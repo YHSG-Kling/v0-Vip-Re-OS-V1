@@ -46,6 +46,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
+import { stripComments as canonicalStripComments } from "./strip-comments"
 import {
   pickCapAmount,
   resolveAnniversaryWindow,
@@ -367,7 +368,7 @@ const PURE_PROBES: PureProbe[] = [
  * underneath it did the wrong thing, so the comments are removed first.
  */
 function stripComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1")
+  return canonicalStripComments(source)
 }
 
 /** One function body only, so a match elsewhere in the file cannot pass a check

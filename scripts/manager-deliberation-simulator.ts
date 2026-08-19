@@ -125,7 +125,8 @@ async function main() {
     && JSON.stringify(MANAGER_COLLABORATIONS.assignment_policy_outcomes.managers.slice().sort()) === JSON.stringify(["ai_isa", "data_steward"])
     && JSON.stringify(MANAGER_COLLABORATIONS.referral_fee_economics.managers.slice().sort()) === JSON.stringify(["finance_manager", "sphere_of_influence"])
     && JSON.stringify(MANAGER_COLLABORATIONS.sequence_touch_cadence.managers.slice().sort()) === JSON.stringify(["ai_isa", "campaign_orchestrator"])
-    && Object.keys(MANAGER_COLLABORATIONS).length === 15)
+    && JSON.stringify(MANAGER_COLLABORATIONS.public_records_seller_signals.managers.slice().sort()) === JSON.stringify(["ai_isa", "data_steward"])
+    && Object.keys(MANAGER_COLLABORATIONS).length === 16)
   check("every deliberative domain's evidence names its LIVE RAISER (no aspirational edges)",
     deliberativeDomains().every((d) => /raiser|sweep|hook|assignVendorToTransaction|publish/i.test(d.evidence)))
 

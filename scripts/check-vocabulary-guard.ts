@@ -71,6 +71,7 @@ import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from "
 import { dirname, join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import { stripComments as canonicalStripComments } from "./strip-comments"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const BASELINE_PATH = join(root, "scripts", "check-vocabulary-baseline.json")
@@ -86,7 +87,7 @@ export interface VocabViolation {
 
 /** Comments quote the dead literals they retired — never scan them. */
 function stripComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+  return canonicalStripComments(src)
 }
 
 function* walk(dir: string): Generator<string> {

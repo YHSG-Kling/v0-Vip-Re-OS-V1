@@ -59,6 +59,7 @@ import {
 } from "../app/config/navigation-config"
 import { toCanonicalRole, isCanonicalRole } from "../lib/security/types"
 import type { NavItem } from "../app/types/navigation"
+import { stripComments } from "./strip-comments"
 
 let pass = 0
 let fail = 0
@@ -74,7 +75,7 @@ const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 
 /** Strip // and /* *\/ comments so a probe reads CODE, never prose. */
 function codeOnly(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")
+  return stripComments(source)
 }
 
 const ids = (items: Array<{ id?: string; href?: string }>) =>

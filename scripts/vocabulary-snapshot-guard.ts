@@ -36,6 +36,8 @@ import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import { stripSqlComments } from "./strip-sql-comments"
+export { stripSqlComments }
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const MIGRATIONS = join(root, "supabase", "migrations")
@@ -77,48 +79,6 @@ export interface CheckDeclaration {
  * this is one left-to-right scan that tracks the state, including the `$$` dollar
  * quoting every `do $$ … $$` migration block in this repo uses.
  */
-export function stripSqlComments(sql: string): string {
-  let out = ""
-  let i = 0
-  const n = sql.length
-  while (i < n) {
-    // Dollar-quoted body: $tag$ … $tag$ — copied verbatim, comments inside are data.
-    const dollar = /^\$([A-Za-z_]\w*)?\$/.exec(sql.slice(i))
-    if (dollar) {
-      const tag = dollar[0]
-      const end = sql.indexOf(tag, i + tag.length)
-      const stop = end === -1 ? n : end + tag.length
-      out += sql.slice(i, stop)
-      i = stop
-      continue
-    }
-    if (sql[i] === "\'") {
-      out += "\'"
-      i++
-      while (i < n) {
-        if (sql[i] === "\'" && sql[i + 1] === "\'") { out += "\'\'"; i += 2; continue } // escaped quote
-        if (sql[i] === "\'") { out += "\'"; i++; break }
-        out += sql[i]
-        i++
-      }
-      continue
-    }
-    if (sql[i] === "-" && sql[i + 1] === "-") {
-      while (i < n && sql[i] !== "\n") i++          // to end of line, wherever it started
-      continue
-    }
-    if (sql[i] === "/" && sql[i + 1] === "*") {
-      const end = sql.indexOf("*/", i + 2)
-      const stop = end === -1 ? n : end + 2
-      for (let k = i; k < stop; k++) if (sql[k] === "\n") out += "\n"  // keep line numbers
-      i = stop
-      continue
-    }
-    out += sql[i]
-    i++
-  }
-  return out
-}
 
 /**
  * PURE — every `ADD CONSTRAINT … CHECK (<col> = ANY (ARRAY[…]))` in one migration,

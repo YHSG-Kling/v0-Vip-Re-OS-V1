@@ -26,6 +26,7 @@ import {
   isUnsendableAddress, isPlausibleAddress, isUsableSender,
   formatSender, bareAddress, NO_SENDER_ERROR,
 } from "../lib/providers/outbound-sender"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -36,7 +37,7 @@ function ok(label: string, cond: boolean, detail?: string) {
 const src = (p: string) => readFileSync(p, "utf8")
 /** Comments stripped — an assertion must target CODE, never prose. */
 const code = (p: string) =>
-  src(p).replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")
+  stripComments(src(p))
 
 console.log("\n═══ 1. A placeholder is recognised wherever it comes from ═══")
 {

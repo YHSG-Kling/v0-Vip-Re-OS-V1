@@ -7,10 +7,17 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 /**
  * LAYER 2 — AI Scoring (nuance refinement of conversational/behavioral signals).
  *
- * Refines the AI-nuanced score columns (`engagement_score`, `intent_score`,
- * `qualification_score`, `motivation_score`, `readiness_level`). When called
- * via explicit agent UI action ("Run AI Score" button on the CRM), this also
- * overrides `lead_score` — that's the documented agent-driven override.
+ * Refines the AI-nuanced score columns that ACTUALLY EXIST on `contacts`:
+ * `engagement_score` and `intent_score` (plus a `last_scored_at` stamp). When
+ * called via explicit agent UI action ("Run AI Score" button on the CRM), this
+ * also overrides `lead_score` — that's the documented agent-driven override.
+ *
+ * `qualification_score`, `motivation_score` and `readiness_level` are NOT columns
+ * on `contacts`, despite what the table in `lib/lead-scoring/LAYERING.md` still
+ * says (that table is wrong on all three names — verified against the committed
+ * live-schema cache scripts/schema-snapshot.ts). Those three dimensions are
+ * persisted to `lead_score_history` instead; readiness rides in its `factors`
+ * blob, matching Layer 3 in lib/lead-intelligence/signal-extensions.ts.
  *
  * Background / cron callers should NOT overwrite `lead_score` (Layer 1 owns
  * the deterministic baseline). A future commit will add a `mode: 'override'
@@ -25,8 +32,8 @@ export async function scoreLeadWithAI(params: {
   /**
    * Write mode (default 'refine'):
    *   - 'refine'   — write only AI-nuanced columns (engagement_score,
-   *                  intent_score, qualification_score, motivation_score,
-   *                  readiness_level). DOES NOT touch lead_score baseline.
+   *                  intent_score) plus the lead_score_history audit row.
+   *                  DOES NOT touch lead_score baseline.
    *                  Use for background/cron callers.
    *   - 'override' — same as refine PLUS overwrite lead_score with the AI
    *                  overall score. Use ONLY when an agent explicitly
@@ -94,25 +101,65 @@ Provide a JSON response with:
     const jsonText = jsonMatch ? (jsonMatch[1] ?? jsonMatch[0]) : analysis
     const scores = JSON.parse(jsonText.trim())
 
+    // The model is free text, not a schema. `contacts.engagement_score` and
+    // `contacts.intent_score` are INTEGER (scripts/010-create-contacts-schema.sql)
+    // — a 72.5 from the model is rejected by Postgres and, because PostgREST
+    // refuses the update as a WHOLE, it takes every other column in the same
+    // statement down with it. Coerce to a clamped integer, and drop the key
+    // entirely when the model returned something unusable rather than writing a
+    // fabricated 0 over a real prior score.
+    const asScore = (v: unknown): number | undefined => {
+      const n = typeof v === "number" ? v : Number(v)
+      if (!Number.isFinite(n)) return undefined
+      return Math.max(0, Math.min(100, Math.round(n)))
+    }
+    const engagement = asScore(scores.engagement)
+    const intent = asScore(scores.intent)
+    const qualification = asScore(scores.qualification)
+    const motivation = asScore(scores.motivation)
+    const overall = asScore(scores.overallScore)
+    const readiness = typeof scores.readiness === "string" ? scores.readiness.trim().toLowerCase() : null
+
     // Update contact with scores. Write boundaries per layering rules:
     //   - 'override' mode (explicit agent action): writes lead_score baseline
     //   - 'refine' mode (background, default): only AI-nuanced columns
+    //
+    // ── WHY THIS UPDATE NAMES ONLY COLUMNS THAT EXIST ───────────────────────
+    // It used to also name `qualification_score`, `motivation_score` and
+    // `readiness_level`. NONE OF THE THREE EXISTS on `contacts` (verified against
+    // the committed live-schema cache, scripts/schema-snapshot.ts: the table has
+    // engagement_score, intent_score, lead_score, isa_qualification_score,
+    // referral_score, confidence_score — and no readiness column at all).
+    // PostgREST refuses an UPDATE naming an unknown column ENTIRELY (PGRST204),
+    // so the two REAL columns beside them were never written either; and because
+    // this call site DOES destructure the error and throw it, the whole action
+    // threw and the CRM's "Run AI Score" button has failed 100% of the time since
+    // it was wired. This was a thrown refusal, not a swallowed one.
+    //
+    // The three dimensions are NOT lost — they persist to `lead_score_history`
+    // below, which layering rule 5 names as the single audit log for all score
+    // changes, and which really does have qualification_score/motivation_score.
+    // Readiness has no column anywhere, so it goes in the history `factors` blob
+    // — exactly what Layer 3 already does (lib/lead-intelligence/signal-extensions.ts:
+    // "Readiness lives in factors only (no column on contacts)").
     const mode = params.mode ?? "refine"
-    const updates: Record<string, unknown> = {
-      engagement_score: scores.engagement,
-      intent_score: scores.intent,
-      qualification_score: scores.qualification,
-      motivation_score: scores.motivation,
-      readiness_level: scores.readiness,
+    const updates: Record<string, unknown> = { last_scored_at: new Date().toISOString() }
+    if (engagement !== undefined) updates.engagement_score = engagement
+    if (intent !== undefined) updates.intent_score = intent
+    if (mode === "override" && overall !== undefined) {
+      updates.lead_score = overall
     }
-    if (mode === "override") {
-      updates.lead_score = scores.overallScore
-    }
-    const { error: contactUpdateError } = await supabase
+    const { data: updatedRows, error: contactUpdateError } = await supabase
       .from("contacts")
       .update(updates)
       .eq("id", params.contactId)
+      .select("id")
     if (contactUpdateError) throw contactUpdateError
+    // A zero-row update is a refusal wearing the shape of success: supabase-js
+    // RESOLVES an RLS-filtered update with no error and no rows.
+    if (!updatedRows || updatedRows.length === 0) {
+      throw new Error(`Scoring wrote no row for contact ${params.contactId} (not visible to this caller)`)
+    }
 
     // Log scoring event.
     //
@@ -135,13 +182,24 @@ Provide a JSON response with:
     const { error: historyError } = await supabase.from("lead_score_history").insert({
       brokerage_id: scoreBrokerageId,
       contact_id: params.contactId,
-      overall_score: scores.overallScore,
-      engagement_score: scores.engagement,
-      intent_score: scores.intent,
-      qualification_score: scores.qualification,
-      motivation_score: scores.motivation,
-      factors: scores.reasoning,
-      ai_recommendations: scores.priorities,
+      lead_id: null,
+      overall_score: overall,
+      engagement_score: engagement,
+      intent_score: intent,
+      qualification_score: qualification,
+      motivation_score: motivation,
+      // `factors` is jsonb (Layer 3 writes an object into it). Readiness has no
+      // column on `contacts`, so this blob is its only home — same convention as
+      // signal-extensions.ts, so one reader can serve both writers.
+      factors: {
+        source: "ai-lead-scoring",
+        mode,
+        reason: typeof scores.reasoning === "string" ? scores.reasoning : null,
+        readiness_signal: readiness,
+        next_best_action: typeof scores.nextBestAction === "string" ? scores.nextBestAction : null,
+      },
+      ai_recommendations: Array.isArray(scores.priorities) ? scores.priorities : null,
+      scored_at: new Date().toISOString(),
     })
     // supabase-js RESOLVES a refused insert, so an unread error here is a
     // scoring event that silently never happened.
@@ -163,29 +221,46 @@ export async function getLeadInsights(contactId: string) {
   try {
     const supabase = await createClient()
 
+    // Two reads, not a PostgREST embed. The embed this used to attempt —
+    // `lead_score_history(* order by scored_at desc limit 5)` — is not PostgREST
+    // syntax (ordering/limiting an embedded resource goes through .order()/.limit()
+    // with `referencedTable`, never inside the select string), so the request was
+    // rejected and this action threw on every call.
     const { data: rawContact, error: contactError } = await supabase
       .from("contacts")
-      .select(`
-        *,
-        lead_score_history(* order by scored_at desc limit 5)
-      `)
+      .select("*")
       .eq("id", contactId)
-      .single()
+      .maybeSingle()
+    if (contactError) throw contactError
     const contact = rawContact as any
 
-    if (contactError) throw contactError
+    const { data: history, error: historyError } = await supabase
+      .from("lead_score_history")
+      .select("*")
+      .eq("contact_id", contactId)
+      .order("scored_at", { ascending: false })
+      .limit(5)
+    if (historyError) throw historyError
+
+    // `qualification_score`, `motivation_score` and `readiness_level` are NOT
+    // columns on `contacts` (see scripts/schema-snapshot.ts). Reading them off the
+    // contact row silently yielded 0/0/"cold" for every lead — a confident-looking
+    // lie. They live on the newest `lead_score_history` row instead, with readiness
+    // inside its `factors` blob.
+    const latest = (history?.[0] ?? null) as any
+    const latestFactors = latest && typeof latest.factors === "object" ? latest.factors : null
 
     return {
       success: true,
       currentScore: {
-        overall: contact?.lead_score || 0,
-        engagement: contact?.engagement_score || 0,
-        intent: contact?.intent_score || 0,
-        qualification: contact?.qualification_score || 0,
-        motivation: contact?.motivation_score || 0,
-        readiness: contact?.readiness_level || "cold",
+        overall: contact?.lead_score ?? latest?.overall_score ?? 0,
+        engagement: contact?.engagement_score ?? latest?.engagement_score ?? 0,
+        intent: contact?.intent_score ?? latest?.intent_score ?? 0,
+        qualification: latest?.qualification_score ?? 0,
+        motivation: latest?.motivation_score ?? 0,
+        readiness: latestFactors?.readiness_signal ?? "cold",
       },
-      history: contact?.lead_score_history || [],
+      history: history ?? [],
       contact,
     }
   } catch (error) {

@@ -75,6 +75,7 @@ import { join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createClient } from "@supabase/supabase-js"
 import { isPlatformStaffIdentity } from "../lib/auth/resolve-user-role"
+import { blankComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -280,9 +281,7 @@ function walk(dir: string, out: string[] = []): string[] {
 
 /** Comments blanked, newlines preserved so reported line numbers survive. */
 function codeOnly(s: string): string {
-  return s
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
-    .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1) => p1 + " ".repeat(m.length - p1.length))
+  return blankComments(s)
 }
 
 const lineOf = (s: string, i: number) => s.slice(0, i).split("\n").length

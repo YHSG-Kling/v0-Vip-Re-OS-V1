@@ -64,6 +64,7 @@
  *     and kcu.column_name='agent_id' and ccu.table_name='users';
  */
 import { readFileSync, existsSync, readdirSync } from "node:fs"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -73,7 +74,7 @@ function ok(label: string, cond: boolean, detail?: string) {
 }
 const src = (p: string) => (existsSync(p) ? readFileSync(p, "utf8") : "")
 const code = (p: string) =>
-  src(p).replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")
+  stripComments(src(p))
 
 /**
  * Tables whose `agent_id` column FKs USERS. THERE ARE NONE — m366 re-pointed the

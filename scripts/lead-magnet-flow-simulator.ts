@@ -12,6 +12,7 @@
  */
 import { readFileSync, existsSync, globSync } from "node:fs"
 import { join } from "node:path"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -87,7 +88,7 @@ console.log("\n── ONE Lead Magnets surface, and its scope is resolved server
 
   const library = src("app/components/features/lead-magnets/MagnetLibrary.tsx")
   check("MagnetLibrary no longer accepts or forwards an agentId",
-    !/agentId/.test(library.replace(/\/\*[\s\S]*?\*\//g, "")))
+    !/agentId/.test(stripComments(library)))
 
   // THE QR MERGE (wave Q): there were THREE lead-magnet QR minters with three different dedupe
   // keys, so one magnet could carry three tracked codes splitting its scans. They collapsed onto
@@ -118,7 +119,7 @@ console.log("\n── ONE Lead Magnets surface, and its scope is resolved server
   // The QR image must come from the vendored `qrcode` package — never a third-party HTTP renderer
   // handed the lead-bearing landing URL. Comments are stripped first: the tombstones that record
   // WHY the third-party renderer was removed necessarily name it.
-  const decomment = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")
+  const decomment = (s: string) => stripComments(s)
   check("no lead-magnet path renders its QR through api.qrserver.com",
     ["lib/kernel/lead-magnets.ts",
      "app/actions/lead-magnets-actions.ts",

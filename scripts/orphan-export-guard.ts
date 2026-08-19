@@ -311,7 +311,7 @@ if (existsSync(proofRoot)) {
   for (const f of walk(proofRoot)) {
     try {
       proofCorpus.push(
-        readFileSync(f, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, ""),
+        stripComments(readFileSync(f, "utf8")),
       )
     } catch { /* unreadable file contributes nothing */ }
   }

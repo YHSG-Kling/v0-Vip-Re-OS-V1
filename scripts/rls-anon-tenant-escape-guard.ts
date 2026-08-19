@@ -143,6 +143,7 @@
 import { readFileSync, writeFileSync, readdirSync, existsSync } from "node:fs"
 import { resolve, join, basename } from "node:path"
 import { createHash } from "node:crypto"
+import { stripSqlComments as canonicalStripSqlComments } from "./strip-sql-comments"
 
 const ROOT = process.cwd()
 const RUN_NEGATIVE = !process.argv.includes("--no-negative")
@@ -246,7 +247,7 @@ const sha = (p: string) => createHash("sha256").update(raw(p)).digest("hex")
 
 /** Strip `--` line comments and block comments. Prose is never evidence. */
 function stripSqlComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/--[^\n]*/g, " ")
+  return canonicalStripSqlComments(src)
 }
 
 /**
@@ -708,10 +709,24 @@ function assertM398ConjoinsTenantPredicate(): boolean {
   )
 }
 
-/** The `keep_world_readable` array of m398 / m399, read the way `carveOutSet` reads m394's. */
+/**
+ * The `keep_world_readable` array of m398 / m399, read the way `carveOutSet` reads m394's.
+ *
+ * It must match the DECLARATION — `keep_world_readable text[] := …` — and not merely
+ * the NAME. Both migrations also mention `keep_world_readable` in prose inside the
+ * long error message they raise, and the previous pattern (`keep_world_readable[^=]*:=`)
+ * was happy to start at that prose mention and run forward to any later `:=`. That
+ * did not show up while this assertion was failing for an unrelated reason: the old
+ * SQL stripper mangled both files badly enough that A20 was permanently RED, so its
+ * negative control went red too and looked like it was working. With the scanner in
+ * scripts/strip-sql-comments.ts the assertion goes green — and the negative control
+ * (which renames the declaration away) then STAYED green, because the prose mention
+ * still satisfied the loose pattern. Anchoring it to the declaration shape is what
+ * makes the control able to fail again.
+ */
 function worldReadableCarveOutSet(path: string): string[] {
   const body = stripSqlComments(raw(path)).replace(/\s+/g, " ")
-  const m = /keep_world_readable[^=]*:=\s*(array\s*\[[^\]]*\]|'\{\}')/i.exec(body)
+  const m = /\bkeep_world_readable\s+[A-Za-z_]+\s*\[\]\s*:=\s*(array\s*\[[^\]]*\]|'\{\}')/i.exec(body)
   if (!m) return ["<no keep_world_readable array found>"]
   if (/^'\{\s*\}'$/.test(m[1].trim())) return []
   return [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1])

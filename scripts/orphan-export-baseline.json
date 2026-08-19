@@ -1,7 +1,6 @@
 {
   "files": {
     "app/actions/accounting-sync.ts": 1,
-    "app/actions/activities.ts": 1,
     "app/actions/admin/billing.ts": 1,
     "app/actions/admin/commission-agreement.ts": 1,
     "app/actions/agents.ts": 5,
@@ -12,18 +11,16 @@
     "app/actions/ai-lead-nurturing.ts": 1,
     "app/actions/ai-listing-intake.ts": 2,
     "app/actions/ai-marketing-automation.ts": 4,
-    "app/actions/ai-predictions.ts": 4,
+    "app/actions/ai-predictions.ts": 5,
     "app/actions/ai-transaction-coordinator.ts": 2,
     "app/actions/ai-voice-transcription.ts": 1,
     "app/actions/assistant.ts": 2,
     "app/actions/billing.ts": 3,
     "app/actions/brokerage-cda-setup.ts": 1,
-    "app/actions/buyer-execution.ts": 1,
     "app/actions/buyer-financial.ts": 1,
     "app/actions/buyer-offer/handle-multi-offer.ts": 1,
     "app/actions/calculators.ts": 1,
     "app/actions/cda-portal.ts": 4,
-    "app/actions/copilot.ts": 4,
     "app/actions/credit-copilot.ts": 1,
     "app/actions/documents.ts": 1,
     "app/actions/dotloop-integration.ts": 1,
@@ -31,7 +28,6 @@
     "app/actions/fb-audience-templates.ts": 1,
     "app/actions/forms-kernel.ts": 1,
     "app/actions/journey-tasks.ts": 1,
-    "app/actions/lead-assignment/assign-lead.ts": 1,
     "app/actions/lead-import/import-actions.ts": 1,
     "app/actions/lead-intelligence.ts": 6,
     "app/actions/listings-kernel.ts": 3,
@@ -110,7 +106,6 @@
     "lib/ai-isa/personalize-outreach.ts": 1,
     "lib/ai-isa/portal-link.ts": 1,
     "lib/ai-isa/post-call-outcome.ts": 2,
-    "lib/ai-isa/qualification-core.ts": 1,
     "lib/ai-isa/reengagement-policy.ts": 3,
     "lib/ai-isa/stale-contact-detector.ts": 1,
     "lib/ai-isa/voice-dial-batch.ts": 2,
@@ -168,6 +163,7 @@
     "lib/data-steward/property-spec-extractor.ts": 1,
     "lib/did/avatar-completion.ts": 3,
     "lib/did/consent.ts": 1,
+    "lib/direct-mail/unsubscribe-token.ts": 2,
     "lib/documents/auto-filer.ts": 1,
     "lib/documents/autonomy-ratchet.ts": 3,
     "lib/documents/client-pdf.ts": 2,
@@ -197,8 +193,9 @@
     "lib/external/exa-client.ts": 1,
     "lib/external/nextdoor-extract.ts": 1,
     "lib/external/nominatim-geocode.ts": 2,
-    "lib/external/permit-signals.ts": 9,
+    "lib/external/permit-signals.ts": 10,
     "lib/external/socrata-client.ts": 1,
+    "lib/external/socrata-market-registry.ts": 1,
     "lib/external/tavily-client.ts": 1,
     "lib/external/vision-property.ts": 1,
     "lib/fatigue/fatigue-display.ts": 1,
@@ -551,7 +548,6 @@
     "lib/voice/voice-bus.ts": 2,
     "lib/voice/voice-coverage.ts": 2,
     "lib/voice-admin/kernel-command-surface.ts": 1,
-    "lib/voice-admin/plan-voice-command.ts": 2,
     "lib/wealth-advisor/fetch-market-rates.ts": 1,
     "lib/wire-fraud/wire-fraud-runner.ts": 1,
     "lib/workflow/intelligence/packet-analysis.ts": 1,
@@ -561,7 +557,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9105,
+  "census": 9129,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -649,7 +645,7 @@
     "app/actions/ai-marketing-automation.ts": 8,
     "app/actions/ai-newsletter.ts": 15,
     "app/actions/ai-offer-creation.ts": 11,
-    "app/actions/ai-predictions.ts": 18,
+    "app/actions/ai-predictions.ts": 24,
     "app/actions/ai-property-matching.ts": 4,
     "app/actions/ai-referral-management.ts": 5,
     "app/actions/ai-reply-coach.ts": 4,
@@ -763,7 +759,7 @@
     "app/actions/continuity-receipt.ts": 1,
     "app/actions/conversation-analytics.ts": 5,
     "app/actions/convert-outside-inquiry.ts": 1,
-    "app/actions/copilot.ts": 11,
+    "app/actions/copilot.ts": 10,
     "app/actions/counter-offer-diff.ts": 1,
     "app/actions/coverage-mode.ts": 1,
     "app/actions/creative-playbooks.ts": 2,
@@ -827,6 +823,7 @@
     "app/actions/lead-acquisition.ts": 1,
     "app/actions/lead-assignment/assign-lead.ts": 3,
     "app/actions/lead-governance/govern-lead.ts": 1,
+    "app/actions/lead-handoff/pending-handoffs.ts": 1,
     "app/actions/lead-import/crm-pull-actions.ts": 3,
     "app/actions/lead-import/import-actions.ts": 4,
     "app/actions/lead-intelligence.ts": 17,
@@ -1158,6 +1155,7 @@
     "app/api/agentic-os/connectivity/route.ts": 1,
     "app/api/agentic-os/mcp/route.ts": 1,
     "app/api/agentic-os/resolve-capability/route.ts": 2,
+    "app/api/agentic-os/voice/route.ts": 1,
     "app/api/ai/content-suggestions/route.ts": 1,
     "app/api/ai/generate-content/route.ts": 1,
     "app/api/ai/generate-module-content/route.ts": 1,
@@ -1501,6 +1499,7 @@
     "app/api/transactions/list/route.ts": 1,
     "app/api/twiml/whisper-bridge/route.ts": 2,
     "app/api/unsubscribe/route.ts": 1,
+    "app/api/unsubscribe/token/route.ts": 2,
     "app/api/validate-them-first/route.ts": 1,
     "app/api/vendor-costs/route.ts": 1,
     "app/api/vendors/list/route.ts": 1,
@@ -1987,6 +1986,7 @@
     "app/dashboard/agent/components/connection-health-card.tsx": 1,
     "app/dashboard/agent/components/conversion/newly-converted-contacts-panel.tsx": 1,
     "app/dashboard/agent/components/deal-risk-widget.tsx": 1,
+    "app/dashboard/agent/components/handoff/new-contact-handoff-panel.tsx": 1,
     "app/dashboard/agent/components/income-forecast-card.tsx": 1,
     "app/dashboard/agent/components/license-compliance-widget.tsx": 1,
     "app/dashboard/agent/components/listing-appt-prep-widget.tsx": 1,
@@ -2061,6 +2061,7 @@
     "app/dashboard/coaching/coaching-dashboard-client.tsx": 1,
     "app/dashboard/coaching/practice/practice-client.tsx": 1,
     "app/dashboard/coaching/practice/voice-practice-overlay.tsx": 1,
+    "app/dashboard/coaching/sessions/coaching-sessions-client.tsx": 1,
     "app/dashboard/communications/communications-os-client.tsx": 1,
     "app/dashboard/communications/components/os/ai-reply-coach-panel.tsx": 1,
     "app/dashboard/communications/components/os/communication-health-panel.tsx": 1,
@@ -2453,6 +2454,7 @@
     "app/dashboard/transactions/[id]/hazard-insurance-section.tsx": 1,
     "app/dashboard/transactions/[id]/lender-status-request-button.tsx": 1,
     "app/dashboard/transactions/[id]/milestone-deadlines-button.tsx": 1,
+    "app/dashboard/transactions/[id]/milestones/add-milestone-form.tsx": 1,
     "app/dashboard/transactions/[id]/transaction-detail-client.tsx": 1,
     "app/dashboard/transactions/closing-concierge/actions.ts": 5,
     "app/dashboard/transactions/closing-concierge/concierge-client.tsx": 1,
@@ -2534,6 +2536,7 @@
     "app/open-house/feedback/[attendeeId]/feedback-form.tsx": 1,
     "app/p/[agentSlug]/profile-lead-capture-form.tsx": 1,
     "app/portal/[contactId]/alerts/[alertId]/alert-match-list.tsx": 1,
+    "app/portal/[contactId]/assistant/buyer-assistant-client.tsx": 1,
     "app/portal/[contactId]/components/DualDependencyBanner.tsx": 1,
     "app/portal/[contactId]/components/DualJourneyTabs.tsx": 1,
     "app/portal/[contactId]/components/LifetimeMilestoneLine.tsx": 1,
@@ -2621,6 +2624,7 @@
     "app/title/orders/title-order-row.tsx": 1,
     "app/trust/page.tsx": 1,
     "app/types/video-generation.ts": 1,
+    "app/unsubscribe/[token]/token-client.tsx": 1,
     "app/unsubscribe/unsubscribe-client.tsx": 1,
     "app/v/[slug]/page.tsx": 1,
     "app/v/[slug]/video-player.tsx": 1,
@@ -2793,7 +2797,7 @@
     "lib/ai-isa/personalize-outreach.ts": 4,
     "lib/ai-isa/portal-link.ts": 3,
     "lib/ai-isa/post-call-outcome.ts": 3,
-    "lib/ai-isa/qualification-core.ts": 6,
+    "lib/ai-isa/qualification-core.ts": 5,
     "lib/ai-isa/qualification-evaluator.ts": 2,
     "lib/ai-isa/reengagement-policy.ts": 10,
     "lib/ai-isa/saved-home-nudge.ts": 1,
@@ -3071,6 +3075,7 @@
     "lib/direct-mail/campaign-drain.ts": 1,
     "lib/direct-mail/draft-copy.ts": 2,
     "lib/direct-mail/listing-lifecycle-mail-reactor.ts": 1,
+    "lib/direct-mail/mail-unsubscribe.ts": 2,
     "lib/direct-mail/orchestrate-bundle-send.ts": 1,
     "lib/direct-mail/orchestrate-preset-send.ts": 1,
     "lib/direct-mail/orchestrate-send.ts": 1,
@@ -3078,6 +3083,7 @@
     "lib/direct-mail/render-letter.ts": 1,
     "lib/direct-mail/render-postcard.ts": 2,
     "lib/direct-mail/resolve-size-pref.ts": 2,
+    "lib/direct-mail/unsubscribe-token.ts": 5,
     "lib/direct-mail/variant-bandit.ts": 2,
     "lib/documents/auto-filer.ts": 3,
     "lib/documents/auto-populate-participants.ts": 1,
@@ -3148,10 +3154,10 @@
     "lib/external/osint-free.ts": 3,
     "lib/external/osint-neighborhood.ts": 3,
     "lib/external/peopledata-client.ts": 2,
-    "lib/external/permit-signals.ts": 10,
+    "lib/external/permit-signals.ts": 11,
     "lib/external/rentcast-typed.ts": 1,
     "lib/external/socrata-client.ts": 2,
-    "lib/external/socrata-market-registry.ts": 2,
+    "lib/external/socrata-market-registry.ts": 3,
     "lib/external/tavily-client.ts": 2,
     "lib/external/vision-property.ts": 1,
     "lib/external/zenrows-client.ts": 3,
@@ -3568,7 +3574,7 @@
     "lib/lead-assignment/contact-assignment.ts": 1,
     "lib/lead-assignment/default-assignment.ts": 2,
     "lib/lead-assignment/routing-profiles.ts": 1,
-    "lib/lead-assignment/rule-matcher.ts": 9,
+    "lib/lead-assignment/rule-matcher.ts": 10,
     "lib/lead-assignment/solo-agent.ts": 1,
     "lib/lead-assignment/stale-lead-detector.ts": 1,
     "lib/lead-assignment/tier-routing.ts": 4,
@@ -3582,7 +3588,7 @@
     "lib/lead-intelligence/interest-level.ts": 1,
     "lib/lead-intelligence/signal-extensions.ts": 4,
     "lib/lead-intent/inbound-lead-intent.ts": 1,
-    "lib/lead-intent/lead-opt-out.ts": 1,
+    "lib/lead-intent/lead-opt-out.ts": 2,
     "lib/lead-pipeline/ai-intent-classifier.ts": 7,
     "lib/lead-pipeline/canonical-lead-eligibility.ts": 1,
     "lib/lead-pipeline/contact-signal-rescrape.ts": 1,
@@ -4832,7 +4838,13 @@
       "massGenerateCMAs",
       "predictWinningOffer",
       "aiNegotiationAdvisor",
-      "predictMarketShift"
+      "predictMarketShift",
+      "findMarketArbitrage",
+      "detectClientChurn",
+      "optimizeShowingRoute",
+      "findHiddenOpportunities",
+      "mineSphereOfInfluence",
+      "competitiveIntelligence"
     ],
     "app/actions/ai-property-matching.ts": [
       "generatePropertyMatches",
@@ -5575,7 +5587,6 @@
     "app/actions/copilot.ts": [
       "handleSuggestionAccepted",
       "handleCoachingSessionBooked",
-      "handleMorningKickoff",
       "generate7DayPlan",
       "createTransactionMilestone",
       "checkOverdueMilestones",
@@ -5987,6 +5998,9 @@
     ],
     "app/actions/lead-governance/govern-lead.ts": [
       "governLead"
+    ],
+    "app/actions/lead-handoff/pending-handoffs.ts": [
+      "listMyPendingHandoffsAction"
     ],
     "app/actions/lead-import/crm-pull-actions.ts": [
       "setCrmImportCredentialAction",
@@ -8127,6 +8141,9 @@
       "POST",
       "GET"
     ],
+    "app/api/agentic-os/voice/route.ts": [
+      "POST"
+    ],
     "app/api/ai/content-suggestions/route.ts": [
       "POST"
     ],
@@ -9183,6 +9200,10 @@
       "POST"
     ],
     "app/api/unsubscribe/route.ts": [
+      "POST"
+    ],
+    "app/api/unsubscribe/token/route.ts": [
+      "GET",
       "POST"
     ],
     "app/api/validate-them-first/route.ts": [
@@ -10669,6 +10690,9 @@
     "app/dashboard/agent/components/deal-risk-widget.tsx": [
       "DealRiskWidget"
     ],
+    "app/dashboard/agent/components/handoff/new-contact-handoff-panel.tsx": [
+      "NewContactHandoffPanel"
+    ],
     "app/dashboard/agent/components/income-forecast-card.tsx": [
       "IncomeForecastCard"
     ],
@@ -10890,6 +10914,9 @@
     ],
     "app/dashboard/coaching/practice/voice-practice-overlay.tsx": [
       "VoicePracticeOverlay"
+    ],
+    "app/dashboard/coaching/sessions/coaching-sessions-client.tsx": [
+      "CoachingSessionsClient"
     ],
     "app/dashboard/communications/communications-os-client.tsx": [
       "CommunicationsOSClient"
@@ -12116,6 +12143,9 @@
     "app/dashboard/transactions/[id]/milestone-deadlines-button.tsx": [
       "MilestoneDeadlinesButton"
     ],
+    "app/dashboard/transactions/[id]/milestones/add-milestone-form.tsx": [
+      "AddMilestoneForm"
+    ],
     "app/dashboard/transactions/[id]/transaction-detail-client.tsx": [
       "TransactionDetailClient"
     ],
@@ -12370,6 +12400,9 @@
     ],
     "app/portal/[contactId]/alerts/[alertId]/alert-match-list.tsx": [
       "AlertMatchList"
+    ],
+    "app/portal/[contactId]/assistant/buyer-assistant-client.tsx": [
+      "BuyerAssistantClient"
     ],
     "app/portal/[contactId]/components/DualDependencyBanner.tsx": [
       "DualDependencyBanner"
@@ -12632,6 +12665,9 @@
     ],
     "app/types/video-generation.ts": [
       "toLibraryScriptType"
+    ],
+    "app/unsubscribe/[token]/token-client.tsx": [
+      "MailUnsubscribeClient"
     ],
     "app/unsubscribe/unsubscribe-client.tsx": [
       "UnsubscribeClient"
@@ -13361,8 +13397,7 @@
       "signalTemperature",
       "deriveQualificationSignals",
       "qualificationScoreFor",
-      "voiceSignalFor",
-      "engine2GatePasses"
+      "voiceSignalFor"
     ],
     "lib/ai-isa/qualification-evaluator.ts": [
       "evaluateLeadQualification",
@@ -14872,6 +14907,10 @@
     "lib/direct-mail/listing-lifecycle-mail-reactor.ts": [
       "dispatchLifecycleMail"
     ],
+    "lib/direct-mail/mail-unsubscribe.ts": [
+      "resolveMailUnsubscribeToken",
+      "applyMailUnsubscribe"
+    ],
     "lib/direct-mail/orchestrate-bundle-send.ts": [
       "orchestrateBundleSend"
     ],
@@ -14894,6 +14933,13 @@
     "lib/direct-mail/resolve-size-pref.ts": [
       "resolveDirectMailSize",
       "getPlatformRecommendation"
+    ],
+    "lib/direct-mail/unsubscribe-token.ts": [
+      "normalizeMailUnsubToken",
+      "isMailUnsubTokenShaped",
+      "formatMailUnsubTokenForPrint",
+      "buildMailUnsubscribeUrl",
+      "mailOptOutPrintLine"
     ],
     "lib/direct-mail/variant-bandit.ts": [
       "pickVariantArm",
@@ -15257,6 +15303,7 @@
       "normalizeStreetAddress",
       "readPermitAddress",
       "readPermitId",
+      "readPermitEventDate",
       "readPermitDescription",
       "readPermitValuation",
       "classifyPermitStrength",
@@ -15274,7 +15321,8 @@
     ],
     "lib/external/socrata-market-registry.ts": [
       "getMarketDatasets",
-      "listSupportedMarkets"
+      "listSupportedMarkets",
+      "listQueryablePermitDatasets"
     ],
     "lib/external/tavily-client.ts": [
       "tavilySearch",
@@ -17505,6 +17553,7 @@
     ],
     "lib/lead-assignment/rule-matcher.ts": [
       "isRuleType",
+      "evaluateAssignmentEligibility",
       "evaluateRuleConditions",
       "pickRoundRobinAgent",
       "toRoutingProfiles",
@@ -17561,7 +17610,8 @@
       "evaluateInboundLeadSignal"
     ],
     "lib/lead-intent/lead-opt-out.ts": [
-      "applyLeadOptOut"
+      "applyLeadOptOut",
+      "reopenLeadOnInboundConsent"
     ],
     "lib/lead-pipeline/ai-intent-classifier.ts": [
       "intentToType",
@@ -20693,5 +20743,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 15
+  "trulyDead": 6
 }

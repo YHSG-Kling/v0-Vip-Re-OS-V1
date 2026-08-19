@@ -37,6 +37,7 @@
  * no deprecated talks/clips stream call survives ANYWHERE in the app.
  */
 import { readFileSync, existsSync, readdirSync } from "node:fs"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -47,7 +48,7 @@ function ok(label: string, cond: boolean, detail?: string) {
 const src = (p: string) => (existsSync(p) ? readFileSync(p, "utf8") : "")
 /** Comments stripped — an assertion must target CODE, never prose. */
 const code = (p: string) =>
-  src(p).replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")
+  stripComments(src(p))
 
 /** The authenticated D-ID surfaces. Every one must be on the gateway. */
 const AUTHED_SURFACES = [

@@ -51,6 +51,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs"
 import { join, relative } from "node:path"
 import { toCanonicalRole, rawRoleVariants, isCanonicalRole } from "../lib/security/types"
+import { stripComments as canonicalStripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -112,10 +113,7 @@ function walk(dir: string, out: string[] = []): string[] {
 
 /** Remove block comments, JSX comments and line comments. */
 function stripComments(t: string): string {
-  return t
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/\{\s*\/\*[\s\S]*?\*\/\s*\}/g, "")
-    .replace(/^[ \t]*\/\/.*$/gm, "")
+  return canonicalStripComments(t)
 }
 
 const offenders: string[] = []

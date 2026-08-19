@@ -441,7 +441,7 @@ console.log("\n[18 · HEYGEN GONE FROM THE SCHEMA + D-ID V4 EXPRESSIVE ENGINE]")
     "app/components/features/education/EducationEditor.tsx",
     "app/dashboard/videos/board/page.tsx", "lib/kernel/video.ts"]
   // Comments are stripped: these files legitimately DISCUSS the purge.
-  const code = (f: string) => src(f).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+  const code = (f: string) => stripComments(src(f))
   for (const [old, now] of RENAMED) {
     check(`${old} is gone from live code — it is ${now}`,
       CODE.every((f) => !new RegExp(`\\b${old}\\b`).test(code(f))))
@@ -464,6 +464,7 @@ console.log("\n[18 · HEYGEN GONE FROM THE SCHEMA + D-ID V4 EXPRESSIVE ENGINE]")
 console.log("\n[19 · THE MOVING ASSISTANT + SENTIMENT-FROM-CONTENT (V4 era)]")
 import { ASSISTANT_EXPRESSIVE_AVATARS } from "../lib/video/assistant-options"
 import { sentimentForSituation } from "../lib/video/video-director"
+import { stripComments } from "./strip-comments"
 {
   check("expressive presenter options exist and every id carries the @avt_ marker lib/did routes to /expressives",
     ASSISTANT_EXPRESSIVE_AVATARS.length >= 1

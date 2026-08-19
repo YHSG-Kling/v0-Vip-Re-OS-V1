@@ -50,6 +50,7 @@ import {
   ZIP_RE,
   type TerritoryViewer,
 } from "../app/dashboard/settings/territories/territory-rules"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -182,11 +183,7 @@ function syncBody(source: string): string {
  * strings, which is how a "clever" probe starts lying.)
  */
 function codeOnly(source: string): string {
-  return source
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .split("\n")
-    .filter((l) => !l.trim().startsWith("//"))
-    .join("\n")
+  return stripComments(source)
 }
 
 /**

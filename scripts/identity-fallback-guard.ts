@@ -65,6 +65,7 @@
  * fallback is where a fix goes to be quietly undone.
  */
 import { readFileSync, existsSync, readdirSync } from "node:fs"
+import { stripComments as canonicalStripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -92,7 +93,7 @@ function walkDir(dir: string, out: string[] = []): string[] {
  * agent-identity.ts that spells the anti-pattern out in order to forbid it.
  */
 function code(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1")
+  return canonicalStripComments(src)
 }
 
 /**

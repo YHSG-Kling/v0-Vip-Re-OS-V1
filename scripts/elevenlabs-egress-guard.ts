@@ -39,6 +39,7 @@
  * the inverse claim, swept across the whole app rather than one known path.
  */
 import { readFileSync, existsSync, readdirSync } from "node:fs"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -49,7 +50,7 @@ function ok(label: string, cond: boolean, detail?: string) {
 const src = (p: string) => (existsSync(p) ? readFileSync(p, "utf8") : "")
 /** Comments stripped — an assertion must target CODE, never prose. */
 const code = (p: string) =>
-  src(p).replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")
+  stripComments(src(p))
 
 const GATEWAY = "lib/agentic-os/connector-gateway.ts"
 const CLONE = "app/api/elevenlabs/voice-clone/route.ts"

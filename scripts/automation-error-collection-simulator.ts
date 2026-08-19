@@ -49,6 +49,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "
 import { join, relative, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import { stripComments } from "./strip-comments"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const BASELINE_PATH = join(root, "scripts", "automation-error-baseline.json")
@@ -59,7 +60,7 @@ const check = (n: string, c: boolean, d?: string) => {
   if (c) { pass++; console.log(`  ✓ ${n}`) }
   else { fail++; fails.push(n + (d ? ` — ${d}` : "")); console.log(`  ✗ ${n}${d ? ` — ${d}` : ""}`) }
 }
-const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+const strip = (s: string) => stripComments(s)
 const src = (p: string) => strip(readFileSync(join(root, p), "utf8"))
 
 /** PURE — files under app/ and lib/ that insert into automation_errors directly. */

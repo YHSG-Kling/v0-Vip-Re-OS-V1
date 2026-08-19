@@ -63,6 +63,7 @@
 import { readFileSync, writeFileSync, readdirSync, existsSync } from "node:fs"
 import { resolve, join } from "node:path"
 import { createHash } from "node:crypto"
+import { stripSqlComments as canonicalStripSqlComments } from "./strip-sql-comments"
 
 const ROOT = process.cwd()
 const RUN_NEGATIVE = !process.argv.includes("--no-negative")
@@ -96,7 +97,7 @@ const sha = (p: string) => createHash("sha256").update(raw(p)).digest("hex")
 
 /** Strip `--` line comments and block comments. Prose is never evidence. */
 function stripSqlComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/--[^\n]*/g, " ")
+  return canonicalStripSqlComments(src)
 }
 
 /**

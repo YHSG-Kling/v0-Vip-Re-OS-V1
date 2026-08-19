@@ -24,6 +24,7 @@
  * the live registry, so it runs in a plain CI process in milliseconds.
  */
 import { readFileSync, readdirSync } from "node:fs"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -187,9 +188,7 @@ console.log("\n═══ 5. The rules that silently do not render ═══")
 
   const offenders: string[] = []
   for (const f of files) {
-    const src = readFileSync(f, "utf8")
-      .replace(/\/\*[\s\S]*?\*\//g, "")
-      .split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")
+    const src = stripComments(readFileSync(f, "utf8"))
     if (/\btransition\s*:/.test(src)) offenders.push(`${f}: CSS transition`)
     if (/\banimation\s*:/.test(src)) offenders.push(`${f}: CSS animation`)
     if (/className=["'][^"']*\banimate-/.test(src)) offenders.push(`${f}: Tailwind animate- class`)

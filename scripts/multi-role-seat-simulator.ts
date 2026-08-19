@@ -64,6 +64,7 @@ import {
   selectPrimaryRole,
   type RoleGrant,
 } from "../lib/auth/role-grants"
+import { blankComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -218,9 +219,7 @@ function walk(dir: string, out: string[] = []): string[] {
  * apart from code fails on the documentation and passes on nothing.
  */
 function codeOnly(s: string): string {
-  return s
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
-    .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1) => p1 + " ".repeat(m.length - p1.length))
+  return blankComments(s)
 }
 
 /**

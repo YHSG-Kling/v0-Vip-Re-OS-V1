@@ -57,6 +57,7 @@ import {
   LIFETIME_STALE_DAYS,
   type StaleEligibilityInput,
 } from "../lib/ai-isa/reengagement-policy"
+import { blankComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -189,19 +190,23 @@ function walk(dir: string, out: string[] = []): string[] {
  * nothing — which is the failure mode this repo has hit repeatedly.
  */
 function executableCodeOnly(s: string): string {
-  return s
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
-    .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1) => p1 + " ".repeat(m.length - p1.length))
-    .replace(/`(?:\\.|[^`\\])*`/g, (m) => m.replace(/[^\n]/g, " "))
-    .replace(/"(?:\\.|[^"\\\n])*"/g, (m) => " ".repeat(m.length))
-    .replace(/'(?:\\.|[^'\\\n])*'/g, (m) => " ".repeat(m.length))
+  // Comments go through the canonical scanner; literals are still masked here
+  // because THIS helper deliberately wants quoted text gone too.
+  //
+  // The escape alternations below are the two-char class, NOT the dot form. A dot
+  // does not match a newline, so a backslash sitting at end of line — a legal
+  // line continuation — could not be consumed: the literal then failed to match,
+  // was left unmasked, and every scan downstream read quoted prose as if it were
+  // code. Same defect class as the block-first comment strip, one layer over.
+  return blankComments(s)
+    .replace(/`(?:\\[\s\S]|[^`\\])*`/g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/"(?:\\[\s\S]|[^"\\\n])*"/g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/'(?:\\[\s\S]|[^'\\\n])*'/g, (m) => m.replace(/[^\n]/g, " "))
 }
 
 /** Comments blanked, literals intact. Newlines preserved so line numbers survive. */
 function codeOnly(s: string): string {
-  return s
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
-    .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1) => p1 + " ".repeat(m.length - p1.length))
+  return blankComments(s)
 }
 
 /**

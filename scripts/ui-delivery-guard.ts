@@ -60,6 +60,7 @@
  * invariant is "every LOCAL-ONLY field is a deliberate, named decision."
  */
 import { readFileSync, existsSync, readdirSync, writeFileSync, unlinkSync } from "node:fs"
+import { stripComments } from "./strip-comments"
 
 const read = (p: string) => { try { return readFileSync(p, "utf8") } catch { return "" } }
 function walk(dir: string, out: string[] = []): string[] {
@@ -72,7 +73,7 @@ function walk(dir: string, out: string[] = []): string[] {
   return out
 }
 const code = (s: string) =>
-  s.replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")
+  stripComments(s)
 
 /**
  * State that is bound to an input and deliberately never submitted. Each entry

@@ -37,6 +37,7 @@
  * here is word-boundaried precisely so that never happens, and §4 proves it.
  */
 import { readFileSync, existsSync, readdirSync } from "node:fs"
+import { stripComments } from "./strip-comments"
 
 const read = (p: string) => { try { return readFileSync(p, "utf8") } catch { return "" } }
 function walk(dir: string, out: string[] = []): string[] {
@@ -53,7 +54,7 @@ function walk(dir: string, out: string[] = []): string[] {
 /** Strip comments so the guard measures CODE, never its own prose or the
  *  historical record that documents WHY the vendor was retired. */
 const code = (s: string) =>
-  s.replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")
+  stripComments(s)
 
 /**
  * Retired vendors, and the ONLY files permitted to still speak their names.

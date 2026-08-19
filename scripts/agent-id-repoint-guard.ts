@@ -46,6 +46,7 @@
  * runtime, from the defect it was meant to cure.
  */
 import { readFileSync, existsSync, readdirSync } from "node:fs"
+import { stripComments } from "./strip-comments"
 
 const REPOINTED = new Set([
   "agent_intro_videos", "ai_video_projects", "closing_disclosure_agreement", "conversation_logs",
@@ -78,7 +79,7 @@ function walk(dir: string, out: string[] = []): string[] {
 }
 /** Strip comments so the guard measures CODE, never its own prose. */
 const code = (s: string) =>
-  s.replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")
+  stripComments(s)
 
 interface Site { file: string; line: number; table: string; expr: string; kind: "write" | "filter" }
 

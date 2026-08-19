@@ -21,6 +21,7 @@
 import { readFileSync, writeFileSync, readdirSync, statSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { stripComments as canonicalStripComments } from "./strip-comments"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const read = (p: string) => readFileSync(join(root, p), "utf8")
@@ -28,7 +29,7 @@ const read = (p: string) => readFileSync(join(root, p), "utf8")
 /** Strip block + line comments so a code-pattern written INSIDE a comment (e.g. a doc example of a
  *  `.eq("milestone_name","x")` call) is never mistaken for real code. Good enough for this guard. */
 function stripComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1")
+  return canonicalStripComments(src)
 }
 const BASELINE_PATH = join(root, "scripts", "vocabulary-drift-baseline.json")
 

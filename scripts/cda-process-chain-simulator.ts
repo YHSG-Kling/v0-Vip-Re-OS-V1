@@ -52,6 +52,7 @@
  */
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs"
 import { evaluateFinalCompliance } from "../lib/transactions/final-compliance-check"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -60,7 +61,7 @@ const check = (n: string, c: boolean) => {
 }
 const src = (p: string) =>
   existsSync(p)
-    ? readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+    ? stripComments(readFileSync(p, "utf8"))
     : ""
 
 /** Body of a top-level function, skipping the parameter list and any generics. */

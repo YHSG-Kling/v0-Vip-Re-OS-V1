@@ -505,18 +505,33 @@ export async function mergeContacts(params: { primaryContactId: string; duplicat
       throw new NotFoundError("One or both contacts not found")
     }
 
-    // Merge data (prefer primary, but take non-null from duplicate)
+    // Merge data (prefer primary, but take non-null from duplicate).
+    //
+    // `preferred_cities` USED TO BE MERGED HERE AND IS GONE ON PURPOSE. There is no
+    // such column on `contacts` (scripts/schema-snapshot.ts; the same fact is already
+    // written down at the insert path above: "contacts has no full_name/lead_score/
+    // preferred_cities/tags columns"). Naming it made PostgREST refuse this UPDATE
+    // ENTIRELY (PGRST204) — so phone, budgets, tags and the merged notes were never
+    // written either. And because the refusal was never destructured, supabase-js
+    // RESOLVED it: the merge reported success, the relationship transfers below ran,
+    // and the duplicate was then soft-deleted — losing every field this function
+    // claims to preserve. Nothing is lost by dropping the key: the column does not
+    // exist, so `primary.preferred_cities` was always undefined and the merge of two
+    // undefineds was always [].
     const merged = {
       phone: primary.phone || duplicate.phone,
       budget_min: primary.budget_min || duplicate.budget_min,
       budget_max: primary.budget_max || duplicate.budget_max,
-      preferred_cities: [...new Set([...(primary.preferred_cities || []), ...(duplicate.preferred_cities || [])])],
       tags: [...new Set([...(primary.tags || []), ...(duplicate.tags || [])])],
       notes: [primary.notes, duplicate.notes].filter(Boolean).join("\n\n---MERGED---\n\n"),
     }
 
-    // Update primary contact
-    await supabase.from("contacts").update(merged).eq("id", params.primaryContactId)
+    // Update primary contact. The error is READ: a refused merge must not be followed
+    // by transferring relationships off the duplicate and soft-deleting it.
+    const { error: mergeError } = await supabase.from("contacts").update(merged).eq("id", params.primaryContactId)
+    if (mergeError) {
+      throw new DatabaseError("Failed to merge contact fields onto primary", mergeError)
+    }
 
     // Transfer relationships to primary
     await supabase.from("property_interactions").update({ contact_id: params.primaryContactId }).eq("contact_id", params.duplicateContactId)

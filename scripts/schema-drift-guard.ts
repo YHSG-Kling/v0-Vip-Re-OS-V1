@@ -842,6 +842,9 @@ function testPure() {
     resolveVariableInsertKeys(`const rows: any[] = []\nrows.push({ pushed_col: 1 })`, "rows").includes("pushed_col"))
   check("resolveVariableInsertKeys: opaque helper result contributes NOTHING (no false positives)",
     resolveVariableInsertKeys(`const rows = buildRows(payload)`, "rows").length === 0)
+  check("resolveVariableInsertKeys: typed const annotation does not hide the object (the .update(var) shape)",
+    resolveVariableInsertKeys(`const updates: Record<string, unknown> = { engagement_score: 1, intent_score: 2 }`, "updates")
+      .join() === "engagement_score,intent_score")
   {
     // Two same-named variables in one file: only the NEAREST definition before
     // the insert counts (the lifetime_customer_touchpoints false-positive shape).
@@ -1300,7 +1303,17 @@ function scanFile(file: string, src: string, stats: ScanStats = newStats()): Vio
         }
       }
     }
-    const varM = chain.match(/\.(insert|upsert)\(\s*([a-zA-Z_$][\w$]*)\s*\)/)
+    // `update` belongs in this list as much as insert/upsert does. It was missing,
+    // and `.update(VARIABLE)` was therefore the one write shape the guard could not
+    // see at all — the inline-literal block above covers `.update({…})`, but a write
+    // object built into a variable first slipped straight through. That blind spot
+    // hid two live PGRST204 refusals: `contacts.preferred_cities` in
+    // lib/services/contact-management.service.ts (silently swallowed — the merge
+    // reported success over a write that never happened) and the three phantom
+    // columns in app/actions/ai-lead-scoring.ts that broke the CRM "Run AI Score"
+    // button. A refused UPDATE is refused ENTIRELY, so one phantom key voids every
+    // real column beside it — exactly the bug class this guard exists to stop.
+    const varM = chain.match(/\.(insert|upsert|update)\(\s*([a-zA-Z_$][\w$]*)\s*\)/)
     if (varM && varM.index != null && !["true", "false", "null"].includes(varM[2])) {
       for (const k of resolveVariableInsertKeys(src, varM[2], m.index + varM.index)) if (!set.has(k)) v.push({ file, table, op: `${varM[1]}(var)`, column: k })
     }

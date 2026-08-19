@@ -38,6 +38,7 @@
  */
 import { readFileSync, readdirSync, existsSync } from "node:fs"
 import { join } from "node:path"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -216,9 +217,7 @@ console.log("\n[repo scan — server surface]")
 
   const found: string[] = []
   for (const f of files) {
-    const src = readFileSync(f, "utf8")
-      .replace(/\/\*[\s\S]*?\*\//g, "")
-      .replace(/^[ \t]*\/\/.*$/gm, "")
+    const src = stripComments(readFileSync(f, "utf8"))
     for (const stmt of splitStatements(src)) {
       const table = isSilentWrite(stmt)
       if (table) found.push(`${f} → ${table}`)

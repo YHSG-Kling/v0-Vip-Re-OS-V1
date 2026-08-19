@@ -73,6 +73,7 @@
  */
 import { readFileSync, readdirSync, existsSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { stripComments as canonicalStripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -186,7 +187,7 @@ function walk(dir: string, ext: string[], out: string[] = []): string[] {
 }
 
 const strip = (s: string) =>
-  s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\{\s*\/\*[\s\S]*?\*\/\s*\}/g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+  canonicalStripComments(s)
 
 console.log("══════════════════════════════════════════════════")
 console.log(" Wired surface — a control that exists must reach the capability that exists")
@@ -268,8 +269,7 @@ const orphanFound: string[] = []
   // ownership metadata, not a call site. Anything it genuinely needs to invoke
   // it imports, and an import survives comment-stripping.
   const DOC_ONLY_FILES = new Set(["lib/kernel/manager-registry.ts"])
-  const stripComments = (s: string) =>
-    s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+  const stripComments = canonicalStripComments
 
   const callerFiles = [...walk("app", [".ts", ".tsx"]), ...walk("lib", [".ts", ".tsx"]), ...walk("hooks", [".ts", ".tsx"])]
     .filter((f) => !DOC_ONLY_FILES.has(f.replace(/\\/g, "/")))

@@ -48,6 +48,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs"
 import { dirname, join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
+import { stripComments } from "./strip-comments"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 
@@ -58,7 +59,7 @@ const check = (n: string, c: boolean, d?: string) => {
   else { fail++; fails.push(n + (d ? ` — ${d}` : "")); console.log(`  ✗ ${n}${d ? ` — ${d}` : ""}`) }
 }
 const strip = (s: string) =>
-  s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+  stripComments(s)
 
 /** PURE — the event-type constants the orchestrator's switch routes. */
 export function routedEventNames(internalSrc: string): string[] {

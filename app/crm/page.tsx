@@ -1253,7 +1253,9 @@ export default function CRMPage() {
                         }))
                         toast.success(`AI Score: ${overall}/100`)
                       } else {
-                        toast.error("Scoring failed")
+                        // Surface the reason. A bare "Scoring failed" is why this
+                        // button's PGRST204 refusal went undiagnosed for so long.
+                        toast.error((result as any)?.error ?? "Scoring failed")
                       }
                     }}
                   >
