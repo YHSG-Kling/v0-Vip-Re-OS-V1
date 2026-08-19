@@ -165,7 +165,6 @@
     "test:market-watch",
     "test:marketing-channels",
     "test:marketing-package",
-    "test:marketing-qr",
     "test:material-change",
     "test:meeting-followthrough",
     "test:meeting-recap",
