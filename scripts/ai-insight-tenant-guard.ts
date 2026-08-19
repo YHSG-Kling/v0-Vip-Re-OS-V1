@@ -1021,7 +1021,14 @@ const W23_TABLES = ["notifications", "automation_errors"] as const
  */
 const W23_WRITER_FLOORS: Array<{ file: string; table: string; floor: number }> = [
   { file: "app/actions/ai-agent-onboarding.ts", table: "notifications", floor: 1 },
-  { file: "app/actions/assistant.ts", table: "notifications", floor: 1 },
+  // MOVED, NOT LOST. This floor stood on app/actions/assistant.ts, whose single
+  // notifications write lived in handleTaskDelegated — an unwired duplicate of the
+  // task reassignment that app/actions/tasks.ts:updateTask performs. The duplicate
+  // was merged into the survivor and deleted, and the notice went with it, so the
+  // floor follows the writer to its new home rather than being dropped. It is
+  // dropped from assistant.ts because that file now has no notifications writer at
+  // all: a floor of 1 there would demand the duplicate back.
+  { file: "app/actions/tasks.ts", table: "notifications", floor: 1 },
   { file: "app/actions/copilot.ts", table: "notifications", floor: 2 },
   { file: "app/actions/credit-copilot.ts", table: "notifications", floor: 3 },
   { file: "app/actions/social-publishing.ts", table: "notifications", floor: 1 },
