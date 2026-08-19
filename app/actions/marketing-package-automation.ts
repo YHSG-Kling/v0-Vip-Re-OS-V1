@@ -7,7 +7,9 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { sendVendorBookingConfirmation } from "@/lib/communications"
-import { syncToPlatform } from "@/lib/platform-sync" // Import syncToPlatform function
+// The full syndication lifecycle, not just the first push: publish, reconcile
+// changes, and WITHDRAW when the home is no longer being marketed.
+import { syncToPlatform, updatePlatformListing, removePlatformListing } from "@/lib/platform-sync"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import {
   getPackageServices,
@@ -413,42 +415,135 @@ export async function syncListingToPlatforms(transactionId: string) {
   const supabase = await createClient()
 
   try {
-    const { data: syndicationRecords } = await supabase
+    // Pending AND already-active rows. The 'active' half is new: see the
+    // reconcile block below.
+    const { data: syndicationRecords, error: recordsError } = await supabase
       .from("listing_syndication_tracking")
       .select("*")
       .eq("transaction_id", transactionId)
-      .eq("syndication_status", "pending")
+      .in("syndication_status", ["pending", "active"])
 
+    // supabase-js RESOLVES a refused read — an RLS refusal here would otherwise
+    // read as "nothing to syndicate" and report success over work never done.
+    if (recordsError) {
+      return { success: false, error: `Could not read syndication records: ${recordsError.message}` }
+    }
     if (!syndicationRecords || syndicationRecords.length === 0) {
       return { success: true, message: "No pending syndications" }
     }
 
+    // Fetched ONCE. This used to be re-read from the database inside the loop,
+    // once per platform, for a value that cannot change between iterations.
+    const listing = await getListingDetails(transactionId)
+
+    // ── The withdrawal vocabulary, from the LIVE listings_status_check ────────
+    // CHECK admits: draft, listing_signed, coming_soon, active, pending,
+    // withdrawn, cancelled, off_market, expired, sold. These five mean the home
+    // is no longer being marketed to buyers and must come DOWN off the portals.
+    // 'pending' is deliberately NOT here — under contract is a status the portals
+    // display, not a reason to delist; pulling it would erase the listing's own
+    // "sale pending" signal.
+    const OFF_PORTAL_STATUSES = new Set(["withdrawn", "cancelled", "off_market", "expired", "sold"])
+
     let successCount = 0
+    let removedCount = 0
+    let updatedCount = 0
 
     for (const record of syndicationRecords) {
-      // Platform-specific API integration
-      const listing = await getListingDetails(transactionId) // Fetch listing details
+      // ── Already live on the platform: reconcile it ─────────────────────────
+      //
+      // THE HOLE THIS CLOSES (orphan burn-down, lane E). Nothing in this repo
+      // had ever written syndication_status 'removed', even though the live
+      // CHECK on listing_syndication_tracking admits it. A listing was pushed to
+      // Zillow / realtor.com / Redfin / Trulia once, at 'pending' → 'active',
+      // and then NOTHING ever touched it again: sold, withdrawn, expired or
+      // repriced, it stayed up on the portal exactly as first published, and the
+      // tracking row kept saying 'active' forever. The two functions that fix
+      // that — removePlatformListing and updatePlatformListing in
+      // lib/platform-sync.ts — existed the whole time with zero callers.
+      if (record.syndication_status === "active") {
+        if (!record.listing_url) continue // never published anywhere to reconcile against
+
+        if (!listing || OFF_PORTAL_STATUSES.has(String(listing.status ?? ""))) {
+          const removal = await removePlatformListing(record.platform_name, record.listing_url)
+          if (!removal.success) {
+            // Recorded, never swallowed: a failed withdrawal means the home is
+            // still advertised to buyers. The row stays 'active' so the next run
+            // tries again — marking it 'removed' here would be the exact lie the
+            // honesty fix in lib/platform-sync.ts exists to prevent.
+            console.warn(`[v0] Failed to withdraw from ${record.platform_name}:`, removal.error)
+            continue
+          }
+          const { error: remErr } = await supabase
+            .from("listing_syndication_tracking")
+            .update({ syndication_status: "removed", last_synced_at: new Date().toISOString() })
+            .eq("id", record.id)
+          if (remErr) console.warn(`[v0] Withdrew from ${record.platform_name} but could not record it:`, remErr.message)
+          else removedCount++
+          continue
+        }
+
+        // Still on the market — push changes only when the listing has actually
+        // moved since we last synced it, so a re-run does not re-POST unchanged
+        // rows to every portal.
+        const changedSince =
+          !record.last_synced_at ||
+          (listing.updated_at && new Date(listing.updated_at) > new Date(record.last_synced_at))
+        if (!changedSince) continue
+
+        const update = await updatePlatformListing(record.platform_name, record.listing_url, listing)
+        if (!update.success) {
+          console.warn(`[v0] Failed to update on ${record.platform_name}:`, update.error)
+          continue
+        }
+        const { error: updErr } = await supabase
+          .from("listing_syndication_tracking")
+          .update({ last_synced_at: new Date().toISOString() })
+          .eq("id", record.id)
+        if (updErr) console.warn(`[v0] Updated ${record.platform_name} but could not record it:`, updErr.message)
+        else updatedCount++
+        continue
+      }
+
+      // ── First publish ──────────────────────────────────────────────────────
       const platformResult = await syncToPlatform(record.platform_name, transactionId, listing)
-      
+
       if (!platformResult.success) {
         console.warn(`[v0] Failed to sync to ${record.platform_name}:`, platformResult.error)
         continue
       }
 
-      await supabase
+      // The URL THE PLATFORM RETURNED, never one we compose. This line used to
+      // build `https://<platform>.com/listing/<transactionId>` out of thin air
+      // — a URL that resolves to nothing on any of these portals, stored as if
+      // it were the live listing, and then handed to the withdrawal call above
+      // as the thing to delete. syncToPlatform already returns the real
+      // `listingUrl`; when it comes back empty we store NULL and say so rather
+      // than inventing an address.
+      const publishedUrl = platformResult.listingUrl ?? null
+      if (!publishedUrl) {
+        console.warn(`[v0] ${record.platform_name} accepted the listing but returned no URL — storing none rather than fabricating one`)
+      }
+
+      const { error: syncErr } = await supabase
         .from("listing_syndication_tracking")
         .update({
           syndication_status: "active",
           last_synced_at: new Date().toISOString(),
-          listing_url: `https://${record.platform_name.toLowerCase().replace(/\s/g, "")}.com/listing/${transactionId}`,
+          listing_url: publishedUrl,
         })
         .eq("id", record.id)
+
+      if (syncErr) {
+        console.warn(`[v0] Synced to ${record.platform_name} but could not record it:`, syncErr.message)
+        continue
+      }
 
       successCount++
     }
 
     revalidatePath("/dashboard/listings")
-    return { success: true, synced: successCount }
+    return { success: true, synced: successCount, updated: updatedCount, removed: removedCount }
   } catch (error) {
     console.error("Sync listing error:", error)
     return { success: false, error: "Failed to sync listings" }

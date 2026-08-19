@@ -11,7 +11,7 @@
 // computes what is due and fans out internal HTTPS calls (Bearer CRON_SECRET — the
 // exact header Vercel itself would send), so every target route runs unchanged.
 //
-// The simulator closes the drift loop in BOTH directions: every app/api/cron/*/route.ts
+// The simulator closes the drift loop in BOTH directions: every app/api/cron/…/route.ts
 // must be registered here, and every registry path must resolve to a real route file —
 // adding a cron route without registering it fails the regression.
 //

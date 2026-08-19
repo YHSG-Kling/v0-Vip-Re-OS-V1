@@ -68,7 +68,7 @@ import {
   refreshPostEngagementFromSync,
 } from "@/app/actions/social-media-automation"
 import { cn } from "@/lib/utils"
-import { shareListingPost } from "@/app/actions/social-share"
+import { shareListingPost, canAgentSharePost, getAgentShareHistory } from "@/app/actions/social-share"
 import { predictPerformanceAction } from "@/app/actions/content-prediction"
 import { PredictionWidget, type PredictionData } from "@/app/components/prediction-widget"
 import { BarChart3, Sparkles } from "lucide-react"
@@ -146,6 +146,9 @@ export function SocialDashboardClient({
   const [analytics, setAnalytics] = useState<any>(null)
   const [analyticsLoading, setAnalyticsLoading] = useState(false)
   const [analyticsLoaded, setAnalyticsLoaded] = useState(false)
+  const [shareHistory, setShareHistory] = useState<any[]>([])
+  const [shareHistoryLoaded, setShareHistoryLoaded] = useState(false)
+  const [shareHistoryLoading, setShareHistoryLoading] = useState(false)
 
   // Reschedule
   const [reschedulingPostId, setReschedulingPostId] = useState<string | null>(null)
@@ -260,14 +263,46 @@ export function SocialDashboardClient({
 
   const handleShare = async (postId: string, platform: string) => {
     setLoadingPostId(postId)
+    // THE GATE, CONSULTED BEFORE THE SHARE. The button is only drawn for a post
+    // that looked shareable when this page was rendered — approval can be
+    // revoked, and brand compliance re-run, in the meantime. canAgentSharePost
+    // re-reads the post's live approval + brand-compliance state under the
+    // session's brokerage and says WHICH one failed; shareListingPost enforces
+    // the same two conditions on the write, so this adds the reason, never the
+    // permission.
+    const gate = await canAgentSharePost({ socialPostId: postId })
+    if (!gate.canShare) {
+      toast.error(gate.reason || "This post cannot be shared")
+      setLoadingPostId(null)
+      return
+    }
     const result = await shareListingPost({ socialPostId: postId, agentUserId: userId, sharePlatform: platform, brokerageId })
     if (result.success) {
       router.refresh()
       toast.success("Post shared")
+      // A completed share belongs on the agent's own share record — refresh it
+      // if it is on screen.
+      if (shareHistoryLoaded) void loadShareHistory()
     } else {
       toast.error(result.error || "Share failed")
     }
     setLoadingPostId(null)
+  }
+
+  // ── THE AGENT'S OWN SHARE RECORD ────────────────────────────────────────────
+  // agent_social_shares is written on every share above and was read by nothing:
+  // an agent could not see what they had personally pushed out, on which
+  // network, or when. Session-scoped inside the action — it is always the
+  // caller's own history, never another agent's.
+  const loadShareHistory = async () => {
+    setShareHistoryLoading(true)
+    try {
+      const rows = await getAgentShareHistory({ limit: 50 })
+      setShareHistory(rows as any[])
+    } finally {
+      setShareHistoryLoaded(true)
+      setShareHistoryLoading(false)
+    }
   }
 
   const handlePredictPerformance = async (post: any) => {
@@ -542,6 +577,48 @@ export function SocialDashboardClient({
 
         {/* Analytics */}
         <TabsContent value="analytics" className="space-y-4">
+          {/* Your shares — agent_social_shares, the ledger every Share button writes. */}
+          <Card>
+            <CardContent className="pt-4">
+              <div className="flex items-center justify-between gap-2 mb-3">
+                <p className="text-sm font-semibold">Your Shares</p>
+                <Button size="sm" variant="outline" onClick={loadShareHistory} disabled={shareHistoryLoading}>
+                  {shareHistoryLoading ? (
+                    <RefreshCw className="h-3.5 w-3.5 mr-1 animate-spin" />
+                  ) : (
+                    <Share2 className="h-3.5 w-3.5 mr-1" />
+                  )}
+                  {shareHistoryLoaded ? "Refresh" : "Load my shares"}
+                </Button>
+              </div>
+              {!shareHistoryLoaded && !shareHistoryLoading && (
+                <p className="text-xs text-muted-foreground">
+                  Every post you personally shared, on which network and when.
+                </p>
+              )}
+              {shareHistoryLoaded && shareHistory.length === 0 && (
+                <p className="text-xs text-muted-foreground">You have not shared any posts yet.</p>
+              )}
+              {shareHistory.length > 0 && (
+                <div className="space-y-2">
+                  {shareHistory.map((sh) => (
+                    <div key={sh.id} className="flex items-start justify-between gap-2 p-2 rounded border text-xs">
+                      <div className="min-w-0">
+                        <p className="font-medium capitalize">{sh.share_platform}</p>
+                        <p className="text-muted-foreground line-clamp-2">
+                          {sh.share_variant_text || sh.social_posts?.content || "(no caption recorded)"}
+                        </p>
+                      </div>
+                      <span className="text-muted-foreground shrink-0">
+                        {sh.shared_at ? new Date(sh.shared_at).toLocaleString() : "—"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
           {analyticsLoading && (
             <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">
               <RefreshCw className="h-4 w-4 animate-spin mr-2" />Loading analytics…

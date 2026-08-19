@@ -243,12 +243,6 @@ export interface CreateAudienceSegmentInput {
   adCampaignId?: string
 }
 
-export interface PreviewAdCreativeInput {
-  ctx: AdsActorContext
-  campaignId: string
-  creativeVariationId?: string
-}
-
 export interface LoadAdPerformanceInput {
   ctx: AdsActorContext
   campaignId?: string
@@ -319,6 +313,12 @@ export async function loadAdsWorkspace(input: LoadAdsWorkspaceInput): Promise<Ke
       `)
       .eq("brokerage_id", ctx.brokerageId)
       .order("created_at", { ascending: false })
+      // MERGED from previewAdCreative (see its tombstone at COMMAND 8): the
+      // nested variations are ordered oldest-first so A/B variants render in
+      // GENERATION order — "variation 1" is the first thing the model produced.
+      // Without it Postgres returns them in no guaranteed order and the same
+      // campaign can list its variants differently on each load.
+      .order("created_at", { referencedTable: "ad_creative_variations", ascending: true })
       .limit(50)
 
     if (campaignsError) throw campaignsError
@@ -787,7 +787,17 @@ export async function syncAudience(input: SyncAudienceInput): Promise<KernelAdsR
     const { hashAudienceMembers } = await import("@/lib/ads/connectors/pii")
     const connector = getConnector(platform)
 
-    let syncStatus: "success" | "error" = "error"
+    // CHECK VOCABULARY (live-verified, lane C): audience_sync_runs_run_status_check
+    // is CHECK (run_status IN ('queued','running','completed','failed')) — it admits
+    // NEITHER 'success' NOR 'error', which is what this variable used to hold and
+    // what was written straight into the insert below. Every sync run INSERT was
+    // therefore refused with 23514, and because that insert IS error-checked
+    // (`if (syncError) throw syncError`) the whole command returned "syncAudience
+    // failed" — AFTER the connector had already uploaded the tenant's consented
+    // contacts to Meta/Google. So the upload happened, the ledger row that is the
+    // only record of it did not, and business rule 2 ("audience sync failures must
+    // be visible") could never hold. The real vocabulary is used now.
+    let syncStatus: "completed" | "failed" = "failed"
     let recordsSynced = 0
     let recordsRejected = 0
     let providerResponse: Record<string, unknown> = {}
@@ -813,7 +823,7 @@ export async function syncAudience(input: SyncAudienceInput): Promise<KernelAdsR
             audienceName: audience.audience_name, seedExternalId,
             country: sourceRule?.filters?.seed_country ?? "US", sizePct: sourceRule?.filters?.seed_lookalike_size_pct ?? 1, cred,
           })
-          syncStatus = res.ok ? "success" : "error"
+          syncStatus = res.ok ? "completed" : "failed"
           externalAudienceId = res.externalAudienceId ?? externalAudienceId
           errorMessage = res.error ?? null
           providerResponse = { type: "lookalike", ...res }
@@ -824,7 +834,7 @@ export async function syncAudience(input: SyncAudienceInput): Promise<KernelAdsR
         // hashed consented contacts.
         const { hashed, rejected } = hashAudienceMembers((contacts ?? []).map((c: any) => ({ email: c.email, phone: c.phone })))
         const res = await connector.pushCustomAudience({ audienceName: audience.audience_name, externalAudienceId, members: hashed, cred })
-        syncStatus = res.ok ? "success" : "error"
+        syncStatus = res.ok ? "completed" : "failed"
         recordsSynced = res.recordsSynced
         recordsRejected = res.recordsRejected + rejected
         externalAudienceId = res.externalAudienceId ?? externalAudienceId
@@ -856,7 +866,11 @@ export async function syncAudience(input: SyncAudienceInput): Promise<KernelAdsR
       .from("facebook_custom_audiences")
       .update({
         last_synced_at: new Date().toISOString(),
-        status: syncStatus === "success" ? "synced" : "error",
+        // facebook_custom_audiences_status_check admits
+        // draft|pending_review|approved|synced|failed|deleted — 'error' was in
+        // none of them, and this update's error is not destructured, so a failed
+        // sync silently left the audience sitting at its previous status.
+        status: syncStatus === "completed" ? "synced" : "failed",
         ...(externalAudienceId ? { external_audience_id: externalAudienceId } : {}),
       })
       .eq("id", audienceId)
@@ -916,65 +930,27 @@ export async function createAudienceSegment(input: CreateAudienceSegmentInput): 
   }
 }
 
-// ─── COMMAND 8: previewAdCreative ─────────────────────────────────────────────
-// Generates preview of ad creative before approval. Returns creative with performance prediction.
+// ─── COMMAND 8: previewAdCreative — MERGED-THEN-DELETED (orphan burn-down lane C)
 //
-// Tables read: ad_campaigns, ad_creative_variations
-// Tables written: none
-// Returns: creative preview data
-
-export async function previewAdCreative(input: PreviewAdCreativeInput): Promise<KernelAdsResult> {
-  const { ctx, campaignId, creativeVariationId } = input
-
-  if (!ctx.brokerageId || !campaignId) {
-    return { success: false, error: "brokerageId and campaignId required" }
-  }
-
-  try {
-    const supabase = createServiceClient()
-
-    // Load campaign
-    const { data: campaign } = await supabase
-      .from("ad_campaigns")
-      .select("*")
-      .eq("id", campaignId)
-      .eq("brokerage_id", ctx.brokerageId)
-      .maybeSingle()
-
-    if (!campaign) {
-      return { success: false, error: "Campaign not found" }
-    }
-
-    // Load creative variations.
-    // `.order("created_at")` merged from lib/ads/ad-creator.ts:getCampaignCreatives
-    // (orphan burn-down w2s2). Without it Postgres returns A/B variations in no
-    // guaranteed order, so the same campaign could render its variations in a
-    // different sequence on each load — the one capability the orphan had that
-    // this survivor lacked. Generation order is the meaningful order for A/B
-    // variants: "variation 1" is the first thing the model produced.
-    let query = supabase
-      .from("ad_creative_variations")
-      .select("*")
-      .eq("ad_campaign_id", campaignId)
-      .eq("brokerage_id", ctx.brokerageId)
-      .order("created_at", { ascending: true })
-
-    if (creativeVariationId) {
-      query = query.eq("id", creativeVariationId)
-    }
-
-    const { data: creatives, error } = await query
-
-    if (error) throw error
-
-    return { success: true, creatives: creatives || [], campaign }
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : "previewAdCreative failed",
-    }
-  }
-}
+// SURVIVOR: lib/kernel/ads.ts:261 (loadAdsWorkspace) — the ONE read behind the ads
+// dashboard (app/dashboard/campaigns/ads/page.tsx:146). It already nests
+// `ad_creative_variations (*)` under every campaign for the caller's brokerage, so
+// the surface holds each campaign's variations before anything is clicked; this
+// command re-fetched, per campaign, rows the page had already loaded.
+//
+// MERGED FIRST, then deleted. The one capability this had that the workspace read
+// lacked was the deterministic `.order("created_at", { ascending: true })` on the
+// variations — the ordering that w2s2 moved here from
+// lib/ads/ad-creator.ts:getCampaignCreatives and recorded as the precondition for
+// deleting that one. It is NOT dropped: loadAdsWorkspace now orders the nested
+// embed with `referencedTable: "ad_creative_variations"`, so generation order
+// survives on the read the dashboard actually performs. The w2s2 precondition is
+// still met.
+//
+// Its other axis — refusing a campaign id that is not the caller's before returning
+// creatives — is structural in the survivor: the workspace only ever selects rows
+// under `.eq("brokerage_id", ctx.brokerageId)`, so a foreign campaign id is not in
+// the result to begin with. There is no id to probe with.
 
 // ─── COMMAND 9: approveAdCreative — MERGED-THEN-DELETED (orphan burn-down w44) ─
 //

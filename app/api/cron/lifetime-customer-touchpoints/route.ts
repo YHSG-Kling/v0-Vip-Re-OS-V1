@@ -4,6 +4,7 @@ import { evaluateDeconflict } from "@/lib/kernel/deconflict"
 import {
   createCronRunContextAction,
   recordCronStartAction,
+  recordCronProgressAction,
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
@@ -46,6 +47,32 @@ export async function GET(request: Request) {
   // same week burns the relationship. The Sphere's calendar touch is gated by the Campaign
   // Orchestrator's cadence policy (evaluateDeconflict — its domain) AND a same-run guard so one
   // contact is never double-touched in a single pass. Managers working together, no over-message.
+  // ── MID-RUN PROGRESS ───────────────────────────────────────────────────────
+  // `recordCronProgressAction` is the one member of the five-part cron logging
+  // kernel that no route ever called: every /api/cron/… route opens a context,
+  // records START, and then goes silent until SUCCESS or FAILURE. So a run that
+  // died partway through — or one still in flight — showed
+  // `cron_execution_logs.records_processed` null and status 'started', and the
+  // Cron Health screen could not tell "stuck at zero" from "halfway done".
+  // This route is the natural first caller: it walks three independent
+  // populations (anniversaries → birthdays → referral windows), so each phase
+  // boundary is a real, meaningful checkpoint rather than an arbitrary tick.
+  //
+  // Progress is BEST-EFFORT bookkeeping and must never take the run down: the
+  // kernel command returns { success:false, error } rather than throwing, and a
+  // refusal is logged and stepped over.
+  async function noteProgress(stage: string): Promise<void> {
+    const processed = results.anniversaries + results.birthdays + results.referralRequests
+    const progress = await recordCronProgressAction({
+      context_id:     contextId,
+      records_processed: processed,
+      metadata_delta: { ...results, stage },
+    })
+    if (!progress.success) {
+      console.error("[PastClientTouchpoints] progress not recorded:", progress.error)
+    }
+  }
+
   const touchedThisRun = new Set<string>()
   async function lifetimeTouchAllowed(brokerageId: string | null, contactId: string, systemSource: string): Promise<boolean> {
     if (touchedThisRun.has(contactId)) return false
@@ -131,6 +158,8 @@ export async function GET(request: Request) {
       }
     }
 
+    await noteProgress("anniversaries-complete")
+
     // Check for birthdays
     const { data: contacts, error: contactsError } = await supabase
       .from("contacts")
@@ -158,6 +187,8 @@ export async function GET(request: Request) {
         }
       }
     }
+
+    await noteProgress("birthdays-complete")
 
     // Check for referral request opportunities (3 days and 30 days after close)
     const threeDaysAgo = new Date(today)
@@ -187,6 +218,8 @@ export async function GET(request: Request) {
         results.errors.push(`Referral request error: ${error.message}`)
       }
     }
+
+    await noteProgress("referral-requests-complete")
 
     const totalProcessed = results.anniversaries + results.birthdays + results.referralRequests
 

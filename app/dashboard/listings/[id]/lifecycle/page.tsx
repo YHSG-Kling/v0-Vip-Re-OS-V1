@@ -10,6 +10,7 @@ import { StageTimeline }        from "@/app/components/dashboard/listings/lifecy
 import { SellerCoachingCard }   from "@/app/components/dashboard/listings/lifecycle/seller-coaching-card"
 import { ListingHealthRadarPanel } from "@/app/components/features/listings/listing-health-radar-panel"
 import { getListingMedia, getVideoProjects } from "@/app/actions/listing-media"
+import { getListingTasks } from "@/app/actions/listing-lifecycle"
 import { getOpenHouseDashboard, getPostEventIntelligence } from "@/app/actions/seller-open-house"
 import {
   LaunchReadinessChecklist,
@@ -18,6 +19,7 @@ import {
 import { OpenHousePostEventPanel } from "../components/open-house-post-event-panel"
 import { VendorBookingsPanel } from "@/app/dashboard/components/vendor-bookings-panel"
 import { VendorBookingButton } from "@/app/components/dashboard/listings/lifecycle/vendor-booking-button"
+import { VendorCoordinationPanel } from "@/app/components/dashboard/listings/lifecycle/vendor-coordination-panel"
 import { DecisionHistoryPanel } from "@/app/components/dashboard/listings/lifecycle/decision-history-panel"
 import { ComingSoonCommandCard } from "@/app/components/dashboard/listings/lifecycle/coming-soon-command-card"
 import { PreListingWorkflowPanel } from "@/app/components/dashboard/listings/lifecycle/pre-listing-workflow-panel"
@@ -108,13 +110,36 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
     .eq("entity_id", listingId)
     .order("created_at", { ascending: true })
 
-  // Load tasks
-  const { data: tasks } = await supabase
-    .from("tasks")
-    .select("id, title, description, status, priority, due_date, owner_role:assignee_type, auto_generated, completed_at")
-    .eq("listing_id", listingId)
-    .eq("auto_generated", true)
-    .order("due_date", { ascending: true })
+  // Load tasks.
+  //
+  // Through the server action rather than inline. The inline read this replaces
+  // carried NO brokerage predicate — it selected `tasks` by listing_id alone and
+  // leaned entirely on RLS — and it destructured only `data`, so a refused read
+  // rendered as "this listing has no tasks". getListingTasks delegates to
+  // getListingTasksService, which resolves the caller's brokerage and filters on
+  // it explicitly, and returns the refusal instead of swallowing it. The
+  // auto_generated narrowing and the owner_role naming the panel expects are
+  // applied here, where they belong — the service is the shared reader.
+  const listingTasksResult = (await getListingTasks(listingId)) as {
+    tasks?: any[]
+    error?: string
+  }
+  if (listingTasksResult.error) {
+    console.error("[listing-lifecycle] task read failed:", listingTasksResult.error)
+  }
+  const tasks = (listingTasksResult.tasks ?? [])
+    .filter((t: any) => t.auto_generated === true)
+    .map((t: any) => ({
+      id:             t.id,
+      title:          t.title,
+      description:    t.description ?? null,
+      status:         t.status,
+      priority:       t.priority ?? null,
+      due_date:       t.due_date ?? null,
+      owner_role:     t.assignee_type ?? null,
+      auto_generated: t.auto_generated,
+      completed_at:   t.completed_at ?? null,
+    }))
 
   // Fetch listing agreement esign status (most recent agreement for this listing)
   const { data: listingAgreement } = await supabase
@@ -629,6 +654,17 @@ const { data: listingVendorBookings } = await supabase
           {(listingVendorBookings ?? []).length > 0 && (
             <VendorBookingsPanel bookings={(listingVendorBookings ?? []) as any} />
           )}
+
+          {/* COORDINATION, REACHABLE. app/actions/ai-vendor-management.ts holds a
+              vendor coordination planner — ordering constraints, critical path,
+              conflicts, per-vendor outreach — that had no caller anywhere, so
+              sequencing four vendors on one listing was left to the agent's
+              memory. It plans; VendorBookingButton above still owns the booking. */}
+          <VendorCoordinationPanel
+            listingId={listingId}
+            agentId={listing.agent_id as string}
+            vendors={(listingVendors ?? []) as { id: string; name: string | null; category: string | null }[]}
+          />
         </div>
 
         {(currentStage === "COMING_SOON_PREP" ||

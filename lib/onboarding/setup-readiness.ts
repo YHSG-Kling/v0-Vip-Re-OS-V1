@@ -451,8 +451,51 @@ export async function loadSetupReadiness(params: {
       // agent_api_credentials is keyed by agent_id; for non-agent staff we accept a user-scoped platform cred instead.
       // platform_credentials.scope is the OWNERSHIP level (brokerage|team|agent), not a
       // provider family — filtering it by "email"/"calendar"/"financial" matched nothing.
-      const pc = await svc.from("platform_credentials").select("id").eq("agent_user_id", userId).eq("is_active", true).in("platform", ["google_calendar", "gmail", "outlook", "sendgrid", "resend", "postmark", "mailgun"]).limit(1)
-      snap.hasEmailOrCalendar = ((data ?? []).length > 0 && !!agentId) || has(pc)
+      // CALENDAR half — still a user-scoped credential: a calendar belongs to
+      // the person whose day it is, so there is no team or brokerage fallback.
+      const pcCal = await svc.from("platform_credentials").select("id").eq("agent_user_id", userId).eq("is_active", true).in("platform", ["google_calendar"]).limit(1)
+
+      // EMAIL half — WALKS THE CASCADE (orphan burn-down, lane E).
+      //
+      // This probe used to ask one question: does a credential exist with
+      // agent_user_id = this user? That is USER scope only, and it is the wrong
+      // question for exactly the staff this branch covers. The provider model is
+      // documented at lib/inbound-mail/resolve-user-provider.ts:6 — agents and
+      // team_leads are independent contractors on their OWN Gmail/Outlook, while
+      // brokerage staff (TC, compliance_officer, broker_admin) work the
+      // BROKERAGE's domain through a transactional provider whose credential is
+      // held at brokerage scope with agent_user_id NULL.
+      //
+      // So a TC whose email was genuinely connected — by their broker, at
+      // brokerage scope, which is the only way it is ever connected for them —
+      // matched nothing here and was told to "Connect your email & calendar"
+      // (the staff_email item at :249) forever, with no action available that
+      // would have cleared it. The readiness surface was NARROWER than reality,
+      // which is the direction that nags a user about work already done.
+      //
+      // resolveInboundEmailProviderForUser is the resolver written for this and
+      // never called: it walks user → team → brokerage over the same
+      // platform_credentials table, restricted to the inbound-email platforms,
+      // and returns null only when NONE of the three levels has one.
+      // The middle rung of the cascade needs the user's team. users.team_id is a
+      // live column; a NULL simply means the team rung cannot match, which is
+      // the same outcome the resolver produces for a user with no team.
+      const { data: teamRow, error: teamErr } = await svc
+        .from("users").select("team_id").eq("id", userId).maybeSingle()
+      if (teamErr) {
+        // supabase-js RESOLVES a refused read. Reported rather than treated as
+        // "no team", which would silently skip a rung of the cascade.
+        console.warn("[setup-readiness] team lookup refused — team-scoped email credentials will not be seen:", teamErr.message)
+      }
+
+      const { resolveInboundEmailProviderForUser } = await import("@/lib/inbound-mail/resolve-user-provider")
+      const inboundEmail = await resolveInboundEmailProviderForUser({
+        userId,
+        teamId: (teamRow as { team_id?: string | null } | null)?.team_id ?? null,
+        brokerageId,
+      })
+
+      snap.hasEmailOrCalendar = ((data ?? []).length > 0 && !!agentId) || has(pcCal) || !!inboundEmail
     }
 
     // Brokerage foundations (broker/admin).

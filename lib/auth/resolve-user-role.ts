@@ -87,12 +87,39 @@ export function isPlatformStaffIdentity(
   return isPlatformStaffRole(platformRole)
 }
 
-export function resolveUserRole(profile: {
-  user_type?: string | null
-  role?: string | null // tolerated on input, intentionally unread
-}): UserRole {
-  return (profile.user_type || "agent") as UserRole
-}
+// TOMBSTONE (orphan burn-down, lane E): `resolveUserRole(profile)` DELETED.
+//
+// It was the last line of a migration that has finished. Its body had already
+// been reduced to `(profile.user_type || "agent") as UserRole` — the legacy
+// `role` column it existed to fall back to is "tolerated on input, intentionally
+// unread" (module header), so the function no longer RESOLVED anything: it was
+// an identity read with a default and an unchecked cast, and it had zero callers.
+//
+// WHERE THE JOB LIVES NOW — the question splits in two, and each half has a
+// survivor that is more complete than the wrapper was:
+//
+//   · "what does this row store, with a default" — read `user_type` at the call
+//     site. That is already the house idiom at ~40 live sites, e.g.
+//     app/dashboard/operations/page.tsx:25, app/dashboard/marketing/review/page.tsx:48,
+//     app/dashboard/campaigns/sequences/[id]/page.tsx:49. Inlining it is not
+//     duplication: it is one expression, and routing it through a helper bought
+//     nothing but a cast that could not fail loudly.
+//
+//   · "which CANONICAL role is this, whatever spelling arrived" — that is the
+//     real resolution, and it is lib/security/types.ts:161 `toCanonicalRole` /
+//     :174 `toCanonicalRoleOrDefault`, which map legacy aliases through
+//     LEGACY_ROLE_MAP ('transaction_coordinator' → 'tc', 'TC' → 'tc') and return
+//     null for an unrecognised value instead of casting it. The deleted function
+//     mapped NOTHING, so a row holding a legacy spelling came back out unchanged
+//     and typed as if it were canonical.
+//
+// The GATES in this file (isAdminOrBroker, isBrokerageFinanceAdmin,
+// isTenantAdminOrPlatformStaff, resolveTenantAdmin, resolveBrokerageFinanceAdmin,
+// isPlatformStaffIdentity) are untouched and remain the only sanctioned way to
+// turn a role into permission — they are what its siblings' callers actually use.
+//
+// The `UserRole` TYPE above stays: it is the users.user_type column vocabulary
+// and is imported by types/user.ts:1.
 
 // TOMBSTONE (orphan tranche 3): requireRole deleted — a one-line membership
 // wrapper with zero callers. The live survivors are the NAMED role predicates

@@ -170,28 +170,22 @@ export async function setRequiredDocTemplate(
   return { ok: true }
 }
 
-/** The brokerage's active form library, light shape for the template picker. */
-export async function listTemplateFormOptions(): Promise<
-  { ok: true; forms: Array<{ id: string; name: string; state: string; packetType: string }> } | { ok: false; error: string }
-> {
-  const actor = await resolveActor()
-  if ("error" in actor) return { ok: false, error: actor.error }
-  const svc = createServiceClient()
-  const { data, error } = await svc
-    .from("brokerage_form_library")
-    .select("id, name, state, packet_type")
-    .eq("brokerage_id", actor.brokerageId)
-    .eq("is_active", true)
-    .order("name")
-    .limit(200)
-  if (error) return { ok: false, error: error.message }
-  return {
-    ok: true,
-    forms: (data ?? []).map((f: any) => ({
-      id: f.id, name: f.name, state: f.state, packetType: f.packet_type,
-    })),
-  }
-}
+// TOMBSTONE: `listTemplateFormOptions()` — DELETED as a duplicate.
+// SURVIVOR: app/dashboard/settings/required-documents/page.tsx:54 — the same
+// `brokerage_form_library` read (same brokerage_id + is_active predicate, same
+// `.order("name").limit(200)`), mapped at page.tsx:63 into the identical
+// `{ id, name, state, packetType }` shape and passed to RequiredDocRowActions as
+// `formOptions`. That page is the ONE consumer the template picker has.
+//
+// NOTHING WAS MERGED because the survivor is a strict superset: it also selects
+// `pdf_url`, which the page needs to render the attached template as a link
+// (page.tsx:112) and which this export never returned. It runs on the RLS-scoped
+// client rather than the service client, and setRequiredDocTemplate above still
+// re-validates the chosen form (brokerage + is_active) server-side before writing,
+// so the picker's option list is never the authorization.
+//
+// It was also one more `"use server"` export — a public HTTP endpoint listing a
+// brokerage's form library — kept alive for a caller that never existed.
 
 // ── TOGGLE blocking ↔ warning ──────────────────────────────────────────────────
 

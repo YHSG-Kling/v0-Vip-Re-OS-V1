@@ -207,29 +207,24 @@ export function HeartbeatCard({
   )
 }
 
-/**
- * Compact status-only variant — single number + status line. Useful for
- * very dense overview rows.
- */
-export function HeartbeatChip({
-  icon,
-  label,
-  value,
-  status = "neutral",
-  href,
-}: {
-  icon: ReactNode
-  label: string
-  value: string | number
-  status?: HeartbeatStatus
-  href?: string
-}) {
-  const inner = (
-    <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs ${STATUS_ICON_BG[status]}`}>
-      {icon}
-      <span className="font-semibold">{value}</span>
-      <span className="opacity-80">{label}</span>
-    </div>
-  )
-  return href ? <Link href={href}>{inner}</Link> : inner
-}
+// TOMBSTONE (orphan burn-down, lane E): `HeartbeatChip` DELETED.
+//
+// Its own doc described it as the "compact status-only variant ... useful for
+// very dense overview rows". That row exists, it is live, and it is not this:
+//
+// SURVIVOR: app/dashboard/agent/components/agent-operating-radar.tsx —
+// `AgentOperatingRadar`, rendered on the agent dashboard
+// (app/dashboard/agent/page.tsx:644). It is the six-across dense overview strip,
+// and it is more complete than the chip on every axis the chip had and three it
+// did not:
+//   · icon + value + label + click-through href      (chip had these)
+//   · a `hint` line under each tile — "Needs first contact", "Next 48 hours" —
+//     so a number the agent cannot act on does not sit there unexplained
+//   · a per-tile "New" badge driven by the stat itself (showBadge)
+//   · a real loading skeleton, so the strip does not flash zeros while stats load
+// The chip's only distinct trait was the pill shape, which is styling, not
+// capability — nothing to merge.
+//
+// HeartbeatCard above is untouched and stays: it IS wired, through
+// app/components/heartbeat/sphere-resonance-card.tsx and wealth-advisor-card.tsx,
+// both rendered at app/dashboard/agent/page.tsx:927-928.

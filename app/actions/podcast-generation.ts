@@ -1099,72 +1099,28 @@ export async function getPodcastEpisode(episodeId: string) {
   }
 }
 
-// Get real podcast analytics aggregated from podcast_analytics_events + podcast_episodes
-export async function getPodcastAnalytics() {
-  // Same null-brokerage trap as getVideoScriptsLibrary above — and worse here,
-  // because the first read is a `head: true` COUNT whose result was destructured
-  // as `const { count }` with no `error`. A refused or malformed count resolves
-  // to `count: null`, which `?? 0` then renders as a confident "0 plays".
-  // A number nobody could compute is not zero.
-  const { isAuthenticated, brokerageId } = await getAgentContext()
-  if (!isAuthenticated || !brokerageId) {
-    return { success: false, error: "Unauthorized", totalPlays: 0, totalListenMinutes: 0, episodeStats: [] }
-  }
-  const supabase = await createClient()
-
-  try {
-    // Total plays (play events)
-    const { count: totalPlays } = await supabase
-      .from("podcast_analytics_events")
-      .select("*", { count: "exact", head: true })
-      .eq("brokerage_id", brokerageId)
-      .eq("event_type", "play")
-
-    // Total listen time in minutes
-    const { data: listenData } = await supabase
-      .from("podcast_analytics_events")
-      .select("duration_listened_seconds")
-      .eq("brokerage_id", brokerageId)
-    const totalListenMinutes = Math.round(
-      (listenData ?? []).reduce((s: number, r: { duration_listened_seconds?: number }) => s + (r.duration_listened_seconds ?? 0), 0) / 60
-    )
-
-    // Per-episode play counts
-    const { data: episodePlays } = await supabase
-      .from("podcast_analytics_events")
-      .select("episode_id")
-      .eq("brokerage_id", brokerageId)
-      .eq("event_type", "play")
-
-    const playsByEpisode: Record<string, number> = {}
-    for (const row of episodePlays ?? []) {
-      playsByEpisode[row.episode_id] = (playsByEpisode[row.episode_id] ?? 0) + 1
-    }
-
-    // Episode titles
-    const { data: episodes } = await supabase
-      .from("podcast_episodes")
-      .select("id, title")
-      .eq("brokerage_id", brokerageId)
-      .eq("status", "published")
-
-    const episodeStats = (episodes ?? []).map((ep: { id: string; title: string }) => ({
-      id: ep.id,
-      title: ep.title,
-      plays: playsByEpisode[ep.id] ?? 0,
-    })).sort((a, b) => b.plays - a.plays)
-
-    return {
-      success: true,
-      totalPlays: totalPlays ?? 0,
-      totalListenMinutes,
-      episodeStats,
-    }
-  } catch (error: any) {
-    console.error("[v0] Error fetching podcast analytics:", error)
-    return { success: false, error: error.message, totalPlays: 0, totalListenMinutes: 0, episodeStats: [] }
-  }
-}
+// ─── getPodcastAnalytics — MERGED-THEN-DELETED (orphan burn-down lane C) ──────
+//
+// SURVIVOR: getPodcastAdvancedAnalytics at app/actions/podcast-generation.ts:1443
+// — the read the Podcast dashboard's Analytics tab actually calls
+// (app/dashboard/marketing/podcast/components/analytics-tab.tsx:71). It computes
+// this one's whole result set (totalPlays, totalListenMinutes, per-episode plays)
+// from a SINGLE podcast_analytics_events read instead of three, and adds the
+// per-channel breakdown, the daily trend, subscriber growth and the platform deep
+// links on top.
+//
+// MERGED FIRST, then deleted. Two axes this had and the survivor did not:
+//   · per-episode rows SORTED by plays descending — an episode list in arbitrary
+//     Postgres order is not a leaderboard;
+//   · the ability to tell a published episode from a draft — this filtered
+//     status='published'; the survivor already SELECTED `status` and dropped it,
+//     so the column is now returned and the caller can filter or label.
+// Both now live on getPodcastAdvancedAnalytics.
+//
+// NOT merged (deliberately): this one's `.select("*", { head: true, count })` for
+// totalPlays. A head-count destructured without `error` resolves to count: null on
+// a refusal, and `?? 0` renders that as a confident "0 plays". The survivor counts
+// rows it actually read, so there is no count it can fail to compute silently.
 
 // Delete podcast episode
 export async function deletePodcastEpisode(episodeId: string) {
@@ -1509,13 +1465,17 @@ export async function getPodcastAdvancedAnalytics(params?: { trendDays?: number 
       rows.reduce((s: number, r: any) => s + (r.duration_listened_seconds ?? 0), 0) / 60
     )
 
-    // Avg completion rate (only for events that record completion_pct)
-    const completionRows = rows.filter((r: any) => typeof r.completion_pct === "number")
-    const avgCompletionRate = completionRows.length
-      ? Math.round(
-          (completionRows.reduce((s: number, r: any) => s + (r.completion_pct ?? 0), 0) / completionRows.length) * 100
-        ) / 100
-      : 0
+    // Avg completion rate — HONESTLY ABSENT, not zero.
+    //
+    // This filtered `typeof r.completion_pct === "number"`, but there is no
+    // completion_pct column on podcast_analytics_events (live-verified: id,
+    // brokerage_id, episode_id, event_type, timestamp_seconds,
+    // duration_listened_seconds, platform, listener_contact_id, created_at) and it
+    // was not in the select either. The filter was false for every row that will
+    // ever exist, so the branch always fell through to 0 and the Analytics tab
+    // rendered a confident "0%" for a number nobody had computed. Null says
+    // "not measured" — the tab renders a dash.
+    const avgCompletionRate: number | null = null
 
     // Subscriber growth: new subscribe events over last 30 days vs prior 30 days
     const subs30 = rows.filter(
@@ -1591,14 +1551,19 @@ export async function getPodcastAdvancedAnalytics(params?: { trendDays?: number 
       else if (n === "rss") platformLinks.rss = ch.external_show_id
     }
 
+    // MERGED from getPodcastAnalytics (see its tombstone above): `status` is
+    // returned rather than selected-and-dropped, so a caller can tell a published
+    // episode from a draft, and the list is SORTED by plays descending so it reads
+    // as a leaderboard instead of whatever order Postgres returned.
     const perEpisode = (episodeRows ?? []).map((ep: any) => ({
       id: ep.id,
       title: ep.title,
+      status: ep.status as string | null,
       plays: playsByEpisode[ep.id] ?? 0,
       audioUrl: ep.audio_url,
       publishedChannels: ep.publish_channels ?? [],
       platformLinks,
-    }))
+    })).sort((a, b) => b.plays - a.plays)
 
     return {
       success: true,

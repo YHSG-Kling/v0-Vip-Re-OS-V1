@@ -330,10 +330,19 @@ export function isSupplied(value: unknown): boolean {
   return true
 }
 
-/** The contract for a composition, or null when it declares none. */
-export function contentContract(compositionId: string): CompositionContentContract | null {
-  return CONTENT_CONTRACT[compositionId] ?? null
-}
+// TOMBSTONE (orphan burn-down, lane E): `contentContract(compositionId)` deleted.
+// A one-line accessor over CONTENT_CONTRACT with zero callers. Both real
+// consumers reach the table directly and more completely:
+//   · scripts/content-contract-guard.ts:128 iterates CONTENT_CONTRACT itself —
+//     it has to, since it proves EVERY composition is classified, which a
+//     per-id lookup cannot express.
+//   · the runtime enforcement path never wants the contract object at all, only
+//     the answer: lib/video/video-director.ts:1084 calls missingContentProps
+//     (:346 below), which does the same lookup internally and returns the prop
+//     NAMES the refusal sentence needs.
+// Nothing merged: the accessor's only distinct behaviour was `?? null`, and
+// missingContentProps already encodes the same "unknown composition is not an
+// outage" ruling (see its header).
 
 /**
  * The required content props this props payload does NOT supply.
@@ -353,13 +362,18 @@ export function missingContentProps(
   return contract.required.filter((k) => !isSupplied(p[k]))
 }
 
-/** Would this render state something the caller never supplied? */
-export function wouldRenderDemoData(
-  compositionId: string,
-  props: Record<string, unknown> | null | undefined,
-): boolean {
-  return missingContentProps(compositionId, props).length > 0
-}
+// TOMBSTONE (orphan burn-down, lane E): `wouldRenderDemoData(id, props)` deleted.
+// It was literally `missingContentProps(id, props).length > 0` with zero callers.
+// The survivor is missingContentProps (:346 above), and the boolean form is the
+// WEAKER shape for the one job this module exists to do: both enforcement sites
+// need the prop NAMES, not a yes/no, because the refusal has to say WHICH claims
+// were never supplied —
+//   · lib/video/video-director.ts:1083-1089 (staging refusal, feeds
+//     describeMissingContent so the manager reads why)
+//   · app/api/internal/remotion/render-composition — the render backstop, which
+//     stamps contentContractError(missing) on the cancelled row.
+// A caller that only wants the boolean writes `.length > 0` at the call site and
+// still has the names when it turns out it needs them.
 
 /** The sentence a manager reads on the refusal. Names the props, never guesses why. */
 export function describeMissingContent(compositionId: string, missing: string[]): string {

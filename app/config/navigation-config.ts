@@ -1200,9 +1200,34 @@ export function getNavigationForRole(role: string | string[]): NavigationConfig 
   return NAVIGATION_BY_ROLE.contact
 }
 
-export function filterNavItemsByPermissions(items: NavItem[], userPermissions: string[]): NavItem[] {
-  return items.filter((item) => {
-    if (!item.requiredPermissions) return true
-    return item.requiredPermissions.some((perm) => userPermissions.includes(perm))
-  })
-}
+// TOMBSTONE (orphan burn-down, lane E): `filterNavItemsByPermissions` DELETED.
+//
+// It filtered nav items on `NavItem.requiredPermissions`. MEASURED: not one item
+// in NAVIGATION_BY_ROLE — 1,100+ lines across every role — ever sets that field.
+// The only two occurrences of `requiredPermissions` in this file were inside the
+// function itself. So the filter's predicate was `if (!item.requiredPermissions)
+// return true` for every item on every call: a no-op by construction, which is
+// worse than unwired, because a reviewer reading a call to it would reasonably
+// believe navigation was being permission-gated when nothing was being filtered.
+//
+// SURVIVOR: navigation is gated by ROLE, and that gate is live —
+// `getNavigationForRole` (:1175 above), called by
+// app/components/layout/app-shell.tsx:145 and rendered by Sidebar, Header and
+// MobileBottomNav. It merges every STAFF role a multi-role user holds, deduped
+// by id then href in a fixed STAFF_NAV_PRECEDENCE, and holds external personas
+// (contact / vendor / lender / title_agent) out of the staff union. That rule,
+// its order-independence and the external-persona boundary are proven by
+// `npm run test:role-union-nav`.
+//
+// Nothing merged: the deleted function enforced nothing to carry over. Adding a
+// SECOND, permission-based vocabulary over the same surface is also what the
+// owner ruling quoted at lib/auth/resolve-user-role.ts:107 forbids — "having
+// more than one vocab over the same function or feature is dangerous". If
+// per-item permissions are ever genuinely wanted, the work is to author them on
+// the items first, against the `Permission` union in lib/security/types.ts:347
+// rather than the bare `string[]` this took; a filter with nothing to filter is
+// not a head start on that.
+//
+// `NavItem.requiredPermissions` is left declared in app/types/navigation.ts:22:
+// it is an optional field, costs nothing, and removing it belongs with whoever
+// decides that question rather than with a burn-down pass.

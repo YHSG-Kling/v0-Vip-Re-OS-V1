@@ -16,7 +16,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { Badge } from '@/components/ui/badge'
-import { Loader2, Plus, Trash2, Check, Send } from 'lucide-react'
+import { Loader2, Plus, Trash2, Check, Send, X } from 'lucide-react'
 import {
   createTemplate,
   type CreateTemplateInput,
@@ -28,7 +28,12 @@ import {
 } from '@/lib/kernel/newsletter/section-types'
 import type { TemplateSectionBlueprint } from '@/lib/kernel/newsletter/template-blueprint'
 import { deleteTemplate } from '@/app/actions/newsletter/delete-template'
-import { submitTemplateForApproval } from '@/app/actions/newsletter/approve-template'
+import {
+  submitTemplateForApproval,
+  approveTemplate,
+  rejectTemplate,
+  canApproveNewsletterTemplates,
+} from '@/app/actions/newsletter/approve-template'
 import {
   updateTemplate,
   type UpdateTemplateInput,
@@ -68,6 +73,17 @@ export function TemplateBuilder() {
   })
   const { toast } = useToast()
 
+  // ── THE APPROVAL RAIL'S OTHER HALF ──────────────────────────────────────────
+  // Templates could be SUBMITTED for approval from this screen and then nothing:
+  // no verb anywhere in the tree flipped a pending_review row to approved or
+  // rejected, and scheduleNewsletter refuses an unapproved template — so every
+  // submitted template was stuck forever. `canApprove` decides whether the
+  // decision buttons are drawn; the server enforces the same predicate on the
+  // write, so this is presentation, not the boundary.
+  const [canApprove, setCanApprove] = useState(false)
+  const [rejectingId, setRejectingId] = useState<string | null>(null)
+  const [rejectReason, setRejectReason] = useState('')
+
   // Form state
   const [formData, setFormData] = useState({
     templateName: '',
@@ -88,6 +104,11 @@ export function TemplateBuilder() {
 
   useEffect(() => {
     loadTemplates()
+    // Authority probe. A refused/absent answer leaves canApprove false, so the
+    // decision buttons simply are not drawn — never drawn optimistically.
+    canApproveNewsletterTemplates()
+      .then(r => setCanApprove(r.allowed))
+      .catch(() => setCanApprove(false))
   }, [])
 
   async function loadTemplates() {
@@ -161,6 +182,57 @@ export function TemplateBuilder() {
       toast({
         title: 'Error',
         description: error instanceof Error ? error.message : 'Failed to create template',
+        variant: 'destructive',
+      })
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  async function handleApproveTemplate(templateId: string) {
+    try {
+      setIsSaving(true)
+      const result = await approveTemplate(templateId)
+      if (result.success) {
+        toast({ title: 'Approved', description: result.message })
+        await loadTemplates()
+      }
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to approve template',
+        variant: 'destructive',
+      })
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  async function handleRejectTemplate(templateId: string) {
+    const reason = rejectReason.trim()
+    // rejected_reason is the whole point of a rejection — an empty one tells the
+    // author nothing and the row would record a decision with no cause.
+    if (reason.length < 5) {
+      toast({
+        title: 'Reason required',
+        description: 'Say what needs to change — at least a few words.',
+        variant: 'destructive',
+      })
+      return
+    }
+    try {
+      setIsSaving(true)
+      const result = await rejectTemplate(templateId, reason)
+      if (result.success) {
+        toast({ title: 'Rejected', description: result.message })
+        setRejectingId(null)
+        setRejectReason('')
+        await loadTemplates()
+      }
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to reject template',
         variant: 'destructive',
       })
     } finally {
@@ -535,6 +607,36 @@ export function TemplateBuilder() {
                       </Button>
                     )}
 
+                    {/* The decision. Only drawn for broker-side reviewers (and
+                        solo-tier principals, who ARE their own broker) and only
+                        on a template that is actually waiting. */}
+                    {canApprove && template.approval_status === 'pending_review' && (
+                      <>
+                        <Button
+                          size="sm"
+                          onClick={() => handleApproveTemplate(template.id)}
+                          disabled={isSaving}
+                          className="gap-2"
+                        >
+                          <Check className="w-4 h-4" />
+                          Approve
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setRejectingId(rejectingId === template.id ? null : template.id)
+                            setRejectReason('')
+                          }}
+                          disabled={isSaving}
+                          className="gap-2 text-red-600"
+                        >
+                          <X className="w-4 h-4" />
+                          Reject
+                        </Button>
+                      </>
+                    )}
+
                     <Button
                       size="sm"
                       variant="ghost"
@@ -547,8 +649,43 @@ export function TemplateBuilder() {
                 </div>
               </CardHeader>
 
-              {(template.template_description || template.sections) && (
+              {(template.template_description || template.sections || rejectingId === template.id) && (
                 <CardContent className="pt-0 space-y-2">
+                  {rejectingId === template.id && (
+                    <div className="flex flex-col gap-2 rounded-md border border-red-200 bg-red-50 p-3">
+                      <Label className="text-xs text-red-800">
+                        Why is this being rejected? The author sees this reason.
+                      </Label>
+                      <Input
+                        value={rejectReason}
+                        onChange={e => setRejectReason(e.target.value)}
+                        placeholder="e.g. Logo is the old brand mark — swap it and resubmit."
+                        disabled={isSaving}
+                      />
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => handleRejectTemplate(template.id)}
+                          disabled={isSaving}
+                        >
+                          {isSaving && <Loader2 className="w-4 h-4 animate-spin mr-1" />}
+                          Confirm rejection
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            setRejectingId(null)
+                            setRejectReason('')
+                          }}
+                          disabled={isSaving}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                   {template.template_description && (
                     <p className="text-sm text-slate-600">{template.template_description}</p>
                   )}

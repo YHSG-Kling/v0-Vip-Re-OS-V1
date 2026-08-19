@@ -7,8 +7,23 @@
 // DEMO MODE
 // ============================================
 
-export const DEMO_USER_ID = "demo-user"
-export const isDemoMode = (userId: string | null | undefined) => userId === DEMO_USER_ID
+// TOMBSTONE (orphan burn-down, lane E): `isDemoMode(userId)` and the
+// `DEMO_USER_ID = "demo-user"` sentinel it compared against are DELETED. Both
+// had zero callers, and the sentinel could never have matched anything: users.id
+// is a uuid column, so no row can ever hold the literal string "demo-user" —
+// isDemoMode returned false for every input it could legally be given.
+//
+// SURVIVOR: demo is a property of the BROKERAGE, not of a magic user id, and it
+// is stored — brokerages.is_demo (boolean, live). The whole demo lane reads that
+// column through lib/platform/demo-tenant.ts:
+//   · :264 findDemoTenant / :269 `.eq("is_demo", true)` — locate the demo tenant
+//   · :279 the HARD GUARD every destructive demo op re-checks against the DB
+//   · :300 ensureDemoTenant, :371 seedDemoData, :416 resetDemoTenant,
+//     :427 getDemoTenantSnapshot
+// plus app/actions/superadmin/demo-tenant.ts and lib/platform/deal-room-demo.ts.
+// That answer is persisted, tenant-scoped and re-verified at the point of use;
+// a string compare in a client-importable constants barrel was none of those.
+// Nothing merged — the deleted pair carried no fact the column does not.
 
 // ============================================
 // VALIDATION PATTERNS

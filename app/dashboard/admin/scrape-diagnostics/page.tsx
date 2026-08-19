@@ -4,6 +4,8 @@ import { ScrapeDiagnosticsClient } from "./scrape-diagnostics-client"
 import { TenantCoverageCard } from "./tenant-coverage-card"
 import { loadTenantCoverage, type TenantCoverage } from "@/lib/analytics/territory-coverage"
 import { loadTerritoryRoi, type TerritoryRoiReport } from "@/lib/analytics/territory-roi"
+import { rollupIntentPhrases, type IntentPhraseStat } from "@/lib/analytics/intent-phrase-rollup"
+import { IntentPhraseCard } from "./intent-phrase-card"
 import { redirect } from "next/navigation"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
@@ -95,6 +97,19 @@ export default async function ScrapeDiagnosticsPage() {
     tenantRoiError = roi.error
   }
 
+  // WHICH PHRASES CONVERT — the reverse-cohort rollup. Scope follows the same
+  // rule as everything else on this page: a brokerage admin sees only their own
+  // raw rows, platform staff (no single brokerage) see the platform aggregate.
+  // The rollup runs on the service client, so passing the brokerage id is what
+  // makes the tenant view a tenant view.
+  const INTENT_PHRASE_WINDOW_DAYS = 60
+  const intentPhrases = await rollupIntentPhrases({
+    sinceDays:   INTENT_PHRASE_WINDOW_DAYS,
+    limit:       25,
+    brokerageId: isSuperadmin ? null : (brokerageId ?? null),
+  })
+  const intentPhraseStats: IntentPhraseStat[] = intentPhrases.stats
+
   return (
     <>
       <ScrapeDiagnosticsClient
@@ -102,6 +117,12 @@ export default async function ScrapeDiagnosticsPage() {
         actorHealth={actorHealth ?? []}
         isSuperadmin={isSuperadmin}
         currentUserId={user.id}
+      />
+      <IntentPhraseCard
+        stats={intentPhraseStats}
+        error={intentPhrases.error}
+        scopeLabel={isSuperadmin ? "Platform-wide" : "Your brokerage"}
+        sinceDays={INTENT_PHRASE_WINDOW_DAYS}
       />
       {!isSuperadmin && brokerageId && (
         <TenantCoverageCard

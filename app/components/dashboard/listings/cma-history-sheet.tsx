@@ -4,9 +4,9 @@ import { useState } from "react"
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Loader2, FileBarChart, ExternalLink, BarChart2, Sparkles } from "lucide-react"
+import { Loader2, FileBarChart, ExternalLink, BarChart2, Sparkles, TrendingDown, AlertTriangle } from "lucide-react"
 import Link from "next/link"
-import { getCMAReports, updateCMAReport, generateAICMA } from "@/app/actions/ai-cma"
+import { getCMAReports, updateCMAReport, generateAICMA, getAIPriceAdjustmentRecommendation } from "@/app/actions/ai-cma"
 import { createClient } from "@/lib/supabase/client"
 import { useToast } from "@/hooks/use-toast"
 
@@ -14,6 +14,21 @@ interface CmaHistorySheetProps {
   listingId: string
   agentId: string
   listingAddress: string
+  /* ── PRICE ADJUSTMENT, REACHABLE ────────────────────────────────────────────
+   * app/actions/ai-cma.ts:getAIPriceAdjustmentRecommendation reads a CMA and the
+   * listing's live performance and says whether to reduce, hold or raise. It had
+   * no caller anywhere, so the product could produce a CMA and then had nothing
+   * to say when the listing sat.
+   *
+   * The three performance inputs are PASSED IN from the listings page rather
+   * than typed by the agent: list price, days on market and showing count are
+   * facts the page already has (listings.list_price, listings.showing_count, and
+   * DOM derived from stage_updated_at). Asking an agent to key them in would
+   * invite a recommendation built on remembered numbers.
+   * ────────────────────────────────────────────────────────────────────────── */
+  listPrice?: number | null
+  daysOnMarket?: number | null
+  showingCount?: number | null
 }
 
 const PURPOSE_LABELS: Record<string, string> = {
@@ -29,13 +44,55 @@ const STATUS_CONFIG: Record<string, { label: string; cls: string }> = {
   active: { label: "Active", cls: "bg-blue-100 text-blue-800 border-blue-200" },
 }
 
-export function CmaHistorySheet({ listingId, agentId, listingAddress }: CmaHistorySheetProps) {
+export function CmaHistorySheet({
+  listingId,
+  agentId,
+  listingAddress,
+  listPrice,
+  daysOnMarket,
+  showingCount,
+}: CmaHistorySheetProps) {
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [reports, setReports] = useState<any[]>([])
   const [toggling, setToggling] = useState<string | null>(null)
   const [generating, setGenerating] = useState(false)
+  const [adjustingId, setAdjustingId] = useState<string | null>(null)
+  const [adjustment, setAdjustment] = useState<{ cmaId: string; rec: any; logged: boolean | null } | null>(null)
   const { toast } = useToast()
+
+  /* A price-adjustment read needs a live list price to adjust FROM. Without one
+   * the action would be handed 0 and would recommend a percentage change against
+   * nothing, so the control is disabled and says why rather than producing a
+   * confident number from a missing input. */
+  const canAdjust = typeof listPrice === "number" && listPrice > 0
+
+  async function handlePriceAdjustment(cma: any) {
+    if (!canAdjust) return
+    setAdjustingId(cma.id)
+    setAdjustment(null)
+    try {
+      const res = await getAIPriceAdjustmentRecommendation(
+        cma.id,
+        listPrice as number,
+        daysOnMarket ?? 0,
+        showingCount ?? 0,
+      )
+      if (!res.success) {
+        toast({ title: (res as any).error ?? "Could not get a recommendation", variant: "destructive" })
+        return
+      }
+      setAdjustment({
+        cmaId: cma.id,
+        rec: (res as any).recommendation,
+        logged: ((res as any).logged as boolean | undefined) ?? null,
+      })
+    } catch {
+      toast({ title: "Could not get a recommendation", variant: "destructive" })
+    } finally {
+      setAdjustingId(null)
+    }
+  }
 
   async function loadReports() {
     if (reports.length > 0) return
@@ -269,6 +326,69 @@ export function CmaHistorySheet({ listingId, agentId, listingAddress }: CmaHisto
                         Regenerate
                       </Button>
                     </Link>
+                  </div>
+
+                  {/* Price adjustment against THIS CMA + the listing's live performance. */}
+                  <div className="pt-1">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-6 text-[10px] px-2 gap-1"
+                      disabled={!canAdjust || adjustingId === cma.id}
+                      onClick={() => handlePriceAdjustment(cma)}
+                    >
+                      {adjustingId === cma.id ? (
+                        <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                      ) : (
+                        <TrendingDown className="h-2.5 w-2.5" />
+                      )}
+                      Price adjustment advice
+                    </Button>
+                    {!canAdjust && (
+                      <p className="mt-1 text-[10px] text-muted-foreground">
+                        This listing has no list price recorded, so there is nothing to adjust from.
+                      </p>
+                    )}
+
+                    {adjustment !== null && adjustment.cmaId === cma.id && adjustment.rec && (
+                      <div className="mt-2 rounded-md bg-muted/50 p-2 space-y-1 text-[10px]">
+                        <p className="text-xs font-semibold capitalize">
+                          {adjustment.rec.recommendedAction ?? "review"}
+                          {typeof adjustment.rec.suggestedNewPrice === "number" && (
+                            <>
+                              {" → $"}
+                              {Number(adjustment.rec.suggestedNewPrice).toLocaleString()}
+                              {typeof adjustment.rec.percentageChange === "number" && (
+                                <span className="ml-1 font-normal text-muted-foreground">
+                                  ({adjustment.rec.percentageChange}%)
+                                </span>
+                              )}
+                            </>
+                          )}
+                        </p>
+                        <p className="text-muted-foreground">
+                          Based on {daysOnMarket ?? 0} DOM and {showingCount ?? 0} showings.
+                        </p>
+                        {adjustment.rec.rationale && (
+                          <p className="text-muted-foreground">{adjustment.rec.rationale}</p>
+                        )}
+                        {adjustment.rec.urgency && (
+                          <p className="capitalize text-muted-foreground">Urgency: {adjustment.rec.urgency}</p>
+                        )}
+                        {adjustment.rec.expectedImpact && (
+                          <p className="text-muted-foreground">{adjustment.rec.expectedImpact}</p>
+                        )}
+                        {adjustment.logged === false && (
+                          <p className="flex items-center gap-1 text-destructive">
+                            <AlertTriangle className="h-2.5 w-2.5" />
+                            Not saved to this CMA's history — copy it before you close this panel.
+                          </p>
+                        )}
+                        <p className="text-muted-foreground">
+                          A recommendation, not a price change. Changing the list price stays with you and the seller.
+                        </p>
+                      </div>
+                    )}
                   </div>
                 </div>
               )

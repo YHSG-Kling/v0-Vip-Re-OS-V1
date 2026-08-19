@@ -49,6 +49,7 @@ import {
   Image,
   Play,
   Pause,
+  Pencil,
   CheckCircle,
   Clock,
   AlertCircle,
@@ -79,7 +80,9 @@ import {
   syncAudience,
   approveAudience,
   deleteAudience,
+  getAudienceSyncHistory,
 } from "@/lib/ads/facebook-audience-sync"
+import { updateAdCampaignAction } from "./ads-campaign-actions"
 import type { AudienceType, SourceRule } from "@/lib/ads/facebook-audience-sync-types"
 import type { AudienceTemplate } from "@/lib/ads/fb-audience-templates"
 import { CtvLane, type CtvEligibleVideo, type CtvCampaignRow } from "./ctv-lane"
@@ -340,6 +343,26 @@ export function AdsDashboardClient({
     audienceType: AudienceType
   } | null>(null)
   const [isSyncing, setIsSyncing] = useState<string | null>(null)
+  // Edit-before-launch (see handleSaveCampaignEdits).
+  const [editingCampaign, setEditingCampaign] = useState<AdCampaign | null>(null)
+  const [editCampaignForm, setEditCampaignForm] = useState({
+    campaignName: "",
+    dailyBudget: "",
+    lifetimeBudget: "",
+    startDate: "",
+    endDate: "",
+  })
+  // Per-audience sync ledger (see loadSyncHistory).
+  const [openSyncHistoryId, setOpenSyncHistoryId] = useState<string | null>(null)
+  const [syncHistory, setSyncHistory] = useState<Array<{
+    id: string
+    run_status: string
+    records_synced: number | null
+    records_rejected: number | null
+    error_message: string | null
+    completed_at: string | null
+  }> | null>(null)
+  const [syncHistoryError, setSyncHistoryError] = useState<string | null>(null)
 
   // Prediction state
   const [predictionDialogOpen, setPredictionDialogOpen] = useState(false)
@@ -482,6 +505,56 @@ export function AdsDashboardClient({
       toast.error(result.error || "Operation failed")
     }
     setIsLoading(false)
+  }
+
+  // ── EDIT A CAMPAIGN THAT HAS NOT LAUNCHED ───────────────────────────────────
+  // Name, budget and flight dates were write-once: a campaign created with the
+  // wrong daily budget could only be approved, launched, or abandoned. The
+  // kernel command behind this refuses `live` and `launching` campaigns, so a
+  // campaign that is already spending can never have its budget rewritten
+  // underneath it — which is why the control is only drawn before launch.
+  const handleSaveCampaignEdits = async () => {
+    if (!editingCampaign) return
+    setIsLoading(true)
+    const daily = editCampaignForm.dailyBudget.trim()
+    const lifetime = editCampaignForm.lifetimeBudget.trim()
+    const result = await updateAdCampaignAction(editingCampaign.id, {
+      campaignName: editCampaignForm.campaignName,
+      ...(daily !== "" ? { dailyBudget: Number(daily) } : {}),
+      ...(lifetime !== "" ? { lifetimeBudget: Number(lifetime) } : {}),
+      ...(editCampaignForm.startDate ? { startDate: editCampaignForm.startDate } : {}),
+      ...(editCampaignForm.endDate ? { endDate: editCampaignForm.endDate } : {}),
+    })
+    setIsLoading(false)
+    if (result.success) {
+      setEditingCampaign(null)
+      router.refresh()
+      toast.success("Campaign updated")
+    } else {
+      toast.error(result.error || "Update failed")
+    }
+  }
+
+  // ── THE SYNC LEDGER, NOT JUST THE LAST GOOD RUN ─────────────────────────────
+  // Business rule 2 of the ads kernel is "audience sync failures must be
+  // VISIBLE". The card above shows only the most recent run and only when it
+  // completed, so a failed upload — the case that matters — rendered as nothing
+  // at all. This reads every run for one audience, including error_message,
+  // which the workspace embed does not carry.
+  const loadSyncHistory = async (audienceId: string) => {
+    if (openSyncHistoryId === audienceId) {
+      setOpenSyncHistoryId(null)
+      return
+    }
+    setOpenSyncHistoryId(audienceId)
+    setSyncHistory(null)
+    setSyncHistoryError(null)
+    const res = await getAudienceSyncHistory(userId, { brokerageId, agentId: userId, audienceId })
+    if (!res.success) {
+      setSyncHistoryError(res.error || "Could not load sync history")
+      return
+    }
+    setSyncHistory(res.runs ?? [])
   }
 
   const handleApproveCampaign = async (campaignId: string) => {
@@ -845,6 +918,30 @@ export function AdsDashboardClient({
                                   Launch Campaign
                                 </Button>
                               )}
+                              {/* Not live and not launching — the two states the
+                                  kernel refuses to edit. Anything else is still
+                                  a plan, and a plan can be corrected. */}
+                              {campaign.status !== "live" && campaign.status !== "launching" && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => {
+                                    setEditingCampaign(campaign)
+                                    setEditCampaignForm({
+                                      campaignName: campaign.campaign_name,
+                                      dailyBudget: campaign.daily_budget != null ? String(campaign.daily_budget) : "",
+                                      lifetimeBudget:
+                                        campaign.lifetime_budget != null ? String(campaign.lifetime_budget) : "",
+                                      startDate: campaign.start_date ?? "",
+                                      endDate: campaign.end_date ?? "",
+                                    })
+                                  }}
+                                  disabled={isLoading}
+                                >
+                                  <Pencil className="h-4 w-4 mr-1" />
+                                  Edit
+                                </Button>
+                              )}
                             </div>
                           </div>
                         </CardHeader>
@@ -1133,8 +1230,68 @@ export function AdsDashboardClient({
                                 Sync Now
                               </Button>
                             )}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => loadSyncHistory(audience.id)}
+                              title="Every sync run for this audience, including failures"
+                            >
+                              <Clock className="h-4 w-4 mr-1" />
+                              Sync history
+                            </Button>
                           </div>
                         </div>
+
+                        {openSyncHistoryId === audience.id && (
+                          <div className="mt-3 rounded-md border bg-muted/40 p-3">
+                            {syncHistoryError && (
+                              <p className="text-sm text-destructive">{syncHistoryError}</p>
+                            )}
+                            {!syncHistoryError && syncHistory === null && (
+                              <p className="text-sm text-muted-foreground">Loading sync runs…</p>
+                            )}
+                            {!syncHistoryError && syncHistory?.length === 0 && (
+                              <p className="text-sm text-muted-foreground">
+                                This audience has never been synced.
+                              </p>
+                            )}
+                            {!syncHistoryError && syncHistory && syncHistory.length > 0 && (
+                              <ul className="space-y-2">
+                                {syncHistory.map((run) => (
+                                  <li key={run.id} className="text-sm">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <Badge
+                                        className={
+                                          run.run_status === "completed"
+                                            ? "bg-green-100 text-green-700"
+                                            : run.run_status === "failed"
+                                              ? "bg-red-100 text-red-700"
+                                              : "bg-gray-100 text-gray-700"
+                                        }
+                                      >
+                                        {run.run_status}
+                                      </Badge>
+                                      <span className="text-muted-foreground">
+                                        {run.completed_at
+                                          ? new Date(run.completed_at).toLocaleString()
+                                          : "not finished"}
+                                      </span>
+                                      <span className="text-muted-foreground">
+                                        {run.records_synced ?? 0} synced
+                                        {run.records_rejected ? ` · ${run.records_rejected} rejected` : ""}
+                                      </span>
+                                    </div>
+                                    {/* The reason a sync failed is the whole point of
+                                        keeping the ledger — it is shown, not swallowed. */}
+                                    {run.error_message && (
+                                      <p className="text-xs text-destructive mt-0.5">{run.error_message}</p>
+                                    )}
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        )}
                       </CardContent>
                     </Card>
                   )
@@ -1733,6 +1890,87 @@ export function AdsDashboardClient({
                 showPredictButton={!!currentPrediction}
               />
             </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* ── EDIT CAMPAIGN (pre-launch only) ───────────────────────────────── */}
+        <Dialog open={!!editingCampaign} onOpenChange={(open) => !open && setEditingCampaign(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Edit campaign</DialogTitle>
+              <DialogDescription>
+                Name, budget and flight dates. A campaign that is live or launching cannot be edited —
+                its spend is already committed.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3">
+              <div className="space-y-1.5">
+                <Label>Campaign name</Label>
+                <Input
+                  value={editCampaignForm.campaignName}
+                  onChange={(e) =>
+                    setEditCampaignForm((prev) => ({ ...prev, campaignName: e.target.value }))
+                  }
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label>Daily budget ($)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={editCampaignForm.dailyBudget}
+                    onChange={(e) =>
+                      setEditCampaignForm((prev) => ({ ...prev, dailyBudget: e.target.value }))
+                    }
+                    placeholder="Leave blank to keep as is"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Lifetime budget ($)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={editCampaignForm.lifetimeBudget}
+                    onChange={(e) =>
+                      setEditCampaignForm((prev) => ({ ...prev, lifetimeBudget: e.target.value }))
+                    }
+                    placeholder="Leave blank to keep as is"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label>Start date</Label>
+                  <Input
+                    type="date"
+                    value={editCampaignForm.startDate}
+                    onChange={(e) =>
+                      setEditCampaignForm((prev) => ({ ...prev, startDate: e.target.value }))
+                    }
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>End date</Label>
+                  <Input
+                    type="date"
+                    value={editCampaignForm.endDate}
+                    onChange={(e) =>
+                      setEditCampaignForm((prev) => ({ ...prev, endDate: e.target.value }))
+                    }
+                  />
+                </div>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setEditingCampaign(null)} disabled={isLoading}>
+                Cancel
+              </Button>
+              <Button onClick={handleSaveCampaignEdits} disabled={isLoading}>
+                {isLoading && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+                Save changes
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>

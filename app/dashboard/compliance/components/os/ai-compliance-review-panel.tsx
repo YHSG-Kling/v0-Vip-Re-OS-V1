@@ -12,6 +12,7 @@ import {
   evaluateCategory,
   batchEvaluate,
   getComplianceReport,
+  quickCheck,
 } from "@/app/actions/content-compliance"
 import {
   evaluateContentApproval,
@@ -96,6 +97,19 @@ export function AIComplianceReviewPanel() {
   const [report, setReport] = useState<string | null>(null)
   const [reportError, setReportError] = useState<string | null>(null)
   const [reportPending, startReport] = useTransition()
+
+  // Critical-only pre-flight — quickComplianceCheck through the quickCheck
+  // action. This is NOT a cheaper "Check Compliance": handleEvaluate deliberately
+  // routes its verdict through evaluateContentApproval with `log_signal: true`,
+  // which files an `approval_required` row in front of an approver. An author who
+  // just wants to know "am I about to trip a CRITICAL rule?" while still editing
+  // had no path that did not summon a human — so the honest options were to
+  // publish blind or to spam the approval queue. quickCheck writes nothing.
+  const [quickResult, setQuickResult] = useState<
+    { hasCritical: boolean; violations: Violation[] } | null
+  >(null)
+  const [quickError, setQuickError] = useState<string | null>(null)
+  const [quickPending, startQuick] = useTransition()
 
   // Bulk mode — a batch of drafts (captions, blurbs, a drip sequence) checked in
   // one pass via batchEvaluate.
@@ -204,6 +218,28 @@ export function AIComplianceReviewPanel() {
         return
       }
       setCategoryViolations((categoryResult.violations ?? []) as Violation[])
+    })
+  }
+
+  /** Critical-only pre-flight. Persists nothing and routes no approval. */
+  const handleQuickCheck = () => {
+    if (!content.trim()) return
+    startQuick(async () => {
+      setQuickError(null)
+      const quick = await quickCheck({
+        raw_content: content,
+        content_type: contentType,
+        channel_intent: channelIntent,
+      })
+      if (!quick.success) {
+        setQuickResult(null)
+        setQuickError(quick.error ?? "Quick check failed")
+        return
+      }
+      setQuickResult({
+        hasCritical: !!quick.has_critical_issues,
+        violations: (quick.critical_violations ?? []) as Violation[],
+      })
     })
   }
 
@@ -355,19 +391,81 @@ export function AIComplianceReviewPanel() {
             )}
           </Button>
         ) : (
-          <Button onClick={handleEvaluate} disabled={isPending || !content.trim()} className="w-full">
-            {isPending ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Analyzing...
-              </>
-            ) : (
-              <>
-                <Sparkles className="mr-2 h-4 w-4" />
-                Check Compliance
-              </>
+          <div className="space-y-2">
+            <Button onClick={handleEvaluate} disabled={isPending || !content.trim()} className="w-full">
+              {isPending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Analyzing...
+                </>
+              ) : (
+                <>
+                  <Sparkles className="mr-2 h-4 w-4" />
+                  Check Compliance
+                </>
+              )}
+            </Button>
+            {/* Pre-flight: critical rules only, nothing persisted, no approval
+                request raised. "Check Compliance" above is the one that files an
+                approval_required row for a human. */}
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleQuickCheck}
+              disabled={quickPending || !content.trim()}
+              className="w-full"
+            >
+              {quickPending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Scanning for critical issues...
+                </>
+              ) : (
+                <>
+                  <ShieldCheck className="mr-2 h-4 w-4" />
+                  Quick check (critical only — nothing recorded)
+                </>
+              )}
+            </Button>
+          </div>
+        )}
+
+        {/* Quick-check outcome */}
+        {!bulkMode && quickError && (
+          <p className="text-xs text-destructive">{quickError}</p>
+        )}
+        {!bulkMode && quickResult && (
+          <div
+            className={`rounded-md border px-3 py-2 text-xs ${
+              quickResult.hasCritical
+                ? "border-destructive/40 bg-destructive/5"
+                : "border-green-500/40 bg-green-500/5"
+            }`}
+          >
+            <p className="font-medium flex items-center gap-1.5">
+              {quickResult.hasCritical ? (
+                <>
+                  <AlertCircle className="h-3.5 w-3.5 text-destructive" />
+                  {quickResult.violations.length} critical issue
+                  {quickResult.violations.length === 1 ? "" : "s"} — fix before running the full check
+                </>
+              ) : (
+                <>
+                  <CheckCircle className="h-3.5 w-3.5 text-green-600" />
+                  No critical issues. Non-critical rules are only evaluated by the full check.
+                </>
+              )}
+            </p>
+            {quickResult.violations.length > 0 && (
+              <ul className="mt-1.5 space-y-1">
+                {quickResult.violations.map((v, i) => (
+                  <li key={`${v.rule_id}-${i}`} className="text-muted-foreground">
+                    <span className="font-medium text-foreground">{v.rule_name}</span> — {v.message}
+                  </li>
+                ))}
+              </ul>
             )}
-          </Button>
+          </div>
         )}
 
         {/* Bulk results — one row per draft. */}

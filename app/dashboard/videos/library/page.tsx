@@ -2,6 +2,7 @@
 
 import { useState, useEffect, Suspense } from "react"
 import { useRouter } from "next/navigation"
+import { useLocalStorage } from "@/hooks/use-local-storage"
 import { useSearchParams } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -131,7 +132,20 @@ function VideoLibraryContent() {
   // State
   const [scripts, setScripts] = useState<VideoScript[]>([])
   const [loading, setLoading] = useState(true)
-  const [viewMode, setViewMode] = useState<"grid" | "list">("grid")
+  // PERSISTED (orphan burn-down, lane E). This was `useState("grid")`, so the
+  // library reset to grid on every visit and an agent who works in list view
+  // re-picked it every single time. hooks/use-local-storage.ts:18 was written
+  // for exactly this — its own header scopes it to "user preferences and
+  // non-critical data ... for data persistence, use a proper database
+  // integration" — and had no caller anywhere in the tree.
+  //
+  // A view toggle is the correct side of that line: it is worth nothing to
+  // anyone but this browser, so it must NOT become a users-table column or a
+  // round-trip. The hook seeds from `initialValue` and only reads storage in a
+  // mount effect, so the server and the first client render agree and there is
+  // no hydration mismatch; a private-mode browser that throws on localStorage
+  // is caught inside the hook and just keeps the default.
+  const [viewMode, setViewMode] = useLocalStorage<"grid" | "list">("videos-library-view", "grid")
   const [searchQuery, setSearchQuery] = useState("")
   const [typeFilter, setTypeFilter] = useState<string>("all")
   const [statusFilter, setStatusFilter] = useState<string>("all")

@@ -152,6 +152,16 @@ export async function getLifetimeCustomers({
   const supabase = await createClient()
   const { agentId, brokerageId } = await getAgentContext()
 
+  // IDENTITY GUARD — carried from app/actions/lifetime-customer-touchpoints.ts
+  // :getLifetimeCustomerContacts, the unwired duplicate of this reader that was
+  // removed in its favour (see the tombstone in that file). Without it a caller
+  // with no agents row issued `.eq("agent_id", null)` — `agent_id=eq.null` on
+  // the wire, which matches nothing — and the screen said "no lifetime
+  // customers" for what is actually "we could not identify you".
+  if (!agentId || !brokerageId) {
+    return { success: false, error: "Agent context not available" }
+  }
+
   // Get lifetime customers (contacts with closed transactions)
   // Fetch contacts first, then get their closed transactions separately
   const { data: contacts, error: contactError } = await supabase
@@ -219,6 +229,21 @@ export async function getLifetimeCustomers({
       transactions: transactionMap.get(c.id) || [],
       client_engagement_scores: engagementMap.get(c.id) ? [engagementMap.get(c.id)] : []
     }))
+    // MOST-RECENT-CLOSING FIRST — carried from the removed duplicate
+    // (lifetime-customer-touchpoints.ts:getLifetimeCustomerContacts). This
+    // returned rows in whatever order PostgREST handed back, so the client the
+    // agent closed last week could sit below one from four years ago. The
+    // transaction alias here is `actual_close_date`, which is the same
+    // `close_date` column the duplicate sorted on.
+    .sort((a, b) => {
+      const latest = (c: any) => {
+        const times = (c.transactions ?? [])
+          .map((t: any) => new Date(t.actual_close_date).getTime())
+          .filter((n: number) => Number.isFinite(n))
+        return times.length ? Math.max(...times) : 0
+      }
+      return latest(b) - latest(a)
+    })
 
 
   return { success: true, clients: pastClients }

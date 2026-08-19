@@ -80,6 +80,25 @@ export async function evaluateCompliance(
       }
     }
 
+    // MERGED IN from the deleted `validateContentInput` (see its tombstone at the
+    // foot of this file), which was the only place that ever required this.
+    //
+    // It is not cosmetic and TypeScript cannot cover it: this is a `"use server"`
+    // export, so the real caller is an HTTP request and `ComplianceContentInput`
+    // is not enforced at that boundary. `channel_intent` chooses the gate the
+    // evaluation is FILED UNDER —
+    // lib/compliance-rules/compliance-logger.ts:16 `resolveGateName` returns
+    // "tcpa" only when channel_intent is 'sms' or 'call' — so an omitted value
+    // silently mislabels a TCPA-relevant check as brand_voice in
+    // `compliance_events`, i.e. the ledger records the wrong gate for the one
+    // channel with statutory exposure.
+    if (!input.channel_intent) {
+      return {
+        success: false,
+        error: "Channel intent is required",
+      }
+    }
+
     // Validate UUIDs if provided
     if (options?.content_id && !isValidUUID(options.content_id)) {
       return {
@@ -360,36 +379,25 @@ export async function getComplianceStatistics(params: {
   }
 }
 
-/**
- * Validate content input structure (pre-evaluation validation)
- */
-export async function validateContentInput(
-  input: Partial<ComplianceContentInput>
-): Promise<{ valid: boolean; errors: string[] }> {
-  const errors: string[] = []
-
-  if (!input.raw_content || input.raw_content.trim().length === 0) {
-    errors.push("raw_content is required")
-  }
-
-  if (!input.content_type) {
-    errors.push("content_type is required")
-  }
-
-  if (!input.channel_intent) {
-    errors.push("channel_intent is required")
-  }
-
-  if (input.context?.listing_id && !isValidUUID(input.context.listing_id)) {
-    errors.push("Invalid listing_id format")
-  }
-
-  if (input.context?.transaction_id && !isValidUUID(input.context.transaction_id)) {
-    errors.push("Invalid transaction_id format")
-  }
-
-  return {
-    valid: errors.length === 0,
-    errors,
-  }
-}
+// TOMBSTONE: `validateContentInput(input)` — MERGED, then DELETED as a duplicate.
+//
+// SURVIVOR: `evaluateCompliance` above (app/actions/content-compliance.ts:56),
+// whose inline guard already refused an empty `raw_content`, a missing
+// `content_type`, and a malformed `context.listing_id` / `context.transaction_id`
+// — the same four checks, in the same file, on the endpoint this one was
+// supposed to be run *before*.
+//
+// MERGED FIRST, then deleted: the ONE check the survivor did not have was
+// `channel_intent is required`, and that one matters — it is the field
+// lib/compliance-rules/compliance-logger.ts:16 `resolveGateName` reads to decide
+// which gate the evaluation is recorded under in `compliance_events`, so an
+// omitted value files an SMS/call check as brand_voice instead of tcpa. It now
+// lives in `evaluateCompliance` (see the merge note there). Nothing else here was
+// carried over, because nothing else here was new.
+//
+// WHY DELETE RATHER THAN WIRE IT: a separate pre-validation endpoint cannot be a
+// gate. It is a `"use server"` export, so the caller decides whether to invoke it
+// at all, and a caller who skips it reaches `evaluateCompliance` regardless —
+// which is precisely why the checks belong (and now entirely are) inside the
+// endpoint that acts. A second HTTP round trip that returns advice the real
+// endpoint re-derives is not validation; it is a suggestion.

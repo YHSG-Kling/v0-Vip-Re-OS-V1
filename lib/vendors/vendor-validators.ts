@@ -17,21 +17,49 @@
 // the other column it checked, does not exist (revenue share is a COMMISSION concept —
 // lib/commission/waterfall/09-revenue-share.ts, gated on brokerages.revenue_share_enabled).
 //
-// ── validateVendorPlan — KEPT, unwired, needs an owner ruling ────────────────
-// This one is not wrong, it is EARLY. It is the input gate for the vendor paid
-// add-on that app/actions/vendor-contact-access.ts declares as future work
-// ("vendor_subscriptions / vendor_plans tables already exist … commit-G will add
-// the billing path"). Measured against the migrations: `vendor_subscriptions` DOES
-// exist (m439 records that its only numeric column is credits_used_this_period, so
-// it carries no money), and `vendor_plans` does NOT exist in any migration. Nothing
-// in app/ or lib/ reads or writes either table.
+// ── validateVendorPlan — KEPT, unwired. The blocker is NO WRITER, not no table ─
 //
-// Left in place rather than deleted because the capability is real and declared;
-// it is NOT adoptable as written, since its 'monthly' | 'annual' billing vocabulary
-// and per-plan price live on a table that has to be designed first. When that
-// ruling lands, the price half belongs on subscription_tiers via
-// lib/billing/plan-catalog.ts:validatePlanTierInput — the superadmin-owned catalog
-// whose whole point is that NOTHING hardcodes tier price or copy.
+// CORRECTION TO THE PREVIOUS NOTE HERE, which said "`vendor_plans` does NOT exist
+// in any migration". That was measured against migration FILES. Measured against
+// the LIVE database (project hrvaqgvukzxfskkcrwbt), `public.vendor_plans` exists
+// and this validator matches it field for field:
+//
+//   name                   text     NOT NULL                → 'Plan name is required'
+//   price_per_month        numeric  NOT NULL, CHECK >= 0     → the price check
+//   billing_cycle          text     CHECK IN ('monthly','annual')
+//                                                            → EXACTLY this list
+//   max_credits_per_month  integer  CHECK (NULL OR > 0)      → the credits check
+//
+// It is also FK-anchored and in use by the schema: vendor_plans.vendor_id →
+// vendor_marketplace_profiles(id) ON DELETE CASCADE, and
+// vendor_subscriptions.plan_id → vendor_plans(id) ON DELETE RESTRICT.
+//
+// So it is neither wrong nor speculative. What it does not have is anything to
+// validate: NOTHING in app/ or lib/ inserts or updates a `vendor_plans` row —
+// scripts/writerless-read-sweep.ts:37 lists `vendor_plans` in its own
+// known-writerless set, and the live table holds 0 rows. Vendor billing that DOES
+// exist works off `vendor_marketplace_profiles.subscription_tier` (app/actions/
+// vendor-billing.ts, app/api/webhooks/stripe/vendor/route.ts) and never touches
+// this table.
+//
+// LEFT, deliberately, rather than deleted or wired:
+//   · Deleting it would be deleting a correct, schema-accurate validator to move
+//     the orphan count — and it would be deleted again the day someone builds the
+//     per-vendor plan catalogue the two FKs above already expect.
+//   · Wiring it means BUILDING that catalogue: a vendor-facing plan CRUD surface
+//     plus the "use server" writer behind it. That is a feature with an owner
+//     decision in it (who may publish a plan — the vendor, or brokerage staff on
+//     the vendor's behalf), not a wiring gap, and it is outside this pass.
+//
+// NOT A GATE THAT IS OPEN. It enforces nothing the database does not already
+// enforce itself: every rule below has a matching CHECK constraint, so no path can
+// currently write a plan that violates it. Its value when wired is the error
+// MESSAGE, not the refusal.
+//
+// One drift fixed while here, against the live CHECK: the old body accepted
+// max_credits_per_month === 0 (`data.max_credits_per_month && … < 0` is false for
+// 0) while `vendor_plans_max_credits_per_month_check` REFUSES 0. A validator that
+// passes a value the database rejects is worse than no validator.
 
 export function validateVendorPlan(data: any) {
   const errors: string[] = [];
@@ -48,8 +76,11 @@ export function validateVendorPlan(data: any) {
     errors.push('Invalid billing cycle');
   }
 
-  if (data.max_credits_per_month && data.max_credits_per_month < 0) {
-    errors.push('Max credits cannot be negative');
+  // Live CHECK: (max_credits_per_month IS NULL OR max_credits_per_month > 0).
+  // Explicit null/undefined test — 0 must FAIL here, and `if (0 && …)` never runs.
+  if (data.max_credits_per_month !== null && data.max_credits_per_month !== undefined
+      && !(data.max_credits_per_month > 0)) {
+    errors.push('Max credits per month must be greater than 0 when set');
   }
 
   return errors;

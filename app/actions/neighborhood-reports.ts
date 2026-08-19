@@ -6,7 +6,12 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { generateAIText } from "@/lib/ai"
 import { fetchOSINTNeighborhoodData } from "@/lib/external/osint-neighborhood"
 import { getRentcastMarketStats } from "@/lib/property/rentcast"
-import { computeLivabilityScore, isNeighborhoodReportAllowed } from "@/lib/property/neighborhood-scoring"
+import {
+  computeLivabilityScore,
+  isNeighborhoodReportAllowed,
+  assembleFactsBlock,
+  factualNarrative,
+} from "@/lib/property/neighborhood-scoring"
 import { detectFairHousingViolations } from "@/lib/compliance-rules/fair-housing-patterns"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
@@ -214,10 +219,15 @@ export async function refreshNeighborhoodReport(listingId: string): Promise<{
 
   let reportData: Partial<NeighborhoodReport> = {}
 
+  // Computed ONCE, unconditionally, and reused below for the AI grounding block
+  // and the Fair-Housing-safe fallback narrative. computeLivabilityScore already
+  // handles the no-data case itself (dataSource "none" → score 0, label
+  // "Limited data"), so hoisting it out of the branch invents nothing.
+  const livability = computeLivabilityScore(osint)
+
   // Seed report with OSINT data where available. walk_score is computed
   // deterministically from real OSM amenity proximity (not AI-guessed).
   if (osint.dataSource !== "none") {
-    const livability = computeLivabilityScore(osint)
     reportData.amenities_json = osint.amenities
     reportData.data_source = osint.dataSource
     reportData.walk_score = livability.score
@@ -309,6 +319,11 @@ ${reportData.walk_score ? `Walk Score: ${reportData.walk_score}` : ""}
 ${reportData.market_trend ? `Market Trend: ${reportData.market_trend}` : ""}
 ${reportData.data_source === "AI-estimated" ? "Note: Data is AI-estimated. Include that caveat." : ""}
 
+VERIFIED NEIGHBORHOOD FACTS (from OpenStreetMap amenities and the US Census — these are measured, not estimated):
+${assembleFactsBlock(osint, livability)}
+
+Use ONLY the verified facts above when describing amenities, walkability, schools, parks, transit or dining. Do not introduce any amenity, school, park or business that is not named there, and do not estimate distances.
+
 Focus on buyer appeal, market positioning, and neighborhood highlights. Keep it professional and informative.`
 
   let aiSummary = ""
@@ -323,6 +338,38 @@ Focus on buyer appeal, market positioning, and neighborhood highlights. Keep it 
     aiSummary = violations.some((v) => v.severity === "high") ? "" : summaryText
   } catch (err) {
     console.error("[v0] AI summary generation error:", err)
+  }
+
+  // GROUNDING + FALLBACK (orphan burn-down, lane E). Two defects closed here,
+  // using the two pure helpers in lib/property/neighborhood-scoring.ts that were
+  // written for this exact surface and had never been called from it:
+  //
+  //  1. assembleFactsBlock — the prompt above used to hand the model four
+  //     numbers (median price, DOM, walk score, trend) and then ask it for
+  //     "neighborhood highlights". The real amenity facts were fetched, scored
+  //     and written to amenities_json one screen up, and were never shown to the
+  //     model that was being asked to describe them. Asking for highlights while
+  //     withholding the amenities is an invitation to invent a grocery store,
+  //     a park or a school — in a report a buyer reads about a specific address.
+  //     The block now goes in, with an explicit instruction not to go beyond it.
+  //
+  //  2. factualNarrative — when the Fair-Housing guard rejected the summary
+  //     (violations.some(high)), aiSummary was set to "" and the report was
+  //     saved with ai_summary NULL. The tenant then saw a neighborhood report
+  //     with no narrative and no explanation. factualNarrative is documented in
+  //     its own header as "the safe fallback when the AI output fails the
+  //     Fair-Housing check": amenity counts and distances only, no
+  //     protected-class or steering language possible because it is assembled
+  //     from integers. A rejected summary now degrades to the honest, factual
+  //     paragraph instead of to silence. Same for a generation that threw.
+  //     It lands in `ai_summary` because that is the report's single narrative
+  //     slot, and the paragraph never claims to be an analysis — it states
+  //     measured counts and distances and nothing else — so the column holding
+  //     it cannot mislead a reader the way a blank report already did. When
+  //     there is no OSINT data at all there are no facts to state, so the field
+  //     stays NULL rather than carrying an empty-sounding sentence.
+  if (!aiSummary && osint.dataSource !== "none") {
+    aiSummary = factualNarrative(osint, livability)
   }
 
   // Determine neighborhood name from address

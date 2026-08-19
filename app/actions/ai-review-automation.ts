@@ -624,8 +624,18 @@ Create a comprehensive recovery plan including:
     // review_recovery_plans table does not exist in live schema.
     // Persist recovery plan to ai_assistant_notes.
     // entity_type + entity_id columns were added to ai_assistant_notes via migration.
+    //
+    // BOTH WRITES BELOW WERE UNCHECKED. supabase-js RESOLVES a refused insert, so
+    // an undestructured `await` here reports a saved plan that was never stored —
+    // and this action is the only writer of the plan, so a swallowed refusal means
+    // the agent walks away believing the recovery is on record when nothing is.
+    // The plan is still RETURNED either way (the model call is already paid for),
+    // but `persisted` says plainly whether it survived the request.
+    let persisted = false
+    let persistError: string | null = null
+
     if (brokerageId && agentUserId) {
-      await supabase.from("ai_assistant_notes").insert({
+      const { error: noteError } = await supabase.from("ai_assistant_notes").insert({
         brokerage_id: brokerageId,
         created_by:  agentUserId,
         role:        "agent",
@@ -635,11 +645,19 @@ Create a comprehensive recovery plan including:
         entity_type: "agent_review",
         entity_id:   params.reviewId,
       })
+      if (noteError) {
+        console.error("[aiCreateRecoveryPlan] recovery plan note insert refused:", noteError.message)
+        persistError = noteError.message
+      } else {
+        persisted = true
+      }
+    } else {
+      persistError = "Could not resolve the acting agent's brokerage or user record."
     }
 
     // lifecycle_events: actor_user_id (not agent_id), entity_type + entity_id columns.
     if (brokerageId && agentUserId) {
-      await supabase.from("lifecycle_events").insert({
+      const { error: eventError } = await supabase.from("lifecycle_events").insert({
         brokerage_id:  brokerageId,
         actor_user_id: agentUserId,
         entity_type:   "agent_review",
@@ -648,9 +666,12 @@ Create a comprehensive recovery plan including:
         payload:       { severity: recoveryPlan.severity, clientId: params.clientId ?? null },
         created_at:    new Date().toISOString(),
       })
+      if (eventError) {
+        console.error("[aiCreateRecoveryPlan] lifecycle event insert refused:", eventError.message)
+      }
     }
 
-    return { success: true, data: recoveryPlan }
+    return { success: true, data: recoveryPlan, persisted, persistError }
   } catch (error) {
     return handleError(error, "aiCreateRecoveryPlan")
   }
@@ -789,22 +810,147 @@ export async function aiSetupReviewMonitoring(params: {
       return { success: false, error: "Could not resolve the agent's brokerage; monitoring was not saved." }
     }
 
-    await supabase.from("ai_assistant_notes").insert({
-      brokerage_id: brokerageId,
-      created_by: agentUserId,
-      role:       "agent",
-      note_text:  JSON.stringify(config),
-      note_type:  "review_monitoring_config",
-      source:     AI_NOTE_SOURCE,
-    })
+    // A SETTING REPLACES, IT DOES NOT STACK.
+    //
+    // This used to INSERT unconditionally, so every save appended another
+    // `review_monitoring_config` note and the agent's configuration became
+    // whichever row a future reader happened to pick. A settings write that
+    // leaves N contradictory copies of the setting has not configured anything.
+    // The agent's existing config row is updated in place when there is one.
+    //
+    // The refusal is read on BOTH branches: supabase-js resolves a rejected
+    // write, and the success message below is the ONLY evidence the agent gets
+    // that monitoring was saved — so an unchecked write meant that message was
+    // printed over a setting that does not exist.
+    const { data: existingConfig, error: existingError } = await supabase
+      .from("ai_assistant_notes")
+      .select("id")
+      .eq("brokerage_id", brokerageId)
+      .eq("created_by", agentUserId)
+      .eq("note_type", "review_monitoring_config")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (existingError) {
+      console.error("[aiSetupReviewMonitoring] existing config read failed:", existingError.message)
+      return { success: false, error: "Could not read your current monitoring settings, so nothing was changed." }
+    }
+
+    if (existingConfig?.id) {
+      const { data: updated, error: updateError } = await supabase
+        .from("ai_assistant_notes")
+        .update({ note_text: JSON.stringify(config), updated_at: new Date().toISOString() })
+        .eq("id", existingConfig.id)
+        .eq("brokerage_id", brokerageId)
+        .select("id")
+      if (updateError) {
+        console.error("[aiSetupReviewMonitoring] config update refused:", updateError.message)
+        return { success: false, error: `Monitoring settings were not saved: ${updateError.message}` }
+      }
+      // A zero-row update is a refusal wearing the shape of success.
+      if (!updated || updated.length === 0) {
+        return { success: false, error: "Monitoring settings were not saved — you may not have permission to change them." }
+      }
+    } else {
+      const { data: inserted, error: insertError } = await supabase
+        .from("ai_assistant_notes")
+        .insert({
+          brokerage_id: brokerageId,
+          created_by: agentUserId,
+          role:       "agent",
+          note_text:  JSON.stringify(config),
+          note_type:  "review_monitoring_config",
+          source:     AI_NOTE_SOURCE,
+        })
+        .select("id")
+      if (insertError) {
+        console.error("[aiSetupReviewMonitoring] config insert refused:", insertError.message)
+        return { success: false, error: `Monitoring settings were not saved: ${insertError.message}` }
+      }
+      if (!inserted || inserted.length === 0) {
+        return { success: false, error: "Monitoring settings were not saved — the write was refused." }
+      }
+    }
 
     return {
       success: true,
       data: {
-        message: `Review monitoring configured for ${params.platforms.join(", ")}. You will be alerted for reviews ${params.alertThreshold} stars or below.`,
+        platforms: params.platforms,
+        alertThreshold: params.alertThreshold,
+        message: `Review monitoring saved for ${params.platforms.join(", ")}. Reviews of ${params.alertThreshold} stars or below are flagged for recovery.`,
       },
     }
   } catch (error) {
     return handleError(error, "aiSetupReviewMonitoring")
+  }
+}
+
+/**
+ * Read back the caller's review-monitoring configuration.
+ *
+ * aiSetupReviewMonitoring above had NO reader anywhere in the tree, which is
+ * what made it a write-only setting: the agent could save a threshold and no
+ * surface — not this one, not a cron — could ever tell them what it was. A
+ * setting that cannot be read back is indistinguishable from one that was never
+ * saved, so the writer needed this before it could honestly be given a surface.
+ *
+ * Returns `configured: false` for "you have not set this up", which is a
+ * different answer from a failed read — the caller is told which it got.
+ */
+export async function getReviewMonitoringSettings(requestedAgentId?: string): Promise<
+  | { success: true; configured: false }
+  | { success: true; configured: true; platforms: string[]; alertThreshold: number; updatedAt: string | null }
+  | { success: false; error: string }
+> {
+  const supabase = await createClient()
+
+  const gate = await requireAgentScope(supabase, requestedAgentId)
+  if (!gate.ok) return { success: false, error: gate.error }
+
+  try {
+    const agentUserId = await resolveUserIdForAgentRecord(supabase, gate.agentId)
+    if (!agentUserId) return { success: false, error: "Could not resolve the acting agent's user record." }
+
+    const { data, error } = await supabase
+      .from("ai_assistant_notes")
+      .select("note_text, updated_at, created_at")
+      .eq("brokerage_id", gate.brokerageId)
+      .eq("created_by", agentUserId)
+      .eq("note_type", "review_monitoring_config")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    // A refused read must not be rendered as "not configured yet" — that would
+    // invite the agent to overwrite a setting they cannot currently see.
+    if (error) {
+      console.error("[getReviewMonitoringSettings] read failed:", error.message)
+      return { success: false, error: "Could not read your monitoring settings." }
+    }
+    if (!data?.note_text) return { success: true, configured: false }
+
+    let parsed: Record<string, unknown>
+    try {
+      parsed = JSON.parse(data.note_text as string) as Record<string, unknown>
+    } catch {
+      // Stored text that is not the config blob is not a config — say so rather
+      // than inventing defaults that would look like the agent's own choices.
+      return { success: true, configured: false }
+    }
+
+    const platforms = Array.isArray(parsed.platforms) ? (parsed.platforms as string[]) : []
+    const alertThreshold = typeof parsed.alert_threshold === "number" ? parsed.alert_threshold : null
+    if (platforms.length === 0 || alertThreshold === null) return { success: true, configured: false }
+
+    return {
+      success: true,
+      configured: true,
+      platforms,
+      alertThreshold,
+      updatedAt: (data.updated_at as string | null) ?? (data.created_at as string | null) ?? null,
+    }
+  } catch (error) {
+    return handleError(error, "getReviewMonitoringSettings")
   }
 }

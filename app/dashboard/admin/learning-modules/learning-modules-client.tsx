@@ -11,6 +11,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import {
   createLearningModuleAction,
   publishLearningModuleAction,
+  updateLearningModuleAction,
 } from "@/app/actions/learning-modules"
 
 type Channel =
@@ -122,6 +123,74 @@ export function LearningModulesClient({ initialModules }: Props) {
 
   function csvToArr(s: string): string[] {
     return s.split(",").map((x) => x.trim()).filter(Boolean)
+  }
+
+  // ── EDIT / ARCHIVE ────────────────────────────────────────────────────────
+  // `updateLearningModuleAction` — the edit half of the authoring rail — had no
+  // caller: a module could be CREATED and PUBLISHED from this screen but never
+  // corrected and never retired. A typo in a title fanned out to every channel
+  // with no way back, and `learning_modules.status` could only ever move
+  // forward to 'published' even though the column's CHECK admits 'archived'.
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editTitle, setEditTitle] = useState("")
+  const [editSummary, setEditSummary] = useState("")
+  const [editPriority, setEditPriority] = useState("0")
+
+  function beginEdit(m: ModuleRow): void {
+    setEditingId(m.id)
+    setEditTitle(m.title)
+    setEditSummary(m.summary ?? "")
+    setEditPriority(String(m.displayPriority ?? 0))
+    setFeedback(null)
+  }
+
+  function handleSaveEdit(id: string): void {
+    if (!editTitle.trim()) {
+      setFeedback("Title is required.")
+      return
+    }
+    startTransition(async () => {
+      setFeedback(null)
+      const result = await updateLearningModuleAction(id, {
+        title:           editTitle.trim(),
+        summary:         editSummary.trim() || null,
+        displayPriority: Number(editPriority) || 0,
+      })
+      // The action RETURNS { ok:false, error } for a non-admin caller and for a
+      // refused write, and its update is scoped `.eq("brokerage_id", …)` so a
+      // module outside the caller's tenant simply matches nothing. Painting the
+      // new title into the list on a refusal would show an edit that did not
+      // land.
+      if (!result.ok) {
+        setFeedback(result.error)
+        return
+      }
+      setModules((prev) =>
+        prev.map((row) =>
+          row.id === id
+            ? { ...row, title: editTitle.trim(), summary: editSummary.trim() || null, displayPriority: Number(editPriority) || 0 }
+            : row,
+        ),
+      )
+      setEditingId(null)
+      setFeedback("Module updated.")
+    })
+  }
+
+  function handleSetStatus(id: string, status: "draft" | "archived"): void {
+    startTransition(async () => {
+      setFeedback(null)
+      // 'draft' | 'published' | 'archived' are three of the five values
+      // learning_modules_status_check admits — verified against the live
+      // constraint, not assumed.
+      const result = await updateLearningModuleAction(id, { status })
+      if (!result.ok) {
+        setFeedback(result.error)
+        return
+      }
+      setModules((prev) => prev.map((row) => (row.id === id ? { ...row, status } : row)))
+      setFeedback(status === "archived" ? "Module archived." : "Module restored to draft.")
+    })
   }
 
   function handleCreate(): void {
@@ -388,30 +457,96 @@ export function LearningModulesClient({ initialModules }: Props) {
         {modules.map((m) => (
           <Card key={m.id}>
             <CardContent className="py-4 flex items-center justify-between gap-4">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="font-medium truncate">{m.title}</span>
-                  <Badge variant={m.status === "published" ? "default" : m.status === "archived" ? "secondary" : "outline"}>
-                    {m.status}
-                  </Badge>
-                  {m.displayPriority > 0 && <Badge variant="outline">priority {m.displayPriority}</Badge>}
+              {editingId === m.id ? (
+                <div className="min-w-0 flex-1 space-y-2">
+                  <div className="space-y-1">
+                    <Label htmlFor={`edit-title-${m.id}`}>Title</Label>
+                    <Input
+                      id={`edit-title-${m.id}`}
+                      value={editTitle}
+                      onChange={(e) => setEditTitle(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor={`edit-summary-${m.id}`}>Summary</Label>
+                    <Textarea
+                      id={`edit-summary-${m.id}`}
+                      rows={2}
+                      value={editSummary}
+                      onChange={(e) => setEditSummary(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1 max-w-40">
+                    <Label htmlFor={`edit-priority-${m.id}`}>Display priority</Label>
+                    <Input
+                      id={`edit-priority-${m.id}`}
+                      type="number"
+                      value={editPriority}
+                      onChange={(e) => setEditPriority(e.target.value)}
+                    />
+                  </div>
                 </div>
-                {m.summary && <p className="text-sm text-muted-foreground truncate mt-0.5">{m.summary}</p>}
-                <div className="flex flex-wrap gap-1 mt-1.5">
-                  {m.channels.map((c) => (
-                    <Badge key={c} variant="secondary">{c}</Badge>
-                  ))}
+              ) : (
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium truncate">{m.title}</span>
+                    <Badge variant={m.status === "published" ? "default" : m.status === "archived" ? "secondary" : "outline"}>
+                      {m.status}
+                    </Badge>
+                    {m.displayPriority > 0 && <Badge variant="outline">priority {m.displayPriority}</Badge>}
+                  </div>
+                  {m.summary && <p className="text-sm text-muted-foreground truncate mt-0.5">{m.summary}</p>}
+                  <div className="flex flex-wrap gap-1 mt-1.5">
+                    {m.channels.map((c) => (
+                      <Badge key={c} variant="secondary">{c}</Badge>
+                    ))}
+                  </div>
                 </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="default"
-                  onClick={() => handlePublish(m.id, m.channels as Channel[])}
-                  disabled={isPending || m.channels.length === 0}
-                >
-                  Publish to {m.channels.length} channel{m.channels.length === 1 ? "" : "s"}
-                </Button>
+              )}
+              <div className="flex items-center gap-2 shrink-0">
+                {editingId === m.id ? (
+                  <>
+                    <Button size="sm" variant="outline" onClick={() => setEditingId(null)} disabled={isPending}>
+                      Cancel
+                    </Button>
+                    <Button size="sm" onClick={() => handleSaveEdit(m.id)} disabled={isPending}>
+                      Save changes
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button size="sm" variant="outline" onClick={() => beginEdit(m)} disabled={isPending}>
+                      Edit
+                    </Button>
+                    {m.status === "archived" ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleSetStatus(m.id, "draft")}
+                        disabled={isPending}
+                      >
+                        Restore to draft
+                      </Button>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleSetStatus(m.id, "archived")}
+                        disabled={isPending}
+                      >
+                        Archive
+                      </Button>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="default"
+                      onClick={() => handlePublish(m.id, m.channels as Channel[])}
+                      disabled={isPending || m.channels.length === 0 || m.status === "archived"}
+                    >
+                      Publish to {m.channels.length} channel{m.channels.length === 1 ? "" : "s"}
+                    </Button>
+                  </>
+                )}
               </div>
             </CardContent>
           </Card>

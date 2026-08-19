@@ -25,6 +25,42 @@ async function canApproveTemplates(
   return (b as { plan_tier?: string } | null)?.plan_tier === 'solo_agent'
 }
 
+/**
+ * May the CALLER approve or reject templates for their own brokerage?
+ *
+ * The verb and the permission have to come from the same place, or the queue
+ * grows an Approve button that always refuses. This is the same predicate the
+ * two writers below enforce — it does not replace them, it only lets the UI
+ * decide whether to draw the control.
+ *
+ * Fails CLOSED: no session, no brokerage, or a refused `users` read all return
+ * false. "We could not check" and "you may not" render the same here (no
+ * button), which is the safe direction for an authority probe.
+ */
+export async function canApproveNewsletterTemplates(): Promise<{ allowed: boolean }> {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { allowed: false }
+
+  const { data: userData, error } = await supabase
+    .from('users')
+    .select('user_type, role, brokerage_id')
+    .eq('id', user.id)
+    .maybeSingle()
+
+  if (error || !userData?.brokerage_id) return { allowed: false }
+
+  return {
+    allowed: await canApproveTemplates(
+      userData.user_type ?? null,
+      userData.role ?? null,
+      userData.brokerage_id,
+    ),
+  }
+}
+
 export async function submitTemplateForApproval(templateId: string) {
   const supabase = await createClient()
 
@@ -59,7 +95,14 @@ export async function submitTemplateForApproval(templateId: string) {
   }
 }
 
-export async function approveTemplate(templateId: string, approvingUserId: string) {
+/**
+ * `approvingUserId` is IGNORED and optional — the approver is the SESSION user,
+ * and `approved_by` is stamped from it below. It was a required positional that
+ * the body never read; a caller could pass anyone's id and the row would still
+ * (correctly) record the person who actually pressed the button. Kept in the
+ * signature so existing call sites keep type-checking.
+ */
+export async function approveTemplate(templateId: string, _approvingUserId?: string) {
   const supabase = await createClient()
 
   const {

@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { AlertTriangle, CheckCircle2, Clock, XCircle, Activity, Zap } from "lucide-react"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { ReprojectPortalButton } from "./reproject-portal-button"
 
 export const dynamic = "force-dynamic"
 
@@ -87,6 +88,10 @@ export default async function CronHealthPage() {
         <p className="text-sm text-muted-foreground mt-1">
           {rows.length} registered crons · last updated live
         </p>
+        {/* On-demand projector re-run — see reproject-portal-button.tsx. */}
+        <div className="mt-3">
+          <ReprojectPortalButton />
+        </div>
       </div>
 
       {/* Summary strip */}

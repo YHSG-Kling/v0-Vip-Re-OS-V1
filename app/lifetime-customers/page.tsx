@@ -68,6 +68,8 @@ import {
   getLifeChangeSignals,
   findReferralOpportunities,
 } from "@/app/actions/lifetime-customers"
+import { getTouchpointCalendar } from "@/app/actions/lifetime-customer-touchpoints"
+import { ingestPredictiveSellerSignalAction } from "@/app/actions/lead-signal-ingest"
 import { generateReferralRequest, nurturePendingReferral, recommendReferralReward } from "@/app/actions/ai-referral-management"
 import { loadReferralPipelineAction, loadReputationWorkspaceAction } from "@/app/actions/reputation-kernel"
 import { LifeSignalBadge } from "@/app/components/shared/LifeSignalBadge"
@@ -272,6 +274,18 @@ export default function LifetimeCustomersPage() {
   const [sphereScores, setSphereScores] = useState<any>(null)
   const [sphereSegments, setSphereSegments] = useState<any>(null)
   const [milestones, setMilestones] = useState<any[]>([])
+  // Scheduled touchpoints for one calendar month — the read half of
+  // scheduleTouchpoint. `lifetime_customer_touchpoints` rows have always been
+  // written (scheduleTouchpoint, sendMarketUpdate, the daily touchpoint cron)
+  // and getTouchpointCalendar, the month view written to read them back, had
+  // no caller: a scheduled touchpoint was invisible until the day it fired.
+  const [calendarMonth, setCalendarMonth] = useState(() => new Date().getMonth())
+  const [calendarYear, setCalendarYear] = useState(() => new Date().getFullYear())
+  const [touchpointCalendar, setTouchpointCalendar] = useState<any[] | null>(null)
+  const [calendarError, setCalendarError] = useState<string | null>(null)
+  // Predictive-seller signals confirmed by the agent from the radar tab.
+  const [confirmingSignal, setConfirmingSignal] = useState<string | null>(null)
+  const [confirmedSignals, setConfirmedSignals] = useState<Set<string>>(new Set())
   const [lifeSignals, setLifeSignals] = useState<any[]>([])
   const [referralOpportunities, setReferralOpportunities] = useState<any[]>([])
   const [referralPipeline, setReferralPipeline] = useState<any[]>([])
@@ -279,6 +293,7 @@ export default function LifetimeCustomersPage() {
   // Total Reviews / Avg Rating tiles were permanently empty even though
   // loadReputationWorkspaceAction already reads agent_reviews for this agent.
   const [reviews, setReviews] = useState<any[]>([])
+  const [reviewRequests, setReviewRequests] = useState<any[]>([])
   const [reviewsLoadError, setReviewsLoadError] = useState<string | null>(null)
   const [nurtureResults, setNurtureResults] = useState<Record<string, any>>({})
   const [rewardResults, setRewardResults] = useState<Record<string, any>>({})
@@ -354,6 +369,11 @@ export default function LifetimeCustomersPage() {
         const result = await loadReputationWorkspaceAction()
         if (result.success && (result as any).data?.reviews) {
           setReviews((result as any).data.reviews)
+          // The workspace has always returned reviewRequests alongside reviews
+          // and this page dropped them on the floor, so the rows "Log Request"
+          // writes had no reader — and sendReviewRequest, the send half, had no
+          // caller. Carried into ReputationPanel now.
+          setReviewRequests((result as any).data.reviewRequests ?? [])
           setReviewsLoadError(null)
         } else if (!result.success) {
           // A refused read used to leave `reviews` at [] and say nothing, so the
@@ -558,6 +578,74 @@ export default function LifetimeCustomersPage() {
         toast.success(`Found ${milestonesData.length} milestones`)
       }
     })
+  }
+
+  function loadTouchpointCalendar(month: number, year: number) {
+    setCalendarMonth(month)
+    setCalendarYear(year)
+    startTransition(async () => {
+      setCalendarError(null)
+      // getTouchpointCalendar takes a 0-indexed month (it builds the range from
+      // `Date`), which is what `calendarMonth` holds.
+      const result = await getTouchpointCalendar(month, year)
+      if (!result.success) {
+        setTouchpointCalendar(null)
+        setCalendarError(result.error ?? "Your touchpoint calendar could not be read.")
+        return
+      }
+      setTouchpointCalendar(result.touchpoints)
+    })
+  }
+
+  /**
+   * Confirm a detected life change as a real predictive-seller signal.
+   *
+   * This is the manual-confirmation lane ingestPredictiveSellerSignalAction was
+   * written for and never got: the automated half (the lead-scraping pipeline)
+   * runs with no session and so cannot call a gated server action, which is why
+   * the action documents itself as reachable only from an interactive surface.
+   * This is that surface. The action re-proves the contact is in the caller's
+   * brokerage before any score moves, and applySignalDelta is idempotent per
+   * (contact, source, evidence, day) — so a double-click cannot double-credit.
+   */
+  async function handleConfirmSellerSignal(signal: any) {
+    const contactId = signal.contact_id ?? signal.contactId
+    const signalKey = signal.type ?? signal.change_type
+    if (!contactId || !signalKey) {
+      toast.error("This signal has no contact or type on it, so it cannot be confirmed.")
+      return
+    }
+    const localKey = `${contactId}:${signalKey}`
+    setConfirmingSignal(localKey)
+    try {
+      const result = await ingestPredictiveSellerSignalAction({
+        contactId,
+        signalKey,
+        signalLabel: String(signalKey).replace(/_/g, " "),
+        // The enrichment writer records `confidence` on each life event. When
+        // it is absent the signal is treated as a low-confidence human
+        // observation rather than assumed certain.
+        confidence: Number.isFinite(Number(signal.confidence)) ? Number(signal.confidence) : 0.5,
+        evidenceId: signal.id ?? null,
+        evidence: { detected_at: signal.detected_at ?? null, details: signal.details ?? null },
+      })
+      // The action RETURNS { applied:false, reason } — for an out-of-tenant
+      // contact, an unauthenticated caller, or a signal already applied today.
+      // Reporting a score change that did not happen is the failure mode this
+      // check exists to prevent.
+      if (!result.applied) {
+        toast.message(
+          result.reason === "already_applied_today"
+            ? "Already counted today — the score only moves once per signal per day."
+            : `Signal not applied: ${result.reason ?? "refused"}`,
+        )
+        return
+      }
+      setConfirmedSignals((prev) => new Set(prev).add(localKey))
+      toast.success("Seller signal confirmed — the contact's motivation score has moved.")
+    } finally {
+      setConfirmingSignal(null)
+    }
   }
 
   async function handleLoadLifeSignals() {
@@ -1385,6 +1473,91 @@ export default function LifetimeCustomersPage() {
                 {milestones.length > 0 ? "Refresh" : "Load Milestones"}
               </Button>
             </div>
+            {/* Scheduled touchpoints for one month — the read half of
+                scheduleTouchpoint. Milestones above are what is COMING; this is
+                what is BOOKED. */}
+            <Card>
+              <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
+                <div>
+                  <CardTitle className="text-base">Scheduled touchpoints</CardTitle>
+                  <CardDescription>
+                    {new Date(calendarYear, calendarMonth, 1).toLocaleString(undefined, { month: "long", year: "numeric" })}
+                  </CardDescription>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="text-xs"
+                    disabled={isPending}
+                    onClick={() => {
+                      const d = new Date(calendarYear, calendarMonth - 1, 1)
+                      loadTouchpointCalendar(d.getMonth(), d.getFullYear())
+                    }}
+                  >
+                    Prev
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="text-xs"
+                    disabled={isPending}
+                    onClick={() => loadTouchpointCalendar(calendarMonth, calendarYear)}
+                  >
+                    <CalendarPlus className="h-3.5 w-3.5 mr-1" />
+                    {touchpointCalendar === null ? "Load" : "Refresh"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="text-xs"
+                    disabled={isPending}
+                    onClick={() => {
+                      const d = new Date(calendarYear, calendarMonth + 1, 1)
+                      loadTouchpointCalendar(d.getMonth(), d.getFullYear())
+                    }}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {calendarError ? (
+                  <p className="text-sm text-destructive">
+                    Your touchpoint calendar could not be read, so this month is not a reading of
+                    what is scheduled: {calendarError}
+                  </p>
+                ) : touchpointCalendar === null ? (
+                  <p className="text-sm text-muted-foreground">
+                    Load the month to see what is already booked.
+                  </p>
+                ) : touchpointCalendar.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    Nothing scheduled in this month.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {touchpointCalendar.map((t: any) => (
+                      <div key={t.id} className="flex items-center gap-3 rounded-lg border bg-card px-4 py-2.5">
+                        <span className="text-xs font-mono text-muted-foreground w-24 shrink-0">
+                          {t.scheduled_date}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium truncate">
+                            {[t.contacts?.first_name, t.contacts?.last_name].filter(Boolean).join(" ") || "Contact"}
+                          </p>
+                          <p className="text-xs text-muted-foreground capitalize">
+                            {String(t.touchpoint_type ?? "").replace(/_/g, " ")} · {t.channel}
+                          </p>
+                        </div>
+                        <Badge variant="outline" className="text-[11px] shrink-0">{t.status}</Badge>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
             {milestones.length === 0 ? (
               <div className="rounded-lg border bg-muted/20 p-8 text-center">
                 <p className="text-sm text-muted-foreground">Click "Load Milestones" to find upcoming home anniversaries, birthdays, and life events.</p>
@@ -1517,23 +1690,73 @@ export default function LifetimeCustomersPage() {
                 ) : (
                   <div className="space-y-3">
                     {lifeSignals.map((signal: any, i: number) => (
-                      <div key={i} className="flex items-center justify-between p-3 rounded-lg border">
-                        <div className="flex items-center gap-3">
-                          <LifeSignalBadge signal={signal} />
-                          <div>
-                            <p className="font-medium text-sm">{signal.contactName}</p>
-                            <p className="text-xs text-muted-foreground">{signal.type}</p>
+                      <div key={signal.id ?? `${signal.contact_id}-${signal.type}-${i}`} className="flex items-center justify-between gap-3 p-3 rounded-lg border">
+                        <div className="flex items-center gap-3 min-w-0">
+                          {/* getRecentLifeChanges returns the raw life_events
+                              element flattened with { contact_id, contact,
+                              detected_at } — the fields are `type` and
+                              `contact`, NOT `change_type` / `contacts`, and
+                              there is no `contactName` at all. The badge is
+                              given the shape it declares rather than one that
+                              would make it read undefined. */}
+                          <LifeSignalBadge
+                            signal={{
+                              id: signal.id ?? `${signal.contact_id}-${signal.type}`,
+                              change_type: signal.type ?? signal.change_type ?? "life_event",
+                              detected_at: signal.detected_at,
+                              contacts: signal.contact
+                                ? {
+                                    id: signal.contact.id,
+                                    first_name: signal.contact.first_name,
+                                    last_name: signal.contact.last_name,
+                                  }
+                                : null,
+                            }}
+                            compact
+                          />
+                          <div className="min-w-0">
+                            <p className="font-medium text-sm truncate">
+                              {[signal.contact?.first_name, signal.contact?.last_name].filter(Boolean).join(" ") || "Contact"}
+                            </p>
+                            <p className="text-xs text-muted-foreground capitalize">
+                              {String(signal.type ?? signal.change_type ?? "").replace(/_/g, " ")}
+                              {Number.isFinite(Number(signal.confidence))
+                                ? ` · ${Math.round(Number(signal.confidence) * 100)}% confidence`
+                                : ""}
+                            </p>
                           </div>
                         </div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleGenerateTouchpoint(signal.contactId, 'check_in')}
-                          disabled={isPending}
-                        >
-                          <Sparkles className="w-4 h-4 mr-1" />
-                          Generate Check-In
-                        </Button>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {/* Confirming a detected life change as a real
+                              predictive-seller signal is what moves the
+                              contact's motivation / intent score. Idempotent
+                              per day, server-side. */}
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleConfirmSellerSignal(signal)}
+                            disabled={
+                              isPending ||
+                              confirmingSignal === `${signal.contact_id}:${signal.type ?? signal.change_type}` ||
+                              confirmedSignals.has(`${signal.contact_id}:${signal.type ?? signal.change_type}`)
+                            }
+                          >
+                            {confirmedSignals.has(`${signal.contact_id}:${signal.type ?? signal.change_type}`) ? (
+                              <><CheckCircle2 className="w-4 h-4 mr-1" />Confirmed</>
+                            ) : (
+                              <><TrendingUp className="w-4 h-4 mr-1" />Confirm seller signal</>
+                            )}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleGenerateTouchpoint(signal.contact_id ?? signal.contactId, 'check_in')}
+                            disabled={isPending}
+                          >
+                            <Sparkles className="w-4 h-4 mr-1" />
+                            Generate Check-In
+                          </Button>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -1803,6 +2026,7 @@ export default function LifetimeCustomersPage() {
               agentId={currentAgentId}
               clients={clients}
               reviews={reviews}
+              reviewRequests={reviewRequests}
               recentClosings={clients.filter(c => c.transactions?.[0]?.actual_close_date).map(c => ({
                 id: c.id,
                 actual_close_date: c.transactions[0].actual_close_date,

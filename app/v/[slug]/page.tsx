@@ -29,6 +29,7 @@ export const revalidate = 300
 
 import { siteUrl } from "@/lib/platform/site-url"
 import { loadProductBrand } from "@/lib/platform/product-brand"
+import { VideoPlayer } from "./video-player"
 
 interface RenderRow {
   id:             string
@@ -64,6 +65,13 @@ interface PageData {
     price: number | null; bedrooms: number | null; bathrooms: number | null; sqft: number | null
   } | null
   disclosures: string
+  /**
+   * The ai_video_projects id when this page is serving a reel from the canonical
+   * project rail (null for a Remotion composition render). trackVideoView keys
+   * on that table, so only the project path can record a view — the Remotion
+   * rail has no view counter of its own and must not be given a fabricated one.
+   */
+  projectId: string | null
 }
 
 async function loadPage(slug: string): Promise<PageData | null> {
@@ -122,7 +130,7 @@ async function loadPage(slug: string): Promise<PageData | null> {
     userId:      render.agent_user_id,
   })
 
-  return { render, composition, title, description, agentName, agentPhoto, brokerageName, listing, disclosures }
+  return { render, composition, title, description, agentName, agentPhoto, brokerageName, listing, disclosures, projectId: null }
 }
 
 /** Load a published reel from the canonical ai_video_projects rail and shape it
@@ -205,7 +213,7 @@ async function loadProjectPage(
     published_at: proj.published_at,
   }
 
-  return { render, composition, title, description, agentName, agentPhoto, brokerageName, listing, disclosures }
+  return { render, composition, title, description, agentName, agentPhoto, brokerageName, listing, disclosures, projectId: proj.id }
 }
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
@@ -277,12 +285,10 @@ export default async function VideoLandingPage({ params }: { params: Promise<{ s
       <article>
         <h1 style={{ fontSize: 28, fontWeight: 700, lineHeight: 1.2, margin: "0 0 12px" }}>{data.title}</h1>
         <div style={{ borderRadius: 12, overflow: "hidden", background: "#000", aspectRatio: "16 / 9" }}>
-          <video
-            controls
-            playsInline
-            poster={data.render.thumbnail_url ?? undefined}
+          <VideoPlayer
             src={data.render.output_url!}
-            style={{ width: "100%", height: "100%", objectFit: "contain", background: "#000" }}
+            poster={data.render.thumbnail_url}
+            projectId={data.projectId}
           />
         </div>
 

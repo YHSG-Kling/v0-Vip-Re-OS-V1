@@ -999,16 +999,39 @@ export async function createDeadlineEventsFromMilestones(params: {
     }
 
     let created = 0
+    let skipped = 0
+    const failures: string[] = []
+
     for (const milestone of milestones) {
-      // Check for existing calendar event for this milestone
-      const { data: existing } = await supabase
+      const eventTitle =
+        milestone.title || milestone.milestone_type?.replace(/_/g, " ") || "Milestone"
+
+      // Check for existing calendar event for this milestone.
+      //
+      // The tenant predicate is on this read too — without it the idempotency
+      // probe reads across brokerages, so a milestone id colliding in another
+      // tenant would suppress an event this tenant is owed. `.limit(1)` because
+      // nothing enforces one event per milestone at the database, and a bare
+      // maybeSingle() THROWS on a second row — turning a duplicate into a total
+      // failure of the whole run.
+      const { data: existing, error: existingErr } = await supabase
         .from("calendar_events")
         .select("id")
         .eq("entity_type", "transaction_milestone")
         .eq("entity_id", milestone.id)
+        .eq("brokerage_id", brokerageId)
+        .limit(1)
         .maybeSingle()
 
-      if (existing) continue // Already exists
+      // A refused idempotency check must NOT fall through to an insert — that is
+      // how a deadline gets duplicated on the agent's calendar every time the
+      // action runs. Skip the milestone and report it.
+      if (existingErr) {
+        failures.push(`${eventTitle}: could not check for an existing event (${existingErr.message})`)
+        continue
+      }
+
+      if (existing) { skipped++; continue } // Already exists
 
       const targetDate = new Date(milestone.target_date!)
       const startAt = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 9, 0, 0)
@@ -1024,20 +1047,37 @@ export async function createDeadlineEventsFromMilestones(params: {
           start_at: startAt.toISOString(),
           end_at: endAt.toISOString(),
           is_system_generated: true,
+          // `title` IS A REAL COLUMN on calendar_events (verified live), and it
+          // was being written only into `metadata`. This file's older writer
+          // (createAppointment) does the same, which is why the note above
+          // getAppointments says per-agent narrowing needs the writer fixed —
+          // a reader that renders `title` got nothing from either writer.
+          // Stamped in BOTH places: the column for readers that select it, and
+          // metadata unchanged so nothing already reading metadata.title breaks.
+          title: eventTitle,
           metadata: {
-            title: milestone.title || milestone.milestone_type?.replace(/_/g, " ") || "Milestone",
+            title: eventTitle,
             description: milestone.description,
             transaction_id: params.transactionId,
             milestone_type: milestone.milestone_type,
           },
         })
 
-      if (!insertErr) created++
+      if (insertErr) {
+        // Silently dropping this was the whole defect class: `created` counted
+        // successes and nothing counted refusals, so a run that wrote NOTHING
+        // returned { success: true, created: 0 } — indistinguishable from
+        // "every deadline was already on the calendar".
+        console.error("[createDeadlineEventsFromMilestones] event insert refused:", insertErr.message)
+        failures.push(`${eventTitle}: ${insertErr.message}`)
+        continue
+      }
+      created++
     }
 
     revalidatePath("/dashboard/calendar")
 
-    return { success: true, created }
+    return { success: true, created, skipped, failures }
   } catch (error) {
     return handleError(error, "createDeadlineEventsFromMilestones")
   }

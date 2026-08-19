@@ -739,16 +739,43 @@ export async function getAIPriceAdjustmentRecommendation(
   const supabase = createServiceClient()
 
   try {
-    const { data: cma } = await supabase
+    // COLUMNS VERIFIED LIVE. This read was `select("*")` and the prompt below then
+    // interpolated `cma.ai_valuation?.estimatedValue` and `cma.market_trends?.marketType`
+    // — NEITHER COLUMN EXISTS on cma_reports (checked against
+    // information_schema.columns: the valuation lives in recommended_price /
+    // price_range_low / price_range_high and the market read is market_conditions).
+    // `select("*")` is why nothing ever complained: the optional chains resolved
+    // to undefined and the prompt shipped "AI Estimated Value: $Unknown / Market
+    // Type: Unknown" on EVERY call. So every price-adjustment recommendation this
+    // action has ever produced was made with no knowledge of what the CMA
+    // concluded — it was reasoning from days-on-market and showing count alone
+    // while presenting itself as an adjustment to a valuation it never saw.
+    // The columns are now named explicitly, which is also what stops the next
+    // phantom from hiding.
+    const { data: cma, error: cmaError } = await supabase
       .from("cma_reports")
-      .select("*")
+      .select("id, recommended_price, price_range_low, price_range_high, market_conditions, property_address, comparable_count")
       .eq("id", cmaId)
       .eq("brokerage_id", ctx.brokerageId)
-      .single()
+      .maybeSingle()
 
+    // A refused read must not fall through to "CMA not found" and must certainly
+    // not fall through to a paid model call.
+    if (cmaError) {
+      console.error("[AI CMA] price adjustment CMA read failed:", cmaError.message)
+      return { success: false, error: "Could not load that CMA." }
+    }
     if (!cma) {
       return { success: false, error: "CMA not found" }
     }
+
+    const valuationLine =
+      cma.recommended_price != null
+        ? `- CMA recommended price: $${Number(cma.recommended_price).toLocaleString()}` +
+          (cma.price_range_low != null && cma.price_range_high != null
+            ? ` (range $${Number(cma.price_range_low).toLocaleString()}–$${Number(cma.price_range_high).toLocaleString()})`
+            : "")
+        : "- CMA recommended price: not recorded on this report"
 
     const prompt = `As a real estate pricing strategist, analyze this listing's performance and recommend a price adjustment.
 
@@ -760,8 +787,9 @@ CURRENT SITUATION:
 - Feedback Summary: ${feedbackSummary || "No specific feedback"}
 
 ORIGINAL VALUATION:
-- AI Estimated Value: $${cma.ai_valuation?.estimatedValue?.toLocaleString() || "Unknown"}
-- Market Type: ${cma.market_trends?.marketType || "Unknown"}
+${valuationLine}
+- Comparables used: ${cma.comparable_count ?? "not recorded"}
+- Market conditions at the time of the CMA: ${cma.market_conditions || "not recorded"}
 
 BENCHMARKS:
 - If showings/week < 2 in seller's market = overpriced
@@ -791,14 +819,21 @@ Provide adjustment recommendation in JSON:
       // (cma_report_id/adjustment_type/adjustment_amount/rationale). The legacy
       // cma_id/current_price/recommended_price/recommendation/days_on_market/showing_count
       // columns never existed on the live table.
-      await supabase.from("cma_price_adjustments").insert({
+      // supabase-js RESOLVES a refused insert, so this `await` reported a logged
+      // recommendation whether or not one was stored. `logged` carries the truth
+      // to the caller instead; the recommendation itself is still returned,
+      // because the model call is already paid for.
+      const { error: adjustmentError } = await supabase.from("cma_price_adjustments").insert({
         cma_report_id: cmaId,
         adjustment_type: "price_recommendation",
         adjustment_amount: (recommendation.suggestedNewPrice ?? currentListPrice) - currentListPrice,
         rationale: `Recommended ${recommendation.recommendedAction ?? "adjustment"}: $${currentListPrice.toLocaleString()} → $${(recommendation.suggestedNewPrice ?? currentListPrice).toLocaleString()} (${recommendation.percentageChange ?? 0}%). DOM ${daysOnMarket}, ${showingCount} showings. ${recommendation.rationale ?? ""}`.trim(),
       })
+      if (adjustmentError) {
+        console.error("[AI CMA] cma_price_adjustments insert refused:", adjustmentError.message)
+      }
 
-      return { success: true, recommendation }
+      return { success: true, recommendation, logged: !adjustmentError }
     }
 
     return { success: false, error: "Failed to generate recommendation" }

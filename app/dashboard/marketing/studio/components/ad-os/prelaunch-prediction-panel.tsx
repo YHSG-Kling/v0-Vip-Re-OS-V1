@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/select"
 import { Loader2, Zap, TrendingUp, AlertTriangle, CheckCircle, XCircle, Clock, ShieldCheck, History } from "lucide-react"
 import { runPrelaunchCheck, loadReadinessHistory } from "./ad-os-actions"
+import { getPredictionAction } from "@/app/actions/content-prediction"
 import type { ContentType } from "@/lib/content/performance-predictor"
 
 interface Props {
@@ -132,6 +133,46 @@ export function PrelaunchPredictionPanel({ agentId }: Props) {
   >(null)
   const [historyError, setHistoryError] = useState<string | null>(null)
   const [isLoadingHistory, setIsLoadingHistory] = useState(false)
+
+  // ── THE PREDICTION ALREADY ON FILE ──────────────────────────────────────────
+  // Running the check again costs a paid model call and writes another
+  // content_performance_predictions row. When this asset has already been
+  // scored, read the recorded verdict instead of buying a new one. Same source
+  // table the check itself defaults to, so the two agree on what they are
+  // keyed on.
+  const PREDICTION_SOURCE_TABLE = "marketing_assets"
+  const [savedPrediction, setSavedPrediction] = useState<{
+    predicted_score: number | null
+    confidence: string | null
+    rationale: string | null
+    created_at: string | null
+  } | null>(null)
+  const [savedPredictionMsg, setSavedPredictionMsg] = useState<string | null>(null)
+  const [isLoadingSaved, setIsLoadingSaved] = useState(false)
+
+  async function handleLoadSavedPrediction() {
+    const id = sourceId.trim()
+    if (!id) return
+    setIsLoadingSaved(true)
+    setSavedPrediction(null)
+    setSavedPredictionMsg(null)
+    try {
+      const res = await getPredictionAction(PREDICTION_SOURCE_TABLE, id)
+      if (!res.success) {
+        setSavedPredictionMsg(res.error ?? "Could not load the recorded prediction")
+      } else if (!res.prediction) {
+        // A clean read that found nothing is NOT a failure — say so plainly, so
+        // "never scored" cannot be mistaken for "we could not look".
+        setSavedPredictionMsg("No prediction on file for this asset yet.")
+      } else {
+        setSavedPrediction(res.prediction as typeof savedPrediction)
+      }
+    } catch {
+      setSavedPredictionMsg("Unexpected error loading the recorded prediction")
+    } finally {
+      setIsLoadingSaved(false)
+    }
+  }
 
   async function handleRun() {
     if (!contentText.trim()) return
@@ -262,7 +303,45 @@ export function PrelaunchPredictionPanel({ agentId }: Props) {
               {isLoadingHistory ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <History className="h-3.5 w-3.5" />}
               <span className="ml-1.5">History</span>
             </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 shrink-0"
+              disabled={!sourceId.trim() || isLoadingSaved}
+              onClick={handleLoadSavedPrediction}
+              title="Read the prediction already recorded for this asset instead of paying for a new one"
+            >
+              {isLoadingSaved ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <TrendingUp className="h-3.5 w-3.5" />}
+              <span className="ml-1.5">Last score</span>
+            </Button>
           </div>
+
+          {savedPredictionMsg && (
+            <p className="text-xs text-muted-foreground">{savedPredictionMsg}</p>
+          )}
+          {savedPrediction && (
+            <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs space-y-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-medium">
+                  Recorded score: {savedPrediction.predicted_score ?? "—"} / 100
+                </span>
+                {savedPrediction.confidence && (
+                  <Badge variant="outline" className="text-[10px]">
+                    {savedPrediction.confidence} confidence
+                  </Badge>
+                )}
+                {savedPrediction.created_at && (
+                  <span className="text-muted-foreground">
+                    {new Date(savedPrediction.created_at).toLocaleDateString()}
+                  </span>
+                )}
+              </div>
+              {savedPrediction.rationale && (
+                <p className="text-muted-foreground leading-relaxed">{savedPrediction.rationale}</p>
+              )}
+            </div>
+          )}
         </div>
 
         <Button

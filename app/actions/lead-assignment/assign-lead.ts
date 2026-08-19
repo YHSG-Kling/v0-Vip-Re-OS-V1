@@ -106,6 +106,35 @@ export async function manualAssignLead(
   return { success: true }
 }
 
+/**
+ * Close out the ASSIGNMENT-LOG side of a claim.
+ *
+ * This is NOT the same verb as app/actions/lead-lifecycle.ts:98 `claimLead`,
+ * which is what the Available Leads sheet calls to move the lead itself
+ * (leads.agent_id + lead_stage='claimed'). This one flips the
+ * `assignment_log` row for the lead from claimed=false to claimed=true under
+ * an optimistic lock and emits KernelEvent.LEAD_CLAIMED so the claim fans out
+ * (staff notification / sequence enrollment / portal update).
+ *
+ * WHY IT MATTERS THAT IT HAD NO CALLER: `assignment_log.claimed` is inserted
+ * false by app/actions/leads.ts:236 and READ by three live surfaces as the
+ * "handoff still awaiting first touch" signal —
+ * lib/intelligence/daily-briefing-generator.ts, lib/intelligence/isa-overnight.ts
+ * (handoffs_unclaimed) and lib/intelligence/user-type-briefs/team-lead.ts.
+ * lib/lead-assignment/assignment-engine.ts:claimLead is the ONLY writer that
+ * ever sets it true, and this action was its only entry point, so no ISA
+ * handoff has ever been marked claimed: the unclaimed counter on the daily
+ * briefing and the team-lead brief could only ever go up.
+ *
+ * TENANT GATE (added). This is a `"use server"` export that takes a bare lead
+ * id and acts on it, and the engine behind it runs on the SERVICE client and
+ * filters `assignment_log` by lead_id ALONE — no brokerage predicate, RLS
+ * bypassed. Any signed-in user of any tenant could therefore close out another
+ * brokerage's handoff and emit a LEAD_CLAIMED event attributed to themselves
+ * against that tenant. The lead is now proved to be in the caller's brokerage,
+ * through the cookie client so RLS applies to the check itself, and it fails
+ * CLOSED: a refused read is a refusal, not a pass.
+ */
 export async function claimLeadAction(
   leadId: string
 ): Promise<{ success: boolean; reason?: string }> {
@@ -123,6 +152,18 @@ export async function claimLeadAction(
     .single()
 
   if (!profile?.brokerage_id) throw new Error("No brokerage found for user")
+
+  const { data: lead, error: leadError } = await supabase
+    .from("leads")
+    .select("id, brokerage_id")
+    .eq("id", leadId)
+    .eq("brokerage_id", profile.brokerage_id)
+    .maybeSingle()
+
+  // supabase-js RESOLVES a refused query, so a swallowed error here would be
+  // indistinguishable from "no such lead" — and both must refuse.
+  if (leadError) return { success: false, reason: "lead_scope_check_failed" }
+  if (!lead) return { success: false, reason: "lead_not_in_tenant" }
 
   return await claimLead({
     leadId,

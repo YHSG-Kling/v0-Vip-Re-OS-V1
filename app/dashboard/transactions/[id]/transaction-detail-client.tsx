@@ -36,6 +36,7 @@ import {
 import {
   scheduleInspectionAction,
   approveInspectionQuoteAction,
+  declineInspectionQuoteAction,
   markInspectionCompleteAction,
   uploadInspectionReportAction,
   requestInsuranceQuoteAction,
@@ -390,7 +391,9 @@ interface TransactionDetailClientProps {
     esign_completed_at?: string | null
     buyer_signed_at?: string | null
   } | null
-  // Existing contract_signatures rows for this brokerage — keyed by contract_type
+  // contract_signatures rows scoped to THIS transaction's signable doc_types
+  // (app/actions/transaction-document-signatures.ts:getTransactionSignatureStatuses)
+  // — keyed by contract_type, most recent wins.
   contractSignatures?: Record<string, {
     id: string
     esign_status: string
@@ -398,6 +401,18 @@ interface TransactionDetailClientProps {
     sent_at: string | null
     agent_signed_at: string | null
     fully_signed_at: string | null
+  }>
+  /** Signable documents ON THIS TRANSACTION that are not fully signed — the
+   *  readiness blockers, from
+   *  app/actions/transaction-document-signatures.ts:getUnsignedDocumentBlockers.
+   *  Keyed off transaction_documents, so it names the real document (label + id)
+   *  rather than a bare doc_type, and never shows another deal's paperwork. */
+  unsignedDocBlockers?: Array<{
+    docId: string
+    docLabel: string
+    docType: string
+    signatureId: string | null
+    esignStatus: string | null
   }>
   // TC assignment
   currentCoordinatorId?: string | null
@@ -486,6 +501,7 @@ export function TransactionDetailClient({
   connectedEsignProvider,
   linkedOffer,
   contractSignatures = {},
+  unsignedDocBlockers = [],
   currentCoordinatorId = null,
   availableTCs = [],
   currentLenderUserId = null,
@@ -1204,6 +1220,30 @@ export function TransactionDetailClient({
         toast.error((res as any)?.error ?? "The approval did not go through.")
         return
       }
+      router.refresh()
+    })
+  }
+
+  // The other half of the quote-approval decision. The alert offered ONLY
+  // "Approve": a client who did not want that inspector's price had no way to
+  // say so, and the pending activity row sat in the queue forever because
+  // nothing in the app could resolve it any other way. declineQuote is the
+  // same workflow's decline path (lib/transactions/vendor-quote-workflow.ts).
+  async function handleDeclineQuote(activityId: string) {
+    const reason = window.prompt("Why is this quote being declined? (optional — shown to the agent)")
+    if (reason === null) return
+    startTransition(async () => {
+      const res = await declineInspectionQuoteAction({
+        activityId,
+        transactionId: transaction.id,
+        brokerageId,
+        reason: reason.trim() || undefined,
+      })
+      if (!res?.success) {
+        toast.error((res as any)?.error ?? "The decline did not go through.")
+        return
+      }
+      toast.success("Quote declined.")
       router.refresh()
     })
   }
@@ -1963,26 +2003,34 @@ export function TransactionDetailClient({
               </CardContent>
             </Card>
 
-            {/* Pending Signatures Blocker — shown when contract_signatures rows are not yet fully signed */}
-            {Object.values(contractSignatures).some(s => s.esign_status !== "fully_signed") && (
+            {/* Unsigned-document blockers for THIS transaction.
+                Source: getUnsignedDocumentBlockers (transaction_documents ⋈
+                contract_signatures), not the brokerage-wide signature map this
+                card used to iterate. Two things change for the agent:
+                  · doc types belonging to OTHER deals no longer appear here; and
+                  · a signable document that was NEVER sent for signature now
+                    raises a blocker — the old card could only ever list
+                    documents that already had a signature row, so "never sent"
+                    read as "nothing pending". */}
+            {unsignedDocBlockers.length > 0 && (
               <Card className="border-amber-200 bg-amber-50/30">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm flex items-center gap-2 text-amber-800">
                     <PenLine className="h-4 w-4" />
-                    Signatures Pending
+                    Signatures Pending ({unsignedDocBlockers.length})
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-1.5">
-                  {Object.entries(contractSignatures)
-                    .filter(([, s]) => s.esign_status !== "fully_signed")
-                    .map(([docType, s]) => (
-                      <div key={docType} className="flex items-center justify-between text-xs">
-                        <span className="capitalize text-amber-900">{docType.replace(/_/g, " ")}</span>
-                        <Badge variant="secondary" className="text-xs bg-amber-100 text-amber-700 border-amber-200">
-                          {s.esign_status?.replace(/_/g, " ") ?? "pending"}
-                        </Badge>
-                      </div>
-                    ))}
+                  {unsignedDocBlockers.map((b) => (
+                    <div key={b.docId} className="flex items-center justify-between gap-2 text-xs">
+                      <span className="text-amber-900 truncate">{b.docLabel}</span>
+                      <Badge variant="secondary" className="text-xs bg-amber-100 text-amber-700 border-amber-200 shrink-0">
+                        {b.signatureId
+                          ? (b.esignStatus?.replace(/_/g, " ") ?? "pending")
+                          : "not sent"}
+                      </Badge>
+                    </div>
+                  ))}
                   <p className="text-xs text-amber-700 pt-1">
                     Go to the Documents tab to send or resend for signatures.
                   </p>
@@ -3262,13 +3310,24 @@ export function TransactionDetailClient({
                             return (
                               <div key={a.id} className="flex items-center justify-between mt-2">
                                 <span>{meta.vendor_name as string} - ${(meta.quote_amount as number)?.toLocaleString()}</span>
-                                <Button
-                                  size="sm"
-                                  onClick={() => handleApproveQuote(a.id, meta.vendor_name as string, "inspector")}
-                                  disabled={isPending}
-                                >
-                                  {isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Approve"}
-                                </Button>
+                                <span className="flex items-center gap-2">
+                                  <Button
+                                    size="sm"
+                                    onClick={() => handleApproveQuote(a.id, meta.vendor_name as string, "inspector")}
+                                    disabled={isPending}
+                                  >
+                                    {isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Approve"}
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="text-red-700 border-red-300 hover:bg-red-50"
+                                    onClick={() => handleDeclineQuote(a.id)}
+                                    disabled={isPending}
+                                  >
+                                    Decline
+                                  </Button>
+                                </span>
                               </div>
                             )
                           })}

@@ -43,6 +43,7 @@ import {
   generatePodcastAudio,
   generatePodcastEpisodeDescription,
   getVideoProjects,
+  getVideoScriptsLibrary,
   generatePodcastScriptDraft,
   publishPodcastEpisode,
   uploadPodcastCoverArt,
@@ -80,6 +81,20 @@ interface VideoProject {
   status: string
 }
 
+/**
+ * A row from `video_scripts_library` — the AI-script shelf. Distinct from
+ * ai_video_projects: a library script may never have been rendered, which is
+ * exactly why it is worth re-cutting as an episode. The two lists are shown
+ * side by side under the same "reuse an existing script" source.
+ */
+interface LibraryScript {
+  id: string
+  title: string
+  script_content: string
+  script_type: string | null
+  duration_target_seconds: number | null
+}
+
 const STEPS = [
   { id: "script",     label: "Script",          icon: Sparkles },
   { id: "voice",      label: "Voice & Audio",   icon: Mic2 },
@@ -115,7 +130,10 @@ export function CreateEpisodeDialog({
   const [keywordInput, setKeywordInput] = useState("")
   const [keywords, setKeywords] = useState<string[]>([])
   const [videoProjects, setVideoProjects] = useState<VideoProject[]>([])
+  const [libraryScripts, setLibraryScripts] = useState<LibraryScript[]>([])
+  const [scriptSourceError, setScriptSourceError] = useState<string | null>(null)
   const [selectedProjectId, setSelectedProjectId] = useState<string>("")
+  const [selectedLibraryId, setSelectedLibraryId] = useState<string>("")
   const [loadingProjects, setLoadingProjects] = useState(false)
   const [generatingScript, setGeneratingScript] = useState(false)
   const [script, setScript] = useState("")
@@ -150,7 +168,7 @@ export function CreateEpisodeDialog({
   const [publishResult, setPublishResult] = useState<string | null>(null)
 
   useEffect(() => {
-    if (open && scriptMode === "video" && videoProjects.length === 0) {
+    if (open && scriptMode === "video" && videoProjects.length === 0 && libraryScripts.length === 0) {
       loadVideoProjects()
     }
   }, [open, scriptMode]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -169,6 +187,10 @@ export function CreateEpisodeDialog({
     setGeneratingScript(false)
     setScript("")
     setTitle("")
+    setSelectedProjectId("")
+    setSelectedLibraryId("")
+    setLibraryScripts([])
+    setScriptSourceError(null)
     setBrandVoice(null)
     setCreatedEpisodeId(null)
     setGeneratingAudio(false)
@@ -189,9 +211,21 @@ export function CreateEpisodeDialog({
 
   async function loadVideoProjects() {
     setLoadingProjects(true)
+    setScriptSourceError(null)
     try {
-      const res = await getVideoProjects()
-      if (res.success) setVideoProjects(res.projects || [])
+      // Two shelves, one source: rendered video projects AND the AI script
+      // library. A refused read is reported — an empty list must not stand in
+      // for "we could not look".
+      const [projRes, libRes] = await Promise.all([
+        getVideoProjects(),
+        getVideoScriptsLibrary(),
+      ])
+      if (projRes.success) setVideoProjects(projRes.projects || [])
+      const errors: string[] = []
+      if (!projRes.success) errors.push(projRes.error ?? "video projects unavailable")
+      if (libRes.success) setLibraryScripts((libRes.scripts || []) as LibraryScript[])
+      else errors.push(libRes.error ?? "script library unavailable")
+      if (errors.length > 0) setScriptSourceError(errors.join(" · "))
     } finally {
       setLoadingProjects(false)
     }
@@ -236,10 +270,21 @@ export function CreateEpisodeDialog({
 
   function handleVideoSelect(projectId: string) {
     setSelectedProjectId(projectId)
+    setSelectedLibraryId("")
     const p = videoProjects.find((vp) => vp.id === projectId)
     if (p) {
       setScript(p.script_content)
       if (!title.trim()) setTitle(p.title)
+    }
+  }
+
+  function handleLibrarySelect(scriptId: string) {
+    setSelectedLibraryId(scriptId)
+    setSelectedProjectId("")
+    const s = libraryScripts.find((ls) => ls.id === scriptId)
+    if (s) {
+      setScript(s.script_content)
+      if (!title.trim()) setTitle(s.title)
     }
   }
 
@@ -484,8 +529,8 @@ export function CreateEpisodeDialog({
                     }`}
                   >
                     <Video className="h-5 w-5 mb-1 text-primary" />
-                    <div className="font-medium text-sm">From Video Project</div>
-                    <p className="text-xs text-gray-500 mt-0.5">Reuse existing script.</p>
+                    <div className="font-medium text-sm">From Video / Script</div>
+                    <p className="text-xs text-gray-500 mt-0.5">Reuse an existing script.</p>
                   </button>
                 </div>
               </div>
@@ -542,35 +587,77 @@ export function CreateEpisodeDialog({
               )}
 
               {scriptMode === "video" && (
-                <div className="space-y-2 rounded-md border bg-muted/30 p-3">
-                  <Label className="text-xs">Pick a video project</Label>
-                  {loadingProjects ? (
-                    <div className="flex items-center justify-center py-6">
-                      <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
-                    </div>
-                  ) : videoProjects.length === 0 ? (
-                    <p className="text-sm text-gray-500 text-center py-4">No video projects found.</p>
-                  ) : (
-                    <div className="flex flex-col gap-2 max-h-44 overflow-y-auto">
-                      {videoProjects.map((p) => (
-                        <button
-                          key={p.id}
-                          type="button"
-                          onClick={() => handleVideoSelect(p.id)}
-                          className={`p-2.5 border rounded-lg text-left transition-colors ${
-                            selectedProjectId === p.id
-                              ? "border-primary bg-primary/5"
-                              : "border-gray-200 hover:border-gray-300"
-                          }`}
-                        >
-                          <div className="font-medium text-sm">{p.title}</div>
-                          <div className="text-xs text-gray-500 mt-0.5">
-                            {p.video_type} • {Math.ceil((p.duration_seconds || 180) / 60)} min
-                          </div>
-                        </button>
-                      ))}
-                    </div>
+                <div className="space-y-3 rounded-md border bg-muted/30 p-3">
+                  {scriptSourceError && (
+                    <p className="text-xs text-amber-700">Some sources could not be loaded: {scriptSourceError}</p>
                   )}
+                  <div className="space-y-2">
+                    <Label className="text-xs">Pick a video project</Label>
+                    {loadingProjects ? (
+                      <div className="flex items-center justify-center py-6">
+                        <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+                      </div>
+                    ) : videoProjects.length === 0 ? (
+                      <p className="text-sm text-gray-500 text-center py-4">No video projects found.</p>
+                    ) : (
+                      <div className="flex flex-col gap-2 max-h-44 overflow-y-auto">
+                        {videoProjects.map((p) => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => handleVideoSelect(p.id)}
+                            className={`p-2.5 border rounded-lg text-left transition-colors ${
+                              selectedProjectId === p.id
+                                ? "border-primary bg-primary/5"
+                                : "border-gray-200 hover:border-gray-300"
+                            }`}
+                          >
+                            <div className="font-medium text-sm">{p.title}</div>
+                            <div className="text-xs text-gray-500 mt-0.5">
+                              {p.video_type} • {Math.ceil((p.duration_seconds || 180) / 60)} min
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* The AI script SHELF — scripts written for video that may never
+                      have been rendered. Same "reuse existing script" job, a
+                      different table (video_scripts_library). */}
+                  <div className="space-y-2 border-t pt-3">
+                    <Label className="text-xs">…or pick a saved script</Label>
+                    {loadingProjects ? (
+                      <div className="flex items-center justify-center py-4">
+                        <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+                      </div>
+                    ) : libraryScripts.length === 0 ? (
+                      <p className="text-sm text-gray-500 text-center py-4">No saved scripts in your library.</p>
+                    ) : (
+                      <div className="flex flex-col gap-2 max-h-44 overflow-y-auto">
+                        {libraryScripts.map((ls) => (
+                          <button
+                            key={ls.id}
+                            type="button"
+                            onClick={() => handleLibrarySelect(ls.id)}
+                            className={`p-2.5 border rounded-lg text-left transition-colors ${
+                              selectedLibraryId === ls.id
+                                ? "border-primary bg-primary/5"
+                                : "border-gray-200 hover:border-gray-300"
+                            }`}
+                          >
+                            <div className="font-medium text-sm">{ls.title}</div>
+                            <div className="text-xs text-gray-500 mt-0.5">
+                              {(ls.script_type ?? "script").replace(/_/g, " ")}
+                              {ls.duration_target_seconds
+                                ? ` • ${Math.ceil(ls.duration_target_seconds / 60)} min target`
+                                : ""}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 

@@ -18,15 +18,22 @@
 
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { createServiceClient } from "@/lib/supabase/service"
-import { getPlaybook, CREATIVE_PLAYBOOKS, type PlaybookStep } from "@/lib/marketing/creative-playbooks"
+import { getPlaybook, type PlaybookStep } from "@/lib/marketing/creative-playbooks"
 import { revalidatePath } from "next/cache"
 
-export async function listCreativePlaybooks() {
-  return CREATIVE_PLAYBOOKS.map((p) => ({
-    key: p.key, title: p.title, strategy: p.strategy, whyItWorks: p.whyItWorks, ridesOn: p.ridesOn,
-    channels: p.steps.map((s) => s.kind).filter((k) => k !== "bundle"),
-  }))
-}
+// ─── listCreativePlaybooks — DELETED (orphan burn-down lane C) ────────────────
+//
+// FUNCTIONALITY ALREADY ELSEWHERE. The catalog is a CODE-VERSIONED constant,
+// not a query: lib/marketing/creative-playbooks.ts:44 exports CREATIVE_PLAYBOOKS
+// and the only surface that lists plays — app/settings/campaign-bundles/client.tsx:257
+// — imports that constant DIRECTLY and maps over it. This wrapper added a network
+// round-trip (and a public HTTP endpoint, since this file is "use server") to hand
+// back data the client already had at build time.
+//
+// NOTHING TO MERGE, and the derived field was the WEAKER of the two: this filtered
+// only `bundle` out of the channel list, so it advertised `lead_magnet`, `qr` and
+// `video` as "channels". The client filters all four
+// (client.tsx:284) and is the version that ships.
 
 // ── The ONE author: brief → charter-governed copy JSON ───────────────────────
 async function authorPlaybookCopy(args: {

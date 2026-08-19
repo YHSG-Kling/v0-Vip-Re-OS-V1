@@ -298,6 +298,12 @@ export default async function ListingsPage() {
                             listingId={listing.id}
                             agentId={agentId}
                             listingAddress={listing.address}
+                            /* The three live performance facts the price-adjustment
+                               reader needs. Already on this row and already rendered
+                               above — passed rather than re-typed by the agent. */
+                            listPrice={listing.list_price}
+                            daysOnMarket={dom}
+                            showingCount={listing.showing_count}
                           />
                         </div>
                       </div>

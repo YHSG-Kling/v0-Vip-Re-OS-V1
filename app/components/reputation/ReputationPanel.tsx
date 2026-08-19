@@ -68,6 +68,7 @@ import {
   loadReviewPerformanceAction,
 } from "@/app/actions/reputation-kernel"
 import { getReputationPreferences, saveReputationPreferences } from "@/app/actions/settings/reputation-preferences"
+import { sendReviewRequest } from "@/app/actions/listing-lifecycle"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -77,6 +78,22 @@ interface ReputationPanelProps {
   clients?:       any[]
   reviews?:       any[]
   recentClosings?: any[]
+  /**
+   * review_requests rows for this agent, from loadReputationWorkspaceAction.
+   * "Log Request" has always WRITTEN one of these (status 'pending'); nothing
+   * ever displayed them and nothing ever sent one — `sendReviewRequest`, the
+   * send half, had no caller anywhere in the tree. The pending list below is
+   * that missing half.
+   */
+  reviewRequests?: Array<{
+    id:           string
+    contact_id:   string | null
+    contact_name: string | null
+    platform:     string
+    status:       string
+    sent_at:      string | null
+    created_at:   string
+  }>
 }
 
 const OCCASIONS = [
@@ -160,8 +177,38 @@ export function ReputationPanel({
   clients       = [],
   reviews       = [],
   recentClosings = [],
+  reviewRequests = [],
 }: ReputationPanelProps) {
   const [isPending, startTransition] = useTransition()
+
+  // ── Logged review requests: send / status ─────────────────────────────────
+  // Rows start life as status 'pending' with sent_at null. sendReviewRequest
+  // dispatches through the SMS gate (consent / DNC / quiet hours still apply)
+  // and stamps status 'sent'. Locally we track which ids this session has sent
+  // so the row updates without a full reload; the server row is the truth.
+  const [sentRequestIds, setSentRequestIds] = useState<Set<string>>(new Set())
+  const [sendingRequestId, setSendingRequestId] = useState<string | null>(null)
+
+  async function handleSendReviewRequest(requestId: string, platform: string) {
+    setSendingRequestId(requestId)
+    try {
+      const result = await sendReviewRequest(requestId, platform)
+      // sendReviewRequest RETURNS { success:false, error } for an
+      // unauthenticated caller, a cross-brokerage request or an unreadable
+      // row. Marking the row sent on a refusal would claim an outbound
+      // message the contact never received.
+      if ((result as { success?: boolean })?.success === false) {
+        toast.error((result as { error?: string }).error ?? "The review request was not sent.")
+        return
+      }
+      setSentRequestIds(prev => new Set(prev).add(requestId))
+      toast.success("Review request sent")
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "The review request was not sent.")
+    } finally {
+      setSendingRequestId(null)
+    }
+  }
 
   // ── Shared ──────────────────────────────────────────
   const [copiedId, setCopiedId] = useState<string | null>(null)
@@ -660,6 +707,60 @@ export function ReputationPanel({
               <Button variant="outline" className="w-full" disabled={isPending} onClick={handleExtractTestimonials}>
                 <Sparkles className="w-4 h-4 mr-2" />Extract Testimonials from Reviews
               </Button>
+            </CardContent>
+          </Card>
+
+          {/* Logged review requests — the send half of "Log Request". */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm flex items-center gap-2">
+                <Send className="w-4 h-4 text-blue-500" /> Logged Requests
+              </CardTitle>
+              <CardDescription>
+                Requests you have logged. Sending texts the client through the compliance gate —
+                consent, DNC and quiet hours still apply, so a refusal here is a refusal to send.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {reviewRequests.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-6">
+                  Nothing logged yet — use “Request” above, then send it from here.
+                </p>
+              ) : (
+                reviewRequests.slice(0, 10).map((req) => {
+                  const alreadySent = req.status === "sent" || !!req.sent_at || sentRequestIds.has(req.id)
+                  return (
+                    <div
+                      key={req.id}
+                      className="flex items-center justify-between gap-3 p-3 rounded-lg border"
+                    >
+                      <div className="min-w-0">
+                        <p className="font-medium text-sm truncate">{req.contact_name || "Client"}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {req.platform} · logged {new Date(req.created_at).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <Badge variant="outline" className={`text-xs ${statusBadge(alreadySent ? "sent" : req.status)}`}>
+                          {alreadySent ? "sent" : req.status}
+                        </Badge>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={alreadySent || sendingRequestId === req.id}
+                          onClick={() => handleSendReviewRequest(req.id, req.platform)}
+                        >
+                          {sendingRequestId === req.id ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <><Send className="w-4 h-4 mr-1" />Send</>
+                          )}
+                        </Button>
+                      </div>
+                    </div>
+                  )
+                })
+              )}
             </CardContent>
           </Card>
 

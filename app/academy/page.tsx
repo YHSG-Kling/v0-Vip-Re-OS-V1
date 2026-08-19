@@ -7,12 +7,23 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { Textarea } from "@/components/ui/textarea"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Search, Star, Play, FileText, BookOpen, ThumbsUp, TrendingUp, Copy, Route, Brain } from "lucide-react"
 import {
   getAcademyContent,
   getMarketplaceTemplates,
   cloneTemplate,
   getTopContributors,
+  addTemplateFeedback,
+  getTemplateFeedback,
 } from "@/app/actions/academy"
 import { generateLearningPath } from "@/app/actions/ai-training-coaching"
 import { getAgentPointsAndTier } from "@/app/actions/gamification"
@@ -50,6 +61,60 @@ export default function AcademyPage() {
   const [inProgressContent, setInProgressContent] = useState<any[]>([])
   // "My Templates" toggle — flips the marketplace grid to the user's own authored templates
   const [showMineOnly, setShowMineOnly] = useState(false)
+
+  // ── Template feedback (marketplace reviews) ──────────────────────────────
+  // The Community tab's "Recent Feedback" card used to be a hardcoded empty
+  // state, and nothing ever called the write half either — template_feedback
+  // had no reader and no writer on any surface. Both halves are wired here:
+  // a review composer on each template card (addTemplateFeedback) and the
+  // selected template's reviews in the Community tab (getTemplateFeedback).
+  const [feedbackTemplate, setFeedbackTemplate] = useState<{ id: string; name: string } | null>(null)
+  const [feedbackRating, setFeedbackRating] = useState(5)
+  const [feedbackComment, setFeedbackComment] = useState("")
+  const [feedbackSaving, setFeedbackSaving] = useState(false)
+  // Which template the Community tab's feedback list is showing, and its rows.
+  const [feedbackFor, setFeedbackFor] = useState<{ id: string; name: string } | null>(null)
+  const [feedbackRows, setFeedbackRows] = useState<any[]>([])
+  const [feedbackLoading, setFeedbackLoading] = useState(false)
+
+  async function loadTemplateFeedback(template: { id: string; name: string }) {
+    setFeedbackFor(template)
+    setFeedbackLoading(true)
+    try {
+      setFeedbackRows(await getTemplateFeedback(template.id))
+    } finally {
+      setFeedbackLoading(false)
+    }
+  }
+
+  async function handleSubmitFeedback() {
+    if (!feedbackTemplate) return
+    setFeedbackSaving(true)
+    try {
+      // rating carries a CHECK BETWEEN 1 AND 5 — the picker below is the only
+      // way in, so it can never send anything else.
+      const result = await addTemplateFeedback({
+        templateId:   feedbackTemplate.id,
+        feedbackType: feedbackComment.trim() ? "comment" : "upvote",
+        comment:      feedbackComment.trim() || undefined,
+        rating:       feedbackRating,
+      })
+      if ((result as { error?: string }).error) {
+        toast({ title: "Review not saved", description: (result as { error?: string }).error, variant: "destructive" })
+        return
+      }
+      toast({ title: "Review posted", description: `Thanks for reviewing ${feedbackTemplate.name}.` })
+      const posted = feedbackTemplate
+      setFeedbackTemplate(null)
+      setFeedbackComment("")
+      setFeedbackRating(5)
+      // Show it immediately in the Community tab rather than claiming a save
+      // the reader cannot confirm.
+      await loadTemplateFeedback(posted)
+    } finally {
+      setFeedbackSaving(false)
+    }
+  }
 
   useEffect(() => {
     loadViewer()
@@ -308,7 +373,17 @@ export default function AcademyPage() {
               </p>
             ) : (
               templates.map((template) => (
-                <TemplateCard key={template.id} template={template} onClone={() => handleCloneTemplate(template.id)} />
+                <TemplateCard
+                  key={template.id}
+                  template={template}
+                  onClone={() => handleCloneTemplate(template.id)}
+                  onReview={() => {
+                    setFeedbackTemplate({ id: template.id, name: template.name })
+                    setFeedbackComment("")
+                    setFeedbackRating(5)
+                  }}
+                  onViewFeedback={() => loadTemplateFeedback({ id: template.id, name: template.name })}
+                />
               ))
             )}
           </div>
@@ -343,11 +418,48 @@ export default function AcademyPage() {
           <Card>
             <CardHeader>
               <CardTitle>Recent Feedback</CardTitle>
+              <CardDescription>
+                {feedbackFor
+                  ? `Reviews of ${feedbackFor.name}`
+                  : "Pick “Read reviews” on any marketplace template to see what other agents said about it."}
+              </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <p className="text-sm text-muted-foreground py-4 text-center">
-                No template feedback yet — clone a template and leave a review to get the conversation started.
-              </p>
+              {feedbackLoading ? (
+                <p className="text-sm text-muted-foreground py-4 text-center">Loading reviews…</p>
+              ) : !feedbackFor ? (
+                <p className="text-sm text-muted-foreground py-4 text-center">
+                  No template selected yet.
+                </p>
+              ) : feedbackRows.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-4 text-center">
+                  No reviews on {feedbackFor.name} yet — clone it and leave one to get the conversation started.
+                </p>
+              ) : (
+                feedbackRows.map((f: any) => (
+                  <div key={f.id} className="rounded-lg border p-3">
+                    <div className="flex items-center gap-1 mb-1">
+                      {[1, 2, 3, 4, 5].map((n) => (
+                        <Star
+                          key={n}
+                          className={
+                            n <= (f.rating ?? 0)
+                              ? "h-3 w-3 fill-yellow-500 text-yellow-500"
+                              : "h-3 w-3 text-muted-foreground"
+                          }
+                        />
+                      ))}
+                      <span className="ml-2 text-xs text-muted-foreground">
+                        {f.created_at ? new Date(f.created_at).toLocaleDateString() : ""}
+                      </span>
+                    </div>
+                    {/* template_feedback.user_id FKs auth.users, so the action
+                        cannot embed a display name — the review is shown
+                        unattributed rather than with an invented author. */}
+                    <p className="text-sm">{f.comment || <span className="text-muted-foreground italic">Rating only</span>}</p>
+                  </div>
+                ))
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -379,6 +491,54 @@ export default function AcademyPage() {
           <EmbeddedLeaderboardWidget agentId={agentId} />
         </div>
       </div>
+
+      {/* Template review composer — the write half of template_feedback. */}
+      <Dialog open={!!feedbackTemplate} onOpenChange={(open) => !open && setFeedbackTemplate(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Review {feedbackTemplate?.name}</DialogTitle>
+            <DialogDescription>
+              Marketplace templates are shared across brokerages, so your review is visible to every
+              signed-in agent browsing this template.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="flex items-center gap-1">
+              {[1, 2, 3, 4, 5].map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  aria-label={`${n} star${n === 1 ? "" : "s"}`}
+                  onClick={() => setFeedbackRating(n)}
+                  className="p-1"
+                >
+                  <Star
+                    className={
+                      n <= feedbackRating
+                        ? "h-5 w-5 fill-yellow-500 text-yellow-500"
+                        : "h-5 w-5 text-muted-foreground"
+                    }
+                  />
+                </button>
+              ))}
+            </div>
+            <Textarea
+              rows={4}
+              placeholder="What worked, what you changed, who it suits…"
+              value={feedbackComment}
+              onChange={(e) => setFeedbackComment(e.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setFeedbackTemplate(null)} disabled={feedbackSaving}>
+              Cancel
+            </Button>
+            <Button onClick={handleSubmitFeedback} disabled={feedbackSaving}>
+              {feedbackSaving ? "Posting…" : "Post review"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -440,7 +600,7 @@ function ResourceCard({ type, title, author, views, estimatedMinutes, onOpen }: 
 }
 
 // Component: Template Card
-function TemplateCard({ template, onClone }: any) {
+function TemplateCard({ template, onClone, onReview, onViewFeedback }: any) {
   return (
     <Card className="flex flex-col">
       <CardHeader>
@@ -467,6 +627,16 @@ function TemplateCard({ template, onClone }: any) {
             <Star className="h-3 w-3 fill-yellow-500 text-yellow-500" />
             <span>{template.average_rating?.toFixed(1) || "N/A"}</span>
           </div>
+        </div>
+        <div className="mt-3 flex items-center gap-2">
+          <Button size="sm" variant="outline" className="text-xs h-7" onClick={onReview}>
+            <Star className="mr-1 h-3 w-3" />
+            Review
+          </Button>
+          <Button size="sm" variant="ghost" className="text-xs h-7" onClick={onViewFeedback}>
+            <ThumbsUp className="mr-1 h-3 w-3" />
+            Read reviews
+          </Button>
         </div>
       </CardContent>
       <CardFooter className="flex items-center justify-between">

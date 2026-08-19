@@ -38,6 +38,7 @@ import {
   getContentCalendar,
   getPublishingStats,
   getSavedIdeas,
+  saveContentIdea,
 } from "@/app/actions/content-studio"
 import { checkContentCompliance } from "@/app/dashboard/marketing/studio/components/ad-os/ad-os-actions"
 import { aiWriteNewsletterContent, aiGenerateSubjectLines, getNewsletters } from "@/app/actions/ai-newsletter"
@@ -68,6 +69,13 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
   const [isInitializing, setIsInitializing] = useState(true)
   const [contentIdeas, setContentIdeas] = useState<any[]>([])
   const [savedIdeas, setSavedIdeas] = useState<any[]>([])
+  // ── SAVE YOUR OWN IDEA ──────────────────────────────────────────────────────
+  // The Saved Ideas shelf could only ever fill from the AI generator: there was
+  // no way to write down an idea of your own. saveContentIdea is the writer that
+  // was already there — this is its verb.
+  const [newIdeaText, setNewIdeaText] = useState("")
+  const [newIdeaType, setNewIdeaType] = useState("social_post")
+  const [isSavingIdea, setIsSavingIdea] = useState(false)
   const [keywords, setKeywords] = useState<any[]>([])
   const [competitors, setCompetitors] = useState<any[]>([])
   const [calendar, setCalendar] = useState<any[]>([])
@@ -248,6 +256,25 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
     const result = await generateContentIdeas("general", userId, userRole)
     if (result.success && result.ideas) {
       setContentIdeas(result.ideas)
+    }
+  }
+
+  async function handleSaveIdea() {
+    const text = newIdeaText.trim()
+    if (!text) return
+    setIsSavingIdea(true)
+    try {
+      const saved = await saveContentIdea(text, newIdeaType)
+      // The action returns the inserted row (or throws). Prepending the row it
+      // actually wrote — rather than the text we typed — means the shelf shows
+      // what is in the database, not what we hoped went in.
+      if (saved) setSavedIdeas((prev) => [saved, ...prev])
+      setNewIdeaText("")
+      toast.success("Idea saved")
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not save that idea")
+    } finally {
+      setIsSavingIdea(false)
     }
   }
 
@@ -899,11 +926,49 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
                   <CardDescription>Your bookmarked content concepts</CardDescription>
                 </CardHeader>
                 <CardContent className="pt-6 space-y-3">
+                  <div className="flex flex-col gap-2 rounded-lg border p-3 bg-slate-50">
+                    <Textarea
+                      value={newIdeaText}
+                      onChange={(e) => setNewIdeaText(e.target.value)}
+                      placeholder="Write down an idea of your own…"
+                      rows={2}
+                      disabled={isSavingIdea}
+                    />
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={newIdeaType}
+                        onChange={(e) => setNewIdeaType(e.target.value)}
+                        disabled={isSavingIdea}
+                        className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                      >
+                        <option value="social_post">Social post</option>
+                        <option value="video">Video</option>
+                        <option value="blog">Blog</option>
+                        <option value="tool">Tool</option>
+                      </select>
+                      <Button
+                        size="sm"
+                        onClick={handleSaveIdea}
+                        disabled={isSavingIdea || !newIdeaText.trim()}
+                        className="gap-2"
+                      >
+                        {isSavingIdea ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                        Save idea
+                      </Button>
+                    </div>
+                  </div>
                   {savedIdeas.length > 0 ? (
                     savedIdeas.map((idea) => (
                       <Card key={idea.id} className="hover:shadow-md transition-shadow">
                         <CardContent className="pt-6">
-                          <p className="leading-relaxed text-slate-700">{idea.idea_text}</p>
+                          {/* content_ideas carries title + description (live
+                              schema). `idea_text` is not a column on this table
+                              and never was, so this panel rendered blank cards
+                              for every saved idea. */}
+                          <p className="leading-relaxed text-slate-700">{idea.title}</p>
+                          {idea.description && (
+                            <p className="text-xs text-slate-500 mt-1">{idea.description}</p>
+                          )}
                         </CardContent>
                       </Card>
                     ))

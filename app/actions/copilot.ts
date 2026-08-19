@@ -754,7 +754,18 @@ export async function analyzeContactPriority(contactId: string) {
   }
 
   // Timeline urgency
-  if (contact.timeline === "asap" || contact.timeline === "urgent") {
+  //
+  // REPOINTED to the one timeline vocabulary (constants/crm-standards.ts:
+  // STANDARD_TIMELINES). This tested "asap" and "urgent" — a private
+  // two-token spelling of `contacts.timeline` that NO writer of that column has
+  // ever produced. `contacts.timeline` is written by
+  // lib/contact-promotion/contact-creator.ts:137, which copies `leads.timeline`
+  // across verbatim, so the two columns share one vocabulary and this test now
+  // uses it. `12+_months` and `researching` are deliberately NOT urgent.
+  if (
+    contact.timeline === "immediate" ||
+    contact.timeline === "1-3_months"
+  ) {
     score += 25
     factors.push("Urgent timeline")
   }

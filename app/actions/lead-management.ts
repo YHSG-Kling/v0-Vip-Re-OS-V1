@@ -5,7 +5,6 @@ import { isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
 import { getAgentContext } from "@/lib/identity"
 import {
   serviceGetLeads,
-  serviceGetLead,
   serviceEnrichLead,
   serviceRejectLead,
   serviceImportLeads,
@@ -78,19 +77,37 @@ export async function getLeadsAdmin(params?: {
   }
 }
 
-export async function getLead(id: string) {
-  try {
-    if (!id) return { success: false, error: "ID is required", lead: null }
-    const gate = await requireLeadDesk()
-    if (!gate.ok) return { success: false, error: gate.error, lead: null }
-    const { agentId, brokerageId } = await getAgentContext()
-    if (!brokerageId) return { success: false, error: "Missing brokerage context", lead: null }
-    const lead = await serviceGetLead((agentId ?? null) as any, brokerageId, id)
-    return { success: true, lead }
-  } catch (error) {
-    return { success: false, error: String(error), lead: null }
-  }
-}
+// ── DELETED: getLead(id) ────────────────────────────────────────────────────
+//
+// DUPLICATE, and the broken one of the pair. The survivor is
+// app/actions/leads.ts:87 `getLeadById`, which is LIVE —
+// app/dashboard/isa/components/isa-lead-queue-panel.tsx:156 reads every lead
+// detail through it.
+//
+// Why the survivor is the survivor, not just the one with a caller:
+//   · SCOPE. getLeadById filters `.eq("brokerage_id", …)` only. This one went
+//     through serviceGetLead, which additionally filters
+//     `.eq("agent_id", agentId)` with agentId from getAgentContext(). The
+//     roster this file gates for is admin / broker / broker_owner /
+//     broker_admin + platform staff — brokerage-level seats that by policy are
+//     NOT agents and generally have no `agents` row. So agentId was null for
+//     exactly the people allowed to call it, producing `agent_id=eq.null` on
+//     the wire, which matches nothing. It could only ever have returned a lead
+//     for a caller who was simultaneously on the lead desk AND the lead's own
+//     assigned agent.
+//   · FAILURE MODE. serviceGetLead uses `.single()` and THROWS on the empty
+//     result, so the miss above surfaced as a caught exception stringified into
+//     `error`. getLeadById uses `.maybeSingle()` and returns
+//     { success:false, error, lead:null }.
+//
+// NOT CARRIED FORWARD, deliberately and named rather than silently dropped:
+// this wrapper's gate admitted PLATFORM STAFF (isPlatformStaffIdentity over
+// users.platform_role) and getLeadById's assertISARole roster does not — it is
+// admin / broker / broker_owner / broker_admin / isa. Widening an access roster
+// is an owner ruling, not a merge, and the two files encode two deliberately
+// different policies (this file's header excludes `isa`; leads.ts includes it).
+// The live surface that genuinely needs platform-staff reach, /app/leads, goes
+// through `getLeadsAdmin` below, which keeps that admission.
 
 export async function enrichLead(leadId: string) {
   try {

@@ -601,26 +601,25 @@ export async function getPendingQuoteApprovalsAction(transactionId: string) {
 }
 
 // ─── GET INSPECTIONS ───────────────────────────────────────────────────────────
-
-export async function getInspectionsAction(transactionId: string) {
-  const auth = await requireCallerForBrokerage()
-  if (!auth.ok) return { success: false, error: auth.error, data: [] }
-
-  if (!(await verifyTransactionInBrokerage(transactionId, auth.brokerageId))) {
-    return { success: false, error: "Transaction not found in your brokerage", data: [] }
-  }
-
-  const supabase = await createClient()
-
-  const { data, error } = await supabase
-    .from("transaction_inspections")
-    .select("*")
-    .eq("transaction_id", transactionId)
-    .order("created_at", { ascending: false })
-
-  if (error) {
-    return { success: false, error: error.message, data: [] }
-  }
-
-  return { success: true, data: data ?? [] }
-}
+//
+// TOMBSTONE: `getInspectionsAction(transactionId)` — DELETED as a duplicate.
+// SURVIVOR: app/dashboard/transactions/[id]/page.tsx:298 — the same query, field
+// for field (`transaction_inspections` select * where transaction_id, ordered
+// created_at desc), run in the page's parallel data fetch and handed to
+// TransactionDetailClient as the `inspections` prop. That is the ONE surface
+// that renders inspections, and every mutation in this file ends in
+// `revalidatePath("/dashboard/transactions/{id}")` + a client `router.refresh()`,
+// so the page re-runs its own read — this export could never be the fresher one.
+//
+// NOTHING WAS LOST IN THE MERGE. The only thing this export carried that the
+// survivor lacks is its brokerage guard, and the survivor already proves strictly
+// more before it reads: page.tsx:89-90 fetches the transaction with
+// `.eq("brokerage_id", brokerageId)` and 404s otherwise, then page.tsx:108-111
+// additionally requires the caller to be the owning agent (resolved through
+// agents.id, not users.id) or broker/admin/tc. The reader also runs on the
+// RLS-scoped client rather than a service client.
+//
+// It was also one more ungated-by-nothing `"use server"` endpoint: a public HTTP
+// entry point over another tenant's inspection schedule, inspector contact
+// details and costs, reachable with only a transaction uuid had the guard ever
+// been weakened.

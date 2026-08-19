@@ -273,134 +273,39 @@ Create:
   }
 }
 
-/**
- * Generate property brochure content
- */
-export async function generateBrochureContent(params: {
-  agentId: string
-  listingId: string
-  brochureType: "luxury" | "standard" | "investment" | "new_construction"
-}) {
-  const auth = await requireCaller()
-  if (!auth.ok) return { success: false, error: auth.error }
-
-  if (!isValidUUID(params.agentId) || !isValidUUID(params.listingId)) {
-    return { success: false, error: "Invalid IDs" }
-  }
-
-  const supabase = await createClient()
-
-  try {
-    const { data: listing } = await supabase
-      .from("listings")
-      .select("*")
-      .eq("id", params.listingId)
-      .eq("brokerage_id", auth.brokerageId)
-      .single()
-    if (!listing) return { success: false, error: "Listing not found in your brokerage" }
-
-    // TENANT SCOPE + narrowed projection. The listing read above was already
-    // pinned to the caller's brokerage; this one was not, so a caller-supplied
-    // `agentId` selected `*` from ANY brokerage's `agents` row and the contact
-    // details off it were written into the brochure and into the model prompt.
-    // Only the four identity fields are ever used, so only those are selected —
-    // `select("*")` on a table this wide is how columns nobody intended to
-    // expose end up in an LLM context window.
-    //
-    // IDENTITY LIVES ON `users`, NOT `agents`. Verified against the live schema:
-    // `agents` has no first_name / last_name / email / phone at all — the name
-    // and email are on `users` (reached via agents.user_id) and the phone is
-    // `agents.phone_mobile` / `phone_office`. The original `select("*")` hid
-    // this: every `agent?.first_name` resolved to `undefined`, so the brochure's
-    // agent section has always been built from "undefined undefined" with no
-    // phone and no email, and the prompt said so to the model. This is the same
-    // embed shape the rest of the tree already uses (see
-    // app/actions/ai-listing-packet.ts and app/actions/home-value.ts).
-    //
-    // `.single()` → `.maybeSingle()`: a missing agent is an answer, not a throw.
-    const { data: agent } = await supabase
-      .from("agents")
-      .select("phone_mobile, phone_office, users(first_name, last_name, email)")
-      .eq("id", params.agentId)
-      .eq("brokerage_id", auth.brokerageId)
-      .maybeSingle()
-
-    // The embed comes back as an object (or an array, depending on how PostgREST
-    // resolves the relationship), so normalise before reading.
-    const agentUser = (Array.isArray(agent?.users) ? agent?.users[0] : agent?.users) as
-      | { first_name?: string | null; last_name?: string | null; email?: string | null }
-      | undefined
-    const agentName = [agentUser?.first_name, agentUser?.last_name].filter(Boolean).join(" ")
-
-    const { object: brochure } = await generateObject({
-      model: resolveModel("openai/gpt-4o"),
-      schema: z.object({
-        headline: z.string(),
-        tagline: z.string(),
-        propertyDescription: z.object({
-          opening: z.string(),
-          features: z.string(),
-          lifestyle: z.string(),
-          neighborhood: z.string(),
-          closing: z.string()
-        }),
-        featureHighlights: z.array(z.object({
-          feature: z.string(),
-          description: z.string(),
-          icon: z.string()
-        })),
-        quickFacts: z.array(z.object({
-          label: z.string(),
-          value: z.string()
-        })),
-        floorplanDescription: z.string().optional(),
-        neighborhoodHighlights: z.array(z.string()),
-        schoolInfo: z.array(z.object({
-          name: z.string(),
-          type: z.string(),
-          rating: z.string()
-        })).optional(),
-        callToAction: z.string(),
-        agentSection: z.object({
-          intro: z.string(),
-          credentials: z.array(z.string())
-        }),
-        disclaimers: z.array(z.string())
-      }),
-      prompt: `Create brochure content:
-
-Listing:
-${JSON.stringify(listing || {}, null, 2)}
-
-Agent:
-${JSON.stringify(
-  {
-    name:  agentName || "the listing agent",
-    phone: agent?.phone_mobile ?? agent?.phone_office ?? null,
-    email: agentUser?.email ?? null,
-  },
-  null,
-  2,
-)}
-
-Brochure Type: ${params.brochureType}
-
-Create compelling content for:
-1. Headline and tagline
-2. Multi-paragraph property description
-3. Feature highlights
-4. Quick facts
-5. Neighborhood highlights
-6. Call to action
-7. Agent section`
-    })
-
-    return {
-      success: true,
-      brochure
-    }
-  } catch (error) {
-    console.error("[v0] Generate brochure content error:", error)
-    return handleError(error, "generateBrochureContent")
-  }
-}
+/* ─────────────────────────────────────────────────────────────────────────────
+ * TOMBSTONE — `generateBrochureContent` was REMOVED (orphan burn-down, Lane A).
+ *
+ * SURVIVOR: `lib/documents/listing-brochure.ts` — `runListingBrochures` (line 91)
+ * with `listingBrochureSpec` (line 50). It is wired and autonomous: the daily
+ * video-plays cron runs it (app/api/cron/video-plays/route.ts:50) and the Jobs
+ * kernel's "Launch full listing kit" play runs it on demand
+ * (lib/kernel/jobs.ts:102). This function had no caller anywhere.
+ *
+ * NOTHING WAS MERGED, because the survivor already covers every section this
+ * produced and does three things this could not:
+ *
+ *   · IT PRODUCES THE ACTUAL ARTEFACT. The survivor lays out a multi-page PDF —
+ *     brand cover, hero spread, facts table, highlights, photo gallery, agent
+ *     page — hosts it on storage through produceClientDocument, records it in
+ *     generated_documents, and notifies the agent with the print-ready link.
+ *     This function returned a JSON blob to its caller and persisted nothing, so
+ *     even with a caller there would have been no brochure at the end of it.
+ *   · ITS COPY IS GROUNDED AND GATED. The survivor's narrative goes through
+ *     generatePersonaCopy on the compliance-gated copy rail, built ONLY from the
+ *     listing's own remarks and facts, with those remarks as a deterministic
+ *     fallback. This function asked a model for `neighborhoodHighlights` and a
+ *     `schoolInfo[]` carrying a per-school `rating` — invented school ratings
+ *     printed beside a real address, on a leave-behind, is a Fair Housing and
+ *     accuracy hazard, not a missing feature.
+ *   · IT IS IDEMPOTENT. One brochure per listing, keyed on generated_documents,
+ *     so a re-run cannot produce a second conflicting piece.
+ *
+ * NOT CARRIED, AND SAID PLAINLY: the survivor has no equivalent of this
+ * function's `brochureType` tone variants (luxury / standard / investment /
+ * new_construction) — its narrative prompt is fixed at "editorial, magazine
+ * tone". That is a real gap and a worthwhile follow-up on
+ * lib/documents/listing-brochure.ts, but it is a one-line prompt input on the
+ * survivor, not a reason to keep a second brochure generator that produces no
+ * brochure.
+ * ───────────────────────────────────────────────────────────────────────────── */

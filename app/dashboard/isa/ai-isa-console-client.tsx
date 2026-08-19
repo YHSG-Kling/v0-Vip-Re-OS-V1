@@ -2,6 +2,7 @@
 
 import { useMemo, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
+import { IsaEngagementStatusSheet } from './components/isa-engagement-status-sheet'
 import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
 import Link from 'next/link'
@@ -672,6 +673,15 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
                             Open Record
                           </Link>
                         </Button>
+
+                        {/* THE READ SIDE. This console could dispatch email, calls
+                            and direct mail through initiateAIISAEngagement and had
+                            no way to show what had already been sent to the same
+                            lead — getAIISAEngagementStatus had no caller anywhere. */}
+                        <IsaEngagementStatusSheet
+                          leadId={item.id}
+                          leadName={[item.first_name, item.last_name].filter(Boolean).join(' ') || item.email || 'This lead'}
+                        />
 
                         {/* AI Call Now — Twilio-native outbound via /api/voice/initiate-call.
                             Disabled up-front when the brokerage cannot place AI

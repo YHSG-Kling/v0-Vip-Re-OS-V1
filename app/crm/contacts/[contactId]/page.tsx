@@ -12,6 +12,12 @@ import { InvestorDealsPanel }        from "@/components/contact/investor-deals-p
 import { BuyerBrokerAgreementPanel } from "@/components/contact/buyer-broker-agreement-panel"
 import { WorkflowRunsPanel }         from "./components/workflow-runs-panel"
 import { EnrichmentPanel }          from "./components/enrichment-panel"
+import { FollowupCard }            from "./components/followup-card"
+import { CampaignBundleSendCard, type BundleOption } from "./components/campaign-bundle-send-card"
+import { listCampaignBundles }      from "@/app/actions/campaign-bundles"
+import { AgentActionDispositionQueue } from "@/app/components/agent/AgentActionDispositionQueue"
+import { getAgentPortalStream }     from "@/app/actions/portal-stream"
+import { getInboxMessages }         from "@/app/actions/inbox"
 import { assertCanActOnContact }    from "@/lib/auth/contact-access"
 import { getBuyerTours }             from "@/app/actions/tour-planner"
 import { getBuyerJourney, getBuyerUpdateHistory } from "@/app/actions/buyer-execution"
@@ -268,6 +274,45 @@ export default async function ContactDetailPage({ params }: PageProps) {
     ? (showingRec!.suggested_order as unknown[]).filter((s): s is string => typeof s === "string")
     : []
 
+  // ── THIS CONTACT'S PORTAL EVENT STREAM + UNIFIED MESSAGE THREAD ────────────
+  //
+  // Two agent-facing reads that existed with no caller anywhere in the tree:
+  //
+  //   · getAgentPortalStream({ contactId }) — the agent view of
+  //     portal_event_stream (agent_copy + suggested action + disposition
+  //     state). Its sibling getOpenAgentActions is mounted on the agent
+  //     dashboard as a BROKERAGE-WIDE queue, and <AgentActionDispositionQueue>
+  //     documents a `compact` mode "used inside a contact's CRM panel" that
+  //     nothing rendered. This is that panel: the same three-way disposition,
+  //     scoped to the one contact whose record you are looking at.
+  //
+  //   · getInboxMessages({ contactId }) — the kernel's universal inbox merged
+  //     across messages / client_portal_messages / voice_calls / chat /
+  //     vendor / ISA lanes for ONE contact. Nothing read it; the app-shell
+  //     inbox slide-out reads `conversations` directly and covers only the
+  //     conversation-threaded channels.
+  //
+  // Both actions gate themselves (session + the contact must be in the
+  // caller's brokerage) and RETURN their refusals, so a refusal is reported
+  // rather than rendered as an empty stream.
+  const [portalStreamResult, contactInboxResult, bundlesResult] = await Promise.all([
+    getAgentPortalStream({ contactId, limit: 25 }),
+    getInboxMessages({ contactId, limit: 25 }),
+    // Saved campaign bundles the caller may dispatch. The action resolves the
+    // caller's own agent/team/brokerage policy scope, so this list is already
+    // narrowed to bundles they are allowed to see.
+    listCampaignBundles(),
+  ])
+  const portalStreamRows = portalStreamResult.success ? (portalStreamResult.rows ?? []) : []
+  const portalStreamError = portalStreamResult.success ? null : (portalStreamResult.error ?? "Portal stream unavailable")
+  const contactMessages = contactInboxResult.success ? (contactInboxResult.messages ?? []) : []
+  const contactInboxError = contactInboxResult.success ? null : (contactInboxResult.error ?? "Messages unavailable")
+  const sendableBundles: BundleOption[] = bundlesResult.success
+    ? bundlesResult.bundles
+        .filter((b) => b.is_active && b.items.length > 0)
+        .map((b) => ({ id: b.id, name: b.name, description: b.description, stepCount: b.items.length }))
+    : []
+
   return (
     <div className="flex flex-col h-full min-h-screen bg-background">
       {/* Route parity: explicit cross-link to the full CRM workspace (portal /
@@ -327,11 +372,94 @@ export default async function ContactDetailPage({ params }: PageProps) {
         />
       </div>
 
+      {/* This contact's portal event stream — the agent side (agent_copy,
+          suggested action, disposition state), with the same Done / Do now /
+          AI do it / Dismiss controls the dashboard queue uses. */}
+      <div className="px-4 pt-3">
+        {portalStreamError ? (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Portal activity</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-destructive">
+                This contact&apos;s portal stream could not be read, so nothing below is a reading of
+                it: {portalStreamError}
+              </p>
+            </CardContent>
+          </Card>
+        ) : portalStreamRows.length > 0 ? (
+          <AgentActionDispositionQueue
+            rows={portalStreamRows}
+            compact
+            title="Portal activity for this contact"
+          />
+        ) : null}
+      </div>
+
+      {/* Unified message thread for this contact — every channel the kernel
+          merges (sms / email / voice / portal / chat / vendor / AI ISA), not
+          just the conversation-threaded ones. Read-only here; replies go
+          through the inbox, which this links to. */}
+      <div className="px-4 pt-3">
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Messages</CardTitle>
+            <CardDescription>
+              Every channel on record for this contact, newest first
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {contactInboxError ? (
+              <p className="text-sm text-destructive">
+                Messages could not be loaded, so this is not a reading of the thread:{" "}
+                {contactInboxError}
+              </p>
+            ) : contactMessages.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No messages on record yet.</p>
+            ) : (
+              <ol className="space-y-2">
+                {contactMessages.slice(0, 12).map((m) => (
+                  <li key={`${m.source_table}-${m.id}`} className="rounded-lg border px-3 py-2">
+                    <div className="flex flex-wrap items-baseline gap-2">
+                      <Badge variant="outline" className="text-[11px]">{m.channel}</Badge>
+                      <span className="text-xs text-muted-foreground">
+                        {m.direction === "inbound" ? "from contact" : "to contact"}
+                      </span>
+                      <span className="ml-auto text-xs text-muted-foreground">
+                        {new Date(m.created_at).toLocaleString()}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-sm line-clamp-3">{m.body}</p>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
       {/* Chain runs against this contact — the orchestrator's contact-card surface.
           Without it a run paused on an approval gate had no way to be approved,
           and a failed run no way to be resumed or cancelled. */}
       <div className="px-4 pt-3">
         <WorkflowRunsPanel contactId={contactId} />
+      </div>
+
+      {/* Dispatch a saved multi-channel campaign bundle at this contact — the
+          send side of the bundle builder, which had none. */}
+      <div className="px-4 pt-3">
+        <CampaignBundleSendCard contactId={contactId} bundles={sendableBundles} />
+      </div>
+
+      {/* Stated future re-contact date — the suppression the reactivation
+          cadences already check for and nothing could set. */}
+      <div className="px-4 pt-3">
+        <FollowupCard
+          contactId={contactId}
+          initialFollowupAt={contact.next_followup_at ?? null}
+          initialReason={contact.next_followup_reason ?? null}
+        />
       </div>
 
       {/* Enrichment + detected life changes. The enrichment lane has always

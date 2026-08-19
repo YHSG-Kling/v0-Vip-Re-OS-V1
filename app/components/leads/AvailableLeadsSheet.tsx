@@ -14,6 +14,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Zap, Loader2, UserCheck } from "lucide-react"
 import { toast } from "sonner"
 import { listUnassignedLeads, claimLead } from "@/app/actions/lead-lifecycle"
+import { claimLeadAction } from "@/app/actions/lead-assignment/assign-lead"
 import { formatDistanceToNow } from "date-fns"
 
 interface Lead {
@@ -81,6 +82,29 @@ export function AvailableLeadsSheet({
     try {
       const result = await claimLead({ leadId: lead.id, agentId, brokerageId })
       if (result.success) {
+        // ── CLOSE OUT THE HANDOFF RECORD ────────────────────────────────────
+        // `claimLead` above moves the LEAD (leads.agent_id + lead_stage). It
+        // does not touch `assignment_log`, whose `claimed` flag is what the
+        // daily briefing, the ISA overnight digest and the team-lead brief read
+        // as "this handoff is still awaiting first touch". claimLeadAction is
+        // the only writer that flips it (and the only thing that emits
+        // LEAD_CLAIMED); without this call every handoff stayed unclaimed
+        // forever on all three surfaces.
+        //
+        // Best-effort on purpose: a lead claimed straight from the open pool
+        // may have no assignment_log row at all, which comes back as
+        // "already_claimed". The lead HAS moved by this point, so a bookkeeping
+        // miss must not be reported to the agent as a failed claim — it is
+        // logged instead.
+        try {
+          const claimLog = await claimLeadAction(lead.id)
+          if (!claimLog.success && claimLog.reason !== "already_claimed") {
+            console.warn("[AvailableLeadsSheet] handoff not marked claimed:", claimLog.reason)
+          }
+        } catch (logErr) {
+          console.warn("[AvailableLeadsSheet] handoff not marked claimed:", logErr)
+        }
+
         // Optimistic removal from pool
         setLeads((prev) => prev.filter((l) => l.id !== lead.id))
         onLeadClaimed(lead.id)

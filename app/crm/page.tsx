@@ -114,6 +114,7 @@ import {
   SmartNoteComposer,
   BuyerMatchPanel,
   QualificationSummaryCard,
+  ConversionForecastPanel,
   type IsaHandoffBriefShape,
 } from "./components/os"
 
@@ -1745,6 +1746,12 @@ export default function CRMPage() {
                       onOpenPortal={() => router.push(`/portal/${selectedContactId}`)}
                       onCreateOffer={() => setOfferWizardOpen(true)}
                     />
+
+                    {/* CONVERSION FORECAST. aiPredictConversion writes
+                        contacts.ai_conversion_probability and
+                        ai_predicted_close_date — both real columns, no other
+                        writer, and until now no reader and no caller either. */}
+                    <ConversionForecastPanel contactId={selectedContactId} />
 
                     {/* Value delivered + Timeline context — combined into a single grid */}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

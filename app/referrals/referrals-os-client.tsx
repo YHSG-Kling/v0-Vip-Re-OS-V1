@@ -17,6 +17,8 @@ import {
   ReferralPipelinePanel,
   AdvocacyActionStack,
   ReviewRequestPanel,
+  ReputationRecoveryPanel,
+  ReferralProgramHealthPanel,
   GratitudeGiftingPanel,
   ReferralAiDraftingPanel,
   RepeatBusinessPanel,
@@ -51,6 +53,8 @@ interface ExistingReview {
   platform: string
   rating: number
   review_text: string
+  /** From agent_reviews.contact_id — the client the recovery plan is built for. */
+  contact_id?: string | null
 }
 
 interface Anniversary {
@@ -267,6 +271,20 @@ export function ReferralsOsClient({
           existingReviews={existingReviews || []}
         />
       </div>
+
+      {/* SERVICE RECOVERY. ReviewRequestPanel above answers a bad review with a
+          PUBLIC REPLY; aiCreateRecoveryPlan is what to do for the CLIENT, and it
+          had no caller anywhere. aiSetupReviewMonitoring sets which reviews
+          qualify — it had no caller and no reader either. */}
+      <ReputationRecoveryPanel
+        agentId={agentId}
+        existingReviews={existingReviews || []}
+      />
+
+      {/* PROGRAM HEALTH. Every other referral surface is about ONE relationship;
+          analyzeReferralProgram is the only read of the book as a program, and it
+          reached no screen. */}
+      <ReferralProgramHealthPanel />
 
       {/* Appreciation + Gifting — one contact, so only with one selected. */}
       {selectedContact && (

@@ -20,94 +20,41 @@ import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
  * Maintains backward compatibility for existing components
  */
 
-/**
- * Move a contact to a new pipeline stage, and record that it happened.
- *
- * Relationship to `updateContact` (which is the same `updateContactService`
- * passthrough): the stage write itself is shared, so that part is a duplicate.
- * What is NOT duplicated — and is the reason this function survives rather than
- * folding into `updateContact` — is the **stage-change audit row**. A stage move
- * is the one contact edit that means something later (pipeline reporting,
- * conversion timing), so it gets an `activities` entry with the agent's note.
- *
- * THE AUDIT ROW HAD NEVER ONCE BEEN WRITTEN. The insert omitted `brokerage_id`,
- * which is NOT NULL with **no default** on `activities` — verified against the
- * live database, where the exact former payload fails with:
- *
- *   23502: null value in column "brokerage_id" of relation "activities"
- *          violates not-null constraint
- *
- * and the result was never destructured, so the error was discarded and the
- * function returned the successful stage update either way. Every stage change
- * ever made reported a note recorded that does not exist. Fixed rather than
- * ported as-is: the intent (audit the move) was right, the implementation was
- * not.
- *
- * `agentId` is no longer taken from the caller. This is a "use server" export,
- * i.e. a public endpoint, and the service's ownership check is
- * `.eq("agent_id", params.agentId)` — comparing the contact against whatever id
- * the caller supplied, which checks nothing. It now comes from the session.
- * `agents.id` and `users.id` are disjoint spaces here; `ctx.agentId` is
- * `agents.id`, which is what both `contacts.agent_id` and `activities.agent_id`
- * reference (confirmed against the live FKs).
- */
-export async function updateContactStage(params: {
-  contactId: string
-  newStage: string
-  /** Ignored — derived from the session. Kept so existing callers still typecheck. */
-  agentId?: string
-  notes?: string
-}) {
-  try {
-    const ctx = await getAgentContext()
-    if (!ctx.isAuthenticated || !ctx.agentId || !ctx.brokerageId) {
-      return { success: false, error: "Not authenticated" }
-    }
-
-    // Update contact stage using consolidated service
-    const result = await updateContactService({
-      contactId: params.contactId,
-      agentId: ctx.agentId,
-      updates: { stage: params.newStage } as any
-    })
-
-    if (!result.success) {
-      return result
-    }
-
-    if (params.notes) {
-      const supabase = await createClient()
-      const { error: activityError } = await supabase.from("activities").insert({
-        brokerage_id:  ctx.brokerageId,   // NOT NULL, no default — the omission that broke this
-        entity_type:   "contact",         // NOT NULL (defaults to 'unknown' — name it properly)
-        entity_id:     params.contactId,
-        agent_id:      ctx.agentId,       // agents.id
-        contact_id:    params.contactId,
-        activity_type: "stage_change",
-        title:         `Stage changed to ${params.newStage}`,
-        notes:         params.notes,
-        outcome:       "completed",
-        status:        "completed",
-      })
-      // The stage HAS moved at this point, so don't claim the whole operation
-      // failed — but don't claim the note was recorded when it wasn't, either.
-      if (activityError) {
-        return {
-          ...result,
-          warning: `Stage updated, but the change note was not recorded: ${activityError.message}`,
-        }
-      }
-    }
-
-    revalidatePath("/crm/contacts")
-    revalidatePath(`/crm/contacts/${params.contactId}`)
-    revalidatePath("/dashboard")
-
-    return result
-  } catch (error) {
-    return handleError(error, "updateContactStage")
-  }
-}
+// ── DELETED: updateContactStage ─────────────────────────────────────────────
+//
+// IT COULD NEVER HAVE WORKED, AND THE FUNCTIONALITY LIVES ELSEWHERE.
+//
+// It called updateContactService with `{ stage: params.newStage }`. THERE IS NO
+// `stage` COLUMN ON `contacts` — verified against the live database, whose
+// stage-ish columns are buyer_stage, lifecycle_state, status, nurture_status
+// and credit_pipeline_stage, and none of them is `stage`. The write therefore
+// failed PGRST204 ("column contacts.stage does not exist") on every call, which
+// updateContactService turns into a thrown DatabaseError, so this action's only
+// possible outcomes were the catch block and an error result. No contact stage
+// has ever moved through it. The `as any` on the updates object is what let it
+// compile.
+//
+// WHERE THE JOB LIVES NOW:
+//   · MOVING a contact through the lifecycle:
+//     lib/buyer-lifecycle/lifecycle-logger.ts:53 `emitLifecycleTransition`
+//     → transitionLifecycle → lifecycle_events. That is this function's exact
+//     stated purpose ("move a contact to a new pipeline stage, AND record that
+//     it happened") against tables that exist, and it does it better: from-state
+//     and to-state, actor + authority role, source system, override reason, and
+//     it returns the activity id of the audit row it wrote. Its reader
+//     (getCurrentBuyerState / buyer_lifecycle_current_states) is live.
+//   · EDITING any other contact field: `updateContact` immediately below, the
+//     same updateContactService passthrough this wrapped.
+//
+// NOTHING WAS MERGED FORWARD, because nothing here worked to merge: the stage
+// write was impossible, and the `activities` audit row it wrote alongside is a
+// strictly poorer version of the lifecycle_events row emitLifecycleTransition
+// already writes (which additionally carries from_state and the actor's
+// authority). The free-text `notes` argument has an equivalent in that path's
+// `metadata` / `overrideReason`.
+//
+// Deliberately NOT touched on the way out: nothing here read or wrote
+// `contacts.timeline`, so no timeline vocabulary moved with it.
 
 // Re-export consolidated service functions for backward compatibility
 export async function updateContact(contactId: string, agentId: string, updates: any) {
@@ -482,4 +429,73 @@ export async function findDuplicateContacts(contactId: string): Promise<
 export async function addContactNote(contactId: string, note: string) {
   const { addContactNote: addNoteWithSync } = await import("./communications")
   return addNoteWithSync({ contactId, note })
+}
+
+/**
+ * Record an explicit FUTURE-INTENT re-contact date on a contact.
+ *
+ * "Call me after the school year." Until now the platform had nowhere to put
+ * that: `lib/lead-pipeline/schedule-followup.ts:setEntityFollowup` is the only
+ * writer of `contacts.next_followup_at` / `next_followup_reason` outside the
+ * demo seed, and it had NO CALLER. The READ side has always been live —
+ * `lib/lead-pipeline/reactivation-enroller.ts` calls `followupSuppresses(
+ * c.next_followup_at, now)` on every contact and lead before enrolling them in
+ * a reactivation cadence — so the suppression check ran against a column
+ * nothing could ever set, and a stated future timeline could not stop the
+ * nurture drip from nagging.
+ *
+ * This is the contact-side entry point for it. Gated: the caller must be
+ * authenticated and the contact must be in the caller's brokerage, proved
+ * through the cookie client so RLS applies to the check itself — setEntityFollowup
+ * runs on the service client and filters on `id` alone, so this is the only
+ * tenant boundary on the write.
+ *
+ * The lead-side equivalent is deliberately NOT exposed here: agents work
+ * contacts, not raw leads.
+ */
+export async function scheduleContactFollowup(params: {
+  contactId: string
+  /** ISO timestamp to next reach out. */
+  at: string
+  /** What they said, in their words — shown to the agent when the date comes round. */
+  reason?: string | null
+}): Promise<{ success: boolean; error?: string }> {
+  try {
+    if (!isValidUUID(params.contactId)) {
+      return { success: false, error: "Invalid contact id" }
+    }
+
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Not authenticated" }
+    }
+
+    const supabase = await createClient()
+    const { data: contact, error: scopeError } = await supabase
+      .from("contacts")
+      .select("id")
+      .eq("id", params.contactId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+
+    // supabase-js RESOLVES a refused query, so an unchecked error here would be
+    // indistinguishable from "no such contact" — and both must refuse.
+    if (scopeError) return { success: false, error: "Could not verify that contact" }
+    if (!contact) return { success: false, error: "Contact not found" }
+
+    const { setEntityFollowup } = await import("@/lib/lead-pipeline/schedule-followup")
+    const result = await setEntityFollowup({
+      entity: "contact",
+      id:     params.contactId,
+      at:     params.at,
+      reason: params.reason ?? null,
+    })
+    if (!result.ok) return { success: false, error: result.error ?? "Follow-up not saved" }
+
+    revalidatePath(`/crm/contacts/${params.contactId}`)
+    revalidatePath("/crm/contacts")
+    return { success: true }
+  } catch (error) {
+    return handleError(error, "scheduleContactFollowup") as { success: boolean; error?: string }
+  }
 }

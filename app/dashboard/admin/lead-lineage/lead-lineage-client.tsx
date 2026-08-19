@@ -95,7 +95,17 @@ export const STAGES = [
   { key: 'lifetime',     label: 'Transaction / Lifetime', color: 'bg-green-500' },
 ]
 
-export function deriveLineageStage(lead: Lead): string {
+/**
+ * MODULE-LOCAL (orphan burn-down, lane E): this was `export`ed with no importer
+ * anywhere. Nothing is deleted — it has five live callers inside this file (the
+ * two funnel-gap counts, the per-lead row badge, the stage tally and the stage
+ * filter) — only the export keyword is gone. That matters beyond tidiness here:
+ * this function IS the lineage-stage vocabulary, derived from the lead row
+ * rather than stored, and an exported copy invites a second surface to import it
+ * and render a stage the ledger never recorded. If another surface ever needs
+ * this, the stage belongs in the query that feeds it, not in a client component.
+ */
+function deriveLineageStage(lead: Lead): string {
   if (lead.contacts && lead.contacts.length > 0) {
     return lead.status === 'closed' ? 'lifetime' : 'converted'
   }

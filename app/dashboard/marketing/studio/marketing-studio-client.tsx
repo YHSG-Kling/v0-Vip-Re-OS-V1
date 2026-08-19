@@ -57,6 +57,8 @@ import {
 import {
   getCampaigns,
   createCampaign,
+  updateCampaign,
+  generateCampaignContent,
   getCampaignById,
   transitionCampaignStatus,
   getAssets,
@@ -81,6 +83,7 @@ import {
   type VisibilityScope,
 } from "@/app/actions/marketing-studio"
 import { getMailCampaigns } from "@/app/actions/direct-mail"
+import { getMyMarketingCadencePolicies, type MarketingCadencePolicyRow } from "@/app/actions/marketing-cadence-policy"
 import { createCampaignSequence, createSequenceStep, deleteCampaignSequence } from "@/app/actions/campaign-sequences"
 import { getCampaignRegistry, registerCampaignSource, type ContentSourceItem } from "@/lib/marketing/campaign-registry"
 import { listAvailableQrCodes, type QrLinkInfo } from "@/lib/marketing/qr-asset-linker"
@@ -208,6 +211,16 @@ interface MarketingStudioClientProps {
   brokerageId?: string
   userRole?: string
   initialTab?: string
+}
+
+/**
+ * One line of honest cadence copy. "off"/no row means the cron will never fire
+ * for this channel — said out loud, because silence reads as "it is handled".
+ */
+function describeCadence(label: string, row: MarketingCadencePolicyRow | null): string {
+  if (!row || row.cadence === "off") return `${label}: manual only`
+  const day = row.fire_day !== null && row.fire_day !== undefined ? ` (day ${row.fire_day})` : ""
+  return `${label}: auto ${row.cadence}${day}`
 }
 
 export default function MarketingStudioClient({ userId: userIdProp, agentId: agentIdProp, brokerageId: brokerageIdProp, userRole, initialTab = "overview" }: MarketingStudioClientProps) {
@@ -415,6 +428,36 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
     scheduledEndAt: "",
     visibilityScope: "agent" as VisibilityScope,
   })
+  // ── EDIT A CAMPAIGN ─────────────────────────────────────────────────────────
+  // A campaign's name, budget and flight dates were write-once from this
+  // screen: createCampaign could set them and transitionCampaignStatus could
+  // move the campaign through its lifecycle, but nothing could correct a typo
+  // or a budget. updateCampaign is the writer that was already there.
+  const [editingCampaign, setEditingCampaign] = useState<any | null>(null)
+  const [editCampaign, setEditCampaign] = useState({
+    campaignName: "",
+    budgetTotal: "",
+    scheduledStartAt: "",
+    scheduledEndAt: "",
+  })
+  const [isSavingCampaign, setIsSavingCampaign] = useState(false)
+  // ── AI COPY FOR AN ASSET, IN THE BRAND VOICE ────────────────────────────────
+  // generateCampaignContent grounds the copy in the campaign (name, type, the
+  // linked listing) AND in the brokerage's brand_voice_profile, then runs the
+  // Fair-Housing / Them-First gates before returning. Writing asset copy by
+  // hand in this dialog skipped all of it.
+  // ── YOUR CONTENT HEARTBEAT ──────────────────────────────────────────────────
+  // The newsletter + social cadence crons publish on a schedule the agent set
+  // once, on a Settings page they had to already know about. Nothing on the
+  // marketing surface said whether anything was scheduled to go out at all —
+  // the same gap the blog dashboard closed with getMyBlogCadencePolicy.
+  const [cadence, setCadence] = useState<{
+    newsletter: MarketingCadencePolicyRow | null
+    social: MarketingCadencePolicyRow | null
+  } | null>(null)
+  const [isWritingAsset, setIsWritingAsset] = useState(false)
+  const [assetCopyPrompt, setAssetCopyPrompt] = useState("")
+  const [assetBrandVoice, setAssetBrandVoice] = useState<{ violations: string[]; notes: string[] } | null>(null)
   const [newAsset, setNewAsset] = useState<{
     assetName: string
     assetType: string
@@ -440,6 +483,15 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
 
   useEffect(() => {
     loadInitialData()
+    // A REFUSED read is not "no cadence configured" — leave the state null so
+    // the chip simply does not render, rather than telling the agent nothing is
+    // scheduled when we could not check.
+    getMyMarketingCadencePolicies()
+      .then((r) => {
+        if (!r.success) return
+        setCadence({ newsletter: r.newsletter ?? null, social: r.social ?? null })
+      })
+      .catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -993,6 +1045,103 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
     }
   }
 
+  async function handleSaveCampaignEdits() {
+    if (!editingCampaign) return
+    if (!editCampaign.campaignName.trim()) {
+      toast({ title: "Campaign name is required", variant: "destructive" })
+      return
+    }
+    const budget = editCampaign.budgetTotal.trim()
+    if (budget !== "" && !(Number(budget) >= 0)) {
+      toast({ title: "Budget must be a number", variant: "destructive" })
+      return
+    }
+    if (
+      editCampaign.scheduledStartAt &&
+      editCampaign.scheduledEndAt &&
+      editCampaign.scheduledEndAt < editCampaign.scheduledStartAt
+    ) {
+      toast({ title: "End date cannot be before the start date", variant: "destructive" })
+      return
+    }
+    setIsSavingCampaign(true)
+    const result = await updateCampaign({
+      campaignId: editingCampaign.id,
+      campaignName: editCampaign.campaignName.trim(),
+      ...(budget !== "" ? { budgetTotal: Number(budget) } : {}),
+      scheduledStartAt: editCampaign.scheduledStartAt,
+      scheduledEndAt: editCampaign.scheduledEndAt,
+    })
+    setIsSavingCampaign(false)
+    if (result.success) {
+      setEditingCampaign(null)
+      loadCampaigns()
+      loadInitialData()
+      toast({ title: "Campaign updated" })
+    } else {
+      toast({
+        title: "Could not update the campaign",
+        description: (result as any).error ?? "Unknown error",
+        variant: "destructive",
+      })
+    }
+  }
+
+  async function handleWriteAssetCopy() {
+    if (!newAsset.campaignId) {
+      toast({
+        title: "Pick a campaign first",
+        description: "The copy is written from the campaign's name, type and listing — there is nothing to ground it in otherwise.",
+        variant: "destructive",
+      })
+      return
+    }
+    setIsWritingAsset(true)
+    setAssetBrandVoice(null)
+    try {
+      // Asset type → the copy shape the generator writes. Anything not on this
+      // map is prose for a social-style asset.
+      const contentType: "social_caption" | "email_subject" | "email_body" | "ad_copy" =
+        newAsset.assetType === "ad_creative"
+          ? "ad_copy"
+          : newAsset.assetType === "newsletter"
+            ? "email_body"
+            : "social_caption"
+      const result = await generateCampaignContent({
+        campaignId: newAsset.campaignId,
+        contentType,
+        prompt:
+          assetCopyPrompt.trim() ||
+          `Write the ${newAsset.assetType.replace(/_/g, " ")} copy for "${newAsset.assetName || "this asset"}".`,
+      })
+      if (!result.success || !result.content) {
+        toast({
+          title: "Could not write the copy",
+          description: (result as any).error ?? "The AI writer returned nothing.",
+          variant: "destructive",
+        })
+        return
+      }
+      setNewAsset((prev) => ({ ...prev, previewText: result.content as string }))
+      // Brand-voice findings are SHOWN. A violation the writer flagged and the
+      // screen swallowed is the same as no check at all.
+      if (result.brandVoiceViolations?.length || result.brandVoiceNotes?.length) {
+        setAssetBrandVoice({
+          violations: result.brandVoiceViolations ?? [],
+          notes: result.brandVoiceNotes ?? [],
+        })
+      }
+    } catch (err) {
+      toast({
+        title: "Could not write the copy",
+        description: err instanceof Error ? err.message : "Unknown error",
+        variant: "destructive",
+      })
+    } finally {
+      setIsWritingAsset(false)
+    }
+  }
+
   async function handleCreateAsset() {
     try {
       // The QR preview image is rendered SERVER-SIDE by the vendored `qrcode` package and stored
@@ -1366,6 +1515,15 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                   <p className="text-muted-foreground">
                     Unified command center for campaigns, assets, and content scheduling
                   </p>
+                  {cadence && (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {describeCadence("Newsletter", cadence.newsletter)} ·{" "}
+                      {describeCadence("Social", cadence.social)}{" "}
+                      <a href="/settings/blog-cadence" className="text-violet-700 hover:underline">
+                        Change
+                      </a>
+                    </p>
+                  )}
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -1901,6 +2059,26 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                         >
                           <Eye className="h-4 w-4" />
                         </Button>
+                        {/* Correcting a plan is not the same as moving it through
+                            its lifecycle — a live campaign's own status gate is
+                            handled by transitionCampaignStatus, this only edits
+                            the fields. */}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          aria-label={`Edit ${campaign.campaign_name}`}
+                          onClick={() => {
+                            setEditingCampaign(campaign)
+                            setEditCampaign({
+                              campaignName: campaign.campaign_name ?? "",
+                              budgetTotal: campaign.budget_total != null ? String(campaign.budget_total) : "",
+                              scheduledStartAt: (campaign.scheduled_start_at ?? "").slice(0, 10),
+                              scheduledEndAt: (campaign.scheduled_end_at ?? "").slice(0, 10),
+                            })
+                          }}
+                        >
+                          <Edit className="h-4 w-4" />
+                        </Button>
                       </div>
                     </CardContent>
                   </Card>
@@ -2023,13 +2201,51 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                       </div>
                     ) : (
                       <div className="space-y-2">
-                        <Label>Preview Text</Label>
+                        <div className="flex items-center justify-between gap-2">
+                          <Label>Preview Text</Label>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={handleWriteAssetCopy}
+                            disabled={isWritingAsset || !newAsset.campaignId}
+                            title={
+                              newAsset.campaignId
+                                ? "Write this in your brand voice, grounded in the campaign"
+                                : "Pick a campaign — the copy is written from it"
+                            }
+                          >
+                            {isWritingAsset ? (
+                              <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                            ) : (
+                              <Sparkles className="h-3.5 w-3.5 mr-1" />
+                            )}
+                            Write with AI
+                          </Button>
+                        </div>
+                        <Input
+                          value={assetCopyPrompt}
+                          onChange={(e) => setAssetCopyPrompt(e.target.value)}
+                          placeholder="What should it say? (optional — e.g. 'lead with the price drop')"
+                        />
                         <Textarea
                           value={newAsset.previewText}
                           onChange={(e) => setNewAsset({ ...newAsset, previewText: e.target.value })}
                           placeholder="Brief description..."
                           rows={3}
                         />
+                        {assetBrandVoice && (
+                          <div className="rounded-md border bg-muted/40 p-2 text-xs space-y-1">
+                            {assetBrandVoice.violations.length > 0 && (
+                              <p className="text-amber-700">
+                                Brand voice: {assetBrandVoice.violations.join("; ")}
+                              </p>
+                            )}
+                            {assetBrandVoice.notes.length > 0 && (
+                              <p className="text-muted-foreground">{assetBrandVoice.notes.join("; ")}</p>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )}
                     <Button onClick={handleCreateAsset} className="w-full bg-violet-600 hover:bg-violet-700">
@@ -4240,6 +4456,64 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                 </ScrollArea>
               </div>
             )}
+          </DialogContent>
+        </Dialog>
+
+        {/* ── EDIT CAMPAIGN ─────────────────────────────────────────────────── */}
+        <Dialog open={!!editingCampaign} onOpenChange={(open) => !open && setEditingCampaign(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Edit Campaign</DialogTitle>
+              <DialogDescription>
+                Name, budget and schedule. Status changes go through the lifecycle buttons on the card.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-2">
+              <div className="space-y-2">
+                <Label>Campaign Name</Label>
+                <Input
+                  value={editCampaign.campaignName}
+                  onChange={(e) => setEditCampaign({ ...editCampaign, campaignName: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Total Budget ($)</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  value={editCampaign.budgetTotal}
+                  onChange={(e) => setEditCampaign({ ...editCampaign, budgetTotal: e.target.value })}
+                  placeholder="Leave blank to keep as is"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label>Starts</Label>
+                  <Input
+                    type="date"
+                    value={editCampaign.scheduledStartAt}
+                    onChange={(e) => setEditCampaign({ ...editCampaign, scheduledStartAt: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Ends</Label>
+                  <Input
+                    type="date"
+                    value={editCampaign.scheduledEndAt}
+                    onChange={(e) => setEditCampaign({ ...editCampaign, scheduledEndAt: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setEditingCampaign(null)} disabled={isSavingCampaign}>
+                  Cancel
+                </Button>
+                <Button onClick={handleSaveCampaignEdits} disabled={isSavingCampaign}>
+                  {isSavingCampaign && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                  Save Changes
+                </Button>
+              </div>
+            </div>
           </DialogContent>
         </Dialog>
       </div>

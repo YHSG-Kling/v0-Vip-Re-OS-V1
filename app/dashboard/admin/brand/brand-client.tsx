@@ -12,6 +12,8 @@ import {
   getBrandElementDescriptionAction,
   getBrandComplianceHistoryAction,
   getTemplateClassificationHistoryAction,
+  batchClassifyTemplatesAction,
+  batchGetBrandRequirementsAction,
 } from "@/app/actions/brand-template-registry"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -226,6 +228,86 @@ export function BrandComplianceClient({
       }
     >
   >({})
+
+  // ── Bulk sweep ─────────────────────────────────────────────────────────────
+  // `batchClassifyTemplatesAction` and `batchGetBrandRequirementsAction` had no
+  // callers anywhere: every check on this screen ran ONE template at a time, so
+  // an admin auditing a library of thirty signatures made sixty round trips and
+  // had no way to see trust level across the set at a glance. Both take up to
+  // BATCH_MAX inputs and return one array each, which is exactly the shape this
+  // sweep needs.
+  const [sweeping, setSweeping] = useState(false)
+  const [sweepError, setSweepError] = useState<string | null>(null)
+  const [sweepResults, setSweepResults] = useState<
+    Record<string, { trustLevel: string; confidence: number; requiredElements: number }>
+  >({})
+
+  async function handleBulkSweep() {
+    setSweeping(true)
+    setSweepError(null)
+    try {
+      const batch = filteredTemplates
+      if (batch.length === 0) {
+        setSweepError("No templates in this category to sweep.")
+        return
+      }
+      // ONE call per action for the whole visible set, in the order of `batch`
+      // — both actions return arrays positionally aligned with their input, so
+      // index i of each result belongs to batch[i].
+      const [classified, requirements] = await Promise.all([
+        batchClassifyTemplatesAction(
+          batch.map((t) => ({
+            content_type: t.template_type as any,
+            channel_intent: "email" as const,
+            is_from_template: true,
+            template_source: "brokerage" as const,
+          })),
+        ),
+        batchGetBrandRequirementsAction(
+          batch.map((t) => ({
+            content_type: t.template_type as any,
+            channel_intent: "email" as const,
+            // BrandContext.audience_scope is "private" | "public" — the value
+            // the singular per-template check on this same screen already
+            // passes, so the sweep and the drill-down agree on the rule set.
+            audience_scope: "public" as const,
+          })),
+        ),
+      ])
+
+      // Both actions RETURN their refusals — an unauthenticated caller, an empty
+      // list, or more than BATCH_MAX at once. Rendering partial results as a
+      // completed sweep would tell an admin the library had been audited when it
+      // had not.
+      if (!classified.success || !classified.data) {
+        setSweepError(classified.error ?? "Bulk classification failed.")
+        return
+      }
+      if (!requirements.success || !requirements.data) {
+        setSweepError(requirements.error ?? "Brand requirements could not be resolved.")
+        return
+      }
+
+      const next: Record<string, { trustLevel: string; confidence: number; requiredElements: number }> = {}
+      batch.forEach((t, i) => {
+        const c = classified.data![i]
+        const r = requirements.data![i]
+        if (!c) return
+        next[t.id] = {
+          trustLevel: c.trust_level,
+          confidence: c.confidence_score,
+          requiredElements: Array.isArray((r as any)?.required_elements)
+            ? (r as any).required_elements.length
+            : 0,
+        }
+      })
+      setSweepResults(next)
+    } catch (err: any) {
+      setSweepError(err?.message ?? "Bulk sweep failed.")
+    } finally {
+      setSweeping(false)
+    }
+  }
 
   // ── Derived ────────────────────────────────────────────────────────────────
 
@@ -584,12 +666,23 @@ export function BrandComplianceClient({
             <CardTitle>Template Library</CardTitle>
             <CardDescription>{templates.length} templates</CardDescription>
           </div>
-          <Button size="sm" onClick={() => setAddTemplateOpen(true)}>
-            <Plus className="h-4 w-4 mr-1.5" />
-            Add Template
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={handleBulkSweep} disabled={sweeping}>
+              {sweeping ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Shield className="h-4 w-4 mr-1.5" />}
+              Sweep this category
+            </Button>
+            <Button size="sm" onClick={() => setAddTemplateOpen(true)}>
+              <Plus className="h-4 w-4 mr-1.5" />
+              Add Template
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
+          {sweepError && (
+            <p className="mb-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">
+              {sweepError}
+            </p>
+          )}
           <Tabs value={templateFilter} onValueChange={setTemplateFilter}>
             <TabsList className="mb-4">
               <TabsTrigger value="all">All</TabsTrigger>
@@ -628,6 +721,19 @@ export function BrandComplianceClient({
                             >
                               {template.is_active ? "Active" : "Inactive"}
                             </Badge>
+                            {sweepResults[template.id] && (
+                              <>
+                                <Badge variant="outline" className="text-xs">
+                                  trust: {sweepResults[template.id].trustLevel}
+                                </Badge>
+                                <Badge variant="outline" className="text-xs">
+                                  {sweepResults[template.id].confidence}% confidence
+                                </Badge>
+                                <Badge variant="outline" className="text-xs">
+                                  {sweepResults[template.id].requiredElements} required brand elements
+                                </Badge>
+                              </>
+                            )}
                           </div>
 
                           {/* Compliance result */}

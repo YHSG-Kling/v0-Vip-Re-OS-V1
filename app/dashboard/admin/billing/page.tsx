@@ -10,6 +10,7 @@ import { FeatureEntitlementList } from "@/app/components/features/admin/feature-
 import { ManageBillingButton } from "./manage-billing-button"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { SubscriptionAgreementCard } from "./subscription-agreement-card"
+import { RevenueSummaryCard } from "./revenue-summary-card"
 import { getSubscriptionAgreementAction } from "@/app/actions/admin/subscription-agreement"
 
 /**
@@ -122,6 +123,11 @@ export default async function BillingAdminPage({
           {/* Right Column - Usage & Overage */}
           <div className="space-y-6">
             <OverageCalculator brokerageId={brokerageId} projectionDays={30} />
+            {/* PLATFORM-WIDE revenue: superadmin only. A tenant billing admin
+                lands on this same page (it is where a blocked tenant is routed
+                at login), so the card is not rendered for them at all — and the
+                action behind it enforces the same gate server-side. */}
+            {isSuper && <RevenueSummaryCard />}
           </div>
         </div>
       </div>

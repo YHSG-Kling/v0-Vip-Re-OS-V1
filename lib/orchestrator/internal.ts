@@ -274,6 +274,11 @@ export async function orchestrateEvent(event: Event): Promise<void> {
 async function handleLeadCreated(event: WorkflowEvent): Promise<ProcessingResult> {
   const startTime = Date.now()
   try {
+    // `timeline` rides the event payload from the lead/contact row. Its
+    // vocabulary is constants/crm-standards.ts:STANDARD_TIMELINES, and the two
+    // tests below key on `immediate`, which survived the consolidation of six
+    // spellings unchanged — so this handler needed no repoint, only a name for
+    // the list it is testing against.
     const { contact_id, source, timeline } = event.payload
 
     // Create AI suggestion for follow-up

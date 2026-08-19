@@ -13,11 +13,12 @@
  * Renders as a compact panel suitable for sidebar or tab use.
  */
 
-import { useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import { PhoneOff, Phone, Mail, MessageSquare, MapPin, Facebook, Instagram, Linkedin, Twitter, ChevronDown, Save, Loader2, AlertTriangle } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
   updateChannelControls,
+  getContactChannelControls,
   type PreferredChannel,
   type SocialHandles,
 } from "@/app/actions/contacts/update-channel-controls"
@@ -107,6 +108,45 @@ export default function ContactChannelControls({
   const isSocialChannel = ["facebook", "instagram", "linkedin", "twitter"].includes(
     preferredChannel
   )
+
+  // ── HYDRATE FROM THE RECORD ────────────────────────────────────────────────
+  //
+  // THE WRITE HALF OF THIS PANEL WAS LIVE AND THE READ HALF WAS NOT.
+  // `getContactChannelControls` — the read written for exactly this component —
+  // had no caller, and the only mount (the inbox ContactDetailPane) feeds
+  // `initialPreferredChannel` / `initialSocialHandles` from a `conversations`
+  // query that selects NEITHER column. So both props arrived undefined on every
+  // render and the panel opened on its "email" / no-handles defaults for every
+  // contact, whatever was actually stored — and pressing Save then WROTE those
+  // defaults back over the contact's real preference.
+  //
+  // The server read is the authority. The initial* props are kept as the
+  // pre-hydration paint only. Hydration runs once per contactId — Save is
+  // disabled until it lands, so the defaults can no longer be written back
+  // over a real preference by someone who clicked before the read returned.
+  const [hydrated, setHydrated] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    setHydrated(false)
+    void (async () => {
+      const current = await getContactChannelControls(contactId)
+      if (cancelled) return
+      // The action returns all-nulls both for "no such preference" and for a
+      // refused read. Neither is a reason to overwrite what the caller passed
+      // in, so a null field leaves the prop-derived value standing.
+      if (current.preferredChannel) setPreferredChannel(current.preferredChannel)
+      if (current.socialHandles) setSocialHandles(current.socialHandles)
+      setCallStopFlag(current.callStopFlag)
+      setHydrated(true)
+    })()
+    return () => {
+      cancelled = true
+    }
+    // `dirty` is deliberately NOT a dependency — re-running on every keystroke
+    // is what would clobber the edit this guard exists to protect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contactId])
 
   function handleSave() {
     startTransition(async () => {
@@ -280,15 +320,15 @@ export default function ContactChannelControls({
         <button
           type="button"
           onClick={handleSave}
-          disabled={isPending}
+          disabled={isPending || !hydrated}
           className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
         >
-          {isPending ? (
+          {isPending || !hydrated ? (
             <Loader2 size={12} className="animate-spin" />
           ) : (
             <Save size={12} />
           )}
-          Save preferences
+          {hydrated ? "Save preferences" : "Loading preferences…"}
         </button>
 
         {saveMsg && (

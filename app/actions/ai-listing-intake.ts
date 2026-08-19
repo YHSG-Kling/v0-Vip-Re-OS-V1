@@ -383,9 +383,36 @@ IMPORTANT RULES:
 // ============================================
 // 4. AI PRICING RECOMMENDATION
 // ============================================
+/**
+ * THE ONE LIST-PRICE RECOMMENDER.
+ *
+ * MERGED IN (consolidation): `app/actions/ai-market-intelligence.ts:predictPropertyPrice`
+ * was a second, caller-less model of the same subject — "what should this
+ * property be priced at" — and it has been deleted in favour of this one (see the
+ * tombstone at ai-market-intelligence.ts:169). Two things it did that this one did
+ * not, both carried over here BEFORE the delete:
+ *
+ *   1. IT FETCHED ITS OWN COMPARABLES. This action took `comparables` as an
+ *      optional parameter and its only surface — ListingIntelligenceCard — has
+ *      never supplied any, so every price recommendation the product has ever
+ *      shown an agent was generated from the literal string "No comps provided"
+ *      (see the note in app/components/dashboard/listings/lifecycle/
+ *      listing-intelligence-card.tsx, which flags exactly this). A pricing
+ *      opinion with no comps behind it is a guess wearing a number. When the
+ *      caller supplies none, the brokerage's own sold inventory in the same zip
+ *      and an adjacent-bedroom band is now read and used.
+ *   2. IT REPORTED CONFIDENCE, POSITIONING AND TIMING. `confidenceLevel`,
+ *      `marketPositioning`, `comparablesSummary` and `marketTiming` are its
+ *      output fields, folded into the schema below.
+ *
+ * `comparableCount`/`comparableSource` are returned so a surface can say WHERE the
+ * number came from — an estimate built on zero comps must be legible as one and
+ * must never be rendered with the same confidence as one built on twenty.
+ */
 export async function aiSuggestListPrice(params: {
   agentId?: string  // ignored — derived from session
   propertyData: any
+  /** Supply comps to use them verbatim; omit and the brokerage's sold inventory is read. */
   comparables?: any[]
   marketConditions?: "hot" | "balanced" | "cooling"
   motivation?: "quick_sale" | "maximize_price" | "balanced"
@@ -397,6 +424,47 @@ export async function aiSuggestListPrice(params: {
       return { success: false, error: "Unauthorized" }
     }
 
+    // ── Comparables ──────────────────────────────────────────────────────────
+    // Caller-supplied comps win. Otherwise fetch them, tenant-anchored: comps
+    // come from the caller's OWN brokerage's sold inventory and nowhere else.
+    // Columns verified live: listings.zip (text), listings.status CHECK includes
+    // 'sold', listings.bedrooms (int), listings.go_live_date (date). There is no
+    // listings.close_date, so recency orders by go_live_date.
+    let comparables: any[] = Array.isArray(params.comparables) ? params.comparables : []
+    let comparableSource: "caller" | "brokerage_sold" | "none" =
+      comparables.length > 0 ? "caller" : "none"
+
+    if (comparables.length === 0) {
+      const zip = params.propertyData?.zipCode ?? params.propertyData?.zip ?? null
+      const beds = Number(params.propertyData?.bedrooms)
+      if (typeof zip === "string" && zip.trim().length > 0) {
+        const supabase = await createClient()
+        let compQuery = supabase
+          .from("listings")
+          .select("address, city, state, zip, list_price, bedrooms, bathrooms, sqft, property_type, go_live_date, sold_date")
+          .eq("brokerage_id", ctx.brokerageId)
+          .eq("zip", zip.trim())
+          .eq("status", "sold")
+          .order("go_live_date", { ascending: false })
+          .limit(20)
+        if (Number.isFinite(beds)) {
+          compQuery = compQuery.gte("bedrooms", beds - 1).lte("bedrooms", beds + 1)
+        }
+        // supabase-js RESOLVES a refused query — an unread error here would be
+        // indistinguishable from "this brokerage has sold nothing in this zip",
+        // and the model would then be told there are no comps when in fact the
+        // read was blocked. Surfaced rather than silently downgraded.
+        const { data: comps, error: compsError } = await compQuery
+        if (compsError) {
+          return { success: false, error: `Could not read comparable sales: ${compsError.message}` }
+        }
+        if (comps && comps.length > 0) {
+          comparables = comps
+          comparableSource = "brokerage_sold"
+        }
+      }
+    }
+
     const { object: pricing } = await generateObject({
       model: resolveModel("openai/gpt-4o"),
       schema: z.object({
@@ -406,6 +474,15 @@ export async function aiSuggestListPrice(params: {
         pricePerSqFt: z.number(),
         daysOnMarketEstimate: z.number(),
         competitivePosition: z.enum(["aggressive", "market", "premium"]),
+        // ── carried from predictPropertyPrice ──
+        confidenceLevel: z.enum(["high", "medium", "low"]),
+        marketPositioning: z.enum(["below_market", "at_market", "above_market"]),
+        comparablesSummary: z.string(),
+        marketTiming: z.object({
+          recommendation: z.enum(["list_now", "wait", "price_aggressively"]),
+          reasoning: z.string(),
+        }),
+        // ──────────────────────────────────────
         reasoning: z.string(),
         adjustments: z.array(
           z.object({
@@ -421,8 +498,8 @@ export async function aiSuggestListPrice(params: {
 Property:
 ${JSON.stringify(params.propertyData, null, 2)}
 
-Comparables:
-${params.comparables ? JSON.stringify(params.comparables, null, 2) : "No comps provided - estimate based on property details"}
+Comparables (${comparables.length} ${comparableSource === "brokerage_sold" ? "sold listings from this brokerage in the same zip" : comparableSource === "caller" ? "supplied by the caller" : "available"}):
+${comparables.length ? JSON.stringify(comparables, null, 2) : "NONE. State this plainly in comparablesSummary and set confidenceLevel to 'low' — do not present a comp-free estimate as if it were comp-supported."}
 
 Market Conditions: ${params.marketConditions || "balanced"}
 Seller Motivation: ${params.motivation || "balanced"}
@@ -432,10 +509,17 @@ Provide:
 2. Price range (low to high)
 3. Estimated days on market
 4. Key adjustments from comps
-5. Market positioning strategy`,
+5. Market positioning strategy
+6. Your confidence, and a one-line summary of what the comparables actually support
+7. Market timing advice`,
     })
 
-    return { success: true, pricing }
+    return {
+      success: true,
+      pricing,
+      comparableCount: comparables.length,
+      comparableSource,
+    }
   } catch (error) {
     console.error("[AI Listing Intake] Pricing error:", error)
     return handleError(error, "aiSuggestListPrice")
@@ -1047,58 +1131,77 @@ export async function createListing(params: ListingIntakeData) {
 }
 
 // ============================================
-// 9. AI PHOTO ORDERING OPTIMIZER
+// 9. AI PHOTO ORDERING OPTIMIZER — REMOVED
 // ============================================
-export async function aiOptimizePhotoOrder(params: { listingId: string; photos: string[]; agentId?: string }) {
-  try {
-    // Auth gate — AI calls cost real $$$, fail fast on unauth
-    const ctx = await getAgentContext()
-    if (!ctx.isAuthenticated || !ctx.brokerageId) {
-      return { success: false, error: "Unauthorized" }
-    }
-
-    // Verify the listing belongs to the caller's brokerage
-    const supabase = await createClient()
-    const { data: listing } = await supabase
-      .from("listings")
-      .select("brokerage_id")
-      .eq("id", params.listingId)
-      .maybeSingle()
-    if (!listing || listing.brokerage_id !== ctx.brokerageId) {
-      return { success: false, error: "Forbidden" }
-    }
-
-    const { object: optimization } = await generateObject({
-      model: resolveModel("openai/gpt-4o"),
-      schema: z.object({
-        optimizedOrder: z.array(z.number()).describe("Indices of photos in optimal order"),
-        heroPhoto: z.number().describe("Index of the best hero/cover photo"),
-        reasoning: z.string(),
-        suggestions: z.array(z.string()).describe("Suggestions for improving photos"),
-      }),
-      prompt: `You are a real estate photography expert. Analyze these ${params.photos.length} listing photos and determine the optimal order.
-
-Photo URLs: ${params.photos.join(", ")}
-
-Best practices:
-1. Hero shot should be the most appealing exterior or dramatic interior
-2. Follow a logical flow (exterior > entry > main living > kitchen > bedrooms > bathrooms > backyard)
-3. Save the best for strategic placement
-4. Group similar spaces together
-
-Provide the optimal order and reasoning.`,
-    })
-
-    return { success: true, optimization }
-  } catch (error) {
-    console.error("[AI Listing Intake] Photo optimization error:", error)
-    return handleError(error, "aiOptimizePhotoOrder")
-  }
-}
+/* ─────────────────────────────────────────────────────────────────────────────
+ * TOMBSTONE — `aiOptimizePhotoOrder` was REMOVED (orphan burn-down, Lane A).
+ *
+ * SURVIVOR: `app/actions/photo-management.ts:optimizePhotoOrder` (declared at
+ * app/actions/photo-management.ts:336), wired to the media manager's "Optimize
+ * order" button at
+ * app/dashboard/listings/[id]/media/media-manager-client.tsx:180, with the rule
+ * editor beside it at
+ * app/dashboard/listings/[id]/media/components/photo-ordering-rules-card.tsx.
+ *
+ * NOTHING WAS MERGED, because this function had nothing the survivor lacks and
+ * one thing the survivor is right not to have:
+ *
+ *   · IT COULD NOT SEE THE PHOTOS. Its whole input was `photos: string[]` — a
+ *     list of URL STRINGS interpolated into a TEXT prompt. No image was ever
+ *     sent to a vision model, so "analyze these listing photos and determine the
+ *     optimal order" was the model ranking filenames. Its `optimizedOrder`,
+ *     `heroPhoto` and per-photo `suggestions` were confabulated from URL text.
+ *   · IT PERSISTED NOTHING. It returned indices into an array the caller passed
+ *     in. The survivor writes `listing_media.sort_order` and revalidates.
+ *   · The survivor orders by the CLASSIFIED `room_type` and `ai_quality_score`
+ *     already on each media row, honours the agent's saved
+ *     `photo_ordering_rules` sequence, and falls back to the MLS default —
+ *     facts about the actual images rather than guesses about their URLs.
+ *
+ * Per-photo quality feedback (the one output class this action gestured at)
+ * lives at `app/actions/photo-management.ts:validatePhotoQuality` (line 597) and
+ * `analyzePhoto` (line 81), both of which look at the real image.
+ * ───────────────────────────────────────────────────────────────────────────── */
 
 // ============================================
 // 10. COMPLETE LISTING INTAKE WORKFLOW
 // ============================================
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * LEFT UNWIRED DELIBERATELY (orphan burn-down, Lane A). READ THIS BEFORE GIVING
+ * IT A CALLER *OR* DELETING IT.
+ *
+ * It has no caller anywhere in the tree, and neither building nor deleting it is
+ * currently the right move:
+ *
+ * WHY NOT BUILD IT. Steps 1–5 are all individually reachable already: a previous
+ * wave surfaced aiEnrichPropertyData, aiSuggestListPrice, aiCheckListingCompliance
+ * and aiCheckDocumentStatus on ListingIntelligenceCard
+ * (app/components/dashboard/listings/lifecycle/listing-intelligence-card.tsx),
+ * and aiGenerateListingDescription on ListingDescriptionComposer beside it.
+ * Step 6 CREATES A LISTING — and the product creates listings through the
+ * FormWizard packet flow (app/dashboard/listings/listings-new-button.tsx →
+ * app/actions/listings-kernel.ts:createListingWithSellerContact). Wiring this up
+ * would put a SECOND listing-creation door next to that one, which is the exact
+ * duplication this burn-down exists to remove.
+ *
+ * WHY NOT DELETE IT. Its only callee that nothing else calls is `createListing`
+ * in this same file (above), and that function is NOT redundant: alone among the
+ * three listing-creation paths it also opens the seller-side `transactions` row
+ * and creates the transaction-provider container (the Dotloop loop, when the
+ * brokerage's resolved provider is dotloop, writing back
+ * listings.dotloop_loop_id). Neither `app/actions/listings.ts:createListing` nor
+ * `listings-kernel.ts:createListingWithSellerContact` does either of those. So
+ * deleting this orchestrator strands a genuinely-capable function, and deleting
+ * both loses capability — which is the one forbidden outcome.
+ *
+ * WHAT WOULD UNBLOCK IT: fold the transaction-row + provider-container creation
+ * into `createListingWithSellerContact` (the canonical door), at which point this
+ * orchestrator and the local `createListing` can both go, with that function as
+ * the named survivor. That is a listings-kernel change and belongs to whoever
+ * owns app/actions/listings-kernel.ts.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
 export async function runCompleteListingIntake(params: {
   agentId: string
   address: string

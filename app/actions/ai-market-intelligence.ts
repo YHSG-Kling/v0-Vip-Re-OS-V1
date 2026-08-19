@@ -163,100 +163,33 @@ Provide actionable market intelligence including:
   }
 }
 
-/**
- * AI-powered price prediction for a specific property
- */
-export async function predictPropertyPrice(params: {
-  agentId: string
-  propertyData: {
-    address: string
-    city: string
-    state: string
-    zipCode: string
-    bedrooms: number
-    bathrooms: number
-    sqft: number
-    lotSize?: number
-    yearBuilt?: number
-    propertyType: string
-    features?: string[]
-    condition?: string
-  }
-}) {
-  if (!isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid agent ID" }
-  }
-
-  const auth = await requireCaller()
-  if (!auth.ok) return { success: false, error: auth.error }
-
-  const supabase = await createClient()
-
-  try {
-    // Get comparable sales
-    const { data: comps } = await supabase
-      .from("listings")
-      .select("*")
-      // tenant anchor (scope burn-down): comps from the caller's own brokerage inventory
-      .eq("brokerage_id", auth.brokerageId)
-      .eq("zip", params.propertyData.zipCode)
-      .eq("status", "sold")
-      .gte("bedrooms", params.propertyData.bedrooms - 1)
-      .lte("bedrooms", params.propertyData.bedrooms + 1)
-      .order("go_live_date", { ascending: false })
-      .limit(20)
-
-    const { object: prediction } = await generateObject({
-      model: resolveModel("openai/gpt-4o"),
-      schema: z.object({
-        estimatedPrice: z.number(),
-        priceRangeLow: z.number(),
-        priceRangeHigh: z.number(),
-        confidenceLevel: z.enum(["high", "medium", "low"]),
-        pricePerSqft: z.number(),
-        marketPositioning: z.enum(["below_market", "at_market", "above_market"]),
-        comparablesSummary: z.string(),
-        valueFactors: z.array(z.object({
-          factor: z.string(),
-          impact: z.enum(["positive", "negative", "neutral"]),
-          adjustment: z.number(),
-          explanation: z.string()
-        })),
-        listingRecommendation: z.object({
-          suggestedListPrice: z.number(),
-          strategy: z.string(),
-          expectedDaysOnMarket: z.number()
-        }),
-        marketTiming: z.object({
-          recommendation: z.enum(["list_now", "wait", "price_aggressively"]),
-          reasoning: z.string()
-        })
-      }),
-      prompt: `Predict the market value for this property:
-
-Property Details:
-${JSON.stringify(params.propertyData, null, 2)}
-
-Comparable Sales:
-${JSON.stringify(comps || [], null, 2)}
-
-Provide:
-1. Estimated market value with confidence range
-2. Price per square foot analysis
-3. Value adjustment factors (location, condition, features)
-4. Optimal listing price recommendation
-5. Market timing advice`
-    })
-
-    return {
-      success: true,
-      prediction
-    }
-  } catch (error) {
-    console.error("[v0] Predict property price error:", error)
-    return handleError(error, "predictPropertyPrice")
-  }
-}
+/* ─────────────────────────────────────────────────────────────────────────────
+ * TOMBSTONE — `predictPropertyPrice` was REMOVED (orphan burn-down, Lane A).
+ *
+ * SURVIVOR: `app/actions/ai-listing-intake.ts:aiSuggestListPrice` (declared at
+ * app/actions/ai-listing-intake.ts:412). It answers the same question — "what
+ * should this property be priced at" — and unlike this one it has a real surface:
+ * ListingIntelligenceCard on the listing lifecycle page
+ * (app/components/dashboard/listings/lifecycle/listing-intelligence-card.tsx).
+ * This function had no caller anywhere in the tree.
+ *
+ * MERGED ONTO THE SURVIVOR BEFORE THIS DELETE, in this order:
+ *   1. COMPARABLE-SALES RETRIEVAL — the only thing this function did that the
+ *      survivor could not. It read the caller's own brokerage's SOLD listings in
+ *      the same zip within an adjacent-bedroom band and priced against them. The
+ *      survivor took `comparables` as an optional parameter that its one caller
+ *      never supplied, so every list-price recommendation the product has ever
+ *      shown was generated from the string "No comps provided". That read now
+ *      lives in aiSuggestListPrice, with the refusal surfaced instead of being
+ *      read as "no comps exist".
+ *   2. `confidenceLevel`, `marketPositioning`, `comparablesSummary` and
+ *      `marketTiming` — output fields the survivor's schema lacked.
+ *
+ * Nothing was dropped: `estimatedPrice` / `priceRangeLow` / `priceRangeHigh` /
+ * `pricePerSqft` / `valueFactors` / `listingRecommendation` are the survivor's
+ * `suggestedListPrice` / `priceRangeLow` / `priceRangeHigh` / `pricePerSqFt` /
+ * `adjustments` / (`suggestedListPrice` + `reasoning` + `daysOnMarketEstimate`).
+ * ───────────────────────────────────────────────────────────────────────────── */
 
 /**
  * Get real-time market alerts for an agent's focus areas.

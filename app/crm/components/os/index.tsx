@@ -11,4 +11,8 @@ export { SmartNoteComposer } from "./smart-note-composer"
 export { BuyerMatchPanel } from "./buyer-match-panel"
 export { PropertyAlertsPanel } from "./property-alerts-panel"
 export { QualificationSummaryCard } from "./qualification-summary-card"
+// Orphan burn-down (Lane A): the surface for
+// app/actions/ai-lead-nurturing.ts:aiPredictConversion, the only
+// conversion-probability writer an agent can actually read back.
+export { ConversionForecastPanel } from "./conversion-forecast-panel"
 export type { IsaHandoffBriefShape } from "./qualification-summary-card"

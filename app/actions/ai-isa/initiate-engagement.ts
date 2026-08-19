@@ -684,13 +684,65 @@ async function dispatchToChannel(
 
 // ─── STATUS QUERY ─────────────────────────────────────────────────────────────
 
+/**
+ * What the ISA has actually done to a lead, and where the lead stands.
+ *
+ * THREE THINGS WERE WRONG HERE and all three are fixed below, because this is
+ * now reachable from the ISA console and a status panel that lies is worse than
+ * no status panel.
+ *
+ * 1. THE ACTIVITY READ COULD NEVER RETURN A ROW. It filtered
+ *    `activities.contact_id = <a LEADS id>`. `activities.contact_id` FKs
+ *    `contacts(id)` (verified live in pg_constraint), and the WRITER of these
+ *    very rows — lib/ai-isa/email-generator.ts:77 — sets `contact_id: null`
+ *    explicitly, with the comment "leads are NOT contacts", and files the lead
+ *    under `entity_type: 'lead' / entity_id: leadId`. So the reader was matching
+ *    a column the writer deliberately leaves NULL: the activity list was
+ *    ALWAYS EMPTY, for every lead, forever, and would have rendered as "the ISA
+ *    has never touched this lead". Reads on (entity_type, entity_id) now, which
+ *    is where the rows are.
+ *
+ * 2. NO AUTH AND NO TENANT. This is a `"use server"` export — a public HTTP
+ *    endpoint — running on the SERVICE client, which bypasses RLS. Anyone who
+ *    could guess a uuid could read any brokerage's lead stage, lead score and
+ *    full ISA activity history. The lead must now be in the caller's own
+ *    brokerage before anything is returned.
+ *
+ * 3. REFUSALS WERE INVISIBLE. Every read was undestructured, so a blocked query
+ *    returned `null` and this function reported stage 'new', score 0 and no
+ *    activity — a confident, wrong answer. Failures are now reported.
+ */
 export async function getAIISAEngagementStatus(leadId: string) {
+  const { getAgentContext } = await import('@/lib/identity/get-agent-context')
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false as const, error: 'Unauthorized' }
+  }
+
   const supabase = createServiceClient()
 
-  const { data: activities } = await supabase
+  // TENANT FIRST. The service client bypasses RLS, so the brokerage predicate is
+  // this function's only tenancy — and it is checked before anything else is read.
+  const { data: lead, error: leadError } = await supabase
+    .from('leads')
+    .select('lead_stage, lead_score, agent_id')
+    .eq('id', leadId)
+    .eq('brokerage_id', ctx.brokerageId)
+    .maybeSingle()
+
+  if (leadError) {
+    console.error('[getAIISAEngagementStatus] lead read failed:', leadError.message)
+    return { success: false as const, error: 'Could not load that lead.' }
+  }
+  if (!lead) return { success: false as const, error: 'Lead not found' }
+
+  const { data: activities, error: activitiesError } = await supabase
     .from('activities')
-    .select('*')
-    .eq('contact_id', leadId)
+    .select('id, activity_type, title, description, status, outcome, channel, created_at')
+    // The identity class the WRITER uses. See note 1 above.
+    .eq('entity_type', 'lead')
+    .eq('entity_id', leadId)
+    .eq('brokerage_id', ctx.brokerageId)
     .in('activity_type', [
       'ai_isa_email',
       'ai_isa_conversation',
@@ -699,31 +751,42 @@ export async function getAIISAEngagementStatus(leadId: string) {
     ])
     .order('created_at', { ascending: false })
 
+  if (activitiesError) {
+    console.error('[getAIISAEngagementStatus] activity read failed:', activitiesError.message)
+    return { success: false as const, error: 'Could not load this lead’s ISA history.' }
+  }
+
   // PASS-2 FIX: the old read filtered messages.contact_id (FKs contacts) by a
   // LEAD id — always empty. The ISA record of truth is isa_outreach_log;
   // inbound threads only exist once a lead becomes a contact (honest zero).
-  const { count: outreachCount } = await supabase
+  const { count: outreachCount, error: outreachError } = await supabase
     .from('isa_outreach_log')
     .select('id', { count: 'exact', head: true })
     .eq('lead_id', leadId)
+    .eq('brokerage_id', ctx.brokerageId)
+
+  if (outreachError) {
+    console.error('[getAIISAEngagementStatus] outreach count failed:', outreachError.message)
+    return { success: false as const, error: 'Could not count this lead’s ISA outreach.' }
+  }
+
   const inboundCount = 0
   const outboundCount = outreachCount ?? 0
 
-  const { data: lead } = await supabase
-    .from('leads')
-    .select('lead_stage, lead_score, agent_id')
-    .eq('id', leadId)
-    .maybeSingle()
-
   return {
+    success: true as const,
     activities: activities ?? [],
     conversationStats: {
       inboundMessages: inboundCount,
       outboundMessages: outboundCount,
       totalExchanges: Math.max(inboundCount, outboundCount),
+      /* Inbound is a structural zero, not a measurement: a lead has no message
+       * thread until it converts to a contact. Surfaces must not render it as
+       * "this person never replied". */
+      inboundTracked: false as const,
     },
-    currentStage: lead?.lead_stage ?? 'new',
-    leadScore: lead?.lead_score ?? 0,
-    assignedToAgent: !!lead?.agent_id,
+    currentStage: lead.lead_stage ?? 'new',
+    leadScore: lead.lead_score ?? 0,
+    assignedToAgent: !!lead.agent_id,
   }
 }

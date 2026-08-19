@@ -22,7 +22,6 @@ import {
 import type {
   CreateAudienceParams,
   SyncAudienceParams,
-  LoadAudiencesParams,
 } from "@/lib/ads/facebook-audience-sync-types"
 
 // ─── SESSION GATE ─────────────────────────────────────────────────────────────
@@ -144,36 +143,20 @@ export async function syncFacebookAudience(
   }
 }
 
-// ─── loadFacebookAudiences ────────────────────────────────────────────────────
-
-export async function loadFacebookAudiences(
-  _userId: string,
-  params: LoadAudiencesParams
-): Promise<{ success: boolean; audiences?: any[]; error?: string }> {
-  // ── 0. Session gate — was an unauthenticated cross-tenant read ──────────────
-  const actor = await resolveAdsActor()
-  if (!actor.ok) return { success: false, error: actor.error }
-  const ctx = actor.ctx
-  const userId = ctx.userId
-
-  // ── 1. Feature gate ─────────────────────────────────────────────────────────
-  const accessCheck = await canAccessFeature(userId, "ads_audiences")
-  if (!accessCheck.allowed) {
-    return { success: false, error: accessCheck.reason || "Feature access denied" }
-  }
-
-  // ── 2. Delegate to kernel loadAudienceDefinitions ────────────────────────────
-  const result = await loadAudienceDefinitions({
-    ctx,
-    campaignId: params.campaignId,
-  })
-
-  if (!result.success) {
-    return { success: false, error: result.error }
-  }
-
-  return { success: true, audiences: (result.audience as any[]) || [] }
-}
+// ─── loadFacebookAudiences — DELETED (orphan burn-down lane C) ────────────────
+//
+// FUNCTIONALITY ALREADY ELSEWHERE. The Ads workspace page loads audiences — with
+// their sync runs embedded — through lib/kernel/ads.ts:261 (loadAdsWorkspace),
+// called at app/dashboard/campaigns/ads/page.tsx:146 and handed to the dashboard
+// as its `audiences` prop. This wrapper called the sibling kernel command
+// (lib/kernel/ads.ts:679 loadAudienceDefinitions) to fetch the same rows a second
+// time.
+//
+// NOTHING TO MERGE. Its one distinct axis was the optional `campaignId` filter,
+// and every workspace audience row carries `ad_campaign_id`, so narrowing to one
+// campaign is a filter over data the surface already holds — not another
+// round-trip. Removing it also closes a public endpoint: this file is
+// "use server", so every export here is a reachable HTTP door.
 
 // ─── CANONICAL NAMED EXPORTS (used by ads-dashboard-client.tsx) ──────────────
 // These are the canonical function names the UI layer imports. They delegate

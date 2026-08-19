@@ -168,42 +168,43 @@ export async function checkLimit(brokerageId: string, metric: string): Promise<U
   }
 }
 
-/**
- * Gets all usage metrics for a brokerage in the current billing period
- */
-export async function getAllUsageMetrics(brokerageId: string): Promise<UsageLimit[]> {
-  const metrics = [
-    "llm_calls",
-    "video_minutes",
-    "active_users",
-    "contacts_count",
-    "active_transactions",
-    "sms_sent",
-    "emails_sent",
-    "storage_gb",
-  ]
-
-  const results = await Promise.all(metrics.map((metric) => checkLimit(brokerageId, metric)))
-
-  return results
-}
-
-/**
- * Gets brokerage plan details
- */
-export async function getBrokeragePlan(brokerageId: string) {
-  const supabase = await createClient()
-
-  const { data, error } = await supabase
-    .from("brokerages")
-    .select("plan_tier, billing_metadata")
-    .eq("id", brokerageId)
-    .maybeSingle()
-
-  if (error) {
-    console.error(" Error fetching brokerage plan:", error)
-    return null
-  }
-
-  return data
-}
+// ─── TOMBSTONES (orphan burn-down, lane E) ───────────────────────────────────
+//
+// `getAllUsageMetrics(brokerageId)` DELETED.
+//   SURVIVOR: app/actions/usage-overview.ts:63 `loadUsageOverview`, which serves
+//   /dashboard/settings/usage and is strictly more complete on every axis:
+//     · It derives the metric list FROM plan_limits instead of a hard-coded
+//       array. That array named EIGHT metrics; plan_limits carries EIGHTEEN on
+//       the live database, so the deleted function could never report
+//       ai_tokens_monthly (the one metric with live counter rows), ai_voice_minutes,
+//       live_avatar_*, live_assistant_*, tts_characters, voice_clones_created or
+//       avatars_created — the whole AI/voice half of what a tenant is billed for.
+//     · It HONOURS plan_limits.soft_limit_threshold. checkLimit below SELECTs
+//       that column and then throws it away, so "approaching your limit" was
+//       unrepresentable; the survivor turns it into status warning/exceeded.
+//     · It resolves the tenant through resolveWriteContext() and gates on
+//       isAdminOrBroker, rather than trusting a brokerageId argument.
+//   MERGED BEFORE DELETING: the one thing this file held that the survivor
+//   lacked — reads keyed on period_start ALONE, never period_end (see
+//   lib/usage/period.ts and checkLimit:135). That is now carried at
+//   app/actions/usage-overview.ts:88.
+//
+// `getBrokeragePlan(brokerageId)` DELETED.
+//   SURVIVORS, one per half of what it returned:
+//     · plan_tier → lib/billing/plan-tier.ts:51 `resolvePlanTier`, THE tier
+//       reader. It normalises through toPlanTier so an unknown/missing value
+//       falls to the TIGHTEST tier (FALLBACK_TIER) instead of being handed to
+//       the caller raw — this function returned an untyped row, so a tenant with
+//       a NULL plan_tier reached callers as `null` and each one guessed.
+//     · billing_metadata → parsed by the ONE seat-override reader,
+//       app/actions/superadmin/tenant-entitlements.ts:305 `parseSeatOverride`
+//       (also used at app/dashboard/settings/page.tsx:147). Handing the raw jsonb
+//       out invited a second parser.
+//   Nothing merged: the deleted function performed no validation of either half.
+//
+// checkLimit below is deliberately KEPT even though its only caller was
+// getAllUsageMetrics: it is the correct single-metric shape, it holds the
+// canonical period key, and scripts/stream-routing-simulator.ts:193 slices this
+// file between `incrementUsage` and `checkLimit` to prove incrementUsage writes
+// on the service client — removing it would silently blank that proof's window
+// and turn a passing guard into a vacuous one.

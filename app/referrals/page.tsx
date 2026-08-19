@@ -268,11 +268,16 @@ export default async function ReferralsPage({ searchParams }: Props) {
     .sort((a, b) => new Date(b.closeDate).getTime() - new Date(a.closeDate).getTime())
     .slice(0, 8)
 
+  // contact_id rides along (it is already on the agent_reviews select in
+  // lib/kernel/reputation.ts:320) so ReputationRecoveryPanel can hand
+  // aiCreateRecoveryPlan the client whose history the plan is built from. Without
+  // it the plan is written from "No client history available".
   const existingReviews = (workspace?.reviews ?? []).map((r) => ({
     id: r.id,
     platform: r.platform,
     rating: r.rating,
     review_text: r.review_text ?? "",
+    contact_id: (r as { contact_id?: string | null }).contact_id ?? null,
   }))
 
   // ── Anniversaries ──────────────────────────────────────────────────────────

@@ -22,7 +22,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { provisionTenantOwner } from "@/lib/kernel/users"
 import { applySnapshotPayload, type SnapshotPayload } from "@/lib/platform/config-snapshots"
-import { validateFunnelCoupon } from "@/lib/platform/trial-funnel"
+import { validateFunnelCoupon, snapshotForTier } from "@/lib/platform/trial-funnel"
 import { headers } from "next/headers"
 
 export type CanonicalTier = "solo_agent" | "team" | "brokerage" | "multi_location"
@@ -38,9 +38,19 @@ export interface SignupBrokerageInput {
   /** Solo-agent only: is the agent's managing brokerage / team also on the platform? */
   brokerageOnPlatform?: boolean
   teamOnPlatform?:      boolean
-  /** Self-serve funnel: platform_config_snapshots id to apply AFTER provisioning
-   *  (the tier's assigned template — day-one branded website). Best-effort:
-   *  a bad/missing snapshot never fails the signup. */
+  /**
+   * @deprecated NOT USED to choose the snapshot any more, and deliberately so.
+   *
+   * This is a REQUEST field on a `"use server"` action, so it is caller-supplied
+   * and cannot decide which platform_config_snapshots row a new tenant is
+   * provisioned from. The snapshot is now resolved SERVER-SIDE from `tier` via
+   * snapshotForTier() — see the block at "Step 4a" below.
+   *
+   * Still accepted on the input so the existing /get-started form (which posts
+   * it) keeps type-checking, and read for ONE thing only: to decide whether the
+   * caller expected branding, so "no snapshot is live for this tier" is reported
+   * back rather than passing silently.
+   */
   snapshotId?:     string
   /** Self-serve funnel: coupon code to redeem for the new tenant. Recorded in the
    *  redemption ledger + brokerages.billing_metadata.coupon so billing honors it
@@ -233,29 +243,56 @@ export async function signupBrokerageAction(
   let snapshotApplied: string[] | undefined
   let snapshotError:   string | undefined
   let snapshotName:    string | null = null
-  if (input.snapshotId) {
-    try {
-      const { data: snap } = await service
-        .from("platform_config_snapshots")
-        .select("id, name, payload")
-        .eq("id", input.snapshotId)
-        .maybeSingle()
-      if (!snap) {
-        snapshotError = "Config snapshot not found — starting from platform defaults."
-      } else {
-        snapshotName = (snap as any).name ?? null
-        const { applied } = await applySnapshotPayload(
-          ((snap as any).payload ?? {}) as SnapshotPayload,
-          brokerage.id,
-          newUser.id,
-          service,
-        )
-        snapshotApplied = applied
+  try {
+    // WHICH SNAPSHOT A SELF-SERVE SIGNUP GETS IS A SERVER DECISION.
+    //
+    // This block used to read `input.snapshotId` and apply whatever row that id
+    // named. `input` arrives from the browser — app/get-started/trial-funnel-form.tsx:96
+    // posts `snapshotId: funnelSnapshots[tier]?.id` into this `"use server"`
+    // action, so the id is a REQUEST FIELD, not a server fact, and nothing
+    // checked that the snapshot it named had anything to do with the tier being
+    // signed up for. A crafted request could hand a brand-new tenant any row in
+    // platform_config_snapshots — a different tier's branding, or an internal
+    // snapshot never meant for self-serve — and applySnapshotPayload would apply
+    // it. Reading the id back from the database does not fix that: the row is
+    // real, it is simply the wrong one.
+    //
+    // lib/platform/trial-funnel.ts:75 `snapshotForTier(tier)` is the resolver
+    // written for this and never called, and that module's header names this
+    // action as one of the two surfaces meant to share it: "the newest-per-tier
+    // rule is a PURE exported function so ... server surfaces (get-started page,
+    // signup action) share one resolver". It re-derives the answer from the TIER
+    // this signup is actually for — newest snapshot whose
+    // payload.recommendedTier === tier — and returns null for a non-canonical
+    // tier, so an unrecognised value provisions from platform defaults instead
+    // of from whatever the caller asked for.
+    //
+    // The tier itself is already validated upstream in this action, so it is the
+    // safe thing to key on. `input.snapshotId` is now ignored entirely; the
+    // /get-started page keeps computing it through liveFunnelSnapshots() for
+    // DISPLAY (attaching "this is what you get" to each tier card), which is
+    // what it was for.
+    const snap = await snapshotForTier(input.tier, service)
+    if (!snap) {
+      // Not an error worth failing a signup over — the funnel still provisions,
+      // the tenant just starts from unbranded defaults. Only say so when the
+      // caller expected branding.
+      if (input.snapshotId) {
+        snapshotError = "No config snapshot is live for this tier — starting from platform defaults."
       }
-    } catch (err) {
-      snapshotError = err instanceof Error ? err.message : "Snapshot apply failed"
-      console.warn("[signupBrokerage] snapshot apply failed (non-fatal):", err)
+    } else {
+      snapshotName = snap.name
+      const { applied } = await applySnapshotPayload(
+        snap.payload as SnapshotPayload,
+        brokerage.id,
+        newUser.id,
+        service,
+      )
+      snapshotApplied = applied
     }
+  } catch (err) {
+    snapshotError = err instanceof Error ? err.message : "Snapshot apply failed"
+    console.warn("[signupBrokerage] snapshot apply failed (non-fatal):", err)
   }
 
   // Step 4b — redeem the coupon. Same rules + same two-write idiom as the

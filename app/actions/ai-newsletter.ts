@@ -1617,47 +1617,128 @@ export async function manageSubscriberBatch(params: {
 
     const supabase = await createClient()
     let affected = 0
+    /** Contacts that were deliberately not subscribed, with the reason. */
+    const skipped: Array<{ contactId: string; reason: string }> = []
 
     for (const contactId of contactIds) {
-      if (!isValidUUID(contactId)) continue
-
-      // Verify the contact belongs to the session brokerage before mutating subscription
-      const { data: contactRow } = await supabase
-        .from("contacts")
-        .select("brokerage_id")
-        .eq("id", contactId)
-        .maybeSingle()
-      if (!contactRow || contactRow.brokerage_id !== sessionBrokerageId) {
+      if (!isValidUUID(contactId)) {
+        skipped.push({ contactId, reason: "not a valid contact id" })
         continue
       }
 
+      // Verify the contact belongs to the session brokerage before mutating
+      // subscription — AND read the columns the write actually needs.
+      //
+      // THIS SELECT USED TO BE `brokerage_id` ALONE, and the "add" branch below
+      // then upserted a row with NO `email`. `newsletter_subscribers.email` is
+      // NOT NULL (verified live), so EVERY batch add was rejected by the
+      // database — and the upsert's error was never destructured while
+      // `affected++` ran unconditionally, so this action reported "47 contacts
+      // added" over 47 rows that do not exist. The name and opt-out flag are
+      // read for the same reason the auto-enrolment lane reads them
+      // (lib/content/newsletter-enrollment.ts): a subscriber row with no name is
+      // a worse row, and mailing an opted-out contact is a CAN-SPAM problem, not
+      // a preference.
+      const { data: contactRow, error: contactErr } = await supabase
+        .from("contacts")
+        .select("brokerage_id, email, email_opt_out, first_name, last_name")
+        .eq("id", contactId)
+        .maybeSingle()
+      if (contactErr) {
+        skipped.push({ contactId, reason: `could not be read: ${contactErr.message}` })
+        continue
+      }
+      if (!contactRow || contactRow.brokerage_id !== sessionBrokerageId) {
+        skipped.push({ contactId, reason: "not in your brokerage" })
+        continue
+      }
+
+      const email = String(contactRow.email ?? "").trim().toLowerCase()
+
       if (params.action === "add") {
-        await supabase.from("newsletter_subscribers").upsert({
-          agent_id: sessionAgentId,
-          brokerage_id: sessionBrokerageId,
-          contact_id: contactId,
-          status: "subscribed",
-          subscribed_at: new Date().toISOString(),
-        })
+        if (!isValidEmail(email)) {
+          skipped.push({ contactId, reason: "no usable email address on the contact" })
+          continue
+        }
+        if (contactRow.email_opt_out === true) {
+          skipped.push({ contactId, reason: "contact has opted out of email" })
+          continue
+        }
+
+        // NEVER RE-SUBSCRIBE AN OPT-OUT. Same rule the automatic enrolment lane
+        // enforces: an unsubscribe is a decision the person made, and an
+        // upsert would silently flip it back to 'subscribed'.
+        const { data: existing, error: existingErr } = await supabase
+          .from("newsletter_subscribers")
+          .select("id, status")
+          .eq("brokerage_id", sessionBrokerageId)
+          .eq("email", email)
+          .maybeSingle()
+        if (existingErr) {
+          skipped.push({ contactId, reason: `subscription state unreadable: ${existingErr.message}` })
+          continue
+        }
+        if (existing?.status === "unsubscribed") {
+          skipped.push({ contactId, reason: "previously unsubscribed — re-subscribing must be deliberate" })
+          continue
+        }
+
+        // onConflict names the REAL unique — newsletter_subscribers_brokerage_id_email_key
+        // (brokerage_id, email). Without it the upsert conflicts on the primary
+        // key only, which a new row never collides on, so a second run inserted
+        // a duplicate instead of updating.
+        const { error: upsertErr } = await supabase
+          .from("newsletter_subscribers")
+          .upsert(
+            {
+              agent_id: sessionAgentId,
+              brokerage_id: sessionBrokerageId,
+              contact_id: contactId,
+              email,
+              first_name: contactRow.first_name ?? null,
+              last_name: contactRow.last_name ?? null,
+              status: "subscribed",
+              source: "manual",
+              ...(existing ? {} : { subscribed_at: new Date().toISOString() }),
+            },
+            { onConflict: "brokerage_id,email" },
+          )
+        if (upsertErr) {
+          skipped.push({ contactId, reason: upsertErr.message })
+          continue
+        }
         affected++
       } else if (params.action === "remove") {
-        await supabase
+        // Count what the database actually changed. A zero-row update is not a
+        // removal, and `affected++` on an unchecked update was reporting one.
+        const { data: removed, error: removeErr } = await supabase
           .from("newsletter_subscribers")
           .update({ status: "unsubscribed", unsubscribed_at: new Date().toISOString() })
           .eq("contact_id", contactId)
           .eq("agent_id", sessionAgentId)
           .eq("brokerage_id", sessionBrokerageId)
-        affected++
+          .select("id")
+        if (removeErr) {
+          skipped.push({ contactId, reason: removeErr.message })
+          continue
+        }
+        if (!removed || removed.length === 0) {
+          skipped.push({ contactId, reason: "was not on your list" })
+          continue
+        }
+        affected += removed.length
       } else if (params.action === "update_segment" && params.segment) {
         // Segments are not modeled on newsletter_subscribers (audience targeting lives at the
         // newsletter_sections level via target_personas/target_locations). No-op rather than write a
         // phantom column.
+        skipped.push({ contactId, reason: "segments are not stored on subscribers" })
       }
     }
 
     revalidatePath("/content-studio")
+    revalidatePath("/newsletters")
 
-    return { success: true, affected }
+    return { success: true, affected, skipped }
   } catch (error) {
     console.error("[AI Newsletter] Subscriber management error:", error)
     return handleError(error, "manageSubscriberBatch")

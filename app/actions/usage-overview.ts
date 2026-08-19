@@ -86,12 +86,21 @@ export async function loadUsageOverview(): Promise<{
 
   // 2. Counters + limits — pull both, join in memory
   const [{ data: counters }, { data: limits }] = await Promise.all([
+    // READERS FILTER ON period_start ALONE — lib/usage/period.ts states the rule
+    // verbatim: "the start identifies the month, and keying reads on the end is
+    // how the old rows became unreachable". period_end is part of the row's
+    // IDENTITY (UNIQUE brokerage_id, period_start, period_end, metric), so a
+    // reader that pins it can only ever match rows written under the exact same
+    // end convention — which is precisely the join that read zero AI tokens
+    // forever before m474. Carried here from lib/usage.ts:135 (checkLimit),
+    // which held the correct key and whose orphaned siblings were removed in the
+    // lane-E burn-down; the survivor must not inherit the defect the duplicate
+    // had already fixed.
     supabase
       .from("usage_counters")
       .select("metric, value")
       .eq("brokerage_id", ctx.brokerageId)
-      .eq("period_start", periodStart.toISOString())
-      .eq("period_end", periodEnd.toISOString()),
+      .eq("period_start", periodStart.toISOString()),
     supabase
       .from("plan_limits")
       .select("metric, limit_value, soft_limit_threshold")

@@ -11,6 +11,19 @@
  * of draft, so a drafted BBA could never reach `active` — and lib/buyer-broker/gate.ts
  * fails CLOSED, which means every showing and every offer for that buyer was
  * blocked by NAR 2024 with no way forward from the UI.
+ *
+ * THE MISSING *FRONT* THIS NOW CLOSES: the lifecycle still had no first step.
+ * `createBBADraftAction` — the only session-gated way to create an agreement —
+ * had ZERO callers anywhere in the tree. The single code path that ever inserted
+ * a `buyer_broker_agreements` row was the VOICE tool-call route
+ * (app/api/agent-assistant/tool-call/route.ts:1199, which re-implements the
+ * insert against a service client because it runs without an auth session), and
+ * this panel's own empty state told the agent to "draft one from the agreements
+ * dashboard" — a page that only lists. So for an agent who does not use voice,
+ * the NAR-2024 gate was unopenable: no agreement could be created, therefore
+ * none could be signed, therefore every showing and offer for that buyer stayed
+ * blocked. The draft form below is that first step, on the surface where the
+ * agent already sees the gate.
  */
 
 import { useCallback, useEffect, useState, useTransition } from "react"
@@ -19,9 +32,10 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { FileSignature, Loader2, ShieldCheck, Clock, AlertTriangle, Send, Ban } from "lucide-react"
+import { FileSignature, Loader2, ShieldCheck, Clock, AlertTriangle, Send, Ban, Plus } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import {
+  createBBADraftAction,
   getBBAForBuyerAction,
   dispatchBBAToSigningProviderAction,
   recordSignedBBAAction,
@@ -77,6 +91,69 @@ export function BuyerBrokerAgreementPanel({ contactId }: { contactId: string }) 
   // the wet/DocuSign document URL the agent is typing for it.
   const [recordingId, setRecordingId] = useState<string | null>(null)
   const [signedDocumentUrl, setSignedDocumentUrl] = useState("")
+
+  // ── New draft form ──────────────────────────────────────────────────────────
+  // Vocabularies are the LIVE CHECK constraints on buyer_broker_agreements
+  // (buyer_broker_agreements_agreement_type_check / _commission_payer_check),
+  // which are also exactly the unions CreateBBAInput declares.
+  const [drafting, setDrafting] = useState(false)
+  const [draftBusy, setDraftBusy] = useState(false)
+  const [agreementType, setAgreementType] =
+    useState<"exclusive" | "non_exclusive" | "showing_only" | "open">("exclusive")
+  const [commissionPayer, setCommissionPayer] =
+    useState<"seller" | "buyer" | "split" | "either">("seller")
+  const [commissionPercentage, setCommissionPercentage] = useState("")
+  const [commissionFlatAmount, setCommissionFlatAmount] = useState("")
+  const [expirationDate, setExpirationDate] = useState("")
+
+  function resetDraftForm() {
+    setDrafting(false)
+    setAgreementType("exclusive")
+    setCommissionPayer("seller")
+    setCommissionPercentage("")
+    setCommissionFlatAmount("")
+    setExpirationDate("")
+  }
+
+  function handleCreateDraft() {
+    // Parsed, not coerced: an unparseable box is sent as undefined so the
+    // action's own NAR-2024 rule ("percentage or flat amount required unless
+    // showing_only") is the thing that refuses, and the agent is told why —
+    // rather than NaN reaching a numeric column.
+    const pct  = commissionPercentage.trim() === "" ? undefined : Number(commissionPercentage)
+    const flat = commissionFlatAmount.trim() === "" ? undefined : Number(commissionFlatAmount)
+    if (pct !== undefined && !Number.isFinite(pct)) {
+      toast({ title: "Commission percentage is not a number", variant: "destructive" })
+      return
+    }
+    if (flat !== undefined && !Number.isFinite(flat)) {
+      toast({ title: "Flat amount is not a number", variant: "destructive" })
+      return
+    }
+
+    setDraftBusy(true)
+    startTransition(async () => {
+      const draftResult = await createBBADraftAction({
+        buyerContactId:       contactId,
+        agreementType,
+        commissionPayer,
+        commissionPercentage: pct,
+        commissionFlatAmount: flat,
+        expirationDate:       expirationDate || undefined,
+      })
+      setDraftBusy(false)
+      if (!draftResult.ok) {
+        toast({ title: "Draft not created", description: draftResult.error, variant: "destructive" })
+        return
+      }
+      resetDraftForm()
+      toast({
+        title: "Draft agreement created",
+        description: "Send it for e-signature, or record a signature taken outside the platform.",
+      })
+      await load()
+    })
+  }
 
   const load = useCallback(async () => {
     const result = await getBBAForBuyerAction(contactId)
@@ -172,11 +249,110 @@ export function BuyerBrokerAgreementPanel({ contactId }: { contactId: string }) 
           <p className="text-sm text-red-600">Could not load agreements: {loadError}</p>
         )}
 
-        {!loadError && agreements.length === 0 && (
+        {!loadError && agreements.length === 0 && !drafting && (
           <p className="text-sm text-muted-foreground">
-            No buyer broker agreement on file. Draft one from the agreements dashboard or by voice
+            No buyer broker agreement on file. Draft one below, or by voice
             (&quot;draft a buyer broker agreement for …&quot;).
           </p>
+        )}
+
+        {/* ── Draft a new agreement — the lifecycle's first step ───────────── */}
+        {drafting ? (
+          <div className="space-y-2.5 rounded-lg border bg-muted/20 p-3">
+            <p className="text-xs font-medium">New agreement</p>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <Label htmlFor="bba-type" className="text-xs">Agreement type</Label>
+                <select
+                  id="bba-type"
+                  className="w-full rounded-md border bg-background px-2 py-1.5 text-xs"
+                  value={agreementType}
+                  onChange={(e) => setAgreementType(e.target.value as typeof agreementType)}
+                  disabled={draftBusy}
+                >
+                  <option value="exclusive">Exclusive</option>
+                  <option value="non_exclusive">Non-exclusive</option>
+                  <option value="showing_only">Showing only</option>
+                  <option value="open">Open</option>
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="bba-payer" className="text-xs">Commission paid by</Label>
+                <select
+                  id="bba-payer"
+                  className="w-full rounded-md border bg-background px-2 py-1.5 text-xs"
+                  value={commissionPayer}
+                  onChange={(e) => setCommissionPayer(e.target.value as typeof commissionPayer)}
+                  disabled={draftBusy}
+                >
+                  <option value="seller">Seller</option>
+                  <option value="buyer">Buyer</option>
+                  <option value="split">Split</option>
+                  <option value="either">Either</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              <div className="space-y-1">
+                <Label htmlFor="bba-pct" className="text-xs">Commission %</Label>
+                <Input
+                  id="bba-pct"
+                  inputMode="decimal"
+                  placeholder="2.5"
+                  value={commissionPercentage}
+                  onChange={(e) => setCommissionPercentage(e.target.value)}
+                  disabled={draftBusy}
+                  className="h-8 text-xs"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="bba-flat" className="text-xs">…or flat $</Label>
+                <Input
+                  id="bba-flat"
+                  inputMode="decimal"
+                  placeholder="7500"
+                  value={commissionFlatAmount}
+                  onChange={(e) => setCommissionFlatAmount(e.target.value)}
+                  disabled={draftBusy}
+                  className="h-8 text-xs"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="bba-exp" className="text-xs">Expires</Label>
+                <Input
+                  id="bba-exp"
+                  type="date"
+                  value={expirationDate}
+                  onChange={(e) => setExpirationDate(e.target.value)}
+                  disabled={draftBusy}
+                  className="h-8 text-xs"
+                />
+              </div>
+            </div>
+
+            <p className="text-[11px] text-muted-foreground">
+              NAR 2024 requires explicit compensation terms — a percentage or a flat amount is
+              mandatory on every type except &quot;showing only&quot;. Leaving the expiry blank
+              defaults it to 90 days from signature.
+            </p>
+
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" disabled={draftBusy} onClick={handleCreateDraft}>
+                {draftBusy && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
+                Create draft
+              </Button>
+              <Button size="sm" variant="ghost" disabled={draftBusy} onClick={resetDraftForm}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <Button size="sm" variant="outline" onClick={() => setDrafting(true)}>
+            <Plus className="h-3 w-3 mr-1" />
+            Draft an agreement
+          </Button>
         )}
 
         {agreements.map((a) => {

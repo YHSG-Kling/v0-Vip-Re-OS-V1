@@ -1,6 +1,11 @@
+"use client"
+
+import { useState, useTransition } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { TrendingUp, TrendingDown, ExternalLink, Heart } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { TrendingUp, TrendingDown, ExternalLink, Heart, Loader2, Wand2, Copy } from "lucide-react"
+import { getCompetitorPostInspiration } from "@/app/actions/marketing-intelligence"
 import type { TrendingKeyword, CompetitorPost } from "@/app/actions/marketing-intelligence"
 
 /**
@@ -10,10 +15,25 @@ import type { TrendingKeyword, CompetitorPost } from "@/app/actions/marketing-in
  * against, plus competitor posts that are working — the raw material for
  * ranking higher and winning organic traffic.
  *
- * Pure presentational server component. Data is fetched by the SEO page from
- * getTrendingKeywords / getCompetitorHighPerformers (keyword_intelligence +
- * competitor_content), which the background scrapers populate.
+ * Data is fetched by the SEO page from getTrendingKeywords /
+ * getCompetitorHighPerformers (keyword_intelligence + competitor_content),
+ * which the background scrapers populate.
+ *
+ * "Repurpose this concept" (the per-post button) is the one interaction here:
+ * it calls getCompetitorPostInspiration for the SIGNAL behind a winning post —
+ * topics, keywords, hook type, emotional tone — and composes the brief the
+ * agent hands to their own AI writer. It deliberately does NOT return the
+ * competitor's caption: the point is to rebuild the idea in the agent's brand
+ * voice, not to copy someone's copy.
  */
+interface Inspiration {
+  topics: string[]
+  keywords: string[]
+  hookType: string | null
+  emotionalTone: string | null
+  inspirationPrompt: string
+}
+
 export function MarketTrendsPanel({
   keywords,
   competitors,
@@ -21,6 +41,34 @@ export function MarketTrendsPanel({
   keywords: TrendingKeyword[]
   competitors: CompetitorPost[]
 }) {
+  const [openPostId, setOpenPostId] = useState<string | null>(null)
+  const [inspiration, setInspiration] = useState<Inspiration | null>(null)
+  const [inspirationError, setInspirationError] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [isPending, startTransition] = useTransition()
+
+  function loadInspiration(postId: string) {
+    if (openPostId === postId) {
+      setOpenPostId(null)
+      return
+    }
+    setOpenPostId(postId)
+    setInspiration(null)
+    setInspirationError(null)
+    setCopied(false)
+    startTransition(async () => {
+      const r = await getCompetitorPostInspiration(postId)
+      // null covers BOTH "not yours / not found" and a refused read. Say we
+      // could not build it rather than rendering an empty brief that looks
+      // like the post had no signal in it.
+      if (!r) {
+        setInspirationError("Could not load the signal for this post.")
+        return
+      }
+      setInspiration(r)
+    })
+  }
+
   return (
     <div className="space-y-6">
       {/* Trending keywords */}
@@ -83,7 +131,8 @@ export function MarketTrendsPanel({
             </p>
           ) : (
             competitors.map((p) => (
-              <div key={p.id} className="p-3 rounded-lg border flex items-start justify-between gap-3">
+              <div key={p.id} className="p-3 rounded-lg border space-y-3">
+                <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-medium text-sm">{p.competitorName || "Competitor"}</span>
@@ -110,15 +159,85 @@ export function MarketTrendsPanel({
                     ))}
                   </div>
                 </div>
-                {p.contentUrl && (
-                  <a
-                    href={p.contentUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-muted-foreground hover:text-foreground shrink-0"
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs gap-1"
+                    onClick={() => loadInspiration(p.id)}
+                    disabled={isPending && openPostId === p.id}
                   >
-                    <ExternalLink className="h-4 w-4" />
-                  </a>
+                    {isPending && openPostId === p.id ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <Wand2 className="h-3 w-3" />
+                    )}
+                    Repurpose
+                  </Button>
+                  {p.contentUrl && (
+                    <a
+                      href={p.contentUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-muted-foreground hover:text-foreground"
+                    >
+                      <ExternalLink className="h-4 w-4" />
+                    </a>
+                  )}
+                </div>
+                </div>
+
+                {openPostId === p.id && (
+                  <div className="rounded-md border bg-muted/40 p-3 space-y-2">
+                    {isPending && !inspiration && !inspirationError && (
+                      <p className="text-xs text-muted-foreground">Reading the signal…</p>
+                    )}
+                    {inspirationError && <p className="text-xs text-destructive">{inspirationError}</p>}
+                    {inspiration && (
+                      <>
+                        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                          {inspiration.hookType && (
+                            <Badge variant="secondary" className="text-[10px]">
+                              {inspiration.hookType} hook
+                            </Badge>
+                          )}
+                          {inspiration.emotionalTone && (
+                            <Badge variant="outline" className="text-[10px]">
+                              {inspiration.emotionalTone}
+                            </Badge>
+                          )}
+                          {inspiration.topics.map((t) => (
+                            <Badge key={t} variant="outline" className="text-[10px]">
+                              #{t}
+                            </Badge>
+                          ))}
+                        </div>
+                        <p className="text-xs leading-relaxed whitespace-pre-wrap">
+                          {inspiration.inspirationPrompt}
+                        </p>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 text-xs gap-1"
+                          onClick={() => {
+                            void navigator.clipboard
+                              ?.writeText(inspiration.inspirationPrompt)
+                              .then(() => setCopied(true))
+                              .catch(() => setCopied(false))
+                          }}
+                        >
+                          <Copy className="h-3 w-3" />
+                          {copied ? "Copied" : "Copy brief"}
+                        </Button>
+                        <p className="text-[11px] text-muted-foreground">
+                          Paste this into the AI writer in Marketing Studio or the blog editor — it rebuilds the
+                          concept in your brand voice. Never copy the original post.
+                        </p>
+                      </>
+                    )}
+                  </div>
                 )}
               </div>
             ))

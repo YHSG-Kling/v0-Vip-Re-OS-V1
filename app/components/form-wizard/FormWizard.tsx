@@ -177,6 +177,18 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
   const [packetLoading, setPacketLoading] = useState(false)
   const [editedFields, setEditedFields] = useState<Map<string, { newValue: unknown; reason?: string }>>(new Map())
   const [approving, setApproving] = useState(false)
+  // ── Field-level AI-fill audit (document_field_audit) ────────────────────────
+  // The banner's confidence COUNTS come from the `filledPacket.audit` blob inside
+  // documents.content. The LEDGER — one row per field, with the AI value, its
+  // source intake field, its confidence, and whether a licensed agent overrode it
+  // — is the E&O record, and until now nothing read it back (recordAIFill and
+  // recordAgentOverride both wrote; getDocumentAudit had no caller anywhere).
+  // Loaded through the gated reader, which proves the document is in the caller's
+  // brokerage before touching the service client.
+  const [fieldAudit, setFieldAudit] = useState<
+    { fieldName: string; aiValue: unknown; aiSource: string | null; aiConfidence: string | null; agentOverrode: boolean; overrideReason: string | null }[] | null
+  >(null)
+  const [fieldAuditError, setFieldAuditError] = useState<string | null>(null)
 
   const [state, setState] = useState<WizardState>(() => ({
     propertyAddress: "",
@@ -259,6 +271,34 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
       }
     })()
   }, [open, documentId, stagedPacket, packetLoading])
+
+  // ── Field-level audit load — runs once per staged packet ────────────────────
+  const loadFieldAudit = useCallback(async () => {
+    if (!documentId) return
+    const { getDocumentFieldAuditAction } = await import("@/app/actions/document-field-audit")
+    const res = await getDocumentFieldAuditAction(documentId)
+    if (!res.ok) {
+      // Reported, not swallowed. "The ledger refused this read" and "this packet
+      // has no AI-filled fields" mean different things to an E&O reviewer.
+      setFieldAuditError(res.error)
+      setFieldAudit([])
+      return
+    }
+    setFieldAuditError(null)
+    setFieldAudit(res.audit.entries.map(e => ({
+      fieldName:      e.fieldName,
+      aiValue:        e.aiValue,
+      aiSource:       e.aiSource ?? null,
+      aiConfidence:   e.aiConfidence ?? null,
+      agentOverrode:  !!e.agentOverrode,
+      overrideReason: e.overrideReason ?? null,
+    })))
+  }, [documentId])
+
+  useEffect(() => {
+    if (!open || !documentId || fieldAudit !== null) return
+    void loadFieldAudit()
+  }, [open, documentId, fieldAudit, loadFieldAudit])
 
   // Track an agent override on a packet field (best-effort persistence)
   const recordOverride = useCallback((fieldName: string, newValue: unknown, reason?: string) => {
@@ -501,7 +541,13 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
           )}
 
           {/* AI-staged packet banner — only renders when documentId prop is set */}
-          {stagedPacket && <PacketBanner packet={stagedPacket} />}
+          {stagedPacket && (
+            <PacketBanner
+              packet={stagedPacket}
+              fieldAudit={fieldAudit}
+              fieldAuditError={fieldAuditError}
+            />
+          )}
 
           {step === 1 && <Step1Context mode={mode} state={state} update={update} />}
           {step === 2 && (
@@ -1264,10 +1310,42 @@ function Step5ESign({ state, mode, esignProvider, busy, onSubmit }: {
 // findings, addendum suggestions. PURELY ADDITIVE — does not affect any other
 // step or interaction when documentId prop is omitted.
 
-function PacketBanner({ packet }: { packet: StagedPacket }) {
+interface FieldAuditRow {
+  fieldName:      string
+  aiValue:        unknown
+  aiSource:       string | null
+  aiConfidence:   string | null
+  agentOverrode:  boolean
+  overrideReason: string | null
+}
+
+function auditValueText(v: unknown): string {
+  if (v === null || v === undefined) return "—"
+  if (typeof v === "string") return v
+  if (typeof v === "number" || typeof v === "boolean") return String(v)
+  try { return JSON.stringify(v) } catch { return "—" }
+}
+
+function PacketBanner({
+  packet,
+  fieldAudit,
+  fieldAuditError,
+}: {
+  packet: StagedPacket
+  /** null = still loading; [] = loaded and empty. */
+  fieldAudit?: FieldAuditRow[] | null
+  fieldAuditError?: string | null
+}) {
   const blockerCount = packet.findings.filter(f => f.severity === "blocker").length
   const warningCount = packet.findings.filter(f => f.severity === "warning").length
   const infoCount    = packet.findings.filter(f => f.severity === "info").length
+
+  // The E&O half. The counts above come from the packet blob; these rows come
+  // from the document_field_audit LEDGER, which is the record that survives the
+  // deal — including which prefilled values the licensed agent overrode and why.
+  const auditRows      = fieldAudit ?? []
+  const overriddenRows = auditRows.filter(r => r.agentOverrode)
+  const lowConfidence  = auditRows.filter(r => r.aiConfidence === "low" || r.aiConfidence === "medium")
 
   return (
     <div className="mb-4 rounded-lg border border-violet-200 bg-violet-50/50 dark:bg-violet-950/20 p-4 space-y-3">
@@ -1326,6 +1404,62 @@ function PacketBanner({ packet }: { packet: StagedPacket }) {
             {packet.findings.length > 4 && (
               <li className="text-xs text-muted-foreground italic ml-3">
                 +{packet.findings.length - 4} more findings — review before approving
+              </li>
+            )}
+          </ul>
+        </div>
+      )}
+
+      {/* ── AI fill audit (document_field_audit) ───────────────────────────────
+          The per-field E&O trail: what the AI put in each field, which intake
+          answer it came from, how confident it was, and what the agent changed.
+          Medium/low-confidence rows are listed first because those are the ones
+          a licensed human is expected to verify before signing. */}
+      {fieldAuditError && (
+        <p className="text-xs text-red-600">
+          AI fill audit unavailable — {fieldAuditError}
+        </p>
+      )}
+      {!fieldAuditError && fieldAudit === null && (
+        <p className="text-xs text-muted-foreground">Loading the AI fill audit…</p>
+      )}
+      {!fieldAuditError && fieldAudit !== null && auditRows.length > 0 && (
+        <div className="space-y-1.5 border-t border-violet-200/70 pt-2.5">
+          <p className="text-xs font-medium">
+            AI fill audit: {auditRows.length} field{auditRows.length !== 1 ? "s" : ""} on record
+            {overriddenRows.length > 0 && (
+              <span className="text-amber-700"> · {overriddenRows.length} overridden by you</span>
+            )}
+            {lowConfidence.length > 0 && (
+              <span className="text-muted-foreground"> · {lowConfidence.length} to verify</span>
+            )}
+          </p>
+          <ul className="space-y-1">
+            {[...lowConfidence, ...auditRows.filter(r => !lowConfidence.includes(r))]
+              .slice(0, 8)
+              .map((r, i) => (
+                <li key={`${r.fieldName}-${i}`} className="text-xs">
+                  <span className="font-medium">{r.fieldName}</span>
+                  <span className="text-muted-foreground"> = {auditValueText(r.aiValue)}</span>
+                  {r.aiConfidence && (
+                    <span className={
+                      r.aiConfidence === "low" ? " text-red-600"
+                      : r.aiConfidence === "medium" ? " text-amber-700"
+                      : " text-muted-foreground"
+                    }>
+                      {" "}({r.aiConfidence}{r.aiSource ? ` from ${r.aiSource}` : ""})
+                    </span>
+                  )}
+                  {r.agentOverrode && (
+                    <span className="block ml-3 text-amber-700">
+                      → you overrode this{r.overrideReason ? `: ${r.overrideReason}` : ""}
+                    </span>
+                  )}
+                </li>
+              ))}
+            {auditRows.length > 8 && (
+              <li className="text-xs text-muted-foreground italic ml-3">
+                +{auditRows.length - 8} more audited fields
               </li>
             )}
           </ul>

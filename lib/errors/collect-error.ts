@@ -182,14 +182,23 @@ export async function collectError(params: CollectErrorParams): Promise<string |
   }
 }
 
-/**
- * Batch collect multiple errors at once
- */
-export async function collectErrors(errors: CollectErrorParams[]): Promise<(string | null)[]> {
-  const results: (string | null)[] = []
-  for (const error of errors) {
-    const id = await collectError(error)
-    results.push(id)
-  }
-  return results
-}
+// TOMBSTONE (orphan burn-down, lane E): `collectErrors(errors[])` DELETED.
+//
+// It was a sequential `for` loop over `collectError` with zero callers, and the
+// name promised something it did not do: NOTHING about it was batched. Each
+// element still cost the same four round-trips collectError makes (the
+// automation_errors insert, the stack trace, the resolution-log row, and the
+// kernel event on critical) — there was no multi-row insert, no shared
+// transaction, no single classification pass. It was `Promise` sugar that
+// serialised.
+//
+// SURVIVOR: `collectError` (:72 above) — THE one writer for automation_errors,
+// as this module's header states. A caller holding several failures loops over
+// it at the call site, which is what the live intake sites already do (the
+// AI-ISA engines, the cron routes, and the workflow handlers each report inside
+// their own catch, where they still have the context — workflowName, brokerageId,
+// leadId — that a flattened array argument would have stripped).
+//
+// Nothing merged: the deleted wrapper added no field, no gate and no vocabulary
+// that collectError lacks. If a genuine batch ever becomes worth having, it
+// belongs INSIDE collectError as a multi-row insert, not as a loop beside it.
