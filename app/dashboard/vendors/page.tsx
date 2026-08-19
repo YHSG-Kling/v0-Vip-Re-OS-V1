@@ -28,9 +28,10 @@ import {
   getAgentAssignedVendors,
   getVendorReviews,
 } from "@/app/actions/vendor-marketplace"
-import { Store, FileText, Star, CheckCircle2, KeyRound } from "lucide-react"
+import { Store, FileText, Star, CheckCircle2, KeyRound, Layers } from "lucide-react"
 import { VendorAccessPanel } from "./vendor-access-panel"
 import { VendorPortalInvitePanel } from "./vendor-portal-invite-panel"
+import { VendorPlanCataloguePanel } from "./vendor-plan-catalogue-panel"
 import { listVendorAssignmentsForBrokerageAction } from "@/app/actions/vendor-contact-access"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
@@ -314,7 +315,7 @@ export default async function VendorsPage() {
       </div>
 
       <Tabs defaultValue="marketplace" className="space-y-6">
-        <TabsList className="grid w-full grid-cols-5">
+        <TabsList className="grid w-full grid-cols-6">
           <TabsTrigger value="marketplace" className="flex items-center gap-2">
             <Store className="h-4 w-4" />
             <span className="hidden sm:inline">Marketplace</span>
@@ -349,6 +350,14 @@ export default async function VendorsPage() {
                 {accessAssignments.filter(a => a.status === "active").length}
               </span>
             )}
+          </TabsTrigger>
+          {/* Vendor plan catalogue — the brokerage side of /vendor/plans. vendor_subscriptions
+              had NO writer until this tab existed, which made the plan catalogue a shop with no
+              door: the subscriber count on every plan was structurally 0 and the "a brokerage
+              pays for this" delete gate could never fire. */}
+          <TabsTrigger value="plans" className="flex items-center gap-2">
+            <Layers className="h-4 w-4" />
+            <span className="hidden sm:inline">Plans</span>
           </TabsTrigger>
         </TabsList>
 
@@ -598,6 +607,11 @@ export default async function VendorsPage() {
             loadError={accessLoadError}
             canRevoke={canRevokeAccess}
           />
+        </TabsContent>
+
+        {/* Tab 6: Vendor plan catalogue */}
+        <TabsContent value="plans" className="space-y-4">
+          <VendorPlanCataloguePanel />
         </TabsContent>
       </Tabs>
     </div>

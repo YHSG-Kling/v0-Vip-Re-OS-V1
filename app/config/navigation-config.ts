@@ -730,6 +730,10 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'invoices', label: 'Invoices', href: '/vendor/invoices', icon: 'Receipt' },
       // Orphan-route sweep: the vendor connection center was unreachable from any nav.
       { id: 'connections', label: 'Connections', href: '/vendor/connections', icon: 'Plug' },
+      // The vendor's OWN plan catalogue (vendor_plans) — what brokerages subscribe to. Distinct
+      // from /vendor/billing, which is the platform tier the vendor pays US. Built with the
+      // surface so it is never a page nothing links to.
+      { id: 'plans', label: 'Plans', href: '/vendor/plans', icon: 'Layers' },
       // Notification-rail parity: every tenant user type gets the /notifications home.
       { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'settings', label: 'Settings', href: '/vendor/settings', icon: 'Settings' },

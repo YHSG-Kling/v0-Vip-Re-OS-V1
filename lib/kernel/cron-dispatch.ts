@@ -245,6 +245,11 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/sphere-resonance"                    , schedule: "30 7 * * *" },
   { path: "/api/cron/weekly-ai-metrics"                   , schedule: "54 7 * * 1" }, // (staggered r43)
   { path: "/api/cron/variant-outcomes-aggregator"         , schedule: "30 8 * * *" },
+  // Permit signal scan — the daily cadence socrata-market-registry.ts described in prose and
+  // nobody built: recentPermits() per registered dataset per ACTIVE brokerage market, matched to
+  // the tenant's own leads by address, filed into motivated_seller_signals. Off-peak and daily:
+  // city portals publish overnight and the 7-day lookback absorbs their backfill.
+  { path: "/api/cron/permit-signal-scan"                  , schedule: "40 5 * * *" },
 ]
 
 /** Pure: one cron field against a value. Supports "*", "*\/n", "a,b,c". */
