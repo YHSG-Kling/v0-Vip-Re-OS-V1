@@ -47,6 +47,11 @@ import {
   buildOpenHouseAttendeeSignal,
   buildPredictiveSellerSignal,
 } from "@/lib/lead-intelligence/signal-extensions"
+import {
+  evaluateInboundLeadSignal,
+  type InboundLeadChannel,
+  type InboundLeadIntentResult,
+} from "@/lib/lead-intent"
 
 type IngestResult = { applied: boolean; reason?: string }
 
@@ -186,4 +191,185 @@ export async function ingestPredictiveSellerSignalAction(input: {
     evidence: input.evidence,
   })
   return applySignalDelta(delta)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INBOUND MESSAGE FROM A LEAD — the intent / conversion / opt-out door
+// ─────────────────────────────────────────────────────────────────────────────
+
+const INBOUND_LEAD_CHANNELS = new Set<InboundLeadChannel>(["email", "sms", "voice", "direct_mail"])
+
+/**
+ * ingestInboundLeadSignalAction — receive one inbound message FROM A LEAD, on any
+ * of the four channels the owner's ruling names (inbound calls, texts, email,
+ * direct-mail responses), evaluate its intent, and act on it:
+ *
+ *   clear POSITIVE           → the lead converts to a contact AUTOMATICALLY,
+ *                              through the existing canonical lane
+ *                              (classifyAndRouteInbound → convertBuyer/SellerLeadOnIntent
+ *                              → acceptAIISAHandoff → evaluateAndAssignLead →
+ *                              handleLeadAssigned → createContactFromLead).
+ *                              No human step. Idempotent — a second positive
+ *                              reply returns the SAME contact.
+ *   "don't contact me"       → per-channel opt-out + DNC on the lead AND the
+ *                              address-keyed suppression rows the send gates
+ *                              actually read.
+ *   neutral / unclear        → nothing. No conversion on ambiguity.
+ *
+ * All of the above lives in lib/lead-intent; this export is only the door.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * AUTH. This file is `"use server"`, so this export is a public HTTP endpoint and
+ * the message body it accepts becomes a lead's recorded words and can trigger a
+ * conversion or a legally-binding suppression. It requires ONE of:
+ *
+ *   1. A trusted internal caller: `process.env.CRON_SECRET` is configured AND
+ *      `internalSecret` matches it. Webhook ingress verifies the PROVIDER
+ *      signature at the route layer and forwards CRON_SECRET here — the same
+ *      contract app/actions/ai-isa/handle-inbound-email.ts documents and the
+ *      inbound router already honours.
+ *   2. An authenticated session whose brokerage owns the lead.
+ *
+ * In BOTH modes the lead is re-read WITH a brokerage predicate downstream, so a
+ * forged leadId cannot reach another tenant. The session mode additionally proves
+ * the lead is in the caller's brokerage through the COOKIE client, so RLS applies
+ * to the proof itself, and it fails CLOSED on a refused read.
+ */
+export async function ingestInboundLeadSignalAction(input: {
+  brokerageId: string
+  leadId: string
+  channel: InboundLeadChannel
+  body: string
+  providerRef?: string | null
+  occurredAt?: string
+  context?: Record<string, unknown>
+  /** True when the caller already ran the intent classifier for this message. */
+  intentAlreadyRouted?: boolean
+  /** Set by trusted internal callers (a signature-verified webhook route, cron). */
+  internalSecret?: string
+}): Promise<InboundLeadIntentResult> {
+  if (!isValidUUID(input.leadId) || !isValidUUID(input.brokerageId)) {
+    return { outcome: "skipped", reason: "invalid_ids" }
+  }
+  if (!INBOUND_LEAD_CHANNELS.has(input.channel)) {
+    return { outcome: "skipped", reason: "unknown_channel" }
+  }
+
+  const cronSecret = process.env.CRON_SECRET
+  const isTrustedInternal =
+    !!cronSecret && !!input.internalSecret && input.internalSecret === cronSecret
+
+  if (!isTrustedInternal) {
+    const ctx = await resolveWriteContext()
+    if (!ctx.isAuthenticated) return { outcome: "skipped", reason: "unauthorized" }
+    if (ctx.brokerageId !== input.brokerageId) return { outcome: "skipped", reason: "forbidden" }
+
+    // Prove the lead is in the caller's tenant through the COOKIE client so RLS
+    // applies to the proof. A refused read resolves as `{ data: null, error }` —
+    // fail closed rather than reading a refusal as "no such lead".
+    const supabase = await createClient()
+    const { data, error } = await supabase
+      .from("leads")
+      .select("id")
+      .eq("id", input.leadId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+    if (error) return { outcome: "skipped", reason: "lead_scope_check_failed" }
+    if (!data) return { outcome: "skipped", reason: "lead_not_in_tenant" }
+  }
+
+  return evaluateInboundLeadSignal({
+    brokerageId: input.brokerageId,
+    leadId: input.leadId,
+    channel: input.channel,
+    body: input.body,
+    providerRef: input.providerRef ?? null,
+    occurredAt: input.occurredAt,
+    context: input.context,
+    intentAlreadyRouted: input.intentAlreadyRouted,
+  })
+}
+
+/**
+ * ingestDirectMailResponseSignalAction — the DIRECT-MAIL half of the same door.
+ *
+ * A direct-mail response reaches this system as a row in `direct_mail_responses`
+ * (response_type ∈ qr_scan | landing_visit | call | form_submit | reply |
+ * appointment — CHECK-verified live). That table carries `contact_id` and has NO
+ * `lead_id`, and neither of its writers (app/actions/direct-mail.ts `logResponse`,
+ * app/api/qr/scan/route.ts) evaluates intent — so a LEAD's response to a mail
+ * piece had nowhere to land and nothing to read it. Those two files are outside
+ * this lane; this action is the door they need to call, and the shape of that call
+ * is documented in the hand-off notes.
+ *
+ * HOW EACH RESPONSE TYPE IS TREATED, and why:
+ *
+ *   reply | form_submit | appointment  → a HAND-RAISE. The person deliberately
+ *     answered the mail piece asking to be reached. If they wrote something, their
+ *     words are what gets classified. If they wrote nothing, a SYSTEM-AUTHORED
+ *     sentence describing what they did is classified instead — marked
+ *     `system_authored` in the recorded metadata so it is never mistaken for a
+ *     quote. It can still fail to convert, and correctly: `classifyAndRouteInbound`
+ *     needs a buyer/seller side, and a lead whose side is unknown stays ambiguous
+ *     rather than being converted as a guess.
+ *
+ *   call → NOT classified here. A lead calling the tracked number already rides
+ *     lib/ai-isa/lead-call-intent.ts `routeLeadCallIntent`, which classifies the
+ *     TRANSCRIPT — the person's actual words, which are strictly better evidence
+ *     than "they dialled". Classifying here as well would double-spend the model
+ *     on the same event. The response is recorded and the voice lane converts.
+ *
+ *   qr_scan | landing_visit → recorded, never classified. A scan is not a sentence.
+ *     Inventing an intent from a page load is exactly the ambiguity the ruling says
+ *     must not convert.
+ */
+export async function ingestDirectMailResponseSignalAction(input: {
+  brokerageId: string
+  leadId: string
+  /** direct_mail_responses.response_type */
+  responseType: "qr_scan" | "landing_visit" | "call" | "form_submit" | "reply" | "appointment"
+  /** Anything the responder actually wrote (a reply card, a form's message field). */
+  message?: string
+  campaignId?: string
+  /** direct_mail_responses.id, or the provider's reference — the idempotency key. */
+  providerRef?: string | null
+  internalSecret?: string
+}): Promise<InboundLeadIntentResult> {
+  const HAND_RAISE = new Set(["reply", "form_submit", "appointment"])
+  const wrote = (input.message ?? "").trim()
+  const isHandRaise = HAND_RAISE.has(input.responseType)
+
+  // The system-authored stand-in for a wordless hand-raise. It states the fact
+  // ("yes, they answered the mailer and asked to be contacted") in plain words the
+  // deterministic keyword floor and the AI classifier both read the same way —
+  // and it is TRUE of every response type it is used for.
+  const SYSTEM_SENTENCE: Record<string, string> = {
+    reply: "Yes — they replied to our mailer and are interested.",
+    form_submit: "Yes — they filled in the form on our mailer and asked to be contacted.",
+    appointment: "Yes — they booked an appointment from our mailer.",
+    // Recorded, never classified (see the doc block) — but still recorded, so the
+    // mail response is on the lead's timeline instead of vanishing.
+    call: "They called the number on our mailer.",
+    qr_scan: "They scanned the QR code on our mailer.",
+    landing_visit: "They visited the landing page from our mailer.",
+  }
+
+  const body = wrote || SYSTEM_SENTENCE[input.responseType] || `Direct-mail response: ${input.responseType}`
+
+  return ingestInboundLeadSignalAction({
+    brokerageId: input.brokerageId,
+    leadId: input.leadId,
+    channel: "direct_mail",
+    body,
+    providerRef: input.providerRef ?? null,
+    context: {
+      response_type: input.responseType,
+      campaign_id: input.campaignId ?? null,
+      system_authored: !wrote,
+    },
+    // 'call' is owned by the voice lane's transcript classifier; scans and page
+    // visits carry nothing to classify. Both are recorded and stop there.
+    intentAlreadyRouted: !isHandRaise,
+    internalSecret: input.internalSecret,
+  })
 }

@@ -752,6 +752,101 @@ export async function dispatchDirectMail(
   // ── AUTONOMY GATE: hold an autonomous send from a manager outside its trust boundary ──
   const autonomyHeld = await autonomyGate(params)
   if (autonomyHeld) return autonomyHeld
+
+  // ── SUPPRESSION GATE — "stop mailing me" is a thing this dispatcher can now hear ──
+  // dispatchEmail (:320) and dispatchSms (:539) both consult checkSuppression before
+  // they spend. This dispatcher consulted NEITHER checkSuppression NOR
+  // evaluateOutboundCompliance: it gated on address verification, CASS deliverability,
+  // de-confliction and a Fair-Housing scan — on everything except whether the recipient
+  // had asked to stop. A lead or contact who opted out of mail was still mailed, and
+  // the send looked clean at every gate it did have.
+  //
+  // Channel is "mail" because that is what the LIVE CHECK on
+  // contact_suppression_list.channel admits (email | sms | phone | mail) — verified
+  // against the database, not guessed from the dispatcher's own vocabulary.
+  //
+  // Placed BEFORE the verification and CASS gates on purpose: a suppressed recipient
+  // must not cost a Lob address-verification call to find that out.
+  if (params.contactId || params.leadId) {
+    const supSvc = createServiceClient()
+    let supEmail: string | null = null
+    let supPhone: string | null = null
+    if (params.leadId) {
+      // The address-keyed arm of checkSuppression is the only one that can fire for a
+      // LEAD — its flag arm reads `contacts`. Without these two values a lead's own
+      // suppression rows are unreachable and the gate would pass vacuously.
+      const { data: supLead, error: supLeadError } = await supSvc
+        .from("leads")
+        .select("email, phone, dnc_status, direct_mail_opt_out, opt_out_channels")
+        .eq("id", params.leadId)
+        .maybeSingle()
+      if (supLeadError) {
+        // FAIL CLOSED. supabase-js RESOLVES a refusal, so treating this as "no
+        // suppression" is exactly how a refused read becomes a mailed opt-out.
+        return {
+          success: false,
+          providerKey: "compliance_gate",
+          error: `Outbound blocked: suppression precheck could not be read (${supLeadError.message})`,
+        }
+      }
+      const supRow = supLead as {
+        email?: string | null
+        phone?: string | null
+        dnc_status?: boolean | null
+        direct_mail_opt_out?: boolean | null
+        opt_out_channels?: string[] | null
+      } | null
+      supEmail = supRow?.email ?? null
+      supPhone = supRow?.phone ?? null
+
+      // THE ROW'S OWN FLAGS, read BEFORE the identifier-keyed arm — because for the
+      // lead this channel exists to reach there may be no identifier at all.
+      // checkSuppression matches suppression rows by email or phone; a MAIL-ONLY lead
+      // (address, no email, no phone) has neither, so that arm cannot fire and the gate
+      // would pass vacuously while `direct_mail_opt_out` sits true on the row. Proved
+      // live: a mail-only lead with dnc_status=t, direct_mail_opt_out=t and
+      // opt_out_channels={email,sms,phone,direct_mail} produced ZERO keyable
+      // suppression rows. The flags ARE the record for that lead, so they are read here.
+      if (supRow?.dnc_status === true || supRow?.direct_mail_opt_out === true) {
+        console.warn(`[Dispatch] direct mail blocked for lead ${params.leadId}: lead row carries a mail opt-out`)
+        return {
+          success: false,
+          providerKey: "compliance_gate",
+          error: "Outbound blocked: this lead has opted out of mail",
+        }
+      }
+      if (Array.isArray(supRow?.opt_out_channels) && supRow.opt_out_channels.some((c) => c === "direct_mail" || c === "mail")) {
+        // Both spellings on purpose: the lead row's channel list and
+        // contact_suppression_list.channel are DIFFERENT vocabularies for one idea
+        // ("direct_mail" vs the CHECK-admitted "mail"), and honouring only one of them
+        // is how a recorded opt-out becomes an unhonoured one.
+        console.warn(`[Dispatch] direct mail blocked for lead ${params.leadId}: mail is in opt_out_channels`)
+        return {
+          success: false,
+          providerKey: "compliance_gate",
+          error: "Outbound blocked: this lead has opted out of mail",
+        }
+      }
+    }
+    const mailSuppression = await checkSuppression({
+      brokerageId: params.brokerageId,
+      contactId:   params.contactId ?? null,
+      email:       supEmail,
+      phone:       supPhone,
+      channel:     "mail",
+    })
+    if (mailSuppression.suppressed) {
+      console.warn(
+        `[Dispatch] direct mail blocked for ${params.contactId ?? params.leadId}: ${mailSuppression.reason}`,
+      )
+      return {
+        success: false,
+        providerKey: "compliance_gate",
+        error: `Outbound blocked: ${mailSuppression.reason}`,
+      }
+    }
+  }
+
   // ── Lead consent + verification gate ──────────────────────────────────────
   // Wave 36 — leads are unconsented for most channels; the only outbound
   // touches permitted to a lead row are direct_mail and email. For mail

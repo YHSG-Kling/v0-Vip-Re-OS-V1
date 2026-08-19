@@ -55,6 +55,21 @@ export default async function LeadDetailPage({ params }: PageProps) {
   const allowed = isPlatform || isBrokerageMatch
   if (!allowed) redirect("/dashboard")
 
+  // THE INBOUND TRANSCRIPT. lib/lead-intent/inbound-lead-intent.ts records every inbound
+  // message on lead_conversation_history before evaluating it, and until this read the table
+  // had no consumer — the write-only-table guard caught it, correctly. The transcript is the
+  // EVIDENCE behind the automatic decisions this page's other cards report: a lead converted
+  // because a reply was positive, or went quiet because a reply asked to be left alone. Read
+  // here rather than in a client component so it stays behind the gate above, and scoped by
+  // brokerage_id as well as lead_id so a platform-staff read cannot widen by a guessed id.
+  const { data: transcript, error: transcriptError } = await svc
+    .from("lead_conversation_history")
+    .select("id, channel, direction, message_content, metadata, occurred_at")
+    .eq("lead_id", lead.id)
+    .eq("brokerage_id", lead.brokerage_id)
+    .order("occurred_at", { ascending: false })
+    .limit(50)
+
   const fullName = [lead.first_name, lead.last_name].filter(Boolean).join(" ") || "(unnamed lead)"
   const addr = [lead.mailing_address, lead.mailing_city, lead.mailing_state, lead.mailing_zip].filter(Boolean).join(", ")
 
@@ -79,6 +94,41 @@ export default async function LeadDetailPage({ params }: PageProps) {
           <div className="flex gap-2"><span className="text-muted-foreground w-24">Email</span> <span>{lead.email ?? "—"}</span></div>
           <div className="flex gap-2"><span className="text-muted-foreground w-24">Phone</span> <span>{lead.phone ?? "—"}</span></div>
           <div className="flex gap-2"><span className="text-muted-foreground w-24">Address</span> <span>{addr || "—"}</span></div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">Conversation</CardTitle>
+        </CardHeader>
+        <CardContent className="text-sm space-y-3">
+          {transcriptError ? (
+            // A refused read is not an empty inbox. Saying "no messages" here would claim
+            // the lead never replied, which is the one thing this card must never get wrong.
+            <div className="text-destructive">
+              Could not load the conversation: {transcriptError.message}
+            </div>
+          ) : !transcript?.length ? (
+            <div className="text-muted-foreground">No inbound messages recorded yet.</div>
+          ) : (
+            transcript.map((m) => {
+              const meta = (m.metadata ?? {}) as Record<string, unknown>
+              const source = typeof meta.source === "string" ? meta.source : null
+              return (
+                <div key={m.id} className="border-l-2 pl-3 space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap text-xs text-muted-foreground">
+                    <Badge variant="outline">{m.channel ?? "unknown channel"}</Badge>
+                    <Badge variant={m.direction === "inbound" ? "default" : "outline"}>
+                      {m.direction ?? "—"}
+                    </Badge>
+                    {source && <span>via {source}</span>}
+                    <span>{m.occurred_at ? new Date(m.occurred_at).toLocaleString() : "—"}</span>
+                  </div>
+                  <div className="whitespace-pre-wrap">{m.message_content ?? "—"}</div>
+                </div>
+              )
+            })
+          )}
         </CardContent>
       </Card>
 
