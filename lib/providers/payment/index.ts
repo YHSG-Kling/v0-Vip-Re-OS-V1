@@ -233,6 +233,29 @@ export async function createAccountLink(
 // tenant-facing action should be able to ask for it. That is a product decision
 // about what this system claims to know about money, not a wiring gap — so it
 // stays unwired until an owner asks for it in those terms.
+//
+// ── RE-EXAMINED (next burn-down wave), AND THERE IS A WIRING THAT DOES NOT COST
+//    THE PRODUCT DECISION ABOVE. Recorded rather than done, because the two files
+//    it touches belong to other lanes.
+//
+// The adjudication above is upheld: no treasury SURFACE, no `"use server"` export,
+// no ledger-adjacent figure on a screen. But the second bullet of that adjudication
+// is itself a DUPLICATE finding that was left un-acted-on. `v1/balance` is requested
+// twice more in this tree, each time as a hand-rolled fetch:
+//   · app/api/cron/health-check/route.ts:110
+//   · lib/platform/go-live-readiness.ts:137
+// Both want ONE bit — did the credential work — and each re-implements the key
+// lookup and the request to get it. This function already does both, better, and
+// returns `{ success, error }`, which is exactly that bit plus a reason.
+//
+// So the merge direction is INWARD, and it costs nothing the note above defends:
+// both probes call `getStripeBalance()` and read ONLY `success` / `error`, never
+// `available` or `pending`. No figure is surfaced, no new authority tier is needed,
+// the balance still reaches no screen — and the two inline copies of the request go
+// away. Anything else that later wants the SUM still has to make the product
+// decision above first.
+//
+// This lane does not own either file, so the edit is reported, not made.
 
 export interface StripeBalanceResult {
   success: boolean

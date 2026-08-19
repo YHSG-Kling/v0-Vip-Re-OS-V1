@@ -204,6 +204,19 @@ export async function checkBuyerCanPerformAction(params: {
  *
  * `userId` is now ignored and taken from the session, so the interaction log
  * records who actually called.
+ *
+ * WIRED (orphan burn-down). Gated in a previous wave and then left with no caller at
+ * all — the buyer-facing assistant existed only as an endpoint. Its surface is now
+ * app/portal/[contactId]/assistant/page.tsx + buyer-assistant-client.tsx, in the
+ * buyer's own portal, which is the audience `requireContactAccess` was chosen for:
+ * it admits the CONTACT themselves (linked user id or matching email) as well as
+ * same-brokerage staff, unlike the staff-only assertCanActOnContact.
+ *
+ * The client sends `contactId`, `intent` and `transcript` and NOTHING ELSE — the
+ * ignored `userId` parameter is not passed at all rather than passed and discarded,
+ * so no surface in the tree even looks like it supplies the actor. Typed transcript
+ * first: a browser speech layer produces the same two fields and needs no change to
+ * this contract.
  */
 export async function handleBuyerVoiceAssistant(params: {
   contactId: string

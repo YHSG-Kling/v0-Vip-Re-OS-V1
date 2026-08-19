@@ -1200,6 +1200,14 @@ export async function createListing(params: ListingIntakeData) {
  * orchestrator and the local `createListing` can both go, with that function as
  * the named survivor. That is a listings-kernel change and belongs to whoever
  * owns app/actions/listings-kernel.ts.
+ *
+ * RE-VERIFIED THIS WAVE and the blocker STANDS, unchanged: `grep -n` for
+ * `transactions` / `dotloop` over app/actions/listings-kernel.ts returns only the
+ * tombstone at :748-757 naming lib/transactions/offer-bridge.ts as the transactions
+ * writer for the offer-accepted trigger — the canonical door still opens no
+ * seller-side transaction and no provider container. So `createListing` in this file
+ * is still the only path that does both, and deleting this orchestrator would still
+ * strand it. Not re-litigated; recorded as still true.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 export async function runCompleteListingIntake(params: {

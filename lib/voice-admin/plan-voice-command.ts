@@ -22,6 +22,30 @@
 //
 // Never throws: a voice surface that 500s mid-sentence is worse than one that says
 // it could not tell.
+//
+// ── THE DOOR (orphan burn-down) ───────────────────────────────────────────────
+// Both exports below were built complete and referenced by NOTHING, so this whole
+// lane — the differentiator lib/kernel/manager-registry.ts:voice_kernel_command_surface
+// describes — had no way in. It does now: app/api/agentic-os/voice/route.ts (POST).
+//
+// THAT DIRECTORY, not a page, because this module's authority source IS the Agentic
+// API's: `authorizedActions` over `buildAppActionManifest`, resolved by
+// `resolveAgenticCaller`. /api/agentic-os/actions answers "what may this caller do",
+// /api/agentic-os/mcp exposes it as tools, and the new route turns a sentence into a
+// plan over the same manifest. A different gate would have meant a second authority
+// answer for the same capabilities.
+//
+// ONE HONEST LIMIT, REPORTED RATHER THAN PAPERED OVER: `resolveAgenticCaller` grants
+// scopes to an agent TOKEN (from the credential) and to PLATFORM STAFF (`["*"]`), and
+// grants a plain tenant session NONE. So a broker signing in today gets a plan whose
+// every step reads "You are not able to … from this account" — which is the true
+// answer from the scope machinery, not a bug in this file. Widening it is a change to
+// lib/agentic-os/agent-credentials.ts, which this lane does not own.
+//
+// The route also refuses a BEARER TOKEN outright: `spoken_by` below is a users.id and
+// the same id goes to the capability resolver as `agentUserId`, and a credential has
+// no human behind it. `agents.id` and `users.id` are disjoint spaces, so there is no
+// id to substitute that would not be a lie in the audit trail.
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"

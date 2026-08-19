@@ -47,6 +47,56 @@ async function requireBillingCaller(): Promise<
  * Record a usage event from within the app
  * Input contract: RecordUsageEventInput
  * Output contract: RecordUsageEventOutput
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ORPHAN BURN-DOWN — NOT WIRED, AND THE REASON IS BIGGER THAN THIS EXPORT.
+ * Measured this pass, not assumed. Read this before giving it a caller.
+ *
+ * `billing_usage` HAS NO WRITER ANYWHERE IN THE PRODUCT. `grep -rn billing_usage`
+ * over app/ and lib/ returns six sites and every one of them is inside the billing
+ * kernel or a read:
+ *   · lib/kernel/billing.ts:512/546/567 — recordUsageEvent, the only INSERT/UPDATE,
+ *     reachable from the product through this action alone;
+ *   · lib/kernel/billing.ts:297 and :695 — reads (entitlement, overage projection);
+ *   · app/actions/billing.ts:243 — getBillingUsage, the tenant read.
+ * This action is that one writer's only door, and it has no caller. So the table has
+ * never been written by the running product.
+ *
+ * TWO LIVE SURFACES READ IT AND THEREFORE SHOW ZERO, ALWAYS:
+ *   · app/settings/billing/usage-section.tsx — the tenant's Active Agents / AI Calls /
+ *     Storage / Video bars, fed by getBillingUsage;
+ *   · app/components/features/admin/overage-calculator.tsx (rendered by
+ *     app/dashboard/admin/billing/page.tsx:125) — projects overage EXPOSURE from
+ *     calculateOverageExposure, which selects exactly those five columns.
+ * An overage projection computed from an unwritten meter is not a small gap: it reads
+ * as "no exposure" for every tenant, forever.
+ *
+ * IT IS NOT A DUPLICATE OF THE METERS THAT DO WORK, checked both ways:
+ *   · lib/usage.ts:incrementUsage writes `usage_counters` (the AI-quota rail, joined
+ *     by v_brokerage_ai_quota);
+ *   · lib/usage/log-media-usage.ts writes `usage_events` + `usage_counters`.
+ * Neither touches `billing_usage`, and `billing_usage`'s readers do not read theirs.
+ * So deleting this would not "move the capability elsewhere" — it would leave the two
+ * surfaces above reading a table nothing can ever write.
+ *
+ * WHY NO SURFACE IS BUILT FOR IT HERE. This is a `"use server"` export, so its
+ * legitimate caller is a CLIENT that just consumed a metered resource — not a form for
+ * typing usage in by hand. Inventing an admin data-entry screen would give the export
+ * a caller while leaving both readers projecting from numbers nobody produces: a
+ * rename of the orphan, which the wired-surface ratchet forbids in as many words.
+ * The finish is call sites in files this lane does not own, and they are REPORTED.
+ * THIS action is the door for a CLIENT caller — verified, exactly one exists:
+ *   · app/dashboard/admin/lead-intake/social-scrape-trigger.tsx ("use client",
+ *     calls scrapeSocialMedia) → metric "scraper_calls".
+ * The other two are SERVER-side and must call the kernel command directly
+ * (lib/kernel/billing.ts:recordUsageEvent) rather than this wrapper — a server module
+ * routing through a `"use server"` action would be gating itself against a session it
+ * may not have:
+ *   · lib/usage/log-media-usage.ts → "video_minutes" beside its existing two writes;
+ *   · lib/ai/cost-tracking.ts → "ai_calls" beside its incrementUsage call.
+ * Note the units are DELTAS (`newTotal = current + units`), so any caller must add
+ * what it just consumed, never restate a running total.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 export async function recordUsageEventAction(
   input: RecordUsageEventInput

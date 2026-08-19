@@ -1029,7 +1029,26 @@ const W23_WRITER_FLOORS: Array<{ file: string; table: string; floor: number }> =
   // dropped from assistant.ts because that file now has no notifications writer at
   // all: a floor of 1 there would demand the duplicate back.
   { file: "app/actions/tasks.ts", table: "notifications", floor: 1 },
-  { file: "app/actions/copilot.ts", table: "notifications", floor: 2 },
+  // MOVED, NOT LOST — the same class as the tasks.ts entry above, and handled the
+  // same way. `copilot.ts:handleMorningKickoff` was a duplicate of
+  // lib/intelligence/daily-briefing-generator.ts:generateDailyBriefing: one source
+  // and a single sentence, against the survivor's seven sources persisted to
+  // ai_daily_briefings. The ONE thing the survivor lacked was DELIVERY — it wrote
+  // the briefing row and never rang the bell — so the duplicate was kept for that
+  // alone. The delivery has now been merged ONTO the survivor
+  // (daily-briefing-generator.ts:876-893, keyed on users.id, tenant-stamped, its
+  // refusal destructured and logged rather than discarded the way the orphan did),
+  // and the duplicate deleted with a tombstone naming it.
+  //
+  // So copilot.ts drops to the one notifications writer it still has, and the
+  // floor follows the write to its new home. Lowering copilot's floor WITHOUT
+  // raising the survivor's would let a genuine deletion look like a merge.
+  { file: "app/actions/copilot.ts", table: "notifications", floor: 1 },
+  // Floor 1, not 2: this file touches `notifications` twice but only ONE of those is
+  // a write (the delivery insert at :877). The other, at :330, is a SELECT that reads
+  // yesterday's briefing notice back. A floor counts writers, so counting the read
+  // would demand a second insert that was never supposed to exist.
+  { file: "lib/intelligence/daily-briefing-generator.ts", table: "notifications", floor: 1 },
   { file: "app/actions/credit-copilot.ts", table: "notifications", floor: 3 },
   { file: "app/actions/social-publishing.ts", table: "notifications", floor: 1 },
   { file: "app/actions/video-content.ts", table: "notifications", floor: 3 },

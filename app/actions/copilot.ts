@@ -1,5 +1,6 @@
 "use server"
 
+import { revalidatePath } from "next/cache"
 import { createServerClient, createClient } from "@/lib/supabase/server"
 import { agentIdForUser } from "@/lib/agents/agent-for-user"
 import { logMilestoneOverdue } from "@/lib/events"
@@ -7,9 +8,6 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { incrementUsage } from "@/lib/usage"
 import { isValidUUID } from "@/lib/validations"
 import { authorizeForUser } from "@/lib/auth/authorize-for-user"
-// The ONE way a notifications row gets its tenant — the recipient's
-// users.brokerage_id, the exact value badge-counts compares against.
-import { resolveRecipientBrokerageId } from "@/lib/notifications/recipient-tenant"
 // Writers resolve their own identity and their own client here — never from the payload.
 import { resolveWriteContext } from "@/lib/platform/acting-context"
 
@@ -26,16 +24,17 @@ import { resolveWriteContext } from "@/lib/platform/acting-context"
 //      exists to keep unwired feature modules referenced. Adding a name to it wires
 //      nothing.
 //   2. THERE IS NO EVENT TO HANDLE. `lib/events/types.ts:29-54` is the entire
-//      EVENT_TYPES vocabulary: no coaching-booked, no morning-kickoff, and the one
-//      near-match for suggestion acceptance (`AI_SUGGESTION_ACTIONED`) has ZERO
-//      emitters repo-wide.
+//      EVENT_TYPES vocabulary: no coaching-booked, and the one near-match for
+//      suggestion acceptance (`AI_SUGGESTION_ACTIONED`) has ZERO emitters repo-wide.
+//      (It had no morning-kickoff either; that one is now deleted onto its survivor
+//      — see the tombstone below.)
 //   3. The recorded blocker — `emitEventFromCron` carries a service credential and no
 //      session, so `authorizeForUser` refuses every unattended dispatch — is TRUE and
 //      MOOT. An internal-caller seam would gate a dispatch that never happens. It
 //      would make these look wired while they fire exactly as often as today: never.
 //      That is strictly worse than leaving them plainly unwired.
 //
-// SO THEY ARE USER ACTIONS, and the three below are treated as such: the caller must
+// SO THEY ARE USER ACTIONS, and the two below are treated as such: the caller must
 // be the user named in the payload, or hold the act-for-others role
 // (`authorizeForUser`, lib/auth/authorize-for-user.ts) — and where the payload need
 // not name a user at all, it does not get to (see handleSuggestionAccepted). Verified
@@ -65,16 +64,21 @@ import { resolveWriteContext } from "@/lib/platform/acting-context"
  * actor is now resolved server-side from the session and the payload's claim about who
  * acted is ignored; `authorizeForUser` still decides WHETHER the call is allowed.
  *
- * WHAT IS STILL MISSING is an accept control on the coaching dashboard
- * (app/dashboard/coaching), which renders the pending suggestions and offers no verb
- * for them. That page belongs to another lane, so it is named here rather than
- * half-built.
+ * WIRED (this wave). The missing accept control now exists:
+ * app/dashboard/coaching/sessions/coaching-sessions-client.tsx calls this for each
+ * pending suggestion, on the route app/dashboard/coaching/sessions/page.tsx. It is a
+ * SIBLING of /dashboard/coaching rather than a card on it because
+ * coaching-dashboard-client.tsx belongs to another lane this wave — the same reason
+ * the previous note gave for not building it, resolved by building beside the page
+ * instead of inside it. /dashboard/coaching/practice is the existing precedent for a
+ * coaching sub-route. The one line still owed on the parent — a link to the sibling
+ * beside its suggestions card — is reported to the wave, not written here.
  */
 export async function handleSuggestionAccepted(payload: any) {
   const { suggestion_id, action_type } = payload
   // The actor is the SESSION's accountable human — the staff member when acting-as,
   // the user otherwise — never a name lifted out of the request body. This replaces
-  // the `authorizeForUser(payload.user_id)` gate the other two handlers still need:
+  // the `authorizeForUser(payload.user_id)` gate the other handler still needs:
   // there is no one to act FOR here, so the payload names nobody and the question
   // collapses to "are you signed in", which resolveWriteContext already answers.
   const write = await resolveWriteContext()
@@ -125,6 +129,10 @@ export async function handleSuggestionAccepted(payload: any) {
     return { success: false, error: `No suggestion ${suggestion_id} exists in your brokerage to accept` }
   }
 
+  // The accept surface renders its pending list on the server, so an accepted
+  // suggestion stays on screen until this cache entry is dropped.
+  revalidatePath("/dashboard/coaching/sessions")
+
   return { success: true }
 }
 
@@ -134,10 +142,18 @@ export async function handleSuggestionAccepted(payload: any) {
  * coaching surface (app/dashboard/coaching) reads suggestions and reports but books
  * nothing. So deleting it would remove the capability outright.
  *
- * WHAT IS STILL MISSING is a caller, and it is a UI one, not an orchestrator one: a
- * "book a session" control on the coaching dashboard. That page belongs to another lane,
- * so this is left as a NAMED surface rather than a half-built one — the export is real,
- * gated, and its writes are all checked.
+ * WIRED (this wave). The caller the previous note named — "a 'book a session' control on
+ * the coaching dashboard" — is app/dashboard/coaching/sessions/coaching-sessions-client.tsx,
+ * on the route app/dashboard/coaching/sessions/page.tsx. Coaches are offered from the
+ * tenant's own staff roster (broker, broker_admin, broker_owner, team_lead, admin) read
+ * server-side, so `coach_id` is chosen from a scoped list rather than typed in.
+ *
+ * THE PARTIAL OUTCOME IS RENDERED AS A PARTIAL OUTCOME. This returns
+ * `{success:true, warning}` when the session lands on the calendar but the prep
+ * reminder is refused, and the client shows that warning in its own colour. That
+ * distinction only exists because a previous pass stopped discarding these errors —
+ * a surface that collapsed it back into a green checkmark would put the old bug
+ * ("a coaching session that was never booked looked booked") back on the screen.
  */
 export async function handleCoachingSessionBooked(payload: any) {
   const { user_id, session_date, coach_id, topic } = payload
@@ -191,87 +207,42 @@ export async function handleCoachingSessionBooked(payload: any) {
   // The session IS on the calendar at this point — report the missing reminder
   // rather than implying the booking failed.
   if (taskError) {
+    // Still revalidated: the session IS on the calendar, so the booked list is stale
+    // either way. Only the reminder failed.
+    revalidatePath("/dashboard/coaching/sessions")
     return { success: true, warning: `Session booked, but the prep reminder was not created: ${taskError.message}` }
   }
+
+  // The booking surface renders the coaching calendar on the server.
+  revalidatePath("/dashboard/coaching/sessions")
 
   return { success: true }
 }
 
-/**
- * DUPLICATE, MERGE NOT YET COMPLETABLE FROM HERE — recorded rather than deleted.
- *
- * SURVIVOR: lib/intelligence/daily-briefing-generator.ts:generateDailyBriefing, driven
- * by app/api/cron/daily-briefing/route.ts. That is the real morning briefing and it is
- * already the thing this one only pretends to be: it runs UNATTENDED on a service
- * credential for every active agent, reads seven sources (tasks, transactions, leads,
- * showings, calendar, contacts, plus the ISA overnight section) and persists to
- * `ai_daily_briefings`. This function reads ONE source — today's task list — and its
- * entire output is the sentence "You have N tasks today."
- *
- * THE ONE ITEM THE SURVIVOR LACKS is the last line of this one: the survivor writes the
- * briefing row but never DELIVERS it — it reads `notifications` (for ISA escalations) and
- * inserts none, so nothing rings the bell when a briefing is ready. That insert, with the
- * recipient-tenant resolution below, is what has to move onto the survivor before this
- * copy is deleted. lib/intelligence/daily-briefing-generator.ts belongs to another lane,
- * so the duplicate STAYS until its missing item is on the survivor — deleting first would
- * lose the delivery, which is exactly the capability worth keeping.
- */
-export async function handleMorningKickoff(payload: any) {
-  const { user_id } = payload
-  // Reads `user_id`'s task list and DELIVERS THEM A NOTIFICATION. Ungated, that is both a
-  // read of another agent's day and a notification-spoofing endpoint — the body text is
-  // derived from their tasks but the delivery is triggered by whoever called.
-  const auth = await authorizeForUser(user_id)
-  if (!auth.ok) return { success: false, error: auth.error }
-
-  const supabase = await createServerClient()
-
-  // Generate daily priorities
-  const { data: todayTasks } = await supabase
-    .from("tasks")
-    .select("*")
-    .eq("assigned_to_agent_id", await agentIdForUser(supabase, user_id))
-    .gte("due_date", new Date().toISOString().split("T")[0])
-    .lte("due_date", new Date().toISOString().split("T")[0] + "T23:59:59")
-    .order("priority", { ascending: false })
-
-  // Create daily summary notification
-  // notifications' real shape is user_id/type/body (the phantom recipient_id/
-  // notification_type/message insert failed silently — no kickoff ever delivered).
-  // Checked, for the reason the comment above already records: the previous
-  // shape failed silently and "no kickoff ever delivered" — which stayed
-  // invisible because the insert's error was discarded and success was returned
-  // either way. A briefing nobody received must not report as sent.
-  //
-  // TENANT — the RECIPIENT's `users.brokerage_id`. `user_id` is a users.id (the
-  // agents.id needed for the tasks read above is fetched separately via
-  // agentIdForUser and never substituted here; the spaces are DISJOINT).
-  // Unstamped, this briefing is filtered out of badge-counts by
-  // `.eq("brokerage_id", …)`, so "no kickoff ever delivered" would have stayed
-  // true even after the shape was fixed — the row lands and the bell stays dark.
-  const kickoffTenant = await resolveRecipientBrokerageId(supabase, user_id)
-  if (!kickoffTenant.ok) {
-    return { success: false, error: `Kickoff not delivered: ${kickoffTenant.reason}` }
-  }
-  if (!kickoffTenant.brokerageId) {
-    // Written untenanted the row is invisible to the very bell this briefing
-    // exists to ring. Reporting the failure beats reporting a delivery.
-    return { success: false, error: "Kickoff not delivered: the recipient has no brokerage" }
-  }
-  const { error: notifyError } = await supabase.from("notifications").insert({
-    user_id: user_id,
-    brokerage_id: kickoffTenant.brokerageId,
-    type: "morning_kickoff",
-    title: "Good Morning! Here's Your Day",
-    body: `You have ${todayTasks?.length || 0} tasks today. Let's make it productive!`,
-    priority: "medium",
-  })
-  if (notifyError) {
-    return { success: false, error: `Kickoff not delivered: ${notifyError.message}` }
-  }
-
-  return { success: true, taskCount: todayTasks?.length || 0 }
-}
+// ─── REMOVED in the orphan burn-down ─────────────────────────────────────────
+//
+// `handleMorningKickoff(payload)` — DELETED. The merge it was waiting on has landed.
+//
+// SURVIVOR: lib/intelligence/daily-briefing-generator.ts:generateDailyBriefing,
+// driven by app/api/cron/daily-briefing/route.ts. It was always the real morning
+// briefing — unattended on a service credential for every active agent, seven
+// sources read (tasks, transactions, leads, showings, calendar, contacts, plus the
+// ISA overnight section), persisted to `ai_daily_briefings` — against this copy's
+// ONE source and its single sentence, "You have N tasks today."
+//
+// The previous note here recorded the one thing the survivor lacked: it wrote the
+// briefing row and never DELIVERED it, so nothing rang the bell when a briefing was
+// ready. That was the only reason this duplicate was kept. THE DELIVERY IS NOW ON
+// THE SURVIVOR — lib/intelligence/daily-briefing-generator.ts:875-888, a
+// `notifications` insert keyed on the users.id (NOT the agents.id resolved beside
+// it; the spaces are disjoint), tenant-stamped, entity-linked to the briefing row,
+// and with its refusal LOGGED as "saved but NOT delivered" rather than swallowed —
+// which is the defect this copy had before it was repaired and is the one thing that
+// must not be lost in a merge. Its comment names this function as the source.
+//
+// So there is nothing left here to lose: reading one task list is strictly less than
+// reading seven, and the delivery half is gone to a caller that actually runs. Both
+// halves of the doctrine are satisfied — merge first, then delete.
 
 export async function generate7DayPlan(payload: any) {
   const supabase = await createServerClient()
@@ -371,12 +342,20 @@ export async function generate7DayPlan(payload: any) {
  * an AI-generated client timeline, and app/actions/lender-portal-actions.ts:203 stamps a
  * lender event. This is the only lane for an agent to add ONE ad-hoc milestone by hand.
  *
- * THE BLOCKER: there is no "add milestone" affordance on any transaction surface, so
- * wiring it means designing that control — a product decision, not a wiring one — and the
- * deal surfaces it would live on are being edited by other lanes this wave. Do not delete
- * it to move the number: the capability is real and the repair recorded above (resolving
- * the listing to its transaction, in the caller's brokerage) is exactly the work that
- * would otherwise have to be redone.
+ * WIRED (this wave). The affordance the previous note said did not exist is
+ * app/dashboard/transactions/[id]/milestones/add-milestone-form.tsx, on the deal
+ * sub-route app/dashboard/transactions/[id]/milestones/page.tsx — a sibling of the
+ * existing /health sub-route, chosen because transaction-detail-client.tsx belongs to
+ * another lane this wave. The page reads the deal only to find its `listing_id` (this
+ * action takes a LISTING and resolves the transaction itself) and to render what is
+ * already there; the write path re-derives both the tenant and the transaction, so the
+ * page is not load-bearing for either. The link from the deal header to that sub-route
+ * is reported to the wave, not written here.
+ *
+ * THE TYPE FIELD IS FREE TEXT ON PURPOSE. lib/transactions/milestone-catalog.ts is the
+ * canonical set and it is SEEDED — offering it in this form would either duplicate a
+ * seeded row or imply the catalog is hand-editable. This lane is for the milestone that
+ * is NOT in the catalog.
  */
 export async function createTransactionMilestone(params: {
   listing_id: string
@@ -442,6 +421,9 @@ export async function createTransactionMilestone(params: {
     .single()
 
   if (error) throw error
+
+  // The deal's milestone sub-route lists these server-side.
+  revalidatePath(`/dashboard/transactions/${tx.id}/milestones`)
 
   return { success: true as const, milestone: data }
 }

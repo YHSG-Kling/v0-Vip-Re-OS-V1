@@ -76,6 +76,9 @@ export async function logActivity(data: {
 
     revalidatePath("/mobile/assistant")
     revalidatePath("/dashboard")
+    // The activity log renders this on the server — a freshly logged activity is
+    // invisible there until this entry is dropped.
+    revalidatePath("/mobile/activity")
 
     return { success: true, activityId: activity?.id }
   } catch (err) {
@@ -113,6 +116,9 @@ export async function completeActivity(
 
     revalidatePath("/mobile/assistant")
     revalidatePath("/dashboard")
+    // Completion moves the row between the log's status filters AND writes the note
+    // the log renders.
+    revalidatePath("/mobile/activity")
 
     return { success: true }
   } catch (err) {
@@ -122,6 +128,25 @@ export async function completeActivity(
 }
 
 // ─── Get Agent Activities ────────────────────────────────────────────────────
+/**
+ * WIRED (orphan burn-down). This file had three live WRITERS on the field surfaces —
+ * app/mobile/components/os/field-quick-actions.tsx, app/crm/components/os/
+ * contact-command-strip.tsx and app/crm/components/contact-header-card.tsx all call
+ * logActivity, and app/mobile/components/os/mobile-followup-panel.tsx calls
+ * completeActivity — and this read had no caller at all. An agent could log a door
+ * knock, a call and a note from the field and there was no screen anywhere in the
+ * product that showed them back, including the notes captured at completion, which
+ * are the most perishable thing the business collects.
+ *
+ * Its reader is now app/mobile/activity/page.tsx: the full history behind the
+ * `getPendingFollowups` queue, status-filtered through searchParams so it stays a
+ * server component and no unrendered activity row (free-text notes included) is ever
+ * shipped to the client.
+ *
+ * NOT A DUPLICATE OF getPendingFollowups below: that one returns only `pending` rows
+ * of four follow-up types with the contact embedded, ordered by schedule. This one
+ * returns every activity type in every status, newest first, and embeds nothing.
+ */
 export async function getAgentActivities(
   agentId: string,
   options?: { limit?: number; status?: string }

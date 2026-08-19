@@ -64,16 +64,21 @@ async function requireCaller(): Promise<
  * WHAT BLOCKS THE MERGE: `app/actions/ai-lead-scoring.ts` is outside this lane's
  * file ownership, and this doctrine forbids deleting before the merge lands.
  *
- * AND THE SURVIVOR IS CURRENTLY BROKEN — verified against the live database, not
- * a source file. `scoreLeadWithAI` updates `contacts` with `qualification_score`,
- * `motivation_score` and `readiness_level`. NONE OF THOSE THREE COLUMNS EXISTS on
- * `contacts` (information_schema.columns: the table has engagement_score,
- * intent_score, lead_score, isa_qualification_score, referral_score, confidence_score
- * — and no readiness column at all). The update therefore fails PGRST204 every
- * time, and unlike the writes around it that error IS destructured and thrown —
- * so "Run AI Score" on the CRM has been failing 100% of the time. LAYERING.md's
- * column table is wrong on the same three names. That is a cross-lane defect and
- * it is reported, not silently worked around here.
+ * THE SURVIVOR'S COLUMN DEFECT IS FIXED — that half of the previous note is now
+ * STALE and is corrected here rather than left to mislead. It recorded that
+ * `scoreLeadWithAI` wrote `qualification_score`, `motivation_score` and
+ * `readiness_level`, none of which exist on `contacts`, so "Run AI Score" failed
+ * 100% of the time. Re-read this wave: it no longer names any of the three on the
+ * `contacts` update — they are persisted to `lead_score_history` instead (readiness
+ * inside its `factors` blob), and its own header now records LAYERING.md's table as
+ * the thing that is wrong. So the survivor works, and the merge below is the only
+ * outstanding item.
+ *
+ * RE-VERIFIED THIS WAVE, and the merge payload is unchanged: `scoreLeadWithAI` still
+ * reads `messages` ALONE (no `activities`, no `lead_property_searches`, no
+ * `email_tracking`) and still parses free text rather than using generateObject with
+ * a schema. Those, plus the extra dimensions and the tenant predicate listed above,
+ * are what has to land on app/actions/ai-lead-scoring.ts before this copy goes.
  *
  * THE ONE THING FIXED IN PLACE: `contacts.ai_insights` is a **text** column, not
  * jsonb (verified live). This function assigned it an OBJECT and did not
