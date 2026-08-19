@@ -249,10 +249,19 @@ for (const f of files) codeCache.set(f, code(f))
  * to prevent.
  */
 function callSites(src: string): string {
+  // `\\.` DOES NOT MATCH A BACKSLASH-NEWLINE — `.` excludes newline in JS regex. A
+  // template literal containing a line continuation therefore failed to match, the
+  // scanner paired the WRONG backticks, and everything to the next one was masked
+  // away. lib/agents/asset-manager.ts collapsed from 36,824 characters to 5,745 —
+  // 85% of the file gone as a reference source — which hid the only caller of
+  // lib/remotion/registry.ts:listCompositionsForTier and reported it as an orphan.
+  // Second false-accusation mechanism found in this census in one wave, and like
+  // the first it was a lane refusing to delete live code that surfaced it.
+  // `\\[\s\S]` consumes the escaped character whatever it is, newline included.
   return src
-    .replace(/`(?:\\.|[^`\\])*`/g, "``")
-    .replace(/"(?:\\.|[^"\\\n])*"/g, '""')
-    .replace(/'(?:\\.|[^'\\\n])*'/g, "''")
+    .replace(/`(?:\\[\s\S]|[^`\\])*`/g, "``")
+    .replace(/"(?:\\[\s\S]|[^"\\\n])*"/g, '""')
+    .replace(/'(?:\\[\s\S]|[^'\\\n])*'/g, "''")
 }
 
 const useCache = new Map<string, string>()
