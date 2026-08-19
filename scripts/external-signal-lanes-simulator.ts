@@ -123,8 +123,34 @@ check("address is read across portal-specific column names",
   readPermitAddress({ original_address1: "1234 Oak St" }) === "1234 Oak St"
   && readPermitAddress({ street_address: "9 Elm Ave" }) === "9 Elm Ave"
   && readPermitAddress({ nothing_useful: 1 }) === null)
+
+// THE REAL SHAPES OF THE REGISTERED PORTALS, pinned offline.
+// The live block at the bottom of this file caught that NONE of these three publishes a
+// single address column — every row of every one of them read as null, so the sweep counted
+// three of the largest markets in the country as "nothing happening" rather than "cannot
+// read". These rows are verbatim field names and values from one live row of each dataset.
+// They are asserted here, with no network, so the regression cannot hide behind a portal
+// being unreachable from wherever this happens to run.
+check("COMPOSITE ADDRESS — the three registered portals that split it across columns",
+  // Chicago ydr8-5enu: number · direction · name
+  readPermitAddress({ street_number: "7529", street_direction: "N", street_name: "CLARK ST" }) === "7529 N CLARK ST"
+  // San Francisco i98e-djp9: number · name · suffix
+  && readPermitAddress({ street_number: "930", street_name: "Sutter", street_suffix: "St" }) === "930 Sutter St"
+  // New York ipu4-2q9a: house__ · name (the suffix is inside the name)
+  && readPermitAddress({ house__: "60", street_name: "BAY 34 ST" }) === "60 BAY 34 ST"
+  // A street with no house number names a BLOCK. Refused — matching a seller signal onto a
+  // block is the fuzzy match this lane exists to not make.
+  && readPermitAddress({ street_name: "CLARK ST", street_direction: "N" }) === null
+  // A single column still wins over the parts when a portal publishes both.
+  && readPermitAddress({ address: "1 Main St", street_number: "2", street_name: "Other Rd" }) === "1 Main St")
+
 check("permit id is read across portal-specific column names",
-  readPermitId({ permit_number: "2026-123" }) === "2026-123" && readPermitId({}) === null)
+  readPermitId({ permit_number: "2026-123" }) === "2026-123" && readPermitId({}) === null
+  // Socrata renders a trailing '#' in a column label as '_', which is where Chicago's
+  // "PERMIT#" → permit_ and NYC's job__ both come from. Chicago's was unreadable, so the
+  // per-(permit, lead) uniqueness m490 added had no handle to dedupe on.
+  && readPermitId({ permit_: "101046020" }) === "101046020"
+  && readPermitId({ job__: "340733647" }) === "340733647")
 check("valuation parses currency text and refuses junk (never 0-as-unknown)",
   readPermitValuation({ estimated_cost: "$125,000" }) === 125000 && readPermitValuation({ estimated_cost: "n/a" }) === null)
 
@@ -284,6 +310,14 @@ console.log("\n[live · recentPermits against a registered dataset — shape, no
     if (res.ok && res.data.length > 0) {
       const withAddr = res.data.filter((r) => !!normalizeStreetAddress(readPermitAddress(r)))
       console.log(`      · live: ${res.data.length} permits, ${withAddr.length} with a usable address key`)
+      // WHEN THIS FAILS IT MUST SAY WHY. The first time it did, it reported only that zero rows
+      // yielded a key — true, and useless: the cause was that the portal splits the address
+      // across columns no reader knew. Printing the row's actual field names turns the next
+      // failure into the fix, instead of another round trip to a portal CI can reach and a
+      // developer often cannot.
+      if (withAddr.length === 0) {
+        console.log(`      · UNREADABLE — this portal's row exposes: ${Object.keys(res.data[0]).sort().join(", ")}`)
+      }
       check("at least one live permit row yields a usable address key (the readers cover this portal)",
         withAddr.length > 0)
     } else {

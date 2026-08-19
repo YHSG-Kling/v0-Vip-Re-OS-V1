@@ -122,9 +122,28 @@ const ADDRESS_KEYS = [
   "location_address", "primary_address", "job_address", "worksite_address",
 ]
 const PERMIT_ID_KEYS = [
-  "permit_number", "permitnum", "permit_num", "permit_id", "permitno", "permit",
+  // `permit_` is Chicago's field name for the column labelled "PERMIT#" — Socrata turns a
+  // trailing `#` into `_`, which is also where NYC's `job__` comes from. Without it the
+  // dedupe handle m490 relies on was null for every Chicago row.
+  "permit_number", "permitnum", "permit_num", "permit_id", "permitno", "permit_", "permit",
   "record_id", "application_number", "job_number", "job__", "case_number", "number",
 ]
+
+// ─── COMPOSITE ADDRESS COMPONENTS ────────────────────────────────────────────
+// Most permit portals do NOT publish a single address column. Of the three registered
+// portals whose live shape was checked, ZERO did:
+//
+//   Chicago  street_number "7529" · street_direction "N"  · street_name "CLARK ST"
+//   SF       street_number "930"  · street_name "Sutter"  · street_suffix "St"
+//   NYC      house__       "60"   · street_name "BAY 34 ST"
+//
+// so readPermitAddress returned null for every row of every one of them, the sweep counted
+// them all as skippedNoAddress, and a market that could not be READ was indistinguishable
+// from a market with nothing happening in it. Assembling the parts is the whole fix.
+const NUMBER_KEYS = ["street_number", "house__", "house_number", "street_no", "address_number", "str_number"]
+const PREDIR_KEYS = ["street_direction", "street_dir", "predirection", "street_predirection", "direction"]
+const NAME_KEYS = ["street_name", "streetname", "street"]
+const SUFFIX_KEYS = ["street_suffix", "suffix", "street_type", "streettype"]
 const DESCRIPTION_KEYS = [
   "description", "permit_type_desc", "work_description", "job_description", "permit_class",
   "work_class", "permit_type", "type_of_work", "proposed_use", "scope_of_work", "worktype",
@@ -144,9 +163,27 @@ function pick(row: Record<string, unknown>, keys: string[]): string | null {
   return null
 }
 
-/** PURE. The permit's street address, or null when the row exposes none we recognize. */
+/**
+ * PURE. The permit's street address, or null when the row exposes none we recognize.
+ *
+ * Single-column portals win outright; the composite assembly is the fallback. A composite is
+ * only built when BOTH a house number and a street name are present — a street name with no
+ * number names a block, not a home, and matching a seller signal onto a whole block is exactly
+ * the fuzzy match this lane refuses to make. (normalizeStreetAddress independently drops any
+ * key with no digit, so this is belt and braces, but the intent belongs here where the parts
+ * are still separable.)
+ */
 export function readPermitAddress(row: Record<string, unknown>): string | null {
-  return pick(row, ADDRESS_KEYS)
+  const single = pick(row, ADDRESS_KEYS)
+  if (single) return single
+
+  const number = pick(row, NUMBER_KEYS)
+  const name = pick(row, NAME_KEYS)
+  if (!number || !name) return null
+
+  return [number, pick(row, PREDIR_KEYS), name, pick(row, SUFFIX_KEYS)]
+    .filter((p): p is string => !!p)
+    .join(" ")
 }
 
 /** PURE. A stable per-permit handle used for idempotency. Null when the row exposes none. */
