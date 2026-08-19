@@ -1,4 +1,12 @@
 import { createServiceClient } from "@/lib/supabase/service"
+import type { StandardTimeline } from "@/constants/crm-standards"
+
+/**
+ * The `leads.timeline` members that warrant a direct phone call rather than
+ * seven more days of AI nurture. Typed against the one vocabulary so a renamed
+ * or dropped member is a type error, not a silently unreachable branch.
+ */
+const URGENT_TIMELINES: readonly StandardTimeline[] = ["immediate", "1-3_months"]
 
 export interface ActionPlanItem {
   action: string
@@ -135,7 +143,12 @@ function determineRecommendedActions(lead: any, hasReplied: boolean, aiActivitie
   }
 
   // Action 3: Schedule call if timeline is urgent
-  if (lead.timeline === "immediate" || lead.timeline === "1-3 months") {
+  //
+  // REPOINTED to the one timeline vocabulary (constants/crm-standards.ts:
+  // STANDARD_TIMELINES). "1-3 months" was the SPACED spelling and matched
+  // nothing, so a lead one-to-three months out was routed down the "monitor for
+  // 7 days" branch — the opposite of what this rule says it does.
+  if (URGENT_TIMELINES.includes(lead.timeline as StandardTimeline)) {
     actions.push({
       action: "Attempt phone call to schedule consultation",
       priority: "high",

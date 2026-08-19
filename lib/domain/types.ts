@@ -6,6 +6,8 @@
  * across the application for consistency.
  */
 
+import type { StandardTimeline } from "@/constants/crm-standards"
+
 // ============================================
 // LEAD
 // ============================================
@@ -128,11 +130,16 @@ export type ContactStatus =
   | "sold"
   | "lifetime_customer"
 
-export type ContactTimeline = 
-  | "0-3_months"
-  | "3-6_months"
-  | "6-12_months"
-  | "12+_months"
+/**
+ * REPOINTED to the one timeline vocabulary — constants/crm-standards.ts:STANDARD_TIMELINES.
+ *
+ * This was the second of two identical hand-maintained copies of a list that had
+ * six spellings across the tree (the other was types/contact.ts). Both are now
+ * aliases of the single exported list, which is also what the live CHECK on
+ * leads.timeline / contacts.timeline / lead_intelligence.timeline /
+ * unified_lead_profile.estimated_timeline admits (m487).
+ */
+export type ContactTimeline = StandardTimeline
 
 /**
  * Contact represents a prospect that has been assigned to an agent

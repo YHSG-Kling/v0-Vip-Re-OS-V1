@@ -21,6 +21,7 @@ import type {
   ContactStatus,
   ContactTimeline,
 } from "../domain/types"
+import { STANDARD_TIMELINES } from "@/constants/crm-standards"
 import { canCreateOffer } from "../permissions/offer-permissions"
 
 // ============================================
@@ -183,25 +184,59 @@ function deriveContactPersona(lead: Lead): ContactPersona {
 
 /**
  * Helper: Derive timeline from lead
+ *
+ * REPOINTED to the one timeline vocabulary (constants/crm-standards.ts:
+ * STANDARD_TIMELINES). This function used to TRANSLATE: it read `leads.timeline`
+ * and emitted a DIFFERENT vocabulary (`0-3_months | 3-6_months | 6-12_months |
+ * 12+_months`) onto `contacts.timeline`, which is how the two columns came to
+ * disagree in the first place. Both columns now carry the same vocabulary and
+ * the same live CHECK (m487), so there is nothing left to translate — a value
+ * that is already a member is carried across UNCHANGED.
+ *
+ * The substring fallback is kept for the legacy free text that predates the
+ * CHECK (`"3 months"`, `"asap"`, `"next year"`), but it is now the fallback and
+ * not the main path, and it emits survivor members. The old chain had an
+ * ordering bug worth naming, because it is the same shape of mistake: it tested
+ * `includes("3") || includes("6")` BEFORE `includes("12")`, so ANY string
+ * containing a 3 or a 6 — `"6-12 months"` included — landed on `3-6_months`.
+ * The fallback below therefore matches RANGES before bare numbers, and reads
+ * digits off a separator-normalised copy so `"3-6 months"`, `"3_6_months"` and
+ * `"3 to 6 months"` all resolve the same way.
  */
 function deriveTimelineFromLead(lead: Lead): ContactTimeline {
   if (lead.timeline) {
-    // Map lead timeline strings to contact timeline enum
-    const timelineLower = lead.timeline.toLowerCase()
-    if (timelineLower.includes("asap") || timelineLower.includes("immediate")) {
-      return "0-3_months"
+    // Already canonical → carry it across verbatim. No translation.
+    if ((STANDARD_TIMELINES as readonly string[]).includes(lead.timeline)) {
+      return lead.timeline as ContactTimeline
     }
-    if (timelineLower.includes("3") || timelineLower.includes("6")) {
-      return "3-6_months"
-    }
-    if (timelineLower.includes("12") || timelineLower.includes("year")) {
-      return "6-12_months"
-    }
+
+    // Legacy free text. Separators collapsed so a range reads the same however
+    // it was punctuated.
+    const t = lead.timeline.toLowerCase()
+    const n = t.replace(/[^a-z0-9]+/g, " ")
+
+    if (/\b(asap|immediate|immediately|right away|now)\b/.test(n)) return "immediate"
+
+    // RANGES FIRST — the upper bound of a range names the bucket.
+    if (/\b6\b.*\b12\b/.test(n)) return "6-12_months"
+    if (/\b3\b.*\b6\b/.test(n)) return "3-6_months"
+    if (/\b(0|1)\b.*\b3\b/.test(n)) return "1-3_months"
+
+    // Day-denominated legacy values — the 30/60/90 spelling that reached rows
+    // only through scripts/351-create-demo-contacts-simple.sql. All three sit
+    // inside the same bucket under the surviving boundaries.
+    if (/\b(7|14|30|45|60|90)\b\s*days?\b/.test(n)) return "1-3_months"
+
+    // Then single horizons, longest first.
+    if (/\b12\b|\byear\b|\byears\b/.test(n)) return "12+_months"
+    if (/\b(7|8|9|10|11)\b/.test(n)) return "6-12_months"
+    if (/\b(4|5|6)\b/.test(n)) return "3-6_months"
+    if (/\b(1|2|3)\b/.test(n)) return "1-3_months"
   }
 
   // Default based on urgency
   if (lead.urgency_score && lead.urgency_score > 75) {
-    return "0-3_months"
+    return "immediate"
   }
 
   return "3-6_months"

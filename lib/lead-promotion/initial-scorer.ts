@@ -1,6 +1,20 @@
 'use server'
 
 import { createServiceClient } from '@/lib/supabase/service'
+import type { StandardTimeline } from '@/constants/crm-standards'
+
+/**
+ * Points contributed by `leads.timeline` (0-10). NOT exported — this file is
+ * `'use server'`, where every export is a public HTTP endpoint and must be async.
+ */
+const TIMELINE_URGENCY_POINTS: Record<StandardTimeline, number> = {
+  immediate:     10,
+  '1-3_months':   7,
+  '3-6_months':   4,
+  '6-12_months':  0,
+  '12+_months':   0,
+  researching:    0,
+}
 
 /**
  * Triggers internal-only lead scoring after promotion.
@@ -66,9 +80,18 @@ export async function triggerInitialScoring(leadId: string): Promise<void> {
     if (lead.property_interest) score += 15
 
     // 5. Timeline urgency (0-10 points)
-    if (lead.timeline === 'immediate') score += 10
-    else if (lead.timeline === '1-3 months') score += 7
-    else if (lead.timeline === '3-6 months') score += 4
+    //
+    // REPOINTED to the one timeline vocabulary (constants/crm-standards.ts:
+    // STANDARD_TIMELINES). These three tests used the SPACED spelling
+    // ('1-3 months'), which no writer of leads.timeline has ever produced —
+    // so outside 'immediate' this factor was structurally worth 0 and nothing
+    // errored, because it is string equality against a free-text column.
+    //
+    // The ladder is a Record over the vocabulary rather than an if-chain so
+    // that adding or removing a member is a TYPE ERROR here, not a silent
+    // zero. Members worth no urgency points are spelled out as 0 on purpose:
+    // an omission and a deliberate zero must not look the same.
+    score += TIMELINE_URGENCY_POINTS[lead.timeline as StandardTimeline] ?? 0
 
     // Cap score at 100
     score = Math.min(score, 100)

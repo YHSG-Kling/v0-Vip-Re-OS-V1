@@ -1,3 +1,5 @@
+import type { StandardTimeline } from "@/constants/crm-standards"
+
 export type ContactType =
   | "buyer"
   | "seller"
@@ -40,7 +42,15 @@ export type ContactStatus =
   | "sold"
   | "lifetime_customer"
 
-export type ContactTimeline = "0-3_months" | "3-6_months" | "6-12_months" | "12+_months"
+/**
+ * REPOINTED to the one timeline vocabulary — constants/crm-standards.ts:STANDARD_TIMELINES.
+ *
+ * This used to declare its own list (`0-3_months | 3-6_months | 6-12_months |
+ * 12+_months`), one of six spellings of the same concept. It is an ALIAS now
+ * rather than a copy so a member can only ever be added or removed in one place;
+ * the live CHECK on contacts.timeline (m487) is generated from the same list.
+ */
+export type ContactTimeline = StandardTimeline
 
 export type ContactSource = "website" | "referral" | "cold_call" | "social" | "other" | "zillow" | "realtor.com"
 

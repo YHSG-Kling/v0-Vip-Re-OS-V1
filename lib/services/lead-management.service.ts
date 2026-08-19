@@ -10,6 +10,17 @@ import {
   priorityTier,
   type BehavioralSummary,
 } from "@/lib/lead-scoring/behavioral-events"
+import type { StandardTimeline } from "@/constants/crm-standards"
+
+/** Points contributed by `lead_intelligence.timeline` to the intent score (0-40). */
+const TIMELINE_INTENT_POINTS: Record<StandardTimeline, number> = {
+  immediate:     40,
+  "1-3_months":  30,
+  "3-6_months":  20,
+  "6-12_months": 10,
+  "12+_months":   0,
+  researching:    0,
+}
 
 // ============================================
 // UNIFIED LEAD MANAGEMENT SERVICE
@@ -451,11 +462,16 @@ function calculateIntentScore(record: any, table: string): number {
 
   const intelligence = record.lead_intelligence?.[0]
 
-  // Urgency signals
-  if (intelligence?.timeline === "immediate") score += 40
-  else if (intelligence?.timeline === "1-3_months") score += 30
-  else if (intelligence?.timeline === "3-6_months") score += 20
-  else if (intelligence?.timeline === "6-12_months") score += 10
+  // Urgency signals — `lead_intelligence.timeline`, NOT `leads.timeline`.
+  //
+  // PINNED to the one timeline vocabulary (constants/crm-standards.ts:
+  // STANDARD_TIMELINES). This ladder was already spelled correctly and is the
+  // only reader in the system that agreed with its writer
+  // (app/actions/lead-intelligence.ts:1342), so its point values are unchanged.
+  // It is a Record over the vocabulary now so it cannot silently fall out of
+  // agreement again, and so the `researching` value that writer initialises
+  // every row to is scored explicitly (0) rather than by falling off the end.
+  score += TIMELINE_INTENT_POINTS[intelligence?.timeline as StandardTimeline] ?? 0
 
   // Pre-approval status. `preapproval_status` is NOT a column on lead_intelligence —
   // the live table carries a boolean `pre_approved` (plus `pre_approval_amount` and a

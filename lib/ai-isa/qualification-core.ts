@@ -46,7 +46,13 @@ export function deriveQualificationSignals(input: {
   /** Recent messages joined to one lowercase string. */
   messageText: string
   conversationCount: number
-  /** leads.timeline (e.g. 'immediate') — secondary urgency signal. */
+  /**
+   * `leads.timeline` — secondary urgency signal. The vocabulary is
+   * constants/crm-standards.ts:STANDARD_TIMELINES, and the column now carries
+   * the matching live CHECK (m487). Typed `string | null` rather than
+   * `StandardTimeline | null` on purpose: this is the raw column value and rows
+   * written before that CHECK existed may still be free text.
+   */
   timeline?: string | null
   /** Rolling leads.lead_score — the conversation tool keeps this current. */
   leadScore?: number | null

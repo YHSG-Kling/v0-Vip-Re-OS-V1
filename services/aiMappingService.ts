@@ -54,9 +54,26 @@ export const STANDARD_CONTACT_TYPES = [
 
 export type StandardContactType = (typeof STANDARD_CONTACT_TYPES)[number]
 
-export const STANDARD_TIMELINES = ["0-3_months", "3-6_months", "6-12_months", "12+_months"] as const
-
-export type StandardTimeline = (typeof STANDARD_TIMELINES)[number]
+// `STANDARD_TIMELINES` / `StandardTimeline` — DELETED HERE.
+// SURVIVOR: constants/crm-standards.ts:119 (`STANDARD_TIMELINES`), with labels
+// at constants/crm-standards.ts:193 (`TIMELINE_LABELS`) and the matching live
+// CHECK installed by supabase/migrations/m487.
+//
+// This was a fourth copy of the timeline vocabulary
+// (`0-3_months | 3-6_months | 6-12_months | 12+_months`) and it was DEAD, which
+// was checked rather than assumed before deleting it:
+//   · this module has no `mapTimeline` — nothing here ever consumed the list;
+//   · `grep -rn "STANDARD_TIMELINES\|StandardTimeline"` over the tree matched
+//     this file, constants/crm-standards.ts and nothing else. The only import of
+//     this module anywhere is `import { aiMappingService } from "./aiMappingService"`
+//     (services/supabaseService.ts:5) — the OBJECT, never these two symbols.
+// So it normalized nothing on any write path, despite a note in
+// constants/crm-standards.ts previously claiming it did.
+//
+// NOT TOUCHED, because they ARE live: mapStatus and mapPersona below, called by
+// services/supabaseService.ts at 154, 157, 184, 189 and 1834, together with the
+// `STANDARD_CRM_STATUSES` / `STANDARD_CONTACT_PERSONAS` / `STANDARD_CONTACT_TYPES`
+// lists they validate against and their fallback matchers.
 
 export const STANDARD_SOURCES = [
   "website",

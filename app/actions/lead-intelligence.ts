@@ -36,6 +36,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { STANDARD_TIMELINES, type StandardTimeline } from "@/constants/crm-standards"
 import { requirePermission } from "@/lib/security"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { revalidatePath } from "next/cache"
@@ -206,7 +207,7 @@ Determine:
   "confidence": 0-100,
   "urgency": "low|medium|high",
   "price_range": "estimate or null",
-  "timeline_indicator": "immediate|3-6months|exploring|unknown",
+  "timeline_indicator": "immediate|1-3_months|3-6_months|6-12_months|12+_months|researching",
   "ready_for_contact": boolean,
   "key_indicators": ["list of signals that led to this conclusion"]
 }
@@ -1305,7 +1306,12 @@ async function updateIntelligenceProfile(
   const priceRange =
     minPrice !== Number.POSITIVE_INFINITY ? `$${minPrice.toLocaleString()} - $${maxPrice.toLocaleString()}` : null
 
-  let timeline = "researching"
+  // `lead_intelligence.timeline`. TYPED against the one vocabulary
+  // (constants/crm-standards.ts:STANDARD_TIMELINES) — this writer already spoke
+  // it and is the reason `researching` survives into the shared list, since it
+  // is the value every row is initialised to. A `let` of type string could drift
+  // off the vocabulary silently; annotated, it cannot.
+  let timeline: StandardTimeline = "researching"
   if (engagementScores) {
     if (engagementScores.overall_score > 70 && engagementScores.recency_score > 80) {
       timeline = "immediate"
@@ -1416,7 +1422,15 @@ export interface LeadProfileTriage {
   temperature?: "hot" | "warm" | "cold"
   intent_type?: "buyer" | "seller" | "both" | "investor" | "researcher" | "unknown"
   intent_strength?: "browsing" | "researching" | "active"
-  estimated_timeline?: "immediate" | "1-3months" | "3-6months"
+  /**
+   * REPOINTED to the one timeline vocabulary — constants/crm-standards.ts:
+   * STANDARD_TIMELINES. This was `"immediate" | "1-3months" | "3-6months"`, the
+   * NO-SEPARATOR spelling, and it was the live gate below: it refused every
+   * other spelling of the same concept onto
+   * `unified_lead_profile.estimated_timeline`, including the one the rest of
+   * this very file writes to `lead_intelligence.timeline` (`1-3_months`).
+   */
+  estimated_timeline?: StandardTimeline
   ready_for_outreach?: boolean
   ai_summary?: string
   /**
@@ -1432,7 +1446,14 @@ export interface LeadProfileTriage {
 const TEMPERATURES = ["hot", "warm", "cold"] as const
 const INTENT_TYPES = ["buyer", "seller", "both", "investor", "researcher", "unknown"] as const
 const INTENT_STRENGTHS = ["browsing", "researching", "active"] as const
-const TIMELINES = ["immediate", "1-3months", "3-6months"] as const
+/**
+ * The gate over `unified_lead_profile.estimated_timeline`. It is now the ONE
+ * vocabulary (constants/crm-standards.ts:STANDARD_TIMELINES) rather than a
+ * third private spelling, and it is the same list the live CHECK admits (m487)
+ * — so a value this gate accepts is a value the column can store, and vice
+ * versa. Aliased rather than redeclared: two lists is how this started.
+ */
+const TIMELINES = STANDARD_TIMELINES
 
 /**
  * Hand-triage one unified lead profile.
@@ -1841,7 +1862,7 @@ PROPERTY DATA: ${JSON.stringify(allSignals.property)}
   "unified_intent": "buyer|seller|both",
   "confidence_score": 0-100,
   "intent_strength": "browsing|researching|active",
-  "estimated_timeline": "immediate|1-3months|3-6months",
+  "estimated_timeline": "immediate|1-3_months|3-6_months|6-12_months|12+_months|researching",
   "motivation_summary": "Why they're looking",
   "key_signals": ["top signals"],
   "ready_for_outreach": boolean
