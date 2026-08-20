@@ -151,6 +151,43 @@ export const AI_TASK_ROUTING: Record<string, {
 }
 
 /**
+ * WHICH BILLABLE MODEL IDENTITY A GATEWAY MODEL STRING IS.
+ * ─────────────────────────────────────────────────────────────
+ * The routed lanes above carry `AIModel` — the platform's own billing identity,
+ * which is what `ai_tool_usage.model_used` stores and what `calculateCost` and
+ * `getModelPricing` key on. The UNROUTED model boundary (lib/ai/generate.ts's
+ * generateObject shim) is handed a gateway model string instead
+ * ("anthropic/claude-sonnet-4-20250514"), because its callers pin a model at
+ * their own call site. A caller of that shim that must ledger its own spend
+ * therefore needs the string turned back into an identity — otherwise the only
+ * way to name the model on the row is to hardcode the one the lane is BELIEVED
+ * to pin, which is an assertion about another file and goes silently wrong the
+ * day that file re-pins.
+ *
+ * Reads MODEL_CONFIG rather than a second table of its own: a reverse map
+ * maintained by hand is how two lanes disagree about what a call cost.
+ *
+ * RETURNS NULL RATHER THAN GUESSING, in two cases:
+ *   · the argument is not a string (an already-constructed provider instance
+ *     carries no id this side of the SDK), and
+ *   · the string is ambiguous — MODEL_CONFIG maps BOTH "gemini-pro" and
+ *     "gemini-flash" onto google/gemini-2.0-flash-exp, and those two price 16x
+ *     apart ($1.25 vs $0.075 per 1M input). Picking either would be inventing
+ *     the tenant's cost.
+ * A null answer means the call cannot be attributed, and m508 says what that
+ * costs: a row claiming tokens must name the model that produced them, so the
+ * caller must book ZERO with a named reason rather than a figure with no model.
+ */
+export function modelIdentityFor(model: unknown): AIModel | null {
+  if (typeof model !== "string") return null
+  const resolved = String(resolveModel(model as Parameters<typeof resolveModel>[0])).trim().toLowerCase()
+  const hits = (Object.entries(MODEL_CONFIG) as Array<[AIModel, { provider: string; modelId: string }]>)
+    .filter(([, cfg]) => `${cfg.provider}/${cfg.modelId}`.toLowerCase() === resolved)
+    .map(([name]) => name)
+  return hits.length === 1 ? hits[0] : null
+}
+
+/**
  * selectModelForTask
  * Returns the designated model and fallback for a given feature/task name.
  * Falls back to "unspecified" routing if the feature is not in the table.

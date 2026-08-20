@@ -87,6 +87,7 @@
 import { readFileSync, readdirSync, statSync, existsSync, writeFileSync } from "node:fs"
 import { join, relative, dirname, resolve } from "node:path"
 import { blankComments, blankStrings } from "./strip-comments"
+import { stripSqlComments } from "./strip-sql-comments"
 import { runtimeFiles, walkTs } from "./runtime-roots"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
 
@@ -266,6 +267,7 @@ const colSites = new Map<string, string>()  // "table.col" → first file:line t
 let unresolvedEmbeds = 0
 let unresolvedWriteObjects = 0
 let unresolvedFilterTerms = 0
+let sqlSeeded = 0                            // 1b findings withheld because an applied .sql writes the column
 let selectSitesParsed = 0
 
 /** Columns the database fills in on its own. A missing app WRITER is expected. */
@@ -335,6 +337,67 @@ function shorthandObjectKeys(objText: string): string[] {
   }
   return keys
 }
+/**
+ * THE PATCH-OBJECT BUILDER — `const update: Record<string, any> = { updated_at }`
+ * followed by `if (p.x !== undefined) update.allowed_domains = …`.
+ *
+ * This is how every partial-update action in this repo is written, and the
+ * shared resolver cannot see it: resolveVariableInsertKeys understands an object
+ * literal, an array literal, a `.map()` and `.push({…})` (schema-drift-guard.ts:
+ * 357-416), so a builder like the one above resolves to exactly ONE key — the
+ * `updated_at` in its initialiser. One key is not zero, so the table is not even
+ * marked opaque, and every column assigned afterwards is reported as written by
+ * NOBODY. Measured: all ten `embed_widgets` columns, including
+ * `allowed_domains` — the ORIGIN ALLOWLIST the embed loader enforces
+ * (app/api/embed/script/route.ts:35). Accusing a live security control of being
+ * dead is the most expensive thing this census can do.
+ *
+ * Same NEAREST-declaration rule the shared resolver uses, so a same-named `update`
+ * in another function cannot bleed its columns in. Only `VAR.key =` counts:
+ * `==`, `>=`, `+=` and `=>` are all excluded by the lookahead and by requiring
+ * the key to sit directly against the `=`.
+ */
+function assignedKeysOf(src: string, varName: string, beforeIdx: number): string[] {
+  let declIdx = -1
+  for (const d of src.matchAll(new RegExp(`(?:const|let|var)\\s+${varName}\\b`, "g"))) {
+    if (d.index! >= beforeIdx) break
+    declIdx = d.index!
+  }
+  if (declIdx < 0) return []
+  const keys: string[] = []
+  for (const a of src.slice(declIdx, beforeIdx).matchAll(new RegExp(`\\b${varName}\\.([a-z_][a-z0-9_]*)\\s*=(?!=)`, "gi"))) {
+    if (!keys.includes(a[1])) keys.push(a[1])
+  }
+  return keys
+}
+/**
+ * SHORTHAND KEYS IN A VARIABLE-DECLARED ROW — `const row = { total_count, status }`
+ * followed by `.update(row)`.
+ *
+ * The shorthand supplement above is applied to INLINE write objects only. The
+ * `.insert(VAR)` path goes through the shared resolveVariableInsertKeys, which
+ * composes parseObjectTopLevelKeys and therefore has exactly the blindness this
+ * file's shorthandObjectKeys comment describes — one level further out, where
+ * nobody had looked. Measured: `document_checklist.status`, written in shorthand
+ * by lib/documents/auto-filer.ts:126 and read by the CLIENT PORTAL's documents
+ * view (app/portal/[contactId]/documents/page.tsx:79) to decide whether a
+ * transaction's paperwork is complete. Every sibling key of that same object was
+ * seen; only the shorthand one was reported as written by nobody.
+ *
+ * Same NEAREST-declaration rule as everywhere else in this file.
+ */
+function declaredShorthandKeysOf(src: string, varName: string, beforeIdx: number): string[] {
+  let best: RegExpMatchArray | null = null
+  for (const d of src.matchAll(new RegExp(`(?:const|let|var)\\s+${varName}\\s*(?::[^=]+)?=\\s*\\{`, "g"))) {
+    if (d.index! >= beforeIdx) break
+    best = d
+  }
+  if (!best) return []
+  const open = best.index! + best[0].length - 1
+  const close = sd.matchBrace(src, open)
+  if (close <= open) return []
+  return shorthandObjectKeys(src.slice(open, close + 1))
+}
 const writeKeysOf = (objText: string): string[] => [
   ...sd.parseObjectTopLevelKeys(objText),
   ...shorthandObjectKeys(objText),
@@ -394,6 +457,88 @@ function triggerWrittenColumns(): Map<string, Set<string>> {
 }
 const TRIGGER_WRITTEN = triggerWrittenColumns()
 
+/**
+ * COLUMNS WHOSE WRITER IS AN APPLIED .sql FILE, not TypeScript.
+ *
+ * A trigger is not the only DB-side writer this repo has. The CATALOGUE tables —
+ * `feature_flags`, `plan_limits`, `remotion_compositions`, `service_status`,
+ * `video_templates` — are populated by seed INSERTs in migrations, and their
+ * per-tier LIMITS are the values a gate reads. Counting those as "written by
+ * NOBODY" was measurably wrong: the live database (project hrvaqgvukzxfskkcrwbt)
+ * answers 68/68 non-null for every `plan_limits` column this census accused,
+ * 10/68 for `feature_flags.solo_agent_limit` (null there means UNLIMITED, which
+ * is a value, not an absence) and 33/33 for every accused `remotion_compositions`
+ * column. Thirty accusations, all false, all against gate/limit columns — the
+ * exact place a reader must be able to trust the list.
+ *
+ * Both SQL roots are read: `supabase/migrations` and `scripts/*.sql` (this repo
+ * applies numbered seeds from both — `scripts/930-seed-content-predictor-
+ * feature-flag.sql` writes four `feature_flags` limit columns and nothing in
+ * `supabase/migrations` does).
+ *
+ * Only the READ-never-written direction is exempted. The mirror direction still
+ * reports a seeded column no code reads, because THAT is a real orphan.
+ */
+// The SQL comment scanner is IMPORTED (scripts/strip-sql-comments.ts), not
+// restated here. What stood in this spot was the block-comments-FIRST pair, in
+// its SQL dialect:
+//
+//     sql.replace(BLOCK, " ").replace(LINE, " ")
+//
+// which is the exact defect scripts/strip-comments.ts exists to end — a block
+// opener appearing inside a `--` comment, or inside a quoted literal, starts a
+// phantom block for the first pass, which then runs to the next closer anywhere
+// below and blanks every statement in between. The census then reports the
+// columns those statements write as WRITTEN BY NOBODY, which is an accusation
+// against live SQL. strip-sql-comments.ts is one left-to-right scan that also
+// knows about `$$ … $$` dollar quoting, which every `do $$` migration here uses.
+function sqlWrittenColumnsFrom(sqlTexts: string[]): Map<string, Set<string>> {
+  const byTable = new Map<string, Set<string>>()
+  const add = (table: string, col: string) => {
+    const t = table.toLowerCase(), c = col.toLowerCase()
+    let s = byTable.get(t)
+    if (!s) { s = new Set(); byTable.set(t, s) }
+    s.add(c)
+  }
+  for (const sql of sqlTexts) {
+      // INSERT INTO <table> ( col, col, … )  — the column list only. A bare
+      // `INSERT INTO t VALUES (…)` names no columns and is deliberately skipped
+      // rather than guessed at from the table's column order.
+      for (const m of sql.matchAll(/INSERT\s+INTO\s+(?:public\.)?([a-z0-9_]+)\s*\(([^)]*)\)/gi)) {
+        for (const raw of m[2].split(",")) {
+          const c = raw.trim().replace(/^"|"$/g, "")
+          if (/^[a-z0-9_]+$/i.test(c)) add(m[1], c)
+        }
+      }
+      // UPDATE <table> SET col = …, col = …  — a backfill. Terminated at the
+      // first WHERE/FROM/RETURNING/; so a predicate's columns are not counted as
+      // writes.
+      for (const m of sql.matchAll(/UPDATE\s+(?:public\.)?([a-z0-9_]+)\s+SET\s+([\s\S]*?)(?:\bWHERE\b|\bFROM\b|\bRETURNING\b|;)/gi)) {
+        for (const a of m[2].matchAll(/(?:^|,)\s*([a-z0-9_]+)\s*=/gi)) add(m[1], a[1])
+      }
+    // An `ON CONFLICT … DO UPDATE SET c = EXCLUDED.c` needs no separate pass:
+    // every column it sets is already in the INSERT's column list above.
+  }
+  return byTable
+}
+function readAppliedSql(): string[] {
+  const out: string[] = []
+  for (const dirName of [["supabase", "migrations"], ["scripts"]]) {
+    const dir = join(root, ...dirName)
+    if (!existsSync(dir)) continue
+    for (const name of readdirSync(dir)) {
+      if (!name.endsWith(".sql")) continue
+      // COMMENTS ARE BLANKED FIRST — the same rule the TypeScript side is held
+      // to by this file's header. A migration's prose routinely QUOTES the
+      // statement it is about, and a scanner that reads prose as evidence would
+      // exempt a gate column on the strength of a sentence.
+      try { out.push(stripSqlComments(readFileSync(join(dir, name), "utf8"))) } catch { /* unreadable — counted as no evidence */ }
+    }
+  }
+  return out
+}
+const SQL_WRITTEN = sqlWrittenColumnsFrom(readAppliedSql())
+
 /** A top-level `...spread` in a write object means the real key set is unknown. */
 function hasTopLevelSpread(objText: string): boolean {
   let depth = 0, q: string | null = null
@@ -413,6 +558,42 @@ function hasTopLevelSpread(objText: string): boolean {
   }
   return false
 }
+
+/**
+ * A COMPUTED KEY is exactly as unknowable as a spread — `{ [column]: total }`
+ * writes a column whose NAME is a runtime value.
+ *
+ * lib/kernel/billing.ts:592 is the measured case: recordUsage maps a metric onto
+ * one of five counter columns and writes `{ [column]: newTotal, recorded_at }`.
+ * The literal parser sees `recorded_at` and nothing else, so the table looked
+ * fully parsed while five money columns — ai_calls_count, video_minutes,
+ * storage_bytes, scraper_calls, active_agents, every one of them read by the
+ * overage projection at lib/kernel/billing.ts:759 — were reported as written by
+ * NOBODY. The whole point of that file's header is that billing_usage FINALLY
+ * got a writer; the census was accusing it of not having one.
+ *
+ * Key position is established the same way shorthandObjectKeys establishes it:
+ * a `[` that follows `{` or `,` at depth 1 opens a computed key, while a `[` in
+ * value position (`col: [1, 2]`) does not.
+ */
+function hasTopLevelComputedKey(objText: string): boolean {
+  const stack: string[] = []
+  let lastSig = ""
+  let q: string | null = null
+  for (let i = 0; i < objText.length; i++) {
+    const ch = objText[i]
+    if (q) { if (ch === q && objText[i - 1] !== "\\") q = null; continue }
+    if (ch === '"' || ch === "'" || ch === "`") { q = ch; lastSig = ch; continue }
+    if (ch === "[" && stack.length === 1 && (lastSig === "{" || lastSig === ",")) return true
+    if (ch === "{" || ch === "(" || ch === "[") { stack.push(ch); lastSig = ch; continue }
+    if (ch === "}" || ch === ")" || ch === "]") { stack.pop(); lastSig = ch; continue }
+    if (!/\s/.test(ch)) lastSig = ch
+  }
+  return false
+}
+/** Either unknowable shape means the write object's key set is not statically knowable. */
+const hasUnknowableKeys = (objText: string): boolean =>
+  hasTopLevelSpread(objText) || hasTopLevelComputedKey(objText)
 
 const noteCol = (map: Map<string, Set<string>>, table: string, col: string, site: string) => {
   let s = map.get(table)
@@ -453,6 +634,31 @@ function scanColumns(file: string, src: string) {
     const w = src.slice(m.index, Math.min(src.length, m.index + CHAIN_WINDOW))
     const chain = sd.contiguousChain(w, m[0].length)
     const windowTruncated = m[0].length + chain.length >= CHAIN_WINDOW - 1 && m.index + CHAIN_WINDOW < src.length
+
+    // ── THE WRITE CHAIN IS ONE CALL LONGER THAN THE READ CHAIN ───────────────
+    // contiguousChain STOPS at the first call whose argument contains `=>`
+    // (schema-drift-guard.ts:351) — deliberately, because a callback opens a
+    // different table scope and its inner `.eq()` must not be read as this
+    // table's filter. Correct for READS, and silently fatal for WRITES: a row
+    // object built by a callback — `.insert(rows.map((r) => ({ … })))` — ends
+    // the chain BEFORE the write, so the write was never seen at all. Not
+    // "opaque": INVISIBLE, which reads as "this table's columns are written by
+    // NOBODY" and accuses every one of them.
+    //
+    // So the write branches get their own chain, extended by EXACTLY ONE call
+    // and only when that next call IS the write, matched ANCHORED at the point
+    // the read chain stopped. Anchoring is what keeps a later `.from()`'s write
+    // from being attributed to this table. Reads keep the shorter chain.
+    let writeChain = chain
+    {
+      const restM = w.slice(m[0].length + chain.length).match(/^\s*\.(insert|upsert|update)\s*\(/)
+      if (restM) {
+        const parenOpen = m[0].length + chain.length + restM[0].length - 1
+        const close = sd.matchParen(w, parenOpen)
+        if (close > parenOpen) writeChain = w.slice(m[0].length, close + 1)
+        else { tablesWritten.add(table); opaqueWrite.add(table); unresolvedWriteObjects++ }
+      }
+    }
 
     // ── READ SIDE ───────────────────────────────────────────────────────────
     const selArg = sd.collectSelectArg(w, 0)
@@ -497,7 +703,7 @@ function scanColumns(file: string, src: string) {
     // ── WRITE SIDE ──────────────────────────────────────────────────────────
     // Offsets below are WINDOW-relative (`w`), and every brace walk that runs off
     // the end of the window falls back to the full source rather than guessing.
-    const opM = chain.match(/\.(insert|upsert|update)\(\s*\{/)
+    const opM = writeChain.match(/\.(insert|upsert|update)\(\s*\{/)
     if (opM && opM.index != null) {
       tablesWritten.add(table)
       const braceOpenW = m[0].length + opM.index + opM[0].length - 1
@@ -511,11 +717,48 @@ function scanColumns(file: string, src: string) {
       }
       if (obj === null) { opaqueWrite.add(table); unresolvedWriteObjects++ }
       else {
-        if (hasTopLevelSpread(obj)) { opaqueWrite.add(table); unresolvedWriteObjects++ }
+        if (hasUnknowableKeys(obj)) { opaqueWrite.add(table); unresolvedWriteObjects++ }
         for (const k of writeKeysOf(obj)) if (cols.has(k)) noteCol(writeCols, table, k, site)
       }
     }
-    const arrM = chain.match(/\.(insert|upsert)\(\s*\[/)
+    // ── INLINE ROW MAPPER — `.insert(rows.map((r) => ({ … })))` ──────────────
+    // The three shapes above cover an object literal, an array literal and a
+    // bare identifier. They do NOT cover the fourth shape this repo writes rows
+    // with, and until this branch existed that shape produced NO write record
+    // AND NO opacity mark — the worst of both, because a silent zero reads as
+    // "written by NOBODY" rather than "not knowable". Measured on the tree it
+    // was FALSELY ACCUSING the money columns of an entire P&L: all seven of
+    // brokerage_earnings' (lib/finance/brokerage-earnings-writer.ts:76), ten of
+    // property_alert_results' (lib/property-alerts/alert-engine.ts:118),
+    // eighteen of brokerage_intelligence_insights'
+    // (app/api/cron/brokerage-intelligence-mine/route.ts:101), and sixteen of
+    // income_gap_recommended_actions' (app/actions/income-engine.ts:164).
+    //
+    // The callback is read ANCHORED — the object literal must be what this
+    // `.map(` callback returns, `(r) => ({ … })`, and nothing else counts. A
+    // 200-character sniff for the next `=> ({` would eventually find SOME object
+    // literal further down the file and attribute its keys to this table, which
+    // is a false ACQUITTAL — the mirror defect, and the one that hides a real
+    // missing writer. A mapper whose body is not a returned literal
+    // (`.map((b) => b.payload)`) is therefore opaque, not empty.
+    const mapM = writeChain.match(/\.(insert|upsert)\(\s*[A-Za-z_$][\w$.[\]]*\s*\.map\(/)
+    if (mapM && mapM.index != null) {
+      tablesWritten.add(table)
+      const afterMap = m.index + m[0].length + mapM.index + mapM[0].length
+      const cb = src.slice(afterMap).match(/^\s*(?:async\s+)?(?:\([^()]*\)|[A-Za-z_$][\w$]*)\s*=>\s*\(\s*\{/)
+      if (!cb) { opaqueWrite.add(table); unresolvedWriteObjects++ }
+      else {
+        const braceAbs = afterMap + cb[0].length - 1
+        const closeAbs = sd.matchBrace(src, braceAbs)
+        if (closeAbs <= braceAbs) { opaqueWrite.add(table); unresolvedWriteObjects++ }
+        else {
+          const obj = src.slice(braceAbs, closeAbs + 1)
+          if (hasUnknowableKeys(obj)) { opaqueWrite.add(table); unresolvedWriteObjects++ }
+          for (const k of writeKeysOf(obj)) if (cols.has(k)) noteCol(writeCols, table, k, site)
+        }
+      }
+    }
+    const arrM = writeChain.match(/\.(insert|upsert)\(\s*\[/)
     if (arrM && arrM.index != null) {
       tablesWritten.add(table)
       const bracketOpen = m.index + m[0].length + arrM.index + arrM[0].length - 1
@@ -528,16 +771,20 @@ function scanColumns(file: string, src: string) {
           const bc = sd.matchBrace(src, i)
           if (bc <= i) { opaqueWrite.add(table); unresolvedWriteObjects++; break }
           const obj = src.slice(i, bc + 1)
-          if (hasTopLevelSpread(obj)) { opaqueWrite.add(table); unresolvedWriteObjects++ }
+          if (hasUnknowableKeys(obj)) { opaqueWrite.add(table); unresolvedWriteObjects++ }
           for (const k of writeKeysOf(obj)) if (cols.has(k)) noteCol(writeCols, table, k, site)
           i = bc
         }
       }
     }
-    const varM = chain.match(/\.(insert|upsert|update)\(\s*([a-zA-Z_$][\w$]*)\s*\)/)
+    const varM = writeChain.match(/\.(insert|upsert|update)\(\s*([a-zA-Z_$][\w$]*)\s*\)/)
     if (varM && varM.index != null && !["true", "false", "null"].includes(varM[2])) {
       tablesWritten.add(table)
-      const keys = sd.resolveVariableInsertKeys(src, varM[2], chainStart + varM.index)
+      const keys = [
+        ...sd.resolveVariableInsertKeys(src, varM[2], chainStart + varM.index),
+        ...declaredShorthandKeysOf(src, varM[2], chainStart + varM.index),
+        ...assignedKeysOf(src, varM[2], chainStart + varM.index),
+      ]
       // ZERO keys back from a variable means "could not resolve", not "writes
       // nothing" — resolveVariableInsertKeys returns [] for an opaque helper
       // result by design. Treating that as an empty key set would invent a
@@ -545,7 +792,7 @@ function scanColumns(file: string, src: string) {
       if (keys.length === 0) { opaqueWrite.add(table); unresolvedWriteObjects++ }
       for (const k of keys) if (cols.has(k)) noteCol(writeCols, table, k, site)
     }
-    if (/\.delete\s*\(/.test(chain)) tablesWritten.add(table)
+    if (/\.delete\s*\(/.test(writeChain)) tablesWritten.add(table)
     // A chain that filled the window was READ INCOMPLETELY. Both directions lose
     // this table rather than report a half-read chain as a whole one.
     if (windowTruncated) { opaqueWrite.add(table); starRead.add(table); unresolvedWriteObjects++ }
@@ -563,15 +810,24 @@ stage("C1 columns")
     void before
     const rc = new Map<string, Set<string>>(), wc = new Map<string, Set<string>>()
     const saveR = readCols.get("contacts"), saveW = writeCols.get("contacts")
-    readCols.delete("contacts"); writeCols.delete("contacts")
+    // OPACITY IS PART OF THE ANSWER, so the probe reports it — and RESTORES it.
+    // opaqueWrite is a Set the real scan already filled; the spread control below
+    // marks `contacts` opaque, and leaving that mark behind SUPPRESSED every
+    // read-never-written finding on the widest table in the schema. A control
+    // that quietly blinds the instrument to one table is the same defect this
+    // file exists to catch, one level up.
+    const saveO = opaqueWrite.has("contacts")
+    readCols.delete("contacts"); writeCols.delete("contacts"); opaqueWrite.delete("contacts")
     scanColumns("<control>", blankComments(text))
     const out = {
       read: [...(readCols.get("contacts") ?? [])],
       write: [...(writeCols.get("contacts") ?? [])],
+      opaque: opaqueWrite.has("contacts"),
     }
-    readCols.delete("contacts"); writeCols.delete("contacts")
+    readCols.delete("contacts"); writeCols.delete("contacts"); opaqueWrite.delete("contacts")
     if (saveR) readCols.set("contacts", saveR)
     if (saveW) writeCols.set("contacts", saveW)
+    if (saveO) opaqueWrite.add("contacts")
     void rc; void wc
     return out
   }
@@ -586,7 +842,37 @@ stage("C1 columns")
     commented.read.length === 0 && commented.write.length === 0)
   const opaque = probe(`await supabase.from("contacts").update({ ...base, phone: b })`)
   control("C1 marks a spread write object OPAQUE rather than assuming its key set",
-    opaque.write.includes("phone"))
+    opaque.write.includes("phone") && opaque.opaque)
+  // INLINE ROW MAPPER — the fourth write shape. Both directions are asserted:
+  // the keys of a returned literal are SEEN, and a mapper whose body is not a
+  // literal is marked opaque instead of counting as "writes nothing".
+  const mapped = probe(`await supabase.from("contacts").insert(rows.map((r) => ({ first_name: r.a, phone })))`)
+  control("C1 sees an INLINE ROW MAPPER's write keys (.insert(xs.map(x => ({…}))))",
+    mapped.write.includes("first_name") && mapped.write.includes("phone") && !mapped.opaque,
+    mapped.write.join(","))
+  // COMPUTED KEYS — a column named by a runtime value.
+  const computed = probe(`await supabase.from("contacts").update({ [column]: total, phone: b })`)
+  control("C1 marks a COMPUTED-KEY write object opaque rather than assuming its key set",
+    computed.opaque && computed.write.includes("phone"), computed.write.join(","))
+  control("C1 does not mistake an ARRAY VALUE for a computed key",
+    !probe(`await supabase.from("contacts").update({ tags: ["a"], phone: b })`).opaque)
+  // SHORTHAND IN A VARIABLE-DECLARED ROW — the shape the shared resolver misses.
+  const declShorthand = probe(`const row = { first_name, phone, email: e }\nawait supabase.from("contacts").insert(row)`)
+  control("C1 sees SHORTHAND keys in a variable-declared row object",
+    ["first_name", "phone", "email"].every((k) => declShorthand.write.includes(k)), declShorthand.write.join(","))
+  // THE PATCH-OBJECT BUILDER — the shape every partial-update action uses.
+  const built = probe(`const patch: Record<string, any> = { updated_at: now }\nif (a) patch.first_name = a\nif (b) patch.phone = b\nawait supabase.from("contacts").update(patch).eq("id", id)`)
+  control("C1 sees columns assigned onto a PATCH OBJECT after its declaration",
+    built.write.includes("first_name") && built.write.includes("phone"), built.write.join(","))
+  control("C1 does not read a COMPARISON as an assignment onto the patch object",
+    !probe(`const patch: Record<string, any> = { updated_at: now }\nif (patch.first_name === x) {}\nawait supabase.from("contacts").update(patch)`).write.includes("first_name"))
+  const mapperOpaque = probe(`await supabase.from("contacts").insert(rows.map((r) => r.payload))`)
+  control("C1 marks a NON-LITERAL row mapper opaque rather than 'writes nothing'",
+    mapperOpaque.opaque && mapperOpaque.write.length === 0)
+  const mapperAnchored = probe(`await supabase.from("contacts").insert(rows.map((r) => r.payload))\nconst other = xs.map((x) => ({ first_name: x }))`)
+  control("C1 does NOT reach past an unreadable mapper to claim a later object literal",
+    mapperAnchored.opaque && mapperAnchored.write.length === 0,
+    mapperAnchored.write.join(","))
   // SHORTHAND KEYS. `{ first_name, phone }` is a write of both columns, and a
   // parser that only knows `name:` reports the columns as read-only — the exact
   // false accusation the automation-log wiring produced on its first run.
@@ -605,6 +891,36 @@ stage("C1 columns")
     [...(TRIGGER_WRITTEN.get("automation_logs") ?? [])].join(","))
   control("C1 does NOT blanket-exempt brokerage_id on a table with no such trigger",
     TRIGGER_WRITTEN.get("contacts")?.has("brokerage_id") !== true)
+  // SQL-SEEDED COLUMNS, read out of the applied .sql the same way. Verified
+  // against the live database before being trusted: plan_limits answers 68/68
+  // non-null on every column below, feature_flags 10/68 on its tier limits.
+  control("C1 read seed/backfill-written columns out of the applied .sql at all",
+    SQL_WRITTEN.size > 0, `${SQL_WRITTEN.size} tables`)
+  control("C1 knows plan_limits' gate columns are seeded by a migration",
+    ["limit_value", "metric", "plan_tier"].every((c) => SQL_WRITTEN.get("plan_limits")?.has(c) === true),
+    [...(SQL_WRITTEN.get("plan_limits") ?? [])].join(","))
+  control("C1 knows feature_flags' per-tier LIMITS are seeded (scripts/*.sql, not only supabase/migrations)",
+    SQL_WRITTEN.get("feature_flags")?.has("solo_agent_limit") === true)
+  {
+    // The parser is exercised on a fixture, not just on the tree: a clean tree
+    // and a broken regex both produce "no seed writers", and the difference is
+    // the whole point of a control.
+    const fx = sqlWrittenColumnsFrom([
+      `INSERT INTO public.plan_limits (plan_tier, metric, limit_value) VALUES ('team','ai_calls',100);`,
+      `UPDATE feature_flags SET solo_agent_limit = 5, team_limit = 20 WHERE feature_key = 'podcast_generation';`,
+      `INSERT INTO t_novals VALUES (1, 2);`,
+    ])
+    control("C1's seed reader sees an INSERT column list and an UPDATE … SET backfill",
+      ["plan_tier", "metric", "limit_value"].every((c) => fx.get("plan_limits")?.has(c)) &&
+      fx.get("feature_flags")?.has("solo_agent_limit") === true && fx.get("feature_flags")?.has("team_limit") === true,
+      [...(fx.get("plan_limits") ?? [])].join(",") + " | " + [...(fx.get("feature_flags") ?? [])].join(","))
+    control("C1's seed reader does NOT count a WHERE predicate's column as a write",
+      fx.get("feature_flags")?.has("feature_key") !== true)
+    control("C1's seed reader does not invent columns for a VALUES-only INSERT",
+      fx.get("t_novals") === undefined)
+    control("C1's seed reader ignores a statement that only exists in a SQL COMMENT",
+      sqlWrittenColumnsFrom([stripSqlComments("-- insert into ghost_table (ghost_col) values (1);\n/* update ghost_table set other_col = 1; */")]).size === 0)
+  }
 }
 
 /**
@@ -626,9 +942,11 @@ for (const t of pairedTables) {
   }
   if (!opaqueWrite.has(t)) {
     const dbWritten = TRIGGER_WRITTEN.get(t)
+    const sqlWritten = SQL_WRITTEN.get(t)
     for (const c of [...r].sort()) {
       if (w.has(c) || DB_MANAGED.has(c)) continue
       if (dbWritten?.has(c)) continue          // a trigger fills this in — see triggerWrittenColumns()
+      if (sqlWritten?.has(c)) { sqlSeeded++; continue }  // an applied .sql seeds/backfills it — see sqlWrittenColumns()
       colReadNeverWritten.push(`${t}.${c}`)
     }
   }
@@ -1456,6 +1774,7 @@ console.log(`  C1 columns   · ${pairedTables.length} tables both written AND re
 console.log(`               · ${selectSitesParsed} select sites parsed · ${starRead.size} tables read with select("*") (excluded from 1a)`)
 console.log(`               · ${opaqueWrite.size} tables with an OPAQUE write object (excluded from 1b) · ${unresolvedWriteObjects} opaque write sites`)
 console.log(`               · ${TRIGGER_WRITTEN.size} table(s) with DB-trigger-written columns read from supabase/migrations (exempt from 1b)`)
+console.log(`               · ${sqlSeeded} column read(s) written by an applied .sql seed/backfill across ${SQL_WRITTEN.size} table(s) (exempt from 1b)`)
 console.log(`               · ${unresolvedEmbeds} unresolvable embeds · ${unresolvedFilterTerms} unresolvable filter terms · ${rpcTouched.size} tables in .rpc() files (excluded entirely)`)
 console.log(`  C2 imports   · ${importBindings.length} bindings across ${importStatements} statements (+${sideEffectImports} side-effect imports, not bindings)`)
 console.log(`  C3 exports   · ${typeExports.length} non-function exports · ${typeProofOnly.length} named only by a proof (reported, not failed)`)

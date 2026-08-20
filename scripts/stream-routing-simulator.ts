@@ -29,6 +29,7 @@
  */
 import { readdirSync, readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
+import { blankStrings } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -37,40 +38,36 @@ const check = (n: string, c: boolean) => {
 }
 const read = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 
-/** true at every index inside a comment or string literal. */
-function codeMask(src: string): boolean[] {
-  const mask = new Array<boolean>(src.length).fill(false)
-  let i = 0
-  while (i < src.length) {
-    const c = src[i]
-    if (c === "/" && src[i + 1] === "/") { while (i < src.length && src[i] !== "\n") mask[i++] = true }
-    else if (c === "/" && src[i + 1] === "*") { const e = src.indexOf("*/", i + 2); const stop = e === -1 ? src.length : e + 2; while (i < stop) mask[i++] = true }
-    else if (c === '"' || c === "'" || c === "`") { const q = c; mask[i++] = true; while (i < src.length) { if (src[i] === "\\") { mask[i++] = true; if (i < src.length) mask[i++] = true; continue } if (src[i] === q) { mask[i++] = true; break } if (q !== "`" && src[i] === "\n") break; mask[i++] = true } }
-    else i++
-  }
-  return mask
-}
-
-/** Occurrences of `needle` as CODE — comments and string literals masked. */
+/**
+ * Occurrences of `needle` as CODE — comments and string literal BODIES masked.
+ *
+ * The mask is no longer hand-rolled (finding #250). blankStrings() is the one
+ * correct scanner: it replaces comment and string CONTENT with spaces while
+ * preserving every character offset, so a position in the masked text still
+ * indexes the same character of `src`. A hit counts when its FIRST character
+ * survived the blanking — which is the same rule the hand-rolled mask applied,
+ * and is what lets a needle like `rpc("agent_team_id"` (code, then a literal)
+ * still match.
+ */
 function codeHits(src: string, needle: string): number {
-  const mask = codeMask(src)
+  const masked = blankStrings(src)
   let n = 0, from = 0
   for (;;) {
     const at = src.indexOf(needle, from)
     if (at === -1) return n
     from = at + needle.length
-    if (!mask[at]) n++
+    if (masked[at] === src[at]) n++
   }
 }
 
 /** Index of the FIRST occurrence of `needle` as CODE, or -1 — same masking. */
 function firstCodeHit(src: string, needle: string): number {
-  const mask = codeMask(src)
+  const masked = blankStrings(src)
   let from = 0
   for (;;) {
     const at = src.indexOf(needle, from)
     if (at === -1) return -1
-    if (!mask[at]) return at
+    if (masked[at] === src[at]) return at
     from = at + needle.length
   }
 }

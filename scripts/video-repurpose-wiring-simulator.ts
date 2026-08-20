@@ -24,6 +24,7 @@
 
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
+import { blankComments, blankStrings } from "./strip-comments"
 
 const root = process.cwd()
 
@@ -51,87 +52,11 @@ function check(label: string, ok: boolean, detail?: string) {
 // file only needs to survive the handful of sources it reads, all of which use
 // plain quotes.
 
-function strip(src: string): string {
-  let out = ""
-  let i = 0
-  const n = src.length
-  while (i < n) {
-    const c = src[i]
-    const c2 = src[i + 1]
-    if (c === "/" && c2 === "*") {
-      const end = src.indexOf("*/", i + 2)
-      i = end === -1 ? n : end + 2
-      out += " "
-      continue
-    }
-    if (c === "/" && c2 === "/") {
-      const end = src.indexOf("\n", i)
-      i = end === -1 ? n : end
-      out += " "
-      continue
-    }
-    if (c === '"' || c === "'" || c === "`") {
-      const quote = c
-      let j = i + 1
-      while (j < n) {
-        if (src[j] === "\\") { j += 2; continue }
-        if (src[j] === quote) break
-        j++
-      }
-      // Keep the quotes so `.eq("brokerage_id"` style checks still match on a
-      // canonicalised, EMPTY string body. The body itself is discarded.
-      out += quote + quote
-      i = j + 1
-      continue
-    }
-    out += c
-    i++
-  }
-  return out
-}
+// hand-rolled scanner replaced (finding #250): it could not see nested `${…}` templates or regex literals, and a hand-rolled string masker desynchronises on a stray backtick.
+const strip = blankStrings
 
-/**
- * Same as strip(), but string LITERAL BODIES are preserved. Needed for the
- * checks that are genuinely about a literal value the code writes to the
- * database (post_type: "custom", .eq("brokerage_id", …), a status token).
- * Comments are still removed, which is the property that matters.
- */
-function stripCommentsOnly(src: string): string {
-  let out = ""
-  let i = 0
-  const n = src.length
-  while (i < n) {
-    const c = src[i]
-    const c2 = src[i + 1]
-    if (c === "/" && c2 === "*") {
-      const end = src.indexOf("*/", i + 2)
-      i = end === -1 ? n : end + 2
-      out += " "
-      continue
-    }
-    if (c === "/" && c2 === "/") {
-      const end = src.indexOf("\n", i)
-      i = end === -1 ? n : end
-      out += " "
-      continue
-    }
-    if (c === '"' || c === "'" || c === "`") {
-      const quote = c
-      let j = i + 1
-      while (j < n) {
-        if (src[j] === "\\") { j += 2; continue }
-        if (src[j] === quote) break
-        j++
-      }
-      out += src.slice(i, Math.min(j + 1, n))
-      i = j + 1
-      continue
-    }
-    out += c
-    i++
-  }
-  return out
-}
+// hand-rolled scanner replaced (finding #250): it could not see nested `${…}` templates or regex literals, and a hand-rolled string masker desynchronises on a stray backtick.
+const stripCommentsOnly = blankComments
 
 function load(rel: string): string {
   const p = join(root, rel)

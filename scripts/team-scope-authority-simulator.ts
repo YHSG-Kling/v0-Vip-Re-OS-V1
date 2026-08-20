@@ -28,7 +28,7 @@
  */
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { blankComments } from "./strip-comments"
+import { blankComments, blankStrings } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -37,23 +37,24 @@ const check = (n: string, c: boolean) => {
 }
 const read = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 
-/** Occurrences of `needle` as CODE — comments and string literals masked. */
+/**
+ * Occurrences of `needle` as CODE — comments and string literal BODIES masked.
+ *
+ * The mask is no longer hand-rolled (finding #250). blankStrings() is the one
+ * correct scanner: it blanks comment and string CONTENT to spaces while every
+ * character offset survives, so an index into the masked text still points at
+ * the same character of `src`. A hit counts when its FIRST character survived
+ * the blanking — the same rule the hand-rolled mask applied, and the reason a
+ * needle like `rpc("agent_team_id"` (code, then a literal) still matches.
+ */
 function codeHits(src: string, needle: string): number {
-  const mask = new Array<boolean>(src.length).fill(false)
-  let i = 0
-  while (i < src.length) {
-    const c = src[i]
-    if (c === "/" && src[i + 1] === "/") { while (i < src.length && src[i] !== "\n") mask[i++] = true }
-    else if (c === "/" && src[i + 1] === "*") { const e = src.indexOf("*/", i + 2); const stop = e === -1 ? src.length : e + 2; while (i < stop) mask[i++] = true }
-    else if (c === '"' || c === "'" || c === "`") { const q = c; mask[i++] = true; while (i < src.length) { if (src[i] === "\\") { mask[i++] = true; if (i < src.length) mask[i++] = true; continue } if (src[i] === q) { mask[i++] = true; break } if (q !== "`" && src[i] === "\n") break; mask[i++] = true } }
-    else i++
-  }
+  const masked = blankStrings(src)
   let n = 0, from = 0
   for (;;) {
     const at = src.indexOf(needle, from)
     if (at === -1) return n
     from = at + needle.length
-    if (!mask[at]) n++
+    if (masked[at] === src[at]) n++
   }
 }
 

@@ -92,6 +92,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "
 import { resolve, join, relative } from "node:path"
 import { createHash } from "node:crypto"
 import { execFileSync } from "node:child_process"
+import { blankComments } from "./strip-comments"
 
 const ROOT = process.cwd()
 const RUN_NEGATIVE = !process.argv.includes("--no-negative")
@@ -146,29 +147,8 @@ const sha = (p: string) => createHash("sha256").update(raw(p)).digest("hex")
 // find the end of anything).
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Blank comments while PRESERVING offsets. Strings are skipped, so a `//`
- *  inside a URL is not a comment. */
-function blankComments(src: string): string {
-  const out = src.split("")
-  let i = 0
-  while (i < src.length) {
-    const c = src[i]
-    if (c === "/" && src[i + 1] === "/") {
-      while (i < src.length && src[i] !== "\n") { out[i] = " "; i++ }
-      continue
-    }
-    if (c === "/" && src[i + 1] === "*") {
-      const end = src.indexOf("*/", i + 2)
-      const stop = end === -1 ? src.length : end + 2
-      for (let k = i; k < stop; k++) if (src[k] !== "\n") out[k] = " "
-      i = stop
-      continue
-    }
-    if (c === '"' || c === "'" || c === "`") { i = skipString(src, i); continue }
-    i++
-  }
-  return out.join("")
-}
+// blankComments() now comes from scripts/strip-comments.ts — see the import above.
+// hand-rolled scanner replaced (finding #250): it could not see nested `${…}` templates, regex literals, or an apostrophe in JSX text, and went blind on the code it judges.
 
 /** Index just past the string/template starting at `start`. Handles `${…}`. */
 function skipString(src: string, start: number): number {

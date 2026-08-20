@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 436 tables, 759 columns.
+ * MEASURED AT GENERATION: 437 tables, 760 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-08-20
  * source: public.live_check_constraints_json()
- * body-sha256: 98fbb681dffaa490b06ac3b432e7a85f871646a9ffd2cd10f7b8aaa81657f325
+ * body-sha256: cb102af53477ff4c9c24f996919b64396e7afdca1c70143edd75c880f58bdced
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -224,6 +224,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   ai_search_landing_citation_observations: {
     outcome: ["cited", "not_checked", "not_cited"],
     platform: ["bing_copilot", "chatgpt", "gemini", "google_ai_overviews", "perplexity"],
+  },
+  ai_tool_usage: {
+    model_used: ["claude-haiku", "claude-opus", "claude-sonnet", "gemini-flash", "gemini-pro", "gpt-4-turbo", "gpt-4o", "gpt-4o-mini", "perplexity-sonar", "perplexity-sonar-pro"],
   },
   ai_video_projects: {
     approval_status: ["approved", "draft", "pending_review", "published", "rejected"],

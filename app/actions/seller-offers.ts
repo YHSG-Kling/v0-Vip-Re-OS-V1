@@ -601,9 +601,15 @@ export async function triggerOfferComparison(params: {
 }
 
 // ── LOAD LATEST PERSISTED OFFER COMPARISON ────────────────────────────────────
-// analyzeMultipleOffers / kernel compareOffers persist comparison rows to
-// offer_comparison — this reads the latest one back so a generated comparison
-// survives page refresh instead of re-burning AI inference.
+// triggerOfferComparison (via lib/offers/offer-analyzer.ts:analyzeAndCompareOffers)
+// and kernel compareOffersForListing persist comparison rows to offer_comparison —
+// this reads the latest one back so a generated comparison survives page refresh
+// instead of re-burning AI inference.
+//
+// The claim above was ASPIRATIONAL until wave 13. The analyzer wrote
+// offers.ai_recommendation per offer and a lifecycle event, and never wrote an
+// offer_comparison row at all — so `ai_recommendation` and `ai_analysis_notes`
+// selected here were NULL on every read, and "survives page refresh" did not.
 export async function loadLatestOfferComparison(listingId: string) {
   if (!isValidUUID(listingId)) return { success: false, error: "Invalid listing ID" }
 

@@ -38,7 +38,7 @@
 import { readFileSync, writeFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { resolve } from "node:path"
-import { stripComments } from "./strip-comments"
+import { blankComments, blankStrings, stripComments } from "./strip-comments"
 
 // Resolved from the process CWD (repo root) so the file works as ESM or CJS.
 const ROOT = process.cwd()
@@ -60,16 +60,6 @@ const F = {
 // Tokenizer: strip comments, blank string bodies. Length-preserving.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SLASH = "/"
-const STAR = "*"
-const BACKSLASH = "\\"
-const NL = "\n"
-
-/** Chars after which a `/` begins a regex literal rather than a division. */
-const REGEX_LEAD = new Set([
-  "(", ",", "=", ":", "[", "!", "&", "|", "?", "{", "}", ";", "+", "-", "*", "%", "~", "^", "<", ">", "\n",
-])
-
 interface Scanned {
   /** Comments replaced by spaces. Same length as the raw file. */
   noComments: string
@@ -77,81 +67,22 @@ interface Scanned {
   skeleton: string
 }
 
-function scan(raw: string, opts: { jsx: boolean }): Scanned {
-  const nc = raw.split("")
-  const sk = raw.split("")
-  const n = raw.length
-  let i = 0
-
-  const blank = (from: number, to: number, arrs: string[][]) => {
-    for (let k = from; k < to && k < n; k++) {
-      const ch = raw[k]
-      for (const a of arrs) a[k] = ch === NL ? NL : " "
-    }
-  }
-
-  let lastSig = "\n"
-
-  while (i < n) {
-    const c = raw[i]
-    const d = i + 1 < n ? raw[i + 1] : ""
-
-    // line comment
-    if (c === SLASH && d === SLASH) {
-      let j = i
-      while (j < n && raw[j] !== NL) j++
-      blank(i, j, [nc, sk])
-      i = j
-      continue
-    }
-    // block comment
-    if (c === SLASH && d === STAR) {
-      let j = i + 2
-      while (j < n && !(raw[j] === STAR && raw[j + 1] === SLASH)) j++
-      j = Math.min(j + 2, n)
-      blank(i, j, [nc, sk])
-      i = j
-      continue
-    }
-    // string / template
-    if (c === '"' || c === "'" || c === "`") {
-      const quote = c
-      let j = i + 1
-      while (j < n) {
-        if (raw[j] === BACKSLASH) { j += 2; continue }
-        if (raw[j] === quote) break
-        j++
-      }
-      // interior blanked in the skeleton only; noComments keeps the literal
-      blank(i + 1, j, [sk])
-      i = Math.min(j + 1, n)
-      lastSig = quote
-      continue
-    }
-    // regex literal (never in JSX files — `</Tag>` would be mistaken for one)
-    if (!opts.jsx && c === SLASH && REGEX_LEAD.has(lastSig)) {
-      let j = i + 1
-      let inClass = false
-      while (j < n) {
-        if (raw[j] === BACKSLASH) { j += 2; continue }
-        if (raw[j] === "[") inClass = true
-        else if (raw[j] === "]") inClass = false
-        else if (raw[j] === SLASH && !inClass) break
-        else if (raw[j] === NL) break
-        j++
-      }
-      blank(i + 1, j, [sk])
-      i = Math.min(j + 1, n)
-      lastSig = SLASH
-      continue
-    }
-
-    if (!/\s/.test(c)) lastSig = c
-    else if (c === NL) lastSig = NL
-    i++
-  }
-
-  return { noComments: nc.join(""), skeleton: sk.join("") }
+/**
+ * Both views come from the ONE scanner in scripts/strip-comments.ts (finding
+ * #250). This used to be a 70-line character scan of its own — the same scan,
+ * re-implemented, and therefore the same bugs re-implemented: it read a lone
+ * backtick inside a double-quoted string as the start of a template and paired
+ * every literal after it off by one, and it treated `${…}` as string content
+ * when interpolations are CODE and can hold a real call.
+ *
+ * `blankComments` blanks comment bodies; `blankStrings` blanks comment bodies
+ * AND string/template interiors. Both preserve length and every offset, which
+ * is what the brace-matching below depends on. The `jsx` hint is no longer
+ * needed: the canonical scanner decides `/` by what precedes it and abandons an
+ * unterminated regex at the newline, so `</Tag>` cannot open one.
+ */
+function scan(raw: string, _opts: { jsx: boolean }): Scanned {
+  return { noComments: blankComments(raw), skeleton: blankStrings(raw) }
 }
 
 interface Src extends Scanned {

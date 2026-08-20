@@ -78,6 +78,7 @@ import { readFileSync, writeFileSync, readdirSync, statSync } from "node:fs"
 import { resolve, join, relative } from "node:path"
 import { createHash } from "node:crypto"
 import { pathToFileURL } from "node:url"
+import { blankComments } from "./strip-comments"
 
 const ROOT = process.cwd()
 const RUN_NEGATIVE = !process.argv.includes("--no-negative")
@@ -218,39 +219,8 @@ function check(label: string, ok: boolean, detail = ""): boolean {
 const raw = (p: string) => readFileSync(resolve(ROOT, p), "utf8")
 const sha = (p: string) => createHash("sha256").update(raw(p)).digest("hex")
 
-/** Blank out comment CONTENT while preserving every byte offset, so a claim in a
- *  comment can never satisfy an assertion — and a negative control cannot be
- *  defeated by commenting the defect out. */
-function blankComments(src: string): string {
-  const out = src.split("")
-  let i = 0
-  while (i < src.length) {
-    const c = src[i]
-    if (c === '"' || c === "'" || c === "`") {
-      const q = c
-      i++
-      while (i < src.length) {
-        if (src[i] === "\\") { i += 2; continue }
-        if (src[i] === q) { i++; break }
-        i++
-      }
-      continue
-    }
-    if (c === "/" && src[i + 1] === "/") {
-      while (i < src.length && src[i] !== "\n") { out[i] = " "; i++ }
-      continue
-    }
-    if (c === "/" && src[i + 1] === "*") {
-      const end = src.indexOf("*/", i + 2)
-      const stop = end === -1 ? src.length : end + 2
-      for (let j = i; j < stop; j++) if (src[j] !== "\n") out[j] = " "
-      i = stop
-      continue
-    }
-    i++
-  }
-  return out.join("")
-}
+// blankComments() now comes from scripts/strip-comments.ts — see the import above.
+// hand-rolled scanner replaced (finding #250): it could not see nested `${…}` templates, regex literals, or an apostrophe in JSX text, and went blind on the code it judges.
 
 /** Index just past the balanced closer for the bracket at `open`. */
 function skipBalanced(src: string, open: number): number {

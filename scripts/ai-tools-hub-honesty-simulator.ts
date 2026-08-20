@@ -223,11 +223,15 @@ function newWorld(over: Partial<World> = {}): World {
       success: true,
       data: { headline: "Room to grow", medium_description: "You get a kitchen built for the way you cook." },
     },
-    draft: { success: true, draft: "Here is what you asked for.", usage: { inputTokens: 90, outputTokens: 30, totalTokens: 120, estimated: false } },
+    // `model` on every usage block is the model the lane says SERVED the call.
+    // The hub reads it; it no longer decides the ledger's model_used from the
+    // survivor's NAME. scripts/ai-tools-hub-served-model-simulator.ts proves the
+    // label follows the server.
+    draft: { success: true, draft: "Here is what you asked for.", usage: { inputTokens: 90, outputTokens: 30, totalTokens: 120, estimated: false, model: "gpt-4o-mini" } },
     social: {
       success: true,
       data: { content: "Your next chapter starts here.", hashtags: ["OakPark"], hook: "h", cta: "c", estimated_engagement: "high" },
-      usage: { inputTokens: 200, outputTokens: 60, totalTokens: 260, estimated: false },
+      usage: { inputTokens: 200, outputTokens: 60, totalTokens: 260, estimated: false, model: "claude-sonnet" },
     },
     smart: {
       replies: [
@@ -235,7 +239,7 @@ function newWorld(over: Partial<World> = {}): World {
         { intent: "clarify", body: "What matters most to you right now?" },
         { intent: "soft_hold", body: "Let me check and come back to you." },
       ],
-      usage: { modelCalled: true, inputTokens: 70, outputTokens: 20, totalTokens: 90, estimated: false },
+      usage: { modelCalled: true, inputTokens: 70, outputTokens: 20, totalTokens: 90, estimated: false, model: "claude-sonnet" },
     },
     teamReport: {
       success: true,
@@ -389,7 +393,7 @@ async function behaviourLayer(): Promise<void> {
   const socialMoved = await run(
     "social_post",
     { platform: "instagram", context: "4 bed in Oak Park" },
-    { social: { success: true, data: { content: "c", hashtags: [] }, usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3, estimated: false } } },
+    { social: { success: true, data: { content: "c", hashtags: [] }, usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3, estimated: false, model: "claude-sonnet" } } },
   )
   check("social_post: that figure MOVES with the survivor's report (1+2)",
     socialMoved.row?.tokens_used === 3, `tokens_used=${socialMoved.row?.tokens_used}`)
@@ -406,7 +410,7 @@ async function behaviourLayer(): Promise<void> {
     {
       smart: {
         replies: [{ intent: "affirm", body: "Yes — Saturday works." }],
-        usage: { modelCalled: false, inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false },
+        usage: { modelCalled: false, inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false, model: null },
       },
     },
   )
@@ -572,6 +576,17 @@ function constructLayer(): void {
       /const ledgerCostCents =\s*\n?\s*measured === null \? 0 : calculateCost\(/.test(hub))
   check("the only measured counts in the hub are read off a usage object",
     /inputTokens: usage\.inputTokens/.test(hub) && /outputTokens: usage\.outputTokens/.test(hub))
+  // NOR IS THE MODEL A LITERAL. tokens_used and model_used are one fact — m508
+  // refuses a row that claims tokens without naming the model that produced
+  // them, and calculateCost prices the tokens off that label — so a model name
+  // asserted from outside the usage block is the same defect as an asserted
+  // count. This file used to decide the ledger's model by comparing the
+  // SURVIVOR'S NAME to a string; wave 13 replaced that with the model the lane
+  // reports. scripts/ai-tools-hub-tenanted-spend-simulator.ts proves the label
+  // follows the server; this stops the string comparison coming back.
+  check("no measured model name is a literal decided from the lane's name",
+    !/model: lane === /.test(hub),
+    (hub.match(/[^\n]*model: lane === [^\n]*/) ?? [])[0])
 
   // P1 — no canned output string on a success path.
   check("no `return { <field>: \"<literal>\" }` stub shape remains in the hub",
@@ -649,7 +664,7 @@ function constructLayer(): void {
     (models.match(/totalTokens: inputTokens \+ outputTokens, model: modelUsed/g) ?? []).length === 2)
   const gen = code(F.generate)
   check("the generateObject shim returns the provider's usage to its caller",
-    /usage: readUsage\(usage, promptForEstimate\)/.test(gen))
+    /usage: readUsage\(usage, promptForEstimate, servedModel\)/.test(gen))
   const smartSrc = code(F.smart)
   check("the smart-reply survivor reports whether it called a model at all",
     /modelCalled: false/.test(smartSrc) && /modelCalled: true/.test(smartSrc))
@@ -662,16 +677,6 @@ function findingsLayer(): void {
   console.log("\n3. FINDINGS")
   const hub = code(F.hub)
 
-  const unmeasured = (hub.match(/unmeasuredLane\(/g) ?? []).length - 1 // minus the helper's own definition
-  if (unmeasured > 0) {
-    finding(
-      "pre-existing tools spend tokens nobody books",
-      `${unmeasured} dispatch arm(s) marked lane_reports_no_usage — explainTerm, compareProperties, runAffordabilityTool and ` +
-      `researchNeighborhood call generateTextRouted with no brokerageId, so logAIUsage never fires and the spend ` +
-      `appears on no ledger at all. They book 0 here — honest, but the spend is still invisible. Fix: give each a ` +
-      `tenant so the routed lane ledgers it.`,
-    )
-  }
   if (/reason: "booked_by_survivor"/.test(hub)) {
     finding(
       "two token provenances, by design",
@@ -680,24 +685,11 @@ function findingsLayer(): void {
       "ai_tool_usage must join tool rows to 'ai_model' rows to see a routed tool's cost.",
     )
   }
-  if (/model: lane === "generateSocialPostContent"/.test(hub)) {
-    finding(
-      "model_used is the PINNED model, not the served one",
-      "the generateObject shim and generateObjectRouted do not report which of primary/fallback served the call, " +
-      "so social_post, email_composer and smart_reply ledger the model their lane pins. The TOKENS are real; the " +
-      "model label can be wrong on a fallback. Fix: carry modelUsed out of those two helpers as well.",
-    )
-  }
   finding(
     "three tools remain unbuilt",
     "document_checklist, deadline_calculator and document_explainer refuse honestly and book zero, but the AI " +
     "Toolkit still advertises them. deadline_calculator must NOT be built as a model call — " +
     "lib/transactions/milestone-catalog.ts and contingency-deadlines.ts already own contract dates.",
-  )
-  finding(
-    "neighborhood_research receives undefined",
-    "the dispatch reads params.address while the form collects neighborhood/city/state, so the tool has always " +
-    "analysed `undefined`. Left untouched: researchNeighborhood is a real implementation and is another lane's.",
   )
 }
 

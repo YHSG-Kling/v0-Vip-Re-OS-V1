@@ -89,6 +89,7 @@ import {
   resolveTenantAdmin,
 } from "../lib/auth/resolve-user-role"
 import { toCanonicalRole } from "../lib/security/types"
+import { blankStrings } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -301,32 +302,16 @@ function walk(dir: string, out: string[] = []): string[] {
  * comment or registry entry can affect the result either way.
  */
 function stringMask(s: string): boolean[] {
-  const mask = new Array<boolean>(s.length).fill(false)
-  let i = 0
-  while (i < s.length) {
-    const c = s[i]
-    if (c === "/" && s[i + 1] === "/") {
-      while (i < s.length && s[i] !== "\n") mask[i++] = true
-    } else if (c === "/" && s[i + 1] === "*") {
-      const end = s.indexOf("*/", i + 2)
-      const stop = end === -1 ? s.length : end + 2
-      while (i < stop) mask[i++] = true
-    } else if (c === '"' || c === "'" || c === "`") {
-      const q = c
-      mask[i++] = true
-      while (i < s.length) {
-        if (s[i] === "\\") { mask[i++] = true; if (i < s.length) mask[i++] = true; continue }
-        if (s[i] === q) { mask[i++] = true; break }
-        // A single/double-quoted literal cannot span a newline; bail out rather
-        // than masking the rest of the file when an apostrophe appears in prose
-        // the comment rules did not already cover.
-        if (q !== "`" && s[i] === "\n") break
-        mask[i++] = true
-      }
-    } else {
-      i++
-    }
-  }
+  // DERIVED, not hand-rolled (finding #250). blankStrings() is the one correct
+  // scanner in scripts/strip-comments.ts: it blanks comment and string/template
+  // CONTENT to spaces while preserving every character offset, so a character
+  // that changed is exactly a character the scanner judged to be prose. The
+  // hand-rolled version this replaces could not see `${…}` interpolations (which
+  // are CODE), regex literals, or an apostrophe in JSX text — each of which
+  // desynchronises the scan and masks live code.
+  const masked = blankStrings(s)
+  const mask = new Array<boolean>(s.length)
+  for (let i = 0; i < s.length; i++) mask[i] = masked[i] !== s[i]
   return mask
 }
 

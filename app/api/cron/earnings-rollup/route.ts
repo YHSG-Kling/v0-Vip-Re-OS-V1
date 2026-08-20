@@ -8,6 +8,7 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { readCapProgress, pickCapWindow, type CapLedgerRow } from "@/lib/finance/cap-progress"
 
 export async function GET(req: NextRequest) {
   // Cron auth — see lib/cron-auth.ts
@@ -72,6 +73,28 @@ export async function GET(req: NextRequest) {
           const m = agg(mtdRows)
           const computedAt = new Date().toISOString()
 
+          // ── THE CAP, WHICH THIS ROLLUP HAS NEVER CARRIED ────────────────────
+          // agent_earnings.cap_status and .cap_progress_pct are READ by the AI
+          // goal-setter (app/actions/ai-agent-goals.ts:182 — it printed "Cap
+          // status: Unknown" for every agent and set next year's GCI targets
+          // without it) and by the agent's earnings report
+          // (app/dashboard/financials/reports/page.tsx:33). Nothing wrote
+          // either. The cap LEDGER — agent_cap_tracking — already exists and is
+          // what the payout engine and the agent financials page read, so the
+          // number is carried across rather than invented, through the ONE
+          // reading (lib/finance/cap-progress.ts) the kernel summary now shares.
+          //
+          // The window in force TODAY is the one the payout engine applies; a
+          // ledger row outside its anniversary window is history, and scoring an
+          // agent against last year's cap is worse than saying nothing.
+          const { data: capRows } = await supabase
+            .from("agent_cap_tracking")
+            .select("cap_amount, cap_paid_to_date, is_capped, anniversary_start, anniversary_end")
+            .eq("agent_id", agent.id)
+            .eq("brokerage_id", agent.brokerage_id)
+            .limit(20)
+          const cap = readCapProgress(pickCapWindow(capRows as CapLedgerRow[] | null, now))
+
           // Populate agent_earnings — THE table the earnings P&L dashboard reads
           // (period_type mtd/ytd). Without this the dashboard showed $0 on closed
           // deals because the close path never aggregated agent_commissions here.
@@ -87,6 +110,13 @@ export async function GET(req: NextRequest) {
                 brokerage_net: a.brok,
                 total_fees: 0,
                 transaction_count: a.count,
+                // NULL when the agent has no cap window in force — "uncapped" is
+                // not a status, and `below_cap` would assert a ceiling the payout
+                // engine will never apply. The CHECK on cap_status admits only
+                // below_cap / at_cap / post_cap, and a value outside it refuses
+                // this WHOLE upsert (the dashboard's $0 defect, one column over).
+                cap_status: cap.status,
+                cap_progress_pct: cap.pct,
                 computed_at: computedAt,
               },
               { onConflict: "agent_id,period_type,period_label" }

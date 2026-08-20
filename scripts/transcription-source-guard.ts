@@ -135,39 +135,8 @@ const sha = (p: string) => createHash("sha256").update(raw(p)).digest("hex")
 // CONSTRUCT SCANNING — offsets preserved, so "is X before Y" is answerable
 // ═════════════════════════════════════════════════════════════════════════════
 
-/** Blank out comment CONTENT while preserving every byte offset, so a claim in a
- *  comment can never satisfy an assertion about code (and a negative control
- *  cannot be defeated by commenting the defect out). */
-function blankComments(src: string): string {
-  const out = src.split("")
-  let i = 0
-  while (i < src.length) {
-    const c = src[i]
-    if (c === '"' || c === "'" || c === "`") {
-      const q = c
-      i++
-      while (i < src.length) {
-        if (src[i] === "\\") { i += 2; continue }
-        if (src[i] === q) { i++; break }
-        i++
-      }
-      continue
-    }
-    if (c === "/" && src[i + 1] === "/") {
-      while (i < src.length && src[i] !== "\n") { out[i] = " "; i++ }
-      continue
-    }
-    if (c === "/" && src[i + 1] === "*") {
-      const end = src.indexOf("*/", i + 2)
-      const stop = end === -1 ? src.length : end + 2
-      for (let k = i; k < stop; k++) if (src[k] !== "\n") out[k] = " "
-      i = stop
-      continue
-    }
-    i++
-  }
-  return out.join("")
-}
+// blankComments() now comes from scripts/strip-comments.ts — see the import above.
+// hand-rolled scanner replaced (finding #250): it could not see nested `${…}` templates, regex literals, or an apostrophe in JSX text, and went blind on the code it judges.
 
 /** Skip a string/template literal starting at `start` (which indexes the quote). */
 function skipString(src: string, start: number): number {
@@ -588,6 +557,7 @@ async function assertNoEgressOnRefusedHost(): Promise<boolean> {
 
 import { readdirSync, statSync } from "node:fs"
 import { join, relative } from "node:path"
+import { blankComments } from "./strip-comments"
 
 function* walk(dir: string): Generator<string> {
   let entries: string[]

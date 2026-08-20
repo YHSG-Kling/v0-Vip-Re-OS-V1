@@ -1,6 +1,30 @@
 // app/api/webhooks/inbound-suppression/route.ts
 // WEBHOOK: Capture inbound suppression intents (stop/unsubscribe)
 // Detects and applies suppression from SMS, email, phone responses
+//
+// ── AUTH: SHARED SECRET, UNSET = 404 ────────────────────────────────────────
+// This handler had NO caller authentication. It runs on the service client
+// (RLS bypassed), and when the payload omits `brokerageId` it matched contacts
+// by bare phone/email across EVERY tenant (see the two identity lookups below).
+// So an unauthenticated POST of {source:"sms", phoneNumber:"…", message:"stop"}
+// set call_stop_flag / sms_opt_out / email_opt_out on somebody else's contact —
+// a cross-tenant write and a denial-of-communication vector — while the
+// 404 `contact_not_found` vs 200 `success` split answered "is this phone number
+// in your CRM?" for anyone who asked.
+//
+// The gate is the idiom the other provider webhooks in this tree already use
+// (app/api/webhooks/sendgrid-events/route.ts:43, app/api/webhooks/lob-events/
+// route.ts:41, app/api/webhooks/twilio-sms-status/route.ts:46): the secret is
+// read from the env, an UNSET secret is an honest 404 rather than a silently
+// open endpoint, and a wrong secret is a 401. Nothing in this repo addresses
+// this route and no provider integration in this repo is configured to call it,
+// so the closed-by-default posture is the correct production state; set
+// INBOUND_SUPPRESSION_WEBHOOK_SECRET and hand the URL its secret to enable it.
+//
+// The signature-verified path that actually carries real inbound opt-outs today
+// is app/api/providers/inbound/route.ts (bound as SmsUrl at
+// lib/voice/twilio-voice.ts:151) → lib/ai-isa/opt-out-utils.ts:12
+// → app/actions/ai-isa/process-opt-out.ts. Prefer it for anything new.
 
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -108,6 +132,20 @@ function detectSuppressionIntent(message: string): DetectIntentOutput {
  */
 export async function POST(request: NextRequest) {
   try {
+    // ─── AUTH ──────────────────────────────────────────────────────────────
+    // Unset secret = 404 (never a silently-open suppression writer);
+    // wrong secret = 401. See the header for why this is not optional.
+    const secret = process.env.INBOUND_SUPPRESSION_WEBHOOK_SECRET
+    if (!secret) {
+      return NextResponse.json({ error: "not found" }, { status: 404 })
+    }
+    const given =
+      request.nextUrl.searchParams.get("secret") ??
+      request.headers.get("x-webhook-secret")
+    if (given !== secret) {
+      return NextResponse.json({ error: "unauthorized" }, { status: 401 })
+    }
+
     const payload: InboundSuppressionPayload = await request.json()
     const supabase = await createServiceClient()
 

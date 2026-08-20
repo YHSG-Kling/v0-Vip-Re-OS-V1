@@ -8,6 +8,7 @@ import { generateText, Output } from "ai"
 import { createGateway } from "@ai-sdk/gateway"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { runPipelineSimple } from "@/lib/ai/pipeline"
+import { modelIdentityFor, type AIModel } from "@/lib/ai/models"
 import { z } from "zod"
 
 /**
@@ -144,6 +145,15 @@ export async function generateObject<T extends z.ZodType>({
 
   const promptForEstimate = promptParts
 
+  // THE MODEL THAT SERVED THIS CALL, named before it is made.
+  //
+  // There is no fallback in this shim — one model instance is built above and
+  // one call is made to it — so the model the caller pinned IS the model that
+  // served, and this is that fact rather than a guess about it. `null` when the
+  // caller handed in an already-constructed provider instance (no id to read)
+  // or a string MODEL_CONFIG cannot name unambiguously.
+  const servedModel = modelIdentityFor(model)
+
   const { experimental_output, usage } = await generateText({
     model: resolvedModel,
     prompt: redactSensitive(promptParts).text,
@@ -153,7 +163,7 @@ export async function generateObject<T extends z.ZodType>({
 
   return {
     object: experimental_output as z.infer<T>,
-    usage: readUsage(usage, promptForEstimate),
+    usage: readUsage(usage, promptForEstimate, servedModel),
   }
 }
 
@@ -175,14 +185,30 @@ export interface GeneratedUsage {
   outputTokens: number
   totalTokens: number
   estimated: boolean
+  /**
+   * THE MODEL THAT SERVED THE CALL, as the platform's own billing identity.
+   *
+   * Counts without a model are half a ledger row. `ai_tool_usage.model_used` is
+   * what prices the tokens (calculateCost keys on it) and m508 refuses a row
+   * that claims tokens without naming one — so a caller booking this usage
+   * needs the model from the same source as the counts. Before this field the
+   * only thing available was the model the caller BELIEVED this lane pins, and
+   * app/actions/ai-tools-hub.ts was carrying exactly that: a `lane === "…"`
+   * string comparison deciding what to write in a billing record.
+   *
+   * `null` = this shim cannot name it (a pre-built provider instance, or a
+   * model string MODEL_CONFIG maps to more than one identity). Null means DO
+   * NOT BOOK THE TOKENS — book zero and say why.
+   */
+  model: AIModel | null
 }
 
-function readUsage(usage: unknown, prompt: string): GeneratedUsage {
+function readUsage(usage: unknown, prompt: string, model: AIModel | null): GeneratedUsage {
   const u = (usage ?? {}) as Record<string, number | undefined>
   const input = u.inputTokens ?? u.promptTokens
   const output = u.outputTokens ?? u.completionTokens
   if (typeof input === "number" && typeof output === "number") {
-    return { inputTokens: input, outputTokens: output, totalTokens: input + output, estimated: false }
+    return { inputTokens: input, outputTokens: output, totalTokens: input + output, estimated: false, model }
   }
   // Same chars/4 heuristic lib/ai/cost-tracking.ts::estimateTokens uses — a
   // second estimator is how two lanes drift.
@@ -192,6 +218,7 @@ function readUsage(usage: unknown, prompt: string): GeneratedUsage {
     outputTokens: typeof output === "number" ? output : 0,
     totalTokens: (typeof input === "number" ? input : inputEstimate) + (typeof output === "number" ? output : 0),
     estimated: true,
+    model,
   }
 }
 

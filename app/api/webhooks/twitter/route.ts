@@ -38,17 +38,28 @@ export async function GET(req: NextRequest) {
 
 // --- POST: Inbound DM events ---
 export async function POST(req: NextRequest) {
-  // Verify signature (Twitter sends x-twitter-webhooks-signature)
+  // Verify signature (Twitter sends x-twitter-webhooks-signature).
+  //
+  // THIS CHECK USED TO FAIL OPEN: `if (CONSUMER_SECRET && signature)` meant an
+  // unset env var OR a simply-omitted header skipped verification entirely and
+  // the body was ingested as a real DM — the exact fail-open shape
+  // lib/cron-auth.ts's docblock was written to prevent, and it is reachable by
+  // anyone who knows the URL (this handler writes into the tenant inbox via
+  // ingestMessageService). Now: no secret configured = 503 "not configured",
+  // matching the CRC handler above (line 27); missing or wrong signature = 403.
   const rawBody = await req.text()
   const signature = req.headers.get("x-twitter-webhooks-signature")
 
-  if (CONSUMER_SECRET && signature) {
-    const expected =
-      "sha256=" +
-      crypto.createHmac("sha256", CONSUMER_SECRET).update(rawBody).digest("base64")
-    if (signature !== expected) {
-      return NextResponse.json({ error: "Invalid signature" }, { status: 403 })
-    }
+  if (!CONSUMER_SECRET) {
+    return NextResponse.json({ error: "Twitter not configured" }, { status: 503 })
+  }
+  const expected =
+    "sha256=" +
+    crypto.createHmac("sha256", CONSUMER_SECRET).update(rawBody).digest("base64")
+  const sigBuf = Buffer.from(signature ?? "")
+  const expBuf = Buffer.from(expected)
+  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+    return NextResponse.json({ error: "Invalid signature" }, { status: 403 })
   }
 
   let payload: any

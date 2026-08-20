@@ -1,8 +1,9 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateTextRouted as generateText } from "@/lib/ai/models"
+import { generateTextRouted as generateText, type RoutedUsage } from "@/lib/ai/models"
 import { calculateCost, type AIModel } from "@/lib/ai/cost-tracking"
+import type { GeneratedUsage } from "@/lib/ai/generate"
 import { getAgentContext, type AgentContext } from "@/lib/identity/get-agent-context"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import type { MessageType } from "@/lib/kernel/types"
@@ -25,14 +26,22 @@ import type { MessageType } from "@/lib/kernel/types"
 //
 //   measured             — this file called the model and read the counts off
 //                          the provider's response. This row books them.
-//   booked_by_survivor   — the tool routes to a real implementation elsewhere
-//                          whose own lane already writes an ai_tool_usage
-//                          ledger row (via logAIUsage) for the same call.
-//                          Booking it again here would DOUBLE-BILL the tenant,
-//                          so this row books 0 and names where the spend landed.
+//   booked_by_survivor   — the same call is ALREADY on an ai_tool_usage row
+//                          written by logAIUsage against the same tenant —
+//                          either because the tool routes to a survivor whose
+//                          own lane ledgers, or because this file made the call
+//                          THROUGH THE TENANT and the routing layer ledgered it
+//                          (generateTextRouted logs whenever it is given a
+//                          brokerageId). Booking it again here would DOUBLE-BILL
+//                          the tenant, so this row books 0 and names where the
+//                          spend landed.
 //   lane_reports_no_usage — a model ran through a path that neither returns its
 //                          usage nor ledgers it. 0, with a warning naming the
-//                          lane. Reported, never guessed at.
+//                          lane. Reported, never guessed at. Also covers a lane
+//                          that returns counts it cannot attribute to a model:
+//                          m508 refuses a row that claims tokens without naming
+//                          one, and a model label invented here to satisfy it
+//                          would be the fabrication this union exists to stop.
 //   no_model_call        — nothing was bought.
 //   refused              — the tool declined (missing input, no tenant, blocked
 //                          by compliance). 0 tokens AND success=false.
@@ -197,34 +206,46 @@ async function dispatchAITool(
 ): Promise<ToolRun> {
   switch (toolName) {
     // ── CLIENT EDUCATION TOOLS ───────────────────────────────────────────
-    case "explain_this":
-      return unmeasuredLane(
-        await explainTerm(params.term, params.context, userType),
-        "explainTerm → generateTextRouted with no brokerageId, which skips logAIUsage",
-      )
+    case "explain_this": {
+      // THE FORM COLLECTS `concept`, AND THIS READ `params.term`.
+      // app/dashboard/ai-tools/ai-tools-client.tsx:72 renders one input named
+      // "concept" and passes the inputs object through verbatim, so every run
+      // of this tool since it shipped asked a model to explain `undefined` —
+      // and paid for the answer. Same defect class as neighborhood_research
+      // below; `term` is still accepted so any other caller keeps working.
+      const concept = field(params.concept) ?? field(params.term)
+      if (!concept) return refuse("Enter the concept you want explained, then run it again.")
+      // There is no Context input on this card either — the prompt used to
+      // interpolate `undefined` into an "Additional context:" line.
+      return explainTerm(concept, field(params.context), userType, tenantOf(ctx))
+    }
 
     case "property_comparison":
       // userId is the SESSION user — this read returns the caller's own saved
       // properties, and it used to take whichever id the browser sent.
-      return unmeasuredLane(
-        await compareProperties(params, ctx.userId),
-        "compareProperties → generateTextRouted with no brokerageId, which skips logAIUsage",
-      )
+      return compareProperties(params, ctx.userId, tenantOf(ctx))
 
     case "affordability_calculator":
       // The form's own four fields — income, debt, downPayment, rate. The old
       // call passed params.location, which this form does not collect, and
       // dropped debt and rate entirely.
-      return unmeasuredLane(
-        await runAffordabilityTool(params),
-        "runAffordabilityTool → calculators + generateTextRouted with no brokerageId",
-      )
+      return runAffordabilityTool(params, tenantOf(ctx))
 
-    case "neighborhood_research":
-      return unmeasuredLane(
-        await researchNeighborhood(params.address, ctx.userId),
-        "researchNeighborhood → generateTextRouted with no brokerageId, which skips logAIUsage",
-      )
+    case "neighborhood_research": {
+      // THE FORM COLLECTS `neighborhood`, `city` AND `state`, and this read
+      // `params.address` — a field this card has never rendered. So the tool
+      // has always researched `undefined`, spent real tokens doing it, and
+      // returned a confident analysis of nothing. The three real fields are
+      // joined into the place description the prompt asks for; `address` is
+      // still honoured for any caller that has one.
+      const place =
+        field(params.address) ??
+        [field(params.neighborhood), field(params.city), field(params.state)].filter(Boolean).join(", ")
+      if (!place) {
+        return refuse("Enter the neighborhood, city or state you want researched, then run it again.")
+      }
+      return researchNeighborhood(place, tenantOf(ctx))
+    }
 
     case "document_explainer":
       return explainDocument(params, ctx)
@@ -271,17 +292,70 @@ async function dispatchAITool(
 }
 
 /**
- * Wrap a tool that DID call a model through a lane which neither returns its
- * usage nor writes a ledger row. Books 0 and says why.
+ * THE TENANT A MODEL CALL IS BILLED TO — from the session, never a parameter.
  *
- * These four are the pre-existing, genuinely-implemented tools. They are
- * untouched here; this only stops the executor from silently reading a
- * `tokensUsed` field off whatever they happen to return. Closing the gap means
- * giving each one a tenant so `generateTextRouted` ledgers it — recorded as a
- * finding rather than swept into this change.
+ * Four pre-existing tools (explainTerm, compareProperties, runAffordabilityTool,
+ * researchNeighborhood) called generateTextRouted with NO identity at all. That
+ * had two consequences, and neither was visible from this file:
+ *
+ *   · NO LEDGER. generateTextRouted calls logAIUsage only when it is given a
+ *     brokerageId, so their spend landed on no ai_tool_usage row anywhere. It
+ *     was not under-billed, it was ABSENT — missing from meter_readings.ai_tokens,
+ *     from the per-tier overage projection, and from every per-manager cost
+ *     roll-up. The hub booked 0 for them, which was honest about what THIS file
+ *     knew and silent about the hole.
+ *   · NO CAP. checkAIFairUse treats a missing brokerageId as a background job
+ *     and returns uncapped. Four tools on the AI Toolkit's front page were
+ *     spending the tenant's AI allowance without being counted against it, so a
+ *     brokerage at 100% of its included quota could keep pressing these four
+ *     buttons for free — unbilled AND uncapped.
+ *
+ * Both close by handing the routed lane the identity the session already
+ * resolved. Nothing here comes from `params`.
  */
-function unmeasuredLane(output: unknown, detail: string): ToolRun {
-  return { output: toPanelText(output), tokens: { measured: false, reason: "lane_reports_no_usage", detail } }
+interface HubTenant {
+  userId: string
+  brokerageId: string | null
+  agentId: string | null
+}
+
+function tenantOf(ctx: AgentContext): HubTenant {
+  return { userId: ctx.userId, brokerageId: ctx.brokerageId, agentId: ctx.agentId }
+}
+
+/**
+ * WHO BOOKS THE COUNTS A ROUTED CALL REPORTED — exactly one row, either way.
+ *
+ * With a tenant, generateTextRouted has already written the ai_tool_usage row
+ * (logAIUsage, keyed on brokerage_id) for this very call, so this row books 0
+ * and names where the spend landed. Booking it here as well would put one call
+ * on two rows of the table usage-metering sums, and the brokerage's ai_tokens
+ * meter would read double.
+ *
+ * WITHOUT a tenant nothing was ledgered — logAIUsage never fired — so the
+ * measured counts are booked HERE, on this hub's own (untenanted) row, rather
+ * than disappearing. That is the whole point: the figure lands once, and which
+ * row it lands on follows from who already wrote one.
+ *
+ * The model is the one the routing layer says SERVED the call, which is the
+ * fallback whenever the primary threw. It is never read from the routing table.
+ */
+function routedTokens(usage: RoutedUsage, tenant: HubTenant, lane: string): ToolTokens {
+  if (tenant.brokerageId) {
+    return {
+      measured: false,
+      reason: "booked_by_survivor",
+      detail:
+        `${lane} → generateTextRouted → logAIUsage already wrote this call's ai_tool_usage row ` +
+        `(tool_name='ai_model', ${usage.totalTokens} tokens on ${usage.model}) against the same tenant`,
+    }
+  }
+  return {
+    measured: true,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    model: usage.model,
+  }
 }
 
 /**
@@ -376,30 +450,33 @@ function blockedByCompliance(violations: string[]): ToolRun {
 // RAG-BASED "EXPLAIN THIS" FOR CLIENTS
 // =====================================================
 
-async function explainTerm(term: string, context: string, userType: string) {
+async function explainTerm(
+  term: string,
+  context: string | null,
+  userType: string,
+  tenant: HubTenant,
+): Promise<ToolRun> {
   const supabase = await createClient()
-  
+
   // Search knowledge base using text search (simplified without embeddings)
   const { data: relevantDocs, error } = await supabase
     .from("knowledge_articles")
     .select("content, title")
     .textSearch("content", term)
     .limit(3)
-  
+
   if (error) {
     console.error("[AI Tools] RAG search error:", error)
     throw new Error("Failed to search knowledge base")
   }
-  
+
   // AI generates explanation using retrieved context
   const prompt = `
 Explain "${term}" in simple, plain English for a ${userType === "buyer" ? "homebuyer" : userType === "seller" ? "home seller" : "real estate professional"}.
 
 Context from knowledge base:
-${relevantDocs?.map((d: any) => d.content).join("\\n\\n")}
-
-Additional context: ${context}
-
+${relevantDocs?.map((d: any) => d.content).join("\n\n") || "(nothing in the knowledge base matched — answer from general real estate knowledge and do not cite an article.)"}
+${context ? `\nAdditional context: ${context}\n` : ""}
 Requirements:
 - No jargon
 - Use analogies and examples
@@ -409,17 +486,26 @@ Requirements:
 
 Explain:
 `
-  
-  const { text } = await generateText({
-    model: "openai/gpt-4o-mini",
+
+  const { text, usage } = await generateText({
+    // No AI_TASK_ROUTING key covers client education, so this rides
+    // "unspecified" (claude-sonnet) exactly as it did before. The `model` field
+    // it used to pass — "openai/gpt-4o-mini" — was IGNORED by
+    // generateTextRouted and is dropped rather than left reading like a choice.
     prompt,
     temperature: 0.7,
+    userId: tenant.userId,
+    brokerageId: tenant.brokerageId,
+    agentId: tenant.agentId ?? undefined,
   })
-  
+
   return {
-    term,
-    explanation: text,
-    learn_more_docs: relevantDocs?.map((d: any) => d.title) || [],
+    output: toPanelText({
+      term,
+      explanation: text,
+      learn_more_docs: relevantDocs?.map((d: any) => d.title) || [],
+    }),
+    tokens: routedTokens(usage, tenant, "explainTerm"),
   }
 }
 
@@ -434,7 +520,11 @@ interface ComparePropertiesParams {
   buyerCriteria?: string
 }
 
-async function compareProperties(params: ComparePropertiesParams, userId: string) {
+async function compareProperties(
+  params: ComparePropertiesParams,
+  userId: string,
+  tenant: HubTenant,
+): Promise<ToolRun> {
   const supabase = await createClient()
 
   // Buyer-side properties live in `saved_properties` (IDX/external/manual,
@@ -501,15 +591,17 @@ Provide:
 Be concise, objective, and helpful.
 `
 
-  const { text } = await generateText({
-    model: "openai/gpt-4o-mini",
+  const { text, usage } = await generateText({
     prompt,
     temperature: 0.7,
+    userId: tenant.userId,
+    brokerageId: tenant.brokerageId,
+    agentId: tenant.agentId ?? undefined,
   })
 
   return {
-    properties,
-    comparison: text,
+    output: toPanelText({ properties, comparison: text }),
+    tokens: routedTokens(usage, tenant, "compareProperties"),
   }
 }
 
@@ -550,12 +642,15 @@ function parseRatePercent(v: unknown): number | null {
   return Number.isFinite(n) ? n : null
 }
 
-async function runAffordabilityTool(params: {
-  income?: unknown
-  debt?: unknown
-  downPayment?: unknown
-  rate?: unknown
-}): Promise<string> {
+async function runAffordabilityTool(
+  params: {
+    income?: unknown
+    debt?: unknown
+    downPayment?: unknown
+    rate?: unknown
+  },
+  tenant: HubTenant,
+): Promise<ToolRun> {
   const { parseMoney } = await import("@/lib/offers/closing-cost-accuracy")
 
   const annualIncome = parseMoney(params.income)
@@ -574,8 +669,12 @@ async function runAffordabilityTool(params: {
   if (monthlyDebts == null) missing.push("monthly debt")
 
   if (missing.length > 0) {
-    // No figure at all beats a figure built on NaN.
-    return `I could not read ${missing.join(", ")}. Enter ${missing.length === 1 ? "it" : "them"} as a plain amount — for example 120000 or $120,000 for income, and 6.5 or 6.5% for the rate — and run it again.`
+    // No figure at all beats a figure built on NaN. A REFUSAL, so it ledgers as
+    // success=false with zero tokens rather than as a run that produced advice.
+    return refuse(
+      `I could not read ${missing.join(", ")}. Enter ${missing.length === 1 ? "it" : "them"} as a plain amount — for example 120000 or $120,000 for income, and 6.5 or 6.5% for the rate — and run it again.`,
+      `unreadable input: ${missing.join(", ")}`,
+    )
   }
 
   const { calculateAffordability } = await import("@/app/actions/calculators")
@@ -623,26 +722,31 @@ Use ONLY the figures above. Do not recalculate them, do not introduce different
 numbers, and do not comment on any specific city or market — no location was
 provided.`
 
-  const { text } = await generateText({
-    model: "openai/gpt-4o-mini",
+  const { text, usage } = await generateText({
     prompt,
     temperature: 0.7,
+    userId: tenant.userId,
+    brokerageId: tenant.brokerageId,
+    agentId: tenant.agentId ?? undefined,
   })
 
   const notes = affordability.recommendations?.length
     ? `\n\nWhat to watch:\n${affordability.recommendations.map((r) => `• ${r}`).join("\n")}`
     : ""
 
-  return `${figures}\n\n${text}${notes}`
+  return {
+    output: `${figures}\n\n${text}${notes}`,
+    tokens: routedTokens(usage, tenant, "runAffordabilityTool"),
+  }
 }
 
 // =====================================================
 // NEIGHBORHOOD RESEARCH
 // =====================================================
 
-async function researchNeighborhood(address: string, userId: string) {
+async function researchNeighborhood(place: string, tenant: HubTenant): Promise<ToolRun> {
   const prompt = `
-Provide a comprehensive neighborhood analysis for: ${address}
+Provide a comprehensive neighborhood analysis for: ${place}
 
 Cover:
 1. Schools (quality, ratings)
@@ -654,16 +758,29 @@ Cover:
 
 Be factual, balanced, and helpful for a homebuyer making a decision.
 `
-  
-  const { text } = await generateText({
-    model: "openai/gpt-4o-mini",
+
+  const { text, usage } = await generateText({
+    // THE ROUTING TABLE HAS A ROW WITH THIS TOOL'S NAME ON IT, and this call
+    // never used it: `neighborhood_research` → perplexity-sonar-pro, the one
+    // model in the table with live web access, chosen precisely for "current
+    // school ratings, walkability, local stats". Passing no feature routed it
+    // to "unspecified" (claude-sonnet), so a tool whose entire prompt asks for
+    // current schools, crime and market stats was answered from training data.
+    // Same price per token as claude-sonnet ($3/$15 per 1M), and it falls back
+    // to claude-sonnet if perplexity fails — so this is what the table always
+    // intended, not a re-route.
+    feature: "neighborhood_research",
     prompt,
     temperature: 0.7,
+    userId: tenant.userId,
+    brokerageId: tenant.brokerageId,
+    agentId: tenant.agentId ?? undefined,
   })
-  
+
   return {
-    address,
-    analysis: text,
+    output: toPanelText({ place, analysis: text }),
+    feature: "neighborhood_research",
+    tokens: routedTokens(usage, tenant, "researchNeighborhood"),
   }
 }
 
@@ -1208,21 +1325,47 @@ async function generateSmartReply(
   return {
     output: rendered,
     feature: "smart_reply_generation",
-    tokens: usage.modelCalled
-      ? {
-          measured: true,
-          inputTokens: usage.inputTokens,
-          outputTokens: usage.outputTokens,
-          // generateObjectRouted routes smart_reply_generation to claude-sonnet;
-          // it does not report back WHICH of primary/fallback served the call,
-          // so the ledger names the routed primary. Recorded as a finding.
-          model: "claude-sonnet",
-        }
-      : {
-          measured: false,
-          reason: "no_model_call",
-          detail: "AI_GATEWAY_API_KEY absent or the call threw — canned fallback replies, nothing spent",
-        },
+    tokens: smartReplyTokens(usage),
+  }
+}
+
+/**
+ * The Smart Reply lane's spend, as this ledger may state it.
+ *
+ * `smart_reply_generation` routes claude-sonnet with a gpt-4o FALLBACK, and
+ * generateObjectRouted switches to the fallback whenever the primary throws.
+ * This used to stamp "claude-sonnet" unconditionally — the PINNED model, not
+ * the served one — so every fallback run booked real tokens under the wrong
+ * model and was priced at claude-sonnet's $3/$15 per 1M instead of gpt-4o's
+ * $2.50/$10. generateSmartReplies now carries the served model out, so the row
+ * names whichever one ran.
+ */
+function smartReplyTokens(usage: {
+  modelCalled: boolean
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  model: AIModel | null
+}): ToolTokens {
+  if (!usage.modelCalled) {
+    return {
+      measured: false,
+      reason: "no_model_call",
+      detail: "AI_GATEWAY_API_KEY absent or the call threw — canned fallback replies, nothing spent",
+    }
+  }
+  if (!usage.model) {
+    return {
+      measured: false,
+      reason: "lane_reports_no_usage",
+      detail: `generateSmartReplies reported ${usage.totalTokens} tokens without naming the model that served them`,
+    }
+  }
+  return {
+    measured: true,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    model: usage.model,
   }
 }
 
@@ -1471,11 +1614,23 @@ async function explainDocument(
  * flattened away: an estimate measured off the real prompt and the real
  * completion is a legitimate ledger figure, but a reader of this table is
  * entitled to know it was not the provider's own count.
+ *
+ * THE MODEL COMES FROM THE SAME PLACE THE COUNTS DO. This used to read
+ *
+ *     model: lane === "generateSocialPostContent" ? "claude-sonnet" : "gpt-4o-mini"
+ *
+ * — a string comparison on the survivor's NAME, deciding what to write in a
+ * billing record. It was right only for as long as those two files kept pinning
+ * the models this file believed they pinned, nothing connected the two, and
+ * cost_cents is priced off that label: claude-sonnet bills 20x gpt-4o-mini per
+ * input token. The generateObject shim now reports the model it actually
+ * called, so the label is read, not asserted.
+ *
+ * A usage block that cannot name its model books ZERO rather than picking one:
+ * m508 refuses a row that claims tokens without a model, and inventing one to
+ * get past that is the exact defect this file exists to prevent.
  */
-function usageToTokens(
-  usage: { inputTokens: number; outputTokens: number; totalTokens: number; estimated: boolean } | undefined,
-  lane: string,
-): ToolTokens {
+function usageToTokens(usage: GeneratedUsage | undefined, lane: string): ToolTokens {
   if (!usage) {
     return {
       measured: false,
@@ -1483,14 +1638,19 @@ function usageToTokens(
       detail: `${lane} returned no usage block for this call`,
     }
   }
+  if (!usage.model) {
+    return {
+      measured: false,
+      reason: "lane_reports_no_usage",
+      detail:
+        `${lane} reported ${usage.totalTokens} tokens but could not name the model that served them ` +
+        `(a pre-built provider instance, or an ambiguous model id) — booked as 0 rather than priced against a guess`,
+    }
+  }
   return {
     measured: true,
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
-    // These lanes pin anthropic/claude-sonnet-4 (social) and openai/gpt-4o-mini
-    // (contextual draft) at their own call sites through resolveModel, and the
-    // generateObject shim does not report the served model back. The ledger
-    // names the model the lane pins. Recorded as a finding.
-    model: lane === "generateSocialPostContent" ? "claude-sonnet" : "gpt-4o-mini",
+    model: usage.model,
   }
 }

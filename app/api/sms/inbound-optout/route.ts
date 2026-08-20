@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { addSuppression } from '@/lib/kernel/compliance/check-suppression'
+import { validateTwilioSignature } from '@/lib/voice/twilio-voice'
+import { twilioTokenCandidates } from '@/lib/voice/sms-inbound'
 
 /**
  * app/api/sms/inbound-optout/route.ts
@@ -9,9 +11,29 @@ import { addSuppression } from '@/lib/kernel/compliance/check-suppression'
  * Detects STOP keywords per TCPA/CTIA rules and immediately suppresses
  * the phone number from future SMS sends.
  *
- * Wire this URL as the inbound SMS webhook in your Twilio / messaging provider.
- *
  * CTIA recognized STOP keywords: STOP, STOPALL, UNSUBSCRIBE, CANCEL, END, QUIT
+ *
+ * ── NOT THE CANONICAL INBOUND SMS INGRESS ───────────────────────────────────
+ * The SmsUrl this platform actually binds on every provisioned tenant number is
+ * /api/providers/inbound (set at lib/voice/twilio-voice.ts:151, described as the
+ * one messaging rail at lib/kernel/manager-registry.ts:606). That route already
+ * covers this one's whole job with MORE care: it verifies the Twilio signature
+ * against the OWNING SUBACCOUNT's token, resolves the tenant from the CALLED
+ * number, and runs the same CTIA keyword set through
+ * lib/ai-isa/opt-out-utils.ts:16 → app/actions/ai-isa/process-opt-out.ts.
+ * This handler survives only because its URL may still be pasted into a Twilio
+ * console somewhere, and a STOP that reaches a 404 is a TCPA problem, not a
+ * tidiness one. It is NOT wired by this repo's own provisioning; if the fleet
+ * console shows no number pointing here, delete it — the survivor is named above.
+ *
+ * ── WHY THE SIGNATURE CHECK BELOW EXISTS ────────────────────────────────────
+ * It had NO caller authentication at all. The handler runs on the service client
+ * and matched contacts by phone ACROSS EVERY BROKERAGE, so an unauthenticated
+ * POST of `From=<any phone>&Body=STOP` suppressed that person in every tenant
+ * that had them — a cross-tenant write and a denial-of-communication vector, and
+ * the TwiML reply told the victim it had happened. The gate is the same one the
+ * canonical ingress uses (subaccount token resolved by the To number, master env
+ * token as fallback) so a request Twilio really signed still passes here.
  */
 
 const STOP_KEYWORDS = /^\s*(stop|stopall|unsubscribe|cancel|end|quit)\s*$/i
@@ -30,6 +52,24 @@ export async function POST(req: NextRequest) {
 
     if (!from) {
       return NextResponse.json({ error: 'Missing From number' }, { status: 400 })
+    }
+
+    // ── Caller verification (X-Twilio-Signature) ────────────────────────────
+    // Signed over the exact form params Twilio POSTed, so the object is built
+    // from the parsed body rather than from the three fields read above.
+    const signedParams: Record<string, string> = {}
+    for (const [k, v] of params.entries()) signedParams[k] = v
+
+    const signature = req.headers.get('x-twilio-signature')
+    const svcForAuth = createServiceClient()
+    const tokens = await twilioTokenCandidates(svcForAuth, signedParams)
+    if (tokens.length === 0) {
+      console.error('[sms-optout] no Twilio auth token available for To=%s — refusing', to)
+      return NextResponse.json({ error: 'Not configured' }, { status: 503 })
+    }
+    if (!tokens.some((t) => validateTwilioSignature(t, req.url, signedParams, signature))) {
+      console.warn('[sms-optout] invalid X-Twilio-Signature for To=%s — refused', to)
+      return new NextResponse('invalid signature', { status: 403 })
     }
 
     // Normalize phone — strip spaces/dashes for lookup

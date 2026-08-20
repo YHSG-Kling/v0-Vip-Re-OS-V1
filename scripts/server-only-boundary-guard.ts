@@ -31,6 +31,7 @@
  */
 import { readFileSync, existsSync, readdirSync } from "node:fs"
 import { dirname, resolve as resolvePath } from "node:path"
+import { blankComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -76,8 +77,26 @@ const PROBE_PATH = "app/__server_only_probe__/page.tsx"
 const IMPORT_RE = /(?:^|\n)\s*(?:import|export)\s+(?!type\s)[^;\n]*?from\s*["']([^"']+)["']/g
 const BARE_IMPORT_RE = /(?:^|\n)\s*import\s+["']([^"']+)["']/g
 
+/**
+ * The file's leading `"use client"` / `"use server"` directive, if it has one.
+ *
+ * The leading comments are removed by the ONE scanner (scripts/strip-comments.ts,
+ * finding #250) rather than by a regex that tries to SPELL them. The regex this
+ * replaces —
+ *   `^\s*(?:BLOCK\s*|LINE\n\s*)*["'](use (?:client|server))["']`
+ * — could only skip a comment shaped exactly the way it expected: a line comment
+ * on the last line before the directive with no trailing newline, a shebang, or
+ * a block comment containing the two characters that end a block comment inside
+ * a string, and it stops seeing the directive at all. A file that HAS `"use
+ * client"` but is read as not having it drops straight out of the traversal, and
+ * a guard that reports zero violations because it stopped looking is the exact
+ * failure this class keeps producing.
+ *
+ * `blankComments` preserves every offset, so the directive is still the first
+ * non-blank token and nothing else in the match shifts.
+ */
 const firstDirective = (src: string): string | null => {
-  const m = src.match(/^\s*(?:\/\*[\s\S]*?\*\/\s*|\/\/[^\n]*\n\s*)*["'](use (?:client|server))["']/)
+  const m = blankComments(src).match(/^\s*["'](use (?:client|server))["']/)
   return m ? m[1] : null
 }
 

@@ -32,9 +32,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    // Body per spec: { contactId, signal, property, agentId, brokerageId }
+    // Body per spec: { contactId, signal, property }.
+    //
+    // `agentId` and `brokerageId` USED TO BE READ FROM HERE and used in
+    // preference to the session ("body takes precedence"). Everything below runs
+    // on the service client, which bypasses RLS, so any authenticated user of any
+    // tenant could POST someone else's brokerage_id / agent_id and write
+    // behaviour signals and buyer preference rows into that tenant. Identity is
+    // the session's, the way every other route in this tree derives it
+    // (see app/api/ai/content-suggestions/route.ts:6 for the same rule stated).
     const body = await req.json()
-    const { contactId, signal, property, agentId, brokerageId } = body
+    const { contactId, signal, property } = body
 
     if (!contactId || !signal || !property) {
       return NextResponse.json(
@@ -48,20 +56,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 })
     }
 
-    // Resolve brokerageId — body takes precedence, fallback to user profile
+    // Resolve brokerageId FROM THE SESSION — the request never gets a vote.
     const svc = createServiceClient()
-    let resolvedBrokerageId: string = brokerageId ?? ""
-    if (!resolvedBrokerageId) {
-      const { data: profile } = await svc
-        .from("users")
-        .select("brokerage_id")
-        .eq("id", user.id)
-        .single()
-      resolvedBrokerageId = profile?.brokerage_id ?? ""
-    }
+    const { data: profile } = await svc
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", user.id)
+      .single()
+    const resolvedBrokerageId: string = profile?.brokerage_id ?? ""
 
     // Resolve agent ID - never use user.id for agent_id column
-    const resolvedAgentId = agentId ?? await resolveAgentId(svc, user.id)
+    const resolvedAgentId = await resolveAgentId(svc, user.id)
     if (!resolvedAgentId) {
       return NextResponse.json({ error: "Agent profile not found" }, { status: 403 })
     }

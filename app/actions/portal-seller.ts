@@ -612,8 +612,13 @@ export interface SellerOfferComparison {
 
 /**
  * The SELLER's door onto the comparison the agent already generated and PERSISTED
- * (`offer_comparison`, written by seller-offers.ts:analyzeMultipleOffers and
+ * (`offer_comparison`, written by lib/offers/offer-analyzer.ts:analyzeAndCompareOffers
+ * — the one analyzer seller-offers.ts:triggerOfferComparison delegates to — and by
  * kernel/offers.ts:compareOffersForListing).
+ *
+ * `ai_recommendation` reached this reader as a permanent NULL until wave 13: the
+ * analyzer produced the recommendation, handed it back to its caller, and
+ * persisted nothing. The column now carries the verdict the model actually gave.
  *
  * This does NOT build a fourth comparison and does NOT re-run inference. The
  * portal used to call `analyzeMultipleOffers` on EVERY page load, which both

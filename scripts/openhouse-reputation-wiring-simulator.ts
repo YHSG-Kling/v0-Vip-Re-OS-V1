@@ -39,6 +39,7 @@ import { randomUUID } from "node:crypto"
 import { resolve as resolvePath } from "node:path"
 import { fileURLToPath } from "node:url"
 import { REFERRAL_STATUSES } from "../lib/referrals/referral-status"
+import { blankComments } from "./strip-comments"
 
 // ═════════════════════════════════════════════════════════════════════════════
 // HARNESS
@@ -65,75 +66,8 @@ const read = (rel: string): string => readFileSync(resolvePath(ROOT, rel), "utf8
 // COMMENT STRIPPER
 // ═════════════════════════════════════════════════════════════════════════════
 
-/**
- * Removes line and block comments while preserving string, template and regex
- * literals, so that a comment MENTIONING a construct can never satisfy a check
- * that the construct EXISTS. Comment bodies are replaced with equal-length
- * whitespace so every reported offset still lines up with the original file.
- */
-function stripComments(source: string): string {
-  const out: string[] = []
-  let i = 0
-  let lastSignificant = ""
-
-  const isRegexPosition = (): boolean =>
-    lastSignificant === "" || "(,=:[!&|?{};+-*%~^<>".includes(lastSignificant)
-
-  while (i < source.length) {
-    const c = source[i]
-    const next = source[i + 1]
-
-    if (c === "/" && next === "/") {
-      while (i < source.length && source[i] !== "\n") { out.push(" "); i++ }
-      continue
-    }
-    if (c === "/" && next === "*") {
-      while (i < source.length && !(source[i] === "*" && source[i + 1] === "/")) {
-        out.push(source[i] === "\n" ? "\n" : " ")
-        i++
-      }
-      out.push(" ", " ")
-      i += 2
-      continue
-    }
-    if (c === '"' || c === "'" || c === "`") {
-      const quote = c
-      out.push(c); i++
-      while (i < source.length) {
-        if (source[i] === "\\") { out.push(source[i], source[i + 1] ?? ""); i += 2; continue }
-        out.push(source[i])
-        if (source[i] === quote) { i++; break }
-        i++
-      }
-      lastSignificant = quote
-      continue
-    }
-    if (c === "/" && isRegexPosition()) {
-      out.push(c); i++
-      let closed = false
-      while (i < source.length && source[i] !== "\n") {
-        if (source[i] === "\\") { out.push(source[i], source[i + 1] ?? ""); i += 2; continue }
-        if (source[i] === "[") {
-          while (i < source.length && source[i] !== "]") {
-            if (source[i] === "\\") { out.push(source[i], source[i + 1] ?? ""); i += 2; continue }
-            out.push(source[i]); i++
-          }
-          continue
-        }
-        out.push(source[i])
-        if (source[i] === "/") { i++; closed = true; break }
-        i++
-      }
-      if (closed) { lastSignificant = "/" ; continue }
-      continue
-    }
-
-    out.push(c)
-    if (!/\s/.test(c)) lastSignificant = c
-    i++
-  }
-  return out.join("")
-}
+// hand-rolled scanner replaced (finding #250): it could not see nested `${…}` templates, regex literals, or an apostrophe in JSX text, and went blind on the code it judges.
+const stripComments = blankComments
 
 // ═════════════════════════════════════════════════════════════════════════════
 // BODY SLICER

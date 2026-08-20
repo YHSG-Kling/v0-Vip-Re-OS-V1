@@ -83,6 +83,7 @@
 import { readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { createHash } from "node:crypto"
+import { stripComments } from "./strip-comments"
 
 const ROOT = process.cwd()
 const RUN_NEGATIVE = !process.argv.includes("--no-negative")
@@ -111,35 +112,8 @@ const LEADS_FK_TABLE = "lead_idx_property_interactions"
 // ─────────────────────────────────────────────────────────────────────────────
 const raw = (p: string) => readFileSync(resolve(ROOT, p), "utf8")
 
-/**
- * Comment-stripped source. String literals are PRESERVED: a `//` inside a quoted
- * string is not a comment, and collapsing one would delete real code — including
- * the `.from("…")` selectors and module specifiers every assertion here reads.
- */
-function strip(src: string): string {
-  let out = ""
-  let i = 0
-  type Mode = "code" | "line" | "block" | "s" | "d" | "t"
-  let mode: Mode = "code"
-  while (i < src.length) {
-    const c = src[i]
-    const n = src[i + 1]
-    if (mode === "code") {
-      if (c === "/" && n === "/") { mode = "line"; i += 2; continue }
-      if (c === "/" && n === "*") { mode = "block"; i += 2; continue }
-      if (c === "'") mode = "s"
-      else if (c === '"') mode = "d"
-      else if (c === "`") mode = "t"
-      out += c; i++; continue
-    }
-    if (mode === "line") { if (c === "\n") { mode = "code"; out += c }; i++; continue }
-    if (mode === "block") { if (c === "*" && n === "/") { mode = "code"; i += 2 } else { if (c === "\n") out += c; i++ }; continue }
-    if (c === "\\") { out += c + (n ?? ""); i += 2; continue }
-    if ((mode === "s" && c === "'") || (mode === "d" && c === '"') || (mode === "t" && c === "`")) mode = "code"
-    out += c; i++
-  }
-  return out
-}
+// hand-rolled scanner replaced (finding #250): it could not see nested `${…}` templates, regex literals, or an apostrophe in JSX text, and went blind on the code it judges.
+const strip = stripComments
 
 const code = (p: string) => strip(raw(p))
 

@@ -68,6 +68,7 @@ import {
 // array, and this module asks it. That scan is what caught the copy this import
 // replaces.
 import { ROLE_WORDS } from "./shared/role-words"
+import { blankComments, blankStrings } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -94,29 +95,22 @@ const read = (p: string) => readFileSync(join(ROOT, p), "utf8")
  * and, worse, a future edit could satisfy a scan by mentioning it in a comment.
  */
 function stringMask(s: string): { mask: boolean[]; comment: boolean[] } {
-  const mask = new Array<boolean>(s.length).fill(false)
-  const comment = new Array<boolean>(s.length).fill(false)
-  let i = 0
-  while (i < s.length) {
-    const c = s[i]
-    if (c === "/" && s[i + 1] === "/") {
-      while (i < s.length && s[i] !== "\n") { comment[i] = true; mask[i++] = true }
-    } else if (c === "/" && s[i + 1] === "*") {
-      const end = s.indexOf("*/", i + 2)
-      const stop = end === -1 ? s.length : end + 2
-      while (i < stop) { comment[i] = true; mask[i++] = true }
-    } else if (c === '"' || c === "'" || c === "`") {
-      const q = c
-      mask[i++] = true
-      while (i < s.length) {
-        if (s[i] === "\\") { mask[i++] = true; if (i < s.length) mask[i++] = true; continue }
-        if (s[i] === q) { mask[i++] = true; break }
-        if (q !== "`" && s[i] === "\n") break
-        mask[i++] = true
-      }
-    } else {
-      i++
-    }
+  // DERIVED, not hand-rolled (finding #250). scripts/strip-comments.ts holds the
+  // one correct scanner; both masks fall straight out of it because it preserves
+  // every character offset:
+  //   · blankComments() blanks COMMENT content only  → the `comment` mask;
+  //   · blankStrings()  blanks comments AND string/template content → `mask`.
+  // A character it changed is exactly a character it judged to be prose. The
+  // hand-rolled scanner this replaces could not see `${…}` interpolations (which
+  // are CODE and can hold a real call), regex literals, or an apostrophe in JSX
+  // text — each desynchronises the scan and masks live code.
+  const noComments = blankComments(s)
+  const noStrings = blankStrings(s)
+  const mask = new Array<boolean>(s.length)
+  const comment = new Array<boolean>(s.length)
+  for (let i = 0; i < s.length; i++) {
+    comment[i] = noComments[i] !== s[i]
+    mask[i] = noStrings[i] !== s[i]
   }
   return { mask, comment }
 }

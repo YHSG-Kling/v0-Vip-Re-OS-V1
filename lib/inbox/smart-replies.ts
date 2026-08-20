@@ -12,7 +12,7 @@
  */
 
 import "server-only"
-import { generateObjectRouted } from "@/lib/ai/models"
+import { generateObjectRouted, type AIModel } from "@/lib/ai/models"
 import { z } from "zod"
 
 const SmartReplySchema = z.object({
@@ -52,10 +52,25 @@ export interface SmartReplyUsage {
   totalTokens: number
   /** true when the provider returned no usage block and the count is a chars/4 estimate. */
   estimated: boolean
+  /**
+   * THE MODEL THAT ACTUALLY SERVED THE CALL — `null` when none was called.
+   *
+   * This lane routes on the `smart_reply_generation` row, which pins
+   * claude-sonnet with a gpt-4o FALLBACK, and generateObjectRouted switches to
+   * that fallback whenever the primary throws. It has always reported which one
+   * ran (RoutedUsage.model); this generator dropped it, so its one ledgering
+   * caller — the AI Toolkit's Smart Reply tool — had nothing to write but the
+   * PINNED model, and stamped "claude-sonnet" on every row including the ones a
+   * fallback served. The tokens were real and the model label was not, and
+   * cost_cents is priced off the label: claude-sonnet bills $3/$15 per 1M
+   * against gpt-4o's $2.50/$10, so a fallback call was over-billed by the
+   * difference on a ledger the tenant's overage projection is derived from.
+   */
+  model: AIModel | null
 }
 
 const NO_SPEND: SmartReplyUsage = {
-  modelCalled: false, inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false,
+  modelCalled: false, inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false, model: null,
 }
 
 const FALLBACK_REPLIES: (input: BuildContextInput) => SmartReply[] = (input) => {
@@ -122,6 +137,10 @@ export async function generateSmartReplies(
         // an output count of exactly 0 alongside a non-empty reply set is the
         // one observable signature of that path.
         estimated: usage.outputTokens === 0,
+        // The SERVED model, straight off the routed call — primary on the happy
+        // path, `fallback` when the primary threw. Never the routing table's
+        // pinned model read from somewhere else.
+        model: usage.model,
       },
     }
   } catch (err) {

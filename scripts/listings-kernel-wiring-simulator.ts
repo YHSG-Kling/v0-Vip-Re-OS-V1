@@ -30,6 +30,7 @@ import { readFileSync, writeFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { resolve, join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
+import { blankComments } from "./strip-comments"
 
 const HERE = typeof __dirname !== "undefined" ? __dirname : dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(HERE, "..")
@@ -57,51 +58,8 @@ const SURFACE_KEYS: FileKey[] = ["COMPOSER", "GATES", "PIPELINE", "FORMS", "INTE
 // Comment stripper — the whole suite reads through this
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Remove // and /* *\/ comments while preserving string and template literals,
- * so `"https://example.com"` survives and a doc-block claiming a fix does not.
- * Comment bodies are replaced with equal-length whitespace so byte offsets and
- * line numbers stay usable.
- */
-function stripComments(src: string): string {
-  let out = ""
-  let i = 0
-  const n = src.length
-  while (i < n) {
-    const c = src[i]
-    const c2 = src[i + 1]
-
-    // line comment
-    if (c === "/" && c2 === "/") {
-      while (i < n && src[i] !== "\n") { out += " "; i++ }
-      continue
-    }
-    // block comment
-    if (c === "/" && c2 === "*") {
-      out += "  "; i += 2
-      while (i < n && !(src[i] === "*" && src[i + 1] === "/")) {
-        out += src[i] === "\n" ? "\n" : " "
-        i++
-      }
-      out += "  "; i += 2
-      continue
-    }
-    // string / template literal — copy verbatim, honouring escapes
-    if (c === '"' || c === "'" || c === "`") {
-      const quote = c
-      out += c; i++
-      while (i < n) {
-        if (src[i] === "\\") { out += src[i] + (src[i + 1] ?? ""); i += 2; continue }
-        out += src[i]
-        if (src[i] === quote) { i++; break }
-        i++
-      }
-      continue
-    }
-    out += c; i++
-  }
-  return out
-}
+// hand-rolled scanner replaced (finding #250): it could not see nested `${…}` templates, regex literals, or an apostrophe in JSX text, and went blind on the code it judges.
+const stripComments = blankComments
 
 function readRaw(key: FileKey): string {
   return readFileSync(join(ROOT, F[key]), "utf8")

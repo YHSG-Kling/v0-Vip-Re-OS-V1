@@ -42,6 +42,7 @@ import { syncAgentLedgerToStamp } from "@/lib/commission/ledger-sync"
 import { resolveUserOffice, pickUserOffice } from "./resolve-user-office"
 import { resolveLedTeamId } from "./resolve-user-team"
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
+import { readCapProgress } from "@/lib/finance/cap-progress"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 
@@ -515,7 +516,11 @@ export async function loadAgentFinancialSummary(
         capAmount:        capData?.cap_amount ?? 0,
         capPaidToDate:    capData?.cap_paid_to_date ?? 0,
         capIsCapped:      capData?.is_capped ?? false,
-        capProgressPct:   capData ? (capData.cap_paid_to_date / capData.cap_amount) * 100 : 0,
+        // ONE READING of the cap, shared with the earnings rollup that now
+        // stamps agent_earnings.cap_progress_pct — see lib/finance/cap-progress.ts.
+        // The inline `(paid / amount) * 100` this replaces divided by zero for an
+        // uncapped agent and handed the progress bar NaN, which renders as "NaN%".
+        capProgressPct:   readCapProgress(capData).pct ?? 0,
         anniversaryStart: capData?.anniversary_start ?? "",
         anniversaryEnd:   capData?.anniversary_end ?? "",
       },

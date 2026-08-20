@@ -64,6 +64,7 @@ import { createClient } from "@supabase/supabase-js"
 import { LISTING_LIFECYCLE_STAGES, entersFromAnyStage, getStageIndex } from "../lib/listing-lifecycle/lifecycle-definitions"
 import { LISTING_TIMELINE_ENTITY_TYPES } from "../lib/kernel/listings"
 import { CLIENT_DOCUMENT_AWAITING_SIGNATURE_STATUSES, classifySignatureStall } from "../lib/kernel/signature-chase"
+import { stripComments } from "./strip-comments"
 
 const ROOT = process.cwd()
 
@@ -95,45 +96,8 @@ const F = {
 const raw = (file: string) => readFileSync(resolve(ROOT, file), "utf8")
 const sha = (file: string) => createHash("sha256").update(readFileSync(resolve(ROOT, file))).digest("hex")
 
-/**
- * Strip comments so no assertion can be satisfied by prose describing the fix.
- * String and template literals are preserved; a `//` or `/*` inside one is not
- * a comment. Regex literals are not stripped (they would need full parsing) —
- * none of the assertions below depend on one.
- */
-function stripComments(src: string): string {
-  let out = ""
-  let i = 0
-  const n = src.length
-  while (i < n) {
-    const c = src[i]
-    if (c === '"' || c === "'" || c === "`") {
-      const quote = c
-      out += c
-      i++
-      while (i < n) {
-        if (src[i] === "\\") { out += src[i] + (src[i + 1] ?? ""); i += 2; continue }
-        out += src[i]
-        if (src[i] === quote) { i++; break }
-        i++
-      }
-      continue
-    }
-    if (c === "/" && src[i + 1] === "/") {
-      while (i < n && src[i] !== "\n") i++
-      continue
-    }
-    if (c === "/" && src[i + 1] === "*") {
-      i += 2
-      while (i < n && !(src[i] === "*" && src[i + 1] === "/")) i++
-      i += 2
-      continue
-    }
-    out += c
-    i++
-  }
-  return out
-}
+// stripComments() now comes from scripts/strip-comments.ts — see the import above.
+// hand-rolled scanner replaced (finding #250): it could not see nested `${…}` templates, regex literals, or an apostrophe in JSX text, and went blind on the code it judges.
 
 const code = (file: string) => stripComments(raw(file))
 

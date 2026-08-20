@@ -37,6 +37,7 @@ import { createHash } from "node:crypto"
 import { execFileSync } from "node:child_process"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
+import { stripComments } from "./strip-comments"
 
 const HERE = typeof __dirname !== "undefined" ? __dirname : dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, "..")
@@ -46,119 +47,9 @@ const ROOT = join(HERE, "..")
 // `"// not a comment"` inside a string from an actual comment, and this whole
 // suite is worthless if a descriptive comment can satisfy an assertion.
 // ─────────────────────────────────────────────────────────────────────────────
-export function stripComments(src: string): string {
-  let out = ""
-  let i = 0
-  const n = src.length
-  // Tracks whether a `/` starts a regex literal or is a division operator.
-  let prevSignificant = ""
-
-  while (i < n) {
-    const c = src[i]
-    const c2 = src[i + 1]
-
-    // line comment
-    if (c === "/" && c2 === "/") {
-      while (i < n && src[i] !== "\n") i++
-      continue
-    }
-    // block comment
-    if (c === "/" && c2 === "*") {
-      i += 2
-      while (i < n && !(src[i] === "*" && src[i + 1] === "/")) i++
-      i += 2
-      out += " "
-      continue
-    }
-    // string literals — copied through verbatim, comments inside them are text
-    if (c === '"' || c === "'") {
-      const quote = c
-      out += c
-      i++
-      while (i < n) {
-        if (src[i] === "\\") {
-          out += src[i] + (src[i + 1] ?? "")
-          i += 2
-          continue
-        }
-        out += src[i]
-        if (src[i] === quote) {
-          i++
-          break
-        }
-        i++
-      }
-      prevSignificant = quote
-      continue
-    }
-    // template literal (handles ${...} nesting one level deep, which is all this
-    // codebase uses inside templates)
-    if (c === "`") {
-      out += c
-      i++
-      let depth = 0
-      while (i < n) {
-        if (src[i] === "\\") {
-          out += src[i] + (src[i + 1] ?? "")
-          i += 2
-          continue
-        }
-        if (src[i] === "$" && src[i + 1] === "{") {
-          depth++
-          out += "${"
-          i += 2
-          continue
-        }
-        if (src[i] === "}" && depth > 0) {
-          depth--
-          out += "}"
-          i++
-          continue
-        }
-        out += src[i]
-        if (src[i] === "`" && depth === 0) {
-          i++
-          break
-        }
-        i++
-      }
-      prevSignificant = "`"
-      continue
-    }
-    // regex literal — only where a value is expected, never after an operand
-    if (c === "/" && !/[\w)\]`'"]/.test(prevSignificant)) {
-      out += c
-      i++
-      let inClass = false
-      while (i < n) {
-        if (src[i] === "\\") {
-          out += src[i] + (src[i + 1] ?? "")
-          i += 2
-          continue
-        }
-        if (src[i] === "[") inClass = true
-        else if (src[i] === "]") inClass = false
-        out += src[i]
-        if (src[i] === "/" && !inClass) {
-          i++
-          break
-        }
-        if (src[i] === "\n") {
-          i++
-          break
-        }
-        i++
-      }
-      prevSignificant = "/"
-      continue
-    }
-
-    out += c
-    if (!/\s/.test(c)) prevSignificant = c
-    i++
-  }
-  return out
-}
+// stripComments() now comes from scripts/strip-comments.ts — see the import above.
+// hand-rolled scanner replaced (finding #250): it could not see nested `${…}` templates, regex literals, or an apostrophe in JSX text, and went blind on the code it judges.
+export { stripComments }
 
 /** Whitespace-normalized stripped source — lets a construct match across newlines. */
 function flat(src: string): string {

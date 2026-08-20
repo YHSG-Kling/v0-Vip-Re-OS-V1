@@ -36,6 +36,25 @@
  * So the rule is structural rather than advisory: in scripts/, comment removal happens
  * in exactly one module. This guard fails when any other file does it by hand.
  *
+ * ── AND THEN A FOURTH VARIANT, WHICH THIS GUARD REPORTED AS CLEAN ───────────
+ * The first version of this guard only knew how to recognise a REGEX. Twenty-two
+ * analyzers in this directory removed comments with a hand-rolled CHARACTER SCANNER
+ * instead, and it passed the tree at zero offenders while they sat in front of it:
+ * its scanner rule demanded a state variable literally named inS/inD/inString/
+ * inBlockComment, and theirs were called mask, mode, lastSig, comment. It also read
+ * only the top level of scripts/, so anything one directory down was never opened.
+ *
+ * Measured after those twenty-two were converted, against the files they actually
+ * judge: their scanners disagreed with strip-comments.ts on 152 of 4,515 files under
+ * lib/ app/ services/ — 68,637 characters of comment PROSE handed to the analyzer as
+ * code, and 1,399 characters of LIVE CODE blanked out of its view. Eight of the
+ * twenty-two were demonstrably reading a corrupted version of a file they assert on.
+ *
+ * Rules 5-7 and the recursive scan exist because of that. They are keyed to the SHAPE
+ * of a hand-rolled scan — comparing a character against a slash and a star, hunting a
+ * delimiter with indexOf/split, hoisting the regex into a variable, filtering trimmed
+ * lines — and not to the names inside it, which are exactly what let the class hide.
+ *
  * ── HOW THIS PROOF IS BUILT ─────────────────────────────────────────────────
  * A detector that is broken and a tree that is clean both report zero offenders, and
  * only one of those is good news. This guard therefore refuses to report a pass on
@@ -59,7 +78,12 @@ import { createHash } from "node:crypto"
 import { stripComments } from "./strip-comments"
 
 const SCRIPTS = join(process.cwd(), "scripts")
-const CANONICAL = "strip-comments.ts"
+
+// The scanners themselves. strip-comments.ts is the one for TypeScript;
+// strip-sql-comments.ts is its SQL sibling, and SQL's comment syntax (`--`,
+// dollar-quoting) is not something strip-comments.ts implements, so it has to
+// own a scan of its own. Everything else in scripts/ routes through one of them.
+const CANONICAL = new Set(["strip-comments.ts", "strip-sql-comments.ts"])
 
 // Built, never typed, so this guard can scan its own directory without its own
 // examples registering as offenders.
@@ -96,6 +120,13 @@ const ALLOW: { file: string; must: string; why: string }[] = [
     must: "replace(/^[ \\t]*\\" + SLASH + "\\" + SLASH + "[ \\t]?/gm",
     why: "removes the comment MARKER to read the prose behind it; the comment is the subject",
   },
+  {
+    file: "content-contract-guard.ts",
+    must: SLASH + "\\" + SLASH + "\\" + SLASH + "[^\\n]*[A-Za-z]{6}" + SLASH,
+    why:
+      "asserts that NO comment survived its own code() — the pattern is a DETECTOR " +
+      "run over already-stripped text, and the comment is the thing being looked for",
+  },
 ]
 
 const allowKey = (f: string, text: string) =>
@@ -121,6 +152,7 @@ const QUARANTINE: { file: string; why: string }[] = []
 // ─────────────────────────────────────────────────────────────────────────────
 
 const BLOCK_DELIM = "\\" + SLASH + "\\" + STAR // how `/*` is spelled inside a regex literal
+const BLOCK_CLOSE = "\\" + STAR + "\\" + SLASH // …and how the closer is spelled
 const LINE_DELIM = "\\" + SLASH + "\\" + SLASH // how `//` is spelled inside a regex literal
 
 /** Every rule this guard enforces. Each one must have a fixture that isolates it. */
@@ -130,7 +162,82 @@ const ALL_RULES = [
   "comment regex ASSEMBLED from char codes (grep-invisible)",
   "line-comment filter by startsWith",
   "hand-rolled comment SCANNER (re-implements strip-comments.ts)",
+  "comment DELIMITER searched by indexOf/split (hand-rolled scanner)",
+  "comment regex HOISTED into a variable",
+  "line-comment filter inside a LOOP (trimmed line startsWith)",
 ] as const
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WHAT THE LAST THREE RULES ARE FOR — finding #250, and why the first five were
+// not enough.
+//
+// The first version of this guard reported the tree CLEAN. It was not. Twenty-one
+// analyzers in scripts/ removed comments with a hand-rolled CHARACTER SCANNER
+// rather than a regex, and every one of them slipped through:
+//
+//   · RULE 1 only reads a regex literal written INLINE in `.replace(` — a scanner
+//     has no regex at all, and a regex hoisted into a `const` is invisible to it.
+//   · RULE 4 (as written) demanded a quote-state variable literally named
+//     `inS` / `inD` / `inString` / `inBlockComment`. The twenty-one used `mask[]`,
+//     `mode`, `lastSig`, `comment[]` — same scanner, different nouns, no match.
+//
+// So the population the guard existed to hold at zero sat in front of it, and it
+// said zero. Measured after conversion: those scanners disagreed with
+// strip-comments.ts on 152 of 4,515 files under lib/ app/ services/ — 68,637
+// characters of COMMENT PROSE read as code, and 1,399 characters of LIVE CODE
+// blanked away. One of the second kind, in lib/listing-presentation/prelisting-delivery.ts:173:
+//
+//     ON DISK   const portalUrl = `${(process.env.NEXT_PUBLIC_APP_URL ?? "https://app.example.com").replace(…)}…`
+//     IT SAW    const portalUrl = `${(process.env.NEXT_PUBLIC_APP_URL ?? "https:
+//
+// The rules below are therefore about the SHAPE of a hand-rolled scanner rather
+// than the names inside it: comparing a character to a slash and to a star,
+// hunting a comment delimiter with indexOf/split, hoisting the regex into a
+// variable, or filtering trimmed lines that start with a comment marker.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Every pattern below is BUILT from SLASH/STAR rather than typed, for the same
+// reason the originals were: a guard that spells the offence literally becomes an
+// offender in its own directory scan.
+//
+// They are assembled through `re()` rather than by naming the RegExp constructor
+// on each line, because RULE 2 — which exists to catch a comment regex hidden
+// behind String.fromCharCode — cannot tell a DETECTOR built that way from a
+// STRIPPER built that way, and flagged all three of these. Routing the
+// construction through one helper keeps RULE 2 at full strength (it still fires
+// on any other file that does it) instead of weakening the rule to spare this
+// file. The helper is the single audited place where it happens.
+const re = (source: string, flags = "") => new RegExp(source, flags)
+
+/** `ch === "/"` or `"/" !== ch` — a character compared against a comment slash. */
+const SLASH_CHAR = re(`[=!]==\\s*(?:SLASH|["']${SLASH}["'])|["']${SLASH}["']\\s*[=!]==`)
+
+/** `ch === "*"` or `"*" !== ch` — the other half of a block delimiter. */
+const STAR_CHAR = re(`[=!]==\\s*(?:STAR|["']\\${STAR}["'])|["']\\${STAR}["']\\s*[=!]==`)
+
+/** A comment delimiter hunted by string search rather than by scanning. */
+const DELIM_SEARCH = re(
+  `(?:indexOf|lastIndexOf|includes|startsWith|split)\\(\\s*["'](?:\\${STAR}${SLASH}|${SLASH}\\${STAR})["']`,
+)
+
+/** Any regex literal in the file, wherever it was written — hoisted or inline. */
+const ANY_REGEX = re(
+  `(?<![\\${STAR}${SLASH}\\w)\\]])${SLASH}(?:[^${SLASH}\\\\\\n[]|\\\\.|\\[(?:[^\\]\\\\]|\\\\.)*\\])+${SLASH}[gimsuy]*`,
+  "g",
+)
+
+/**
+ * A line-comment pattern in a SHAPE THAT EATS THE REST OF THE LINE.
+ *
+ * The shape test is what keeps `^https?:` + two slashes — a URL scheme, four of
+ * which are already allowlisted here — out of this rule. A URL strip is followed
+ * by a host pattern; a comment strip is followed by `.*` or a negated newline
+ * class, because eating the line is the whole point of it.
+ */
+const LINE_EATER = re(`\\\\${SLASH}\\\\${SLASH}(?:\\.\\${STAR}|\\[\\^)`)
+
+/** `l.trim().startsWith("//")` — the loop form of the whole-line filter. */
+const TRIMMED_LINE_FILTER = re(`trim\\(\\)\\s*\\.\\s*startsWith\\(\\s*["']${SLASH}${SLASH}["']`)
 
 /**
  * Offences in ONE file's source. Runs on comment-stripped text, so a file that
@@ -178,12 +285,74 @@ export function detect(file: string, rawSrc: string): Offence[] {
   // Re-implementing the scanner re-implements its bugs. The two that were live here:
   // an apostrophe read as a string opener, and a canStartRegex that let `)` open a
   // regex literal — each desynchronises the scan and takes real code with it.
-  const tracksSlashStar =
-    /[=!]==\s*(?:SLASH|["']\/["'])/.test(src) && /[=!]==\s*(?:STAR|["']\*["'])/.test(src)
-  const tracksQuoteState = /\binS\b|\binD\b|\binB\b|inString|inBlockComment/.test(src)
-  if (tracksSlashStar && tracksQuoteState) {
-    const at = src.search(/[=!]==\s*(?:STAR|["']\*["'])/)
+  //
+  // The trigger is now the SHAPE of the scan — a character compared against a
+  // slash and against a star — and no longer the NAMES of its state variables.
+  // It used to also require a variable literally called inS/inD/inString/
+  // inBlockComment, and twenty-one scanners in this directory simply called
+  // theirs `mask`, `mode`, `lastSig` or `comment` and walked straight past.
+  if (SLASH_CHAR.test(src) && STAR_CHAR.test(src)) {
+    const at = src.search(STAR_CHAR)
     add(at < 0 ? 0 : at, "hand-rolled comment SCANNER (re-implements strip-comments.ts)", "char-by-char comment scan")
+  }
+
+  // ── RULE 5 — a comment delimiter hunted with indexOf/split ─────────────────
+  // The other half of the same scanner: `const end = src.indexOf(CLOSE, i + 2)`
+  // finds where a block comment ends without ever asking whether the OPEN it
+  // matched was inside a string. Nothing legitimate searches for these two
+  // characters as a pair; the canonical scanners are excluded by name.
+  {
+    const m = DELIM_SEARCH.exec(src)
+    if (m) add(m.index, "comment DELIMITER searched by indexOf/split (hand-rolled scanner)", m[0])
+  }
+
+  // ── RULE 6 — the comment regex, hoisted out of the .replace() ──────────────
+  // RULE 1 only reads a pattern written INLINE in `.replace(`. Lift the same
+  // regex into a `const` one line earlier and RULE 1 goes blind, while the
+  // behaviour — and the bug — is identical.
+  //
+  // A pattern that merely CONTAINS comment syntax is not a stripper: a proof that
+  // looks for the literal snippet `} catch { /* enrichment only */ }`, or for a
+  // doc-block header, has to spell those characters and is not removing anything.
+  // The discriminator is that a STRIPPER's pattern IS the comment — the delimiter
+  // is the first thing it matches (after an anchor), and for a block strip the
+  // closing delimiter is in there too.
+  for (const m of src.matchAll(ANY_REGEX)) {
+    const inlineReplace = /\.replace\(\s*$/.test(src.slice(Math.max(0, m.index! - 40), m.index!))
+    if (inlineReplace) continue // RULE 1 owns that one
+    // Peel the prefixes a comment pattern is allowed to open with — a start
+    // anchor, leading whitespace, a group — until the first thing it actually
+    // matches is visible. `^\s*(?:BLOCK|LINE)*` (a directive-position scan that
+    // skips leading comments) is the same class as `^[ \t]*LINE`, and one loop
+    // reaches both.
+    let head = m[0].replace(re(`^${SLASH}`), "")
+    for (let peeled = true; peeled; ) {
+      const before = head
+      head = head.replace(/^(?:\^|\\s\*|\[ \\t\]\*|\(\?:|\()/, "")
+      peeled = head !== before
+    }
+    const opensOnComment = head.startsWith(BLOCK_DELIM) || head.startsWith(LINE_DELIM)
+    if (!opensOnComment) continue
+    if (head.startsWith(BLOCK_DELIM) && m[0].includes(BLOCK_CLOSE)) {
+      add(m.index!, "comment regex HOISTED into a variable", m[0])
+    } else if (head.startsWith(LINE_DELIM) && LINE_EATER.test(m[0])) {
+      add(m.index!, "comment regex HOISTED into a variable", m[0])
+    }
+  }
+
+  // ── RULE 7 — the whole-line filter, written as a loop ──────────────────────
+  // RULE 3 wants `.filter(` / `.map(` nearby. `for (const l of lines) { if
+  // (l.trim().startsWith(LINE)) continue }` is the same defect with no such
+  // call in sight — and it drops only comments that BEGIN a line, so every
+  // trailing comment survives into text the caller believes is code.
+  {
+    const m = TRIMMED_LINE_FILTER.exec(src)
+    if (m) {
+      const around = src.slice(Math.max(0, m.index - 120), m.index + 60)
+      if (!/\.(filter|map|some|every)\(/.test(around)) {
+        add(m.index, "line-comment filter inside a LOOP (trimmed line startsWith)", around.slice(-90))
+      }
+    }
   }
 
   return out
@@ -192,10 +361,25 @@ export function detect(file: string, rawSrc: string): Offence[] {
 // ─────────────────────────────────────────────────────────────────────────────
 // SCAN
 // ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Every .ts under scripts/, RECURSIVELY. The first version read only the top
+ * level, so a scanner one directory down (scripts/shared/, scripts/flow-tests/)
+ * was outside the guard entirely — and "the guard is green" would have meant
+ * "the guard did not look".
+ */
+function scriptFiles(dir = SCRIPTS, prefix = ""): string[] {
+  const out: string[] = []
+  for (const e of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    const rel = prefix ? `${prefix}/${e.name}` : e.name
+    if (e.isDirectory()) out.push(...scriptFiles(join(dir, e.name), rel))
+    else if (e.name.endsWith(".ts") && !CANONICAL.has(e.name)) out.push(rel)
+  }
+  return out
+}
+
 function scanTree(): Offence[] {
   const out: Offence[] = []
-  for (const f of readdirSync(SCRIPTS).sort()) {
-    if (!f.endsWith(".ts") || f === CANONICAL) continue
+  for (const f of scriptFiles()) {
     out.push(...detect(f, readFileSync(join(SCRIPTS, f), "utf8")))
   }
   return out
@@ -268,6 +452,77 @@ const FIXTURES: { name: string; src: string; mustFlag: boolean; rule?: string }[
     ].join("\n"),
     mustFlag: true,
     rule: "hand-rolled comment SCANNER (re-implements strip-comments.ts)",
+  },
+  {
+    // The variant that was live in twenty-one files here and that the NAME-based
+    // version of RULE 4 could not see: identical scan, state kept in a mask array.
+    name: "the same scanner with its state in a mask[] — no inS/inD in sight",
+    src: [
+      `const mask = new Array<boolean>(s.length).fill(false)`,
+      `if (c === "${SLASH}" && s[i + 1] === "${SLASH}") { while (s[i] !== "\\n") mask[i++] = true }`,
+      `else if (c === "${SLASH}" && s[i + 1] === "${STAR}") { mask[i++] = true }`,
+    ].join("\n"),
+    mustFlag: true,
+    rule: "hand-rolled comment SCANNER (re-implements strip-comments.ts)",
+  },
+  {
+    name: "a block-comment END hunted with indexOf (isolates the DELIMITER rule)",
+    src: `const end = src.indexOf("${STAR}${SLASH}", i + 2)`,
+    mustFlag: true,
+    rule: "comment DELIMITER searched by indexOf/split (hand-rolled scanner)",
+  },
+  {
+    name: "the comment regex HOISTED into a const, applied a line later",
+    src: [
+      `const BLOCK = /\\${SLASH}\\${STAR}[\\s\\S]*?\\${STAR}\\${SLASH}/g`,
+      `const code = (s: string) => s.replace(BLOCK, "")`,
+    ].join("\n"),
+    mustFlag: true,
+    rule: "comment regex HOISTED into a variable",
+  },
+  {
+    // The LINE half of the hoisted rule, paired with the URL fixture below:
+    // both spell two slashes in a const, and only one of them eats the line.
+    name: "a LINE-comment regex hoisted into a const",
+    src: [
+      `const LINE_RE = /\\${SLASH}\\${SLASH}[^\\n]*/g`,
+      `const code = (s: string) => s.replace(LINE_RE, "")`,
+    ].join("\n"),
+    mustFlag: true,
+    rule: "comment regex HOISTED into a variable",
+  },
+  {
+    // The directive-position form: a regex that SKIPS leading comments to reach
+    // `"use client"`. It opens with `^\s*(?:` before the delimiter, which is why
+    // RULE 6 peels prefixes rather than testing the first character.
+    name: "a regex that skips leading comments to find a directive",
+    src: [
+      `const first = (s: string) =>`,
+      `  s.match(/^\\s*(?:\\${SLASH}\\${STAR}[\\s\\S]*?\\${STAR}\\${SLASH}\\s*)*["'](use client)["']/)`,
+    ].join("\n"),
+    mustFlag: true,
+    rule: "comment regex HOISTED into a variable",
+  },
+  {
+    name: "the whole-line filter written as a LOOP, with no .filter( anywhere",
+    src: [
+      `for (const l of src.split("\\n")) {`,
+      `  if (l.trim().startsWith("${LINE}")) continue`,
+      `  emit(l)`,
+      `}`,
+    ].join("\n"),
+    mustFlag: true,
+    rule: "line-comment filter inside a LOOP (trimmed line startsWith)",
+  },
+  {
+    // The four allowlisted files strip a URL SCHEME. If the new hoisted-regex
+    // rule cannot tell that from a comment strip, it re-flags all of them.
+    name: "a URL-scheme strip is not a comment strip",
+    src: [
+      `const HOST = /^https?:\\${SLASH}\\${SLASH}(www\\.)?/i`,
+      `const bare = (u: string) => u.replace(HOST, "")`,
+    ].join("\n"),
+    mustFlag: false,
   },
   {
     name: "the correct thing — routed through strip-comments.ts",
@@ -372,7 +627,7 @@ function main() {
   }
   console.log("  ✓ the idiom written into scripts/ was caught, and the probe was removed")
 
-  const scanned = readdirSync(SCRIPTS).filter((f) => f.endsWith(".ts") && f !== CANONICAL).length
+  const scanned = scriptFiles().length
   console.log(`\n  ${scanned} files scanned, ${ALLOW.length} allowlisted exceptions`)
 
   const stale = ALLOW.filter((a) => {

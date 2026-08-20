@@ -47,6 +47,7 @@
 
 import { readFileSync, existsSync } from "node:fs"
 import { resolve } from "node:path"
+import { stripComments } from "./strip-comments"
 
 // ── files under test ────────────────────────────────────────────────────────
 const ACTIONS = "app/actions/video.ts"
@@ -99,52 +100,8 @@ function src(rel: string): string {
   return readFileSync(p, "utf8")
 }
 
-/**
- * Strip line and block comments without eating the contents of strings,
- * template literals or regex-looking slashes inside quotes. Prose must never be
- * able to satisfy an assertion.
- */
-function strip(source: string): string {
-  let out = ""
-  let i = 0
-  const n = source.length
-  while (i < n) {
-    const c = source[i]
-    const next = source[i + 1]
-    if (c === "/" && next === "/") {
-      while (i < n && source[i] !== "\n") i++
-      continue
-    }
-    if (c === "/" && next === "*") {
-      i += 2
-      while (i < n && !(source[i] === "*" && source[i + 1] === "/")) i++
-      i += 2
-      continue
-    }
-    if (c === '"' || c === "'" || c === "`") {
-      const quote = c
-      out += c
-      i++
-      while (i < n) {
-        if (source[i] === "\\") {
-          out += source[i] + (source[i + 1] ?? "")
-          i += 2
-          continue
-        }
-        out += source[i]
-        if (source[i] === quote) {
-          i++
-          break
-        }
-        i++
-      }
-      continue
-    }
-    out += c
-    i++
-  }
-  return out
-}
+// hand-rolled scanner replaced (finding #250): it could not see nested `${…}` templates, regex literals, or an apostrophe in JSX text, and went blind on the code it judges.
+const strip = stripComments
 
 function code(rel: string): string {
   return strip(src(rel))

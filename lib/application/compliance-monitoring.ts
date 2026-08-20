@@ -891,14 +891,42 @@ export async function reviewContentApprovalService(data: {
       .single()
 
     if (approval && approval.metadata) {
-      await supabase.from("approved_content_library").insert({
+      // THE EXPIRY IS A COLUMN, NOT A NOTE. `expiresInDays` was folded into the
+      // activity's metadata blob and NOWHERE ELSE, while the nightly sweep
+      // (app/api/cron/compliance-monitoring/route.ts:130) deactivates approved
+      // content by `expires_at < now()` on THIS table. A column no writer ever
+      // set means that sweep has never expired anything: an approval granted
+      // "for 30 days" stayed usable forever, which is the whole point of a
+      // time-boxed approval inverted.
+      //
+      // Two more defects in the same six lines, both silent:
+      //   · brokerage_id is NOT NULL on this table and was not named at all, so
+      //     PostgREST refused the row ENTIRELY (23502) — the library was never
+      //     populated, and the error was never read.
+      //   · created_by FKs users(id) and was handed a BROKERAGE id. Those id
+      //     spaces are disjoint; the value could only ever have been a dangling
+      //     reference. The reviewer is who created this entry, and reviewerId is
+      //     already in hand.
+      const expiresAt = data.status === "approved" && data.expiresInDays
+        ? new Date(Date.now() + data.expiresInDays * 86_400_000).toISOString()
+        : null
+      const { error: libraryError } = await supabase.from("approved_content_library").insert({
+        brokerage_id: approval.brokerage_id,
         approval_id: approval.id,
         content_category: approval.metadata.content_type,
         content_template: approval.description,
         allowed_channels: approval.metadata.distribution_channels,
         allowed_lead_types: [approval.metadata.target_audience],
-        created_by: approval.brokerage_id,
+        expires_at: expiresAt,
+        created_by: data.reviewerId,
       })
+      // A refused write here means the approved content is NOT in the library the
+      // send path checks against. Reported, never swallowed — a compliance
+      // library that silently failed to record an approval is the failure mode
+      // this whole module exists to prevent.
+      if (libraryError) {
+        throw new Error(`[ComplianceMonitoring] Approved content could not be recorded in the library: ${libraryError.message}`)
+      }
     }
   }
 

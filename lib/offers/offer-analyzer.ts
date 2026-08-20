@@ -134,6 +134,79 @@ Return ONLY a valid JSON object with this exact schema (no markdown, no commenta
       .eq("id", o.id)
   }
 
+  // ── PERSIST THE COMPARISON ───────────────────────────────────────────────
+  // THE AI VERDICT HAD NOWHERE TO LAND. `offer_comparison.ai_recommendation`
+  // and `.ai_analysis_notes` are read by BOTH doors onto this comparison —
+  // app/actions/seller-offers.ts:620 (loadLatestOfferComparison, which the agent's
+  // offers manager hydrates from on every page load) and
+  // app/actions/portal-seller.ts:663 (getSellerOfferComparison, the seller's own
+  // view) — and NOTHING in the tree wrote either column. Both surfaces rendered
+  // a permanent null: the agent clicked "compare", read the recommendation once
+  // in memory, and it was gone on refresh; the seller's portal showed a matrix
+  // with no recommendation at all, forever.
+  //
+  // The row is written HERE, in the ONE analyzer both comparison paths already
+  // delegate to, rather than in either caller — a second persister in the action
+  // would be the third copy of a shape this file's own history records being
+  // deduplicated once already (seller-offers.ts:842).
+  //
+  // IDENTITY: agent_id FKs agents(id) and created_by FKs users(id). Those spaces
+  // are disjoint, so the users id in hand is RESOLVED to an agents id rather than
+  // substituted; an unresolved agent leaves the nullable column NULL instead of
+  // planting a dangling reference.
+  const { resolveAgentIdInBrokerage } = await import("@/lib/kernel/agent-identity")
+  const comparisonAgentId = await resolveAgentIdInBrokerage(supabase, agentUserId, brokerageId)
+
+  const netByOffer: Record<string, number> = {}
+  for (const o of enriched) netByOffer[o.id] = o.net_to_seller
+  const comparisonMatrix = enriched.map((o) => ({
+    offer_id: o.id,
+    offer_price: o.offer_price,
+    net_to_seller: o.net_to_seller,
+    financing_type: o.financing_type ?? null,
+    down_payment_percent: o.down_payment_percent ?? null,
+    closing_date: o.closing_date ?? null,
+    contingencies_count: (o.contingencies ?? []).length,
+  }))
+  // The ranking the model returned decides the recommended offer, and it is
+  // VALIDATED against the offers actually compared — a hallucinated id would
+  // otherwise be written into a column that FKs offers(id) and refuse the whole
+  // row (PGRST/23503), taking the recommendation text down with it.
+  const comparedIds = new Set(enriched.map((o) => o.id))
+  const recommendedOfferId = (result.ranked_offer_ids ?? []).find((id) => comparedIds.has(id))
+    ?? [...enriched].sort((a, b) => b.net_to_seller - a.net_to_seller)[0]?.id
+    ?? null
+  // The per-offer notes are kept as the analysis NOTES, labelled by the same
+  // offer label the model was shown, so the text a reader sees names the offer
+  // it is about rather than a bare uuid.
+  const perOfferNotes = enriched
+    .map((o) => {
+      const note = result.per_offer_notes?.[o.id]
+      return note ? `${o.label}: ${note}` : null
+    })
+    .filter(Boolean)
+    .join("\n")
+  const analysisNotes = [result.comparison_summary, perOfferNotes].filter(Boolean).join("\n\n") || null
+
+  const { error: comparisonError } = await supabase.from("offer_comparison").insert({
+    listing_id: listingId,
+    brokerage_id: brokerageId,
+    agent_id: comparisonAgentId,
+    created_by: agentUserId,
+    offer_ids: enriched.map((o) => o.id),
+    net_to_seller_by_offer: netByOffer,
+    comparison_matrix: comparisonMatrix,
+    ai_recommendation: result.recommendation ?? null,
+    ai_analysis_notes: analysisNotes,
+    recommended_offer_id: recommendedOfferId,
+  })
+  // Reported, not thrown: the analysis itself succeeded and the caller's own
+  // return still carries it. A silent failure here is what produced the
+  // permanently-null columns in the first place, so it is never swallowed.
+  if (comparisonError) {
+    console.error("[offer-analyzer] offer_comparison insert refused — this comparison will not survive a refresh:", comparisonError.message)
+  }
+
   // lifecycle_events + kernel event
   await supabase.from("lifecycle_events").insert({
     brokerage_id: brokerageId,

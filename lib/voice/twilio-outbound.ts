@@ -210,6 +210,27 @@ export async function placeOutboundAiCall(svc: any, params: PlaceOutboundParams)
     phone_from: fromRow.phone_number,
     phone_to: params.toNumber,
     started_at: new Date().toISOString(),
+    // THE ONLY HONEST WRITER OF THIS COLUMN, and it is reached only past the
+    // whole gate stack at step 1 (autonomy → suppression/DNC → TCPA consent and
+    // quiet hours → de-conflict → budget). A refusal returns above, so `true`
+    // here records a check that RAN on this call.
+    //
+    // Three surfaces render this as a compliance verdict — the agent's call
+    // history (app/components/dashboard/voice/VoiceCallHistoryTable.tsx:156, a
+    // green shield), the voice-intelligence board and the superadmin tenant call
+    // log — and NOTHING in the tree wrote it, while the column carried DEFAULT
+    // true. Every call on every lane therefore displayed "compliance passed"
+    // having been checked by nobody, and the red `=== false` branch on those
+    // surfaces was unreachable. m510 drops that default so a lane with no gate
+    // says NOTHING (null → "—") instead of claiming a pass.
+    compliance_passed: true,
+    // The companion column the voice-intelligence board reads beside the verdict
+    // (app/dashboard/voice-intelligence/page.tsx:50) — text[], no default, and
+    // written by nobody either. An EMPTY array is the honest partner of a pass:
+    // "the stack ran and raised nothing". It is not the same statement as NULL,
+    // which every other lane still writes and which means "no stack ran here" —
+    // a blocking flag never reaches this line at all, because the gate returns.
+    compliance_flags: [],
     vendor_call_id: res.data.sid, // vendor call id (Twilio CallSid on this lane)
     ai_notes: encodeOutboundBrief({
       engine: "twilio",

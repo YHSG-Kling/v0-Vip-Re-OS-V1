@@ -51,6 +51,7 @@
 import { readFileSync, writeFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { resolve } from "node:path"
+import { blankComments } from "./strip-comments"
 
 const ROOT = process.cwd()
 const arg = (name: string) => process.argv.find((a) => a.startsWith(`--${name}`))
@@ -81,126 +82,8 @@ const WRITERS = [F.txnDocs, F.docIntel, F.workflows] as const
 // Whitespace is preserved so offsets and line structure stay meaningful.
 // ─────────────────────────────────────────────────────────────────────────────
 
-function stripComments(src: string): string {
-  const out: string[] = []
-  let i = 0
-  const n = src.length
-  let lastSig = ""
-  const REGEX_PRECEDERS = new Set([
-    "", "(", ",", "=", ":", "[", "!", "&", "|", "?", "{", "}", ";", "+", "-", "*", "%", "~", "^", "<", ">",
-  ])
-
-  while (i < n) {
-    const c = src[i]
-    const c2 = src[i + 1]
-
-    if (c === "/" && c2 === "/") {
-      while (i < n && src[i] !== "\n") {
-        out.push(" ")
-        i++
-      }
-      continue
-    }
-    if (c === "/" && c2 === "*") {
-      while (i < n && !(src[i] === "*" && src[i + 1] === "/")) {
-        out.push(src[i] === "\n" ? "\n" : " ")
-        i++
-      }
-      out.push("  ")
-      i += 2
-      continue
-    }
-    if (c === "'" || c === '"') {
-      const quote = c
-      out.push(c)
-      i++
-      while (i < n) {
-        if (src[i] === "\\") {
-          out.push(src[i], src[i + 1] ?? "")
-          i += 2
-          continue
-        }
-        out.push(src[i])
-        if (src[i] === quote) {
-          i++
-          break
-        }
-        i++
-      }
-      lastSig = quote
-      continue
-    }
-    // Template literal — `${ … }` may contain anything, including comments and
-    // nested templates, so track brace depth and recurse on the whole span.
-    if (c === "`") {
-      out.push(c)
-      i++
-      let depth = 0
-      while (i < n) {
-        if (src[i] === "\\") {
-          out.push(src[i], src[i + 1] ?? "")
-          i += 2
-          continue
-        }
-        if (src[i] === "$" && src[i + 1] === "{") {
-          depth++
-          out.push("${")
-          i += 2
-          continue
-        }
-        if (depth > 0 && src[i] === "}") {
-          depth--
-          out.push("}")
-          i++
-          continue
-        }
-        if (depth === 0 && src[i] === "`") {
-          out.push("`")
-          i++
-          break
-        }
-        out.push(src[i])
-        i++
-      }
-      lastSig = "`"
-      continue
-    }
-    // Regex literal, only where a regex may legally begin.
-    if (c === "/" && REGEX_PRECEDERS.has(lastSig)) {
-      let j = i + 1
-      let inClass = false
-      let closed = false
-      while (j < n) {
-        if (src[j] === "\\") {
-          j += 2
-          continue
-        }
-        if (src[j] === "[") inClass = true
-        else if (src[j] === "]") inClass = false
-        else if (src[j] === "/" && !inClass) {
-          closed = true
-          break
-        } else if (src[j] === "\n") break
-        j++
-      }
-      if (closed) {
-        out.push(src.slice(i, j + 1))
-        i = j + 1
-        while (i < n && /[a-z]/.test(src[i])) {
-          out.push(src[i])
-          i++
-        }
-        lastSig = "/"
-        continue
-      }
-    }
-
-    out.push(c)
-    if (!/\s/.test(c)) lastSig = c
-    i++
-  }
-  return out.join("")
-}
+// hand-rolled scanner replaced (finding #250): it could not see nested `${…}` templates, regex literals, or an apostrophe in JSX text, and went blind on the code it judges.
+const stripComments = blankComments
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SOURCE ACCESS
