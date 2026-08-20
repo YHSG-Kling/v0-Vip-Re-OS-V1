@@ -17,32 +17,55 @@
 // the other column it checked, does not exist (revenue share is a COMMISSION concept —
 // lib/commission/waterfall/09-revenue-share.ts, gated on brokerages.revenue_share_enabled).
 //
-// ── validateVendorPlan — NOW WIRED. The catalogue it was waiting for exists ────
+// ── validateVendorPlan — WIRED, AND ITS SUBJECT CORRECTED (m497) ─────────────
 //
-// HISTORY, kept because the corrections are the point. An early note here said
-// "`vendor_plans` does NOT exist in any migration" — measured against migration
-// FILES, not the database. Against the LIVE database (project hrvaqgvukzxfskkcrwbt)
-// `public.vendor_plans` exists, is FK-anchored both ways
-// (vendor_plans.vendor_id → vendor_marketplace_profiles(id) ON DELETE CASCADE;
-// vendor_subscriptions.plan_id → vendor_plans(id) ON DELETE RESTRICT), and this
-// validator matches it field for field.
+// WHAT A "PLAN" IS. `vendor_plans` is A BROKERAGE'S VENDOR PACKAGE CATALOGUE:
+// each row is a recurring package the brokerage SELLS TO VENDORS for access and
+// placement in that brokerage's marketplace. MONEY FLOWS VENDOR → BROKERAGE.
+// The owner ruling, verbatim:
 //
-// A later note then kept it unwired on the grounds that wiring it "means BUILDING
-// that catalogue … a feature with an owner decision in it (who may publish a plan —
-// the vendor, or brokerage staff on the vendor's behalf)".
+//   "vendor packages are for brokerages to charge the vendor on a subscription
+//    to the platform. vendors do bill the brokerages for jobs but not a monthly
+//    subscription."
 //
-// THAT DECISION WAS ALREADY MADE, IN THE DATABASE. Measured live, vendor_plans has
-// RLS enabled and three policies that answer the question outright:
+// The three money paths are named once, in lib/vendors/vendor-money-directions.ts.
+// This validator only ever touches PATH 1's price sheet.
 //
-//   vendor_plans_vendor_manage_own    ALL     is_current_user_marketplace_vendor(vendor_id)
-//   vendor_plans_platform_manage      ALL     is_platform_staff()
-//   vendor_plans_authenticated_browse SELECT  status = 'active'
+// HISTORY, kept because the corrections are the point.
 //
-// So: THE VENDOR publishes their own plans (platform staff may act on any), and any
-// authenticated user may browse the ACTIVE ones. Brokerage staff have no write path
-// at all. There was no open question — only an unread schema. The catalogue is now
-// app/actions/vendors/vendor-plans.ts + /vendor/plans, and it enforces exactly the
-// boundary the policies already draw.
+//  1. An early note said "`vendor_plans` does NOT exist in any migration" —
+//     measured against migration FILES, not the database. It exists live.
+//
+//  2. A later note kept the validator unwired, calling the owner question open:
+//     "who may publish a plan — the vendor, or brokerage staff on the vendor's
+//     behalf".
+//
+//  3. The wave after that declared the question ALREADY ANSWERED BY THE DATABASE,
+//     citing vendor_plans' RLS:
+//
+//       vendor_plans_vendor_manage_own    ALL     is_current_user_marketplace_vendor(vendor_id)
+//       vendor_plans_platform_manage      ALL     is_platform_staff()
+//       vendor_plans_authenticated_browse SELECT  status = 'active'
+//
+//     and built the catalogue as A VENDOR'S OWN PRICE LIST that brokerages
+//     subscribed to. THAT WAS THE WRONG DIRECTION, and the citation is why it
+//     was believable: those policies do say a vendor may write vendor_plans
+//     rows, which is exactly what you would expect of a catalogue the vendor
+//     owns — and they say NOTHING about which way money moves. The schema was
+//     read where it agreed and not where it did not: the policies on
+//     `vendor_subscriptions` (brokerage finance admin WRITES, vendor READS only)
+//     were describing the corrected direction the entire time.
+//
+//  4. m497 repoints it. vendor_plans.vendor_id is GONE — a package sold by a
+//     brokerage has no owning vendor — replaced by brokerage_id NOT NULL, with
+//     vendor_plans_brokerage_manage_own on the same finance tier that already
+//     guards vendor_subscriptions and vendor_invoices. The writer is
+//     app/actions/vendors/vendor-plans.ts; the authoring surface is the
+//     brokerage's /dashboard/vendors Packages tab; /vendor/plans is the payer's
+//     READ-ONLY view of what it is being charged.
+//
+// NOTHING BELOW CHANGED IN m497. The DIRECTION moved; the field rules did not.
+// Every rule here is still the live CHECK on the same column, verbatim.
 //
 // ── EVERY LIVE CHECK IS COVERED, AND NOTHING BEYOND THEM ─────────────────────
 // Verified against pg_constraint on the live table:

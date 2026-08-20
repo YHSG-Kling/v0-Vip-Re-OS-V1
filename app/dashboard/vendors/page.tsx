@@ -351,13 +351,17 @@ export default async function VendorsPage() {
               </span>
             )}
           </TabsTrigger>
-          {/* Vendor plan catalogue — the brokerage side of /vendor/plans. vendor_subscriptions
-              had NO writer until this tab existed, which made the plan catalogue a shop with no
-              door: the subscriber count on every plan was structurally 0 and the "a brokerage
-              pays for this" delete gate could never fire. */}
+          {/* VENDOR PACKAGES — what this brokerage CHARGES its vendors, monthly.
+              This tab shipped as the opposite (the brokerage subscribing to a vendor's
+              plan and paying it monthly). Owner ruling: "vendor packages are for
+              brokerages to charge the vendor on a subscription to the platform.
+              vendors do bill the brokerages for jobs but not a monthly subscription."
+              m497 repointed the schema; the authoring surface lives here because the
+              SELLER authors the price sheet. What the brokerage PAYS a vendor is per
+              job and appears on the Bills tab, never here. */}
           <TabsTrigger value="plans" className="flex items-center gap-2">
             <Layers className="h-4 w-4" />
-            <span className="hidden sm:inline">Plans</span>
+            <span className="hidden sm:inline">Packages</span>
           </TabsTrigger>
         </TabsList>
 
@@ -609,7 +613,7 @@ export default async function VendorsPage() {
           />
         </TabsContent>
 
-        {/* Tab 6: Vendor plan catalogue */}
+        {/* Tab 6: Vendor packages — the brokerage's own catalogue (money vendor → brokerage) */}
         <TabsContent value="plans" className="space-y-4">
           <VendorPlanCataloguePanel />
         </TabsContent>
