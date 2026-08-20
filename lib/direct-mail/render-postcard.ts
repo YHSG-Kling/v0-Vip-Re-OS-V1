@@ -26,6 +26,7 @@ import { selectComposition, renderStill } from "@remotion/renderer"
 import { getBundle } from "@/lib/remotion/bundle-cache"
 import { resolveBrandContext } from "@/lib/branding/resolve-brand-context"
 import { draftPostcardCopy, type DirectMailCopyContext } from "@/lib/direct-mail/draft-copy"
+import { buildMailOptOutAffordance, mailOptOutProps } from "@/lib/direct-mail/mail-opt-out-affordance"
 import path from "node:path"
 import fs from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -65,9 +66,27 @@ export interface RenderPostcardBothSidesResult {
 export async function renderPostcardBothSides4x6(args: {
   brokerageId: string
   copyCtx:     DirectMailCopyContext
+  /** CAMPAIGN-level response QR (a qr_codes slug shared by every recipient of
+   *  this campaign). Front panel only. NOT the opt-out — see below. */
   qrScanUrl:   string | null
   agentName:   string | null
   agentPhotoUrl: string | null
+  /**
+   * THIS RECIPIENT's `direct_mail_recipients.unsubscribe_token`, read straight
+   * off the row the drain just inserted. PER-RECIPIENT and never shared: it is
+   * the only credential the public opt-out surface accepts, and it names one
+   * person on one campaign.
+   *
+   * Deliberately a TOKEN and not a URL: taking a URL here would let a caller
+   * hand this argument the campaign's `qrScanUrl` by mistake, and the two
+   * arguments would then be interchangeable at the type level. A token can only
+   * come from a recipient row.
+   *
+   * Null (no row, or the insert was refused) prints no opt-out row, which the
+   * content contract classifies as an unsatisfied REQUIRED prop rather than a
+   * quietly opt-out-less card.
+   */
+  unsubscribeToken?: string | null
 }): Promise<RenderPostcardBothSidesResult> {
   const brand = await resolveBrandContext({
     brokerageId: args.brokerageId,
@@ -118,12 +137,22 @@ export async function renderPostcardBothSides4x6(args: {
     output: frontPath, inputProps: frontInput, imageFormat: "png",
   })
 
+  // ── THE OPT-OUT ON THE PIECE ────────────────────────────────────────────
+  // Built from the RECIPIENT's token, on the BACK, and structurally separate
+  // from the campaign QR above: that one came from `args.qrScanUrl` (a qr_codes
+  // slug every recipient of this campaign shares) and goes on the FRONT; this
+  // one encodes /unsubscribe/<this recipient's token> and never reads, writes
+  // or counts against the qr_codes table. Collapsing the two would print one
+  // shared code on every card, so the first scan would suppress a stranger.
+  const optOut = mailOptOutProps(await buildMailOptOutAffordance(args.unsubscribeToken))
+
   // Render back
   const backInput = {
     body:    copyResult.copy.body,
     signoff: args.agentName ? `— ${args.agentName.split(" ")[0] ?? args.agentName}` : null,
     agentPhotoUrl: args.agentPhotoUrl,
     agentName: args.agentName,
+    ...optOut,
     brand: brandProp,
   }
   const backComp = await selectComposition({ serveUrl, id: "PostcardBack4x6", inputProps: backInput })

@@ -918,7 +918,24 @@ export const RemotionRoot: React.FC = () => {
         }}
       />
       {/* Wave 36 — 4×6 postcard back. Left ~48% holds body+signature;
-          right ~52% kept empty for Lob's address indicia overlay. */}
+          right ~52% kept empty for Lob's address indicia overlay.
+
+          NO SAMPLE OPT-OUT. optOutLine and optOutQrDataUrl default to null,
+          and they are the one pair of props on this card where a plausible
+          default would be actively dangerous: a token identifies a PERSON, so
+          a sample token printed on every card in a run would hand whoever
+          scans it the power to suppress one arbitrary stranger — or nobody,
+          if it names no live row, which is the same card carrying an opt-out
+          that silently does not work. Null renders the row absent, and
+          lib/remotion/content-contract.ts declares optOutLine REQUIRED, so a
+          real send arriving here with no recipient token is a refusable
+          render rather than a mailed piece with no way to say stop. Filled in
+          per recipient by lib/direct-mail/mail-opt-out-affordance.ts.
+
+          (This note lives OUTSIDE defaultProps on purpose: the content-contract
+          guard parses that block as text, and a comment inside it hides the
+          prop that follows — an apostrophe in one even swallows the rest of
+          the block as a string literal.) */}
       <Composition
         id="PostcardBack4x6"
         component={PostcardBack4x6 as unknown as React.FC<Record<string, unknown>>}
@@ -931,6 +948,8 @@ export const RemotionRoot: React.FC = () => {
           signoff:       "— Your agent",
           agentPhotoUrl: null,
           agentName:     "Your Agent",
+          optOutLine:      null,
+          optOutQrDataUrl: null,
           brand: {
             primaryColor:    "#0F172A",
             accentColor:     "#F59E0B",

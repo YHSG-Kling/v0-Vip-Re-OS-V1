@@ -279,11 +279,26 @@ export const CONTENT_CONTRACT: Record<string, CompositionContentContract> = {
       "in eleven days last month.",
   },
   PostcardBack4x6: {
-    required: ["body", "agentName"],
-    cosmetic: [...CHROME, "signoff"],
+    required: ["body", "agentName", "optOutLine"],
+    cosmetic: [...CHROME, "signoff", "optOutQrDataUrl"],
     why:
       "Back side of the same mailed piece, and the side that carries the body " +
-      "copy — the front's headline is the hook, this is the claim.",
+      "copy — the front's headline is the hook, this is the claim. " +
+      "`optOutLine` is REQUIRED for a reason the other entries do not cover: it " +
+      "is not a claim that could be WRONG, it is the piece's only route back to " +
+      "the sender, and its default is null precisely so nothing plausible can be " +
+      "printed in its place. A postcard mailed without it is a solicitation the " +
+      "recipient has no way to stop — the defect the owner ruled on — and a " +
+      "postcard mailed with a SHARED or stale token is worse, because scanning " +
+      "it suppresses a stranger. Required means both outcomes are a refusable " +
+      "render instead of a silent one. `optOutQrDataUrl` is COSMETIC on purpose " +
+      "and the asymmetry is the whole design: the printed line is what makes the " +
+      "opt-out readable, typeable and legitimate, while the QR only removes the " +
+      "friction of 49 characters — so a failed QR encode must degrade the card, " +
+      "never cancel a legitimate send. The QR here is NOT the campaign's " +
+      "`qrCodeDataUrl` (chrome, front panel, one qr_codes slug shared by every " +
+      "recipient); it encodes this recipient's own /unsubscribe/<token> URL and " +
+      "never touches the qr_codes table.",
   },
   PostcardFront6x9: {
     required: ["headline", "body", "statusBadge"],

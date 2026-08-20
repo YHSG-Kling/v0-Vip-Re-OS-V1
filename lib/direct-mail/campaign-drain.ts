@@ -134,7 +134,16 @@ export async function runDirectMailCampaignDrain(
     // (logResponse and the QR route both fall back to `direct_mail_campaigns.lead_id`,
     // which is where a 1:1 campaign names its addressee), so a ledger gap here is
     // a defect to surface, not a reason to cancel a legitimate marketing send.
+    //
+    // m493/QR — THE INSERT IS ALSO WHERE THE PRINTED OPT-OUT COMES FROM. The
+    // token column is NOT NULL with a pgcrypto DEFAULT, so the row is minted
+    // with one and the ONLY way to learn it is to select it back off this
+    // insert. That is why `.select("id, unsubscribe_token")` and not just "id":
+    // the piece cannot be rendered with a working opt-out until this line
+    // returns. A re-read afterwards would be a second round trip to the same
+    // row for a value the insert already had.
     let recipientRowId: string | null = null
+    let unsubscribeToken: string | null = null
     {
       const { data: recRow, error: recErr } = await svc
         .from("direct_mail_recipients")
@@ -151,14 +160,26 @@ export async function runDirectMailCampaignDrain(
           zip:            addr.zip,
           delivery_status: "pending",
         })
-        .select("id")
+        .select("id, unsubscribe_token")
         .maybeSingle()
       if (recErr) {
         console.error(
           `[campaign-drain] direct_mail_recipients insert refused for campaign ${row.id}: ${recErr.message}`,
         )
       }
-      recipientRowId = ((recRow as { id?: string } | null)?.id) ?? null
+      const rec = recRow as { id?: string; unsubscribe_token?: string | null } | null
+      recipientRowId   = rec?.id ?? null
+      unsubscribeToken = rec?.unsubscribe_token ?? null
+      // A row with no token means the m493 DEFAULT did not fire — the piece can
+      // still mail (the marketing send is legitimate) but it would mail WITHOUT
+      // a way for the recipient to stop it, and that is not something to notice
+      // only in a printer's proof. Said out loud, once, per piece.
+      if (recipientRowId && !unsubscribeToken) {
+        console.error(
+          `[campaign-drain] recipient ${recipientRowId} came back with no unsubscribe_token; ` +
+          `the piece will print no opt-out. Check the m493 DEFAULT on direct_mail_recipients.`,
+        )
+      }
     }
 
     // ONE real dispatch through the shared rail — every gate applies.
@@ -190,6 +211,12 @@ export async function runDirectMailCampaignDrain(
           persona: "sphere",
         } as any,
         fallbackTemplateId: fallbackTpl,
+        // The token minted on the recipient row above, carried to the printed
+        // piece. This is the half of the owner's "traceable back to their
+        // direct mail campaign to unsubscribe" ruling that the mechanism could
+        // not satisfy on its own: the resolver and the public surface existed,
+        // and nothing put the code where the person could reach it.
+        unsubscribeToken,
         systemSource: `campaign_drain:${row.target_audience ?? "approved"}`,
       })
 
