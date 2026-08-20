@@ -328,9 +328,30 @@ function testColumnsExist() {
   check("generateAICMA writes quality_score from the MEASURED confidence",
     /quality_score:\s*Math\.round\(cma\.confidenceScore \* 100\)/.test(SRC.aiCma))
 
-  // The gap this wave could not close in code.
-  check("cma_comparables STILL cannot record status/source (migration m498 filed)",
-    !comparables.includes("status") && !comparables.includes("source_provider"))
+  // ── THE GAP IS CLOSED. m498 APPLIED. ──────────────────────────────────────
+  // This assertion used to pin the OPPOSITE — "cma_comparables STILL cannot
+  // record status/source (migration m498 filed)" — which was the honest reading
+  // while the migration was only a file on disk. Files are not the database, so
+  // the proof said so out loud instead of pretending. m498 is now applied and
+  // the schema cache regenerated from the live database, so the assertion is
+  // inverted to the fact rather than deleted: the columns exist, and the writer
+  // fills them EXPLICITLY rather than leaning on the DEFAULT — a default is a
+  // statement about rows nobody thought about.
+  for (const c of ["status", "source_provider", "price_basis"]) {
+    check(`cma_comparables.${c} exists (m498, applied)`, comparables.includes(c))
+  }
+  check("persistComparables declares status/price_basis on the row, not by DEFAULT",
+    /status:\s*"closed"/.test(SRC.aiCma) && /price_basis:\s*"closed_sale"/.test(SRC.aiCma))
+  check("source_provider is the COMP'S OWN provenance, not the side's majority provider",
+    /source_provider:\s*a\.comp\.sourceProvider/.test(SRC.aiCma),
+    "a per-side provider here would mislabel a mixed side")
+  // The two CHECKs that make the fabrication unrepresentable, read from the
+  // migration itself so the proof cannot drift from what was applied.
+  const m498 = read("supabase/migrations/m498-cma-comparables-cannot-record-a-comps-status-or-source-so-an-asking-price-can-only-be-stored-in-a-column-named-sale-price.sql")
+  check("m498: a non-closed row must be list_price with sale_price NULL",
+    /price_basis = 'list_price' AND sale_price IS NULL/.test(m498))
+  check("m498: a perplexity-sourced row can NEVER be a closed sale",
+    /NOT \(source_provider = 'perplexity' AND status = 'closed'\)/.test(m498))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

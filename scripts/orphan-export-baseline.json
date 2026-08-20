@@ -1,7 +1,6 @@
 {
   "files": {
     "app/actions/accounting-sync.ts": 1,
-    "app/actions/admin/billing.ts": 1,
     "app/actions/admin/commission-agreement.ts": 1,
     "app/actions/agents.ts": 5,
     "app/actions/ai-auto-response.ts": 1,
@@ -9,7 +8,6 @@
     "app/actions/ai-contract-review.ts": 1,
     "app/actions/ai-document-intelligence.ts": 1,
     "app/actions/ai-lead-nurturing.ts": 1,
-    "app/actions/ai-listing-intake.ts": 2,
     "app/actions/ai-marketing-automation.ts": 4,
     "app/actions/ai-predictions.ts": 5,
     "app/actions/ai-transaction-coordinator.ts": 2,
@@ -113,7 +111,7 @@
     "lib/analytics/assignment-outcomes.ts": 4,
     "lib/analytics/prediction-accuracy.ts": 16,
     "lib/analytics/territory-coverage.ts": 2,
-    "lib/analytics/territory-roi.ts": 3,
+    "lib/analytics/territory-roi.ts": 2,
     "lib/auth/isa-actor.ts": 1,
     "lib/auth/permissions.ts": 2,
     "lib/billing/ai-overage.ts": 1,
@@ -154,7 +152,6 @@
     "lib/connections/scope.ts": 2,
     "lib/connections/zoom-transcripts.ts": 1,
     "lib/connections/zoom.ts": 12,
-    "lib/contact-promotion/contact-creator.ts": 1,
     "lib/contacts/buyer-stage.ts": 1,
     "lib/contacts/contact-brief.ts": 1,
     "lib/contacts/persona-builder.ts": 5,
@@ -163,7 +160,6 @@
     "lib/data-steward/property-spec-extractor.ts": 1,
     "lib/did/avatar-completion.ts": 3,
     "lib/did/consent.ts": 1,
-    "lib/direct-mail/unsubscribe-token.ts": 2,
     "lib/documents/auto-filer.ts": 1,
     "lib/documents/autonomy-ratchet.ts": 3,
     "lib/documents/client-pdf.ts": 2,
@@ -193,9 +189,9 @@
     "lib/external/exa-client.ts": 1,
     "lib/external/nextdoor-extract.ts": 1,
     "lib/external/nominatim-geocode.ts": 2,
-    "lib/external/permit-signals.ts": 10,
-    "lib/external/socrata-client.ts": 1,
-    "lib/external/socrata-market-registry.ts": 1,
+    "lib/external/permit-signals.ts": 13,
+    "lib/external/socrata-client.ts": 3,
+    "lib/external/socrata-market-registry.ts": 3,
     "lib/external/tavily-client.ts": 1,
     "lib/external/vision-property.ts": 1,
     "lib/fatigue/fatigue-display.ts": 1,
@@ -357,6 +353,7 @@
     "lib/lead-assignment/default-assignment.ts": 1,
     "lib/lead-assignment/rule-matcher.ts": 2,
     "lib/lead-assignment/tier-routing.ts": 3,
+    "lib/lead-governance/seller-signal-strength.ts": 3,
     "lib/lead-pipeline/ai-intent-classifier.ts": 3,
     "lib/lead-pipeline/enrichment-column-map.ts": 1,
     "lib/lead-pipeline/exa-sourcer.ts": 1,
@@ -466,7 +463,6 @@
     "lib/providers/email/personal-email-adapter.ts": 1,
     "lib/providers/messaging/sms-adapters.ts": 2,
     "lib/providers/outbound-sender.ts": 3,
-    "lib/providers/payment/index.ts": 1,
     "lib/recruiting/career-tier.ts": 4,
     "lib/recruiting/challenge-runner.ts": 1,
     "lib/recruiting/leaderboard.ts": 3,
@@ -516,6 +512,7 @@
     "lib/validations/index.ts": 4,
     "lib/vendor-governance/vendor-policy.ts": 1,
     "lib/vendors/rank.ts": 1,
+    "lib/vendors/vendor-money-directions.ts": 1,
     "lib/vendors/vendor-scope.ts": 1,
     "lib/video/assistant-options.ts": 1,
     "lib/video/avatar-render-orchestrator.ts": 1,
@@ -557,7 +554,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9129,
+  "census": 9144,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -582,7 +579,7 @@
     "app/actions/admin/agent-360.ts": 3,
     "app/actions/admin/agent-profile.ts": 2,
     "app/actions/admin/assignment-rules.ts": 3,
-    "app/actions/admin/billing.ts": 3,
+    "app/actions/admin/billing.ts": 2,
     "app/actions/admin/commission-agreement.ts": 4,
     "app/actions/admin/create-subscriber.ts": 2,
     "app/actions/admin/domain-coherence.ts": 8,
@@ -638,7 +635,7 @@
     "app/actions/ai-isa.ts": 18,
     "app/actions/ai-lead-nurturing.ts": 5,
     "app/actions/ai-lead-scoring.ts": 3,
-    "app/actions/ai-listing-intake.ts": 12,
+    "app/actions/ai-listing-intake.ts": 9,
     "app/actions/ai-listing-packet.ts": 5,
     "app/actions/ai-listing-presentation.ts": 3,
     "app/actions/ai-market-intelligence.ts": 3,
@@ -1089,7 +1086,7 @@
     "app/actions/vendor-respa.ts": 1,
     "app/actions/vendor-verification.ts": 7,
     "app/actions/vendor-w9.ts": 2,
-    "app/actions/vendors/vendor-plan-subscriptions.ts": 3,
+    "app/actions/vendors/vendor-plan-subscriptions.ts": 4,
     "app/actions/vendors/vendor-plans.ts": 6,
     "app/actions/vendors-kernel.ts": 6,
     "app/actions/video/create-video-project.ts": 10,
@@ -3019,7 +3016,9 @@
     "lib/constants/index.ts": 2,
     "lib/contact-pipeline/contact-capture.ts": 2,
     "lib/contact-promotion/contact-creator.ts": 3,
+    "lib/contact-promotion/history-carry.ts": 1,
     "lib/contact-promotion/lead-deactivator.ts": 1,
+    "lib/contact-promotion/portal-access.ts": 1,
     "lib/contact-promotion/promote-lead-to-contact.ts": 1,
     "lib/contact-promotion/promotion-eligibility.ts": 1,
     "lib/contact-promotion/promotion-logger.ts": 1,
@@ -3075,6 +3074,7 @@
     "lib/direct-mail/campaign-drain.ts": 1,
     "lib/direct-mail/draft-copy.ts": 2,
     "lib/direct-mail/listing-lifecycle-mail-reactor.ts": 1,
+    "lib/direct-mail/mail-opt-out-affordance.ts": 2,
     "lib/direct-mail/mail-unsubscribe.ts": 2,
     "lib/direct-mail/orchestrate-bundle-send.ts": 1,
     "lib/direct-mail/orchestrate-preset-send.ts": 1,
@@ -3154,10 +3154,10 @@
     "lib/external/osint-free.ts": 3,
     "lib/external/osint-neighborhood.ts": 3,
     "lib/external/peopledata-client.ts": 2,
-    "lib/external/permit-signals.ts": 11,
+    "lib/external/permit-signals.ts": 14,
     "lib/external/rentcast-typed.ts": 1,
-    "lib/external/socrata-client.ts": 2,
-    "lib/external/socrata-market-registry.ts": 3,
+    "lib/external/socrata-client.ts": 4,
+    "lib/external/socrata-market-registry.ts": 5,
     "lib/external/tavily-client.ts": 2,
     "lib/external/vision-property.ts": 1,
     "lib/external/zenrows-client.ts": 3,
@@ -3401,7 +3401,7 @@
     "lib/kernel/conversation-memory.ts": 6,
     "lib/kernel/conversation-thread.ts": 2,
     "lib/kernel/coordination-kind.ts": 1,
-    "lib/kernel/crm.ts": 14,
+    "lib/kernel/crm.ts": 13,
     "lib/kernel/cron-dispatch.ts": 4,
     "lib/kernel/cron-logging.ts": 5,
     "lib/kernel/deal-autopsy.ts": 3,
@@ -3565,6 +3565,7 @@
     "lib/kernel/warm-handoff-runner.ts": 1,
     "lib/kernel/warm-handoff.ts": 3,
     "lib/kernel/week-in-review.ts": 4,
+    "lib/kernel/welcome-personal-video.ts": 1,
     "lib/kernel/write-sentinel.ts": 4,
     "lib/knowledge/embedding-service.ts": 11,
     "lib/knowledge/help-topic-categories.ts": 2,
@@ -3582,6 +3583,7 @@
     "lib/lead-governance/multi-factor-scorer.ts": 1,
     "lib/lead-governance/promotion-readiness.ts": 1,
     "lib/lead-governance/routing-evaluator.ts": 1,
+    "lib/lead-governance/seller-signal-strength.ts": 4,
     "lib/lead-governance/sla-escalation.ts": 1,
     "lib/lead-governance/sla-monitor.ts": 2,
     "lib/lead-governance/stale-lead-processor.ts": 1,
@@ -4061,7 +4063,7 @@
     "lib/transactions/walkthrough-outcome.ts": 2,
     "lib/usage/check-cap.ts": 1,
     "lib/usage/log-media-usage.ts": 1,
-    "lib/usage/period.ts": 1,
+    "lib/usage/period.ts": 2,
     "lib/usage.ts": 2,
     "lib/utils.ts": 1,
     "lib/validations/index.ts": 8,
@@ -4080,6 +4082,7 @@
     "lib/vendors/insurance-posture.ts": 2,
     "lib/vendors/premium-placement.ts": 3,
     "lib/vendors/rank.ts": 3,
+    "lib/vendors/vendor-money-directions.ts": 2,
     "lib/vendors/vendor-scope.ts": 7,
     "lib/vendors/vendor-validators.ts": 1,
     "lib/vendors/w9-vocab.ts": 3,
@@ -4345,7 +4348,6 @@
       "deleteAssignmentRuleAction"
     ],
     "app/actions/admin/billing.ts": [
-      "recordUsageEventAction",
       "calculateOverageExposureAction",
       "loadRevenueSummaryAction"
     ],
@@ -4751,15 +4753,12 @@
     ],
     "app/actions/ai-listing-intake.ts": [
       "aiEnrichPropertyData",
-      "aiGetRequiredForms",
       "aiGenerateListingDescription",
       "aiSuggestListPrice",
       "aiCheckListingCompliance",
       "getListingCopyComplianceGate",
       "createOrPullDotloop",
       "aiCheckDocumentStatus",
-      "createListing",
-      "runCompleteListingIntake",
       "generateListingAgreement",
       "generateListingLandingPage"
     ],
@@ -7827,9 +7826,10 @@
       "getMyVendorW9Action"
     ],
     "app/actions/vendors/vendor-plan-subscriptions.ts": [
-      "listVendorPlanCatalogueAction",
-      "subscribeToVendorPlanAction",
-      "cancelVendorPlanSubscriptionAction"
+      "listVendorPackageEnrolmentsAction",
+      "enrolVendorInPackageAction",
+      "endVendorPackageEnrolmentAction",
+      "listMyVendorPackageChargesAction"
     ],
     "app/actions/vendors/vendor-plans.ts": [
       "listVendorPlansAction",
@@ -12706,7 +12706,7 @@
       "VendorRequestDialog"
     ],
     "app/vendor/plans/plans-client.tsx": [
-      "VendorPlansClient"
+      "VendorPackageChargesClient"
     ],
     "app/vendor/reviews/reviews-client.tsx": [
       "VendorReviewsClient"
@@ -14668,8 +14668,14 @@
       "resolveContactType",
       "createContactFromLead"
     ],
+    "lib/contact-promotion/history-carry.ts": [
+      "carryLeadHistoryToContact"
+    ],
     "lib/contact-promotion/lead-deactivator.ts": [
       "deactivateLead"
+    ],
+    "lib/contact-promotion/portal-access.ts": [
+      "grantPortalAccessForPromotedContact"
     ],
     "lib/contact-promotion/promote-lead-to-contact.ts": [
       "promoteLeadToContactService"
@@ -14906,6 +14912,10 @@
     ],
     "lib/direct-mail/listing-lifecycle-mail-reactor.ts": [
       "dispatchLifecycleMail"
+    ],
+    "lib/direct-mail/mail-opt-out-affordance.ts": [
+      "buildMailOptOutAffordance",
+      "mailOptOutProps"
     ],
     "lib/direct-mail/mail-unsubscribe.ts": [
       "resolveMailUnsubscribeToken",
@@ -15307,7 +15317,10 @@
       "readPermitDescription",
       "readPermitValuation",
       "classifyPermitStrength",
+      "readViolationStatus",
+      "classifyViolationStrength",
       "matchPermitsToLeads",
+      "signalTypeForKind",
       "buildPermitSignalRow",
       "permitDedupeKey",
       "ingestPermitSignals"
@@ -15317,12 +15330,16 @@
     ],
     "lib/external/socrata-client.ts": [
       "socrataQuery",
+      "isSoqlFieldName",
+      "isIsoCalendarDay",
       "recentPermits"
     ],
     "lib/external/socrata-market-registry.ts": [
       "getMarketDatasets",
       "listSupportedMarkets",
-      "listQueryablePermitDatasets"
+      "listQueryablePermitDatasets",
+      "listQueryableDatasets",
+      "classifyMarketCoverage"
     ],
     "lib/external/tavily-client.ts": [
       "tavilySearch",
@@ -16467,8 +16484,7 @@
       "updateContactRecord",
       "archiveContactRecord",
       "loadContactWorkspace",
-      "generateContactFollowupDraft",
-      "applyContactSuppressionState"
+      "generateContactFollowupDraft"
     ],
     "lib/kernel/cron-dispatch.ts": [
       "cronFieldMatches",
@@ -17505,6 +17521,9 @@
       "isoWeekOf",
       "runWeekInReview"
     ],
+    "lib/kernel/welcome-personal-video.ts": [
+      "resolveWelcomePersonalVideo"
+    ],
     "lib/kernel/write-sentinel.ts": [
       "sentinelWrite",
       "isRuntimeDriftLoss",
@@ -17586,6 +17605,12 @@
     ],
     "lib/lead-governance/routing-evaluator.ts": [
       "evaluateRoutingEligibility"
+    ],
+    "lib/lead-governance/seller-signal-strength.ts": [
+      "isSellerSignalStrength",
+      "rankOf",
+      "isStrongSellerSignal",
+      "countStrongSellerSignals"
     ],
     "lib/lead-governance/sla-escalation.ts": [
       "evaluateSLABreach"
@@ -19928,7 +19953,8 @@
       "logMediaUsage"
     ],
     "lib/usage/period.ts": [
-      "currentUsagePeriod"
+      "currentUsagePeriod",
+      "currentBillingPeriodLabel"
     ],
     "lib/usage.ts": [
       "incrementUsage",
@@ -20009,6 +20035,10 @@
       "compareVendors",
       "fastestTurnaround",
       "pickBestVendor"
+    ],
+    "lib/vendors/vendor-money-directions.ts": [
+      "isVendorPackageDirection",
+      "describeDirection"
     ],
     "lib/vendors/vendor-scope.ts": [
       "canInviteVendors",
@@ -20743,5 +20773,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 6
+  "trulyDead": 3
 }

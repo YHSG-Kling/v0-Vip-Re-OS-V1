@@ -5,6 +5,16 @@ import { Badge } from "@/components/ui/badge"
 import { ArrowRight } from "lucide-react"
 import type { VendorPackageChargeRow } from "@/app/actions/vendors/vendor-plan-subscriptions"
 
+/* TOMBSTONE — `VendorPlansClient` was RENAMED to `VendorPackageChargesClient`
+ * (below, :34), not removed. The orphan-export census reports it
+ * as capability removed because its move-detection requires a new home in a
+ * DIFFERENT file, and a rename inside one file is indistinguishable from a
+ * deletion from the outside.
+ *
+ * The old name described a vendor EDITING ITS OWN PLANS — the inverted direction
+ * m497 corrected. The component is now what the corrected direction actually
+ * supports, and the name says so. */
+
 /**
  * THE PAYER'S READ-ONLY VIEW of vendor package charges.
  *

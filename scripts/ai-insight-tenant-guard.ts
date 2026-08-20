@@ -506,10 +506,19 @@ function insertSites(file: string, table: string): InsertSite[] {
       continue
     }
     const props = topLevelProps(src, resolved.open)
+    // A BUILT-UP array contributes several row literals to ONE insert. The keys
+    // this site is credited with are the INTERSECTION across all of them: a
+    // column stamped on the seed row and forgotten on a pushed branch is not
+    // stamped, and crediting the union would hide exactly that.
+    let keys = props.map((p) => p.key)
+    for (const extra of resolved.extraOpens) {
+      const extraKeys = new Set(topLevelProps(src, extra).map((p) => p.key))
+      keys = keys.filter((k) => extraKeys.has(k))
+    }
     sites.push({
       file,
       line,
-      keys: props.map((p) => p.key),
+      keys,
       props,
       hasObjectArg: true,
       viaRowMapper: resolved.viaRowMapper,
@@ -536,34 +545,99 @@ function insertSites(file: string, table: string): InsertSite[] {
  * unachievable for a correctly-stamped tree. `null` still means genuinely
  * unresolvable, which stays an offender: a stamp that cannot be seen is not a
  * stamp that can be trusted.
+ *
+ *   4. `.insert(rows)` where `const rows = [{ … }]` and later `rows.push({ … })`
+ *      — a BUILT-UP array. Added after lib/kernel/client-welcome.ts's agent
+ *      first-touch notifier, which seeds one row and pushes one of two more
+ *      depending on whether the welcome actually went out. Every one of its three
+ *      literals carries brokerage_id, and the scan called it unprovable because it
+ *      only knew how to follow a `.map()`. That is the false-red class again: a
+ *      guard that calls a correctly-stamped writer broken is the one that gets
+ *      switched off.
+ *
+ * EVERY contributing literal is returned, not just the first, and the caller
+ * intersects their key sets. Reading only the seed row would let a `.push()`
+ * branch omit the tenant and still pass — the exact hole this shape opens.
  */
-function resolveRowObject(src: string, openParen: number): { open: number; viaRowMapper: boolean } | null {
+interface ResolvedRows { open: number; viaRowMapper: boolean; extraOpens: number[] }
+
+/** Top-level `{` positions of the object elements of the array literal at `openBracket`. */
+function arrayElementObjects(src: string, openBracket: number): number[] {
+  const end = skipBalanced(src, openBracket) // one past the matching `]`
+  const opens: number[] = []
+  let i = openBracket + 1
+  let depth = 0
+  while (i < end - 1) {
+    const c = src[i]
+    if (c === '"' || c === "'" || c === "`") { i = skipString(src, i); continue }
+    if (c === "{") {
+      if (depth === 0) opens.push(i)
+      i = skipBalanced(src, i)
+      continue
+    }
+    if (c === "(" || c === "[") { depth++; i++; continue }
+    if (c === ")" || c === "]") { depth--; i++; continue }
+    i++
+  }
+  return opens
+}
+
+/** `{` positions of every `IDENT.push({ … })` between `lo` and `hi`. */
+function pushedObjects(src: string, ident: string, lo: number, hi: number): number[] {
+  const re = new RegExp(`\\b${ident}\\s*\\.\\s*push\\s*\\(`, "g")
+  re.lastIndex = lo
+  const opens: number[] = []
+  let m: RegExpExecArray | null
+  while ((m = re.exec(src)) !== null) {
+    if (m.index >= hi) break
+    let j = m.index + m[0].length
+    while (j < hi && /\s/.test(src[j])) j++
+    if (src[j] === "{") opens.push(j)
+  }
+  return opens
+}
+
+function resolveRowObject(src: string, openParen: number): ResolvedRows | null {
   const close = skipBalanced(src, openParen)
   const argText = src.slice(openParen + 1, close - 1)
 
   // 1 — the direct object, optionally inside an array literal.
   let i = openParen + 1
   while (i < close && /[\s[]/.test(src[i])) i++
-  if (src[i] === "{") return { open: i, viaRowMapper: false }
+  if (src[i] === "{") return { open: i, viaRowMapper: false, extraOpens: [] }
 
   // 2 — an inline `… => ({ … })` row mapper anywhere in the argument.
   const inline = findArrowObject(src, openParen + 1, close - 1)
-  if (inline !== null) return { open: inline, viaRowMapper: true }
+  if (inline !== null) return { open: inline, viaRowMapper: true, extraOpens: [] }
 
-  // 3 — a bare identifier argument, bound earlier to a row mapper.
+  // 3/4 — a bare identifier argument, bound earlier to a row mapper or to an
+  // array that is then pushed into.
   const ident = /^\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*$/.exec(argText)
   if (!ident) return null
-  const decl = new RegExp(`(?:const|let|var)\\s+${ident[1]}\\s*(?::[^=]*)?=`, "g")
+  const name = ident[1]
+  const decl = new RegExp(`(?:const|let|var)\\s+${name}\\s*(?::[^=]*)?=`, "g")
   let d: RegExpExecArray | null
   let best: number | null = null
+  let extras: number[] = []
+  let declEnd = 0
   while ((d = decl.exec(src)) !== null) {
     if (d.index >= openParen) break
     const bodyStart = d.index + d[0].length
     const bodyEnd = initializerEnd(src, bodyStart)
     const arrow = findArrowObject(src, bodyStart, bodyEnd)
-    if (arrow !== null) best = arrow
+    if (arrow !== null) { best = arrow; extras = []; declEnd = bodyEnd; continue }
+    // Shape 4: an ARRAY literal initializer. Its elements are rows, and so is
+    // every object pushed into it between the declaration and this insert.
+    let k = bodyStart
+    while (k < bodyEnd && /\s/.test(src[k])) k++
+    if (src[k] === "[") {
+      const elems = arrayElementObjects(src, k)
+      if (elems.length > 0) { best = elems[0]; extras = elems.slice(1); declEnd = bodyEnd }
+    }
   }
-  return best === null ? null : { open: best, viaRowMapper: true }
+  if (best === null) return null
+  extras = extras.concat(pushedObjects(src, name, declEnd, openParen))
+  return { open: best, viaRowMapper: true, extraOpens: extras }
 }
 
 /**

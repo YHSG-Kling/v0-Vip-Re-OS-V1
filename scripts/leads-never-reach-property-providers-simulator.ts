@@ -322,6 +322,48 @@ function touchesIdx(body: string): boolean {
   return new RegExp(`\\b${IDX_KLASS}\\b`).test(body)
 }
 
+/**
+ * PROVIDER ENTRY POINTS THAT LIVE IN ANOTHER MODULE.
+ *
+ * WHY THIS EXISTS. This scanner originally only saw a provider when the ACTION
+ * FILE itself named IDXBrokerClient or the RentCast module. That held while every
+ * spend was written inline. It stopped holding when the CMA was consolidated onto
+ * one engine: `generateAICMA` no longer builds a client or imports RentCast — it
+ * calls `runAiCma`, which resolves BOTH providers inside
+ * lib/cma/ai-cma-orchestrator.ts.
+ *
+ * The scanner then reported "generateAICMA no longer reaches a property provider
+ * — this proof is aimed at the wrong shape", which was HONEST and exactly right:
+ * it had lost sight of the spend, and it said so instead of passing. That refusal
+ * is the behaviour to keep. The fix is to give it back its sight, not to drop the
+ * site from the list — dropping it would retire the ordering guarantee on the one
+ * function in this file that spends the most.
+ *
+ * MODULE SPECIFIER + EXPORTED NAME, both required. Matching a bare function name
+ * would let any same-named local satisfy it, which is the coincidence-matching
+ * this whole file exists to refuse.
+ */
+const PROVIDER_ENTRY_MODULES: Array<{ module: string; fn: string }> = [
+  // The one CMA engine. Resolves the brokerage's IDX connection and buys RentCast
+  // comps; see lib/cma/ai-cma-orchestrator.ts.
+  { module: "@/lib/cma/ai-cma-orchestrator", fn: "runAiCma" },
+]
+
+/** Cross-module provider entry points this file imports AND calls. */
+function importedProviderEntryNames(src: string): string[] {
+  const out: string[] = []
+  for (const e of PROVIDER_ENTRY_MODULES) {
+    // Static `import { runAiCma } from "…"` or dynamic `await import("…")` with
+    // the name destructured — ai-cma.ts uses the dynamic shape.
+    if (src.includes(e.module) && new RegExp(`\\b${e.fn}\\b`).test(src)) out.push(e.fn)
+  }
+  return out
+}
+
+function touchesProviderEntry(body: string, entryNames: string[]): boolean {
+  return entryNames.some((n) => new RegExp(`\\b${n}\\s*\\(`).test(body))
+}
+
 /** A read of the pre-conversion table. */
 const preConversionRead = (body: string) => body.includes(`.from("${PRE_CONVERSION}")`)
 const contactsRead = (body: string) => body.includes(`.from("${CONTACTS}")`)
@@ -340,9 +382,12 @@ function model(file: string): FileModel {
   const src = code(file)
   const fns = functions(src)
   const staticNames = rentcastStaticNames(src)
+  const entryNames = importedProviderEntryNames(src)
   const direct = new Set<string>()
   for (const f of fns) {
-    if (touchesIdx(f.body) || touchesRentcast(f.body, staticNames)) direct.add(f.name)
+    if (touchesIdx(f.body) || touchesRentcast(f.body, staticNames) || touchesProviderEntry(f.body, entryNames)) {
+      direct.add(f.name)
+    }
   }
   const reaching = new Set(direct)
   // In-file transitive closure: who CALLS a provider-touching function.
@@ -370,6 +415,13 @@ function providerPosition(m: FileModel, fn: Fn): number {
   const markers: string[] = []
   if (touchesIdx(fn.body)) markers.push(IDX_KLASS)
   if (fn.body.includes(RENTCAST_MODULE)) markers.push(RENTCAST_MODULE)
+  // A cross-module provider entry point (runAiCma) is a spend at the position of
+  // its CALL, not of its import: the dynamic `await import(...)` line sits beside
+  // the call anyway, and the call is the moment money is committed.
+  for (const n of importedProviderEntryNames(m.src)) {
+    const at = fn.body.search(new RegExp(`\\b${n}\\s*\\(`))
+    if (at !== -1) markers.push(fn.body.slice(at, at + n.length))
+  }
   for (const n of staticNames) {
     const at = fn.body.search(new RegExp(`\\b${n}\\s*\\(`))
     if (at !== -1) markers.push(fn.body.slice(at, at + n.length))
@@ -559,12 +611,21 @@ A.push({
     },
     {
       // The RentCast side of the ruling, on the function that actually spends.
+      //
+      // RE-AIMED. This control used to anchor on
+      // `const { getRentcastComps } = await import("@/lib/property/rentcast")`,
+      // which ai-cma.ts no longer contains: the CMA was consolidated onto ONE
+      // engine and the RentCast pull moved inside `runAiCma`
+      // (lib/cma/ai-cma-orchestrator.ts). The control did not fail — it silently
+      // DID NOT APPLY, and a mutation that never lands is theatre: it proves the
+      // assertion catches nothing. The harness caught that and said so, which is
+      // why it is re-anchored on the surviving spend rather than deleted.
       file: F.cma,
-      find: `  const { getRentcastComps } = await import("@/lib/property/rentcast")`,
+      find: `    const { runAiCma } = await import("@/lib/cma/ai-cma-orchestrator")`,
       replace:
-        `  const probe = await (await createClient()).from("${PRE_CONVERSION}").select("id").limit(1)\n` +
-        `  void probe\n` +
-        `  const { getRentcastComps } = await import("@/lib/property/rentcast")`,
+        `    const probe = await supabase.from("${PRE_CONVERSION}").select("id").limit(1)\n` +
+        `    void probe\n` +
+        `    const { runAiCma } = await import("@/lib/cma/ai-cma-orchestrator")`,
     },
     {
       // The IDX enrichment path in the third file.

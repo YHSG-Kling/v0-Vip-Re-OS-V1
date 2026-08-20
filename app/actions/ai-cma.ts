@@ -428,13 +428,27 @@ const CONDITION_GRADE: Record<string, number> = {
  * `no_comparables` for every CMA this product has ever generated — the packet
  * an agent hands a licensed appraiser could not be built at all.
  *
- * CLOSED COMPS ONLY. cma_comparables has no `status` and no source column, and
- * its price column is named `sale_price`. Writing an ACTIVE listing's asking
- * price into a column called sale_price is the exact fabrication this wave
- * exists to remove — appraisal-defense.ts reads that column and calls the rows
- * "closed comparables" in the argument it prints. Pending/active rows are
- * returned to the caller and stay off this table until it can carry their
- * status honestly; supabase/migrations/m498-*.sql adds the columns.
+ * CLOSED COMPS ONLY, AND NOW SAID OUT LOUD ON THE ROW. m498 is applied: the
+ * table carries `status`, `price_basis` and `source_provider`, so each row now
+ * declares what kind of number it holds instead of leaving a reader to infer it
+ * from the column name.
+ *
+ * The three values are WRITTEN EXPLICITLY rather than left to the m498 DEFAULT.
+ * A default is a statement about rows nobody thought about; these rows were
+ * thought about, and a writer that relies on a default cannot be read as having
+ * decided anything. `source_provider` comes from the comp's OWN `sourceProvider`
+ * — the authoritative per-row answer (lib/cma/comp-provider.ts:211) — not from
+ * the majority provider on the side, because a side can be mixed.
+ *
+ * WHY ONLY CLOSED ROWS ARE WRITTEN, unchanged: its price column is named
+ * `sale_price`, and writing an ACTIVE listing's ASKING price into it is the
+ * exact fabrication this wave exists to remove — appraisal-defense.ts reads that
+ * column and calls the rows "closed comparables" in the argument it prints.
+ * Pending/active comps are still returned to the caller and still stay off this
+ * table. m498's CHECK now makes the mistake unrepresentable anyway: a non-closed
+ * row must carry price_basis='list_price' AND a NULL sale_price, and a
+ * perplexity-sourced row can never be status='closed' at all — an AI web-search
+ * result is not a recorded transaction however confidently it is worded.
  *
  * NOT FATAL, BUT NOT SILENT. The report row is already committed and the comps
  * were already paid for; a refusal here is reported on `persistenceWarnings`
@@ -457,8 +471,15 @@ async function persistComparables(
     return {
       cma_id: cmaReportId,
       address: a.comp.address,
-      // Every row here is status:"closed" and priceBasis:"closed_sale" —
-      // runAiCma puts nothing else in adjustedComps.
+      // Every row here is a CLOSED SALE — runAiCma puts nothing else in
+      // adjustedComps — and m498 lets the row say so rather than implying it.
+      status: "closed",
+      price_basis: "closed_sale",
+      // The comp's OWN provenance, never the side's majority provider: a side
+      // can be mixed, and this column is the per-row answer an appraiser would
+      // ask for. NULL only if the sourcing layer somehow published none, which
+      // is honest — a fabricated provider name is worse than an absent one.
+      source_provider: a.comp.sourceProvider ?? null,
       sale_price: a.comp.salePrice,
       list_price: null,
       price_per_sqft:

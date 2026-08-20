@@ -13,6 +13,8 @@ import {
   SlidersHorizontal,
   Film,
   Sparkles,
+  Send,
+  Cpu,
   ChevronRight,
 } from 'lucide-react';
 
@@ -36,6 +38,19 @@ const TILES: Tile[] = [
   { href: '/settings/channel-presets', title: 'Channel Presets', description: 'Locked creative per channel — email, SMS, social, ads, portal', icon: SlidersHorizontal, accent: 'text-violet-600 bg-violet-100' },
   { href: '/dashboard/settings/stock-library', title: 'Stock Library', description: 'Intros, outros, B-roll, and music for your videos', icon: Film, accent: 'text-rose-600 bg-rose-100' },
   { href: '/dashboard/settings/twin-studio', title: 'AI Avatar & Voice', description: 'Your on-camera avatar and cloned voice in Twin Studio', icon: Sparkles, accent: 'text-purple-600 bg-purple-100' },
+  // ── ORPHAN-ROUTE SWEEP. Both pages are built and both were unreachable. ────
+  // This hub is the ONLY way into /settings/*: the sidebar carries a single
+  // "Settings" link and everything below it is a tile here. A settings page
+  // with no tile is therefore a page a human can only reach by typing the URL.
+  //
+  // Neither of these was a false positive. The only references to
+  // /settings/services in the whole tree were six revalidatePath() calls in
+  // app/actions/services-config.ts, and to /settings/direct-mail one
+  // revalidatePath in app/actions/direct-mail-size-prefs.ts. A cache
+  // invalidation is evidence a page is INTENDED, never evidence anyone can get
+  // to it — which is exactly the false pass the route sweep stopped counting.
+  { href: '/settings/direct-mail', title: 'Direct Mail', description: 'Postcard sizes, presets, and creative variants', icon: Send, accent: 'text-orange-600 bg-orange-100' },
+  { href: '/settings/services', title: 'Services & AI', description: 'External service credentials and AI agent templates', icon: Cpu, accent: 'text-teal-600 bg-teal-100' },
 ];
 
 export default function SettingsDashboard() {

@@ -2498,7 +2498,14 @@ async function main() {
         //    longer asserts a zero the product never had. The other two zeros
         //    (orphan-write-baseline, writerless reads) are untouched and still
         //    asserted at zero below.
-        routeBaseline18.length <= 32
+        // TIGHTENED 32 → 30 in the same pass that burned two of them down:
+        // /settings/direct-mail and /settings/services now have tiles on the
+        // settings hub, which is the only way into /settings/* (the sidebar
+        // carries one "Settings" link). Both had been reachable ONLY by typing
+        // the URL — their sole references in the whole tree were revalidatePath
+        // calls, which is precisely the false pass removed above. A ratchet that
+        // is not lowered when the number drops is not a ratchet.
+        routeBaseline18.length <= 30
         && src("scripts/orphan-route-sweep.ts").includes("legacy redirect stub")
         // The two identifiers the false-pass fixes introduced: selfDirOf (a page
         // no longer counts as a reference to itself) and resolveLocalBasePaths

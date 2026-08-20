@@ -27,8 +27,6 @@
   "/portal/[contactId]/education",
   "/portal/[contactId]/social",
   "/properties/saved",
-  "/settings/direct-mail",
-  "/settings/services",
   "/transactions",
   "/transactions/pipeline"
 ]

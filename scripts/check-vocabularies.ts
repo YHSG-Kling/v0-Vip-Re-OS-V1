@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 435 tables, 758 columns.
+ * MEASURED AT GENERATION: 436 tables, 759 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-08-20
  * source: public.live_check_constraints_json()
- * body-sha256: 0475662e182e5fe550fddfd904565c8e728c79dd05d8ec3e38ba17b948e20c77
+ * body-sha256: 98fbb681dffaa490b06ac3b432e7a85f871646a9ffd2cd10f7b8aaa81657f325
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -961,6 +961,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   model_retraining_log: {
     status: ["completed", "failed", "pending", "running"],
     trigger_type: ["approval_rate_threshold", "manual", "negative_spike", "weekly_batch"],
+  },
+  motivated_seller_signals: {
+    signal_strength: ["moderate", "strong", "urgent", "weak"],
   },
   negotiation_strategies: {
     agent_disposition: ["did_already", "did_now", "dismissed", "let_ai_do_it"],

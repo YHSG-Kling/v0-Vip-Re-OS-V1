@@ -11,6 +11,7 @@ import {
   type BehavioralSummary,
 } from "@/lib/lead-scoring/behavioral-events"
 import type { StandardTimeline } from "@/constants/crm-standards"
+import { countStrongSellerSignals } from "@/lib/lead-governance/seller-signal-strength"
 
 /** Points contributed by `lead_intelligence.timeline` to the intent score (0-40). */
 const TIMELINE_INTENT_POINTS: Record<StandardTimeline, number> = {
@@ -415,8 +416,28 @@ function calculateEngagementScore(record: any, table: string, behavior: Behavior
     // which is worse than not scoring it at all.
     const sellerSignals = record.motivated_seller_signals || []
 
-    // Motivated seller signals
-    const strongSignals = sellerSignals.filter((s: any) => s.signal_strength > 0.7).length
+    // ── MOTIVATED SELLER SIGNALS. This line used to read: ─────────────────────
+    //
+    //     sellerSignals.filter((s: any) => s.signal_strength > 0.7).length
+    //
+    // `motivated_seller_signals.signal_strength` is a TEXT column and every
+    // writer stores a WORD in it — "weak" | "moderate" | "strong" | "urgent".
+    // `"strong" > 0.7` coerces the string to NaN, and NaN > 0.7 is false, for
+    // every value the vocabulary contains. So this component contributed exactly
+    // ZERO of its possible 30 points to every lead score ever computed: a
+    // demolition permit, a divorce filing and an absentee owner all scored the
+    // same as no signal at all.
+    //
+    // That is the SECOND time this component was structurally zero, for a second
+    // reason. The comment at the read site above records the first — it queried
+    // `lead_motivated_seller_signals`, a retired twin with no writer. Repointing
+    // it made the rows reachable; this comparison meant they still could not
+    // score. Reading from the right table does not help if the value is then
+    // compared against the wrong type.
+    //
+    // The vocabulary and the "what counts as strong" threshold now live in ONE
+    // place so the two cannot drift apart again.
+    const strongSignals = countStrongSellerSignals(sellerSignals as Array<{ signal_strength?: unknown }>)
     score += Math.min(strongSignals * 15, 30)
 
     // External behavioural events. Was `event_type ? 1 : 0` — a single boolean over

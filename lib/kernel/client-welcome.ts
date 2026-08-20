@@ -347,7 +347,10 @@ export async function ensureClientWelcome(svc: Svc, contact: {
   const base: WelcomeOutcome = {
     proposed: true, sent: false, state: "held_for_approval", messageId,
     reason: null, videoIncluded: false,
-    videoReason: videoReady ? null : video.reason, portalAccess,
+    // Narrowed on `video` itself, not on the derived `videoReady` boolean: the
+    // union only carries `reason` on its in_progress/none arms, and TypeScript
+    // cannot discriminate one value from a truthiness test on another.
+    videoReason: video.state === "ready" ? null : video.reason, portalAccess,
   }
 
   // No agent, or no reachable inbox → there is no agent-signed email to send.

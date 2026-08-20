@@ -244,7 +244,10 @@ async function main(): Promise<void> {
     typeof leadUpdate?.payload?.converted_at === "string")
   check("carry reports linked=true", carry.linked === true)
   check("leads.lifecycle_state NOT written here (lead-acquisition-handlers.ts owns that column)",
-    leadUpdate && !("lifecycle_state" in leadUpdate.payload))
+    // !! — `leadUpdate &&` yields `undefined` when the call was never made, and
+    // check() takes a boolean. An undefined here would read as a failure anyway,
+    // but only by accident; say it.
+    !!leadUpdate && !("lifecycle_state" in leadUpdate.payload))
 
   const repointCalls = rec.calls.filter((c) => c.table !== "leads")
   check(`every curated history table is re-pointed (${REPOINTED_HISTORY_TABLES.length} tables)`,

@@ -479,7 +479,11 @@ check("every dataset the sweep will query, of EITHER kind, is row-verified and n
 check("a violation is filed under its OWN signal_type, never merged into permit_activity",
   signalTypeForKind("code_violations") === VIOLATION_SIGNAL_TYPE
   && signalTypeForKind("permits") === PERMIT_SIGNAL_TYPE
-  && VIOLATION_SIGNAL_TYPE !== PERMIT_SIGNAL_TYPE
+  // Widened to string BEFORE comparing. Both constants are literal-typed, so TS
+  // resolves `!==` at compile time and reports the comparison as unintentional —
+  // which is exactly backwards: this assertion exists to catch someone LATER
+  // collapsing the two literals into one, and it can only do that at runtime.
+  && (VIOLATION_SIGNAL_TYPE as string) !== (PERMIT_SIGNAL_TYPE as string)
   && SOCRATA_SIGNAL_TYPES.length === 2)
 
 // STRENGTH STAYS CONSERVATIVE. The lane's rule is "only demolition reads strong" — that belongs to

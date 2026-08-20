@@ -71,6 +71,30 @@ import {
   describeDirection,
 } from "@/lib/vendors/vendor-money-directions"
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * TOMBSTONE — THREE EXPORTS WERE RENAMED, NOT REMOVED.
+ *
+ * The orphan-export census reports these three as CAPABILITY REMOVED, and it is
+ * right to: its move-detection needs a NEW HOME in a DIFFERENT file, because a
+ * pre-existing same-named function in an unrelated module is a coincidence and
+ * not a destination. A rename WITHIN one file looks identical to a deletion from
+ * the outside. So the survivors are named here, by line:
+ *
+ *   listVendorPlanCatalogueAction     → listVendorPackageEnrolmentsAction   :161
+ *   subscribeToVendorPlanAction       → enrolVendorInPackageAction          :231
+ *   cancelVendorPlanSubscriptionAction→ endVendorPackageEnrolmentAction     :342
+ *
+ * Every one is the SAME capability with a corrected name. "Subscribe to a vendor
+ * plan" describes a BROKERAGE paying a VENDOR monthly — the direction m497
+ * proved backwards. A function named for the wrong direction is exactly how the
+ * wrong direction survives a review: the reader trusts the name and never opens
+ * the body. Renaming is therefore part of the fix, not cosmetics.
+ *
+ * `listMyVendorPackageChargesAction` :379 is NEW in the same pass — the payer's
+ * read-only view, which had no equivalent before because under the inverted
+ * model the vendor was the one being paid.
+ * ────────────────────────────────────────────────────────────────────────── */
+
 /** One package this brokerage sells, with the vendors currently enrolled in it. */
 export interface VendorPackageEnrolmentRow {
   subscription_id: string

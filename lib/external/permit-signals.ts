@@ -45,6 +45,7 @@
  */
 
 import { recentPermits } from "./socrata-client"
+import type { SellerSignalStrength } from "@/lib/lead-governance/seller-signal-strength"
 import {
   classifyMarketCoverage, type MarketCoverage, type SocrataDatasetSpec,
 } from "./socrata-market-registry"
@@ -292,7 +293,21 @@ const MODERATE_TERMS = [
   "addition", "deck", "paint",
 ]
 
-export type SignalStrength = "strong" | "moderate" | "weak"
+/**
+ * The strength levels THIS LANE emits. A narrowed subset of the one vocabulary
+ * for `motivated_seller_signals.signal_strength` — see
+ * lib/lead-governance/seller-signal-strength.ts, which owns the full ladder
+ * ("weak" | "moderate" | "strong" | "urgent") and the "what counts as strong"
+ * threshold the scorer applies.
+ *
+ * Narrowed ON PURPOSE: "urgent" is a judgement about a PERSON'S situation (the
+ * unified-profile lane emits it from a motivation read), and a building permit
+ * is a fact about a STRUCTURE. Nothing this lane can observe justifies the top
+ * of the ladder, so it cannot spell it. Deriving the type from the canonical
+ * list rather than restating the literals is what keeps a fifth level, added
+ * there, from silently failing to typecheck here.
+ */
+export type SignalStrength = Extract<SellerSignalStrength, "strong" | "moderate" | "weak">
 
 /**
  * PURE. Deterministic strength for a permit signal. Same permit, same verdict, always.
