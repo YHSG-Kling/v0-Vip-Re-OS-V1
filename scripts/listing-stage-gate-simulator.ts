@@ -42,6 +42,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
 import { LISTING_LIFECYCLE_STAGES, getStageDefinition } from "../lib/listing-lifecycle/lifecycle-definitions"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -50,7 +51,7 @@ const check = (n: string, c: boolean) => {
 }
 const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 /** Strip comments so no assertion can be satisfied by prose describing the fix. */
-const code = (p: string) => src(p).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")
+const code = (p: string) => stripComments(src(p))
 
 const ENGINE = "app/actions/seller-listing/execution-engine.ts"
 

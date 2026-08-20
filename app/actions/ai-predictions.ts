@@ -2353,7 +2353,19 @@ Provide strategic negotiation advice:
 // MARKET SHIFT PREDICTION
 // ============================================
 
-export async function predictMarketShift(data: { city: string; state: string }) {
+/**
+ * MERGED IN (from the AI Toolkit's Market Trend Predictor, previously a stub
+ * that returned the literal string "Market trend predictions"): `propertyType`.
+ * The Toolkit's form has always collected it and had nowhere to send it.
+ * Optional and additive — both existing UI callers pass city/state only and are
+ * unchanged; omitted, the prediction stays city-wide exactly as before.
+ */
+export async function predictMarketShift(data: {
+  city: string
+  state: string
+  /** e.g. "single-family" | "condo" | "townhouse" | "multi-family" | "luxury". */
+  propertyType?: string
+}) {
   const supabase = await createClient()
   // ONE tenant resolve for the whole function: the same brokerage whose IDX feed is
   // read below is the brokerage the alert row and the affected-contact sweep are
@@ -2377,9 +2389,19 @@ export async function predictMarketShift(data: { city: string; state: string }) 
       ? Math.round(domValues.reduce((sum, d) => sum + d, 0) / domValues.length)
       : null
 
+  // The segment is stated as a FOCUS, not as a filter on the snapshot below:
+  // the listing count and DOM are city-wide across the brokerage's feed and are
+  // NOT re-computed per property type, so claiming they describe the segment
+  // would be the same class of fabricated market fact the DOM average above was
+  // fixed for.
+  const segmentLine = data.propertyType?.trim()
+    ? `\nSegment of interest: ${data.propertyType.trim()} properties. The snapshot below is CITY-WIDE across all property types and was not filtered to this segment — treat the segment as the lens for your prediction, and say so where a segment-specific figure would be needed.\n`
+    : ""
+
   const prompt = `You are a real estate market economist AI. Predict market shifts.
 
 Market: ${data.city}, ${data.state}
+${segmentLine}
 
 Current Snapshot — SCOPE WARNING: this count is this brokerage's own IDX-enabled
 active listings in the city, NOT total market inventory. Do not present it as the

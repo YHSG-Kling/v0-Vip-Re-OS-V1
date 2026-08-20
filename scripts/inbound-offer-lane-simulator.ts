@@ -50,6 +50,7 @@ import {
   STAGED_PACKET_DOCUMENT_TYPE,
 } from "../lib/inbound-mail/offer-detect"
 import { linkInboundDocumentsToOffer } from "../lib/inbound-mail/offer-intake"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -60,9 +61,6 @@ const check = (n: string, c: boolean, detail?: string) => {
 
 const ROOT = process.cwd()
 /** Source with comments removed — prose that DESCRIBES a defect is not the defect. */
-const stripComments = (t: string) => t
-  .replace(/\/\*[\s\S]*?\*\//g, "")
-  .replace(/^[ \t]*\/\/.*$/gm, "")
 const src = (p: string) =>
   existsSync(join(ROOT, p)) ? stripComments(readFileSync(join(ROOT, p), "utf8")) : ""
 

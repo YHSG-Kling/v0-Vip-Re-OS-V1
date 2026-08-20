@@ -78,6 +78,7 @@
  */
 import { readFileSync } from "node:fs"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import { stripComments } from "./strip-comments"
 import {
   MILESTONE_STATUSES, MILESTONE_OPEN_STATUSES, isMilestoneStatus,
   DEADLINE_STATUSES, DEADLINE_OPEN_STATUSES, isDeadlineStatus,
@@ -94,7 +95,7 @@ const check = (n: string, c: boolean) => {
   if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; fails.push(n); console.log(`  ✗ ${n}`) }
 }
 const src = (p: string) =>
-  readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+  stripComments(readFileSync(p, "utf8"))
 
 /** Every constant here must be a subset of what the live CHECK admits. */
 const subsetOf = (vals: readonly string[], live: readonly string[]) =>

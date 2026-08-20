@@ -43,16 +43,10 @@
  */
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { stripComments } from "./strip-comments"
 
 const root = process.cwd()
 const read = (p: string) => readFileSync(join(root, p), "utf8")
-
-/** Strip comments so a check can never be satisfied by prose describing it. */
-function stripComments(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/(^|[^:])\/\/.*$/gm, "$1")
-}
 
 const failures: string[] = []
 const passes: string[] = []
@@ -168,13 +162,21 @@ const CALLERS = [
   "app/actions/social/generate-social-post.ts",
   "app/actions/ai-newsletter.ts",
   "app/actions/blog.ts",
-  "app/actions/video/create-video-project.ts",
   "app/actions/social-media-automation.ts",
   "lib/video/persona-variant-post-pass.ts",
   "lib/video/script-compliance.ts",
   // app/actions/video/generate-script.ts is deliberately absent: it no longer
   // calls evaluateOutbound directly, it delegates to the shared gate above.
   // Listing it here would assert nothing.
+  //
+  // app/actions/video/create-video-project.ts left for the SAME reason, and it
+  // is worth naming because it was listed here and PASSING while asserting
+  // nothing. Its only two `evaluateOutbound` mentions are inside the tombstone
+  // comment describing the fail-open call it USED to make; this loop strips
+  // comments first, so evaluateOutboundArgs() returned an empty list and the
+  // per-caller check was vacuously true. A caller list is only a check while
+  // every file on it still calls the thing — a name that stops calling has to
+  // come off, or the list quietly turns into decoration.
 ]
 
 /**

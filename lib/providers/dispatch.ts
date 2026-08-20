@@ -789,7 +789,23 @@ export async function dispatchDirectMail(
   //
   // Placed BEFORE the verification and CASS gates on purpose: a suppressed recipient
   // must not cost a Lob address-verification call to find that out.
-  if (params.contactId || params.leadId) {
+  //
+  // ── WHY THIS GATE NO LONGER REQUIRES AN ENTITY ID ────────────────────────
+  //
+  // It used to be `if (params.contactId || params.leadId)`, so a send that named
+  // NEITHER — the mail-only recipient of an acquisition mailer, the purchased
+  // farm list, the audience import — skipped the suppression gate entirely.
+  // That is not an edge case: it is the recipient direct mail exists to reach,
+  // and m493 prints an opt-out code on the piece we send them. We were printing
+  // a promise on paper posted to a stranger's house and then not consulting the
+  // list they had asked to be put on.
+  //
+  // The address IS the identity (m503's contact_suppression_list.mailing_address_key,
+  // read through checkSuppression's address arm), and `params.mailingAddress` +
+  // `params.zip` are on EVERY call — they are what gets printed. So the gate now
+  // runs unconditionally; the entity-keyed reads below stay behind their own id
+  // checks exactly as before.
+  {
     const supSvc = createServiceClient()
     let supEmail: string | null = null
     let supPhone: string | null = null
@@ -856,10 +872,16 @@ export async function dispatchDirectMail(
       email:       supEmail,
       phone:       supPhone,
       channel:     "mail",
+      // THE ADDRESS ARM. These are the values about to be handed to Lob and
+      // printed on the piece, so gating on them asks the only question that can
+      // be asked about a household with no CRM record: "did this mailbox tell us
+      // to stop?" Normalized inside the arm — a raw address cannot be compared.
+      mailingStreet: params.mailingAddress,
+      mailingZip:    params.zip,
     })
     if (mailSuppression.suppressed) {
       console.warn(
-        `[Dispatch] direct mail blocked for ${params.contactId ?? params.leadId}: ${mailSuppression.reason}`,
+        `[Dispatch] direct mail blocked for ${params.contactId ?? params.leadId ?? `address ${params.zip}`}: ${mailSuppression.reason}`,
       )
       return {
         success: false,

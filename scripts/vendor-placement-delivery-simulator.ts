@@ -53,6 +53,7 @@
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -60,7 +61,7 @@ const check = (n: string, c: boolean) => {
   if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; fails.push(n); console.log(`  ✗ ${n}`) }
 }
 const raw = (p: string) => (existsSync(join(process.cwd(), p)) ? readFileSync(join(process.cwd(), p), "utf8") : "")
-const src = (p: string) => raw(p).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+const src = (p: string) => stripComments(raw(p))
 
 console.log("══════════════════════════════════════════════════")
 console.log(" Vendor placement delivery — what was paid for is what is shown")

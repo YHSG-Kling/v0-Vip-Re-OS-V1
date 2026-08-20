@@ -55,6 +55,7 @@
  */
 import { readFileSync } from "node:fs"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import { stripComments } from "./strip-comments"
 import {
   RETRY_RESULT_SCHEDULED, RETRY_RESULT_SUCCESS, RETRY_RESULT_FAILURE,
 } from "../lib/errors/auto-retry"
@@ -65,7 +66,7 @@ const check = (n: string, c: boolean) => {
   if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; fails.push(n); console.log(`  ✗ ${n}`) }
 }
 const src = (p: string) =>
-  readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+  stripComments(readFileSync(p, "utf8"))
 
 /**
  * PURE — does a CHECK definition contain the inert-NULL trap?

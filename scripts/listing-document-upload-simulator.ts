@@ -47,6 +47,7 @@ import {
   LISTING_AGREEMENT_PARTIES,
 } from "../lib/compliance/signature-completeness"
 import { ALL_DOCUMENT_CLASSIFICATIONS } from "../lib/compliance/document-classifications"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -56,7 +57,7 @@ const check = (n: string, c: boolean) => {
 /** Comments stripped so this file's own prose cannot satisfy an assertion. */
 const src = (p: string) =>
   existsSync(p)
-    ? readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+    ? stripComments(readFileSync(p, "utf8"))
     : ""
 
 const SCANNER = src("lib/documents/scan-uploaded-document.ts")

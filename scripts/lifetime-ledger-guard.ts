@@ -27,6 +27,7 @@
  */
 import { readFileSync } from "node:fs"
 import { latestByContact, isNewestFirst, topByValue } from "../lib/lifetime-customer-npv/current"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -37,7 +38,7 @@ function ok(label: string, cond: boolean, detail?: string) {
 const src = (p: string) => readFileSync(p, "utf8")
 /** Comments stripped — an assertion must target CODE, never prose. */
 const code = (p: string) =>
-  src(p).replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")
+  stripComments(src(p))
 
 console.log("\n═══ 1. latestByContact keeps the newest and drops the history ═══")
 {

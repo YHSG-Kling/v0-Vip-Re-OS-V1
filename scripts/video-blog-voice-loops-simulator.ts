@@ -54,6 +54,7 @@
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -88,11 +89,7 @@ function loadSources(): Record<string, string> {
  * on the explanation and red on nothing.
  */
 function codeOnly(source: string): string {
-  return source
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .split("\n")
-    .filter((l) => !l.trim().startsWith("//"))
-    .join("\n")
+  return stripComments(source)
 }
 
 /**

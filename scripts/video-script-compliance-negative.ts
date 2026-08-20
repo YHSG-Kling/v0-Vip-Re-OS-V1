@@ -33,7 +33,9 @@ const CALLER_FILES = [
   "app/actions/social/generate-social-post.ts",
   "app/actions/ai-newsletter.ts",
   "app/actions/blog.ts",
-  "app/actions/video/create-video-project.ts",
+  // create-video-project.ts is off this list: it no longer calls evaluateOutbound
+  // (only the tombstone comment mentions it), so the NO-STUB-CONTACT mutation had
+  // no anchor to substitute and the case could never have proved anything.
   "app/actions/social-media-automation.ts",
   "lib/video/persona-variant-post-pass.ts",
   "lib/video/script-compliance.ts",

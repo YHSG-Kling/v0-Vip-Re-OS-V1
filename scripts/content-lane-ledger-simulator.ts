@@ -39,6 +39,7 @@
  */
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { stripComments } from "./strip-comments"
 import {
   CONTENT_TYPE_FEATURE,
   CONTENT_GENERATION_FEATURES,
@@ -137,7 +138,7 @@ console.log("\n[4 · Lane A no longer synthesizes unrouted feature strings]")
 // mistake this check made on its first pass, and the same one section 5 made.
 // Only a LIVE stamp counts.
 for (const f of ["lib/content-generation/content-generator.ts", "app/actions/content-generation-engine.ts"]) {
-  const code = read(f).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+  const code = stripComments(read(f))
   const synthesized = [...code.matchAll(/["'`]content_generation_[a-z_${}.\s]*["'`]/g)].map((m) => m[0])
   check(
     `${f} stamps no content_generation_* feature`,
@@ -174,7 +175,7 @@ check(
 //     defect was never the string; it was a string used as a PRICING key.
 // So this looks for a rival price TABLE — a key mapped to a {prompt, completion}
 // rate pair — which is the only shape that can misprice anything.
-const laneBCode = laneBSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+const laneBCode = stripComments(laneBSrc)
 check(
   "no rival price table in the content lane",
   !/\{\s*prompt:\s*[\d.]+\s*,\s*completion:\s*[\d.]+\s*\}/.test(laneBCode),
@@ -208,12 +209,12 @@ console.log("\n[7 · quality_score is measured, not self-reported]")
 const svcSrc = read("lib/services/content-generation.service.ts")
 check(
   "the prompt no longer dictates a score",
-  !/"qualityScore":\s*\d+/.test(svcSrc.replace(/^\s*\/\/.*$/gm, "")),
+  !/"qualityScore":\s*\d+/.test(stripComments(svcSrc)),
   "the generation prompt still asks the model to emit a literal qualityScore — that is a constant, not an assessment",
 )
 check(
   "no hardcoded score fallback survives",
-  !/qualityScore:\s*\d+/.test(svcSrc.replace(/^\s*\/\/.*$/gm, "")),
+  !/qualityScore:\s*\d+/.test(stripComments(svcSrc)),
   "a hardcoded qualityScore fallback is back in lib/services/content-generation.service.ts",
 )
 check(

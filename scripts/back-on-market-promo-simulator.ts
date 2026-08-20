@@ -16,15 +16,14 @@ import { isBackOnMarket } from "../lib/listings/back-on-market"
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { CRON_REGISTRY } from "../lib/kernel/cron-dispatch"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
 const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; fails.push(n); console.log(`  ✗ ${n}`) } }
 /** Source with comments stripped — these files quote the poster they retired. */
 const src = (p: string) =>
-  readFileSync(join(process.cwd(), p), "utf8")
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/^[ \t]*\/\/.*$/gm, "")
+  stripComments(readFileSync(join(process.cwd(), p), "utf8"))
 const exists = (p: string) => existsSync(join(process.cwd(), p))
 
 function main() {

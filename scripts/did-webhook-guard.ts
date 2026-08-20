@@ -32,6 +32,7 @@ import { readFileSync, existsSync } from "node:fs"
 import { parseDidWebhook, secretMatches, didWebhookUrl } from "../lib/did/webhook"
 import { buildExpressAvatarRequest, assetIdFromUserData } from "../lib/did/contract"
 import { pickAvatarImageUrl, avatarWarning } from "../lib/did/avatar-completion"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -42,7 +43,7 @@ function ok(label: string, cond: boolean, detail?: string) {
 const src = (p: string) => (existsSync(p) ? readFileSync(p, "utf8") : "")
 /** Comments stripped — an assertion must target CODE, never prose. */
 const code = (p: string) =>
-  src(p).replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")
+  stripComments(src(p))
 
 const ROUTE = "app/api/webhooks/did/route.ts"
 const CRON = "app/api/cron/poll-did-avatars/route.ts"

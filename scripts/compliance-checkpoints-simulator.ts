@@ -32,6 +32,7 @@
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { analyzeFilledPacket, classifyMissingField } from "../lib/workflow/intelligence/packet-analysis"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -48,9 +49,6 @@ const ROOT = process.cwd()
  * three separate assertions in this sweep were tripped by a comment explaining
  * the very thing they were checking for. Prose is not code; do not scan it.
  */
-const stripComments = (t: string) => t
-  .replace(/\/\*[\s\S]*?\*\//g, "")
-  .replace(/^[ \t]*\/\/.*$/gm, "")
 const src = (p: string) =>
   existsSync(join(ROOT, p)) ? stripComments(readFileSync(join(ROOT, p), "utf8")) : ""
 

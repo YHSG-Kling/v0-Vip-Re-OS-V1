@@ -59,6 +59,7 @@ import {
   isLeadSuppressed,
 } from "../lib/lead-pipeline/lead-lifecycle"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -67,7 +68,7 @@ const check = (n: string, c: boolean) => {
 }
 /** Reads CODE. These files quote the dead literals in their headers. */
 const src = (p: string) =>
-  readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+  stripComments(readFileSync(p, "utf8"))
 
 console.log("\n── the module matches the live CHECK ──")
 {

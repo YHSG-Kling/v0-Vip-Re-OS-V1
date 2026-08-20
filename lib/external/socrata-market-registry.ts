@@ -43,6 +43,51 @@
  * Fixing the date column would have bought a perfectly-formed query returning 2020. So freshness is
  * now part of verification, and a frozen feed is `unavailable` with its last data date stated.
  *
+ * ── 2026-08-20 (second pass): A FIFTH SHAPE — BOUND VALID, SELECTIVITY ZERO ──
+ * Every shape above is about whether a query is WELL-FORMED. This one is about whether it
+ * SELECTS anything. NYC DOB's `ipu4-2q9a` was registered bound on `dobrundate` because that is its
+ * only Calendar date, with `issuance_date` re-filtering the rows afterwards. Both facts are still
+ * true. What nobody measured is how much `dobrundate >= <7 days ago>` actually excludes:
+ *
+ *     $select=count(*)                                   → 3,989,981   (whole dataset)
+ *     $where=dobrundate >= '2026-08-13'                  → 3,897,421   (97.7% of it)
+ *     $where=issuance_date like '%/2026'                 →     4,940   (0.12% of it)
+ *
+ * DOB re-runs essentially the entire table every week, so the "recent" bound returns the entire
+ * table, `MAX_PERMITS_PER_DATASET = 1000` truncates it to an arbitrary thousandth of a percent, and
+ * the event-date filter then drops nearly all of those as out-of-window. The query is well-formed,
+ * the columns are right, the feed is live, the freshness is fine — and the expected yield is ~0
+ * permits per run while the market reports `covered`. A bound whose selectivity is 2.3% is not a
+ * bound. So `ipu4-2q9a` is now `unavailable` with those three counts stated, and New York is served
+ * by `rbx6-tga4` (DOB NOW: Build – Approved Permits), whose `issued_date` IS the event date and IS
+ * a Calendar date: 2,743 permits in the same 7-day window. Verification now has to ask "how many
+ * rows does the bound exclude", not only "does the bound parse".
+ *
+ * ── 2026-08-20 (third pass): A SIXTH SHAPE — NOT DEAD, JUST UNSPOKEN ─────────
+ * Every shape above is a way a dataset can fail. This one is a way THIS FILE can fail. Three
+ * markets — Miami, Atlanta, Denver — were marked `unavailable` with reasons that all reduce to
+ * the same sentence: "this host is ArcGIS, not Socrata; needs an ArcGIS FeatureServer adapter."
+ * Read as coverage that is EXACTLY what it looks like: a dead market. It was not. The permits
+ * were live the entire time at an endpoint the OS had no client for, and `unavailable` had no way
+ * to say "the feed is fine, WE are the missing piece" — so a TODO wore the costume of a fact.
+ *
+ * `provider` fixes that, and lib/external/arcgis-permits.ts is the adapter. Miami is repointed
+ * and verified live 2026-08-20 (Miami-Dade County, 1,161 permits in a 7-day window off 139,711
+ * rows). Atlanta and Denver are NOT repointed in this pass and stay `unavailable` — with the
+ * adapter now existing, that marking finally means what it says: nobody has verified a live
+ * layer for them yet. Registering one is a data edit, not a code change.
+ *
+ * A WARNING FOR WHOEVER DOES IT. Verify by ID, never by catalog SEARCH. `q=Santa Rosa County`
+ * against the Socrata catalog returns SONOMA COUNTY, CALIFORNIA as its top hit (checked
+ * 2026-08-20) — a confident, well-formed, entirely wrong dataset for a Florida territory. A fuzzy
+ * name match is how a market gets registered to another state's data and then reports permits
+ * that will never touch a single one of the tenant's leads.
+ *
+ * AND ARCGIS FAILS DIFFERENTLY. A FeatureServer answers its OWN errors with HTTP 200 and puts the
+ * failure in the body, so on that provider an invalid field and a deleted layer both look like an
+ * empty week unless the body is checked. arcgis-permits.ts::readArcgisError is that check, and it
+ * is the reason a second provider needed a real adapter rather than a second fetch call.
+ *
  * ── WHY THIS FILE SHOULD NOT STAY A HAND-KEPT CONSTANT ───────────────────────
  * Everything above is the same defect wearing four hats: a hand-maintained file asserting facts
  * about a system it cannot see. Socrata publishes those facts itself, live, on every dataset:
@@ -60,9 +105,34 @@
 
 export type SocrataDatasetKind = "permits" | "code_violations" | "probate" | "property_transfers"
 
-export interface SocrataDatasetSpec {
+/**
+ * Which adapter can read this dataset.
+ *
+ * ADDED 2026-08-20, and it is the reason three of the `unavailable` reasons below could finally
+ * be acted on. This registry marked Miami, Atlanta and Denver dead with, in effect, one sentence:
+ * "needs an ArcGIS FeatureServer adapter". They were never dead — their data was live at an
+ * endpoint the OS could not speak to, which the coverage taxonomy could not express because
+ * `unavailable` conflates "this feed stopped" with "we lack the client". Naming the provider
+ * splits those apart: a market is now dark only when NO registered provider can read it.
+ *
+ * Absent means "socrata" — every entry predating this field is a Socrata entry.
+ */
+export type SignalProvider = "socrata" | "arcgis"
+
+export interface PermitDatasetSpec {
+  /** Socrata portal host, or the ArcGIS service host. Identity + connector attribution. */
   host:        string          // e.g. "data.austintexas.gov"
+  /** Socrata 4x4 id, or — for ArcGIS — the AGOL item id. STABLE, and load-bearing: it is the
+   *  first segment of `permitDedupeKey`, so it must not change when a service is re-hosted. */
   datasetId:   string          // Socrata 4x4 id, e.g. "3syk-w9eu"
+  /** Defaults to "socrata" when absent. */
+  provider?:   SignalProvider
+  /**
+   * ArcGIS ONLY, and REQUIRED when provider is "arcgis": the full FeatureServer LAYER url,
+   * `.../FeatureServer/<n>`. There is no 4x4-style short id on ArcGIS — the URL is the address —
+   * so `host`/`datasetId` stay identity and this stays the locator.
+   */
+  serviceUrl?: string
   kind:        SocrataDatasetKind
   /** Friendly label for dashboards. */
   label:       string
@@ -100,6 +170,19 @@ export interface SocrataDatasetSpec {
   notes?:      string
 }
 
+/**
+ * The name this interface carried when Socrata was the only provider. Kept as an alias rather
+ * than renamed at every call site: the type is structurally identical, and a rename touching
+ * permit-signals.ts, the cron and the simulator in the same pass would hide the one-field change
+ * that actually happened inside a diff of noise.
+ */
+export type SocrataDatasetSpec = PermitDatasetSpec
+
+/** PURE. The adapter that can read this dataset. Absent `provider` means Socrata. */
+export function providerOf(spec: PermitDatasetSpec): SignalProvider {
+  return spec.provider ?? "socrata"
+}
+
 export interface MarketSpec {
   state: string                 // 2-letter
   city:  string                 // lowercase
@@ -125,8 +208,11 @@ export const MARKETS: Readonly<Record<string, MarketSpec>> = Object.freeze({
       // WAS `issued_date`, which is not a column here — the sweep took an HTTP 400 every day.
       // Live row 2026-08-19: permit_number "2026-089992 BP" · issue_date "2026-08-01T00:00:00.000"
       // · original_address1 "1401 PHILOMENA ST UNIT 415".
+      // Re-measured 2026-08-20 — the bound SELECTS, which is the check the fifth failure shape
+      // added: $where=issue_date >= '2026-08-13' → count 1,086 of 2,371,355 rows (0.05%),
+      // max(issue_date) 2026-08-18, catalog data_updated_at 2026-08-19. Working.
       { host: "data.austintexas.gov", datasetId: "3syk-w9eu", kind: "permits",
-        label: "Austin issued construction permits", dateColumn: "issue_date", verifiedOn: "2026-08-19",
+        label: "Austin issued construction permits", dateColumn: "issue_date", verifiedOn: "2026-08-20",
         notes: "Single address column (original_address1). description + permit_type_desc + work_class." },
       { host: "data.austintexas.gov", datasetId: "9qy3-hbf9", kind: "code_violations",
         label: "Austin code-enforcement cases",
@@ -170,9 +256,12 @@ export const MARKETS: Readonly<Record<string, MarketSpec>> = Object.freeze({
       // Live row 2026-08-19: permit_ "101046020" · issue_date "2024-09-18T00:00:00.000" ·
       // street_number "7529" · street_direction "N" · street_name "CLARK ST" · work_description ·
       // reported_cost. One of the two markets that worked before this audit.
+      // Re-measured 2026-08-20: $where=issue_date >= '2026-08-13' → count 771, max 2026-08-19,
+      // catalog data_updated_at 2026-08-20T12:16Z. The healthiest feed in the registry.
       { host: "data.cityofchicago.org", datasetId: "ydr8-5enu", kind: "permits",
-        label: "Chicago building permits", dateColumn: "issue_date", verifiedOn: "2026-08-19",
-        notes: "Composite address (number/direction/name). Permit id is `permit_` (label 'PERMIT#')." },
+        label: "Chicago building permits", dateColumn: "issue_date", verifiedOn: "2026-08-20",
+        notes: "Composite address (number/direction/name). Permit id is `permit_` (label 'PERMIT#'). " +
+               "`work_type` ('Masonry Work') is a second, sparsely-populated work-text column." },
       // Re-verified live 2026-08-20 (`$order=violation_date DESC`): violation_date
       // "2026-08-18T00:00:00.000" · address "3830 W 63RD ST" · violation_description
       // "REPAIR DOOR, INT." · violation_status "OPEN" · violation_code "CN105015".
@@ -189,16 +278,35 @@ export const MARKETS: Readonly<Record<string, MarketSpec>> = Object.freeze({
   [k("CA", "Los Angeles")]: {
     state: "CA", city: "Los Angeles",
     datasets: [
-      // The id is real (it is the parent of the published view xnhu-aczu) but LADBS stopped
-      // feeding it: the Socrata catalog reports data_updated_at 2023-05-22. A daily query would
-      // return zero rows forever and read as a quiet Los Angeles. Marked, counted, reported.
-      // Its column names ARE recorded so the entry works the day LA resumes publishing:
-      // address_start · street_direction · street_name · street_suffix · issue_date (Calendar
-      // date) · pcis_permit · work_description · valuation — and permit-signals reads all of them.
+      // LADBS DID NOT STOP PUBLISHING — IT MOVED. Last wave marked the old feed stale and left the
+      // market dark, which is the honest half of the answer and only half. Re-probed 2026-08-20:
+      // the catalog search on data.lacity.org for "building permit" returns THIS dataset, and
+      //   $where=issue_date >= '2026-08-13' → count 502, max(issue_date) 2026-08-15
+      // with catalog data_updated_at 2026-08-17. Live row read the same day:
+      //   permit_nbr "23016-10000-02499" · primary_address "7006 W GREELEY ST" ·
+      //   issue_date "2023-07-06T00:00:00.000" (Calendar date) · permit_type "Bldg-Addition" ·
+      //   permit_sub_type "1 or 2 Family Dwelling" · valuation "10000" · work_desc "ADDITION TO
+      //   (E) SINGLE FMAILY DWELLING PER WFPP." · status_desc "Permit Expired"
+      // Single address column (`primary_address`), so no composite assembly is needed here.
+      { host: "data.lacity.org", datasetId: "pi9x-tg5x", kind: "permits",
+        label: "LA building & safety permits issued 2020–present",
+        dateColumn: "issue_date", verifiedOn: "2026-08-20",
+        notes: "Single `primary_address`. Permit id is `permit_nbr`; valuation is `valuation`; " +
+               "work text is `work_desc` + `permit_type` + `permit_sub_type`." },
+      // The retired feed. The id is real (it is the parent of the published view xnhu-aczu) but it
+      // is now ABSENT from the Socrata catalog outright (`ids=yv23-pmwf` → 0 results, 2026-08-20),
+      // and its published view proves where the data stopped: xnhu-aczu holds 375,150 rows with
+      // max(issue_date) 2023-05-19. Kept, marked, and counted rather than deleted — a market that
+      // was once served and is not any more is a fact the sweep should keep reporting.
+      // Its column names stay recorded because they are a DIFFERENT vocabulary from pi9x-tg5x's
+      // (address_start · street_direction · street_name · street_suffix · pcis_permit) and
+      // permit-signals still reads them.
       { host: "data.lacity.org", datasetId: "yv23-pmwf", kind: "permits",
-        label: "LA building & safety permit information",
-        dateColumn: "issue_date", eventDateFormat: "iso", verifiedOn: "2026-08-19",
-        unavailable: "stale — Socrata catalog reports data_updated_at 2023-05-22; LADBS stopped feeding it",
+        label: "LA building & safety permit information (retired)",
+        dateColumn: "issue_date", eventDateFormat: "iso", verifiedOn: "2026-08-20",
+        unavailable: "retired — absent from the Socrata catalog (ids=yv23-pmwf → 0 results) on " +
+                     "2026-08-20; its published view xnhu-aczu stops at max(issue_date) 2023-05-19. " +
+                     "LADBS now publishes pi9x-tg5x, registered above.",
         notes: "House number is `address_start`; permit id is `pcis_permit`." },
     ],
   },
@@ -207,25 +315,55 @@ export const MARKETS: Readonly<Record<string, MarketSpec>> = Object.freeze({
     datasets: [
       // Live row 2026-08-19: permit_number "201806293452" · filed_date "2018-06-29T15:36:37.000"
       // · street_number "930" · street_name "Sutter" · street_suffix "St" · estimated_cost "40000.0".
+      // Re-measured 2026-08-20: $where=filed_date >= '2026-08-13' → count 436,
+      // max(filed_date) 2026-08-19T22:15:53. Working.
+      // NOTE: some rows carry a NULL filed_date and Socrata sorts those FIRST on `$order … DESC`,
+      // so `$order=filed_date DESC&$limit=1` reads back `{}` and looks like a dead feed. It is not;
+      // `>=` excludes nulls, so the sweep's own query is unaffected. Use max()/IS NOT NULL when
+      // probing this one by hand.
       { host: "data.sfgov.org", datasetId: "i98e-djp9", kind: "permits",
-        label: "San Francisco building permits", dateColumn: "filed_date", verifiedOn: "2026-08-19",
+        label: "San Francisco building permits", dateColumn: "filed_date", verifiedOn: "2026-08-20",
         notes: "filed_date is the FILING date (issued_date also exists and is also a timestamp)." },
     ],
   },
   [k("NY", "New York")]: {
     state: "NY", city: "New York",
     datasets: [
-      // WAS `issuance_date`, which is TEXT "06/17/2020". The daily sweep asked for
-      //   $where=issuance_date >= '2026-08-12'
-      // and Socrata answered 200 with []: a string comparison where every candidate begins '0'
-      // or '1'. New York City reported zero permits every single day and looked idle.
-      // `dobrundate` is the one real timestamp — but it is the DOB RE-PUBLISH date, and DOB
-      // re-publishes decades-old permits (verified 2026-08-19: dobrundate 2026-08-14 carrying
-      // issuance_date "08/14/1998"). So it bounds the QUERY and issuance_date filters the ROWS.
+      // THE LIVE NEW YORK FEED (registered 2026-08-20). DOB NOW is where NYC permitting actually
+      // happens now, and unlike its BIS-era sibling below its date column is the EVENT date and a
+      // real Calendar date, so the query bound needs no re-publish workaround at all:
+      //   $where=issued_date >= '2026-08-13' → count 2,743, max(issued_date) 2026-08-18
+      // catalog data_updated_at 2026-08-19. Live rows read the same day:
+      //   job_filing_number "M01301984-S1" · issued_date "2026-08-17T00:00:00.000" · house_no "315"
+      //   · street_name "WEST 29 STREET" · work_type "Plumbing" · estimated_job_costs "8000"
+      //   · permit_status "Permit Issued" · borough "Manhattan"
+      // NOTE ON WHAT IS NOT READ: this dataset also publishes `owner_name`, `owner_street_address`,
+      // `owner_city`/`owner_zip_code` and the applicant's name and licence number. None of those
+      // are in any reader list in permit-signals.ts and none reach `signal_details`, which is
+      // assembled from named fields rather than from the raw row. A permit is an address here on
+      // purpose; adding an owner-name reader would turn this lane into people-sourcing.
+      { host: "data.cityofnewyork.us", datasetId: "rbx6-tga4", kind: "permits",
+        label: "NYC DOB NOW: Build – approved permits",
+        dateColumn: "issued_date", verifiedOn: "2026-08-20",
+        notes: "house_no + street_name compose the address; permit id is `job_filing_number`; " +
+               "valuation is `estimated_job_costs`; work text is work_type + job_description." },
+      // THE BIS-ERA FEED — well-formed, live, fresh, and USELESS AS A BOUND. See the fifth failure
+      // shape in the header. It was registered bound on `dobrundate` because `issuance_date` is
+      // TEXT "06/17/2020" (a lexicographic comparison that answered 200-with-[] forever), and that
+      // reasoning was right as far as it went. Measured 2026-08-20, it does not go far enough:
+      //   count(*)                          3,989,981
+      //   dobrundate  >= '2026-08-13'       3,897,421   ← the "recent" bound excludes 2.3% of rows
+      //   issuance_date like '%/2026'           4,940   ← every 2026 permit in the whole dataset
+      // A 1000-row page off a 3.9M-row match cannot contain this week's permits except by accident.
       { host: "data.cityofnewyork.us", datasetId: "ipu4-2q9a", kind: "permits",
-        label: "NYC DOB permit issuance",
-        dateColumn: "dobrundate", eventDateColumn: "issuance_date", eventDateFormat: "mdy",
-        verifiedOn: "2026-08-19",
+        label: "NYC DOB permit issuance (BIS era)",
+        eventDateColumn: "issuance_date", eventDateFormat: "mdy",
+        verifiedOn: "2026-08-20",
+        unavailable: "unboundable in practice — `dobrundate` is the only Calendar date and DOB " +
+                     "re-publishes the whole table weekly: 3,897,421 of 3,989,981 rows carry a " +
+                     "dobrundate inside a 7-day window (2026-08-20), while only 4,940 rows in the " +
+                     "entire dataset carry a 2026 issuance_date. The 1000-row page samples the " +
+                     "re-publish, not the week. Superseded by rbx6-tga4, registered above.",
         notes: "house__ + street_name compose the address; permit id is job__. Rows with no " +
                "issuance_date are applications that were never issued and are skipped." },
       // Verified live 2026-08-20 with `$where=novissueddate > '2026-08-01'` — which returns rows,
@@ -263,7 +401,9 @@ export const MARKETS: Readonly<Record<string, MarketSpec>> = Object.freeze({
       label: "Montgomery County MD residential permits",
       dateColumn: "issueddate", verifiedOn: "2026-08-20",
       notes: "Composite address stno + predir + stname + suffix. Permit id is `permitno`; " +
-             "valuation is `declaredvaluation`; description + worktype carry the work.",
+             "valuation is `declaredvaluation`; description + worktype carry the work. " +
+             "Selectivity measured 2026-08-20: issueddate >= '2026-08-13' → 133 rows, " +
+             "max 2026-08-19T12:08:49.",
     }
     const cities = [
       "Rockville", "Silver Spring", "Bethesda", "Gaithersburg", "Germantown",
@@ -291,13 +431,54 @@ export const MARKETS: Readonly<Record<string, MarketSpec>> = Object.freeze({
                      "longer supported'), never a Socrata portal. Needs an ArcGIS FeatureServer adapter." },
     ],
   },
+  // ── MIAMI — THE FIRST MARKET SERVED BY A NON-SOCRATA PROVIDER (2026-08-20) ──
+  // This market was marked `unavailable` with the reason "Needs an ArcGIS FeatureServer adapter".
+  // That reason was correct and it was also a TODO nobody had picked up, so the market read as
+  // dead when its data was live the whole time. lib/external/arcgis-permits.ts is that adapter;
+  // this is the repoint it unlocks. The Socrata entry is KEPT and marked, per this file's rule
+  // that a market which was once wrong should keep saying so.
   [k("FL", "Miami")]: {
     state: "FL", city: "Miami",
     datasets: [
+      // Miami-Dade County's own permit feed, verified live 2026-08-20 against all five checks
+      // this file's failure taxonomy demands:
+      //   1. the column exists      → PermitIssuedDate, esriFieldTypeDateOnly
+      //   2. it is a real date      → publishes "2026-08-18", not a lexicographic text date
+      //   3. the feed is moving     → max(PermitIssuedDate) 2026-08-18, item modified 2026-08-18
+      //   4. the bound SELECTS      → PermitIssuedDate >= DATE '2026-08-13' → 1,161 of 139,711
+      //                               rows (0.83%) — a real bound, not NYC ipu4-2q9a's 97.7%
+      //   5. the columns are read   → live row: PermitNumber "2026065888" · PropertyAddress
+      //                               "2960 SW 109 CT" · PermitType "ELEC" ·
+      //                               ApplicationTypeDescription "ALTER - EXTERIOR" ·
+      //                               DetailDescriptionComments "ELEC PANEL" · EstimatedValue
+      //                               "1800" · ResidentialCommercial "R"
+      // SINGLE address column (PropertyAddress), so no composite assembly is needed.
+      // NOTE ON WHAT IS NOT READ: this layer also publishes OwnerName, ContractorName,
+      // ContractorAddress and ContractorPhone. None of them are in any reader list in
+      // permit-signals.ts and none reach `signal_details`. A permit is an ADDRESS in this lane,
+      // deliberately — reading OwnerName would turn a structure signal into people-sourcing,
+      // which belongs to the scraping spine and its consent gates, not here.
+      { host: "services.arcgis.com", datasetId: "6db5f56e886446df88313ca279e59120",
+        provider: "arcgis",
+        serviceUrl: "https://services.arcgis.com/8Pc9XBTAsYuxx9Ny/arcgis/rest/services/miamidade_permit_data/FeatureServer/0",
+        kind: "permits",
+        label: "Miami-Dade County issued building permits",
+        dateColumn: "PermitIssuedDate", verifiedOn: "2026-08-20",
+        notes: "ArcGIS FeatureServer, not Socrata — field names are CamelCase and CASE-SENSITIVE. " +
+               "Permit id is `PermitNumber`; valuation is `EstimatedValue` (a STRING on the wire); " +
+               "work text is DetailDescriptionComments + ApplicationTypeDescription + PermitType. " +
+               "maxRecordCount is 1000 and the 7-day window is ~1,161 rows, so this layer NEEDS " +
+               "the pager in recentArcgisPermits — one page is not one week." },
+      // The City of Miami Socrata id this file was written with. Kept and marked: the host is an
+      // ArcGIS Hub site and `resource/{id}.json` can never work there, and it is a CITY feed where
+      // the entry above is the COUNTY's, which is the broader population a territory named "Miami"
+      // means. Superseded rather than deleted, so the wrong id cannot be re-registered from the
+      // same document it came from.
       { host: "opendata.miamigov.com", datasetId: "ucp7-fqyk", kind: "permits",
-        label: "Miami building permit applications",
-        unavailable: "opendata.miamigov.com is an ArcGIS Hub site, not Socrata. Needs an ArcGIS " +
-                     "FeatureServer adapter." },
+        label: "Miami building permit applications (City of Miami, retired id)",
+        unavailable: "opendata.miamigov.com is an ArcGIS Hub site, not Socrata — resource/{id}.json " +
+                     "cannot serve it. Superseded 2026-08-20 by Miami-Dade County's ArcGIS " +
+                     "FeatureServer, registered above and read by lib/external/arcgis-permits.ts." },
     ],
   },
   [k("WA", "Seattle")]: {
@@ -310,6 +491,9 @@ export const MARKETS: Readonly<Record<string, MarketSpec>> = Object.freeze({
       // "7107265-CN" · issueddate "2026-08-01T00:00:00.000" · originaladdress1 "4027 46TH AVE S"
       // · estprojectcost "160000.0000" · description "Construct addition and alterations to
       // one-family dwelling per plan."
+      // Selectivity re-measured 2026-08-20: $where=issueddate >= '2026-08-13' → count 104,
+      // max(issueddate) 2026-08-18. Working. (Same null-sorts-first quirk as San Francisco:
+      // `$order=issueddate DESC&$limit=1` reads back `{}`; `>=` is unaffected.)
       { host: "data.seattle.gov", datasetId: "76t5-zqzr", kind: "permits",
         label: "Seattle building permits", dateColumn: "issueddate", verifiedOn: "2026-08-20",
         notes: "Single address column (originaladdress1). estprojectcost + permittypedesc." },
@@ -362,6 +546,23 @@ export function listQueryablePermitDatasets(): SocrataDatasetSpec[] {
 export const INGESTIBLE_KINDS: readonly SocrataDatasetKind[] = ["permits", "code_violations"]
 
 /**
+ * PURE. The ONE definition of "the sweep can query this dataset today", used by both
+ * `listQueryableDatasets` and `classifyMarketCoverage` so a coverage count and a sweep can never
+ * disagree about the same entry — which they would the moment two copies of this predicate drift.
+ *
+ * Three requirements, and the third arrived with the second provider: an ArcGIS entry carries its
+ * locator in `serviceUrl`, not in `host`/`datasetId`, so an arcgis spec WITHOUT one is not a
+ * queryable dataset — it is an incomplete descriptor. Without this clause such an entry would be
+ * counted as covered and then refused by the adapter on every single run, which is precisely the
+ * "registered and serving are not the same thing" gap this registry exists to close.
+ */
+export function isQueryableDataset(spec: PermitDatasetSpec): boolean {
+  if (!spec.dateColumn || spec.unavailable) return false
+  if (providerOf(spec) === "arcgis" && !spec.serviceUrl) return false
+  return true
+}
+
+/**
  * Same rule as `listQueryablePermitDatasets`, for any kind — DEDUPED BY host/datasetId.
  *
  * The dedupe is not cosmetic. One publisher can serve many markets (Montgomery County MD's single
@@ -373,7 +574,7 @@ export function listQueryableDatasets(kind?: SocrataDatasetKind): SocrataDataset
   const byId = new Map<string, SocrataDatasetSpec>()
   for (const d of Object.values(MARKETS).flatMap((m) => m.datasets)) {
     if (kind ? d.kind !== kind : !INGESTIBLE_KINDS.includes(d.kind)) continue
-    if (!d.dateColumn || d.unavailable) continue
+    if (!isQueryableDataset(d)) continue
     const id = `${d.host}/${d.datasetId}`
     if (!byId.has(id)) byId.set(id, d)
   }
@@ -439,11 +640,12 @@ export function classifyMarketCoverage(params: {
   }
 
   const ingestible = datasets.filter((d) => INGESTIBLE_KINDS.includes(d.kind))
-  const queryable = ingestible.filter((d) => !!d.dateColumn && !d.unavailable)
+  const queryable = ingestible.filter(isQueryableDataset)
   const reasons: string[] = []
   for (const d of ingestible) {
     if (d.unavailable) reasons.push(`${d.label} (${d.host}/${d.datasetId}): ${d.unavailable}`)
     else if (!d.dateColumn) reasons.push(`${d.label} (${d.host}/${d.datasetId}): no verified date column to bound "recent" on`)
+    else if (!isQueryableDataset(d)) reasons.push(`${d.label} (${d.host}/${d.datasetId}): registered as an ArcGIS dataset but carries no serviceUrl to query`)
   }
   for (const d of datasets) {
     if (!INGESTIBLE_KINDS.includes(d.kind)) {

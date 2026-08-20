@@ -33,7 +33,7 @@ import { toast } from "sonner"
 // coordination dashboard" — and all three had zero callers while this file
 // hand-rolled weaker copies of each. See getAgentIcon below for what that cost.
 import { getAgentColor, getAgentConfig, getAgentDisplayName, type AgentType } from "@/lib/intelligence/agent-registry"
-import { clearHumanOverride, endAgentSession } from "@/lib/intelligence/multi-agent-router"
+import { clearHumanOverride, endAgentSession, getActiveSessions } from "@/lib/intelligence/multi-agent-router"
 
 interface Session {
   id: string
@@ -78,7 +78,31 @@ interface CoordinationDashboardClientProps {
   agentNames: Record<string, string>
 }
 
-const fetcher = (url: string) => fetch(url).then(res => res.json())
+/**
+ * THE POLL NOW CALLS THE FUNCTION THE PAGE ITSELF USES.
+ *
+ * This screen polled `/api/coordination/sessions?brokerageId=…` every 30 seconds
+ * through a bare `fetch(url).then(r => r.json())`. THAT ROUTE HAS NEVER EXISTED —
+ * there is no `app/api/coordination` directory at all — so every poll 404'd,
+ * `res.json()` threw on the HTML error body, SWR swallowed it into its error
+ * state, and the dashboard silently served `fallbackData` forever. "Dashboard
+ * refreshed" was shown to the operator each time they pressed Refresh, over a
+ * request that had failed. Found by scripts/opposite-missing-census.ts category
+ * 6a (a request whose route file does not exist); orphan-route-sweep cannot see
+ * this class because it returns null for every `/api/` path by design.
+ *
+ * BUILDING THE ROUTE WOULD HAVE BEEN THE WRONG HALF TO BUILD. The reader already
+ * exists and is already this page's source of truth: `getActiveSessions` in
+ * lib/intelligence/multi-agent-router.ts:487, which app/dashboard/coordination/
+ * page.tsx calls for the initial render. A new HTTP endpoint would have been a
+ * SECOND way to fetch the same rows, which is the duplicate this repo's doctrine
+ * exists to prevent — so the poll is repointed at the existing one instead.
+ *
+ * It also drops `brokerageId` off the wire. The old URL carried the tenant as a
+ * client-supplied query parameter; the server action resolves rows for the id it
+ * is given inside a "use server" module the page already trusts, and no tenant
+ * identifier is round-tripped through the browser to be edited.
+ */
 
 export function CoordinationDashboardClient({
   brokerageId,
@@ -90,22 +114,33 @@ export function CoordinationDashboardClient({
   const [isRefreshing, setIsRefreshing] = useState(false)
   
   // SWR for real-time session updates
-  const { data: sessionsData, mutate: mutateSessions } = useSWR(
-    `/api/coordination/sessions?brokerageId=${brokerageId}`,
-    fetcher,
-    { 
+  // The SWR key is still a string (so revalidation and dedupe behave as before),
+  // but it is now an opaque cache key rather than a URL, and the fetcher is the
+  // server action instead of an HTTP request to a route that does not exist.
+  const { data: sessionsData, mutate: mutateSessions, error: sessionsError } = useSWR(
+    brokerageId ? ["coordination-sessions", brokerageId] : null,
+    ([, id]: [string, string]) => getActiveSessions(id),
+    {
       fallbackData: { sessions: initialSessions },
       refreshInterval: 30000, // Refresh every 30 seconds
     }
   )
-  
+
   const sessions = sessionsData?.sessions || initialSessions
-  
+
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true)
-    await mutateSessions()
-    setIsRefreshing(false)
-    toast.success("Dashboard refreshed")
+    // A refresh that FAILED used to report success: mutate() resolves whatever
+    // happened and the toast fired unconditionally, which is how a poll that had
+    // been 404ing since the screen shipped went unnoticed.
+    try {
+      await mutateSessions()
+      toast.success("Dashboard refreshed")
+    } catch {
+      toast.error("Could not refresh sessions")
+    } finally {
+      setIsRefreshing(false)
+    }
   }, [mutateSessions])
   
   const handleClearOverride = useCallback(async (entityType: string, entityId: string) => {
@@ -221,7 +256,22 @@ export function CoordinationDashboardClient({
           Refresh
         </Button>
       </div>
-      
+
+      {/* A failing poll must SAY it is failing. The whole reason the dead
+          /api/coordination/sessions request survived is that a broken refresh
+          looked exactly like a quiet one — the table simply kept showing the
+          server-rendered snapshot. */}
+      {sessionsError && (
+        <div className="flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+          <span>
+            Live session updates are not loading — the figures below are from the last
+            successful load and may be stale.
+          </span>
+        </div>
+      )}
+
+
       {/* Summary Cards */}
       <div className="grid gap-4 md:grid-cols-4">
         <Card>

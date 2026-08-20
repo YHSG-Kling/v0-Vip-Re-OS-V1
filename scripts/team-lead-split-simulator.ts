@@ -33,6 +33,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
+import { stripComments } from "./strip-comments"
 import {
   resolveTeamLeadOverride,
   isAgreementEffective,
@@ -141,7 +142,7 @@ console.log("\n── THE RULED BASE IS THE PER-DEAL NET — a re-base must not 
     && resolveTeamLeadOverride(200_00, AGENT, pct(25)).leadCents === 50_00)
 
   const stage08 = src("lib/commission/waterfall/08-team-split.ts")
-  const code08 = stage08.replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter(l => !l.trim().startsWith("//")).join("\n")
+  const code08 = stripComments(stage08)
   check("B2 stage 08 passes the POST-cap agentNetCents, not the pre-cap agentPortionCents",
     /netForLead\s*=\s*context\.agentNetCents\s*-\s*totalTeamDeductionCents/.test(code08)
     && !/agentPortionCents/.test(code08))
@@ -168,7 +169,7 @@ console.log("\n── THE LOOP IS CLOSED: the negotiated term can be SET, not on
   // — exactly what agents.cap_amount was before m461/m463. These assert the whole
   // round trip exists: form → action → column → engine.
   const action = src("app/actions/admin/agent-profile.ts")
-  const actionCode = action.replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter(l => !l.trim().startsWith("//")).join("\n")
+  const actionCode = stripComments(action)
   const form = src("app/dashboard/admin/users/[userId]/user-edit-form.tsx")
 
   check("W1 the admin action WRITES team_override_percent",

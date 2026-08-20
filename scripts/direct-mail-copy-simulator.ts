@@ -13,6 +13,7 @@
  */
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -24,11 +25,15 @@ console.log("\n── the postcard-copy schema is strict-output safe ──")
   const act = src("app/actions/ai-direct-mail.ts")
   // Isolate the aiWritePostcardCopy generateObject schema block, stripping
   // comment lines (the explanatory note mentions .max/.optional on purpose).
-  const block = act
-    .slice(act.indexOf("const { object: copy }"), act.indexOf("prompt: `Write compelling postcard"))
-    .split("\n")
-    .filter((l) => !l.trim().startsWith("//"))
-    .join("\n")
+  // The slice is taken from the STRIPPED text so the offsets line up with it. The
+  // whole-line `startsWith("//")` filter this replaced saw only comments that begin a
+  // line: a trailing `// keep .optional() here` on a code line survived it, and so did
+  // every block comment, either of which could satisfy the assertions below from prose.
+  const code = stripComments(act)
+  const block = code.slice(
+    code.indexOf("const { object: copy }"),
+    code.indexOf("prompt: `Write compelling postcard"),
+  )
   check("no .max() length constraints in the copy schema", !/\.max\(/.test(block))
   check("no .optional() properties in the copy schema", !/\.optional\(/.test(block))
   check("optional fields are expressed as .nullable() instead", /\.nullable\(\)/.test(block))

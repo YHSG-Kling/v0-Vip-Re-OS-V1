@@ -28,6 +28,7 @@
  */
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { blankComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -63,9 +64,7 @@ function codeHits(src: string, needle: string): number {
  * proof's first run. Comments alone are stripped here.
  */
 function literalHits(src: string, needle: string): number {
-  const stripped = src
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
-    .replace(/\/\/[^\n]*/g, (m) => " ".repeat(m.length))
+  const stripped = blankComments(src)
   let n = 0, from = 0
   for (;;) {
     const at = stripped.indexOf(needle, from)

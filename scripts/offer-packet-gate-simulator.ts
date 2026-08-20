@@ -40,6 +40,7 @@ import {
   classifyMissingField,
 } from "../lib/workflow/intelligence/packet-analysis"
 import { scanListingPacketCompleteness } from "../lib/workflow/intelligence/scan-offer-packet"
+import { stripComments } from "./strip-comments"
 
 /**
  * The side of a block, read the way a REAL consumer reads it: out of the
@@ -62,9 +63,6 @@ const check = (n: string, c: boolean, detail?: string) => {
 }
 const ROOT = process.cwd()
 /** Source with comments removed — prose that DESCRIBES a defect is not the defect. */
-const stripComments = (t: string) => t
-  .replace(/\/\*[\s\S]*?\*\//g, "")
-  .replace(/^[ \t]*\/\/.*$/gm, "")
 const src = (p: string) =>
   existsSync(join(ROOT, p)) ? stripComments(readFileSync(join(ROOT, p), "utf8")) : ""
 

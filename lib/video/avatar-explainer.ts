@@ -94,7 +94,18 @@ export interface AvatarExplainerReadiness {
 
 export interface CommissionAvatarExplainerParams {
   brokerageId: string
-  /** users.id of the agent (ai_video_projects.agent_id FK → users.id). */
+  /**
+   * users.id of the agent — the class every browser caller holds
+   * (`resolveCaller()` returns the auth user).
+   *
+   * IT IS NOT `ai_video_projects.agent_id`. That column FKs `agents(id)` since
+   * m366 (scripts/schema-fk-map.ts: `"ai_video_projects": { "agent_id": "agents",
+   * … }`), and `agents.id` / `users.id` are DISJOINT id spaces — no agents row's
+   * id is also a users id. The commission below therefore RESOLVES this through
+   * `agents.user_id` before it writes. The prior doc-comment on this field
+   * asserted the FK pointed at `users`, which is what let the wrong id be written
+   * with a straight face.
+   */
   agentUserId: string
   /** Plain-language topic (from a preset seed or typed by the agent). */
   topic: string
@@ -429,10 +440,33 @@ export async function commissionAvatarExplainer(
     warnings.push("ElevenLabs is not configured — narration will use D-ID's default TTS voice")
   }
 
+  // ── THE ID CLASS. `ai_video_projects.agent_id` FKs `agents(id)` (m366; proved
+  //    by scripts/schema-fk-map.ts), and every caller of this function holds a
+  //    USERS id — app/actions/avatar-video.ts:createTeammateExplainerVideo passes
+  //    `resolveCaller().userId` straight through. Writing that users id into an
+  //    agents foreign key raised 23503 `insert or update on table
+  //    "ai_video_projects" violates foreign key constraint` on EVERY commission,
+  //    so the teammate-explainer lane had never produced a single row.
+  //
+  //    Resolved through `agents.user_id` with the ONE shared resolver
+  //    (lib/kernel/agent-identity), the same one app/actions/video/create-video-project
+  //    uses for this exact column — not a second lookup that can drift from it.
+  //    The column is NOT NULL, so "this user has no agent profile here" is a
+  //    REFUSAL with a sentence, never a null and never a substituted users id.
+  const { resolveAgentIdInBrokerage } = await import("@/lib/kernel/agent-identity")
+  const agentRecordId = await resolveAgentIdInBrokerage(svc, params.agentUserId, params.brokerageId)
+  if (!agentRecordId) {
+    return {
+      ok: false,
+      status: "failed",
+      reason: "No agent profile for this user in this brokerage — a teammate explainer has no owner to file it under.",
+    }
+  }
+
   const now = new Date().toISOString()
   const row = {
     brokerage_id: params.brokerageId,
-    agent_id: params.agentUserId,
+    agent_id: agentRecordId,
     listing_id: params.listingId ?? null,
     contact_id: null,
     title: `Teammate explainer — ${content.title}`.slice(0, 200),

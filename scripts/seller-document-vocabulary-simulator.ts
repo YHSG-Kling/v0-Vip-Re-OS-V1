@@ -33,6 +33,7 @@
 import { readFileSync, existsSync } from "node:fs"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
 import { getRequiredDocPresetsForState } from "../lib/compliance/required-doc-presets"
+import { stripComments } from "./strip-comments"
 import {
   DOCUMENT_CLASSIFICATION_LABEL,
   SELLER_SIDE_CLASSIFICATIONS,
@@ -46,7 +47,7 @@ const check = (n: string, c: boolean) => {
 }
 const src = (p: string) =>
   existsSync(p)
-    ? readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+    ? stripComments(readFileSync(p, "utf8"))
     : ""
 
 const SELLER_ANCHORS = ["listing_agreement", "seller_broker_agreement"] as const

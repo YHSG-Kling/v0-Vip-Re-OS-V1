@@ -71,6 +71,7 @@ import { TERMINAL_TXN_STATUSES } from "../lib/transactions/closing-overdue-polic
 import { planEnrichmentLane } from "../lib/external/osint-free"
 import { VENDOR_PRICING, normalizeVendorCost } from "../lib/vendor-governance/cost-normalizer"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -79,7 +80,7 @@ const check = (n: string, c: boolean) => {
 }
 const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 /** Strip comments so no assertion can be satisfied by prose describing the fix. */
-const code = (p: string) => src(p).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")
+const code = (p: string) => stripComments(src(p))
 
 const SUPPRESSION = "lib/enrichment/deal-suppression.ts"
 const CORE        = "lib/enrichment/contact-enrichment-core.ts"

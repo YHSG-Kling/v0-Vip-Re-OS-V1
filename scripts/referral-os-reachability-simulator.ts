@@ -62,6 +62,7 @@
  *     read `action`, so two of the three opened nothing.
  */
 import { readFileSync, existsSync } from "node:fs"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -71,7 +72,7 @@ const check = (n: string, c: boolean) => {
 /** Comments stripped: this file's own prose must never satisfy an assertion. */
 const src = (p: string) =>
   existsSync(p)
-    ? readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+    ? stripComments(readFileSync(p, "utf8"))
     : ""
 
 const PAGE     = src("app/referrals/page.tsx")

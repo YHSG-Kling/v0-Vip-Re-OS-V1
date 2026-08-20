@@ -23,6 +23,7 @@
 import { readFileSync, writeFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { resolve } from "node:path"
+import { blankComments, blankStrings } from "./strip-comments"
 
 // The repo runs as ESM, so __dirname is absent; this file is always executed
 // from the repository root by the command in the report.
@@ -57,180 +58,24 @@ type FileKey = keyof typeof FILES
 // ─────────────────────────────────────────────────────────────────────────────
 
 function stripComments(src: string): { stripped: string; masked: string } {
-  const stripped: string[] = []
-  const masked: string[] = []
-  const SLASH = String.fromCharCode(47)
-  const STAR = String.fromCharCode(42)
-  const BACKSLASH = String.fromCharCode(92)
-  const BACKTICK = String.fromCharCode(96)
-
-  const push = (s: string, m: string) => {
-    stripped.push(s)
-    masked.push(m)
-  }
-  const blank = (ch: string) => push(ch === "\n" ? "\n" : " ", ch === "\n" ? "\n" : " ")
-
-  // Template-literal nesting: each entry is the brace depth at which the
-  // interpolation opened.
-  const tplStack: number[] = []
-  let braceDepth = 0
-  let i = 0
-  let prevSig = ""
-
-  const canStartRegex = () => {
-    if (prevSig === "") return true
-    return "(,=:[!&|?{};+-*%~^<>".includes(prevSig) || /[a-z]/.test(prevSig) === false
-  }
-
-  while (i < src.length) {
-    const ch = src[i]
-    const next = src[i + 1]
-
-    // line comment
-    if (ch === SLASH && next === SLASH) {
-      while (i < src.length && src[i] !== "\n") {
-        blank(src[i])
-        i++
-      }
-      continue
-    }
-
-    // block comment
-    if (ch === SLASH && next === STAR) {
-      blank(src[i]); i++
-      blank(src[i]); i++
-      while (i < src.length && !(src[i] === STAR && src[i + 1] === SLASH)) {
-        blank(src[i]); i++
-      }
-      if (i < src.length) { blank(src[i]); i++ }
-      if (i < src.length) { blank(src[i]); i++ }
-      continue
-    }
-
-    // string literals
-    //
-    // A quoted string in JS/TS cannot contain a raw newline, so a quote with no
-    // partner before the end of the line is NOT a string opener — it is an
-    // apostrophe in JSX text. Treating one as a string opener silently swallows
-    // everything up to the next apostrophe anywhere in the file, which is how a
-    // whole dialog can vanish from the scan and take an assertion with it.
-    if (ch === '"' || ch === "'") {
-      const quote = ch
-      let probe = i + 1
-      let closes = false
-      while (probe < src.length && src[probe] !== "\n") {
-        if (src[probe] === BACKSLASH) { probe += 2; continue }
-        if (src[probe] === quote) { closes = true; break }
-        probe++
-      }
-      if (!closes) {
-        push(ch, ch)
-        prevSig = ch
-        i++
-        continue
-      }
-      push(ch, ch); i++
-      while (i < src.length && src[i] !== quote) {
-        if (src[i] === BACKSLASH) {
-          push(src[i], " "); i++
-          if (i < src.length) { push(src[i], " "); i++ }
-          continue
-        }
-        push(src[i], src[i] === "\n" ? "\n" : " ")
-        i++
-      }
-      if (i < src.length) { push(src[i], src[i]); i++ }
-      prevSig = quote
-      continue
-    }
-
-    // template literal
-    if (ch === BACKTICK) {
-      push(ch, ch); i++
-      while (i < src.length) {
-        if (src[i] === BACKSLASH) {
-          push(src[i], " "); i++
-          if (i < src.length) { push(src[i], " "); i++ }
-          continue
-        }
-        if (src[i] === BACKTICK) break
-        if (src[i] === "$" && src[i + 1] === "{") {
-          // interpolation is CODE again — hand control back to the main loop
-          push(src[i], src[i]); i++
-          push(src[i], src[i]); i++
-          tplStack.push(braceDepth)
-          braceDepth++
-          break
-        }
-        push(src[i], src[i] === "\n" ? "\n" : " ")
-        i++
-      }
-      if (i < src.length && src[i] === BACKTICK) { push(src[i], src[i]); i++ }
-      prevSig = BACKTICK
-      continue
-    }
-
-    // regex literal — only where a regex can legally begin
-    if (ch === SLASH && canStartRegex()) {
-      const start = i
-      let j = i + 1
-      let ok = false
-      let inClass = false
-      while (j < src.length) {
-        const c = src[j]
-        if (c === "\n") break
-        if (c === BACKSLASH) { j += 2; continue }
-        if (c === "[") inClass = true
-        else if (c === "]") inClass = false
-        else if (c === SLASH && !inClass) { ok = true; break }
-        j++
-      }
-      if (ok) {
-        // consume flags
-        let k = j + 1
-        while (k < src.length && /[a-z]/.test(src[k])) k++
-        for (let p = start; p < k; p++) push(src[p], src[p] === "\n" ? "\n" : " ")
-        i = k
-        prevSig = SLASH
-        continue
-      }
-    }
-
-    if (ch === "{") braceDepth++
-    if (ch === "}") {
-      braceDepth--
-      if (tplStack.length > 0 && tplStack[tplStack.length - 1] === braceDepth) {
-        // closing an interpolation — resume template-literal scanning
-        tplStack.pop()
-        push(ch, ch); i++
-        while (i < src.length) {
-          if (src[i] === BACKSLASH) {
-            push(src[i], " "); i++
-            if (i < src.length) { push(src[i], " "); i++ }
-            continue
-          }
-          if (src[i] === BACKTICK) break
-          if (src[i] === "$" && src[i + 1] === "{") {
-            push(src[i], src[i]); i++
-            push(src[i], src[i]); i++
-            tplStack.push(braceDepth)
-            braceDepth++
-            break
-          }
-          push(src[i], src[i] === "\n" ? "\n" : " ")
-          i++
-        }
-        if (i < src.length && src[i] === BACKTICK) { push(src[i], src[i]); i++ }
-        continue
-      }
-    }
-
-    push(ch, ch)
-    if (!/\s/.test(ch)) prevSig = ch
-    i++
-  }
-
-  return { stripped: stripped.join(""), masked: masked.join("") }
+  // Both outputs now come from the ONE scanner in scripts/strip-comments.ts.
+  //
+  // What stood here was a 175-line re-implementation of that scanner. It got the
+  // hard parts right (comments before strings, template interpolation depth, an
+  // apostrophe that never closes) but its canStartRegex read ANY non-lowercase
+  // character as a place a regex may begin — so `)`, a digit and a capital all
+  // opened one. Measured against the 12 files this simulator reads, that misreads
+  // 8 real DIVISIONS as regex openers, including
+  // `Math.round(((monthlyGCI - lastMonthGCI) / lastMonthGCI) * 100)` in
+  // app/actions/agents.ts:1511 and `(pendingCommissions || 0) / 1000` in
+  // app/dashboard/brokerage/page.tsx:335. Each one blanks to the next slash and
+  // desynchronises everything after it — the same confidently-wrong failure the
+  // canonical scanner exists to end.
+  //
+  //   stripped — comments blanked, offsets preserved, string CONTENTS kept
+  //   masked   — the same, plus string/template contents blanked, so a brace or a
+  //              token inside a literal can never be mistaken for structure
+  return { stripped: blankComments(src), masked: blankStrings(src) }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

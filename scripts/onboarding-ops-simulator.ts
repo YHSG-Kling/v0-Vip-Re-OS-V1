@@ -20,6 +20,7 @@
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { isOnboardingStalled, STALL_AFTER_DAYS } from "../lib/onboarding/onboarding-roster"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -30,8 +31,6 @@ const raw = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
  * they fixed, and those explanations quote the exact strings being asserted
  * absent — without this, the guard would flag its own documentation.
  */
-const stripComments = (s: string) =>
-  s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
 const src = (p: string) => stripComments(raw(p))
 const exists = (p: string) => existsSync(join(process.cwd(), p))
 

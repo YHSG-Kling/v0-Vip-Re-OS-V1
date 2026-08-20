@@ -36,6 +36,7 @@ import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
+import { stripComments } from "./strip-comments"
 import {
   pickAgentForRule,
   previewRuleRouting,
@@ -222,8 +223,6 @@ console.log("\n[a SOLO tenant gets everything — every ingress path, ahead of e
   // and they are the only person there is.
   const solo = src("lib/lead-assignment/solo-agent.ts")
   check("there is ONE solo resolver", solo.length > 0)
-  const stripComments = (t: string) =>
-    t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
   check("…and it decides the tier through the canonical accessor, not a raw column read",
     /resolvePlanTier/.test(solo) && !TWIN_READ.test(stripComments(solo)))
   check("…returns null for a non-solo brokerage rather than guessing",
@@ -292,7 +291,7 @@ console.log("\n[ONE tier per tenant — the unwritten twin is gone (m306)]")
   // asserted is unchanged — plan_tier is read FIRST, and the singular twin column
   // is never read at all.
   check("there is one accessor, and it reads plan_tier first and the dropped twin never",
-    /\.select\("plan_tier"\)/.test(mod) && !TWIN_READ.test(mod.replace(/\/\/[^\n]*/g, "")))
+    /\.select\("plan_tier"\)/.test(mod) && !TWIN_READ.test(stripComments(mod)))
   check("…falling to the TIGHTEST tier, so a mis-tagged tenant gets no free upgrade",
     /FALLBACK_TIER: PlanTier = "solo_agent"/.test(mod))
 
@@ -310,7 +309,7 @@ console.log("\n[ONE tier per tenant — the unwritten twin is gone (m306)]")
     // catalog TABLE and joining to it is correct — billing legitimately reads
     // subscription_tiers:tier_id(monthly_price_cents) for the save-offer price.
     check(`${f}: no longer reads brokerages.subscription_tier`,
-      !TWIN_READ.test(s.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "")))
+      !TWIN_READ.test(stripComments(stripComments(s))))
     check(`${f}: resolves the tier through lib/billing/plan-tier`,
       /from "@\/lib\/billing\/plan-tier"/.test(s))
   }

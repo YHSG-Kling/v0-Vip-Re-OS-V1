@@ -28,6 +28,7 @@
  * Reads Root.tsx as text. No Remotion import, no bundling, no DB.
  */
 import { readFileSync } from "node:fs"
+import { blankComments, stripComments } from "./strip-comments"
 import { CONTENT_CONTRACT, isSupplied, missingContentProps, describeMissingContent } from "../lib/remotion/content-contract"
 import {
   listingReelProps, justSoldProps, comingSoonProps, openHouseProps,
@@ -43,9 +44,30 @@ function ok(label: string, cond: boolean, detail?: string) {
 }
 
 const src = (p: string) => readFileSync(p, "utf8")
-/** Source with comments stripped — an assertion must target CODE, never prose. */
-const code = (p: string) =>
-  src(p).replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")
+/**
+ * Source with comments stripped — an assertion must target CODE, never prose.
+ *
+ * WAS: `.replace(/\/\*[\s\S]*?\*\//g, "")` then a line filter that dropped only
+ * lines whose TRIM STARTS WITH `//`. Two failures in one expression, and they
+ * point in OPPOSITE directions, which is why neither showed up as an error:
+ *
+ *   UNDER-READ — a `/` + `*` inside a `//` comment opens a block comment for the
+ *     first regex, which then runs to the next `*` + `/` ANYWHERE below, deleting
+ *     every line between, code included. This is the exact mechanism that hid the
+ *     dead `video_assets` insert in the (now deleted) video-scripts approve route
+ *     for its whole life.
+ *   OVER-READ — a TRAILING comment (`foo() // resolveDirectorContentProps(...)`)
+ *     survives the line filter entirely, so an `includes()` assertion can be
+ *     satisfied by PROSE ABOUT the code instead of the code. Measured on this
+ *     guard's own inputs: lib/video/video-director.ts kept 625 non-whitespace
+ *     characters of commentary that a correct stripper removes, and sections 8
+ *     and 9 assert with `includes()` over exactly that file.
+ *
+ * NOW: the one correct scanner (scripts/strip-comments.ts) — a single
+ * left-to-right pass that tracks string/template/comment state, so neither
+ * failure is expressible.
+ */
+const code = (p: string) => stripComments(src(p))
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Parse remotion/Root.tsx → per-composition top-level defaultProps + whether
@@ -57,7 +79,41 @@ export interface ParsedProp { key: string; valued: boolean }
 /** A literal that means "nothing was said" — safe to leave unclassified. */
 const NEUTRAL = /^(null|undefined|\[\]|\{\}|""|''|``|false|0)$/
 
-export function parseDefaultProps(rootSrc: string): Record<string, ParsedProp[]> {
+/**
+ * Root.tsx → per-composition top-level defaultProps.
+ *
+ * ── WHY THE FIRST LINE IS `blankComments` ───────────────────────────────────
+ *
+ * `splitTopLevel` below is a character scanner over the raw defaultProps body,
+ * and it had no idea comments existed. Two consequences, both SILENT, and both
+ * of which make section 4 — "the teeth" — stop having teeth:
+ *
+ *   1. A PROP PRECEDED BY A COMMENT IS DROPPED. The comma-split hands
+ *      `\n // the seller's own figure\n estimatedValue: 812000` to a regex
+ *      anchored `^([A-Za-z0-9_]+)\s*:` — it starts with `/`, so there is no
+ *      match and the prop is simply not returned. An unclassified sample value
+ *      that a reader documented with a comment is thereby EXEMPTED from the very
+ *      check that exists to catch it: the more carefully a prop is annotated,
+ *      the less likely it is to be audited.
+ *   2. AN APOSTROPHE SWALLOWS THE REST OF THE COMPOSITION. `'` in prose
+ *      ("the seller's", "don't") puts the scanner into `inStr = "'"`, and it
+ *      stays there until another `'` appears — so every top-level comma until
+ *      then is consumed and every prop after it vanishes into one unparseable
+ *      part. One possessive in one comment silently un-audits a whole
+ *      composition's defaults.
+ *
+ * `blankComments` (scripts/strip-comments.ts) replaces comment bodies with
+ * SPACES, so character offsets — which `parseDefaultProps` depends on for its
+ * brace balancing and `indexOf` arithmetic — are preserved exactly. It is
+ * applied ONCE here, to the whole source, rather than being re-derived per
+ * block: `<Composition` can appear inside a comment too.
+ *
+ * Do NOT replace this with a regex stripper. The naive block-first idiom is what
+ * this repo keeps re-learning: a `/` + `*` inside a `//` comment opens a block
+ * that runs to the next `*` + `/` and deletes the code in between.
+ */
+export function parseDefaultProps(rootSrcRaw: string): Record<string, ParsedProp[]> {
+  const rootSrc = blankComments(rootSrcRaw)
   const out: Record<string, ParsedProp[]> = {}
   for (const block of rootSrc.split(/<Composition/).slice(1)) {
     const id = block.match(/id="([A-Za-z0-9_]+)"/)?.[1]
@@ -77,12 +133,27 @@ export function parseDefaultProps(rootSrc: string): Record<string, ParsedProp[]>
   return out
 }
 
-/** Split an object body on TOP-LEVEL commas, respecting nesting and strings. */
+/**
+ * Split an object body on TOP-LEVEL commas, respecting nesting and strings.
+ *
+ * ESCAPES ARE TRACKED. Without `\` handling, `teaser: 'Chef\'s kitchen'` reads
+ * the escaped apostrophe as the CLOSING quote, and everything after it — the
+ * rest of that value plus every prop below — is scanned in the wrong mode and
+ * lost. Same failure shape as the comment-apostrophe bug above, one layer down:
+ * the guard would report ✓ over props it never saw. Root.tsx carries no escaped
+ * quote in a defaultProps body today, which is exactly why this stayed invisible.
+ */
 function splitTopLevel(body: string): ParsedProp[] {
   const parts: string[] = []
-  let depth = 0, cur = "", inStr: string | null = null
+  let depth = 0, cur = "", inStr: string | null = null, escaped = false
   for (const c of body) {
-    if (inStr) { cur += c; if (c === inStr) inStr = null; continue }
+    if (inStr) {
+      cur += c
+      if (escaped) { escaped = false; continue }
+      if (c === "\\") { escaped = true; continue }
+      if (c === inStr) inStr = null
+      continue
+    }
     if (c === '"' || c === "'" || c === "`") { inStr = c; cur += c; continue }
     if (c === "{" || c === "[" || c === "(") depth++
     if (c === "}" || c === "]" || c === ")") depth--
@@ -94,7 +165,8 @@ function splitTopLevel(body: string): ParsedProp[] {
   for (const p of parts) {
     const m = p.trim().match(/^([A-Za-z0-9_]+)\s*:\s*([\s\S]*)$/)
     if (!m) continue
-    // Comment lines inside the block are not props; strip a leading // run.
+    // Comments are already SPACES by the time a body reaches here (see
+    // parseDefaultProps) — this scanner deliberately knows nothing about them.
     const key = m[1]
     const value = m[2].trim().replace(/\s+as\s+const$/, "").trim()
     props.push({ key, valued: !NEUTRAL.test(value) })
@@ -120,6 +192,69 @@ console.log("\n═══ 1. The parser ═══")
   ok("an empty array does NOT — the producer said nothing", !sample.Demo[1].valued)
   ok("a populated nested object DOES", sample.Demo[2].valued)
   ok("false is a real answer, not a placeholder", !sample.Demo[3].valued)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1b. THE NEGATIVE CONTROLS FOR THE PARSER ITSELF.
+//
+// Section 4 is the teeth of this guard, and its bite is exactly the set of props
+// the parser can SEE. A prop the parser drops is a prop that can carry sample
+// data forever without anyone classifying it — the guard reports ✓ and means
+// "I did not look". These four assertions are the ones that fail the moment
+// parseDefaultProps stops blanking comments first.
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n═══ 1b. Comments cannot hide a prop from the teeth (negative controls) ═══")
+{
+  const commented = parseDefaultProps(`
+    <Composition id="Demo" defaultProps={{
+      // the address we print on the card
+      address: "123 Main",
+      /* the seller's own figure, read back from the trigger */
+      estimatedValue: 812000,
+      plain: "x",
+    }} />`)
+  const keys = (commented.Demo ?? []).map((p) => p.key)
+  ok("a prop preceded by a LINE comment is still seen — annotating a prop must\n    not exempt it from classification",
+    keys.includes("address"), keys.join(",") || "(none)")
+  ok("a prop preceded by a BLOCK comment is still seen",
+    keys.includes("estimatedValue"), keys.join(",") || "(none)")
+  ok("...and both still count as CARRYING A VALUE, so section 4 can demand a verdict",
+    (commented.Demo ?? []).filter((p) => p.key === "address" || p.key === "estimatedValue").every((p) => p.valued))
+
+  // The apostrophe control. One possessive in one comment used to put the
+  // character scanner into an unterminated string and swallow every top-level
+  // comma after it — every prop below the comment disappeared at once.
+  const apostrophe = parseDefaultProps(`
+    <Composition id="Apos" defaultProps={{
+      first: "a",
+      // the client's equity, don't recompute it
+      estimatedEquity: 268900,
+      purchasePrice: 640000,
+      quote: "she priced it honestly",
+    }} />`)
+  const aKeys = (apostrophe.Apos ?? []).map((p) => p.key)
+  ok("an APOSTROPHE in a comment does not swallow the rest of the composition —\n    every prop below it is still audited",
+    aKeys.includes("estimatedEquity") && aKeys.includes("purchasePrice") && aKeys.includes("quote"),
+    aKeys.join(",") || "(none)")
+
+  // A `'` inside a real string value must STILL behave like a string delimiter —
+  // blanking comments must not have blunted the scanner's actual job.
+  const strings = parseDefaultProps(`
+    <Composition id="Str" defaultProps={{
+      teaser: 'Chef\\'s kitchen, pool, boat slip',
+      price: "$899,000",
+    }} />`)
+  ok("...while a quote inside a real STRING value is still string content",
+    (strings.Str ?? []).map((p) => p.key).join(",") === "teaser,price",
+    (strings.Str ?? []).map((p) => p.key).join(",") || "(none)")
+
+  // And the OTHER half of the fix: `code()` must not leave prose behind for an
+  // includes() assertion to match. Sections 8-10 assert over these files.
+  const director = code("lib/video/video-director.ts")
+  ok("code() removes TRAILING comments too, so a section-8/9 assertion can never\n    be satisfied by commentary about the code instead of the code",
+    !/\/\/[^\n]*[A-Za-z]{6}/.test(director))
+  ok("...and section 10 scans a Root.tsx with no comment text left to hide a\n    fabricated sample phone number behind",
+    !/\/\/[^\n]*[A-Za-z]{6}/.test(code("remotion/Root.tsx")))
 }
 
 console.log("\n═══ 2. Every composition is classified ═══")

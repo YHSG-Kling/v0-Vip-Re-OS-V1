@@ -78,6 +78,7 @@
 import { readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { createHash } from "node:crypto"
+import { stripComments } from "./strip-comments"
 
 const ROOT = process.cwd()
 const RUN_NEGATIVE = !process.argv.includes("--no-negative")
@@ -149,7 +150,7 @@ const raw = (p: string) => readFileSync(resolve(ROOT, p), "utf8")
 const sha = (p: string) => createHash("sha256").update(raw(p)).digest("hex")
 /** Comment-stripped source. Load-bearing here: both files quote the defect. */
 const code = (p: string) =>
-  raw(p).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+  stripComments(raw(p))
 
 /**
  * The top-level REGION of `fn` — from just past its opening paren to the next

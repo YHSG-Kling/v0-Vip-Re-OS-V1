@@ -62,6 +62,7 @@
 import { readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { createHash } from "node:crypto"
+import { stripComments } from "./strip-comments"
 
 const ROOT = process.cwd()
 const RUN_NEGATIVE = !process.argv.includes("--no-negative")
@@ -89,7 +90,7 @@ const raw = (p: string) => readFileSync(resolve(ROOT, p), "utf8")
 const sha = (p: string) => createHash("sha256").update(raw(p)).digest("hex")
 /** Comment-stripped source. Load-bearing here: these files quote the defect. */
 const code = (p: string) =>
-  raw(p).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+  stripComments(raw(p))
 
 /**
  * The top-level REGION of `fn` — from its declaration to the next top-level
@@ -222,12 +223,44 @@ const RENTCAST_EXPORTS = [
   "searchRentcastRentalListings",
   "getRentcastAVM",
   "getRentcastMarketStats",
+  // Reads the comparables AND the AVM off the ONE /avm/value response, so the
+  // CMA lane can show the provider's own estimate as a baseline without buying
+  // a second lookup. This is the gated export; `getRentcastComps` below is a
+  // thin reader over it.
+  "getRentcastAvmAndComps",
   "getRentcastComps",
 ]
+
+/**
+ * A DELEGATING export: one that issues no request of its own and reaches the
+ * provider only through another export in this list.
+ *
+ * `getRentcastComps` became one of these when the comps pull and the AVM read
+ * were merged into `getRentcastAvmAndComps` — two calls to `/avm/value` for one
+ * question was two charges and two possibly-different comparable sets. A
+ * delegate has no `gateRentcast(` of its own and does not need one; it is gated
+ * by the thing it calls.
+ *
+ * This is the ONLY relaxation, and it is deliberately narrow: the delegate must
+ * make NO network call itself, AND its delegate must be in this list, AND that
+ * delegate must itself pass the gate-before-network test. A body that calls
+ * `rentcastGet(` without a gate is still an offender no matter what else it
+ * calls, so "delegating" cannot be used to smuggle an ungated request in.
+ */
+function delegateTargetOf(body: string): string | null {
+  if (body.includes("rentcastGet(")) return null
+  for (const fn of RENTCAST_EXPORTS) {
+    if (new RegExp(`\\b${fn}\\s*\\(`).test(body)) return fn
+  }
+  return null
+}
 
 function assertGatedBeforeNetwork(): boolean {
   const src = code(F.readers)
   const offenders: string[] = []
+  const clean = new Set<string>()
+  const delegating: Array<{ fn: string; target: string }> = []
+
   for (const fn of RENTCAST_EXPORTS) {
     const region = regionOf(src, fn)
     const body = region === null ? null : bodyAfterParams(region)
@@ -239,11 +272,22 @@ function assertGatedBeforeNetwork(): boolean {
     }
     const gate = body.indexOf("gateRentcast(")
     const net = body.indexOf("rentcastGet(")
-    if (gate === -1) offenders.push(`${fn}(ungated)`)
-    else if (net !== -1 && gate > net) offenders.push(`${fn}(spends-then-checks)`)
+    if (gate !== -1 && (net === -1 || gate < net)) { clean.add(fn); continue }
+    if (gate !== -1) { offenders.push(`${fn}(spends-then-checks)`); continue }
+    const target = delegateTargetOf(body)
+    if (target === null) { offenders.push(`${fn}(ungated)`); continue }
+    delegating.push({ fn, target })
   }
+  // Resolve delegates only against exports proven clean above. A delegate whose
+  // target is itself an offender (or another delegate) is NOT excused.
+  for (const d of delegating) {
+    if (clean.has(d.target)) clean.add(d.fn)
+    else offenders.push(`${d.fn}(delegates to ungated ${d.target})`)
+  }
+
   return check(
-    `E3  all ${RENTCAST_EXPORTS.length} RentCast exports ask the gate BEFORE reaching the network`,
+    `E3  all ${RENTCAST_EXPORTS.length} RentCast exports ask the gate BEFORE reaching the network` +
+      (delegating.length ? ` (${delegating.map((d) => `${d.fn}→${d.target}`).join(", ")} gated by delegation)` : ""),
     offenders.length === 0,
     offenders.join(", "),
   )
@@ -254,9 +298,20 @@ function assertCompProviderDecidesBeforeSpending(): boolean {
   const body = compsRegion === null ? null : bodyAfterParams(compsRegion)
   if (body === null) return check("E3b comp-provider decides eligibility before it spends", false, "body unreadable")
   const decide = body.indexOf("resolveRentcastEligibility(")
-  const pull = body.indexOf("getRentcastComps(")
+  // The pull is now the COMBINED reader (comparables + the AVM baseline off the
+  // one /avm/value response). Both spellings are looked for so this stays an
+  // assertion about the ORDER rather than about which name the pull has today —
+  // and a body where NEITHER appears is an offender, not a pass, because a
+  // vacuous `pull === -1` is how this check would quietly stop checking.
+  const pull = Math.min(
+    ...["getRentcastAvmAndComps(", "getRentcastComps("]
+      .map((n) => body.indexOf(n))
+      .filter((i) => i !== -1)
+      .concat([Number.POSITIVE_INFINITY]),
+  )
   const spend = body.indexOf("costCents += RENTCAST_COMPS_COST_CENTS")
-  const ok = decide !== -1 && (pull === -1 || decide < pull) && (spend === -1 || decide < spend)
+  const ok =
+    decide !== -1 && Number.isFinite(pull) && decide < pull && (spend === -1 || decide < spend)
   return check(
     "E3b comp-provider decides eligibility BEFORE the pull and before costCents moves",
     ok,

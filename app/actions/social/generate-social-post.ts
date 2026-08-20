@@ -15,7 +15,7 @@
  * Database: Supabase — uses maybeSingle(), never single().
  */
 
-import { generateObject } from "@/lib/ai/generate"
+import { generateObject, type GeneratedUsage } from "@/lib/ai/generate"
 import { friendlyAiError } from "@/lib/ai/ai-error"
 import { z } from "zod"
 import { resolveModel } from "@/lib/ai/resolve-model"
@@ -158,6 +158,11 @@ export async function generateSocialPostContent(params: {
   complianceBlocked?: boolean
   complianceViolations?: string[]
   error?: string
+  /** REAL provider token counts for this call. ADDITIVE — see GeneratedUsage.
+   *  This lane books nothing (the generateObject shim never calls logAIUsage),
+   *  so a caller that ledgers a run of this generator MUST take the figure from
+   *  here rather than inventing one. Absent when no model call was made. */
+  usage?: GeneratedUsage
 }> {
   try {
     const supabase = await createClient()
@@ -220,7 +225,7 @@ export async function generateSocialPostContent(params: {
     ].filter(Boolean).join("\n")
 
     // ── 4. Generate with AI ──────────────────────────────────────────────────
-    const { object } = await generateObject({
+    const { object, usage } = await generateObject({
       model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       schema: GeneratedPostSchema,
       system: systemPrompt,
@@ -253,10 +258,15 @@ export async function generateSocialPostContent(params: {
         complianceBlocked:    true,
         complianceViolations: complianceResult.violations,
         error:                `Content blocked by compliance: ${complianceResult.violations?.[0] ?? "compliance violation"}`,
+        // The model DID run and DID cost tokens even though the gate refused
+        // the output. A blocked generation is spend, not a free call, so the
+        // figure is carried out here too — a caller that only ledgers the happy
+        // path is under-reporting real usage.
+        usage,
       }
     }
 
-    return { success: true, data: object }
+    return { success: true, data: object, usage }
   } catch (error: any) {
     console.error("[generate-social-post] Error:", error)
     return { success: false, error: friendlyAiError(error, "Failed to generate post content") }
@@ -428,6 +438,14 @@ export async function generateWeeklyContentPlan(params: {
  * Generic contextual draft generator.
  * Wires brand voice + compliance kernel for all outbound content types.
  * Used by ContextualAiAssistBar and any ad-hoc draft generation.
+ *
+ * MERGED IN (from the AI Toolkit's Email Composer, which used to be a stub that
+ * returned the literal string "AI-generated email"): `brief` and `variant`.
+ * This generator could previously write a draft FROM NOTHING or IMPROVE an
+ * existing one, but it had no slot for "here is what this message has to
+ * accomplish" — so the Toolkit's Context box and its Email-type picker had
+ * nowhere to land. Both are optional and additive; every existing caller is
+ * unchanged.
  */
 export async function generateContextualDraft(params: {
   agentId: string
@@ -437,7 +455,20 @@ export async function generateContextualDraft(params: {
   contactName?: string
   propertyAddress?: string
   currentContent?: string
-}): Promise<{ success: boolean; draft?: string; complianceViolations?: string[]; error?: string }> {
+  /** Free-text description of what this message must accomplish. */
+  brief?: string
+  /** A narrower label than contentType — "follow-up", "negotiation", "thank-you". */
+  variant?: string
+}): Promise<{
+  success: boolean
+  draft?: string
+  complianceViolations?: string[]
+  error?: string
+  /** REAL provider token counts. ADDITIVE, and for the same reason as on
+   *  generateSocialPostContent: this lane books nothing, so a caller that
+   *  ledgers the run must take the figure from here. */
+  usage?: GeneratedUsage
+}> {
   try {
     const brandVoice = await resolveBrandVoice(
       params.brokerageId ?? "",
@@ -447,13 +478,21 @@ export async function generateContextualDraft(params: {
 
     const DraftSchema = z.object({ draft: z.string() })
 
-    const instruction = params.currentContent
-      ? `Improve the following ${params.contentType}: "${params.currentContent.slice(0, 800)}"`
-      : `Write a ${params.contentType} for ${params.contactName ?? "a client"}.${
-          params.propertyAddress ? ` Property: ${params.propertyAddress}.` : ""
-        }`
+    // `variant` narrows the noun ("a follow-up email", not "an email"); `brief`
+    // is appended to BOTH branches because the caller's intent applies just as
+    // much when improving existing copy as when writing from scratch.
+    const label = params.variant ? `${params.variant} ${params.contentType}` : params.contentType
+    const briefLine = params.brief?.trim()
+      ? `\n\nWhat this ${label} has to accomplish: ${params.brief.trim().slice(0, 1200)}`
+      : ""
 
-    const { object } = await generateObject({
+    const instruction = (params.currentContent
+      ? `Improve the following ${label}: "${params.currentContent.slice(0, 800)}"`
+      : `Write a ${label} for ${params.contactName ?? "a client"}.${
+          params.propertyAddress ? ` Property: ${params.propertyAddress}.` : ""
+        }`) + briefLine
+
+    const { object, usage } = await generateObject({
       model: resolveModel("openai/gpt-4o-mini"),
       schema: DraftSchema,
       system: [
@@ -497,11 +536,14 @@ export async function generateContextualDraft(params: {
           success:              false,
           complianceViolations: compliance.violations,
           error:                `Draft blocked by compliance: ${compliance.violations?.[0] ?? "compliance violation"}`,
+          // A refused draft still cost tokens — carried out so the caller's
+          // ledger records the spend rather than treating a block as free.
+          usage,
         }
       }
     }
 
-    return { success: true, draft: object.draft }
+    return { success: true, draft: object.draft, usage }
   } catch (error: any) {
     return { success: false, error: friendlyAiError(error, "Failed to generate draft") }
   }

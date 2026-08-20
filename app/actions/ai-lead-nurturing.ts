@@ -1,10 +1,8 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { createServiceClient } from "@/lib/supabase/service"
 import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
-import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
@@ -35,205 +33,39 @@ async function requireCaller(): Promise<
 }
 
 /**
- * AI-powered lead scoring with behavioral analysis.
+ * ─── TOMBSTONE ─────────────────────────────────────────────────────────────
+ * `aiCalculateLeadScore` LIVED HERE AND IS GONE. Its survivor is
+ * app/actions/ai-lead-scoring.ts:121 — `scoreLeadWithAI`.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * LEFT UNWIRED DELIBERATELY (orphan burn-down, Lane A). READ THIS BEFORE GIVING
- * IT A CALLER *OR* DELETING IT.
+ * It was a SECOND Layer-2 AI scorer with no caller anywhere in the tree, and
+ * `lib/lead-scoring/LAYERING.md` rule 4 names exactly one ("Do not create a
+ * fifth top-level scorer"). Two waves recorded the verdict — merge onto
+ * scoreLeadWithAI, then delete — and both stopped short because that file sat
+ * outside their lane. NOTHING WAS LOST: every item this copy had and the
+ * survivor did not was moved there FIRST, and the survivor's header lists them
+ * against this name:
  *
- * It has NO caller anywhere. It is not, however, a safe delete and it is not a
- * safe wiring either, and the reason is the same in both directions:
+ *   · requireCaller() + the `brokerage_id` predicate on the contact read and on
+ *     the write. The survivor had no gate at all, so this merge closed a hole
+ *     rather than merely relocating a feature.
+ *   · generateObject + a zod schema in place of a regex over free text.
+ *   · the `activities` and `email_tracking` behavioural reads.
+ *   · timelineScore, financialReadinessScore, buyerPersona, predictedTimeline,
+ *     riskOfLoss and the positive/negative/neutral factor split, persisted to
+ *     `contacts.ai_insights` and into `lead_score_history.factors`.
  *
- * IT IS A SECOND LAYER-2 SCORER. `lib/lead-scoring/LAYERING.md` names exactly one
- * — `app/actions/ai-lead-scoring.ts:scoreLeadWithAI` — and its rule 4 says "No
- * new scoring functions … Do not create a fifth top-level scorer". scoreLeadWithAI
- * is wired to the CRM's "Run AI Score" button (app/crm/page.tsx:1243). So the
- * doctrine outcome is: merge onto that survivor, then delete this. What this one
- * has and the survivor does not, i.e. the merge payload:
- *
- *   · BEHAVIOURAL INPUTS. This reads `activities`, `lead_property_searches` and
- *     `email_tracking`. scoreLeadWithAI reads `messages` alone, so it scores
- *     engagement without seeing a single property search or email open.
- *   · A STRUCTURED RESPONSE. This uses generateObject + a zod schema; the
- *     survivor JSON.parses a regex match out of free text.
- *   · EXTRA DIMENSIONS: timelineScore, financialReadinessScore, buyerPersona,
- *     predictedTimeline, riskOfLoss, nextBestAction, and the positive/negative/
- *     neutral factor split.
- *   · A TENANT PREDICATE on the contact read and on the write.
- *
- * WHAT BLOCKS THE MERGE: `app/actions/ai-lead-scoring.ts` is outside this lane's
- * file ownership, and this doctrine forbids deleting before the merge lands.
- *
- * THE SURVIVOR'S COLUMN DEFECT IS FIXED — that half of the previous note is now
- * STALE and is corrected here rather than left to mislead. It recorded that
- * `scoreLeadWithAI` wrote `qualification_score`, `motivation_score` and
- * `readiness_level`, none of which exist on `contacts`, so "Run AI Score" failed
- * 100% of the time. Re-read this wave: it no longer names any of the three on the
- * `contacts` update — they are persisted to `lead_score_history` instead (readiness
- * inside its `factors` blob), and its own header now records LAYERING.md's table as
- * the thing that is wrong. So the survivor works, and the merge below is the only
- * outstanding item.
- *
- * RE-VERIFIED THIS WAVE, and the merge payload is unchanged: `scoreLeadWithAI` still
- * reads `messages` ALONE (no `activities`, no `lead_property_searches`, no
- * `email_tracking`) and still parses free text rather than using generateObject with
- * a schema. Those, plus the extra dimensions and the tenant predicate listed above,
- * are what has to land on app/actions/ai-lead-scoring.ts before this copy goes.
- *
- * THE ONE THING FIXED IN PLACE: `contacts.ai_insights` is a **text** column, not
- * jsonb (verified live). This function assigned it an OBJECT and did not
- * destructure the update's error — so supabase-js resolved the refusal, the blob
- * was never stored, and the function returned success. It is serialised and the
- * refusal is read below.
- * ─────────────────────────────────────────────────────────────────────────────
+ * ONE READ WAS DELIBERATELY NOT CARRIED, and that is a fix, not a loss. This
+ * copy also read `lead_property_searches` with `.eq("lead_id", contactId)` — a
+ * CONTACT id in a LEAD column. Wave 18 ruled on exactly that shape: the table is
+ * keyed on the pre-conversion lead id, has no contacts column, and its writer was
+ * removed for filing a contacts id there (app/actions/ai-predictions.ts:355
+ * records the same finding). The query could only ever return nothing, so
+ * carrying it forward would have moved a permanently-empty read onto the survivor
+ * and let the prompt report "0 property searches" as if it were an observation
+ * about the person. Property-search interest is not collected on contacts today;
+ * when it is, the survivor is where it goes.
+ * ───────────────────────────────────────────────────────────────────────────
  */
-export async function aiCalculateLeadScore(params: {
-  contactId: string
-  agentId: string
-}): Promise<{ success: boolean; score?: number; factors?: any; recommendations?: string[]; persisted?: boolean; error?: string }> {
-  const auth = await requireCaller()
-  if (!auth.ok) return { success: false, error: auth.error }
-
-  if (!isValidUUID(params.contactId) || !isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid IDs provided" }
-  }
-
-  const supabase = await createClient()
-
-  try {
-    // Get contact data — scope to caller's brokerage to prevent burning AI $$$
-    // on cross-tenant probing.
-    const { data: contact } = await supabase
-      .from("contacts")
-      .select("*")
-      .eq("id", params.contactId)
-      .eq("brokerage_id", auth.brokerageId)
-      .single()
-
-    if (!contact) {
-      return { success: false, error: "Contact not found" }
-    }
-
-    const { data: interactions } = await supabase
-      .from("activities")
-      .select("id, activity_type, title, description, notes, outcome, channel, status, created_at, contact_id, agent_id")
-      .eq("contact_id", params.contactId)
-      .order("created_at", { ascending: false })
-      .limit(50)
-
-    // Get property views/searches
-    const { data: propertyActivity } = await supabase
-      .from("lead_property_searches")
-      .select("*")
-      .eq("lead_id", params.contactId)
-      .limit(50)
-
-    // Get email engagement
-    const { data: emailActivity } = await supabase
-      .from("email_tracking")
-      .select("*")
-      .eq("contact_id", params.contactId)
-      .limit(50)
-
-    // AI analysis
-    const { object: analysis } = await generateObject({
-      model: resolveModel("openai/gpt-4o-mini"),
-      schema: z.object({
-        overallScore: z.number().min(0).max(100),
-        engagementScore: z.number().min(0).max(100),
-        intentScore: z.number().min(0).max(100),
-        timelineScore: z.number().min(0).max(100),
-        financialReadinessScore: z.number().min(0).max(100),
-        factors: z.object({
-          positive: z.array(z.string()),
-          negative: z.array(z.string()),
-          neutral: z.array(z.string()),
-        }),
-        buyerPersona: z.enum(["first_time_buyer", "move_up_buyer", "investor", "downsizer", "relocating", "unknown"]),
-        predictedTimeline: z.enum(["immediate", "1_3_months", "3_6_months", "6_12_months", "12_plus_months"]),
-        recommendations: z.array(z.string()),
-        nextBestAction: z.string(),
-        riskOfLoss: z.enum(["low", "medium", "high"]),
-      }),
-      prompt: `Analyze this real estate lead and provide a comprehensive score:
-
-CONTACT INFO:
-- Name: ${contact.first_name} ${contact.last_name}
-- Type: ${contact.contact_type}
-- Persona: ${contact.contact_persona}
-- Timeline: ${contact.timeline}
-- Status: ${contact.status}
-- Source: ${contact.source}
-- Created: ${contact.created_at}
-- Last Contact: ${contact.last_contact_date}
-
-INTERACTIONS (${interactions?.length || 0} total):
-${JSON.stringify(interactions?.slice(0, 10), null, 2)}
-
-PROPERTY ACTIVITY (${propertyActivity?.length || 0} searches):
-${JSON.stringify(propertyActivity?.slice(0, 10), null, 2)}
-
-EMAIL ENGAGEMENT (${emailActivity?.length || 0} emails):
-${JSON.stringify(emailActivity?.slice(0, 10), null, 2)}
-
-Provide scores 0-100 for each category, identify positive/negative factors, and recommend next actions.`,
-    })
-
-    // AI-derived nurturing scores. Per lib/lead-scoring/LAYERING.md:
-    //   - DO NOT write lead_score from this background analysis (Layer 1
-    //     multi-factor owns the baseline). Write AI-nuanced columns + the
-    //     ai_insights metadata blob only.
-    //   - If you need to refresh lead_score, call the canonical orchestrator
-    //     `calculateLeadScore` from `lib/services/lead-management.service`.
-    //
-    // `contacts.ai_insights` is **text**, not jsonb (verified live). Assigning it
-    // an object made PostgREST reject the whole update — and with the error
-    // undestructured, supabase-js resolved the refusal and this returned success
-    // over a write that never happened, including for the two REAL integer
-    // columns beside it. Serialised, and the refusal is read.
-    const aiScoreUpdate = {
-      engagement_score: analysis.engagementScore,
-      intent_score: analysis.intentScore,
-      ai_insights: JSON.stringify({
-        lastScored: new Date().toISOString(),
-        aiOverallScore: analysis.overallScore,  // surfaced for agent reference, not the canonical lead_score
-        engagementScore: analysis.engagementScore,
-        intentScore: analysis.intentScore,
-        timelineScore: analysis.timelineScore,
-        financialReadinessScore: analysis.financialReadinessScore,
-        buyerPersona: analysis.buyerPersona,
-        predictedTimeline: analysis.predictedTimeline,
-        riskOfLoss: analysis.riskOfLoss,
-        nextBestAction: analysis.nextBestAction,
-      }),
-    }
-    const { data: scoredRows, error: scoreUpdateError } = await supabase
-      .from("contacts")
-      .update(aiScoreUpdate)
-      .eq("id", params.contactId)
-      // tenant anchor (scope burn-down): write stays inside the caller's brokerage
-      .eq("brokerage_id", auth.brokerageId)
-      .select("id")
-
-    if (scoreUpdateError) {
-      console.error("[aiCalculateLeadScore] contact score update refused:", scoreUpdateError.message)
-    }
-    // A zero-row update is a refusal wearing the shape of success.
-    const persisted = !scoreUpdateError && !!scoredRows && scoredRows.length > 0
-
-    revalidatePath("/dashboard/crm")
-    return {
-      success: true,
-      score: analysis.overallScore,
-      factors: analysis.factors,
-      recommendations: analysis.recommendations,
-      persisted,
-    }
-  } catch (error) {
-    console.error("[v0] AI lead scoring error:", error)
-    return handleError(error, "aiCalculateLeadScore")
-  }
-}
 
 /**
  * Draft a multi-touch nurture SEQUENCE, modelled on one contact.

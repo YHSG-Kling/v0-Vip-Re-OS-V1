@@ -7,12 +7,10 @@
     "app/actions/ai-content-generation.tsx": 3,
     "app/actions/ai-contract-review.ts": 1,
     "app/actions/ai-document-intelligence.ts": 1,
-    "app/actions/ai-lead-nurturing.ts": 1,
     "app/actions/ai-marketing-automation.ts": 4,
     "app/actions/ai-predictions.ts": 5,
     "app/actions/ai-transaction-coordinator.ts": 2,
     "app/actions/ai-voice-transcription.ts": 1,
-    "app/actions/assistant.ts": 2,
     "app/actions/billing.ts": 3,
     "app/actions/brokerage-cda-setup.ts": 1,
     "app/actions/buyer-financial.ts": 1,
@@ -109,7 +107,7 @@
     "lib/ai-isa/voice-dial-batch.ts": 2,
     "lib/analytics/ai-prediction-outcomes.ts": 1,
     "lib/analytics/assignment-outcomes.ts": 4,
-    "lib/analytics/prediction-accuracy.ts": 16,
+    "lib/analytics/prediction-accuracy.ts": 15,
     "lib/analytics/territory-coverage.ts": 2,
     "lib/analytics/territory-roi.ts": 2,
     "lib/auth/isa-actor.ts": 1,
@@ -160,6 +158,7 @@
     "lib/data-steward/property-spec-extractor.ts": 1,
     "lib/did/avatar-completion.ts": 3,
     "lib/did/consent.ts": 1,
+    "lib/direct-mail/address-suppression.ts": 2,
     "lib/documents/auto-filer.ts": 1,
     "lib/documents/autonomy-ratchet.ts": 3,
     "lib/documents/client-pdf.ts": 2,
@@ -184,14 +183,15 @@
     "lib/embed/widget-modes.ts": 1,
     "lib/errors/index.ts": 2,
     "lib/external/apify-actors.ts": 1,
+    "lib/external/arcgis-permits.ts": 8,
     "lib/external/batchdata-client.ts": 2,
     "lib/external/email-verifier.ts": 1,
     "lib/external/exa-client.ts": 1,
     "lib/external/nextdoor-extract.ts": 1,
     "lib/external/nominatim-geocode.ts": 2,
-    "lib/external/permit-signals.ts": 13,
-    "lib/external/socrata-client.ts": 3,
-    "lib/external/socrata-market-registry.ts": 3,
+    "lib/external/permit-signals.ts": 14,
+    "lib/external/socrata-client.ts": 2,
+    "lib/external/socrata-market-registry.ts": 4,
     "lib/external/tavily-client.ts": 1,
     "lib/external/vision-property.ts": 1,
     "lib/fatigue/fatigue-display.ts": 1,
@@ -458,7 +458,6 @@
     "lib/portal/home-maintenance.ts": 1,
     "lib/portal/lifetime-segment.ts": 1,
     "lib/privacy/contact-pii-redaction.ts": 1,
-    "lib/property/rentcast.ts": 1,
     "lib/property-risk/deal-killer-runner.ts": 1,
     "lib/providers/email/personal-email-adapter.ts": 1,
     "lib/providers/messaging/sms-adapters.ts": 2,
@@ -527,6 +526,7 @@
     "lib/video/multilingual-reel.ts": 4,
     "lib/video/promo-composition.ts": 1,
     "lib/video/reel-voiceover.ts": 1,
+    "lib/video/script-compliance.ts": 4,
     "lib/video/video-director.ts": 8,
     "lib/video/video-plays.ts": 2,
     "lib/video/video-qr.ts": 1,
@@ -554,7 +554,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9144,
+  "census": 9166,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -633,7 +633,7 @@
     "app/actions/ai-isa/speed-to-lead-metrics.ts": 1,
     "app/actions/ai-isa-settings.ts": 4,
     "app/actions/ai-isa.ts": 18,
-    "app/actions/ai-lead-nurturing.ts": 5,
+    "app/actions/ai-lead-nurturing.ts": 4,
     "app/actions/ai-lead-scoring.ts": 3,
     "app/actions/ai-listing-intake.ts": 9,
     "app/actions/ai-listing-packet.ts": 5,
@@ -660,7 +660,7 @@
     "app/actions/appraisal-defense.ts": 1,
     "app/actions/approval-sla.ts": 1,
     "app/actions/asset-manager-resolutions.ts": 2,
-    "app/actions/assistant.ts": 7,
+    "app/actions/assistant.ts": 6,
     "app/actions/auth/signup-brokerage.ts": 1,
     "app/actions/auth.ts": 3,
     "app/actions/autonomy-halt.ts": 1,
@@ -1507,8 +1507,6 @@
     "app/api/video/projects/[projectId]/script/route.ts": 1,
     "app/api/video/projects/[projectId]/video-action-http.ts": 1,
     "app/api/video/projects/route.ts": 2,
-    "app/api/video-scripts/[id]/approve/route.ts": 1,
-    "app/api/video-scripts/[id]/reject/route.ts": 1,
     "app/api/video-scripts/route.ts": 4,
     "app/api/videos/listing-voiceover/route.ts": 1,
     "app/api/videos/route.ts": 1,
@@ -3071,6 +3069,7 @@
     "lib/did/gateway.ts": 2,
     "lib/did/index.ts": 1,
     "lib/did/webhook.ts": 3,
+    "lib/direct-mail/address-suppression.ts": 4,
     "lib/direct-mail/campaign-drain.ts": 1,
     "lib/direct-mail/draft-copy.ts": 2,
     "lib/direct-mail/listing-lifecycle-mail-reactor.ts": 1,
@@ -3139,6 +3138,7 @@
     "lib/events/event-helpers.ts": 6,
     "lib/external/apify-actors.ts": 3,
     "lib/external/apify-client.ts": 7,
+    "lib/external/arcgis-permits.ts": 9,
     "lib/external/batchdata-client.ts": 6,
     "lib/external/batchdata-mcp.ts": 2,
     "lib/external/census-appreciation.ts": 4,
@@ -3154,10 +3154,10 @@
     "lib/external/osint-free.ts": 3,
     "lib/external/osint-neighborhood.ts": 3,
     "lib/external/peopledata-client.ts": 2,
-    "lib/external/permit-signals.ts": 14,
+    "lib/external/permit-signals.ts": 15,
     "lib/external/rentcast-typed.ts": 1,
     "lib/external/socrata-client.ts": 4,
-    "lib/external/socrata-market-registry.ts": 5,
+    "lib/external/socrata-market-registry.ts": 7,
     "lib/external/tavily-client.ts": 2,
     "lib/external/vision-property.ts": 1,
     "lib/external/zenrows-client.ts": 3,
@@ -3874,9 +3874,10 @@
     "lib/property/listing-source.ts": 1,
     "lib/property/neighborhood-scoring.ts": 4,
     "lib/property/property-evaluation.ts": 1,
+    "lib/property/rent-estimate.ts": 2,
     "lib/property/rentcast-eligibility.ts": 2,
     "lib/property/rentcast-normalize.ts": 2,
-    "lib/property/rentcast.ts": 7,
+    "lib/property/rentcast.ts": 8,
     "lib/property/resolve-property-facts.ts": 4,
     "lib/property-alerts/alert-cadence.ts": 1,
     "lib/property-alerts/alert-engine.ts": 2,
@@ -4119,7 +4120,7 @@
     "lib/video/reel-brand.ts": 2,
     "lib/video/reel-voiceover.ts": 2,
     "lib/video/repurpose-planner.ts": 3,
-    "lib/video/script-compliance.ts": 3,
+    "lib/video/script-compliance.ts": 10,
     "lib/video/script-structure.ts": 3,
     "lib/video/video-director.ts": 11,
     "lib/video/video-identity.ts": 1,
@@ -4740,7 +4741,6 @@
       "suppressGhostContact"
     ],
     "app/actions/ai-lead-nurturing.ts": [
-      "aiCalculateLeadScore",
       "aiGenerateDripCampaign",
       "aiSuggestFollowUp",
       "aiBatchReengagement",
@@ -4959,7 +4959,6 @@
       "approveAssetManagerAction"
     ],
     "app/actions/assistant.ts": [
-      "handleAssistantQuery",
       "handleAutomationTriggered",
       "generateSmartSuggestion",
       "dismissSuggestion",
@@ -9237,12 +9236,6 @@
     ],
     "app/api/video/projects/route.ts": [
       "GET",
-      "POST"
-    ],
-    "app/api/video-scripts/[id]/approve/route.ts": [
-      "POST"
-    ],
-    "app/api/video-scripts/[id]/reject/route.ts": [
       "POST"
     ],
     "app/api/video-scripts/route.ts": [
@@ -14903,6 +14896,12 @@
       "parseDidWebhook",
       "secretMatches"
     ],
+    "lib/direct-mail/address-suppression.ts": [
+      "mailingAddressSuppressionKey",
+      "isAddressColumnMissing",
+      "addAddressSuppression",
+      "checkAddressSuppression"
+    ],
     "lib/direct-mail/campaign-drain.ts": [
       "runDirectMailCampaignDrain"
     ],
@@ -15238,6 +15237,17 @@
       "scrapeLinkedInPosts",
       "scrapeGoogleSearchResults"
     ],
+    "lib/external/arcgis-permits.ts": [
+      "isArcgisFieldName",
+      "buildArcgisDateWhere",
+      "readArcgisError",
+      "arcgisDateToIsoDay",
+      "parseArcgisResponse",
+      "arcgisHostOf",
+      "isArcgisLayerUrl",
+      "arcgisFeatureQuery",
+      "recentArcgisPermits"
+    ],
     "lib/external/batchdata-client.ts": [
       "batchDataTriggersFor",
       "normalizeBatchDataProperty",
@@ -15320,6 +15330,7 @@
       "readViolationStatus",
       "classifyViolationStrength",
       "matchPermitsToLeads",
+      "detectedViaForDataset",
       "signalTypeForKind",
       "buildPermitSignalRow",
       "permitDedupeKey",
@@ -15335,9 +15346,11 @@
       "recentPermits"
     ],
     "lib/external/socrata-market-registry.ts": [
+      "providerOf",
       "getMarketDatasets",
       "listSupportedMarkets",
       "listQueryablePermitDatasets",
+      "isQueryableDataset",
       "listQueryableDatasets",
       "classifyMarketCoverage"
     ],
@@ -19075,6 +19088,10 @@
     "lib/property/property-evaluation.ts": [
       "evaluatePropertyValue"
     ],
+    "lib/property/rent-estimate.ts": [
+      "estimateMonthlyRentFromComps",
+      "rentSourceCaption"
+    ],
     "lib/property/rentcast-eligibility.ts": [
       "rentcastBudgetBlocked",
       "resolveRentcastEligibility"
@@ -19090,6 +19107,7 @@
       "searchRentcastRentalListings",
       "getRentcastAVM",
       "getRentcastMarketStats",
+      "getRentcastAvmAndComps",
       "getRentcastComps"
     ],
     "lib/property/resolve-property-facts.ts": [
@@ -20215,9 +20233,16 @@
       "repurposeDiscriminator"
     ],
     "lib/video/script-compliance.ts": [
+      "detectFairHousingRedFlags",
+      "loadProhibitedPhraseCatalogue",
+      "buildProhibitedPhraseBlock",
+      "assessProhibitedPhrases",
+      "detectProhibitedPhraseRedFlags",
       "buildComplianceSystemBlocks",
       "precheckBriefForFairHousing",
-      "postcheckScript"
+      "assessScriptCompliance",
+      "postcheckScript",
+      "escalateScriptToHumanReview"
     ],
     "lib/video/script-structure.ts": [
       "videoTypeToContactType",
@@ -20773,5 +20798,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 3
+  "trulyDead": 0
 }

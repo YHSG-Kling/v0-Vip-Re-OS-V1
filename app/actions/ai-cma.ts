@@ -534,7 +534,12 @@ async function persistComparables(
       // these onto sale_price, so flipping them to absolute values here would
       // silently invert every downward adjustment in the appraiser's packet.
       adjustment_amount: adj.amount,
-      rationale: `${adj.rationale} (state rate ${adj.rateUsed} ${adj.rateBasis})`,
+      // The GUIDELINE YEAR rides on the rationale, because this row is what the
+      // appraisal-defense packet shows a licensed appraiser and the vintage of
+      // the rate that produced the dollar figure is part of the figure. Until
+      // m505 nothing recorded it anywhere, so every adjustment ever written here
+      // was a number with no stated basis.
+      rationale: `${adj.rationale} (state rate ${adj.rateUsed} ${adj.rateBasis}, ${adj.rateEffectiveYear} guideline vintage)`,
     }))
   })
 

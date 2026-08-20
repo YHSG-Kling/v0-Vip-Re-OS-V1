@@ -23,6 +23,7 @@
  */
 import { readFileSync, existsSync } from "node:fs"
 import { allowedScopes, defaultScope, resolveScope, emptyScopeMessage } from "../lib/geo/citation-scope"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -33,7 +34,7 @@ function ok(label: string, cond: boolean, detail?: string) {
 const src = (p: string) => (existsSync(p) ? readFileSync(p, "utf8") : "")
 /** Comments stripped — an assertion must target CODE, never prose. */
 const code = (p: string) =>
-  src(p).replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")
+  stripComments(src(p))
 
 const BROK = "b0000000-0000-0000-0000-000000000001"
 const MONITOR = "lib/kernel/ai-search-citation-monitor.ts"

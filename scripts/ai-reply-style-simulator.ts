@@ -42,6 +42,7 @@
  * all broken" are how working code gets deleted.
  */
 import { readFileSync, existsSync } from "node:fs"
+import { stripComments } from "./strip-comments"
 import {
   REPLY_TONES,
   REPLY_MODELS,
@@ -59,7 +60,7 @@ const check = (n: string, c: boolean) => {
 }
 const src = (p: string) =>
   existsSync(p)
-    ? readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+    ? stripComments(readFileSync(p, "utf8"))
     : ""
 
 console.log("\n── a stored preference can never break the generator ──")
@@ -198,9 +199,7 @@ console.log("\n── no read embeds a relationship PostgREST cannot resolve ─
   // relationships only, so each of these made the whole request fail PGRST200.
   // getChatSession threw on every call for every session id; createChatSession
   // swallowed it into a null and stored an empty context_data on every session.
-  const a = readFileSync("app/actions/ai-chat.ts", "utf8")
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/^[ \t]*\/\/.*$/gm, "")
+  const a = stripComments(readFileSync("app/actions/ai-chat.ts", "utf8"))
 
   check("nothing embeds lead_intelligence under contacts any more",
     !/contacts[\s\S]{0,80}?lead_intelligence \(\*\)/.test(a))

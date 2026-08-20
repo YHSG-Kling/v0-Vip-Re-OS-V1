@@ -29,13 +29,22 @@ import {
   readPermitEventDate, readPermitDescription, readViolationStatus,
   classifyPermitStrength, classifyViolationStrength,
   matchPermitsToLeads, buildPermitSignalRow, permitDedupeKey, ingestPermitSignals, signalTypeForKind,
+  detectedViaForDataset,
   PERMIT_SIGNAL_TYPE, VIOLATION_SIGNAL_TYPE, SOCRATA_SIGNAL_TYPES, PERMIT_DETECTED_VIA,
+  ARCGIS_DETECTED_VIA,
 } from "../lib/external/permit-signals"
 import {
   getMarketDatasets, listQueryablePermitDatasets, listQueryableDatasets, classifyMarketCoverage,
+  isQueryableDataset, providerOf,
   MARKETS,
 } from "../lib/external/socrata-market-registry"
 import { recentPermits, isSoqlFieldName, isIsoCalendarDay } from "../lib/external/socrata-client"
+import {
+  parseArcgisResponse, arcgisDateToIsoDay, isArcgisFieldName, buildArcgisDateWhere,
+  isArcgisLayerUrl, recentArcgisPermits, arcgisFeatureQuery,
+} from "../lib/external/arcgis-permits"
+import { SELLER_SIGNAL_STRENGTHS } from "../lib/lead-governance/seller-signal-strength"
+import { stripComments } from "./strip-comments"
 import { validateVendorPlan, VENDOR_PLAN_BILLING_CYCLES, VENDOR_PLAN_STATUSES } from "../lib/vendors/vendor-validators"
 import { CRON_REGISTRY } from "../lib/kernel/cron-dispatch"
 import { CRON_MANAGER, MAINTENANCE_DOMAINS, MANAGERS } from "../lib/kernel/manager-registry"
@@ -231,16 +240,47 @@ check("CHICAGO and SAN FRANCISCO keep the bounds that were already right",
   permitSpec("IL", "Chicago")?.dateColumn === "issue_date"
   && permitSpec("CA", "San Francisco")?.dateColumn === "filed_date")
 
-// The worst one. `issuance_date` is TEXT "06/17/2020"; `$where=issuance_date >= '2026-08-12'`
-// compares STRINGS, every month begins '0' or '1', so it is always less than '2026…' and NYC
-// returned an empty array with a 200 forever. Verified live 2026-08-19: that query → [], and
-// `dobrundate >= '2026-08-01'` → rows, one of them carrying issuance_date "08/14/1998".
-const nyc = permitSpec("NY", "New York")
-check("NEW YORK bounds on `dobrundate` (its only real timestamp), never on the TEXT issuance_date",
-  nyc?.dateColumn === "dobrundate", `got ${nyc?.dateColumn}`)
-check("…and re-filters on `issuance_date` as MM/DD/YYYY, because DOB re-publishes 1998 permits " +
-  "with today's run date",
-  nyc?.eventDateColumn === "issuance_date" && nyc?.eventDateFormat === "mdy")
+// ── NEW YORK, THE FIFTH FAILURE SHAPE: BOUND VALID, SELECTIVITY ZERO ─────────
+// Two waves of correct-but-insufficient reasoning live in this one market.
+//   Wave 1: `issuance_date` is TEXT "06/17/2020"; `$where=issuance_date >= '2026-08-12'` compares
+//           STRINGS, every month begins '0' or '1', so it is always < '2026…' and NYC returned a
+//           200 with [] forever. True. Fixed by bounding on `dobrundate` instead.
+//   Wave 2: nobody measured what that bound EXCLUDES. Counted live 2026-08-20 —
+//             count(*)                      3,989,981
+//             dobrundate >= '2026-08-13'    3,897,421   (97.7%: DOB re-runs the table weekly)
+//             issuance_date like '%/2026'       4,940   (0.12%: every 2026 permit there is)
+//           A 1000-row page off a 3.9M-row match is a lottery ticket, so the well-formed query
+//           yields ~0 real permits while the market reports `covered`. THAT is the failure.
+// New York is now served by DOB NOW, whose date column is the event's own and a Calendar date.
+const nycLive = permitSpec("NY", "New York")
+check("NEW YORK is now served by DOB NOW (rbx6-tga4), bound on `issued_date` — the EVENT date, " +
+  "so no re-publish window is needed at all",
+  nycLive?.datasetId === "rbx6-tga4" && nycLive?.dateColumn === "issued_date"
+  && nycLive?.eventDateColumn === undefined && nycLive?.verifiedOn === "2026-08-20",
+  `got ${nycLive?.datasetId} dateColumn=${nycLive?.dateColumn}`)
+check("…and its live row reads end to end — house_no · street_name · job_filing_number · " +
+  "estimated_job_costs · work_type (NONE of which were readable before 2026-08-20)",
+  readPermitAddress({ house_no: "315", street_name: "WEST 29 STREET" }) === "315 WEST 29 STREET"
+  && readPermitId({ job_filing_number: "M01301984-S1" }) === "M01301984-S1"
+  && readPermitValuation({ estimated_job_costs: "8000" }) === 8000
+  && (readPermitDescription({ work_type: "General Construction", job_description: "EXTERIOR RESTORATION" }) ?? "")
+    .includes("General Construction")
+  && readPermitEventDate({ issued_date: "2026-08-17T00:00:00.000" }, "issued_date") === "2026-08-17")
+
+const nycBis = getMarketDatasets({ state: "NY", city: "New York" })
+  .find((d) => d.datasetId === "ipu4-2q9a")
+check("…and the BIS-era feed is marked UNAVAILABLE with the COUNTS that prove the bound is not a " +
+  "bound — 'well-formed' is not the same claim as 'selective'",
+  [/3,897,421/, /3,989,981/, /4,940/].every((re) => re.test(nycBis?.unavailable ?? "")),
+  `unavailable=${nycBis?.unavailable ?? "(unset)"}`)
+check("…and it no longer registers a dateColumn, so nothing can accidentally query it again",
+  nycBis?.dateColumn === undefined)
+// The BIS lesson is not deleted with the entry: the mdy re-filter it taught is still the mechanism
+// any future re-publish-bounded dataset would use, and readPermitEventDate still refuses 2-digit
+// years. Those assertions live in section 2c and are unchanged.
+check("NEW YORK's HPD violations feed is untouched by the permits repair",
+  getMarketDatasets({ state: "NY", city: "New York" })
+    .find((d) => d.kind === "code_violations")?.dateColumn === "novissueddate")
 
 check("every dataset the sweep will actually query has been checked against a live row",
   listQueryablePermitDatasets().every((d) => !!d.verifiedOn),
@@ -264,18 +304,64 @@ check("…and it still registers no query bound, because issued_date is TEXT 'MM
   permitSpec("TX", "Dallas")?.dateColumn === undefined)
 
 // The markets whose HOST is not a Socrata portal (Phoenix is CKAN, Atlanta and Miami are ArcGIS
-// Hub, Denver's id 404s), stale Los Angeles, and frozen Dallas. Registered, so the market is not
+// Hub, Denver's id 404s), retired Los Angeles, and frozen Dallas. Registered, so the market is not
 // silently missing; marked, so it is never queried into a daily failure.
+//
+// This looks for the first permits dataset THAT IS MARKED, not simply the first permits dataset:
+// a market can now hold both a retired feed and its live successor (Los Angeles and New York both
+// do), and asserting on position instead of on the property would have started passing for the
+// wrong reason the moment a replacement was registered ahead of the corpse.
+const deadPermitSpec = (state: string, city: string) =>
+  getMarketDatasets({ state, city }).find((d) => d.kind === "permits" && !!d.unavailable)
 const deadMarkets: Array<[string, string]> = [
   ["AZ", "Phoenix"], ["GA", "Atlanta"], ["FL", "Miami"], ["CO", "Denver"], ["CA", "Los Angeles"],
-  ["TX", "Dallas"],
+  ["TX", "Dallas"], ["NY", "New York"],
 ]
-check("the six permit datasets that cannot serve are MARKED with a stated reason, not deleted",
+check("the seven permit datasets that cannot serve are MARKED with a stated reason, not deleted",
   deadMarkets.every(([s, c]) => {
-    const d = permitSpec(s, c)
+    const d = deadPermitSpec(s, c)
     return !!d?.unavailable && d.unavailable.length > 10
   }),
-  deadMarkets.filter(([s, c]) => !permitSpec(s, c)?.unavailable).map(([s, c]) => `${s}:${c}`).join(", "))
+  deadMarkets.filter(([s, c]) => !deadPermitSpec(s, c)).map(([s, c]) => `${s}:${c}`).join(", "))
+check("…and a marked dataset is never ALSO offered as queryable, in any market that holds both",
+  listQueryableDatasets().every((d) => !d.unavailable))
+
+// ── LOS ANGELES: 'stale' WAS HALF AN ANSWER. LADBS MOVED. ────────────────────
+// Last wave measured that yv23-pmwf stopped (data_updated_at 2023-05-22), marked it, and left the
+// second-largest city in the country dark. Re-probed 2026-08-20: the id is now absent from the
+// Socrata catalog outright, its published view xnhu-aczu stops at max(issue_date) 2023-05-19 —
+// and a catalog search on data.lacity.org for "building permit" returns a LIVE successor with
+// $where=issue_date >= '2026-08-13' → 502 rows, max 2026-08-15. "This feed is dead" and "this
+// market is unreadable" are different sentences, and only the first one was ever proved.
+const laLive = permitSpec("CA", "Los Angeles")
+check("LOS ANGELES is served again by pi9x-tg5x, bound on `issue_date` and row-verified",
+  laLive?.datasetId === "pi9x-tg5x" && laLive?.dateColumn === "issue_date"
+  && laLive?.verifiedOn === "2026-08-20" && !laLive?.unavailable,
+  `got ${laLive?.datasetId} dateColumn=${laLive?.dateColumn}`)
+check("…and its live row reads end to end — primary_address · permit_nbr · valuation · work_desc",
+  readPermitAddress({ primary_address: "7006 W GREELEY ST" }) === "7006 W GREELEY ST"
+  && readPermitId({ permit_nbr: "23016-10000-02499" }) === "23016-10000-02499"
+  && readPermitValuation({ valuation: "10000" }) === 10000
+  && (readPermitDescription({ work_desc: "ADDITION TO (E) SINGLE FMAILY DWELLING PER WFPP." }) ?? "")
+    .includes("ADDITION")
+  && readPermitEventDate({ issue_date: "2026-08-15T00:00:00.000" }, "issue_date") === "2026-08-15")
+check("…and the retired feed is kept, marked with WHERE the data went, not deleted",
+  /pi9x-tg5x/.test(deadPermitSpec("CA", "Los Angeles")?.unavailable ?? "")
+  && /2023-05-19/.test(deadPermitSpec("CA", "Los Angeles")?.unavailable ?? ""))
+check("…so Los Angeles and New York both read as COVERED again, from the successor feed",
+  classifyMarketCoverage({ state: "CA", city: "Los Angeles" }).status === "covered"
+  && classifyMarketCoverage({ state: "NY", city: "New York" }).status === "covered")
+check("…and each still reports its dead sibling's reason in `reasons`, so the repair is visible",
+  classifyMarketCoverage({ state: "CA", city: "Los Angeles" }).reasons.some((r) => /retired/.test(r))
+  && classifyMarketCoverage({ state: "NY", city: "New York" }).reasons.some((r) => /unboundable in practice/.test(r)))
+
+// A widened description list can only ever move a permit UP the conservative ladder — never down,
+// and never past the one rule that matters (only demolition reads strong). Pinned, because the
+// next person to add a portal's work-text column needs to know that is the invariant.
+check("reading MORE work text never weakens a verdict and never invents a 'strong' one",
+  classifyPermitStrength({ description: readPermitDescription({ work_type: "Plumbing" }), valuation: null }) === "weak"
+  && classifyPermitStrength({ description: readPermitDescription({ work_type: "General Construction", job_description: "KITCHEN REMODEL" }), valuation: null }) === "moderate"
+  && classifyPermitStrength({ description: readPermitDescription({ work_desc: "DEMOLITION OF SFD" }), valuation: null }) === "strong")
 
 // MONTGOMERY COUNTY, MARYLAND — added 2026-08-20 off a live row, not a document.
 // `$where=issueddate >= '2026-08-01'` returned permitno "1167770" · issueddate
@@ -338,6 +424,19 @@ check("LA's house number is `address_start` and its permit id is `pcis_permit`",
 
 console.log("\n[2e · an unavailable dataset is COUNTED, and never queried]")
 {
+  // ── SUBJECT MOVED, RULE INTACT (2026-08-20) ───────────────────────────────
+  // This block used to name FOUR markets — Phoenix, Atlanta, Miami, Denver — as wholly
+  // unavailable. MIAMI IS NOW COVERED: its permits were always live on Miami-Dade's ArcGIS
+  // FeatureServer and the registry's own `unavailable` reason said only that an adapter was
+  // missing (see section 2i). Leaving Miami in this list would assert that a market this OS can
+  // now read is unreadable — a green test certifying the gap it was written to catch, which is
+  // worse than a red one. So the SUBJECT is corrected and the RULE it expressed is unchanged:
+  // a dataset the registry marks broken is COUNTED and REPORTED, never quietly queried.
+  //
+  // Phoenix (CKAN), Atlanta (retired ArcGIS Hub) and Denver (wrong host) stay. Note that Atlanta
+  // and Denver are now unavailable for a DIFFERENT reason than before: the adapter exists, so
+  // what they lack is a verified live layer, not a client. That is a data task, not a code one.
+  //
   // Every one of these markets is marked unavailable, so `datasets` comes out empty and the ingest
   // returns before it touches supabase or the network. The stub proves it: any call throws.
   const forbidden: any = { from: () => { throw new Error("the ingest touched the database for a market it cannot query") } }
@@ -347,16 +446,19 @@ console.log("\n[2e · an unavailable dataset is COUNTED, and never queried]")
     territories: [
       { brokerage_id: "brok-x", state: "AZ", city: "Phoenix" },
       { brokerage_id: "brok-x", state: "GA", city: "Atlanta" },
-      { brokerage_id: "brok-x", state: "FL", city: "Miami" },
       { brokerage_id: "brok-x", state: "CO", city: "Denver" },
     ],
     sinceIso: "2026-08-12",
   })
-  check("four dead portals are reported as four unavailable datasets, not as four quiet markets",
-    r.datasetsUnavailable === 4 && r.datasetsQueried === 0,
+  check("three dead portals are reported as three unavailable datasets, not as three quiet markets",
+    r.datasetsUnavailable === 3 && r.datasetsQueried === 0,
     `unavailable=${r.datasetsUnavailable} queried=${r.datasetsQueried}`)
-  check("…each with the registry's stated reason attached", r.unavailableReasons.length === 4
+  check("…each with the registry's stated reason attached", r.unavailableReasons.length === 3
     && r.unavailableReasons.every((x) => /CKAN|ArcGIS|404/.test(x)))
+  // The repoint, asserted from the OTHER side: Miami must NOT be reportable as unavailable now.
+  check("…and MIAMI is no longer among them — a repointed market must leave the dead list",
+    !r.unavailableReasons.some((x) => /Miami-Dade/.test(x))
+    && classifyMarketCoverage({ state: "FL", city: "Miami" }).status === "covered")
   check("…and none of them is miscounted as an unregistered market or a missing date column",
     r.marketsUnregistered === 0 && r.datasetsSkippedNoDateColumn === 0)
   check("a territory in no registered market is still counted as unregistered",
@@ -601,6 +703,275 @@ check("…and reports the two window skips separately from the address skips",
   && src("app/api/cron/permit-signal-scan/route.ts").includes("skipped_no_event_date"))
 check("the cron is registered in the single-heartbeat dispatcher", CRON_REGISTRY.some((c) => c.path === cronPath))
 check("the cron has an accountable manager", cronPath in CRON_MANAGER && CRON_MANAGER[cronPath] in MANAGERS)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2i · THE SECOND PROVIDER — ArcGIS, where a failure is an HTTP 200
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// THE FIXTURES BELOW ARE RECORDED, NOT INVENTED. Every one was read live from Miami-Dade's
+// FeatureServer on 2026-08-20 and pasted verbatim, so this section runs with NO NETWORK and
+// still asserts against the bytes a real portal sends:
+//
+//   .../miamidade_permit_data/FeatureServer/0/query?where=<...>&f=json
+//
+// The whole point of the section is the pair of states that this lane has now mistaken for one
+// another five separate times, arriving on a new provider where the mistake is the DEFAULT:
+// ArcGIS answers its own errors with HTTP 200 and an `error` object in the body. A caller that
+// trusts the status code reads a deleted layer, a renamed column and a genuinely quiet week as
+// the same thing — zero permits.
+console.log("\n[2i · ArcGIS provider — a dead layer and a quiet week are BOTH HTTP 200]")
+
+// ── the four recorded payloads ──────────────────────────────────────────────
+/** Live page, 2026-08-20: `where=PermitIssuedDate >= DATE '2026-08-13'`, ordered DESC. */
+const ARCGIS_LIVE_PAGE = {
+  objectIdFieldName: "ObjectId",
+  uniqueIdField: { name: "ObjectId", isSystemMaintained: true },
+  globalIdFieldName: "GlobalID",
+  exceededTransferLimit: true,
+  features: [
+    { attributes: {
+      PermitNumber: "2026065888", PermitIssuedDate: "2026-08-18", PropertyAddress: "2960 SW 109 CT",
+      PermitType: "ELEC", ApplicationTypeDescription: "ALTER - EXTERIOR",
+      DetailDescriptionComments: "ELEC PANEL", EstimatedValue: "1800",
+      ResidentialCommercial: "R", ProposedUseDescription: "SINGLE FAM RES-CLUST-ZERO LOT-TOWN HOUSE" } },
+    { attributes: {
+      PermitNumber: "2026065887", PermitIssuedDate: "2026-08-18", PropertyAddress: "19602 SW 136 AVE",
+      PermitType: "BLDG", ApplicationTypeDescription: "FENCE NOMASONRY",
+      DetailDescriptionComments: "DURA FENCE", EstimatedValue: "3500",
+      ResidentialCommercial: "R", ProposedUseDescription: "SINGLE FAM RES-CLUST-ZERO LOT-TOWN HOUSE" } },
+    { attributes: {
+      PermitNumber: "2026065886", PermitIssuedDate: "2026-08-18", PropertyAddress: "5280 NW 77 CT",
+      PermitType: "MBLD", ApplicationTypeDescription: "RE-ROOF/REPAIR",
+      DetailDescriptionComments: "REROOF", EstimatedValue: "51000",
+      ResidentialCommercial: "C", ProposedUseDescription: "WAREHOUSE/STORAGE" } },
+  ],
+}
+/** A window with nothing in it: `where=PermitIssuedDate >= DATE '2099-01-01'`. HTTP 200. */
+const ARCGIS_EMPTY = {
+  objectIdFieldName: "ObjectId",
+  uniqueIdField: { name: "ObjectId", isSystemMaintained: true },
+  globalIdFieldName: "GlobalID",
+  features: [],
+}
+/** A column that does not exist: `where=NoSuchField >= DATE '2026-08-13'`. ALSO HTTP 200. */
+const ARCGIS_INVALID_FIELD = {
+  error: { code: 400, message: "Cannot perform query. Invalid query parameters.",
+           details: ["'Invalid field: NoSuchField' parameter is invalid"] },
+}
+/** A layer that does not exist: `/FeatureServer/99/query`. ALSO HTTP 200. */
+const ARCGIS_INVALID_URL = { error: { code: 400, message: "Invalid URL", details: ["Invalid URL"] } }
+
+// ── THE CORE ASSERTION OF THIS WHOLE LANE ───────────────────────────────────
+{
+  const live = parseArcgisResponse(ARCGIS_LIVE_PAGE, ["PermitIssuedDate"])
+  const empty = parseArcgisResponse(ARCGIS_EMPTY, ["PermitIssuedDate"])
+  const badField = parseArcgisResponse(ARCGIS_INVALID_FIELD, ["PermitIssuedDate"])
+  const badLayer = parseArcgisResponse(ARCGIS_INVALID_URL, ["PermitIssuedDate"])
+
+  check("A DATASET RETURNING ZERO ROWS IS DISTINGUISHABLE FROM ONE THAT FAILED — the defect " +
+    "this lane keeps re-learning, on the provider where both are HTTP 200",
+    empty.ok === true && empty.rows.length === 0
+    && badField.ok === false && badLayer.ok === false,
+    `empty=${empty.ok}/${empty.rows.length} badField=${badField.ok} badLayer=${badLayer.ok}`)
+  check("…and the refusals carry the PORTAL'S OWN WORDS, so the operator sees why without a portal",
+    /Invalid field: NoSuchField/.test(badField.error ?? "")
+    && /Invalid URL/.test(badLayer.error ?? ""),
+    `${badField.error} | ${badLayer.error}`)
+  check("an empty result states NO error — 'quiet' is a real, reportable answer, not a soft failure",
+    empty.error === null && badField.error !== null && badLayer.error !== null)
+
+  // NEGATIVE CONTROL. A body that is neither an error nor a feature collection (an HTML error
+  // page, a redirect, a schema-only response) must ALSO not read as an empty market.
+  check("NEGATIVE CONTROL — a payload with no `features` array is UNREADABLE, never zero rows",
+    [{ foo: "bar" }, {}, "<html>502</html>", null, 42].every((p) => {
+      const r = parseArcgisResponse(p, [])
+      return r.ok === false && r.rows.length === 0 && !!r.error
+    }))
+  // NEGATIVE CONTROL. The three intents must occupy three distinct (ok, rows, error?) states —
+  // if any two collapse, the distinction above is decorative.
+  check("NEGATIVE CONTROL — served-empty, refused and served-with-rows are THREE distinct states",
+    new Set([live, empty, badField].map((r) => `${r.ok}:${r.rows.length > 0}:${r.error !== null}`)).size === 3)
+
+  check("the live page's three rows parse, and the page cap is REPORTED rather than passed off " +
+    "as a complete window",
+    live.rows.length === 3 && live.exceededTransferLimit === true)
+
+  // The existing readers must cover this portal with NO ArcGIS-specific branch — that is what
+  // makes a second provider one `if` in the fetch loop instead of a second lane.
+  const row = live.rows[0]
+  check("the SHARED readers read an ArcGIS row end to end (address · id · date · value · work)",
+    readPermitAddress(row) === "2960 SW 109 CT"
+    && readPermitId(row) === "2026065888"
+    && readPermitEventDate(row, "PermitIssuedDate") === "2026-08-18"
+    && readPermitValuation(row) === 1800
+    && (readPermitDescription(row) ?? "").includes("ELEC PANEL"),
+    `addr=${readPermitAddress(row)} id=${readPermitId(row)} val=${readPermitValuation(row)}`)
+  check("…and the address normalizes to a matchable key",
+    normalizeStreetAddress(readPermitAddress(row)) === "2960 SW 109 CT")
+
+  // Strength on a REAL row, not a crafted one. The re-roof is the interesting case: `readPermit
+  // Description` has to reach DetailDescriptionComments/ApplicationTypeDescription for "roof" to
+  // be visible at all, so this asserts the reader and the classifier together.
+  const reroof = live.rows[2]
+  check("a real RE-ROOF permit classifies `moderate` — pre-listing work, read through the " +
+    "ArcGIS description columns",
+    classifyPermitStrength({
+      description: readPermitDescription(reroof), valuation: readPermitValuation(reroof),
+    }) === "moderate")
+  check("…and a fence permit does NOT — routine work stays `weak` on either provider",
+    classifyPermitStrength({
+      description: readPermitDescription(live.rows[1]), valuation: readPermitValuation(live.rows[1]),
+    }) === "weak")
+  // The lane's vocabulary ceiling, restated on the new provider: a permit is a fact about a
+  // STRUCTURE, so no ArcGIS row may ever reach the top of the ladder either.
+  check("no ArcGIS row can produce `urgent` — the ceiling belongs to the LANE, not the provider",
+    live.rows.every((r) => classifyPermitStrength({
+      description: readPermitDescription(r), valuation: readPermitValuation(r),
+    }) !== ("urgent" as string))
+    && SELLER_SIGNAL_STRENGTHS.includes("urgent" as never))
+}
+
+// ── date normalisation: two wire shapes, one downstream vocabulary ──────────
+check("an esriFieldTypeDateOnly STRING passes through as the calendar day it already is",
+  arcgisDateToIsoDay("2026-08-18") === "2026-08-18")
+check("an esriFieldTypeDate EPOCH-MILLIS number becomes the same shape readPermitEventDate parses",
+  arcgisDateToIsoDay(Date.UTC(2026, 7, 18)) === "2026-08-18")
+check("NEGATIVE CONTROL — garbage is REFUSED with null, never coerced into a plausible day",
+  [null, undefined, "", "not a date", {}, [], true, 0, -1].every((v) => arcgisDateToIsoDay(v) === null))
+{
+  // A real epoch row, normalised by the parser and then read by the SHARED reader — proving the
+  // two halves agree rather than each being right on its own.
+  const epochRow = parseArcgisResponse(
+    { features: [{ attributes: { PermitNumber: "X1", PermitIssuedDate: Date.UTC(2026, 7, 14),
+                                 PropertyAddress: "1 MAIN ST" } }] },
+    ["PermitIssuedDate"],
+  )
+  check("an epoch-millis date survives parse → readPermitEventDate with no ArcGIS-aware reader",
+    readPermitEventDate(epochRow.rows[0], "PermitIssuedDate") === "2026-08-14")
+  // An UNPARSEABLE date must leave the original value alone, so permit-signals can still tell
+  // "column absent" from "column present and unreadable" (skippedNoEventDate).
+  const junk = parseArcgisResponse(
+    { features: [{ attributes: { PermitIssuedDate: "later today" } }] }, ["PermitIssuedDate"])
+  check("…and an unreadable date is LEFT IN PLACE, so 'absent' stays distinct from 'unparseable'",
+    junk.rows[0].PermitIssuedDate === "later today"
+    && readPermitEventDate(junk.rows[0], "PermitIssuedDate") === null)
+}
+
+// ── the interpolation guard, ArcGIS dialect ─────────────────────────────────
+check("CamelCase ArcGIS field names pass — the Socrata whitelist would refuse every one of them",
+  ["PermitIssuedDate", "PermitNumber", "PropertyAddress", "ObjectId"].every(isArcgisFieldName)
+  && !isSoqlFieldName("PermitIssuedDate"))
+check("NEGATIVE CONTROL — an ArcGIS `where` is real SQL, so injection shapes are REFUSED",
+  ["PermitIssuedDate' OR 1=1 --", "1) OR (1=1", "a b", "", "1abc", "Permit;DROP"]
+    .every((v) => !isArcgisFieldName(v)))
+check("the date bound is built only from two whitelisted halves, and is null otherwise",
+  buildArcgisDateWhere({ field: "PermitIssuedDate", sinceIso: "2026-08-13" })
+    === "PermitIssuedDate >= DATE '2026-08-13'"
+  && buildArcgisDateWhere({ field: "Bad Field", sinceIso: "2026-08-13" }) === null
+  && buildArcgisDateWhere({ field: "PermitIssuedDate", sinceIso: "2026-08-13' OR '1'='1" }) === null)
+check("only an https FeatureServer LAYER url is accepted — a service ROOT has no /query endpoint",
+  isArcgisLayerUrl("https://services.arcgis.com/8Pc9XBTAsYuxx9Ny/arcgis/rest/services/miamidade_permit_data/FeatureServer/0")
+  && !isArcgisLayerUrl("https://services.arcgis.com/8Pc9XBTAsYuxx9Ny/arcgis/rest/services/miamidade_permit_data/FeatureServer")
+  && !isArcgisLayerUrl("http://services.arcgis.com/x/FeatureServer/0")
+  && !isArcgisLayerUrl(""))
+{
+  // Both refusals happen BEFORE any request leaves, exactly like recentPermits'.
+  const badField = await recentArcgisPermits({
+    serviceUrl: "https://services.arcgis.com/x/arcgis/rest/services/y/FeatureServer/0",
+    dateField: "PermitIssuedDate' OR 1=1 --", sinceIso: "2026-08-13",
+  })
+  const badDate = await recentArcgisPermits({
+    serviceUrl: "https://services.arcgis.com/x/arcgis/rest/services/y/FeatureServer/0",
+    dateField: "PermitIssuedDate", sinceIso: "2026-08-13'; DROP TABLE leads; --",
+  })
+  const badUrl = await arcgisFeatureQuery({ serviceUrl: "https://evil.example/x", where: "1=1" })
+  check("a bad field, a bad bound and a bad layer url all refuse in the adapter's own envelope " +
+    "and never reach the network",
+    badField.ok === false && /not an ArcGIS field name/.test(badField.error ?? "")
+    && badDate.ok === false && /calendar day/.test(badDate.error ?? "")
+    && badUrl.ok === false && /FeatureServer layer URL/.test(badUrl.error ?? ""))
+}
+
+// ── the registry repoint ────────────────────────────────────────────────────
+{
+  const miami = classifyMarketCoverage({ state: "FL", city: "Miami" })
+  const arc = miami.queryable.find((d) => providerOf(d) === "arcgis")
+  check("MIAMI — marked `unavailable` for wanting an adapter that now exists — is COVERED",
+    miami.status === "covered" && !!arc,
+    `status=${miami.status} queryable=${miami.queryable.length}`)
+  check("…by Miami-Dade's FeatureServer, bound on a row-verified event date",
+    arc?.dateColumn === "PermitIssuedDate" && arc?.verifiedOn === "2026-08-20"
+    && isArcgisLayerUrl(arc?.serviceUrl))
+  check("…and the retired City-of-Miami Socrata id is KEPT and marked, not deleted",
+    miami.reasons.some((r) => /ucp7-fqyk|ArcGIS Hub site/.test(r)))
+
+  // NEGATIVE CONTROL — the descriptor gap a second provider introduces. An arcgis spec with no
+  // serviceUrl has a dateColumn and no `unavailable`, so the OLD predicate would have called it
+  // queryable and then refused it on every run forever.
+  check("NEGATIVE CONTROL — an ArcGIS dataset with NO serviceUrl is NOT queryable",
+    isQueryableDataset({ host: "h", datasetId: "d", kind: "permits", label: "l",
+                         provider: "arcgis", dateColumn: "PermitIssuedDate" }) === false
+    && isQueryableDataset({ host: "h", datasetId: "d", kind: "permits", label: "l",
+                            provider: "arcgis", dateColumn: "PermitIssuedDate",
+                            serviceUrl: "https://x.example/arcgis/rest/services/y/FeatureServer/0" }) === true)
+  check("…and a Socrata entry is unaffected — absent `provider` still means socrata",
+    providerOf({ host: "h", datasetId: "d", kind: "permits", label: "l" }) === "socrata"
+    && isQueryableDataset({ host: "h", datasetId: "d", kind: "permits", label: "l",
+                            dateColumn: "issue_date" }) === true)
+
+  // Provenance. `detected_via` names where a fact came from; stamping an ArcGIS row "socrata"
+  // would send anyone tracing a bad signal to a portal that never served it.
+  check("an ArcGIS row is stamped detected_via `arcgis`, a Socrata row `socrata`",
+    detectedViaForDataset(arc as any) === ARCGIS_DETECTED_VIA
+    && detectedViaForDataset({ host: "h", datasetId: "d", kind: "permits", label: "l" } as any)
+       === PERMIT_DETECTED_VIA
+    && ARCGIS_DETECTED_VIA !== (PERMIT_DETECTED_VIA as string))
+  {
+    // End to end on the recorded row: an ArcGIS permit becomes a legal motivated_seller_signals
+    // row, with a strength inside the ONE vocabulary m500's CHECK constraint enforces.
+    const parsed = parseArcgisResponse(ARCGIS_LIVE_PAGE, ["PermitIssuedDate"])
+    const outcome = matchPermitsToLeads(
+      parsed.rows,
+      [{ id: "lead-mia", address: "2960 SW 109 Court" }],
+      undefined,
+      { dateColumn: "PermitIssuedDate", kind: "permits" },
+    )
+    check("a recorded ArcGIS permit matches a lead on the SHARED normalizer (suffix expanded)",
+      outcome.matches.length === 1 && outcome.matches[0].leadId === "lead-mia",
+      `matches=${outcome.matches.length} skippedNoLeadMatch=${outcome.skippedNoLeadMatch}`)
+    const built = buildPermitSignalRow({
+      match: outcome.matches[0], brokerageId: "brok-mia", dataset: arc as any,
+    })
+    check("…and builds a signal row whose strength is inside the ONE governed vocabulary (m500)",
+      SELLER_SIGNAL_STRENGTHS.includes(built.signal_strength as never)
+      && built.signal_type === PERMIT_SIGNAL_TYPE
+      && built.detected_via === ARCGIS_DETECTED_VIA)
+    check("…whose dedupe_key is keyed on the STABLE AGOL item id, so a re-host cannot re-file it",
+      String(built.signal_details.dedupe_key).startsWith("6db5f56e886446df88313ca279e59120|p:2026065888"))
+    check("…and which carries NO owner or contractor field, though the layer publishes both",
+      !JSON.stringify(built.signal_details).match(/OwnerName|ContractorName|ContractorPhone/i))
+  }
+}
+
+// ── the per-dataset verdict reaches the operator ────────────────────────────
+{
+  // Comments stripped before scanning: this section's own prose names every symbol it greps for,
+  // so an un-stripped scan would pass on the documentation rather than on the code.
+  const ingestSrc = stripComments(src("lib/external/permit-signals.ts"))
+  const routeSrc = stripComments(src("app/api/cron/permit-signal-scan/route.ts"))
+  check("the ingest records a probe per QUERIED dataset, not just a sum of rows",
+    /datasetHealth\.push\(/.test(ingestSrc) && /rows:\s*res\.ok\s*\?/.test(ingestSrc))
+  check("…the probe's `ok` is the ADAPTER's verdict, so a 200-with-an-error-body counts as failed",
+    /ok:\s*res\.ok/.test(ingestSrc))
+  check("…and the cron surfaces it, naming the datasets that served NOTHING",
+    /dataset_health/.test(routeSrc) && /datasets_silent/.test(routeSrc)
+    && /h\.ok\s*&&\s*h\.rows\s*===\s*0/.test(routeSrc))
+  check("a truncated page is reported rather than passed off as a complete window",
+    /truncated/.test(ingestSrc) && /page cap reached/.test(ingestSrc))
+  check("the ingest branches on provider in exactly one place — one lane, two adapters",
+    (ingestSrc.match(/recentArcgisPermits\(/g) ?? []).length === 1
+    && (ingestSrc.match(/recentPermits</g) ?? []).length === 1)
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 3 · validateVendorPlan → the vendor plan catalogue

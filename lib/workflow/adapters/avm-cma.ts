@@ -131,6 +131,9 @@ export const avmCmaAdapter: ChannelAdapter = {
               arv: result.arv ?? null,
               comp_count: result.adjustedComps.length,
               state_guidelines_used: result.stateGuidelinesUsed,
+              // WHICH YEAR'S guidelines, stored with the document. A CMA on file
+              // that cannot say which vintage priced it cannot be audited later.
+              state_guideline_vintage: result.stateGuidelineVintage,
               citations: result.citations,
               // WHERE the comps came from and how fresh they are, stored with the
               // document so a CMA on file can be audited later without re-running it —

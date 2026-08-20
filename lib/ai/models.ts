@@ -591,6 +591,29 @@ export interface RoutedTextRequest {
 }
 
 /**
+ * The REAL token counts the provider returned for one routed call, plus the
+ * model that actually served it (which is the FALLBACK model when the primary
+ * threw). Both routed lanes already computed this to write logAIUsage and then
+ * discarded it, so a caller that needed to report its own spend had no honest
+ * source and had to invent one.
+ *
+ * ADDITIVE — `const { text } = await generateTextRouted(...)` is unchanged.
+ *
+ * WHO BOOKS THE SPEND, so this never becomes a second meter reading: when a
+ * caller passes `brokerageId`, THIS FILE writes the ai_tool_usage ledger row
+ * (logAIUsage, below) and the caller must treat `usage` as read-only telemetry.
+ * A caller that omits `brokerageId` is not ledgered here at all and is the one
+ * responsible for booking the figure exactly once.
+ */
+export interface RoutedUsage {
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  /** The model that served the call — `fallback` when the primary threw. */
+  model: AIModel
+}
+
+/**
  * Structured-output variant of generateTextRouted — same routing, fallback,
  * and gateway wrapping as the text version, but returns a typed object via
  * the AI SDK's experimental_output schema.
@@ -601,7 +624,7 @@ export interface RoutedTextRequest {
  */
 export async function generateObjectRouted<TSchema extends z.ZodTypeAny>(
   request: RoutedTextRequest & { schema: TSchema }
-): Promise<{ object: z.infer<TSchema> }> {
+): Promise<{ object: z.infer<TSchema>; usage: RoutedUsage }> {
   const feature = request.feature ?? 'unspecified'
   const { model: routedModel, fallback } = selectModelForTask(feature)
 
@@ -672,12 +695,15 @@ export async function generateObjectRouted<TSchema extends z.ZodTypeAny>(
     })
   }
 
-  return { object: resultObject }
+  return {
+    object: resultObject,
+    usage: { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, model: modelUsed },
+  }
 }
 
 export async function generateTextRouted(
   request: RoutedTextRequest
-): Promise<{ text: string }> {
+): Promise<{ text: string; usage: RoutedUsage }> {
   const feature = request.feature ?? 'unspecified'
   const { model: routedModel, fallback } = selectModelForTask(feature)
 
@@ -756,7 +782,10 @@ export async function generateTextRouted(
     })
   }
 
-  return { text: resultText }
+  return {
+    text: resultText,
+    usage: { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, model: modelUsed },
+  }
 }
 
 /**

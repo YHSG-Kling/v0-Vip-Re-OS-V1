@@ -120,8 +120,124 @@ export function parseSelectColumns(literal: string): string[] {
 /** Top-level keys of an object literal `{ a: 1, b: foo({..}), c }` at brace depth 1.
  *  A key only counts when it directly follows `{` or `,` (depth 1) — so a ternary branch
  *  `cond ? ident : null` is NOT mistaken for an `ident:` key. Skips strings. */
-export function parseObjectTopLevelKeys(objText: string): string[] {
+/**
+ * MODULE-LEVEL `const NAME = "literal"` BINDINGS, so a COMPUTED key can be resolved.
+ *
+ * Deliberately narrow. It reads only a top-of-line `const` (no leading indent, so a
+ * binding inside a function body is not picked up) assigned a single-quoted, double-
+ * quoted or backtick-with-no-interpolation string, optionally `as const`. Anything
+ * else — a template with `${…}`, a value computed from another value, a re-assignment
+ * — is NOT resolved and must fall through to the unresolved report rather than be
+ * guessed at. A wrong resolution here would accuse a real column, which is worse than
+ * declining to judge.
+ */
+export function moduleStringConsts(src: string): Map<string, string> {
+  const out = new Map<string, string>()
+  const re = /^export\s+const\s+([A-Z][A-Z0-9_]*)\s*(?::[^=]+)?=\s*("[^"\n]*"|'[^'\n]*'|`[^`$\n]*`)\s*(?:as\s+const)?\s*$/gm
+  const re2 = /^const\s+([A-Z][A-Z0-9_]*)\s*(?::[^=]+)?=\s*("[^"\n]*"|'[^'\n]*'|`[^`$\n]*`)\s*(?:as\s+const)?\s*$/gm
+  for (const r of [re, re2]) {
+    let m: RegExpExecArray | null
+    while ((m = r.exec(src))) out.set(m[1], m[2].slice(1, -1))
+  }
+  return out
+}
+
+/**
+ * `for (const NAME of ["a", "b", "c"])` — THE LOOP-OVER-COLUMNS IDIOM.
+ *
+ * This is the OTHER shape a computed write key comes in, and it is the more common
+ * one: `for (const roleCol of ["agent_id","buyer_agent_id","seller_agent_id"])` then
+ * `.update({ [roleCol]: successor })`. THREE columns on `transactions` were being
+ * written through a key the parser could not see, in two separate files.
+ *
+ * Resolved to ALL candidates, so every one of them is checked — a set where one member
+ * has drifted is exactly as broken as a single wrong key, and it fails on only some
+ * iterations, which is worse to diagnose.
+ *
+ * A loop binding is FUNCTION-scoped while this map is FILE-wide, so a name bound more
+ * than once in a file is deliberately dropped rather than resolved against a set that
+ * may belong to the other binding. Resolving to the wrong set would accuse a real
+ * column, and a false accusation costs more than a declined check.
+ */
+export function loopStringSets(src: string): Map<string, string[]> {
+  const seen = new Map<string, string[][]>()
+  const re = /for\s*\(\s*const\s+([A-Za-z_$][\w$]*)\s+of\s*\[([^\]]*)\]/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(src))) {
+    const items = m[2].split(",").map((t) => t.trim()).filter(Boolean)
+    // Every member must be a plain string literal. One computed member and the set is
+    // no longer knowable, so the whole binding is skipped.
+    if (!items.length || !items.every((t) => /^("[^"\n]*"|'[^'\n]*'|`[^`$\n]*`)$/.test(t))) continue
+    const vals = items.map((t) => t.slice(1, -1))
+    if (!seen.has(m[1])) seen.set(m[1], [])
+    seen.get(m[1])!.push(vals)
+  }
+  const out = new Map<string, string[]>()
+  for (const [name, sets] of seen) if (sets.length === 1) out.set(name, sets[0])
+  return out
+}
+
+/**
+ * NOT RESOLVED, DELIBERATELY — `const col = cond ? "a" : "b"`, THE TERNARY COLUMN PICK.
+ *
+ * Three of the remaining unresolvable keys are this shape, and it looks trivially
+ * resolvable: lib/campaign-sequences/enrollment-engine.ts:43 picks `lead_id` vs
+ * `contact_id` for sequence_enrollments, and app/crm/page.tsx:1171 picks one of four
+ * opt-out columns on contacts. Both candidate sets are right there in the source.
+ *
+ * A resolver for it was written and REVERTED, because the obvious implementation is
+ * wrong in the expensive direction. "Collect the string literals from the right-hand
+ * side" collects the CONDITION's literals too — `channel === "email" ? "email_opt_out"`
+ * yields "email" as readily as "email_opt_out". Run against the tree it accused
+ * `contacts.sms` of drifting, a column that does not exist and was never referenced:
+ * a FALSE ACCUSATION AGAINST WORKING CODE, produced by the very check meant to protect
+ * it. Only the BRANCH positions of the ternary may contribute candidates, and telling a
+ * branch from a condition needs the `?`/`:` structure parsed rather than the literals
+ * swept up — including nested chains, where each `:` may open another ternary.
+ *
+ * Left on the unresolvable list until that is done properly. A named skipped check is
+ * honest; a check that invents columns is worse than no check, which is the whole
+ * argument the block above makes about silent skips, pointing the other way.
+ */
+/** What a computed key `[X]` may be resolved to: one column, or a set of them. */
+export type ComputedKeyResolver = Map<string, string | string[]>
+
+export interface ObjectKeyParse {
+  keys: string[]
+  /** Computed keys — `[expr]: v` — that WERE resolved to a column name and are in `keys`. */
+  resolvedComputed: string[]
+  /** Computed keys that could NOT be resolved, and were therefore never checked. */
+  unresolvedComputed: string[]
+}
+
+/**
+ * A COMPUTED PROPERTY KEY IS A COLUMN NAME THE OLD PARSER COULD NOT SEE AT ALL.
+ *
+ * `{ [ADDRESS_SUPPRESSION_COLUMN]: key }` names a real column, and the depth-1 loop
+ * below skipped it in silence: it only starts a key at `/[a-z_]/i`, and a computed key
+ * starts at `[`, which the very next branch pushes onto the bracket stack. No key was
+ * recorded, nothing was checked, and the guard reported PASS.
+ *
+ * MEASURED, NOT THEORISED: `contact_suppression_list.mailing_address_key` is added by
+ * m503 and written through exactly this shape in lib/direct-mail/address-suppression.ts.
+ * The column was absent from schema-snapshot.ts and the guard was green anyway — and
+ * the code carries a hand-written comment asserting that every column it names is
+ * present, which is what people write when the machine cannot check it for them.
+ * `lib/kernel/billing.ts` and `lib/kernel/lifecycle.ts` write through the same shape.
+ *
+ * TWO OUTCOMES, and the second matters as much as the first:
+ *   · RESOLVED — the key is `[IDENT]` and IDENT is a module-level string const in the
+ *     same file. The column is checked exactly like a literal key.
+ *   · UNRESOLVED — anything else (`[col]` from a parameter, `[entityDef.stateColumn]`,
+ *     `[template.id]` writing jsonb content). These are COUNTED AND REPORTED, never
+ *     silently dropped, because a skipped check that prints nothing is indistinguishable
+ *     from a check that passed. This is the same discipline the filter-DSL and embed
+ *     coverage lines already follow.
+ */
+export function parseObjectTopLevelKeysDetailed(objText: string, consts?: ComputedKeyResolver): ObjectKeyParse {
   const keys: string[] = []
+  const resolvedComputed: string[] = []
+  const unresolvedComputed: string[] = []
   const s = objText
   const stack: string[] = []
   let lastSig = ""        // last significant (non-ws) char at the current scope
@@ -131,6 +247,28 @@ export function parseObjectTopLevelKeys(objText: string): string[] {
     const ch = s[i]
     if (q) { if (ch === q && s[i - 1] !== "\\") q = null; i++; continue }
     if (ch === '"' || ch === "'" || ch === "`") { q = ch; lastSig = ch; i++; continue }
+    // ── COMPUTED KEY at the object's TOP level: `{ [X]: v }` / `, [X]: v` ──────
+    // Must be tested BEFORE the bracket is pushed onto the stack, which is precisely
+    // where the original parser lost it. A `[` in any other position (an array value,
+    // an index expression) does not match `]\s*:` and falls through unchanged.
+    if (stack.length === 1 && ch === "[" && (lastSig === "{" || lastSig === ",")) {
+      const cm = s.slice(i).match(/^\[\s*("([^"\n]*)"|'([^'\n]*)'|([A-Za-z_$][\w$.]*))\s*\]\s*:/)
+      if (cm) {
+        const literal = cm[2] ?? cm[3]
+        const ident = cm[4]
+        // A quoted computed key IS a literal — `{ ["brokerage_id"]: v }` names a column
+        // as plainly as `{ brokerage_id: v }` does.
+        if (literal != null) { keys.push(literal); resolvedComputed.push(literal) }
+        else if (ident && consts?.has(ident)) {
+          const r = consts.get(ident)!
+          for (const col of Array.isArray(r) ? r : [r]) { keys.push(col); resolvedComputed.push(col) }
+        }
+        else unresolvedComputed.push(ident ?? cm[1])
+        lastSig = ":"
+        i += cm[0].length
+        continue
+      }
+    }
     if (ch === "{" || ch === "(" || ch === "[") { stack.push(ch); lastSig = ch; i++; continue }
     if (ch === "}" || ch === ")" || ch === "]") { stack.pop(); lastSig = ch; i++; continue }
     if (stack.length === 1 && /[a-z_]/i.test(ch) && (lastSig === "{" || lastSig === ",")) {
@@ -146,7 +284,13 @@ export function parseObjectTopLevelKeys(objText: string): string[] {
   // inner object-literal keys from any `...( … )` spread. Plain nested values (`meta: { z }`) and
   // function-call spreads (`...fn(args)`) are left alone — only `...` IMMEDIATELY before `(` counts.
   for (const k of extractConditionalSpreadKeys(s)) if (!keys.includes(k)) keys.push(k)
-  return keys
+  return { keys, resolvedComputed, unresolvedComputed }
+}
+
+/** Back-compatible wrapper — the shape every existing caller (and
+ *  scripts/opposite-missing-census.ts, which imports this) already expects. */
+export function parseObjectTopLevelKeys(objText: string, consts?: ComputedKeyResolver): string[] {
+  return parseObjectTopLevelKeysDetailed(objText, consts).keys
 }
 
 function extractConditionalSpreadKeys(s: string): string[] {
@@ -271,7 +415,7 @@ export function resolveVariableInsertKeys(src: string, varName: string, beforeId
   return keys
 }
 
-function matchParen(s: string, open: number): number {
+export function matchParen(s: string, open: number): number {
   let d = 0
   for (let i = open; i < s.length; i++) {
     if (s[i] === "(") d++
@@ -511,7 +655,7 @@ export function resolveEmbeddedSelects(literal: string, rootTable: string | null
 export function parseEmbeddedSelects(literal: string, rootTable: string | null = null): Array<{ table: string; column: string }> {
   return resolveEmbeddedSelects(literal, rootTable).refs.map(({ table, column }) => ({ table, column }))
 }
-function matchBrace(s: string, open: number): number {
+export function matchBrace(s: string, open: number): number {
   let d = 0
   for (let i = open; i < s.length; i++) {
     if (s[i] === "{") d++
@@ -806,6 +950,47 @@ function testPure() {
   check("parseSelectColumns: rename alias checks the REAL column (price:list_price → list_price)", JSON.stringify(parseSelectColumns("price:list_price, sqft:sqft")) === JSON.stringify(["list_price", "sqft"]))
   check("parseObjectTopLevelKeys: ternary branch is NOT a key", JSON.stringify(parseObjectTopLevelKeys("{ inferred_beds_min: avgBeds > 0 ? avgBeds : null, x: 1 }")) === JSON.stringify(["inferred_beds_min", "x"]))
   check("parseSelectColumns: strips interpolation residue", parseSelectColumns("  , signals_processed, last_calculated_at").join() === "signals_processed,last_calculated_at")
+  // ── COMPUTED KEYS. Each of these was invisible to the parser before, in silence. ────
+  check("computed key: resolved from a module string const",
+    JSON.stringify(parseObjectTopLevelKeys("{ a: 1, [COL]: v, b: 2 }", new Map<string, string | string[]>([["COL", "mailing_address_key"]])))
+      === JSON.stringify(["a", "mailing_address_key", "b"]))
+  check("computed key: a QUOTED computed key is a literal and needs no const",
+    JSON.stringify(parseObjectTopLevelKeys('{ ["brokerage_id"]: v }')) === JSON.stringify(["brokerage_id"]))
+  check("computed key: UNRESOLVABLE is reported, not silently dropped",
+    JSON.stringify(parseObjectTopLevelKeysDetailed("{ a: 1, [roleCol]: v }").unresolvedComputed) === JSON.stringify(["roleCol"]))
+  check("computed key: an unresolvable one contributes NO key (never a guess)",
+    JSON.stringify(parseObjectTopLevelKeysDetailed("{ a: 1, [roleCol]: v }").keys) === JSON.stringify(["a"]))
+  check("computed key: a dotted expression is unresolvable, not mistaken for a column",
+    JSON.stringify(parseObjectTopLevelKeysDetailed("{ [entityDef.stateColumn]: v }").unresolvedComputed) === JSON.stringify(["entityDef.stateColumn"]))
+  // NEGATIVE CONTROL for the resolution itself: WITHOUT the const map the same object must
+  // go unresolved. If this ever passes both ways the map is not what is doing the work.
+  check("computed key: NEGATIVE CONTROL — no const map means unresolved, not resolved",
+    parseObjectTopLevelKeysDetailed("{ [COL]: v }").keys.length === 0 &&
+    parseObjectTopLevelKeysDetailed("{ [COL]: v }", new Map<string, string | string[]>([["COL", "x"]])).keys.length === 1)
+  // A `[` that is NOT a key must still behave exactly as it did: array values and index
+  // expressions are values, and reading one as a column would invent a phantom.
+  check("computed key: an ARRAY VALUE is not a key",
+    JSON.stringify(parseObjectTopLevelKeys("{ tags: [a, b], id: 1 }")) === JSON.stringify(["tags", "id"]))
+  check("computed key: an INDEX EXPRESSION in a value is not a key",
+    JSON.stringify(parseObjectTopLevelKeys("{ name: parts[0], id: 1 }")) === JSON.stringify(["name", "id"]))
+  check("computed key: a LOOP set resolves to EVERY candidate column",
+    JSON.stringify(parseObjectTopLevelKeys("{ [roleCol]: v, updated_at: t }",
+      new Map<string, string | string[]>([["roleCol", ["agent_id", "buyer_agent_id", "seller_agent_id"]]])))
+      === JSON.stringify(["agent_id", "buyer_agent_id", "seller_agent_id", "updated_at"]))
+  check("loopStringSets: reads the for-of literal array",
+    JSON.stringify(loopStringSets('for (const roleCol of ["agent_id", "buyer_agent_id"] as const) {')
+      .get("roleCol")) === JSON.stringify(["agent_id", "buyer_agent_id"]))
+  check("loopStringSets: a name bound TWICE is dropped, never resolved against the wrong set",
+    !loopStringSets('for (const c of ["a"]) {}\nfor (const c of ["b"]) {}\n').has("c"))
+  check("loopStringSets: a non-literal member makes the whole set unknowable",
+    !loopStringSets('for (const c of ["a", someVar]) {}\n').has("c"))
+  check("moduleStringConsts: reads a module-level const, ignores an indented one",
+    (() => {
+      const m = moduleStringConsts('const TOP = "col_a"\nfunction f() {\n  const INNER = "col_b"\n}\nexport const EXPORTED = "col_c" as const\n')
+      return m.get("TOP") === "col_a" && m.get("EXPORTED") === "col_c" && !m.has("INNER")
+    })())
+  check("moduleStringConsts: an INTERPOLATED template is NOT resolved (a guess would accuse a real column)",
+    !moduleStringConsts("const K = `col_${suffix}`\n").has("K"))
   check("parseObjectTopLevelKeys: flat", JSON.stringify(parseObjectTopLevelKeys("{ contact_id: x, brokerage_id: y }")) === JSON.stringify(["contact_id", "brokerage_id"]))
   check("parseObjectTopLevelKeys: ignores nested", JSON.stringify(parseObjectTopLevelKeys("{ a: 1, meta: { z: 2 }, b: 3 }")) === JSON.stringify(["a", "meta", "b"]))
   check("parseObjectTopLevelKeys: catches conditional-spread keys (...(cond && {col:v}))",
@@ -1242,10 +1427,19 @@ interface ScanStats {
   ambiguityPairsConsulted: Set<string>
   ambiguityUnknownParent: number
   embedAmbiguous: Array<AmbiguousEmbed & { file: string }>
+  /** ── COMPUTED WRITE KEYS — `{ [X]: v }`. Same honesty rule as every block above.
+   *  `computedKeysResolved` were checked exactly like literal keys (X is a module-level
+   *  string const, or the key was quoted). `computedKeysUnresolved` could NOT be turned
+   *  into a column name and were therefore NEVER CHECKED — they are printed rather than
+   *  dropped, because these used to vanish in total silence and a column written this way
+   *  could drift for its whole life without the guard noticing. */
+  computedKeysResolved: number
+  computedKeysUnresolved: Array<{ file: string; table: string; expr: string }>
 }
 const newStats = (): ScanStats => ({
   directColumns: 0, embedColumns: 0, embedsResolved: 0, embedsUnresolved: 0, embedTargetUnguarded: 0, unresolved: [],
   dslStrings: 0, dslTerms: 0, dslColumns: 0, dslTargetUnguarded: 0, dslUnattributed: 0, dslSkipped: [], dslUnattributedSites: [],
+  computedKeysResolved: 0, computedKeysUnresolved: [],
   bareTableEmbeds: 0, ambiguityPairsConsulted: new Set(), ambiguityUnknownParent: 0, embedAmbiguous: [],
 })
 
@@ -1281,6 +1475,13 @@ function scanFile(file: string, rawSrc: string, stats: ScanStats = newStats()): 
   // Idempotent — blanking already-blanked source is a no-op — so a caller that
   // pre-blanks is not double-charged.
   const src = blankComments(rawSrc)
+  // Module-level string consts, so a COMPUTED write key `{ [NAME]: v }` can be resolved
+  // to the column it actually names. Computed once per file, not per write site — a file
+  // has one set of module bindings.
+  const fileConsts: ComputedKeyResolver = new Map<string, string | string[]>(moduleStringConsts(src))
+  // …and the loop-over-columns idiom, which is how `transactions.agent_id` /
+  // `.buyer_agent_id` / `.seller_agent_id` are written in two files.
+  for (const [k, v] of loopStringSets(src)) if (!fileConsts.has(k)) fileConsts.set(k, v)
   const v: Violation[] = []
   /** Absolute source indices of `.or(`/`.filter(` sites a guarded from()-chain reached. */
   const dslAttributed = new Set<number>()
@@ -1331,7 +1532,10 @@ function scanFile(file: string, rawSrc: string, stats: ScanStats = newStats()): 
       const braceClose = matchBrace(src, braceOpen)
       if (braceClose > braceOpen) {
         const obj = src.slice(braceOpen, braceClose + 1)
-        for (const k of parseObjectTopLevelKeys(obj)) if (!set.has(k)) v.push({ file, table, op: opM[1], column: k })
+        const parsed = parseObjectTopLevelKeysDetailed(obj, fileConsts)
+        stats.computedKeysResolved += parsed.resolvedComputed.length
+        for (const e of parsed.unresolvedComputed) stats.computedKeysUnresolved.push({ file, table, expr: e })
+        for (const k of parsed.keys) if (!set.has(k)) v.push({ file, table, op: opM[1], column: k })
       }
     }
     // PASS 14 — the closing-checklist blind spot: `.insert(rows)` where `rows` is a
@@ -1350,7 +1554,11 @@ function scanFile(file: string, rawSrc: string, stats: ScanStats = newStats()): 
         else if (ch === "{" && d === 1) {
           const bc = matchBrace(src, i)
           if (bc > i) {
-            for (const k of parseObjectTopLevelKeys(src.slice(i, bc + 1))) if (!set.has(k)) v.push({ file, table, op: arrM[1], column: k })
+            const rowObj = src.slice(i, bc + 1)
+            const rowParsed = parseObjectTopLevelKeysDetailed(rowObj, fileConsts)
+            stats.computedKeysResolved += rowParsed.resolvedComputed.length
+            for (const e of rowParsed.unresolvedComputed) stats.computedKeysUnresolved.push({ file, table, expr: e })
+            for (const k of rowParsed.keys) if (!set.has(k)) v.push({ file, table, op: arrM[1], column: k })
             i = bc
           }
         }
@@ -1493,6 +1701,26 @@ function testScan() {
   // The honest edge of the filter-DSL check, itemised: every string it could not read and
   // every call site no guarded chain reached. Coverage that does not publish its exclusions
   // is just a number that rounds up.
+  //
+  // COMPUTED WRITE KEYS. Printed for the same reason: `{ [X]: v }` names a column, and
+  // until this line existed the parser could not see one at all — it started a key only
+  // at a letter, and a computed key starts at `[`, which went straight onto the bracket
+  // stack. Nothing was recorded and nothing was reported, so a column written this way
+  // was outside the guard entirely. contact_suppression_list.mailing_address_key was the
+  // proof: added by m503, written through exactly this shape, absent from the snapshot,
+  // and the guard green throughout. The resolved half is now checked like any literal
+  // key; the unresolved half is named here rather than dropped, because the whole lesson
+  // of that column is that a silent skip and a pass look identical from the outside.
+  console.log(
+    `  · computed write keys: ${stats.computedKeysResolved} resolved and checked, ` +
+      `${stats.computedKeysUnresolved.length} unresolvable (never checked — listed with GUARD_DSL_REPORT=1)`,
+  )
+  if (process.env.GUARD_DSL_REPORT === "1" && stats.computedKeysUnresolved.length) {
+    console.log("    unresolvable computed write keys (table — expression — file):")
+    for (const c of [...new Set(stats.computedKeysUnresolved.map((c) => `${c.table}  [${c.expr}]  ${c.file}`))].sort()) {
+      console.log(`      ${c}`)
+    }
+  }
   if (process.env.GUARD_DSL_REPORT === "1") {
     const byReason = new Map<string, string[]>()
     for (const s of stats.dslSkipped) {
@@ -1754,4 +1982,20 @@ async function main() {
   if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
   console.log(" ✅ No schema drift — every guarded column reference matches the live schema")
 }
-main()
+
+// ── IMPORTED AS A LIBRARY, RUN AS A GUARD ───────────────────────────────────
+// Twenty-two of the parsers above are exported, and they are the only correct
+// readers of a PostgREST call chain in this repo — column lists, embed
+// resolution, object keys, variable-shaped inserts, the filter DSL. A second
+// analyzer that needs them had exactly two options: import this file (which ran
+// the ENTIRE guard as a side effect of the import, printing a second report and
+// exiting non-zero mid-scan on any failure) or hand-roll its own copies. The
+// second option is how a repo ends up with two parsers that disagree, and it is
+// precisely what this codebase's doctrine exists to prevent.
+//
+// So the guard's ENTRY POINT is gated, and nothing else changes: with the
+// variable unset — every CI run, every `npm run test:schema-drift`, every bare
+// `tsx scripts/schema-drift-guard.ts` — main() runs exactly as it did before.
+// scripts/opposite-missing-census.ts sets it to "1" before its dynamic import,
+// so it gets the parsers WITHOUT the report.
+if (process.env.SCHEMA_DRIFT_AS_LIBRARY !== "1") main()

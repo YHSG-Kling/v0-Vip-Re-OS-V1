@@ -61,6 +61,7 @@ import {
   ACTIVE_ENROLLMENT_STATUSES,
 } from "../lib/campaign-sequences/auto-enroll"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -68,7 +69,7 @@ const check = (n: string, c: boolean) => {
   if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; fails.push(n); console.log(`  ✗ ${n}`) }
 }
 const src = (p: string) =>
-  readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+  stripComments(readFileSync(p, "utf8"))
 
 /** Recording fake: per-table queued results, and every filter captured. */
 function fakeDb(results: Record<string, any[]>) {

@@ -35,7 +35,6 @@ const AUDIT_EXEMPT: Record<string, string> = {
   // ── Telemetry / debugging ledgers ──
   agent_assistant_tool_calls: "assistant tool-call telemetry (debugging/analytics)",
   ai_usage_log: "LLM token/cost record — billing & cost reconciliation export",
-  assistant_queries: "assistant usage telemetry (debugging/analytics)",
   automation_logs: "automation-execution forensics (debugging)",
   event_processing_log: "orchestrator event replay/debugging ledger",
   workflow_webhook_events: "inbound webhook receipt — replay/debugging",

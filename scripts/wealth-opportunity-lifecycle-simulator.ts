@@ -44,6 +44,7 @@ import {
   isWealthActive,
 } from "../lib/wealth-advisor/recommendation-status"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -53,7 +54,7 @@ const check = (n: string, c: boolean) => {
 /** Every assertion reads CODE. These files quote the dead literals in their own
  *  headers, so the comments have to come off or the guard flags its own notes. */
 const src = (p: string) =>
-  readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+  stripComments(readFileSync(p, "utf8"))
 
 console.log("\n── the module matches the live CHECK, value for value ──")
 {

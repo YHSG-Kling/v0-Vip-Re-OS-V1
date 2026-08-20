@@ -38,6 +38,7 @@
 import { readFileSync, writeFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { resolve } from "node:path"
+import { stripComments } from "./strip-comments"
 
 // Resolved from the process CWD (repo root) so the file works as ESM or CJS.
 const ROOT = process.cwd()
@@ -515,7 +516,7 @@ const CHECKS: Check[] = [
         `${F.DC}: the guard does not refuse when the capability check fails`,
       )
       ok(
-        !/user_type/.test(dc.noComments.replace(/^[\s\S]*?\bimport\b/, "").replace(/\/\/.*/g, "")) ||
+        !/user_type/.test(stripComments(dc.noComments.replace(/^[\s\S]*?\bimport\b/, ""))) ||
           !/\[[^\]]*"broker"[^\]]*\]\s*\.includes/.test(dc.noComments),
         `${F.DC}: a tenant-role list is being used as the authorization gate for platform-wide data`,
       )

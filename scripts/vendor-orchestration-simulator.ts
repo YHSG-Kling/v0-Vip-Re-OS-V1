@@ -15,6 +15,7 @@
  */
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { stripComments } from "./strip-comments"
 import {
   vendorGapForStage, rankVendors, pickVendorForGap, composeQuoteRequestFallback,
   runVendorOrchestration, type BenchVendor, type DealCoverage,
@@ -111,7 +112,7 @@ function layer1() {
 
   const orchRaw = readFileSync(join(process.cwd(), "lib/kernel/vendor-orchestration.ts"), "utf8")
   // Comments stripped: this file legitimately DOCUMENTS the retired bridge.
-  const orchSrc = orchRaw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+  const orchSrc = stripComments(orchRaw)
   check("the retired bridge is gone — no resolvePreferredVendorIds, no second vendor table",
     !/resolvePreferredVendorIds/.test(orchSrc) && !/vendor_directory/.test(orchSrc))
   check("preference is the broker's actual `preferred` flag, not approval standing in for it",

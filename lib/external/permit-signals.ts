@@ -41,13 +41,31 @@
  * Verified live 2026-08-20: Chicago `22u3-xenr` and NYC HPD `wvxf-dwi5` serve; the Seattle and
  * Dallas violation ids in the registry do not exist and are now marked so.
  *
+ * ── A SECOND PROVIDER (2026-08-20) ───────────────────────────────────────────
+ * This lane was Socrata-only, and socrata-market-registry.ts marked three registered markets dead
+ * with the reason "needs an ArcGIS FeatureServer adapter". They were not dead — their permits are
+ * live at an endpoint the OS could not speak to. lib/external/arcgis-permits.ts is that adapter
+ * and Miami is the first market it serves (Miami-Dade County, 1,161 permits in a 7-day window
+ * measured 2026-08-20). The provider branch is EXACTLY ONE `if` inside the fetch loop: both
+ * adapters return the same `{ ok, status, data, error }` envelope over the same flat rows, so
+ * windowing, address matching, strength, dedupe and the write are untouched and shared. A second
+ * provider must not become a second lane — there is one `motivated_seller_signals` spine.
+ *
+ * ── AND A PER-DATASET VERDICT ────────────────────────────────────────────────
+ * `permitsFetched` is a sum, and under a sum a quiet dataset and a dead one are the same number.
+ * `PermitIngestResult.datasetHealth` now carries one `DatasetProbe` per queried dataset so
+ * "served, zero rows", "refused", and "served, truncated" stay three different answers. This
+ * matters more with ArcGIS in the mix, not less: a FeatureServer reports its own errors with
+ * HTTP 200, so on that provider a dead layer looks like an empty one unless something checks.
+ *
  * The pure half (everything above `ingestPermitSignals`) has no I/O and is simulator-driven.
  */
 
 import { recentPermits } from "./socrata-client"
+import { recentArcgisPermits } from "./arcgis-permits"
 import type { SellerSignalStrength } from "@/lib/lead-governance/seller-signal-strength"
 import {
-  classifyMarketCoverage, type MarketCoverage, type SocrataDatasetSpec,
+  classifyMarketCoverage, providerOf, type MarketCoverage, type SocrataDatasetSpec,
 } from "./socrata-market-registry"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -126,11 +144,22 @@ export function normalizeStreetAddress(input: string | null | undefined): string
 // PURE — tolerant field readers over a Socrata row
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Address column names observed across the registered portals, most-specific first. */
+/** Address column names observed across the registered portals, most-specific first.
+ *
+ *  ── CASE IS PART OF THE NAME (2026-08-20) ───────────────────────────────────
+ *  `pick` does EXACT key lookup, and every entry here was lowercase because Socrata lowercases
+ *  every column it serves. ArcGIS does not: Miami-Dade publishes `PropertyAddress`, and the first
+ *  run of the new provider read null for the address of every single row — the readers "covered"
+ *  a portal they could not see one field of. Lower-casing the lookup was the tempting fix and is
+ *  the wrong one: the registry's `dateColumn` and the ArcGIS `where` clause BOTH require the
+ *  exact-case name, so the row's keys must stay as published, and the candidate list learns the
+ *  new spelling instead. That is the same thing this list has done for every portal before it. */
 const ADDRESS_KEYS = [
   "original_address1", "originaladdress1", "street_address", "address", "permit_address",
   "project_address", "site_address", "full_address", "address_line_1", "house_address",
   "location_address", "primary_address", "job_address", "worksite_address",
+  // ArcGIS / Miami-Dade (live row 2026-08-20: "2960 SW 109 CT"). Single column, no assembly.
+  "PropertyAddress",
 ]
 const PERMIT_ID_KEYS = [
   // `permit_` is Chicago's field name for the column labelled "PERMIT#" — Socrata turns a
@@ -145,6 +174,15 @@ const PERMIT_ID_KEYS = [
   // has one: `id` is a ROW id, not a case id, and a row id that moves when the portal republishes
   // would file a brand-new signal every single day — the exact defect m490's index exists to stop.
   "violationid", "violation_number", "novid",
+  // NYC DOB NOW (rbx6-tga4) numbers its filings `job_filing_number` ("M01301984-S1"), and LA's
+  // current permits feed (pi9x-tg5x) uses `permit_nbr` ("23016-10000-02499"). Both were registered
+  // 2026-08-20 and neither id was readable before, which would have left every row of two of the
+  // largest markets in the country dedupe-keyed on address+date instead of on its own record
+  // number — coarser than it needs to be, and wrong the moment two permits land on one day.
+  "job_filing_number", "permit_nbr",
+  // ArcGIS / Miami-Dade (live row 2026-08-20: "2026065888"). CamelCase — see the note on
+  // ADDRESS_KEYS about why these are added rather than the lookup being case-folded.
+  "PermitNumber",
 ]
 
 // ─── COMPOSITE ADDRESS COMPONENTS ────────────────────────────────────────────
@@ -165,9 +203,13 @@ const PERMIT_ID_KEYS = [
 // suffix "PL"); `housenumber` is NYC HPD's violations feed (live 2026-08-20: housenumber "116",
 // streetname "LENOX ROAD"). Both were unreadable before, which would have made two newly-verified
 // datasets report every row as skippedNoAddress — a covered market reading as a silent one.
+// `house_no` is NYC DOB NOW (rbx6-tga4, live 2026-08-20: house_no "315", street_name
+// "WEST 29 STREET"). It is a THIRD spelling of the same idea in one city — BIS publishes `house__`,
+// HPD publishes `housenumber`, DOB NOW publishes `house_no` — which is precisely why this list is
+// a list and not a branch.
 const NUMBER_KEYS = [
-  "street_number", "house__", "house_number", "housenumber", "street_no", "address_number",
-  "str_number", "address_start", "stno",
+  "street_number", "house__", "house_number", "housenumber", "house_no", "street_no",
+  "address_number", "str_number", "address_start", "stno",
 ]
 const PREDIR_KEYS = [
   "street_direction", "street_dir", "predirection", "street_predirection", "direction", "predir",
@@ -181,11 +223,28 @@ const DESCRIPTION_KEYS = [
   // Code violations describe the work that must be done, not work being done. Chicago publishes
   // `violation_description` ("REPAIR DOOR, INT."), NYC HPD `novdescription` (the ADM CODE text).
   "violation_description", "novdescription", "violation_ordinance",
+  // Registered 2026-08-20. `work_type` is NYC DOB NOW's work category ("Plumbing", "General
+  // Construction") and is ALSO a sparsely-populated Chicago column ("Masonry Work"); `work_desc`
+  // and `permit_sub_type` are LA pi9x-tg5x's ("ADDITION TO (E) SINGLE FMAILY DWELLING PER WFPP.",
+  // "1 or 2 Family Dwelling"). Widening the description widens what classifyPermitStrength can
+  // SEE, and it can only ever move a permit UP the ladder from "weak" — which is the correct
+  // direction when the reason it read weak was that nobody read the column naming the work.
+  "work_type", "work_desc", "permit_sub_type",
+  // ArcGIS / Miami-Dade, live row 2026-08-20: DetailDescriptionComments "REROOF" ·
+  // ApplicationTypeDescription "RE-ROOF/REPAIR" · PermitType "MBLD" · ProposedUseDescription
+  // "SINGLE FAM RES-CLUST-ZERO LOT-TOWN HOUSE". The first two are where the WORK is named, and
+  // without them a re-roof — the archetypal pre-listing permit — read as `weak`.
+  "DetailDescriptionComments", "ApplicationTypeDescription", "PermitType", "ProposedUseDescription",
 ]
 const VALUATION_KEYS = [
   "total_job_valuation", "estimated_cost", "reported_cost", "valuation", "job_value",
   "total_valuation", "declared_valuation", "declaredvaluation", "estimated_project_cost",
   "construction_cost",
+  // NYC DOB NOW (rbx6-tga4), live 2026-08-20: estimated_job_costs "8000" / "63410".
+  "estimated_job_costs",
+  // ArcGIS / Miami-Dade, live 2026-08-20: EstimatedValue "1800" — a STRING on the wire, which
+  // readPermitValuation already handles (it strips $ and , and Number()s the rest).
+  "EstimatedValue",
 ]
 /** Violation disposition. Chicago `violation_status` is OPEN / COMPLIED / NO ENTRY; NYC HPD
  *  `violationstatus` is Open / Close. Both read live 2026-08-20. */
@@ -527,6 +586,22 @@ export const VIOLATION_SIGNAL_TYPE = "code_violation"
 export const SOCRATA_SIGNAL_TYPES: readonly string[] = [PERMIT_SIGNAL_TYPE, VIOLATION_SIGNAL_TYPE]
 /** `detected_via` — the provider, matching the connector id in lib/agentic-os/connector-registry. */
 export const PERMIT_DETECTED_VIA = "socrata"
+/** …and for a dataset read over an ArcGIS FeatureServer (lib/external/arcgis-permits.ts). */
+export const ARCGIS_DETECTED_VIA = "arcgis"
+
+/**
+ * PURE. The `detected_via` a dataset's rows are stamped with.
+ *
+ * A SECOND VALUE, NOT A WIDENED FIRST ONE. `detected_via` names the provider the fact came from,
+ * and stamping a Miami-Dade FeatureServer row "socrata" would be a false provenance on a column
+ * whose only job is provenance — the operator tracing a bad signal would go read a Socrata portal
+ * that never served it. The two providers also fail in different ways (see arcgis-permits.ts:
+ * ArcGIS reports its errors inside a 200), so telling them apart in the stored row is what makes
+ * a per-provider outage legible after the fact.
+ */
+export function detectedViaForDataset(dataset: SocrataDatasetSpec): string {
+  return providerOf(dataset) === "arcgis" ? ARCGIS_DETECTED_VIA : PERMIT_DETECTED_VIA
+}
 
 /** PURE. The signal_type a dataset's rows are filed under. */
 export function signalTypeForKind(kind: SocrataDatasetSpec["kind"]): string {
@@ -562,7 +637,7 @@ export function buildPermitSignalRow(params: {
     brokerage_id: params.brokerageId,
     signal_type: signalTypeForKind(dataset.kind),
     signal_strength: match.strength,
-    detected_via: PERMIT_DETECTED_VIA,
+    detected_via: detectedViaForDataset(dataset),
     signal_details: {
       // Fixed sentences, not generated ones. Nothing here is authored by a model, and nothing
       // written into a field whose name implies a measurement is anything but a read value.
@@ -619,10 +694,52 @@ export interface PermitScanTerritory {
   state?: string | null
 }
 
+/**
+ * ONE QUERIED DATASET'S OWN VERDICT.
+ *
+ * WHY THIS EXISTS, AND IT IS THE CENTRAL DEFECT OF THIS LANE ARRIVING FOR THE SIXTH TIME.
+ * `permitsFetched` is a SUM across every dataset in the run. Under a sum, a dataset that returns
+ * zero rows and a dataset that has quietly died are THE SAME NUMBER — the total just gets
+ * smaller, and nothing in the output says which feed stopped. That is the identical sentence
+ * socrata-market-registry.ts has now written five times about five different failure shapes, one
+ * level up: this time the thing that cannot be told apart is not two datasets but two RUNS.
+ *
+ * So every queried dataset now reports for itself. `ok` + `rows` are independent facts and the
+ * three states stay three:
+ *   ok:true,  rows:0   → the feed served, and this window is genuinely quiet
+ *   ok:false, rows:0   → the feed REFUSED, and `error` says so in the vendor's own words
+ *   ok:true,  rows:N   → data
+ * A fourth, `truncated`, is only reachable on ArcGIS and means the page cap cut the window short
+ * — rows returned, but not all of them, which is not the same as a complete quiet answer either.
+ */
+export interface DatasetProbe {
+  /** `"host/datasetId"` — the same key the sweep dedupes datasets on. */
+  dataset: string
+  label: string
+  provider: string
+  /** HTTP status when there was one. Null for a refusal built before any request left. */
+  status: number | null
+  ok: boolean
+  /** Rows the adapter handed back. Meaningful ONLY when ok — never read this alone. */
+  rows: number
+  /** Rows that survived windowing and address-matching into a signal candidate. */
+  matched: number
+  /** True when the provider capped the page and more matching rows exist than were read. */
+  truncated: boolean
+  /** Stated reason when ok is false. Null when ok. */
+  error: string | null
+}
+
 export interface PermitIngestResult {
   brokerageId: string
   marketsConsidered: number
   datasetsQueried: number
+  /**
+   * ONE ENTRY PER DATASET ACTUALLY QUERIED, in query order. The run's most diagnostic output:
+   * `permitsFetched` says how much the sweep saw in total, and this says which feed it came from
+   * and which feed said nothing — the difference between "a quiet week" and "a dead endpoint".
+   */
+  datasetHealth: DatasetProbe[]
   /** Registered datasets (either kind) that carry no `dateColumn`, so recentPermits cannot bound
    *  them. Distinct from `unavailable`: the portal is alive, our descriptor is incomplete. */
   datasetsSkippedNoDateColumn: number
@@ -697,6 +814,7 @@ export async function ingestPermitSignals(params: {
     brokerageId,
     marketsConsidered: 0,
     datasetsQueried: 0,
+    datasetHealth: [],
     datasetsSkippedNoDateColumn: 0,
     datasetsUnavailable: 0,
     unavailableReasons: [],
@@ -808,16 +926,54 @@ export async function ingestPermitSignals(params: {
   const toWrite: PermitSignalRow[] = []
   for (const dataset of datasets) {
     result.datasetsQueried++
-    const res = await recentPermits<Record<string, unknown>>({
-      host: dataset.host,
-      datasetId: dataset.datasetId,
-      sinceIso,
-      permitDateColumn: dataset.dateColumn as string,
-      limit: MAX_PERMITS_PER_DATASET,
-    })
+    const provider = providerOf(dataset)
+    const datasetKey = `${dataset.host}/${dataset.datasetId}`
+
+    // ── THE PROVIDER BRANCH ──────────────────────────────────────────────────
+    // The ONLY place the two providers differ. Both adapters return the same
+    // `{ ok, status, data, error }` envelope over the same flat row shape, so everything below
+    // this — windowing, address matching, strength, dedupe, the write — is provider-agnostic and
+    // stays that way. A second provider that forked the whole pipeline would be a second lane.
+    const res = provider === "arcgis"
+      ? await recentArcgisPermits({
+          serviceUrl: dataset.serviceUrl as string,
+          dateField: dataset.dateColumn as string,
+          sinceIso,
+          limit: MAX_PERMITS_PER_DATASET,
+        })
+      : await recentPermits<Record<string, unknown>>({
+          host: dataset.host,
+          datasetId: dataset.datasetId,
+          sinceIso,
+          permitDateColumn: dataset.dateColumn as string,
+          limit: MAX_PERMITS_PER_DATASET,
+        })
+    const truncated = "truncated" in res ? res.truncated === true : false
+
+    const probe: DatasetProbe = {
+      dataset: datasetKey,
+      label: dataset.label,
+      provider,
+      status: res.status,
+      ok: res.ok,
+      rows: res.ok ? res.data.length : 0,
+      matched: 0,
+      truncated,
+      error: res.ok ? null : (res.error ?? `${provider} refused`),
+    }
+    result.datasetHealth.push(probe)
+
     if (!res.ok) {
-      result.errors.push(`${dataset.label} (${dataset.host}/${dataset.datasetId}): ${res.error ?? "socrata refused"}`)
+      result.errors.push(`${dataset.label} (${datasetKey}): ${res.error ?? `${provider} refused`}`)
       continue
+    }
+    // A capped page is a REPORTED fact, not a silent one: the window was wider than the read.
+    // It is not pushed onto `errors` — the rows we did get are real and usable — but a run that
+    // truncated has not seen the whole week and must not be able to claim it has.
+    if (truncated) {
+      result.errors.push(
+        `${dataset.label} (${datasetKey}): page cap reached — more permits matched this window than were read`,
+      )
     }
     result.permitsFetched += res.data.length
 
@@ -841,6 +997,7 @@ export async function ingestPermitSignals(params: {
     result.skippedNoLeadMatch += outcome.skippedNoLeadMatch
     result.skippedOutsideWindow += outcome.skippedOutsideWindow
     result.skippedNoEventDate += outcome.skippedNoEventDate
+    probe.matched = outcome.matches.length
 
     for (const match of outcome.matches) {
       const key = permitDedupeKey(match, dataset)

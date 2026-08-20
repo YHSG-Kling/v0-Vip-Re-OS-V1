@@ -128,7 +128,7 @@ export async function generateObject<T extends z.ZodType>({
   prompt?: string
   temperature?: number
   system?: string
-}): Promise<{ object: z.infer<T> }> {
+}): Promise<{ object: z.infer<T>; usage: GeneratedUsage }> {
   // If model is already a resolved provider instance (any non-string truthy value),
   // use it directly. If it's a string, resolve it via the Vercel AI Gateway.
   const resolvedModel =
@@ -142,14 +142,57 @@ export async function generateObject<T extends z.ZodType>({
   // shim is a model-boundary chokepoint, like lib/ai/models.ts).
   const { redactSensitive } = await import("@/lib/data-guard")
 
-  const { experimental_output } = await generateText({
+  const promptForEstimate = promptParts
+
+  const { experimental_output, usage } = await generateText({
     model: resolvedModel,
     prompt: redactSensitive(promptParts).text,
     temperature: temperature ?? 0.5,
     experimental_output: Output.object({ schema }),
   })
 
-  return { object: experimental_output as z.infer<T> }
+  return {
+    object: experimental_output as z.infer<T>,
+    usage: readUsage(usage, promptForEstimate),
+  }
+}
+
+/**
+ * The REAL token counts the provider returned for one call through this shim.
+ *
+ * ADDITIVE — `const { object } = await generateObject(...)` is unchanged. It
+ * exists because this shim is a MODEL BOUNDARY that books nothing: unlike
+ * lib/ai/models.ts's routed lanes it never calls logAIUsage, so a caller that
+ * needs to record its own spend previously had no honest figure to record and
+ * the only alternative was to make one up.
+ *
+ * `estimated: true` marks the fallback path — a provider that returned no usage
+ * block at all. An estimate is still measured off the real prompt and the real
+ * completion; it is never a fixed number, and it says that it is an estimate.
+ */
+export interface GeneratedUsage {
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  estimated: boolean
+}
+
+function readUsage(usage: unknown, prompt: string): GeneratedUsage {
+  const u = (usage ?? {}) as Record<string, number | undefined>
+  const input = u.inputTokens ?? u.promptTokens
+  const output = u.outputTokens ?? u.completionTokens
+  if (typeof input === "number" && typeof output === "number") {
+    return { inputTokens: input, outputTokens: output, totalTokens: input + output, estimated: false }
+  }
+  // Same chars/4 heuristic lib/ai/cost-tracking.ts::estimateTokens uses — a
+  // second estimator is how two lanes drift.
+  const inputEstimate = Math.ceil(prompt.length / 4)
+  return {
+    inputTokens: typeof input === "number" ? input : inputEstimate,
+    outputTokens: typeof output === "number" ? output : 0,
+    totalTokens: (typeof input === "number" ? input : inputEstimate) + (typeof output === "number" ? output : 0),
+    estimated: true,
+  }
 }
 
 // ─── STRUCTURED OBJECT GENERATION ────────────────────────────────────────────

@@ -34,11 +34,12 @@
  * way — and a green monitor is trusted.
  */
 import { readFileSync } from "node:fs"
+import { stripComments } from "./strip-comments"
 
 const read = (p: string) => { try { return readFileSync(p, "utf8") } catch { return "" } }
 /** Strip comments so the guard measures CODE, never its own prose. */
 const code = (s: string) =>
-  s.replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")
+  stripComments(s)
 
 let pass = 0, fail = 0
 const failures: string[] = []

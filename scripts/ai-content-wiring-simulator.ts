@@ -52,23 +52,23 @@ import { readFileSync, writeFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
+import { stripComments } from "./strip-comments"
 
 // ── comment stripping ────────────────────────────────────────────────────────
 // The block-comment delimiters are BUILT, never typed as a literal: a stripper
 // reading its own source treats an inline delimiter as a real comment opener
 // and swallows the rest of the file.
+// Kept for stripperSelfTest(), which builds decoy source out of these so the
+// construct never appears literally in this file.
 const SLASH = String.fromCharCode(47)
 const STAR = String.fromCharCode(42)
-const BLOCK_COMMENT = new RegExp(SLASH + "\\" + STAR + "[\\s\\S]*?\\" + STAR + SLASH, "g")
-const LINE_COMMENT = new RegExp("^[ \\t]*" + SLASH + SLASH + ".*$", "gm")
-const TRAILING_LINE_COMMENT = new RegExp("\\s" + SLASH + SLASH + " .*$", "gm")
 
-function stripComments(source: string): string {
-  return source
-    .replace(BLOCK_COMMENT, "")
-    .replace(LINE_COMMENT, "")
-    .replace(TRAILING_LINE_COMMENT, "")
-}
+// Comment stripping lives in scripts/strip-comments.ts — see the import above.
+// What stood here was the block-comments-first idiom, assembled out of
+// String.fromCharCode so that the regex never appeared literally in the file.
+// The obfuscation hid it from every grep, but not from the defect: a slash-star
+// inside a string or a line comment still opened a block comment that ran to the
+// next star-slash anywhere below, taking the code in between with it.
 
 const raw = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 // Read fresh every call. Caching would make the negative tests read stale text

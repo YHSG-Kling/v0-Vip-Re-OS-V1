@@ -20,6 +20,23 @@ export interface CheckSuppressionParams {
   email?: string | null
   phone?: string | null
   channel: SuppressionChannel
+  /**
+   * THE MAILING ADDRESS ABOUT TO BE PRINTED ON THE PIECE (channel 'mail' only).
+   *
+   * Added because contactId / email / phone are the WRONG THREE IDENTITIES for
+   * this channel. A direct-mail recipient is identified by a mailbox, and the
+   * normal recipient of an acquisition mailer — a purchased farm list, an
+   * audience import — has no contact row, no lead row, no email and no phone.
+   * For that person the OR list below was EMPTY, so this function returned
+   * `{ suppressed: false }` having asked no question, while m493's postcard
+   * carried a printed promise that they could stop it.
+   *
+   * Supplying these two values arms the address arm (m503's
+   * `contact_suppression_list.mailing_address_key`). Omitting them changes
+   * nothing for the three other channels, which have no address.
+   */
+  mailingStreet?: string | null
+  mailingZip?: string | null
 }
 
 export interface SuppressionResult {
@@ -135,6 +152,33 @@ export async function checkSuppression(
         suppressed: true,
         reason: `Suppressed: ${suppressionRows[0].suppression_reason}`,
       }
+    }
+  }
+
+  // ── 3. THE ADDRESS ARM — the only identity a mail-only recipient has ──────
+  //
+  // Runs for channel 'mail' only, and only when the caller handed over the
+  // address it is about to print. It is a SEPARATE query from the OR above on
+  // purpose: the m503 column may not exist yet in a given database, and a
+  // PGRST204 on this arm must not be able to break the contact/email/phone arm
+  // that has always worked.
+  //
+  // The three "no"s this arm can return are NOT the same answer — see
+  // lib/direct-mail/address-suppression.ts. Only `unreadable` fails closed;
+  // `pendingMigration` cannot hide a row because no row can exist without the
+  // column, and `unkeyable` means the arm was never able to ask.
+  if (params.channel === 'mail' && (params.mailingStreet || params.mailingZip)) {
+    const { checkAddressSuppression } = await import('@/lib/direct-mail/address-suppression')
+    const addr = await checkAddressSuppression(supabase, {
+      brokerageId: params.brokerageId,
+      street: params.mailingStreet,
+      zip: params.mailingZip,
+    })
+    if (addr.suppressed) {
+      return { suppressed: true, reason: addr.reason ?? 'This mailing address has opted out of mail' }
+    }
+    if (addr.unreadable) {
+      return { suppressed: true, reason: addr.reason ?? 'Address suppression list unreadable — refusing to send' }
     }
   }
 

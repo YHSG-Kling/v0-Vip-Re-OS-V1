@@ -66,6 +66,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from "node:fs"
 import { resolve } from "node:path"
 import { createHash } from "node:crypto"
+import { stripComments } from "./strip-comments"
 import {
   DASHBOARD_DATA_SURVIVOR,
   DASHBOARD_DATA_MERGE_RECORD,
@@ -91,7 +92,7 @@ const raw = (p: string) => readFileSync(resolve(ROOT, p), "utf8")
 const sha = (p: string) => createHash("sha256").update(raw(p)).digest("hex")
 /** Comment-stripped source. Prose must never satisfy a structural assertion. */
 const code = (p: string) =>
-  raw(p).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+  stripComments(raw(p))
 
 const ENTRIES = Object.entries(DASHBOARD_DATA_SURVIVOR) as Array<[DashboardDataType, string]>
 const survivorFiles = [...new Set(ENTRIES.map(([, v]) => v.split(":")[0]))]

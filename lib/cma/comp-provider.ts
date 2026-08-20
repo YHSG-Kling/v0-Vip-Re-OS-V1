@@ -78,7 +78,11 @@
  */
 
 import "server-only"
-import { getRentcastComps, type RentcastComp } from "@/lib/property/rentcast"
+import {
+  getRentcastAvmAndComps,
+  type RentcastAvmAndComps,
+  type RentcastComp,
+} from "@/lib/property/rentcast"
 import {
   resolveRentcastEligibility,
   type RentcastEligibilityReason,
@@ -174,6 +178,11 @@ const RENTCAST_COMPS_COST_CENTS = 15
  *  ledger (an unmetered egress path is not allowed), without inventing a price. */
 const IDX_PULL_COST_DOLLARS = 0
 
+/** Vendor-ledger lane for a CMA comp pull when the caller did not name one.
+ *  Named once so the RentCast pull and the IDX pull cannot file under two
+ *  different lanes for the same CMA. */
+const DEFAULT_COMP_SYSTEM_SOURCE = "cma_comp_source"
+
 // ─── Public shapes ──────────────────────────────────────────────────────────
 
 export interface CompSourceRequest {
@@ -183,6 +192,15 @@ export interface CompSourceRequest {
    *  substituted for agents.id or any other id space. */
   agentUserId?: string | null
   teamId?: string | null
+  /**
+   * The contact this CMA is being run for, when the caller has one. Vendor-
+   * ledger attribution ONLY — never a credential selector, never a tenant
+   * boundary (`brokerageId` is both). `AiCmaInput.contactId` had been accepted
+   * by the orchestrator and read by nothing since it was written; this is where
+   * it now lands, so a provider charge can be traced to the client whose CMA
+   * spent it instead of only to the brokerage.
+   */
+  contactId?: string | null
   address: string
   city?: string | null
   state?: string | null
@@ -201,6 +219,61 @@ export interface CompSourceRequest {
   /** Vendor-ledger attribution for the lane doing the sourcing. */
   systemSource?: string
 }
+
+/**
+ * THE PROVIDER'S AUTOMATED ESTIMATE — a BASELINE, never the recommendation.
+ *
+ * Owner, verbatim: "getting a cma is very complicated and rentcast does ovver an
+ * avm which can be argued but a possible baseline."
+ *
+ * That is exactly the status this type encodes and enforces. RentCast's
+ * `/avm/value` returns a model-computed price alongside the comparables the CMA
+ * is built from, and it arrives on the SAME billed call — so refusing to show it
+ * costs nothing and hides something the agent may legitimately want to argue
+ * with. Showing it as if it were the analysis, however, would replace a
+ * comp-derived, state-rate-adjusted value conclusion with a black-box number.
+ *
+ * THREE GUARANTEES, and they are the whole point of this being a named type
+ * rather than three loose numbers on the provenance:
+ *
+ *  1. IT IS LABELLED WHEREVER IT SURFACES. `kind` is a fixed discriminator and
+ *     `label` is the sentence a renderer must show beside the figure. A consumer
+ *     cannot destructure a bare `value` out of this without stepping over both.
+ *
+ *  2. IT NEVER BECOMES THE RECOMMENDATION. Nothing in the CMA math reads this.
+ *     `runAiCma` computes estimatedValueLow/Mid/High from the ADJUSTED CLOSED
+ *     comps alone and this field is not an input to that; `cma_reports
+ *     .recommended_price` is written from the comp-bounded pricing strategy.
+ *     If this ever became either, the CMA would be reporting a vendor's model as
+ *     its own analysis — which is the failure the comp-sourcing rules above
+ *     exist to prevent, arriving through a different door.
+ *
+ *  3. MISSING READS AS MISSING. `available: false` with `value: null` and a
+ *     plain-language `unavailableNote`. Never 0, never silently absent — a
+ *     baseline of $0 next to a $600k range is a defect that looks like data,
+ *     and a baseline that quietly vanishes when RentCast is suppressed lets a
+ *     reader assume none was ever offered.
+ */
+export interface ProviderAvmBaseline {
+  /** Fixed discriminator. Its only job is to be impossible to confuse with a
+   *  comp-derived conclusion at a call site or in a JSON blob. */
+  kind: "provider_automated_estimate"
+  provider: "rentcast"
+  /** The words that must appear beside the number on any surface that shows it. */
+  label: string
+  /** True only when the provider actually published an estimate. */
+  available: boolean
+  /** Null when unavailable — NEVER 0. */
+  value: number | null
+  rangeLow: number | null
+  rangeHigh: number | null
+  /** Why there is no baseline, in the report's own words. Null when available. */
+  unavailableNote: string | null
+}
+
+/** The label, named once so every surface says the same thing. */
+export const PROVIDER_AVM_BASELINE_LABEL =
+  "RentCast automated valuation (AVM) — the data provider's own automated estimate, shown as a baseline for comparison. It is NOT this analysis's value conclusion and NOT the recommended list price: those are derived from the adjusted closed comparable sales below."
 
 /** What actually produced this comp set. Rides on the CMA result. */
 export interface CompProvenance {
@@ -271,6 +344,14 @@ export interface CompProvenance {
   /** True when a gap-fill search was actually RUN (it may still have returned
    *  nothing usable — which is a different fact from never having tried). */
   aiGapFillAttempted: boolean
+  /**
+   * The provider's own automated estimate, carried as a labelled BASELINE.
+   * ALWAYS PRESENT as an object — when RentCast was not called, or answered
+   * without a price, this is `available: false` with a note saying so. It is
+   * never omitted and never zero. See ProviderAvmBaseline for the three
+   * guarantees this field exists to hold.
+   */
+  avmBaseline: ProviderAvmBaseline
   /** Plain-language facts about what happened — every empty side gets one. */
   notes: string[]
   citations: string[]
@@ -315,16 +396,28 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
   const tenantOwnsIdx = rentcastEligibility.idx.status === "connected"
 
   let rentcastRows: RentcastComp[] = []
+  // The AVM baseline rides on the SAME `/avm/value` response as the comparables
+  // — see getRentcastAvmAndComps. It starts unavailable and is only ever
+  // upgraded by a provider that actually answered, so every path out of this
+  // function carries a baseline object that says what it knows.
+  let avmPull: RentcastAvmAndComps | null = null
   if (rentcastEligibility.eligible) {
-    rentcastRows = await getRentcastComps({
+    avmPull = await getRentcastAvmAndComps({
       brokerageId: req.brokerageId,
       agentUserId: req.agentUserId ?? null,
       teamId: req.teamId ?? null,
       address: fullAddress,
       limit: RENTCAST_COMP_PULL_LIMIT,
+      // The lane that actually spent, on the vendor ledger row. Without this
+      // every CMA comp pull was filed as `buyer_search`, which is the one
+      // question the ledger exists to answer.
+      systemSource: req.systemSource ?? DEFAULT_COMP_SYSTEM_SOURCE,
+      contactId: req.contactId ?? null,
     })
-    // getRentcastComps meters its own call (usage_type comps_lookup); this only
-    // mirrors the spend onto the CMA's own cost estimate.
+    rentcastRows = avmPull.comps
+    // The pull meters its own call ONCE (usage_type comps_lookup) and the AVM
+    // comes back on that same call at no marginal cost; this only mirrors the
+    // one spend onto the CMA's own cost estimate. It is NOT doubled for the AVM.
     costCents += RENTCAST_COMPS_COST_CENTS
     if (rentcastRows.length > 0) {
       citations.push("RentCast comparable sales (/avm/value comparables)")
@@ -346,6 +439,19 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
         ? "No closed comparable sales were sourced: it could not be determined whether this brokerage has its own IDX Broker feed connected, and the platform's RentCast account is not spent on that uncertainty. This is a lookup failure, NOT a statement that no comparable sales exist — retry before drawing any conclusion from this report."
         : "RentCast is not configured for this platform (no platform key), so no closed comparable sales could be sourced.",
     )
+  }
+
+  // ── 1b. THE PROVIDER'S AVM, AS A LABELLED BASELINE ────────────────────────
+  //
+  // Built here, from the pull above, and stated in `notes` either way — because
+  // the two ways this can go wrong are showing a zero and showing nothing.
+  const avmBaseline = buildAvmBaseline(avmPull, rentcastEligibility.detail)
+  if (avmBaseline.available) {
+    notes.push(
+      `A RentCast automated valuation (AVM) of $${avmBaseline.value!.toLocaleString()} is carried on this analysis AS A BASELINE FOR COMPARISON ONLY. It is the data provider's own automated estimate; it is not derived from the comparable sales in this report, it has had no state appraiser adjustment applied to it, and it is neither this analysis's value conclusion nor the recommended list price.`,
+    )
+  } else {
+    notes.push(`No provider AVM baseline is available for this property: ${avmBaseline.unavailableNote}`)
   }
 
   // ── 2. Split RentCast's rows by what their dates actually say ─────────────
@@ -443,9 +549,9 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
       usageType: "api_call",
       unitCount: 1,
       estimatedCost: IDX_PULL_COST_DOLLARS,
-      systemSource: "cma_comp_source",
+      systemSource: req.systemSource ?? DEFAULT_COMP_SYSTEM_SOURCE,
       brokerageId: req.brokerageId,
-      metadata: { endpoint: "/clients/featured", rows: idxRows.length, purpose: "cma_active_comps" },
+      metadata: { endpoint: "/clients/featured", rows: idxRows.length, purpose: "cma_active_comps", contact_id: req.contactId ?? null },
     }).catch(() => null)
 
     const idxActive: ScoredComp[] = []
@@ -464,8 +570,16 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
       activeProvider = "idxbroker"
       citations.push("IDX Broker connected feed (brokerage featured/active listings)")
     } else {
+      // WHICH sentence is true depends on whether RentCast was even allowed to
+      // run. When the TENANT owns the IDX feed, RentCast was deliberately not
+      // called at all (rentcastEligibility.reason === "tenant_has_idx"), so
+      // there is nothing to fall back TO — promising a fallback that cannot
+      // happen is the same class of defect as a silent empty, just politer.
       notes.push(
-        "IDX Broker is connected but its featured feed returned no active listings matching the subject's city/ZIP, so the active comparables fall back to RentCast.",
+        rentcastEligibility.eligible
+          ? "IDX Broker is connected but its featured feed returned no active listings matching the subject's city/ZIP, so the active comparables fall back to RentCast."
+          : "IDX Broker is connected but its featured feed returned no active listings matching the subject's city/ZIP. There is NO RentCast fallback for the active side on this CMA: " +
+              rentcastEligibility.detail,
       )
     }
     if (idxPending.length > 0) {
@@ -551,7 +665,7 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
         subjectYearBuilt: req.subject.yearBuilt ?? null,
         subjectPropertyType: req.propertyType ?? null,
         want,
-        systemSource: req.systemSource ?? "cma_comp_source",
+        systemSource: req.systemSource ?? DEFAULT_COMP_SYSTEM_SOURCE,
       })
     } catch {
       ai = null
@@ -657,6 +771,7 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
       aiGapFilledSlots,
       aiGapFilledCompCount,
       aiGapFillAttempted,
+      avmBaseline,
       notes,
       citations,
       estimatedCostCents: costCents,
@@ -665,6 +780,64 @@ export async function sourceCompsForCma(req: CompSourceRequest): Promise<Sourced
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+/**
+ * Turn the RentCast pull into the labelled baseline, or into an honest "no
+ * baseline available" with the reason spelled out.
+ *
+ * `null` in means RentCast was never called at all (the gate refused before any
+ * request), which is a different sentence from "we called and it had no
+ * estimate" — so `eligibilityDetail` is carried in to say WHICH question
+ * suppressed it rather than reporting a provider failure that never happened.
+ *
+ * There is deliberately NO branch here that produces `available: true` with a
+ * null or zero value: the only way to be available is for the provider to have
+ * published a positive price, which `getRentcastAvmAndComps` has already
+ * checked. A baseline that says "available" and shows nothing is worse than no
+ * baseline.
+ */
+function buildAvmBaseline(
+  pull: RentcastAvmAndComps | null,
+  eligibilityDetail: string,
+): ProviderAvmBaseline {
+  const unavailable = (note: string): ProviderAvmBaseline => ({
+    kind: "provider_automated_estimate",
+    provider: "rentcast",
+    label: PROVIDER_AVM_BASELINE_LABEL,
+    available: false,
+    value: null,
+    rangeLow: null,
+    rangeHigh: null,
+    unavailableNote: note,
+  })
+
+  if (pull == null) {
+    return unavailable(
+      `RentCast was not queried for this CMA, so it published no automated estimate to show. ${eligibilityDetail}`,
+    )
+  }
+  if (!pull.avmAvailable || pull.avm.value == null) {
+    return unavailable(
+      pull.avmUnavailableReason === "provider_error"
+        ? "the RentCast lookup did not complete, so no automated estimate could be read. This is a lookup failure, not a statement that the property has no value — retry before drawing any conclusion from its absence."
+        : pull.avmUnavailableReason === "no_address"
+        ? "no address could be assembled to look up."
+        : pull.avmUnavailableReason === "not_eligible"
+        ? `RentCast was not queried. ${pull.eligibility.detail}`
+        : "RentCast was queried and published no automated valuation for this address — its model has no estimate here. Nothing was substituted in its place.",
+    )
+  }
+  return {
+    kind: "provider_automated_estimate",
+    provider: "rentcast",
+    label: PROVIDER_AVM_BASELINE_LABEL,
+    available: true,
+    value: pull.avm.value,
+    rangeLow: pull.avm.rangeLow,
+    rangeHigh: pull.avm.rangeHigh,
+    unavailableNote: null,
+  }
+}
 
 interface DatedComp {
   comp: ScoredComp

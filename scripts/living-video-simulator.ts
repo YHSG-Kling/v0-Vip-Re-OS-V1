@@ -25,6 +25,7 @@ import { paddingSecondsFor } from "../lib/remotion/voiceover-mixer"
 import { isUnavailableStatus, normalizeVendorStatus } from "../lib/property/resolve-property-facts"
 import { SIGNAL_REGISTRY } from "../lib/kernel/signal-registry"
 import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -33,9 +34,7 @@ function ok(label: string, cond: boolean, detail?: string) {
   else { fail++; failures.push(label); console.log(`  ✗ ${label}${detail ? ` — ${detail}` : ""}`) }
 }
 function code(path: string): string {
-  return readFileSync(path, "utf8")
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")
+  return stripComments(readFileSync(path, "utf8"))
 }
 
 const KIND = "seller_weekly_update"

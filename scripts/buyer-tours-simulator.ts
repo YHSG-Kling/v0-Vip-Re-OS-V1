@@ -46,6 +46,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs"
 import { join, relative, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
+import { stripComments } from "./strip-comments"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 
@@ -67,12 +68,12 @@ function report() {
 // without a literal `/*` swallowing the rest of the source.
 const SLASH = String.fromCharCode(47)
 const STAR = String.fromCharCode(42)
-const BLOCK_COMMENT = new RegExp(SLASH + "\\" + STAR + "[\\s\\S]*?\\" + STAR + SLASH, "g")
-const LINE_COMMENT = new RegExp("(^|[^:])" + SLASH + SLASH + ".*$", "gm")
-function stripComments(source: string): string {
-  // Line comments keep the leading char they matched (so `https://` survives via [^:]).
-  return source.replace(BLOCK_COMMENT, "").replace(LINE_COMMENT, "$1")
-}
+// The block-comments-first pair that stood here was assembled from char codes so it
+// never appeared literally in the file — invisible to grep, but not to the defect.
+// Comment removal now goes through scripts/strip-comments.ts, which decides comment
+// boundaries with a real scanner instead of two regexes that cannot see each other.
+// The `[^:]` guard that used to protect `https://` is no longer needed: the scanner
+// knows a URL inside a string literal is string content, not a comment.
 
 function masked(relPath: string): string {
   return stripComments(readFileSync(join(root, relPath), "utf8"))

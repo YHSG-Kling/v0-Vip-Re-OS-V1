@@ -65,6 +65,7 @@ import {
   type BehavioralEvent,
 } from "../lib/lead-scoring/behavioral-events"
 import { recordBehavioralEvent, isScoredEventType } from "../lib/lead-scoring/record-behavioral-event"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -76,12 +77,12 @@ const src = (p: string) => (existsSync(join(process.cwd(), p)) ? readFileSync(jo
 /** Source with comments removed. The phantom-column assertions below must test CODE:
  *  the fix documents each dead column by name, and a raw-text search would trip on
  *  the very explanation that proves the column is no longer read. */
-const code = (p: string) =>
-  src(p)
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .split("\n")
-    .map((l) => l.replace(/(^|\s)\/\/.*$/, ""))
-    .join("\n")
+// stripComments already removes TRAILING line comments, so the per-line pass that
+// used to follow it is gone. It was not merely redundant: `(^|\s)//.*$` fires on the
+// slashes inside any string holding a URL, so it deleted the tail of every line
+// carrying one — the analyzer's own blind spot, bolted on to cover the anchored
+// regex that could not see a trailing comment in the first place.
+const code = (p: string) => stripComments(src(p))
 
 console.log("══════════════════════════════════════════════════")
 console.log(" Lead scoring — one scorer, reading the table that actually exists")

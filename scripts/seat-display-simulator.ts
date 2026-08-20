@@ -32,6 +32,7 @@
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import { stripComments } from "./strip-comments"
 import {
   SEAT_ROLES, PARTNER_ROLES, TIER_SEAT_LIMITS, TIER_ORDER, TIER_INVITABLE_ROLES,
   seatLimitForTier, roleConsumesSeat, effectiveSeatLimit,
@@ -284,9 +285,7 @@ console.log("\n[a workspace with no AGENT is inert, and says so]")
   check("the panel shows the advisory", /agentRoleAdvisory/.test(panel))
   // Comment-stripped: the fix documents the phrase it replaced, so a raw search
   // trips on the very explanation that proves the copy changed.
-  const panelCode = panel
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .split("\n").map((l) => l.replace(/(^|\s)\/\/.*$/, "")).join("\n")
+  const panelCode = stripComments(panel)
   check("…and the over-limit copy offers the plan, not a scolding",
     /See plans/.test(panelCode) && !/remove or suspend a user/.test(panelCode))
 }

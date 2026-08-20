@@ -64,6 +64,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs"
 import { resolve } from "node:path"
 import { createHash } from "node:crypto"
+import { stripComments } from "./strip-comments"
 
 const ROOT = process.cwd()
 const RUN_NEGATIVE = !process.argv.includes("--no-negative")
@@ -77,7 +78,7 @@ const F = {
 /** Read fresh every time — the negative layer rewrites these files. */
 const raw = (p: string) => readFileSync(resolve(ROOT, p), "utf8")
 /** Comment-stripped source: prose must never satisfy a structural assertion. */
-const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+const strip = (s: string) => stripComments(s)
 const code = (p: string) => strip(raw(p))
 
 // ─────────────────────────────────────────────────────────────────────────────

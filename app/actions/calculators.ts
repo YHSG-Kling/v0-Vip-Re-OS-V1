@@ -1073,6 +1073,9 @@ export async function calculateHomeValue(
         narrative: cma.aiNarrative,
         citations: cma.citations,
         state_guidelines_used: cma.stateGuidelinesUsed,
+        // WHICH YEAR'S guidelines priced it, and whether that is this CMA's own
+        // year — carried so a caller cannot read the rates as current by default.
+        state_guideline_vintage: cma.stateGuidelineVintage,
         generated_at: cma.generatedAt,
       },
       comparables,

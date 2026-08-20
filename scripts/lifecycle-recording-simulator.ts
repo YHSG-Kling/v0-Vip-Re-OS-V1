@@ -38,6 +38,7 @@
  * Identity now comes from the SESSION and the listing must belong to it.
  */
 import { readFileSync, existsSync } from "node:fs"
+import { stripComments } from "./strip-comments"
 import {
   RECORDABLE_EVENTS,
   recordableEventsForStage,
@@ -53,7 +54,7 @@ const check = (n: string, c: boolean) => {
 }
 const src = (p: string) =>
   existsSync(p)
-    ? readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+    ? stripComments(readFileSync(p, "utf8"))
     : ""
 
 const ENGINE     = "app/actions/seller-listing/execution-engine.ts"

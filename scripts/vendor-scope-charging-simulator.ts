@@ -25,6 +25,7 @@
 import { readFileSync } from "fs"
 import { join, dirname } from "path"
 import { fileURLToPath } from "url"
+import { stripComments } from "./strip-comments"
 import {
   VENDOR_INVITE_ROLES,
   VENDOR_CHARGE_ADMIN_ROLES,
@@ -266,9 +267,7 @@ check("verdict documents WHY (brokerage-wide placement flags, no team-scoped sur
 // DOES, not what it says. The header legitimately narrates the m355 merge (and so
 // names the dropped table); reading prose as code made a truthful comment fail a
 // check about queries.
-const placementSrc = src("lib/vendors/premium-placement.ts")
-  .replace(/\/\*[\s\S]*?\*\//g, "")
-  .replace(/^[ \t]*\/\/.*$/gm, "")
+const placementSrc = stripComments(src("lib/vendors/premium-placement.ts"))
 // The flags moved onto `vendors` in m355; the SCOPE claim is unchanged, and that
 // is what this asserts — a brokerage-anchored flip of the placement flags.
 //

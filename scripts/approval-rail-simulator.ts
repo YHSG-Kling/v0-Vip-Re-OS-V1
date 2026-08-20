@@ -67,6 +67,7 @@
  */
 import { readFileSync } from "node:fs"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import { stripComments } from "./strip-comments"
 import {
   BLOG_PENDING_PUBLISH_STATUS,
   BLOG_REJECTED_PUBLISH_STATUS,
@@ -82,7 +83,7 @@ const check = (n: string, c: boolean) => {
   if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; fails.push(n); console.log(`  ✗ ${n}`) }
 }
 const src = (p: string) =>
-  readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+  stripComments(readFileSync(p, "utf8"))
 
 console.log("══════════════════════════════════════════════════")
 console.log(" The approval rail (every queued thing is findable, and 'no' sticks)")

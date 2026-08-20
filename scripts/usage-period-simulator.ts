@@ -22,6 +22,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { currentUsagePeriod } from "../lib/usage/period"
+import { blankComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -31,9 +32,7 @@ const check = (n: string, c: boolean) => {
 const read = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 
 /** Strip comments so prose cannot satisfy (or trip) a scan. */
-const code = (s: string) => s
-  .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
-  .replace(/\/\/[^\n]*/g, (m) => " ".repeat(m.length))
+const code = (s: string) => blankComments(s)
 
 const PERIOD = read("lib/usage/period.ts")
 const USAGE = read("lib/usage.ts")

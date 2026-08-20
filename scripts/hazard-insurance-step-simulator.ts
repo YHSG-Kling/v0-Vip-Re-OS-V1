@@ -96,6 +96,7 @@ import {
   milestoneJourneyFor,
 } from "../lib/transactions/milestone-catalog"
 import { resolveMilestoneIdentity } from "../lib/transactions/milestone-identity"
+import { stripComments } from "./strip-comments"
 
 const ROOT = process.cwd()
 const RUN_NEGATIVE = !process.argv.includes("--no-negative")
@@ -115,7 +116,7 @@ const F = {
 const raw = (p: string) => readFileSync(resolve(ROOT, p), "utf8")
 /** Comment-stripped source: prose must never satisfy a structural assertion. */
 const code = (p: string) =>
-  raw(p).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+  stripComments(raw(p))
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Construct-level source utilities
@@ -163,10 +164,10 @@ function callArgs(src: string, callee: string): string[] | null {
 function isUseServerModule(relPath: string): boolean {
   const abs = resolve(ROOT, relPath)
   if (!existsSync(abs)) return false
-  const src = readFileSync(abs, "utf8")
-    .replace(/^﻿/, "")
-    .replace(/^(?:\s*(?:\/\/[^\n]*|\/\*[\s\S]*?\*\/)\s*)+/, "")
-    .trimStart()
+  // Comments removed by the one scanner that decides comment boundaries correctly;
+  // a header comment containing a slash-star used to end the anchored run early and
+  // hide the directive underneath it.
+  const src = stripComments(readFileSync(abs, "utf8").replace(/^﻿/, "")).trimStart()
   return /^["']use server["']/.test(src)
 }
 

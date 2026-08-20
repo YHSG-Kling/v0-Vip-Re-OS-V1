@@ -472,23 +472,62 @@ export async function handleLeadAssigned(params: {
     motivationToContactType(lead.lead_type) ??
     null
 
-  // `converted_at` — WHEN the lead became a contact. NOTHING in the tree wrote it
-  // before this line: the only other appearances are lib/platform/demo-tenant.ts
-  // (seed data) and lib/agents/referral-closer.ts (the unrelated
-  // `referrals.converted_at`). So `leads.contact_id` was the ONLY real conversion
-  // guard, and every "when did this convert" read — the lead-lineage console, any
-  // time-to-convert measure — was reading a column no writer had ever filled.
-  // It is stamped here, beside the contact_id it belongs to, so the pair is
-  // written by the same statement and can never disagree.
-  await supabase
-    .from('leads')
-    .update({
-      contact_id: contact.id,
-      converted_at: new Date().toISOString(),
-      is_active: false,
-      updated_at: new Date().toISOString(),
+  // ── THE LINEAGE LINK **AND** THE HISTORY CARRY ────────────────────────────
+  //
+  // This used to be a bare inline UPDATE stamping `contact_id` + `converted_at`
+  // and nothing else. That is HALF of what a conversion owes the new contact,
+  // and the missing half was the half nobody could see:
+  //
+  //   · the LINK (leads.contact_id + converted_at) makes the `contact_lead_history`
+  //     view (migration 039) return lineage. The inline update did that much.
+  //   · the RE-POINT — filling `contact_id` on the SIXTEEN tables that carry BOTH
+  //     `lead_id` and `contact_id` (ai_isa_activities, ai_isa_calls,
+  //     ai_isa_qualifications, voice_calls, isa_outreach_log, contact_consent_events,
+  //     chat_sessions, …) — is what makes the ISA history sheet, the contact detail
+  //     pane and conversation memory show the lead-phase conversation. NOTHING here
+  //     did that.
+  //
+  // `carryLeadHistoryToContact` (lib/contact-promotion/history-carry.ts) performs
+  // both, and it was wired into the MANUAL lane only (promoteLeadToContactService
+  // step 5b). This — handleLeadAssigned — is the AUTOMATIC lane, the one the owner's
+  // routing ruling makes the NORMAL path: a qualified lead that clears
+  // evaluateAndAssignLead becomes a contact here with no human click. So every
+  // automatically-converted contact opened onto an EMPTY history while the lead's
+  // own calls, qualification and consent trail sat unreachable behind a `leads` row
+  // migration 034 locks agents out of. The two lanes now run the SAME function —
+  // not a second copy, which is exactly how the two drifted in the first place.
+  //
+  // Best-effort by construction: every step inside destructures its own `{ error }`
+  // and reports it as a warning. A history-carry failure must never turn a
+  // successful assignment+conversion into a thrown request.
+  {
+    const { carryLeadHistoryToContact } = await import('@/lib/contact-promotion/history-carry')
+    const carry = await carryLeadHistoryToContact(supabase, {
+      leadId,
+      contactId: contact.id,
+      brokerageId,
     })
-    .eq('id', leadId)
+    for (const w of carry.warnings) {
+      console.error(`[lead-acquisition] history carry: ${w}`)
+    }
+    if (Object.keys(carry.repointed).length > 0) {
+      console.log(`[lead-acquisition] history re-pointed to contact ${contact.id}:`, carry.repointed)
+    }
+
+    // `is_active` is NOT the carry's business — it is this file's, which declares
+    // itself the lead lifecycle's only writer. Stamped separately so the carry
+    // stays the single shared implementation of the link + re-point and nothing
+    // else. supabase-js RESOLVES a refusal, so the error is read.
+    const { error: deactivateError } = await supabase
+      .from('leads')
+      .update({ is_active: false, updated_at: new Date().toISOString() })
+      .eq('id', leadId)
+    if (deactivateError) {
+      console.error(
+        `[lead-acquisition] lead ${leadId} converted to contact ${contact.id} but was NOT deactivated: ${deactivateError.message}`,
+      )
+    }
+  }
 
   await supabase.from('lifecycle_events').insert({
     entity_type: 'lead',

@@ -402,7 +402,11 @@ console.log("\n[18 · HEYGEN GONE FROM THE SCHEMA + D-ID V4 EXPRESSIVE ENGINE]")
     "lib/ai-isa/isa-outreach-logger.ts", "app/actions/listing-media.ts", "app/actions/video/create-video-project.ts",
     "app/dashboard/listings/[id]/media/components/video-panel.tsx", "app/components/features/video/VideosDashboard.tsx"]
   check("ZERO heygen_* COLUMN references remain (l39-s01 dropped the five ai_video_projects columns live; canonical provider_* everywhere)",
-    sweep.every((f) => !/heygen_(avatar_id|voice_id|template_id|video_id|status)\b/.test(src(f).replace(/\/\/.*|\* .*/g, "")))
+    // `.replace(/\/\/.*|\* .*/g, "")` used to stand here. Besides being the wrong way to
+    // remove a line comment, its second alternative deleted from any `* ` to end of line —
+    // which is a multiplication in live code, not a comment. Measured over the 8 files
+    // this sweep reads, it blanked 117,663 characters across 9,111 lines that are code.
+    sweep.every((f) => !/heygen_(avatar_id|voice_id|template_id|video_id|status)\b/.test(stripComments(src(f))))
     && existsSync(join(process.cwd(), "scripts/l39-s01-heygen-columns-drop.sql")))
   check("the snapshot tracks provider_avatar_id/provider_voice_id/provider_template_id (drift guard sees the real schema)",
     ["provider_avatar_id", "provider_voice_id", "provider_template_id"].every((c) => {

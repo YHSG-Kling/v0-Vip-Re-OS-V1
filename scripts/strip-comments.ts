@@ -77,7 +77,52 @@ export function blankComments(src: string): string {
   return scan(src, true)
 }
 
-function scan(src: string, blank: boolean): string {
+/**
+ * Comments AND string/template CONTENTS blanked to spaces. Delimiters kept, so
+ * `"…"` stays `"…"` with spaces inside; `${ … }` interpolations stay CODE,
+ * because a name inside one is a real reference. Line numbers and character
+ * offsets both survive, exactly as blankComments preserves them.
+ *
+ * ── WHY THIS EXISTS, AND WHAT IT COST TO LEARN (round four) ─────────────────
+ *
+ * Every analyzer that asks "is this name a USE or merely a MENTION" has to blank
+ * string contents — an export name inside a narrative string is documentation,
+ * not wiring, and orphan-export-guard once classed 240 exports as "referenced"
+ * on exactly that mistake. So each of them grew its own masker, and each grew
+ * the SAME one:
+ *
+ *     src.replace(/`(?:\\[\s\S]|[^`\\])*`/g, "``")
+ *        .replace(/"(?:\\[\s\S]|[^"\\\n])*"/g, '""')
+ *        .replace(/'(?:\\[\s\S]|[^'\\\n])*'/g, "''")
+ *
+ * That is the block-comments-first defect wearing a different hat, and it fails
+ * the same way: a lone backtick INSIDE a double-quoted string opens a template
+ * for the first regex, which then runs to the next backtick anywhere below and
+ * blanks every line in between — code included. Measured, not theorised: in
+ * lib/agents/generate-client-message.ts the backtick pass deleted the region
+ * containing `export async function generateClientMessage`, so a scanner built
+ * on it concluded the module does not export it — and duly reported the twenty
+ * `await import("@/lib/agents/generate-client-message")` call sites across
+ * lib/agents, lib/ai-isa and lib/kernel as importing a name that does not exist.
+ * Twenty false accusations against working code, from one stray backtick.
+ *
+ * Swapping the regex order only moves the bug, for the same reason it did for
+ * comments: a quote inside a template would then end the template early. Strings,
+ * templates, comments and regex literals nest in ways no sequence of regexes can
+ * decide. The scanner below already tracks all four correctly — it has to, in
+ * order to know where a comment is — so masking is a THIRD output of the one
+ * scan rather than a fourth hand-rolled approximation of it.
+ */
+export function blankStrings(src: string): string {
+  return scan(src, true, true)
+}
+
+/**
+ * @param blank  replace comments with SPACES (offsets survive) rather than deleting them
+ * @param mask   additionally blank string and template CONTENTS (delimiters kept,
+ *               `${…}` interpolations left as code)
+ */
+function scan(src: string, blank: boolean, mask = false): string {
   let out = ""
   let i = 0
   const n = src.length
@@ -101,10 +146,18 @@ function scan(src: string, blank: boolean): string {
   const tmplStack: number[] = [] // brace depth captured at each open `${`
   let braceDepth = 0
 
+  /** Same span, every character a space except the newlines (offsets AND lines survive). */
+  const blanked = (text: string) => text.replace(/[^\n]/g, " ")
+
   while (i < n) {
     if (mode === "template") {
       const t = src[i]
-      if (t === "\\") { out += src[i] + (src[i + 1] ?? ""); i += 2; continue }
+      if (t === "\\") {
+        const esc = src[i] + (src[i + 1] ?? "")
+        out += mask ? blanked(esc) : esc
+        i += 2
+        continue
+      }
       if (t === "`") { out += t; i++; mode = "code"; prevSignificant = "`"; continue }
       if (t === "$" && src[i + 1] === "{") {
         out += "${"
@@ -116,8 +169,8 @@ function scan(src: string, blank: boolean): string {
       }
       let k = i
       while (k < n && src[k] !== "\\" && src[k] !== "`" && !(src[k] === "$" && src[k + 1] === "{")) k++
-      if (k > i) { out += src.slice(i, k); i = k; continue }
-      out += t
+      if (k > i) { const span = src.slice(i, k); out += mask ? blanked(span) : span; i = k; continue }
+      out += mask ? blanked(t) : t
       i++
       continue
     }
@@ -171,7 +224,12 @@ function scan(src: string, blank: boolean): string {
       out += c
       i++
       while (i < n) {
-        if (src[i] === "\\") { out += src[i] + (src[i + 1] ?? ""); i += 2; continue }
+        if (src[i] === "\\") {
+          const esc = src[i] + (src[i + 1] ?? "")
+          out += mask ? blanked(esc) : esc
+          i += 2
+          continue
+        }
         if (src[i] === quote) { out += src[i]; i++; break }
         // A single- or double-quoted literal cannot span a newline; if one appears, the quote was
         // not a string at all (an apostrophe in JSX text, say) and swallowing to EOF would repeat
@@ -185,8 +243,8 @@ function scan(src: string, blank: boolean): string {
           if (ch === "\\" || ch === quote || ch === "\n") break
           k++
         }
-        if (k > i) { out += src.slice(i, k); i = k; continue }
-        out += src[i]
+        if (k > i) { const span = src.slice(i, k); out += mask ? blanked(span) : span; i = k; continue }
+        out += mask ? blanked(src[i]) : src[i]
         i++
       }
       prevSignificant = quote

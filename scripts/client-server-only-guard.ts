@@ -33,6 +33,7 @@
  */
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs"
 import { join, dirname, resolve } from "node:path"
+import { stripComments } from "./strip-comments"
 
 const root = process.cwd()
 
@@ -110,10 +111,12 @@ const isServerOnly = (src: string) => /(?:^|\n)\s*import\s+["']server-only["']/.
  * and blank lines first, then look at what is actually first.
  */
 function leadingDirective(src: string): string | null {
-  const body = src
-    .replace(/^\uFEFF/, "")
-    .replace(/^(?:\s*(?:\/\/[^\n]*|\/\*[\s\S]*?\*\/)\s*)+/, "")
-    .trimStart()
+  // The prologue is found by removing comments through the ONE scanner that can
+  // actually decide where a comment ends (scripts/strip-comments.ts). The anchored
+  // alternation this replaced was correct only by luck: it ordered the line-comment
+  // branch first, so it dodged the block-first defect \u2014 but any header comment
+  // containing a slash-star still ended the run early and left the directive hidden.
+  const body = stripComments(src.replace(/^\uFEFF/, "")).trimStart()
   const m = /^["'](use (?:client|server))["']/.exec(body)
   return m ? m[1] : null
 }

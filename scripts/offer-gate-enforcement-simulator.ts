@@ -49,6 +49,7 @@ import {
   OFFER_EVENT,
   isTerminalOfferState,
 } from "../lib/buyer-offer/offer-lifecycle"
+import { stripComments } from "./strip-comments"
 import {
   evaluateOfferLimit,
   limitProximity,
@@ -90,9 +91,6 @@ function controlled<T>(
 
 const ROOT = process.cwd()
 /** Source with comments removed — prose that DESCRIBES a defect is not the defect. */
-const stripComments = (t: string) => t
-  .replace(/\/\*[\s\S]*?\*\//g, "")
-  .replace(/^[ \t]*\/\/.*$/gm, "")
 const src = (p: string) =>
   existsSync(join(ROOT, p)) ? stripComments(readFileSync(join(ROOT, p), "utf8")) : ""
 

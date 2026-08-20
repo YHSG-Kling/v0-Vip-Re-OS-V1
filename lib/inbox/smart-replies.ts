@@ -36,6 +36,28 @@ interface BuildContextInput {
   recentThread?: Array<{ direction: "inbound" | "outbound"; body: string }>
 }
 
+/**
+ * What this generator SPENT, and whether it spent anything at all.
+ *
+ * `modelCalled: false` is the canned-fallback path — no gateway key, or the
+ * call threw — and it is 0 because nothing was bought, not because nobody
+ * looked. A caller that ledgers a run of this generator must take the number
+ * from here; the previous shape returned only the replies, so the AI Toolkit's
+ * Smart Reply tool had no honest figure available and reported a made-up 250.
+ */
+export interface SmartReplyUsage {
+  modelCalled: boolean
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  /** true when the provider returned no usage block and the count is a chars/4 estimate. */
+  estimated: boolean
+}
+
+const NO_SPEND: SmartReplyUsage = {
+  modelCalled: false, inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false,
+}
+
 const FALLBACK_REPLIES: (input: BuildContextInput) => SmartReply[] = (input) => {
   const name = input.contactName?.split(" ")[0] ?? "there"
   return [
@@ -54,13 +76,15 @@ const FALLBACK_REPLIES: (input: BuildContextInput) => SmartReply[] = (input) => 
   ]
 }
 
-export async function generateSmartReplies(input: BuildContextInput): Promise<SmartReply[]> {
+export async function generateSmartReplies(
+  input: BuildContextInput,
+): Promise<{ replies: SmartReply[]; usage: SmartReplyUsage }> {
   // Routed via generateObjectRouted: gateway + AI_TASK_ROUTING + fallback + fair-use + cost log.
   // Falls back to canned replies when the gateway key is missing.
-  if (!process.env.AI_GATEWAY_API_KEY) return FALLBACK_REPLIES(input)
+  if (!process.env.AI_GATEWAY_API_KEY) return { replies: FALLBACK_REPLIES(input), usage: NO_SPEND }
 
   try {
-    const { object } = await generateObjectRouted({
+    const { object, usage } = await generateObjectRouted({
       feature: "smart_reply_generation",
       schema:  SmartReplySchema,
       system:
@@ -86,9 +110,22 @@ export async function generateSmartReplies(input: BuildContextInput): Promise<Sm
         .filter(Boolean)
         .join("\n"),
     })
-    return object.replies
+    return {
+      replies: object.replies,
+      usage: {
+        modelCalled: true,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        totalTokens: usage.totalTokens,
+        // generateObjectRouted falls back to its own chars/4 estimate when the
+        // provider omits a usage block; it does not tell us which happened, so
+        // an output count of exactly 0 alongside a non-empty reply set is the
+        // one observable signature of that path.
+        estimated: usage.outputTokens === 0,
+      },
+    }
   } catch (err) {
     console.warn("[smart-replies] LLM failed, using fallback:", err)
-    return FALLBACK_REPLIES(input)
+    return { replies: FALLBACK_REPLIES(input), usage: NO_SPEND }
   }
 }

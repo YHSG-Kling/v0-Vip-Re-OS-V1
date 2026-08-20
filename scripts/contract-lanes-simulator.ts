@@ -18,6 +18,7 @@
 
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { stripComments } from "./strip-comments"
 
 let passed = 0, failed = 0
 function check(name: string, ok: boolean, detail?: string) {
@@ -26,7 +27,7 @@ function check(name: string, ok: boolean, detail?: string) {
 }
 const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 // Comment mask: strip block + line comments so prose cannot satisfy a code assertion.
-const mask = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").replace(/([^:"'])\/\/[^\n]*/g, "$1")
+const mask = (s: string) => stripComments(s)
 
 // ── LANE 1 SCHEMA — platform-authored template, tenant-pinned signature ──────
 console.log("\n── lane 1 schema: m481 migration ──")

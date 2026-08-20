@@ -39,6 +39,7 @@
  */
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { stripComments } from "./strip-comments"
 import {
   OUTBOUND_CALL_GATES,
   OUTBOUND_CALL_GATE_ORDER,
@@ -57,7 +58,7 @@ const check = (name: string, cond: boolean, detail?: string) => {
 const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 /** CODE ONLY. Prose that NAMES a gate is not a second gate — this repo keeps
  *  catching assertions that matched a sentence in a comment. */
-const code = (p: string) => src(p).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")
+const code = (p: string) => stripComments(src(p))
 
 const CTX: OutboundCallGateContext = {
   brokerageId: "00000000-0000-0000-0000-000000000000",

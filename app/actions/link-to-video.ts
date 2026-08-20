@@ -8,7 +8,12 @@ import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-featur
 import { resolveProvider } from "@/lib/kernel/providers"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
-import { buildComplianceSystemBlocks, postcheckScript } from "@/lib/video/script-compliance"
+import {
+  buildComplianceSystemBlocks,
+  postcheckScript,
+  PROHIBITED_PHRASE_RED_FLAG_PREFIX,
+  COMPLIANCE_UNKNOWN_PREFIX,
+} from "@/lib/video/script-compliance"
 
 // Every function in this file used to be unauthenticated. Caller could
 // generate AI video scripts attributed to any organization (burning AI
@@ -168,8 +173,24 @@ Return ONLY the script text, no formatting or labels.`,
         .maybeSingle()
 
       const existingFlags = Array.isArray(current?.compliance_flags) ? current.compliance_flags : []
+      // THREE THINGS COUNT AS A VIOLATION HERE, not one.
+      //   · FairHousing: — the deterministic rule array, as before.
+      //   · ProhibitedPhrase(blocking): — a word THIS BROKERAGE marked
+      //     `critical` in Settings → Prohibited phrases. The settings screen
+      //     tells the broker in so many words that critical is "the only
+      //     severity that makes content FAIL the scan"; grading it as a mere
+      //     warning on the one lane that HAS a needs_revision lever would make
+      //     that sentence false.
+      //   · Compliance: UNKNOWN — the gate could not run. This lane has a
+      //     `compliance_check_passed` column, and writing "passed" for a check
+      //     that never happened is the fail-open in column form.
       const kernelFlags = kernelWarnings.map((issue) => ({
-        severity: issue.startsWith("FairHousing:") ? "violation" : "warning",
+        severity:
+          issue.startsWith("FairHousing:") ||
+          issue.startsWith(PROHIBITED_PHRASE_RED_FLAG_PREFIX) ||
+          issue.startsWith(COMPLIANCE_UNKNOWN_PREFIX)
+            ? "violation"
+            : "warning",
         issue,
         suggestion: "Regenerate or edit the script to clear this before rendering.",
         source: "kernel_gate",

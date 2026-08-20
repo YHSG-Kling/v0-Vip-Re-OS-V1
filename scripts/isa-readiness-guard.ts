@@ -22,6 +22,7 @@
  */
 import { readFileSync, existsSync } from "node:fs"
 import { describeIsaBlocker } from "../lib/voice/isa-readiness-copy"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -32,7 +33,7 @@ function ok(label: string, cond: boolean, detail?: string) {
 const src = (p: string) => (existsSync(p) ? readFileSync(p, "utf8") : "")
 /** Comments stripped — an assertion must target CODE, never prose. */
 const code = (p: string) =>
-  src(p).replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")
+  stripComments(src(p))
 
 const SURFACES = [
   "app/dashboard/isa/page.tsx",

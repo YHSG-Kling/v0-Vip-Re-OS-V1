@@ -595,9 +595,19 @@ export async function executeWorkflow(workflowId: string, contextData: any) {
 
   const actions: any[] = workflow.actions || []
 
+  // ── PER-ACTION OUTCOMES, so the run is recordable ────────────────────────
+  // Until now this loop reported nothing about itself: the only trace a run left
+  // was `execution_count + 1`, which counts attempts and cannot distinguish a
+  // milestone update that landed from one this function refused. Each branch now
+  // says what it did, and the summary goes to the automation_logs ledger below.
+  const outcomes: Array<{ type: string; status: "done" | "skipped" | "refused"; detail?: string }> = []
+
   for (const action of actions) {
     switch (action.type) {
       case "send_email":
+        // Deliberately a no-op here: outbound email has ONE egress and it is not
+        // this loop. Recorded as skipped rather than silently counted as done.
+        outcomes.push({ type: "send_email", status: "skipped", detail: "no egress wired in this executor" })
         break
       case "create_task":
         await supabase.from("tasks").insert({
@@ -615,6 +625,7 @@ export async function executeWorkflow(workflowId: string, contextData: any) {
             : null,
           status: "pending",
         })
+        outcomes.push({ type: "create_task", status: "done", detail: String(action.taskTitle ?? "") })
         break
       case "update_milestone":
         // action.newStatus is operator-authored JSON from the automations UI —
@@ -626,6 +637,11 @@ export async function executeWorkflow(workflowId: string, contextData: any) {
           console.error(
             `[executeWorkflow] automation ${workflowId}: '${action.newStatus}' is not a milestone status; milestone not updated`,
           )
+          outcomes.push({
+            type: "update_milestone",
+            status: "refused",
+            detail: `'${String(action.newStatus)}' is not a milestone status`,
+          })
           break
         }
         await supabase
@@ -633,6 +649,17 @@ export async function executeWorkflow(workflowId: string, contextData: any) {
           .update({ status: action.newStatus })
           .eq("transaction_id", contextData.transactionId)
           .eq("milestone_name", action.milestoneName)
+        outcomes.push({
+          type: "update_milestone",
+          status: "done",
+          detail: `${String(action.milestoneName ?? "")} → ${String(action.newStatus)}`,
+        })
+        break
+      default:
+        // An action type this executor does not implement used to fall through in
+        // total silence and still increment the counter — a run reported as
+        // successful that did nothing at all.
+        outcomes.push({ type: String(action?.type ?? "unknown"), status: "skipped", detail: "no handler in this executor" })
         break
     }
   }
@@ -642,7 +669,47 @@ export async function executeWorkflow(workflowId: string, contextData: any) {
     .update({ execution_count: (workflow.execution_count ?? 0) + 1, last_executed_at: new Date().toISOString() })
     .eq("id", workflowId)
 
-  return { success: true }
+  // ── THE PER-RUN LEDGER ───────────────────────────────────────────────────
+  // `execution_count` counts attempts; it cannot tell a run that moved a
+  // milestone from one that refused an operator-authored status and moved
+  // nothing. app/actions/assistant.ts:handleAutomationTriggered is the writer for
+  // that record — it existed, fully built and gated, with no caller anywhere in
+  // the tree, and app/dashboard/admin/automations now reads what it writes.
+  //
+  // BEST-EFFORT BY CONSTRUCTION: the automation already ran and its effects are
+  // committed, so a failure to journal it must not turn a completed run into a
+  // reported failure. The refusal is logged, not thrown.
+  try {
+    const { data: { user: runUser } } = await supabase.auth.getUser()
+    if (runUser) {
+      const { handleAutomationTriggered } = await import("@/app/actions/assistant")
+      await handleAutomationTriggered({
+        automation_id: workflowId,
+        user_id: runUser.id,
+        trigger_type: workflow.trigger_event ?? "manual",
+        result: {
+          workflow_name: workflow.workflow_name ?? null,
+          workflow_type: workflow.workflow_type ?? null,
+          actions_total: actions.length,
+          actions_done: outcomes.filter((o) => o.status === "done").length,
+          actions_refused: outcomes.filter((o) => o.status === "refused").length,
+          actions_skipped: outcomes.filter((o) => o.status === "skipped").length,
+          outcomes,
+          context: {
+            transaction_id: contextData?.transactionId ?? null,
+            brokerage_id: contextData?.brokerageId ?? null,
+          },
+        },
+      })
+    } else {
+      console.warn(`[executeWorkflow] automation ${workflowId} ran without a session user — run not journalled`)
+    }
+  } catch (journalError) {
+    console.error(`[executeWorkflow] automation ${workflowId} ran but the automation_logs journal failed:`, journalError)
+  }
+
+  revalidatePath("/dashboard/admin/automations")
+  return { success: true, outcomes }
 }
 
 export async function submitClientFeedback(data: {

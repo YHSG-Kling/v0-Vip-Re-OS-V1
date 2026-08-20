@@ -28,13 +28,49 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 //      look wired while firing exactly as often as they do now, which is never.
 //
 // WHAT THEY ARE INSTEAD — each is user-initiated, not event-driven:
-//   · handleAssistantQuery / handleAutomationTriggered — TELEMETRY. Each is the SOLE
+//   · handleAssistantQuery / handleAutomationTriggered — TELEMETRY. Each was the SOLE
 //     writer of its table (`assistant_queries`, `automation_logs`) and NEITHER table
-//     has a reader anywhere in the repo; scripts/orphan-write-sweep.ts:38 already
-//     classifies assistant_queries as "assistant usage telemetry". They are kept as
+//     had a reader anywhere in the repo; scripts/orphan-write-sweep.ts:38 already
+//     classifies assistant_queries as "assistant usage telemetry". They were kept as
 //     the write half of a telemetry pair whose read half was never built. Not
 //     deleted (no duplicate, and deleting the only writer of a live table loses the
 //     column), not registered (nothing emits an event for them).
+//
+//     ── THAT STALEMATE IS NOW BROKEN, AND THE TWO WENT DIFFERENT WAYS ────────
+//     "Kept as the write half of a pair whose read half was never built" is a
+//     description of a deadlock, not a verdict, and the opposite-missing census
+//     (scripts/opposite-missing-census.ts) put both ends of each pair on one page
+//     so the deadlock could actually be broken.
+//
+//     handleAutomationTriggered — BUILT, both halves. Neither end had to be
+//     invented: the entity exists (`workflow_automations`), the executor exists
+//     (app/actions/multi-persona.ts:executeWorkflow) and wrote back only
+//     `execution_count + 1`, and the surface exists
+//     (app/dashboard/admin/automations). It now has a caller and a reader. See
+//     its own header below.
+//
+//     handleAssistantQuery — STILL UNWIRED, and now with a NAMED DUPLICATE
+//     rather than an open question. `assistant_queries` is
+//     ["context","created_at","id","query","timestamp","user_id"] and HAS NO
+//     brokerage_id COLUMN AT ALL, so a row written here is untenanted by
+//     construction and can never appear on any tenant-scoped surface — which is
+//     most of why no reader was ever built for it. Two live, tenanted ledgers
+//     already record the same event more completely, both with writers that RUN
+//     and at least one reader:
+//       · `ai_tool_usage` — written by app/actions/ai-tools-hub.ts:executeAITool
+//         and by lib/kernel/ai-tools.ts:runAiTool, read by lib/kernel/ai-tools.ts
+//         :172. Carries brokerage_id, the input context, the OUTPUT, timing,
+//         success and token cost. `assistant_queries` carries none of those.
+//       · `agent_assistant_sessions` / `agent_assistant_tool_calls` — written by
+//         app/api/agent-assistant/session and .../tool-call, both tenanted.
+//     RECOMMENDED VERDICT, handed back rather than executed: delete
+//     handleAssistantQuery onto lib/kernel/ai-tools.ts:runAiTool with a tombstone,
+//     and in the same change drop the now-false `assistant_queries` exemption in
+//     scripts/orphan-write-baseline's AUDIT_EXEMPT list (an exemption that names
+//     an out-of-band consumer for a table nothing writes is worse than none — the
+//     writerless sweep's own header makes that argument about prohibited_phrases).
+//     Not done here because it deletes the only writer of a live table AND
+//     requires editing a committed baseline this lane does not own.
 //   · handleTaskDelegated — MERGED, THEN DELETED. It was a TASK REASSIGNMENT, and
 //     app/actions/tasks.ts:updateTask (`params.assignedTo` → `assigned_to_agent_id`)
 //     is the wired survivor of that write. The cross-lane merge this note named is
@@ -58,35 +94,92 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 // any plain-tsx guard that transitively imports it).
 import { authorizeForUser } from "@/lib/auth/authorize-for-user"
 
-export async function handleAssistantQuery(payload: any) {
-  const { user_id, query, context } = payload
-  const auth = await authorizeForUser(user_id)
-  if (!auth.ok) return { success: false, error: auth.error }
+/**
+ * TOMBSTONE. `handleAssistantQuery` LIVED HERE AND IS GONE. Its survivors are
+ * app/api/agent-assistant/tool-call/route.ts:161 (`agent_assistant_tool_calls`)
+ * and app/api/agent-assistant/session/route.ts:153 (`agent_assistant_sessions`).
+ *
+ * The stalemate the note above describes — "the write half of a telemetry pair
+ * whose read half was never built" — was never going to be broken by building
+ * the reader, because THE TABLE CANNOT SUPPORT ONE. `assistant_queries` is
+ * ["context","created_at","id","query","timestamp","user_id"] and has NO
+ * brokerage_id column at all, so every row it has ever held is untenanted by
+ * construction and cannot be shown on any tenant-scoped surface in this app.
+ * That is the reason no reader was ever built, and it is a property of the
+ * schema rather than of anyone's backlog.
+ *
+ * WHAT THE SURVIVORS CARRY THAT THIS DID NOT: the tenant (taken from the
+ * session row, never from the caller), the tool input AND its output, success,
+ * latency and token cost, and an actual reader — lib/recruiting/retention-radar
+ * .ts:25 reads agent_assistant_sessions, and tool-call/route.ts:19 states the
+ * audit purpose in its own header. This function wrote four fields and read
+ * back nothing.
+ *
+ * WHAT WAS MERGED FORWARD: nothing, and that is a finding rather than an
+ * omission. Its one distinctive behaviour was the authorizeForUser(user_id)
+ * act-for-others gate — which guarded an endpoint no caller in the tree ever
+ * reached. Its INSERT did not destructure `error`, so the single thing it did
+ * do, it did blind: supabase-js RESOLVES a refused write, so a row rejected by
+ * RLS and a row accepted looked identical from here.
+ *
+ * `assistant_queries` keeps its rows and its m-numbered history; it simply stops
+ * gaining new ones. Its AUDIT_EXEMPT entry in scripts/orphan-write-sweep.ts is
+ * removed in the same change: an exemption that names an out-of-band consumer
+ * for a table nothing writes is worse than no exemption, because it reads as a
+ * deliberate design where the truth is a dead end — the same argument that
+ * file's own header makes about prohibited_phrases.
+ *
+ * This file is `"use server"`, so deleting this also removes a public HTTP
+ * endpoint that accepted a `user_id` from its payload and had no caller.
+ */
 
-  const supabase = await createServerClient()
-  await supabase.from("assistant_queries").insert({
-    user_id,
-    query,
-    context,
-    timestamp: new Date().toISOString(),
-  })
-
-  return { success: true }
-}
-
+/**
+ * THE PER-RUN LEDGER FOR A SAVED AUTOMATION. NOW WIRED, BOTH HALVES.
+ *
+ * This was category C — exported, called by nobody, writing a table nobody read.
+ * The note above used to file it under "telemetry kept as the write half of a pair
+ * whose read half was never built", which was an accurate description of a
+ * stalemate and not a verdict. Both halves exist now, and neither needed inventing:
+ *
+ *   THE CALLER — app/actions/multi-persona.ts:executeWorkflow. That function runs a
+ *   saved `workflow_automations` row and, on finishing, wrote back exactly two
+ *   facts: `execution_count + 1` and `last_executed_at`. So the admin automations
+ *   page could say a rule had fired 43 times and nothing whatever about what any of
+ *   the 43 runs DID — including the runs that took the `update_milestone` branch,
+ *   refused an operator-authored status, and logged to the server console before
+ *   incrementing the counter anyway. `automation_logs` is the table that answers
+ *   that question, and this is its writer.
+ *
+ *   THE READER — app/dashboard/admin/automations/page.tsx, beside the existing
+ *   automation_errors panel, through the same service-client-after-gate pattern
+ *   lib/kernel/manager-registry.ts:463 named as the destination for this table.
+ *
+ * `automation_id` is a `workflow_automations.id`. `brokerage_id` is NOT stamped
+ * here and that is deliberate, not an omission: migration 052 puts a BEFORE INSERT
+ * trigger (`automation_logs_set_brokerage`) on the table that denormalises it from
+ * `user_id`, and a second app-side write of the same value would be a second
+ * opinion about the tenant.
+ */
 export async function handleAutomationTriggered(payload: any) {
   const { automation_id, trigger_type, user_id, result } = payload
   const auth = await authorizeForUser(user_id)
   if (!auth.ok) return { success: false, error: auth.error }
 
   const supabase = await createServerClient()
-  await supabase.from("automation_logs").insert({
+  const { error } = await supabase.from("automation_logs").insert({
     automation_id,
     user_id,
     trigger_type,
     result,
     executed_at: new Date().toISOString(),
   })
+  // supabase-js RESOLVES a refused insert, so an unread error here is a run that
+  // the ledger silently never recorded — and a ledger with holes in it is worse
+  // than no ledger, because the page above now presents it as the record.
+  if (error) {
+    console.error("[assistant] automation_logs insert refused:", error.message)
+    return { success: false, error: error.message }
+  }
 
   return { success: true }
 }

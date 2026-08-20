@@ -54,6 +54,7 @@
 import { readFileSync, writeFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { join } from "node:path"
+import { stripComments } from "./strip-comments"
 
 // ─── FILES UNDER PROOF ───────────────────────────────────────────────────────
 
@@ -83,25 +84,14 @@ function raw(path: string): string {
  * Trailing comments are removed only when the `//` is not inside a quote on
  * that line, so a URL or a regex containing a slash pair survives.
  */
-function stripComments(text: string): string {
-  const noBlocks = text.replace(/\/\*[\s\S]*?\*\//g, "")
-  return noBlocks
-    .split("\n")
-    .map((line) => {
-      let inS = false, inD = false, inB = false, esc = false
-      for (let i = 0; i < line.length; i++) {
-        const c = line[i]
-        if (esc) { esc = false; continue }
-        if (c === "\\") { esc = true; continue }
-        if (!inD && !inB && c === "'") { inS = !inS; continue }
-        if (!inS && !inB && c === '"') { inD = !inD; continue }
-        if (!inS && !inD && c === "`") { inB = !inB; continue }
-        if (!inS && !inD && !inB && c === "/" && line[i + 1] === "/") return line.slice(0, i)
-      }
-      return line
-    })
-    .join("\n")
-}
+// Comment removal goes through scripts/strip-comments.ts.
+//
+// What stood here walked each line tracking quote state to find an unquoted `//`.
+// That is the apostrophe variant of the same defect class: a `'` in ordinary prose
+// — "the script's agent", "don't" — flipped the scanner into "inside a string",
+// after which the `//` that actually started the comment was not recognised and the
+// whole comment was returned as code. The canonical scanner knows a single-quoted
+// literal cannot span a newline, so an apostrophe in prose is never a string opener.
 
 function code(path: string): string {
   const hit = codeCache.get(path)

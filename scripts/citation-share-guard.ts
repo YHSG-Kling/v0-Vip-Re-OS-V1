@@ -28,6 +28,7 @@ import {
   citationShare, collapseToQueries, describeCitationShare, type ShareObservationRow,
 } from "../lib/geo/citation-share"
 import { detectCompetitorCitations } from "../lib/kernel/ai-search-citation-monitor"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -38,7 +39,7 @@ function ok(label: string, cond: boolean, detail?: string) {
 const src = (p: string) => (existsSync(p) ? readFileSync(p, "utf8") : "")
 /** Comments stripped — an assertion must target CODE, never prose. */
 const code = (p: string) =>
-  src(p).replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")
+  stripComments(src(p))
 
 const PLATFORMS = ["google_ai_overviews", "chatgpt", "perplexity", "gemini", "bing_copilot"]
 /** One answer, as the monitor really stores it: five rows sharing one fetch. */

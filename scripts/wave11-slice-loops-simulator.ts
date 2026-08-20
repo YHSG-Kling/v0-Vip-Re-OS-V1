@@ -51,6 +51,7 @@ import {
   OFFER_COMPLIANCE_FLAG_EVENT,
   FLAG_STATUS_OPEN,
 } from "../lib/compliance/offer-flag-resolution"
+import { stripComments } from "./strip-comments"
 import {
   raiseOfferComplianceFlag,
   resolveUnattendedRaiserUserId,
@@ -72,7 +73,7 @@ const F = {
 const raw = (p: string) => readFileSync(resolve(ROOT, p), "utf8")
 /** Comment-stripped source: prose must never satisfy a structural assertion. */
 const code = (p: string) =>
-  raw(p).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+  stripComments(raw(p))
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Small source utilities (construct-level, not spelling-level)
@@ -126,10 +127,10 @@ function resolveLocal(spec: string, fromFile: string): string | null {
 
 /** Does a module carry a top-level "use server" directive? */
 function isUseServerModule(absPath: string): boolean {
-  const src = readFileSync(absPath, "utf8")
-    .replace(/^﻿/, "")
-    .replace(/^(?:\s*(?:\/\/[^\n]*|\/\*[\s\S]*?\*\/)\s*)+/, "")
-    .trimStart()
+  // Comments removed by the one scanner that decides comment boundaries correctly;
+  // a header comment containing a slash-star used to end the anchored run early and
+  // hide the directive underneath it.
+  const src = stripComments(readFileSync(absPath, "utf8").replace(/^﻿/, "")).trimStart()
   return /^["']use server["']/.test(src)
 }
 
@@ -413,7 +414,7 @@ A.push({
     if (!/complianceFlagKey\s*\(/.test(src)) {
       return { ok: false, detail: "the key is not derived from the shared identity function" }
     }
-    if (/em_receipt_missing/.test(src.replace(/\/\/.*$/gm, ""))) {
+    if (/em_receipt_missing/.test(stripComments(src))) {
       return { ok: false, detail: "a literal that no writer emits is back in the query" }
     }
     return { ok: true }

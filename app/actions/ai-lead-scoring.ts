@@ -2,7 +2,70 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { handleError } from "@/lib/errors"
-import { generateTextRouted as generateText } from "@/lib/ai/models"
+import { generateObject } from "@/lib/ai/generate"
+import { z } from "zod"
+
+/**
+ * The caller, and the tenant they may score inside.
+ *
+ * MERGED IN from app/actions/ai-lead-nurturing.ts:aiCalculateLeadScore (deleted;
+ * see the tombstone there). This file is a `"use server"` module — every export
+ * is a public HTTP endpoint — and it had NO gate at all: any authenticated user
+ * could name any contactId and this would read the row, spend paid inference on
+ * it and write scores back, with only RLS between them and another brokerage's
+ * book. The duplicate had the gate; the survivor did not. Merging the two the
+ * other way round would have lost it.
+ */
+async function requireCaller(): Promise<
+  | { ok: true; userId: string; brokerageId: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Unauthorized" }
+  const { data: u } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (!u?.brokerage_id) return { ok: false, error: "Unauthorized" }
+  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
+}
+
+/**
+ * The scoring contract, as a SCHEMA rather than as a hope.
+ *
+ * MERGED IN from aiCalculateLeadScore. The survivor asked for JSON in prose and
+ * then regex-matched a `{ … }` out of the reply — which throws on a fenced or
+ * chatty response, and silently yields whatever shape the model felt like on a
+ * well-formed one. `overallScore`, `engagement` and `intent` kept their original
+ * names so the CRM's "Run AI Score" button (app/crm/page.tsx:1244 reads
+ * `result.scores.overallScore`) and this file's own `lead_score_history` write
+ * are unchanged; the five dimensions below them are what the duplicate had and
+ * this one did not.
+ */
+const LeadScoreSchema = z.object({
+  overallScore: z.number().min(0).max(100),
+  engagement: z.number().min(0).max(100),
+  intent: z.number().min(0).max(100),
+  qualification: z.number().min(0).max(100),
+  motivation: z.number().min(0).max(100),
+  readiness: z.enum(["cold", "warm", "hot"]),
+  // ── the merge payload: dimensions the duplicate produced and this one did not
+  timelineScore: z.number().min(0).max(100),
+  financialReadinessScore: z.number().min(0).max(100),
+  buyerPersona: z.enum(["first_time_buyer", "move_up_buyer", "investor", "downsizer", "relocating", "unknown"]),
+  predictedTimeline: z.enum(["immediate", "1_3_months", "3_6_months", "6_12_months", "12_plus_months"]),
+  riskOfLoss: z.enum(["low", "medium", "high"]),
+  factors: z.object({
+    positive: z.array(z.string()),
+    negative: z.array(z.string()),
+    neutral: z.array(z.string()),
+  }),
+  nextBestAction: z.string(),
+  reasoning: z.string(),
+  priorities: z.array(z.string()),
+})
 
 /**
  * LAYER 2 — AI Scoring (nuance refinement of conversational/behavioral signals).
@@ -25,6 +88,35 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
  *
  * See `lib/lead-scoring/LAYERING.md` for full layering rules and the four
  * scoring systems that touch these columns.
+ *
+ * ── THE SURVIVOR OF A MERGE (orphan burn-down, category C) ──────────────────
+ * `app/actions/ai-lead-nurturing.ts:aiCalculateLeadScore` was a SECOND Layer-2
+ * scorer with no caller anywhere, standing against LAYERING.md rule 4 ("Do not
+ * create a fifth top-level scorer"). Two successive waves recorded the verdict —
+ * merge onto this function, then delete — and left it undone because this file
+ * was outside their lane. It is done now. Everything the duplicate had and this
+ * did not came across first, and only then was it deleted (tombstone in place):
+ *
+ *   · AN AUTH GATE AND A TENANT PREDICATE. This module is `"use server"`, so
+ *     every export is a public endpoint, and this function had NO caller check at
+ *     all — any authenticated user could name any contact id and have paid
+ *     inference spent on it and scores written back. requireCaller() + the
+ *     `brokerage_id` predicate on the contact read AND the update are the
+ *     duplicate's, moved here.
+ *   · A SCHEMA INSTEAD OF A REGEX. It asked for JSON in prose and pulled a
+ *     `{ … }` out of the reply with a regex; now generateObject + LeadScoreSchema.
+ *   · BEHAVIOURAL INPUTS. It scored engagement off `messages` alone — no logged
+ *     call, no showing, no email open. `activities` and `email_tracking` are now
+ *     read too. (The duplicate's third read, `lead_property_searches`, was NOT
+ *     carried: it filed a contact id in a lead column and could only ever return
+ *     nothing — see the note at its former call site below.)
+ *   · FIVE MORE DIMENSIONS — timelineScore, financialReadinessScore,
+ *     buyerPersona, predictedTimeline, riskOfLoss — plus the positive/negative/
+ *     neutral factor split, persisted to `contacts.ai_insights` and into the
+ *     `lead_score_history.factors` blob.
+ *
+ * The public contract is unchanged: `result.scores.overallScore` still exists and
+ * still means what the CRM's "Run AI Score" button (app/crm/page.tsx:1244) reads.
  */
 export async function scoreLeadWithAI(params: {
   contactId: string
@@ -43,13 +135,20 @@ export async function scoreLeadWithAI(params: {
   mode?: "refine" | "override"
 }) {
   try {
+    const auth = await requireCaller()
+    if (!auth.ok) return { success: false, error: auth.error }
+
     const supabase = await createClient()
 
-    // Get contact data (simple select — embedded relation tables may not exist)
+    // Get contact data (simple select — embedded relation tables may not exist).
+    // TENANT PREDICATE merged in from the deleted duplicate: without it this
+    // action would read, and spend inference on, any contact id a caller cared to
+    // name.
     const { data: contact, error: contactError } = await supabase
       .from("contacts")
       .select("*")
       .eq("id", params.contactId)
+      .eq("brokerage_id", auth.brokerageId)
       .maybeSingle()
 
     if (contactError) throw contactError
@@ -63,9 +162,41 @@ export async function scoreLeadWithAI(params: {
       .order("created_at", { ascending: false })
       .limit(20)
 
-    // AI scoring analysis
-    const { text: analysis } = await generateText({
+    // ── BEHAVIOURAL INPUTS — merged in from aiCalculateLeadScore ──────────────
+    // This scorer read `messages` ALONE, so it judged engagement without ever
+    // seeing a logged call, a showing, or an email open. Two of the duplicate's
+    // three behavioural reads come across intact.
+    const { data: activityLog } = await supabase
+      .from("activities")
+      .select("activity_type, title, outcome, channel, status, created_at")
+      .eq("contact_id", params.contactId)
+      .eq("brokerage_id", auth.brokerageId)
+      .order("created_at", { ascending: false })
+      .limit(50)
+
+    const { data: emailActivity } = await supabase
+      .from("email_tracking")
+      .select("event_type, event_at, url")
+      .eq("contact_id", params.contactId)
+      .eq("brokerage_id", auth.brokerageId)
+      .order("event_at", { ascending: false })
+      .limit(50)
+
+    // ── THE THIRD READ IS DELIBERATELY NOT MERGED ────────────────────────────
+    // aiCalculateLeadScore also read `lead_property_searches` with
+    // `.eq("lead_id", params.contactId)` — a CONTACT id in a LEAD column. That is
+    // the exact defect wave 18 ruled on and removed elsewhere: the table is keyed
+    // on the pre-conversion lead id, has no contacts column, and its writer was
+    // deleted for filing a contacts id there (see app/actions/ai-predictions.ts
+    // :355 extractFactors, which records the same finding). The read therefore
+    // returns nothing, always, for every contact — carrying it forward would move
+    // a known-dead query onto the survivor and make the prompt claim "0 property
+    // searches" as if that were an observation about the person. Property-search
+    // interest is not collected on contacts today; when it is, it belongs here.
+
+    const { object: scores } = await generateObject({
       model: "openai/gpt-4o-mini",
+      schema: LeadScoreSchema,
       prompt: `You are an AI real estate lead scoring expert. Analyze this lead comprehensively.
 
 Contact Details:
@@ -79,35 +210,24 @@ Contact Details:
 - Timeline: ${contact.buying_timeline || "Unknown"}
 
 Behavioral Data:
-- Recent Interactions: ${interactions?.length || 0}
+- Recent Messages: ${interactions?.length || 0}
 - Last Contact: ${contact.last_contacted_at || "Never"}
+- Logged Activities (${activityLog?.length || 0}):
+${JSON.stringify(activityLog?.slice(0, 10) ?? [], null, 2)}
+- Email Engagement Events (${emailActivity?.length || 0}):
+${JSON.stringify(emailActivity?.slice(0, 10) ?? [], null, 2)}
 
-Provide a JSON response with:
-{
-  "overallScore": 0-100,
-  "engagement": 0-100,
-  "intent": 0-100,
-  "qualification": 0-100,
-  "motivation": 0-100,
-  "readiness": "cold" | "warm" | "hot",
-  "nextBestAction": "specific recommendation",
-  "reasoning": "brief explanation",
-  "priorities": ["priority1", "priority2", "priority3"]
-}`,
+Score every dimension 0-100, split the evidence into positive/negative/neutral
+factors, and name the single next best action.`,
     })
 
-    // Extract JSON robustly — the AI may wrap output in markdown code blocks
-    const jsonMatch = analysis.match(/```(?:json)?\s*([\s\S]*?)```/) ?? analysis.match(/(\{[\s\S]*\})/)
-    const jsonText = jsonMatch ? (jsonMatch[1] ?? jsonMatch[0]) : analysis
-    const scores = JSON.parse(jsonText.trim())
-
-    // The model is free text, not a schema. `contacts.engagement_score` and
-    // `contacts.intent_score` are INTEGER (scripts/010-create-contacts-schema.sql)
-    // — a 72.5 from the model is rejected by Postgres and, because PostgREST
-    // refuses the update as a WHOLE, it takes every other column in the same
-    // statement down with it. Coerce to a clamped integer, and drop the key
-    // entirely when the model returned something unusable rather than writing a
-    // fabricated 0 over a real prior score.
+    // The schema bounds each score to 0-100 but NOT to an integer, and
+    // `contacts.engagement_score` / `contacts.intent_score` are INTEGER
+    // (scripts/010-create-contacts-schema.sql) — a 72.5 is rejected by Postgres
+    // and, because PostgREST refuses the update as a WHOLE, it takes every other
+    // column in the same statement down with it. So the coercion stays exactly as
+    // it was: clamp and round, and drop the key entirely when the value is
+    // unusable rather than writing a fabricated 0 over a real prior score.
     const asScore = (v: unknown): number | undefined => {
       const n = typeof v === "number" ? v : Number(v)
       if (!Number.isFinite(n)) return undefined
@@ -149,10 +269,32 @@ Provide a JSON response with:
     if (mode === "override" && overall !== undefined) {
       updates.lead_score = overall
     }
+    // ── ai_insights — merged in from aiCalculateLeadScore ────────────────────
+    // The five extra dimensions have no column of their own on `contacts`, and
+    // this is where the duplicate put them so an agent looking at the card can
+    // see WHY the number moved. `contacts.ai_insights` is a **text** column, not
+    // jsonb (verified live) — the duplicate's own header records that assigning
+    // it an object made PostgREST refuse the whole update — so it is serialised.
+    updates.ai_insights = JSON.stringify({
+      lastScored: new Date().toISOString(),
+      aiOverallScore: overall ?? null,
+      engagementScore: engagement ?? null,
+      intentScore: intent ?? null,
+      timelineScore: scores.timelineScore,
+      financialReadinessScore: scores.financialReadinessScore,
+      buyerPersona: scores.buyerPersona,
+      predictedTimeline: scores.predictedTimeline,
+      riskOfLoss: scores.riskOfLoss,
+      nextBestAction: scores.nextBestAction,
+      factors: scores.factors,
+    })
     const { data: updatedRows, error: contactUpdateError } = await supabase
       .from("contacts")
       .update(updates)
       .eq("id", params.contactId)
+      // Tenant anchor on the WRITE as well as the read — merged in from the
+      // deleted duplicate, which had it on both and this one had it on neither.
+      .eq("brokerage_id", auth.brokerageId)
       .select("id")
     if (contactUpdateError) throw contactUpdateError
     // A zero-row update is a refusal wearing the shape of success: supabase-js
@@ -197,6 +339,15 @@ Provide a JSON response with:
         reason: typeof scores.reasoning === "string" ? scores.reasoning : null,
         readiness_signal: readiness,
         next_best_action: typeof scores.nextBestAction === "string" ? scores.nextBestAction : null,
+        // Merged in from aiCalculateLeadScore: the audit row now carries the same
+        // five dimensions the contact card shows, so the history explains the
+        // score instead of only recording it.
+        timeline_score: scores.timelineScore,
+        financial_readiness_score: scores.financialReadinessScore,
+        buyer_persona: scores.buyerPersona,
+        predicted_timeline: scores.predictedTimeline,
+        risk_of_loss: scores.riskOfLoss,
+        evidence: scores.factors,
       },
       ai_recommendations: Array.isArray(scores.priorities) ? scores.priorities : null,
       scored_at: new Date().toISOString(),

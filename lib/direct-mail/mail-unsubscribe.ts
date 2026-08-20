@@ -79,8 +79,16 @@ import { normalizeMailUnsubToken } from "@/lib/direct-mail/unsubscribe-token"
  */
 export type MailUnsubRequest = "mail" | "all"
 
-/** Which entity the suppression actually became binding on. */
-export type MailUnsubBinding = "lead" | "contact" | "lead+contact" | "recipient_only"
+/**
+ * Which identity the suppression actually became binding on.
+ *
+ * `mailing_address` is the m503 arm: no lead, no contact, no email, no phone —
+ * a household, keyed by its normalized street + ZIP on the same
+ * `contact_suppression_list` every other channel uses. `recipient_only` now means
+ * what it always claimed to mean and no longer covers for it: NOTHING binds, and
+ * a human has to clear the source list by hand.
+ */
+export type MailUnsubBinding = "lead" | "contact" | "lead+contact" | "mailing_address" | "recipient_only"
 
 export interface ResolvedMailRecipient {
   recipientId: string
@@ -285,19 +293,84 @@ export async function applyMailUnsubscribe(args: {
     }
   }
 
-  // ── THE RECIPIENT-ONLY CASE ───────────────────────────────────────────────
-  // A recipient row that names neither a lead nor a contact (a purchased farm
-  // list, an audience import) has no entity for any sender gate to check, and
-  // contact_suppression_list is keyed on contact_id / email / phone — it has no
-  // mailing-address column. So this request can be RECORDED and cannot be made
-  // BINDING. That is reported to the caller, not papered over.
+  // ── THE ADDRESS-ONLY CASE ─────────────────────────────────────────────────
+  //
+  // A recipient row that names neither a lead nor a contact — a purchased farm
+  // list, an audience import, a mail-only prospect — is the NORMAL recipient of
+  // an acquisition mailer, and it used to be the one case this module could only
+  // RECORD and never BIND. The reason was structural and is quoted in the block
+  // this replaces: `contact_suppression_list` was keyed on contact_id / email /
+  // phone and had no mailing-address column, so there was no identity to write.
+  //
+  // m503 adds one. `addAddressSuppression` writes a row on that SAME list —
+  // channel 'mail', no contact/email/phone, the normalized household key — which
+  // is exactly what `checkSuppression`'s address arm reads and therefore what
+  // `dispatchDirectMail` now gates on before it pays Lob.
+  //
+  // THE ADDRESS IS READ HERE, NOT RETURNED BY THE RESOLVER. `resolveMailUnsubscribeToken`
+  // deliberately does not select the mailing address: a token holder is entitled
+  // to ACT, not to read the file, and a token that leaked would otherwise
+  // disclose where the piece was sent. This read is service-side, scoped to the
+  // one recipient the token already resolved, and the value never leaves this
+  // function.
   let bindingGap: string | undefined
   if (!r.leadId && !r.contactId) {
-    bindingGap =
-      "This request was recorded against the mail piece, but the mailing list row it came from is not linked to a lead or contact, " +
-      "so no sender gate can enforce it automatically. It needs manual removal from the source list."
-    await recordRecipientOnlyRequest(supabase, r, args.request, reason, now)
-    channelsSuppressed.push("mail")
+    const { data: addrRow, error: addrError } = await supabase
+      .from("direct_mail_recipients")
+      .select("address_line1, zip")
+      .eq("id", r.recipientId)
+      .maybeSingle()
+
+    // supabase-js RESOLVES a refusal. An unreadable address is NOT "no address" —
+    // reporting it as one would tell the person we bound their request when we
+    // never even looked. It becomes a stated gap.
+    if (addrError) {
+      errors.push(`mailing address unreadable: ${addrError.message}`)
+      bindingGap =
+        "This request was recorded against the mail piece, but the mailing address on it could not be read, " +
+        "so the suppression could not be keyed to your household. It needs manual removal from the source list."
+    } else {
+      const a = (addrRow ?? {}) as { address_line1?: string | null; zip?: string | null }
+      const { addAddressSuppression } = await import("@/lib/direct-mail/address-suppression")
+      const addr = await addAddressSuppression(supabase, {
+        brokerageId: r.brokerageId,
+        street: a.address_line1,
+        zip: a.zip,
+        reason,
+        source: "inbound_direct_mail",
+      })
+
+      if (addr.suppressed) {
+        // BINDING. Not a gap. The next dispatchDirectMail to this household is
+        // refused by the same gate that refuses a contact's opt-out.
+        wroteSomethingBinding = true
+        if (!channelsSuppressed.includes("mail")) channelsSuppressed.push("mail")
+      } else if (addr.pendingMigration) {
+        // The code is here and the column is not. Say WHICH migration, so this
+        // is an operator's five-minute fix rather than a mystery.
+        errors.push("address suppression column is missing — migration m503 is not applied")
+        bindingGap =
+          "This request was recorded against the mail piece, but address-keyed suppression is not enabled on this database yet " +
+          "(migration m503 pending), so no sender gate can enforce it automatically. It needs manual removal from the source list."
+      } else if (addr.unkeyable) {
+        errors.push(`mailing address not specific enough to suppress: ${addr.error ?? "unkeyable"}`)
+        bindingGap =
+          "This request was recorded against the mail piece, but the mailing address on it has no house number or ZIP code, " +
+          "so it cannot identify one household. It needs manual removal from the source list."
+      } else {
+        errors.push(`address suppression refused: ${addr.error ?? "unknown"}`)
+        bindingGap =
+          "This request was recorded against the mail piece, but the suppression could not be written, " +
+          "so no sender gate can enforce it automatically. It needs manual removal from the source list."
+      }
+    }
+
+    // The audit row is written EITHER WAY. When the suppression bound it is the
+    // provenance of an address-keyed row that names no person; when it did not,
+    // it is the only durable record that this person asked, and a human clearing
+    // the source list needs to find it.
+    await recordRecipientOnlyRequest(supabase, r, args.request, reason, now, bindingGap ?? null)
+    if (!channelsSuppressed.includes("mail")) channelsSuppressed.push("mail")
   }
 
   // Nothing binding written and no honest recipient-only fallback → refuse.
@@ -341,7 +414,10 @@ function bindingOf(r: ResolvedMailRecipient): MailUnsubBinding {
   if (r.leadId && r.contactId) return "lead+contact"
   if (r.leadId) return "lead"
   if (r.contactId) return "contact"
-  return "recipient_only"
+  // No entity — but a mail piece always has an address, and since m503 that
+  // address is itself a suppression identity. Callers reach this arm only when
+  // `bindingGap` is unset, i.e. the address-keyed row is known to have landed.
+  return "mailing_address"
 }
 
 /**
@@ -384,18 +460,25 @@ async function recordRecipientOnlyRequest(
   request: MailUnsubRequest,
   reason: string,
   now: string,
+  /** NULL when the address-keyed suppression BOUND — the row is then provenance,
+   *  not a gap, and it must not claim otherwise. */
+  bindingGap: string | null,
 ): Promise<void> {
   const { error } = await supabase.from("lifecycle_events").insert({
     brokerage_id: r.brokerageId,
     entity_type: "direct_mail_recipient",
     entity_id: r.recipientId,
+    // The event type still says UNBOUND — it is the type a human sweeping the
+    // source list greps for — but the metadata now distinguishes the two very
+    // different states it can be in.
     event_type: "MAIL_OPT_OUT_UNBOUND",
     source: "system",
     metadata: {
       campaign_id: r.campaignId,
       request,
       reason,
-      binding_gap: "recipient row names neither a lead nor a contact",
+      bound_to: bindingGap ? "nothing" : "mailing_address",
+      binding_gap: bindingGap,
     },
     created_at: now,
   })

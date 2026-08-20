@@ -25,6 +25,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { deriveAIOverage, runAIOverageBilling } from "../lib/billing/ai-overage"
 import { validateAIOverageTermsInput } from "../lib/billing/plan-catalog"
+import { blankComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -34,9 +35,7 @@ const check = (n: string, c: boolean) => {
 const read = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 
 /** Strip comments so prose cannot satisfy (or trip) a scan. */
-const code = (s: string) => s
-  .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
-  .replace(/\/\/[^\n]*/g, (m) => " ".repeat(m.length))
+const code = (s: string) => blankComments(s)
 /** Strip SQL comments for migration scans. */
 const sqlCode = (s: string) => s.replace(/--[^\n]*/g, (m) => " ".repeat(m.length))
 
@@ -179,7 +178,7 @@ console.log("\n[the admin lane — overage terms administrable like the tier pri
   const a = code(ACT)
   check("listAIOverageTermsAction + upsertAIOverageTermsAction exist in the plan-catalog action module", /export async function listAIOverageTermsAction/.test(a) && /export async function upsertAIOverageTermsAction/.test(a))
   check("both are behind the SAME superadmin gate as upsertPlanTierAction", /listAIOverageTermsAction[\s\S]{0,200}?requireSuperadmin\(\)/.test(a) && /upsertAIOverageTermsAction[\s\S]{0,200}?requireSuperadmin\(\)/.test(a))
-  check("the upsert goes through the pure validator, import-pinned to lib/billing/plan-catalog", /validateAIOverageTermsInput/.test(a) && /from "@\/lib\/billing\/plan-catalog"/.test(ACT.replace(/\/\/[^\n]*/g, "")))
+  check("the upsert goes through the pure validator, import-pinned to lib/billing/plan-catalog", /validateAIOverageTermsInput/.test(a) && /from "@\/lib\/billing\/plan-catalog"/.test(blankComments(ACT)))
   check("...and refuses BEFORE any write (validator result gates the update)", /const v = validateAIOverageTermsInput\(input\)\s*\n\s*if \(!v\.ok\) return \{ ok: false, error: v\.error \}/.test(a))
   check("the metric is pinned to the ONE constant on both read and write (.eq(\"metric\", AI_OVERAGE_METRIC))", (a.match(/\.eq\("metric", AI_OVERAGE_METRIC\)/g) ?? []).length >= 2)
   check("UPDATE-only: the action can never mint a plan_limits row (no insert/upsert on plan_limits)", !/from\("plan_limits"\)[\s\S]{0,400}?\.(insert|upsert)\(/.test(a))

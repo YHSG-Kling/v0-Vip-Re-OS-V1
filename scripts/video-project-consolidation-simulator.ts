@@ -40,6 +40,7 @@
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -48,7 +49,7 @@ const check = (n: string, c: boolean) => {
 }
 const src = (p: string) => (existsSync(join(process.cwd(), p)) ? readFileSync(join(process.cwd(), p), "utf8") : "")
 /** Strip comments so an assertion can never be satisfied by prose describing the fix. */
-const code = (p: string) => src(p).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")
+const code = (p: string) => stripComments(src(p))
 
 const SURVIVOR = "app/actions/video/create-video-project.ts"
 const DUPLICATE = "app/actions/video.ts"

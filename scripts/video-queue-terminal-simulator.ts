@@ -59,7 +59,7 @@ const check = (n: string, c: boolean) => {
 /** Comments stripped: this file's own prose must never satisfy an assertion. */
 const src = (p: string) =>
   existsSync(p)
-    ? readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+    ? stripComments(readFileSync(p, "utf8"))
     : ""
 /** SQL keeps its comments stripped too — `--` lines. */
 const sql = (p: string) =>
@@ -73,6 +73,7 @@ const REAPER    = src("lib/video/video-pipeline-reaper-policy.ts")
 // m374 moved the vocabulary itself here; the reaper policy only re-exports it.
 // Imported, not grepped — see the membership checks below for why.
 import { VIDEO_TERMINAL_STATUSES } from "../lib/video/video-status"
+import { stripComments } from "./strip-comments"
 const POLL      = src("app/api/cron/poll-did-videos/route.ts")
 
 console.log("\n── the mirror exists, at the database, where no writer can miss it ──")

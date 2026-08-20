@@ -97,9 +97,24 @@ export interface PerplexityCompFinderInput {
   searchRadiusMiles?: number           // default 1.0
   monthsBack?: number                  // default 6
   /**
-   * Which slots to ask for, and how many of each. Defaults to the historical
-   * 3 closed / 1 pending / 1 active shape. The CMA gap-fill NEVER asks for
-   * `closed` — see the header.
+   * Which slots to ask for, and how many of each.
+   *
+   * DEFAULT: 0 closed / 1 pending / 1 active — the pending and active sides
+   * RentCast structurally cannot hold, and nothing else.
+   *
+   * The default used to be 3 CLOSED / 1 pending / 1 active, which is the exact
+   * thing the header of this file says this module must never supply. It never
+   * fired — comp-provider.ts, the one door in, passes `closed: 0` explicitly —
+   * so the defect was a loaded gun rather than a wound: the next caller to omit
+   * `want` would have asked an AI web search for recorded sales, and a wrong AI
+   * sale price does not degrade a CMA's estimate, it BECOMES it. A default is
+   * what the module does when nobody is looking, so it now defaults to the rule
+   * the rest of the lane enforces (AI_GAP_FILL_SLOTS in comp-provider.ts,
+   * proven by cma-provider-lane check P2b).
+   *
+   * `closed` remains REQUESTABLE rather than deleted: a caller that genuinely
+   * wants AI-sourced closed rows must now type the number, and the CMA path
+   * refuses them at the caller regardless of what this finder returns.
    */
   want?: PerplexityCompSlotRequest
   /** Vendor-ledger attribution for the lane making the call. */
@@ -141,7 +156,10 @@ export async function findCompsViaPerplexity(
   const months = input.monthsBack ?? 6
   const propType = input.subjectPropertyType ?? "single-family"
   const want = {
-    closed: Math.max(0, input.want?.closed ?? 3),
+    // 0, not 3. See PerplexityCompFinderInput.want — the sold side is not this
+    // module's to serve, and the default is the one place a caller's silence
+    // gets to decide that.
+    closed: Math.max(0, input.want?.closed ?? 0),
     pending: Math.max(0, input.want?.pending ?? 1),
     active: Math.max(0, input.want?.active ?? 1),
   }

@@ -17,6 +17,7 @@
 import { readFileSync } from "node:fs"
 import { isSnoozed } from "../lib/property-alerts/alert-cadence"
 import { CRON_REGISTRY, isDue } from "../lib/kernel/cron-dispatch"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -73,9 +74,7 @@ function main() {
   check("daily @08:00 snooze expired → runs again (auto-resume)", eligible("daily", past, monday8) === true)
 
   console.log("\n[The surviving engine actually APPLIES the snooze it inherited]")
-  const engine = readFileSync("lib/property-alerts/alert-engine.ts", "utf8")
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/^[ \t]*\/\/.*$/gm, "")
+  const engine = stripComments(readFileSync("lib/property-alerts/alert-engine.ts", "utf8"))
   check("runAlert refuses a snoozed alert", /isSnoozed\(\(alert as any\)\.snoozed_until\)/.test(engine))
   check("runAllActiveAlerts filters snoozed alerts out of the batch",
     /!isSnoozed\(a\.snoozed_until, now\)/.test(engine))

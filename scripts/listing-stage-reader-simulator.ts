@@ -37,6 +37,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -45,7 +46,7 @@ const check = (n: string, c: boolean) => {
 }
 const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
 /** Strip comments so this file's own prose cannot satisfy an assertion. */
-const code = (p: string) => src(p).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "")
+const code = (p: string) => stripComments(src(p))
 
 const LOGGER   = "lib/listing-lifecycle/lifecycle-logger.ts"
 const PRIORITY = "lib/listing-lifecycle/multi-listing-priority.ts"

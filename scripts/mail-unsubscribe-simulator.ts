@@ -55,6 +55,7 @@ import {
   MAIL_OPT_OUT_QR_PX,
   MAIL_OPT_OUT_QR_OPTIONS,
 } from "../lib/direct-mail/mail-opt-out-affordance"
+import { stripComments } from "./strip-comments"
 import {
   MAIL_UNSUB_ALPHABET,
   MAIL_UNSUB_TOKEN_LENGTH,
@@ -453,8 +454,11 @@ async function main() {
     !affA.url.includes("/api/qr/scan") && !affA.url.includes("slug=") && !/[?&]/.test(affA.url))
 
   const affordanceSrc = src("lib/direct-mail/mail-opt-out-affordance.ts")
-  const affordanceCode = affordanceSrc.replace(/\/\*[\s\S]*?\*\//g, "")
-    .split("\n").filter((l) => !l.trim().startsWith("*") && !l.trim().startsWith("//")).join("\n")
+  // stripComments removes the comments outright, so the line filter that used to
+  // follow it is gone. It dropped any line beginning with `*` or `//` — which is a
+  // JSDoc continuation and a comment respectively, but also any wrapped expression
+  // line that happens to start with one.
+  const affordanceCode = stripComments(affordanceSrc)
   check("the affordance builder never reads or writes qr_codes, and mints no slug",
     !/qr_codes|scan_count|slug/.test(affordanceCode))
   check("it takes a TOKEN, not a URL — so a caller cannot hand it the campaign's\n    qrScanUrl by mistake",
@@ -529,8 +533,7 @@ async function main() {
     && /\.eq\("unsubscribe_token", token\)/.test(applier2))
   // Negative half targets CODE, never prose — the comment above the select says
   // the word "pgcrypto" in order to explain that the DATABASE does the minting.
-  const drainCode = drain.replace(/\/\*[\s\S]*?\*\//g, "")
-    .split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")
+  const drainCode = stripComments(drain)
   check("…and the m493 migration is the one that mints it, NOT NULL with a CSPRNG\n    default, so the drain never generates a token itself",
     /unsubscribe_token text\s*\n\s*not null default public\.direct_mail_unsubscribe_token\(\)/.test(mig)
     && !/gen_random|randomBytes|crypto|Math\.random/.test(drainCode))

@@ -38,6 +38,7 @@
  * that vocabulary is a schema decision for the owner, not a guard fix.
  */
 import { readFileSync, existsSync } from "node:fs"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -46,7 +47,7 @@ const check = (n: string, c: boolean) => {
 }
 const src = (p: string) =>
   existsSync(p)
-    ? readFileSync(p, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+    ? stripComments(readFileSync(p, "utf8"))
     : ""
 
 /** Body of a named function, skipping its parameter list and return type. */

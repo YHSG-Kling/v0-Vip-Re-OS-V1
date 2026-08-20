@@ -69,6 +69,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs"
 import { resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import { createHash } from "node:crypto"
+import { stripComments } from "./strip-comments"
 
 const ROOT = process.cwd()
 const RUN_NEGATIVE = !process.argv.includes("--no-negative")
@@ -92,9 +93,7 @@ const raw = (p: string) => readFileSync(resolve(ROOT, p), "utf8")
 
 /** Comment-stripped source. Prose must never satisfy a structural assertion. */
 const code = (p: string) =>
-  raw(p)
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/^[ \t]*\/\/.*$/gm, "")
+  stripComments(raw(p))
 
 // ═════════════════════════════════════════════════════════════════════════════
 // CACHE-BUSTED MODULE LOADING

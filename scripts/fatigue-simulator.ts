@@ -22,6 +22,7 @@
 
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
+import { stripComments } from "./strip-comments"
 import {
   buildReachoutGuard,
   deriveRiskLevel,
@@ -30,9 +31,7 @@ import {
 
 /** Source read with comments stripped — these files quote the dead literals they retired. */
 const src = (p: string) =>
-  readFileSync(join(process.cwd(), p), "utf8")
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/^[ \t]*\/\/.*$/gm, "")
+  stripComments(readFileSync(join(process.cwd(), p), "utf8"))
 const exists = (p: string) => existsSync(join(process.cwd(), p))
 
 let passed = 0

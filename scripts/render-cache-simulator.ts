@@ -38,6 +38,7 @@ import {
 import { resolveCodeRevision, __resetCodeRevisionMemo } from "../lib/remotion/code-revision"
 import { SIGNAL_REGISTRY } from "../lib/kernel/signal-registry"
 import { TABLE_MANAGER, MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
+import { stripComments } from "./strip-comments"
 
 let pass = 0
 let fail = 0
@@ -51,11 +52,7 @@ function ok(label: string, cond: boolean, detail?: string) {
 /** Source with comments stripped, so an assertion about a dead pattern is not
  *  defeated by a comment that names the pattern it removed. */
 function code(path: string): string {
-  return readFileSync(path, "utf8")
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .split("\n")
-    .filter((l) => !l.trim().startsWith("//"))
-    .join("\n")
+  return stripComments(readFileSync(path, "utf8"))
 }
 
 const GEO = { width: 1080, height: 1920, fps: 30, durationFrames: 480 }

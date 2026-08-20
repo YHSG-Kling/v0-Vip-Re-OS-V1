@@ -254,6 +254,51 @@ export async function saveVideoScript(data: {
   return script
 }
 
+/**
+ * ─── THE ONE VIDEO-SCRIPT APPROVAL WRITER ────────────────────────────────────
+ *
+ * TOMBSTONE. `app/api/video-scripts/[id]/approve/route.ts` and its mirror
+ * `app/api/video-scripts/[id]/reject/route.ts` were DELETED into this function.
+ * Both were public, authenticated HTTP endpoints that wrote
+ * `video_scripts_library.approval_status`, and NOTHING in the tree reached
+ * either one: the only surface that moves a script through approval is
+ * app/dashboard/videos/library/page.tsx:317, which calls THIS server action, and
+ * the only other `fetch("/api/video-scripts…")` in the tree is a DELETE on the
+ * collection route (library/page.tsx:460). A second, unreached, drifting writer
+ * of a compliance column is not redundancy — it is a place for the rules to
+ * disagree, and they had already begun to:
+ *
+ *   MERGED IN FROM THE ROUTES (things they did and this did not):
+ *     · THE ROLE GATE. The routes required `isAdminOrBroker(...)`; this action
+ *       required only a session. So the ONE path anybody actually used let ANY
+ *       signed-in member of the brokerage approve a video script — including the
+ *       agent who authored it — while the governance lived in an endpoint no
+ *       button pointed at. That is the whole finding: the gate existed, and it
+ *       was installed on the door nobody walks through.
+ *     · `approved_at` / `rejected_at` — the routes stamped approved_at; the
+ *       columns exist (scripts/schema-snapshot.ts:video_scripts_library) and
+ *       nothing was filling them, so "when was this cleared" had no answer.
+ *     · `approved_by` / `rejected_by` — WHO cleared it. Both FK `users`
+ *       (scripts/schema-fk-map.ts), and `auth.userId` is a users id, so the
+ *       classes match. Never `agents.id`.
+ *     · `rejection_reason` — the routes discarded the reason entirely; the
+ *       library surface already collects one and it was only being written to
+ *       `compliance_review_notes`.
+ *
+ *   KEPT FROM THIS SURVIVOR (things it does and the routes did not):
+ *     · tenant + identity derived from the SESSION, never from the URL or an
+ *       argument (the `_brokerageId` / `_actorUserId` parameters are ignored);
+ *     · the SCRIPT_APPROVED / SCRIPT_REJECTED lifecycle events;
+ *     · revalidation of the surface the reviewer is standing on.
+ *
+ * The OTHER live approval path for this table — `applyMarketingAssetApproval("video_script", …)`
+ * in lib/kernel/approval-queue-aggregator.ts:95, reached from the admin
+ * marketing-approvals console — is deliberately NOT collapsed into this one: it
+ * is the shared six-kind state machine for the unified queue, already admin-gated
+ * at app/actions/marketing-ai-approvals.ts:186, and merging a per-kind writer
+ * into it would be the reverse of this fix.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
 export async function updateScriptApprovalStatus(
   scriptId: string,
   _brokerageId: string,  // ignored — derived from session
@@ -270,13 +315,45 @@ export async function updateScriptApprovalStatus(
 
   const supabase = createServiceClient()
 
+  // THE ROLE GATE, merged in from the deleted routes. An approval is the last
+  // human stop before a script can spend provider credits and reach a client's
+  // screen; the author must not be the approver. Resolved from the session's own
+  // users row — never from an argument.
+  const { data: callerUser, error: callerUserError } = await supabase
+    .from("users")
+    .select("user_type")
+    .eq("id", actorUserId)
+    .maybeSingle()
+  // supabase-js RESOLVES a refusal. An unreadable role is "we do not know whether
+  // this person may approve", and the only safe rendering of that is "no".
+  if (callerUserError) {
+    throw new Error(`Could not verify your role — approval refused (${callerUserError.message})`)
+  }
+  if (!isAdminOrBroker({ user_type: (callerUser as { user_type?: string } | null)?.user_type ?? "" })) {
+    throw new Error("Only brokers and admins can change a script's approval status")
+  }
+
+  const now = new Date().toISOString()
+  const decision: Record<string, unknown> = {
+    approval_status: approvalStatus,
+    compliance_review_notes: complianceReviewNotes ?? null,
+    updated_at: now,
+  }
+  // EVERY column named here is verified present on `video_scripts_library` in
+  // scripts/schema-snapshot.ts — PostgREST refuses an UPDATE naming an absent
+  // column ENTIRELY (PGRST204), which would turn this into a total refusal.
+  if (approvalStatus === "approved") {
+    decision.approved_at = now
+    decision.approved_by = actorUserId
+  } else if (approvalStatus === "rejected") {
+    decision.rejected_at = now
+    decision.rejected_by = actorUserId
+    decision.rejection_reason = complianceReviewNotes ?? null
+  }
+
   const { data: script, error } = await supabase
     .from("video_scripts_library")
-    .update({
-      approval_status: approvalStatus,
-      compliance_review_notes: complianceReviewNotes ?? null,
-      updated_at: new Date().toISOString(),
-    })
+    .update(decision)
     .eq("id", scriptId)
     .eq("brokerage_id", brokerageId)
     .select()

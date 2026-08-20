@@ -4,8 +4,16 @@ import { createClient } from "@/lib/supabase/server"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
-import { evaluateOutbound } from "@/lib/kernel/compliance"
-import { applyBrandVoice } from "@/lib/kernel/brand-voice"
+import {
+  buildComplianceSystemBlocks,
+  precheckBriefForFairHousing,
+  postcheckScript,
+  detectFairHousingRedFlags,
+  detectProhibitedPhraseRedFlags,
+  escalateScriptToHumanReview,
+  COMPLIANCE_UNKNOWN_PREFIX,
+  type ScriptComplianceState,
+} from "@/lib/video/script-compliance"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { generateAvatarVideo, getAvatarVideoStatus } from "@/app/actions/external-services"
@@ -192,6 +200,50 @@ export interface VideoProject {
 
 // ─── AI SCRIPT GENERATION ──────────────────────────────────────────────────
 
+/**
+ * ⚠ DELIBERATELY NOT WIRED TO ANY SURFACE — named duplicate of
+ *   app/actions/video/generate-script.ts:generateVideoScript (that file, line
+ *   112), which is wired to /dashboard/videos/create (the wizard —
+ *   app/dashboard/videos/create/video-create-client.tsx:57) and is strictly
+ *   more complete: nine video types against five, saveToLibrary, listing
+ *   context, the SCRIPT_QUALITY_CHARTER, and the human-review escalation.
+ *
+ * NOT DELETED, and this is a standing ruling, not an omission:
+ * lib/kernel/manager-registry.ts video_repurpose_render_writers records it as
+ * "deliberately left unwired … NOT deleted, because the capability could not be
+ * shown to have MOVED rather than being an independent twin." Three sibling
+ * functions in this file carry the same treatment. Deleting it would also
+ * red-line scripts/video-repurpose-wiring-simulator.ts:597-602, which asserts
+ * on this body, and contradict scripts/wired-surface-baseline.json.
+ *
+ * It IS still a live "use server" endpoint, so it is hardened rather than left
+ * as written. THREE DEFECTS CLOSED HERE, all of them ways the compliance gate
+ * was decorative:
+ *
+ *  1. FAIL-OPEN. It called evaluateOutbound raw with
+ *     `.catch(() => ({ allowed: true, violations: [] }))`. A THROWN evaluator —
+ *     a DB outage, a refused compliance_events insert — reported the script as
+ *     ALLOWED. "We could not check" is not "it is clean". It now runs the
+ *     shared gate, whose red-flag pass is deterministic and cannot be lost to
+ *     a throw, and the return shape carries an explicit `unknown` state.
+ *
+ *  2. NO PRE-CHECK AND NO STEER. The brief went straight to the model with no
+ *     Fair Housing block in the system prompt and no check on the brief itself,
+ *     so the compliance-FIRST design the owner ruled for did not exist on this
+ *     path at all — only a post-hoc opinion that was then discarded.
+ *
+ *  3. TWO PERSONAS FOR ONE TEXT. applyBrandVoice was called with journeyType
+ *     "seller" / persona "seller", and evaluateOutbound with journeyType
+ *     "buyer" / persona "first_time", for the SAME string. Worse, "seller" is
+ *     not a member of the Persona union at all (lib/kernel/types.ts:139), so
+ *     getPersonaBrandNotes matched nothing and that call contributed no notes.
+ *     And applyBrandVoice returns `content: params.content` UNCHANGED — it is a
+ *     checker, not a rewriter — so the whole `withVoice` dance applied no brand
+ *     voice and then threw away the violations it found. Removed: brand voice
+ *     now arrives PROACTIVELY in the system prompt via
+ *     buildComplianceSystemBlocks, and its violations arrive as Gate 1 of the
+ *     one gate call, under ONE journeyType and ONE persona.
+ */
 export async function generateAIScript(params: {
   description: string
   videoType: "listing_tour" | "market_update" | "agent_intro" | "tips" | "testimonial"
@@ -209,12 +261,28 @@ export async function generateAIScript(params: {
   // brokerage, so it authenticates before it spends. The caller-supplied
   // brokerageId/agentId are ignored — they authenticated nothing.
   const auth = await requireCaller()
-  if (!auth.ok) return { error: auth.error, script: "", wordCount: 0, complianceAllowed: false, complianceViolations: [auth.error] }
+  if (!auth.ok) {
+    return {
+      error: auth.error,
+      script: "",
+      wordCount: 0,
+      complianceState: "unknown" as ScriptComplianceState,
+      complianceEscalated: false,
+      complianceViolations: [auth.error],
+    }
+  }
   const brokerageId = auth.brokerageId
-  // USERS-class throughout: generateText's agentId, applyBrandVoice's
-  // actorUserId and evaluateOutbound's actorContext.userId are all users ids.
-  // Substituting an agents.id here would be a cross-class bug.
+  // USERS-class throughout: generateText's agentId and the gate's actor.userId
+  // are both users ids. Substituting an agents.id here would be a cross-class bug.
   const actorUserId = auth.userId
+  const actor = { userId: actorUserId, brokerageId }
+
+  // ONE journeyType for the whole evaluation — see defect 3 in the header.
+  // All five of this path's video types are buyer-facing marketing (there is no
+  // seller_update / listing_presentation here, which are the two the wizard's
+  // videoTypeToContactType maps to "seller"), so this is a constant rather than
+  // a lookup that would always return the same answer.
+  const journeyType = "buyer" as const
 
   // Word count target: ~150 words per 60s
   const targetWords = Math.round((params.durationSeconds / 60) * 150)
@@ -244,11 +312,36 @@ Property details:
 `
   }
 
+  // ── COMPLIANCE FIRST (Gate 1/4/5, proactive) ───────────────────────────────
+  // Brand voice + ThemFirst + Fair Housing go INTO the system prompt, so the
+  // model complies while writing rather than being graded afterwards. This is
+  // the shared gate — the same blocks the wizard and the other three
+  // generators use (lib/video/script-compliance.ts).
+  const complianceBlocks = await buildComplianceSystemBlocks(brokerageId)
+
+  // ── PRE-CHECK the human's brief, BEFORE spending inference ─────────────────
+  // A brief that is itself a Fair Housing violation must not be turned into a
+  // script at all. This is the only hard block on the path; per the owner's
+  // ruling nothing after generation blocks.
+  const preCheck = await precheckBriefForFairHousing(actor, params.description, journeyType)
+  if (preCheck.blocked) {
+    return {
+      error: `Description contains a Fair Housing violation: ${preCheck.reason}`,
+      script: "",
+      wordCount: 0,
+      complianceState: "red_flag" as ScriptComplianceState,
+      complianceEscalated: false,
+      complianceViolations: preCheck.reason ? [preCheck.reason] : [],
+    }
+  }
+
   const prompt = `Write a ${params.durationSeconds}-second video script (~${targetWords} words) for ${typeContext[params.videoType]}.
 
 Tone: ${toneContext[params.tone]}
 ${listingContext}
 Topic: ${params.description}
+
+${complianceBlocks.join("\n\n")}
 
 Requirements:
 - Open with a strong hook in the first 5 seconds
@@ -267,38 +360,107 @@ Return only the script text.`
     brokerageId,
   })
 
-  // Apply brand voice
-  const withVoice = await applyBrandVoice({
-    content: raw.text,
-    brokerageId,
-    actorUserId,
-    actorRole: "agent",
-    journeyType: "seller",
-    persona: "seller",
-    messageType: "social",
-  }).then((r) => r.content, () => raw.text)
+  const scriptContent = raw.text
 
-  // Compliance check
-  const scriptContent = typeof withVoice === "string" ? withVoice : raw.text
-  const compliance = await evaluateOutbound({
-    actorContext: {
-      userId: actorUserId,
-      role: "agent",
-      brokerageId,
-    },
-    journeyType: "buyer",
-    persona: "first_time",
-    messageType: "social",
-    content: scriptContent,
-    // Broadcast payload — see lib/video/script-compliance.ts for why the
-    // stub contact is omitted rather than faked.
-  }).catch(() => ({ allowed: true, violations: [] as string[] }))
+  // ── POST-CHECK: advisory, and it CANNOT fail open ──────────────────────────
+  // postcheckScript now returns an explicit `Compliance: UNKNOWN — …` line when
+  // the evaluator throws, instead of undefined, so "we could not check" is
+  // never mistaken for "clean". The red-flag pass beside it is deterministic
+  // and needs no database at all.
+  const advisoryFindings = (await postcheckScript(actor, scriptContent, journeyType)) ?? []
+  const redFlags = detectFairHousingRedFlags(scriptContent, journeyType)
+  // …plus this brokerage's OWN blocking words. Graded inside the shared gate and
+  // recovered here by prefix — a pure filter over the list already returned, not
+  // a second read of prohibited_phrases.
+  redFlags.push(...detectProhibitedPhraseRedFlags(advisoryFindings))
+  const evaluatorUnknown = advisoryFindings.some((w) => w.startsWith(COMPLIANCE_UNKNOWN_PREFIX))
+  const unknownReasons = advisoryFindings.filter((w) => w.startsWith(COMPLIANCE_UNKNOWN_PREFIX))
+  const advisory = advisoryFindings.filter(
+    (w) => !redFlags.includes(w) && !w.startsWith(COMPLIANCE_UNKNOWN_PREFIX),
+  )
+  // The BRIEF's own evaluation can have failed too, and that failure is upstream
+  // of everything above — it was checked before a token was spent.
+  const unevaluated = evaluatorUnknown || preCheck.evaluatorFailed
+
+  // ── ESCALATE ONLY A BIG RED FLAG ───────────────────────────────────────────
+  // The script is returned either way — the ruling forbids compliance holding
+  // up video creation. A hard Fair Housing finding additionally files a row on
+  // the existing human lane (video_scripts_library approval_status
+  // 'pending_review' → /dashboard/admin/marketing-approvals).
+  let complianceEscalated = false
+  let humanReviewId: string | undefined
+  const escalationNotes: string[] = []
+  if (redFlags.length > 0) {
+    const escalation = await escalateScriptToHumanReview({
+      actor,
+      script: scriptContent,
+      videoType: params.videoType,
+      title: `AI Script — ${params.videoType.replace(/_/g, " ")} — ${new Date().toLocaleDateString()}`,
+      redFlags,
+      warnings: advisory,
+      brandVoiceTone: params.tone,
+      durationTargetSeconds: params.durationSeconds,
+    })
+    if (escalation.ok) {
+      complianceEscalated = true
+      humanReviewId = escalation.reviewId
+      escalationNotes.push(
+        "This script was sent to a human for Fair Housing review (Marketing Approvals). You still have the script — it is not blocked.",
+      )
+    } else {
+      escalationNotes.push(
+        `Compliance: ESCALATION FAILED — a hard Fair Housing finding could not be filed for human review (${escalation.error}). Do not publish this script until someone has looked at it.`,
+      )
+    }
+  } else if (unevaluated) {
+    // ── FAIL CLOSED ────────────────────────────────────────────────────────────
+    // No red flag was FOUND, but the gate did not fully run — the kernel
+    // evaluator threw, or the brokerage's prohibited-phrase catalogue could not
+    // be read or holds no active rows. "We could not check" is not "it is
+    // clean", and a label alone is not an escalation: it takes the same human
+    // lane, with a note saying what was NOT checked. The script is still
+    // returned, so nothing is held up.
+    const hold = await escalateScriptToHumanReview({
+      actor,
+      script: scriptContent,
+      videoType: params.videoType,
+      title: `AI Script (unchecked) — ${params.videoType.replace(/_/g, " ")} — ${new Date().toLocaleDateString()}`,
+      redFlags: [],
+      warnings: advisory,
+      holdReason: "unevaluated",
+      unknownReasons,
+      brandVoiceTone: params.tone,
+      durationTargetSeconds: params.durationSeconds,
+    })
+    if (hold.ok) {
+      complianceEscalated = true
+      humanReviewId = hold.reviewId
+      escalationNotes.push(
+        "Compliance could not be fully checked on this script, so it was sent to a human (Marketing Approvals). You still have the script — it is not blocked.",
+      )
+    } else {
+      escalationNotes.push(
+        `Compliance: HOLD FAILED — this script could not be compliance-checked AND could not be filed for human review (${hold.error}). Do not publish it until someone has looked at it.`,
+      )
+    }
+  }
+
+  // complianceAllowed was a BOOLEAN, and the fail-open made it `true` for a
+  // gate that never ran. A tri-state replaces it so the caller can tell
+  // "clean" from "we do not know" — there are no callers to break.
+  const complianceState: ScriptComplianceState =
+    redFlags.length > 0 ? "red_flag"
+      : unevaluated ? "unknown"
+        : advisory.length > 0 ? "advisory"
+          : "clean"
 
   return {
     script: scriptContent,
     wordCount: scriptContent.split(/\s+/).filter(Boolean).length,
-    complianceAllowed: compliance.allowed,
-    complianceViolations: compliance.allowed ? [] : (compliance.violations ?? []),
+    complianceState,
+    complianceEscalated,
+    humanReviewId,
+    complianceViolations: [...redFlags, ...unknownReasons, ...advisory, ...escalationNotes],
   }
 }
 

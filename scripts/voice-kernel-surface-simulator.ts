@@ -45,6 +45,7 @@ import { MANAGERS, MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
 import { SIGNAL_REGISTRY } from "../lib/kernel/signal-registry"
 import { classifyCoordination } from "../lib/kernel/coordination-kind"
 import { COMMAND_MAP } from "../app/actions/voice-assistant/helpers/command-map"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -57,10 +58,12 @@ const src = (p: string) => (existsSync(join(process.cwd(), p)) ? readFileSync(jo
  *  the planner explains why it does not call COMMAND_EXECUTORS, and the executors
  *  file records the runtime-string import it replaced — so a raw search trips on the
  *  very explanation that proves the code is right. */
-const code = (p: string) =>
-  src(p)
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .split("\n").map((l) => l.replace(/(^|\s)\/\/.*$/, "")).join("\n")
+// stripComments already removes TRAILING line comments, so the per-line pass that
+// used to follow it is gone. It was not merely redundant: `(^|\s)//.*$` fires on the
+// slashes inside any string holding a URL, so it deleted the tail of every line
+// carrying one — a blind spot bolted on to cover the anchored regex that could not
+// see a trailing comment in the first place.
+const code = (p: string) => stripComments(src(p))
 
 console.log("══════════════════════════════════════════════════")
 console.log(" Voice admin — a command surface over the kernel, dispatched onto the bus")

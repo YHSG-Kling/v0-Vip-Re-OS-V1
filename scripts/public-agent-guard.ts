@@ -45,6 +45,7 @@
  * what a visitor can USE are different questions, and the widget asks both.
  */
 import { readFileSync, existsSync } from "node:fs"
+import { stripComments } from "./strip-comments"
 import {
   EMBED_MODES, normalizeEnabledModes, usableModes, initialMode, isEmbedMode,
 } from "../lib/embed/widget-modes"
@@ -59,7 +60,7 @@ const src = (p: string) => (existsSync(p) ? readFileSync(p, "utf8") : "")
 /** Comments stripped — an assertion must target CODE, never prose. This file's
  *  header names every retired route, so a src() search would match the story. */
 const code = (p: string) =>
-  src(p).replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")
+  stripComments(src(p))
 
 const WIDGET = "app/widget/chat/widget-chat-client.tsx"
 const EMBED = "app/embed/[publicId]/embed-widget.tsx"

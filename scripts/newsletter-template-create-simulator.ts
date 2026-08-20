@@ -30,6 +30,7 @@
 import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
+import { stripComments } from "./strip-comments"
 import {
   parseTemplateBlueprint,
   TEMPLATE_BLUEPRINT_FORMAT,
@@ -84,10 +85,6 @@ const PHANTOM_SECTION_COLUMNS = [
 type StaticProbe = { id: string; name: string; run: (src: string) => boolean }
 
 /** Strip line and block comments so a probe judges CODE, not commentary. */
-function stripComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '')
-}
-
 const STATIC_PROBES: StaticProbe[] = [
   {
     id: 'no-phantom-columns',

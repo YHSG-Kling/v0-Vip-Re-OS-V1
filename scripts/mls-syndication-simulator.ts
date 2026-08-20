@@ -34,6 +34,7 @@
  */
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
+import { stripComments } from "./strip-comments"
 import {
   verifyMlsSyndication,
   sameMlsNumber,
@@ -50,7 +51,7 @@ const check = (n: string, c: boolean) => {
 }
 const src = (p: string) =>
   existsSync(join(process.cwd(), p))
-    ? readFileSync(join(process.cwd(), p), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+    ? stripComments(readFileSync(join(process.cwd(), p), "utf8"))
     : ""
 
 const NOW = new Date("2026-06-10T12:00:00Z")

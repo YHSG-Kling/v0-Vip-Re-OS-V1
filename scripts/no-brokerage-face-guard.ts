@@ -42,6 +42,7 @@
  *     older table.
  */
 import { readFileSync, existsSync } from "node:fs"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -54,7 +55,7 @@ const src = (p: string) => (existsSync(p) ? readFileSync(p, "utf8") : "")
  *  own header names every column and table it forbids, so a src() search here
  *  would match the explanation and pass on nothing. */
 const code = (p: string) =>
-  src(p).replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")
+  stripComments(src(p))
 
 const DID = "lib/did/index.ts"
 const EMBED_SESSION = "app/api/embed/session/route.ts"

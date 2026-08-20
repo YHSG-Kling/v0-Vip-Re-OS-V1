@@ -30,6 +30,7 @@
  * is: read every caller, rename column + constraint, convert callers, prove.
  */
 import { readFileSync, existsSync, readdirSync } from "node:fs"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -51,7 +52,7 @@ function walkDir(dir: string, out: string[] = []): string[] {
   return out
 }
 /** Strip comments — otherwise this guard asserts against its own explanation. */
-const code = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1")
+const code = (s: string) => stripComments(s)
 
 /**
  * THE FULL LIST — regenerate with:

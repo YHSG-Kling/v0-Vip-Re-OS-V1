@@ -40,7 +40,10 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const replies = await generateSmartReplies({
+  // generateSmartReplies now also reports what the call SPENT (SmartReplyUsage)
+  // so callers that keep their own ledger have a real figure instead of a
+  // guess. This route does not ledger, so it takes the replies only.
+  const { replies } = await generateSmartReplies({
     inboundBody,
     channel,
     contactName,

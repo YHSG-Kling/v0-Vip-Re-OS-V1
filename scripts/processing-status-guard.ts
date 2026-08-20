@@ -21,6 +21,7 @@
  * the CHECK from that same list. This guard keeps the three in agreement.
  */
 import { readFileSync, existsSync } from "node:fs"
+import { stripComments } from "./strip-comments"
 import {
   RAW_PROCESSING_STATUSES, REJECTION_STATUSES, IN_FLIGHT_STATUSES,
   isRawProcessingStatus, isRejectionStatus,
@@ -35,7 +36,7 @@ function ok(label: string, cond: boolean, detail?: string) {
 const src = (p: string) => (existsSync(p) ? readFileSync(p, "utf8") : "")
 /** Comments stripped — an assertion must target CODE, never prose. */
 const code = (p: string) =>
-  src(p).replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n")
+  stripComments(src(p))
 
 const MIGRATION = "supabase/migrations/m330-raw-processing-status-vocabulary.sql"
 

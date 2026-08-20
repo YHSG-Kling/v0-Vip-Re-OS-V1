@@ -77,6 +77,7 @@ import { createHash } from "node:crypto"
 import { createRequire } from "node:module"
 import { MONTHLY_VENDOR_BUDGET_USD, vendorBudgetForTier, DEFAULT_VENDOR_BUDGET } from "../lib/vendor-governance/budget-eval"
 import type * as Visibility from "../lib/vendor-governance/budget-visibility"
+import { stripComments } from "./strip-comments"
 
 const ROOT = process.cwd()
 const RUN_NEGATIVE = !process.argv.includes("--no-negative")
@@ -108,7 +109,7 @@ const raw = (p: string) => readFileSync(resolve(ROOT, p), "utf8")
 const sha = (p: string) => createHash("sha256").update(raw(p)).digest("hex")
 /** Comment-stripped source. Load-bearing: this file quotes the defect it fixed. */
 const code = (p: string) =>
-  raw(p).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+  stripComments(raw(p))
 
 /**
  * The BODY of a named function — everything from the `{` that follows the

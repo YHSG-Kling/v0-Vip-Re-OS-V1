@@ -89,6 +89,15 @@ export async function GET(request: Request) {
 
     const errors: string[] = []
     const unavailableReasons = new Set<string>()
+    /**
+     * ONE ROW PER DATASET ACTUALLY QUERIED, deduped across brokerages (many tenants can name the
+     * same market, and the dataset's health is a fact about the PORTAL, not about the tenant).
+     *
+     * This is the run's answer to the question the totals below cannot answer: `permits_fetched`
+     * is a sum, so a feed that died reads as a smaller number and nothing says which one. With
+     * this, "served 0 rows" and "refused" are two different lines with two different `ok` values.
+     */
+    const datasetHealth = new Map<string, { dataset: string; label: string; provider: string; status: number | null; ok: boolean; rows: number; matched: number; truncated: boolean; error: string | null }>()
     /** market label → { status, reasons }, deduped across brokerages. THE coverage answer. */
     const coverageByMarket = new Map<string, { status: string; reasons: string[] }>()
     const totals = {
@@ -115,6 +124,10 @@ export async function GET(request: Request) {
         totals.datasets_unavailable += r.datasetsUnavailable
         for (const reason of r.unavailableReasons) unavailableReasons.add(reason)
         for (const c of r.coverage) coverageByMarket.set(c.market, { status: c.status, reasons: c.reasons })
+        // Keep the FIRST verdict per dataset. A later brokerage querying the same portal in the
+        // same run gets the same answer, and overwriting would let a second tenant's read hide
+        // the first's refusal.
+        for (const p of r.datasetHealth) if (!datasetHealth.has(p.dataset)) datasetHealth.set(p.dataset, p)
         totals.markets_unregistered += r.marketsUnregistered
         totals.permits_fetched += r.permitsFetched
         totals.skipped_no_address += r.skippedNoAddress
@@ -160,6 +173,15 @@ export async function GET(request: Request) {
     // a dead portal, and the operator has no way to tell that from a week with no permits.
     const unavailable = unavailableReasons.size > 0 ? [...unavailableReasons] : undefined
 
+    // Sorted so the FAILURES read first. A run that queried nine healthy datasets and one dead
+    // one should not bury the dead one ten lines down in an operator's log.
+    const health = [...datasetHealth.values()].sort((a, b) =>
+      a.ok === b.ok ? a.dataset.localeCompare(b.dataset) : (a.ok ? 1 : -1))
+    /** Datasets that served but returned NOTHING — the state that used to be invisible. Named
+     *  here so a feed going quiet is something an operator can watch, not something they infer
+     *  from a total that got smaller. */
+    const silent = health.filter((h) => h.ok && h.rows === 0).map((h) => h.dataset)
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: totals.signals_written,
@@ -167,6 +189,8 @@ export async function GET(request: Request) {
         ...totals, since: sinceIso,
         market_coverage: marketCoverage, market_gaps: marketGaps,
         supported_markets: supportedMarkets,
+        dataset_health: health,
+        datasets_silent: silent.length > 0 ? silent : undefined,
         unavailable_datasets: unavailable, errors: errors.slice(0, 20),
       },
     }).catch(() => {})
@@ -179,6 +203,10 @@ export async function GET(request: Request) {
       market_coverage: marketCoverage,
       market_gaps: marketGaps,
       supported_markets: supportedMarkets,
+      // PER-DATASET, ALWAYS PRESENT. `permits_fetched` is the sum; this is the breakdown, and it
+      // is the only thing in this response that can distinguish a quiet portal from a dead one.
+      dataset_health: health,
+      datasets_silent: silent.length > 0 ? silent : undefined,
       unavailable_datasets: unavailable,
       errors: errors.slice(0, 20),
     })

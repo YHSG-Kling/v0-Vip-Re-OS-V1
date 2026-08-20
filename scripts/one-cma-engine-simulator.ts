@@ -40,6 +40,7 @@
  */
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { stripComments } from "./strip-comments"
 
 const ROOT = process.cwd()
 const read = (p: string) => readFileSync(join(ROOT, p), "utf8")
@@ -92,15 +93,19 @@ for (const [k, p] of Object.entries(F)) SRC[k] = read(p)
  * reintroduction. So the rule is: prose may name the defect, code may not
  * contain it.
  */
+// CONVERTED to the one correct stripper. The hand-rolled version here was the
+// block-comments-first idiom, and this file is the worst possible place for it:
+// its whole reason to strip is that the tombstones QUOTE the code they replaced,
+// so a stripper that swallows real code would let a REINTRODUCED
+// `generateAIValuation` hide inside the swallowed span and read as absent. A
+// slash-star inside any string in these seven files opens a phantom block
+// comment that runs to the next star-slash anywhere below — measured elsewhere
+// in this repo at 359,572 characters from a single path glob.
+//
+// stripComments, not blankComments: nothing here computes a position from a
+// match index, and preserving line numbers keeps `bodyOf` anchors readable.
 const CODE: Record<string, string> = {}
-for (const [k, src] of Object.entries(SRC)) {
-  CODE[k] = src
-    .replace(/\/\*[\s\S]*?\*\//g, "")            // block comments (incl. JSDoc)
-    .split("\n")
-    .filter((l) => !/^\s*(\/\/|\*)/.test(l))      // whole-line // and stray * rows
-    .map((l) => l.replace(/\s\/\/.*$/, ""))       // trailing // comments
-    .join("\n")
-}
+for (const [k, src] of Object.entries(SRC)) CODE[k] = stripComments(src)
 
 /** The region of a file between an anchor and the next top-level `function`/`export`. */
 function bodyOf(src: string, anchor: string): string {

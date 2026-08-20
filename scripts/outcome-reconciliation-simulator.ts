@@ -42,6 +42,7 @@ import { SIGNAL_REGISTRY } from "../lib/kernel/signal-registry"
 import { classifyCoordination } from "../lib/kernel/coordination-kind"
 import { MAINTENANCE_DOMAINS, MANAGERS } from "../lib/kernel/manager-registry"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -226,9 +227,7 @@ console.log("\n[the truth can actually ARRIVE — the intakes exist]")
   // jsonb). It would have matched nothing and mirrored no status, silently.
   // Comment-stripped: the fix DOCUMENTS the dead column by name, so a raw search
   // trips on the very explanation that proves the code no longer uses it.
-  const twilioCode = twilioHook
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .split("\n").map((l) => l.replace(/(^|\s)\/\/.*$/, "")).join("\n")
+  const twilioCode = stripComments(twilioHook)
   check("…mirrors onto messages via metadata containment, the column that EXISTS",
     /contains\("metadata", \{ twilio_sid: sid \}\)/.test(twilioCode) &&
     !/provider_message_id/.test(twilioCode))

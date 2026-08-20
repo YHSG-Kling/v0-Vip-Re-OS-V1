@@ -56,13 +56,32 @@ const COST_PER_LISTING_SEARCH = 0.20
 const COST_PER_AVM_LOOKUP = 0.15
 
 /**
+ * The vendor-ledger lane a RentCast call is attributed to when the caller did
+ * not name one. It is `buyer_search` because that is what this client was built
+ * for and what the historical ledger rows say.
+ */
+const DEFAULT_SYSTEM_SOURCE = "buyer_search"
+
+/**
  * Fire-and-forget usage logger; never blocks the caller's request.
+ *
+ * `systemSource` USED TO BE HARD-CODED to "buyer_search" here, on every reader.
+ * That made the vendor ledger say something false: a CMA's comparable pull, an
+ * equity-trigger AVM and a market-stats read were all filed as buyer search, so
+ * "what is RentCast spend actually going to?" had exactly one possible answer
+ * and it was wrong for most of the calls. `sourceCompsForCma` had been accepting
+ * a `systemSource` from its callers the whole time and there was no route for it
+ * to reach this line. Now the caller's lane is carried on `RentcastCaller` and
+ * lands on the ledger row; the old constant remains as the default so nothing
+ * that does not name a lane changes meaning.
  */
 function meterCall(params: {
   brokerageId: string
   usageType: string
   cost: number
   endpoint: string
+  systemSource?: string
+  contactId?: string | null
   metadata?: Record<string, any>
 }) {
   void logVendorUsage({
@@ -70,9 +89,9 @@ function meterCall(params: {
     usageType: params.usageType,
     unitCount: 1,
     estimatedCost: params.cost,
-    systemSource: "buyer_search",
+    systemSource: params.systemSource ?? DEFAULT_SYSTEM_SOURCE,
     brokerageId: params.brokerageId,
-    metadata: { endpoint: params.endpoint, ...(params.metadata ?? {}) },
+    metadata: { endpoint: params.endpoint, contact_id: params.contactId ?? null, ...(params.metadata ?? {}) },
   }).catch(() => null)
 }
 
@@ -88,7 +107,23 @@ function meterCall(params: {
  * brokerage scope — see lib/property/rentcast-eligibility.ts for what that
  * misses and why it is stated rather than guessed around.
  */
-type RentcastCaller = RentcastEligibilityContext
+type RentcastCaller = RentcastEligibilityContext & {
+  /**
+   * Which lane of the product is making this call, for the vendor ledger.
+   * OPTIONAL and defaulted to `buyer_search` so no existing caller changes
+   * meaning — but a caller that knows its lane (the CMA comp sourcing does)
+   * must pass it, or the ledger records a lane that did not spend.
+   */
+  systemSource?: string
+  /**
+   * The contact this call is being made ON BEHALF OF, when the caller has one.
+   * Ledger metadata only — it is NOT a credential selector and it is NOT a
+   * tenant boundary (`brokerageId` is both). It exists so "which client's CMA
+   * did this $0.15 go to?" is answerable, which it was not while every RentCast
+   * row carried only a brokerage.
+   */
+  contactId?: string | null
+}
 
 export interface RentcastSearchFilters {
   city?: string
@@ -285,6 +320,8 @@ export async function searchRentcastSaleListings(
       usageType: "api_call",
       cost: COST_PER_LISTING_SEARCH,
       endpoint: "/listings/sale",
+      systemSource: params.systemSource,
+      contactId: params.contactId,
       metadata: { ok: res.ok, status: res.status },
     })
     if (!res.ok) {
@@ -358,6 +395,8 @@ export async function getRentcastListingStatus(
       usageType: "api_call",
       cost: COST_PER_LISTING_SEARCH,
       endpoint: "/listings/sale/{id}",
+      systemSource: params.systemSource,
+      contactId: params.contactId,
       metadata: { ok: res.ok, status: res.status },
     })
     // A 404 means the vendor no longer carries the listing. That is genuinely
@@ -377,6 +416,29 @@ export async function getRentcastListingStatus(
 // Search rental listings (used by investor mode + lifetime customer portal)
 // ---------------------------------------------------------------------------
 
+/**
+ * Long-term rental listings for an area.
+ *
+ * `price` on every row this returns is a MONTHLY RENT, not a sale price. That is
+ * the only reason this is a separate function from `searchRentcastSaleListings`
+ * rather than a `status`/endpoint flag on it: the two share a request shape and
+ * a row shape but not the meaning of their central number, and merging them
+ * would produce one function whose result a caller cannot interpret without
+ * knowing which branch ran. Everything they genuinely share — the gate, the
+ * refusal message, the range-parameter contract, the row mapper — is shared.
+ *
+ * WHAT CHANGED AND WHY: this used to accept the full `RentcastSearchFilters`
+ * and read exactly FOUR of its fields. `bedroomsMax`, `bathroomsMin`,
+ * `priceMin`, `priceMax`, `propertyType` and `status` were accepted from the
+ * caller and silently dropped, so a caller asking for "2-3 bed rentals under
+ * $2,500" got every rental in the city and no indication its filters had been
+ * discarded. Worse, `bedrooms` was sent as a bare `String(bedroomsMin)`, which
+ * is RentCast's EXACT-match form — a "3+ bedroom" search lost every 4-bedroom
+ * rental. `searchRentcastSaleListings` had already been corrected to the
+ * MCP-verified range syntax (`3:*`, `min:max`, `price=min:max`); this had not,
+ * because nothing consumed it and so nothing surfaced the difference. Both now
+ * build the query the same way.
+ */
 export async function searchRentcastRentalListings(
   params: RentcastCaller & { filters: RentcastSearchFilters },
 ): Promise<{ success: boolean; listings: RentcastListing[]; error?: string }> {
@@ -394,8 +456,18 @@ export async function searchRentcastRentalListings(
   if (f.city) qs.set("city", f.city)
   if (f.state) qs.set("state", f.state)
   if (f.zipCode) qs.set("zipCode", f.zipCode)
-  if (f.bedroomsMin != null) qs.set("bedrooms", String(f.bedroomsMin))
-  qs.set("status", "Active")
+  // Same MCP-verified range contract as the for-sale search: a bare "3" means
+  // EXACTLY 3, so a min-only filter must be written "3:*". `price` here is the
+  // monthly rent range, which is the same query parameter on this endpoint.
+  if (f.bedroomsMin != null && f.bedroomsMax != null) qs.set("bedrooms", `${f.bedroomsMin}:${f.bedroomsMax}`)
+  else if (f.bedroomsMin != null) qs.set("bedrooms", `${f.bedroomsMin}:*`)
+  else if (f.bedroomsMax != null) qs.set("bedrooms", `*:${f.bedroomsMax}`)
+  if (f.bathroomsMin != null) qs.set("bathrooms", `${f.bathroomsMin}:*`)
+  if (f.priceMin != null && f.priceMax != null) qs.set("price", `${f.priceMin}:${f.priceMax}`)
+  else if (f.priceMin != null) qs.set("price", `${f.priceMin}:*`)
+  else if (f.priceMax != null) qs.set("price", `*:${f.priceMax}`)
+  if (f.propertyType) qs.set("propertyType", f.propertyType)
+  qs.set("status", f.status ?? "Active")
   qs.set("limit", String(f.limit ?? 20))
 
   try {
@@ -405,6 +477,8 @@ export async function searchRentcastRentalListings(
       usageType: "api_call",
       cost: COST_PER_LISTING_SEARCH,
       endpoint: "/listings/rental/long-term",
+      systemSource: params.systemSource,
+      contactId: params.contactId,
       metadata: { ok: res.ok, status: res.status },
     })
     if (!res.ok) {
@@ -412,7 +486,17 @@ export async function searchRentcastRentalListings(
     }
     const data = res.data
     const arr: any[] = Array.isArray(data) ? data : []
-    const listings: RentcastListing[] = arr.map((r) => ({
+    // Belt-and-braces re-filter, matching the for-sale search: the server-side
+    // ranges above are the contract, this keeps bedroomsMax exact and stops a
+    // row with NO rent at all from satisfying a rent filter.
+    const filtered = arr.filter((r) => {
+      const rent = r?.price ?? null
+      if (f.priceMin != null && (rent == null || rent < f.priceMin)) return false
+      if (f.priceMax != null && (rent == null || rent > f.priceMax)) return false
+      if (f.bedroomsMax != null && r?.bedrooms != null && r.bedrooms > f.bedroomsMax) return false
+      return true
+    })
+    const listings: RentcastListing[] = filtered.map((r) => ({
       externalId: r?.id ?? r?.formattedAddress ?? "",
       address: r?.formattedAddress ?? r?.addressLine1 ?? "",
       city: r?.city ?? null,
@@ -441,6 +525,29 @@ export async function searchRentcastRentalListings(
 // AVM endpoint (used for cross-checking Perplexity estimate)
 // ---------------------------------------------------------------------------
 
+/**
+ * The AVM figures carried on a `/avm/value` response, parsed in ONE place.
+ *
+ * `/avm/value` answers two questions in a single billed call: what does
+ * RentCast's model think this home is worth (`price`, `priceRangeLow`,
+ * `priceRangeHigh`), and which comparables did it look at (`comparables[]`).
+ * `getRentcastAVM` reads the first half, `getRentcastComps` reads the second,
+ * and `getRentcastAvmAndComps` reads both from the SAME response — which is why
+ * this parser exists rather than three copies of `data?.price ?? null`.
+ *
+ * Every field is `number | null`. NEVER 0: a provider that did not answer and a
+ * provider that answered "zero" are different facts, and this lane's whole
+ * purpose is that a missing estimate reads as missing.
+ */
+function parseAvmValue(data: any): { value: number | null; rangeLow: number | null; rangeHigh: number | null } {
+  const num = (v: any): number | null => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null)
+  return {
+    value: num(data?.price),
+    rangeLow: num(data?.priceRangeLow),
+    rangeHigh: num(data?.priceRangeHigh),
+  }
+}
+
 export async function getRentcastAVM(
   params: RentcastCaller & { address: string },
 ): Promise<{ value: number | null; rangeLow: number | null; rangeHigh: number | null }> {
@@ -455,15 +562,12 @@ export async function getRentcastAVM(
       usageType: "avm_lookup",
       cost: COST_PER_AVM_LOOKUP,
       endpoint: "/avm/value",
+      systemSource: params.systemSource,
+      contactId: params.contactId,
       metadata: { ok: res.ok, status: res.status },
     })
     if (!res.ok) return { value: null, rangeLow: null, rangeHigh: null }
-    const data = res.data
-    return {
-      value: data?.price ?? null,
-      rangeLow: data?.priceRangeLow ?? null,
-      rangeHigh: data?.priceRangeHigh ?? null,
-    }
+    return parseAvmValue(res.data)
   } catch {
     return { value: null, rangeLow: null, rangeHigh: null }
   }
@@ -493,6 +597,8 @@ export async function getRentcastMarketStats(
       usageType: "market_stats",
       cost: COST_PER_MARKET_LOOKUP,
       endpoint: "/markets",
+      systemSource: params.systemSource,
+      contactId: params.contactId,
       metadata: { ok: res.ok, status: res.status, zip: params.zipCode },
     })
     if (!res.ok) return null
@@ -504,15 +610,65 @@ export async function getRentcastMarketStats(
 }
 
 /**
- * Fetch comparable sales for an address via RentCast's AVM endpoint (returns a
- * `comparables[]` array). This is the chosen comps source for CMA generation,
- * replacing the retired HouseCanary integration. Never throws.
+ * WHY A RENTCAST AVM BASELINE IS ABSENT. Never collapsed to a boolean, and never
+ * collapsed to a zero: "we deliberately did not call", "the call failed" and
+ * "RentCast has no estimate for this address" are three different facts about
+ * the product and a reader is owed the difference.
  */
-export async function getRentcastComps(
+export type RentcastAvmUnavailableReason =
+  | "not_eligible"      // the gate refused — `eligibility.reason` names which question said no
+  | "no_address"        // nothing to look up
+  | "provider_error"    // non-2xx, or the request threw
+  | "no_estimate"       // RentCast answered and published no price for this address
+
+export interface RentcastAvmAndComps {
+  comps: RentcastComp[]
+  /** RentCast's own automated estimate. NOT a comp-derived value conclusion.
+   *  Every field is null-when-unknown; a refused or failed lookup is never 0. */
+  avm: { value: number | null; rangeLow: number | null; rangeHigh: number | null }
+  /** True only when RentCast actually published a price. */
+  avmAvailable: boolean
+  /** Why not, when not. Null when it is available. */
+  avmUnavailableReason: RentcastAvmUnavailableReason | null
+  /** The gate's verdict, so a caller can say WHICH question suppressed the call. */
+  eligibility: RentcastEligibility
+}
+
+/**
+ * ONE `/avm/value` call, BOTH of the things it answers.
+ *
+ * RentCast's `/avm/value` response carries the model's price estimate AND the
+ * comparables it reasoned from. The CMA lane needs both — the comparables to
+ * build the value range from, and the estimate as the owner's "possible
+ * baseline" to show alongside it ("rentcast does offer an avm which can be
+ * argued but a possible baseline"). Reading both off the one response is not an
+ * optimisation, it is the correctness requirement: a separate `getRentcastAVM`
+ * call would bill the tenant a SECOND $0.15 lookup and could return an estimate
+ * computed from a different comparable set than the one the report shows.
+ *
+ * Metered ONCE, as `comps_lookup`, because it is one billable call. The AVM
+ * rides along at no marginal cost, which is exactly why it is read here.
+ *
+ * Never throws.
+ */
+export async function getRentcastAvmAndComps(
   params: RentcastCaller & { address: string; limit?: number },
-): Promise<RentcastComp[]> {
-  const { apiKey } = await gateRentcast(params)
-  if (!apiKey || !params.address) return []
+): Promise<RentcastAvmAndComps> {
+  const empty = (
+    reason: RentcastAvmUnavailableReason,
+    eligibility: RentcastEligibility,
+    comps: RentcastComp[] = [],
+  ): RentcastAvmAndComps => ({
+    comps,
+    avm: { value: null, rangeLow: null, rangeHigh: null },
+    avmAvailable: false,
+    avmUnavailableReason: reason,
+    eligibility,
+  })
+
+  const { apiKey, eligibility } = await gateRentcast(params)
+  if (!apiKey) return empty("not_eligible", eligibility)
+  if (!params.address) return empty("no_address", eligibility)
 
   try {
     const qs = new URLSearchParams({ address: params.address, compCount: String(params.limit ?? 10) })
@@ -522,9 +678,11 @@ export async function getRentcastComps(
       usageType: "comps_lookup",
       cost: COST_PER_AVM_LOOKUP,
       endpoint: "/avm/value(comps)",
+      systemSource: params.systemSource,
+      contactId: params.contactId,
       metadata: { ok: res.ok, status: res.status },
     })
-    if (!res.ok) return []
+    if (!res.ok) return empty("provider_error", eligibility)
     const data = res.data
     const comps = normalizeRentcastComps(data?.comparables)
     // PULL-DRIFT SENTINEL: RentCast returned comparables but the normalizer
@@ -538,8 +696,27 @@ export async function getRentcastComps(
         received, kept: 0, sample: data.comparables[0],
       })
     }
-    return comps
+
+    const avm = parseAvmValue(data)
+    if (avm.value == null) return empty("no_estimate", eligibility, comps)
+    return { comps, avm, avmAvailable: true, avmUnavailableReason: null, eligibility }
   } catch {
-    return []
+    return empty("provider_error", eligibility)
   }
+}
+
+/**
+ * Fetch comparable sales for an address via RentCast's AVM endpoint (returns a
+ * `comparables[]` array). This is the chosen comps source for CMA generation,
+ * replacing the retired HouseCanary integration. Never throws.
+ *
+ * A THIN READER OVER `getRentcastAvmAndComps` — one HTTP call, one meter entry,
+ * one parser. Callers that only want the comparables keep this signature; the
+ * CMA lane calls the combined reader because it also shows the AVM baseline.
+ * Do not re-implement the pull here: two pulls is two prices for one question.
+ */
+export async function getRentcastComps(
+  params: RentcastCaller & { address: string; limit?: number },
+): Promise<RentcastComp[]> {
+  return (await getRentcastAvmAndComps(params)).comps
 }
