@@ -26,14 +26,16 @@ import {
 } from "../lib/external/nextdoor-extract"
 import {
   normalizeStreetAddress, readPermitAddress, readPermitId, readPermitValuation,
-  readPermitEventDate, classifyPermitStrength, matchPermitsToLeads, buildPermitSignalRow,
-  permitDedupeKey, ingestPermitSignals,
-  PERMIT_SIGNAL_TYPE, PERMIT_DETECTED_VIA,
+  readPermitEventDate, readPermitDescription, readViolationStatus,
+  classifyPermitStrength, classifyViolationStrength,
+  matchPermitsToLeads, buildPermitSignalRow, permitDedupeKey, ingestPermitSignals, signalTypeForKind,
+  PERMIT_SIGNAL_TYPE, VIOLATION_SIGNAL_TYPE, SOCRATA_SIGNAL_TYPES, PERMIT_DETECTED_VIA,
 } from "../lib/external/permit-signals"
 import {
-  getMarketDatasets, listQueryablePermitDatasets, MARKETS,
+  getMarketDatasets, listQueryablePermitDatasets, listQueryableDatasets, classifyMarketCoverage,
+  MARKETS,
 } from "../lib/external/socrata-market-registry"
-import { recentPermits } from "../lib/external/socrata-client"
+import { recentPermits, isSoqlFieldName, isIsoCalendarDay } from "../lib/external/socrata-client"
 import { validateVendorPlan, VENDOR_PLAN_BILLING_CYCLES, VENDOR_PLAN_STATUSES } from "../lib/vendors/vendor-validators"
 import { CRON_REGISTRY } from "../lib/kernel/cron-dispatch"
 import { CRON_MANAGER, MAINTENANCE_DOMAINS, MANAGERS } from "../lib/kernel/manager-registry"
@@ -245,22 +247,57 @@ check("every dataset the sweep will actually query has been checked against a li
   listQueryablePermitDatasets().filter((d) => !d.verifiedOn).map((d) => d.datasetId).join(", "))
 check("no dataset is BOTH marked unavailable and offered as queryable",
   listQueryablePermitDatasets().every((d) => !d.unavailable))
-check("DALLAS registers no query bound at all — its issued_date is TEXT 'MM/DD/YY', a two-digit " +
-  "year that cannot be compared OR parsed, so it is counted as un-boundable instead of guessed",
+// DALLAS — the fourth failure shape, found 2026-08-20: COLUMNS RIGHT, FEED DEAD. Last wave read a
+// live row, confirmed street_address / permit_number / work_description / value, and registered it
+// as merely "un-boundable" because issued_date is TEXT 'MM/DD/YY'. Verifying a ROW proves the
+// columns; it does not prove the FEED. `$order=issued_date DESC` returns issued_date "12/31/19",
+// the Socrata catalog reports data_updated_at 2020-08-30, and the dataset's own description opens
+// "ATTENTION: This permit data set is historical and no longer updated." Fixing the date column
+// would have bought a perfectly-formed query returning 2020 permits forever.
+check("DALLAS is marked UNAVAILABLE (frozen feed), not merely un-boundable — verifying a row " +
+  "proves the columns, never the freshness",
+  !!permitSpec("TX", "Dallas")?.unavailable
+  && /2020-08-30|historical/i.test(permitSpec("TX", "Dallas")?.unavailable ?? ""),
+  `unavailable=${permitSpec("TX", "Dallas")?.unavailable ?? "(unset)"}`)
+check("…and it still registers no query bound, because issued_date is TEXT 'MM/DD/YY' — a " +
+  "two-digit year that cannot be compared OR parsed",
   permitSpec("TX", "Dallas")?.dateColumn === undefined)
 
-// The four markets whose HOST is not a Socrata portal (Phoenix is CKAN, Atlanta and Miami are
-// ArcGIS Hub, Denver's id 404s) plus stale Los Angeles. Registered, so the market is not silently
-// missing; marked, so it is never queried into a daily failure.
+// The markets whose HOST is not a Socrata portal (Phoenix is CKAN, Atlanta and Miami are ArcGIS
+// Hub, Denver's id 404s), stale Los Angeles, and frozen Dallas. Registered, so the market is not
+// silently missing; marked, so it is never queried into a daily failure.
 const deadMarkets: Array<[string, string]> = [
   ["AZ", "Phoenix"], ["GA", "Atlanta"], ["FL", "Miami"], ["CO", "Denver"], ["CA", "Los Angeles"],
+  ["TX", "Dallas"],
 ]
-check("the five permit datasets that cannot serve are MARKED with a stated reason, not deleted",
+check("the six permit datasets that cannot serve are MARKED with a stated reason, not deleted",
   deadMarkets.every(([s, c]) => {
     const d = permitSpec(s, c)
     return !!d?.unavailable && d.unavailable.length > 10
   }),
   deadMarkets.filter(([s, c]) => !permitSpec(s, c)?.unavailable).map(([s, c]) => `${s}:${c}`).join(", "))
+
+// MONTGOMERY COUNTY, MARYLAND — added 2026-08-20 off a live row, not a document.
+// `$where=issueddate >= '2026-08-01'` returned permitno "1167770" · issueddate
+// "2026-08-18T12:08:57.000" · stno "7721" · stname "POLARA" · suffix "PL" · city "ROCKVILLE"
+// · declaredvaluation "8263" · worktype "ALTER". Every field this lane reads is asserted here
+// with the portal's real names, so the "readers do not cover this portal" failure that made
+// Chicago/SF/NYC report every row as skippedNoAddress cannot recur silently for this one.
+const mont = permitSpec("MD", "Rockville")
+check("MONTGOMERY COUNTY MD is registered, bound on `issueddate`, and row-verified",
+  mont?.host === "data.montgomerycountymd.gov" && mont?.datasetId === "m88u-pqki"
+  && mont?.dateColumn === "issueddate" && mont?.verifiedOn === "2026-08-20",
+  `got ${mont?.host}/${mont?.datasetId} dateColumn=${mont?.dateColumn}`)
+check("…and the readers actually read its live row (stno · stname · suffix · permitno · " +
+  "declaredvaluation)",
+  readPermitAddress({ stno: "7721", stname: "POLARA", suffix: "PL" }) === "7721 POLARA PL"
+  && readPermitId({ permitno: "1167770" }) === "1167770"
+  && readPermitValuation({ declaredvaluation: "8263" }) === 8263
+  && readPermitEventDate({ issueddate: "2026-08-18T12:08:57.000" }, "issueddate") === "2026-08-18")
+check("…and the county's ONE dataset is registered under every city in it, deduped by host/id " +
+  "so a tenant farming three of them queries it once",
+  ["Rockville", "Silver Spring", "Bethesda", "Gaithersburg", "Germantown", "Takoma Park"]
+    .every((c) => permitSpec("MD", c)?.datasetId === "m88u-pqki"))
 check("every registered market still resolves (marking a dataset never un-registers the market)",
   Object.values(MARKETS).every((m) => getMarketDatasets({ state: m.state, city: m.city }).length > 0))
 
@@ -329,6 +366,218 @@ console.log("\n[2e · an unavailable dataset is COUNTED, and never queried]")
     })).marketsUnregistered === 1)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 2f · COVERAGE — the gap taxonomy the owner ruling requires
+// "all markets from the active tenant territories for motivational sellers."
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[2f · territory → market coverage — every gap NAMED, never a silent zero]")
+
+check("a covered market says so, and hands back the datasets that will be queried",
+  classifyMarketCoverage({ state: "IL", city: "Chicago" }).status === "covered"
+  && classifyMarketCoverage({ state: "IL", city: "Chicago" }).queryable.length > 0)
+check("an UNREGISTERED market is named, not counted — this is the loudest gap",
+  classifyMarketCoverage({ state: "MT", city: "Bozeman" }).status === "unregistered"
+  && classifyMarketCoverage({ state: "MT", city: "Bozeman" }).market === "MT:Bozeman")
+
+// THE LIVE TENANTS OF THIS OS ARE IN THE FLORIDA PANHANDLE — brokerages `VIP Premier Realty`
+// (Pensacola FL) and `Your Brokerage` (Pace FL), read from the live project 2026-08-20. Neither
+// market is registered and NEITHER CAN BE: the Socrata catalog returns zero datasets for
+// q=Pensacola and zero for q=Escambia. Before this pass those tenants would have been served a
+// clean "0 signals" forever. Now they are named. This assertion exists so that stays true.
+check("PENSACOLA and PACE FL — where this OS's only two tenants actually are — come back as " +
+  "UNREGISTERED BY NAME, never as a quiet market",
+  classifyMarketCoverage({ state: "FL", city: "Pensacola" }).status === "unregistered"
+  && classifyMarketCoverage({ state: "FL", city: "Pace" }).status === "unregistered")
+check("a market registered but wholly unavailable is `unavailable`, WITH the reasons attached",
+  classifyMarketCoverage({ state: "AZ", city: "Phoenix" }).status === "unavailable"
+  && classifyMarketCoverage({ state: "AZ", city: "Phoenix" }).reasons.some((r) => /CKAN/.test(r)))
+check("…and Dallas, whose only two datasets are a frozen feed and a nonexistent id, likewise",
+  classifyMarketCoverage({ state: "TX", city: "Dallas" }).status === "unavailable")
+check("the four statuses are distinct verdicts, not one boolean",
+  new Set(
+    [["IL", "Chicago"], ["MT", "Bozeman"], ["AZ", "Phoenix"]]
+      .map(([s, c]) => classifyMarketCoverage({ state: s, city: c }).status),
+  ).size === 3)
+
+{
+  // The end-to-end proof: a tenant whose territories are one covered market, one dead market and
+  // one nobody ever registered. Every one of the three must come back named.
+  const forbidden: any = { from: () => { throw new Error("touched the database before coverage was decided") } }
+  const r = await ingestPermitSignals({
+    supabase: forbidden, brokerageId: "brok-cov", sinceIso: "2026-08-13",
+    territories: [
+      { brokerage_id: "brok-cov", state: "FL", city: "Pensacola" },
+      { brokerage_id: "brok-cov", state: "AZ", city: "Phoenix" },
+      { brokerage_id: "brok-cov", state: "TX", city: "Dallas" },
+    ],
+  })
+  check("every active territory gets a verdict, one per market",
+    r.coverage.length === 3 && r.coverage.every((c) => !!c.market && !!c.status),
+    r.coverage.map((c) => `${c.market}=${c.status}`).join(" "))
+  check("…and every one that produced nothing is in market_gaps BY NAME",
+    r.marketGaps.length === 3
+    && r.marketGaps.some((g) => g.startsWith("FL:Pensacola") && g.includes("unregistered")),
+    r.marketGaps.join(" | "))
+  check("a duplicate territory row for one city does not double-report the market",
+    (await ingestPermitSignals({
+      supabase: forbidden, brokerageId: "brok-cov", sinceIso: "2026-08-13",
+      territories: [
+        { brokerage_id: "brok-cov", state: "FL", city: "Pensacola" },
+        { brokerage_id: "brok-cov", state: "FL", city: "pensacola" },
+      ],
+    })).coverage.length === 1)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2g · CODE VIOLATIONS — registered since day one, ingested since today
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[2g · code violations — the registered datasets the ingest used to throw away]")
+
+const violationSpec = (state: string, city: string) =>
+  getMarketDatasets({ state, city }).find((d) => d.kind === "code_violations")
+
+// Chicago 22u3-xenr, live row 2026-08-20 (`$order=violation_date DESC`).
+check("CHICAGO's violations dataset is bound on `violation_date` and row-verified",
+  violationSpec("IL", "Chicago")?.dateColumn === "violation_date"
+  && violationSpec("IL", "Chicago")?.verifiedOn === "2026-08-20")
+check("…and its live row reads end to end (address · violation_description · violation_status)",
+  readPermitAddress({ address: "3830 W 63RD ST" }) === "3830 W 63RD ST"
+  && (readPermitDescription({ violation_description: "REPAIR DOOR, INT." }) ?? "").includes("REPAIR DOOR")
+  && readViolationStatus({ violation_status: "OPEN" }) === "OPEN"
+  && readPermitEventDate({ violation_date: "2026-08-18T00:00:00.000" }, "violation_date") === "2026-08-18")
+
+// NYC HPD wvxf-dwi5, live row 2026-08-20 via `$where=novissueddate > '2026-08-01'` — which RETURNS
+// ROWS, so unlike its permit sibling ipu4-2q9a this dataset's bound really is a Calendar date.
+const nycViol = violationSpec("NY", "New York")
+check("NEW YORK's HPD violations bind on `novissueddate` — the day the notice was ISSUED to the " +
+  "owner, which is when the pressure starts, not the inspection date",
+  nycViol?.dateColumn === "novissueddate" && nycViol?.verifiedOn === "2026-08-20",
+  `got ${nycViol?.dateColumn}`)
+check("…and its composite address + violationid are readable (they were not, before today)",
+  readPermitAddress({ housenumber: "116", streetname: "LENOX ROAD" }) === "116 LENOX ROAD"
+  && readPermitId({ violationid: "19075125" }) === "19075125"
+  && readPermitEventDate({ novissueddate: "2026-08-03T00:00:00.000" }, "novissueddate") === "2026-08-03")
+
+// The two ids that never existed. `ids=skuc-86g2` and `ids=9ahz-iyrm` against the Socrata catalog
+// both return zero results (2026-08-20), and both 404 on fetch — written from documentation, like
+// the date columns last wave undid.
+check("SEATTLE's and DALLAS's violation dataset ids DO NOT EXIST and are marked so, not queried",
+  ["skuc-86g2", "9ahz-iyrm"].every((id) => {
+    const d = [violationSpec("WA", "Seattle"), violationSpec("TX", "Dallas")].find((x) => x?.datasetId === id)
+    return !!d?.unavailable && /absent from the Socrata catalog/i.test(d.unavailable)
+  }))
+
+// Coverage is what the sweep can READ, and both kinds now count toward it. Every dataset offered
+// as queryable — permits and violations alike — has been checked against a live row.
+check("every dataset the sweep will query, of EITHER kind, is row-verified and not marked broken",
+  listQueryableDatasets().every((d) => !!d.verifiedOn && !d.unavailable)
+  && listQueryableDatasets("code_violations").length === 2
+  && listQueryableDatasets().length > listQueryablePermitDatasets().length,
+  `permits=${listQueryablePermitDatasets().length} all=${listQueryableDatasets().length} ` +
+  `unverified=${listQueryableDatasets().filter((d) => !d.verifiedOn).map((d) => d.datasetId).join(",")}`)
+
+check("a violation is filed under its OWN signal_type, never merged into permit_activity",
+  signalTypeForKind("code_violations") === VIOLATION_SIGNAL_TYPE
+  && signalTypeForKind("permits") === PERMIT_SIGNAL_TYPE
+  && VIOLATION_SIGNAL_TYPE !== PERMIT_SIGNAL_TYPE
+  && SOCRATA_SIGNAL_TYPES.length === 2)
+
+// STRENGTH STAYS CONSERVATIVE. The lane's rule is "only demolition reads strong" — that belongs to
+// the LANE, not to permits, so a violation ordering a structure razed reads strong and nothing else
+// does. An OPEN violation is moderate; a COMPLIED one is weak, because it is evidence the owner
+// FIXED the problem, which is close to the opposite of distress.
+check("only demolition language reads 'strong' for a violation too",
+  classifyViolationStrength({ description: "DEMOLITION of unsafe structure ordered", status: "OPEN" }) === "strong")
+check("an OPEN violation is 'moderate' — real and unresolved, but most of them are one handrail",
+  classifyViolationStrength({ description: "REPAIR DOOR, INT.", status: "OPEN" }) === "moderate"
+  && classifyViolationStrength({ description: "FIRE ESCAPE DEFECTIVE", status: "Open" }) === "moderate")
+check("a COMPLIED / Close violation is 'weak' — the owner fixed it; that is not distress",
+  classifyViolationStrength({ description: "REPAIR DOOR, INT.", status: "COMPLIED" }) === "weak"
+  && classifyViolationStrength({ description: "FIRE ESCAPE DEFECTIVE", status: "Close" }) === "weak")
+check("'Close' must not be read as 'Open' by a substring search — the two vocabularies overlap",
+  classifyViolationStrength({ description: "x", status: "Close" }) !== "moderate")
+check("an unreadable status is 'weak', never assumed open",
+  classifyViolationStrength({ description: "x", status: null }) === "weak"
+  && classifyViolationStrength({ description: "x", status: "NO ENTRY" }) === "weak")
+
+// Chicago's violations feed publishes NO case number — only a bare `id`, which is a ROW id. Keying
+// on it would file a fresh signal every time the portal republished. Keying on address alone would
+// collapse every violation a property ever collects into ONE signal, destroying the accrual that
+// makes violations predictive in the first place. The event DATE is the third answer: stable across
+// re-reads, and different for different citations.
+{
+  const chi = violationSpec("IL", "Chicago")!
+  const rows = [
+    { address: "1234 N LAMAR BLVD", violation_description: "REPAIR DOOR, INT.", violation_status: "OPEN", violation_date: "2026-08-18T00:00:00.000", id: "7530910" },
+    { address: "1234 N LAMAR BLVD", violation_description: "PORCH DEFECTIVE", violation_status: "OPEN", violation_date: "2026-08-14T00:00:00.000", id: "7530777" },
+    { address: "1234 N LAMAR BLVD", violation_description: "REPAIR DOOR, INT.", violation_status: "OPEN", violation_date: "2026-08-18T00:00:00.000", id: "7530910" },
+  ]
+  const out = matchPermitsToLeads(rows, [{ id: "lead-chi", address: "1234 N Lamar Blvd" }], undefined,
+    { dateColumn: "violation_date", kind: "code_violations" })
+  check("a bare row `id` is NOT accepted as a record handle (it moves when the portal republishes)",
+    out.matches.every((m) => m.permitId === null))
+  const keys = out.matches.map((m) => permitDedupeKey(m, chi))
+  check("two violations at one address on DIFFERENT days are two signals (accrual survives)",
+    new Set(keys).size === 2, keys.join(" | "))
+  check("…and the same violation seen twice in one window is still one",
+    keys[0] === keys[2])
+  const row = buildPermitSignalRow({ match: out.matches[0], brokerageId: "brok-1", dataset: chi })
+  check("the violation row is filed as code_violation / socrata with its status recorded",
+    row.signal_type === VIOLATION_SIGNAL_TYPE && row.detected_via === PERMIT_DETECTED_VIA
+    && (row.signal_details as any).violation_status === "OPEN"
+    && (row.signal_details as any).dataset_kind === "code_violations")
+  check("…and its reason sentence is a FIXED string about a violation, not a permit",
+    /code violation/i.test(String((row.signal_details as any).reason)))
+}
+
+check("the ingest reads back BOTH signal types for idempotency — an .eq here would re-file every " +
+  "violation daily, and lead scoring COUNTS signals",
+  /\.in\("signal_type", SOCRATA_SIGNAL_TYPES\)/.test(permitSrc))
+check("the ingest no longer discards every non-permit dataset it is handed",
+  permitSrc.includes("classifyMarketCoverage")
+  && !/^\s*if \(spec\.kind !== "permits"\) continue/m.test(permitSrc))
+
+const m499 = src("supabase/migrations/m499-a-second-signal-type-swept-daily-had-no-uniqueness-rule-at-all.sql")
+check("m499 exists and widens the uniqueness rule to BOTH signal types",
+  m499.includes("code_violation") && m499.includes("permit_activity")
+  && /CREATE UNIQUE INDEX[\s\S]{0,400}signal_type IN \('permit_activity', 'code_violation'\)/.test(m499))
+check("…and retires m490's narrower index rather than leaving two rules in force",
+  m499.includes("DROP INDEX IF EXISTS public.motivated_seller_signals_permit_dedupe"))
+check("…creating the new index BEFORE dropping the old (no window with no guarantee)",
+  m499.indexOf("CREATE UNIQUE INDEX") < m499.indexOf("DROP INDEX"))
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2h · the SoQL interpolation guard
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[2h · recentPermits interpolates into $where — the guard for when config is editable]")
+
+check("real portal field names pass, INCLUDING the trailing-underscore ones Socrata generates",
+  ["issue_date", "issueddate", "dobrundate", "novissueddate", "permit_", "job__", "violation_date"]
+    .every(isSoqlFieldName))
+check("anything that is not a field name is REFUSED, not escaped",
+  ["issue_date' OR 1=1 --", "issue_date, count(*)", "ISSUE_DATE", "", "a b", "1abc", "date)"]
+    .every((v) => !isSoqlFieldName(v)))
+check("only a bare YYYY-MM-DD is accepted as the bound",
+  isIsoCalendarDay("2026-08-20")
+  && !isIsoCalendarDay("2026-08-20T00:00:00.000")
+  && !isIsoCalendarDay("2026-08-20' OR '1'='1")
+  && !isIsoCalendarDay(""))
+{
+  // The refusal rides the adapter's own envelope, so the sweep counts it exactly like an outage.
+  const bad = await recentPermits({
+    host: "data.cityofchicago.org", datasetId: "ydr8-5enu",
+    sinceIso: "2026-08-01", permitDateColumn: "issue_date' OR 1=1 --", limit: 1,
+  })
+  check("a bad date column returns ok:false with a stated reason and never reaches the network",
+    bad.ok === false && /not a Socrata field name/.test(bad.error ?? ""))
+  const badDate = await recentPermits({
+    host: "data.cityofchicago.org", datasetId: "ydr8-5enu",
+    sinceIso: "2026-08-01'; DROP TABLE leads; --", permitDateColumn: "issue_date", limit: 1,
+  })
+  check("…and so does a bad date bound",
+    badDate.ok === false && /calendar day/.test(badDate.error ?? ""))
+}
+
 const cronPath = "/api/cron/permit-signal-scan"
 check("the cron route file exists", existsSync(join(root, "app/api/cron/permit-signal-scan/route.ts")))
 check("the route is gated the way its neighbours are (verifyCronAuth)",
@@ -338,6 +587,11 @@ check("the route uses the ACTIVE-subscriber territory resolver, not fixed geogra
 check("the route reports the registry's broken datasets instead of absorbing them into a 0",
   src("app/api/cron/permit-signal-scan/route.ts").includes("unavailable_datasets")
   && src("app/api/cron/permit-signal-scan/route.ts").includes("datasets_unavailable"))
+check("the route reports a verdict for EVERY active territory, and names the gaps — the owner " +
+  "ruling is 'all markets from the active tenant territories', not 'all registered markets'",
+  src("app/api/cron/permit-signal-scan/route.ts").includes("market_coverage")
+  && src("app/api/cron/permit-signal-scan/route.ts").includes("market_gaps")
+  && /marketGaps[\s\S]{0,200}reasons/.test(src("app/api/cron/permit-signal-scan/route.ts")))
 check("…and reports the two window skips separately from the address skips",
   src("app/api/cron/permit-signal-scan/route.ts").includes("skipped_outside_window")
   && src("app/api/cron/permit-signal-scan/route.ts").includes("skipped_no_event_date"))
@@ -379,20 +633,34 @@ const planAction = src("app/actions/vendors/vendor-plans.ts")
 check("the writer exists and runs the validator", planAction.includes("validateVendorPlan"))
 check("every export is an async Server Action",
   planAction.split("\n").filter((l) => /^export\s+(const|function|class|let|var|enum)\s/.test(l)).length === 0)
-check("ownership is on the WRITE itself, not a prior read",
-  (planAction.match(/\.eq\("vendor_id", actor\.vendorId\)/g) ?? []).length >= 4)
-check("delete refuses a subscribed plan BY NAME before the FK can raise 23503",
+// ── DIRECTION CORRECTED (m497) ─────────────────────────────────────────────
+// Three assertions here USED TO PIN THE WRONG DIRECTION and are rewritten, not
+// deleted. This lane built the catalogue as A VENDOR'S OWN PRICE LIST that
+// brokerages subscribed to monthly. Owner ruling, verbatim: "vendor packages are
+// for brokerages to charge the vendor on a subscription to the platform. vendors
+// do bill the brokerages for jobs but not a monthly subscription." So money runs
+// VENDOR → BROKERAGE for a package and BROKERAGE → VENDOR only PER JOB. A green
+// test asserting the old ownership predicate would certify the inversion, which
+// is worse than a red one. The RULE each assertion expressed survives; only its
+// subject moved. Full direction coverage lives in
+// scripts/vendor-package-direction-simulator.ts.
+check("ownership is on the WRITE itself, not a prior read — now keyed on the SELLING BROKERAGE",
+  (planAction.match(/\.eq\("brokerage_id", actor\.brokerageId\)/g) ?? []).length >= 4)
+check("delete refuses an ENROLLED package BY NAME before the FK can raise 23503",
   planAction.includes("vendor_subscriptions") && /cannot\s+`?\s*\+?\s*`?be deleted|cannot \$\{|cannot be deleted/i.test(planAction))
 check("archiving is offered as the retirement path", planAction.includes("setVendorPlanStatusAction") && planAction.includes("archived"))
 check("the surface exists", existsSync(join(root, "app/vendor/plans/page.tsx")) && existsSync(join(root, "app/vendor/plans/plans-client.tsx")))
 check("the surface is NAV-LINKED (never a page nothing points at)",
   src("app/config/navigation-config.ts").includes("'/vendor/plans'"))
-check("the client runs the same validator the server does",
-  src("app/vendor/plans/plans-client.tsx").includes("validateVendorPlan"))
+// The AUTHORING client moved with the direction: the seller (brokerage) writes
+// the package, so the shared validator now runs on the brokerage panel.
+// /vendor/plans is the PAYER's read-only view and correctly has no validator.
+check("the authoring client runs the same validator the server does",
+  src("app/dashboard/vendors/vendor-plan-catalogue-panel.tsx").includes("validateVendorPlan"))
 
-// The catalogue's OTHER half. vendor_plans' subscriber count and its delete gate both read
+// The catalogue's OTHER half. vendor_plans' enrolled-vendor count and its delete gate both read
 // vendor_subscriptions, and a read whose table has no writer is not a measurement — "0
-// subscribers" would be a structural certainty and the delete gate could never fire.
+// enrolled" would be a structural certainty and the delete gate could never fire.
 const subAction = src("app/actions/vendors/vendor-plan-subscriptions.ts")
 check("vendor_subscriptions has a real writer (the read is a measurement, not a certainty)",
   /\.from\("vendor_subscriptions"\)[\s\S]{0,400}\.insert/.test(subAction))
@@ -402,8 +670,8 @@ check("every vendor_subscriptions read AND write is tenant-pinned",
   (subAction.match(/\.eq\("brokerage_id", ctx\.brokerageId\)/g) ?? []).length >= 4)
 check("only an ACTIVE plan may be subscribed to (the line the browse policy draws)",
   subAction.includes('plan.status !== "active"'))
-check("a repeat subscribe is a sentence, not a 23505 from the UNIQUE index",
-  subAction.includes("already subscribed to this plan"))
+check("a repeat ENROLMENT is a sentence, not a 23505 from the UNIQUE index",
+  subAction.includes("already enrolled in this package"))
 check("cancel KEEPS the row (credits used are the invoice basis) — it never deletes",
   subAction.includes('status: "canceled"') && !/\.from\("vendor_subscriptions"\)[\s\S]{0,200}\.delete\(/.test(subAction))
 check("the brokerage-side surface exists and is mounted on the nav-linked vendors page",

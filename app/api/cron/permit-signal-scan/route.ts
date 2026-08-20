@@ -26,6 +26,16 @@ export const maxDuration = 300
  * markets only. No active subscribers or no configured territory → an honest no-op with the reason
  * stated, never a fallback to scraping fixed geography.
  *
+ * COVERAGE. Every ACTIVE TERRITORY gets a verdict every run — `market_coverage`, and its
+ * actionable half `market_gaps` — because the owner ruling is "all markets from the active tenant
+ * territories", and a sweep that reports only what the registry happens to contain is answering a
+ * different question. A tenant farming a city nobody registered is now NAMED in the output
+ * ("FL:Pensacola (unregistered)") instead of receiving a zero.
+ *
+ * TWO SIGNAL KINDS. Building permits (`permit_activity`) and city code violations
+ * (`code_violation`). A permit says money is going INTO a house; a violation says the city is
+ * billing the owner for one they are not maintaining. Both are public, dated and address-keyed.
+ *
  * HONESTY. Per-brokerage errors are collected and returned; a run with any refusal reports
  * `ok: false` with the refusals verbatim, so a Socrata outage or a refused insert can never read
  * as "no permits today".
@@ -79,6 +89,8 @@ export async function GET(request: Request) {
 
     const errors: string[] = []
     const unavailableReasons = new Set<string>()
+    /** market label → { status, reasons }, deduped across brokerages. THE coverage answer. */
+    const coverageByMarket = new Map<string, { status: string; reasons: string[] }>()
     const totals = {
       brokerages: 0,
       datasets_queried: 0,
@@ -102,6 +114,7 @@ export async function GET(request: Request) {
         totals.datasets_skipped_no_date_column += r.datasetsSkippedNoDateColumn
         totals.datasets_unavailable += r.datasetsUnavailable
         for (const reason of r.unavailableReasons) unavailableReasons.add(reason)
+        for (const c of r.coverage) coverageByMarket.set(c.market, { status: c.status, reasons: c.reasons })
         totals.markets_unregistered += r.marketsUnregistered
         totals.permits_fetched += r.permitsFetched
         totals.skipped_no_address += r.skippedNoAddress
@@ -116,10 +129,31 @@ export async function GET(request: Request) {
       }
     }
 
-    // "markets_unregistered > 0" is a REGISTRY GAP, not an empty market, and it is only
-    // actionable if the operator can see what IS covered — so the supported list rides along
-    // whenever a territory fell through. socrata-market-registry.MARKETS is the place to extend.
-    const supportedMarkets = totals.markets_unregistered > 0 ? listSupportedMarkets() : undefined
+    // ── THE COVERAGE ANSWER, ALWAYS PRESENT ──────────────────────────────────
+    //
+    // OWNER RULING: "all markets from the active tenant territories for motivational sellers."
+    // The run therefore reports one verdict per ACTIVE TERRITORY, every run, whether or not
+    // anything was found — because the failure this lane keeps re-learning is that a market we
+    // CANNOT READ looks exactly like a market with nothing happening in it. `market_coverage` is
+    // that answer, and `market_gaps` is its actionable half: every territory that produced no
+    // queryable dataset, BY NAME, with which of the four kinds of gap it is:
+    //   covered      — a verified, bounded, serving dataset exists
+    //   unregistered — this OS has no dataset for this market at all (the loudest gap)
+    //   unavailable  — registered and known broken; the reason is in unavailable_datasets
+    //   unboundable  — registered and alive, but no verified date column to bound "recent" on
+    const marketCoverage = [...coverageByMarket.entries()]
+      .map(([market, v]) => ({ market, status: v.status }))
+      .sort((a, b) => a.market.localeCompare(b.market))
+    // A gap carries its stated reasons, so "TX:Dallas (unavailable)" is never a dead end — the
+    // operator sees WHY without opening the registry. `unregistered` has none by construction:
+    // there is nothing registered to state a reason about, and that IS the reason.
+    const marketGaps = marketCoverage
+      .filter((m) => m.status !== "covered")
+      .map((m) => ({ ...m, reasons: coverageByMarket.get(m.market)?.reasons ?? [] }))
+
+    // The supported list rides along whenever ANY territory fell through, so the operator can see
+    // what IS covered next to what is not. socrata-market-registry.MARKETS is the place to extend.
+    const supportedMarkets = marketGaps.length > 0 ? listSupportedMarkets() : undefined
 
     // A dataset the registry itself marks broken is a REGISTRY DEFECT, and it rides back with the
     // reason attached. Without this the run reports "0 signals" for a tenant whose only market is
@@ -130,7 +164,9 @@ export async function GET(request: Request) {
       context_id: contextId,
       records_processed: totals.signals_written,
       metadata: {
-        ...totals, since: sinceIso, supported_markets: supportedMarkets,
+        ...totals, since: sinceIso,
+        market_coverage: marketCoverage, market_gaps: marketGaps,
+        supported_markets: supportedMarkets,
         unavailable_datasets: unavailable, errors: errors.slice(0, 20),
       },
     }).catch(() => {})
@@ -139,6 +175,9 @@ export async function GET(request: Request) {
       ok: errors.length === 0,
       since: sinceIso,
       ...totals,
+      markets_covered: marketCoverage.length - marketGaps.length,
+      market_coverage: marketCoverage,
+      market_gaps: marketGaps,
       supported_markets: supportedMarkets,
       unavailable_datasets: unavailable,
       errors: errors.slice(0, 20),

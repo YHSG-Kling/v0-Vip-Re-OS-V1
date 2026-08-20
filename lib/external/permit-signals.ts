@@ -33,11 +33,21 @@
  * fuzzy-matched to "the closest lead", because a wrong match writes a seller signal onto an
  * innocent person's record and every downstream score then treats it as observed fact.
  *
+ * ── CODE VIOLATIONS (2026-08-20) ─────────────────────────────────────────────
+ * The registry has carried `kind: "code_violations"` datasets since it was written, and this file
+ * threw every one of them away with `if (spec.kind !== "permits") continue`. They were dead weight
+ * that LOOKED like coverage. They are ingested now, under their own signal_type `code_violation`,
+ * through the same address-exact matching and the same refusals — a violation is an address too.
+ * Verified live 2026-08-20: Chicago `22u3-xenr` and NYC HPD `wvxf-dwi5` serve; the Seattle and
+ * Dallas violation ids in the registry do not exist and are now marked so.
+ *
  * The pure half (everything above `ingestPermitSignals`) has no I/O and is simulator-driven.
  */
 
 import { recentPermits } from "./socrata-client"
-import { getMarketDatasets, type SocrataDatasetSpec } from "./socrata-market-registry"
+import {
+  classifyMarketCoverage, type MarketCoverage, type SocrataDatasetSpec,
+} from "./socrata-market-registry"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PURE — address normalization
@@ -129,6 +139,11 @@ const PERMIT_ID_KEYS = [
   "record_id", "application_number", "job_number", "job__", "case_number", "number",
   // Los Angeles labels its permit number "PCIS Permit #" → pcis_permit.
   "pcis_permit",
+  // Code-violation handles. NYC HPD publishes `violationid` ("19075125", live 2026-08-20).
+  // A bare `id` is deliberately absent from this list even though Chicago's violations dataset
+  // has one: `id` is a ROW id, not a case id, and a row id that moves when the portal republishes
+  // would file a brand-new signal every single day — the exact defect m490's index exists to stop.
+  "violationid", "violation_number", "novid",
 ]
 
 // ─── COMPOSITE ADDRESS COMPONENTS ────────────────────────────────────────────
@@ -144,21 +159,37 @@ const PERMIT_ID_KEYS = [
 // from a market with nothing happening in it. Assembling the parts is the whole fix.
 // `address_start` is Los Angeles: LADBS publishes a house-number RANGE (address_start /
 // address_end) and the start is the house number. Generic key, not an LA branch.
+//
+// `stno` / `stname` are Montgomery County MD (live 2026-08-20: stno "7721", stname "POLARA",
+// suffix "PL"); `housenumber` is NYC HPD's violations feed (live 2026-08-20: housenumber "116",
+// streetname "LENOX ROAD"). Both were unreadable before, which would have made two newly-verified
+// datasets report every row as skippedNoAddress — a covered market reading as a silent one.
 const NUMBER_KEYS = [
-  "street_number", "house__", "house_number", "street_no", "address_number", "str_number",
-  "address_start",
+  "street_number", "house__", "house_number", "housenumber", "street_no", "address_number",
+  "str_number", "address_start", "stno",
 ]
-const PREDIR_KEYS = ["street_direction", "street_dir", "predirection", "street_predirection", "direction"]
-const NAME_KEYS = ["street_name", "streetname", "street"]
+const PREDIR_KEYS = [
+  "street_direction", "street_dir", "predirection", "street_predirection", "direction", "predir",
+]
+const NAME_KEYS = ["street_name", "streetname", "street", "stname"]
 const SUFFIX_KEYS = ["street_suffix", "suffix", "street_type", "streettype"]
 const DESCRIPTION_KEYS = [
   "description", "permit_type_desc", "work_description", "job_description", "permit_class",
   "work_class", "permit_type", "type_of_work", "proposed_use", "scope_of_work", "worktype",
   "permit_class_mapped", "reported_cost_description",
+  // Code violations describe the work that must be done, not work being done. Chicago publishes
+  // `violation_description` ("REPAIR DOOR, INT."), NYC HPD `novdescription` (the ADM CODE text).
+  "violation_description", "novdescription", "violation_ordinance",
 ]
 const VALUATION_KEYS = [
   "total_job_valuation", "estimated_cost", "reported_cost", "valuation", "job_value",
-  "total_valuation", "declared_valuation", "estimated_project_cost", "construction_cost",
+  "total_valuation", "declared_valuation", "declaredvaluation", "estimated_project_cost",
+  "construction_cost",
+]
+/** Violation disposition. Chicago `violation_status` is OPEN / COMPLIED / NO ENTRY; NYC HPD
+ *  `violationstatus` is Open / Close. Both read live 2026-08-20. */
+const STATUS_KEYS = [
+  "violation_status", "violationstatus", "case_status", "currentstatus", "current_status", "status",
 ]
 
 function pick(row: Record<string, unknown>, keys: string[]): string | null {
@@ -287,6 +318,46 @@ export function classifyPermitStrength(params: {
   return "weak"
 }
 
+/** PURE. Free-text disposition of a code violation, or null. */
+export function readViolationStatus(row: Record<string, unknown>): string | null {
+  return pick(row, STATUS_KEYS)
+}
+
+/**
+ * A violation status that means the owner is still carrying it. Anchored at the START of the
+ * value, not searched inside it, because the closed vocabulary contains the open one as a
+ * substring ("Close"/"Closed" vs "Open") and a `.includes` here would invert the verdict.
+ * Grounded on the values these two datasets actually publish (read live 2026-08-20):
+ *   Chicago 22u3-xenr violation_status → OPEN | COMPLIED | NO ENTRY
+ *   NYC     wvxf-dwi5 violationstatus  → Open | Close
+ */
+const OPEN_VIOLATION_STATUS = /^(open|nov sent|active|unresolved|in violation)/
+
+/**
+ * PURE. Deterministic strength for a code-violation signal.
+ *
+ * WHY A VIOLATION IS A SIGNAL AT ALL: a permit says somebody is SPENDING on a house; a violation
+ * says the city is billing them for one they are not maintaining. Accruing fines on a property the
+ * owner is not fixing is pressure, and pressure is what "motivated seller" means.
+ *
+ * SAME CONSERVATISM AS PERMITS, DELIBERATELY. Only demolition language reads "strong" — that rule
+ * belongs to the lane, not to permits, and a violation ordering a structure razed is the same fact
+ * as a demolition permit. An OPEN violation reads "moderate": real, dated, unresolved, but a great
+ * many of them are one broken handrail. A CLOSED or COMPLIED violation reads "weak" — it is
+ * evidence the owner FIXED the problem, which is close to the opposite of distress, and calling it
+ * a strong seller signal would teach the scorer to chase people who maintain their homes.
+ */
+export function classifyViolationStrength(params: {
+  description: string | null
+  status: string | null
+}): SignalStrength {
+  const text = (params.description ?? "").toLowerCase()
+  if (STRONG_TERMS.some((t) => text.includes(t))) return "strong"
+  const status = (params.status ?? "").trim().toLowerCase()
+  if (!status) return "weak" // cannot read the disposition → never assume it is open
+  return OPEN_VIOLATION_STATUS.test(status) ? "moderate" : "weak"
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PURE — matching + row building
 // ─────────────────────────────────────────────────────────────────────────────
@@ -306,6 +377,14 @@ export interface PermitMatch {
   description: string | null
   valuation: number | null
   strength: SignalStrength
+  /** Disposition, for code violations. Null for permits and for rows that publish none. */
+  status: string | null
+  /**
+   * The day the event happened, `YYYY-MM-DD`, when the dataset declares a readable date column.
+   * Carried for ONE reason: it is the second half of the dedupe key when the portal publishes no
+   * stable record number (see `permitDedupeKey`).
+   */
+  eventDate: string | null
   raw: Record<string, unknown>
 }
 
@@ -340,10 +419,28 @@ export interface PermitEventWindow {
  * matching lead gets the signal — the permit is genuinely about all of them, and picking one
  * silently would hide the other.
  */
+/**
+ * Per-dataset facts the matcher needs that are not part of windowing.
+ *
+ * `dateColumn` is separate from `PermitEventWindow` on purpose: EVERY dataset has a date column to
+ * stamp matches with, but only the datasets whose query bound is a re-publish date need a window
+ * to filter on. Conflating them would mean an unwindowed dataset (Chicago, Seattle, Montgomery)
+ * could not stamp an event date, and its id-less rows would lose the only thing that tells two
+ * violations at one address apart.
+ */
+export interface PermitDatasetShape {
+  /** Column carrying the event's own date, for stamping `PermitMatch.eventDate`. */
+  dateColumn?: string
+  dateFormat?: "iso" | "mdy"
+  /** Chooses the strength classifier. Defaults to permit semantics. */
+  kind?: "permits" | "code_violations"
+}
+
 export function matchPermitsToLeads(
   permits: Array<Record<string, unknown>>,
   leads: MatchableLead[],
   window?: PermitEventWindow,
+  shape?: PermitDatasetShape,
 ): MatchOutcome {
   const byKey = new Map<string, string[]>()
   for (const lead of leads) {
@@ -377,7 +474,13 @@ export function matchPermitsToLeads(
 
     const description = readPermitDescription(row)
     const valuation = readPermitValuation(row)
-    const strength = classifyPermitStrength({ description, valuation })
+    const status = shape?.kind === "code_violations" ? readViolationStatus(row) : null
+    const strength = shape?.kind === "code_violations"
+      ? classifyViolationStrength({ description, status })
+      : classifyPermitStrength({ description, valuation })
+    const eventDate = shape?.dateColumn
+      ? readPermitEventDate(row, shape.dateColumn, shape.dateFormat ?? "iso")
+      : null
     for (const leadId of leadIds) {
       matches.push({
         leadId,
@@ -387,6 +490,8 @@ export function matchPermitsToLeads(
         description,
         valuation,
         strength,
+        status,
+        eventDate,
         raw: row,
       })
     }
@@ -394,10 +499,24 @@ export function matchPermitsToLeads(
   return { matches, skippedNoAddress, skippedNoLeadMatch, skippedOutsideWindow, skippedNoEventDate }
 }
 
-/** The canonical signal_type this lane writes. One value, so the idempotency read can find them. */
+/** The canonical signal_type this lane writes for a building permit. */
 export const PERMIT_SIGNAL_TYPE = "permit_activity"
+/**
+ * …and for a code violation. A SECOND value, not a widened first one: lead scoring and the
+ * intelligence panel both read signal_type, and collapsing "someone is spending money on this
+ * house" into "the city is citing this house" would make the two indistinguishable downstream.
+ */
+export const VIOLATION_SIGNAL_TYPE = "code_violation"
+/** Every signal_type this lane writes — the set the idempotency read and m499's unique index cover.
+ *  Adding a kind here without adding it to the index is how a daily sweep starts duplicating. */
+export const SOCRATA_SIGNAL_TYPES: readonly string[] = [PERMIT_SIGNAL_TYPE, VIOLATION_SIGNAL_TYPE]
 /** `detected_via` — the provider, matching the connector id in lib/agentic-os/connector-registry. */
 export const PERMIT_DETECTED_VIA = "socrata"
+
+/** PURE. The signal_type a dataset's rows are filed under. */
+export function signalTypeForKind(kind: SocrataDatasetSpec["kind"]): string {
+  return kind === "code_violations" ? VIOLATION_SIGNAL_TYPE : PERMIT_SIGNAL_TYPE
+}
 
 export interface PermitSignalRow {
   lead_id: string
@@ -422,20 +541,28 @@ export function buildPermitSignalRow(params: {
   dataset: SocrataDatasetSpec
 }): PermitSignalRow {
   const { match, dataset } = params
+  const isViolation = dataset.kind === "code_violations"
   return {
     lead_id: match.leadId,
     brokerage_id: params.brokerageId,
-    signal_type: PERMIT_SIGNAL_TYPE,
+    signal_type: signalTypeForKind(dataset.kind),
     signal_strength: match.strength,
     detected_via: PERMIT_DETECTED_VIA,
     signal_details: {
-      reason: "Building permit issued at this lead's address",
+      // Fixed sentences, not generated ones. Nothing here is authored by a model, and nothing
+      // written into a field whose name implies a measurement is anything but a read value.
+      reason: isViolation
+        ? "City code violation recorded at this lead's address"
+        : "Building permit issued at this lead's address",
       dedupe_key: permitDedupeKey(match, dataset),
       permit_id: match.permitId,
       permit_address: match.permitAddress,
       address_key: match.addressKey,
       description: match.description,
       valuation: match.valuation,
+      event_date: match.eventDate,
+      violation_status: match.status,
+      dataset_kind: dataset.kind,
       dataset_id: dataset.datasetId,
       dataset_host: dataset.host,
       dataset_label: dataset.label,
@@ -444,15 +571,26 @@ export function buildPermitSignalRow(params: {
 }
 
 /**
- * PURE. Stable identity for one (permit, lead) pair.
+ * PURE. Stable identity for one (record, lead) pair.
  *
- * When the portal exposes a permit number we key on it. When it does NOT, we key on the normalized
- * address plus the dataset — coarser on purpose: without a permit number we cannot tell two permits
- * at one address apart, and collapsing them is the safe error (one signal instead of two) where
- * splitting them would re-file the same permit every single day forever.
+ * When the portal exposes a permit or violation number we key on it. When it does NOT, we key on
+ * the normalized address plus the record's own EVENT DATE — which is stable across re-reads (a
+ * violation issued on the 18th was still issued on the 18th tomorrow) and is the only thing that
+ * distinguishes two citations at one address. This matters far more for violations than permits:
+ * Chicago's violations feed publishes no case number at all, and without the date every violation
+ * a property ever collects would collapse into ONE signal, turning the accrual that makes a
+ * violation predictive into a single flat fact.
+ *
+ * With neither an id nor a date we fall back to address-plus-dataset — coarser on purpose, because
+ * collapsing two records into one signal is the safe error where splitting them would re-file the
+ * same record every single day forever.
  */
 export function permitDedupeKey(match: PermitMatch, dataset: SocrataDatasetSpec): string {
-  const tail = match.permitId ? `p:${match.permitId}` : `a:${match.addressKey}`
+  const tail = match.permitId
+    ? `p:${match.permitId}`
+    : match.eventDate
+      ? `a:${match.addressKey}@${match.eventDate}`
+      : `a:${match.addressKey}`
   return `${dataset.datasetId}|${tail}|${match.leadId}`
 }
 
@@ -470,10 +608,11 @@ export interface PermitIngestResult {
   brokerageId: string
   marketsConsidered: number
   datasetsQueried: number
-  /** Registered permit datasets that carry no `dateColumn`, so recentPermits cannot bound them. */
+  /** Registered datasets (either kind) that carry no `dateColumn`, so recentPermits cannot bound
+   *  them. Distinct from `unavailable`: the portal is alive, our descriptor is incomplete. */
   datasetsSkippedNoDateColumn: number
   /**
-   * Registered permit datasets marked `unavailable` in the registry — a dead dataset id, a stale
+   * Registered datasets marked `unavailable` in the registry — a dead dataset id, a stale
    * feed, or a host that is not a Socrata portal at all. Never queried, always reported, with the
    * registry's stated reason attached, so a broken portal reads as broken and not as a quiet market.
    */
@@ -482,6 +621,17 @@ export interface PermitIngestResult {
   unavailableReasons: string[]
   /** Territories whose (state, city) is not in socrata-market-registry MARKETS at all. */
   marketsUnregistered: number
+  /**
+   * ONE VERDICT PER ACTIVE TERRITORY, NAMED. The owner ruling is "all markets from the active
+   * tenant territories" — so the unit of reporting is the TERRITORY, not the registry entry. A
+   * market this OS cannot see appears here by name with the status `unregistered`; it is the whole
+   * reason a tenant farming an unregistered city can no longer be served silence that looks
+   * identical to "no permits this week".
+   */
+  coverage: MarketCoverage[]
+  /** `"FL:Pensacola"`-style labels for every territory that produced no queryable dataset. The
+   *  cron surfaces this list verbatim; it is the actionable half of `coverage`. */
+  marketGaps: string[]
   permitsFetched: number
   skippedNoAddress: number
   skippedNoLeadMatch: number
@@ -503,8 +653,13 @@ const MAX_LEADS_PER_BROKERAGE = 5000
 const MAX_SIGNALS_PER_RUN = 500
 
 /**
- * Run the permit scan for ONE brokerage across its configured territories and file the matches into
- * `motivated_seller_signals`.
+ * Run the Socrata scan for ONE brokerage across its configured territories and file the matches
+ * into `motivated_seller_signals` — building permits AND code violations.
+ *
+ * COVERAGE IS AN OUTPUT, NOT A PRECONDITION. Every territory the tenant configured comes back in
+ * `coverage` with a verdict, and `marketGaps` names the ones that produced nothing. A run that
+ * queries zero datasets is a legitimate, INFORMATIVE result — it says which markets this OS cannot
+ * see — where before it was indistinguishable from a quiet week.
  *
  * TENANT SCOPING: every read and every write is pinned to `brokerageId`. The lead read filters
  * `.eq("brokerage_id", brokerageId)`, the idempotency read filters on it, and each written row
@@ -531,6 +686,8 @@ export async function ingestPermitSignals(params: {
     datasetsUnavailable: 0,
     unavailableReasons: [],
     marketsUnregistered: 0,
+    coverage: [],
+    marketGaps: [],
     permitsFetched: 0,
     skippedNoAddress: 0,
     skippedNoLeadMatch: 0,
@@ -541,37 +698,57 @@ export async function ingestPermitSignals(params: {
     errors: [],
   }
 
-  // ── 1. Which registered permit datasets do this tenant's territories map to? ──
+  // ── 1. WALK THE TENANT'S TERRITORIES AND GIVE EVERY ONE A VERDICT ──
+  //
+  // This loop used to iterate the REGISTRY's answer for each territory and silently move on when
+  // there wasn't one. It now iterates the TERRITORIES and records what happened to each, because
+  // the two are not the same list and the difference is exactly where a tenant disappears: a
+  // brokerage farming a city nobody registered got `marketsUnregistered++` — a NUMBER, with no name
+  // attached — and then a run reporting zero signals. `coverage` names them.
   const datasets: SocrataDatasetSpec[] = []
   const seen = new Set<string>()
+  const seenMarkets = new Set<string>()
   for (const t of territories) {
     result.marketsConsidered++
-    const specs = getMarketDatasets({ state: t.state, city: t.city })
-    if (specs.length === 0) { result.marketsUnregistered++; continue }
-    for (const spec of specs) {
-      if (spec.kind !== "permits") continue
+    const verdict = classifyMarketCoverage({ state: t.state, city: t.city })
+
+    // One verdict per distinct market, even when several territory rows name the same city — and
+    // case-insensitively, because `lead_scraping_markets.city` is free text a human typed and
+    // "Pensacola" and "pensacola" are one market, not two.
+    const marketKey = verdict.market.toLowerCase()
+    if (!seenMarkets.has(marketKey)) {
+      seenMarkets.add(marketKey)
+      result.coverage.push(verdict)
+      if (verdict.status !== "covered") result.marketGaps.push(`${verdict.market} (${verdict.status})`)
+    }
+    if (verdict.status === "unregistered") { result.marketsUnregistered++; continue }
+
+    // The per-DATASET counters the cron already reports are kept, and are still counted once per
+    // territory row: a dead portal named by three territories is three refusals to serve.
+    // `unavailableReasons` stays strictly about datasets the registry marks UNAVAILABLE — the
+    // other exclusion reasons (no verified date column, a registered kind this lane cannot ingest
+    // yet) ride in `coverage[].reasons`, because a field named for one thing must not quietly
+    // start carrying three.
+    for (const spec of verdict.ingestible) {
       if (spec.unavailable) {
-        // Registered, and known not to serve. Querying it anyway buys a daily HTTP 400 (a dead id,
-        // a non-Socrata host) or a daily silent zero (a feed that stopped updating). Counted with
-        // its reason instead — the operator learns the registry is wrong, not that Miami is quiet.
         result.datasetsUnavailable++
         const reason = `${spec.label} (${spec.host}/${spec.datasetId}): ${spec.unavailable}`
         if (!result.unavailableReasons.includes(reason)) result.unavailableReasons.push(reason)
         continue
       }
-      if (!spec.dateColumn) {
-        // recentPermits filters and orders BY that column. Without one we cannot bound the query
-        // to "recent", and pulling a whole historical dataset every day is not a cadence. Counted
-        // and reported so the registry gap is visible instead of looking like an empty market.
-        result.datasetsSkippedNoDateColumn++
-        continue
-      }
+      if (!spec.dateColumn) { result.datasetsSkippedNoDateColumn++; continue }
+    }
+
+    for (const spec of verdict.queryable) {
       const id = `${spec.host}/${spec.datasetId}`
       if (seen.has(id)) continue
       seen.add(id)
       datasets.push(spec)
     }
   }
+  // NOTE: we do NOT return early on an empty dataset list any more. `coverage` and `marketGaps` are
+  // the run's most important output when nothing is queryable — returning here with them populated
+  // is correct, and the caller reports them.
   if (datasets.length === 0) return result
 
   // ── 2. The tenant's own leads (the ONLY things a permit may attach to) ──
@@ -588,12 +765,18 @@ export async function ingestPermitSignals(params: {
   const leads = (leadRows ?? []) as MatchableLead[]
   if (leads.length === 0) return result
 
-  // ── 3. Already-filed permit signals for this tenant (idempotency) ──
+  // ── 3. Already-filed Socrata signals for this tenant (idempotency) ──
+  //
+  // `.in`, not `.eq`. This read was pinned to permit_activity, and the moment code_violation
+  // started being written an `.eq` here would have read back NONE of yesterday's violations,
+  // re-filed the entire rolling window every day, and — because lead scoring COUNTS signals —
+  // turned one broken handrail into a new reason to believe somebody is selling, daily, forever.
+  // m499 widens the unique index to match; this is the fast path in front of it.
   const { data: existingRows, error: existingError } = await supabase
     .from("motivated_seller_signals")
     .select("signal_details")
     .eq("brokerage_id", brokerageId)
-    .eq("signal_type", PERMIT_SIGNAL_TYPE)
+    .in("signal_type", SOCRATA_SIGNAL_TYPES)
   if (existingError) {
     // Without the existing set we cannot tell a new permit from one filed yesterday. Writing
     // anyway would duplicate the whole window on every daily run, so this refuses instead.
@@ -631,6 +814,13 @@ export async function ingestPermitSignals(params: {
       dataset.eventDateColumn
         ? { column: dataset.eventDateColumn, format: dataset.eventDateFormat ?? "iso", sinceIso }
         : undefined,
+      {
+        // Stamp the event date from whichever column actually carries it — the event column when
+        // the query bound is a re-publish date, otherwise the query bound itself.
+        dateColumn: dataset.eventDateColumn ?? dataset.dateColumn,
+        dateFormat: dataset.eventDateColumn ? (dataset.eventDateFormat ?? "iso") : "iso",
+        kind: dataset.kind === "code_violations" ? "code_violations" : "permits",
+      },
     )
     result.skippedNoAddress += outcome.skippedNoAddress
     result.skippedNoLeadMatch += outcome.skippedNoLeadMatch

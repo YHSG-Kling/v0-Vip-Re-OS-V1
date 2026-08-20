@@ -32,6 +32,30 @@
  * that it is a floating timestamp, and `verifiedOn` records the day that row was read. A dataset
  * that cannot serve is marked `unavailable` with the reason — it is COUNTED and REPORTED by the
  * sweep rather than queried into a daily 400 or a daily silent zero.
+ *
+ * ── 2026-08-20: A FOURTH SHAPE — COLUMNS RIGHT, DATA FROZEN ──────────────────
+ * Verifying a row proves the COLUMNS. It does not prove the FEED. Dallas `e7gq-4sah` passed the
+ * column check last wave (street_address, permit_number, work_description, value all readable) and
+ * was registered as merely "un-boundable". It is not un-boundable — it is DEAD: the Socrata catalog
+ * reports data_updated_at 2020-08-30, the newest row carries issued_date "12/31/19", and the
+ * dataset's own description now opens "ATTENTION: This permit data set is historical and no longer
+ * updated. Active permit tracking has migrated to the Dallas Accela Citizen Access Portal."
+ * Fixing the date column would have bought a perfectly-formed query returning 2020. So freshness is
+ * now part of verification, and a frozen feed is `unavailable` with its last data date stated.
+ *
+ * ── WHY THIS FILE SHOULD NOT STAY A HAND-KEPT CONSTANT ───────────────────────
+ * Everything above is the same defect wearing four hats: a hand-maintained file asserting facts
+ * about a system it cannot see. Socrata publishes those facts itself, live, on every dataset:
+ *
+ *   https://api.us.socrata.com/api/catalog/v1?ids=<4x4>
+ *     → columns_field_name[] · columns_datatype[] ("Calendar date" vs "Text") · data_updated_at
+ *
+ * That single document answers every question this file currently answers from memory: does the
+ * column exist, is it a real timestamp or lexicographic text, and is the feed still moving. The
+ * recommendation (see the lane report; deliberately NOT half-built here) is to keep this file as
+ * the DISCOVERY SEED — the (state, city) → (host, datasetId) binding, which is the one fact the
+ * catalog cannot infer — and to derive dateColumn / eventDateColumn / staleness from the catalog on
+ * a scheduled probe that writes `connector_health_log`, rather than from these literals.
  */
 
 export type SocrataDatasetKind = "permits" | "code_violations" | "probate" | "property_transfers"
@@ -112,17 +136,34 @@ export const MARKETS: Readonly<Record<string, MarketSpec>> = Object.freeze({
   [k("TX", "Dallas")]: {
     state: "TX", city: "Dallas",
     datasets: [
-      // Deliberately NO dateColumn. Live row 2026-08-19: issued_date "03/13/20" — TEXT, and a
-      // TWO-digit year, so it cannot even be parsed unambiguously, let alone compared. Registering
-      // it would produce the silent-zero failure. The sweep counts this as un-boundable and says so.
+      // WAS registered as merely "un-boundable" (issued_date is TEXT 'MM/DD/YY', a two-digit year
+      // that cannot be compared OR parsed). True, and beside the point: the feed STOPPED. Verified
+      // 2026-08-20 — `$order=issued_date DESC` returns permit_number "1912173019" /
+      // issued_date "12/31/19" / street_address "2911 CLYDEDALE DR"; the Socrata catalog reports
+      // data_updated_at 2020-08-30; and the dataset description says so itself. A right date column
+      // here would return 2020 permits forever, which is the silent-zero failure with extra steps.
       { host: "www.dallasopendata.com", datasetId: "e7gq-4sah", kind: "permits",
-        label: "Dallas building permits", verifiedOn: "2026-08-19",
-        notes: "street_address + permit_number + work_description + value are all readable; " +
-               "issued_date is TEXT 'MM/DD/YY' so there is no usable query bound." },
+        label: "Dallas building permits", verifiedOn: "2026-08-20",
+        unavailable: "historical — data_updated_at 2020-08-30, newest issued_date '12/31/19'; the " +
+                     "dataset states permit tracking migrated to the Dallas Accela Citizen Access " +
+                     "Portal, which is not Socrata",
+        notes: "street_address + permit_number + work_description + value are all readable; the " +
+               "columns were never the problem." },
+      // Never verified, and it does not exist: two live fetches 404'd and an `ids=9ahz-iyrm` lookup
+      // against the Socrata catalog returns zero results on 2026-08-20.
       { host: "www.dallasopendata.com", datasetId: "9ahz-iyrm", kind: "code_violations",
-        label: "Dallas code-violation 311 cases" },
+        label: "Dallas code-violation 311 cases", verifiedOn: "2026-08-20",
+        unavailable: "dataset id absent from the Socrata catalog (ids=9ahz-iyrm → 0 results) and " +
+                     "404 on fetch, 2026-08-20 — the id was written from documentation" },
     ],
   },
+  // ── The two live tenants of this OS are in Pensacola FL and Pace FL (Escambia / Santa Rosa
+  // County). There is NO registered market for either, and there cannot be one: the Socrata
+  // catalog returns ZERO datasets for q=Pensacola and ZERO for q=Escambia (checked 2026-08-20).
+  // That is not a gap this file can close by trying harder — the Florida panhandle does not
+  // publish permits through Socrata. It is registered NOWHERE on purpose, so the sweep reports
+  // "FL:Pensacola — UNREGISTERED" by name rather than "0 permits", which is the whole point of
+  // the coverage taxonomy below. Closing it needs a non-Socrata adapter, not another entry here.
   [k("IL", "Chicago")]: {
     state: "IL", city: "Chicago",
     datasets: [
@@ -132,9 +173,17 @@ export const MARKETS: Readonly<Record<string, MarketSpec>> = Object.freeze({
       { host: "data.cityofchicago.org", datasetId: "ydr8-5enu", kind: "permits",
         label: "Chicago building permits", dateColumn: "issue_date", verifiedOn: "2026-08-19",
         notes: "Composite address (number/direction/name). Permit id is `permit_` (label 'PERMIT#')." },
+      // Re-verified live 2026-08-20 (`$order=violation_date DESC`): violation_date
+      // "2026-08-18T00:00:00.000" · address "3830 W 63RD ST" · violation_description
+      // "REPAIR DOOR, INT." · violation_status "OPEN" · violation_code "CN105015".
+      // NOTE: this dataset publishes no violation-number column — its unique handle is the bare
+      // `id`, which is a row id, not a case id. `id` is deliberately NOT a readPermitId candidate
+      // (a row id that changes on republish would file a fresh signal every single day), so
+      // Chicago violations dedupe on (address, violation date, dataset, lead) instead.
       { host: "data.cityofchicago.org", datasetId: "22u3-xenr", kind: "code_violations",
-        label: "Chicago building violations", dateColumn: "violation_date", verifiedOn: "2026-08-19",
-        notes: "Single `address` column, `violation_description`, real timestamp on violation_date." },
+        label: "Chicago building violations", dateColumn: "violation_date", verifiedOn: "2026-08-20",
+        notes: "Single `address` column, `violation_description`, `violation_status` OPEN/CLOSED, " +
+               "real timestamp on violation_date." },
     ],
   },
   [k("CA", "Los Angeles")]: {
@@ -179,10 +228,51 @@ export const MARKETS: Readonly<Record<string, MarketSpec>> = Object.freeze({
         verifiedOn: "2026-08-19",
         notes: "house__ + street_name compose the address; permit id is job__. Rows with no " +
                "issuance_date are applications that were never issued and are skipped." },
+      // Verified live 2026-08-20 with `$where=novissueddate > '2026-08-01'` — which returns rows,
+      // so unlike its permit sibling this dataset's date column really is a Calendar date:
+      // novissueddate "2026-08-03T00:00:00.000" · violationid "19075125" · housenumber "116" ·
+      // streetname "LENOX ROAD" · class "B" · violationstatus "Open" · novdescription
+      // "§ 27-2005 ADM CODE FIRE ESCAPE DEFECTIVE…". `inspectiondate` is when the inspector
+      // called; `novissueddate` is when the notice of violation was ISSUED to the owner, which is
+      // the day the pressure starts, so that is the bound.
       { host: "data.cityofnewyork.us", datasetId: "wvxf-dwi5", kind: "code_violations",
-        label: "NYC HPD housing-maintenance code violations" },
+        label: "NYC HPD housing-maintenance code violations",
+        dateColumn: "novissueddate", verifiedOn: "2026-08-20",
+        notes: "housenumber + streetname compose the address; violationid is the stable handle; " +
+               "violationstatus is Open/Close; class A/B/C is HPD's hazard tier." },
     ],
   },
+  // ── MONTGOMERY COUNTY, MARYLAND (new 2026-08-20) ───────────────────────────
+  // The county publishes ONE permit dataset covering every municipality in it, so the same
+  // descriptor is registered under each city a brokerage would name as its territory. That is the
+  // registry's key shape (state:city) meeting the publisher's shape (county), and duplicating the
+  // descriptor is correct: `ingestPermitSignals` dedupes datasets by host/id, so a tenant farming
+  // three of these cities queries the dataset once.
+  //
+  // Verified live 2026-08-20 with `$where=issueddate >= '2026-08-01'` → rows:
+  //   permitno "1167770" · issueddate "2026-08-18T12:08:57.000" · stno "7721" · stname "POLARA"
+  //   · suffix "PL" · city "ROCKVILLE" · declaredvaluation "8263" · worktype "ALTER"
+  //   · description " Interior work only,Modify existing attached garage roof framing…"
+  //   · usecode "SINGLE FAMILY DWELLING"
+  // and a second row at 18014 COACHMANS RD, GERMANTOWN the same day. Residential-only by
+  // construction — this is DPS's "Residential Permit" dataset, which is exactly the population a
+  // seller signal is about (the county's Commercial Permits dataset is deliberately NOT registered).
+  ...((): Record<string, MarketSpec> => {
+    const dataset: SocrataDatasetSpec = {
+      host: "data.montgomerycountymd.gov", datasetId: "m88u-pqki", kind: "permits",
+      label: "Montgomery County MD residential permits",
+      dateColumn: "issueddate", verifiedOn: "2026-08-20",
+      notes: "Composite address stno + predir + stname + suffix. Permit id is `permitno`; " +
+             "valuation is `declaredvaluation`; description + worktype carry the work.",
+    }
+    const cities = [
+      "Rockville", "Silver Spring", "Bethesda", "Gaithersburg", "Germantown",
+      "Takoma Park", "Wheaton", "Potomac", "Chevy Chase", "Olney",
+    ]
+    return Object.fromEntries(
+      cities.map((city) => [k("MD", city), { state: "MD", city, datasets: [dataset] }]),
+    )
+  })(),
   [k("AZ", "Phoenix")]: {
     state: "AZ", city: "Phoenix",
     datasets: [
@@ -216,11 +306,20 @@ export const MARKETS: Readonly<Record<string, MarketSpec>> = Object.freeze({
       // WAS `issued_date`; the column is `issueddate` (no underscore) and the sweep took an
       // HTTP 400 every day. Live row 2026-08-19: permitnum "7107265-CN" ·
       // issueddate "2026-08-01T00:00:00.000" · originaladdress1 "4027 46TH AVE S".
+      // Re-verified live 2026-08-20 with `$where=issueddate >= '2026-08-01'`: permitnum
+      // "7107265-CN" · issueddate "2026-08-01T00:00:00.000" · originaladdress1 "4027 46TH AVE S"
+      // · estprojectcost "160000.0000" · description "Construct addition and alterations to
+      // one-family dwelling per plan."
       { host: "data.seattle.gov", datasetId: "76t5-zqzr", kind: "permits",
-        label: "Seattle building permits", dateColumn: "issueddate", verifiedOn: "2026-08-19",
+        label: "Seattle building permits", dateColumn: "issueddate", verifiedOn: "2026-08-20",
         notes: "Single address column (originaladdress1). estprojectcost + permittypedesc." },
+      // Never verified, and it does not exist: two live fetches 404'd and an `ids=skuc-86g2`
+      // lookup against the Socrata catalog returns zero results on 2026-08-20. Same defect as
+      // Dallas's violations id — an id copied out of a document nobody checked.
       { host: "data.seattle.gov", datasetId: "skuc-86g2", kind: "code_violations",
-        label: "Seattle code compliance violations" },
+        label: "Seattle code compliance violations", verifiedOn: "2026-08-20",
+        unavailable: "dataset id absent from the Socrata catalog (ids=skuc-86g2 → 0 results) and " +
+                     "404 on fetch, 2026-08-20 — the id was written from documentation" },
     ],
   },
   [k("CO", "Denver")]: {
@@ -254,7 +353,113 @@ export function listSupportedMarkets(): Array<{ state: string; city: string; dat
  * counts — this function is the definition of coverage, not a filter that hides gaps.
  */
 export function listQueryablePermitDatasets(): SocrataDatasetSpec[] {
-  return Object.values(MARKETS)
-    .flatMap((m) => m.datasets)
-    .filter((d) => d.kind === "permits" && !!d.dateColumn && !d.unavailable)
+  return listQueryableDatasets("permits")
+}
+
+/** The kinds this lane knows how to turn into a motivated-seller signal. Registered datasets of any
+ *  OTHER kind (probate, property_transfers) are counted as `not_yet_ingestible` — registered, real,
+ *  and honestly reported as not wired, rather than quietly dropped by a `!==` filter. */
+export const INGESTIBLE_KINDS: readonly SocrataDatasetKind[] = ["permits", "code_violations"]
+
+/**
+ * Same rule as `listQueryablePermitDatasets`, for any kind — DEDUPED BY host/datasetId.
+ *
+ * The dedupe is not cosmetic. One publisher can serve many markets (Montgomery County MD's single
+ * dataset is registered under ten of its cities), and a coverage count that reported that as ten
+ * datasets would overstate what this OS can actually read by a factor of ten. The sweep dedupes on
+ * the same key before querying, so this is the same number the sweep would report.
+ */
+export function listQueryableDatasets(kind?: SocrataDatasetKind): SocrataDatasetSpec[] {
+  const byId = new Map<string, SocrataDatasetSpec>()
+  for (const d of Object.values(MARKETS).flatMap((m) => m.datasets)) {
+    if (kind ? d.kind !== kind : !INGESTIBLE_KINDS.includes(d.kind)) continue
+    if (!d.dateColumn || d.unavailable) continue
+    const id = `${d.host}/${d.datasetId}`
+    if (!byId.has(id)) byId.set(id, d)
+  }
+  return [...byId.values()]
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COVERAGE — the gap taxonomy
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// THE OWNER RULING THIS EXISTS FOR: "all markets from the active tenant territories for
+// motivational sellers." A sweep that can only see the cities somebody happened to type into
+// MARKETS does not obey that ruling — it obeys the registry. So the sweep now walks the TENANT'S
+// territories and every one of them comes back with a verdict, including the ones this file has
+// never heard of. A market that cannot be read must never be indistinguishable from a market with
+// nothing happening in it; that is the same sentence as last wave's NYC bug, one level up.
+
+export type MarketCoverageStatus =
+  /** At least one dataset is verified, bounded and serving. This market is genuinely swept. */
+  | "covered"
+  /** The (state, city) is not in MARKETS at all. THE NAMED GAP — nobody has ever registered it. */
+  | "unregistered"
+  /** Registered, but every dataset for it is marked `unavailable` (dead id, non-Socrata host,
+   *  frozen feed). The registry knows about this market and cannot serve it. */
+  | "unavailable"
+  /** Registered and reachable, but no dataset carries a verified query bound, so "recent" cannot
+   *  be expressed. Distinct from `unavailable`: the portal is alive, our descriptor is incomplete. */
+  | "unboundable"
+
+export interface MarketCoverage {
+  /** As the tenant configured it, verbatim — this is what the operator has to recognize. */
+  state: string | null
+  city: string | null
+  /** `"TX:Austin"`-style label for logs and gap lists. */
+  market: string
+  status: MarketCoverageStatus
+  /** Every registered dataset of an ingestible kind for this market — queryable or not. The sweep
+   *  counts its exclusions off this list, so "how many datasets did we skip and why" is answered
+   *  from the same place "is this market covered" is. */
+  ingestible: SocrataDatasetSpec[]
+  /** Datasets that will actually be queried for this market. */
+  queryable: SocrataDatasetSpec[]
+  /** Stated reasons for everything excluded, verbatim from the registry. Never empty when the
+   *  status is `unavailable`. */
+  reasons: string[]
+}
+
+/**
+ * PURE. The verdict for ONE tenant territory. No I/O, no network — this is the registry answering
+ * "can I see this market at all", which is the question the cron has to report per territory.
+ */
+export function classifyMarketCoverage(params: {
+  state?: string | null
+  city?: string | null
+}): MarketCoverage {
+  const state = params.state ?? null
+  const city = params.city ?? null
+  const market = `${(state ?? "??").toUpperCase()}:${(city ?? "??").trim()}`
+
+  const datasets = getMarketDatasets({ state, city })
+  if (datasets.length === 0) {
+    return { state, city, market, status: "unregistered", ingestible: [], queryable: [], reasons: [] }
+  }
+
+  const ingestible = datasets.filter((d) => INGESTIBLE_KINDS.includes(d.kind))
+  const queryable = ingestible.filter((d) => !!d.dateColumn && !d.unavailable)
+  const reasons: string[] = []
+  for (const d of ingestible) {
+    if (d.unavailable) reasons.push(`${d.label} (${d.host}/${d.datasetId}): ${d.unavailable}`)
+    else if (!d.dateColumn) reasons.push(`${d.label} (${d.host}/${d.datasetId}): no verified date column to bound "recent" on`)
+  }
+  for (const d of datasets) {
+    if (!INGESTIBLE_KINDS.includes(d.kind)) {
+      reasons.push(`${d.label} (${d.host}/${d.datasetId}): kind "${d.kind}" is registered but this lane does not ingest it yet`)
+    }
+  }
+
+  if (queryable.length > 0) {
+    return { state, city, market, status: "covered", ingestible, queryable, reasons }
+  }
+  const anyUnavailable = ingestible.some((d) => !!d.unavailable)
+  return {
+    state, city, market,
+    status: anyUnavailable ? "unavailable" : "unboundable",
+    ingestible,
+    queryable: [],
+    reasons,
+  }
 }
