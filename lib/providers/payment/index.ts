@@ -255,7 +255,23 @@ export async function createAccountLink(
 // away. Anything else that later wants the SUM still has to make the product
 // decision above first.
 //
-// This lane does not own either file, so the edit is reported, not made.
+// ── DONE, not reported. This lane owns lib/providers/payment/** this wave and
+//    the two probe files are not another lane's, so the wiring above is MADE:
+//      · app/api/cron/health-check/route.ts   (stripe checkFn)
+//      · lib/platform/go-live-readiness.ts    (the Stripe money check)
+//    Both now call getStripeBalance() and read ONLY the credential-reachability
+//    fields — `success`, `error`, `httpStatus`, `notConfigured`, `livemode`.
+//    Neither reads `available` or `pending`; no figure reaches a screen; the
+//    product decision above is untouched. Two hand-rolled copies of the key
+//    lookup and the /v1/balance request are gone.
+//
+//    THREE FIELDS WERE ADDED TO THE RESULT so the probes lose nothing they had:
+//    `httpStatus` (health-check records httpStatusCode and distinguishes
+//    "degraded" from "down" by whether a status came back at all), `livemode`
+//    (go-live-readiness tells an operator TEST-mode keys apart from LIVE ones —
+//    shipping without that check is how a launch charges nobody), and
+//    `notConfigured` (an unset key is "not configured", not "broken", and the
+//    two are different verdicts to an operator). None of them is a balance.
 
 export interface StripeBalanceResult {
   success: boolean
@@ -263,15 +279,31 @@ export interface StripeBalanceResult {
   available?: Record<string, number>
   pending?: Record<string, number>
   error?: string
+  /** HTTP status Stripe returned, or null if the request never got one. */
+  httpStatus?: number | null
+  /** TRUE when STRIPE_SECRET_KEY is unset — distinct from a rejected key. */
+  notConfigured?: boolean
+  /** Stripe's own `livemode` flag: false means a TEST key. */
+  livemode?: boolean
 }
 
 export async function getStripeBalance(): Promise<StripeBalanceResult> {
   const secretKey = getStripeKey()
-  if (!secretKey) return { success: false, error: "Stripe not configured." }
+  if (!secretKey) {
+    return { success: false, notConfigured: true, httpStatus: null, error: "Stripe not configured." }
+  }
 
-  const res = await stripeReq<{ available: Array<{ amount: number; currency: string }>; pending: Array<{ amount: number; currency: string }> }>(secretKey, "v1/balance")
+  const res = await stripeReq<{
+    available: Array<{ amount: number; currency: string }>
+    pending: Array<{ amount: number; currency: string }>
+    livemode?: boolean
+  }>(secretKey, "v1/balance")
   if (!res.ok || !res.data) {
-    return { success: false, error: res.error || `Stripe balance error (${res.status ?? "—"})` }
+    return {
+      success: false,
+      httpStatus: res.status,
+      error: res.error || `Stripe balance error (${res.status ?? "\u2014"})`,
+    }
   }
   const data = res.data
   const sum = (rows: Array<{ amount: number; currency: string }> = []) =>
@@ -279,7 +311,13 @@ export async function getStripeBalance(): Promise<StripeBalanceResult> {
       acc[r.currency] = (acc[r.currency] ?? 0) + r.amount / 100
       return acc
     }, {})
-  return { success: true, available: sum(data.available), pending: sum(data.pending) }
+  return {
+    success: true,
+    httpStatus: res.status,
+    livemode: data.livemode === true,
+    available: sum(data.available),
+    pending: sum(data.pending),
+  }
 }
 
 // ─── REMOVED in the orphan burn-down (lane O) ────────────────────────────────

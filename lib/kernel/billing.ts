@@ -4,6 +4,10 @@
 
 import { SupabaseClient } from "@supabase/supabase-js"
 import { createServiceClient } from "@/lib/supabase/service"
+// ONE definition of the billing month, shared with usage_counters. Every
+// billing_usage writer AND reader in this file filters on it — see the note in
+// lib/usage/period.ts for what happened when neither side did.
+import { currentBillingPeriodLabel } from "@/lib/usage/period"
 
 /**
  * PURE: is a feature included in a subscription tier's feature set? subscription_tiers.features is a
@@ -293,10 +297,16 @@ export async function loadBillingWorkspace(
       .eq("brokerage_id", input.brokerageId)
 
     // Fetch usage for cost calculation
+    // SAME PERIOD KEY AS THE WRITER (lib/usage/period.ts). Without it this read
+    // returned an arbitrary month once a second existed — and `.maybeSingle()`
+    // over two rows is a PostgREST error, not a row.
     const { data: usage, error: usageError } = await supabase
       .from("billing_usage")
       .select("ai_calls_count,video_minutes,storage_bytes")
       .eq("brokerage_id", input.brokerageId)
+      .eq("period_label", currentBillingPeriodLabel())
+      .order("recorded_at", { ascending: false })
+      .limit(1)
       .maybeSingle()
 
     // Build feature map
@@ -501,17 +511,49 @@ export async function resolveFeatureEntitlement(
 // COMMAND 4: RECORD USAGE EVENT
 // ============================================================================
 
+/**
+ * THE ONLY WRITER OF `billing_usage` — and, until this change, one nothing
+ * called. See the tombstone at app/actions/admin/billing.ts for the census.
+ *
+ * VALIDATION MERGED IN FROM THE DELETED `"use server"` WRAPPER: the metric and
+ * the non-negative-units checks used to live only in `recordUsageEventAction`,
+ * so a server-side caller reaching this command directly bypassed both. They
+ * belong on the command, not on one door into it, and they are here now.
+ *
+ * `units` is a DELTA — what the caller JUST consumed, never a running total.
+ */
 export async function recordUsageEvent(
   input: RecordUsageEventInput
 ): Promise<RecordUsageEventOutput> {
   try {
+    if (!input.brokerageId) {
+      return { success: false, error: "Missing required field: brokerageId" }
+    }
+    if (!input.metric) {
+      return { success: false, error: "Missing required field: metric" }
+    }
+    if (!Number.isFinite(input.units) || input.units < 0) {
+      return { success: false, error: "Units must be a non-negative number" }
+    }
+
     const supabase = await createServiceClient()
 
-    // Fetch current usage
+    // THE PERIOD IS PART OF THE ROW'S IDENTITY. This fetch used to filter on
+    // brokerage alone and then UPDATE whatever it found, so every later month's
+    // usage accumulated into the FIRST month's row and the meter never reset.
+    // lib/usage/period.ts is the one definition of the month, shared with the
+    // readers below and with usage_counters. `.order().limit(1)` rather than a
+    // bare `.maybeSingle()`: two rows for one period (a write race) must degrade
+    // to "use the newest", not to a PostgREST error that blanks the meter.
+    const periodLabel = currentBillingPeriodLabel()
+
     const { data: currentUsage, error: fetchError } = await supabase
       .from("billing_usage")
       .select("*")
       .eq("brokerage_id", input.brokerageId)
+      .eq("period_label", periodLabel)
+      .order("recorded_at", { ascending: false })
+      .limit(1)
       .maybeSingle()
 
     if (fetchError && fetchError.code !== "PGRST116") {
@@ -539,15 +581,22 @@ export async function recordUsageEvent(
     }
 
     const newTotal = (currentUsage?.[column as keyof typeof currentUsage] || 0) + input.units
+    const now = new Date().toISOString()
 
     // Update or insert usage record
     if (currentUsage) {
-      const { error: updateError } = await supabase
+      // Keyed on the ROW ID, not on brokerage_id: the brokerage predicate would
+      // have rewritten every period's row for this tenant with one month's total.
+      // `recorded_at` is refreshed because app/actions/billing.ts getBillingUsage
+      // orders on it.
+      const { data: updated, error: updateError } = await supabase
         .from("billing_usage")
         .update({
           [column]: newTotal,
+          recorded_at: now,
         })
-        .eq("brokerage_id", input.brokerageId)
+        .eq("id", (currentUsage as { id: string }).id)
+        .select("id")
 
       if (updateError) {
         return {
@@ -555,12 +604,23 @@ export async function recordUsageEvent(
           error: `Failed to update usage: ${updateError.message}`,
         }
       }
+      // A zero-row UPDATE is not an error in PostgREST. Recording usage that
+      // landed nowhere while reporting success is how billing_usage would go on
+      // reading zero even after it had a writer.
+      if (!Array.isArray(updated) || updated.length === 0) {
+        return {
+          success: false,
+          error: `Failed to update usage: no billing_usage row matched id ${(currentUsage as { id: string }).id}`,
+        }
+      }
     } else {
       const insertData: Record<string, any> = {
         brokerage_id: input.brokerageId,
         [column]: input.units,
-        // period_label is NOT NULL — the current billing month (YYYY-MM)
-        period_label: new Date().toISOString().slice(0, 7),
+        // period_label is NOT NULL — the current billing month (YYYY-MM), from
+        // the shared UTC definition rather than an inline slice of a local date.
+        period_label: periodLabel,
+        recorded_at: now,
       }
 
       const { error: insertError } = await supabase
@@ -691,10 +751,17 @@ export async function calculateOverageExposure(
     }
 
     // Fetch current usage
+    // SAME PERIOD KEY AS THE WRITER (lib/usage/period.ts). The overage
+    // PROJECTION is the surface this table exists for; reading an unkeyed
+    // "whatever row comes back" meant projecting one month's exposure from
+    // another month's counters as soon as a second month existed.
     const { data: usage, error: usageError } = await supabase
       .from("billing_usage")
       .select("ai_calls_count,video_minutes,storage_bytes,scraper_calls,active_agents")
       .eq("brokerage_id", input.brokerageId)
+      .eq("period_label", currentBillingPeriodLabel())
+      .order("recorded_at", { ascending: false })
+      .limit(1)
       .maybeSingle()
 
     if (usageError) {

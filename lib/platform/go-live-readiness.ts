@@ -45,6 +45,7 @@ const d = (key: string, label: string, optional: boolean) =>
 /** Run every domain probe (independently — one vendor down never hides the rest). */
 export async function runGoLiveReadiness(svc: any): Promise<GoLiveReadiness> {
   const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
+  const { getStripeBalance } = await import("@/lib/providers/payment")
   const basic = (u: string, p: string) => ({ style: "basic" as const, username: u, password: p })
 
   const probes: Probe[] = [
@@ -128,16 +129,19 @@ export async function runGoLiveReadiness(svc: any): Promise<GoLiveReadiness> {
     },
 
     // ── Money ───────────────────────────────────────────────────────────────
+    // ONE Stripe client. This check and app/api/cron/health-check/route.ts each
+    // re-implemented the key lookup and the /v1/balance request; getStripeBalance
+    // in lib/providers/payment already did both and had no caller at all. It
+    // returns { success, error, httpStatus, notConfigured, livemode } — every
+    // bit this check reads. It does NOT read `available` or `pending`: no
+    // balance figure reaches any surface, which is the standing product decision
+    // recorded in lib/providers/payment/index.ts.
     async () => {
       const r = d("stripe", "Stripe (billing)", false)
-      const key = process.env.STRIPE_SECRET_KEY
-      if (!key) return r("not_configured", "STRIPE_SECRET_KEY unset — signup checkout, dunning, and vendor billing can't run")
-      const res = await callConnector<{ livemode?: boolean }>({
-        connector: "stripe", baseUrl: "https://api.stripe.com",
-        path: "/v1/balance", method: "GET", auth: { style: "bearer", token: key },
-      })
-      if (!res.ok) return r("broken", `Stripe rejected the key (${res.status ?? "—"})`)
-      const live = (res.data as any)?.livemode
+      const res = await getStripeBalance()
+      if (res.notConfigured) return r("not_configured", "STRIPE_SECRET_KEY unset — signup checkout, dunning, and vendor billing can't run")
+      if (!res.success) return r("broken", `Stripe rejected the key (${res.httpStatus ?? "—"})`)
+      const live = res.livemode
       const whsec = process.env.STRIPE_WEBHOOK_SECRET ? "webhook secret set" : "STRIPE_WEBHOOK_SECRET unset — register https://<app>/api/webhooks/stripe in the dashboard and set it, or paid signups never activate"
       return r(process.env.STRIPE_WEBHOOK_SECRET ? "ready" : "broken", `Key accepted · ${live ? "LIVE mode" : "TEST mode — swap to the live key before charging real customers"} · ${whsec}`)
     },

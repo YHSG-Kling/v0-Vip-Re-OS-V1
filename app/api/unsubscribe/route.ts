@@ -171,7 +171,7 @@ export async function POST(req: NextRequest) {
       // NOTE THE VALUE PASSED: `contact.id`, never `contact.contact_id`. That
       // substitution is defect 2 — the FK target is contacts(id), so the other
       // uuid is a foreign-key violation that addSuppression swallows.
-      await addSuppression({
+      const applied = await addSuppression({
         brokerageId: contact.brokerage_id,
         contactId: contact.id,
         email: ch === "email" ? contact.email : null,
@@ -186,8 +186,23 @@ export async function POST(req: NextRequest) {
         source: UNVERIFIED_SOURCE,
       })
 
-      // addSuppression reports nothing. Read back the row it was supposed to
-      // write before telling anyone they are unsubscribed.
+      // addSuppression NOW REPORTS. It used to return void, which is why the
+      // read-back below had to exist at all. Check the reported result first —
+      // it carries the REAL refusal (the FK violation, the zero-row contact
+      // update), which a read-back can only ever render as "absent".
+      if (!applied.suppressed || applied.contactFlagsUpdated === false) {
+        console.error(
+          `[/api/unsubscribe] suppression for contact ${contact.id} channel ${ch} was REFUSED:`,
+          applied.errors.join(" | ") || "(no error reported)",
+        )
+        return NextResponse.json(
+          { error: "We could not record that right now. Please try again." },
+          { status: 503 },
+        )
+      }
+
+      // The read-back is KEPT as the independent confirmation: the result above
+      // is this process's account of its own writes; this is the database's.
       const landed = await suppressionLanded(supabase, contact.brokerage_id, contact.id, ch)
       if (landed !== true) {
         console.error(

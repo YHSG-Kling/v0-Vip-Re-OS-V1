@@ -34,3 +34,37 @@ export function currentUsagePeriod(now: Date = new Date()): {
   const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1))
   return { periodStartIso: start.toISOString(), periodEndIso: end.toISOString() }
 }
+
+/**
+ * THE SAME PERIOD, IN THE OTHER TABLE'S SPELLING — `billing_usage.period_label`,
+ * a NOT NULL `YYYY-MM` text column rather than a timestamp pair.
+ *
+ * ── THE DEFECT THIS ENDS ─────────────────────────────────────────────────────
+ * This is NOT the local-vs-UTC mismatch #190 above — stating the difference
+ * plainly, because the two are easy to conflate and the remedy differs.
+ * `billing_usage` had a WORSE problem: NEITHER SIDE USED THE PERIOD AT ALL.
+ *
+ *   · the writer (lib/kernel/billing.ts recordUsageEvent) fetched with
+ *     `.eq('brokerage_id', …).maybeSingle()` and no period predicate, then
+ *     UPDATED whatever row came back. `period_label` was stamped on INSERT only.
+ *   · the readers — calculateOverageExposure, resolveFeatureEntitlement and
+ *     app/actions/billing.ts getBillingUsage — also filtered on brokerage alone.
+ *
+ * With exactly one row per tenant that is invisible. The moment a second month
+ * exists it is two separate failures at once: the writer accumulates every new
+ * month's usage into the FIRST month's row (so a meter that should reset never
+ * does, and overage exposure only ever climbs), and `.maybeSingle()` over two
+ * rows is a PostgREST error, so the readers stop returning anything.
+ *
+ * It never bit because nothing had ever written the table (see the tombstone at
+ * app/actions/admin/billing.ts). Giving it a writer is exactly what would have
+ * made it bite, so the period key is closed in the same change.
+ *
+ * ── THE CONVENTION ───────────────────────────────────────────────────────────
+ * The SAME UTC calendar month as `currentUsagePeriod`, and derived FROM it
+ * rather than recomputed, so the two spellings cannot drift apart. Every writer
+ * and every reader of `billing_usage` filters on this value.
+ */
+export function currentBillingPeriodLabel(now: Date = new Date()): string {
+  return currentUsagePeriod(now).periodStartIso.slice(0, 7)
+}

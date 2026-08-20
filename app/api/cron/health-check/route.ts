@@ -7,6 +7,9 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+// The one Stripe client — see the stripe checkFn below for why this probe no
+// longer hand-rolls the key lookup and the /v1/balance request.
+import { getStripeBalance } from "@/lib/providers/payment"
 import { DECOMMISSIONED_PROVIDERS } from "@/lib/platform/provider-posture"
 
 // Service check configuration
@@ -100,22 +103,26 @@ const SERVICE_CHECKS: Record<
   },
   stripe: {
     type: "api",
+    // ONE Stripe client. This probe used to re-implement the key lookup and the
+    // /v1/balance request inline, as did lib/platform/go-live-readiness.ts —
+    // three copies of the same call, and the one in lib/providers/payment was
+    // the only one with no caller. It does both jobs better and returns
+    // { success, error, httpStatus }, which is exactly the bit this probe wants
+    // plus a reason. NOTHING here reads `available` or `pending`: the balance
+    // FIGURE stays off every surface, deliberately — see the note in
+    // lib/providers/payment/index.ts.
     checkFn: async () => {
       const start = Date.now()
-      const stripeKey = process.env.STRIPE_SECRET_KEY
-      if (!stripeKey) {
+      const res = await getStripeBalance()
+      const responseTimeMs = Date.now() - start
+      if (res.notConfigured) {
         return { status: "unknown" as const, responseTimeMs: 0, errorMessage: "No API key configured" }
       }
-      const response = await callConnector({
-        connector: "stripe", baseUrl: "https://api.stripe.com", path: "/v1/balance",
-        method: "GET", auth: { style: "bearer", token: stripeKey }, timeoutMs: 5000,
-      })
-      const responseTimeMs = Date.now() - start
       return {
-        status: response.ok ? "healthy" : (response.status ? "degraded" : "down"),
+        status: res.success ? "healthy" : (res.httpStatus ? "degraded" : "down"),
         responseTimeMs,
-        httpStatusCode: response.status ?? 0,
-        ...(response.ok ? {} : { errorMessage: response.error ?? undefined }),
+        httpStatusCode: res.httpStatus ?? 0,
+        ...(res.success ? {} : { errorMessage: res.error ?? undefined }),
       }
     },
   },

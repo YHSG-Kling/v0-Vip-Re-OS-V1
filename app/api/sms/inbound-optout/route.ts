@@ -43,19 +43,36 @@ export async function POST(req: NextRequest) {
     // STOP keyword detected — suppress immediately
     const supabase = createServiceClient()
 
-    // Look up contact(s) by phone across all brokerages
-    const { data: contacts } = await supabase
+    // Look up contact(s) by phone across all brokerages.
+    //
+    // SELECTS `id`, NOT `contact_id`. `contacts` carries TWO distinct unique
+    // uuid columns — the primary key `id` and a secondary `contact_id` — and
+    // they are NEVER equal (app/api/unsubscribe/route.ts:10-27 records the live
+    // verification). `contact_suppression_list.contact_id` is a FOREIGN KEY onto
+    // `contacts(id)`, so this handler was handing addSuppression the OTHER uuid:
+    // every STOP produced a foreign-key violation, addSuppression returned void
+    // and swallowed it, and the sender replied "You have been successfully
+    // unsubscribed" to a person it had not suppressed. Same defect the email
+    // footer had, in the one channel where the reply PROMISES the suppression.
+    const { data: contacts, error: contactsError } = await supabase
       .from('contacts')
-      .select('contact_id, brokerage_id, phone')
+      .select('id, brokerage_id, phone')
       .or(`phone.eq.${from},phone.eq.${normalizedPhone}`)
+
+    // FAIL LOUD, not silently-pass-through: a refused lookup is not "no such
+    // contact". Answering 200 here would tell the carrier the STOP was handled.
+    if (contactsError) {
+      console.error('[sms-optout] contact lookup refused:', contactsError.message)
+      return NextResponse.json({ error: 'Could not process opt-out' }, { status: 503 })
+    }
 
     if (contacts && contacts.length > 0) {
       // Suppress in all brokerages that have this contact
-      await Promise.all(
+      const results = await Promise.all(
         contacts.map((c) =>
           addSuppression({
             brokerageId: c.brokerage_id,
-            contactId:   c.contact_id,
+            contactId:   c.id,
             phone:       c.phone ?? from,
             channel:     'sms',
             reason:      `STOP keyword received: "${msgBody.trim()}"`,
@@ -63,6 +80,18 @@ export async function POST(req: NextRequest) {
           })
         )
       )
+
+      // CHECK THE RESULT. A STOP is a legal obligation under TCPA/CTIA; the
+      // reply below states it as done, so a refusal must not be answered with
+      // that reply. 503 makes the provider retry the webhook.
+      const refused = results.filter((r) => !r.suppressed || r.contactFlagsUpdated === false)
+      if (refused.length > 0) {
+        console.error(
+          `[sms-optout] ${refused.length}/${results.length} STOP suppression(s) REFUSED for ${from}:`,
+          refused.flatMap((r) => r.errors).join(' | ') || '(no error reported)',
+        )
+        return NextResponse.json({ error: 'Could not record opt-out' }, { status: 503 })
+      }
     } else {
       // Phone not in contacts. The comment here used to say the brokerage came from the
       // "to" number's provider config — but the query never used `to`. It took the FIRST
@@ -87,13 +116,23 @@ export async function POST(req: NextRequest) {
       }
 
       if (providerConfig?.brokerage_id) {
-        await addSuppression({
+        const applied = await addSuppression({
           brokerageId: providerConfig.brokerage_id,
           phone:       from,
           channel:     'sms',
           reason:      `STOP keyword received from unknown number: "${msgBody.trim()}"`,
           source:      'sms_stop',
         })
+        // No contactId here (the number is not in contacts), so
+        // contactFlagsUpdated is null by design — only the list row can bind
+        // this suppression, and `checkSuppression` matches it on `phone`.
+        if (!applied.suppressed) {
+          console.error(
+            `[sms-optout] STOP suppression for unknown number ${from} REFUSED:`,
+            applied.errors.join(' | ') || '(no error reported)',
+          )
+          return NextResponse.json({ error: 'Could not record opt-out' }, { status: 503 })
+        }
       }
     }
 

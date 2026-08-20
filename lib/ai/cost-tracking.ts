@@ -229,6 +229,37 @@ export async function logAIUsage(params: {
         console.error("[v0] Failed to bump ai_tokens_monthly counter:", counterError)
       }
     }
+
+    // THE BILLING METER — `billing_usage.ai_calls_count`.
+    //
+    // A DIFFERENT RAIL from the three writes above, with different readers, and
+    // it had NO WRITER ANYWHERE IN THE PRODUCT. `ai_usage_log` is the per-call
+    // ledger, `ai_usage_monthly` is the token rollup, `usage_counters` is the
+    // fair-use cap rail — and `billing_usage` is what the tenant's usage bars
+    // (app/settings/billing/usage-section.tsx) and the OVERAGE PROJECTION
+    // (app/components/features/admin/overage-calculator.tsx →
+    // lib/kernel/billing.ts calculateOverageExposure) read. Both showed zero for
+    // every tenant on every day because nothing ever wrote the table.
+    //
+    // The unit is CALLS, not tokens: `ai_calls_count` counts requests, and every
+    // invocation of logAIUsage is exactly one completed model call. Tokens are
+    // already metered on the two rails above; folding them in here would make
+    // the overage projection compare token counts against a call allowance.
+    if (params.brokerageId) {
+      try {
+        const { recordUsageEvent } = await import("@/lib/kernel/billing")
+        const metered = await recordUsageEvent({
+          brokerageId: params.brokerageId,
+          metric: "ai_calls",
+          units: 1,
+        })
+        if (!metered.success) {
+          console.warn("[v0] billing_usage ai_calls not recorded:", metered.error)
+        }
+      } catch (meterError) {
+        console.error("[v0] Failed to record billing_usage ai_calls:", meterError)
+      }
+    }
   } catch (error) {
     console.error("[v0] Error in logAIUsage:", error)
     // Don't throw - logging failures shouldn't break the application

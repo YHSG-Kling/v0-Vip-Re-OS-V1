@@ -2479,9 +2479,32 @@ async function main() {
     // ── ROUND 18: THREE ZEROS + THE NIGHTLY TRUTH LANE ──
     {
       const routeBaseline18 = JSON.parse(src("scripts/orphan-route-baseline.json")) as string[]
-      check("ROUND 18 — THE THIRD ZERO, AND THE DATABASE WATCHES ITSELF NIGHTLY. ROUTE BURN 42 → 0: the honest branch mattered — ROUTE_ALIASES turned out to be runtime-DEAD (no middleware consumes it), so the 14 legacy redirect stubs ARE the bookmark-compatibility layer and were kept + exempted with named targets instead of aliased-and-deleted into 404s; the 14 hardcoded journey mock pages and 4 superseded surfaces were deleted after zero-ref verification; 9 more real surfaces got their links — including the client portal's Full Deal Dashboard (the buyer loan-condition rail) and the FIRST public privacy-request footer on the tenant sites. All three rot classes now sit at ZERO with shrink-only guards: writes nothing reads, reads nothing writes, pages nothing links. NIGHTLY TRUTH LANE: the per-push drift guard proves code vs the committed snapshot; the new creds-gated check proves the snapshot vs the LIVE database (service-role-only live_schema_json RPC, l72_s14) — DDL applied between deploys is caught within a day, with the diff shown and the committed snapshot restored so regens are always deliberate; the nightly workflow now also runs the FULL guard chain against main. FLEET DRILL ran live: all four tiers provisioned with real shapes, the seat gate's exact predicate proven (solo at its 2-seat cap, vendor partner not counting, suspension freeing the seat), residue 0",
-        routeBaseline18.length === 0
+      check("ROUND 18 — THE THIRD ZERO, AND THE DATABASE WATCHES ITSELF NIGHTLY. ROUTE BURN 42 → 0: the honest branch mattered — ROUTE_ALIASES turned out to be runtime-DEAD (no middleware consumes it), so the 14 legacy redirect stubs ARE the bookmark-compatibility layer and were kept + exempted with named targets instead of aliased-and-deleted into 404s; the 14 hardcoded journey mock pages and 4 superseded surfaces were deleted after zero-ref verification; 9 more real surfaces got their links — including the client portal's Full Deal Dashboard (the buyer loan-condition rail) and the FIRST public privacy-request footer on the tenant sites. TWO of the three rot classes sit at ZERO with shrink-only guards (writes nothing reads, reads nothing writes); THE THIRD ZERO WAS A GUARD ARTEFACT AND IS WITHDRAWN — the 'pages nothing links' sweep carried three false passes (revalidatePath counted as a reference, a page counted as a reference to itself, and a bare ${…} segment satisfied a literal route segment), and with those closed the honest count is 32 unlinked pages, now the shrink-only baseline. NIGHTLY TRUTH LANE: the per-push drift guard proves code vs the committed snapshot; the new creds-gated check proves the snapshot vs the LIVE database (service-role-only live_schema_json RPC, l72_s14) — DDL applied between deploys is caught within a day, with the diff shown and the committed snapshot restored so regens are always deliberate; the nightly workflow now also runs the FULL guard chain against main. FLEET DRILL ran live: all four tiers provisioned with real shapes, the seat gate's exact predicate proven (solo at its 2-seat cap, vendor partner not counting, suspension freeing the seat), residue 0",
+        // ── THE THIRD ZERO WAS NOT REAL, and this assertion is corrected rather
+        //    than restored. `routeBaseline18.length === 0` held only because the
+        //    sweep that produced it had THREE false passes, each measured and
+        //    each now fixed in scripts/orphan-route-sweep.ts:
+        //      · `revalidatePath("/x")` counted as a reference — a cache
+        //        invalidation is not a way for a human to reach a page;
+        //      · a page.tsx counted as a reference to ITSELF, so a breadcrumb or
+        //        a self-referencing tab made a route "linked";
+        //      · a pure `${…}` reference segment satisfied a LITERAL route
+        //        segment, so `/portal/${id}/listings` "linked"
+        //        /portal/[contactId]/assistant.
+        //    With those closed the honest count is 32 unlinked pages, which is
+        //    what the baseline now holds. The claim in the narrative above —
+        //    "pages nothing links" at zero — was a guard artefact, so the ratchet
+        //    below asserts the SHRINK-ONLY property that is actually true and no
+        //    longer asserts a zero the product never had. The other two zeros
+        //    (orphan-write-baseline, writerless reads) are untouched and still
+        //    asserted at zero below.
+        routeBaseline18.length <= 32
         && src("scripts/orphan-route-sweep.ts").includes("legacy redirect stub")
+        // The two identifiers the false-pass fixes introduced: selfDirOf (a page
+        // no longer counts as a reference to itself) and resolveLocalBasePaths
+        // (a `${basePath}/x` template resolves instead of being read as a host).
+        && src("scripts/orphan-route-sweep.ts").includes("selfDirOf")
+        && src("scripts/orphan-route-sweep.ts").includes("resolveLocalBasePaths")
         && src("scripts/check-live-schema-drift.ts").includes("live_schema_json")
         && src("scripts/check-live-schema-drift.ts").includes("skipped (no Supabase credentials")
         && src(".github/workflows/e2e.yml").includes("check-live-schema-drift")

@@ -6,18 +6,21 @@
 // usage events on any tenant's billing meter (overage padding);
 // calculateOverageExposureAction leaked projection data; and the
 // "(superadmin only)" loadRevenueSummaryAction had no enforcement —
-// any caller got cross-tenant revenue aggregates. All three now require
+// any caller got cross-tenant revenue aggregates. All three were given
 // session auth, and revenue summary additionally requires superadmin.
+//
+// `recordUsageEventAction` has since been REMOVED entirely (tombstone below):
+// the meter it wrote is now written server-side at the three points where the
+// usage is actually consumed, so there is no longer a browser-reachable
+// endpoint whose purpose is to move a billing meter. The two surviving exports
+// still go through requireBillingCaller().
 
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
 import {
-  recordUsageEvent,
   calculateOverageExposure,
   loadRevenueSummary,
-  type RecordUsageEventInput,
-  type RecordUsageEventOutput,
   type CalculateOverageExposureInput,
   type CalculateOverageExposureOutput,
   type LoadRevenueSummaryInput,
@@ -43,95 +46,57 @@ async function requireBillingCaller(): Promise<
   }
 }
 
-/**
- * Record a usage event from within the app
- * Input contract: RecordUsageEventInput
- * Output contract: RecordUsageEventOutput
+/* ─────────────────────────────────────────────────────────────────────────────
+ * TOMBSTONE — `recordUsageEventAction` was REMOVED (orphan census, category C).
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * ORPHAN BURN-DOWN — NOT WIRED, AND THE REASON IS BIGGER THAN THIS EXPORT.
- * Measured this pass, not assumed. Read this before giving it a caller.
+ * SURVIVOR: `recordUsageEvent` at lib/kernel/billing.ts:525 — the kernel command
+ * this action wrapped, and the only writer of `billing_usage` there has ever been.
  *
- * `billing_usage` HAS NO WRITER ANYWHERE IN THE PRODUCT. `grep -rn billing_usage`
- * over app/ and lib/ returns six sites and every one of them is inside the billing
- * kernel or a read:
- *   · lib/kernel/billing.ts:512/546/567 — recordUsageEvent, the only INSERT/UPDATE,
- *     reachable from the product through this action alone;
- *   · lib/kernel/billing.ts:297 and :695 — reads (entitlement, overage projection);
- *   · app/actions/billing.ts:243 — getBillingUsage, the tenant read.
- * This action is that one writer's only door, and it has no caller. So the table has
- * never been written by the running product.
+ * IT WAS A DUPLICATE DOOR, NOT A CAPABILITY. It contained no behaviour of its own
+ * beyond an auth gate and two validations; every byte of the actual write was the
+ * survivor's. The finding it carried was correct and has now been ACTED ON rather
+ * than restated: `billing_usage` HAD NO WRITER ANYWHERE IN THE PRODUCT, so the
+ * tenant usage bars (app/settings/billing/usage-section.tsx, via
+ * app/actions/billing.ts getBillingUsage) and the overage EXPOSURE projection
+ * (app/components/features/admin/overage-calculator.tsx, via
+ * calculateOverageExposure below) read zero for every tenant, forever — and an
+ * overage projection from an unwritten meter reads as "no exposure".
  *
- * TWO LIVE SURFACES READ IT AND THEREFORE SHOW ZERO, ALWAYS:
- *   · app/settings/billing/usage-section.tsx — the tenant's Active Agents / AI Calls /
- *     Storage / Video bars, fed by getBillingUsage;
- *   · app/components/features/admin/overage-calculator.tsx (rendered by
- *     app/dashboard/admin/billing/page.tsx:125) — projects overage EXPOSURE from
- *     calculateOverageExposure, which selects exactly those five columns.
- * An overage projection computed from an unwritten meter is not a small gap: it reads
- * as "no exposure" for every tenant, forever.
+ * THE THREE CALL SITES ARE NOW WIRED, all SERVER-SIDE, straight to the survivor:
+ *   · app/actions/scrape-social-media.ts  → metric "scraper_calls" (counted at the
+ *     scraper invocation, before the return)
+ *   · lib/usage/log-media-usage.ts        → metric "video_minutes" (beside its two
+ *     existing usage_events / usage_counters writes)
+ *   · lib/ai/cost-tracking.ts             → metric "ai_calls" (one per completed
+ *     model call, beside the ai_usage_log / ai_usage_monthly / usage_counters writes)
  *
- * IT IS NOT A DUPLICATE OF THE METERS THAT DO WORK, checked both ways:
- *   · lib/usage.ts:incrementUsage writes `usage_counters` (the AI-quota rail, joined
- *     by v_brokerage_ai_quota);
- *   · lib/usage/log-media-usage.ts writes `usage_events` + `usage_counters`.
- * Neither touches `billing_usage`, and `billing_usage`'s readers do not read theirs.
- * So deleting this would not "move the capability elsewhere" — it would leave the two
- * surfaces above reading a table nothing can ever write.
+ * WHY THE `"use server"` DOOR WENT RATHER THAN GETTING A CALLER. The previous note
+ * here proposed wiring the one client that exists
+ * (app/dashboard/admin/lead-intake/social-scrape-trigger.tsx) to record
+ * "scraper_calls". That is the wrong place and the reason is not stylistic:
+ *   · the client cannot see how many scraper calls were made, only how many posts
+ *     came back — so the number it would report is not the number being billed;
+ *   · a tab closed mid-run records nothing, while the credits are already spent;
+ *   · a client-callable usage writer IS a public HTTP endpoint whose whole purpose
+ *     is to move a billing meter. Any authenticated user could then pad their own
+ *     tenant's usage by calling it, or under-report by never calling it. The
+ *     brokerageId override this action performed prevented CROSS-tenant padding; it
+ *     could not prevent self-padding, because self-padding is the endpoint working
+ *     as designed.
  *
- * WHY NO SURFACE IS BUILT FOR IT HERE. This is a `"use server"` export, so its
- * legitimate caller is a CLIENT that just consumed a metered resource — not a form for
- * typing usage in by hand. Inventing an admin data-entry screen would give the export
- * a caller while leaving both readers projecting from numbers nobody produces: a
- * rename of the orphan, which the wired-surface ratchet forbids in as many words.
- * The finish is call sites in files this lane does not own, and they are REPORTED.
- * THIS action is the door for a CLIENT caller — verified, exactly one exists:
- *   · app/dashboard/admin/lead-intake/social-scrape-trigger.tsx ("use client",
- *     calls scrapeSocialMedia) → metric "scraper_calls".
- * The other two are SERVER-side and must call the kernel command directly
- * (lib/kernel/billing.ts:recordUsageEvent) rather than this wrapper — a server module
- * routing through a `"use server"` action would be gating itself against a session it
- * may not have:
- *   · lib/usage/log-media-usage.ts → "video_minutes" beside its existing two writes;
- *   · lib/ai/cost-tracking.ts → "ai_calls" beside its incrementUsage call.
- * Note the units are DELTAS (`newTotal = current + units`), so any caller must add
- * what it just consumed, never restate a running total.
- * ─────────────────────────────────────────────────────────────────────────────
- */
-export async function recordUsageEventAction(
-  input: RecordUsageEventInput
-): Promise<RecordUsageEventOutput> {
-  try {
-    const auth = await requireBillingCaller()
-    if (!auth.ok) return { success: false, error: auth.error }
-
-    // Always override caller-supplied brokerageId with session's —
-    // recording usage events on another tenant's meter could pad their
-    // overage charges.
-    const safeInput = { ...input, brokerageId: auth.brokerageId }
-
-    if (!safeInput.metric) {
-      return {
-        success: false,
-        error: "Missing required field: metric",
-      }
-    }
-    if (safeInput.units < 0) {
-      return {
-        success: false,
-        error: "Units must be non-negative",
-      }
-    }
-
-    return await recordUsageEvent(safeInput)
-  } catch (error) {
-    console.error("[Action] recordUsageEventAction error:", error)
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Unknown error",
-    }
-  }
-}
+ * THE AUTH GATE IS NOT REGRESSED — it is superseded. `requireBillingCaller()` still
+ * gates the two actions that remain in this file. What this action gated no longer
+ * exists as a reachable endpoint at all: the meter is now written only from server
+ * modules that already hold the session (scrape-social-media resolves brokerageId
+ * from getAgentContext behind an admin check) or are service-credentialed and
+ * unreachable from a browser. Removing an endpoint is strictly stronger than
+ * gating it.
+ *
+ * MERGED ONTO THE SURVIVOR BEFORE DELETING, so nothing this action did is lost:
+ * the "Missing required field: metric" and "Units must be non-negative" checks now
+ * live on `recordUsageEvent` itself (lib/kernel/billing.ts:528-536), where they
+ * also cover the server-side callers that previously bypassed them entirely.
+ * ───────────────────────────────────────────────────────────────────────────── */
 
 /**
  * Calculate overage exposure projection

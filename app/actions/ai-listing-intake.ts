@@ -11,7 +11,6 @@ import { handleError } from "@/lib/errors"
 import { guardContent } from "@/lib/content-guardian"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
-import { resolveTransactionProvider } from "@/lib/integrations/transaction-providers/resolve-transaction-provider"
 import { z } from "zod"
 import { createHash } from "node:crypto"
 import { PROPERTY_TYPES } from "@/lib/constants"
@@ -24,57 +23,14 @@ import { PROPERTY_TYPES } from "@/lib/constants"
 // ============================================
 
 // State-specific form configurations
-const STATE_FORMS: Record<string, { required: string[]; optional: string[]; disclosures: string[] }> = {
-  TX: {
-    required: [
-      "TAR 1101 - Listing Agreement",
-      "TAR 1406 - Seller's Disclosure Notice",
-      "TAR 1407 - Lead-Based Paint Disclosure",
-      "TAR 2301 - Information About Brokerage Services",
-    ],
-    optional: ["TAR 1915 - MUD Notice", "TAR 1918 - Coastal Area Property Notice"],
-    disclosures: ["seller_disclosure", "lead_paint", "hoa_docs", "survey"],
-  },
-  CA: {
-    required: [
-      "CAR RLA - Residential Listing Agreement",
-      "CAR TDS - Transfer Disclosure Statement",
-      "CAR SPQ - Seller Property Questionnaire",
-      "CAR AD - Agency Disclosure",
-    ],
-    optional: ["CAR NHD - Natural Hazard Disclosure", "CAR MHTDS - Manufactured Home TDS"],
-    disclosures: ["transfer_disclosure", "natural_hazard", "lead_paint", "earthquake"],
-  },
-  FL: {
-    required: [
-      "FAR/BAR Listing Agreement",
-      "Seller's Property Disclosure",
-      "Lead-Based Paint Disclosure",
-      "Agency Disclosure",
-    ],
-    optional: ["HOA/COA Disclosure", "Flood Zone Disclosure"],
-    disclosures: ["seller_disclosure", "lead_paint", "hoa_docs", "flood_zone"],
-  },
-  // Add more states as needed
-  DEFAULT: {
-    required: ["Listing Agreement", "Seller's Disclosure", "Lead-Based Paint Disclosure", "Agency Disclosure"],
-    optional: [],
-    disclosures: ["seller_disclosure", "lead_paint"],
-  },
-}
+/* The local 3-state `STATE_FORMS` table went with `aiGetRequiredForms`, its only
+ * reader (tombstone below). The canonical 50-state registry — which this file
+ * already uses from `generateListingAgreement` — is
+ * lib/state-forms/registry.ts:STATE_FORMS / getStateForms. */
 
-interface ListingIntakeData {
-  agentId: string
-  brokerageId: string
-  propertyAddress: string
-  city: string
-  state: string
-  zipCode: string
-  propertyType: (typeof PROPERTY_TYPES)[number]
-  sellerId?: string | null
-  listPrice?: number
-  propertyDetails?: any
-}
+/* `ListingIntakeData` went with the local `createListing` it typed (tombstone
+ * below). The live input shape is the inline parameter object of
+ * `createListingWithSellerContact`, app/actions/listings-kernel.ts:145. */
 
 // ============================================
 // 1. AI PROPERTY DATA ENRICHMENT
@@ -201,81 +157,54 @@ Provide realistic estimates in JSON format:
 // ============================================
 // 2. AI STATE FORM RECOMMENDER
 // ============================================
-export async function aiGetRequiredForms(params: {
-  state: string
-  propertyType: string
-  transactionType: "standard" | "short_sale" | "foreclosure" | "new_construction"
-  hasHoa: boolean
-  hasPool: boolean
-  isHistoric: boolean
-  leadPaintYear?: number
-}) {
-  try {
-    const stateConfig = STATE_FORMS[params.state] || STATE_FORMS.DEFAULT
-
-    // Start with required forms
-    const forms = [...stateConfig.required]
-    const disclosures = [...stateConfig.disclosures]
-
-    // Add conditional forms
-    if (params.hasHoa) {
-      forms.push("HOA Disclosure Package")
-      disclosures.push("hoa_financials", "hoa_rules")
-    }
-
-    if (params.hasPool) {
-      forms.push("Pool Safety Disclosure")
-      disclosures.push("pool_inspection")
-    }
-
-    if (params.leadPaintYear && params.leadPaintYear < 1978) {
-      if (!forms.some((f) => f.toLowerCase().includes("lead"))) {
-        forms.push("Lead-Based Paint Disclosure")
-      }
-    }
-
-    if (params.transactionType === "short_sale") {
-      forms.push("Short Sale Addendum")
-      forms.push("Lender Authorization")
-    }
-
-    // AI enhancement for special circumstances
-    const { text: aiRecommendations } = await generateText({
-      model: resolveModel("openai/gpt-4o-mini"),
-      prompt: `As a real estate compliance expert for ${params.state}, review this listing:
-Property Type: ${params.propertyType}
-Transaction: ${params.transactionType}
-Has HOA: ${params.hasHoa}
-Has Pool: ${params.hasPool}
-Historic Property: ${params.isHistoric}
-Built: ${params.leadPaintYear || "Unknown"}
-
-Are there any additional state-specific forms or disclosures required?
-List only the form names, one per line. If none, respond with "NONE".`,
-    })
-
-    const additionalForms =
-      aiRecommendations !== "NONE"
-        ? aiRecommendations
-            .split("\n")
-            .filter((f) => f.trim())
-            .map((f) => f.trim())
-        : []
-
-    return {
-      success: true,
-      forms: {
-        required: forms,
-        optional: stateConfig.optional,
-        aiRecommended: additionalForms,
-        disclosures,
-      },
-    }
-  } catch (error) {
-    console.error("[AI Listing Intake] Form recommender error:", error)
-    return handleError(error, "aiGetRequiredForms")
-  }
-}
+/* ───────────────────────────────────────────────────────────────────────────────
+ * TOMBSTONE — `aiGetRequiredForms` was REMOVED (orphan census, category C).
+ *
+ * SURVIVOR: `getStateForms(state, "listing")` at lib/state-forms/registry.ts:258
+ * (with `getBrokerageRepresentationForm` beside it at :277).
+ *
+ * IT BECAME AN ORPHAN IN THIS SAME CHANGE, and that is stated plainly rather
+ * than glossed: its ONLY caller was `runCompleteListingIntake`, deleted below as
+ * a duplicate. Rather than leave a stranded export, it gets its own verdict —
+ * and the verdict is that the capability already lives elsewhere, better.
+ *
+ * THE SURVIVOR IS STRICTLY BETTER, AND THIS FILE ALREADY USES IT. The registry's
+ * own header names `app/actions/ai-listing-intake.ts:generateListingAgreement()`
+ * as a consumer — so the function in this file that actually runs asks the
+ * registry the same question this one answered from a private table:
+ *   · COVERAGE: the registry defines ALL 50 STATES explicitly. This function's
+ *     local `STATE_FORMS` had THREE — TX, CA, FL — plus a `DEFAULT`.
+ *   · THE DEFAULT WAS THE DEFECT. An agent listing in Georgia got
+ *     STATE_FORMS.DEFAULT: "Listing Agreement", "Seller's Disclosure",
+ *     "Lead-Based Paint Disclosure", "Agency Disclosure" — generic names for a
+ *     state whose forms are GAR-numbered. The registry has NO default and
+ *     THROWS on an unrecognised state ("Forms unavailable — verify the property
+ *     address"), because the property address dictates the forms and a plausible
+ *     wrong answer about required disclosures is worse than a refusal.
+ *
+ * NOT MERGED, with the reason, because two things here have no home on the
+ * survivor and pretending otherwise would be the lie this tombstone exists to
+ * prevent:
+ *
+ *   1. THE CONDITIONAL ADDITIONS (HOA package, Pool Safety Disclosure, pre-1978
+ *      lead paint, short-sale addendum + lender authorization). These are REAL
+ *      product logic and the registry does not have them — StateFormBundle is
+ *      { required, addenda, brokerageRepresentation } with no conditional arm.
+ *      They are NOT carried over as-is because they were free-text English
+ *      names ("HOA Disclosure Package") against a 3-state table, while the
+ *      survivor's consumers route FORM IDS to Dotloop and the form library; a
+ *      name that is not an id resolves to nothing downstream. Recorded as an
+ *      OPEN ITEM on lib/state-forms/registry.ts — per-state conditional addenda
+ *      keyed by the same id vocabulary — not as a capability that moved.
+ *
+ *   2. THE AI "additional forms" STEP. Deliberately NOT carried over. It asked a
+ *      model to "list only the form names, one per line" as FREE TEXT, with no
+ *      schema and no validation against any form that exists, then returned the
+ *      lines as `aiRecommended`. That is the same confabulation shape already
+ *      tombstoned in this file for `aiOptimizePhotoOrder` — a model inventing
+ *      identifiers for a compliance surface. Required-disclosure lists are the
+ *      last place to accept invented names.
+ * ────────────────────────────────────────────────────────────────────────────── */
 
 // ============================================
 // 3. AI LISTING DESCRIPTION GENERATOR
@@ -1002,133 +931,39 @@ Provide a 1-2 sentence recommendation for the agent.`,
 // ============================================
 // 8. CREATE COMPLETE LISTING
 // ============================================
-export async function createListing(params: ListingIntakeData) {
-  try {
-    // Resolve identity from session — never trust caller-supplied agentId/brokerageId
-    const ctx = await getAgentContext()
-    if (!ctx.isAuthenticated || !ctx.brokerageId) {
-      return { success: false, error: "Unauthorized" }
-    }
-
-    const supabase = await createClient()
-
-    // If the request supplies a sellerId, verify it belongs to the caller's brokerage
-    const sellerId = params.sellerId && isValidUUID(params.sellerId) ? params.sellerId : null
-    if (sellerId) {
-      const { data: sellerContact } = await supabase
-        .from("contacts")
-        .select("brokerage_id")
-        .eq("id", sellerId)
-        .maybeSingle()
-      if (sellerContact && sellerContact.brokerage_id !== ctx.brokerageId) {
-        return { success: false, error: "Forbidden" }
-      }
-    }
-
-    // NOT `?? ctx.userId` (m359). Everything this reaches is agents-class —
-    // ai_usage_log, brand_voice_profile, guardContent, the dotloop loop and
-    // aiGenerateListingDescription all key agents(id). The substitution only
-    // fired when the caller had no agents row, i.e. exactly when there was
-    // nothing for those queries to match anyway; it bought a wrong-class id in
-    // place of an honest refusal. This is the spelling test:identity-fallback
-    // could not see until m358.
-    const ownerAgentId = ctx.agentId
-    if (!ownerAgentId) return { success: false, error: "No agent profile for this user yet — finish account setup." }
-
-    // Create the listing — use live schema column names only
-    const { data: listing, error } = await supabase
-      .from("listings")
-      .insert({
-        agent_id:          ownerAgentId,
-        brokerage_id:      ctx.brokerageId,
-        seller_contact_id: sellerId,
-        address:           params.propertyAddress,
-        city:              params.city,
-        state:             params.state,
-        zip:               params.zipCode,
-        property_type:     params.propertyType,
-        list_price:        params.listPrice ?? null,
-        bedrooms:          params.propertyDetails?.beds,
-        bathrooms:         params.propertyDetails?.baths,
-        sqft:              params.propertyDetails?.sqft,
-        // "draft" persists the partial listing row before the agreement is
-        // complete (added to the status CHECK). Becomes coming_soon when the
-        // listing agreement is signed.
-        status:            "draft",
-        lifecycle_stage:   "LEAD",
-      })
-      .select()
-      .maybeSingle()
-
-    if (error || !listing) throw error ?? new Error("Failed to create listing")
-
-    // Create transaction record — stamped from session identity.
-    // Live schema: column is deal_type (buyer|seller|dual) and status is a fixed
-    // CHECK set; the previous transaction_type/"pre_listing" values silently
-    // failed the constraint, so no transaction row was ever created.
-    const { data: transaction, error: txError } = await supabase
-      .from("transactions")
-      .insert({
-        agent_id:          ownerAgentId,
-        brokerage_id:      ctx.brokerageId,
-        // contact_id is the primary in-house client; on a seller-side deal that
-        // is the seller. seller_contact_id is the same person in its role slot.
-        contact_id:        sellerId,
-        seller_contact_id: sellerId,
-        listing_id:        listing.id,
-        deal_type:         "seller",
-        status:            "qualifying",
-        deal_name:         params.propertyAddress, // NOT NULL on transactions
-        property_address:  params.propertyAddress,
-      })
-      .select()
-      .maybeSingle()
-
-    if (txError) {
-      console.error("[AI Listing Intake] Transaction insert failed:", txError)
-    }
-
-    // Provider container at intake is provider-specific. We do NOT assume dotloop:
-    // only create a Dotloop loop when the brokerage's resolved provider is dotloop.
-    // Other providers create their container later at send-for-signature time.
-    let dotloopResult: Awaited<ReturnType<typeof createOrPullDotloop>> | null = null
-    const resolvedProvider = await resolveTransactionProvider({
-      agentUserId: ctx.userId,
-      brokerageId: ctx.brokerageId,
-    })
-    if (resolvedProvider?.provider === "dotloop") {
-      dotloopResult = await createOrPullDotloop({
-        agentId: ownerAgentId,
-        listingId: listing.id,
-        propertyAddress: params.propertyAddress,
-        sellerId: sellerId ?? "",
-        transactionType: "listing",
-      })
-
-      // Update listing with loop ID
-      if (dotloopResult.success && dotloopResult.loopId) {
-        await supabase
-          .from("listings")
-          .update({ dotloop_loop_id: dotloopResult.loopId })
-          .eq("id", listing.id)
-      }
-    }
-
-    revalidatePath("/dashboard/listings")
-    revalidatePath("/dashboard/listings/[id]", "page")
-    revalidatePath("/dashboard/transactions")
-
-    return {
-      success: true,
-      listing,
-      transaction,
-      dotloop: dotloopResult,
-    }
-  } catch (error) {
-    console.error("[AI Listing Intake] Create listing error:", error)
-    return handleError(error, "createListing")
-  }
-}
+/* ─────────────────────────────────────────────────────────────────────────────
+ * TOMBSTONE — `createListing(params: ListingIntakeData)` was REMOVED here.
+ *
+ * SURVIVOR: `createListingWithSellerContact` at
+ * app/actions/listings-kernel.ts:145 — the canonical listing-creation door, the
+ * one ListingCreateSheet and the FormWizard listing flow actually call.
+ *
+ * THE MERGE THAT UNBLOCKED THIS IS DONE. The previous note here (and on the
+ * orchestrator below) recorded, correctly, that this copy could NOT simply be
+ * deleted: alone among the three listing-creation paths it also opened the
+ * seller-side `transactions` row and created the transaction-provider container
+ * (the Dotloop loop, writing back `listings.dotloop_loop_id`) — so deleting it
+ * would have LOST capability rather than removed a duplicate, which is the one
+ * forbidden outcome. It named the unblocking work precisely: "fold the
+ * transaction-row + provider-container creation into
+ * `createListingWithSellerContact`". That fold is now made, at
+ * app/actions/listings-kernel.ts Step 4 of that function, corrections included
+ * (deal_type/status spelled as the live CHECK admits them, dotloop opened only
+ * when the brokerage's RESOLVED provider is dotloop, both steps non-fatal, and
+ * the loop-id write-back destructured).
+ *
+ * SO THE MERGE MOVED CAPABILITY *INTO* THE PRODUCT, not out of it. This copy had
+ * NO CALLER but `runCompleteListingIntake`, which had no caller either — meaning
+ * that for as long as both existed, EVERY listing the product actually created
+ * got a `listings` row and no deal row and no provider container. The doors that
+ * run now do all three.
+ *
+ * NOT MERGED, deliberately: this copy's `sellerId` brokerage-ownership check.
+ * The survivor does not take a caller-supplied seller id at all — it creates or
+ * attaches the seller contact itself from the caller's own tenant
+ * (createOrAttachSellerContact), so there is no foreign id to validate. A check
+ * against an input that cannot exist is not a behaviour to carry over.
+ * ───────────────────────────────────────────────────────────────────────────── */
 
 // ============================================
 // 9. AI PHOTO ORDERING OPTIMIZER — REMOVED
@@ -1164,146 +999,43 @@ export async function createListing(params: ListingIntakeData) {
  * ───────────────────────────────────────────────────────────────────────────── */
 
 // ============================================
-// 10. COMPLETE LISTING INTAKE WORKFLOW
+// 10. COMPLETE LISTING INTAKE WORKFLOW — REMOVED
 // ============================================
-/**
- * ─────────────────────────────────────────────────────────────────────────────
- * LEFT UNWIRED DELIBERATELY (orphan burn-down, Lane A). READ THIS BEFORE GIVING
- * IT A CALLER *OR* DELETING IT.
+/* ─────────────────────────────────────────────────────────────────────────────
+ * TOMBSTONE — `runCompleteListingIntake` was REMOVED (orphan census, category C).
  *
- * It has no caller anywhere in the tree, and neither building nor deleting it is
- * currently the right move:
+ * SURVIVOR: `createListingWithSellerContact` at
+ * app/actions/listings-kernel.ts:145.
  *
- * WHY NOT BUILD IT. Steps 1–5 are all individually reachable already: a previous
- * wave surfaced aiEnrichPropertyData, aiSuggestListPrice, aiCheckListingCompliance
- * and aiCheckDocumentStatus on ListingIntelligenceCard
- * (app/components/dashboard/listings/lifecycle/listing-intelligence-card.tsx),
- * and aiGenerateListingDescription on ListingDescriptionComposer beside it.
- * Step 6 CREATES A LISTING — and the product creates listings through the
- * FormWizard packet flow (app/dashboard/listings/listings-new-button.tsx →
- * app/actions/listings-kernel.ts:createListingWithSellerContact). Wiring this up
- * would put a SECOND listing-creation door next to that one, which is the exact
- * duplication this burn-down exists to remove.
- *
- * WHY NOT DELETE IT. Its only callee that nothing else calls is `createListing`
- * in this same file (above), and that function is NOT redundant: alone among the
- * three listing-creation paths it also opens the seller-side `transactions` row
- * and creates the transaction-provider container (the Dotloop loop, when the
- * brokerage's resolved provider is dotloop, writing back
- * listings.dotloop_loop_id). Neither `app/actions/listings.ts:createListing` nor
- * `listings-kernel.ts:createListingWithSellerContact` does either of those. So
- * deleting this orchestrator strands a genuinely-capable function, and deleting
- * both loses capability — which is the one forbidden outcome.
- *
- * WHAT WOULD UNBLOCK IT: fold the transaction-row + provider-container creation
- * into `createListingWithSellerContact` (the canonical door), at which point this
+ * THE RECORDED BLOCKER IS GONE, so the recorded verdict is executed rather than
+ * restated a third time. The note that stood here said, in as many words: "WHAT
+ * WOULD UNBLOCK IT: fold the transaction-row + provider-container creation into
+ * `createListingWithSellerContact` (the canonical door), at which point this
  * orchestrator and the local `createListing` can both go, with that function as
- * the named survivor. That is a listings-kernel change and belongs to whoever
- * owns app/actions/listings-kernel.ts.
+ * the named survivor." That fold is now made (listings-kernel.ts Step 4). Both
+ * are gone. The survivor is named.
  *
- * RE-VERIFIED THIS WAVE and the blocker STANDS, unchanged: `grep -n` for
- * `transactions` / `dotloop` over app/actions/listings-kernel.ts returns only the
- * tombstone at :748-757 naming lib/transactions/offer-bridge.ts as the transactions
- * writer for the offer-accepted trigger — the canonical door still opens no
- * seller-side transaction and no provider container. So `createListing` in this file
- * is still the only path that does both, and deleting this orchestrator would still
- * strand it. Not re-litigated; recorded as still true.
- * ─────────────────────────────────────────────────────────────────────────────
- */
-export async function runCompleteListingIntake(params: {
-  agentId: string
-  address: string
-  city: string
-  state: string
-  zipCode: string
-  sellerId: string
-  propertyType: (typeof PROPERTY_TYPES)[number]
-  hasHoa?: boolean
-  hasPool?: boolean
-}) {
-  try {
-    const agentCtx = await getAgentContext()
-    if (!agentCtx.isAuthenticated || !agentCtx.brokerageId) {
-      return { success: false, error: "Unauthorized" }
-    }
-    const brokerageId = agentCtx.brokerageId
-    // Identity is session-derived; ignore caller-supplied agentId
-    // NOT `?? ctx.userId` (m359). Everything this reaches is agents-class —
-    // ai_usage_log, brand_voice_profile, guardContent, the dotloop loop and
-    // aiGenerateListingDescription all key agents(id). The substitution only
-    // fired when the caller had no agents row, i.e. exactly when there was
-    // nothing for those queries to match anyway; it bought a wrong-class id in
-    // place of an honest refusal. This is the spelling test:identity-fallback
-    // could not see until m358.
-    const effectiveAgentId = agentCtx.agentId
-    if (!effectiveAgentId) return { success: false, error: "No agent profile for this user yet — finish account setup." }
-
-    // Step 1: Enrich property data
-    const enrichResult = await aiEnrichPropertyData(params.address, effectiveAgentId)
-    if (!enrichResult.success) return enrichResult
-
-    // Step 2: Get required forms
-    const formsResult = await aiGetRequiredForms({
-      state: params.state,
-      propertyType: params.propertyType,
-      transactionType: "standard",
-      hasHoa: params.hasHoa || false,
-      hasPool: params.hasPool || false,
-      isHistoric: false,
-      leadPaintYear: enrichResult.data?.yearBuilt,
-    })
-
-    // Step 3: Generate listing description
-    const descResult = await aiGenerateListingDescription({
-      agentId: effectiveAgentId,
-      propertyData: enrichResult.data,
-      style: "family",
-    })
-
-    // Step 4: Get pricing recommendation
-    const pricingResult = await aiSuggestListPrice({
-      agentId: effectiveAgentId,
-      propertyData: enrichResult.data,
-    })
-
-    // Step 5: Check compliance
-    const complianceResult = await aiCheckListingCompliance({
-      agentId: effectiveAgentId,
-      description: descResult.success ? descResult.descriptions?.mlsDescription || "" : "",
-      state: params.state,
-    })
-
-    // Step 6: Create the listing
-    const listingResult = await createListing({
-      agentId: effectiveAgentId,
-      brokerageId,
-      propertyAddress: params.address,
-      city: params.city,
-      state: params.state,
-      zipCode: params.zipCode,
-      propertyType: params.propertyType,
-      sellerId: params.sellerId,
-      listPrice: pricingResult.success ? pricingResult.pricing?.suggestedListPrice : undefined,
-      propertyDetails: enrichResult.data,
-    })
-
-    return {
-      success: true,
-      workflow: {
-        propertyData: enrichResult.data,
-        requiredForms: formsResult.success ? formsResult.forms : null,
-        descriptions: descResult.success ? descResult.descriptions : null,
-        pricing: pricingResult.success ? pricingResult.pricing : null,
-        compliance: complianceResult.success ? complianceResult.compliance : null,
-        listing: listingResult.success ? listingResult.listing : null,
-        dotloop: listingResult.success ? listingResult.dotloop : null,
-      },
-    }
-  } catch (error) {
-    console.error("[AI Listing Intake] Complete workflow error:", error)
-    return handleError(error, "runCompleteListingIntake")
-  }
-}
+ * NOTHING IS LOST, checked step by step against what this orchestrator did:
+ *   1. aiEnrichPropertyData      — reachable: ListingIntelligenceCard
+ *      (app/components/dashboard/listings/lifecycle/listing-intelligence-card.tsx)
+ *   2. aiGetRequiredForms        — DELETED IN THE SAME CHANGE, because this
+ *      orchestrator was its only caller. Survivor: lib/state-forms/registry.ts
+ *      getStateForms — all 50 states, no DEFAULT, and already the registry that
+ *      generateListingAgreement in this file uses. Its own tombstone is above.
+ *   3. aiGenerateListingDescription — reachable: ListingDescriptionComposer
+ *   4. aiSuggestListPrice        — reachable: ListingIntelligenceCard
+ *   5. aiCheckListingCompliance  — reachable: ListingIntelligenceCard
+ *   6. createListing (local)     — MERGED onto the survivor; see the tombstone above
+ * All five AI steps remain exported from this file and remain wired to the
+ * surfaces above. Only the uncalled orchestration of them is gone.
+ *
+ * AND WIRING IT WOULD HAVE BEEN WRONG, which is why it is deleted rather than
+ * given a caller: step 6 CREATES A LISTING, and the product creates listings
+ * through the FormWizard packet flow
+ * (app/dashboard/listings/listings-new-button.tsx → the survivor). Giving this a
+ * surface would have stood up a SECOND listing-creation door beside the real
+ * one — the exact duplication this burn-down exists to remove.
+ * ───────────────────────────────────────────────────────────────────────────── */
 
 // ============================================
 // WORKFLOW OS — generate listing agreement draft

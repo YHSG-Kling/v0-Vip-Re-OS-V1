@@ -5,7 +5,10 @@
  *
  * Ownership rules:
  *   - ONLY this file writes the dedup / merge decision to contacts.
- *   - ONLY this file writes contact_suppression_list via applyContactSuppressionState().
+ *   - contact_suppression_list is written by lib/kernel/compliance/check-suppression.ts
+ *     `addSuppression` — NOT by this file. The rule that used to stand here named
+ *     `applyContactSuppressionState()`, which had zero callers and has been deleted
+ *     as a duplicate (tombstone at COMMAND 14 below).
  *   - ONLY this file writes to lead_enrichment_queue for contact-triggered enrichment.
  *   - ONLY this file writes lead_deduplication_log rows.
  *   - Server actions call these commands — they do not duplicate the logic.
@@ -88,15 +91,10 @@ export interface DeduplicateResult {
   matchScore?: number
 }
 
-export interface SuppressionStateParams {
-  contactId: string
-  brokerageId: string
-  channel: "email" | "sms" | "phone" | "mail"
-  reason: string
-  source: string
-  email?: string | null
-  phone?: string | null
-}
+/* `SuppressionStateParams` was the input type of `applyContactSuppressionState`
+ * and went with it (tombstone at COMMAND 14). The live shape is the inline
+ * parameter object of `addSuppression`,
+ * lib/kernel/compliance/check-suppression.ts:263. */
 
 export interface CRMResult {
   success: boolean
@@ -1023,76 +1021,54 @@ export async function generateContactFollowupDraft(params: {
   return { success: true, data: { draftId: data.id } }
 }
 
-// ─── COMMAND 14: applyContactSuppressionState ────────────────────────────────
-/**
- * Applies a suppression state to a contact across one channel.
- * Writes to contact_suppression_list, updates the contact's opt-out flags,
- * and writes a consent event for audit.
+// ─── COMMAND 14: applyContactSuppressionState — REMOVED (duplicate) ──────────
+/* ─────────────────────────────────────────────────────────────────────────────
+ * TOMBSTONE — `applyContactSuppressionState` was DELETED as a DUPLICATE.
  *
- * Called by: unsubscribe handlers, SMS STOP processor, DNC ingestion, manual admin.
- */
-export async function applyContactSuppressionState(
-  params: SuppressionStateParams
-): Promise<CRMResult> {
-  const supabase = createServiceClient()
-  const now = new Date().toISOString()
-
-  // Write suppression list entry
-  await supabase.from("contact_suppression_list").insert({
-    brokerage_id:       params.brokerageId,
-    contact_id:         params.contactId,
-    email:              params.email ?? null,
-    phone:              params.phone ?? null,
-    channel:            params.channel,
-    suppression_reason: params.reason,
-    source:             params.source,
-    created_at:         now,
-  })
-
-  // Update contact opt-out flags
-  const updates: Record<string, unknown> = { updated_at: now }
-  if (params.channel === "email") {
-    updates.email_unsubscribed    = true
-    updates.email_unsubscribed_at = now
-    updates.email_opt_out         = true
-  } else if (params.channel === "sms") {
-    updates.sms_unsubscribed    = true
-    updates.sms_unsubscribed_at = now
-    updates.sms_opt_out         = true
-    updates.sms_unsubscribed    = true
-  } else if (params.channel === "phone") {
-    updates.call_stop_flag = true
-    updates.dnc_status     = true
-  } else if (params.channel === "mail") {
-    updates.direct_mail_opt_out = true
-  }
-
-  await supabase
-    .from("contacts")
-    .update(updates)
-    .eq("id", params.contactId)
-    .eq("brokerage_id", params.brokerageId)
-
-  // Consent event for audit
-  await supabase.from("contact_consent_events").insert({
-    contact_id:     params.contactId,
-    brokerage_id:   params.brokerageId,
-    consent_type:   params.channel === "email" ? "email_unsubscribe" : `${params.channel}_opt_out`,
-    consent_text:   `${params.source}: ${params.reason}`,
-    consent_source: params.source,
-    consented:      false,
-    created_at:     now,
-  })
-
-  // Lifecycle event
-  await supabase.from("lifecycle_events").insert({
-    entity_type:  "contact",
-    entity_id:    params.contactId,
-    event_type:   KernelEvent.CONTACT_SUPPRESSION_APPLIED,
-    brokerage_id: params.brokerageId,
-    created_at:   now,
-    metadata:     { channel: params.channel, reason: params.reason, source: params.source },
-  })
-
-  return { success: true }
-}
+ * SURVIVOR: `addSuppression` at lib/kernel/compliance/check-suppression.ts:263.
+ *
+ * It is the survivor because it is the one that RUNS. `applyContactSuppressionState`
+ * had ZERO callers: `grep -rn applyContactSuppressionState` over app/ lib/
+ * components/ scripts/ returned this definition, this file's header line, and the
+ * re-export in lib/kernel/index.ts — nothing invoked it, ever. `addSuppression`
+ * has three live callers (app/api/unsubscribe/route.ts, app/api/sms/inbound-optout/
+ * route.ts, lib/direct-mail/mail-unsubscribe.ts). The header rule at the top of
+ * this file — "ONLY this file writes contact_suppression_list via
+ * applyContactSuppressionState()" — was never true of the running product, and is
+ * corrected there.
+ *
+ * MERGED ONTO THE SURVIVOR BEFORE DELETING — this copy was the more CORRECT of
+ * the two on three counts, and all three were carried across:
+ *   1. `channel === 'mail'` → `contacts.direct_mail_opt_out`. The survivor had no
+ *      'mail' arm at all, so a direct-mail opt-out set no contact flag and the two
+ *      live mail senders (app/actions/ai-isa/engage-contact.ts:492/612,
+ *      app/api/cron/farm-mail-weekly) kept sending.
+ *   2. `channel === 'phone'` → `dnc_status` as well as `call_stop_flag`. The
+ *      survivor wrote only `call_stop_flag`. (The survivor additionally now writes
+ *      `phone_opt_out`, which NEITHER copy had and which lib/lead-intent/
+ *      lead-opt-out.ts and app/actions/ai-isa/process-opt-out.ts both key on.)
+ *   3. A per-channel `consent_type` instead of a two-way branch over a four-member
+ *      union. The survivor ledgered a MAIL opt-out and a PHONE/DNC request both as
+ *      'sms_stop'.
+ *
+ * NOT MERGED, deliberately and with the reason stated:
+ *   · `.eq('brokerage_id', …)` on the `contacts` UPDATE. The other predicate is
+ *     `.eq('id', …)` — the PRIMARY KEY, which already identifies exactly one row in
+ *     exactly one tenant. A second predicate cannot narrow a PK lookup; it can only
+ *     turn a legitimate opt-out into a zero-row miss when the caller's brokerageId
+ *     and the contact's disagree. The survivor instead SELECTS THE UPDATED ID BACK,
+ *     which is what actually catches a miss (a zero-row UPDATE is not an error).
+ *   · The raw `lifecycle_events` INSERT. It bypassed lib/events/event-helpers.ts —
+ *     the canonical emitter — so it wrote a row without the `source`/`dedupe_key`
+ *     shape that path stamps, and `KernelEvent.CONTACT_SUPPRESSION_APPLIED` has
+ *     ZERO consumers repo-wide (grep: this file and the enum declaration at
+ *     lib/kernel/events.ts:521, nothing else). Copying it across would have merged a
+ *     defect and added a write nothing reads. If an owner wants a suppression event,
+ *     it should be emitted through event-helpers, and that is a decision, not a gap.
+ *
+ * ALSO FIXED IN THE SURVIVOR AND PRESENT IN NEITHER COPY: both discarded all three
+ * write results and returned without checking them. supabase-js RESOLVES refusals,
+ * so a foreign-key violation on the suppression row read as success — which is how
+ * the unsubscribe endpoint came to report suppressions it had not performed. The
+ * survivor now returns AddSuppressionResult and every caller checks it.
+ * ───────────────────────────────────────────────────────────────────────────── */

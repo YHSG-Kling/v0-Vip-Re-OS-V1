@@ -218,13 +218,100 @@ export async function createListingWithSellerContact(params: {
     }
   }
 
+  // ── Step 4: the SELLER-SIDE DEAL and its provider container ────────────────
+  //
+  // MERGED IN from app/actions/ai-listing-intake.ts `createListing`, which was
+  // the ONLY listing-creation path in the product that did either of these — and
+  // which nothing called, because its only caller was the equally-uncalled
+  // `runCompleteListingIntake` orchestrator. Both are now deleted; this is the
+  // named survivor (see the tombstones there).
+  //
+  // WHAT THE PRODUCT WAS MISSING WHILE THAT CODE SAT UNREACHABLE: every listing
+  // created through the real doors — ListingCreateSheet and the FormWizard
+  // listing flow, which are the only doors — produced a `listings` row and
+  // NOTHING ELSE. No `transactions` row, so the seller side of the deal did not
+  // exist for the transaction pipeline, the coordinator surfaces or commission;
+  // and no transaction-provider container, so `listings.dotloop_loop_id` was
+  // never populated for a dotloop brokerage and documents had nowhere to land.
+  //
+  // NON-FATAL, same posture the merged code had: a listing that exists without
+  // its deal row is recoverable; a listing-creation flow that fails at the last
+  // step because a downstream insert was refused is not. Both failures are
+  // LOGGED rather than swallowed silently.
+  const supabase = await createClient()
+
+  let transaction: unknown = null
+  const { data: txRow, error: txError } = await supabase
+    .from("transactions")
+    .insert({
+      agent_id:          ctx.agentId,
+      brokerage_id:      ctx.brokerageId,
+      // contact_id is the primary in-house client; on a seller-side deal that is
+      // the seller. seller_contact_id is the same person in its role slot.
+      contact_id:        sellerResult.contactId,
+      seller_contact_id: sellerResult.contactId,
+      listing_id:        newListingId,
+      // Live schema: the column is deal_type (buyer|seller|dual) and status is a
+      // fixed CHECK set. The pre-merge spelling in the deleted copy had once been
+      // transaction_type/"pre_listing", neither of which the constraint admits —
+      // corrected there before the merge and carried across corrected.
+      deal_type:         "seller",
+      status:            "qualifying",
+      deal_name:         params.address, // NOT NULL on transactions
+      property_address:  params.address,
+    })
+    .select()
+    .maybeSingle()
+  if (txError) {
+    console.error("[createListingWithSellerContact] seller transaction insert failed (non-fatal):", txError.message)
+  } else {
+    transaction = txRow
+  }
+
+  // The provider container at intake is PROVIDER-SPECIFIC. Do NOT assume
+  // dotloop: only open a loop when the brokerage's resolved provider is dotloop.
+  // Other providers create their container later, at send-for-signature time.
+  let dotloop: unknown = null
+  try {
+    const { resolveTransactionProvider } = await import("@/lib/integrations/transaction-providers/resolve-transaction-provider")
+    const resolvedProvider = await resolveTransactionProvider({
+      agentUserId: ctx.userId,
+      brokerageId: ctx.brokerageId,
+    })
+    if (resolvedProvider?.provider === "dotloop") {
+      const { createOrPullDotloop } = await import("@/app/actions/ai-listing-intake")
+      const loop = await createOrPullDotloop({
+        agentId:         ctx.agentId,
+        listingId:       newListingId,
+        propertyAddress: params.address,
+        sellerId:        sellerResult.contactId ?? "",
+        transactionType: "listing",
+      })
+      dotloop = loop
+      if (loop.success && loop.loopId) {
+        const { error: loopWriteError } = await supabase
+          .from("listings")
+          .update({ dotloop_loop_id: loop.loopId })
+          .eq("id", newListingId)
+        if (loopWriteError) {
+          console.error("[createListingWithSellerContact] dotloop_loop_id write-back refused:", loopWriteError.message)
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[createListingWithSellerContact] provider container step failed (non-fatal):", err)
+  }
+
   revalidatePath("/dashboard/listings")
+  revalidatePath("/dashboard/transactions")
 
   return {
     success:  true,
     listing:  listingResult.listing,
     listingId: newListingId,
     sellerCreated: sellerResult.created,
+    transaction,
+    dotloop,
   }
 }
 

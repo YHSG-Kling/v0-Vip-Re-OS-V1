@@ -102,14 +102,13 @@ export {
   archiveContactRecord,
   loadContactWorkspace,
   generateContactFollowupDraft,
-  applyContactSuppressionState,
+
 } from "./crm"
 export type {
   ContactSourceAttribution,
   CreateContactParams,
   CRMContactResult,
   DeduplicateResult,
-  SuppressionStateParams,
   CRMResult,
 } from "./crm"
 

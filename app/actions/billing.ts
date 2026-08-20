@@ -5,6 +5,7 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { KernelEvent } from "@/lib/kernel/events"
 import { toPlanTier } from "@/lib/billing/plan-tier"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
+import { currentBillingPeriodLabel } from "@/lib/usage/period"
 
 // TRUE ADMIN GATE, brokerage-wide MONEY (billing): derived from THE finance
 // roster (admin/broker/broker_owner — mirrors public.is_brokerage_finance_admin,
@@ -239,10 +240,18 @@ export async function getBillingUsage(_brokerageId?: string) {
   if (!ctx.isAuthenticated || !ctx.brokerageId) return null
   const supabase = await createClient()
 
+  // PERIOD KEY — the same UTC billing month the writer stamps
+  // (lib/kernel/billing.ts recordUsageEvent, via lib/usage/period.ts).
+  // "newest row by recorded_at" is not the same question as "this month's
+  // usage": on the first day of a new month, before any event is recorded, the
+  // unkeyed read hands the Active Agents / AI Calls / Storage / Video bars LAST
+  // month's totals and labels them as current. Now an unstarted month reads as
+  // an unstarted month.
   const { data: usage, error } = await supabase
     .from("billing_usage")
     .select("*")
     .eq("brokerage_id", ctx.brokerageId)
+    .eq("period_label", currentBillingPeriodLabel())
     .order("recorded_at", { ascending: false })
     .limit(1)
     .maybeSingle()

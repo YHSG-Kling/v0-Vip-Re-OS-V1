@@ -404,8 +404,21 @@ console.log("\n═══ 7. The cluster m358 made visible ═══")
   const li = code(read("app/actions/ai-listing-intake.ts"))
   ok("ai-listing-intake no longer substitutes ctx.userId at any of its four sites",
     !/\?\?\s*(?:ctx|agentCtx)\.userId/.test(li))
-  ok("...and each of the four refuses instead, so a user without an agents row is\n    told to finish setup rather than handed a silently empty listing intake",
-    (li.match(/No agent profile for this user yet — finish account setup\./g) ?? []).length === 4)
+  // FOUR became TWO, and not by weakening the rule. `createListing` and
+  // `runCompleteListingIntake` in this file were DELETED as duplicates (their
+  // survivor is app/actions/listings-kernel.ts createListingWithSellerContact),
+  // and each carried one of the four refusal sites. The remaining two are
+  // asserted here; the survivor is asserted below, so no site went unwatched.
+  ok("...and each of the remaining two refuses instead, so a user without an agents\n    row is told to finish setup rather than handed a silently empty listing intake",
+    (li.match(/No agent profile for this user yet — finish account setup\./g) ?? []).length === 2)
+  // THE SURVIVOR MUST REFUSE TOO — otherwise the merge would have moved the
+  // defect instead of the capability. resolveCallerContext returns agentId
+  // NULLABLE (broker/admin with no agents row), and lib/kernel/listings.ts
+  // createListingRecord is the insert it feeds.
+  ok("...and the survivor refuses a null agents id rather than inserting one —\n    createListingRecord validates input.agentId as a uuid before the insert",
+    /if \(!isValidUUID\(input\.agentId\)\)\s*return \{ success: false, error: "Invalid agent ID" \}/.test(
+      code(read("lib/kernel/listings.ts")),
+    ))
 }
 
 console.log("\n═══ 8. The compliance + approval log kept the wrong rows ═══")

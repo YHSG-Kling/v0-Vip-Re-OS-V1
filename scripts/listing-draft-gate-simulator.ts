@@ -93,7 +93,29 @@ console.log("\n── a new listing opens as a DRAFT, never live ──")
     !/lifecycle_stage:\s*"LISTING_AGREEMENT_INITIATED",\s*\n\s*status:\s*"active"/.test(SERVICE))
 
   // The writer that was right before this change must stay right.
-  check("the AI intake path still opens draft too", /status:\s*"draft"/.test(INTAKE))
+  //
+  // IT MOVED. This used to assert `status: "draft"` inside
+  // app/actions/ai-listing-intake.ts, whose local `createListing` was the third
+  // listing-creation path. That function and its only caller
+  // (`runCompleteListingIntake`) were both DELETED as duplicates — neither had
+  // any caller, so the "AI intake path" opened no listings at all, draft or
+  // otherwise. Survivor: app/actions/listings-kernel.ts
+  // `createListingWithSellerContact` → lib/kernel/listings.ts
+  // `createListingRecord`, which is the KERNEL insert already proven draft two
+  // checks above.
+  //
+  // ASSERTED AS AN ABSENCE, which is the honest form now: the intake file must
+  // no longer create a listing at all. Re-checking `status: "draft"` there would
+  // pass on any stray literal and prove nothing.
+  check("the AI intake path no longer opens listings at all (merged onto listings-kernel)",
+    !/\.from\("listings"\)\s*\n?\s*\.insert\(/.test(INTAKE))
+  // Read RAW, not through src(): src() strips comments, and a tombstone IS a
+  // comment. A deletion whose survivor is not named at the deletion site is how
+  // the next reader concludes the capability was dropped.
+  const INTAKE_RAW = readFileSync("app/actions/ai-listing-intake.ts", "utf8")
+  check("…and the tombstone names the survivor",
+    /createListingWithSellerContact/.test(INTAKE_RAW) &&
+    /app\/actions\/listings-kernel\.ts/.test(INTAKE_RAW))
 
   // Going live is a DIFFERENT moment and must keep its 'active'.
   check("launch still publishes the listing for real",

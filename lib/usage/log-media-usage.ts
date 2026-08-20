@@ -106,4 +106,40 @@ export async function logMediaUsage(params: LogMediaUsageParams): Promise<void> 
       })
       .then(() => {}, (e) => console.warn("[usage] counter insert failed", e))
   }
+
+  // 3. THE BILLING METER — `billing_usage.video_minutes`.
+  //
+  // WHY A THIRD WRITE AND NOT A JOIN OFF THE TWO ABOVE: `billing_usage` is a
+  // DIFFERENT rail from `usage_counters`, with different readers, and it had NO
+  // WRITER AT ALL. Its two live surfaces — the tenant's usage bars
+  // (app/settings/billing/usage-section.tsx via app/actions/billing.ts
+  // getBillingUsage) and the overage projection
+  // (app/components/features/admin/overage-calculator.tsx via
+  // calculateOverageExposure) — read five columns nothing in the product ever
+  // wrote, so both showed zero for every tenant, forever. An overage exposure
+  // computed from an unwritten meter reads as "no exposure", which is the one
+  // wrong answer that costs money.
+  //
+  // Only `video_minutes` maps: it is the one media metric `billing_usage` has a
+  // column for (live schema: ai_calls_count, video_minutes, storage_bytes,
+  // scraper_calls, active_agents). The avatar/TTS/voice metrics stay on
+  // usage_counters alone rather than being silently folded into a column that
+  // does not mean them.
+  //
+  // `units` is a DELTA. Never restate a running total here.
+  if (params.metric === "video_minutes") {
+    const { recordUsageEvent } = await import("@/lib/kernel/billing")
+    const metered = await recordUsageEvent({
+      brokerageId: params.brokerageId,
+      metric: "video_minutes",
+      units: Math.ceil(params.quantity),
+    })
+    // Same posture as the two writes above: usage logging is observability and
+    // must not break the caller. But the refusal is REPORTED rather than
+    // discarded — a meter that silently stops recording is what produced the
+    // zeroed surfaces in the first place.
+    if (!metered.success) {
+      console.warn("[usage] billing_usage video_minutes not recorded:", metered.error)
+    }
+  }
 }
