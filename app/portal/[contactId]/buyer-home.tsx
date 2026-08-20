@@ -190,7 +190,7 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
     // milestones fire (LISTING_UNDER_CONTRACT, OFFER_ACCEPTED, etc.)
     supabase
       .from("transparency_updates")
-      .select("id, title, plain_language_summary, message, next_step, next_step_date, responsible_party, responsible_party_name, update_type, is_visible_to_client, created_at, transaction_id")
+      .select("id, title, plain_language_summary, message, next_step, next_step_date, responsible_party, responsible_party_name, update_type, is_visible_to_client, created_at, transaction_id, metadata")
       .eq("contact_id", contactId)
       .eq("is_visible_to_client", true)
       .order("created_at", { ascending: false })

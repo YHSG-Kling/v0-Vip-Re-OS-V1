@@ -22,19 +22,26 @@
 // payload to render.
 //
 // And it does NOT print "welcome package sent" as a slogan. `ensureClientWelcome`
-// (lib/kernel/client-welcome.ts) does not send: it PROPOSES one gated draft on
-// `agent_client_messages`, and that table's status column is the only record of
-// what actually happened. So each row prints the ledger's own answer — sent (with
-// the timestamp), approved-but-not-yet-sent, drafted-and-waiting, failed, or
-// nothing on record at all. A handoff with no welcome row says so plainly, which
-// is the point: an unverified send is not worth more than an honest blank.
+// (lib/kernel/client-welcome.ts) records what happened on `agent_client_messages`,
+// and that table's status column is the only record of it. So each row prints the
+// ledger's own answer — sent (with the timestamp), approved-but-not-yet-sent,
+// drafted-and-waiting, failed, or nothing on record at all. A handoff with no
+// welcome row says so plainly, which is the point: an unverified send is not
+// worth more than an honest blank.
+//
+// 'sent' HERE MEANS A PROVIDER ACCEPTED IT. Per the owner ruling the welcome now
+// goes out from the assigned agent through the canonical governed egress, and the
+// ledger is stamped 'sent' only on a provider success (evidence line on
+// `rationale`). "Drafted and waiting" is what a send HELD by the manager-autonomy
+// gate looks like — the broker's posture asked for a human on this one.
 //
 // NOTE THAT AN AGENT CANNOT APPROVE THE DRAFT THEMSELVES. `client_message`
 // approval lives only in the admin Command Center (app/actions/command-center.ts
 // gates it to admin/broker/broker_owner) — it is NOT in the /approvals queue
-// (lib/kernel/approval-queue-aggregator.ts carries no client_message lane). So a
-// drafted-but-unsent welcome is reported as waiting on the brokerage, with no
-// link offered to a page this reader cannot act on.
+// (lib/kernel/approval-queue-aggregator.ts carries no client_message lane). That
+// is exactly why the default path no longer depends on a per-message approval the
+// assigned agent cannot give: a drafted-but-unsent welcome is still reported as
+// waiting on the brokerage, with no link offered to a page this reader cannot act on.
 //
 // Acknowledging is NOT claiming. The contact is already theirs; this records
 // that a human has seen the handoff.

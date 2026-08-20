@@ -280,7 +280,16 @@ export async function sendEmail(params: SendEmailParams): Promise<SendEmailResul
         textBody: params.text,
       })
       if (result.success) {
-        return { success: true, status: "sent", provider: result.provider }
+        // The provider's OWN reference travels back. It was being dropped here,
+        // so an agent-mailbox send was the one lane that produced no evidence at
+        // all — a caller could record "sent" and hold nothing it could take to
+        // Gmail/Outlook to check. The SendGrid tier below already returns one.
+        return {
+          success: true,
+          status: "sent",
+          provider: result.provider,
+          providerMessageId: result.messageId ?? null,
+        }
       }
       // Only fall through on no_personal_account — other failures should bubble up
       if (result.reason !== "no_personal_account") {

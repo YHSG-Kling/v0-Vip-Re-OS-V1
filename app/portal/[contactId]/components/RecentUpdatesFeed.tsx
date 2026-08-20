@@ -27,6 +27,24 @@ const SHAREABLE_UPDATE_TYPES = new Set(["listing_marketing_week", "listing_launc
 // this surface).
 const MEETING_RECAP_UPDATE_TYPE = "meeting_recap"
 
+// THE WELCOME PACKAGE (owner ruling): the personal video from the assigned agent
+// must be visible "in the emila and in the portal". The email half rides in the
+// send; THIS is the portal half. lib/kernel/client-welcome.ts writes the same
+// transparency_updates card every other approved agent message uses and puts the
+// resolved, bucket-hosted URL on metadata.welcome_video_url.
+//
+// `welcome_video_url` is null whenever the agent had no finished personal video,
+// and the card then renders with NO video affordance at all — never a "coming
+// soon" tile, which would imply a recording the agent never made.
+const WELCOME_UPDATE_TYPE = "client_welcome"
+
+/** The playable welcome clip on a card's metadata, or null. */
+function welcomeVideoUrl(u: RecentUpdate): string | null {
+  const m = u.metadata as Record<string, unknown> | null | undefined
+  const url = m && typeof m.welcome_video_url === "string" ? m.welcome_video_url.trim() : ""
+  return url ? url : null
+}
+
 export interface RecentUpdate {
   id: string
   title: string | null
@@ -41,6 +59,8 @@ export interface RecentUpdate {
   created_at: string | null
   /** Optional cross-link to a transaction the agent wired the update to */
   transaction_id: string | null
+  /** transparency_updates.metadata — carries welcome_video_url on the welcome card. */
+  metadata?: Record<string, unknown> | null
 }
 
 interface Props {
@@ -106,6 +126,30 @@ export function RecentUpdatesFeed({ contactId, updates, limit = 4, hideWhenEmpty
                 </span>
               )}
             </div>
+            {/* The agent's personal welcome video — rendered only when a real
+                playable clip exists on the card. */}
+            {u.update_type === WELCOME_UPDATE_TYPE && welcomeVideoUrl(u) && (
+              <div className="pt-2">
+                <video
+                  controls
+                  poster={
+                    typeof (u.metadata as Record<string, unknown> | null)?.welcome_video_thumbnail_url === "string"
+                      ? ((u.metadata as Record<string, unknown>).welcome_video_thumbnail_url as string)
+                      : undefined
+                  }
+                  className="w-full max-w-md rounded-lg border"
+                >
+                  <source src={welcomeVideoUrl(u) as string} type="video/mp4" />
+                  <a href={welcomeVideoUrl(u) as string} className="text-blue-700 hover:underline">
+                    Watch the video from your agent
+                  </a>
+                </video>
+                <p className="text-[11px] text-muted-foreground pt-1 flex items-center gap-1">
+                  <Video className="h-3 w-3" />
+                  A personal hello from your agent
+                </p>
+              </div>
+            )}
             {u.next_step && (
               <div className="text-xs flex items-center gap-1 pt-1">
                 <ArrowRight className="h-3 w-3 text-blue-500" />

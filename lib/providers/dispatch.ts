@@ -301,6 +301,23 @@ export interface DispatchEmailParams extends DispatchActorContext {
    * Always set this explicitly when the caller knows the intent.
    */
   channelPurpose?: 'conversation' | 'campaign' | 'update' | 'transactional'
+  /**
+   * SEND AS THIS AGENT (users.id) — deliver through their own connected
+   * Gmail/Outlook mailbox when one exists, so the message arrives FROM the
+   * agent and the client can simply hit reply.
+   *
+   * `lib/providers/messaging:sendEmail` has supported this since it was written
+   * (`agentUserId`, tier 1, falling through to SendGrid on `no_personal_account`)
+   * — but this dispatcher NEVER PASSED IT. So the one canonical governed egress
+   * could not produce an agent-identity send at all: every dispatchEmail landed
+   * on the tenant/platform from-address no matter whose message it was.
+   *
+   * OPT-IN, not inferred from `userId`. A newsletter or bulk campaign that
+   * happens to carry an actor's userId must NOT start leaving that person's
+   * personal mailbox; only a caller that means "this is a 1:1 message from this
+   * human" sets it.
+   */
+  sendAsAgentUserId?: string
   metadata?: Record<string, unknown>
 }
 
@@ -448,33 +465,32 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
 
   let result: DispatchResult
 
-  if (providerKey === "sendgrid") {
+  // ONE provider call for both branches. `providerKey` still records which
+  // provider the cascade selected; the SMTP-relay branch is not wired yet and
+  // falls through to the same sender, so duplicating the call only made it
+  // possible for the two copies to drift (and one of them already had).
+  //
+  // `agentUserId` is what makes an agent-identity send possible at all — see
+  // DispatchEmailParams.sendAsAgentUserId. `raw.provider` is the provider that
+  // ACTUALLY sent (gmail / outlook / sendgrid), which is not necessarily the one
+  // the cascade selected, so it wins in the reported providerKey.
+  {
     const raw = await messagingSendEmail({
-      from:    params.from,
-      to:      params.to,
-      subject: params.subject,
-      html:    assembled.html,
-      text:    assembled.text,
+      from:        params.from,
+      to:          params.to,
+      subject:     params.subject,
+      html:        assembled.html,
+      text:        assembled.text,
+      agentUserId: params.sendAsAgentUserId,
     })
     result = {
       success: raw.success,
-      providerKey,
-      error: raw.error,
-      budgetWarning: emailBudget.warning,
-    }
-  } else {
-    // Future: SMTP relay via global_settings (smtp_host / smtp_port / smtp_username / smtp_password)
-    // For now fall through to sendgrid default until SMTP relay is wired
-    const raw = await messagingSendEmail({
-      from:    params.from,
-      to:      params.to,
-      subject: params.subject,
-      html:    assembled.html,
-      text:    assembled.text,
-    })
-    result = {
-      success: raw.success,
-      providerKey,
+      providerKey: raw.provider ?? providerKey,
+      // THE EVIDENCE OF A SEND. This was dropped on the floor: the email branch
+      // returned no messageId at all, so no caller could ever record WHICH
+      // message the provider accepted — the SMS and direct-mail branches both
+      // carry their provider reference and this one did not.
+      messageId: raw.providerMessageId ?? undefined,
       error: raw.error,
       budgetWarning: emailBudget.warning,
     }
@@ -498,6 +514,12 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
       to: params.to,
       subject: params.subject,
       provider_key: providerKey,
+      // The provider that ACTUALLY carried it. When the agent's own mailbox
+      // took the send this is 'gmail'/'outlook' and no SendGrid quota was
+      // spent — the cost row above is still keyed to the resolved vendor so the
+      // ledger's vocabulary stays stable, and this records the truth beside it.
+      sending_provider: result.providerKey,
+      provider_message_id: result.messageId ?? null,
       contact_id: params.contactId,
       ...(params.metadata ?? {}),
     },

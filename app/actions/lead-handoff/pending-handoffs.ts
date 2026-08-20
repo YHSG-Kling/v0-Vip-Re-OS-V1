@@ -36,14 +36,26 @@
 //
 // The ruling says the heads-up mentions the welcome package. This module
 // REFUSES to assert a send it has not seen. `ensureClientWelcome`
-// (lib/kernel/client-welcome.ts) does NOT send anything: it PROPOSES one gated
-// draft on `agent_client_messages` via proposeClientMessage, tagged
+// (lib/kernel/client-welcome.ts) writes exactly one row on
+// `agent_client_messages` via proposeClientMessage, tagged
 // `WELCOME_RATIONALE_TAG` — imported here so the reader and the writer can never
 // drift apart. That table carries the real lifecycle
 // (status proposed|approved|sent|rejected|failed + sent_at, m189), and it is the
 // ONLY evidence a welcome was ever produced. So the state reported per contact
 // is whatever that ledger actually says, including "none_on_record" when there
 // is no row at all. Nothing here prints "sent" unless `status = 'sent'`.
+//
+// AND `status = 'sent'` NOW MEANS A PROVIDER ACCEPTED IT. Per the owner ruling
+// ("the welcome package is getting an email from the assigned agent…"), the
+// welcome SENDS: ensureClientWelcome dispatches it through the canonical
+// governed egress (lib/providers/dispatch dispatchEmail) as an autonomous
+// manager send, and flips this row to 'sent' — with the provider key and
+// provider message id appended to `rationale` as the evidence line — ONLY when
+// `dispatchEmail` returns success. A refusal writes 'failed' + send_error; a
+// send HELD by the manager-autonomy gate leaves the row 'proposed', which is
+// this surface's "drafted, waiting on the brokerage" state and is still the
+// truth. So the states below did not change — what changed is that the happy
+// one is now reachable.
 //
 // EVERY EXPORT IN A "use server" FILE IS A PUBLIC HTTP ENDPOINT. The one export
 // below takes NO caller-supplied scope: identity, brokerage and agents row are
