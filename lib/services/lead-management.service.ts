@@ -12,6 +12,7 @@ import {
 } from "@/lib/lead-scoring/behavioral-events"
 import type { StandardTimeline } from "@/constants/crm-standards"
 import { countStrongSellerSignals } from "@/lib/lead-governance/seller-signal-strength"
+import { readPreApproval } from "@/lib/leads/pre-approval"
 
 /** Points contributed by `lead_intelligence.timeline` to the intent score (0-40). */
 const TIMELINE_INTENT_POINTS: Record<StandardTimeline, number> = {
@@ -501,7 +502,19 @@ function calculateIntentScore(record: any, table: string): number {
   // populated at all. Mapped onto the column that exists; the old "in_process" branch
   // is DELETED rather than guessed at, because no column carries that state — inventing
   // a value for it would be inventing a score.
-  if (intelligence?.pre_approved === true) score += 30
+  //
+  // WAVE 14 — the branch could still never fire: the column's sole writer
+  // (app/actions/lead-intelligence.ts updateIntelligenceProfile) did not name it, so
+  // `pre_approved` was writerless and this +30 was 30 points the scale advertised and
+  // never awarded. The writer now derives it, and this reader now asks the SAME
+  // reading (lib/leads/pre-approval.ts) of the record's OWN financing fact —
+  // `lender_status`, which has four live writers — rather than depending solely on an
+  // enrichment row that a contact captured from a web form legitimately does not have.
+  // Two spellings of one idea are a defect (CLAUDE.md §6); this is the merge.
+  const financing = readPreApproval({
+    lenderStatus: (record as { lender_status?: string | null })?.lender_status ?? null,
+  })
+  if (financing.preApproved || intelligence?.pre_approved === true) score += 30
 
   if (table === "contacts") {
     // Budget alignment

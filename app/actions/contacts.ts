@@ -16,6 +16,55 @@
  *   - contacts.source, source_family, source_channel, source_subtype — all exist
  *   - activities table (not activity_log) for notes/timeline
  *   - lead_enrichment_queue for enrichment pipeline
+ *
+ * ─── TOMBSTONE (wave 14) — the /api/contacts HTTP twins ──────────────────────
+ * Five unreferenced route files duplicated the functions below and were retired
+ * here. Every one of them had ZERO callers in the tree (no fetch, no
+ * `${baseUrl}/api/…` self-call, not in vercel.json crons, not in
+ * lib/kernel/cron-dispatch.ts) and none is a webhook or a public/token-gated
+ * door — they were session-auth'd CRM verbs behind the same login as this file.
+ *
+ *   app/api/contacts/list/route.ts          GET    → getContacts()        :90
+ *   app/api/contacts/[contactId]/route.ts   GET    → getContactById()     :166
+ *                                           DELETE → archiveContact()     :381
+ *   app/api/contacts/create/route.ts        POST   → createContact()      :209
+ *   app/api/contacts/update/route.ts        PUT    → updateContact()      :307
+ *   app/api/contacts/delete/route.ts        DELETE → archiveContact()     :381
+ *
+ * What was MERGED before they went (nothing else was load-bearing):
+ *   · /api/contacts/delete wrote an `activities` row on removal; this lane wrote
+ *     only lifecycle_events, which the CRM timeline never reads. That write is
+ *     now in lib/kernel/crm.ts:archiveContactRecord — see the ABSORBED note
+ *     there. It also carried the fact that a contact's portal auth user SURVIVES
+ *     the archive (`contact_user_id`); that is recorded too.
+ *
+ * What was deliberately NOT merged, and why:
+ *   · /api/contacts/delete did NOT hard-delete (an earlier census said it did —
+ *     re-read it: it stamped `deleted_at`, same as this lane). There was no
+ *     hard-vs-soft gap to resolve.
+ *   · /api/contacts/create's `["broker","admin","agent"]` role list is NARROWER
+ *     than the live roster (CLAUDE.md §4 — broker_admin, broker_owner, team_lead
+ *     are all missing from it) and it required `contact_type`, `contact_persona`
+ *     and `timeline`, then threw all three away without passing them to the
+ *     writer. A validation that discards what it validates is a defect, not a
+ *     capability.
+ *   · /api/contacts/update could never succeed: it passed `user.id` (users.id)
+ *     as `agentId` into lib/services/contact-management.service.ts:updateContact,
+ *     which filters `.eq("agent_id", …)`. agents.id and users.id are DISJOINT
+ *     (CLAUDE.md §3), so ownership never matched and every call returned
+ *     NotFoundError before reaching its login-provisioning branch. That branch
+ *     (auth.admin.createUser on qualification) was also written against the
+ *     COOKIE client, which has no admin rights. Contact-login provisioning lives
+ *     in app/actions/portal-invites.ts:createPortalInviteForContact, already
+ *     fired from createContact() below.
+ *   · /api/contacts/list scoped `.eq("agent_id", …)` unconditionally, so a broker
+ *     saw only their own contacts through it. getContacts() applies the agent
+ *     predicate only for userType "agent", and adds search + pagination.
+ *
+ * NOT retired: app/api/contacts/analytics/route.ts. It has no duplicate here —
+ * no function in this file computes by_type / by_persona / by_status /
+ * by_timeline / conversion_rate, and nothing else in the tree does either. Per
+ * the orphan doctrine that is a BUILD (give it a reader), not a delete.
  */
 
 import { createClient } from "@/lib/supabase/server"

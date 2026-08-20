@@ -1327,7 +1327,7 @@ export async function generateVideoFromScript(params: {
       // read is not read as "no such script".
       const { data: scriptRow, error: scriptReadError } = await supabase
         .from("video_scripts_library")
-        .select("id, brokerage_id, script_content, title")
+        .select("id, brokerage_id, script_content, title, approval_status")
         .eq("id", params.scriptId)
         .maybeSingle()
       if (scriptReadError) {
@@ -1336,6 +1336,35 @@ export async function generateVideoFromScript(params: {
       if (!scriptRow) return { success: false, error: "Script not found" }
       if (scriptRow.brokerage_id !== auth.brokerageId) {
         return { success: false, error: "Forbidden" }
+      }
+
+      // ── THE HOLD, READ AT THE ROW ITSELF ──────────────────────────────────
+      //
+      // OWNER RULING (the refinement): "after the script is run then hold up
+      // the video creation if still have a big red flag needed for a human."
+      //
+      // A hard Fair Housing finding parks the script at
+      // approval_status='pending_review' (lib/video/script-compliance.ts
+      // escalateScriptToHumanReview) and a reviewer's "no" parks it at
+      // 'rejected'. THIS FUNCTION USED TO RENDER EITHER OF THEM: it selected
+      // script_content and title and never looked at the one column that says
+      // whether a person had cleared it.
+      //
+      // createVideoProject below now runs the shared gate too and would catch
+      // this by content match, but the check belongs at the reader that names
+      // the row: a script this path is TOLD is held must be refused here, with
+      // the reason, rather than being refused three frames deeper by a text
+      // comparison. 'draft' and 'approved' both render — 'draft' is the agent's
+      // own shelf and has never been a hold.
+      const scriptApproval = String(scriptRow.approval_status ?? "draft")
+      if (scriptApproval === "pending_review" || scriptApproval === "rejected") {
+        return {
+          success: false,
+          complianceHold: true,
+          error: scriptApproval === "rejected"
+            ? "Compliance HOLD: a reviewer rejected this script, so it cannot be turned into a video. Edit it and generate a new one."
+            : "Compliance HOLD: this script is waiting on a human compliance review (Marketing Approvals). It cannot be rendered until someone approves it.",
+        }
       }
       const storedScript = (scriptRow.script_content ?? "").trim()
       if (!storedScript) {

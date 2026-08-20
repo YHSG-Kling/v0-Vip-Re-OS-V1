@@ -616,6 +616,21 @@ export default function VideoCreatePage() {
       const result = await response.json()
 
       if (!response.ok) {
+        // ── A COMPLIANCE HOLD IS NOT A RENDER FAILURE ───────────────────────
+        // /api/did/generate-video answers 422 + compliance_hold when a hard
+        // Fair Housing finding (or a script that could not be checked at all)
+        // holds the video for a human. The route has already stamped the
+        // project compliance_status='needs_review' / approval_status=
+        // 'pending_review', which is what puts it in Marketing Approvals —
+        // overwriting status='failed' here would dress a hold up as a broken
+        // render and tell the agent to retry something a person has to clear.
+        if (result?.compliance_hold) {
+          const lines: string[] = Array.isArray(result.violations) ? result.violations : []
+          throw new Error(
+            [result.error, ...lines.slice(1)].filter(Boolean).join("\n") ||
+              "This video is held for human compliance review.",
+          )
+        }
         // Update project status on failure
         await supabase
           .from("ai_video_projects")

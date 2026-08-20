@@ -1,7 +1,6 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { getListingsService as getListings, createListingService as createListing } from "@/lib/application/listings"
 import {
   scheduleListingAppointmentService,
   updateListingStageService,
@@ -21,8 +20,27 @@ import {
   scheduleClosingGift,
 } from "@/lib/application/listing-lifecycle"
 
-// Re-exports moved to direct imports from listings.ts
-export { getListings, createListing }
+// TOMBSTONE — `export { getListings, createListing }` was REMOVED here.
+//
+// This file is `"use server"`, so those two lines were not re-exports: they were
+// PUBLIC HTTP ENDPOINTS. And they aliased the RAW lib-layer services
+// (`getListingsService` / `createListingService`), which take their tenant from a
+// PARAMETER — so a browser could POST `{ brokerageId: "<any uuid>" }` and name the
+// tenant it wanted, the IDOR shape CLAUDE.md §4 names. The gated survivors had
+// already been built and this door bypassed both of them:
+//
+//   getListings   → app/actions/listings.ts:62 — session-derived tenant via
+//                   getAgentContext, agent id may only NARROW, and only for a
+//                   broker/admin inside their own tenant
+//   createListing → app/actions/listings.ts:134 — stamps the session's brokerage
+//                   on the row (the adjacent fix noted in
+//                   lib/dashboard/data-survivors.ts:103, which recorded the same
+//                   defect as already merged onto that survivor)
+//
+// app/actions/index.ts:106-113 already exports BOTH names from "./listings", so
+// nothing imported them from here and no caller changes. The comment these lines
+// carried — "Re-exports moved to direct imports from listings.ts" — says the move
+// happened; only the deletion was missed.
 
 // =====================================================
 // LISTING LIFECYCLE SERVER ACTIONS

@@ -49,54 +49,53 @@ function assertISARole(userType: string): void {
 
 // ─── READ ─────────────────────────────────────────────────────────────────────
 
-export async function getLeads(filters?: {
-  lifecycle_state?: string
-  lead_type?: string
-  source?: string
-  urgency_level?: string
-  assigned_agent_id?: string
-  ai_isa_owner?: boolean
-  minimum_viable_for_isa?: boolean
-  limit?: number
-}) {
-  try {
-    const { brokerageId, userType } = await getAgentContext()
-    assertISARole(userType)
-
-    if (!brokerageId) return { success: true, leads: [] }
-
-    const supabase = await createClient()
-    let query = supabase
-      .from("leads")
-      .select(
-        `id, brokerage_id, agent_id, first_name, last_name, email, phone,
-         lead_score, lifecycle_state, lead_type, lead_stage, source,
-         ai_isa_owner, ai_outreach_paused, tcpa_consent, preferred_channel,
-         minimum_viable_for_isa, call_stop_flag, motivation_type, urgency_level,
-         last_activity_at, last_contacted_at, stage_entered_at, days_in_stage,
-         contact_id, is_active, created_at, updated_at, tags, notes, status`
-      )
-      .eq("brokerage_id", brokerageId)
-      .eq("is_active", true)
-      .order("lead_score", { ascending: false, nullsFirst: false })
-
-    if (filters?.lifecycle_state) query = query.eq("lifecycle_state", filters.lifecycle_state)
-    if (filters?.lead_type) query = query.eq("lead_type", filters.lead_type)
-    if (filters?.source) query = query.eq("source", filters.source)
-    if (filters?.urgency_level) query = query.eq("urgency_level", filters.urgency_level)
-    if (filters?.assigned_agent_id) query = query.eq("agent_id", filters.assigned_agent_id)
-    if (filters?.ai_isa_owner !== undefined) query = query.eq("ai_isa_owner", filters.ai_isa_owner)
-    if (filters?.minimum_viable_for_isa !== undefined) query = query.eq("minimum_viable_for_isa", filters.minimum_viable_for_isa)
-    if (filters?.limit) query = query.limit(filters.limit)
-
-    const { data, error } = await query
-    if (error) return { success: false, error: error.message, leads: [] }
-    return { success: true, leads: data || [] }
-  } catch (err: any) {
-    console.error("[leads] getLeads:", err.message)
-    return { success: false, error: err.message, leads: [] }
-  }
-}
+// ── DELETED (wave 14): getLeads(filters) ────────────────────────────────────
+//
+// DUPLICATE. The survivor is app/actions/lead-management.ts:63 `getLeadsAdmin`,
+// which is LIVE — app/leads/page.tsx:57 imports it and the lead table's
+// fetchLeads() calls it on every filter change.
+//
+// Both read `leads`, both pin brokerage_id from the SESSION, both take a filter
+// bag. Two spellings of one function is the §6 defect, not a style choice.
+//
+// WHY THIS ONE WAS THE DUPLICATE AND NOT THE SURVIVOR:
+//   · CALLERS. getLeadsAdmin has a surface. This had none — and it is important
+//     that it never did. Its apparent caller was PROSE: the retired
+//     app/api/leads/list/route.ts carried the comment "supabaseService.getLeads
+//     delegates to contacts", and the orphan scan counted that string as a
+//     reference (the finding-#119 class the wired-surface guard was hardened
+//     against by stripping comments). Deleting that route did not orphan this
+//     function; it made an existing orphan VISIBLE.
+//   · COMPLETENESS. getLeadsAdmin also does search, pagination and sorting, and
+//     returns total/page/totalPages. This returned an unbounded array with no
+//     count, so the pagination the screen needs could not be built on it.
+//
+// MERGED FIRST, then deleted — CLAUDE.md §1, in that order. Every filter that
+// lived ONLY here now lives on the survivor's service layer at
+// lib/application/lead-application-service.ts:127 `serviceGetLeads` and is
+// passed through by getLeadsAdmin: lifecycle_state → lifecycleState,
+// urgency_level → urgencyLevel, assigned_agent_id → assignedAgentId,
+// ai_isa_owner → aiIsaOwner, minimum_viable_for_isa → minimumViableForIsa, and
+// the unconditional is_active filter → the opt-in `activeOnly`. lead_type and
+// source were already there as `intent` and `source`.
+//
+// NOT MERGED, and named rather than dropped silently: this function's role
+// ladder (ISA_ALLOWED_ROLES = TENANT_ADMIN_USER_TYPES + 'isa') admits team_lead
+// and the ISA seat and excludes platform staff; getLeadsAdmin's admits platform
+// staff and excludes 'isa'. Changing either roster is an owner ruling, not a
+// merge — the same call the getLead tombstone in lead-management.ts records.
+// The ISA seat keeps its own lead reads through getISAQueueLeads / getLeadById
+// below, which are wired to app/dashboard/isa.
+//
+// THE SAME TANGLE, RESOLVED IN THE SAME PASS: services/supabaseService.ts also
+// carried a method named getLeads whose whole body was
+// `return this.getContacts(agentId, brokerageId)` — a reader named for leads
+// that served CONTACTS, against the standing ruling that leads belong to the
+// brokerage and agents see contacts only (CLAUDE.md §5). It was NOT a survivor
+// for this function and could not have been one: it never touched the `leads`
+// table. Its last caller was the retired app/api/leads/list/route.ts, so it went
+// too, onto its own delegate `getContacts` — tombstone at
+// services/supabaseService.ts:281.
 
 export async function getLeadById(leadId: string) {
   try {

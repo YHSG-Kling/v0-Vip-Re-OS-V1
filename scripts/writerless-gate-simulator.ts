@@ -279,11 +279,42 @@ function censusLayer() {
     check(`1b no longer accuses ${col}`, !oneB.includes(col))
   }
   // The scanner must still SEE genuine ones, or this burn-down is just a new
-  // kind of blindness. `lead_intelligence.pre_approved` is a REAL writerless
-  // read this lane deliberately did not build (no fact in the tree supplies it —
-  // see the report), so it must still be reported.
-  check("1b still reports a genuine writerless read this lane did NOT fix",
-    oneB.includes("lead_intelligence.pre_approved"))
+  // kind of blindness — so one REAL writerless read is named as a canary.
+  //
+  // ── CANARY REPOINTED, WAVE 14 ──────────────────────────────────────────────
+  // This used to name `lead_intelligence.pre_approved`, chosen here because wave
+  // 13 deliberately did not build it. Wave 14 lane T DID build it: the fact the
+  // derivation needed turned out to exist and to be written four times over
+  // (contacts.lender_status, plus buyer_financial_profiles for the amount), and
+  // the +30 intent branch it gated now fires. See lib/leads/pre-approval.ts for
+  // the derivation and its evidence, and scripts/writerless-arrivals-simulator.ts
+  // for the proof that the score moves.
+  //
+  // So the canary MOVED rather than being deleted — deleting it would have left
+  // this census layer unable to tell a burn-down from a blindness. The
+  // replacement is `ad_creative_variations.destination_url`: read at
+  // lib/ads/launch-assembler.ts:41 (and carried to `destinationUrl` at :63) and
+  // by the approval queue at lib/kernel/approval-sources.ts:144/:154, and written
+  // by nothing anywhere in the tree — every launched ad points at no destination.
+  // If this line ever goes green, either that gap was closed (repoint the canary
+  // again, and say so) or the scanner went blind.
+  check("1b still reports a genuine writerless read no lane has fixed",
+    oneB.includes("ad_creative_variations.destination_url"))
+  // The nine this wave's sibling lane closed must be GONE — the same list its own
+  // proof asserts, checked here too so the two simulators cannot drift apart.
+  for (const col of [
+    "lead_intelligence.pre_approved",
+    "lead_intelligence.pre_approval_amount",
+    "lead_intelligence.financial_readiness",
+    "agent_api_credentials.api_secret",
+    "integration_credentials.api_secret",
+    "compliance_alerts.resolved",
+    "comp_risk_flags.is_resolved",
+    "approval_items.item_id",
+    "listing_agreements.seller_transaction_fee",
+  ]) {
+    check(`1b no longer accuses ${col} (wave 14 lane T built the writer)`, !oneB.includes(col))
+  }
 }
 
 function main() {

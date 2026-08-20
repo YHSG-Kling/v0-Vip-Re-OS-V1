@@ -7,17 +7,37 @@
 import { createClient } from "@/lib/supabase/server"
 import { handleError } from "@/lib/errors"
 
-export async function getListingsService(params?: {
+export async function getListingsService(params: {
   agentId?: string
-  /** Tenant anchor. app/actions/listings.ts:getListings resolves this from the
-   *  SESSION and always supplies it; it exists as a parameter only because this
-   *  layer takes no session of its own. */
-  brokerageId?: string
+  /**
+   * Tenant anchor — REQUIRED, and applied unconditionally below.
+   *
+   * It used to be optional and applied only `if (params?.brokerageId)`, which
+   * made "no tenant" a silent, legal call shape: `getListingsService()` read
+   * every listing on the platform. The only reason that was not a live leak is
+   * that this layer runs on the RLS-backed cookie client and every SELECT policy
+   * on `listings` is brokerage-scoped — and CLAUDE.md §4 is explicit that RLS is
+   * the verified BACKSTOP, not the primary boundary. A conditional predicate also
+   * satisfies tenant-scope-guard textually while being able not to run, so the
+   * guard could not tell this apart from a real filter.
+   *
+   * The caller resolves it from the SESSION (app/actions/listings.ts:getListings,
+   * via getAgentContext) and never from a parameter the browser supplied. The
+   * ungated re-export that let a browser name its own tenant here is gone —
+   * tombstone at app/actions/listing-lifecycle.ts:23.
+   */
+  brokerageId: string
   status?: string
   stage?: string
   limit?: number
 }) {
   try {
+    // Fail closed: a missing tenant anchor REFUSES rather than widening to every
+    // brokerage. "Nobody supplied a tenant" must never render as "all tenants".
+    if (!params?.brokerageId) {
+      return { success: false as const, error: "Listings require a brokerage", listings: [] as unknown[] }
+    }
+
     const supabase = await createClient()
 
     let query = supabase
@@ -36,8 +56,10 @@ export async function getListingsService(params?: {
          agent:agent_id(id, users:user_id(first_name, last_name))`,
       )
       .order("created_at", { ascending: false })
+      // UNCONDITIONAL. Every other predicate below is an optional NARROWING; this
+      // one is the tenant boundary and does not get to be skipped.
+      .eq("brokerage_id", params.brokerageId)
 
-    if (params?.brokerageId) query = query.eq("brokerage_id", params.brokerageId)
     if (params?.agentId) query = query.eq("agent_id", params.agentId)
     if (params?.status) query = query.eq("status", params.status)
     if (params?.stage) query = query.eq("lifecycle_stage", params.stage)

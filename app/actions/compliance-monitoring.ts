@@ -3,6 +3,8 @@
 import {
   logAuditEventService,
   checkComplianceStatusService,
+  resolveComplianceAlertService,
+  resolveCompRiskFlagService,
   trackCertificationExpirationService,
   analyzeFairHousingRiskService,
   monitorTRIDComplianceService,
@@ -42,6 +44,25 @@ export async function logAuditEvent(params: {
 export async function checkComplianceStatus(transactionId: string) {
   if (!isValidUUID(transactionId)) throw new Error("Invalid transaction ID")
   return checkComplianceStatusService(transactionId)
+}
+
+/**
+ * Clear one compliance alert — the half `checkComplianceStatus` was missing.
+ *
+ * Its `overallStatus` reads `resolved = false` and nothing in the tree ever set
+ * that column true, so a transaction that raised a single alert was 'at_risk'
+ * permanently. Identity and tenant come from the SESSION inside the service; the
+ * only thing this endpoint accepts is which alert and what the person did.
+ */
+export async function resolveComplianceAlert(params: { alertId: string; note?: string }) {
+  if (!isValidUUID(params.alertId)) throw new Error("Invalid alert ID")
+  return resolveComplianceAlertService(params)
+}
+
+/** Clear one comp risk flag on a CMA — the same missing half on the listing side. */
+export async function resolveCompRiskFlag(params: { flagId: string; note?: string }) {
+  if (!isValidUUID(params.flagId)) throw new Error("Invalid flag ID")
+  return resolveCompRiskFlagService(params)
 }
 
 // Track agent certification expiration

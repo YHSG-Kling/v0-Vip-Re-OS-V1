@@ -1,5 +1,35 @@
 "use server"
 
+/**
+ * ─── NOT A SURVIVOR FOR /api/errors/* (wave 14) ──────────────────────────────
+ * A route census classified app/api/errors/{collect,escalate,retry} as duplicates
+ * of this file plus lib/errors/collect-error.ts:collectError. Re-read, they are
+ * not, and all three were LEFT IN PLACE:
+ *
+ *   · /api/errors/retry — the ONLY manual writer of the retry ledger. This file
+ *     exports no retry action; lib/errors/auto-retry.ts's own header names this
+ *     route as one of exactly two callers of scheduleRetry (the other is
+ *     /api/cron/retry-errors). Deleting it leaves the auto-retry state that
+ *     getErrorGroupDetails() attaches — and that
+ *     app/components/admin/errors/ErrorDetailsPanel.tsx renders at line 140 —
+ *     readable but with no operator-facing writer. A reader with no writer is
+ *     the orphan the doctrine forbids CREATING, not one it licenses removing.
+ *   · /api/errors/escalate — the only writer of error_resolution_log
+ *     action_type 'escalated', of the SYSTEM_HEALTH_ALERT lifecycle event, and
+ *     of the escalation notification. None of those exists anywhere else in the
+ *     tree. There is no survivor to merge onto.
+ *   · /api/errors/collect — remote intake. It authorizes on
+ *     `x-internal-api-secret` (INTERNAL_API_SECRET) as well as a session, the
+ *     same service-to-service shape as /api/intelligence/*. collectError() is
+ *     called in-process by four modules already; the HTTP door exists for
+ *     callers that are not in this process, and nothing in this repo can prove
+ *     none exists. UNRESOLVED (CLAUDE.md §1).
+ *
+ * If any of the three is ever retired, the missing half must be BUILT here
+ * first — a retryErrorGroup() and an escalateErrorGroup() beside
+ * resolveErrorGroup() and dismissErrorGroup() below.
+ */
+
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
 

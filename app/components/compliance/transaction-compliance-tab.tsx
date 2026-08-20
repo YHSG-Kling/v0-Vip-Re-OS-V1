@@ -48,6 +48,7 @@ import {
   exportAuditTrail,
   monitorTRIDCompliance,
   checkComplianceStatus,
+  resolveComplianceAlert,
 } from "@/app/actions/compliance-monitoring"
 import { ActionConfirmSheet } from "@/app/components/action-framework"
 import {
@@ -99,10 +100,27 @@ interface TridResult {
   checkedAt: string
 }
 
+/** One unresolved row from compliance_alerts, as checkComplianceStatus returns it. */
+interface ComplianceAlert {
+  id: string
+  alert_type: string
+  severity: string | null
+  message: string | null
+  created_at: string | null
+}
+
 interface ComplianceSummary {
   score: number
   flaggedCount: number
   overallStatus: string
+  /**
+   * The alerts themselves, not just the COUNT. Until wave 14 this panel showed
+   * "3 alerts" and `overallStatus: at_risk` with no way to see or clear any of
+   * them — `compliance_alerts.resolved` was read as `false` and written by
+   * nobody, so at_risk was permanent and the badge was noise. Listing them is
+   * what makes the resolve action reachable.
+   */
+  alerts: ComplianceAlert[]
 }
 
 interface TransactionComplianceTabProps {
@@ -128,6 +146,8 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
   const [tridPendingId, setTridPendingId] = useState<string | null>(null)
   const [summaries, setSummaries] = useState<Record<string, ComplianceSummary>>({})
   const [summaryPendingId, setSummaryPendingId] = useState<string | null>(null)
+  const [resolvingAlertId, setResolvingAlertId] = useState<string | null>(null)
+  const [alertMsg, setAlertMsg] = useState<string | null>(null)
 
   // Review dialog state (preserved from original)
   const [selectedLog, setSelectedLog] = useState<ComplianceLog | null>(null)
@@ -288,9 +308,52 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
           score: total > 0 ? Math.round((compliant / total) * 100) : 100,
           flaggedCount: result.alerts?.length ?? 0,
           overallStatus: result.overallStatus ?? "pending",
+          alerts: (result.alerts ?? []).map((a: any) => ({
+            id: String(a.id),
+            alert_type: String(a.alert_type ?? "alert"),
+            severity: (a.severity as string | null) ?? null,
+            message: (a.message as string | null) ?? null,
+            created_at: (a.created_at as string | null) ?? null,
+          })),
         },
       }))
     }
+  }
+
+  // ── Clear one compliance alert ─────────────────────────────────────────────
+  //
+  // The writer `compliance_alerts.resolved` never had. It stamps who and when
+  // server-side (identity from the session, never from here). A refusal is shown,
+  // not swallowed — an alert that vanishes from the panel while still standing in
+  // the record is the failure this whole path exists to prevent.
+  async function handleResolveAlert(transactionId: string, alertId: string) {
+    setResolvingAlertId(alertId)
+    setAlertMsg(null)
+    const res = await resolveComplianceAlert({ alertId })
+    setResolvingAlertId(null)
+    if (!res.success) {
+      setAlertMsg(res.error ?? "Could not clear that alert.")
+      return
+    }
+    setSummaries((prev) => {
+      const s = prev[transactionId]
+      if (!s) return prev
+      const alerts = s.alerts.filter((a) => a.id !== alertId)
+      return {
+        ...prev,
+        [transactionId]: {
+          ...s,
+          alerts,
+          flaggedCount: alerts.length,
+          // The status is RE-DERIVED from the same rule the service uses: any
+          // unresolved alert means at_risk. Clearing the last one is what finally
+          // lets this leave at_risk — which it previously never could.
+          overallStatus: alerts.length > 0 ? "at_risk" : s.score === 100 ? "compliant" : "pending",
+        },
+      }
+    })
+    toast.success("Alert cleared")
+    router.refresh()
   }
 
   // ── Batch approve selected ─────────────────────────────────────────────────
@@ -434,7 +497,54 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
                           {summary.flaggedCount} alert{summary.flaggedCount !== 1 ? "s" : ""}
                         </Badge>
                       )}
+                      {summary && (
+                        <Badge
+                          variant="outline"
+                          className={`text-xs h-4 ${
+                            summary.overallStatus === "at_risk"
+                              ? "border-red-300 text-red-700"
+                              : summary.overallStatus === "compliant"
+                                ? "border-emerald-300 text-emerald-700"
+                                : "text-muted-foreground"
+                          }`}
+                        >
+                          {summary.overallStatus}
+                        </Badge>
+                      )}
                     </div>
+
+                    {/* The unresolved alerts themselves, each with the clear action
+                        that `compliance_alerts.resolved` never had a writer for. */}
+                    {summary && summary.alerts.length > 0 && (
+                      <div className="rounded border border-red-200 bg-red-50 p-2 space-y-1.5">
+                        {summary.alerts.map((a) => (
+                          <div key={a.id} className="flex items-start gap-2 text-xs">
+                            <AlertOctagon className="h-3 w-3 mt-0.5 text-red-600 shrink-0" />
+                            <div className="flex-1 min-w-0">
+                              <p className="font-medium text-red-800">
+                                {a.alert_type}
+                                {a.severity ? ` · ${a.severity}` : ""}
+                              </p>
+                              {a.message && <p className="text-red-700 leading-snug">{a.message}</p>}
+                            </div>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-6 px-2 text-xs shrink-0"
+                              disabled={resolvingAlertId === a.id}
+                              onClick={() => handleResolveAlert(txnId, a.id)}
+                            >
+                              {resolvingAlertId === a.id ? (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              ) : (
+                                "Resolve"
+                              )}
+                            </Button>
+                          </div>
+                        ))}
+                        {alertMsg && <p className="text-xs text-red-800">{alertMsg}</p>}
+                      </div>
+                    )}
 
                     {/* Per-transaction actions */}
                     <div className="flex gap-1.5 flex-wrap">

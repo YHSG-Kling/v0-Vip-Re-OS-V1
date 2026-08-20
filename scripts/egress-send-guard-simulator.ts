@@ -14,6 +14,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { dirname, join, relative } from "node:path"
+import { blankComments } from "./strip-comments"
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -67,8 +68,27 @@ walk(join(root, "app"), files)
 
 const importers: string[] = []
 for (const abs of files) {
-  const src = readFileSync(abs, "utf8")
+  // BLANK COMMENTS FIRST. This scan used to read the file RAW, and a file was
+  // accused of touching the low-level senders because the word `sendSMS`
+  // appeared IN A COMMENT — app/actions/dispatch-showing.ts:243 says "the one
+  // the actual send path (sendSMS) reads", while the code calls dispatchViaSms.
+  // That is the CLAUDE.md section 2 defect: a guard that cannot tell code from
+  // prose either accuses live code or, in the other direction, is satisfied by
+  // a mention. blankComments preserves offsets, so nothing downstream shifts.
+  const src = blankComments(readFileSync(abs, "utf8"))
   if (src.includes(MESSAGING) && SENDERS.test(src)) importers.push(relative(root, abs).replace(/\\/g, "/"))
+}
+
+// ── POSITIVE CONTROL ─────────────────────────────────────────────────────────
+// A broken scanner and a clean tree both report zero. Prove the finder still
+// fires on a REAL sender call, and stays quiet on the same text commented out.
+{
+  const live = `import { x } from "${MESSAGING}"\nawait sendSMS(to, body)\n`
+  const prose = `import { x } from "${MESSAGING}"\n// await sendSMS(to, body)\n`
+  const sees = (t: string) => { const b = blankComments(t); return b.includes(MESSAGING) && SENDERS.test(b) }
+  if (!sees(live)) { console.error("  ✗ POSITIVE CONTROL FAILED — the finder no longer recognises a real sendSMS call"); process.exit(1) }
+  if (sees(prose)) { console.error("  ✗ CONTROL FAILED — a commented-out sendSMS is still being counted as code"); process.exit(1) }
+  console.log("  ✓ positive control · a real sendSMS call is still caught, a commented one is not")
 }
 
 console.log("\n[1 · every file touching the low-level senders is on the reviewed allowlist]")

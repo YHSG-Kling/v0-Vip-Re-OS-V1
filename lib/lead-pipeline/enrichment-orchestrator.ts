@@ -489,10 +489,18 @@ export async function processEnrichmentQueue(
         const mailingStreet = (enriched as any).streetAddress ?? enriched.address ?? null
         const hasMailingData = !!(mailingStreet || enriched.city || enriched.state)
         // PDL now reports verification flags directly (peopledata-client derives them from the
-        // person likelihood + presence of structured email/address). Fall back to hasMailingData
-        // for back-compat with mocks/tests.
+        // person likelihood + presence of structured email/address).
+        //
+        // THE FALLBACK USED TO BE `hasMailingData` — "the provider returned an address" recorded
+        // as "the address is VERIFIED". That was already documented as a lie by
+        // lib/providers/mailing-cass-gate.ts ("it is NEVER CASS/USPS-verified"), and the owner's
+        // wave-14 conversion ruling made the flag load-bearing at the promotion gate: with the
+        // old fallback, "a mailing address verified" would have degraded right back into "any
+        // address string", which is the exact arm the ruling excludes. Absent an explicit
+        // provider verdict the flag stays FALSE, and lib/lead-pipeline/promotion-address-verification.ts
+        // buys the real Lob verdict at the gate for the records where it actually decides.
         const mvRaw = (enriched as any).mailingAddressVerified
-        const mailingVerified: boolean = typeof mvRaw === 'boolean' ? mvRaw : hasMailingData
+        const mailingVerified: boolean = mvRaw === true
         const emailFlagVerified: boolean = (enriched as any).emailVerified === true
 
         // Rich enrichment profile (downstream — AI-ISA scripts, AI Mesh, dashboards) so the full

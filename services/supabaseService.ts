@@ -1,4 +1,68 @@
 // Comprehensive Supabase Service - Production ready, all data from Supabase
+//
+// ─── TOMBSTONE (wave 14) — the /api/*/list twins that sat on this file ───────
+// Six unreferenced route files were thin HTTP wrappers around methods below.
+// Each had zero callers in the tree (no fetch, no `${baseUrl}/api/…` self-call,
+// nothing in vercel.json crons, no webhook), and each duplicated a server action
+// that resolves tenant from the SESSION instead of from a caller's argument.
+// Retired, survivor named:
+//
+//   app/api/leads/list/route.ts        → app/actions/lead-management.ts:getLeadsAdmin      :63
+//                                        (was app/actions/leads.ts:getLeads — SEE BELOW,
+//                                         that one has since been retired onto this survivor)
+//   app/api/listings/list/route.ts     → app/actions/listings.ts:getListings               :62
+//   app/api/transactions/list/route.ts → app/actions/transactions.ts:getTransactions       :27
+//   app/api/transactions/[id]/route.ts → app/actions/transactions.ts:getTransactionById    :71
+//                                        app/actions/transactions.ts:updateTransaction     :131
+//   app/api/vendors/list/route.ts      → app/actions/vendor-marketplace.ts:searchVendors    :25
+//   app/api/copilot/plans/route.ts     → app/crm/page.tsx:727 (the live copilot_plans read)
+//
+// Nothing was merged onto the survivors, and here is why each gap ran the OTHER
+// way — the routes were the weaker half in every case:
+//   · /api/leads/list did not read leads. It called `supabaseService.getLeads`,
+//     which is `return this.getContacts(agentId, brokerageId)` (see below) — so a
+//     route named "leads" served CONTACTS, against the owner ruling that the two
+//     are different populations (CLAUDE.md §5). The survivor reads the real
+//     `leads` table with a lead-desk role ladder in front of it.
+//     ONE THING WAS NOT PORTED, deliberately: the route admitted `support`
+//     (platform staff) to the lead list. That is a live roster ruling, not a
+//     merge — REPORTED, not changed here.
+//
+//     ── UPDATED after this route was retired ─────────────────────────────────
+//     The survivor first named here was app/actions/leads.ts:getLeads, and that
+//     turned out to be an orphan whose ONLY apparent caller was THIS ROUTE'S
+//     COMMENT — the guard counted the prose string as a reference. Removing the
+//     route made the truth visible. getLeads has since been retired onto
+//     app/actions/lead-management.ts:63 `getLeadsAdmin` (the live /app/leads
+//     reader) after its filters were merged onto
+//     lib/application/lead-application-service.ts:127 `serviceGetLeads`; the
+//     full tombstone is at the top of app/actions/leads.ts. The platform-staff
+//     admission the route had actually EXISTS on getLeadsAdmin, so that gap is
+//     closed by the change of survivor rather than by a roster edit.
+//     The `isa` seat, which getLeads admitted and getLeadsAdmin does not, keeps
+//     its own reads through getISAQueueLeads / getLeadById in app/actions/leads.ts.
+//   · /api/listings/list and /api/transactions/list passed ONLY an agent id to a
+//     service-role query that applies no tenant filter of its own. The survivors
+//     pin brokerage_id from the session and let a caller-supplied agent id only
+//     NARROW, and only for a broker/admin inside their own tenant.
+//   · /api/transactions/[id] carried its own brokerage-equality check because it
+//     read through the service-role client below. The survivor goes through
+//     lib/application/transactions.ts on the COOKIE client, where RLS is the
+//     gate — the check is not a missing capability, it is the thing the service
+//     client made necessary. The survivor also returns the full embed graph
+//     (milestones, participants, lenders, documents, …) this route's
+//     `select("*")` did not.
+//   · /api/vendors/list exact-matched `category`; searchVendors ilike-matches it,
+//     resolves brokerage from the session the same way, and additionally returns
+//     the global (brokerage_id IS NULL) vendors the route silently hid.
+//   · /api/copilot/plans took a `leadId` QUERY PARAM and passed it straight to
+//     `getCopilotPlans` on the service-role client with NO tenant check at all —
+//     any signed-in agent could read any tenant's plans by id. The CRM reads the
+//     same table through the RLS-scoped client.
+//
+// STILL PRESENT, deliberately (do not sweep these into the same bucket):
+//   · app/api/financial/{commissions,expenses} and app/api/credit/status — see
+//     the notes at getCreditStatus and getCommissions below. UNRESOLVED.
 import { createClient } from "@supabase/supabase-js"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import type { Contact } from "@/types/contact"
@@ -214,9 +278,29 @@ export const supabaseService = {
     }
   },
 
-  async getLeads(agentId?: string, brokerageId?: string) {
-    return this.getContacts(agentId, brokerageId)
-  },
+  // ── DELETED (wave 14): getLeads(agentId, brokerageId) ─────────────────────
+  //
+  // Its entire body was `return this.getContacts(agentId, brokerageId)` — a
+  // reader NAMED for leads that served CONTACTS. That is the §5 ruling stood on
+  // its head (leads belong to the brokerage; agents see contacts only), and §6's
+  // "one vocabulary per function" broken in the most direct way available: two
+  // populations, one name, and a call site that could not tell which it got.
+  //
+  // SURVIVOR: `getContacts` immediately above in this same object — the thing it
+  // already delegated to, unchanged. Nothing is lost; a wrong label is.
+  //
+  // It had NO remaining caller. Its last one was app/api/leads/list/route.ts,
+  // retired earlier this wave (see the tombstone at the top of this file). The
+  // only other mention in the tree is scripts/complete-migration.ts:58, a
+  // REPLACEMENT STRING in a codemod whose own header records that it has already
+  // run and that both of its targets (services/airtableService.ts,
+  // services/workflowService.ts) no longer exist — a historical record, not a
+  // call site and not a rule with anything left to match.
+  //
+  // If a caller ever genuinely wants the brokerage's LEADS through a service
+  // object, the reader is app/actions/lead-management.ts:63 `getLeadsAdmin`,
+  // which reads the `leads` table, pins the tenant from the SESSION, and gates
+  // on the lead-desk roster. This method did none of those three.
 
   // =====================================================
   // TRANSACTIONS (DEALS)

@@ -349,6 +349,42 @@ export async function submitVideoGenerationJob(
   }
   const brokerageId = project.brokerage_id
 
+  // ── THE FAIR HOUSING HOLD ──────────────────────────────────────────────────
+  //
+  // OWNER RULING (the refinement): "after the script is run then hold up the
+  // video creation if still have a big red flag needed for a human."
+  //
+  // The third door to a render, after createVideoProject and
+  // /api/did/generate-video. Same gate, same vocabulary, same release: only a
+  // person clearing the script or the project in Marketing Approvals lifts it.
+  // ADVISORY PASSES — evaluateVideoRenderHold holds on red_flag and unknown only.
+  //
+  // BEFORE the slot claim below, so a held project is never left wedged at
+  // status='generating' with no provider job for the poller to chase.
+  {
+    const { data: authData } = await supabase.auth.getUser()
+    const actorUserId = authData?.user?.id
+    const { evaluateVideoRenderHold, stampProjectComplianceHold, holdErrorMessage } =
+      await import("@/lib/video/video-render-hold")
+    const hold = await evaluateVideoRenderHold({
+      supabase,
+      // No session id means we cannot even say who is asking — that is an
+      // UNKNOWN, and evaluateVideoRenderHold's own catch turns a bad actor
+      // shape into a hold rather than a pass. Fail closed either way.
+      actor: { userId: actorUserId ?? "", brokerageId },
+      script: input.scriptText ?? "",
+      projectId: input.projectId,
+      title: "Held video script (render blocked)",
+    })
+    if (hold.hold) {
+      const stamped = await stampProjectComplianceHold(supabase, input.projectId, hold)
+      if (!stamped.ok) {
+        console.error("[kernel/video] compliance hold could not be stamped:", stamped.error)
+      }
+      throw new Error(holdErrorMessage(hold))
+    }
+  }
+
   // Atomically claim the project slot. provider_status is the canonical column;
   // Canonical provider_* columns only (heygen_* columns DROPPED live, l39-s01
   // cron and the dashboard UI still consume it).

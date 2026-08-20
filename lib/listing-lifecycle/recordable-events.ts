@@ -30,6 +30,7 @@ import type { ListingStage } from "./lifecycle-definitions"
 export type RecordableAction =
   | "recordSellerDecision"
   | "initiateListingAgreement"
+  | "markAgreementSigned"
   | "markDripCompleted"
   | "recordPreListingRepair"
   | "markRepairCompleted"
@@ -90,6 +91,55 @@ export const RECORDABLE_EVENTS: Record<RecordableAction, RecordableEvent> = {
     label: "Send the listing agreement",
     effect: "Starts the listing agreement for signature and records that it went out.",
     fields: [
+    ],
+  },
+  /**
+   * WAVE 14 — THE ORPHAN THAT HELD THE SELLER'S FEE.
+   *
+   * `markAgreementSigned` (app/actions/seller-listing/execution-engine.ts:536) is
+   * the ONLY INSERT into `listing_agreements` anywhere in the tree — the dotloop
+   * webhook and the e-sign finalizer only UPDATE rows it must already have
+   * created — and it had NO CALLER. Its sibling `initiateListingAgreement` was
+   * wired into this dispatcher and it was not, so the stage where an agreement is
+   * out for signature (LISTING_AGREEMENT_INITIATED) offered nothing but
+   * "cancelListing": an agent could send the agreement and had no way to record
+   * that it came back signed.
+   *
+   * That orphan is why `listing_agreements.seller_transaction_fee` had six
+   * readers and zero writers. The verdict under the orphan doctrine is BUILD, not
+   * delete: nothing else creates a listing agreement, the recorder carries the
+   * full compliance gate (auditListingDocuments + scanListingPacketCompleteness),
+   * and deleting it would delete the only path onto the table.
+   *
+   * The seller fee is collected HERE because here is where it is agreed. It is
+   * OPTIONAL and must stay optional — blank means no fee was negotiated, which is
+   * written as NULL. A required box would push every brokerage that charges
+   * nothing into typing 0, and 0 asserts a negotiated zero.
+   */
+  markAgreementSigned: {
+    action: "markAgreementSigned",
+    label: "Listing agreement came back signed",
+    effect:
+      "Files the executed listing agreement with its commission terms, runs the document + packet compliance gate, and moves the listing to go-live prep.",
+    fields: [
+      {
+        key: "uploadMode", label: "How you have it", type: "choice", required: true,
+        // The RECORDER's vocabulary, not a friendlier one — a value the server
+        // does not accept is a write that fails while looking like it worked.
+        options: ["manual_upload", "provider_pull"],
+        help: "manual_upload = you have the signed PDF; provider_pull = it is in DocuSign/dotloop.",
+      },
+      { key: "documentUrl", label: "Signed document URL", type: "text", required: false, help: "For manual_upload." },
+      { key: "providerRef", label: "Provider reference", type: "text", required: false, help: "For provider_pull — the envelope / loop id." },
+      { key: "listingRate", label: "Listing side commission %", type: "number", required: false },
+      { key: "buyerRate", label: "Buyer side commission %", type: "number", required: false },
+      {
+        key: "sellerTransactionFee",
+        label: "Seller transaction fee ($)",
+        type: "number",
+        required: false,
+        help: "Flat brokerage fee the SELLER pays at closing. Leave blank if none was agreed — every net sheet subtracts this from their proceeds.",
+      },
     ],
   },
   markDripCompleted: {
@@ -187,7 +237,10 @@ const STAGE_EVENTS: Partial<Record<ListingStage, RecordableAction[]>> = {
   LISTING_PRESENTATION_CREATED:  ["recordSellerDecision"],
   PRESENTATION_VIDEO_GENERATED:  ["recordSellerDecision"],
   SELLER_DECISION:               ["recordSellerDecision", "initiateListingAgreement"],
-  LISTING_AGREEMENT_INITIATED:   ["cancelListing"],
+  // The agreement is OUT for signature here, so "it came back signed" is exactly
+  // what could have just happened — and until wave 14 this stage offered only
+  // "cancel", which is why the sole writer of listing_agreements had no caller.
+  LISTING_AGREEMENT_INITIATED:   ["markAgreementSigned", "cancelListing"],
   LISTING_AGREEMENT_SIGNED:      ["recordPreListingRepair", "cancelListing"],
   MLS_DATE_CONFIRMED:            ["recordPreListingRepair", "cancelListing"],
   COMING_SOON_PREP:              ["recordPreListingRepair", "markMediaCaptured", "cancelListing"],

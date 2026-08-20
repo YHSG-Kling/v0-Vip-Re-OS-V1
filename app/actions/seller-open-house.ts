@@ -796,6 +796,22 @@ export async function convertAttendeeToContact(params: {
       actor_user_id: auth.userId,
       metadata: { source: "open_house", attendee_id: params.attendeeId, listing_id: params.listingId },
     })
+
+    // AUTOMATIC ENRICHMENT ON A NEW CONTACT (owner, wave 14). The insert above was
+    // the WHOLE emit: the row landed, the event was auditable, and the REACTOR
+    // never ran — so the CONTACT_CREATED branch in lib/kernel/event-reactor.ts,
+    // which enqueues enrichment for every new contact, never saw this door and an
+    // open-house attendee was enriched only if the nightly net happened to reach
+    // them. Same insert-then-dispatch pair lib/contact-pipeline/contact-capture.ts
+    // uses; the lifecycle row keeps its actor attribution, which emitKernelEvent
+    // does not carry.
+    await processKernelEvent({
+      event:       KernelEvent.CONTACT_CREATED,
+      brokerageId: auth.brokerageId,
+      entityType:  "contact",
+      entityId:    contactId,
+      contactId,
+    })
   }
 
   await supabase

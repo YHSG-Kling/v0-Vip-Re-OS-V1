@@ -16,6 +16,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { scanConnectivity } from "@/lib/agentic-os/resolve-connectivity"
 import { resolveConnection } from "@/lib/integrations/connection-manager"
 import { probeConnector, PROBE_SPECS } from "@/lib/agentic-os/connector-probe"
+import { secretFromConfig } from "@/lib/connections/credential-secret"
 
 // Per-brokerage probes + per-provider AI healer call (Exa search + Anthropic) can take 60–120s
 // in aggregate. Without an explicit maxDuration the Vercel default (10–15s) would kill the route
@@ -107,7 +108,10 @@ export async function GET(req: Request) {
           apiKey: (r.api_key as string) ?? null,
           // The connect flow stores a provider secret under config.auth_token (e.g. Twilio auth
           // token); fall back to api_secret for any provider that uses that key.
-          apiSecret: ((r.config as any)?.auth_token as string) ?? ((r.config as any)?.api_secret as string) ?? null,
+          // ONE READING — this file's private two-key ladder was the THIRD spelling of
+          // it (resolve-sms-provider.ts:69 had its own, connection-manager.ts had none
+          // at all and read `null`). Merged onto lib/connections/credential-secret.ts.
+          apiSecret: secretFromConfig(r.config),
           accessToken: (r.access_token as string) ?? null,
           config: (r.config as Record<string, unknown>) ?? null,
         })

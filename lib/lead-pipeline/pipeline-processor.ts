@@ -377,12 +377,12 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
   }
 
   // ── STEP 4B: Promotion eligibility gate (CANONICAL — shared with lead-promoter) ─
-  // Owner's canonical rule (round 39): after enrichment + second dedup, promote when the
-  // record carries a FIRST NAME and LAST NAME plus at least an EMAIL ADDRESS and/or a
-  // MAILING ADDRESS (phone is not an anchor). Names are fed post-enrichment
-  // (enriched.first_name ?? firstName) so enrichWithPeopleData can SUPPLY a missing name
-  // before this pass. Single source of truth in canonical-lead-eligibility so the two
-  // historical paths can never drift apart.
+  // Owner's canonical rule (wave 14): after enrichment + second dedup, promote when the
+  // record carries a FIRST NAME and a LAST NAME plus at least ONE reachable channel —
+  // an EMAIL and/or a PHONE and/or a VERIFIED MAILING ADDRESS. Names are fed
+  // post-enrichment (enriched.first_name ?? firstName) so enrichWithPeopleData can SUPPLY
+  // a missing name before this pass. Single source of truth in canonical-lead-eligibility
+  // so the two historical paths can never drift apart.
   const { evaluateCanonicalLeadEligibility } =
     await import("@/lib/lead-pipeline/canonical-lead-eligibility")
   const rawAddrVerified = (rawRecord as any)?.mailing_address_verified
@@ -390,21 +390,78 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
                         ?? false
   // Resolution order for the mailing address (same chain the lead insert uses):
   // enrichment result → raw first-class column → preview/raw_data jsonb.
-  const resolvedMailingAddress =
+  let resolvedMailingAddress =
     (enriched as any).mailing_address
     ?? rec.mailing_address
     ?? rec.normalized_preview?.mailingAddress
     ?? (rec.raw_data as any)?.mailing_address
     ?? null
-  const resolvedMailingVerified = !!((enriched as any).mailing_address_verified ?? rawAddrVerified)
-  const promoEligibility = evaluateCanonicalLeadEligibility({
+  let resolvedMailingCity  = (enriched as any).mailing_city  ?? rec.mailing_city  ?? (rec.raw_data as any)?.mailing_city  ?? null
+  let resolvedMailingState = (enriched as any).mailing_state ?? rec.mailing_state ?? (rec.raw_data as any)?.mailing_state ?? null
+  let resolvedMailingZip   = (enriched as any).mailing_zip   ?? rec.mailing_zip   ?? (rec.raw_data as any)?.mailing_zip   ?? null
+  let resolvedMailingVerified = !!((enriched as any).mailing_address_verified ?? rawAddrVerified)
+  let resolvedMailingSource: string | null =
+    (enriched as any).mailing_address_source
+    ?? rec.mailing_address_source
+    ?? (rec.raw_data as any)?.mailing_address_source
+    ?? null
+
+  const promoCandidate = {
     first_name:               enriched.first_name ?? firstName,
     last_name:                enriched.last_name  ?? lastName,
     email:                    enriched.email,
     phone:                    enriched.phone ?? phone,
     mailing_address:          resolvedMailingAddress,
     mailing_address_verified: resolvedMailingVerified,
-  })
+  }
+  let promoEligibility = evaluateCanonicalLeadEligibility(promoCandidate)
+
+  // ── THE VERIFIED-ADDRESS ARM'S WRITER ──────────────────────────────────────
+  // "a mailing address VERIFIED" is only a real arm of the gate if something
+  // actually verifies. When the record is refused for want of a channel and its
+  // address is the ONLY candidate anchor (no email, no phone), buy ONE Lob
+  // US-verification (~$0.0025) and persist the verdict onto the raw row, then
+  // re-evaluate against the same canonical gate. Bounded by construction: a
+  // record reachable by email or phone never reaches this call, and an address
+  // Lob already ruled undeliverable is never re-bought.
+  // FAIL CLOSED: no LOB_API_KEY / a transient Lob failure verifies nothing, the
+  // gate's refusal stands, and the record stays raw and retryable.
+  if (!promoEligibility.eligible && promoEligibility.failing === "contact_anchor") {
+    const { verifyMailingAddressForPromotion } =
+      await import("@/lib/lead-pipeline/promotion-address-verification")
+    const addrVerdict = await verifyMailingAddressForPromotion({
+      candidate: {
+        email:                    enriched.email,
+        phone:                    enriched.phone ?? phone,
+        mailing_address:          resolvedMailingAddress,
+        mailing_city:             resolvedMailingCity,
+        mailing_state:            resolvedMailingState,
+        mailing_zip:              resolvedMailingZip,
+        mailing_address_verified: resolvedMailingVerified,
+        mailing_address_source:   resolvedMailingSource,
+      },
+      supabase,
+      table: "raw_scraped_leads",
+      id:    rawRecordId,
+    })
+    if (addrVerdict.ran) {
+      resolvedMailingVerified = addrVerdict.verified
+      // Carry Lob's STANDARDIZED parts onto the lead too — the raw row already
+      // took the patch, and a lead holding the pre-standardized string would put
+      // the two rows out of agreement the moment direct mail reads either one.
+      const p = addrVerdict.patch
+      if (typeof p.mailing_address_source === "string") resolvedMailingSource  = p.mailing_address_source
+      if (typeof p.mailing_address        === "string") resolvedMailingAddress = p.mailing_address
+      if (typeof p.mailing_city           === "string") resolvedMailingCity    = p.mailing_city
+      if (typeof p.mailing_state          === "string") resolvedMailingState   = p.mailing_state
+      if (typeof p.mailing_zip            === "string") resolvedMailingZip     = p.mailing_zip
+      promoEligibility = evaluateCanonicalLeadEligibility({
+        ...promoCandidate,
+        mailing_address_verified: resolvedMailingVerified,
+      })
+    }
+  }
+
   if (!promoEligibility.eligible) {
     await setStatus(supabase, rawRecordId, 'insufficient_identity_for_promotion')
     await logDeduplication({
@@ -503,16 +560,18 @@ export async function processRawRecord(rawRecordId: string, brokerageId?: string
       // column → preview/raw_data jsonb. The raw layer keeps mailing_* as first-class
       // columns, so they must be in the fallback chain or the breakdown is silently lost.
       mailing_address:       resolvedMailingAddress,
-      mailing_address_source:(enriched as any).mailing_address_source ?? rec.mailing_address_source ?? (rec.raw_data as any)?.mailing_address_source ?? null,
+      // Carries 'lob_cass' when the gate's own verification ruled on this address,
+      // so the direct-mail CASS gate does not re-buy a verdict we already paid for.
+      mailing_address_source: resolvedMailingSource,
       // Carry the FULL address fidelity into leads (was dropping these → enrichment looked
       // incomplete and they never reached the contact): physical address + mailing breakdown.
       address:               rec.address ?? (rec.normalized_preview?.propertyAddress as string | null) ?? (rec.raw_data?.propertyAddress as string | null) ?? null,
       city:                  city,
       state:                 state,
       zip_code:              rec.zip_code ?? rec.normalized_preview?.zip ?? (rec.raw_data?.zip as string | null) ?? null,
-      mailing_city:          (enriched as any).mailing_city  ?? rec.mailing_city  ?? (rec.raw_data as any)?.mailing_city  ?? null,
-      mailing_state:         (enriched as any).mailing_state ?? rec.mailing_state ?? (rec.raw_data as any)?.mailing_state ?? null,
-      mailing_zip:           (enriched as any).mailing_zip   ?? rec.mailing_zip   ?? (rec.raw_data as any)?.mailing_zip   ?? null,
+      mailing_city:          resolvedMailingCity,
+      mailing_state:         resolvedMailingState,
+      mailing_zip:           resolvedMailingZip,
       email_verified:        (enriched as any).email_verified        ?? (rec as any).email_verified                  ?? (rec.raw_data as any)?.email_verified ?? false,
       raw_record_id:         rawRecordId,
     })

@@ -861,7 +861,9 @@ export async function archiveContactRecord(params: {
   // trail asserting an archive that never happened, and a UI free to tell the user
   // their contact was removed while the record stayed live and reachable.
   // `.select("id")` makes the affected rows observable so the outcome is the truth.
-  const { data: archived, error } = await query.select("id")
+  // `contact_user_id` and `agent_id` come back too — ABSORBED (wave 14) from the
+  // retired app/api/contacts/delete route, which recorded the portal-login fact.
+  const { data: archived, error } = await query.select("id, contact_user_id, agent_id")
 
   if (error) {
     return { success: false, error: error.message }
@@ -881,6 +883,42 @@ export async function archiveContactRecord(params: {
     actor_user_id: params.actorUserId ?? null,
     created_at:   now,
     metadata:     { reason: params.reason ?? "manual" },
+  })
+
+  // ── ABSORBED (wave 14) from app/api/contacts/delete/route.ts ────────────────
+  // That route wrote an `activities` row on removal; this command wrote only a
+  // lifecycle_events row. They are not the same surface: loadContactWorkspace()
+  // (COMMAND 12, below) builds the contact timeline from `activities` and never
+  // reads lifecycle_events, so an archive done through this lane left NO trace on
+  // the timeline the CRM actually renders — the record vanished with no entry
+  // saying who removed it or when. The retired route also carried one fact worth
+  // keeping: a contact with a `contact_user_id` still has a live auth user after
+  // the archive, because archiving deliberately does NOT delete the login (that is
+  // an admin action). Both are recorded here now.
+  // Vocabulary follows the intake activity written by createContactManually above
+  // (activity_type/title/description/entity_type/status) — the route's
+  // `notes: JSON.stringify(...)` spelling is deliberately NOT ported, because the
+  // timeline reader selects title/description and would have shown nothing.
+  const archivedRow = archived[0] as { contact_user_id?: string | null; agent_id?: string | null }
+  await supabase.from("activities").insert({
+    brokerage_id:  params.brokerageId,
+    agent_id:      params.agentId ?? archivedRow.agent_id ?? null,
+    contact_id:    params.contactId,
+    activity_type: "contact_archived",
+    title:         "Contact Archived",
+    description:   archivedRow.contact_user_id
+      ? `Contact archived (${params.reason ?? "manual"}). Portal login retained — deleting the auth user is a separate admin action.`
+      : `Contact archived (${params.reason ?? "manual"}).`,
+    entity_type:   "contact",
+    status:        "completed",
+    completed_at:  now,
+    agent_user_id: params.actorUserId ?? null,
+    metadata:      {
+      reason:          params.reason ?? "manual",
+      archived_by:     params.actorUserId ?? null,
+      contact_user_id: archivedRow.contact_user_id ?? null,
+    },
+    created_at:    now,
   })
 
   return { success: true }

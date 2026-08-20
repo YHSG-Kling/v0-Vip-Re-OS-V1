@@ -12,6 +12,8 @@ export {
 export {
   logAuditEventService,
   checkComplianceStatusService,
+  resolveComplianceAlertService,
+  resolveCompRiskFlagService,
   trackCertificationExpirationService,
   analyzeFairHousingRiskService,
   monitorTRIDComplianceService,

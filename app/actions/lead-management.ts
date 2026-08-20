@@ -50,6 +50,16 @@ async function requireLeadDesk(): Promise<
   return { ok: true }
 }
 
+/**
+ * THE brokerage lead list. Since wave 14 it is the ONLY one: the second
+ * spelling, app/actions/leads.ts:getLeads, was a duplicate of this over the same
+ * table with the same session-derived tenant and no caller, and was retired onto
+ * this one (tombstone at the bottom of app/actions/leads.ts). The six filters
+ * that lived only there — lifecycleState / urgencyLevel / assignedAgentId /
+ * aiIsaOwner / minimumViableForIsa / activeOnly — were merged onto
+ * lib/application/lead-application-service.ts:serviceGetLeads BEFORE that
+ * deletion and are passed straight through here.
+ */
 export async function getLeadsAdmin(params?: {
   search?: string
   score?: LeadScore
@@ -61,6 +71,12 @@ export async function getLeadsAdmin(params?: {
   sortBy?: string
   sortOrder?: "asc" | "desc"
   adminView?: boolean
+  lifecycleState?: string
+  urgencyLevel?: string
+  assignedAgentId?: string
+  aiIsaOwner?: boolean
+  minimumViableForIsa?: boolean
+  activeOnly?: boolean
 }) {
   try {
     const gate = await requireLeadDesk()

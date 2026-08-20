@@ -33,6 +33,7 @@ import {
 import {
   recordSellerDecision,
   initiateListingAgreement,
+  markAgreementSigned,
   markDripCompleted,
   recordPreListingRepair,
   markRepairCompleted,
@@ -119,6 +120,25 @@ export async function recordLifecycleEventAction(input: {
       })
     case "initiateListingAgreement":
       return initiateListingAgreement({ listingId })
+    case "markAgreementSigned":
+      // Identity is NOT passed — the recorder resolves it from the session and
+      // ignores any userId/brokerageId handed to it, which is what stops a caller
+      // filing an agreement into someone else's brokerage.
+      //
+      // `sellerTransactionFee` is passed through as undefined when the agent left
+      // it blank (num() returns undefined for "" and null), so the recorder writes
+      // NULL — "no fee agreed" — rather than a negotiated 0.
+      return markAgreementSigned({
+        listingId,
+        uploadMode: str("uploadMode") as "manual_upload" | "provider_pull",
+        documentUrl: str("documentUrl"),
+        providerRef: str("providerRef"),
+        commissionTerms: {
+          listingRate: num("listingRate"),
+          buyerRate: num("buyerRate"),
+          sellerTransactionFee: num("sellerTransactionFee"),
+        },
+      })
     case "markDripCompleted":
       return markDripCompleted({ listingId })
     case "recordPreListingRepair":

@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { ChevronDown, ChevronRight, Zap, Sparkles } from "lucide-react"
 import { triggerAICompScoring } from "@/app/actions/seller-cma"
+import { resolveCompRiskFlag } from "@/app/actions/compliance-monitoring"
 import { generateAICMA } from "@/app/actions/ai-cma"
 import type { CMAPageData } from "@/app/actions/seller-cma"
 import { useRouter } from "next/navigation"
@@ -60,7 +61,31 @@ export function CMAReportTab({ listing, data }: Props) {
   const [scoringMsg, setScoringMsg] = useState<string | null>(null)
   const [generating, setGenerating] = useState(false)
   const [generateError, setGenerateError] = useState<string | null>(null)
+  // Flags cleared during THIS render, so the card empties immediately instead of
+  // waiting for a refresh. The server is still the authority — a refusal leaves
+  // the id out of this set and puts the reason in flagMsg.
+  const [resolvedFlagIds, setResolvedFlagIds] = useState<Set<string>>(new Set())
+  const [resolvingFlagId, setResolvingFlagId] = useState<string | null>(null)
+  const [flagMsg, setFlagMsg] = useState<string | null>(null)
   const router = useRouter()
+
+  const openRiskFlags = riskFlags.filter((f) => !resolvedFlagIds.has(f.id))
+
+  async function handleResolveFlag(flagId: string) {
+    setResolvingFlagId(flagId)
+    setFlagMsg(null)
+    const res = await resolveCompRiskFlag({ flagId })
+    setResolvingFlagId(null)
+    if (res.success) {
+      setResolvedFlagIds((prev) => new Set(prev).add(flagId))
+      setFlagMsg("Flag cleared — recorded against you, with the time.")
+      router.refresh()
+    } else {
+      // Never swallowed. A refused clear that looks like a success is how a
+      // risk flag disappears from the screen while still standing in the record.
+      setFlagMsg(res.error ?? "Could not clear that flag.")
+    }
+  }
 
   function handleScoreComps() {
     if (!cma) return
@@ -202,26 +227,45 @@ export function CMAReportTab({ listing, data }: Props) {
         </Card>
       )}
 
-      {/* Risk flags */}
-      {riskFlags.length > 0 && (
+      {/* Risk flags.
+          The list is loaded `.eq("is_resolved", false)` and, until wave 14, nothing
+          could ever set that column true — so a comp risk the agent had already
+          dealt with stayed on the report permanently. "Mark handled" is the writer
+          that was missing; it records WHO cleared it and WHEN (m511), because a
+          compliance artefact cleared by nobody is not cleared. */}
+      {openRiskFlags.length > 0 && (
         <Card className="border-red-200 bg-red-50/30">
           <CardHeader className="py-3 px-4">
             <CardTitle className="text-sm font-medium text-red-800">Comp Risk Flags</CardTitle>
           </CardHeader>
           <CardContent className="px-4 pb-4 space-y-2">
-            {riskFlags.map((flag) => (
+            {openRiskFlags.map((flag) => (
               <div key={flag.id} className="flex gap-2 items-start text-sm">
                 {severityBadge(flag.severity)}
-                <div>
+                <div className="flex-1">
                   <p className="text-foreground">{flag.description}</p>
                   {flag.recommended_action && (
                     <p className="text-xs text-muted-foreground mt-0.5">{flag.recommended_action}</p>
                   )}
                 </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={resolvingFlagId === flag.id}
+                  onClick={() => handleResolveFlag(flag.id)}
+                >
+                  {resolvingFlagId === flag.id ? "Clearing…" : "Mark handled"}
+                </Button>
               </div>
             ))}
+            {flagMsg && <p className="text-xs text-muted-foreground">{flagMsg}</p>}
           </CardContent>
         </Card>
+      )}
+      {/* A refusal must not be silent: if every flag was cleared this run, say so
+          rather than simply removing the card and leaving the agent guessing. */}
+      {openRiskFlags.length === 0 && resolvedFlagIds.size > 0 && flagMsg && (
+        <p className="text-xs text-muted-foreground">{flagMsg}</p>
       )}
 
       {/* AI Scoring button */}

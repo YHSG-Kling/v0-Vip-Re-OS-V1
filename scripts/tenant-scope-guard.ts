@@ -11,6 +11,7 @@
 // only SHRINK — any NEW unscoped query fails the build with its location.
 
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "node:fs"
+import { stripComments } from "./strip-comments"
 import { join, relative } from "node:path"
 
 // High-risk tenant tables — rows here belong to ONE brokerage.
@@ -56,31 +57,161 @@ function* walk(dir: string): Generator<string> {
   }
 }
 
+/**
+ * The one place the verdict is made — so the POSITIVE CONTROLS below judge the
+ * SAME code that judges the repo. `raw` is a whole file's text, exactly as read
+ * from disk; the return is one entry per table that has at least one unscoped
+ * `.from()` chain in it.
+ *
+ * ── COMMENTS ARE REMOVED, NOT BLANKED, AND THAT DISTINCTION IS THE WHOLE BUG ──
+ *
+ * Round 1 — this scan read the file RAW, so PROSE could satisfy the scope check.
+ * Counted, not asserted: `lib/communications/vendor-communications.tsx` carries
+ * NINE `brokerage_id` mentions inside comments and `app/actions/buyer-offers.ts`
+ * FOUR. A guard that a MENTION can talk out of reporting is worse than no guard,
+ * because it reports zero and reads as a clean bill of health (CLAUDE.md §2).
+ *
+ * Round 2 — the obvious fix, `blankComments`, moved the same defect one step to
+ * the left and pointed it at LIVE CODE. blankComments deliberately preserves
+ * character offsets, so an eight-line comment between `.from("transactions")`
+ * and `.eq("id", …)` does not go away: it becomes ~470 characters of SPACES, and
+ * those spaces are spent out of this scan's 500-character chain budget. All
+ * three "new" findings that appeared the day this guard switched to blanking
+ * were of exactly that shape — a real predicate pushed just past the window by
+ * whitespace, at a measured offset from its own `.from(`:
+ *
+ *   app/actions/buyer-offers.ts       getBuyerOffers      .eq("brokerage_id", access.brokerageId)  ~530
+ *   lib/communications/…-communications.tsx  sendVendorBookingConfirmation  .eq("id", params.transactionId)  ~520
+ *   lib/application/listings.ts       getListingsService  .eq("brokerage_id", params.brokerageId)  ~560
+ *
+ * The first two were correct as written and needed nothing. The third was only
+ * HALF right and the window hid which half: the predicate was there but written
+ * `if (params?.brokerageId) query = query.eq(…)`, so the tenant filter was
+ * OPTIONAL — a shape this guard cannot tell from a real one either way, since
+ * both look identical as text. It is now unconditional and the parameter is
+ * required, which is the only form the text-level check is actually entitled to
+ * believe.
+ *
+ * `stripComments` DELETES the comment (keeping newlines, so line numbers still
+ * match the file on disk) and this scan reports no offsets or positions, so it
+ * is the correct one of the two exports here: prose still cannot satisfy the
+ * check — the text is gone entirely — and the 500 characters are 500 characters
+ * of CODE. Both directions of the §2 defect are closed at once, and both are
+ * pinned by the controls at the bottom of this block.
+ *
+ * KNOWN BLIND SPOT, stated beside the number (CLAUDE.md §2): this is a TEXTUAL
+ * check over a 500-character window of a `.from()` chain. It cannot see a filter
+ * applied through a helper, a predicate more than 500 characters downstream, or
+ * the difference between a predicate that always runs and one behind an `if`.
+ * Files named `*simulator*`, `*guard*` and `*.test.*` are excluded by walk(),
+ * and only `app/` and `lib/` are scanned.
+ */
+function unscopedTablesIn(raw: string): Map<string, number> {
+  const found = new Map<string, number>()
+  const src = stripComments(raw)
+  for (const table of TENANT_TABLES) {
+    const needle = `.from("${table}")`
+    let idx = src.indexOf(needle)
+    while (idx !== -1) {
+      // storage.from("documents") is a BUCKET, not the documents table —
+      // storage paths are tenant-prefixed by convention, not by .eq().
+      if (src.slice(Math.max(0, idx - 12), idx).includes("storage")) {
+        idx = src.indexOf(needle, idx + 1)
+        continue
+      }
+      const window = src.slice(idx, idx + WINDOW)
+      // Head-only counts (count/head:true aggregate) still leak counts — no exemption.
+      const scoped = SCOPE_EVIDENCE.some((e) => window.includes(e))
+      if (!scoped) found.set(table, (found.get(table) ?? 0) + 1)
+      idx = src.indexOf(needle, idx + 1)
+    }
+  }
+  return found
+}
+
+// ── POSITIVE CONTROLS ────────────────────────────────────────────────────────
+// A broken finder and a clean tree both report zero, so "0 found" is only a
+// measurement once the finder has been shown to still recognise the defect it
+// was written for (CLAUDE.md §2). These run against unscopedTablesIn — the SAME
+// function that judges the repo — before any verdict is printed, and they exit
+// non-zero rather than degrading to a pass, because a guard that cannot prove
+// itself must refuse, not wave the build through (CLAUDE.md §4, fail closed).
+{
+  const controls: Array<{ name: string; src: string; expect: number; why: string }> = [
+    {
+      name: "a genuinely unscoped read is REPORTED",
+      expect: 1,
+      why: "the finder no longer recognises the defect it exists to catch — everything below this line is a false all-clear",
+      src: `const { data } = await supabase.from("leads").select("*").order("created_at")`,
+    },
+    {
+      name: "a brokerage_id that appears ONLY IN A COMMENT does NOT satisfy the check",
+      expect: 1,
+      why:
+        "prose is being read as scoping evidence again — this is the ORIGINAL defect, and it is silent: " +
+        "the guard keeps printing PASS while nine commented brokerage_id mentions vouch for an unfiltered query",
+      src: [
+        "const { data } = await supabase",
+        '  .from("transactions")',
+        "  // The tenant stamp comes from brokerage_id on the row below, which is",
+        "  // why this read does not need its own brokerage_id predicate.",
+        '  .select("id, amount")',
+      ].join("\n"),
+    },
+    {
+      name: "a REAL predicate behind a long comment block is still SEEN (no whitespace-budget blind spot)",
+      expect: 0,
+      why:
+        "comment removal is leaving whitespace in the chain window again (blankComments instead of stripComments), " +
+        "so correctly scoped queries are being accused — the direction that gets a guard's real findings ignored",
+      src: [
+        "const { data } = await supabase",
+        '  .from("offers")',
+        // Deliberately longer than WINDOW: if this text is BLANKED rather than
+        // deleted, the .eq() below lands outside the 500-char budget and this
+        // control flips to a false accusation.
+        `  /* ${"documentation. ".repeat(60)} */`,
+        '  .select("id, offer_price")',
+        '  .eq("brokerage_id", access.brokerageId)',
+      ].join("\n"),
+    },
+    {
+      name: "an ordinary scoped read is NOT reported",
+      expect: 0,
+      why: "the finder has started accusing live, correctly scoped code",
+      src: `const { data } = await supabase.from("leads").select("*").eq("brokerage_id", ctx.brokerageId)`,
+    },
+    {
+      name: "a storage BUCKET named like a tenant table is NOT reported",
+      expect: 0,
+      why: "the storage-bucket exemption broke; every signed-URL call site would now read as a tenant leak",
+      src: `const { data } = await supabase.storage.from("documents").createSignedUrl(path, 60)`,
+    },
+  ]
+  let controlFailed = false
+  for (const c of controls) {
+    const got = [...unscopedTablesIn(c.src).values()].reduce((a, b) => a + b, 0)
+    if (got === c.expect) console.log(`  ✓ control · ${c.name}`)
+    else {
+      controlFailed = true
+      console.log(`  ✗ CONTROL FAILED · ${c.name} — expected ${c.expect}, got ${got}`)
+      console.log(`      ${c.why}`)
+    }
+  }
+  if (controlFailed) {
+    console.log(" ❌ TENANT_SCOPE_CONTROL_FAIL — the finder cannot prove it still works, so its zero means nothing")
+    process.exit(1)
+  }
+}
+
 const violations = new Map<string, number>() // "file :: table" → count
 let scanned = 0
 for (const dir of ["app", "lib"]) {
   for (const abs of walk(join(root, dir))) {
-    const src = readFileSync(abs, "utf8")
     scanned += 1
-    for (const table of TENANT_TABLES) {
-      const needle = `.from("${table}")`
-      let idx = src.indexOf(needle)
-      while (idx !== -1) {
-        // storage.from("documents") is a BUCKET, not the documents table —
-        // storage paths are tenant-prefixed by convention, not by .eq().
-        if (src.slice(Math.max(0, idx - 12), idx).includes("storage")) {
-          idx = src.indexOf(needle, idx + 1)
-          continue
-        }
-        const window = src.slice(idx, idx + WINDOW)
-        // Head-only counts (count/head:true aggregate) still leak counts — no exemption.
-        const scoped = SCOPE_EVIDENCE.some((e) => window.includes(e))
-        if (!scoped) {
-          const key = `${relative(root, abs).replace(/\\/g, "/")} :: ${table}`
-          violations.set(key, (violations.get(key) ?? 0) + 1)
-        }
-        idx = src.indexOf(needle, idx + 1)
-      }
+    for (const [table, count] of unscopedTablesIn(readFileSync(abs, "utf8"))) {
+      const key = `${relative(root, abs).replace(/\\/g, "/")} :: ${table}`
+      violations.set(key, (violations.get(key) ?? 0) + count)
     }
   }
 }
@@ -150,9 +281,84 @@ const GLOBAL_LOOKUP_EXEMPT: Record<string, string> = {
 }
 
 {
-  const offenders: string[] = []
   const LOOKUP_RE = /from\((["'])users\1\)([\s\S]{0,300}?)\.eq\((["'])(email|phone|username)\3/g
 
+  /**
+   * Same shape as unscopedTablesIn, and for the same reason: the controls below
+   * have to exercise the function that judges the repo, not a paraphrase of it.
+   * Returns the free-text field of each unscoped `users` lookup found.
+   *
+   * COMMENTS ARE REMOVED, NOT BLANKED — this scan reports a file and a field and
+   * never an offset, and it is windowed twice (`{0,300}?` before the predicate,
+   * 300 characters after), so blanked comments would spend both budgets on
+   * whitespace: a long note between `.from("users")` and `.eq("email")` would
+   * push the pair past the lazy quantifier and the lookup would go UNSEEN, and a
+   * note before `.eq("brokerage_id")` would push the predicate out of the trailing
+   * window and a correctly scoped lookup would be ACCUSED. Deleting the comment
+   * text closes both, and prose still cannot vouch for a query because the prose
+   * is gone. Pinned by the controls immediately below.
+   */
+  function unscopedUserLookupsIn(raw: string): string[] {
+    const src = stripComments(raw)
+    const out: string[] = []
+    LOOKUP_RE.lastIndex = 0
+    let m: RegExpExecArray | null
+    while ((m = LOOKUP_RE.exec(src))) {
+      const window = m[2] + src.slice(LOOKUP_RE.lastIndex, LOOKUP_RE.lastIndex + 300)
+      if (!/\.eq\((["'])brokerage_id\1/.test(window)) out.push(m[4])
+    }
+    return out
+  }
+
+  // ── POSITIVE CONTROLS (see the note on the first set — same rule, same reason) ──
+  {
+    const controls: Array<{ name: string; src: string; expect: number; why: string }> = [
+      {
+        name: "an unscoped free-text users lookup is REPORTED",
+        expect: 1,
+        why: "the finder no longer recognises the binding defect — its zero is meaningless",
+        src: `const { data } = await supabase.from("users").select("id").eq("email", form.email).maybeSingle()`,
+      },
+      {
+        name: "a brokerage_id that appears ONLY IN A COMMENT does NOT satisfy the binding check",
+        expect: 1,
+        why: "prose is vouching for a lookup again — a commented brokerage_id is documentation, not a predicate",
+        src: [
+          'const { data } = await supabase.from("users").select("id")',
+          '  .eq("email", form.email)',
+          "  // Scoped by brokerage_id further up, where the caller was resolved.",
+          "  .maybeSingle()",
+        ].join("\n"),
+      },
+      {
+        name: "a REAL brokerage_id predicate behind a long comment block is still SEEN",
+        expect: 0,
+        why: "comment removal is leaving whitespace in the window again, so scoped lookups are being accused",
+        src: [
+          'const { data } = await supabase.from("users").select("id")',
+          '  .eq("email", form.email)',
+          `  /* ${"documentation. ".repeat(40)} */`,
+          '  .eq("brokerage_id", ctx.brokerageId)',
+        ].join("\n"),
+      },
+    ]
+    let controlFailed = false
+    for (const c of controls) {
+      const got = unscopedUserLookupsIn(c.src).length
+      if (got === c.expect) console.log(`  ✓ control · ${c.name}`)
+      else {
+        controlFailed = true
+        console.log(`  ✗ CONTROL FAILED · ${c.name} — expected ${c.expect}, got ${got}`)
+        console.log(`      ${c.why}`)
+      }
+    }
+    if (controlFailed) {
+      console.log(" ❌ TENANT_BINDING_CONTROL_FAIL — the finder cannot prove it still works, so its zero means nothing")
+      process.exit(1)
+    }
+  }
+
+  const offenders: string[] = []
   const scanDirs = ["app", "lib"]
   const allFiles: string[] = []
   for (const d of scanDirs) for (const abs of walk(join(root, d))) allFiles.push(abs)
@@ -160,14 +366,8 @@ const GLOBAL_LOOKUP_EXEMPT: Record<string, string> = {
   for (const file of allFiles) {
     const rel = relative(root, file)
     if (GLOBAL_LOOKUP_EXEMPT[rel]) continue
-    const src = readFileSync(file, "utf8")
-    LOOKUP_RE.lastIndex = 0
-    let m: RegExpExecArray | null
-    while ((m = LOOKUP_RE.exec(src))) {
-      const window = m[2] + src.slice(LOOKUP_RE.lastIndex, LOOKUP_RE.lastIndex + 300)
-      if (!/\.eq\((["'])brokerage_id\1/.test(window)) {
-        offenders.push(`${rel} :: users.${m[4]}`)
-      }
+    for (const field of unscopedUserLookupsIn(readFileSync(file, "utf8"))) {
+      offenders.push(`${rel} :: users.${field}`)
     }
   }
 

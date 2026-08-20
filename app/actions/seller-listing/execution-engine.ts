@@ -547,6 +547,34 @@ export async function markAgreementSigned(params: {
     buyerRate?: number
     isFlatFee?: boolean
     flatAmount?: number
+    /**
+     * `listing_agreements.seller_transaction_fee` — the FLAT brokerage
+     * transaction fee charged to the SELLER at closing, in dollars, as agreed on
+     * this agreement.
+     *
+     * WHY IT IS HERE (wave 14). m286 built the column and wrote its doctrine, and
+     * no writer ever followed. SIX readers price the seller's net against it:
+     *   lib/kernel/offer-net-sheet.ts:162          the offer net sheet
+     *   lib/workflow/intelligence/multi-offer-matrix.ts:97  the multi-offer matrix
+     *   app/actions/cma-presentation/net-sheet-calculator.ts:151
+     *   app/actions/seller-cma.ts:215 / :300       the CMA + net-sheet pages
+     *   app/actions/portal-seller.ts:573           THE SELLER'S OWN PORTAL
+     *   app/dashboard/listings/[id]/offers/page.tsx:150
+     * Every one of them read NULL and coerced it to 0, so every net-sheet figure
+     * shown to a seller — including in their own portal — OVERSTATED their
+     * proceeds by the brokerage's flat fee.
+     *
+     * NOT agents.transaction_fee / agent_commission_profiles.transaction_fee.
+     * Those are AGENT-side (what the agent pays the brokerage out of their own
+     * split) and must never reduce the seller's proceeds — m286 says so
+     * explicitly, and the temptation to default this from one of them is exactly
+     * the mistake that comment exists to prevent. Absent means NONE AGREED, which
+     * is written as NULL, not as 0: 0 asserts a fee of zero was negotiated.
+     *
+     * Flat dollars only. A percentage charge is commission and belongs in the
+     * rate fields above.
+     */
+    sellerTransactionFee?: number
     adjustmentType?: string
     adjustmentValue?: number
     adjustmentValueType?: "percent" | "flat"
@@ -703,6 +731,19 @@ export async function markAgreementSigned(params: {
   }
   const hasAdjustment = !!(commissionTerms?.adjustmentType && commissionTerms?.adjustmentValue !== undefined)
 
+  // MONEY SHOWN TO A SELLER — validated before it is written, because the six
+  // net-sheet readers subtract it from the seller's proceeds without re-checking.
+  // A negative fee would ADD to their net; a NaN would render "$NaN" on the
+  // seller's own portal. Neither is a number anyone agreed to.
+  const rawFee = commissionTerms?.sellerTransactionFee
+  if (rawFee !== undefined && rawFee !== null) {
+    if (!Number.isFinite(Number(rawFee)) || Number(rawFee) < 0) {
+      return { success: false, error: "Seller transaction fee must be a positive dollar amount (or left blank if none was agreed)." }
+    }
+  }
+  const sellerTransactionFee =
+    rawFee === undefined || rawFee === null ? null : Number(rawFee)
+
   const { data: agreement, error: agreementError } = await supabase
     .from("listing_agreements")
     .insert({
@@ -722,6 +763,10 @@ export async function markAgreementSigned(params: {
       buyer_commission_rate:       commissionTerms?.buyerRate ?? null,
       commission_is_flat_fee:      commissionTerms?.isFlatFee ?? false,
       commission_flat_amount:      commissionTerms?.flatAmount ?? null,
+      // NULL, never 0, when none was agreed — see the doc on the parameter. The
+      // six net-sheet readers all treat NULL as "no fee"; writing 0 would be
+      // indistinguishable but would ASSERT a negotiated zero.
+      seller_transaction_fee:      sellerTransactionFee,
       has_commission_adjustment:   hasAdjustment,
       adjustment_type:             commissionTerms?.adjustmentType ?? null,
       adjustment_value:            commissionTerms?.adjustmentValue ?? null,

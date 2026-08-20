@@ -7,6 +7,9 @@ import {
 import { resolveActiveScrapeTerritories } from "@/lib/lead-pipeline/scrape-territories"
 import { ingestPermitSignals, type PermitScanTerritory } from "@/lib/external/permit-signals"
 import { listSupportedMarkets } from "@/lib/external/socrata-market-registry"
+import {
+  ingestBatchDataSellerSignals, realBatchDataPropertyLookup, DEFAULT_LOOKUPS_PER_RUN,
+} from "@/lib/external/batchdata-seller-signals"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -36,6 +39,27 @@ export const maxDuration = 300
  * (`code_violation`). A permit says money is going INTO a house; a violation says the city is
  * billing the owner for one they are not maintaining. Both are public, dated and address-keyed.
  *
+ * ── A SECOND SOURCE ON THE SAME CADENCE (2026-08-20) ─────────────────────────
+ * Owner directive, verbatim: "we need to find another way to find out signs for motivated sellers
+ * besides permits, maybe use our connection to batchdata?"
+ *
+ * lib/external/batchdata-seller-signals.ts is that source, and it rides HERE rather than on a cron
+ * of its own for the same reason arcgis-permits.ts rides inside permit-signals.ts: there is ONE
+ * seller-signal cadence and ONE signal table, and a second source that forks the whole schedule
+ * becomes a second lane nobody reconciles. Same table, same four-value strength vocabulary, same
+ * idempotency discipline, same tenant stamping.
+ *
+ * IT IS NOT GATED ON TERRITORIES, AND THAT IS THE POINT. The permit half can only see a market
+ * somebody registered a public portal for; measured live on 2026-08-20, `lead_scraping_markets`
+ * holds ZERO rows, so the permit half currently covers zero live tenants and no work inside it
+ * changes that. The BatchData half is driven by the tenant's OWN LEADS instead — national,
+ * address-keyed, and available to a tenant who has configured no market at all. So a
+ * `no_active_territories` resolution still runs it, and only `no_active_subscribers` stops both.
+ *
+ * FAIR HOUSING IS STRUCTURAL IN THAT LANE, not a note here: every signal type it may write is
+ * declared through lib/lead-governance/protected-class-signals.ts, which refuses a protected-class
+ * source at module load. See that file's header.
+ *
  * HONESTY. Per-brokerage errors are collected and returned; a run with any refusal reports
  * `ok: false` with the refusals verbatim, so a Socrata outage or a refused insert can never read
  * as "no permits today".
@@ -61,19 +85,20 @@ export async function GET(request: Request) {
 
   try {
     const resolution = await resolveActiveScrapeTerritories(supabase)
-    if (resolution.noOp) {
+    // ONLY "no active subscribers" stops BOTH halves. A tenant with a live subscription and no
+    // configured market cannot be served permits — but its own leads are still probeable, and
+    // returning here would have made the new source inherit the exact coverage hole it was built
+    // to close. `no_active_territories` and `territory_query_failed` therefore skip the PERMIT
+    // half only, with their reason carried through to the response verbatim.
+    if (resolution.activeBrokerageIds.length === 0) {
       await recordCronSuccessAction({
         context_id: contextId,
         records_processed: 0,
         metadata: { no_op_reason: resolution.reason, error: resolution.error ?? null },
       }).catch(() => {})
-      // A FAILED territory query is not an idle pipeline — it is reported as a failure status.
-      const failed = resolution.reason === "territory_query_failed"
-      return NextResponse.json(
-        { ok: !failed, no_op_reason: resolution.reason, error: resolution.error ?? null },
-        { status: failed ? 500 : 200 },
-      )
+      return NextResponse.json({ ok: true, no_op_reason: resolution.reason, error: resolution.error ?? null })
     }
+    const permitNoOpReason = resolution.noOp ? resolution.reason : null
 
     // Permits publish with a lag and datasets backfill, so the window is wider than the cadence.
     // Re-seeing a permit is free: ingestPermitSignals dedupes on signal_details.dedupe_key.
@@ -142,6 +167,69 @@ export async function GET(request: Request) {
       }
     }
 
+    // ── THE SECOND SOURCE: BATCHDATA, OVER THE TENANT'S OWN LEADS ────────────
+    //
+    // Runs for EVERY active-subscription brokerage, territory or no territory — see the header.
+    // Its own totals stay in their own block rather than being folded into `totals`: the permit
+    // numbers are counts of PERMITS and these are counts of LEADS PROBED, and summing two units
+    // under one name is how this lane's last five findings started.
+    const dayIso = new Date().toISOString().slice(0, 10)
+    const batchdata = {
+      brokerages: 0,
+      leads_available: 0,
+      leads_probed: 0,
+      lookups_refused: 0,
+      leads_not_found: 0,
+      leads_address_mismatch: 0,
+      leads_no_signal: 0,
+      signals_derived: 0,
+      already_recorded: 0,
+      signals_written: 0,
+      written_by_type: {} as Record<string, number>,
+      /** Protected-class field paths the storage gate stripped. EXPECTED EMPTY — a non-empty
+       *  array here means the provider sent a demographic field we never asked for, which is a
+       *  fact an operator must see rather than one the redaction quietly absorbs. */
+      protected_class_redacted: [] as string[],
+      /** Stated reason when the lane did not run. Never silence. */
+      skipped_reason: null as string | null,
+    }
+    // FAIL CLOSED AND SAY SO. With no API key every probe would be a 401, and 200 refusals per
+    // tenant per day is a worse failure than an honest skip that names its reason.
+    if (!process.env.BATCHDATA_API_KEY) {
+      batchdata.skipped_reason = "batchdata_unconfigured"
+    } else {
+      for (const brokerageId of resolution.activeBrokerageIds) {
+        batchdata.brokerages++
+        try {
+          const r = await ingestBatchDataSellerSignals({
+            supabase,
+            brokerageId,
+            lookup: realBatchDataPropertyLookup,
+            dayIso,
+            lookupsPerRun: DEFAULT_LOOKUPS_PER_RUN,
+          })
+          batchdata.leads_available += r.leadsAvailable
+          batchdata.leads_probed += r.leadsProbed
+          batchdata.lookups_refused += r.lookupsRefused
+          batchdata.leads_not_found += r.leadsNotFound
+          batchdata.leads_address_mismatch += r.leadsAddressMismatch
+          batchdata.leads_no_signal += r.leadsNoSignal
+          batchdata.signals_derived += r.signalsDerived
+          batchdata.already_recorded += r.alreadyRecorded
+          batchdata.signals_written += r.signalsWritten
+          for (const [type, n] of Object.entries(r.writtenByType)) {
+            batchdata.written_by_type[type] = (batchdata.written_by_type[type] ?? 0) + n
+          }
+          for (const p of r.protectedClassRedacted) {
+            if (!batchdata.protected_class_redacted.includes(p)) batchdata.protected_class_redacted.push(p)
+          }
+          for (const e of r.errors) errors.push(`batchdata ${brokerageId}: ${e}`)
+        } catch (e) {
+          errors.push(`batchdata ${brokerageId}: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+    }
+
     // ── THE COVERAGE ANSWER, ALWAYS PRESENT ──────────────────────────────────
     //
     // OWNER RULING: "all markets from the active tenant territories for motivational sellers."
@@ -184,9 +272,13 @@ export async function GET(request: Request) {
 
     await recordCronSuccessAction({
       context_id: contextId,
-      records_processed: totals.signals_written,
+      // BOTH sources' writes. `records_processed` names what the RUN produced, and a run that
+      // filed nothing from permits and forty from the property probe did not process zero.
+      records_processed: totals.signals_written + batchdata.signals_written,
       metadata: {
         ...totals, since: sinceIso,
+        permit_no_op_reason: permitNoOpReason,
+        batchdata,
         market_coverage: marketCoverage, market_gaps: marketGaps,
         supported_markets: supportedMarkets,
         dataset_health: health,
@@ -199,6 +291,10 @@ export async function GET(request: Request) {
       ok: errors.length === 0,
       since: sinceIso,
       ...totals,
+      // The permit half's own no-op, carried rather than swallowed: with this present, "0 permit
+      // signals" reads as "no tenant has configured a market" instead of "a quiet week".
+      permit_no_op_reason: permitNoOpReason,
+      batchdata,
       markets_covered: marketCoverage.length - marketGaps.length,
       market_coverage: marketCoverage,
       market_gaps: marketGaps,

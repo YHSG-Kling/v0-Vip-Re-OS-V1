@@ -69,8 +69,8 @@ async function main(): Promise<void> {
     cleanup.push(() => svc.from("leads").delete().eq("brokerage_id", brokerageId))
     console.log("  ✓ seeded brokerage + raw scraped lead")
 
-    const { evaluatePromotionEligibility, promoteRawRecordToLead } = await import("../lib/lead-promotion")
-    const eligibility = await evaluatePromotionEligibility(rawId)
+    const { evaluatePromotionEligibilityCore, promoteRawRecordToLead } = await import("../lib/lead-promotion")
+    const eligibility = await evaluatePromotionEligibilityCore(rawId)  // ungated core: this simulator has no session
     console.log(`  · eligibility → ${JSON.stringify(eligibility).slice(0, 160)}`)
     if (eligibility.eligible) {
       const result = await promoteRawRecordToLead(rawId, brokerageId, rawData)

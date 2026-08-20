@@ -8,7 +8,7 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
-import { guardContent } from "@/lib/content-guardian"
+import { guardContent, attachApprovalSubject } from "@/lib/content-guardian"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { z } from "zod"
@@ -282,17 +282,37 @@ IMPORTANT RULES:
       contentType: "listing_description",
     }).catch((err) => {
       console.error("[compliance-guard] guardContent threw — treating as guard failure:", err)
-      return { flagged: false, guardFailed: true, violations: [], notes: [], content: "", brandVoiceChecked: false }
+      return { flagged: false, guardFailed: true, violations: [], notes: [], content: "", brandVoiceChecked: false, approvalItemId: null }
     })
 
     // Save generated content. listing_marketing_content is listing/brokerage-scoped
     // (no agent_id/status/target_audience columns) — the audience/style folds into
     // the content blob like the canonical ai-marketing-automation writer.
-    await supabase.from("listing_marketing_content").insert({
-      brokerage_id: brokerageId,
-      content_type: "ai_descriptions",
-      content: { ...descriptions, target_audience: params.style },
-    })
+    //
+    // The id is SELECTED now because it is the subject a flagged approval_items row
+    // points at. This path generates text before any row exists, so the scan
+    // (which must run first — see the ordering ruling in lib/content-guardian)
+    // could not name it; the link is stamped immediately after, below.
+    const { data: savedContent, error: savedContentError } = await supabase
+      .from("listing_marketing_content")
+      .insert({
+        brokerage_id: brokerageId,
+        content_type: "ai_descriptions",
+        content: { ...descriptions, target_audience: params.style },
+      })
+      .select("id")
+      .single()
+    if (savedContentError) {
+      console.error("[AI Listing Intake] listing_marketing_content insert failed:", savedContentError)
+    }
+
+    // `approval_items.item_id` — the column the reviewer opens. Called
+    // unconditionally: it is a no-op when nothing was flagged (approvalItemId is
+    // null) or when the save above was refused, and never throws.
+    await attachApprovalSubject(
+      (guardResult as { approvalItemId?: string | null }).approvalItemId,
+      (savedContent?.id as string | null) ?? null,
+    )
 
     return {
       success: true,

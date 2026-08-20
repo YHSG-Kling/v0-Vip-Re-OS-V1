@@ -33,7 +33,6 @@
     "app/actions/privacy/data-subject-requests.ts": 1,
     "app/actions/property-buyer-matching.ts": 1,
     "app/actions/reputation-kernel.ts": 3,
-    "app/actions/seller-listing/execution-engine.ts": 1,
     "app/actions/smart-insights.ts": 1,
     "app/actions/social/generate-social-post.ts": 1,
     "app/actions/social-media-automation.ts": 1,
@@ -44,7 +43,6 @@
     "app/actions/vendor-verification.ts": 1,
     "app/actions/video/create-video-project.ts": 5,
     "app/actions/video-repurposing.ts": 3,
-    "app/api/contacts/update/route.ts": 1,
     "app/components/portal/FitBadge.tsx": 1,
     "app/dashboard/intelligence-report/trust-receipts-card.tsx": 1,
     "app/dashboard/videos/components/BackgroundPicker.tsx": 1,
@@ -185,11 +183,12 @@
     "lib/external/apify-actors.ts": 1,
     "lib/external/arcgis-permits.ts": 8,
     "lib/external/batchdata-client.ts": 2,
+    "lib/external/batchdata-seller-signals.ts": 14,
     "lib/external/email-verifier.ts": 1,
     "lib/external/exa-client.ts": 1,
     "lib/external/nextdoor-extract.ts": 1,
     "lib/external/nominatim-geocode.ts": 2,
-    "lib/external/permit-signals.ts": 14,
+    "lib/external/permit-signals.ts": 13,
     "lib/external/socrata-client.ts": 2,
     "lib/external/socrata-market-registry.ts": 4,
     "lib/external/tavily-client.ts": 1,
@@ -353,8 +352,10 @@
     "lib/lead-assignment/default-assignment.ts": 1,
     "lib/lead-assignment/rule-matcher.ts": 2,
     "lib/lead-assignment/tier-routing.ts": 3,
+    "lib/lead-governance/protected-class-signals.ts": 4,
     "lib/lead-governance/seller-signal-strength.ts": 3,
     "lib/lead-pipeline/ai-intent-classifier.ts": 3,
+    "lib/lead-pipeline/canonical-lead-eligibility.ts": 1,
     "lib/lead-pipeline/enrichment-column-map.ts": 1,
     "lib/lead-pipeline/exa-sourcer.ts": 1,
     "lib/lead-pipeline/osint-sourcer.ts": 1,
@@ -362,6 +363,7 @@
     "lib/lead-pipeline/persona-drift.ts": 1,
     "lib/lead-pipeline/portal-lead-intake.ts": 1,
     "lib/lead-pipeline/processing-status.ts": 2,
+    "lib/lead-pipeline/promotion-address-verification.ts": 2,
     "lib/lead-pipeline/promotion-gate-health.ts": 1,
     "lib/lead-pipeline/raw-record-types.ts": 1,
     "lib/lead-pipeline/scrape-territories.ts": 1,
@@ -526,7 +528,7 @@
     "lib/video/multilingual-reel.ts": 4,
     "lib/video/promo-composition.ts": 1,
     "lib/video/reel-voiceover.ts": 1,
-    "lib/video/script-compliance.ts": 4,
+    "lib/video/script-compliance.ts": 3,
     "lib/video/video-director.ts": 8,
     "lib/video/video-plays.ts": 2,
     "lib/video/video-qr.ts": 1,
@@ -554,7 +556,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9166,
+  "census": 9189,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -732,7 +734,7 @@
     "app/actions/compliance/manage-required-docs.ts": 4,
     "app/actions/compliance/seed-required-docs.ts": 1,
     "app/actions/compliance-bridge-actions.ts": 3,
-    "app/actions/compliance-monitoring.ts": 17,
+    "app/actions/compliance-monitoring.ts": 19,
     "app/actions/compliance-phrases.ts": 4,
     "app/actions/composition-library.ts": 1,
     "app/actions/connection-health.ts": 2,
@@ -833,7 +835,7 @@
     "app/actions/lead-readiness/evaluate-readiness.ts": 2,
     "app/actions/lead-scraping-config.ts": 15,
     "app/actions/lead-signal-ingest.ts": 5,
-    "app/actions/leads.ts": 12,
+    "app/actions/leads.ts": 11,
     "app/actions/learning-modules-approvals.ts": 3,
     "app/actions/learning-modules.ts": 5,
     "app/actions/lender-portal-actions.ts": 5,
@@ -1131,9 +1133,6 @@
     "app/api/admin/billing/subscriptions/[brokerageId]/route.ts": 2,
     "app/api/admin/compliance/ai-disclosures/export/route.ts": 1,
     "app/api/admin/deconflict/route.ts": 1,
-    "app/api/admin/domain-coherence/routes/classify/route.ts": 1,
-    "app/api/admin/domain-coherence/routes/enumerate/route.ts": 1,
-    "app/api/admin/domain-coherence/routes/validate/route.ts": 1,
     "app/api/admin/forms/[id]/route.ts": 1,
     "app/api/admin/forms/route.ts": 1,
     "app/api/admin/health-status/route.ts": 1,
@@ -1178,16 +1177,10 @@
     "app/api/compliance/flags/route.ts": 2,
     "app/api/contacts/[contactId]/brief/route.ts": 1,
     "app/api/contacts/[contactId]/lead-history/route.ts": 1,
-    "app/api/contacts/[contactId]/route.ts": 2,
     "app/api/contacts/[contactId]/voice-note/route.ts": 1,
     "app/api/contacts/analytics/route.ts": 1,
-    "app/api/contacts/create/route.ts": 1,
-    "app/api/contacts/delete/route.ts": 1,
-    "app/api/contacts/list/route.ts": 1,
     "app/api/contacts/qualify/route.ts": 1,
     "app/api/contacts/send-isa-email/route.ts": 1,
-    "app/api/contacts/update/route.ts": 1,
-    "app/api/copilot/plans/route.ts": 1,
     "app/api/credit/status/route.ts": 1,
     "app/api/cron/actor-health/route.ts": 1,
     "app/api/cron/ad-performance-sync/route.ts": 1,
@@ -1424,20 +1417,15 @@
     "app/api/internal/user-wake-word/route.ts": 1,
     "app/api/internal/voice-command/route.ts": 1,
     "app/api/internal/voice-tts/route.ts": 1,
-    "app/api/lead-magnets/[magnetId]/publish/route.ts": 1,
-    "app/api/lead-magnets/create/route.ts": 1,
-    "app/api/lead-magnets/performance/route.ts": 1,
     "app/api/lead-magnets/qr/[magnetId]/route.ts": 2,
     "app/api/lead-magnets/submissions/route.ts": 1,
     "app/api/leads/deduplication-log/route.ts": 1,
-    "app/api/leads/list/route.ts": 1,
     "app/api/leads/process-pipeline/route.ts": 1,
     "app/api/leads/raw/route.ts": 2,
     "app/api/leads/route.ts": 1,
     "app/api/listings/[listingId]/appraisal-defense/route.ts": 1,
     "app/api/listings/[listingId]/upload-document/route.ts": 1,
     "app/api/listings/create/route.ts": 1,
-    "app/api/listings/list/route.ts": 1,
     "app/api/listings/mls-check/route.ts": 1,
     "app/api/meetings/sdk-signature/route.ts": 1,
     "app/api/migrate/verify/route.ts": 1,
@@ -1492,14 +1480,11 @@
     "app/api/them-first/empathy-response/route.ts": 2,
     "app/api/track/identify/route.ts": 1,
     "app/api/track/pixel/route.ts": 1,
-    "app/api/transactions/[id]/route.ts": 2,
-    "app/api/transactions/list/route.ts": 1,
     "app/api/twiml/whisper-bridge/route.ts": 2,
     "app/api/unsubscribe/route.ts": 1,
     "app/api/unsubscribe/token/route.ts": 2,
     "app/api/validate-them-first/route.ts": 1,
     "app/api/vendor-costs/route.ts": 1,
-    "app/api/vendors/list/route.ts": 1,
     "app/api/video/engagement/route.ts": 2,
     "app/api/video/projects/[projectId]/generate/route.ts": 2,
     "app/api/video/projects/[projectId]/preview/route.ts": 1,
@@ -2750,7 +2735,7 @@
     "lib/ai/get-message-text.ts": 1,
     "lib/ai/image-generation.ts": 1,
     "lib/ai/lead-analyzer.ts": 1,
-    "lib/ai/models.ts": 8,
+    "lib/ai/models.ts": 9,
     "lib/ai/pipeline.ts": 4,
     "lib/ai/reply-style.ts": 3,
     "lib/ai/resolve-model.ts": 1,
@@ -2816,7 +2801,7 @@
     "lib/analytics/territory-roi.ts": 5,
     "lib/analytics/vendor-roi.ts": 2,
     "lib/application/ai-isa.ts": 6,
-    "lib/application/compliance-monitoring.ts": 18,
+    "lib/application/compliance-monitoring.ts": 20,
     "lib/application/lead-application-service.ts": 5,
     "lib/application/listing-lifecycle.ts": 16,
     "lib/application/listings.ts": 2,
@@ -3004,6 +2989,7 @@
     "lib/compliance-rules/state-fair-housing-format.ts": 1,
     "lib/compliance-rules/state-fair-housing.ts": 2,
     "lib/connections/accounting-scopes.ts": 10,
+    "lib/connections/credential-secret.ts": 1,
     "lib/connections/field-spec.ts": 6,
     "lib/connections/resolve-scoped.ts": 2,
     "lib/connections/scope.ts": 7,
@@ -3036,7 +3022,7 @@
     "lib/content-generation/content-generator.ts": 6,
     "lib/content-generation/context-enricher.ts": 2,
     "lib/content-generation/generation-logger.ts": 5,
-    "lib/content-guardian/index.ts": 1,
+    "lib/content-guardian/index.ts": 2,
     "lib/content-intel/apify-scraper.ts": 1,
     "lib/content-intel/exa-scraper.ts": 1,
     "lib/content-intel/newsapi-ai.ts": 2,
@@ -3141,6 +3127,7 @@
     "lib/external/arcgis-permits.ts": 9,
     "lib/external/batchdata-client.ts": 6,
     "lib/external/batchdata-mcp.ts": 2,
+    "lib/external/batchdata-seller-signals.ts": 17,
     "lib/external/census-appreciation.ts": 4,
     "lib/external/email-verifier.ts": 3,
     "lib/external/exa-client.ts": 2,
@@ -3170,6 +3157,7 @@
     "lib/finance/auto-dispute.ts": 2,
     "lib/finance/brokerage-earnings-writer.ts": 1,
     "lib/finance/cap-crush.ts": 2,
+    "lib/finance/cap-progress.ts": 2,
     "lib/finance/commission-leak-policy.ts": 1,
     "lib/finance/commission-leak-reaper.ts": 1,
     "lib/finance/commission-tracking-reaper.ts": 1,
@@ -3582,6 +3570,7 @@
     "lib/lead-assignment/unassigned-escalation.ts": 1,
     "lib/lead-governance/multi-factor-scorer.ts": 1,
     "lib/lead-governance/promotion-readiness.ts": 1,
+    "lib/lead-governance/protected-class-signals.ts": 7,
     "lib/lead-governance/routing-evaluator.ts": 1,
     "lib/lead-governance/seller-signal-strength.ts": 4,
     "lib/lead-governance/sla-escalation.ts": 1,
@@ -3592,7 +3581,7 @@
     "lib/lead-intent/inbound-lead-intent.ts": 1,
     "lib/lead-intent/lead-opt-out.ts": 2,
     "lib/lead-pipeline/ai-intent-classifier.ts": 7,
-    "lib/lead-pipeline/canonical-lead-eligibility.ts": 1,
+    "lib/lead-pipeline/canonical-lead-eligibility.ts": 3,
     "lib/lead-pipeline/contact-signal-rescrape.ts": 1,
     "lib/lead-pipeline/enrichment-column-map.ts": 3,
     "lib/lead-pipeline/enrichment-merge.ts": 2,
@@ -3612,6 +3601,7 @@
     "lib/lead-pipeline/pipeline-processor.ts": 1,
     "lib/lead-pipeline/portal-lead-intake.ts": 3,
     "lib/lead-pipeline/processing-status.ts": 2,
+    "lib/lead-pipeline/promotion-address-verification.ts": 3,
     "lib/lead-pipeline/promotion-gate-health.ts": 2,
     "lib/lead-pipeline/raw-record-types.ts": 3,
     "lib/lead-pipeline/reactivation-cadence.ts": 1,
@@ -3634,6 +3624,7 @@
     "lib/lead-pipeline/subscription-gate.ts": 2,
     "lib/lead-pipeline/tavily-sourcer.ts": 2,
     "lib/lead-pipeline/variant-winner.ts": 1,
+    "lib/lead-promotion/eligibility-core.ts": 1,
     "lib/lead-promotion/eligibility-evaluator.ts": 1,
     "lib/lead-promotion/initial-scorer.ts": 1,
     "lib/lead-promotion/lead-promoter.ts": 1,
@@ -3642,6 +3633,7 @@
     "lib/lead-readiness/readiness-logger.ts": 2,
     "lib/lead-scoring/behavioral-events.ts": 3,
     "lib/lead-scoring/record-behavioral-event.ts": 2,
+    "lib/leads/pre-approval.ts": 1,
     "lib/learning-router/composer.ts": 1,
     "lib/learning-router/milestone-gated-modules.ts": 1,
     "lib/learning-router/resolve-agent-learning-context.ts": 1,
@@ -4128,6 +4120,7 @@
     "lib/video/video-pipeline-reaper.ts": 1,
     "lib/video/video-plays.ts": 8,
     "lib/video/video-qr.ts": 2,
+    "lib/video/video-render-hold.ts": 3,
     "lib/video/video-status.ts": 2,
     "lib/video/video-thumbnail-embed.ts": 1,
     "lib/video/viral-script-share.ts": 1,
@@ -5423,6 +5416,8 @@
     "app/actions/compliance-monitoring.ts": [
       "logAuditEvent",
       "checkComplianceStatus",
+      "resolveComplianceAlert",
+      "resolveCompRiskFlag",
       "trackCertificationExpiration",
       "analyzeFairHousingRisk",
       "monitorTRIDCompliance",
@@ -6028,7 +6023,7 @@
       "deliverIntelligentValue",
       "scrapeExternalBehavior",
       "trackExternalActivity",
-      "fetchMotivatedSellers"
+      "runBatchDataSellerSignalProbe"
     ],
     "app/actions/lead-lifecycle.ts": [
       "listUnassignedLeads",
@@ -6090,7 +6085,6 @@
       "ingestDirectMailResponseSignalAction"
     ],
     "app/actions/leads.ts": [
-      "getLeads",
       "getLeadById",
       "getISAQueueLeads",
       "qualifyLead",
@@ -8072,15 +8066,6 @@
     "app/api/admin/deconflict/route.ts": [
       "GET"
     ],
-    "app/api/admin/domain-coherence/routes/classify/route.ts": [
-      "GET"
-    ],
-    "app/api/admin/domain-coherence/routes/enumerate/route.ts": [
-      "GET"
-    ],
-    "app/api/admin/domain-coherence/routes/validate/route.ts": [
-      "GET"
-    ],
     "app/api/admin/forms/[id]/route.ts": [
       "PATCH"
     ],
@@ -8219,23 +8204,10 @@
     "app/api/contacts/[contactId]/lead-history/route.ts": [
       "GET"
     ],
-    "app/api/contacts/[contactId]/route.ts": [
-      "GET",
-      "DELETE"
-    ],
     "app/api/contacts/[contactId]/voice-note/route.ts": [
       "POST"
     ],
     "app/api/contacts/analytics/route.ts": [
-      "GET"
-    ],
-    "app/api/contacts/create/route.ts": [
-      "POST"
-    ],
-    "app/api/contacts/delete/route.ts": [
-      "DELETE"
-    ],
-    "app/api/contacts/list/route.ts": [
       "GET"
     ],
     "app/api/contacts/qualify/route.ts": [
@@ -8243,12 +8215,6 @@
     ],
     "app/api/contacts/send-isa-email/route.ts": [
       "POST"
-    ],
-    "app/api/contacts/update/route.ts": [
-      "PUT"
-    ],
-    "app/api/copilot/plans/route.ts": [
-      "GET"
     ],
     "app/api/credit/status/route.ts": [
       "GET"
@@ -8976,15 +8942,6 @@
     "app/api/internal/voice-tts/route.ts": [
       "POST"
     ],
-    "app/api/lead-magnets/[magnetId]/publish/route.ts": [
-      "POST"
-    ],
-    "app/api/lead-magnets/create/route.ts": [
-      "POST"
-    ],
-    "app/api/lead-magnets/performance/route.ts": [
-      "GET"
-    ],
     "app/api/lead-magnets/qr/[magnetId]/route.ts": [
       "POST",
       "GET"
@@ -8993,9 +8950,6 @@
       "POST"
     ],
     "app/api/leads/deduplication-log/route.ts": [
-      "GET"
-    ],
-    "app/api/leads/list/route.ts": [
       "GET"
     ],
     "app/api/leads/process-pipeline/route.ts": [
@@ -9016,9 +8970,6 @@
     ],
     "app/api/listings/create/route.ts": [
       "POST"
-    ],
-    "app/api/listings/list/route.ts": [
-      "GET"
     ],
     "app/api/listings/mls-check/route.ts": [
       "POST"
@@ -9187,13 +9138,6 @@
     "app/api/track/pixel/route.ts": [
       "GET"
     ],
-    "app/api/transactions/[id]/route.ts": [
-      "GET",
-      "PATCH"
-    ],
-    "app/api/transactions/list/route.ts": [
-      "GET"
-    ],
     "app/api/twiml/whisper-bridge/route.ts": [
       "GET",
       "POST"
@@ -9209,9 +9153,6 @@
       "POST"
     ],
     "app/api/vendor-costs/route.ts": [
-      "GET"
-    ],
-    "app/api/vendors/list/route.ts": [
       "GET"
     ],
     "app/api/video/engagement/route.ts": [
@@ -13196,6 +13137,7 @@
       "analyzeLead"
     ],
     "lib/ai/models.ts": [
+      "modelIdentityFor",
       "selectModelForTask",
       "generateAIResponse",
       "generateObjectRouted",
@@ -13524,6 +13466,8 @@
     "lib/application/compliance-monitoring.ts": [
       "logAuditEventService",
       "checkComplianceStatusService",
+      "resolveComplianceAlertService",
+      "resolveCompRiskFlagService",
       "trackCertificationExpirationService",
       "analyzeFairHousingRiskService",
       "monitorTRIDComplianceService",
@@ -14587,6 +14531,9 @@
       "findOrCreateQboCustomer",
       "readScopedAccounting"
     ],
+    "lib/connections/credential-secret.ts": [
+      "secretFromConfig"
+    ],
     "lib/connections/field-spec.ts": [
       "isOAuthConnection",
       "oauthStartPath",
@@ -14753,7 +14700,8 @@
       "getContentGenerationStats"
     ],
     "lib/content-guardian/index.ts": [
-      "guardContent"
+      "guardContent",
+      "attachApprovalSubject"
     ],
     "lib/content-intel/apify-scraper.ts": [
       "runApifyScrape"
@@ -15260,6 +15208,25 @@
       "callBatchDataMcp",
       "batchDataPreferMcp"
     ],
+    "lib/external/batchdata-seller-signals.ts": [
+      "at",
+      "readQuickList",
+      "readSalePropensity",
+      "readEquityPercent",
+      "readTenureYears",
+      "readTaxDelinquentYear",
+      "readLiens",
+      "readForeclosure",
+      "readProviderAddress",
+      "bandSalePropensity",
+      "bandEquity",
+      "deriveSellerSignals",
+      "batchDataSignalDedupeKey",
+      "buildBatchDataSignalRow",
+      "selectLeadsToProbe",
+      "ingestBatchDataSellerSignals",
+      "realBatchDataPropertyLookup"
+    ],
     "lib/external/census-appreciation.ts": [
       "probeCensusMedianHomeValue",
       "fetchCensusMedianHomeValue",
@@ -15398,6 +15365,10 @@
     "lib/finance/cap-crush.ts": [
       "detectCapCrush",
       "celebrateCapCrush"
+    ],
+    "lib/finance/cap-progress.ts": [
+      "readCapProgress",
+      "pickCapWindow"
     ],
     "lib/finance/commission-leak-policy.ts": [
       "classifyCommissionLeak"
@@ -17616,6 +17587,15 @@
     "lib/lead-governance/promotion-readiness.ts": [
       "evaluatePromotionReadiness"
     ],
+    "lib/lead-governance/protected-class-signals.ts": [
+      "tokenizeFieldPath",
+      "protectedClassReasonFor",
+      "isProtectedClassSource",
+      "assertSellerSignalSourceAllowed",
+      "defineSellerSignalSources",
+      "stripProtectedClassCriteria",
+      "redactProtectedClassFields"
+    ],
     "lib/lead-governance/routing-evaluator.ts": [
       "evaluateRoutingEligibility"
     ],
@@ -17661,6 +17641,8 @@
       "assembleRecordContent"
     ],
     "lib/lead-pipeline/canonical-lead-eligibility.ts": [
+      "hasVerifiedMailingAddress",
+      "hasUnverifiedMailingAddress",
       "evaluateCanonicalLeadEligibility"
     ],
     "lib/lead-pipeline/contact-signal-rescrape.ts": [
@@ -17734,6 +17716,11 @@
     "lib/lead-pipeline/processing-status.ts": [
       "isRawProcessingStatus",
       "isRejectionStatus"
+    ],
+    "lib/lead-pipeline/promotion-address-verification.ts": [
+      "needsPromotionAddressVerification",
+      "interpretLobForPromotion",
+      "verifyMailingAddressForPromotion"
     ],
     "lib/lead-pipeline/promotion-gate-health.ts": [
       "isPermanentlyStuck",
@@ -17839,6 +17826,9 @@
     "lib/lead-pipeline/variant-winner.ts": [
       "pickWinningVariant"
     ],
+    "lib/lead-promotion/eligibility-core.ts": [
+      "evaluatePromotionEligibilityCore"
+    ],
     "lib/lead-promotion/eligibility-evaluator.ts": [
       "evaluatePromotionEligibility"
     ],
@@ -17867,6 +17857,9 @@
     "lib/lead-scoring/record-behavioral-event.ts": [
       "isScoredEventType",
       "recordBehavioralEvent"
+    ],
+    "lib/leads/pre-approval.ts": [
+      "readPreApproval"
     ],
     "lib/learning-router/composer.ts": [
       "pickLearningModulesForActor"
@@ -20284,6 +20277,11 @@
     "lib/video/video-qr.ts": [
       "qrDestinationForKind",
       "mintVideoQr"
+    ],
+    "lib/video/video-render-hold.ts": [
+      "evaluateVideoRenderHold",
+      "stampProjectComplianceHold",
+      "holdErrorMessage"
     ],
     "lib/video/video-status.ts": [
       "isCanonicalVideoStatus",

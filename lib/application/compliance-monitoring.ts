@@ -5,6 +5,7 @@ import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { businessDaysInclusive } from "@/lib/compliance/trid-disclosure-clock"
 import { resolveBrokerageComplianceIdentity } from "@/lib/brokerage/compliance-identity"
+import { getAgentContext } from "@/lib/identity"
 
 // ============================================
 // AUDIT LOGGING
@@ -83,6 +84,234 @@ export async function checkComplianceStatusService(transactionId: string) {
           ? "compliant"
           : "pending",
   }
+}
+
+// ============================================
+// RESOLVING A RAISED FLAG
+// ============================================
+//
+// `compliance_alerts.resolved` and `comp_risk_flags.is_resolved` both DEFAULT
+// false, are both read as `.eq(…, false)`, and were both written by NOBODY. The
+// consequence on the alerts side is above: `overallStatus` is 'at_risk' the
+// moment any alert exists and can never come back, because there was no way to
+// clear one. On the CMA side (app/actions/seller-cma.ts:243) a comp risk the
+// agent has already dealt with keeps rendering on the report forever.
+//
+// Neither failed OPEN — nothing ever showed a green light it had not earned —
+// but a light that cannot go out is a light nobody reads.
+//
+// WHO AND WHEN ARE PART OF THE FACT. A compliance record marked "cleared" with
+// no actor and no timestamp asserts a human judgement that cannot be attributed
+// or dated — the same defect class as a call stamped `compliance_passed` by a
+// gate that never ran (m510). So neither path below writes the boolean alone:
+//
+//   compliance_alerts  already HAS `resolved_at` + `resolved_by` (live, and never
+//                      written until now). All three go in ONE statement, so a
+//                      cleared alert cannot exist without its actor and moment.
+//
+//   comp_risk_flags    has `is_resolved` alone. Rather than adding three new
+//                      columns — which would be three brand-new writerless
+//                      columns until the migration landed, the exact defect this
+//                      wave is burning down — the attribution is written to
+//                      public.audit_log, the ONE audit ledger this file already
+//                      owns (logAuditEventService, top of this module). BOTH
+//                      paths write it, so the two sides are attributable in the
+//                      same place and the same vocabulary.
+//
+// THE AUDIT ENTRY IS WRITTEN FIRST, ON THE RISK-FLAG PATH. If the ledger write
+// fails, the flag is NOT cleared — a cleared flag with no audit row is precisely
+// the unattributable state; an audit row for a clear that was then refused is
+// merely a recorded attempt, which is harmless and true.
+const AUDIT_ALERT_RESOLVED = "compliance_alert.resolved"
+const AUDIT_RISK_FLAG_RESOLVED = "comp_risk_flag.resolved"
+
+export interface ResolveFlagResult {
+  success: boolean
+  error?: string
+}
+
+/**
+ * users.id + brokerage of the caller, from the SESSION — the one identity
+ * resolver (lib/identity), never a parameter. A body-supplied brokerageId on a
+ * compliance write is the IDOR shape this codebase has paid for repeatedly.
+ *
+ * FAILS CLOSED: a gate that cannot RUN refuses. `getAgentContext` throws when the
+ * session cannot be read, and that throw becomes a refusal here rather than an
+ * unauthenticated pass.
+ */
+async function resolveComplianceActor(): Promise<
+  { ok: true; userId: string; brokerageId: string } | { ok: false; error: string }
+> {
+  const ctx = await getAgentContext().catch(() => null)
+  if (!ctx?.isAuthenticated || !ctx.userId) return { ok: false, error: "Not signed in" }
+  if (!ctx.brokerageId) return { ok: false, error: "Your account has no brokerage" }
+  return { ok: true, userId: ctx.userId, brokerageId: ctx.brokerageId }
+}
+
+/**
+ * Clear one compliance alert. The tenant predicate is the caller's OWN brokerage,
+ * so an id belonging to another tenant matches no row and clears nothing.
+ */
+export async function resolveComplianceAlertService(params: {
+  alertId: string
+  note?: string
+}): Promise<ResolveFlagResult> {
+  const supabase = await createClient()
+  const actor = await resolveComplianceActor()
+  if (!actor.ok) return { success: false, error: actor.error }
+
+  const resolvedAt = new Date().toISOString()
+  const { data, error } = await supabase
+    .from("compliance_alerts")
+    .update({
+      resolved: true,
+      resolved_at: resolvedAt,
+      // users.id — the column FKs users, and agents.id is a DISJOINT id space (23503).
+      resolved_by: actor.userId,
+    })
+    .eq("id", params.alertId)
+    .eq("brokerage_id", actor.brokerageId)
+    // Only ever clears an OPEN alert, so a second click cannot rewrite the first
+    // person's name and time off a flag they already dealt with.
+    .eq("resolved", false)
+    .select("id")
+
+  // supabase-js RESOLVES a refusal — read the error before reading the rows.
+  if (error) return { success: false, error: error.message }
+  if (!data || data.length === 0) {
+    return { success: false, error: "That alert is not in your brokerage, or is already resolved" }
+  }
+
+  await writeResolutionAudit(supabase, {
+    action: AUDIT_ALERT_RESOLVED,
+    entityType: "compliance_alert",
+    entityId: params.alertId,
+    userId: actor.userId,
+    brokerageId: actor.brokerageId,
+    resolvedAt,
+    note: params.note,
+  })
+
+  revalidatePath("/dashboard/compliance")
+  return { success: true }
+}
+
+/**
+ * The clearing, in the ONE audit ledger. Deliberately NOT
+ * `logAuditEventService`: that one THROWS on a failed insert, and a throw here
+ * would fail the caller's whole action after the flag had already been cleared —
+ * turning a lost audit line into a lost operation. The failure is returned so
+ * each path can decide (the alert path has its own resolved_by column and only
+ * logs; the risk-flag path has none and REFUSES).
+ */
+async function writeResolutionAudit(
+  supabase: SupabaseClient,
+  params: {
+    action: string
+    entityType: string
+    entityId: string
+    userId: string
+    brokerageId: string
+    resolvedAt: string
+    note?: string
+  },
+): Promise<{ ok: boolean; error?: string }> {
+  const { error } = await supabase.from("audit_log").insert({
+    user_id: params.userId,
+    action: params.action,
+    entity_type: params.entityType,
+    entity_id: params.entityId,
+    before: { resolved: false },
+    after: {
+      resolved: true,
+      resolved_at: params.resolvedAt,
+      resolved_by: params.userId,
+      brokerage_id: params.brokerageId,
+      note: params.note?.trim() || null,
+      compliance_relevant: true,
+    },
+  })
+  if (error) {
+    console.error(`[ComplianceMonitoring] ${params.action} audit write failed:`, error)
+    return { ok: false, error: error.message }
+  }
+  return { ok: true }
+}
+
+/**
+ * Clear one comp risk flag raised by the CMA engine (lib/cma/ai-cma-engine.ts:188).
+ *
+ * comp_risk_flags.brokerage_id is NULLABLE and the engine's bulk insert does not
+ * always carry it, so the tenant predicate cannot be a bare `.eq("brokerage_id", …)`
+ * — that would silently refuse to clear every legitimately-untenanted flag. The
+ * row's OWNERSHIP is established through its CMA instead, which is tenanted, and
+ * the flag is only then cleared by id.
+ */
+export async function resolveCompRiskFlagService(params: {
+  flagId: string
+  note?: string
+}): Promise<ResolveFlagResult> {
+  const supabase = await createClient()
+  const actor = await resolveComplianceActor()
+  if (!actor.ok) return { success: false, error: actor.error }
+
+  const { data: flag, error: flagError } = await supabase
+    .from("comp_risk_flags")
+    .select("id, cma_id, brokerage_id")
+    .eq("id", params.flagId)
+    .maybeSingle()
+  if (flagError) return { success: false, error: flagError.message }
+  if (!flag) return { success: false, error: "Comp risk flag not found" }
+
+  let owned = flag.brokerage_id === actor.brokerageId
+  if (!owned && flag.cma_id) {
+    const { data: cma, error: cmaError } = await supabase
+      .from("cma_reports")
+      .select("id")
+      .eq("id", flag.cma_id)
+      .eq("brokerage_id", actor.brokerageId)
+      .maybeSingle()
+    if (cmaError) return { success: false, error: cmaError.message }
+    owned = !!cma
+  }
+  // No tenant on the row AND no tenant on its CMA → we cannot establish that this
+  // flag belongs to the caller. Refuse; do not guess in the permissive direction.
+  if (!owned) return { success: false, error: "That comp risk flag is not in your brokerage" }
+
+  // ATTRIBUTION FIRST. comp_risk_flags has no resolved_by/resolved_at column, so
+  // the audit row IS the record of who cleared this and when. Writing the boolean
+  // first and the ledger second would leave a cleared flag nobody owns whenever
+  // the second write failed — which is the state this whole path exists to
+  // prevent. An audit row for a clear that is then refused is harmless: it says
+  // an attempt was made, which is true.
+  const resolvedAt = new Date().toISOString()
+  const audit = await writeResolutionAudit(supabase, {
+    action: AUDIT_RISK_FLAG_RESOLVED,
+    entityType: "comp_risk_flag",
+    entityId: params.flagId,
+    userId: actor.userId,
+    brokerageId: actor.brokerageId,
+    resolvedAt,
+    note: params.note,
+  })
+  if (!audit.ok) {
+    return {
+      success: false,
+      error: `Could not record who cleared this flag, so it was left open: ${audit.error ?? "audit write refused"}`,
+    }
+  }
+
+  const { data, error } = await supabase
+    .from("comp_risk_flags")
+    .update({ is_resolved: true })
+    .eq("id", params.flagId)
+    // A second click must not re-clear a flag someone else already closed.
+    .eq("is_resolved", false)
+    .select("id")
+  if (error) return { success: false, error: error.message }
+  if (!data || data.length === 0) return { success: false, error: "That flag is already resolved" }
+
+  return { success: true }
 }
 
 // ============================================

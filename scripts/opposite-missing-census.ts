@@ -1321,6 +1321,37 @@ function findFunctionBody(src: string, parenClose: number): { start: number; end
   return null
 }
 
+
+/**
+ * Split a PARAMETER LIST on top-level commas.
+ *
+ * NOT `sd.splitTopLevel`: that helper tracks only `(` and `)`, so a parameter
+ * typed with a generic — `supabase: SupabaseClient<any, any, any>` — split into
+ * THREE pieces and the last two parsed as parameters literally named `any`,
+ * which were then reported inert because no body mentions `any`. A parameter
+ * that does not exist cannot be inert; that is a false accusation of live code.
+ *
+ * It is deliberately a LOCAL helper rather than a fix to sd.splitTopLevel,
+ * because that one also splits PostgREST select-lists, and those contain `->>`
+ * JSON operators — teaching it to count `<` and `>` as depth would corrupt every
+ * embed it parses. Same reasoning as the strip-comments split: the right scanner
+ * depends on what is being scanned.
+ */
+function splitParamList(s: string): string[] {
+  const parts: string[] = []
+  let depth = 0, start = 0, quote: string | null = null
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]
+    if (quote) { if (ch === quote && s[i - 1] !== "\\") quote = null; continue }
+    if (ch === '"' || ch === "'" || ch === "`") { quote = ch; continue }
+    if (ch === "(" || ch === "[" || ch === "{" || ch === "<") depth++
+    else if (ch === ")" || ch === "]" || ch === "}" || ch === ">") depth--
+    else if (ch === "," && depth === 0) { parts.push(s.slice(start, i)); start = i + 1 }
+  }
+  parts.push(s.slice(start))
+  return parts
+}
+
 function scanInertParams(file: string, src: string): InertParam[] {
   const out: InertParam[] = []
   for (const m of src.matchAll(/(?:^|\n)[ \t]*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([A-Za-z0-9_$]+)\s*(?:<[^(]*>)?\s*\(/g)) {
@@ -1337,7 +1368,7 @@ function scanInertParams(file: string, src: string): InertParam[] {
     functionsExamined++
     if (/\barguments\b/.test(body)) { paramsUnresolved++; continue }
     if (paramText.trim() === "") continue
-    for (const raw of sd.splitTopLevel(paramText, ",")) {
+    for (const raw of splitParamList(paramText)) {
       const p = raw.trim()
       if (!p) continue
       if (/^[{[]/.test(p) || p.startsWith("...") || p.includes("=")) { paramsUnresolved++; continue }

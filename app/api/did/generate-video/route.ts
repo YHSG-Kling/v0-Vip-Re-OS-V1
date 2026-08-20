@@ -183,6 +183,65 @@ export async function POST(request: NextRequest) {
         .eq("id", video_project_id)
     }
 
+    // ─── THE FAIR HOUSING HOLD ────────────────────────────────────────────────
+    //
+    // OWNER RULING (the refinement): "after the script is run then hold up the
+    // video creation if still have a big red flag needed for a human."
+    //
+    // THIS IS THE ONLY COMMON GATE ON THE WIZARD LANE.
+    // app/dashboard/videos/create/video-create-client.tsx inserts
+    // ai_video_projects DIRECTLY from the browser and then posts here — it never
+    // touches createVideoProject — so a hard Fair Housing finding that had been
+    // escalated to a human at script time reached D-ID untouched: the escalation
+    // row sat at approval_status='pending_review' and nothing on this path had
+    // ever read it.
+    //
+    // It runs BEFORE the slot claim and before the ElevenLabs/D-ID spend, on the
+    // RAW script — not `renderScript`, which already carries the injected
+    // brokerage disclosure and would make the human-approval text match fail.
+    //
+    // The brand-compliance gate below is a DIFFERENT check (approved hashtags,
+    // brokerage avatar/voice, brand prohibited_language from global_settings)
+    // and stays where it is; it has never looked at Fair Housing.
+    //
+    // ADVISORY PASSES. evaluateVideoRenderHold holds on red_flag and unknown
+    // only, so a "safe area" or a ThemFirst slip renders exactly as before.
+    //
+    // UNCONDITIONAL — deliberately not wrapped in `if (auth.brokerageId)` the
+    // way the brand gate below is. requireAuth already refuses a session with no
+    // brokerage (403, api-auth.ts), so that condition could only ever be a way
+    // for the gate to be skipped rather than a way for it to be needed.
+    {
+      const { evaluateVideoRenderHold, stampProjectComplianceHold, holdErrorMessage } =
+        await import("@/lib/video/video-render-hold")
+      const hold = await evaluateVideoRenderHold({
+        supabase,
+        actor: { userId: auth.userId, brokerageId: auth.brokerageId },
+        script,
+        projectId: video_project_id,
+        title: "Held video script (render blocked)",
+      })
+      if (hold.hold) {
+        // Record the hold ON THE PROJECT so the board and the admin queue can
+        // both see it, and so a person has something to approve at the project
+        // level too. Destructured — a refused stamp must not read as recorded.
+        const stamped = await stampProjectComplianceHold(supabase, video_project_id, hold)
+        if (!stamped.ok) {
+          console.error("[D-ID] compliance hold could not be stamped on the project:", stamped.error)
+        }
+        return NextResponse.json(
+          {
+            error: holdErrorMessage(hold),
+            compliance_hold: true,
+            compliance_state: hold.state,
+            violations: hold.reasons,
+            review_id: hold.reviewId ?? null,
+          },
+          { status: 422 },
+        )
+      }
+    }
+
     // ─── Brand compliance gate ────────────────────────────────────────────────
     if (auth.brokerageId) {
       const compliance = await checkBrandCompliance({

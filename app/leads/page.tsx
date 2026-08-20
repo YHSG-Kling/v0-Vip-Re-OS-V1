@@ -83,6 +83,7 @@ import {
   deliverIntelligentValue,
   updateLeadProfile,
   getAgentWorkloadStats,
+  runBatchDataSellerSignalProbe,
 } from "@/app/actions/lead-intelligence"
 import type { AgentWorkloadRow } from "@/app/actions/lead-intelligence"
 import LeadIntelligencePanel from "@/app/components/intelligence/LeadIntelligencePanel"
@@ -268,6 +269,13 @@ export default function LeadsPage() {
   const [intentFilter, setIntentFilter] = useState<LeadIntent | "all">("all")
   const [statusFilter, setStatusFilter] = useState<LeadStatus | "all">("all")
   const [sourceFilter, setSourceFilter] = useState<LeadSource | "all">("all")
+  // AI-ISA ownership. The table has rendered an AI-ISA column for admins the
+  // whole time with no way to filter on it; the filter itself only became
+  // available when app/actions/leads.ts:getLeads was retired onto getLeadsAdmin
+  // and its `ai_isa_owner` predicate came with it.
+  const [isaFilter, setIsaFilter] = useState<"all" | "ai" | "human">("all")
+  /** The refusal from the last list read, or null. Rendered — never swallowed. */
+  const [leadsError, setLeadsError] = useState<string | null>(null)
 
   // Sorting
   const [sortBy, setSortBy] = useState("created_at")
@@ -321,6 +329,25 @@ export default function LeadsPage() {
   const [batchReengagementLoading, setBatchReengagementLoading] = useState(false)
   const [batchReengagementResult, setBatchReengagementResult] = useState<any>(null)
 
+  // BATCHDATA SELLER-SIGNAL PROBE — the session-triggered half of the lane whose
+  // scheduled half is /api/cron/permit-signal-scan. The cron rotates the whole
+  // lead base at 200 lookups a run; this button probes 25 for the operator who
+  // does not want to wait for tomorrow's sweep.
+  const [sellerProbeLoading, setSellerProbeLoading] = useState(false)
+  const [sellerProbeResult, setSellerProbeResult] = useState<
+    | null
+    | {
+        success: boolean
+        error?: string
+        signalsWritten?: number
+        alreadyRecorded?: number
+        leadsProbed?: number
+        leadsAvailable?: number
+        writtenByType?: Record<string, number>
+        errors?: string[]
+      }
+  >(null)
+
   // AI PROPERTY MATCH GENIUS — WITHDRAWN FROM THIS SCREEN BY OWNER RULING.
   //
   // The action behind this button now resolves its subject against the contacts
@@ -353,6 +380,33 @@ export default function LeadsPage() {
     }
   }
 
+  // READS ITS OUTCOME. The action returns success:false when ANY lookup or write
+  // was refused — the connector gateway and supabase-js both RESOLVE their
+  // failures, so a run that wrote nothing looks identical to a clean one unless
+  // the caller inspects `errors`. Nothing here says "triggered" or "refreshed";
+  // it says what came back, and a refusal is rendered as a refusal.
+  //
+  // NO ARGUMENTS ARE PASSED, and none can be: the action takes no parameters
+  // and resolves the tenant from the session. A brokerage id crossing this wire
+  // would be the IDOR shape (CLAUDE.md §4).
+  const handleSellerSignalProbe = async () => {
+    setSellerProbeLoading(true)
+    setSellerProbeResult(null)
+    try {
+      const res = await runBatchDataSellerSignalProbe()
+      setSellerProbeResult(res)
+      if (res.success) {
+        // Newly written signals change the motivated-seller count on this tab.
+        const stats = await getIntelligenceDashboardStats().catch(() => null)
+        if (stats?.success) setIntelligenceStats(stats.stats)
+      }
+    } catch (err) {
+      setSellerProbeResult({ success: false, error: "The seller-signal probe could not be reached." })
+    } finally {
+      setSellerProbeLoading(false)
+    }
+  }
+
   // Fetch leads — respects resolved role; waits until role is known.
   // Non-admin agents never fetch leads — they see the gate screen instead.
   const fetchLeads = useCallback(async () => {
@@ -370,15 +424,23 @@ export default function LeadsPage() {
       sortBy,
       sortOrder,
       adminView: isAdminOrBroker,
+      // Merged onto this action from the retired app/actions/leads.ts:getLeads.
+      aiIsaOwner: isaFilter === "all" ? undefined : isaFilter === "ai",
     })
 
     if (result.success) {
       setLeads(result.leads as Lead[])
       setTotal(result.total)
       setTotalPages(result.totalPages)
+      setLeadsError(null)
+    } else {
+      // READ THE OUTCOME. A refused list used to leave the previous page of rows
+      // on screen with no indication that the refresh had failed.
+      setLeads([])
+      setLeadsError(result.error ?? "The lead list could not be loaded.")
     }
     setLoading(false)
-  }, [roleResolved, isAdminOrBroker, search, scoreFilter, intentFilter, statusFilter, sourceFilter, page, sortBy, sortOrder])
+  }, [roleResolved, isAdminOrBroker, search, scoreFilter, intentFilter, statusFilter, sourceFilter, isaFilter, page, sortBy, sortOrder])
 
   useEffect(() => {
     fetchLeads()
@@ -984,7 +1046,7 @@ export default function LeadsPage() {
         {/* Filters Card */}
         <Card>
           <CardContent className="pt-6">
-            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
               {/* Search */}
               <div className="md:col-span-2">
                 <div className="relative">
@@ -1041,6 +1103,21 @@ export default function LeadsPage() {
                   <SelectItem value="rejected">Rejected</SelectItem>
                 </SelectContent>
               </Select>
+
+              {/* AI-ISA Filter — reads leads.ai_isa_owner, the predicate merged
+                  onto getLeadsAdmin from the retired app/actions/leads.ts:getLeads.
+                  The table already renders an AI-ISA column for admins; this is
+                  the control that column never had. */}
+              <Select value={isaFilter} onValueChange={(v) => { setIsaFilter(v as "all" | "ai" | "human"); setPage(1) }}>
+                <SelectTrigger>
+                  <SelectValue placeholder="All Owners" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Owners</SelectItem>
+                  <SelectItem value="ai">AI-ISA owned</SelectItem>
+                  <SelectItem value="human">Human owned</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
 
             {/* Active Filters */}
@@ -1069,7 +1146,23 @@ export default function LeadsPage() {
                   </button>
                 </Badge>
               )}
+              {isaFilter !== "all" && (
+                <Badge variant="secondary" className="gap-1">
+                  Owner: {isaFilter === "ai" ? "AI-ISA" : "Human"}
+                  <button onClick={() => { setIsaFilter("all"); setPage(1) }} className="ml-1 hover:bg-muted rounded-full">
+                    <X className="h-3 w-3" />
+                  </button>
+                </Badge>
+              )}
             </div>
+
+            {/* THE LIST REFUSED. Shown instead of an empty table that reads as
+                "this brokerage has no leads". */}
+            {leadsError && (
+              <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+                Lead list not loaded — {leadsError}
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -1343,6 +1436,101 @@ export default function LeadsPage() {
                 ))}
               </div>
             )}
+
+            {/* MOTIVATED-SELLER SIGNAL PROBE — the session-triggered half of the
+                BatchData seller-signal lane. The scheduled half rides
+                /api/cron/permit-signal-scan nightly; this is where a broker or
+                admin who does not want to wait for the sweep asks for it now.
+                It reads the tenant's OWN leads and looks each one's address up
+                at the provider — it creates no lead and no contact, so it is
+                outside the owner's fence around lead scraping. */}
+            <div className="rounded-lg border bg-card p-4 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold flex items-center gap-1.5">
+                    <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
+                    Motivated-Seller Signal Probe
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Looks up your own leads&apos; addresses at BatchData and files sale-propensity,
+                    pre-foreclosure, tax-delinquency, lien, vacancy and absentee signals. Up to 25
+                    leads per run; the nightly sweep covers the rest. No new leads are created.
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleSellerSignalProbe}
+                  disabled={sellerProbeLoading}
+                  className="gap-1.5 shrink-0"
+                >
+                  {sellerProbeLoading
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    : <Home className="h-3.5 w-3.5 text-amber-500" />}
+                  Probe 25 Leads
+                </Button>
+              </div>
+
+              {/* THE OUTCOME IS READ, NOT ASSUMED. The action returns
+                  success:false whenever ANY lookup or write was refused, and the
+                  refusals ride back in `errors` — a "signals updated" toast over
+                  a failed run is the exact defect this panel must not repeat. */}
+              {sellerProbeResult && (
+                sellerProbeResult.success ? (
+                  <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900 space-y-1">
+                    <p className="font-medium">
+                      {sellerProbeResult.signalsWritten ?? 0} new signal
+                      {(sellerProbeResult.signalsWritten ?? 0) === 1 ? "" : "s"} filed from{" "}
+                      {sellerProbeResult.leadsProbed ?? 0} lead
+                      {(sellerProbeResult.leadsProbed ?? 0) === 1 ? "" : "s"} probed
+                      {typeof sellerProbeResult.leadsAvailable === "number"
+                        ? ` of ${sellerProbeResult.leadsAvailable} with a usable address`
+                        : ""}.
+                    </p>
+                    {(sellerProbeResult.alreadyRecorded ?? 0) > 0 && (
+                      <p className="text-emerald-800">
+                        {sellerProbeResult.alreadyRecorded} signal
+                        {sellerProbeResult.alreadyRecorded === 1 ? " was" : "s were"} already on
+                        record and not duplicated.
+                      </p>
+                    )}
+                    {sellerProbeResult.writtenByType &&
+                      Object.keys(sellerProbeResult.writtenByType).length > 0 && (
+                        <div className="flex flex-wrap gap-1 pt-0.5">
+                          {Object.entries(sellerProbeResult.writtenByType).map(([type, n]) => (
+                            <span
+                              key={type}
+                              className="rounded-full border border-emerald-300 bg-white px-2 py-0.5 text-[11px] capitalize"
+                            >
+                              {type.replace(/_/g, " ")}: {n as number}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    {(sellerProbeResult.signalsWritten ?? 0) === 0 && (
+                      <p className="text-emerald-800">
+                        The run completed and found nothing new — that is a result, not a failure.
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-900 space-y-1">
+                    <p className="font-medium">Probe did not complete.</p>
+                    {sellerProbeResult.error && <p>{sellerProbeResult.error}</p>}
+                    {sellerProbeResult.errors?.map((e, i) => (
+                      <p key={i} className="font-mono text-[11px] leading-relaxed">{e}</p>
+                    ))}
+                    {(sellerProbeResult.signalsWritten ?? 0) > 0 && (
+                      <p>
+                        {sellerProbeResult.signalsWritten} signal
+                        {sellerProbeResult.signalsWritten === 1 ? " was" : "s were"} written before
+                        the run was interrupted — the count above is partial.
+                      </p>
+                    )}
+                  </div>
+                )
+              )}
+            </div>
 
           {/* WHO IS CARRYING WHAT. getAgentWorkloadStats aggregated the qualified
               pipeline by assigned agent and had no caller — so "Assign to me"

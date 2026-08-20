@@ -105,7 +105,16 @@ export async function verifyLeadAddressAction(params: {
       zip_code:     gate.lead.mailing_zip ?? undefined,
     })
     if (!data) return { success: false, error: "Lob not configured (set LOB_API_KEY)", cost }
-    await createServiceClient().from("leads").update({ mailing_address_verified: data.verified }).eq("id", params.leadId)
+    // Stamp the CASS marker too. It is the same Lob US-verification the direct-mail
+    // gate buys (lib/providers/mailing-cass-gate.ts) and the same one the promotion
+    // gate buys (lib/lead-pipeline/promotion-address-verification.ts); without the
+    // marker, a hand-verified address is re-verified — and re-billed — by both.
+    const { CASS_SOURCE } = await import("@/lib/providers/mailing-cass-gate")
+    const { error: verifyWriteError } = await createServiceClient()
+      .from("leads")
+      .update({ mailing_address_verified: data.verified, mailing_address_source: CASS_SOURCE })
+      .eq("id", params.leadId)
+    if (verifyWriteError) return { success: false, error: verifyWriteError.message, cost }
     revalidatePath(`/leads/${params.leadId}`)
     return { success: true, verified: data.verified, deliverability: data.deliverability, cost }
   } catch (e: any) { return { success: false, error: e?.message ?? "address verify failed" } }

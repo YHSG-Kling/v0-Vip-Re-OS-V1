@@ -23,6 +23,30 @@
 // Both halves are fixed by delegating to the one canonical platform gate,
 // requirePlatformCapability('sentinel') — the same capability the superadmin
 // observability surface uses.
+//
+// ─── TOMBSTONE (wave 14) — the /api/admin/domain-coherence HTTP twins ─────────
+// Three unreferenced route files sat in front of the same kernel commands and
+// were retired here. Their own headers already said so: "These routes are the
+// HTTP path around app/actions/admin/domain-coherence.ts." They had zero callers
+// in the tree, are not cron (vercel.json crons is only /api/cron/dispatch) and
+// are not webhooks — they were platform-staff GETs behind the SAME
+// requirePlatformCapability("sentinel") gate as the actions below.
+//
+//   app/api/admin/domain-coherence/routes/enumerate/route.ts GET
+//        → actionEnumerateDomainRoutes()          :80
+//   app/api/admin/domain-coherence/routes/classify/route.ts  GET
+//        → actionClassifyRouteOwnership()         :89
+//          + actionDetectDuplicateManagerSurfaces() :112
+//   app/api/admin/domain-coherence/routes/validate/route.ts  GET
+//        → actionGenerateDomainCoherenceReport()  :158
+//
+// Nothing needed merging: each route body was `gate → kernel call → NextResponse`
+// with the identical arguments the matching action already passes
+// (includePersonaRoutes: true for classify, includeRecommendations: true for
+// validate). The only shape the routes had that no single action has is
+// classify's COMBINED `{ classification, duplicates }` envelope — that is a
+// caller's composition of actions 2 and 4, not a capability, and any reader can
+// await both. No action is dropped and no argument is lost.
 
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import {

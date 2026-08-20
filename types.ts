@@ -1860,7 +1860,6 @@ export type {
   ContactStatus,
   ContactTimeline,
   ContactSource,
-  ContactFormData,
   ContactFilters,
   PropertyInterest,
 } from "./types/contact"

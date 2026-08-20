@@ -5,6 +5,20 @@
 // the single entry point that lets agents "find the answer with context" instead of
 // re-deriving vendor routing + gating at every call site.
 
+// ─── /api/agentic-os/resolve-capability WAS NOT RETIRED (wave 14) ────────────
+// A route census called that endpoint a duplicate of this module. It is not, and
+// this module could not stand in for it if it were:
+//   · `import "server-only"` (line below) means nothing outside this Node process
+//     can reach this function. The route is the ONLY door an external agent has.
+//     Its own header says as much: "Internal AI-agent server code calls
+//     resolveVendorCapability() directly rather than over HTTP" — i.e. the HTTP
+//     door exists precisely for the callers that are NOT internal.
+//   · The route carries three things that live nowhere else: the
+//     requirePlatformStaffAuth gate, validation of `capability` against
+//     VENDOR_CAPABILITY_REGISTRY (with the available list in the 400), and a GET
+//     discovery listing of the whole registry.
+// Unreferenced by design (CLAUDE.md §1). UNRESOLVED — left in place.
+
 import "server-only"
 import { checkVendorBudget } from "@/lib/vendor-governance/budget-gate"
 import {

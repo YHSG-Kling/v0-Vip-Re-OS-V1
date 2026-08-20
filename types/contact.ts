@@ -120,19 +120,19 @@ export interface PropertyInterest {
   [key: string]: any
 }
 
-export interface ContactFormData {
-  first_name: string
-  last_name: string
-  email: string
-  phone?: string
-  contact_type: ContactType
-  contact_persona: ContactPersona
-  timeline: ContactTimeline
-  source: ContactSource
-  status?: ContactStatus
-  notes?: string
-  property_interest?: PropertyInterest
-}
+// ── TOMBSTONE · ContactFormData ─────────────────────────────────────────────
+// DELETED in wave 14. Its only importers were app/api/contacts/create/route.ts
+// and app/api/contacts/update/route.ts, both retired this same wave onto the
+// server actions that already owned contact writes. Those survivors declare
+// their own parameter shapes inline and never referenced this interface:
+//
+//   create → app/actions/contacts.ts:209  createContact
+//   update → app/actions/contacts.ts:307  updateContact
+//
+// The capability is not lost — contact form typing lives on the survivors. What
+// is gone is a second, drifting declaration of the same idea, which is the one
+// vocabulary per function rule. It was still re-exported from the types barrel,
+// so it LOOKED wired: a barrel re-export is a forwarding address, not a reader.
 
 export interface ContactFilters {
   contact_type?: ContactType[]

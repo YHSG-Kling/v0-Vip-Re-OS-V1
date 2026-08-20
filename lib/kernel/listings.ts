@@ -768,6 +768,14 @@ Write 2-3 paragraphs (150-250 words). No address in the first sentence. Lead wit
           agentId: input.agentId,
           brokerageId,
           contentType: "listing_description",
+          // The listing this text is FOR already exists — it was loaded above —
+          // so approval_items.item_id is written directly by the insert and the
+          // reviewer's queue entry opens the listing. No second write, and no
+          // window in which the flagged item is unlinked.
+          // `input.listingId` — isValidUUID-checked at the top and the key the
+          // row above was resolved by. The select does not name `id`, and reading
+          // it off `listing` would have been undefined.
+          subjectId: input.listingId,
         })
         finalDescription = guarded.content
       }

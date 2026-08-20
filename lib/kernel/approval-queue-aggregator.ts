@@ -578,7 +578,15 @@ export async function aggregatePendingApprovals(
       agent_id: (row.agent_id as string | null) ?? null,
       status: String(row.status ?? "pending"),
       priority: "standard",
-      content: `${String(row.item_type ?? "approval")} — ${String(row.item_id ?? "")}`.trim(),
+      // `item_id` is the LINK the reviewer opens. It used to be interpolated
+      // unconditionally, so a row without one rendered as "video_script — " with a
+      // dangling em-dash — a reviewer told something was flagged and given nothing
+      // to open. lib/content-guardian now writes it (directly when the entity
+      // exists, stamped by attachApprovalSubject when it is created after the
+      // scan), and a row that STILL has none says so instead of trailing off.
+      content: row.item_id
+        ? `${String(row.item_type ?? "approval")} — ${String(row.item_id)}`
+        : `${String(row.item_type ?? "approval")} (no linked item)`,
       created_at: String(row.submitted_at ?? new Date().toISOString()),
       updated_at: String(row.reviewed_at ?? row.submitted_at ?? new Date().toISOString()),
     })

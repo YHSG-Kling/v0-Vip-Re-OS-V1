@@ -86,7 +86,18 @@ export async function verifyContactAddressAction(params: {
     })
     if (!data) return { success: false, error: "Lob not configured (set LOB_API_KEY)", cost }
     const svc = createServiceClient()
-    await svc.from("contacts").update({ mailing_address_verified: data.verified }).eq("id", params.contactId)
+    // Same Lob verdict the direct-mail CASS gate buys — stamp its marker and its
+    // timestamp so nothing downstream re-buys a verification already paid for.
+    const { CASS_SOURCE } = await import("@/lib/providers/mailing-cass-gate")
+    const { error: verifyWriteError } = await svc
+      .from("contacts")
+      .update({
+        mailing_address_verified:    data.verified,
+        mailing_address_source:      CASS_SOURCE,
+        mailing_address_verified_at: new Date().toISOString(),
+      })
+      .eq("id", params.contactId)
+    if (verifyWriteError) return { success: false, error: verifyWriteError.message, cost }
     revalidatePath(`/dashboard/contacts/${params.contactId}`)
     return { success: true, verified: data.verified, deliverability: data.deliverability, cost }
   } catch (e: any) { return { success: false, error: e?.message ?? "address verify failed" } }

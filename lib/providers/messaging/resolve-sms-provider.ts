@@ -17,6 +17,7 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
+import { secretFromConfig } from "@/lib/connections/credential-secret"
 import {
   isSupportedSMSProvider,
   type SupportedSMSProvider,
@@ -66,8 +67,14 @@ function toSMSCredentials(conn: {
   const cfg = conn.config ?? {}
   return {
     apiKey:     conn.apiKey ?? conn.accessToken ?? "",
-    apiSecret:  (cfg.auth_token as string | undefined)
-                ?? conn.refreshToken ?? (cfg.api_password as string | undefined),
+    // ONE READING of the config blob's secret half — lib/connections/credential-secret.ts.
+    // This line used to carry its own two-key ladder (auth_token → api_password), the
+    // cron carried a different two-key ladder (auth_token → api_secret), and
+    // connection-manager carried none and read `null`. Three spellings of one idea is
+    // the defect CLAUDE.md §6 names; merged onto the shared reading, with the
+    // refreshToken fallback preserved because platform_credentials genuinely stores
+    // some carriers' secret there.
+    apiSecret:  secretFromConfig(cfg) ?? conn.refreshToken ?? undefined,
     fromNumber: (cfg.from_number as string | undefined) ?? conn.accountId ?? undefined,
     config:     cfg,
   }

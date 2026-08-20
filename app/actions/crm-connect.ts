@@ -15,6 +15,7 @@ import { revalidatePath } from "next/cache"
 import { getAgentContext } from "@/lib/identity"
 import { syncContactToCRM } from "@/lib/crm/sync"
 import { INTEGRATION_STATUS_CONNECTED, INTEGRATION_STATUS_NOT_CONFIGURED } from "@/lib/integrations/integration-status"
+import { encryptSecret } from "@/lib/security/secret-crypto"
 
 export type CrmProvider = "gohighlevel" | "lofty" | "followupboss"
 const CRM_PROVIDERS: CrmProvider[] = ["gohighlevel", "lofty", "followupboss"]
@@ -45,10 +46,40 @@ async function requireMember(): Promise<{ ok: true; member: Member } | { ok: fal
   }
 }
 
-/** Connect (or update) a CRM by API key, and make it the active CRM for the caller's scope. */
+/**
+ * Connect (or update) a CRM by API key, and make it the active CRM for the caller's scope.
+ *
+ * ─── THE SECRET HALF (wave 14) ───────────────────────────────────────────────
+ * `agent_api_credentials.api_secret` and `integration_credentials.api_secret` are
+ * READ — lib/integrations/connection-manager.ts resolves both into
+ * `ResolvedConnection.apiSecret`, and lib/providers/vibe.ts and
+ * lib/agentic-os/connector-probe.ts:247 sign requests with the pair. This action is
+ * the ONLY writer of either table's credential columns anywhere in the tree, and it
+ * took an api_key only, so both columns were writerless and every pair-authenticated
+ * provider resolved to `apiSecret: null`.
+ *
+ * `apiSecret` is OPTIONAL and stays optional. Most CRMs (Follow Up Boss, Lofty,
+ * GoHighLevel) issue a single key and have no second half — a required box would
+ * make the common case impossible to fill in honestly. The column now simply has a
+ * writer for the providers that DO issue one.
+ *
+ * STORED THE WAY THIS TREE STORES SECRETS, not a new scheme: lib/security/secret-crypto.ts
+ * (`encryptSecret` → self-describing `enc:v1:` envelope, AES-256-GCM, a NO-OP when
+ * SECRETS_ENCRYPTION_KEY is unset so a missing key never blocks a write). The reader
+ * — connection-manager — was switched to the backward-compatible `decryptSecret`
+ * FIRST, which is the documented safe order in that module's own header. The
+ * discrete `api_secret` COLUMN is used, not a second `*_encrypted` column: the only
+ * `api_key_encrypted` in this schema is on vendor_marketplace_profiles, a table with
+ * 0 rows and no writer, and copying its shape would fork the scheme.
+ *
+ * NEVER LOGGED. The secret is not put in an error string, a revalidate path, or the
+ * returned value; a refused write reports the PostgREST message only.
+ */
 export async function connectCrmAction(params: {
   provider: CrmProvider
   apiKey: string
+  /** Optional second half of a key+secret pair — only providers that issue one. */
+  apiSecret?: string
   apiUrl?: string
 }): Promise<{ ok: true; scope: "agent" | "brokerage" } | { ok: false; error: string }> {
   if (!CRM_PROVIDERS.includes(params.provider)) return { ok: false, error: "Unknown CRM provider" }
@@ -57,6 +88,13 @@ export async function connectCrmAction(params: {
   if (!gate.ok) return gate
   const { member } = gate
   const supabase = await createClient()
+
+  // A blank box is NOT a secret. Writing "" would make `!!connection.apiSecret`
+  // true at every gate that asks whether a pair is configured (vibe.ts:57,
+  // connector-probe.ts:247) and produce a signed request that 401s at the
+  // provider instead of an honest "not connected" here.
+  const rawSecret = params.apiSecret?.trim()
+  const apiSecret = rawSecret ? encryptSecret(rawSecret) : null
 
   if (member.agentScoped) {
     // Agent's OWN CRM — agent-scoped credential. resolveConnection reads this first.
@@ -69,6 +107,7 @@ export async function connectCrmAction(params: {
           service_name: params.provider,
           service_type: "crm_sync",
           api_key: params.apiKey.trim(),
+          api_secret: apiSecret,
           config: params.apiUrl?.trim() ? { apiUrl: params.apiUrl.trim() } : {},
           is_active: true,
         },
@@ -87,6 +126,7 @@ export async function connectCrmAction(params: {
         brokerage_id: member.brokerageId,
         provider_name: params.provider,
         api_key: params.apiKey.trim(),
+        api_secret: apiSecret,
         webhook_url: params.apiUrl?.trim() || null,
         is_active: true,
         updated_at: new Date().toISOString(),

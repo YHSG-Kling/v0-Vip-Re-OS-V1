@@ -51,6 +51,22 @@ import type {
  * app/api/video/projects/[projectId]/{script,generate,preview,publish} are the
  * SECOND DOOR onto these same functions — they parse HTTP and delegate here.
  * They do not re-implement the gate.
+ *
+ * ── NOT ORPHANS. DO NOT RETIRE THEM. (wave 14) ──────────────────────────────
+ * A route census keeps re-flagging those four as "duplicates whose survivor is
+ * app/actions/video.ts", because their headers say "HTTP door onto
+ * app/actions/video.ts". A thin door is not a duplicate — it is the merged
+ * RESULT of an earlier consolidation, and two things depend on it existing:
+ *   · scripts/video-generation-lane-simulator.ts (npm run test:video-generation-lane,
+ *     inside `npm run guard`) reads all four files by path and asserts each one
+ *     imports from @/app/actions/video, holds no second tenant check, and calls
+ *     no kernel command directly. Delete a file and `code(rel)` returns "" —
+ *     every assertion about it fails, and so does the guard.
+ *   · ../video-action-http.ts states the doors were kept so "any external
+ *     consumer sees no change" in status codes. Nothing in this repo can prove
+ *     no such consumer exists. UNRESOLVED, and unresolved means leave it.
+ * The same holds for app/api/video/projects/route.ts, which
+ * scripts/video-project-consolidation-simulator.ts reads by path.
  */
 
 /** Why a call was refused. Maps to an HTTP status at the route door. */

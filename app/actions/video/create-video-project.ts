@@ -541,6 +541,12 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
   success: boolean
   project?: VideoProject
   error?: string
+  /** True when compliance HELD the video — see the block below. */
+  complianceHold?: boolean
+  /** video_scripts_library.id a human now owns, when a hold was raised. */
+  complianceReviewId?: string
+  /** Everything the agent needs to be told about the hold. */
+  complianceReasons?: string[]
 }> {
   if (!isValidUUID(params.brokerageId) || !isValidUUID(params.agentUserId)) {
     return { success: false, error: "Invalid brokerage or agent ID" }
@@ -553,6 +559,49 @@ export async function createVideoProject(params: CreateVideoProjectParams): Prom
   }
 
   const supabase = await createClient()
+
+  // ── THE HOLD ───────────────────────────────────────────────────────────────
+  //
+  // OWNER RULING (the refinement): "after the script is run then hold up the
+  // video creation if still have a big red flag needed for a human."
+  //
+  // Everything upstream of here GRADED the script and, at most, filed a review
+  // row — and then handed the caller a script this function would turn into a
+  // video anyway, because it had never read that row. That is escalation
+  // without a hold.
+  //
+  // ADVISORY STILL PASSES, and that is asserted in both directions: the gate
+  // holds on `red_flag` and `unknown` ONLY. A ThemFirst pronoun ratio, a
+  // "safe area", a brand-voice drift or a UDAAP pricing phrase renders exactly
+  // as it did before — the first half of the ruling forbids holding those up.
+  //
+  // The scriptless shell lane (scriptPending) has nothing to judge yet; its
+  // script arrives through POST /api/video/projects/[projectId]/script and the
+  // render doors below it are gated, so a shell cannot smuggle a red flag past.
+  if (params.script?.trim()) {
+    const { evaluateVideoRenderHold } = await import("@/lib/video/video-render-hold")
+    const hold = await evaluateVideoRenderHold({
+      supabase,
+      // Tenant and identity are the CALLER'S — createVideoProject's brokerageId
+      // parameter is already the session's at every gated call site, and the
+      // review row RLS (`brokerage_id = current_user_brokerage_id()`) refuses
+      // anything else, so a foreign id cannot file a hold into another tenant.
+      actor: { userId: params.agentUserId, brokerageId: params.brokerageId },
+      script: params.script,
+      scriptId: undefined,
+      videoType: params.videoType,
+      title: params.title,
+    })
+    if (hold.hold) {
+      return {
+        success: false,
+        complianceHold: true,
+        complianceReviewId: hold.reviewId,
+        complianceReasons: hold.reasons,
+        error: hold.reasons[0] ?? "This video is held for human compliance review.",
+      }
+    }
+  }
 
   // CAMPAIGN ATTRIBUTION, tenant-checked. The kernel path wrote the caller's
   // campaignId into marketing_campaign_id unverified, so a caller could attribute
@@ -793,6 +842,36 @@ export async function submitAvatarVideoRender(
     return {
       success: false,
       error: "Avatar and voice must be configured before generating. Set them up in Settings.",
+    }
+  }
+
+  // ── THE FAIR HOUSING HOLD ──────────────────────────────────────────────────
+  //
+  // This function is UNWIRED but it is still a "use server" export, i.e. a live
+  // HTTP endpoint the browser can call by name — and the header above records
+  // that it has NO compliance gate, unlike the D-ID route. That was tolerable
+  // while nothing after generation blocked; under the refinement ("hold up the
+  // video creation if still have a big red flag needed for a human") an
+  // ungated render door is the hole the whole hold leaks through. Gated here
+  // for the same reason it was hardened rather than left as written.
+  //
+  // ADVISORY PASSES — the shared gate holds on red_flag and unknown only.
+  {
+    const { evaluateVideoRenderHold, stampProjectComplianceHold, holdErrorMessage } =
+      await import("@/lib/video/video-render-hold")
+    const hold = await evaluateVideoRenderHold({
+      supabase,
+      actor: { userId: gate.userId, brokerageId },
+      script: (project.script_content as string | null) ?? "",
+      projectId,
+      title: "Held video script (render blocked)",
+    })
+    if (hold.hold) {
+      const stamped = await stampProjectComplianceHold(supabase, projectId, hold)
+      if (!stamped.ok) {
+        console.error("[create-video-project] compliance hold could not be stamped:", stamped.error)
+      }
+      return { success: false, error: holdErrorMessage(hold) }
     }
   }
 

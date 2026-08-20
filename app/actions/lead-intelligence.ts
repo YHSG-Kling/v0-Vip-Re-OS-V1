@@ -38,13 +38,18 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { STANDARD_TIMELINES, type StandardTimeline } from "@/constants/crm-standards"
 import { requirePermission } from "@/lib/security"
+import { isTenantAdminOrPlatformStaff, resolveTenantAdmin } from "@/lib/auth/resolve-user-role"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { revalidatePath } from "next/cache"
 import { ZenrowsClient, BatchDataClient, PeopleDataClient } from "@/lib/external"
 import { IDXBrokerClient } from "@/lib/idxbroker-client"
-import { OSINTClient } from "@/lib/osint-client"
+// OSINTClient's import went with scrapeSocialMotivatedSellerSignals — it was this
+// file's only consumer. The client itself is alive at lib/osint-client.ts and is
+// reached by lib/lead-pipeline/osint-sourcer.ts:64,
+// lib/enrichment/contact-enrichment-core.ts:60 and lib/property/enrichment-chain.ts:92.
 import { calculateLeadScore } from "@/lib/services/lead-management.service"
 import { isValidUUID } from "@/lib/validations"
+import { readPreApproval } from "@/lib/leads/pre-approval"
 
 // Previously every function in this file (except `trackBehavior`, which is
 // a legitimate public visitor-tracking pixel) was unauthenticated. Some
@@ -53,7 +58,9 @@ import { isValidUUID } from "@/lib/validations"
 // BatchData) on caller-supplied locations, draining budget.
 //
 // trackBehavior + scrapeSocialSignalsWithZenRows / scrapeExternalBehavior /
-// fetchMotivatedSellers / analyzeGoogleSearchIntent / enrichPropertyIntelligence
+// analyzeGoogleSearchIntent / enrichPropertyIntelligence
+// (scrapeSocialMotivatedSellerSignals was in this list and is DELETED — see the
+//  tombstone under "MOTIVATED SELLER DETECTION" below)
 // (cron / system data-augmentation functions) need only an auth gate to
 // prevent unauthenticated triggering. The dashboard-facing reads also need
 // brokerage scoping on the two tables that carry a brokerage_id column
@@ -810,7 +817,14 @@ export async function enrichLeadData(leadId: string) {
     await detectMotivatedSellerSignals(leadId)
 
     // 7. Update intelligence profile
-    await updateIntelligenceProfile(leadId, dataSources, contactBrokerageId)
+    await updateIntelligenceProfile(
+      leadId,
+      dataSources,
+      contactBrokerageId,
+      // From the CONTACT row resolved by primary key above — the one live,
+      // written source of "this buyer is financed" at this stage.
+      (lead as { lender_status?: string | null }).lender_status ?? null,
+    )
 
     revalidatePath("/intelligence")
     return { success: true, dataSources }
@@ -1253,6 +1267,12 @@ async function updateIntelligenceProfile(
   leadId: string,
   dataSources: string[],
   brokerageId: string | null,
+  /**
+   * `contacts.lender_status` off the record `enrichLeadData` already loaded.
+   * Threaded rather than re-read: the caller resolved the row by primary key and
+   * refused on absence, so a second lookup here could only disagree with it.
+   */
+  lenderStatus?: string | null,
 ) {
   const supabase = createServiceClient()
 
@@ -1276,6 +1296,34 @@ async function updateIntelligenceProfile(
   const { data: sellerSignals } = await supabase.from("motivated_seller_signals").select("*").eq("lead_id", leadId)
 
   const { data: propertyOwnership } = await supabase.from("lead_property_ownership").select("*").eq("lead_id", leadId)
+
+  // ── FINANCIAL READINESS — the half this writer never wrote ────────────────
+  //
+  // `pre_approved`, `pre_approval_amount` and `financial_readiness` were READ
+  // (lib/services/lead-management.service.ts:504 awards +30 intent points on the
+  // first of them) and written by NOBODY, so the branch could never fire. The
+  // facts that answer it are live and written — `contacts.lender_status` (passed
+  // in from the row the caller loaded) and `buyer_financial_profiles`, keyed on
+  // the contact by app/actions/buyer-financial.ts. The derivation itself lives in
+  // lib/leads/pre-approval.ts so the scorer and this writer cannot disagree about
+  // who is pre-approved.
+  //
+  // `contact_id` is the FK on buyer_financial_profiles and `leadId` here is a
+  // contacts id (enrichLeadData resolves it out of `contacts` and is gated by
+  // requirePermission on a contact) — not the `contacts.contact_id` secondary
+  // uuid, which is a different column and would match nothing.
+  const { data: financialProfile, error: financialError } = await supabase
+    .from("buyer_financial_profiles")
+    .select("pre_approval_amount, pre_approval_expires_at, is_cash_buyer, verified")
+    .eq("contact_id", leadId)
+    .maybeSingle()
+  if (financialError) {
+    // Said out loud. A refused read arrives as `data: null` — byte-for-byte how
+    // "no profile" arrives — and silently scoring a pre-approved buyer as
+    // unfinanced is the failure this whole column was found for.
+    console.error("[v0] buyer_financial_profiles read failed:", financialError.message)
+  }
+  const preApproval = readPreApproval({ lenderStatus: lenderStatus ?? null, financial: financialProfile })
 
   let buyerSellerType = "buyer"
   if (propertyOwnership && propertyOwnership.length > 0) {
@@ -1346,6 +1394,13 @@ async function updateIntelligenceProfile(
     property_type: [...new Set(propertyTypes)],
     location_preferences: [...new Set(locations)],
     timeline,
+    // The three columns the +30 fit/intent branch reads. `pre_approval_amount`
+    // is written as NULL rather than omitted when there is no profile: omitting
+    // it would leave a stale amount from a previous enrichment standing after a
+    // pre-approval lapsed.
+    pre_approved: preApproval.preApproved,
+    pre_approval_amount: preApproval.preApprovalAmount,
+    financial_readiness: preApproval.financialReadiness,
     motivation_score: motivationScore,
     qualification_score: qualificationScore,
     data_sources: dataSources,
@@ -2324,94 +2379,184 @@ export async function trackExternalActivity(data: {
 // MOTIVATED SELLER DETECTION (Public Records + OSINT)
 // ============================================
 
-export async function fetchMotivatedSellers(targetLocation: { city: string; state: string }) {
-  // Paid OSINT + Apify + BatchData scrapers — require auth to prevent budget drain
+// ── DELETED (wave 14): scrapeSocialMotivatedSellerSignals(targetLocation) ────
+//
+// It was exported, had ZERO callers under this name and ZERO under its previous
+// one (`fetchMotivatedSellers`, renamed here last pass), and it is deleted
+// rather than wired because its inputs cannot pass the fair-housing gate this
+// wave built. Every half of what it did survives somewhere better:
+//
+//   1. BatchData motivated-seller PULL
+//      → lib/external/batchdata-client.ts:320 `fetchMotivatedSellers`, which
+//        this function CONSUMED via BatchDataClient.getMotivatedSellers
+//        (lib/external/batchdata-client.ts:9). Untouched, four live consumers.
+//   2. SOCIAL SCRAPE → motivated-seller record
+//      → app/actions/scrape-social-media.ts:41 `scrapeSocialMedia`, surfaced at
+//        app/dashboard/admin/lead-intake/social-scrape-trigger.tsx:11. That one
+//        is admin-gated, meters its scraper calls into billing_usage, and files
+//        through lib/lead-pipeline `processRawRecord`, which carries the dedupe
+//        and consent gates. This one wrote straight past all of it.
+//   3. SOCIAL_INTELLIGENCE row (author_name / post_content / post_url /
+//      ai_intent_score)
+//      → app/actions/lead-intelligence.ts:466 `scrapeSocialSignalsWithZenRows`,
+//        which writes exactly that shape and is deliberately kept DARK for the
+//        same compliance reason recorded in its own header: there is no lawful-
+//        basis record anywhere in this codebase for profiling named individuals'
+//        neighbourhood posts. That ruling applies here identically.
+//   4. COURT / PUBLIC RECORDS by territory
+//      → lib/osint-client.ts:357 `searchCourtRecordsByTerritory`, driven by
+//        lib/lead-pipeline/osint-sourcer.ts:66 — the acquisition lane, inside
+//        the owner's fence around lead scraping and untouched by this lane.
+//   5. MOTIVATED_SELLER_SIGNALS rows from a real provider
+//      → lib/external/batchdata-seller-signals.ts, driven by
+//        app/api/cron/permit-signal-scan (scheduled) and by
+//        `runBatchDataSellerSignalProbe` below (session-triggered). That lane
+//        reads the tenant's OWN leads, matches on an exact normalized address
+//        key, bands its strength onto the one vocabulary, and passes every
+//        source field through lib/lead-governance/protected-class-signals.ts.
+//
+// ── WHY IT COULD NOT BE WIRED: THE GATE WOULD HAVE REFUSED IT ───────────────
+// The owner has ruled repeatedly that probate- and divorce-derived signals need
+// a fair-housing filter, and wave 14 built one:
+// lib/lead-governance/protected-class-signals.ts. Run this function's sources
+// through it and there is nowhere to stand.
+//
+//   · SOURCE. Its second input was (osint as any).searchCourtRecords(...) — a
+//     PRIVATE method reached through an `as any` cast — whose parser
+//     (lib/osint-client.ts:325 parseCourtRecordsHtml) classifies a page by
+//     looking for the literal words "divorce", "bankruptcy", "foreclosure",
+//     "eviction", "lien", "judgment". `protectedClassReasonFor("divorce")`
+//     REFUSES: "divorce" is in PROTECTED_CLASS_TOKENS. So do "probate",
+//     "deceased" and "heirs", which the sibling territory sweep's
+//     DISTRESS_RECORD_TYPES also names. A signal type declaring any of them
+//     through defineSellerSignalSources throws AT MODULE LOAD, by design.
+//   · PAYLOAD. Worse, the gate could not have been placed at all. It is a FIELD
+//     -PATH gate — it inspects provider field names and query criteria. This
+//     function's payload was free-form model prose: it asked a model for
+//     "motivation_factors": ["list of reasons"] about a Nextdoor/Reddit/Facebook
+//     post and wrote the answer verbatim into signal_details. A post reading
+//     "we're divorcing and have to sell fast" produces the protected fact as a
+//     GENERATED SENTENCE, and redactProtectedClassFields cannot strip a sentence
+//     it has no field name for. There is no version of this function where the
+//     gate holds; that is the argument for deleting it rather than filtering it.
+//
+// ── TWO DEFECTS THAT GO WITH IT, RECORDED SO THEY ARE NOT REDISCOVERED ──────
+//   · It wrote `lead_id: signal.contact_id || null` into motivated_seller_signals
+//     — a CONTACTS id into a column every reader treats as leads(id), and NULL
+//     for every social post (no social post carries a contact_id), which files
+//     rows no reader can ever see: lib/services/lead-management.service.ts:187
+//     and app/actions/ai-predictions.ts:204 both read `.eq("lead_id", …)`.
+//     The misattribution class is described at
+//     scripts/leads-never-reach-property-providers-simulator.ts:984. It is gone
+//     with the function; the surviving writers in
+//     lib/external/batchdata-seller-signals.ts and lib/external/permit-signals.ts
+//     both stamp a real leads(id) they matched by address.
+//   · Its court-records call was DEAD ANYWAY: `foreclosures` was awaited — a
+//     paid, JS-rendered, premium-proxy ZenRows fetch — and then never referenced.
+//     `allSignals` was built from the BatchData records and the three Apify
+//     scrapes only. The OSINT half never reached a single row it wrote.
+
+/**
+ * BATCHDATA SELLER-SIGNAL PROBE — the session-triggered half of the lane whose
+ * scheduled half is /api/cron/permit-signal-scan.
+ *
+ * Owner directive, verbatim: "we need to find another way to find out signs for
+ * motivated sellers besides permits, maybe use our connection to batchdata?"
+ *
+ * TENANT COMES FROM THE SESSION AND ONLY FROM THE SESSION. This function takes
+ * NO brokerage parameter — deliberately, and it is the whole reason the
+ * signature looks under-parameterised. A body-supplied `brokerageId` on a
+ * service client is the IDOR shape this repo has found repeatedly (CLAUDE.md
+ * §4), and the ingest below runs on the SERVICE client, so a caller who could
+ * name the tenant could probe and write signals into somebody else's board.
+ * `requireCaller()` resolves it from the authenticated user's own `users` row;
+ * the caller cannot influence it.
+ *
+ * GATE FIRST, THEN THE SERVICE CLIENT — in that order, on those two lines.
+ *
+ * The per-call cap is a FRACTION of the cron's, because this path is reachable
+ * by a human clicking: the scheduled rotation is where the tenant's whole lead
+ * base gets covered, and an interactive trigger must not be able to spend a
+ * day's budget in one click.
+ */
+export async function runBatchDataSellerSignalProbe() {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
 
-  const supabase = createServiceClient()
-  const osint = new OSINTClient()
-  const { ApifyClient } = await import("@/lib/apify-client")
-  const { BatchDataClient } = await import("@/lib/batchdata-client")
-  const { generateAIJSON } = await import("./ai-generate")
-
-  const apify = new ApifyClient()
-  const batchData = new BatchDataClient()
-
-  try {
-    // Get motivated sellers from BatchData (public records, high equity, etc.)
-    const batchDataSellers = await batchData.getMotivatedSellers({
-      city: targetLocation.city,
-      state: targetLocation.state,
-      minEquity: 50000,
+  // THE GATE MATCHES THE SURFACE, because the surface is not the gate.
+  //
+  // The control is on /app/leads, which renders an explanatory refusal screen to
+  // anyone who is not a tenant admin or platform staff. But a "use server"
+  // export is a PUBLIC HTTP ENDPOINT (CLAUDE.md §4) — the screen does not
+  // protect it. Without this, any authenticated agent could POST 25 paid
+  // BatchData lookups per click against their brokerage's provider budget, which
+  // is the same reason app/actions/scrape-social-media.ts:52 gates its scrape to
+  // the admin roster. Same roster used here, resolved from the SESSION.
+  //
+  // BOTH HALVES OF THE ADMIN RULE, because the surface uses both. /app/leads
+  // admits a tenant admin by users.user_type OR by a role GRANT pinned to their
+  // own brokerage (resolveTenantAdmin) — on the live solo tenant the person who
+  // most needs the lead desk is 'agent' by user_type and 'admin' by grant. A
+  // server gate reading only the user_type half would show that person the button
+  // and then refuse them, which is a worse failure than no button.
+  //
+  // FAIL CLOSED: an unreadable profile or a refused grant read REFUSES. supabase-js
+  // resolves a denial, so "nobody could check" must not render as "checked and fine".
+  const cookieClient = await createClient()
+  const { data: profile, error: profileError } = await cookieClient
+    .from("users")
+    .select("user_type, platform_role, brokerage_id")
+    .eq("id", auth.userId)
+    .maybeSingle()
+  if (profileError) {
+    return { success: false, error: `Role could not be resolved: ${profileError.message}` }
+  }
+  if (!profile) {
+    return { success: false, error: "Role could not be resolved" }
+  }
+  let allowed = isTenantAdminOrPlatformStaff(profile)
+  if (!allowed) {
+    const grant = await resolveTenantAdmin(cookieClient, auth.userId, {
+      user_type: profile.user_type,
+      brokerage_id: profile.brokerage_id,
     })
-
-    // Search for foreclosure filings
-    const foreclosures = await (osint as any).searchCourtRecords("", targetLocation.state)
-
-    // Scrape Nextdoor using Apify
-    const nextdoorPosts = await apify.scrapeSocialMedia("nextdoor", `${targetLocation.city} moving selling house`)
-
-    // Scrape Reddit using Apify
-    const redditPosts = await apify.scrapeSocialMedia("reddit", `${targetLocation.city} selling house need to sell`)
-
-    // Scrape Facebook using Apify
-    const fbPosts = await apify.scrapeSocialMedia("facebook", `${targetLocation.city} selling house`)
-
-    // Combine all sources
-    const allSignals = [...batchDataSellers, ...nextdoorPosts, ...redditPosts, ...fbPosts]
-
-    for (const signal of allSignals) {
-      const prompt = `Analyze this post for seller motivation:
-
-Post: ${signal.content || signal.text}
-Source: ${signal.source || "unknown"}
-Location: ${targetLocation.city}
-
-Determine:
-{
-  "is_motivated_seller": boolean,
-  "motivation_level": "low|medium|high|urgent",
-  "motivation_factors": ["list of reasons"],
-  "urgency_timeline": "immediate|1month|3months|unknown",
-  "estimated_property_value": number or null,
-  "contact_method": "How to reach out"
-}`
-
-      const analysis = await generateAIJSON(prompt)
-
-      if (analysis.data?.is_motivated_seller) {
-        await supabase.from("motivated_seller_signals").insert({
-          brokerage_id: auth.brokerageId,
-          lead_id: signal.contact_id || null,
-          signal_type: "social_media",
-          signal_details: {
-            property_address: signal.property_address || "Unknown",
-            motivation_factors: analysis.data.motivation_factors,
-            urgency_level: analysis.data.motivation_level,
-            timeframe: analysis.data.urgency_timeline,
-          },
-          signal_strength: analysis.data.motivation_level === "urgent" ? "urgent" : analysis.data.motivation_level === "high" ? "strong" : "moderate",
-          detected_via: signal.source,
-        })
-
-        // Create social intelligence record
-        await supabase.from("social_intelligence").insert({
-          brokerage_id: auth.brokerageId,
-          source: signal.source,
-          post_content: signal.content || signal.text,
-          post_url: signal.url,
-          detected_location: targetLocation.city,
-          intent_keywords_matched: analysis.data.motivation_factors,
-          ai_intent_score: analysis.data.motivation_level === "urgent" ? 95 : 70,
-          urgency_level: analysis.data.motivation_level,
-        })
-      }
+    if (!grant.ok) {
+      return { success: false, error: `Role could not be resolved: ${grant.error}` }
     }
+    allowed = grant.isTenantAdmin
+  }
+  if (!allowed) {
+    return { success: false, error: "Forbidden: the seller-signal probe is a lead-desk action" }
+  }
 
-    return { success: true, motivatedSellers: allSignals.length }
-  } catch (error) {
-    console.error("[v0] Motivated seller detection error:", error)
-    return { success: false, error: String(error) }
+  const supabase = createServiceClient()
+  const { ingestBatchDataSellerSignals, realBatchDataPropertyLookup } =
+    await import("@/lib/external/batchdata-seller-signals")
+
+  // FAIL CLOSED WITH A STATED REASON. With no provider key every probe is a 401,
+  // and a caller must be told the connector is unconfigured rather than shown a
+  // clean run that found nothing.
+  if (!process.env.BATCHDATA_API_KEY) {
+    return { success: false, error: "BatchData connector is not configured" }
+  }
+
+  const result = await ingestBatchDataSellerSignals({
+    supabase,
+    brokerageId: auth.brokerageId,
+    lookup: realBatchDataPropertyLookup,
+    dayIso: new Date().toISOString().slice(0, 10),
+    lookupsPerRun: 25,
+  })
+
+  // A run with any refusal NEVER reports a clean success — supabase-js and the
+  // connector gateway both RESOLVE their failures, so silence here would be the bug.
+  return {
+    success: result.errors.length === 0,
+    signalsWritten: result.signalsWritten,
+    alreadyRecorded: result.alreadyRecorded,
+    leadsProbed: result.leadsProbed,
+    leadsAvailable: result.leadsAvailable,
+    writtenByType: result.writtenByType,
+    errors: result.errors,
   }
 }

@@ -76,6 +76,32 @@ const OSINT_REQUESTS_PER_SEARCH = 6
 export const LIFE_CHANGE_CHECK_INTERVAL_DAYS = 30
 
 /**
+ * BACKLOG CAP — the most pending/processing `contact_id` rows one tenant may hold.
+ *
+ * THE BULK-IMPORT BOUND. The owner's wave-14 ruling — "when a list or any time
+ * there is a new contact, there is an automatic enrichment run" — points every
+ * imported row at this queue: app/actions/lead-import/import-actions.ts
+ * (processImportRows) and lib/crm/import-pull.ts (the Follow Up Boss / Lofty /
+ * HubSpot / GoHighLevel migration pull) both funnel through
+ * lib/contact-pipeline/contact-capture.ts:captureContact, which queues on BOTH its
+ * create and its merge path. A 5,000-row CSV therefore asked for 5,000 enrichments
+ * in one loop — at this lane's own ~$0.16/contact, ~$800 of committed spend from a
+ * single upload, drained ten rows at a time.
+ *
+ * This is the same instrument the lead lane already had
+ * (lib/enrichment/lead-enrichment-core.ts:MAX_PENDING_LEAD_ENRICHMENTS) and the
+ * same number, so the two tracks cannot drift: ~200 × $0.16 ≈ $32 of
+ * committed-but-unspent contact enrichment per tenant.
+ *
+ * BACKPRESSURE, NOT A DROP. A refused contact keeps `enriched_at` NULL, so it is
+ * still un-enriched BY EVIDENCE and the nightly net
+ * (app/api/cron/contact-enrichment → listUnenrichedContacts, which selects exactly
+ * `enriched_at IS NULL`) picks it up on a later run once the backlog drains. The
+ * import still finishes; nothing is silently abandoned.
+ */
+export const MAX_PENDING_CONTACT_ENRICHMENTS = 200
+
+/**
  * Where an enrichment run was triggered FROM.
  *
  * ── "ghl_sync" IS DELIBERATELY ABSENT (owner's wave-5 ruling) ────────────────
@@ -169,7 +195,7 @@ export async function queueContactEnrichment(params: {
   supabase?: SupabaseClient<any, any, any>
 }): Promise<{
   queued: boolean
-  reason?: "already_queued" | "recently_enriched" | "live_deal" | "not_found" | "no_identifier" | "error"
+  reason?: "already_queued" | "recently_enriched" | "live_deal" | "not_found" | "no_identifier" | "backlog" | "error"
   error?: string
 }> {
   const { contactId, brokerageId } = params
@@ -230,6 +256,29 @@ export async function queueContactEnrichment(params: {
   // is what turns an idempotency guard into a double-charge.
   if (existingError) return { queued: false, reason: "error", error: existingError.message }
   if (existing?.id) return { queued: false, reason: "already_queued" }
+
+  // ── BACKLOG CAP — the bound on a list/bulk import ──────────────────────────
+  // Counted over `contact_id`-bearing rows only, so a 5,000-row import cannot be
+  // masked by (or mask) the lead track's own queue depth. Mirrors the lead lane's
+  // cap exactly (MAX_PENDING_LEAD_ENRICHMENTS), including its ordering: after the
+  // owner's suppression rule, so a live-deal contact is reported as suppressed
+  // rather than as backlogged.
+  const { count: pendingContacts, error: backlogError } = await supabase
+    .from("lead_enrichment_queue")
+    .select("id", { count: "exact", head: true })
+    .eq("brokerage_id", brokerageId)
+    .not("contact_id", "is", null)
+    .in("status", ["pending", "processing"])
+
+  // Fail CLOSED on the money question: if the backlog cannot be sized, do not add
+  // to it. supabase-js RESOLVES refusals, so an unread error here would read as a
+  // backlog of zero and uncap the import entirely.
+  if (backlogError) {
+    return { queued: false, reason: "error", error: `backlog count: ${backlogError.message}` }
+  }
+  if ((pendingContacts ?? 0) >= MAX_PENDING_CONTACT_ENRICHMENTS) {
+    return { queued: false, reason: "backlog" }
+  }
 
   const enrichments_needed: string[] = ["skip_trace"]
   if (!contact.email) enrichments_needed.push("email_append")

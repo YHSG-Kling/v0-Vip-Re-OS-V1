@@ -188,6 +188,25 @@ export async function convertValuationRequestToContact(params: {
       sendMagicLink: true,
     }).catch(() => {})
 
+    // 6. AUTOMATIC ENRICHMENT (owner, wave 14): "any time there is a new contact,
+    //    there is an automatic enrichment run." This door inserts the contact
+    //    directly — no captureContact, no CONTACT_CREATED emit — so neither the
+    //    create-time lane nor the reactor reached it. The SURVIVOR is called
+    //    (lib/enrichment/contact-enrichment-core.ts:queueContactEnrichment); it
+    //    owns the freshness check, the pending-row idempotency guard, the owner's
+    //    live-deal suppression and the backlog cap. Best-effort — a conversion
+    //    must never fail because enrichment could not be queued.
+    try {
+      const { queueContactEnrichment } = await import("@/lib/enrichment/contact-enrichment-core")
+      await queueContactEnrichment({
+        contactId:   newContact.id,
+        brokerageId: params.brokerageId,
+        triggerType: "home_value_conversion",
+      })
+    } catch (err) {
+      console.error("[convertValuationRequestToContact] enrichment enqueue failed (non-fatal):", err)
+    }
+
     return { success: true, contactId: newContact.id }
   } catch (error: any) {
     console.error("[convertValuationRequestToContact] Error:", error)
@@ -365,6 +384,26 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
         return { success: false, error: "Failed to create contact" }
       }
       contactId = newContact.id
+
+      // AUTOMATIC ENRICHMENT ON A NEW CONTACT (owner, wave 14). Public,
+      // sessionless door that inserts a contact directly, so neither
+      // captureContact's create-time lane nor the reactor's CONTACT_CREATED
+      // branch reached it. Queued through the survivor
+      // (lib/enrichment/contact-enrichment-core.ts:queueContactEnrichment), which
+      // carries the identifier gate, the live-deal suppression and the backlog
+      // cap. Only on the CREATE branch: a returning homeowner is already known to
+      // the queue's freshness check, which would refuse them anyway.
+      // Best-effort — a public form submission must never fail on enrichment.
+      try {
+        const { queueContactEnrichment } = await import("@/lib/enrichment/contact-enrichment-core")
+        await queueContactEnrichment({
+          contactId,
+          brokerageId: resolvedBrokerageId,
+          triggerType: "home_value_form",
+        })
+      } catch (err) {
+        console.error("[submitHomeValueRequest] enrichment enqueue failed (non-fatal):", err)
+      }
     } else {
       contactId = existingContact.id
     }

@@ -2,7 +2,56 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { listLeadMagnets, createLeadMagnet, publishLeadMagnet } from "@/lib/kernel/lead-magnets"
+import { listLeadMagnets, createLeadMagnet, publishLeadMagnet, getMagnetPerformance } from "@/lib/kernel/lead-magnets"
+import { headers } from "next/headers"
+
+/**
+ * ─── TOMBSTONE (wave 14) — the /api/lead-magnets HTTP twins ──────────────────
+ * Three unreferenced route files duplicated the actions below and were retired
+ * here. All three were session-auth'd (`supabase.auth.getUser()`) and had zero
+ * callers in the tree, no cron entry in vercel.json, and no self-call.
+ *
+ *   app/api/lead-magnets/create/route.ts             POST → createLeadMagnetAction()   :98
+ *   app/api/lead-magnets/[magnetId]/publish/route.ts POST → publishLeadMagnetAction()  :166
+ *   app/api/lead-magnets/performance/route.ts        GET  → getMagnetPerformanceAction() :254
+ *
+ * Every one of them took `brokerageId` (and create also `agentId`) FROM THE
+ * REQUEST BODY and handed it straight to a service-client kernel command — the
+ * IDOR shape CLAUDE.md §4 names. None of that is ported: the survivors resolve
+ * tenant from the session, which is the whole reason they are the survivors.
+ *
+ * What WAS merged onto the survivors before the routes went — three real gaps:
+ *   1. ACTOR ID CLASS. The routes passed `user.id` (users.id) as createdBy /
+ *      actorUserId; these actions passed `ctx.agentId` (agents.id).
+ *      lifecycle_events.actor_user_id is `FOREIGN KEY … REFERENCES users(id)`
+ *      (verified live), and agents.id / users.id are DISJOINT (CLAUDE.md §3), so
+ *      the kernel's audit insert was being refused with 23503 on every create and
+ *      every publish — and the kernel does not read that insert's error, so the
+ *      refusal was silent. Both now pass ctx.userId.
+ *   2. PUBLISH CHANNELS. publishLeadMagnetAction hard-coded
+ *      `channels: ["landing_page"]`, which made the kernel's `qr_code` branch
+ *      unreachable from the product. The route accepted the channel list; it is
+ *      now an optional argument, defaulting to the old behaviour.
+ *   3. PUBLISH BASE URL. This action used `process.env.NEXT_PUBLIC_APP_URL ?? ""`,
+ *      and the kernel refuses an empty baseUrl — so on any deploy without that
+ *      env var, publish failed with "Missing required fields". The route derived
+ *      the origin from the request host/x-forwarded-proto, which always resolves.
+ *      That derivation is ported (env still wins when set).
+ *   4. PERFORMANCE. getMagnetPerformanceAction returned RAW `form_submissions`
+ *      rows and let the UI invent the metrics from them — PerformanceDashboard
+ *      was setting totalViews = submissions.length and conversionRate = 1. The
+ *      route called lib/kernel/lead-magnets.ts:getMagnetPerformance, which counts
+ *      views and QR scans off lifecycle_events for real. The action now delegates
+ *      to it and returns `performance` alongside the submissions it already
+ *      returned, so its existing caller keeps working.
+ *
+ * NOT retired: app/api/lead-magnets/submissions/route.ts. Its own header says
+ * "Auth: NOT required — public-facing endpoint for form submitters", which is the
+ * unreferenced-by-design shape CLAUDE.md §1 warns about: an embedded or hosted
+ * capture form living outside this repo would address it directly, and nothing in
+ * the tree can prove one does not. UNRESOLVED — left in place. (Also not retired:
+ * app/api/lead-magnets/qr/[magnetId]/route.ts, same public-QR reasoning.)
+ */
 
 /** Roles whose Lead Magnets view is the whole brokerage rather than just their own.
  *  TRUE ADMIN GATE (operational: marketing — the owner ruling's team_lead-included
@@ -62,7 +111,11 @@ export async function createLeadMagnetAction(input: {
       magnetType: input.magnet_type as any,
       brokerageId: ctx.brokerageId,
       agentId: ctx.agentId,
-      createdBy: ctx.agentId,
+      // ABSORBED from the retired /api/lead-magnets/create route: createdBy lands
+      // in lifecycle_events.actor_user_id, which FKs users(id). ctx.agentId is
+      // agents.id — a disjoint class — so the audit insert was refused (23503) and
+      // the kernel never reads that insert's error. users.id is the correct class.
+      createdBy: ctx.userId,
       description: input.description ?? "",
       thankYouMessage: input.thank_you_message,
       tcpaDisclosureText: input.tcpa_text,
@@ -110,19 +163,47 @@ export async function saveMagnetLandingContentAction(
 }
 
 // Delegates to kernel publishLeadMagnet which reads/writes lead_capture_forms
-export async function publishLeadMagnetAction(magnetId: string) {
+export async function publishLeadMagnetAction(
+  magnetId: string,
+  // ABSORBED from the retired /api/lead-magnets/[magnetId]/publish route, which
+  // took the channel list from its body. Hard-coding ["landing_page"] here made
+  // the kernel's `qr_code` branch unreachable from the product. Default keeps the
+  // previous behaviour for the existing caller (MagnetBuilder).
+  channels: Array<"qr_code" | "email" | "landing_page" | "social"> = ["landing_page"],
+) {
   try {
     const ctx = await getAgentContext()
     if (!ctx.brokerageId || !ctx.agentId) return { success: false as const, error: "Not authenticated" }
+    if (!channels?.length) return { success: false as const, error: "At least one channel required" }
     return publishLeadMagnet({
       magnetId,
       brokerageId: ctx.brokerageId,
-      channels: ["landing_page"],
-      actorUserId: ctx.agentId,
-      baseUrl: process.env.NEXT_PUBLIC_APP_URL ?? "",
+      channels,
+      // ABSORBED: actor_user_id FKs users(id) — see createLeadMagnetAction above.
+      actorUserId: ctx.userId,
+      // ABSORBED: the retired route derived the origin from the request headers.
+      // `process.env.NEXT_PUBLIC_APP_URL ?? ""` alone meant that on any deploy
+      // without that env var the kernel refused with "Missing required fields:
+      // … baseUrl" — a publish that fails for a reason no user can act on.
+      baseUrl: process.env.NEXT_PUBLIC_APP_URL || (await requestOrigin()),
     })
   } catch (err: any) {
     return { success: false as const, error: err?.message ?? "Failed to publish" }
+  }
+}
+
+/** Same-origin base url from the incoming request — ABSORBED from the retired
+ *  publish route. Not exported: this file is "use server", where every export is
+ *  a public HTTP endpoint (CLAUDE.md §4). */
+async function requestOrigin(): Promise<string> {
+  try {
+    const h = await headers()
+    const host = h.get("host") ?? ""
+    if (!host) return ""
+    const proto = h.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https")
+    return `${proto}://${host}`
+  } catch {
+    return ""
   }
 }
 
@@ -187,8 +268,24 @@ export async function getMagnetPerformanceAction(magnetId: string) {
       .from("form_submissions")
       .select("*")
       .eq("form_id", magnetId)
+      .eq("brokerage_id", ctx.brokerageId)
     if (error) return { success: false as const, error: error.message }
-    return { success: true as const, submissions: data ?? [], total: data?.length ?? 0 }
+
+    // ABSORBED from the retired /api/lead-magnets/performance route: the real
+    // metrics. This action used to return raw submission rows only, and
+    // PerformanceDashboard then INVENTED the rest of the panel from them —
+    // totalViews = submissions.length, conversionRate = 1 whenever a single
+    // submission existed, totalQrScans = 0 always. The kernel command counts
+    // lead_magnet_view and lead_magnet_qr_scan off lifecycle_events, so the
+    // numbers are the ledger's rather than the component's.
+    const perf = await getMagnetPerformance({ magnetId, brokerageId: ctx.brokerageId })
+
+    return {
+      success: true as const,
+      submissions: data ?? [],
+      total: data?.length ?? 0,
+      performance: perf.success ? perf.performance : undefined,
+    }
   } catch (err: any) {
     return { success: false as const, error: err?.message ?? "Failed to get performance" }
   }

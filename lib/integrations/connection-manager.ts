@@ -55,6 +55,8 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { decryptSecret } from "@/lib/security/secret-crypto"
+import { secretFromConfig } from "@/lib/connections/credential-secret"
 
 /** canonical name → every alias that appears in any table for the same provider. */
 const PROVIDER_ALIASES: Record<string, string[]> = {
@@ -229,8 +231,14 @@ export async function resolveConnectionResult(
           status: "connected",
           connection: {
             provider: canon, source: "agent_api_credentials", scope: "agent", credentialId: data.id,
-            apiKey: data.api_key ?? null, apiSecret: data.api_secret ?? null,
-            accessToken: data.access_token ?? null, refreshToken: data.refresh_token ?? null,
+            // decryptSecret is BACKWARD-COMPATIBLE (lib/security/secret-crypto.ts): a
+            // plaintext value passes through verbatim, an `enc:v1:` envelope is opened.
+            // Adopted at the READ first — the documented safe order — so
+            // connectCrmAction can write api_secret through encryptSecret without any
+            // existing plaintext row breaking. A tampered envelope THROWS and is caught
+            // by the outer try as `unreadable`, never handed on as a corrupt credential.
+            apiKey: decryptSecret(data.api_key), apiSecret: decryptSecret(data.api_secret),
+            accessToken: decryptSecret(data.access_token), refreshToken: decryptSecret(data.refresh_token),
             accountId: null, accountName: null, apiUrl: null,
             config: (data.config as Record<string, unknown>) ?? {}, isActive: true,
             tokenExpiresAt: data.token_expires_at ?? null,
@@ -263,8 +271,20 @@ export async function resolveConnectionResult(
           status: "connected",
           connection: {
             provider: canon, source: "platform_credentials", scope, credentialId: data.id,
-            apiKey: data.api_key ?? null, apiSecret: null,
-            accessToken: data.access_token ?? null, refreshToken: data.refresh_token ?? null,
+            // ── THE SECRET WAS NEVER MISSING — IT WAS BEING THROWN AWAY ──────
+            // This read `apiSecret: null` as a LITERAL. platform_credentials has
+            // no api_secret COLUMN, which is true, and the conclusion drawn from
+            // it — "therefore this store has no secret" — is false: the store's
+            // own writers put the pair's second half in `config`
+            // (app/actions/connections/connection-center.ts:215 via
+            // lib/connections/field-spec.ts:156, and app/actions/phone-connect.ts:33
+            // both write config.auth_token). Two other readers already knew that
+            // (resolve-sms-provider.ts:69, connector-health/route.ts:110); this
+            // one did not, so a Twilio/Vibe pair connected in the Connection
+            // Center resolved here as key-only and could not authenticate.
+            // One reading, shared: lib/connections/credential-secret.ts.
+            apiKey: decryptSecret(data.api_key), apiSecret: secretFromConfig(data.config),
+            accessToken: decryptSecret(data.access_token), refreshToken: decryptSecret(data.refresh_token),
             accountId: data.account_id ?? null, accountName: data.account_name ?? null,
             apiUrl: data.api_url ?? null,
             config: (data.config as Record<string, unknown>) ?? {}, isActive: true,
@@ -295,7 +315,10 @@ export async function resolveConnectionResult(
         status: "connected",
         connection: {
           provider: canon, source: "integration_credentials", scope: "brokerage", credentialId: data.id,
-          apiKey: data.api_key ?? null, apiSecret: data.api_secret ?? null,
+          // Same backward-compatible read as the agent tier — connectCrmAction
+          // (app/actions/crm-connect.ts:49) now writes this column through
+          // encryptSecret, and every row written before it stays readable.
+          apiKey: decryptSecret(data.api_key), apiSecret: decryptSecret(data.api_secret),
           accessToken: null, refreshToken: null, accountId: null, accountName: null,
           apiUrl: data.webhook_url ?? null,
           config: {}, isActive: true,
