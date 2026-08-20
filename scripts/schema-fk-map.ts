@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1650 of 1706 pairs) — storing them would be
+ * overwhelming majority (1649 of 1706 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -60,13 +60,13 @@
  *
  * MEASURED AT GENERATION: 1781 edges across 706 source tables — every foreign key
  * single-column, and no (table, column) pair carrying FKs to two different targets, so the map is
- * total and unambiguous. 1706 unordered table pairs carry at least one FK; 56
+ * total and unambiguous. 1706 unordered table pairs carry at least one FK; 57
  * carry more than one and are listed below. 12 of the edges are self-referential.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-08-19
+ * generated: 2026-08-20
  * source: public.live_foreign_keys_json()
- * body-sha256: 36d0690f6dc8080f85f58e1c14e650e93748c37b34360440127d61922ad855e6
+ * body-sha256: b94505c3f93f26ff862c01a60cf8b02fd5788be06f8ae216fd263ac31e6005d7
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -751,11 +751,11 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "vendor_jobs": { "assignment_id": "vendor_assignments", "brokerage_id": "brokerages", "transaction_id": "transactions", "vendor_id": "vendors" },
   "vendor_messages": { "brokerage_id": "brokerages", "contact_vendor_id": "contact_vendors", "vendor_id": "vendors" },
   "vendor_payouts": { "brokerage_id": "brokerages", "vendor_id": "vendors" },
-  "vendor_plans": { "vendor_id": "vendor_marketplace_profiles" },
+  "vendor_plans": { "brokerage_id": "brokerages" },
   "vendor_ratings": { "vendor_id": "vendors" },
   "vendor_review_flags": { "review_id": "vendor_reviews" },
   "vendor_reviews": { "brokerage_id": "brokerages", "user_id": "users", "vendor_id": "vendors" },
-  "vendor_subscriptions": { "brokerage_id": "brokerages", "plan_id": "vendor_plans", "vendor_id": "vendor_marketplace_profiles" },
+  "vendor_subscriptions": { "brokerage_id": "vendor_plans", "plan_id": "vendor_plans", "vendor_id": "vendors" },
   "vendor_tax_documents": { "vendor_id": "vendors" },
   "vendor_transactions": { "brokerage_id": "brokerages", "subscription_id": "vendor_subscriptions", "vendor_id": "vendor_marketplace_profiles" },
   "vendor_usage_tracking": { "agent_id": "agents", "brokerage_id": "brokerages", "lead_id": "leads" },
@@ -845,6 +845,7 @@ export const SCHEMA_FK_PAIR_CARDINALITY: Record<string, number> = {
   "users|vendor_contact_assignments": 2,
   "users|vendors": 2,
   "users|video_scripts_library": 3,
+  "vendor_plans|vendor_subscriptions": 3,
 }
 
 /** How many distinct foreign keys join these two tables, in EITHER direction.

@@ -29,6 +29,7 @@ import { join } from "node:path"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
 import { SCHEMA_FK_MAP, SCHEMA_FK_PAIR_CARDINALITY, fkPairCount } from "./schema-fk-map"
 import { resolveTableManager } from "../lib/kernel/manager-registry"
+import { blankComments } from "./strip-comments"
 
 const BASELINE_PATH = join(process.cwd(), "scripts/schema-drift-baseline.json")
 const UNGUARDED_BASELINE_PATH = join(process.cwd(), "scripts/schema-drift-unguarded-baseline.json")
@@ -1165,6 +1166,32 @@ function testPure() {
       scanOf('supabase.from("contacts").select("id").filter("metadata->>k", "eq", v)').length === 0 &&
       scanOf('supabase.from("contacts").select("id").filter("not_a_column->>k", "eq", v)')
         .map((x) => `${x.op}:${x.table}.${x.column}`).join() === "filter:contacts.not_a_column")
+
+    // ── PROSE IS NOT CODE. Both directions, both measured on live files. ──────
+    // Direction 1 — the FALSE ACCUSATION. A comment that quotes a select, sitting
+    // downstream of an unrelated from(), was read as that from()'s select. This
+    // is campaign-drain.ts's `.select("id, unsubscribe_token")` explanation,
+    // reduced: the column belongs to a different table entirely, and reporting it
+    // against `contacts` is an accusation against code that is correct.
+    check("SCAN: a select quoted inside a // comment is NOT attributed to an earlier from()",
+      scanOf('await supabase.from("contacts").update({ first_name: n }).eq("id", id)\n  // That is why `.select("id, phantom_col")` and not just "id".').length === 0)
+    check("SCAN: a select quoted inside a /* block */ comment is not attributed either",
+      scanOf('await supabase.from("contacts").update({ first_name: n }).eq("id", id)\n  /* explains `.select("id, phantom_col")` above */').length === 0)
+    // Direction 2 — the MISSED DEFECT, and the more dangerous of the two. An
+    // apostrophe in a trailing comment ("the script's agent") opened a string
+    // literal for the object-key parser, which then swallowed every key after it.
+    // That is exactly how video_assets.status and .video_type stayed invisible.
+    check("SCAN: an apostrophe in a trailing comment does not hide the keys BELOW it",
+      scanOf('await supabase.from("contacts").insert({\n    first_name: a,  // use the script\'s agent, not the approver\n    phantom_col: b,\n  })')
+        .map((x) => `${x.op}:${x.table}.${x.column}`).join() === "insert:contacts.phantom_col")
+    // …and a REAL column in that position still reports nothing, so the control
+    // above is proving the comment handling and not just a noisy parser.
+    check("SCAN: the same shape with a REAL column below the apostrophe reports nothing",
+      scanOf('await supabase.from("contacts").insert({\n    first_name: a,  // use the script\'s agent, not the approver\n    last_name: b,\n  })').length === 0)
+    // The mirror control: a from() that exists ONLY in prose must not enrol a
+    // table or mint violations of its own.
+    check("SCAN: a from() written only inside a comment contributes nothing",
+      scanOf('// legacy: supabase.from("contacts").select("phantom_col")\nconst x = 1').length === 0)
   }
 
   // The exact bug we fixed must be caught:
@@ -1227,7 +1254,33 @@ const newStats = (): ScanStats => ({
  *  and folding a brand-new check's findings into either would erase those standards. */
 const DSL_OPS = new Set(["or", "filter", "or(embed)", "filter(embed)"])
 
-function scanFile(file: string, src: string, stats: ScanStats = newStats()): Violation[] {
+function scanFile(file: string, rawSrc: string, stats: ScanStats = newStats()): Violation[] {
+  // ── COMMENTS ARE BLANKED BEFORE ANYTHING IS SCANNED. ────────────────────────
+  // This guard read RAW SOURCE for its whole life, so a query written inside a
+  // comment was indistinguishable from one that runs. Two live consequences,
+  // both measured:
+  //
+  //   FALSE ACCUSATION. lib/direct-mail/campaign-drain.ts explains its own
+  //   insert with the line ``That is why `.select("id, unsubscribe_token")` and
+  //   not just "id":``. The guard read that quoted fragment as a live select,
+  //   attached it to the nearest preceding from() — direct_mail_campaigns, a
+  //   DIFFERENT table — and reported direct_mail_campaigns.unsubscribe_token as
+  //   drift. The column is real and sits on direct_mail_recipients, which the
+  //   actual code queries correctly. A guard reading prose, accusing code.
+  //
+  //   MISSED DEFECT, the same blindness pointing the other way. A trailing
+  //   comment with an apostrophe — `agent_id: x,  // use the script's agent` —
+  //   opened a string literal for the object-key parser, which swallowed every
+  //   key after it. app/api/video-scripts/[id]/approve/route.ts inserted
+  //   `status` and `video_type` into video_assets, a table that has neither, and
+  //   the guard never saw them. That insert could only ever raise PGRST204.
+  //
+  // blankComments, not stripComments: every position here is computed from a
+  // match index (collectSelectArg walks forward from the from() offset), so the
+  // replacement must preserve character offsets, not merely line numbers.
+  // Idempotent — blanking already-blanked source is a no-op — so a caller that
+  // pre-blanks is not double-charged.
+  const src = blankComments(rawSrc)
   const v: Violation[] = []
   /** Absolute source indices of `.or(`/`.filter(` sites a guarded from()-chain reached. */
   const dslAttributed = new Set<number>()
@@ -1398,7 +1451,11 @@ function testScan() {
   const stats = newStats()
   for (const f of files) {
     let src = ""
-    try { src = readFileSync(f, "utf8") } catch { continue }
+    // Blanked here as well as inside scanFile, because the cheap `hit` precheck
+    // below decides whether the file is scanned AT ALL: a from("guarded_table")
+    // appearing only in a comment must not enrol a file, and a real one must not
+    // be missed. Same rule, applied at both gates.
+    try { src = blankComments(readFileSync(f, "utf8")) } catch { continue }
     let hit = false
     for (const t of GUARDED) if (src.includes(`from("${t}")`) || src.includes(`from('${t}')`)) { hit = true; break }
     if (!hit) continue
@@ -1599,7 +1656,11 @@ function testCoverage() {
   const PG_VERB = /^\s*(?:\.\s*)?(select|insert|upsert|update|delete|eq|neq|gt|gte|lt|lte|like|ilike|in|is|or|order|limit|range|match|single|maybeSingle|rpc|contains|filter|not|count)\b/
   for (const f of files) {
     let src = ""
-    try { src = readFileSync(f, "utf8") } catch { continue }
+    // Comments blanked here too, for the mirror-image reason: a `.from("x").select(…)`
+    // written in a comment would enrol table x in the coverage ratchet, demanding a
+    // snapshot entry for a table no query touches. Layer 2 and Layer 3 must agree on
+    // what counts as code.
+    try { src = blankComments(readFileSync(f, "utf8")) } catch { continue }
     if (!src.includes(".from(")) continue
     let m: RegExpExecArray | null
     while ((m = fromRe.exec(src))) {

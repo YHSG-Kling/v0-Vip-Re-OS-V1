@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 434 tables, 754 columns.
+ * MEASURED AT GENERATION: 435 tables, 758 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-08-19
+ * generated: 2026-08-20
  * source: public.live_check_constraints_json()
- * body-sha256: 0458fc3fdfbbd04535d1124ad6abcf620b72a3d42b2a43a86820290cfeb45af6
+ * body-sha256: 0475662e182e5fe550fddfd904565c8e728c79dd05d8ec3e38ba17b948e20c77
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -427,6 +427,11 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   closing_gifts: {
     status: ["cancelled", "delivered", "ordered", "scheduled", "shipped"],
+  },
+  cma_comparables: {
+    price_basis: ["closed_sale", "list_price"],
+    source_provider: ["idxbroker", "none", "perplexity", "rentcast"],
+    status: ["active", "closed", "pending"],
   },
   cma_packages: {
     status: ["cancelled", "error", "generating", "ready"],
@@ -1590,6 +1595,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["active", "archived"],
   },
   vendor_subscriptions: {
+    billing_direction: ["vendor_pays_brokerage"],
     status: ["active", "canceled", "paused"],
   },
   vendor_tax_documents: {
