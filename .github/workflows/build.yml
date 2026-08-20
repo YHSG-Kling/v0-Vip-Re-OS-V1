@@ -53,6 +53,20 @@ jobs:
       #         "Ineffective mark-compacts near heap limit", heap at
       #         7161 MB used / 7773 MB committed. Too low: this broke a phase
       #         that had been working.
+      #   10240, cpus:1, commit 5115d4e (2026-08-20)
+      #       → compile aborted at 6m58s, exit 134, same message, heap at
+      #         8461 MB used / 9186 MB committed. RE-RUN OF THE SAME COMMIT,
+      #         UNCHANGED, PASSED in 14m34s. So this is the intermittent failure
+      #         this workflow has always had, NOT a new floor — but note WHERE it
+      #         landed: compile, not page-data. Both compile aborts above died
+      #         with COMMITTED heap at ~90% of the cap (7773/8192, 9186/10240),
+      #         which is what "ineffective mark-compacts" means — V8 gives up
+      #         while still short of the cap. Read that as the useful signal: the
+      #         effective compile ceiling is ~90% of whatever is set here, so
+      #         10240 buys ~9.2 GB, not 10 GB, and compile's own demand has grown
+      #         from 7.2 GB to 8.5 GB between those two measurements. When a
+      #         compile abort STOPS being recoverable by re-running, that headroom
+      #         is gone and the answer is the runner, not the number.
       #
       # So compile demonstrably needs >7.8 GB, and page-data demonstrably cannot
       # be given 12 GB on a 16 GB runner. 10240 is the value that clears compile's
@@ -63,11 +77,20 @@ jobs:
       # answer is a larger runner — a cost decision for the repo owner, not
       # something to keep bisecting here.
       NODE_OPTIONS: "--max-old-space-size=10240"
-      # NO max-old-space-size override: `next build` uses Turbopack (Rust), which
-      # holds the heavy compile state in NATIVE memory. Reserving a large V8 old
-      # space steals from that native budget and pushed total RSS past the 16 GB
-      # GitHub-hosted runner ceiling — the runner was killed ("shutdown signal")
-      # ~4.5 min into compile. Letting V8 self-manage leaves room for Turbopack.
+      #
+      # A COMMENT THAT SAID THE OPPOSITE OF THE LINE ABOVE IT USED TO LIVE HERE.
+      # It read: "NO max-old-space-size override: `next build` uses Turbopack
+      # (Rust), which holds the heavy compile state in NATIVE memory. Reserving a
+      # large V8 old space steals from that native budget..." — an argument for
+      # DELETING the override on the line directly above it. Every part of it is
+      # now false: `npm run build` is `next build --webpack`, the compile is
+      # JavaScript and its state is in the V8 heap, and the override is exactly
+      # what keeps it alive. It survived the switch off Turbopack and was left
+      # sitting under the setting it argues against, so anyone opening this file
+      # to diagnose an OOM — the one reason anyone opens this file — was told to
+      # do the thing that causes the OOM. Kept as a tombstone rather than quietly
+      # deleted, because the empirical bracket above is only trustworthy if the
+      # prose beside it is known to have been checked against what actually runs.
       # Placeholder build-time env — presence, not real secrets. Overridden by
       # repository/environment secrets when those are configured.
       NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co' }}
