@@ -65,6 +65,9 @@ export interface AppraisalDefensePackage {
     avgDaysOnMarket: number | null
     monthsOfSupply: number | null
   } | null
+  /** cma_reports.market_conditions — the market classification recorded on the
+   *  CMA itself. Null when the CMA recorded none. */
+  marketConditionLabel: string | null
   argumentBullets: string[]
 }
 
@@ -189,7 +192,26 @@ export async function buildAppraisalDefensePackage(
     )
   }
 
-  const market = (report.market_conditions ?? null) as any
+  // cma_reports.market_conditions is a TEXT LABEL ("sellers" | "balanced" |
+  // "buyers" | "unknown") — the value app/actions/ai-cma.ts writes from the
+  // market_data read. This block used to treat it as an object and reach for
+  // `.active_count`, `.pending_count`, `.avg_dom`, `.months_of_supply`: on a
+  // string every one of those is undefined, yet the string is TRUTHY, so the
+  // packet always emitted a marketContext block of four nulls. An appraiser
+  // reading it saw a market section that had been populated and had nothing in
+  // it, rather than one that was honestly absent.
+  //
+  // The counts live on market_data, which this package does not read; until it
+  // does, the market section carries the one fact the CMA actually recorded.
+  const marketLabel =
+    typeof report.market_conditions === "string" && report.market_conditions.length > 0
+      ? report.market_conditions
+      : null
+  if (marketLabel && marketLabel !== "unknown") {
+    argumentBullets.push(
+      `At the time of the analysis this area was classified a ${marketLabel} market.`,
+    )
+  }
 
   return {
     success: true,
@@ -214,14 +236,10 @@ export async function buildAppraisalDefensePackage(
         perSqftRangeLow,
         perSqftRangeHigh,
       },
-      marketContext: market
-        ? {
-            activeCount: market.active_count ?? null,
-            pendingCount: market.pending_count ?? null,
-            avgDaysOnMarket: market.avg_dom ?? null,
-            monthsOfSupply: market.months_of_supply ?? null,
-          }
-        : null,
+      // Null until this package reads market_data. A block of four nulls is not
+      // "we looked and the market has no listings"; it is "nothing was read".
+      marketContext: null,
+      marketConditionLabel: marketLabel,
       argumentBullets,
     },
   }

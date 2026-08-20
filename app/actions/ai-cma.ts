@@ -9,7 +9,32 @@ import { revalidatePath } from "next/cache"
 
 // =============================================================================
 // AI-POWERED COMPARATIVE MARKET ANALYSIS (CMA) SYSTEM
-// Provides intelligent property valuations, market insights, and pricing strategy
+//
+// THERE IS ONE CMA ENGINE AND IT IS NOT IN THIS FILE.
+// ---------------------------------------------------------------------------
+// Owner ruling: "the same cma should be used for all." This file used to carry
+// a SECOND, private valuation stack — its own comp fetch, its own hardcoded
+// adjustment constants, and a GPT-4o call that authored `estimatedValue`, the
+// number written to cma_reports.recommended_price and shown to sellers. That
+// stack has been deleted (tombstones below name what replaced each piece) and
+// this action now composes lib/cma/ai-cma-orchestrator.runAiCma — the same
+// engine app/actions/home-value.ts, app/actions/calculators.ts,
+// lib/workflow/adapters/avm-cma.ts and
+// lib/workflow/intelligence/listing-presentation-builder.ts already use.
+//
+// WHAT THIS FILE STILL OWNS, and why it survives rather than the orchestrator:
+//   · the "use server" boundary + auth/contact/tenant gates
+//   · PERSISTENCE. runAiCma is pure of DB writes by design ("Callers own
+//     persistence"), and this is the only writer of cma_reports — the table
+//     read by seller-cma, appraisal-defense, the presentation assembler, the
+//     seller portal and the CMA history sheet.
+//   · the market_data read behind cma_reports.market_conditions
+//   · the pricing-strategy and presentation-script narratives
+//
+// DIVISION OF LABOUR, stated once so it is not re-blurred: runAiCma produces
+// EVERY NUMBER. The models called from this file produce PROSE and may position
+// a list price INSIDE the comp-derived range — never outside it, never in its
+// absence. See clampToRange below.
 // =============================================================================
 
 // -----------------------------------------------------------------------------
@@ -35,36 +60,45 @@ interface CMAParams {
   listingId?: string
 }
 
-interface ComparableProperty {
-  address: string
-  listPrice: number
-  soldPrice?: number
-  daysOnMarket: number
-  squareFeet: number
-  pricePerSqFt: number
-  bedrooms: number
-  bathrooms: number
-  yearBuilt: number
-  distance: number
-  adjustedValue: number
-  adjustments: PropertyAdjustment[]
-  source?: "RentCast"
+/**
+ * The slice of `AiCmaResult` (lib/cma/ai-cma-orchestrator.ts) this file consumes.
+ * Structural rather than an import of the concrete type so the "use server"
+ * module keeps a dynamic import of the orchestrator and does not pull the comp
+ * providers into this bundle at build time.
+ */
+interface AiCmaResultShape {
+  estimatedValueLow: number
+  estimatedValueMid: number
+  estimatedValueHigh: number
+  confidenceScore: number
+  adjustedComps: Array<{ comp: any; adjustments: any[]; adjustedPrice: number }>
+  pendingComps: Array<{ comp: any; adjustments: any[]; adjustedPrice: number }>
+  activeComps: Array<{ comp: any; adjustments: any[]; adjustedPrice: number }>
+  compProvenance: unknown
+  aiNarrative: string
+  citations: string[]
+  disclaimers: string[]
 }
 
-interface PropertyAdjustment {
-  factor: string
-  amount: number
-  reason: string
-}
-
+/**
+ * MEASURED-OR-NULL. Every field here was previously non-nullable and therefore
+ * had to be filled with something whether or not a market_data row existed —
+ * which is how `|| 35` days-on-market, `|| 100` active listings, a median sale
+ * price derived from the subject's own square footage, a `[240,245,250,255,260]`
+ * price trend commented "Simulated", and a flat 5% appreciation rate all became
+ * inputs to a valuation prompt. Nullable types are what make "we do not know"
+ * expressible; `pricePerSqFtTrend` and `seasonalFactor` are gone entirely
+ * because nothing measured them.
+ */
 interface MarketTrends {
-  averageDaysOnMarket: number
-  medianSalePrice: number
-  pricePerSqFtTrend: number[]
-  inventoryLevel: "low" | "balanced" | "high"
-  marketType: "sellers" | "balanced" | "buyers"
-  appreciationRate: number
-  seasonalFactor: number
+  averageDaysOnMarket: number | null
+  medianSalePrice: number | null
+  activeListings: number | null
+  monthsOfSupply: number | null
+  inventoryLevel: "low" | "balanced" | "high" | "unknown"
+  marketType: "sellers" | "balanced" | "buyers" | "unknown"
+  appreciationRate: number | null
+  marketDataAvailable: boolean
 }
 
 interface PricingStrategy {
@@ -75,7 +109,13 @@ interface PricingStrategy {
   rationale: string
   quickSalePrice: number
   premiumPrice: number
-  daysToSellEstimate: number
+  /**
+   * Null when neither the strategist model nor the market feed produced one.
+   * This used to fall back to `marketTrends.averageDaysOnMarket`, which itself
+   * fell back to a hardcoded 35 — so "sells in about 35 days" was told to
+   * sellers in markets no data had ever been collected for.
+   */
+  daysToSellEstimate: number | null
 }
 
 // -----------------------------------------------------------------------------
@@ -176,22 +216,80 @@ export async function generateAICMA(params: CMAParams) {
   }
 
   try {
-    // 1. Fetch comparable properties from database/MLS
-    const comparables = await fetchComparableProperties(params, agentRow.brokerage_id)
+    // ── 1. THE CMA ITSELF — runAiCma, the one engine ─────────────────────────
+    // Provider-first comp sourcing (3 SOLD within 6 months, widening to 12 only
+    // when short, + 2 ACTIVE + 1 PENDING), state-published appraiser adjustment
+    // rates applied per comp DETERMINISTICALLY, a value range computed from the
+    // ADJUSTED CLOSED comps alone, provenance, citations and disclaimers.
+    //
+    // The three functions this replaced are described in the tombstones below.
+    // The short version: they bought RentCast comps with no status/window rules,
+    // adjusted them with national constants invented in this file ($15,000 a
+    // bedroom, $10,000 a bathroom, $1,000 a year of age), and then asked GPT-4o
+    // for the property's value. A model's answer to "what is this house worth"
+    // became cma_reports.recommended_price, which the seller portal renders, the
+    // net sheet prices off, and the appraisal-defense package argues to a
+    // licensed appraiser. That is a fabricated measurement and it is gone.
+    const { runAiCma } = await import("@/lib/cma/ai-cma-orchestrator")
 
-    // 2. Get market trends data
+    const cma = await runAiCma({
+      mode: "standard",
+      brokerageId: cmaBrokerageId,
+      // agents.id is NOT users.id. runAiCma resolves the IDX connection through
+      // the agent → team → brokerage cascade off the AUTH user id, which is the
+      // one this function has already proven owns params.agentId.
+      agentUserId: user.id,
+      contactId: cmaContactId,
+      subject: {
+        address: params.propertyAddress,
+        city: params.propertyCity || null,
+        state: params.propertyState,
+        zip: params.propertyZip || null,
+        propertyType: cmaSubjectPropertyType(params.propertyType),
+        sqftLiving: params.squareFeet || null,
+        bedrooms: params.bedrooms || null,
+        // CMAParams carries a single bathroom count, as every caller's form
+        // does. Halves are unknown rather than zero-by-assumption.
+        fullBaths: params.bathrooms || null,
+        halfBaths: null,
+        yearBuilt: params.yearBuilt ?? null,
+        lotSizeAcres: acresFromLotSize(params.lotSize),
+        conditionGrade: CONDITION_GRADE[params.condition ?? ""] ?? null,
+        // The seller's own words about what they have done since purchase.
+        // runAiCma treats these as NARRATIVE CONTEXT and refuses to turn them
+        // into a dollar line — see SELLER_UPGRADE_TREATMENT in the orchestrator.
+        sellerUpgrades: (params.features ?? []).map((description) => ({ description })),
+      },
+    })
+
+    // ── 2. NO CLOSED COMP, NO CMA ────────────────────────────────────────────
+    // Refusing here is the whole point of the change. The deleted stack, handed
+    // an empty comp array, computed `0/0` for its average, shipped a prompt
+    // containing NaN and Infinity, and wrote whatever number the model replied
+    // with. A CMA with no comparable sale behind it is not a thin CMA — it is a
+    // price with nothing under it, and this product hands that price to
+    // consumers and to appraisers. lib/cma/comp-provider.ts already states the
+    // same consequence and accepts it: the fix is to connect the provider.
+    if (cma.adjustedComps.length === 0 || cma.estimatedValueMid <= 0) {
+      return {
+        success: false,
+        error:
+          "No closed comparable sales could be sourced for this property, so no value range can be produced. " +
+          cma.disclaimers.join(" "),
+        compProvenance: cma.compProvenance,
+      }
+    }
+
+    // ── 3. Market conditions — the market_data read ──────────────────────────
     const marketTrends = await analyzeMarketTrends(params, supabase)
 
-    // 3. AI-powered property valuation
-    const valuation = await generateAIValuation(params, comparables, marketTrends)
+    // ── 4. Pricing strategy, BOUNDED BY THE COMPS ────────────────────────────
+    const pricingStrategy = await generatePricingStrategy(params, cma, marketTrends)
 
-    // 4. Generate pricing strategy
-    const pricingStrategy = await generatePricingStrategy(params, valuation, marketTrends)
+    // ── 5. Presentation script ───────────────────────────────────────────────
+    const presentation = await generateCMAPresentation(params, cma, marketTrends, pricingStrategy)
 
-    // 5. Generate presentation content
-    const presentation = await generateCMAPresentation(params, comparables, marketTrends, pricingStrategy)
-
-    // 6. Save CMA report — only insert columns that exist in cma_reports schema.
+    // ── 6. Save CMA report — columns verified against scripts/schema-snapshot.ts
     // contact_id is NOT NULL on cma_reports; a CMA must be tied to a contact.
     // The id written here is the one the contacts lookup above RETURNED, not the
     // one the caller supplied, so the column can only ever hold a confirmed row.
@@ -216,8 +314,20 @@ export async function generateAICMA(params: CMAParams) {
         recommended_price: pricingStrategy.recommendedListPrice,
         price_range_low: pricingStrategy.priceRangeLow,
         price_range_high: pricingStrategy.priceRangeHigh,
-        comparable_count: comparables.length,
+        // The CLOSED comps — the set the range was computed from and the set
+        // written to cma_comparables below. It used to count every row RentCast
+        // returned regardless of status, so the number on the report and the
+        // number of rows a reader could find never had to agree.
+        comparable_count: cma.adjustedComps.length,
         market_conditions: marketTrends.marketType,
+        // MEASURED, not assumed. quality_score was never written on insert, so
+        // every CMA carried the column default and the CMA tab's quality badge
+        // rendered that default as if something had assessed it. runAiCma's
+        // confidence is derived from comp count, similarity, price spread and
+        // documented haircuts for a widened window / AI-gap-filled mix; it is
+        // reported 0..1 and this column stores 0-100. scoreAllComps later
+        // overwrites it with the per-comp AI average, which is the same scale.
+        quality_score: Math.round(cma.confidenceScore * 100),
         status: "ready", // CHECK: draft|ready|presented|archived
         disclaimer_included: true,
       })
@@ -226,16 +336,43 @@ export async function generateAICMA(params: CMAParams) {
 
     if (error) throw error
 
+    // ── 7. THE COMPARABLES THEMSELVES ────────────────────────────────────────
+    const persisted = await persistComparables(supabase, cmaReport.id, cma)
+
     revalidatePath("/dashboard/cma")
     return {
       success: true,
       id: cmaReport.id,
       cmaId: cmaReport.id,
-      valuation,
+      // Retained for the callers that read it (lib/workflow-orchestrator/chains/
+      // listing-appt-prep.ts surfaces `valuation` on its step output). It is now
+      // the COMPUTED range rather than a model's opinion of one.
+      valuation: {
+        estimatedValue: cma.estimatedValueMid,
+        estimatedValueLow: cma.estimatedValueLow,
+        estimatedValueHigh: cma.estimatedValueHigh,
+        confidenceLevel: Math.round(cma.confidenceScore * 100),
+        valuationMethod: "Adjusted comparable sales (state appraiser guideline rates)",
+        narrative: cma.aiNarrative,
+      },
       pricingStrategy,
-      comparables,
+      // `comparables` keeps the key its callers already read
+      // (app/actions/cma-presentation/cma-generator.ts counts `.length`).
+      comparables: cma.adjustedComps,
+      pendingComparables: cma.pendingComps,
+      activeComparables: cma.activeComps,
       marketTrends,
       presentation,
+      // NEW, and load-bearing for every consumer that has to say where a number
+      // came from: provenance, citations, the mandatory disclaimers, and whether
+      // the comp rows a reader will later fetch actually landed.
+      compProvenance: cma.compProvenance,
+      citations: cma.citations,
+      disclaimers: cma.disclaimers,
+      qualityScore: Math.round(cma.confidenceScore * 100),
+      comparablesPersisted: persisted.comparablesWritten,
+      adjustmentsPersisted: persisted.adjustmentsWritten,
+      persistenceWarnings: persisted.warnings,
     }
   } catch (error) {
     console.error("[AI CMA] Generation error:", error)
@@ -244,122 +381,192 @@ export async function generateAICMA(params: CMAParams) {
 }
 
 /**
- * Fetch comparable properties — priority chain:
- *   1. BatchData /comparable-sales (real MLS comps via API key)
- *   2. RentCast /avm/value comparables (chosen comps provider; if BatchData unconfigured)
- *   3. AI-estimated stubs clearly labelled "AI-estimated" (never passed off as real sold data)
- * Returns empty array when neither API is configured and AI flag is off.
+ * runAiCma's subject accepts a narrower property-type vocabulary than CMAParams
+ * (its adjustment rate tables are published for these three). Anything else is
+ * passed as null rather than coerced into "single_family", which would apply a
+ * detached-home rate table to land or a duplex.
  */
-async function fetchComparableProperties(
-  params: CMAParams,
-  brokerageId: string | null,
-): Promise<ComparableProperty[]> {
-  const { getRentcastComps } = await import("@/lib/property/rentcast")
-
-  // RentCast is the platform comps provider (BatchData has no comparables endpoint).
-  const rcComps = brokerageId
-    ? await getRentcastComps({ brokerageId, address: `${params.propertyAddress}, ${params.propertyCity}, ${params.propertyState} ${params.propertyZip}`, limit: 10 })
-    : []
-
-  if (rcComps.length > 0) {
-    return rcComps.map((c) => {
-      const adjustments = calculatePropertyAdjustments(params, {
-        square_feet: c.square_feet,
-        bedrooms: c.bedrooms,
-        bathrooms: c.bathrooms,
-        sold_price: c.sale_price,
-      })
-      return {
-        address: c.address,
-        listPrice: c.list_price,
-        soldPrice: c.sale_price,
-        daysOnMarket: c.days_on_market,
-        squareFeet: c.square_feet,
-        pricePerSqFt: c.price_per_sqft,
-        bedrooms: c.bedrooms,
-        bathrooms: c.bathrooms,
-        yearBuilt: c.year_built ?? 0,
-        distance: c.distance_miles,
-        adjustedValue: c.sale_price + adjustments.reduce((s, a) => s + a.amount, 0),
-        adjustments,
-        source: "RentCast" as const,
-      }
-    })
-  }
-
-  // ── 3. No API configured — return empty, amber banner shows in UI ────────
-  return []
+function cmaSubjectPropertyType(
+  t: CMAParams["propertyType"],
+): "single_family" | "condo" | "townhouse" | null {
+  return t === "single_family" || t === "condo" || t === "townhouse" ? t : null
 }
 
 /**
- * Calculate property adjustments between subject and comparable
+ * CMAParams.lotSize is unlabelled and every caller that sets it reads
+ * `listings.lot_size`, which this product stores in SQUARE FEET. runAiCma's
+ * rate table prices lot by the ACRE. Passing square feet into an acre field
+ * would have multiplied the lot adjustment by ~43,560.
  */
-function calculatePropertyAdjustments(
-  subject: CMAParams,
-  comparable: any
-): PropertyAdjustment[] {
-  const adjustments: PropertyAdjustment[] = []
-  const pricePerSqFt = (comparable.sold_price || comparable.list_price) / comparable.square_feet
-
-  // Square footage adjustment
-  const sqFtDiff = subject.squareFeet - comparable.square_feet
-  if (Math.abs(sqFtDiff) > 100) {
-    adjustments.push({
-      factor: "Square Footage",
-      amount: sqFtDiff * (pricePerSqFt * 0.5), // 50% of price/sqft for additional space
-      reason: `Subject has ${sqFtDiff > 0 ? "more" : "less"} square footage`,
-    })
-  }
-
-  // Bedroom adjustment
-  const bedDiff = subject.bedrooms - comparable.bedrooms
-  if (bedDiff !== 0) {
-    adjustments.push({
-      factor: "Bedrooms",
-      amount: bedDiff * 15000, // $15k per bedroom
-      reason: `Subject has ${bedDiff > 0 ? "more" : "fewer"} bedrooms`,
-    })
-  }
-
-  // Bathroom adjustment
-  const bathDiff = subject.bathrooms - comparable.bathrooms
-  if (bathDiff !== 0) {
-    adjustments.push({
-      factor: "Bathrooms",
-      amount: bathDiff * 10000, // $10k per bathroom
-      reason: `Subject has ${bathDiff > 0 ? "more" : "fewer"} bathrooms`,
-    })
-  }
-
-  // Age/Year built adjustment
-  if (subject.yearBuilt && comparable.year_built) {
-    const ageDiff = subject.yearBuilt - comparable.year_built
-    if (Math.abs(ageDiff) > 5) {
-      adjustments.push({
-        factor: "Age",
-        amount: ageDiff * 1000, // $1k per year newer
-        reason: `Subject is ${ageDiff > 0 ? "newer" : "older"} than comparable`,
-      })
-    }
-  }
-
-  // Condition adjustment
-  if (subject.condition) {
-    const conditionValues: Record<string, number> = {
-      excellent: 25000,
-      good: 10000,
-      fair: 0,
-      poor: -15000,
-    }
-    adjustments.push({
-      factor: "Condition",
-      amount: conditionValues[subject.condition] || 0,
-      reason: `Subject is in ${subject.condition} condition`,
-    })
-  }
-
-  return adjustments
+function acresFromLotSize(lotSizeSqft: number | null | undefined): number | null {
+  if (lotSizeSqft == null || !Number.isFinite(lotSizeSqft) || lotSizeSqft <= 0) return null
+  return lotSizeSqft / 43_560
 }
+
+/** CMAParams' condition words → the 1-5 grade the state rate tables use. */
+const CONDITION_GRADE: Record<string, number> = {
+  excellent: 5,
+  good: 4,
+  fair: 2,
+  poor: 1,
+}
+
+/**
+ * PERSIST THE COMPARABLES. THIS WRITE DID NOT EXIST.
+ *
+ * `cma_comparables` had FIVE production readers and ZERO production writers:
+ *   · app/actions/seller-cma.ts loadCMAPageData        (the CMA tab's comp table)
+ *   · app/actions/appraisal-defense.ts                 (the appraiser packet)
+ *   · lib/cma/ai-cma-engine.ts scoreAllComps           (AI comp scoring)
+ *   · lib/listing-presentation/section-render.ts       (the seller presentation)
+ *   · lib/predictive-listing/run-scoring.ts
+ * The only INSERT anywhere in the repo was in a test fixture
+ * (scripts/section-render-simulator.ts). So a CMA reported "10 comparables" on
+ * a report whose comparable table was empty for every one of those readers:
+ * the comp table rendered blank, "Score comps" returned "No comparables found
+ * for CMA" every time it was pressed, and buildAppraisalDefensePackage returned
+ * `no_comparables` for every CMA this product has ever generated — the packet
+ * an agent hands a licensed appraiser could not be built at all.
+ *
+ * CLOSED COMPS ONLY. cma_comparables has no `status` and no source column, and
+ * its price column is named `sale_price`. Writing an ACTIVE listing's asking
+ * price into a column called sale_price is the exact fabrication this wave
+ * exists to remove — appraisal-defense.ts reads that column and calls the rows
+ * "closed comparables" in the argument it prints. Pending/active rows are
+ * returned to the caller and stay off this table until it can carry their
+ * status honestly; supabase/migrations/m498-*.sql adds the columns.
+ *
+ * NOT FATAL, BUT NOT SILENT. The report row is already committed and the comps
+ * were already paid for; a refusal here is reported on `persistenceWarnings`
+ * rather than thrown away. supabase-js RESOLVES a refused insert, so an unread
+ * `{ error }` is precisely how this failure would look identical to success.
+ */
+async function persistComparables(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  cmaReportId: string,
+  cma: { adjustedComps: Array<{ comp: any; adjustments: any[]; adjustedPrice: number }> },
+): Promise<{ comparablesWritten: number; adjustmentsWritten: number; warnings: string[] }> {
+  const warnings: string[] = []
+
+  const rows = cma.adjustedComps.map((a) => {
+    const sqft = a.comp.sqftLiving ?? null
+    const baths =
+      a.comp.fullBaths != null || a.comp.halfBaths != null
+        ? (a.comp.fullBaths ?? 0) + (a.comp.halfBaths ?? 0) * 0.5
+        : null
+    return {
+      cma_id: cmaReportId,
+      address: a.comp.address,
+      // Every row here is status:"closed" and priceBasis:"closed_sale" —
+      // runAiCma puts nothing else in adjustedComps.
+      sale_price: a.comp.salePrice,
+      list_price: null,
+      price_per_sqft:
+        a.comp.pricePerSqft ?? (sqft && sqft > 0 ? Math.round(a.comp.salePrice / sqft) : null),
+      bedrooms: a.comp.bedrooms ?? null,
+      bathrooms: baths,
+      square_feet: sqft,
+      days_on_market: a.comp.daysOnMarket ?? null,
+      sale_date: a.comp.saleDate ?? null,
+      // Null, not 0, when the provider published no distance. appraisal-defense
+      // ranks by distance and a 0 would promote an unknown comp to "closest".
+      distance_miles: a.comp.distanceMiles ?? null,
+      similarity_score: a.comp.similarityScore ?? null,
+      adjusted_price: Math.round(a.adjustedPrice),
+      adjustments: a.adjustments,
+    }
+  })
+
+  if (rows.length === 0) return { comparablesWritten: 0, adjustmentsWritten: 0, warnings }
+
+  const { data: inserted, error: compsError } = await supabase
+    .from("cma_comparables")
+    .insert(rows)
+    .select("id, address")
+
+  if (compsError) {
+    console.error("[AI CMA] cma_comparables insert refused:", compsError.message)
+    warnings.push(
+      `The comparables could not be saved (${compsError.message}). The report's value range is correct, but the comp table, AI comp scoring and the appraisal-defense package will read as empty for this CMA.`,
+    )
+    return { comparablesWritten: 0, adjustmentsWritten: 0, warnings }
+  }
+
+  // ── The per-feature adjustments, keyed to the row appraisal-defense joins on ─
+  // appraisal-defense.ts groups cma_price_adjustments by `comparable_property_id`
+  // and matches it against cma_comparables.id, so the id has to come back from
+  // the insert above — an address string would not join.
+  const idByAddress = new Map<string, string>()
+  for (const r of (inserted ?? []) as Array<{ id: string; address: string }>) {
+    if (!idByAddress.has(r.address)) idByAddress.set(r.address, r.id)
+  }
+
+  const adjustmentRows = cma.adjustedComps.flatMap((a) => {
+    const compRowId = idByAddress.get(a.comp.address)
+    if (!compRowId) return []
+    return a.adjustments.map((adj: any) => ({
+      cma_report_id: cmaReportId,
+      comparable_property_id: compRowId,
+      comparable_address: a.comp.address,
+      adjustment_type: adj.type,
+      // Signed. appraisal-defense derives add/subtract from the sign and sums
+      // these onto sale_price, so flipping them to absolute values here would
+      // silently invert every downward adjustment in the appraiser's packet.
+      adjustment_amount: adj.amount,
+      rationale: `${adj.rationale} (state rate ${adj.rateUsed} ${adj.rateBasis})`,
+    }))
+  })
+
+  let adjustmentsWritten = 0
+  if (adjustmentRows.length > 0) {
+    const { error: adjError } = await supabase.from("cma_price_adjustments").insert(adjustmentRows)
+    if (adjError) {
+      console.error("[AI CMA] cma_price_adjustments insert refused:", adjError.message)
+      warnings.push(
+        `The per-comp adjustments could not be saved (${adjError.message}). The appraisal-defense package will fall back to each comp's stored adjusted price and show no adjustment breakdown.`,
+      )
+    } else {
+      adjustmentsWritten = adjustmentRows.length
+    }
+  }
+
+  return { comparablesWritten: rows.length, adjustmentsWritten, warnings }
+}
+
+// ─── TOMBSTONE · fetchComparableProperties ──────────────────────────────────
+// DELETED. Replaced by lib/cma/comp-provider.ts `sourceCompsForCma`, reached
+// through lib/cma/ai-cma-orchestrator.ts:183 `runAiCma`.
+//
+// What it did: one unconditional RentCast pull, `limit: 10`, everything it
+// returned treated as a closed sale. No sold-window rule (a sale from four
+// years ago counted the same as one from last month), no active or pending
+// side at all, no record of which provider served the row, and — when RentCast
+// was unconfigured — it returned `[]` and let generation continue.
+//
+// What replaced it can do everything it did and these besides: the required
+// 3 SOLD / 2 ACTIVE / 1 PENDING mix, a 6-month sold window that widens to 12
+// only when short and SAYS SO, the brokerage's own IDX feed for the active
+// side, a per-row `sourceProvider`, a per-side `CompProvenance`, cost
+// telemetry, and the rule that an AI web search may never fill a SOLD slot.
+
+// ─── TOMBSTONE · calculatePropertyAdjustments ───────────────────────────────
+// DELETED. Replaced by lib/cma/state-adjustment-rates.ts `computeCompAdjustments`,
+// reached through lib/cma/ai-cma-orchestrator.ts:183 `runAiCma`.
+//
+// What it did: adjusted every comp in every market by constants written into
+// this file — $15,000 a bedroom, $10,000 a bathroom, $1,000 per year of age,
+// half the comp's own price-per-sqft for floor area, and a flat condition
+// ladder topping out at $25,000. Those numbers cite nothing. They were applied
+// identically to a bungalow in Ohio and a waterfront condo in Miami, and their
+// output was written to a column named `adjusted_price`, which reads as a
+// measurement.
+//
+// The replacement prices sqft, beds, baths, garage, pool, waterfront, view,
+// lot, age, condition grade, finished basement, new construction and gated
+// against PUBLISHED PER-STATE appraiser rates, records the rate used and its
+// basis on every line item, and is deterministic — no model participates in the
+// math. Those line items are now persisted to cma_price_adjustments, so the
+// appraisal-defense packet can show an appraiser the rate behind each figure.
 
 /**
  * Analyze market trends for the area
@@ -368,152 +575,186 @@ async function analyzeMarketTrends(
   params: CMAParams,
   supabase: any
 ): Promise<MarketTrends> {
-  // Query market data
-  const { data: marketData } = await supabase
+  // COLUMNS NAMED EXPLICITLY (verified against scripts/schema-snapshot.ts). The
+  // `select("*")` this replaced is how the invented values below hid: nothing
+  // ever failed, the reads simply came back undefined and the `||` fallbacks
+  // took over on every call.
+  //
+  // A REFUSED read is not an empty market. supabase-js resolves it, and the old
+  // code could not tell the two apart — a permissions failure produced the same
+  // "35 days on market, balanced" as a genuinely uncovered city.
+  const { data: marketData, error: marketError } = await supabase
     .from("market_data")
-    .select("*")
+    .select(
+      "avg_days_on_market, median_sale_price, active_listings, months_of_inventory, market_type, price_trend_pct_1yr, data_date",
+    )
     .eq("city", params.propertyCity)
     .eq("state", params.propertyState)
     .order("data_date", { ascending: false })
     .limit(12)
 
-  // Calculate trends or use defaults
-  const avgDOM = marketData?.[0]?.avg_days_on_market || 35
-  const medianPrice = marketData?.[0]?.median_sale_price || params.squareFeet * 250
-  const inventory = marketData?.[0]?.active_listings || 100
-
-  // Determine market type based on DOM (days on market)
-  let marketType: "sellers" | "balanced" | "buyers" = "balanced"
-  let inventoryLevel: "low" | "balanced" | "high" = "balanced"
-
-  // Market type determined by DOM (speed of sale)
-  if (avgDOM < 20) {
-    marketType = "sellers"
-  } else if (avgDOM > 60) {
-    marketType = "buyers"
+  if (marketError) {
+    console.error("[AI CMA] market_data read refused:", marketError.message)
   }
 
-  // Inventory level determined by active listings count
-  // Adjust thresholds based on typical market conditions
-  const monthsOfSupply = (inventory / 20) // Approximate monthly sales = inventory / avg sales per month
-  if (monthsOfSupply < 2) {
-    inventoryLevel = "low" // Less than 2 months supply = seller's market
-  } else if (monthsOfSupply > 6) {
-    inventoryLevel = "high" // More than 6 months supply = buyer's market
-  } else {
-    inventoryLevel = "balanced"
+  const latest = (marketData?.[0] ?? null) as {
+    avg_days_on_market: number | null
+    median_sale_price: number | null
+    active_listings: number | null
+    months_of_inventory: number | null
+    market_type: string | null
+    price_trend_pct_1yr: number | null
+  } | null
+
+  // ── EVERY FIELD BELOW IS EITHER MEASURED OR NULL ─────────────────────────
+  // What was here before, and why each one had to go:
+  //   avgDOM      `|| 35`                    — an invented days-on-market
+  //   medianPrice `|| params.squareFeet*250` — an invented median SALE PRICE for
+  //                                            the whole city, derived from the
+  //                                            subject's own floor area
+  //   inventory   `|| 100`                   — an invented active-listing count
+  //   pricePerSqFtTrend [240,245,250,255,260] — commented "Simulated trend" in
+  //                                            the source and returned to callers
+  //                                            as a price history
+  //   appreciationRate 0.05                  — a hardcoded 5%, interpolated into
+  //                                            the valuation prompt as
+  //                                            "Annual Appreciation: 5.0%"
+  // All five were fed to a model that was then asked what the house was worth.
+  const avgDOM = latest?.avg_days_on_market ?? null
+  const medianPrice = latest?.median_sale_price ?? null
+
+  // Prefer the market's OWN published classification; fall back to the DOM rule
+  // only when a DOM was actually measured. With neither, the market type is
+  // unknown, and "unknown" is a legitimate value for cma_reports.market_conditions.
+  let marketType: MarketTrends["marketType"] = "unknown"
+  if (latest?.market_type === "sellers" || latest?.market_type === "buyers" || latest?.market_type === "balanced") {
+    marketType = latest.market_type
+  } else if (avgDOM != null) {
+    marketType = avgDOM < 20 ? "sellers" : avgDOM > 60 ? "buyers" : "balanced"
   }
 
-  // Calculate seasonal factor (spring/summer premium)
-  const month = new Date().getMonth()
-  let seasonalFactor = 1.0
-  if (month >= 3 && month <= 6) seasonalFactor = 1.03 // Spring premium
-  if (month >= 11 || month <= 1) seasonalFactor = 0.97 // Winter discount
+  // months_of_inventory is a real column. The old code ignored it and instead
+  // divided the active-listing count by a hardcoded 20 "avg sales per month".
+  let inventoryLevel: MarketTrends["inventoryLevel"] = "unknown"
+  const monthsOfSupply = latest?.months_of_inventory ?? null
+  if (monthsOfSupply != null) {
+    inventoryLevel = monthsOfSupply < 2 ? "low" : monthsOfSupply > 6 ? "high" : "balanced"
+  }
+
+  // The 1-year price trend the market feed publishes, as a rate. Null when the
+  // feed carries none — never a stand-in 5%.
+  const appreciationRate =
+    latest?.price_trend_pct_1yr != null ? latest.price_trend_pct_1yr / 100 : null
 
   return {
     averageDaysOnMarket: avgDOM,
     medianSalePrice: medianPrice,
-    pricePerSqFtTrend: [240, 245, 250, 255, 260], // Simulated trend
+    activeListings: latest?.active_listings ?? null,
+    monthsOfSupply,
     inventoryLevel,
     marketType,
-    appreciationRate: 0.05, // 5% annual
-    seasonalFactor,
+    appreciationRate,
+    /** True when no market_data row covers this city/state at all. */
+    marketDataAvailable: latest != null,
   }
 }
 
-/**
- * AI-powered property valuation
- */
-async function generateAIValuation(
-  params: CMAParams,
-  comparables: ComparableProperty[],
-  marketTrends: MarketTrends
-) {
-  const avgAdjustedValue = comparables.reduce((sum, c) => sum + c.adjustedValue, 0) / comparables.length
-  const avgPricePerSqFt = comparables.reduce((sum, c) => sum + c.pricePerSqFt, 0) / comparables.length
-
-  const prompt = `You are a real estate valuation expert. Analyze this property and provide a detailed valuation.
-
-SUBJECT PROPERTY:
-- Address: ${params.propertyAddress}, ${params.propertyCity}, ${params.propertyState} ${params.propertyZip}
-- Type: ${params.propertyType}
-- Bedrooms: ${params.bedrooms}, Bathrooms: ${params.bathrooms}
-- Square Feet: ${params.squareFeet}
-- Year Built: ${params.yearBuilt || "Unknown"}
-- Condition: ${params.condition || "Unknown"}
-- Features: ${params.features?.join(", ") || "Standard"}
-
-COMPARABLE SALES ANALYSIS:
-- Number of Comparables: ${comparables.length}
-- Average Adjusted Value: $${avgAdjustedValue.toLocaleString()}
-- Average Price/SqFt: $${avgPricePerSqFt.toFixed(2)}
-- Price Range: $${Math.min(...comparables.map(c => c.adjustedValue)).toLocaleString()} - $${Math.max(...comparables.map(c => c.adjustedValue)).toLocaleString()}
-
-MARKET CONDITIONS:
-- Market Type: ${marketTrends.marketType} market
-- Average Days on Market: ${marketTrends.averageDaysOnMarket}
-- Inventory Level: ${marketTrends.inventoryLevel}
-- Annual Appreciation: ${(marketTrends.appreciationRate * 100).toFixed(1)}%
-- Seasonal Factor: ${marketTrends.seasonalFactor}
-
-Provide your valuation analysis in JSON format:
-{
-  "estimatedValue": number,
-  "confidenceLevel": number (0-100),
-  "valuationMethod": string,
-  "keyFactors": string[],
-  "strengths": string[],
-  "weaknesses": string[],
-  "marketPositioning": string
-}`
-
-  try {
-    const { text } = await generateText({
-      model: "openai/gpt-4o",
-      prompt,
-    })
-
-    const jsonMatch = text.match(/\{[\s\S]*\}/)
-    if (jsonMatch) {
-      return JSON.parse(jsonMatch[0])
-    }
-  } catch (error) {
-    console.error("[AI CMA] Valuation error:", error)
-  }
-
-  // Fallback valuation
-  return {
-    estimatedValue: Math.round(avgAdjustedValue * marketTrends.seasonalFactor),
-    confidenceLevel: 75,
-    valuationMethod: "Comparable Sales Approach",
-    keyFactors: ["Location", "Size", "Condition", "Market Trends"],
-    strengths: ["Good location", "Competitive market"],
-    weaknesses: ["Limited comparable data"],
-    marketPositioning: "Average for the area",
-  }
-}
+// ─── TOMBSTONE · generateAIValuation ────────────────────────────────────────
+// DELETED. Replaced by the value range lib/cma/ai-cma-orchestrator.ts:183
+// `runAiCma` COMPUTES — median of the adjusted CLOSED comps, low/high at ∓3% of
+// the extremes — with the model demoted to writing the narrative that explains
+// it (`AiCmaResult.aiNarrative`).
+//
+// THIS IS THE FABRICATION THIS WAVE EXISTS TO REMOVE, stated plainly so it is
+// not reintroduced by someone who thinks it was only a prompt.
+//
+// It sent GPT-4o a property description and asked for `"estimatedValue": number`.
+// Whatever the model replied became `valuation.estimatedValue`, which became
+// `pricingStrategy.recommendedListPrice` and `priceRangeLow/High`, which became
+// cma_reports.recommended_price / price_range_low / price_range_high. From
+// there the number is rendered on the seller portal, priced off by the net
+// sheet, quoted by the price-adjustment recommender, and printed in the
+// appraisal-defense package an agent hands to a licensed appraiser at the
+// property. A generative model authored a figure in a column whose name states
+// it was measured.
+//
+// Three details worth keeping on the record:
+//   1. The MARKET FACTS in that prompt were themselves invented — see the note
+//      in analyzeMarketTrends. The model was told a 5% appreciation rate and a
+//      median sale price derived from the subject's own square footage.
+//   2. With no comparables the reduce/length divisions produced NaN and the
+//      `Math.min(...[])` / `Math.max(...[])` produced Infinity and -Infinity,
+//      all of which were interpolated into the prompt as text. The model was
+//      handed "Average Adjusted Value: $NaN" and still returned a price, and
+//      that price was still written and still shown. generateAICMA now refuses
+//      before this point when no closed comp was sourced.
+//   3. The fallback multiplied the comp average by a `seasonalFactor` — 1.03 in
+//      spring, 0.97 in winter — invented in this file with no citation.
+//
+// The same defect was found and fixed in app/actions/home-value.ts, which used
+// to ask a chat model to "Provide exactly 3 comparable sales" and rendered the
+// invented addresses to homeowners as recent sales. Its fix was to adopt
+// runAiCma. This is the same fix on the agent-facing side, and it is why the
+// owner's ruling — "the same cma should be used for all" — is worth enforcing:
+// the two lanes did not merely differ in quality, one of them was making the
+// number up.
 
 /**
  * Generate pricing strategy recommendations
  */
 async function generatePricingStrategy(
   params: CMAParams,
-  valuation: any,
+  cma: AiCmaResultShape,
   marketTrends: MarketTrends
 ): Promise<PricingStrategy> {
-  const estimatedValue = valuation.estimatedValue
+  // ── THE RANGE IS THE COMPS' RANGE ────────────────────────────────────────
+  // It used to be `estimatedValue × (1 ∓ rangeMultiplier)` where estimatedValue
+  // was the model's answer and rangeMultiplier was 3/5/7% picked off the market
+  // type — so both the number and the width around it were manufactured here.
+  // These three now come from runAiCma, which derives them from the ADJUSTED
+  // CLOSED comps: mid is their median, low/high sit 3% outside the extremes.
+  const low = cma.estimatedValueLow
+  const mid = cma.estimatedValueMid
+  const high = cma.estimatedValueHigh
+  const confidenceLevel = Math.round(cma.confidenceScore * 100)
 
-  // Calculate price range based on market conditions
-  let rangeMultiplier = 0.05 // 5% range in balanced market
-  if (marketTrends.marketType === "sellers") rangeMultiplier = 0.03
-  if (marketTrends.marketType === "buyers") rangeMultiplier = 0.07
+  /**
+   * A LIST PRICE IS A STRATEGY, A VALUE IS A MEASUREMENT.
+   *
+   * The model is still allowed to say WHERE in the comp-supported range to list
+   * — that is a genuine judgement an agent pays for, and it is why this call
+   * survives the merge rather than being deleted with the rest. What it may not
+   * do is leave the range. Outside [low, high] the figure is no longer supported
+   * by any comparable sale, and cma_reports.recommended_price is read by the
+   * seller portal, the net sheet and the appraisal-defense package as though a
+   * comp stands behind it.
+   */
+  const clampToRange = (n: unknown): number | null => {
+    const v = typeof n === "number" && Number.isFinite(n) ? n : null
+    if (v == null || v <= 0) return null
+    return Math.round(Math.min(high, Math.max(low, v)))
+  }
+
+  const domLine =
+    marketTrends.averageDaysOnMarket != null
+      ? `Average days on market: ${marketTrends.averageDaysOnMarket}`
+      : "Average days on market: not reported for this area"
 
   const prompt = `As a real estate pricing strategist, recommend a pricing strategy for this ${params.listingType === "seller" ? "listing" : "purchase"}.
 
-Property Value: $${estimatedValue.toLocaleString()}
-Market Type: ${marketTrends.marketType}
-Average Days on Market: ${marketTrends.averageDaysOnMarket}
-Listing Type: ${params.listingType}
+The valuation below was produced from adjusted closed comparable sales using published state appraiser adjustment rates. It is not yours to revise.
+  Supported range: $${Math.round(low).toLocaleString()} – $${Math.round(high).toLocaleString()}
+  Midpoint:        $${Math.round(mid).toLocaleString()}
+  Closed comps behind it: ${cma.adjustedComps.length}
+  Confidence: ${confidenceLevel}/100
+
+Market type: ${marketTrends.marketType}
+${domLine}
+Listing type: ${params.listingType}
+
+HARD RULE: recommendedListPrice MUST fall inside the supported range above. Do not
+recommend a figure outside it, and do not restate the range. Your judgement is
+WHERE within it to list and why.
 
 Provide strategic pricing recommendations in JSON:
 {
@@ -535,29 +776,41 @@ Provide strategic pricing recommendations in JSON:
     if (jsonMatch) {
       const strategy = JSON.parse(jsonMatch[0])
       return {
-        recommendedListPrice: strategy.recommendedListPrice || estimatedValue,
-        priceRangeLow: Math.round(estimatedValue * (1 - rangeMultiplier)),
-        priceRangeHigh: Math.round(estimatedValue * (1 + rangeMultiplier)),
-        confidenceLevel: valuation.confidenceLevel,
-        rationale: strategy.rationale || "Based on comparable sales analysis",
-        quickSalePrice: Math.round(estimatedValue * (1 - (strategy.quickSaleDiscount || 5) / 100)),
-        premiumPrice: Math.round(estimatedValue * (1 + (strategy.premiumPricing || 3) / 100)),
-        daysToSellEstimate: strategy.estimatedDaysToSell || marketTrends.averageDaysOnMarket,
+        recommendedListPrice: clampToRange(strategy.recommendedListPrice) ?? Math.round(mid),
+        priceRangeLow: Math.round(low),
+        priceRangeHigh: Math.round(high),
+        confidenceLevel,
+        rationale: strategy.rationale || "Based on adjusted comparable sales analysis",
+        // Quick-sale and premium are POSITIONS WITHIN the supported range, not
+        // excursions past its ends. The old code multiplied out from the model's
+        // estimate and routinely produced a "premium price" no comp reached.
+        quickSalePrice:
+          clampToRange(mid * (1 - Math.abs(Number(strategy.quickSaleDiscount) || 5) / 100)) ??
+          Math.round(low),
+        premiumPrice:
+          clampToRange(mid * (1 + Math.abs(Number(strategy.premiumPricing) || 3) / 100)) ??
+          Math.round(high),
+        // Null rather than an invented 35 when neither the model nor the market
+        // feed produced one.
+        daysToSellEstimate:
+          (typeof strategy.estimatedDaysToSell === "number" ? strategy.estimatedDaysToSell : null) ??
+          marketTrends.averageDaysOnMarket,
       }
     }
   } catch (error) {
     console.error("[AI CMA] Pricing strategy error:", error)
   }
 
-  // Fallback strategy
+  // Fallback strategy — still the comps' own numbers, no model involved.
   return {
-    recommendedListPrice: estimatedValue,
-    priceRangeLow: Math.round(estimatedValue * (1 - rangeMultiplier)),
-    priceRangeHigh: Math.round(estimatedValue * (1 + rangeMultiplier)),
-    confidenceLevel: valuation.confidenceLevel,
-    rationale: "Based on comparable sales and current market conditions",
-    quickSalePrice: Math.round(estimatedValue * 0.95),
-    premiumPrice: Math.round(estimatedValue * 1.03),
+    recommendedListPrice: Math.round(mid),
+    priceRangeLow: Math.round(low),
+    priceRangeHigh: Math.round(high),
+    confidenceLevel,
+    rationale:
+      `Based on ${cma.adjustedComps.length} adjusted closed comparable sale(s) and current market conditions.`,
+    quickSalePrice: clampToRange(mid * 0.95) ?? Math.round(low),
+    premiumPrice: clampToRange(mid * 1.03) ?? Math.round(high),
     daysToSellEstimate: marketTrends.averageDaysOnMarket,
   }
 }
@@ -567,16 +820,59 @@ Provide strategic pricing recommendations in JSON:
  */
 async function generateCMAPresentation(
   params: CMAParams,
-  comparables: ComparableProperty[],
+  cma: AiCmaResultShape,
   marketTrends: MarketTrends,
   pricingStrategy: PricingStrategy
 ) {
+  // Every comp named to the script writer carries its own source, so the script
+  // cannot describe an AI-web-search row as a provider-reported sale — and the
+  // pending/active rows are labelled ASKING PRICES, because "comparables
+  // analyzed: 10" with six of them still for sale is how an active listing gets
+  // narrated to a seller as a recent sale.
+  const compLines = cma.adjustedComps
+    .map(
+      (a, i) =>
+        `  ${i + 1}. ${a.comp.address} — sold $${Math.round(a.comp.salePrice).toLocaleString()} on ${a.comp.saleDate}, adjusted to $${Math.round(a.adjustedPrice).toLocaleString()}`,
+    )
+    .join("\n")
+
+  const marketLines = [
+    `Market type: ${marketTrends.marketType}`,
+    marketTrends.averageDaysOnMarket != null
+      ? `Average days on market: ${marketTrends.averageDaysOnMarket}`
+      : "Average days on market: not reported for this area",
+    `Inventory: ${marketTrends.inventoryLevel}`,
+    marketTrends.marketDataAvailable
+      ? null
+      : "NOTE: no market-data record covers this city, so market context is limited to what the comparables themselves show. Do not state market statistics.",
+  ]
+    .filter(Boolean)
+    .join("\n")
+
   const prompt = `Create a professional CMA presentation script for a real estate agent to present to their ${params.listingType === "seller" ? "seller" : "buyer"} client.
 
 Property: ${params.propertyAddress}, ${params.propertyCity}, ${params.propertyState}
-Recommended Price: $${pricingStrategy.recommendedListPrice.toLocaleString()}
-Market: ${marketTrends.marketType} market
-Comparables Analyzed: ${comparables.length}
+Recommended list price: $${pricingStrategy.recommendedListPrice.toLocaleString()}
+Comp-supported range: $${pricingStrategy.priceRangeLow.toLocaleString()} – $${pricingStrategy.priceRangeHigh.toLocaleString()}
+
+CLOSED COMPARABLE SALES (the only figures behind the valuation):
+${compLines}
+
+Still on the market (ASKING prices — never describe these as sales):
+${
+  [...cma.pendingComps, ...cma.activeComps]
+    .map((a) => `  • ${a.comp.address} — asking $${Math.round(a.comp.salePrice).toLocaleString()} (${a.comp.status})`)
+    .join("\n") || "  (none reported)"
+}
+
+MARKET:
+${marketLines}
+
+HARD RULES:
+  - Use ONLY the comparables listed above. Do not add, recall or infer any other
+    property, address, sale price or sale date.
+  - Never describe an active or pending listing as a sale.
+  - Do not state a market statistic that is not given above.
 
 Generate a compelling presentation with:
 1. Executive Summary (2-3 sentences)
@@ -605,25 +901,39 @@ Keep it conversational and client-focused. Format as JSON:
 
     const jsonMatch = text.match(/\{[\s\S]*\}/)
     if (jsonMatch) {
-      return JSON.parse(jsonMatch[0])
+      // The mandatory disclaimers ride WITH the script rather than being left
+      // for a downstream surface to remember. runAiCma builds them from what
+      // actually happened — which provider served each side, whether the sold
+      // window had to be widened, whether any row came off a web search.
+      return { ...JSON.parse(jsonMatch[0]), disclaimers: cma.disclaimers }
     }
   } catch (error) {
     console.error("[AI CMA] Presentation error:", error)
   }
 
-  // Fallback presentation
+  // Fallback presentation — states only what was measured.
   return {
-    executiveSummary: `Based on our comprehensive market analysis, we recommend listing your property at $${pricingStrategy.recommendedListPrice.toLocaleString()}.`,
+    executiveSummary: `Based on ${cma.adjustedComps.length} adjusted closed comparable sale(s), we recommend listing at $${pricingStrategy.recommendedListPrice.toLocaleString()} within a supported range of $${pricingStrategy.priceRangeLow.toLocaleString()}–$${pricingStrategy.priceRangeHigh.toLocaleString()}.`,
     marketOverview: [
-      `Current market conditions favor ${marketTrends.marketType}`,
-      `Average days on market: ${marketTrends.averageDaysOnMarket}`,
-      `Inventory levels are ${marketTrends.inventoryLevel}`,
+      `Market type: ${marketTrends.marketType}`,
+      marketTrends.averageDaysOnMarket != null
+        ? `Average days on market: ${marketTrends.averageDaysOnMarket}`
+        : "Average days on market: not reported for this area",
+      `Inventory levels: ${marketTrends.inventoryLevel}`,
     ],
     pricingRationale: pricingStrategy.rationale,
-    comparablesSummary: `Analyzed ${comparables.length} comparable properties in your area.`,
-    recommendedStrategy: "Strategic pricing at market value for optimal results.",
+    comparablesSummary: `Analyzed ${cma.adjustedComps.length} closed comparable sale(s)${
+      cma.activeComps.length + cma.pendingComps.length > 0
+        ? `, plus ${cma.activeComps.length} active and ${cma.pendingComps.length} pending listing(s) for market direction`
+        : ""
+    }.`,
+    recommendedStrategy: "Strategic pricing within the comparable-supported range.",
     nextSteps: ["Review and approve pricing", "Schedule listing photos", "Prepare property for showings"],
-    talkingPoints: ["Strong comparable support", "Favorable market timing", "Competitive positioning"],
+    talkingPoints: [
+      `${cma.adjustedComps.length} closed comparable sale(s) behind the range`,
+      `Confidence ${Math.round(cma.confidenceScore * 100)}/100`,
+    ],
+    disclaimers: cma.disclaimers,
   }
 }
 

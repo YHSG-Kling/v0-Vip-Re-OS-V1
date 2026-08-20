@@ -165,20 +165,35 @@ export const listingApptPrepChain: WorkflowChain = {
         // Use the canonical CMA generator via the injectable executor seam.
         // Real path lazily imports the server action (avoids bundling it into
         // the lib layer at edge); tests inject a fake so no AVM spend in CI.
+        //
+        // PARAMETER NAMES. This object used `address`/`city`/`state`/`zipCode`/
+        // `sqft` — NOT ONE of which is a key on generateAICMA's CMAParams, which
+        // reads propertyAddress / propertyCity / propertyState / propertyZip /
+        // squareFeet. The `as any` on the call is what let it compile. So every
+        // CMA generated from a listing appointment ran with an EMPTY address and
+        // ZERO square feet: the comps provider was handed ", , " to search on and
+        // the subject was valued as a 0-sqft home. It never failed loudly — it
+        // returned a CMA built on nothing. `listingType` was missing too, which
+        // the pricing strategy branches on.
         const cma = await activeExecutors.generateCMA({
           agentId: agent.id,
           contactId: ctx.contactId,
-          address: propertyData.address,
-          city: propertyData.city,
-          state: propertyData.state,
-          zipCode: propertyData.zip ?? propertyData.zipCode,
-          bedrooms: propertyData.bedrooms,
-          bathrooms: propertyData.bathrooms,
-          sqft: propertyData.sqft,
+          propertyAddress: propertyData.address,
+          propertyCity: propertyData.city ?? "",
+          propertyState: propertyData.state ?? "",
+          propertyZip: propertyData.zip ?? propertyData.zipCode ?? "",
+          bedrooms: propertyData.bedrooms ?? 0,
+          bathrooms: propertyData.bathrooms ?? 0,
+          squareFeet: propertyData.sqft ?? 0,
           lotSize: propertyData.lotSize,
           yearBuilt: propertyData.yearBuilt,
           propertyType: propertyData.propertyType ?? "single_family",
-          condition: propertyData.condition ?? "average",
+          // Left unset unless the appointment actually recorded one. The old
+          // `?? "average"` is not a member of the condition vocabulary
+          // (excellent|good|fair|poor), so it graded as unknown anyway — but it
+          // read on the record as though the property had been assessed.
+          condition: propertyData.condition,
+          listingType: "seller",
         } as any)
 
         if (!cma.success) {
