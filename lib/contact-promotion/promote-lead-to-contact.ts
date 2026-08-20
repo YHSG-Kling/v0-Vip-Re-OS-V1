@@ -6,14 +6,23 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { validatePromotionEligibility } from "./promotion-eligibility"
-import { createContactFromLead } from "./contact-creator"
+import { createContactFromLead, resolveContactType } from "./contact-creator"
 import { deactivateLead } from "./lead-deactivator"
 import { logPromotionActivity } from "./promotion-logger"
+import { carryLeadHistoryToContact } from "./history-carry"
+import { grantPortalAccessForPromotedContact } from "./portal-access"
 
 export interface PromotionResult {
   success: boolean
   message: string
   contactId?: string
+  /**
+   * Non-fatal problems in the BEST-EFFORT tail of the promotion (history carry,
+   * portal access). The contact exists and the promotion SUCCEEDED; these are things
+   * the operator needs to know about, not reasons to unwind. Always an array on a
+   * successful promotion so a caller can log it without a null check.
+   */
+  warnings?: string[]
 }
 
 export async function promoteLeadToContactService(
@@ -49,18 +58,44 @@ export async function promoteLeadToContactService(
     // brokerage is the anchor for both automation_errors writes below.
     promotionBrokerageId = (lead.brokerage_id as string | null) ?? null
 
-    // Step 2: Idempotency check
-    // tenant anchor (scope burn-down): the probe is pinned to the validated
-    // lead's brokerage — the notes marker alone must never match cross-tenant.
+    // Step 2: Idempotency check.
+    //
+    // LINK FIRST. `leads.contact_id` is the real conversion record (it is what
+    // migration 039's contact_lead_history joins on, and what the history carry in
+    // Step 5b stamps), so it answers "already promoted?" directly and exactly. The
+    // notes-marker probe is kept ONLY as the fallback for rows converted before the
+    // link was stamped — it is a string match on a free-text column, and now that the
+    // lead's own notes are appended after the marker it can no longer be an equality
+    // test. `like(marker%)` matches both shapes.
+    //
+    // tenant anchor (scope burn-down): the fallback probe stays pinned to the
+    // validated lead's brokerage — the notes marker alone must never match cross-tenant.
+    //
+    // The link check is HOISTED ABOVE the is_active gate on purpose. Deactivation is
+    // a separate statement that can fail (the branch below files an automation_errors
+    // row for exactly that case), and while it was the ONLY idempotency signal a lead
+    // left active-but-converted got promoted a SECOND time on the next call — two
+    // contacts for one person. `contact_id` is set in the same tail as the conversion,
+    // so it answers the question even when deactivation did not land. Same semantic
+    // lib/kernel/crm.ts:convertLeadToContact already uses.
+    if (lead.contact_id) {
+      return { success: true, message: "Lead already promoted to contact", contactId: lead.contact_id as string }
+    }
+
     if (lead.is_active === false) {
-      const { data: existingContact } = await supabase
+      const { data: existingContact, error: existingError } = await supabase
         .from("contacts")
         .select("id")
         .eq("brokerage_id", lead.brokerage_id)
-        .eq("notes", `Promoted from lead ${leadId}`)
+        .like("notes", `Promoted from lead ${leadId}%`)
         .limit(1)
-        .single()
+        .maybeSingle()
 
+      // supabase-js RESOLVES refusals. An unread error here reports "no contact
+      // found" for a lead that has one, and the caller promotes it a second time.
+      if (existingError) {
+        return { success: false, message: `Could not verify prior promotion: ${existingError.message}` }
+      }
       if (existingContact) {
         return { success: true, message: "Lead already promoted to contact", contactId: existingContact.id }
       }
@@ -97,9 +132,35 @@ export async function promoteLeadToContactService(
       throw new Error(contactResult.error || "Failed to create contact")
     }
 
+    // Everything past this point is the BEST-EFFORT TAIL. The contact EXISTS. No
+    // step below may throw, roll back, or turn a successful promotion into a failure
+    // — each one reports into `warnings` the same way the deactivation failure below
+    // reports into automation_errors.
+    const warnings: string[] = []
+
+    // Step 5b: Carry the lead's HISTORY to the new contact.
+    //
+    // Runs BEFORE deactivation on purpose: deactivation is the step that ends the
+    // lead's life, and the lineage link is what keeps its history reachable
+    // afterwards. Stamping the link first means that even if deactivation fails, the
+    // contact is not standing on an orphaned history trail.
+    const carry = await carryLeadHistoryToContact(supabase, {
+      leadId,
+      contactId: contactResult.contactId,
+      brokerageId: lead.brokerage_id ?? null,
+    })
+    warnings.push(...carry.warnings)
+    if (Object.keys(carry.repointed).length > 0) {
+      console.log(
+        `[promoteLeadToContactService] history re-pointed to contact ${contactResult.contactId}:`,
+        carry.repointed,
+      )
+    }
+
     // Step 6: Deactivate lead (preserve for audit)
     const deactivateResult = await deactivateLead(supabase, leadId)
     if (!deactivateResult.success) {
+      warnings.push(`lead NOT deactivated after conversion: ${deactivateResult.error ?? "unknown error"}`)
       // TENANT — the lead's own brokerage, resolved once above. This is the
       // worst-shaped failure this function has (a contact exists and the lead is
       // still active, so the pair will be promoted again), and unstamped it is
@@ -127,18 +188,47 @@ export async function promoteLeadToContactService(
     }
 
     // Step 7: Log audit trail
-    await logPromotionActivity(supabase, {
+    const promotionLog = await logPromotionActivity(supabase, {
       leadId,
       contactId: contactResult.contactId,
       agentId: lead.agent_id,
       brokerageId: lead.brokerage_id,
       reason: "Agent assigned - relationship lifecycle begins",
     })
+    if (!promotionLog.success) {
+      warnings.push(`promotion activity NOT logged: ${promotionLog.error ?? "unknown error"}`)
+    }
+
+    // Step 8: PORTAL ACCESS. "since this is a new contact record, the contact gets
+    // access to their portal" (owner). Delegates to the canonical system invite path
+    // — see lib/contact-promotion/portal-access.ts for why that one and not the
+    // session-bound server action. `agent.user_id` was already resolved in Step 4,
+    // so the agents.id → users.id crossing costs no extra read.
+    //
+    // BEST EFFORT, and it CANNOT unwind the conversion: the contact, its history and
+    // the deactivated lead are all already committed. A portal failure comes back as
+    // a warning the caller reports, exactly like the deactivation failure above.
+    const portal = await grantPortalAccessForPromotedContact(supabase, {
+      contactId: contactResult.contactId,
+      agentId: lead.agent_id,
+      agentUserId: agent.user_id ?? null,
+      contactType: resolveContactType(lead.motivation_type, lead.lead_type),
+    })
+    warnings.push(...portal.warnings)
+    console.log(
+      `[promoteLeadToContactService] portal access for contact ${contactResult.contactId}: ` +
+        `${portal.reason} (granted=${portal.granted}, emailSent=${portal.emailSent})`,
+    )
+
+    if (warnings.length > 0) {
+      console.warn(`[promoteLeadToContactService] lead ${leadId} promoted WITH warnings:`, warnings)
+    }
 
     return {
       success: true,
       message: "Lead successfully promoted to contact",
       contactId: contactResult.contactId,
+      warnings,
     }
   } catch (error: any) {
     console.error("[promoteLeadToContactService] Error:", error)
