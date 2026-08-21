@@ -68,6 +68,25 @@ jobs:
       #         compile abort STOPS being recoverable by re-running, that headroom
       #         is gone and the answer is the runner, not the number.
       #
+      #   10240, cpus:1, commit 36f0500 (2026-08-21)
+      #       → compile aborted at 6m57s, exit 134, same message, heap at
+      #         8460 MB used / 9250 MB committed. RE-RUN OF THE SAME COMMIT,
+      #         UNCHANGED, PASSED in 17m10s.
+      #         WHY THIS ONE IS WORTH RECORDING even though it says the same
+      #         thing: it is the CONTROL for the previous line. That reading
+      #         (8461/9186) was a single sample, so "compile's demand has grown
+      #         from 7.2 to 8.5 GB" could equally have been one outlier. This
+      #         one lands within 1 MB used and 64 MB committed of it, a day
+      #         later, carrying the whole wave-15 diff — sixteen role rosters
+      #         folded into one resolver, a new conversion guard wired at 14
+      #         sites, two new lib modules and four new simulators. Demand did
+      #         NOT move. So the 8.5 GB figure is the real floor rather than a
+      #         spike, the ~90%-of-cap abort threshold reproduces exactly, and
+      #         10240 is still the right number — not by argument, by a second
+      #         measurement agreeing with the first.
+      #         Failure rate at this commit: 1 abort, then green. Consistent
+      #         with the intermittent flake, NOT with a hard ceiling.
+      #
       # So compile demonstrably needs >7.8 GB, and page-data demonstrably cannot
       # be given 12 GB on a 16 GB runner. 10240 is the value that clears compile's
       # measured demand with ~2.4 GB of margin while staying meaningfully under the
