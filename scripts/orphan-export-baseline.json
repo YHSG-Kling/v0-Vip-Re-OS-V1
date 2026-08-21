@@ -27,7 +27,6 @@
     "app/actions/lead-import/import-actions.ts": 1,
     "app/actions/lead-intelligence.ts": 6,
     "app/actions/listings-kernel.ts": 3,
-    "app/actions/marketing-studio.ts": 2,
     "app/actions/multi-persona.ts": 2,
     "app/actions/onboarding/mentor-session.ts": 1,
     "app/actions/open-house-automation.ts": 1,
@@ -557,7 +556,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9211,
+  "census": 9208,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -871,7 +870,7 @@
     "app/actions/marketing-intelligence.ts": 3,
     "app/actions/marketing-ops.ts": 2,
     "app/actions/marketing-package-automation.ts": 9,
-    "app/actions/marketing-studio.ts": 21,
+    "app/actions/marketing-studio.ts": 19,
     "app/actions/multi-persona.ts": 28,
     "app/actions/negotiation-copilot.ts": 2,
     "app/actions/negotiation-strategy.ts": 6,
@@ -1096,7 +1095,7 @@
     "app/actions/video/distribute-video.ts": 1,
     "app/actions/video/generate-script.ts": 1,
     "app/actions/video-content.ts": 5,
-    "app/actions/video-generation.ts": 18,
+    "app/actions/video-generation.ts": 17,
     "app/actions/video-landing.ts": 3,
     "app/actions/video-repurposing.ts": 13,
     "app/actions/video-repurposing.utils.ts": 3,
@@ -6354,9 +6353,7 @@
       "getCalendarEvents",
       "updateCalendarEventStatus",
       "addCampaignComment",
-      "getCampaignComments",
       "createCampaignTask",
-      "getCampaignTasks",
       "updateTaskStatus",
       "generateCampaignContent",
       "createQrCodeAction",
@@ -7882,7 +7879,6 @@
       "recordVideoEngagementEvent",
       "getVideoPerformanceStats",
       "getVideoEngagementEvents",
-      "getVideoPerformanceTracking",
       "getAgentVideoProfile",
       "generateVideoScript",
       "generateVideoFromScript",
@@ -20828,5 +20824,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 2
+  "trulyDead": 0
 }
