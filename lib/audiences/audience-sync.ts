@@ -21,7 +21,10 @@
  *       required); but we still respect direct_mail_opt_out as a
  *       proxy for "this person doesn't want our marketing".
  *
- *   onLeadConvertedToContact(contactId, brokerageId, agentUserId)
+ *   onLeadConvertedForAudience({contactId, leadId, brokerageId, agentUserId})
+ *     · NAME CORRECTED. This header called it onLeadConvertedToContact, which
+ *       is not and never was an export of this file — so the documented API
+ *       named nothing, and a reader grepping for it found only this comment.
  *     · Promotes the audience membership: keeps the brokerage row,
  *       adds an agent_user_id-scoped row. Now the contact is in
  *       BOTH the brokerage's retargeting pool AND the assigned
@@ -186,7 +189,8 @@ async function stageMembership(args: {
  * them violates FB's TOS and risks the brokerage's ad account.
  *
  * Audience membership now begins ONLY when a lead becomes a contact
- * (handleLeadAssigned / handleLeadConvertedToContact). At that point
+ * (handleLeadAssigned, and — since the manual lane was wired —
+ * lib/kernel/crm.ts convertLeadToContact). At that point
  * the kernel has either explicit tcpa_consent OR established active
  * representation, both of which satisfy FB's consent requirement.
  *

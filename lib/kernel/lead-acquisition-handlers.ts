@@ -612,62 +612,29 @@ export async function handleLeadAssigned(params: {
   }
 }
 
-// ─── HANDLER 7: handleLeadConvertedToContact (manual path) ───────────────────
-export async function handleLeadConvertedToContact(params: {
-  leadId: string
-  brokerageId: string
-  contactId: string
-}): Promise<void> {
-  const { leadId, brokerageId, contactId } = params
-  const supabase = createServiceClient()
-
-  // A FOURTH CONVERSION WRITER, found while closing the converter gap and
-  // REPORTED rather than deleted: this export has ZERO call sites (the only
-  // other mention in the tree is a comment in lib/audiences/audience-sync.ts:189),
-  // and it is exported through lib/kernel/index.ts:147, so "unreferenced" is not
-  // proof of "dead" without an owner ruling. What it WAS is a fifth spelling of
-  // conversion — `is_active` + `contact_id` and nothing else: no `converted_at`,
-  // no `ai_isa_owner` release, no sequence_enrollments close, no history carry.
-  // Brought onto the same markers as the other three here so that if it is ever
-  // called it cannot re-open the leak; whether it should exist at all is a
-  // consolidation call for the integrator (survivor candidate:
-  // lib/kernel/crm.ts:convertLeadToContact).
-  const nowIso = new Date().toISOString()
-  const { error: linkError } = await supabase
-    .from('leads')
-    .update({
-      contact_id: contactId,
-      converted_at: nowIso,
-      updated_at: nowIso,
-    })
-    .eq('id', leadId)
-  if (linkError) {
-    console.error(`[lead-acquisition] lead ${leadId} → contact ${contactId} LINK not stamped: ${linkError.message}`)
-  }
-
-  {
-    const { deactivateLead } = await import('@/lib/contact-promotion/lead-deactivator')
-    const deactivated = await deactivateLead(supabase, leadId)
-    if (!deactivated.success) {
-      console.error(
-        `[lead-acquisition] lead ${leadId} converted to contact ${contactId} but was NOT deactivated: ${deactivated.error ?? 'unknown error'}`,
-      )
-    }
-  }
-
-  await supabase.from('lifecycle_events').insert({
-    entity_type: 'lead',
-    entity_id: leadId,
-    event_type: KernelEvent.LEAD_CONVERTED_TO_CONTACT,
-    brokerage_id: brokerageId,
-    metadata: { contactId },
-    created_at: new Date().toISOString(),
-  })
-
-  await processKernelEvent({
-    event: KernelEvent.LEAD_CONVERTED_TO_CONTACT,
-    brokerageId,
-    entityType: 'lead',
-    entityId: leadId,
-  })
-}
+// ─── HANDLER 7 REMOVED — handleLeadConvertedToContact (manual path) ──────────
+//
+// TOMBSTONE. SURVIVOR: lib/kernel/crm.ts `convertLeadToContact` (the live manual
+// path, reached from app/actions/lead-lifecycle.ts `convertLeadToContact`).
+//
+// This was a FOURTH conversion writer and a fifth spelling of conversion. It had
+// ZERO call sites: the only other mentions in the tree were the barrel export in
+// lib/kernel/index.ts and a stale name inside a comment in
+// lib/audiences/audience-sync.ts. Reachability was PROVEN before deleting rather
+// than inferred from the reference count — its siblings in this file are invoked
+// by DIRECT IMPORT (handleLeadAssigned is imported at
+// app/actions/lead-assignment/assign-lead.ts and app/actions/lead-acquisition.ts),
+// there is no handler registry that dispatches them by name, and
+// processKernelEvent routes to notification_rules rows, not to functions in this
+// module. It emitted LEAD_CONVERTED_TO_CONTACT; it was never dispatched by it.
+//
+// MERGED ONTO THE SURVIVOR FIRST, then deleted. The one thing it carried that
+// crm.ts lacked was the intent to be the manual conversion hook — and the actual
+// audience promotion it never performed now lives in the survivor, crossing
+// agents.user_id correctly. What it DID do (contact_id, converted_at,
+// deactivateLead, the lifecycle row and the kernel fan-out) the survivor already
+// did or now does.
+//
+// Deleting it is not moving a number: it removes a writer that, had anyone ever
+// called it, would have been a fifth answer to "what does conversion stamp" — the
+// exact divergence the conversion-finality guard exists to make impossible.

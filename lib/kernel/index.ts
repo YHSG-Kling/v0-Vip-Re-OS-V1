@@ -144,7 +144,11 @@ export {
   handleConsentReceived,
   handleLeadReadyForAssignment,
   handleLeadAssigned,
-  handleLeadConvertedToContact,
+  // handleLeadConvertedToContact REMOVED — see the tombstone at
+  // lib/kernel/lead-acquisition-handlers.ts:615. It was a fourth conversion
+  // writer with zero call sites; this barrel line was its only non-comment
+  // reference in the tree, which is exactly how an orphan looks WIRED to a
+  // reference count. SURVIVOR: lib/kernel/crm.ts `convertLeadToContact`.
 } from "./lead-acquisition-handlers"
 
 export {

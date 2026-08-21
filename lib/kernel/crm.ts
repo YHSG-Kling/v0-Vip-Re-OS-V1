@@ -622,7 +622,60 @@ export async function convertLeadToContact(params: {
     }
   }
 
+  // PROMOTE THE NEW CONTACT INTO THE AGENT'S RETARGETING AUDIENCE.
+  //
+  // MERGED ONTO THIS SURVIVOR (§1) from the automatic lane, which has always done
+  // it (lib/kernel/lead-acquisition-handlers.ts, inside handleLeadAssigned) while
+  // this MANUAL lane never did. `onLeadConvertedForAudience` had exactly ONE
+  // caller in the tree, and it was that one — so a lead a broker converted by hand
+  // stayed out of the agent's Meta audience while an identical lead converted
+  // automatically went in. Same business fact, two outcomes, decided by which
+  // button someone pressed.
+  //
+  // agentUserId IS A users.id, AND params.agentId IS AN agents.id. Those id spaces
+  // are DISJOINT here (23503 on the FK), so the agents row is crossed via
+  // `user_id` rather than passing agentId straight through — passing it would not
+  // error, it would just silently match no audience row and promote nobody, which
+  // is how this kind of wire looks connected while doing nothing.
+  //
+  // Non-blocking and best-effort by construction: a retargeting push must never
+  // unwind a completed conversion. The failure is logged, not swallowed.
+  if (!result.isDuplicate) {
+    try {
+      const { data: agentRow, error: agentErr } = await supabase
+        .from("agents")
+        .select("user_id")
+        .eq("id", params.agentId)
+        .maybeSingle()
+      const agentUserId = (agentRow as { user_id?: string | null } | null)?.user_id ?? null
+      if (agentErr) {
+        console.error(`[crm] audience promote skipped — agents.user_id unreadable for ${params.agentId}: ${agentErr.message}`)
+      }
+      const { onLeadConvertedForAudience } = await import("@/lib/audiences/audience-sync")
+      void onLeadConvertedForAudience({
+        contactId:   result.contactId as string,
+        leadId:      params.leadId,
+        brokerageId: params.brokerageId,
+        agentUserId,
+      }).catch((e) => {
+        console.error("[crm] FB audience promote failed:", e)
+      })
+    } catch { /* best-effort */ }
+  }
+
   // Lifecycle event
+  //
+  // VOCABULARY SPLIT, MEASURED AND LEFT IN PLACE DELIBERATELY. This lane emits
+  // CONTACT_LEAD_CONVERTED while the automatic lane emits
+  // LEAD_CONVERTED_TO_CONTACT for the very same fact, and processKernelEvent
+  // routes by matching notification_rules.trigger_event against the event STRING
+  // — so a rule written for one name can never fire for the other. Measured on
+  // the live database before deciding: 42 notification rules, all active, ZERO
+  // referencing either name, and zero lifecycle_events rows carrying either. So
+  // nothing is silently failing today and renaming an emitted event mid-wave
+  // would be a change with no evidence behind it. It is a latent trap for
+  // whoever configures the first conversion notification, and it is filed rather
+  // than guessed at.
   await supabase.from("lifecycle_events").insert({
     entity_type:  "lead",
     entity_id:    params.leadId,
