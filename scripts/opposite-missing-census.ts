@@ -676,6 +676,36 @@ function scanColumns(file: string, src: string) {
         if (e.column === "*") { starRead.add(e.table); continue }
         if (SCHEMA_SNAPSHOT[e.table].includes(e.column)) noteCol(readCols, e.table, e.column, site)
       }
+      // AN EMBED WILDCARD READS EVERY COLUMN OF THE EMBEDDED TABLE, and until
+      // this loop it was only counted when the resolver handed back a `*`
+      // column. It does not do that for every spelling: PostgREST embeds are
+      // routinely written with an ALIAS — `tasks:marketing_campaign_tasks(*)`,
+      // `comments:marketing_campaign_comments(*, author:users(id, …))` — and an
+      // aliased wildcard slipped past, so the embedded table never entered
+      // `starRead`.
+      //
+      // The consequence was not a missed finding, it was a FABRICATED one. A
+      // top-level `select("*")` marks a table fully-read (line above), so while
+      // some other function happened to select the table with a bare star, its
+      // columns looked read. Delete that function — even correctly, onto a
+      // survivor that reads the same rows through an aliased embed — and every
+      // column of that table instantly becomes "written by code, read by
+      // NOBODY". That is exactly what happened when getCampaignComments and
+      // getCampaignTasks were consolidated onto getCampaignById: six columns on
+      // marketing_campaign_comments / marketing_campaign_tasks were reported as
+      // new one-sided pairs while the survivor was reading all of them, through
+      // `tasks:marketing_campaign_tasks(*)`, at runtime.
+      //
+      // Accepting those six into the baseline would have been the worse move of
+      // the two available: it records a defect that does not exist and teaches
+      // the next reader that the columns need a reader built. So the finder is
+      // fixed instead. Scanned on the RAW select argument rather than the
+      // resolver's output, because the point is to catch the spellings the
+      // resolver does not model.
+      for (const wm of selArg.matchAll(/(?:^|[,\s{])(?:[A-Za-z_][A-Za-z0-9_]*\s*:\s*)?([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:!\s*[A-Za-z_][A-Za-z0-9_]*\s*)?\(\s*\*/g)) {
+        const embTable = wm[1]
+        if (SCHEMA_SNAPSHOT[embTable]) { tablesRead.add(embTable); starRead.add(embTable) }
+      }
       // An embed whose target could not be named may read ANY column of ANY table;
       // rather than guess, the PARENT keeps its findings and the unresolved count
       // carries the doubt (printed in the coverage block).
@@ -801,6 +831,45 @@ function scanColumns(file: string, src: string) {
 
 for (const f of productFiles) scanColumns(f, codeOf.get(f)!)
 stage("C1 columns")
+
+// EMBED-WILDCARD CONTROLS. The regex added to the select-parsing loop above
+// exists because an ALIASED embed wildcard was invisible, which turned a correct
+// consolidation into six fabricated "written, never read" findings. A fix to a
+// blind spot needs both arms proved or it is just a different blindness: the
+// spellings that DO read everything must be caught, and the ones that read only
+// named columns must NOT be, or every embed would mark its table fully-read and
+// this whole direction of the census would go quiet.
+{
+  const EMB = /(?:^|[,\s{])(?:[A-Za-z_][A-Za-z0-9_]*\s*:\s*)?([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:!\s*[A-Za-z_][A-Za-z0-9_]*\s*)?\(\s*\*/g
+  const hits = (s: string) => { EMB.lastIndex = 0; return [...s.matchAll(EMB)].map((m) => m[1]) }
+
+  // CAUGHT — every spelling that really does read the embedded table whole.
+  control("embed wildcard: bare `table(*)` marks the embedded table fully-read",
+    hits("*, marketing_campaign_tasks(*)").includes("marketing_campaign_tasks"))
+  control("embed wildcard: ALIASED `alias:table(*)` — the spelling that was invisible",
+    hits("*, tasks:marketing_campaign_tasks(*)").includes("marketing_campaign_tasks"))
+  control("embed wildcard: aliased star WITH trailing named columns and a nested embed",
+    hits("*, comments:marketing_campaign_comments(*, author:users(id, first_name))")
+      .includes("marketing_campaign_comments"))
+  control("embed wildcard: hint syntax `alias:table!fk(*)` is still a full read",
+    hits("*, t:transactions!buyer_contact_id(*)").includes("transactions"))
+  control("embed wildcard: survives newlines and indentation (template-literal selects)",
+    hits("\n      *,\n      tasks:marketing_campaign_tasks(*),\n    ").includes("marketing_campaign_tasks"))
+
+  // NOT CAUGHT — an embed naming its columns proves nothing about the others,
+  // and must keep contributing findings.
+  control("embed wildcard: an embed with NAMED columns is NOT a full read",
+    !hits("*, author:users(id, first_name, last_name)").includes("users"))
+  control("embed wildcard: a plain function call is not an embed",
+    hits("count(id)").length === 0 || !hits("count(id)").includes("count"))
+
+  // THE REGRESSION ITSELF, stated as a control: the two tables whose consolidation
+  // exposed this must now be seen as fully-read from getCampaignById's select.
+  const real = "\n      *,\n      tasks:marketing_campaign_tasks(*),\n      comments:marketing_campaign_comments(*, author:users(id, first_name, last_name)),\n    "
+  control("embed wildcard: the real getCampaignById select marks BOTH campaign child tables read",
+    hits(real).includes("marketing_campaign_tasks") && hits(real).includes("marketing_campaign_comments"),
+    hits(real).join(","))
+}
 
 // POSITIVE CONTROLS — the scanner must SEE a column read and a column write, and
 // must NOT see one that only exists in a comment.
