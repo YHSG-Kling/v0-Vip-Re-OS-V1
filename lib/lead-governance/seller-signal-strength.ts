@@ -88,7 +88,64 @@ export function isStrongSellerSignal(value: unknown): boolean {
   return r >= 0 && r >= RANK[STRONG_SELLER_SIGNAL_THRESHOLD]
 }
 
-/** How many of these rows are strong. The shape the scorer actually wants. */
-export function countStrongSellerSignals(rows: ReadonlyArray<{ signal_strength?: unknown }>): number {
-  return rows.filter((r) => isStrongSellerSignal(r?.signal_strength)).length
+/**
+ * SIGNAL TYPES THAT ARE A REASON *NOT* TO ACT, filed in the same table as the
+ * reasons TO act.
+ *
+ * WHY A SUPPRESSION KIND EXISTS AT ALL. `motivated_seller_signals` is the one
+ * place this OS records "something about this property says a sale is coming".
+ * The provider also publishes the exact opposite fact — the property is ALREADY
+ * on the market with a listing broker. That is not noise to be dropped: an agent
+ * needs to SEE it, because soliciting a seller who is already subject to an
+ * exclusive representation agreement with another broker is an NAR Code of
+ * Ethics Article 16 problem, not merely a wasted call. So the fact is stored,
+ * and the SCORER is taught to leave it out of the motivation count.
+ *
+ * A suppression row must therefore never be able to move the motivated-seller
+ * score UP. If it could, "this person already has an agent" would read as "this
+ * person is ready to sell" — which is true, and is precisely the wrong
+ * conclusion to hand a prospecting queue.
+ *
+ * NOT A SECOND VOCABULARY. These values are `signal_type` values from the same
+ * namespace every other writer uses (CLAUDE.md §6); this set only says which of
+ * them point the other way. lib/external/batchdata-seller-signals.ts declares
+ * `active_listing` through the same `defineSellerSignalSources` gate as every
+ * other type.
+ */
+export const SUPPRESSION_SELLER_SIGNAL_TYPES: readonly string[] = ["active_listing"]
+
+/**
+ * PURE. Is this row a reason NOT to prospect rather than a reason to?
+ *
+ * A row with NO `signal_type` (the shape older callers pass — see
+ * `countStrongSellerSignals` below) reads FALSE: absence of a type is not
+ * evidence of suppression, and treating it as suppression would silently zero
+ * the whole component for every caller that selects only `signal_strength`.
+ */
+export function isSuppressionSellerSignal(row: { signal_type?: unknown } | null | undefined): boolean {
+  const t = row?.signal_type
+  return typeof t === "string" && SUPPRESSION_SELLER_SIGNAL_TYPES.includes(t)
+}
+
+/** Does this record carry a live "already represented / already listed" flag? */
+export function hasRepresentationSuppression(
+  rows: ReadonlyArray<{ signal_type?: unknown }>,
+): boolean {
+  return rows.some((r) => isSuppressionSellerSignal(r))
+}
+
+/**
+ * How many of these rows are strong. The shape the scorer actually wants.
+ *
+ * SUPPRESSION ROWS ARE EXCLUDED. A row whose `signal_type` is in
+ * `SUPPRESSION_SELLER_SIGNAL_TYPES` is a fact that argues AGAINST prospecting,
+ * so counting it as a strong motivation signal would invert its meaning. Rows
+ * that carry no `signal_type` at all are counted exactly as before — every
+ * pre-existing caller selects `id, signal_strength` only, and changing what
+ * those callers measure was not the intent of adding a suppression kind.
+ */
+export function countStrongSellerSignals(
+  rows: ReadonlyArray<{ signal_strength?: unknown; signal_type?: unknown }>,
+): number {
+  return rows.filter((r) => !isSuppressionSellerSignal(r) && isStrongSellerSignal(r?.signal_strength)).length
 }

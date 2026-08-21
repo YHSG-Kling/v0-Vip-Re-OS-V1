@@ -17,12 +17,32 @@
  * (lib/external/batchdata-client.ts, live consumer at lib/kernel/intent-campaign.ts:29).
  *
  * ── WHAT IT IS, AND THE LINE IT DOES NOT CROSS ───────────────────────────────
- * This is a SIGNAL lane, not a sourcing lane. It reads the leads the brokerage
- * ALREADY OWNS, looks each one's own address up at the provider, and files what
- * it finds into the ONE existing signal table — `motivated_seller_signals`, the
- * same table permit-signals writes and lead scoring reads. It creates no lead,
- * no contact, and no raw scraped record; lead SOURCING belongs to
- * lib/lead-pipeline and its consent/territory gates and is untouched here.
+ * This is a SIGNAL lane, not a sourcing lane. It reads the leads AND CONTACTS
+ * the brokerage ALREADY OWNS, looks each one's own address up at the provider,
+ * and files what it finds into the ONE existing signal table —
+ * `motivated_seller_signals`, the same table permit-signals writes and lead
+ * scoring reads. It creates no lead, no contact, and no raw scraped record; lead
+ * SOURCING belongs to lib/lead-pipeline and its consent/territory gates and is
+ * untouched here.
+ *
+ * ── TWO BOARDS, ONE TABLE (2026-08-21) ───────────────────────────────────────
+ * Owner ruling, verbatim: "motivated sellers source is for leads and contacts."
+ * A homeowner does not stop being a possible seller the moment they become a
+ * contact, and the contacts board is where an agent actually works.
+ *
+ * The table could not express that. It carried ONE entity column, `lead_id`, so
+ * a contact could only be filed by putting a `contacts.id` into a column every
+ * reader treats as `leads(id)` — a mistake this repo has already made and
+ * tombstoned (app/actions/lead-intelligence.ts:2444). m517 adds `contact_id`
+ * and a CHECK that exactly one of the two is set; `SignalEntityKind` below is
+ * the discriminator that carries the answer through this lane.
+ *
+ * CONVERTED LEADS ARE EXCLUDED FROM THE LEAD SIDE, through the ONE conversion
+ * guard (lib/contact-promotion/conversion-finality.ts `excludeConvertedLeads`),
+ * never an inline predicate. `leads.contact_id` is a real FK to `contacts(id)`,
+ * so after conversion the lead row and the contact row are one person at one
+ * address; probing both would derive the same signals twice and lead scoring
+ * COUNTS signals. The contact is the survivor.
  *
  * That direction — from OUR lead outward to the provider, never from the
  * provider's market inward — is what keeps the two apart, and it also removes
@@ -42,15 +62,35 @@
  * `min_owner_age: 70` is the same shape of edit as `min_sale_propensity: 70`.
  *
  * So every signal type below is DECLARED through `defineSellerSignalSources`
- * (lib/lead-governance/protected-class-signals.ts), which runs the
- * protected-class gate over every field the type names as its source AT MODULE
- * LOAD. Adding a signal sourced from `demographics.age`, `senior-owner`,
- * `inherited` or `min_household_income` makes THIS MODULE THROW ON IMPORT — the
- * cron, the type check and the simulator all stop. The same file gates the
- * outbound query (`stripProtectedClassCriteria`) and redacts the stored row
- * (`redactProtectedClassFields`), so a protected value cannot be asked for,
- * cannot arrive unasked and be kept, and cannot become a signal type.
- * scripts/batchdata-seller-signal-simulator.ts carries the positive control.
+ * (lib/lead-governance/protected-class-signals.ts), which walks every field the
+ * type names as its source AT MODULE LOAD.
+ *
+ * WHAT THAT CALL DOES CHANGED ON 2026-08-21 AND THIS PARAGRAPH IS THE
+ * CORRECTION. It used to REFUSE: a signal sourced from `demographics.age`,
+ * `senior-owner`, `inherited` or `min_household_income` made this module throw
+ * on import. Owner ruling, verbatim — "do not run the compliance or fair
+ * housing on scrapping, enrichment, scoring, sourcing" — removed that refusal
+ * from the data lane, and the function is now a LABELLER: it accepts the spec
+ * and attaches `protectedClassSources`, the classified subset of its own
+ * sources, so a protected fact is VISIBLE at the declaration rather than
+ * impossible at it. The refusal did not disappear; it moved to the place the
+ * ruling left it — `assertAudienceSegmentationAllowed`, called from
+ * lib/audiences/audience-sync.ts before any person is staged into an ad
+ * audience. That file names the move at file:line.
+ *
+ * THIS LANE ADDS NO REFUSAL OF ITS OWN, on the same ruling. What it does keep
+ * is honest: it declares every source it reads, so the classifier can label
+ * them, and it ships with ZERO labelled sources — every type below is derived
+ * from parcel-and-transaction state, which the simulator asserts positively
+ * rather than leaving as a claim. Two integrity checks in that function still
+ * throw and are NOT fair-housing: a duplicate `signalType` (how a repeating
+ * probe starts duplicating rows) and an empty `sources` list (a signal that
+ * cannot be classified or explained).
+ *
+ * `stripProtectedClassCriteria` still runs over the outbound query and
+ * `redactProtectedClassFields` still runs over the stored row; both now REPORT
+ * rather than refuse on this path. scripts/batchdata-seller-signal-simulator.ts
+ * carries the positive control in both directions.
  *
  * ── ONE VOCABULARY ───────────────────────────────────────────────────────────
  * `signal_strength` is the four-value ladder owned by
@@ -69,9 +109,10 @@
  */
 
 import { normalizeStreetAddress } from "./permit-signals"
+import { excludeConvertedLeads } from "@/lib/contact-promotion/conversion-finality"
 import type { SellerSignalStrength } from "@/lib/lead-governance/seller-signal-strength"
 import {
-  defineSellerSignalSources, stripProtectedClassCriteria, redactProtectedClassFields,
+  defineSellerSignalSources, stripProtectedClassCriteria, labelProtectedClassFields,
   type SellerSignalSourceSpec,
 } from "@/lib/lead-governance/protected-class-signals"
 
@@ -92,6 +133,35 @@ export const HIGH_EQUITY_SIGNAL_TYPE = "high_equity"
 /** REUSED, not coined — app/actions/lead-intelligence.ts:1180 already writes it
  *  for "Long-term ownership" at the same 120-month threshold. */
 export const MARKET_TIMING_SIGNAL_TYPE = "market_timing"
+
+// ── ADDED 2026-08-21, on the owner's second request for more motivated-seller
+//    signs. Every one is a PROPERTY-AND-TRANSACTION-STATE fact from the same
+//    quicklist catalogue the ten above are read from; each is declared through
+//    the same gate and each is added to BATCHDATA_SIGNAL_TYPES, which is what
+//    the m517 dedupe index is widened from. Declaring a kind without widening
+//    the index is how a repeating probe starts duplicating (m499, m514, m517
+//    are three files on that one lesson).
+/** Demonstrated intent to sell with NO representation — the strongest actionable
+ *  signal this lane can read, and the one an agent may lawfully approach. */
+export const FSBO_SIGNAL_TYPE = "for_sale_by_owner"
+export const BELOW_MARKET_LISTING_SIGNAL_TYPE = "listed_below_market"
+export const CORPORATE_OWNED_SIGNAL_TYPE = "corporate_owned"
+export const FIX_AND_FLIP_SIGNAL_TYPE = "fix_and_flip"
+export const VACANT_LOT_SIGNAL_TYPE = "vacant_lot"
+/**
+ * THE SUPPRESSION KIND — a row that argues AGAINST prospecting, filed in the
+ * same table as the rows that argue for it.
+ *
+ * The provider flags a property already on the market. Soliciting a seller who
+ * is already under an exclusive agreement with another broker is an NAR Code of
+ * Ethics Article 16 problem, not just a wasted call, so the fact is STORED
+ * where an agent and a scorer can both see it rather than dropped.
+ * lib/lead-governance/seller-signal-strength.ts names it in
+ * SUPPRESSION_SELLER_SIGNAL_TYPES and excludes it from the strong-signal count,
+ * because a row meaning "leave this person alone" must never be able to push a
+ * prospecting score up.
+ */
+export const ACTIVE_LISTING_SIGNAL_TYPE = "active_listing"
 
 /**
  * EVERY signal type this lane may write, with the EXACT provider field paths it
@@ -189,6 +259,48 @@ export const BATCHDATA_SELLER_SIGNAL_SOURCES: readonly SellerSignalSourceSpec[] 
         "min_length_of_residence_years",
       ],
       why: "Years since the recorded ownership start date. Tenure past the typical holding period is when a move becomes statistically likely — a date arithmetic on a deed, carrying no information about the owner.",
+    },
+    {
+      signalType: FSBO_SIGNAL_TYPE,
+      label: "For sale by owner",
+      sources: ["quickLists.forSaleByOwner", "listing.status", "listing.statusCategory"],
+      why: "The owner has PUBLICLY LISTED the property themselves and is not represented. Demonstrated intent to sell, evidenced by a live listing rather than inferred, and the one on-market state an agent may lawfully approach — Article 16's prohibition is on soliciting a seller already subject to another broker's exclusive agreement, which by definition an unrepresented seller is not.",
+    },
+    {
+      signalType: BELOW_MARKET_LISTING_SIGNAL_TYPE,
+      label: "Listed below market",
+      sources: [
+        "quickLists.listedBelowMarketPrice", "listing.listPrice", "listing.status",
+        "valuation.estimatedValue",
+      ],
+      why: "The asking price sits under the provider's own valuation of the parcel. A price is a transaction term, publicly published, and a seller pricing under the model is a seller optimising for SPEED — the definition of motivation, read off the listing rather than guessed about the person.",
+    },
+    {
+      signalType: CORPORATE_OWNED_SIGNAL_TYPE,
+      label: "Corporate owner",
+      sources: ["quickLists.corporateOwned", "owner.ownerOccupied"],
+      why: "Title is held by an entity rather than a natural person. An entity has no residence to be attached to and disposes of assets on a schedule — and, being an entity, it has no protected class to be profiled on at all.",
+    },
+    {
+      signalType: FIX_AND_FLIP_SIGNAL_TYPE,
+      label: "Fix and flip",
+      sources: ["quickLists.fixAndFlip"],
+      why: "The provider's composite over recently-acquired properties held for resale. An owner whose whole purpose for the parcel is to sell it again is a seller with a date on it — a HOLDING PATTERN, not a personal circumstance.",
+    },
+    {
+      signalType: VACANT_LOT_SIGNAL_TYPE,
+      label: "Vacant lot",
+      sources: ["quickLists.vacantLot", "general.propertyTypeCategory"],
+      why: "Unimproved land: carrying cost, property tax and no use. The recorded parcel classification, and one of the most commonly-transacted holdings once an owner stops planning to build.",
+    },
+    {
+      signalType: ACTIVE_LISTING_SIGNAL_TYPE,
+      label: "Already listed with a broker (SUPPRESSION)",
+      sources: [
+        "quickLists.activeListing", "quickLists.onMarket", "quickLists.pendingListing",
+        "quickLists.forSaleByOwner", "listing.status", "listing.statusCategory",
+      ],
+      why: "SUPPRESSION, not motivation. The property is on the market and NOT for sale by owner, so a listing broker holds the representation. This is filed so an agent and a scorer can both see the reason NOT to pitch — NAR Code of Ethics Article 16. `quickLists.forSaleByOwner` is named as a source because it is what DISQUALIFIES the suppression: an unrepresented seller is not somebody else's client.",
     },
   ] as const)
 
@@ -620,6 +732,109 @@ export function deriveSellerSignals(
     })
   }
 
+  // ── for sale by owner ──
+  //
+  // THE STRONGEST ACTIONABLE ONE, and the only on-market state this lane treats
+  // as an opportunity: the seller has published intent and has no broker.
+  const fsbo = readQuickList(row, "forSaleByOwner")
+  if (fsbo) {
+    out.push({
+      signalType: FSBO_SIGNAL_TYPE,
+      strength: "strong",
+      variant: "q:fsbo",
+      reason: "Property is listed for sale by the owner, with no listing broker",
+      observed: { for_sale_by_owner: true, listing_status: at(row, "listing.status") ?? null },
+    })
+  }
+
+  // ── listed below the provider's own valuation ──
+  const belowMarket = readQuickList(row, "listedBelowMarketPrice")
+  if (belowMarket) {
+    const listPrice = num(at(row, "listing.listPrice"))
+    const estimated = num(at(row, "valuation.estimatedValue"))
+    // A DISCOUNT WIDE ENOUGH TO BE A DECISION, not a rounding difference. Under
+    // 10% is inside the noise of any AVM, and banding it "strong" would file the
+    // provider's estimation error as the owner's motivation. With no readable
+    // pair of prices we keep the provider's flag at "moderate" and say so in
+    // `observed` — never inflate a verdict on a number we could not read.
+    const discountPct = listPrice !== null && estimated !== null && estimated > 0
+      ? Math.round(((estimated - listPrice) / estimated) * 100)
+      : null
+    out.push({
+      signalType: BELOW_MARKET_LISTING_SIGNAL_TYPE,
+      strength: discountPct !== null && discountPct >= 10 ? "strong" : "moderate",
+      variant: discountPct !== null ? `d:${discountPct >= 10 ? "10pct" : "under10pct"}` : "q:below-market",
+      reason: "Asking price is below the provider's valuation of this property",
+      observed: { list_price: listPrice, estimated_value: estimated, discount_percent: discountPct },
+    })
+  }
+
+  // ── corporate owner ──
+  if (readQuickList(row, "corporateOwned")) {
+    out.push({
+      signalType: CORPORATE_OWNED_SIGNAL_TYPE,
+      strength: "weak",
+      variant: "q:corporate-owned",
+      reason: "Title is held by an entity rather than a natural person",
+      observed: { corporate_owned: true, owner_occupied: at(row, "owner.ownerOccupied") ?? null },
+    })
+  }
+
+  // ── fix and flip ──
+  if (readQuickList(row, "fixAndFlip")) {
+    out.push({
+      signalType: FIX_AND_FLIP_SIGNAL_TYPE,
+      strength: "moderate",
+      variant: "q:fix-and-flip",
+      reason: "Provider flags a property held for resale rather than occupation",
+      observed: { fix_and_flip: true },
+    })
+  }
+
+  // ── vacant lot ──
+  if (readQuickList(row, "vacantLot")) {
+    out.push({
+      signalType: VACANT_LOT_SIGNAL_TYPE,
+      strength: "weak",
+      variant: "q:vacant-lot",
+      reason: "Unimproved land carrying tax and no use",
+      observed: { vacant_lot: true, property_type_category: at(row, "general.propertyTypeCategory") ?? null },
+    })
+  }
+
+  // ── SUPPRESSION: already represented ──
+  //
+  // FSBO IS THE DISQUALIFIER, and it is the whole reason this is not simply
+  // `if (onMarket)`. Article 16 forbids soliciting a seller subject to ANOTHER
+  // BROKER'S exclusive agreement. An unrepresented seller is not that, and
+  // suppressing them would delete the strongest opportunity in this file two
+  // branches above. On-market AND not-FSBO is the condition that means somebody
+  // else holds the listing.
+  const onMarket = readQuickList(row, "activeListing") || readQuickList(row, "onMarket")
+  const pending = readQuickList(row, "pendingListing")
+  if ((onMarket || pending) && !fsbo) {
+    out.push({
+      signalType: ACTIVE_LISTING_SIGNAL_TYPE,
+      // "weak" is the FLOOR of the ladder and it is deliberate: the strength
+      // column ranks MOTIVATION, and this row is not a motivation reading at
+      // all. The exclusion that actually protects the score lives in
+      // lib/lead-governance/seller-signal-strength.ts, which drops this
+      // signal_type from the strong count outright — a strength word alone is
+      // not a gate, because the next author to band it "strong" would silently
+      // turn "do not call" into thirty points of "ready to sell".
+      strength: "weak",
+      variant: pending && !onMarket ? "l:pending" : "l:active",
+      reason: "Property is already listed with a broker — do not solicit (NAR Code of Ethics Article 16)",
+      observed: {
+        active_listing: onMarket,
+        pending_listing: pending,
+        for_sale_by_owner: false,
+        listing_status: at(row, "listing.status") ?? null,
+        suppression: true,
+      },
+    })
+  }
+
   return out
 }
 
@@ -639,13 +854,33 @@ export function deriveSellerSignals(
  */
 export function batchDataSignalDedupeKey(params: {
   signal: DerivedSellerSignal
-  leadId: string
+  entity: SignalEntityKind
+  entityId: string
 }): string {
-  return `batchdata|${params.signal.signalType}|${params.signal.variant}|${params.leadId}`
+  // THE ENTITY KIND IS PART OF THE KEY. Two id namespaces meet in this table —
+  // `leads.id` and `contacts.id` are disjoint uuid spaces — and a key that named
+  // only the id would be ambiguous about which table it pointed at the moment a
+  // contact and a lead ever shared one. Naming the kind also makes the key
+  // readable in the row: an operator can see which board a signal is on.
+  //
+  // THIS KEY FORMAT CHANGED on 2026-08-21 (the tail gained `lead:` / `contact:`).
+  // That is safe ONLY because the live table is empty — measured against project
+  // hrvaqgvukzxfskkcrwbt on 2026-08-21: `select count(*) from
+  // motivated_seller_signals` → 0. With rows present, changing the key would
+  // have re-filed every one of them on the next rotation.
+  return `batchdata|${params.signal.signalType}|${params.signal.variant}|${params.entity}:${params.entityId}`
 }
 
+/**
+ * The row as written. EXACTLY ONE of `lead_id` / `contact_id` is present — the
+ * other is omitted entirely rather than sent as null, because PGRST204 refuses
+ * an INSERT naming an absent column and an omitted column simply takes its
+ * default. m517 adds `contact_id` and the CHECK that makes "exactly one" a
+ * database fact rather than a convention this file happens to keep.
+ */
 export interface BatchDataSignalRow {
-  lead_id: string
+  lead_id?: string
+  contact_id?: string
   brokerage_id: string
   signal_type: string
   signal_strength: BatchDataSignalStrength
@@ -660,36 +895,83 @@ export interface BatchDataSignalRow {
  * (defaults now()). PGRST204 refuses an INSERT naming an absent column ENTIRELY,
  * so this row names those seven and nothing else.
  *
- * `observed` is passed through `redactProtectedClassFields` on the way in — the
- * THIRD fair-housing gate. The derivation never reads a protected field, so this
- * should always be a no-op; that is exactly why it runs, because a redaction
- * that only fires when someone already made the mistake is not a gate.
+ * `observed` is passed through `redactProtectedClassFields` on the way in.
+ *
+ * READ THAT NAME LITERALLY AS OF 2026-08-21: it no longer REMOVES anything on
+ * this path. Owner ruling — "do not run the compliance or fair housing on
+ * scrapping, enrichment, scoring, sourcing" — turned it into a LABELLER, and it
+ * now returns the row intact alongside the paths that name a protected class.
+ * Those paths are stored as `signal_details.protected_class_fields` — renamed
+ * from `protected_class_redacted` on 2026-08-21, because the old name asserted
+ * a redaction that no longer happens, in persisted data a reader would trust.
+ * The array means "protected-class fields PRESENT in this row", never "fields
+ * removed from it". An empty array means nothing protected was present, not
+ * that something was stripped.
+ *
+ * It is still called, and still on every row, for the reason it always was: the
+ * derivation reads no protected field, so this is expected to come back empty,
+ * and a labeller that only runs after somebody makes the mistake tells you
+ * nothing. The refusal that used to live here now lives at
+ * `assertAudienceSegmentationAllowed`, on the ad-audience path.
  */
 export function buildBatchDataSignalRow(params: {
   signal: DerivedSellerSignal
-  leadId: string
+  entity: SignalEntityKind
+  entityId: string
   brokerageId: string
   leadAddressKey: string
   providerAddress: string | null
 }): BatchDataSignalRow {
-  const { value: observed, redacted } = redactProtectedClassFields(params.signal.observed)
+  // `labelProtectedClassFields`, NOT the `redactProtectedClassFields` shim.
+  // The shim's own header names this one as the survivor; calling the survivor
+  // means the name at this call site cannot go on implying a redaction that has
+  // not happened since 2026-08-21.
+  const { value: observed, paths: protectedFields } = labelProtectedClassFields(params.signal.observed)
   return {
-    lead_id: params.leadId,
+    // ONE KEY, NEVER BOTH AND NEVER NEITHER. The other column is omitted rather
+    // than set to null: m517's CHECK enforces the same rule in the database, so
+    // a row that got this wrong would be REFUSED rather than filed where no
+    // reader can see it — which is the exact failure recorded at
+    // app/actions/lead-intelligence.ts:2444 (a contacts id written into
+    // `lead_id`, producing rows no reader could ever reach).
+    ...(params.entity === "contact"
+      ? { contact_id: params.entityId }
+      : { lead_id: params.entityId }),
     brokerage_id: params.brokerageId,
     signal_type: params.signal.signalType,
     signal_strength: params.signal.strength,
     detected_via: BATCHDATA_DETECTED_VIA,
     signal_details: {
       reason: params.signal.reason,
-      dedupe_key: batchDataSignalDedupeKey({ signal: params.signal, leadId: params.leadId }),
+      dedupe_key: batchDataSignalDedupeKey({
+        signal: params.signal, entity: params.entity, entityId: params.entityId,
+      }),
       source: "batchdata_property",
       variant: params.signal.variant,
+      // The entity kind is repeated INSIDE signal_details as well as being
+      // implied by which column is populated. Cheap, and it makes a row
+      // self-describing in a jsonb dump where the null column is invisible.
+      entity: params.entity,
       address_key: params.leadAddressKey,
       provider_address: params.providerAddress,
       observed: observed as Record<string, unknown>,
-      // A redaction is a REPORTED fact, never a silent one. An empty array here
-      // is the expected state and says the gate ran and found nothing to remove.
-      protected_class_redacted: redacted,
+      // RENAMED 2026-08-21 from `protected_class_redacted`, at the integrator's
+      // request, because that name had become a lie in PERSISTED DATA — the
+      // worst place for one. Owner ruling — "do not run the compliance or fair
+      // housing on scrapping, enrichment, scoring, sourcing" — turned
+      // protected-class handling on this path from a REDACTION into a LABEL, so
+      // this array now names the protected-class fields PRESENT ON THIS ROW. It
+      // is not evidence that anything was removed; nothing was.
+      //
+      // NO STORED ROW CARRIES THE OLD KEY, so there is no dual-read to write and
+      // the rename drops nothing. Measured live against project
+      // hrvaqgvukzxfskkcrwbt on 2026-08-21: `select count(*) from
+      // motivated_seller_signals` → 0. Had rows existed, a reader would have had
+      // to accept both spellings rather than the old ones going quiet.
+      //
+      // An empty array is the EXPECTED state and says the labeller ran and found
+      // nothing protected — never that it did not run.
+      protected_class_fields: protectedFields,
     },
   }
 }
@@ -698,8 +980,24 @@ export function buildBatchDataSignalRow(params: {
 // DB — the ingest
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** The minimum a lead row must carry to be probed. */
-export interface ProbeableLead {
+/**
+ * WHICH BOARD A SIGNAL BELONGS TO. Owner ruling, 2026-08-21: "motivated sellers
+ * source is for leads and contacts."
+ *
+ * `leads.id` and `contacts.id` are DISJOINT uuid namespaces, and until m517
+ * this table had exactly one entity column — `lead_id` — so a contact could
+ * only be filed by lying about which table its id came from. That lie has
+ * already been made and paid for once here; the tombstone is at
+ * app/actions/lead-intelligence.ts:2444. This type is the discriminator that
+ * makes it unnecessary.
+ */
+export type SignalEntityKind = "lead" | "contact"
+
+/** The minimum a lead OR contact row must carry to be probed. */
+export interface ProbeableEntity {
+  /** Which table `id` came from. There is no default: an entity whose kind
+   *  nobody stated is an entity nobody can file, and guessing is the defect. */
+  entity: SignalEntityKind
   id: string
   address: string | null
   city?: string | null
@@ -715,10 +1013,10 @@ export interface PropertyLookupResult {
   error: string | null
 }
 
-/** Injectable seam: one lead's address → one provider property row. Real
+/** Injectable seam: one entity's address → one provider property row. Real
  *  implementation below; the simulator supplies its own so the proof costs
  *  nothing and never depends on a vendor's uptime. */
-export type PropertyLookup = (lead: ProbeableLead) => Promise<PropertyLookupResult>
+export type PropertyLookup = (entity: ProbeableEntity) => Promise<PropertyLookupResult>
 
 /**
  * PURE. Which of a tenant's leads to probe on a given day.
@@ -736,44 +1034,72 @@ export type PropertyLookup = (lead: ProbeableLead) => Promise<PropertyLookupResu
  * no state, nothing to drift.
  */
 export function selectLeadsToProbe(params: {
-  leads: ProbeableLead[]
+  leads: ProbeableEntity[]
   perRun: number
   dayIso: string
-}): ProbeableLead[] {
+}): ProbeableEntity[] {
   const usable = params.leads
     .filter((l) => !!normalizeStreetAddress(l.address))
-    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    // Sorted on (entity, id) rather than id alone. The two namespaces are
+    // disjoint uuids, so sorting on id would interleave them arbitrarily and the
+    // rotation's day-offset would land on a different mix each time the tenant's
+    // roster changed. Keyed this way the order is stable and a run is still
+    // reproducible from the date alone.
+    .sort((a, b) => {
+      const ka = `${a.entity}:${a.id}`, kb = `${b.entity}:${b.id}`
+      return ka < kb ? -1 : ka > kb ? 1 : 0
+    })
   if (usable.length === 0 || params.perRun <= 0) return []
   if (usable.length <= params.perRun) return usable
   const days = Math.floor(Date.parse(`${params.dayIso}T00:00:00Z`) / 86_400_000)
   const offset = ((days * params.perRun) % usable.length + usable.length) % usable.length
-  const out: ProbeableLead[] = []
+  const out: ProbeableEntity[] = []
   for (let i = 0; i < params.perRun; i++) out.push(usable[(offset + i) % usable.length])
   return out
 }
 
 export interface BatchDataSignalIngestResult {
   brokerageId: string
+  // ── THE TWO ENTITY KINDS, COUNTED APART ──────────────────────────────────
+  // A single `leadsAvailable` covering both boards would make "this tenant has
+  // 400 contacts and no leads" indistinguishable from the reverse, and the
+  // owner ruling that produced this lane is precisely that the two are
+  // different populations. UNCONVERTED leads only — see the ingest.
   leadsAvailable: number
+  contactsAvailable: number
   leadsProbed: number
-  /** Probes the provider REFUSED. Distinct from `leadsNoMatch` on purpose:
+  contactsProbed: number
+  /** Leads excluded because they have already been converted to a contact
+   *  (`leads.contact_id` set). NOT a failure — the contact is probed instead,
+   *  and this counter is what keeps that visible rather than looking like a
+   *  shrinking lead base. */
+  leadsSkippedConverted: number
+  /** Probes the provider REFUSED. Distinct from `probesNotFound` on purpose:
    *  "the provider said no" and "the provider has nothing on this address" are
    *  two different facts and collapsing them is how a dead connector reads as a
    *  quiet market. */
   lookupsRefused: number
   /** Probes that served but returned no property for the address. */
-  leadsNotFound: number
-  /** Probes whose returned property did NOT match the lead's address key. */
-  leadsAddressMismatch: number
+  probesNotFound: number
+  /** Probes whose returned property did NOT match the entity's address key. */
+  probesAddressMismatch: number
   /** Probes that served a matching property carrying no qualifying signal. */
-  leadsNoSignal: number
+  probesNoSignal: number
   signalsDerived: number
   alreadyRecorded: number
   signalsWritten: number
   /** Per signal_type counts of what was WRITTEN — the breakdown a total hides. */
   writtenByType: Record<string, number>
-  /** Protected-class field paths the storage gate removed. Expected empty. */
-  protectedClassRedacted: string[]
+  /** Written rows split by which board they landed on. The counter that makes
+   *  "contacts are covered" a measurement rather than a claim. */
+  writtenByEntity: Record<SignalEntityKind, number>
+  /** Protected-class field paths the storage LABELLER found in the provider
+   *  rows. Expected empty — this lane reads only parcel-and-transaction state.
+   *  Since 2026-08-21 these fields are LABELLED, not removed (owner ruling), so
+   *  a non-empty list means "the provider sent demographics we never asked for
+   *  and they are ON the stored row", not "…and they were stripped". Renamed
+   *  from `protectedClassRedacted` alongside the stored key, 2026-08-21. */
+  protectedClassFields: string[]
   /** Every refusal, verbatim. A run with errors NEVER reports a clean success. */
   errors: string[]
 }
@@ -811,33 +1137,107 @@ export async function ingestBatchDataSellerSignals(params: {
   const result: BatchDataSignalIngestResult = {
     brokerageId,
     leadsAvailable: 0,
+    contactsAvailable: 0,
     leadsProbed: 0,
+    contactsProbed: 0,
+    leadsSkippedConverted: 0,
     lookupsRefused: 0,
-    leadsNotFound: 0,
-    leadsAddressMismatch: 0,
-    leadsNoSignal: 0,
+    probesNotFound: 0,
+    probesAddressMismatch: 0,
+    probesNoSignal: 0,
     signalsDerived: 0,
     alreadyRecorded: 0,
     signalsWritten: 0,
     writtenByType: {},
-    protectedClassRedacted: [],
+    writtenByEntity: { lead: 0, contact: 0 },
+    protectedClassFields: [],
     errors: [],
   }
 
-  // ── 1. The tenant's own leads (the ONLY things a property fact may attach to) ──
-  const { data: leadRows, error: leadsError } = await supabase
-    .from("leads")
-    .select("id, address, city, state, zip_code")
-    .eq("brokerage_id", brokerageId)
+  // ── 1a. The tenant's own UNCONVERTED leads ────────────────────────────────
+  //
+  // `.is("contact_id", null)` IS LOAD-BEARING, not tidiness. `leads.contact_id`
+  // REFERENCES contacts(id) (verified live on project hrvaqgvukzxfskkcrwbt,
+  // constraint leads_contact_id_fkey), so a converted lead and its contact are
+  // THE SAME PERSON at THE SAME ADDRESS. Probing both would derive the identical
+  // signal set twice, under two different dedupe keys — and lead scoring COUNTS
+  // signals, so one foreclosure would become two independent reasons to believe
+  // somebody is selling. The owner ruled separately that after conversion only
+  // the contact is acted on, so the CONTACT is the survivor and the lead row is
+  // excluded here rather than deduplicated afterwards.
+  //
+  // THE PREDICATE IS NOT SPELLED HERE. `excludeConvertedLeads`
+  // (lib/contact-promotion/conversion-finality.ts) is the ONE conversion guard,
+  // and it owns the marker column: three converters in this tree disagree about
+  // which "converted" flag they write, and `leads.contact_id` is the only one
+  // every path sets. Spelling `.is("contact_id", null)` inline here would be a
+  // second copy of that decision, which is how one of the copies later stops
+  // matching (CLAUDE.md §6).
+  const { data: leadRows, error: leadsError } = await excludeConvertedLeads(
+    supabase
+      .from("leads")
+      .select("id, address, city, state, zip_code")
+      .eq("brokerage_id", brokerageId),
+  )
     .not("address", "is", null)
     .limit(MAX_LEADS_READ)
   if (leadsError) {
     result.errors.push(`leads read refused: ${leadsError.message}`)
     return result
   }
-  const leads = (leadRows ?? []) as ProbeableLead[]
+  const leads: ProbeableEntity[] = ((leadRows ?? []) as Array<Omit<ProbeableEntity, "entity">>)
+    .map((l) => ({ ...l, entity: "lead" as const }))
   result.leadsAvailable = leads.length
-  const batch = selectLeadsToProbe({ leads, perRun, dayIso })
+
+  // How many leads the exclusion removed. Counted with a SEPARATE query rather
+  // than inferred, because "we filtered some out" and "this tenant has fewer
+  // leads than it did" look identical in a single number.
+  const { count: convertedCount, error: convertedError } = await supabase
+    .from("leads")
+    .select("id", { count: "exact", head: true })
+    .eq("brokerage_id", brokerageId)
+    .not("contact_id", "is", null)
+    .not("address", "is", null)
+  if (convertedError) {
+    // Not fatal: this is a REPORTING number, not a gate. But it is never
+    // silently reported as zero.
+    result.errors.push(`converted-lead count refused: ${convertedError.message}`)
+  } else {
+    result.leadsSkippedConverted = convertedCount ?? 0
+  }
+
+  // ── 1b. …and the tenant's own CONTACTS ────────────────────────────────────
+  //
+  // Owner ruling, verbatim: "motivated sellers source is for leads and
+  // contacts." `contacts.id` is the PRIMARY KEY and the column
+  // `leads.contact_id` points at — NOT `contacts.contact_id`, the secondary
+  // unique uuid this schema also carries (CLAUDE.md §3: picking the wrong one
+  // produces a query that always returns nothing). Measured live 2026-08-21:
+  // all 4 contact rows have id <> contact_id, so the two are genuinely
+  // different values and the choice is not academic.
+  //
+  // `deleted_at` is respected: contacts is soft-deleted, and probing a deleted
+  // person would spend provider budget to file a signal onto a record the
+  // product has already retired.
+  const { data: contactRows, error: contactsError } = await supabase
+    .from("contacts")
+    .select("id, address, city, state, zip_code")
+    .eq("brokerage_id", brokerageId)
+    .is("deleted_at", null)
+    .not("address", "is", null)
+    .limit(MAX_LEADS_READ)
+  if (contactsError) {
+    result.errors.push(`contacts read refused: ${contactsError.message}`)
+    return result
+  }
+  const contacts: ProbeableEntity[] = ((contactRows ?? []) as Array<Omit<ProbeableEntity, "entity">>)
+    .map((c) => ({ ...c, entity: "contact" as const }))
+  result.contactsAvailable = contacts.length
+
+  // ONE ROTATION OVER BOTH BOARDS, not one rotation each. The cap is a SPEND
+  // cap — the provider bills per lookup — so splitting it into two independent
+  // rotations would double a tenant's daily bill the day contacts were added.
+  const batch = selectLeadsToProbe({ leads: [...leads, ...contacts], perRun, dayIso })
   if (batch.length === 0) return result
 
   // ── 2. Already-filed BatchData signals for this tenant (idempotency) ──
@@ -866,38 +1266,40 @@ export async function ingestBatchDataSellerSignals(params: {
   // ── 3. Probe, verify the address, derive ──
   const toWrite: BatchDataSignalRow[] = []
   for (const lead of batch) {
-    result.leadsProbed++
+    if (lead.entity === "contact") result.contactsProbed++
+    else result.leadsProbed++
     const leadKey = normalizeStreetAddress(lead.address)
     const res = await lookup(lead)
     if (!res.ok) {
       result.lookupsRefused++
-      result.errors.push(`lead ${lead.id}: provider refused (${res.status ?? "network"}): ${res.error ?? "no reason given"}`)
+      result.errors.push(`${lead.entity} ${lead.id}: provider refused (${res.status ?? "network"}): ${res.error ?? "no reason given"}`)
       continue
     }
-    if (!res.data) { result.leadsNotFound++; continue }
+    if (!res.data) { result.probesNotFound++; continue }
 
     // EXACT key equality, the same refusal permit-signals makes. A provider free
     // to return "the closest match" would otherwise put a neighbour's foreclosure
-    // on this lead's record, and every downstream score would read it as fact.
+    // on this record, and every downstream score would read it as fact.
     const providerAddress = readProviderAddress(res.data)
     if (normalizeStreetAddress(providerAddress) !== leadKey) {
-      result.leadsAddressMismatch++
+      result.probesAddressMismatch++
       continue
     }
 
     const derived = deriveSellerSignals(res.data, { todayIso: dayIso })
-    if (derived.length === 0) { result.leadsNoSignal++; continue }
+    if (derived.length === 0) { result.probesNoSignal++; continue }
     result.signalsDerived += derived.length
 
     for (const signal of derived) {
-      const key = batchDataSignalDedupeKey({ signal, leadId: lead.id })
+      const key = batchDataSignalDedupeKey({ signal, entity: lead.entity, entityId: lead.id })
       if (alreadyKeys.has(key)) { result.alreadyRecorded++; continue }
       alreadyKeys.add(key) // also dedupes WITHIN this run
       const row = buildBatchDataSignalRow({
-        signal, leadId: lead.id, brokerageId, leadAddressKey: leadKey, providerAddress,
+        signal, entity: lead.entity, entityId: lead.id, brokerageId,
+        leadAddressKey: leadKey, providerAddress,
       })
-      const redacted = (row.signal_details as { protected_class_redacted?: string[] }).protected_class_redacted ?? []
-      for (const r of redacted) if (!result.protectedClassRedacted.includes(r)) result.protectedClassRedacted.push(r)
+      const labelled = (row.signal_details as { protected_class_fields?: string[] }).protected_class_fields ?? []
+      for (const r of labelled) if (!result.protectedClassFields.includes(r)) result.protectedClassFields.push(r)
       toWrite.push(row)
       if (toWrite.length >= MAX_SIGNALS_PER_RUN) break
     }
@@ -915,7 +1317,14 @@ export async function ingestBatchDataSellerSignals(params: {
   // falls back to per-row inserts, which lets every genuinely-new signal through
   // and counts the collisions as what they are. Any OTHER error is reported.
   const countWritten = (rows: BatchDataSignalRow[]) => {
-    for (const r of rows) result.writtenByType[r.signal_type] = (result.writtenByType[r.signal_type] ?? 0) + 1
+    for (const r of rows) {
+      result.writtenByType[r.signal_type] = (result.writtenByType[r.signal_type] ?? 0) + 1
+      // Counted from WHICH COLUMN THE ROW ACTUALLY CARRIES, not from a variable
+      // we happened to be holding. The point of the split counter is to prove
+      // contacts really are landing in `contact_id`; deriving it from anything
+      // other than the row itself would prove only that the loop believed so.
+      result.writtenByEntity[r.contact_id ? "contact" : "lead"]++
+    }
   }
 
   const { data: inserted, error: insertError } = await supabase
@@ -971,7 +1380,7 @@ export const BATCHDATA_SIGNAL_DATASETS: readonly string[] = [
  * the gate is here so that stays true after the next edit, and so a removal is
  * REPORTED rather than silently narrowing the query.
  */
-export async function realBatchDataPropertyLookup(lead: ProbeableLead): Promise<PropertyLookupResult> {
+export async function realBatchDataPropertyLookup(lead: ProbeableEntity): Promise<PropertyLookupResult> {
   try {
     const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
     const query = [lead.address, lead.city, lead.state, lead.zip_code].filter(Boolean).join(", ")

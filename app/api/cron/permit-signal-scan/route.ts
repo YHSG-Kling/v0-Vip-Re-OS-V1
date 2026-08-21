@@ -39,6 +39,23 @@ export const maxDuration = 300
  * (`code_violation`). A permit says money is going INTO a house; a violation says the city is
  * billing the owner for one they are not maintaining. Both are public, dated and address-keyed.
  *
+ * ── TWO BOARDS, AND THE COUNTERS THAT TELL THEM APART (2026-08-21) ───────────
+ * Owner ruling, verbatim: "motivated sellers source is for leads and contacts." BOTH halves of
+ * this cron now cover both boards. `motivated_seller_signals` grew a `contact_id` column (m517)
+ * with a CHECK that exactly one entity column is set, so a contact no longer has to be filed by
+ * putting a `contacts.id` into `lead_id` — the failure tombstoned at
+ * app/actions/lead-intelligence.ts:2444.
+ *
+ * CONVERTED LEADS ARE EXCLUDED FROM THE LEAD SIDE of both halves (`leads.contact_id` set). A
+ * converted lead and its contact are one person at one address; probing or matching both would
+ * file every fact twice, and lead scoring COUNTS signals. `leads_skipped_converted` reports the
+ * exclusion so it never looks like a shrinking lead base.
+ *
+ * EVERY COUNTER THAT COULD CONFLATE THE TWO IS SPLIT — `leads_matchable` /
+ * `contacts_matchable`, `signals_written_lead` / `signals_written_contact`, and the same shape in
+ * the batchdata block. A single total cannot say which board was covered, and "contacts are
+ * covered" has to be a measurement rather than a claim.
+ *
  * ── A SECOND SOURCE ON THE SAME CADENCE (2026-08-20) ─────────────────────────
  * Owner directive, verbatim: "we need to find another way to find out signs for motivated sellers
  * besides permits, maybe use our connection to batchdata?"
@@ -56,9 +73,14 @@ export const maxDuration = 300
  * address-keyed, and available to a tenant who has configured no market at all. So a
  * `no_active_territories` resolution still runs it, and only `no_active_subscribers` stops both.
  *
- * FAIR HOUSING IS STRUCTURAL IN THAT LANE, not a note here: every signal type it may write is
- * declared through lib/lead-governance/protected-class-signals.ts, which refuses a protected-class
- * source at module load. See that file's header.
+ * FAIR HOUSING, ACCURATELY (corrected 2026-08-21): every signal type that lane may write is still
+ * DECLARED through lib/lead-governance/protected-class-signals.ts, but that function no longer
+ * REFUSES a protected-class source — the owner ruled "do not run the compliance or fair housing on
+ * scrapping, enrichment, scoring, sourcing", and it now LABELS instead. The refusal moved to the
+ * ad-audience path (assertAudienceSegmentationAllowed, called from lib/audiences/audience-sync.ts).
+ * This cron adds no refusal of its own. `protected_class_fields` below (RENAMED 2026-08-21 from
+ * `protected_class_redacted`, which asserted a redaction that no longer happens) reports what was
+ * FOUND, and is expected empty because the lane reads only parcel-and-transaction state.
  *
  * HONESTY. Per-brokerage errors are collected and returned; a run with any refusal reports
  * `ok: false` with the refusals verbatim, so a Socrata outage or a refused insert can never read
@@ -133,11 +155,26 @@ export async function GET(request: Request) {
       markets_unregistered: 0,
       permits_fetched: 0,
       skipped_no_address: 0,
+      /** Permits matching NO lead and NO contact. Named for leads only because
+       *  MatchOutcome publishes the field under that name; it counts both. */
       skipped_no_lead_match: 0,
       skipped_outside_window: 0,
       skipped_no_event_date: 0,
       already_recorded: 0,
       signals_written: 0,
+      // ── THE TWO BOARDS, TOLD APART ──────────────────────────────────────
+      // Owner ruling 2026-08-21: "motivated sellers source is for leads and
+      // contacts." Without this split, a run that filed forty lead signals and
+      // zero contact signals is INDISTINGUISHABLE from one that did the
+      // reverse, and the whole point of the ruling — that contacts are covered
+      // — becomes a claim nobody can check from the run report.
+      leads_matchable: 0,
+      contacts_matchable: 0,
+      /** Leads excluded because already converted; their CONTACT is matched
+       *  instead. Without it the exclusion reads as a shrinking lead base. */
+      leads_skipped_converted: 0,
+      signals_written_lead: 0,
+      signals_written_contact: 0,
     }
 
     for (const [brokerageId, territories] of byBrokerage) {
@@ -161,6 +198,11 @@ export async function GET(request: Request) {
         totals.skipped_no_event_date += r.skippedNoEventDate
         totals.already_recorded += r.alreadyRecorded
         totals.signals_written += r.signalsWritten
+        totals.leads_matchable += r.leadsMatchable
+        totals.contacts_matchable += r.contactsMatchable
+        totals.leads_skipped_converted += r.leadsSkippedConverted
+        totals.signals_written_lead += r.signalsWrittenByEntity.lead
+        totals.signals_written_contact += r.signalsWrittenByEntity.contact
         for (const e of r.errors) errors.push(`${brokerageId}: ${e}`)
       } catch (e) {
         errors.push(`${brokerageId}: ${e instanceof Error ? e.message : String(e)}`)
@@ -176,20 +218,34 @@ export async function GET(request: Request) {
     const dayIso = new Date().toISOString().slice(0, 10)
     const batchdata = {
       brokerages: 0,
+      // LEADS AND CONTACTS ARE COUNTED APART, for the reason stated on the
+      // permit totals above: a single number cannot say which board was
+      // covered, and the owner ruling this lane implements is exactly that both
+      // are. `leads_*` here means UNCONVERTED leads only.
       leads_available: 0,
+      contacts_available: 0,
       leads_probed: 0,
+      contacts_probed: 0,
+      leads_skipped_converted: 0,
       lookups_refused: 0,
-      leads_not_found: 0,
-      leads_address_mismatch: 0,
-      leads_no_signal: 0,
+      probes_not_found: 0,
+      probes_address_mismatch: 0,
+      probes_no_signal: 0,
       signals_derived: 0,
       already_recorded: 0,
       signals_written: 0,
+      signals_written_lead: 0,
+      signals_written_contact: 0,
       written_by_type: {} as Record<string, number>,
-      /** Protected-class field paths the storage gate stripped. EXPECTED EMPTY — a non-empty
-       *  array here means the provider sent a demographic field we never asked for, which is a
-       *  fact an operator must see rather than one the redaction quietly absorbs. */
-      protected_class_redacted: [] as string[],
+      /** Protected-class field paths the storage labeller FOUND. EXPECTED EMPTY — a non-empty
+       *  array means the provider sent a demographic field we never asked for, which is a fact an
+       *  operator must see.
+       *  RENAMED 2026-08-21 from `protected_class_redacted`: these are LABELLED, not stripped.
+       *  Owner ruling — "do not run the compliance or fair housing on scrapping, enrichment,
+       *  scoring, sourcing" — moved that refusal to the ad-audience path
+       *  (assertAudienceSegmentationAllowed). So a non-empty list here means the fields are ON the
+       *  stored row, not that they were removed from it, and the old name said the opposite. */
+      protected_class_fields: [] as string[],
       /** Stated reason when the lane did not run. Never silence. */
       skipped_reason: null as string | null,
     }
@@ -209,19 +265,24 @@ export async function GET(request: Request) {
             lookupsPerRun: DEFAULT_LOOKUPS_PER_RUN,
           })
           batchdata.leads_available += r.leadsAvailable
+          batchdata.contacts_available += r.contactsAvailable
           batchdata.leads_probed += r.leadsProbed
+          batchdata.contacts_probed += r.contactsProbed
+          batchdata.leads_skipped_converted += r.leadsSkippedConverted
           batchdata.lookups_refused += r.lookupsRefused
-          batchdata.leads_not_found += r.leadsNotFound
-          batchdata.leads_address_mismatch += r.leadsAddressMismatch
-          batchdata.leads_no_signal += r.leadsNoSignal
+          batchdata.probes_not_found += r.probesNotFound
+          batchdata.probes_address_mismatch += r.probesAddressMismatch
+          batchdata.probes_no_signal += r.probesNoSignal
           batchdata.signals_derived += r.signalsDerived
           batchdata.already_recorded += r.alreadyRecorded
           batchdata.signals_written += r.signalsWritten
+          batchdata.signals_written_lead += r.writtenByEntity.lead
+          batchdata.signals_written_contact += r.writtenByEntity.contact
           for (const [type, n] of Object.entries(r.writtenByType)) {
             batchdata.written_by_type[type] = (batchdata.written_by_type[type] ?? 0) + n
           }
-          for (const p of r.protectedClassRedacted) {
-            if (!batchdata.protected_class_redacted.includes(p)) batchdata.protected_class_redacted.push(p)
+          for (const p of r.protectedClassFields) {
+            if (!batchdata.protected_class_fields.includes(p)) batchdata.protected_class_fields.push(p)
           }
           for (const e of r.errors) errors.push(`batchdata ${brokerageId}: ${e}`)
         } catch (e) {

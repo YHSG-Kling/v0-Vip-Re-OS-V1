@@ -20,11 +20,24 @@
  * ── WHAT IT REFUSES TO DO ────────────────────────────────────────────────────
  * A permit is an ADDRESS, not a person. Turning an address into a lead is lead SOURCING, which
  * belongs to the scraping spine (lib/lead-pipeline) and its consent/territory gates — not here.
- * So this lane only ever ATTACHES a permit to a lead the brokerage ALREADY owns, matched on a
- * normalized street address within the same tenant. No lead is created, no contact is created,
- * and an unmatched permit is dropped, counted, and reported — never stored as an orphan signal
- * with a NULL lead_id that no reader can ever see (every reader of this table filters
- * `.eq("lead_id", …)`; a NULL-lead row would be an unreadable write).
+ * So this lane only ever ATTACHES a permit to a lead or contact the brokerage ALREADY owns,
+ * matched on a normalized street address within the same tenant. No lead is created, no contact
+ * is created, and an unmatched permit is dropped, counted, and reported — never stored as an
+ * orphan signal with no entity column set, which no reader can ever see (every reader of this
+ * table filters on `lead_id` or `contact_id`; a row with neither is an unreadable write, and
+ * m517's CHECK now REFUSES one outright).
+ *
+ * ── TWO BOARDS, ONE TABLE (2026-08-21) ───────────────────────────────────────
+ * Owner ruling, verbatim: "motivated sellers source is for leads and contacts." A permit at a
+ * contact's address is the same fact as a permit at a lead's address, and the contacts board is
+ * where an agent actually works. The table could only hold `lead_id` until m517 added
+ * `contact_id`; `PermitMatch.entity` is the discriminator that decides which column is written.
+ *
+ * CONVERTED LEADS ARE EXCLUDED, through the ONE conversion guard
+ * (lib/contact-promotion/conversion-finality.ts `excludeConvertedLeads`), never an inline
+ * predicate. `leads.contact_id` is a real FK to `contacts(id)`, so after conversion the lead row
+ * and the contact row are one person at one address. Matching both would file one permit twice and
+ * lead scoring COUNTS signals. The contact is the survivor.
  *
  * ── WHAT IT REFUSES TO GUESS ─────────────────────────────────────────────────
  * Socrata datasets have no shared column vocabulary — Austin's address column is not Chicago's.
@@ -67,6 +80,15 @@ import type { SellerSignalStrength } from "@/lib/lead-governance/seller-signal-s
 import {
   classifyMarketCoverage, providerOf, type MarketCoverage, type SocrataDatasetSpec,
 } from "./socrata-market-registry"
+import { excludeConvertedLeads } from "@/lib/contact-promotion/conversion-finality"
+// TYPE-ONLY, deliberately. batchdata-seller-signals imports `normalizeStreetAddress` from THIS
+// file at runtime, so a value import back would be a real cycle; `import type` is erased at
+// compile time and is not. Restating `"lead" | "contact"` here instead would be the two-spellings
+// defect CLAUDE.md §6 names — one discriminator, one spelling.
+import type { SignalEntityKind } from "./batchdata-seller-signals"
+
+/** Local alias so the rest of this file reads without the module prefix. */
+type EntityKind = SignalEntityKind
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PURE — address normalization
@@ -436,15 +458,43 @@ export function classifyViolationStrength(params: {
 // PURE — matching + row building
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** The minimum a lead row must carry to be matchable. */
+/**
+ * WHICH BOARD A MATCH BELONGS TO. Owner ruling 2026-08-21: "motivated sellers
+ * source is for leads and contacts." Re-exported from the BatchData lane rather
+ * than restated, so the two seller-signal sources cannot drift into two
+ * spellings of one discriminator (CLAUDE.md §6).
+ */
+/** The minimum a lead or contact row must carry to be matchable. */
 export interface MatchableLead {
   id: string
   address: string | null
   brokerage_id?: string | null
+  /**
+   * Which table `id` came from. OPTIONAL, defaulting to "lead", and that
+   * default is a compatibility decision rather than a guess: every pre-existing
+   * caller of `matchPermitsToLeads` in the tree passes rows read from `leads`
+   * (scripts/external-signal-lanes-simulator.ts:188, :408, :621, :933), and the
+   * DB ingest below states the kind explicitly on both reads. A future caller
+   * that reads contacts and forgets this field files a lead — so the ingest
+   * states it, and the simulator asserts it.
+   */
+  entity?: EntityKind
 }
 
 export interface PermitMatch {
+  /**
+   * The matched entity's id — a `leads.id` when `entity` is "lead", a
+   * `contacts.id` when it is "contact".
+   *
+   * THE NAME IS A LEGACY ONE AND IS KEPT DELIBERATELY. It is read by
+   * scripts/external-signal-lanes-simulator.ts:190 and :938, a guard this lane
+   * does not own; renaming it there and here in one pass is a change to a file
+   * another lane may be holding. `entity` beside it is the discriminator that
+   * makes the value unambiguous, and `buildPermitSignalRow` chooses the column
+   * from `entity`, never from this field's name. Reported as found-not-renamed.
+   */
   leadId: string
+  entity: EntityKind
   addressKey: string
   permitId: string | null
   permitAddress: string
@@ -516,13 +566,18 @@ export function matchPermitsToLeads(
   window?: PermitEventWindow,
   shape?: PermitDatasetShape,
 ): MatchOutcome {
-  const byKey = new Map<string, string[]>()
+  // Keyed to (id, entity) pairs, not bare ids. Two DISJOINT uuid namespaces meet
+  // in this map — `leads.id` and `contacts.id` — and an address at which the
+  // tenant holds both a lead and a contact must produce two DISTINCT matches
+  // filed into two DIFFERENT columns, not one match under an ambiguous id.
+  const byKey = new Map<string, Array<{ id: string; entity: EntityKind }>>()
   for (const lead of leads) {
     const key = normalizeStreetAddress(lead.address)
     if (!key) continue
+    const entry = { id: lead.id, entity: lead.entity ?? ("lead" as const) }
     const bucket = byKey.get(key)
-    if (bucket) bucket.push(lead.id)
-    else byKey.set(key, [lead.id])
+    if (bucket) bucket.push(entry)
+    else byKey.set(key, [entry])
   }
 
   const matches: PermitMatch[] = []
@@ -555,9 +610,10 @@ export function matchPermitsToLeads(
     const eventDate = shape?.dateColumn
       ? readPermitEventDate(row, shape.dateColumn, shape.dateFormat ?? "iso")
       : null
-    for (const leadId of leadIds) {
+    for (const entity of leadIds) {
       matches.push({
-        leadId,
+        leadId: entity.id,
+        entity: entity.entity,
         addressKey: key,
         permitId: readPermitId(row),
         permitAddress: permitAddress as string,
@@ -608,8 +664,14 @@ export function signalTypeForKind(kind: SocrataDatasetSpec["kind"]): string {
   return kind === "code_violations" ? VIOLATION_SIGNAL_TYPE : PERMIT_SIGNAL_TYPE
 }
 
+/**
+ * EXACTLY ONE of `lead_id` / `contact_id` is present; the other is omitted
+ * rather than sent as null. m517 adds `contact_id` and the CHECK that makes
+ * "exactly one" a database fact instead of a convention.
+ */
 export interface PermitSignalRow {
-  lead_id: string
+  lead_id?: string
+  contact_id?: string
   brokerage_id: string
   signal_type: string
   signal_strength: SignalStrength
@@ -633,7 +695,12 @@ export function buildPermitSignalRow(params: {
   const { match, dataset } = params
   const isViolation = dataset.kind === "code_violations"
   return {
-    lead_id: match.leadId,
+    // The column is chosen from `match.entity`, NEVER from the legacy field name
+    // `leadId`. A contact filed into `lead_id` is a row no reader can ever see —
+    // the failure tombstoned at app/actions/lead-intelligence.ts:2444.
+    ...(match.entity === "contact"
+      ? { contact_id: match.leadId }
+      : { lead_id: match.leadId }),
     brokerage_id: params.brokerageId,
     signal_type: signalTypeForKind(dataset.kind),
     signal_strength: match.strength,
@@ -647,6 +714,10 @@ export function buildPermitSignalRow(params: {
       dedupe_key: permitDedupeKey(match, dataset),
       permit_id: match.permitId,
       permit_address: match.permitAddress,
+      // Repeated here as well as implied by the populated column: in a jsonb
+      // dump the NULL column is invisible and the row stops being
+      // self-describing.
+      entity: match.entity,
       address_key: match.addressKey,
       description: match.description,
       valuation: match.valuation,
@@ -681,7 +752,17 @@ export function permitDedupeKey(match: PermitMatch, dataset: SocrataDatasetSpec)
     : match.eventDate
       ? `a:${match.addressKey}@${match.eventDate}`
       : `a:${match.addressKey}`
-  return `${dataset.datasetId}|${tail}|${match.leadId}`
+  // THE ENTITY KIND IS PART OF THE KEY. `leads.id` and `contacts.id` are
+  // disjoint uuid namespaces filed in one table, so a key naming only the id
+  // cannot say which board it belongs to. The dataset prefix is unchanged, which
+  // is what scripts/external-signal-lanes-simulator.ts:942 asserts on.
+  //
+  // THIS FORMAT CHANGED on 2026-08-21 (the tail gained `lead:` / `contact:`).
+  // Safe only because the live table is EMPTY — `select count(*) from
+  // motivated_seller_signals` → 0 against project hrvaqgvukzxfskkcrwbt on
+  // 2026-08-21. With rows present, every one would have re-filed on the next
+  // daily sweep.
+  return `${dataset.datasetId}|${tail}|${match.entity}:${match.leadId}`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -766,13 +847,33 @@ export interface PermitIngestResult {
   marketGaps: string[]
   permitsFetched: number
   skippedNoAddress: number
+  /** Fetched rows whose address matched NO lead and NO contact this tenant owns.
+   *  The name predates contacts being matchable and is kept because MatchOutcome
+   *  publishes the same field under the same name; it now means "no ENTITY
+   *  matched". */
   skippedNoLeadMatch: number
   /** Fetched rows that were genuinely older than the window (portals that re-publish history). */
   skippedOutsideWindow: number
   /** Fetched rows whose declared event-date column was missing or unparseable. */
   skippedNoEventDate: number
+  // ── THE TWO BOARDS, COUNTED APART ─────────────────────────────────────────
+  // Owner ruling 2026-08-21: "motivated sellers source is for leads and
+  // contacts." A single `signals_written` covering both would make a run that
+  // filed forty lead signals and zero contact signals read exactly like one that
+  // did the reverse — and "contacts are covered" would be a claim rather than a
+  // measurement.
+  /** Unconverted leads with a usable address that were candidates for a match. */
+  leadsMatchable: number
+  /** Live contacts with a usable address that were candidates for a match. */
+  contactsMatchable: number
+  /** Leads excluded because they are already converted (`leads.contact_id` set).
+   *  Their CONTACT is matched instead; without this counter the exclusion looks
+   *  like a shrinking lead base. */
+  leadsSkippedConverted: number
   alreadyRecorded: number
   signalsWritten: number
+  /** `signalsWritten` split by the column the row actually landed in. */
+  signalsWrittenByEntity: { lead: number; contact: number }
   /** Every refusal, verbatim. A run with errors NEVER reports a clean success. */
   errors: string[]
 }
@@ -826,8 +927,12 @@ export async function ingestPermitSignals(params: {
     skippedNoLeadMatch: 0,
     skippedOutsideWindow: 0,
     skippedNoEventDate: 0,
+    leadsMatchable: 0,
+    contactsMatchable: 0,
+    leadsSkippedConverted: 0,
     alreadyRecorded: 0,
     signalsWritten: 0,
+    signalsWrittenByEntity: { lead: 0, contact: 0 },
     errors: [],
   }
 
@@ -884,18 +989,72 @@ export async function ingestPermitSignals(params: {
   // is correct, and the caller reports them.
   if (datasets.length === 0) return result
 
-  // ── 2. The tenant's own leads (the ONLY things a permit may attach to) ──
-  const { data: leadRows, error: leadsError } = await supabase
-    .from("leads")
-    .select("id, address")
-    .eq("brokerage_id", brokerageId)
+  // ── 2a. The tenant's own UNCONVERTED leads ──────────────────────────────
+  //
+  // `.is("contact_id", null)` IS LOAD-BEARING. `leads.contact_id` REFERENCES
+  // contacts(id) (verified live, constraint leads_contact_id_fkey), so a
+  // converted lead and its contact are the SAME PERSON at the SAME ADDRESS.
+  // Matching a permit to both would file the identical permit twice under two
+  // dedupe keys, and lead scoring COUNTS signals — one roof permit would become
+  // two independent reasons to believe somebody is selling. The owner ruled that
+  // after conversion only the contact is acted on, so the contact is the
+  // survivor and the lead row is excluded here.
+  //
+  // THE PREDICATE IS NOT SPELLED HERE. `excludeConvertedLeads`
+  // (lib/contact-promotion/conversion-finality.ts) is the ONE conversion guard
+  // and it owns the marker column — three converters in this tree write
+  // different "converted" flags and `leads.contact_id` is the only one every
+  // path sets. A second inline copy of that decision is how one copy later
+  // stops matching (CLAUDE.md §6).
+  const { data: leadRows, error: leadsError } = await excludeConvertedLeads(
+    supabase
+      .from("leads")
+      .select("id, address")
+      .eq("brokerage_id", brokerageId),
+  )
     .not("address", "is", null)
     .limit(MAX_LEADS_PER_BROKERAGE)
   if (leadsError) {
     result.errors.push(`leads read refused: ${leadsError.message}`)
     return result
   }
-  const leads = (leadRows ?? []) as MatchableLead[]
+  const leadEntities: MatchableLead[] = ((leadRows ?? []) as MatchableLead[])
+    .map((l) => ({ ...l, entity: "lead" as const }))
+  result.leadsMatchable = leadEntities.length
+
+  const { count: convertedCount, error: convertedError } = await supabase
+    .from("leads")
+    .select("id", { count: "exact", head: true })
+    .eq("brokerage_id", brokerageId)
+    .not("contact_id", "is", null)
+    .not("address", "is", null)
+  if (convertedError) result.errors.push(`converted-lead count refused: ${convertedError.message}`)
+  else result.leadsSkippedConverted = convertedCount ?? 0
+
+  // ── 2b. …and the tenant's own CONTACTS ──────────────────────────────────
+  //
+  // Owner ruling 2026-08-21: "motivated sellers source is for leads and
+  // contacts." `contacts.id` is the PRIMARY KEY and the column
+  // `leads.contact_id` points at — NOT `contacts.contact_id`, the secondary
+  // unique uuid this table also carries (CLAUDE.md §3). Live on 2026-08-21 all
+  // four contact rows have id <> contact_id, so choosing wrong would produce a
+  // permit lane that matched nothing and looked like a quiet market.
+  const { data: contactRows, error: contactsError } = await supabase
+    .from("contacts")
+    .select("id, address")
+    .eq("brokerage_id", brokerageId)
+    .is("deleted_at", null)
+    .not("address", "is", null)
+    .limit(MAX_LEADS_PER_BROKERAGE)
+  if (contactsError) {
+    result.errors.push(`contacts read refused: ${contactsError.message}`)
+    return result
+  }
+  const contactEntities: MatchableLead[] = ((contactRows ?? []) as MatchableLead[])
+    .map((c) => ({ ...c, entity: "contact" as const }))
+  result.contactsMatchable = contactEntities.length
+
+  const leads: MatchableLead[] = [...leadEntities, ...contactEntities]
   if (leads.length === 0) return result
 
   // ── 3. Already-filed Socrata signals for this tenant (idempotency) ──
@@ -1019,6 +1178,14 @@ export async function ingestPermitSignals(params: {
   // (a concurrent run, a re-dispatch) would reject the whole batch — so a 23505 falls back to
   // per-row inserts, which lets every genuinely-new signal through and counts the collisions as
   // what they are: already recorded. Any OTHER error is reported, never swallowed.
+  // Counted from WHICH COLUMN THE ROW CARRIES, never from a variable the loop
+  // was holding: the split counter exists to PROVE contacts land in contact_id,
+  // and deriving it from anything but the row would prove only that the code
+  // believed so.
+  const countByEntity = (rows: PermitSignalRow[]) => {
+    for (const r of rows) result.signalsWrittenByEntity[r.contact_id ? "contact" : "lead"]++
+  }
+
   const { data: inserted, error: insertError } = await supabase
     .from("motivated_seller_signals")
     .insert(toWrite)
@@ -1026,6 +1193,7 @@ export async function ingestPermitSignals(params: {
 
   if (!insertError) {
     result.signalsWritten = (inserted ?? []).length
+    countByEntity(toWrite)
     return result
   }
   if ((insertError as { code?: string }).code !== "23505") {
@@ -1039,7 +1207,7 @@ export async function ingestPermitSignals(params: {
       .insert(row)
       .select("id")
       .maybeSingle()
-    if (!oneError) { if (one) result.signalsWritten++; continue }
+    if (!oneError) { if (one) { result.signalsWritten++; countByEntity([row]) } ; continue }
     if ((oneError as { code?: string }).code === "23505") { result.alreadyRecorded++; continue }
     result.errors.push(`motivated_seller_signals insert refused: ${oneError.message}`)
   }

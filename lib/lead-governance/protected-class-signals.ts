@@ -273,7 +273,26 @@ export interface SellerSignalSourceSpec {
  *   · empty `sources` — a signal that names no source cannot be classified,
  *     traced, or explained to an operator.
  */
-export function defineSellerSignalSources<T extends readonly SellerSignalSourceSpec[]>(specs: T): T {
+/**
+ * A spec AFTER the labeller has run: `protectedClassSources` is no longer
+ * optional, because `defineSellerSignalSources` always computes it.
+ *
+ * WHY THIS TYPE EXISTS. The function used to be declared `(specs: T): T` with an
+ * `as unknown as T` on the way out — it claimed to hand back exactly what it was
+ * given while in fact adding a field to every element. For an INLINE literal (how
+ * every real caller writes a spec table) `T` infers without the optional field,
+ * so the label the function had just computed was invisible to the caller and
+ * reading it was a type error. The cast is what hid that: it asserted the lie
+ * rather than expressing the truth. A labeller whose return type omits the label
+ * is a write with no readable half — the orphan class this wave is burning down.
+ */
+export type LabelledSellerSignalSpec<S extends SellerSignalSourceSpec> = S & {
+  readonly protectedClassSources: readonly string[]
+}
+
+export function defineSellerSignalSources<T extends readonly SellerSignalSourceSpec[]>(
+  specs: T,
+): { readonly [K in keyof T]: LabelledSellerSignalSpec<T[K] & SellerSignalSourceSpec> } {
   const seen = new Set<string>()
   const labelled: SellerSignalSourceSpec[] = []
   for (const spec of specs) {
@@ -291,7 +310,11 @@ export function defineSellerSignalSources<T extends readonly SellerSignalSourceS
       protectedClassSources: Object.freeze(spec.sources.filter(isProtectedClassSource)),
     }))
   }
-  return Object.freeze(labelled) as unknown as T
+  // The cast is narrowed to what it actually is: we built a NEW array whose
+  // element order and arity match `specs`, which the mapped return type states
+  // but TypeScript cannot verify through a push loop. It no longer asserts away
+  // the added field — that is now declared.
+  return Object.freeze(labelled) as { readonly [K in keyof T]: LabelledSellerSignalSpec<T[K] & SellerSignalSourceSpec> }
 }
 
 /**

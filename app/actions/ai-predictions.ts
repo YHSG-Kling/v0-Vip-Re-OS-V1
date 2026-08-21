@@ -200,11 +200,18 @@ export async function predictLeadConversion(leadId: string): Promise<LeadPredict
   try {
     // motivated_seller_signals is the canonical signal table (the lead_-prefixed
     // name never existed as a written table — pure name drift, repointed).
-    const { data } = await supabase
-      .from("motivated_seller_signals")
-      .select("*")
-      .eq("lead_id", leadId)
-    motivatedSellerSignals = data || []
+    //
+    // BOTH ENTITY COLUMNS as of 2026-08-21. Owner ruling: "motivated sellers
+    // source is for leads and contacts", and m517 added the `contact_id` column
+    // that lets a contact's signals be filed honestly. `leadId` here is an id
+    // whose table this function does not know, so reading only `lead_id` would
+    // silently return an empty set for every contact and the prediction prompt
+    // would be built as though nothing about the property said anything.
+    const [{ data: byLead }, { data: byContact }] = await Promise.all([
+      supabase.from("motivated_seller_signals").select("*").eq("lead_id", leadId),
+      supabase.from("motivated_seller_signals").select("*").eq("contact_id", leadId),
+    ])
+    motivatedSellerSignals = [...(byLead || []), ...(byContact || [])]
   } catch (e) { /* Table may not exist */ }
 
   // Calculate days since first contact

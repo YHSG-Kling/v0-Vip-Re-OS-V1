@@ -813,8 +813,15 @@ export async function enrichLeadData(leadId: string) {
       })
     }
 
-    // 6. Detect motivated seller signals
-    await detectMotivatedSellerSignals(leadId)
+    // 6. Detect motivated seller signals.
+    //    It resolves the entity kind itself and REFUSES rather than guessing; a
+    //    refusal is reported here rather than absorbed, because "we filed no
+    //    signals" and "we could not tell whose record this is" are different
+    //    facts and only one of them is a clean result.
+    const sellerSignalRun = await detectMotivatedSellerSignals(leadId)
+    if (!sellerSignalRun.ok) {
+      console.error("[v0] enrichLeadData: motivated-seller detection refused:", sellerSignalRun.reason)
+    }
 
     // 7. Update intelligence profile
     await updateIntelligenceProfile(
@@ -1163,20 +1170,88 @@ function calculateAverageDaysBetween(behaviors: any[]): number {
   return gaps.reduce((a, b) => a + b, 0) / gaps.length
 }
 
-async function detectMotivatedSellerSignals(leadId: string) {
+/**
+ * FILE MOTIVATED-SELLER SIGNALS FOR ONE ENTITY — WHOSE KIND IS RESOLVED, NOT ASSUMED.
+ *
+ * ── WHAT WAS WRONG HERE ──────────────────────────────────────────────────────
+ * This function resolved its brokerage by querying **contacts** on the id it was
+ * given, and then wrote that same id into **`lead_id`** — a column every reader
+ * of `motivated_seller_signals` treated as `leads(id)`. So on the one path where
+ * it actually found a brokerage (the id WAS a contact) it filed rows into a
+ * column no reader could ever match, and on the path where the id was a real
+ * lead it stamped `brokerage_id: null`. That is the same defect already
+ * tombstoned at :2444 for a now-deleted writer, still live in this one.
+ *
+ * Its caller `enrichLeadData` makes it worse: :801-804 has ALREADY probed the id
+ * against BOTH tables and knows which it is, and then throws that answer away
+ * before calling here.
+ *
+ * ── WHAT IT DOES NOW ─────────────────────────────────────────────────────────
+ * m517 gives the table a `contact_id` column and a CHECK that exactly one entity
+ * column is set, so the honest answer is finally expressible. This function
+ * RESOLVES the kind explicitly — one read per table, both refusals READ — and
+ * REFUSES when it cannot. It never guesses:
+ *   · a read that is refused        → refuse (supabase-js RESOLVES refusals;
+ *                                     "nobody could check" must not render as
+ *                                     "checked and fine", CLAUDE.md §4)
+ *   · the id matches NEITHER table  → refuse
+ *   · the id matches BOTH tables    → refuse, loudly. The namespaces are
+ *                                     disjoint, so this cannot happen without
+ *                                     something being wrong, and picking one
+ *                                     would file the fact on the wrong board.
+ *
+ * The brokerage is taken from whichever row was actually found, so it is no
+ * longer null for leads.
+ *
+ * `lead_property_ownership` and `lead_people_data` are keyed on the
+ * PRE-CONVERSION id, so for a contact they legitimately return nothing. That is
+ * an absence of instrumentation, not an absence of motivation, and it is
+ * reported as `reason: "no_property_ownership"` rather than as a clean zero.
+ */
+async function detectMotivatedSellerSignals(entityId: string) {
   const supabase = createServiceClient()
 
-  // Resolve the contact's brokerage so we can stamp signal rows correctly
-  const { data: contact } = await supabase
+  // ── RESOLVE THE ENTITY KIND. Both reads, both errors. ──
+  const { data: contactRow, error: contactError } = await supabase
     .from("contacts")
-    .select("brokerage_id")
-    .eq("id", leadId)
+    .select("id, brokerage_id")
+    .eq("id", entityId)
     .maybeSingle()
-  const contactBrokerageId = contact?.brokerage_id ?? null
+  if (contactError) {
+    console.error("[lead-intelligence] detectMotivatedSellerSignals: contacts probe refused:", contactError.message)
+    return { ok: false as const, reason: `contacts probe refused: ${contactError.message}` }
+  }
+  const { data: leadRow, error: leadError } = await supabase
+    .from("leads")
+    .select("id, brokerage_id")
+    .eq("id", entityId)
+    .maybeSingle()
+  if (leadError) {
+    console.error("[lead-intelligence] detectMotivatedSellerSignals: leads probe refused:", leadError.message)
+    return { ok: false as const, reason: `leads probe refused: ${leadError.message}` }
+  }
+  if (contactRow && leadRow) {
+    // Disjoint uuid namespaces colliding means something upstream is broken.
+    // Choosing a side here would file the fact on a board it does not belong to.
+    console.error("[lead-intelligence] detectMotivatedSellerSignals: id resolves to BOTH a contact and a lead:", entityId)
+    return { ok: false as const, reason: "ambiguous_entity" }
+  }
+  if (!contactRow && !leadRow) {
+    console.error("[lead-intelligence] detectMotivatedSellerSignals: id resolves to neither a contact nor a lead:", entityId)
+    return { ok: false as const, reason: "unknown_entity" }
+  }
+  const entity: "lead" | "contact" = contactRow ? "contact" : "lead"
+  /** The ONE entity column this run may populate. m517's CHECK refuses a row
+   *  that sets both or neither, so this object IS the choice. */
+  const entityColumn = entity === "contact" ? { contact_id: entityId } : { lead_id: entityId }
+  const contactBrokerageId = (contactRow?.brokerage_id ?? leadRow?.brokerage_id) ?? null
 
-  const { data: properties } = await supabase.from("lead_property_ownership").select("*").eq("lead_id", leadId)
+  const { data: properties } = await supabase.from("lead_property_ownership").select("*").eq("lead_id", entityId)
 
-  if (!properties || properties.length === 0) return
+  if (!properties || properties.length === 0) {
+    return { ok: true as const, entity, signals: [] as any[], reason: "no_property_ownership" }
+  }
+  const leadId = entityId
 
   const { data: peopleData } = await supabase
     .from("lead_people_data")
@@ -1191,7 +1266,7 @@ async function detectMotivatedSellerSignals(leadId: string) {
   for (const property of properties) {
     if (property.ownership_length_months >= 120) {
       signals.push({
-        lead_id: leadId,
+        ...entityColumn,
         signal_type: "market_timing",
         signal_details: {
           reason: "Long-term ownership",
@@ -1206,7 +1281,7 @@ async function detectMotivatedSellerSignals(leadId: string) {
     const equityPercent = property.equity_estimate / property.estimated_value
     if (equityPercent > 0.5) {
       signals.push({
-        lead_id: leadId,
+        ...entityColumn,
         signal_type: "high_equity",
         signal_details: {
           reason: "High equity position",
@@ -1222,7 +1297,7 @@ async function detectMotivatedSellerSignals(leadId: string) {
     const propertyAge = new Date().getFullYear() - (property.property_details?.year_built || 0)
     if (propertyAge > 40) {
       signals.push({
-        lead_id: leadId,
+        ...entityColumn,
         signal_type: "property_condition",
         signal_details: {
           reason: "Older property may need updates",
@@ -1240,7 +1315,7 @@ async function detectMotivatedSellerSignals(leadId: string) {
 
       for (const event of recentEvents) {
         signals.push({
-          lead_id: leadId,
+          ...entityColumn,
           signal_type: "life_event",
           signal_details: {
             reason: `Life event: ${event.type}`,
@@ -1255,12 +1330,23 @@ async function detectMotivatedSellerSignals(leadId: string) {
   }
 
   if (signals.length > 0) {
-    // Stamp brokerage_id on every batch-inserted signal row
+    // Stamp brokerage_id on every batch-inserted signal row. It now comes from
+    // whichever row actually resolved, so a LEAD no longer gets `null` — the
+    // previous version only ever looked in `contacts`.
     const signalsWithBrokerage = signals.map(s => ({ ...s, brokerage_id: contactBrokerageId }))
-    await supabase.from("motivated_seller_signals").insert(signalsWithBrokerage)
+    // THE REFUSAL IS READ. supabase-js RESOLVES a refused insert, so the old
+    // bare `await` reported a clean run whether or not a single row landed —
+    // and with m517's "exactly one entity column" CHECK in force, a future
+    // writer that got the column wrong would be refused here and the refusal is
+    // exactly what must not be swallowed.
+    const { error: insertError } = await supabase.from("motivated_seller_signals").insert(signalsWithBrokerage)
+    if (insertError) {
+      console.error("[lead-intelligence] motivated_seller_signals insert refused:", insertError.message)
+      return { ok: false as const, entity, signals, reason: `insert refused: ${insertError.message}` }
+    }
   }
 
-  return signals
+  return { ok: true as const, entity, signals }
 }
 
 async function updateIntelligenceProfile(
@@ -1293,7 +1379,18 @@ async function updateIntelligenceProfile(
     .eq("lead_id", leadId)
     .single()
 
-  const { data: sellerSignals } = await supabase.from("motivated_seller_signals").select("*").eq("lead_id", leadId)
+  // BOTH ENTITY COLUMNS. m517 gave this table a `contact_id`, and the owner
+  // ruling that produced it ("motivated sellers source is for leads and
+  // contacts") means the profile for a CONTACT would otherwise be assembled
+  // from an empty set and present "no motivation" as an observation. Two reads
+  // rather than one `.or()` string: the id is interpolated into a filter
+  // expression in that form, and two exact-match queries cannot be malformed by
+  // a value.
+  const [{ data: sellerSignalsByLead }, { data: sellerSignalsByContact }] = await Promise.all([
+    supabase.from("motivated_seller_signals").select("*").eq("lead_id", leadId),
+    supabase.from("motivated_seller_signals").select("*").eq("contact_id", leadId),
+  ])
+  const sellerSignals = [...(sellerSignalsByLead ?? []), ...(sellerSignalsByContact ?? [])]
 
   const { data: propertyOwnership } = await supabase.from("lead_property_ownership").select("*").eq("lead_id", leadId)
 
@@ -2554,9 +2651,18 @@ export async function runBatchDataSellerSignalProbe() {
     success: result.errors.length === 0,
     signalsWritten: result.signalsWritten,
     alreadyRecorded: result.alreadyRecorded,
+    // BOTH BOARDS, REPORTED APART. Owner ruling 2026-08-21: "motivated sellers
+    // source is for leads and contacts." A caller shown one total cannot tell a
+    // run that covered contacts from one that did not, which is the whole thing
+    // the ruling asked for.
     leadsProbed: result.leadsProbed,
+    contactsProbed: result.contactsProbed,
     leadsAvailable: result.leadsAvailable,
+    contactsAvailable: result.contactsAvailable,
+    /** Leads skipped because already converted — their CONTACT was probed. */
+    leadsSkippedConverted: result.leadsSkippedConverted,
     writtenByType: result.writtenByType,
+    writtenByEntity: result.writtenByEntity,
     errors: result.errors,
   }
 }

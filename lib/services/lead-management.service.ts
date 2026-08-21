@@ -150,6 +150,34 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
           console.error("[lead-management] lead_behavioral_data read failed:", behavioralError.message)
         }
         record.lead_behavioral_data = behavioral || []
+
+        // ── MOTIVATED-SELLER SIGNALS FOR A CONTACT ─────────────────────────
+        //
+        // THE HALF THAT MADE THE OWNER RULING WRITE-ONLY. Owner ruling
+        // 2026-08-21: "motivated sellers source is for leads and contacts."
+        // Both external lanes now probe contacts — but this branch never read
+        // the table at all, and the scorer's motivated-seller component lives
+        // in the `else` (leads) branch of calculateEngagementScore. So a
+        // contact scored ZERO for motivated-seller no matter how many signals
+        // existed about their address. That is the same structural-zero defect
+        // this component has now been fixed for twice (retired twin, then a
+        // word compared to a number); this is the third face of it, and the
+        // only one where the rows were unreachable because the READ was absent.
+        //
+        // `.eq("contact_id", …)`, NOT `lead_id`: `contacts.id` and `leads.id`
+        // are disjoint namespaces and m517 gives the table the column that can
+        // say so. `signal_type` is selected alongside `signal_strength` because
+        // the counter must be able to drop SUPPRESSION rows — an
+        // `active_listing` row means "this owner already has a broker", and
+        // counting it as motivation would invert its meaning.
+        const { data: contactSellerSignals, error: contactSellerSignalsError } = await supabase
+          .from("motivated_seller_signals")
+          .select("id, signal_strength, signal_type")
+          .eq("contact_id", params.id)
+        if (contactSellerSignalsError) {
+          console.error("[lead-management] motivated_seller_signals read failed:", contactSellerSignalsError.message)
+        }
+        record.motivated_seller_signals = contactSellerSignals || []
       }
     } else {
       // Same defect on the leads side, and it was equally fatal: NEITHER
@@ -183,9 +211,15 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
         //
         // Both tables carry `lead_id` and `signal_strength`, which is all this scorer
         // reads, so the threshold below is unchanged — it can simply now be met.
+        //
+        // `signal_type` is selected beside `signal_strength` as of 2026-08-21:
+        // the table now carries SUPPRESSION rows (`active_listing` — this owner
+        // is already represented by another broker) and the counter has to be
+        // able to tell them from motivation rows. Selecting strength alone
+        // would let "do not solicit" score as "ready to sell".
         const { data: sellerSignals, error: sellerSignalsError } = await supabase
           .from("motivated_seller_signals")
-          .select("id, signal_strength")
+          .select("id, signal_strength, signal_type")
           .eq("lead_id", params.id)
         if (sellerSignalsError) {
           console.error("[lead-management] motivated_seller_signals read failed:", sellerSignalsError.message)
@@ -393,19 +427,57 @@ function calculateEngagementScore(record: any, table: string, behavior: Behavior
   if (table === "contacts") {
     const interactions = record.property_interactions || []
 
-    // Property views
-    const views = interactions.filter((i: any) => i.interaction_type === "view").length
-    score += Math.min(views * 5, 30)
+    // ── THE CONTACTS BUDGET WAS REBALANCED 2026-08-21, and the reason is not
+    // cosmetic. This branch summed to exactly 100 (30 views + 25 saves + 45
+    // behaviour) before `Math.min(score, 100)`. Adding the motivated-seller
+    // component on top of a full budget would have made it contribute NOTHING
+    // for precisely the contacts that already engage most — a component that is
+    // structurally zero for the records that matter, which is the exact defect
+    // class this component has now been fixed for twice (a retired twin with no
+    // writer, then a word compared to a number). Shipping a third face of it
+    // while claiming the owner ruling was implemented would be worse than not
+    // implementing it.
+    //
+    // So room was MADE rather than borrowed: 25 + 20 + 25 + 30 = 100, with the
+    // motivated-seller component weighted identically to the leads branch below
+    // (15 per strong signal, capped at 30) so one fact cannot be worth more on
+    // one board than the other.
 
-    // Saved properties
+    // Property views (was 30)
+    const views = interactions.filter((i: any) => i.interaction_type === "view").length
+    score += Math.min(views * 5, 25)
+
+    // Saved properties (was 25)
     const saves = interactions.filter((i: any) => i.interaction_type === "save").length
-    score += Math.min(saves * 10, 25)
+    score += Math.min(saves * 10, 20)
 
     // Logged behaviour — opens, clicks, visits, form submits and the rest, from the
     // EVENT LOG. This replaced `behavioralData?.email_open_count` (max 20) and
     // `behavioralData?.site_visit_count` (max 25): 45 of these 100 points read
     // columns lead_behavioral_data does not have, so they were always zero.
-    score += Math.min(Math.round(behavior.engagement * 0.45), 45)
+    // (was 45)
+    score += Math.min(Math.round(behavior.engagement * 0.25), 25)
+
+    // ── MOTIVATED SELLER SIGNALS, ON THE CONTACTS BOARD ───────────────────
+    //
+    // Owner ruling 2026-08-21: "motivated sellers source is for leads and
+    // contacts." Both external lanes (lib/external/permit-signals.ts,
+    // lib/external/batchdata-seller-signals.ts) now file signals against
+    // `motivated_seller_signals.contact_id`; the read that feeds this lives in
+    // the contacts branch of calculateLeadScore above. Without THIS line the
+    // rows would be written, read, and then discarded — the ruling would ship
+    // write-only.
+    //
+    // Same counter, same weights as the leads branch: countStrongSellerSignals
+    // owns both the vocabulary and the "what counts as strong" threshold
+    // (lib/lead-governance/seller-signal-strength.ts), and it drops SUPPRESSION
+    // rows so an `active_listing` — this owner already has a broker — can never
+    // push a prospecting score up.
+    const contactSellerSignals = record.motivated_seller_signals || []
+    const strongContactSignals = countStrongSellerSignals(
+      contactSellerSignals as Array<{ signal_strength?: unknown; signal_type?: unknown }>,
+    )
+    score += Math.min(strongContactSignals * 15, 30)
   } else {
     // For leads table - use external behavior signals
     // IDX property interactions are no longer a component of this score (wave 18).
