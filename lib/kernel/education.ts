@@ -12,6 +12,58 @@ import { resolveMilestoneIdentity } from "@/lib/transactions/milestone-identity"
 
 export type AgeSegment = "18-30" | "30-50" | "50-65" | "65+"
 
+/**
+ * THE AGE BANDS, DEFINED ONCE. Everything that needs a band derives it from
+ * here; nothing re-derives the boundaries inline.
+ *
+ * A BAND IS A SEGMENT, A BIRTHDATE IS A DOSSIER. The owner ruling (wave 15)
+ * unlocked demographic data so education can be routed by age group — "we
+ * determine the kind of education in channels by the age group" — and this repo
+ * already holds the matching discipline for timeline (buckets 1-3 / 3-6 / 6-12,
+ * never 30/60/90, CLAUDE.md §5). The same discipline applies here: selection
+ * reads the BAND, never the raw age or the birthday.
+ *
+ * `AgeSegment` and `DELIVERY_MATRIX` already lived in this file, so the
+ * derivation lives beside them rather than in a fifth module. It was previously
+ * open-coded inline at lib/portal/resolve-education-context.ts, which is the
+ * duplicate this replaces.
+ */
+export const AGE_SEGMENTS: readonly AgeSegment[] = ["18-30", "30-50", "50-65", "65+"]
+
+/** PURE. Whole-years age → band. null in, null out — an unknown age must stay
+ *  unknown rather than defaulting into a band it was never measured in. */
+export function ageSegmentFromAge(age: number | null | undefined): AgeSegment | null {
+  if (age == null || !Number.isFinite(age) || age <= 0) return null
+  if (age < 30) return "18-30"
+  if (age < 50) return "30-50"
+  if (age < 65) return "50-65"
+  return "65+"
+}
+
+/**
+ * PURE. An enrichment `age_range` string → a single representative age.
+ *
+ * `contacts.age_range` is written by the enrichment lane
+ * (lib/lead-pipeline/enrichment-column-map.ts, app/actions/contact-enrichment.ts)
+ * in the PROVIDER's banding — "25-34", "35-44", "55+", "65 plus" — which does
+ * not line up with ours. Rather than adding a second age vocabulary (CLAUDE.md
+ * §6), the provider band is collapsed to its MIDPOINT here and every band
+ * boundary in the tree is decided by `ageSegmentFromAge` alone. An open-ended
+ * top band ("65+") uses its lower bound, which lands in the same segment.
+ */
+export function ageMidpointFromAgeRange(range: string | null | undefined): number | null {
+  if (!range) return null
+  const nums = String(range).match(/\d+/g)?.map(Number).filter((n) => Number.isFinite(n) && n > 0) ?? []
+  if (nums.length === 0) return null
+  if (nums.length === 1) return nums[0]
+  return Math.round((nums[0] + nums[1]) / 2)
+}
+
+/** PURE. An enrichment `age_range` string → OUR band, via the midpoint above. */
+export function ageSegmentFromAgeRange(range: string | null | undefined): AgeSegment | null {
+  return ageSegmentFromAge(ageMidpointFromAgeRange(range))
+}
+
 // ─── GENERATIONAL COHORT ──────────────────────────────────────────────────────
 // Companion routing axis. Same person can be 50-65 ageSeg + 'boomer' OR
 // 'gen_x' depending on which side of 1965 they were born. Tone differs:

@@ -32,9 +32,50 @@
  * The actual FB Marketing API call (POST /act_<account>/customaudiences/
  * <id>/users with hashed payload) happens in the existing audience-
  * sync runner. This module is the staging layer.
+ *
+ * ── FAIR HOUSING LIVES HERE NOW (owner ruling, wave 15) ──────────────────
+ * The ruling took the fair-housing control OFF the data lane — scraping,
+ * enrichment, scoring, sourcing, signals and buyer property search — and
+ * left it on outbound CONTENT. That leaves one act unguarded that the
+ * statute actually reaches: TARGETING HOUSING ADVERTISING BY A PROTECTED
+ * CLASS. 42 U.S.C. § 3604(c) reaches the publication of a housing ad
+ * indicating a protected-class preference; HUD's actions against Meta
+ * reached protected-class ad TARGETING. Neither reaches holding a
+ * homeowner's age in a CRM.
+ *
+ * WHAT THIS FILE CARRIES, MEASURED BEFORE THE GATE WAS DESIGNED. This
+ * module itself carries NO segmentation criteria — `stageMembership`
+ * writes only (audience_id, contact_id, lead_id, consent_snapshot), so
+ * there is nothing here to segment ON. The segmentation is chosen ONE
+ * LEVEL UP, on the audience row: `facebook_custom_audiences.source_rule`
+ * (jsonb), written by lib/kernel/ads.ts:915 (`createAudienceSegment`) and
+ * read back by lib/kernel/ads.ts:757 (`syncAudience`) to build the contact
+ * query it uploads to Meta/Google. That is a REAL segmentation point, not
+ * an invented one.
+ *
+ * So the gate reads the audience's own `source_rule` at resolve time and
+ * refuses to stage ANY person into an audience whose rule leans on a
+ * protected class. It fails CLOSED (CLAUDE.md §4): a rule that cannot be
+ * evaluated is a refusal, never a pass, and the refusal is COUNTED into
+ * `skippedReasons` rather than swallowed.
+ *
+ * EVERY audience in this product is a housing audience — this is a real
+ * estate CRM and `facebook_custom_audiences` exists only to retarget
+ * housing services — so there is deliberately no "is this a housing
+ * campaign?" branch: a per-campaign housing flag would be one unchecked
+ * checkbox away from turning the gate off.
+ *
+ * NOT FIXED HERE, and named so it is tracked rather than assumed: the
+ * CREATION path (lib/kernel/ads.ts:915) still accepts any `sourceRule`
+ * without running this check, so a protected-class audience can still be
+ * DEFINED — it just cannot be POPULATED through this module. Wiring
+ * `assertAudienceSegmentationAllowed` into `createAudienceSegment` and
+ * into `syncAudience`'s contact query belongs to the lane that owns
+ * lib/kernel/ads.ts.
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { protectedClassSegmentationIn } from "@/lib/lead-governance/protected-class-signals"
 
 export interface AudienceSyncOutcome {
   ok:                      boolean
@@ -49,6 +90,36 @@ interface AudienceRow {
   agent_user_id: string | null
   audience_type: string | null
   status:        string | null
+  /** The segmentation rule lib/kernel/ads.ts:757 turns into the contact query
+   *  it uploads to Meta/Google. THE thing the fair-housing gate reads. */
+  audience_name: string | null
+  source_rule:   unknown
+}
+
+/** The columns the gate needs. `source_rule` and `audience_name` were added to
+ *  this select FOR the gate — without them it would be judging a row it cannot
+ *  see, which reads as "checked and fine" (CLAUDE.md §2). */
+const AUDIENCE_COLS = "id, scope_type, agent_user_id, audience_type, status, audience_name, source_rule"
+
+/**
+ * The fair-housing refusal, at the act the statute actually reaches.
+ *
+ * Returns null when the audience may be populated, or a SKIP REASON naming the
+ * offending attributes when it may not. A reason, never a bare false: an
+ * operator reading `skippedReasons` has to know which audience to fix.
+ *
+ * FAILS CLOSED. A `source_rule` that cannot be walked (a thrown classifier, a
+ * shape nobody anticipated) refuses rather than passes.
+ */
+function protectedClassAudienceRefusal(aud: AudienceRow): string | null {
+  let hits: string[]
+  try {
+    hits = protectedClassSegmentationIn(aud.source_rule)
+  } catch (e) {
+    return `fair_housing_unevaluable:${aud.id}:${e instanceof Error ? e.message : String(e)}`
+  }
+  if (hits.length === 0) return null
+  return `fair_housing_protected_segmentation:${aud.audience_name ?? aud.id}:${hits.join("|")}`
 }
 
 async function findAudienceForScope(args: {
@@ -58,7 +129,7 @@ async function findAudienceForScope(args: {
   const svc = createServiceClient()
   if (args.agentUserId) {
     const { data } = await svc.from("facebook_custom_audiences")
-      .select("id, scope_type, agent_user_id, audience_type, status")
+      .select(AUDIENCE_COLS)
       .eq("brokerage_id", args.brokerageId)
       .eq("scope_type", "agent")
       .eq("agent_user_id", args.agentUserId)
@@ -69,7 +140,7 @@ async function findAudienceForScope(args: {
     return (data as AudienceRow | null) ?? null
   }
   const { data } = await svc.from("facebook_custom_audiences")
-    .select("id, scope_type, agent_user_id, audience_type, status")
+    .select(AUDIENCE_COLS)
     .eq("brokerage_id", args.brokerageId)
     .eq("scope_type", "brokerage")
     .eq("status", "synced")
@@ -184,17 +255,26 @@ export async function onLeadConvertedForAudience(args: {
   const brokerageAud = await findAudienceForScope({ brokerageId: args.brokerageId })
   if (brokerageAud) {
     out.audiencesProcessed++
-    // Wave 38 CORRECTION — contact-only push (no lead_id). Membership
-    // begins at conversion; legacy lead-keyed rows from prior code
-    // paths are no longer expected.
-    const r = await stageMembership({
-      brokerageId: args.brokerageId,
-      audienceId:  brokerageAud.id,
-      contactId:   args.contactId,
-      consent,
-    })
-    if (r.inserted) out.membersInserted++
-    if (r.skipped) out.skippedReasons.push(`brokerage:${r.skipped}`)
+    // FAIR HOUSING (owner ruling, wave 15) — an audience whose source_rule
+    // segments on a protected class may not be populated. See the file header
+    // for why this is the point of enforcement and the data lane is not.
+    const refusal = protectedClassAudienceRefusal(brokerageAud)
+    if (refusal) {
+      out.ok = false
+      out.skippedReasons.push(`brokerage:${refusal}`)
+    } else {
+      // Wave 38 CORRECTION — contact-only push (no lead_id). Membership
+      // begins at conversion; legacy lead-keyed rows from prior code
+      // paths are no longer expected.
+      const r = await stageMembership({
+        brokerageId: args.brokerageId,
+        audienceId:  brokerageAud.id,
+        contactId:   args.contactId,
+        consent,
+      })
+      if (r.inserted) out.membersInserted++
+      if (r.skipped) out.skippedReasons.push(`brokerage:${r.skipped}`)
+    }
   } else {
     out.skippedReasons.push("no_brokerage_audience_configured")
   }
@@ -207,14 +287,20 @@ export async function onLeadConvertedForAudience(args: {
     })
     if (agentAud) {
       out.audiencesProcessed++
-      const r = await stageMembership({
-        brokerageId: args.brokerageId,
-        audienceId:  agentAud.id,
-        contactId:   args.contactId,
-        consent,
-      })
-      if (r.inserted) out.membersInserted++
-      if (r.skipped) out.skippedReasons.push(`agent:${r.skipped}`)
+      const refusal = protectedClassAudienceRefusal(agentAud)
+      if (refusal) {
+        out.ok = false
+        out.skippedReasons.push(`agent:${refusal}`)
+      } else {
+        const r = await stageMembership({
+          brokerageId: args.brokerageId,
+          audienceId:  agentAud.id,
+          contactId:   args.contactId,
+          consent,
+        })
+        if (r.inserted) out.membersInserted++
+        if (r.skipped) out.skippedReasons.push(`agent:${r.skipped}`)
+      }
     } else {
       out.skippedReasons.push("no_agent_audience_configured")
     }
@@ -281,9 +367,18 @@ export async function onContactBecameLifetimeForAudience(args: {
   const brokerageAud = await findAudienceForScope({ brokerageId: args.brokerageId })
   if (brokerageAud) {
     out.audiencesProcessed++
-    const r = await stageMembership({ brokerageId: args.brokerageId, audienceId: brokerageAud.id, contactId: args.contactId, consent })
-    if (r.inserted) out.membersInserted++
-    if (r.skipped) out.skippedReasons.push(`brokerage:${r.skipped}`)
+    // FAIR HOUSING (owner ruling, wave 15) — same refusal as the conversion path.
+    // A past client is the highest-value retargeting seed, which is exactly why
+    // the protected-class check has to hold on this path too.
+    const refusal = protectedClassAudienceRefusal(brokerageAud)
+    if (refusal) {
+      out.ok = false
+      out.skippedReasons.push(`brokerage:${refusal}`)
+    } else {
+      const r = await stageMembership({ brokerageId: args.brokerageId, audienceId: brokerageAud.id, contactId: args.contactId, consent })
+      if (r.inserted) out.membersInserted++
+      if (r.skipped) out.skippedReasons.push(`brokerage:${r.skipped}`)
+    }
   } else {
     out.skippedReasons.push("no_brokerage_audience_configured")
   }
@@ -292,9 +387,15 @@ export async function onContactBecameLifetimeForAudience(args: {
     const agentAud = await findAudienceForScope({ brokerageId: args.brokerageId, agentUserId })
     if (agentAud) {
       out.audiencesProcessed++
-      const r = await stageMembership({ brokerageId: args.brokerageId, audienceId: agentAud.id, contactId: args.contactId, consent })
-      if (r.inserted) out.membersInserted++
-      if (r.skipped) out.skippedReasons.push(`agent:${r.skipped}`)
+      const refusal = protectedClassAudienceRefusal(agentAud)
+      if (refusal) {
+        out.ok = false
+        out.skippedReasons.push(`agent:${refusal}`)
+      } else {
+        const r = await stageMembership({ brokerageId: args.brokerageId, audienceId: agentAud.id, contactId: args.contactId, consent })
+        if (r.inserted) out.membersInserted++
+        if (r.skipped) out.skippedReasons.push(`agent:${r.skipped}`)
+      }
     } else {
       out.skippedReasons.push("no_agent_audience_configured")
     }

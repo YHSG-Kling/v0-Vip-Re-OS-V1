@@ -97,7 +97,13 @@ export async function pickLearningModulesForActor(input: PickInput): Promise<Lea
     if (!brokerageId) return []
     if (c?.contact_persona) personas = [c.contact_persona as string]
     generations = ctx.generationalCohort && ctx.generationalCohort !== "unknown" ? [ctx.generationalCohort] : []
-    ageSegs     = [ctx.ageSeg]
+    // A DEFAULTED BAND IS NOT A MEASURED ONE. `resolveEducationContext` returns
+    // "30-50" as a placeholder when neither contacts.birthday nor the enrichment
+    // lane's contacts.age_range said anything; scoring it as if it had been
+    // observed handed every unbanded contact a +30 match against modules tagged
+    // 30-50, so "we routed by age group" and "we guessed 30-50" produced the same
+    // number (CLAUDE.md §2). Only a measured band participates in scoring now.
+    ageSegs     = ctx.ageSegSource === "default" ? [] : [ctx.ageSeg]
     if (ctx.currentMilestone) stageTags.push(ctx.currentMilestone)
     if (ctx.buyerStage)       stageTags.push(ctx.buyerStage)
     if (ctx.portalView)       stageTags.push(ctx.portalView)
@@ -112,7 +118,7 @@ export async function pickLearningModulesForActor(input: PickInput): Promise<Lea
       completedIds = ((completedRows as Array<{ module_id: string }> | null) ?? []).map(r => r.module_id)
     }
     signalSource = ctx.currentMilestone ? `milestone:${ctx.currentMilestone}` : `persona:${c?.contact_persona ?? "general"}`
-    signalMetadata = { ageSeg: ctx.ageSeg, generationalCohort: ctx.generationalCohort, persona: c?.contact_persona, milestone: ctx.currentMilestone }
+    signalMetadata = { ageSeg: ctx.ageSeg, ageSegSource: ctx.ageSegSource, generationalCohort: ctx.generationalCohort, persona: c?.contact_persona, milestone: ctx.currentMilestone }
   }
 
   if (!brokerageId) return []

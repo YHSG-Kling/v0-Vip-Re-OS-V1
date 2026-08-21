@@ -6,6 +6,10 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { determinePortalView, type PortalView } from "@/lib/kernel/portal"
 import {
   generationalCohortFromAge,
+  ageFromBirthday,
+  ageSegmentFromAge,
+  ageSegmentFromAgeRange,
+  ageMidpointFromAgeRange,
   type AgeSegment,
   type GenerationalCohort,
 } from "@/lib/kernel/education"
@@ -128,6 +132,16 @@ export interface EducationContext {
   buyerStage: string | null
   currentMilestone: string | null
   ageSeg: AgeSegment
+  /**
+   * WHERE `ageSeg` CAME FROM. Published beside the value because a DEFAULT and
+   * a MEASUREMENT are not the same fact and used to be indistinguishable here:
+   * a contact with no birthday silently became "30-50", and every downstream
+   * scorer then treated a guess as an observation (CLAUDE.md §2).
+   *   · "birthday"  — computed from contacts.birthday
+   *   · "age_range" — collapsed from the enrichment lane's contacts.age_range
+   *   · "default"   — NOT MEASURED. Treat as unknown, not as 30-50.
+   */
+  ageSegSource: "birthday" | "age_range" | "default"
   /** Generational cohort derived from date_of_birth alongside ageSeg.
    *  Education + marketing modules tag against this for tone routing
    *  (e.g. boomer downsizer vs millennial first-time-buyer). */
@@ -149,33 +163,43 @@ export async function resolveEducationContext(
   const portalView: PortalView = portalViewOutput.view
 
   // Get contact details
+  // `age_range` joins the select under the wave-15 owner ruling. It is the column
+  // the ENRICHMENT lane actually writes; `birthday` is filled in by a human and is
+  // null on most rows, so reading only `birthday` meant the age band was a default
+  // dressed as a measurement for nearly every contact.
   const { data: contact } = await supabase
     .from("contacts")
-    .select("buyer_stage, contact_type, birthday")
+    .select("buyer_stage, contact_type, birthday, age_range")
     .eq("id", contactId)
     .single()
 
   const buyerStage = contact?.buyer_stage ?? null
 
-  // Calculate age segment + generational cohort from birthday
-  let ageSeg: AgeSegment = "30-50"  // Default
-  let computedAge: number | null = null
-  if (contact?.birthday) {
-    const birthDate = new Date(contact.birthday)
-    const today = new Date()
-    computedAge = today.getFullYear() - birthDate.getFullYear()
-    // Adjust if birthday hasn't happened yet this year
-    const beforeBirthday =
-      today.getMonth() < birthDate.getMonth() ||
-      (today.getMonth() === birthDate.getMonth() && today.getDate() < birthDate.getDate())
-    if (beforeBirthday) computedAge -= 1
-
-    if (computedAge < 30)      ageSeg = "18-30"
-    else if (computedAge < 50) ageSeg = "30-50"
-    else if (computedAge < 65) ageSeg = "50-65"
-    else                       ageSeg = "65+"
+  // Age band + generational cohort. Bands come from lib/kernel/education.ts —
+  // ONE definition, derived here rather than re-spelled (CLAUDE.md §6); the
+  // boundaries used to be open-coded in this block and drifted from nothing only
+  // because nothing else had asked for them yet.
+  let ageSegSource: EducationContext["ageSegSource"] = "default"
+  const enrichedRange = (contact as { age_range?: string | null } | null)?.age_range ?? null
+  let effectiveAge: number | null = ageFromBirthday(contact?.birthday ?? null)
+  let ageSeg: AgeSegment | null = ageSegmentFromAge(effectiveAge)
+  if (ageSeg) {
+    ageSegSource = "birthday"
+  } else {
+    ageSeg = ageSegmentFromAgeRange(enrichedRange)
+    if (ageSeg) {
+      ageSegSource = "age_range"
+      // The cohort follows the same signal the band did. Leaving it on `birthday`
+      // alone is how a contact ended up with a real age band and cohort "unknown".
+      effectiveAge = ageMidpointFromAgeRange(enrichedRange)
+    }
   }
-  const generationalCohort: GenerationalCohort = generationalCohortFromAge(computedAge)
+  // The historical default is KEPT for API stability — callers type `ageSeg` as a
+  // non-null AgeSegment — but `ageSegSource: "default"` now says out loud that it
+  // is a placeholder, and selection paths are expected to read the source, not
+  // just the band.
+  if (!ageSeg) ageSeg = "30-50"
+  const generationalCohort: GenerationalCohort = generationalCohortFromAge(effectiveAge)
 
   // Get current milestone from active transaction
   let currentMilestone: string | null = null
@@ -230,6 +254,7 @@ export async function resolveEducationContext(
     buyerStage,
     currentMilestone,
     ageSeg,
+    ageSegSource,
     generationalCohort,
     completedLessonKeys,
   }
