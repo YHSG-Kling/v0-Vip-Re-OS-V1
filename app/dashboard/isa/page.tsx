@@ -50,6 +50,7 @@ import { SpeedToLeadPanel } from './components/speed-to-lead-panel'
 import { ISALeadQueuePanel } from './components/isa-lead-queue-panel'
 import { getSpeedToLeadMetrics } from '@/app/actions/ai-isa/speed-to-lead-metrics'
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+import { resolveLeadVisibility } from "@/lib/auth/lead-visibility"
 
 export const dynamic = 'force-dynamic'
 
@@ -72,7 +73,10 @@ export default async function AIISAOperationsConsolePage() {
   await ensureAgentContextInPlace()
   const { data: profile } = await supabase
     .from('users')
-    .select('brokerage_id, first_name, user_type')
+    // platform_role joins the select so the lead-visibility gate below is not
+    // forced to re-read this row. Staff identity is dual-column and "unknown" is
+    // not "absent" — see lib/auth/lead-visibility.ts#LeadVisibilitySession.
+    .select('brokerage_id, first_name, user_type, platform_role')
     .eq('id', user.id)
     .maybeSingle()
 
@@ -89,13 +93,33 @@ export default async function AIISAOperationsConsolePage() {
   // Role-based agent filter: agent sees own calls; broker/admin sees all brokerage calls
   const isAgentOnly = profile?.user_type === 'agent'
 
-  // RAW LEAD ACCESS. app/actions/leads.ts gates every export on this exact set —
-  // agents are deliberately NOT in it, because agents work CONTACTS and lead
-  // visibility is role-gated. The ISA queue tab is only mounted for a role whose
-  // calls the server will actually honour, so nobody is shown a control that can
-  // only refuse. The server-side gate remains the real one.
-  const canWorkRawLeads = ['admin', 'broker', 'broker_admin', 'superadmin', 'isa']
-    .includes(profile?.user_type ?? '')
+  // TOMBSTONE (lead-visibility consolidation): the inline
+  // ['admin','broker','broker_admin','superadmin','isa'] array is DELETED. The
+  // survivor is lib/auth/lead-visibility.ts:resolveLeadVisibility.
+  //
+  // This roster was the WORST of the fifteen, and measurably so: it was the only
+  // one that also omitted `broker_owner`, so a brokerage OWNER was shown no ISA
+  // queue tab on a console whose server actions would have honoured every call
+  // they made. It also carried two values that can never match a live row —
+  // 'broker_admin' (not a storable user_type; canonicalizes to `broker`) and
+  // 'superadmin' (0 live rows; platform staff carry platform_role) — so three of
+  // its five entries were wrong in one direction or the other.
+  //
+  // Asking the survivor fixes all three at once and adds team_lead per the
+  // owner's ruling. The queue tab is a MOUNT decision, so it must agree with the
+  // server gate exactly or it shows a control that can only refuse; deriving it
+  // from the same answer is the only way that agreement survives.
+  //
+  // The SCOPE is used, not discarded: the console's own lead query below is
+  // scoped with it, so a team lead sees their team's leads rather than the
+  // brokerage's. The server-side gate remains the real one.
+  const leadVisibility = await resolveLeadVisibility(supabase, {
+    userId: user.id,
+    userType: profile?.user_type ?? null,
+    platformRole: (profile as { platform_role?: string | null } | null)?.platform_role ?? null,
+    brokerageId,
+  })
+  const canWorkRawLeads = leadVisibility.allowed
   const { data: agentRow } = isAgentOnly
     ? await supabase.from('agents').select('id').eq('user_id', user.id).maybeSingle()
     : { data: null }
@@ -118,6 +142,14 @@ export default async function AIISAOperationsConsolePage() {
     .eq('brokerage_id', brokerageId)
     .order('updated_at', { ascending: false })
     .limit(50)
+
+  // TEAM ROW SCOPE on the console's own lead read. Admitting a team lead to this
+  // console without narrowing this query would put the brokerage's whole lead
+  // board on their screen — the exact failure the scope half exists to prevent.
+  if (leadVisibility.allowed && leadVisibility.scope.kind === 'team') {
+    const teamAgentIds = leadVisibility.scope.agentIds
+    leadsQuery.in('agent_id', teamAgentIds.length ? teamAgentIds : ['00000000-0000-0000-0000-000000000000'])
+  }
 
   if (isAgentOnly && agentRow?.id) {
     leadsQuery.eq('agent_id', agentRow.id)

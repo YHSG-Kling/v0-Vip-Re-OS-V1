@@ -396,78 +396,42 @@ export const DEMO_USERS = [
 ];
 
 // ============================================
-// ROLE DEFINITIONS
+// ROLE DEFINITIONS — DELETED (lead-visibility consolidation)
 // ============================================
-export const ROLES = {
-  SUPERADMIN: 'superadmin',
-  ADMIN: 'admin',
-  BROKER: 'broker',
-  MANAGER: 'manager',
-  TEAM_LEAD: 'team_lead',
-  AGENT: 'agent',
-  TC: 'tc',
-  BUYER: 'buyer',
-  SELLER: 'seller',
-  SUPPORT: 'support',
-} as const;
+//
+// TOMBSTONE. `ROLES` and `ROLE_PERMISSIONS` lived here and are DELETED.
+// SURVIVOR: lib/security/permission-matrix.ts:102 `ROLE_PERMISSIONS` (and
+// :34 `ROLE_HIERARCHY` for the scope half).
+//
+// WHY THIS ONE WAS THE DUPLICATE AND NOT THE SURVIVOR:
+//   · CALLERS. Measured with scripts/strip-comments.ts over every file that
+//     imports this module: `@/app/constants/auth` is imported exactly twice —
+//     app/actions/demo-auth.ts takes { DEMO_USERS, DEMO_CONFIG, AUTH_MESSAGES }
+//     and proxy.ts takes { PROTECTED_ROUTES, PUBLIC_ROUTES }. NEITHER name was
+//     imported anywhere. The survivor is read by lib/auth/permissions-client.ts:72,
+//     lib/security/role-manager.ts:9 and the admin user-edit form at
+//     app/dashboard/admin/users/[userId]/user-edit-form.tsx:165.
+//   · VOCABULARY. This copy carried a `manager` role and `buyer`/`seller` roles
+//     that are not users.user_type values at all (users_user_type_check admits
+//     fourteen, none of them these), and its permission strings were a SECOND
+//     spelling of the survivor's — 'view_all_leads' here vs 'leads:view_all'
+//     there. Two spellings of one permission is the §6 defect: no scorer can
+//     match a writer across them, and a reader consulting this copy would have
+//     graded a real role against names nothing else uses.
+//
+// THE RECONCILIATION THE LEAD RULING NEEDED, recorded where it was asked for:
+// this copy gave `team_lead` a 'view_team_leads' permission — the right IDEA,
+// the wrong vocabulary and no enforcement behind it. The survivor gives
+// team_lead 'leads:view' / 'leads:view_all' (lib/security/permission-matrix.ts:250)
+// and ROLE_HIERARCHY already records `canViewData: 'team'` for the same role
+// (:72). Under the owner's ruling — "if team tier subscriptions, they don't
+// have a broker in the subscription so the team lead can see leads" — those two
+// now agree with the code that enforces them: the ADMISSION is
+// lib/auth/lead-visibility.ts#LEAD_DESK_USER_TYPES and the SCOPE is
+// LeadRowScope, whose team branch is exactly `canViewData: 'team'`. The
+// catalogue describes; lib/auth/lead-visibility.ts decides. Neither restates
+// the other, and nothing enforces this deleted third spelling.
 
-// ============================================
-// ROLE PERMISSIONS
-// ============================================
-export const ROLE_PERMISSIONS = {
-  superadmin: ['*'], // All permissions
-  admin: [
-    'manage_users',
-    'manage_agents',
-    'manage_leads',
-    'manage_listings',
-    'view_analytics',
-    'manage_compliance',
-  ],
-  broker: [
-    'manage_agents',
-    'view_all_listings',
-    'view_all_leads',
-    'approve_listings',
-    'view_analytics',
-  ],
-  manager: [
-    'manage_team',
-    'view_team_leads',
-    'view_team_listings',
-    'approve_team_content',
-  ],
-  team_lead: [
-    'manage_agents',
-    'view_team_listings',
-    'view_team_leads',
-  ],
-  agent: [
-    'manage_own_listings',
-    'manage_own_leads',
-    'view_own_contacts',
-  ],
-  tc: [
-    'manage_transactions',
-    'view_all_transactions',
-    'update_transaction_status',
-  ],
-  buyer: [
-    'view_listings',
-    'view_saved_properties',
-    'contact_agent',
-  ],
-  seller: [
-    'manage_own_listings',
-    'view_offers',
-    'contact_agent',
-  ],
-  support: [
-    'view_all_tickets',
-    'respond_to_support',
-    'view_user_accounts',
-  ],
-};
 
 // ============================================
 // SESSION CONFIGURATION

@@ -217,8 +217,24 @@ console.log("\n[the tier sells SEATS — with ONE role constraint on solo]")
   check("solo's menu is brokerage's MINUS exactly the two governance roles",
     [...TIER_INVITABLE_ROLES.brokerage].filter((r) => r !== "broker" && r !== "broker_owner").sort().join(",") ===
     [...TIER_INVITABLE_ROLES.solo_agent].sort().join(","))
-  check("team and above DO get them — that is where a brokerage begins",
-    TIER_INVITABLE_ROLES.team.includes("broker") && TIER_INVITABLE_ROLES.brokerage.includes("broker_owner"))
+  // SUPERSEDED, and the supersession is the assertion now. This used to read
+  // "team and above DO get them — that is where a brokerage begins". OWNER, new
+  // ruling: "if team tier subscriptions, they don't have a broker in the
+  // subscription so the team lead can see leads." The missing broker is the
+  // PREMISE of the team lead's lead-desk admission (lib/auth/lead-visibility.ts),
+  // so a team tier that could still invite a broker would contradict it.
+  // A brokerage begins at the BROKERAGE tier.
+  check("team has NO broker — the team-tier subscription does not include one",
+    !TIER_INVITABLE_ROLES.team.includes("broker"))
+  check("team has NO broker_owner either",
+    !TIER_INVITABLE_ROLES.team.includes("broker_owner"))
+  check("team's menu is brokerage's MINUS exactly the two governance roles",
+    [...TIER_INVITABLE_ROLES.brokerage].filter((r) => r !== "broker" && r !== "broker_owner").sort().join(",") ===
+    [...TIER_INVITABLE_ROLES.team].sort().join(","))
+  check("team KEEPS team_lead — it is the seat that governs a team",
+    TIER_INVITABLE_ROLES.team.includes("team_lead"))
+  check("brokerage and above DO get them — that is where a brokerage begins",
+    TIER_INVITABLE_ROLES.brokerage.includes("broker") && TIER_INVITABLE_ROLES.brokerage.includes("broker_owner"))
   check("…and the limits still differ, because SEATS are what a tier sells",
     TIER_SEAT_LIMITS.solo_agent === 2 && TIER_SEAT_LIMITS.brokerage === null)
 }

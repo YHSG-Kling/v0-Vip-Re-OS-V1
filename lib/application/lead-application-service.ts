@@ -145,6 +145,21 @@ export async function serviceGetLeads(
     aiIsaOwner?: boolean
     minimumViableForIsa?: boolean
     activeOnly?: boolean
+    /**
+     * TEAM ROW SCOPE — the agents.id list of the caller's own team(s), supplied
+     * by lib/auth/lead-visibility.ts and NEVER by a request body.
+     *
+     * A NARROWING only, and structurally incapable of widening: it is an
+     * additional `.in("agent_id", …)` on top of the brokerage pin and (on the
+     * agent view) on top of the caller's own agent pin, so it can only
+     * intersect. It exists because the owner's ruling admits `team_lead` to the
+     * lead desk while "teams see only their own board" still holds — an
+     * admission with no row scope would hand every team lead the brokerage's
+     * whole desk. An EMPTY array means "a team with no agents", which correctly
+     * matches nothing; `undefined` means brokerage or platform scope, i.e. no
+     * team narrowing at all. The two must not be collapsed.
+     */
+    teamAgentIds?: string[]
   }
 ) {
   const supabase = await createClient()
@@ -180,6 +195,15 @@ export async function serviceGetLeads(
   // caller's own id, so this second .eq() can only intersect with it — a caller
   // naming somebody else's agent id gets an empty page, never their leads.
   if (params?.assignedAgentId) query = query.eq("agent_id", params.assignedAgentId)
+  // TEAM ROW SCOPE. Applied after every other filter and never in place of one —
+  // it intersects, it cannot widen. `[]` (a team with no agents) becomes an
+  // impossible filter rather than an empty `.in()` list, whose PostgREST spelling
+  // is not a filter at all.
+  if (params?.teamAgentIds !== undefined) {
+    query = params.teamAgentIds.length > 0
+      ? query.in("agent_id", params.teamAgentIds)
+      : query.eq("agent_id", "00000000-0000-0000-0000-000000000000")
+  }
   if (params?.aiIsaOwner !== undefined) query = query.eq("ai_isa_owner", params.aiIsaOwner)
   if (params?.minimumViableForIsa !== undefined) {
     query = query.eq("minimum_viable_for_isa", params.minimumViableForIsa)

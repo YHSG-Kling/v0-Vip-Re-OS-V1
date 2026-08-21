@@ -1,42 +1,60 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
-import { isPlatformStaffIdentity } from '@/lib/auth/resolve-user-role'
+import {
+  resolveLeadVisibilityForSession,
+  applyLeadRowScope,
+  type LeadRowScope,
+} from '@/lib/auth/lead-visibility'
 import { createPortalInviteForContact } from './portal-invites'
 import { syncContactToCRM } from '@/lib/crm/sync'
 import { convertLeadToContact as kernelConvertLeadToContact } from '@/lib/kernel'
 
-// ACCESS POLICY (owner): LEADS = BROKERAGE + PLATFORM ONLY. The lifecycle verbs
-// in this file (list unassigned / claim-assign / convert-to-contact) are lead-desk
-// verbs: brokerage-LEVEL roles (broker / broker_owner / broker_admin / admin) +
-// platform staff only. Agents, team leads, TCs and compliance officers never work
-// lead rows — agents receive their work as CONTACTS (post-promotion). Previously
-// these actions had NO role gate and trusted a caller-supplied brokerageId.
-const LEAD_DESK_ROLES = new Set(['admin', 'broker', 'broker_owner', 'broker_admin', 'superadmin'])
+// TOMBSTONE (lead-visibility consolidation): the inline `LEAD_DESK_ROLES` set is
+// DELETED. The survivor is lib/auth/lead-visibility.ts:resolveLeadVisibility
+// (session entry point `resolveLeadVisibilityForSession`).
+//
+// The policy note that stood here said team leads "never work lead rows". That
+// is superseded by the owner's ruling — "if team tier subscriptions, they don't
+// have a broker in the subscription so the team lead can see leads" — and the
+// admission arrives with a ROW SCOPE, so it does not become brokerage-wide
+// reach on a tenant that has more than one team.
+//
+// REMOVED FROM THIS SITE, named rather than dropped silently:
+//   · 'superadmin' as a user_type comparison — measured DEAD (0 live rows hold
+//     it; the platform's one superadmin is user_type='admin' with
+//     platform_role='superadmin'). Platform staff keep their cross-brokerage
+//     reach through the survivor's isPlatformStaffIdentity arm, which reads the
+//     column that holds the answer.
+//   · 'broker_admin' — not a storable user_type, so the comparison matched
+//     nothing. It survives only as an input spelling inside the one roster.
+//
+// The caller-supplied `brokerageId` is STILL verified against the session and
+// still never trusted — it is now checked against the scope the session
+// resolved, which is the same rule with the team half added.
 
-async function requireLeadDesk(targetBrokerageId: string): Promise<void> {
+/**
+ * Session-derived lead-desk gate, returning the caller's ROW SCOPE.
+ *
+ * `targetBrokerageId` remains an INPUT to be VERIFIED, never a source of truth:
+ * a tenant actor must be acting inside the brokerage their own session resolved
+ * to. Platform staff may act across brokerages (support/repair paths), which is
+ * what `scope.kind === 'platform'` expresses.
+ */
+async function requireLeadDesk(targetBrokerageId: string): Promise<LeadRowScope> {
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) throw new Error('Unauthenticated')
-
-  const { data: profile } = await supabase
-    .from('users')
-    .select('user_type, platform_role, brokerage_id')
-    .eq('id', user.id)
-    .maybeSingle()
-
-  const role = profile?.user_type ?? 'agent'
-  // Platform staff may act across brokerages (support/repair paths).
-  if (isPlatformStaffIdentity(role, profile?.platform_role)) return
-
-  if (!LEAD_DESK_ROLES.has(role)) {
-    throw new Error('Forbidden — leads are managed at the brokerage level')
+  const vis = await resolveLeadVisibilityForSession(supabase)
+  if (!vis.allowed) {
+    throw new Error(
+      vis.status === 'forbidden'
+        ? 'Forbidden — leads are managed at the brokerage level'
+        : vis.reason,
+    )
   }
-  // Tenant brokers act only inside their own brokerage — the caller-supplied
-  // brokerageId is verified against the session, never trusted.
-  if (!profile?.brokerage_id || profile.brokerage_id !== targetBrokerageId) {
+  if (vis.scope.kind !== 'platform' && vis.scope.brokerageId !== targetBrokerageId) {
     throw new Error('Forbidden — brokerage mismatch')
   }
+  return vis.scope
 }
 
 export async function listUnassignedLeads(params: {
@@ -47,7 +65,18 @@ export async function listUnassignedLeads(params: {
 }) {
   const supabase = await createClient()
   const { brokerageId, limit = 50, leadStage, motivationType } = params
-  await requireLeadDesk(brokerageId)
+  const scope = await requireLeadDesk(brokerageId)
+
+  // THE UNASSIGNED POOL IS THE BROKERAGE'S, NOT A TEAM'S. `leads` carries no team
+  // column; a lead's only link to a team is `agent_id → agents.team_id`, and an
+  // unworked lead has no agent_id. So under a TRUE team scope this list is empty
+  // by construction, and it is returned empty rather than being silently widened
+  // to the brokerage — that widening is the failure this consolidation prevents.
+  // Where the actor's team IS the whole tenant the resolver already collapsed the
+  // scope to 'brokerage' and this list is fully visible, which is the owner's case.
+  if (scope.kind === 'team') {
+    return { success: true, leads: [], total: 0, count: 0 }
+  }
 
   let query = supabase
     .from('leads')
@@ -119,13 +148,17 @@ export async function convertLeadToContact(params: {
 }) {
   const supabase = await createClient()
   const { leadId, agentId, brokerageId } = params
-  await requireLeadDesk(brokerageId)
+  const scope = await requireLeadDesk(brokerageId)
 
-  const { data: lead, error: fetchError } = await supabase
-    .from('leads')
-    .select('*')
-    .eq('id', leadId)
-    .single()
+  // The row scope is on the FETCH, so a team lead converting a lead outside their
+  // own board gets "Lead not found" rather than a row. The brokerage equality
+  // check below is kept as well: under platform scope there is no brokerage pin
+  // in the scope at all, and the caller-supplied brokerageId still has to match
+  // the row it names.
+  const { data: lead, error: fetchError } = await applyLeadRowScope(
+    supabase.from('leads').select('*').eq('id', leadId),
+    scope,
+  ).maybeSingle()
 
   if (fetchError || !lead) {
     throw new Error('Lead not found')

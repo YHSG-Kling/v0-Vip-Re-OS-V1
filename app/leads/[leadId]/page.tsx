@@ -1,12 +1,14 @@
 // app/leads/[leadId]/page.tsx
 // Minimal lead detail surface — shows identity + ISA state and the lead quick-actions panel.
 // `leads` are platform OR brokerage-scoped (NEVER agent-assigned in the canonical flow). The
-// QuickActions server actions enforce the matching auth gate so this page can render without
-// per-row authorization in the page itself.
+// QuickActions server actions enforce the matching auth gate; this page ALSO authorises the
+// ROW it is about to render, through lib/auth/lead-visibility.ts — since the team-tier ruling
+// admitted `team_lead`, "may you see leads" and "may you see THIS lead" are different
+// questions, and a detail page is exactly where the second one has to be asked.
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { isPlatformStaffIdentity } from "@/lib/auth/resolve-user-role"
+import { resolveLeadVisibility, leadRowInScope } from "@/lib/auth/lead-visibility"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { LeadQuickActions } from "@/components/lead/LeadQuickActions"
@@ -34,26 +36,44 @@ export default async function LeadDetailPage({ params }: PageProps) {
   await ensureAgentContextInPlace()
   const svc = createServiceClient()
   const { data: lead } = await svc.from("leads")
-    .select("id, brokerage_id, first_name, last_name, email, phone, mailing_address, mailing_city, mailing_state, mailing_zip, email_verified, mailing_address_verified, lead_stage, lifecycle_state, ai_isa_owner, is_active, created_at")
+    .select("id, brokerage_id, agent_id, first_name, last_name, email, phone, mailing_address, mailing_city, mailing_state, mailing_zip, email_verified, mailing_address_verified, lead_stage, lifecycle_state, ai_isa_owner, is_active, created_at")
     .eq("id", leadId).maybeSingle()
   if (!lead) {
     return <div className="p-6 text-sm text-muted-foreground">Lead not found.</div>
   }
 
-  // ACCESS POLICY (owner): LEADS = BROKERAGE + PLATFORM ONLY. Page-level gate
-  // (mirrors the canonical lead scoping rule used inside the server actions):
-  // platform admin / staff → always. Brokerage-LEVEL roles (broker/admin family)
-  // → only when brokerage_id matches. Agents, team leads, TCs and compliance
-  // officers do NOT reach lead rows — agents work CONTACTS only (post-promotion).
-  const { data: profile } = await svc.from("users")
+  // TOMBSTONE (lead-visibility consolidation): the inline `BROKERAGE_ROLES` set
+  // is DELETED. The survivor is lib/auth/lead-visibility.ts:resolveLeadVisibility
+  // + leadRowInScope.
+  //
+  // This was the SIXTEENTH lead-visibility roster and it was not on the census
+  // that opened this lane — it was found by the guard that closes it
+  // (scripts/lead-visibility-roster-simulator.ts), which is the whole point of
+  // measuring instead of listing. It gated the LEAD DETAIL page, so it is the
+  // one place a single lead row is shown whole.
+  //
+  //   · team_lead ADMITTED (owner ruling) and ROW-SCOPED: because this page has
+  //     the lead row in hand, leadRowInScope answers exactly — a team lead sees
+  //     the detail of a lead their own team is working, and is redirected off
+  //     any other. The old comment here said team leads "do NOT reach lead rows";
+  //     that is superseded.
+  //   · 'broker_admin' REMOVED — not a storable user_type, so `BROKERAGE_ROLES.has(user_type)`
+  //     could never match it against a live row.
+  //
+  // A NULL brokerage_id on the lead still means PLATFORM-ONLY: leadRowInScope
+  // refuses it for every tenant scope, exactly as the previous equality check did.
+  const { data: profile, error: profileError } = await svc.from("users")
     .select("user_type, platform_role, brokerage_id").eq("id", user.id).maybeSingle()
-  const isPlatform = isPlatformStaffIdentity(profile?.user_type, profile?.platform_role)
-  const BROKERAGE_ROLES = new Set(["broker","broker_owner","broker_admin","admin"])
-  const isBrokerageMatch =
-    !!profile?.user_type && BROKERAGE_ROLES.has(profile.user_type)
-    && !!profile?.brokerage_id && profile.brokerage_id === lead.brokerage_id
-  const allowed = isPlatform || isBrokerageMatch
-  if (!allowed) redirect("/dashboard")
+  // supabase-js RESOLVES a refusal — "could not read the profile" is not
+  // "not authorised", but both must refuse rather than render the lead.
+  if (profileError) redirect("/dashboard")
+  const vis = await resolveLeadVisibility(svc, {
+    userId: user.id,
+    userType: profile?.user_type ?? null,
+    platformRole: profile?.platform_role ?? null,
+    brokerageId: profile?.brokerage_id ?? null,
+  })
+  if (!vis.allowed || !leadRowInScope(vis.scope, lead)) redirect("/dashboard")
 
   // THE INBOUND TRANSCRIPT. lib/lead-intent/inbound-lead-intent.ts records every inbound
   // message on lead_conversation_history before evaluating it, and until this read the table

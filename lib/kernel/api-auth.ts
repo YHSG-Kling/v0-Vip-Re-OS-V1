@@ -168,8 +168,26 @@ export async function requirePlatformStaffAuth(
 }
 
 /**
- * Broker/Admin auth guard.
- * Allows broker, admin, and superadmin roles.
+ * Broker/Admin auth guard — the TENANT-ADMIN roster, asked of a route.
+ *
+ * ── WHAT IT IS NOT, since the team-tier ruling ──────────────────────────────
+ *
+ * This is `isAdminOrBroker` with a 403 attached, so it answers "is this caller a
+ * tenant admin" and NOTHING about rows. `team_lead` has always been in
+ * TENANT_ADMIN_USER_TYPES, so this guard has always admitted a team lead — which
+ * was harmless while team leads reached no lead data, and is not harmless now.
+ *
+ * A LEAD route must therefore NOT stop here. lib/auth/lead-visibility.ts is the
+ * one lead answer, and it returns a ROW SCOPE this boolean cannot carry; its
+ * single remaining caller, app/api/leads/process-pipeline/route.ts, keeps this
+ * gate for the admission and then refuses a team scope it cannot express (see
+ * the comment there). Any new lead route should ask the lead resolver instead of
+ * adding a second caller here.
+ *
+ * It also reads only the user_type half, so it refuses the SECOND SEAT — the
+ * live agent+admin+isa account whose admin authority is a GRANT. A gate guarding
+ * a WRITE should prefer resolveTenantAdmin (lib/auth/resolve-user-role.ts:388),
+ * which mirrors is_brokerage_admin() in RLS.
  */
 export async function requireBrokerAuth(
   supabase: SupabaseClient

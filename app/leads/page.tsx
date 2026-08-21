@@ -96,13 +96,27 @@ import type { Lead, LeadScore, LeadIntent, LeadStatus, LeadSource } from "@/app/
 import { cn } from "@/lib/utils"
 import { createClient } from "@/lib/supabase/client"
 import { toast } from "sonner"
+// TOMBSTONE (lead-visibility consolidation): the two-step
+// isTenantAdminOrPlatformStaff + resolveTenantAdmin dance this surface performed
+// is DELETED. The survivor is lib/auth/lead-visibility.ts:resolveLeadVisibility,
+// which does BOTH halves (user_type and a tenant-pinned grant, plus platform
+// staff) in one call AND returns the ROW SCOPE this page needs.
+//
+// Those two functions were never wrong here — they are the tenant-ADMIN answer,
+// and this surface needs the lead-DESK answer, which is a different question
+// with the same members plus 'isa'. Deriving it once means this page and the
+// server actions it calls cannot disagree about who sees the lead desk, which
+// they did before this lane: the page admitted team_lead through
+// TENANT_ADMIN_USER_TYPES while the actions it calls refused them, so a team
+// lead reached a fully-rendered lead desk whose every action returned Forbidden.
+//
+// It is pure of server-only and runs client-side; the users / user_role_assignments
+// / teams / agents reads it makes are subject to RLS exactly as the server-side
+// call is.
 import {
-  isTenantAdminOrPlatformStaff as isTenantAdminOrPlatformStaffFn,
-  // The GRANT half of the same rule. Pure (its only imports are pure helpers),
-  // so it runs client-side; the user_role_assignments read it makes is subject to
-  // RLS exactly as the server-side call is.
-  resolveTenantAdmin as resolveTenantAdminFn,
-} from "@/lib/auth/resolve-user-role"
+  resolveLeadVisibility,
+  type LeadRowScope,
+} from "@/lib/auth/lead-visibility"
 
 export default function LeadsPage() {
   const router = useRouter()
@@ -110,6 +124,12 @@ export default function LeadsPage() {
   // Role resolution state
   const [isAdminOrBroker, setIsAdminOrBroker] = useState(false)
   const [roleResolved, setRoleResolved] = useState(false)
+  /**
+   * The resolved ROW SCOPE. Null until role resolution finishes, and null is not
+   * "no restriction" — every read below is guarded on `isAdminOrBroker`, which
+   * only becomes true once a scope exists.
+   */
+  const [leadRowScope, setLeadRowScope] = useState<LeadRowScope | null>(null)
 
   // ── CSV IMPORT ──────────────────────────────────────────────────────────────
   // The dialog above used to be a picture of a dropzone over an importLeads
@@ -343,7 +363,14 @@ export default function LeadsPage() {
         alreadyRecorded?: number
         leadsProbed?: number
         leadsAvailable?: number
+        // BOTH BOARDS, as of the owner ruling "motivated sellers source is for
+        // leads and contacts". The probe covers contacts too, so a panel that
+        // reported only leads would understate what the run did AND misname it.
+        contactsProbed?: number
+        contactsAvailable?: number
+        leadsSkippedConverted?: number
         writtenByType?: Record<string, number>
+        writtenByEntity?: { lead: number; contact: number }
         errors?: string[]
       }
   >(null)
@@ -467,59 +494,40 @@ export default function LeadsPage() {
 
       const resolvedType = profile?.user_type ?? profile?.role ?? "agent"
 
-      // ACCESS POLICY (owner): LEADS = BROKERAGE + PLATFORM ONLY. This surface
-      // is usable only by brokerage-LEVEL roles (broker/admin family, which
-      // INCLUDES team_lead) and platform staff. TC / compliance_officer / isa /
-      // vendor / lender are redirected — they work contacts, not the lead desk.
+      // ROUTING, NOT ACCESS. This list decides which seats belong on a DIFFERENT
+      // screen; it is not a lead roster and must not be read as one. TC /
+      // compliance_officer / vendor / lender / title_agent work contacts, and
+      // `isa` — which the one lead roster DOES admit — has its own console at
+      // /dashboard/isa, so it is sent there rather than to a second lead desk.
       // Agents fall through to the explanatory gate screen below (no lead data is
-      // fetched or rendered for them). Server actions re-enforce this gate.
+      // fetched or rendered for them). Server actions re-enforce the real gate.
       //
-      // ── team_lead REMOVED FROM THE REDIRECT ──────────────────────────────
-      // Owner ruling: "if team lead subscription, team lead has agent assignment
-      // settings … in team or solo agent subscription, they can have an admin
-      // that sees everything." On a TEAM-tier tenant the team lead IS the admin,
-      // and this redirect bounced them off the only surface where those settings
-      // are exercised — while `team_lead` sits in TENANT_ADMIN_USER_TYPES, so the
-      // very next statement would have graded them an admin. The page and the
-      // roster disagreed and the redirect won.
+      // team_lead is deliberately NOT in this list: on a team-tier tenant the
+      // team lead IS the admin (owner ruling), and this redirect used to bounce
+      // them off the only surface where their assignment settings are exercised.
       if (["tc", "transaction_coordinator", "vendor", "lender", "compliance_officer", "compliance_manager", "isa", "title_agent"].includes(resolvedType)) {
         router.push("/dashboard")
         return
       }
 
-      // This surface genuinely means BOTH: a tenant admin sees the brokerage's
-      // leads, and so does platform staff. It says so with the explicit OR of the
-      // two single definitions rather than restating either — the four platform
-      // roles were inlined here, a second copy of the roster that
-      // lib/platform/platform-staff-roster.ts already owns.
+      // THE ONE LEAD-VISIBILITY ANSWER — admission and ROW SCOPE together, both
+      // role sources plus platform staff, in a single call. It replaces the
+      // pure-predicate-then-grant-read pair this page used to run by hand.
       //
-      // Called under an ALIAS because the component below binds a state variable
-      // of the same name; the unaliased import would be shadowed by that boolean
-      // and the call would fail at runtime, not at build time.
-      let adminBroker = isTenantAdminOrPlatformStaffFn({
-        user_type: resolvedType,
-        platform_role: String((profile as any)?.platform_role ?? "") || null,
+      // The SECOND SEAT is still admitted: the grant half is inside the resolver
+      // (MEASURED live, on the solo tenant 231f4e64-… that person is
+      // agent1@yourbrokerage.com, user_type 'agent' holding an 'admin' grant
+      // pinned to their own brokerage). A refused grant read is still NOT an
+      // admin answer — the resolver returns `allowed:false, status:"unresolved"`,
+      // so this page stays closed exactly as the server actions do.
+      const vis = await resolveLeadVisibility(supabase, {
+        userId: user.id,
+        userType: resolvedType,
+        platformRole: String((profile as any)?.platform_role ?? "") || null,
+        brokerageId: (profile as any)?.brokerage_id ?? null,
       })
-
-      // THE SECOND SEAT — the admin a solo or team tenant "can have … that sees
-      // everything". MEASURED live: on the solo tenant 231f4e64-… that person is
-      // agent1@yourbrokerage.com, whose users.user_type is 'agent' and who holds
-      // an 'admin' GRANT in user_role_assignments pinned to their own brokerage.
-      // public.is_brokerage_admin() (m466) admits them and the assignment server
-      // actions now admit them too (resolveTenantAdmin) — but this page decided
-      // with the user_type half alone, so the tenant that most needs the admin
-      // seat was shown "Leads are managed by your brokerage" instead. Read only
-      // when the pure half already said no, so nobody pays for the query twice.
-      if (!adminBroker) {
-        const grant = await resolveTenantAdminFn(supabase, user.id, {
-          user_type: resolvedType,
-          brokerage_id: (profile as any)?.brokerage_id ?? null,
-        })
-        // A refused grant read is NOT an admin answer — supabase-js resolves it,
-        // so failing open here would hand the lead desk to anyone whose read was
-        // denied. It stays closed, exactly as the server actions do.
-        if (grant.ok && grant.isTenantAdmin) adminBroker = true
-      }
+      const adminBroker = vis.allowed
+      setLeadRowScope(vis.allowed ? vis.scope : null)
       setIsAdminOrBroker(adminBroker)
 
       // Resolve brokerageId from users table
@@ -544,18 +552,32 @@ export default function LeadsPage() {
       // Mark role resolved — triggers fetchLeads
       setRoleResolved(true)
 
-      // Load unassigned lead count for admin badge
+      // Load unassigned lead count for admin badge.
+      //
+      // TEAM ROW SCOPE: the unassigned pool belongs to the BROKERAGE (an unworked
+      // lead has no agent and therefore no team), so under a true team scope the
+      // server action returns an empty list and this badge is 0 — correct, not
+      // broken. Where the actor's team IS the tenant the resolver has already
+      // collapsed the scope to 'brokerage' and the badge counts normally.
       if (adminBroker && userRow?.brokerage_id) {
         listUnassignedLeads({ brokerageId: userRow.brokerage_id, limit: 1 })
           .then((r) => setUnassignedCount(r.total ?? (r.leads?.length ?? 0)))
           .catch(() => setUnassignedCount(null))
 
-        // Load pipeline stats for admin stats bar — single query, client-side aggregate
-        supabase
+        // Load pipeline stats for admin stats bar — single query, client-side aggregate.
+        // The scope is applied HERE too: a stats bar counting brokerage-wide over a
+        // table showing one team's rows tells the reader they are looking at their
+        // own board when they are not.
+        let statsQuery = supabase
           .from("leads")
           .select("lead_stage, agent_id, reengagement_status, lifecycle_state")
           .eq("brokerage_id", userRow.brokerage_id)
           .eq("is_active", true)
+        if (vis.allowed && vis.scope.kind === "team") {
+          const ids = vis.scope.agentIds
+          statsQuery = statsQuery.in("agent_id", ids.length ? ids : ["00000000-0000-0000-0000-000000000000"])
+        }
+        statsQuery
           .then(({ data }: { data: { lead_stage: any; agent_id: any; reengagement_status: any; lifecycle_state: any }[] | null }) => {
             if (data) {
               setPipelineStats({
@@ -1482,9 +1504,11 @@ export default function LeadsPage() {
                       {sellerProbeResult.signalsWritten ?? 0} new signal
                       {(sellerProbeResult.signalsWritten ?? 0) === 1 ? "" : "s"} filed from{" "}
                       {sellerProbeResult.leadsProbed ?? 0} lead
-                      {(sellerProbeResult.leadsProbed ?? 0) === 1 ? "" : "s"} probed
+                      {(sellerProbeResult.leadsProbed ?? 0) === 1 ? "" : "s"} and{" "}
+                      {sellerProbeResult.contactsProbed ?? 0} contact
+                      {(sellerProbeResult.contactsProbed ?? 0) === 1 ? "" : "s"} probed
                       {typeof sellerProbeResult.leadsAvailable === "number"
-                        ? ` of ${sellerProbeResult.leadsAvailable} with a usable address`
+                        ? ` of ${sellerProbeResult.leadsAvailable + (sellerProbeResult.contactsAvailable ?? 0)} with a usable address`
                         : ""}.
                     </p>
                     {(sellerProbeResult.alreadyRecorded ?? 0) > 0 && (
@@ -1816,6 +1840,19 @@ export default function LeadsPage() {
         </Tabs>
 
         {/* Admin pipeline stats bar */}
+        {/* THE SCOPE IS SAID OUT LOUD. A team lead's numbers below are their
+            TEAM's, not the brokerage's, and a stats bar that does not say so
+            invites the reader to act on a total they think is the tenant's.
+            Rendered only for a true team scope: where the team is the whole
+            tenant the resolver collapsed the scope to 'brokerage' and there is
+            nothing to qualify. */}
+        {isAdminOrBroker && leadRowScope?.kind === "team" && (
+          <p className="text-xs text-muted-foreground">
+            Showing your team&apos;s board — leads worked by your {leadRowScope.agentIds.length} team
+            {leadRowScope.agentIds.length === 1 ? " member" : " members"}. Unassigned brokerage leads are
+            not on a team board.
+          </p>
+        )}
         {isAdminOrBroker && pipelineStats && (
           <div className="grid grid-cols-5 gap-3">
             {/* Unassigned */}

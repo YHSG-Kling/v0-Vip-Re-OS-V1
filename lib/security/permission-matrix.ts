@@ -247,6 +247,15 @@ export const ROLE_PERMISSIONS: Record<UserRole, RolePermissions> = {
       'contacts:view_all',
       'contacts:create',
       'contacts:edit',
+      // LEAD ACCESS — the ONE enforcer is lib/auth/lead-visibility.ts, and
+      // "_all" here means ALL OF THIS TEAM'S, not all of the brokerage's.
+      // ROLE_HIERARCHY above already records `canViewData: 'team'` for this same
+      // role (:72), and that is the half that decides rows: the resolver returns
+      // a team LeadRowScope pinned to `teams.team_lead_id`, which collapses to
+      // brokerage scope only where the actor's team IS the whole tenant (owner:
+      // "if team tier subscriptions, they don't have a broker in the
+      // subscription so the team lead can see leads"). This catalogue DESCRIBES;
+      // it does not gate — no lead surface reads it.
       'leads:view',
       'leads:view_all',
       'leads:claim',

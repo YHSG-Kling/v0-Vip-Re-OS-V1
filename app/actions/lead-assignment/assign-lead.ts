@@ -34,10 +34,27 @@ import { createClient } from "@/lib/supabase/server"
 import { autoAssignLead } from "@/lib/lead-assignment/tier-routing"
 import { evaluateAssignmentEligibility } from "@/lib/lead-assignment/rule-matcher"
 import { handleLeadAssigned } from "@/lib/kernel/lead-acquisition-handlers"
-import { resolveTenantAdmin } from "@/lib/auth/resolve-user-role"
+// TOMBSTONE (lead-visibility consolidation): `resolveTenantAdmin` no longer
+// gates this file. The survivor is
+// lib/auth/lead-visibility.ts:resolveLeadVisibility.
+//
+// resolveTenantAdmin is not retired and is not wrong — it is the TENANT-ADMIN
+// answer and remains the right gate for admin surfaces. It was the wrong gate
+// HERE for one reason: it returns a boolean, and these verbs move LEAD ROWS.
+// team_lead has always been in TENANT_ADMIN_USER_TYPES, so this file already
+// admitted a team lead to assign ANY lead in the brokerage — the error copy at
+// the gate below has said "or team lead" all along. Under the owner's team-tier
+// ruling that admission is correct; brokerage-wide is not. The survivor returns
+// the ROW SCOPE with the admission, and every read and write below carries it.
+import {
+  resolveLeadVisibility,
+  applyLeadRowScope,
+  leadRowInScope,
+  type LeadRowScope,
+} from "@/lib/auth/lead-visibility"
 
 type Gate =
-  | { ok: true; userId: string; brokerageId: string }
+  | { ok: true; userId: string; brokerageId: string; scope: LeadRowScope }
   | { ok: false; reason: string }
 
 /**
@@ -64,7 +81,8 @@ type Gate =
  *
  * team_lead is already in TENANT_ADMIN_USER_TYPES, which is what makes "if team
  * lead subscription, team lead has agent assignment settings" true of these
- * verbs without a second roster.
+ * verbs without a second roster. What that roster could not say — and what the
+ * lead-visibility resolver now does — is WHICH LEADS a team lead may assign.
  */
 async function gateTenantAdmin(): Promise<Gate> {
   const supabase = await createClient()
@@ -75,7 +93,7 @@ async function gateTenantAdmin(): Promise<Gate> {
 
   const { data: profile, error: profileError } = await supabase
     .from("users")
-    .select("brokerage_id, user_type")
+    .select("brokerage_id, user_type, platform_role")
     .eq("id", user.id)
     .maybeSingle()
 
@@ -84,13 +102,22 @@ async function gateTenantAdmin(): Promise<Gate> {
   if (profileError) return { ok: false, reason: "Could not verify your account" }
   if (!profile?.brokerage_id) return { ok: false, reason: "No brokerage found for user" }
 
-  const admin = await resolveTenantAdmin(supabase, user.id, profile)
-  if (!admin.ok) return { ok: false, reason: "Could not verify your permissions" }
-  if (!admin.isTenantAdmin) {
-    return { ok: false, reason: "Forbidden: only a brokerage admin or team lead can assign leads" }
+  const vis = await resolveLeadVisibility(supabase, {
+    userId: user.id,
+    userType: profile.user_type,
+    platformRole: (profile as { platform_role?: string | null }).platform_role ?? null,
+    brokerageId: profile.brokerage_id,
+  })
+  if (!vis.allowed) {
+    return {
+      ok: false,
+      reason: vis.status === "forbidden"
+        ? "Forbidden: only a brokerage admin or team lead can assign leads"
+        : vis.reason,
+    }
   }
 
-  return { ok: true, userId: user.id, brokerageId: profile.brokerage_id }
+  return { ok: true, userId: user.id, brokerageId: profile.brokerage_id, scope: vis.scope }
 }
 
 /**
@@ -105,6 +132,18 @@ export async function assignLead(
 ): Promise<{ assigned: boolean; agentId?: string; reason: string }> {
   const gate = await gateTenantAdmin()
   if (!gate.ok) throw new Error(gate.reason)
+
+  // THE LEAD MUST BE ON THIS CALLER'S BOARD. The gate says they may assign; it
+  // does not say they may assign THIS lead. autoAssignLead pins the brokerage
+  // and knows nothing about teams, so without this a team lead could run the
+  // tenant's assignment policy over any lead in the brokerage by id.
+  const supabase = await createClient()
+  const { data: inScope, error: scopeError } = await applyLeadRowScope(
+    supabase.from("leads").select("id").eq("id", leadId),
+    gate.scope,
+  ).maybeSingle()
+  if (scopeError) throw new Error("Could not read that lead")
+  if (!inScope) throw new Error("Lead not found in your brokerage")
 
   const out = await autoAssignLead({
     leadId,
@@ -146,12 +185,15 @@ export async function manualAssignLead(
 
   const supabase = await createClient()
 
-  const { data: lead, error: leadError } = await supabase
-    .from("leads")
-    .select("id, brokerage_id, lead_stage, lifecycle_state, lead_score, agent_id, is_active")
-    .eq("id", leadId)
-    .eq("brokerage_id", gate.brokerageId)
-    .maybeSingle()
+  // The brokerage pin comes from the SCOPE, which for a team lead also pins the
+  // agent set — so a lead outside their board is "not found", not assignable.
+  const { data: lead, error: leadError } = await applyLeadRowScope(
+    supabase
+      .from("leads")
+      .select("id, brokerage_id, lead_stage, lifecycle_state, lead_score, agent_id, is_active")
+      .eq("id", leadId),
+    gate.scope,
+  ).maybeSingle()
 
   if (leadError) throw new Error("Could not read that lead")
   if (!lead) throw new Error("Lead not found in your brokerage")
@@ -161,14 +203,22 @@ export async function manualAssignLead(
   // taken out of the pipeline is work assigned against a lead nobody is working.
   if (lead.is_active === false) throw new Error("Lead is inactive and cannot be assigned")
 
-  // THE RECIPIENT MUST BE A REAL, ACTIVE AGENT OF THIS TENANT.
-  const { data: recipient, error: recipientError } = await supabase
+  // THE RECIPIENT MUST BE A REAL, ACTIVE AGENT OF THIS TENANT — and, for a team
+  // lead, of THEIR OWN TEAM. Handing a team's lead to another team's agent is a
+  // brokerage act; a team board does not reach across.
+  let recipientQuery = supabase
     .from("agents")
     .select("id")
     .eq("id", agentId)
     .eq("brokerage_id", gate.brokerageId)
     .eq("is_active", true)
-    .maybeSingle()
+  if (gate.scope.kind === "team") {
+    recipientQuery = recipientQuery.in(
+      "id",
+      gate.scope.agentIds.length ? gate.scope.agentIds : ["00000000-0000-0000-0000-000000000000"],
+    )
+  }
+  const { data: recipient, error: recipientError } = await recipientQuery.maybeSingle()
   if (recipientError) throw new Error("Could not verify that agent")
   if (!recipient) throw new Error("That agent is not an active agent of your brokerage")
 
@@ -241,7 +291,7 @@ export async function acknowledgeLeadHandoffAction(
 
   const { data: profile, error: profileError } = await supabase
     .from("users")
-    .select("brokerage_id, user_type")
+    .select("brokerage_id, user_type, platform_role")
     .eq("id", user.id)
     .maybeSingle()
   if (profileError) return { success: false, reason: "profile_check_failed" }
@@ -249,7 +299,7 @@ export async function acknowledgeLeadHandoffAction(
 
   const { data: lead, error: leadError } = await supabase
     .from("leads")
-    .select("id, agent_id")
+    .select("id, brokerage_id, agent_id")
     .eq("id", leadId)
     .eq("brokerage_id", profile.brokerage_id)
     .maybeSingle()
@@ -259,10 +309,22 @@ export async function acknowledgeLeadHandoffAction(
   if (!lead) return { success: false, reason: "lead_not_in_tenant" }
   if (!lead.agent_id) return { success: false, reason: "lead_not_assigned" }
 
-  const admin = await resolveTenantAdmin(supabase, user.id, profile)
-  if (!admin.ok) return { success: false, reason: "permission_check_failed" }
+  // The ADMIN OVERRIDE half now comes from the lead answer rather than the
+  // tenant-admin one, and it carries the row scope: a team lead may close out a
+  // handoff on THEIR OWN team's lead, and not on another team's. The assigned
+  // agent's own path below is unchanged.
+  const vis = await resolveLeadVisibility(supabase, {
+    userId: user.id,
+    userType: profile.user_type,
+    platformRole: (profile as { platform_role?: string | null }).platform_role ?? null,
+    brokerageId: profile.brokerage_id,
+  })
+  if (!vis.allowed && vis.status === "unresolved") {
+    return { success: false, reason: "permission_check_failed" }
+  }
 
-  if (!admin.isTenantAdmin) {
+  const adminOverride = vis.allowed && leadRowInScope(vis.scope, lead)
+  if (!adminOverride) {
     const { data: me, error: meError } = await supabase
       .from("agents")
       .select("id")

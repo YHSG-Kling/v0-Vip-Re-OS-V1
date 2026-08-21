@@ -10,11 +10,20 @@
 //   • Every tier gets access to the working roles — admin, agent, tc,
 //     compliance_officer, isa, team_lead — and the constraint is SEATS, not the
 //     role menu: "they can use those seats anyway they want" (owner).
-//   • THE ONE EXCEPTION, and it is a hard one: a SOLO subscription has NO
-//     broker and NO broker_owner. Owner, explicitly: "no solo agent tier
-//     subscription does NOT have a broker owner or broker." A solo
-//     subscription is not a brokerage, so the roles that exist to govern one
-//     are not on its menu. Its 2 seats are spent inside the remaining set.
+//   • THE EXCEPTION, and it is a hard one: NEITHER a SOLO nor a TEAM
+//     subscription has a broker or a broker_owner.
+//       – Solo: owner, explicitly — "no solo agent tier subscription does NOT
+//         have a broker owner or broker." A solo subscription is not a
+//         brokerage, so the roles that exist to govern one are not on its menu.
+//         Its 2 seats are spent inside the remaining set.
+//       – Team: owner, explicitly — "if team tier subscriptions, they don't have
+//         a broker in the subscription so the team lead can see leads." The
+//         missing broker is the PREMISE of the lead ruling: the team lead is
+//         admitted to the lead desk (lib/auth/lead-visibility.ts) precisely
+//         because on that tier there is nobody else to work it. This header used
+//         to record the exception as SOLO-ONLY while the matrix gave `team` the
+//         full seat list — the two halves of one ruling disagreeing in the same
+//         file. Its 5 seats are spent inside the remaining set.
 //   • SEATS: solo_agent = 2 · team = 5 · brokerage / multi_location =
 //     unlimited. A "seat" is a working staff user (SEAT_ROLES). Partner
 //     users do NOT consume seats.
@@ -53,12 +62,47 @@ export const SEAT_ROLES: readonly UserDomainRole[] = [
 const SOLO_SEAT_ROLES: readonly UserDomainRole[] =
   SEAT_ROLES.filter((r) => r !== "broker" && r !== "broker_owner")
 
+/**
+ * The TEAM set. Same subtraction as solo, and it is the SAME EXPRESSION on
+ * purpose rather than a second literal.
+ *
+ * ── THE RULING THAT MOVED THIS ──────────────────────────────────────────────
+ *
+ * OWNER, verbatim: "if team tier subscriptions, they don't have a broker in the
+ * subscription so the team lead can see leads."
+ *
+ * The header of this file recorded the no-broker exception as SOLO-ONLY, and the
+ * matrix below duly gave `team` the full SEAT_ROLES including broker and
+ * broker_owner. The owner has now said a team-tier subscription has no broker
+ * either — which is the PREMISE of the lead ruling, not an aside: the reason the
+ * team lead sees leads is that on that tier there is nobody else to. A tier that
+ * could still invite a broker would contradict the sentence that admits the team
+ * lead to the lead desk in the first place.
+ *
+ * ── WHY DERIVED, NOT RETYPED ────────────────────────────────────────────────
+ *
+ * Written as a literal, `team` and `solo_agent` would drift the first time a
+ * working role is added to SEAT_ROLES: it would land in one and be forgotten in
+ * the other. Both tiers ask the SAME question — "every working role except the
+ * two that exist to govern a brokerage" — so both are the same filter, and a new
+ * role joins both tiers automatically, which is the safe default for a seat
+ * menu. The subtraction is visible in one line instead of buried in a diff
+ * between two lists.
+ *
+ * The two are kept as SEPARATE named constants rather than one shared alias
+ * because they are two RULINGS that currently agree, not one ruling: solo has no
+ * broker because it is not a brokerage, team has no broker because the
+ * subscription does not include one. If either moves, it moves alone.
+ */
+const TEAM_SEAT_ROLES: readonly UserDomainRole[] =
+  SEAT_ROLES.filter((r) => r !== "broker" && r !== "broker_owner")
+
 /** Canonical tier → invitable roles. THE matrix — every invite surface derives
- *  from it. The tier sells SEATS and how a tenant spends them is theirs; the one
- *  role constraint is that solo has no broker/broker_owner. */
+ *  from it. The tier sells SEATS and how a tenant spends them is theirs; the
+ *  role constraint is that neither solo NOR team has broker/broker_owner. */
 export const TIER_INVITABLE_ROLES: Record<CanonicalTier, readonly UserDomainRole[]> = {
   solo_agent:     [...SOLO_SEAT_ROLES, ...PARTNER_ROLES],
-  team:           [...SEAT_ROLES, ...PARTNER_ROLES],
+  team:           [...TEAM_SEAT_ROLES, ...PARTNER_ROLES],
   brokerage:      [...SEAT_ROLES, ...PARTNER_ROLES],
   multi_location: [...SEAT_ROLES, ...PARTNER_ROLES],
 }
@@ -88,16 +132,43 @@ export function isCanonicalTier(tier: string | null | undefined): tier is Canoni
 
 /**
  * Invitable roles for a tenant tier.
- * Unknown/legacy/null tiers FAIL OPEN to the full brokerage set — the
- * pre-matrix behavior — so a legacy tenant whose brokerages.plan_tier was never
- * backfilled keeps a working invite surface instead of being bricked.
- * Canonical tiers are enforced strictly.
+ *
+ * ── THIS NOW FAILS CLOSED ON THE TWO GOVERNANCE ROLES ───────────────────────
+ *
+ * It used to return `TIER_INVITABLE_ROLES.brokerage` for an unknown / legacy /
+ * null tier — the pre-matrix behaviour, chosen so a tenant whose
+ * `brokerages.plan_tier` was never backfilled kept a working invite surface
+ * instead of being bricked. That reasoning still holds for MOST of the menu and
+ * is kept.
+ *
+ * What it can no longer do is hand back the seats a ruling just removed. Under a
+ * ruling that SUBTRACTS roles from a tier, "unknown tier ⇒ the widest tier"
+ * inverts the ruling exactly where it is least visible: a team-tier tenant whose
+ * plan_tier is NULL, mis-cased, or spelled with a legacy value would fall
+ * through to the brokerage menu and be offered `broker` and `broker_owner` —
+ * the two roles the owner has now removed from both non-brokerage tiers — and
+ * nothing would report it, because being offered a role is not an error.
+ *
+ * So the fallback is the brokerage menu MINUS the two brokerage-governance
+ * roles: every operational seat still invitable (nobody is bricked), and the two
+ * roles that only a real brokerage subscription buys withheld until the tenant's
+ * tier can actually be read. A tenant that IS on brokerage or multi_location is
+ * unaffected — their tier is canonical and matches strictly.
+ *
+ * Derived from SEAT_ROLES with the same one-line subtraction the tiers use, so a
+ * new working role joins the fallback automatically and a new governance role
+ * does not have to be remembered in three places.
  */
+const UNKNOWN_TIER_INVITABLE_ROLES: readonly UserDomainRole[] = [
+  ...SEAT_ROLES.filter((r) => r !== "broker" && r !== "broker_owner"),
+  ...PARTNER_ROLES,
+]
+
 export function invitableRolesForTier(tier: string | null | undefined): readonly UserDomainRole[] {
-  return isCanonicalTier(tier) ? TIER_INVITABLE_ROLES[tier] : TIER_INVITABLE_ROLES.brokerage
+  return isCanonicalTier(tier) ? TIER_INVITABLE_ROLES[tier] : UNKNOWN_TIER_INVITABLE_ROLES
 }
 
-/** Is this role invitable on this tier? (Same fail-open rule for unknown tiers.) */
+/** Is this role invitable on this tier? (Same fail-CLOSED rule for unknown tiers.) */
 export function tierAllowsRole(tier: string | null | undefined, role: UserDomainRole): boolean {
   return invitableRolesForTier(tier).includes(role)
 }
