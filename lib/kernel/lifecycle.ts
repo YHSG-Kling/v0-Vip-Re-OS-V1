@@ -59,6 +59,10 @@ const LIFECYCLE_TO_KERNEL_EVENT: Record<string, KernelEvent> = {
   'buyer_disengaged':      KernelEvent.BUYER_DISENGAGED,
   'buyer_lifetime':        KernelEvent.LIFETIME_CUSTOMER,
   // ── Buyer lifecycle — BuyerState values (uppercase, from lifecycle-definitions.ts) ──
+  // BUYER_CONTACT_CREATED is the 13th BuyerState (lib/buyer-lifecycle/
+  // lifecycle-definitions.ts:14) and was the only one this map did not name, so
+  // the first transition of every buyer's journey resolved to no kernel event.
+  'BUYER_CONTACT_CREATED':       KernelEvent.CONTACT_CREATED,
   'BUYER_FINANCIALLY_VERIFIED':  KernelEvent.BUYER_FINANCIALLY_VERIFIED,
   'BUYER_SEARCH_CONFIGURED':     KernelEvent.BUYER_SEARCH_CONFIGURED,
   'BUYER_SEARCHING':             KernelEvent.BUYER_SEARCH_EXECUTED,
@@ -92,6 +96,9 @@ const LIFECYCLE_TO_KERNEL_EVENT: Record<string, KernelEvent> = {
   'in_progress':               KernelEvent.ONBOARDING_STALLED,   // used only when stall detected
   'completed':                 KernelEvent.ONBOARDING_COMPLETED,
 }
+
+/** Every canonical KernelEvent VALUE, for the identity arm of the lookup below. */
+const KERNEL_EVENT_VALUES: ReadonlySet<string> = new Set<string>(Object.values(KernelEvent))
 
 // ─── ENTITY → TABLE + STATE COLUMN MAP ───────────────────────────────────────
 // Derived from live schema. Each EntityType maps to one table and its state column.
@@ -233,7 +240,30 @@ export async function transitionLifecycle(
   }
 
   if (event) {
-    const kernelEvent = LIFECYCLE_TO_KERNEL_EVENT[params.eventType]
+    // ── THE IDENTITY ARM ────────────────────────────────────────────────────
+    //
+    // `eventType` carries TWO different vocabularies from two groups of callers,
+    // and only one of them was ever resolvable here:
+    //
+    //   · STATE NAMES — 'MLS_ACTIVE', 'BUYER_UNDER_CONTRACT', 'closed'. Those are
+    //     the keys of the table above, and they resolve.
+    //   · KERNEL EVENT VALUES — `KernelEvent.LISTING_STAGE_CHANGED`
+    //     ('listing_stage_changed'), passed by every transition in
+    //     app/actions/seller-listing/execution-engine.ts (20+ call sites) and by
+    //     lib/buyer-lifecycle/lifecycle-logger.ts. NONE of those are keys of the
+    //     table — its listing entries are spelled 'LISTING_STAGE_CHANGED' — so
+    //     the lookup returned undefined and `processKernelEvent` was NEVER
+    //     CALLED for them. The state transition landed, the lifecycle_events row
+    //     landed, and the notification/portal/sequence fan-out silently did not.
+    //
+    // A caller that already names the canonical event is the least ambiguous
+    // caller there is, so the value is accepted as ITSELF when the table misses.
+    // STRICTLY ADDITIVE — this arm can only fire where the primary lookup
+    // returned undefined, i.e. where nothing fired at all before, so it cannot
+    // change any transition that already worked.
+    const kernelEvent: KernelEvent | undefined =
+      LIFECYCLE_TO_KERNEL_EVENT[params.eventType] ??
+      (KERNEL_EVENT_VALUES.has(params.eventType) ? (params.eventType as KernelEvent) : undefined)
 
     if (kernelEvent) {
       // FAILURE ISOLATION: Notification processing is non-blocking

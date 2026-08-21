@@ -19,7 +19,12 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveUserIdToAgentRecord } from "@/lib/kernel/agent-identity-resolver"
 import { KernelEvent }         from "@/lib/kernel/events"
-import { processKernelEvent }  from "@/lib/kernel/notification-engine"
+// TOMBSTONE (dead-import tranche): `processKernelEvent` was imported here and
+// never called. Survivor: lib/kernel/event-fanout.ts:67, reached through
+// `fanOutKernelEvent` at :207 below — whose own comment already records the
+// swap ("Single canonical fan-out (replaces direct processKernelEvent call)").
+// The fan-out adds contact/buyer/seller/listing resolution, portal updates and
+// sequence auto-enrolment on top; the direct call would have skipped all three.
 import { isValidUUID }         from "@/lib/validations"
 import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 

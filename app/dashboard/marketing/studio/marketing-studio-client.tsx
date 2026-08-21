@@ -68,9 +68,14 @@ import {
   getCalendarEvents,
   createCalendarEvent,
   updateCalendarEventStatus,
-  getCampaignComments,
+  // TOMBSTONE (dead-import tranche): `getCampaignComments` and
+  // `getCampaignTasks` were imported here and never called, and this is their
+  // only importer in the tree. Survivor: `getCampaignById` (imported above),
+  // whose bundle already carries `campaign.comments` and `campaign.tasks` —
+  // it is what populates the two lists in the detail dialog and what
+  // refreshOpenCampaignDetail re-reads after a write. A second reader of the
+  // same two tables would give one dialog two sources for one list.
   addCampaignComment,
-  getCampaignTasks,
   createCampaignTask,
   updateTaskStatus,
   getMarketingStudioDashboard,
@@ -268,6 +273,30 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
   const [loadingQrPerformanceId, setLoadingQrPerformanceId] = useState<string | null>(null)
 
   // Campaign detail (the eye control on every campaign card)
+  // ── CAMPAIGN COLLABORATION COMPOSERS ───────────────────────────────────────
+  //
+  // BUILT, not tidied. `addCampaignComment` and `createCampaignTask` were
+  // imported by this file and called by NOTHING — and this is the only importer
+  // of either, anywhere in the tree. The campaign detail dialog below RENDERS
+  // "Tasks (n)" and "Comments (n)" and has done all along; there was simply no
+  // way for a human to produce either one, so both lists could only ever read
+  // "No tasks on this campaign yet." / "No comments yet." Confirmed against the
+  // live database (hrvaqgvukzxfskkcrwbt): marketing_campaign_comments and
+  // marketing_campaign_tasks each hold 0 rows — a writer with no caller and a
+  // reader with nothing to read.
+  //
+  // The dead imports named the missing UI precisely: `Popover` /
+  // `PopoverContent` / `PopoverTrigger` and `MessageSquare` were imported by
+  // this file and unused too. They are the task composer and the comment
+  // affordance, which is what the two below now are.
+  const [newCommentBody, setNewCommentBody] = useState("")
+  const [isPostingComment, setIsPostingComment] = useState(false)
+  const [newTaskTitle, setNewTaskTitle] = useState("")
+  const [newTaskDueAt, setNewTaskDueAt] = useState("")
+  const [isCreatingTask, setIsCreatingTask] = useState(false)
+  const [isTaskComposerOpen, setIsTaskComposerOpen] = useState(false)
+  const [collabError, setCollabError] = useState<string | null>(null)
+
   const [isCampaignDetailOpen, setIsCampaignDetailOpen] = useState(false)
   const [campaignDetail, setCampaignDetail] = useState<any | null>(null)
   const [isLoadingCampaignDetail, setIsLoadingCampaignDetail] = useState(false)
@@ -1250,6 +1279,76 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
       setCampaignDetailError(err instanceof Error ? err.message : "This campaign could not be loaded.")
     } finally {
       setIsLoadingCampaignDetail(false)
+    }
+  }
+
+  /**
+   * Re-read the open campaign after a collaboration write.
+   *
+   * Through `getCampaignById` — the SAME brokerage-scoped reader that opened the
+   * dialog — rather than through `getCampaignComments` / `getCampaignTasks`.
+   * Those two were also imported-and-unused here, and they are a second read of
+   * rows this bundle already carries; using them would have given the dialog two
+   * sources for one list, which is how two lists come to disagree.
+   */
+  async function refreshOpenCampaignDetail(campaignId: string) {
+    try {
+      const result = await getCampaignById(campaignId)
+      if (result.success && result.campaign) setCampaignDetail(result.campaign)
+    } catch {
+      // A failed refresh must not look like a failed WRITE — the write already
+      // returned success. Leave the stale list; the next open re-reads it.
+    }
+  }
+
+  async function handleAddCampaignComment() {
+    const campaignId = campaignDetail?.id ?? selectedCampaign?.id
+    const body = newCommentBody.trim()
+    if (!campaignId || !body) return
+    setIsPostingComment(true)
+    setCollabError(null)
+    try {
+      const result = await addCampaignComment({ campaignId, commentBody: body })
+      if (!result.success) {
+        setCollabError((result as any).error ?? "The comment could not be posted.")
+        return
+      }
+      setNewCommentBody("")
+      await refreshOpenCampaignDetail(campaignId)
+    } catch (err) {
+      setCollabError(err instanceof Error ? err.message : "The comment could not be posted.")
+    } finally {
+      setIsPostingComment(false)
+    }
+  }
+
+  async function handleCreateCampaignTask() {
+    const campaignId = campaignDetail?.id ?? selectedCampaign?.id
+    const title = newTaskTitle.trim()
+    if (!campaignId || !title) return
+    setIsCreatingTask(true)
+    setCollabError(null)
+    try {
+      const result = await createCampaignTask({
+        campaignId,
+        title,
+        // The input is a date-only control; the column is timestamptz. An empty
+        // box means "no due date", which the writer stores as NULL — never as
+        // an invented one.
+        dueAt: newTaskDueAt ? new Date(`${newTaskDueAt}T12:00:00`).toISOString() : undefined,
+      })
+      if (!result.success) {
+        setCollabError((result as any).error ?? "The task could not be created.")
+        return
+      }
+      setNewTaskTitle("")
+      setNewTaskDueAt("")
+      setIsTaskComposerOpen(false)
+      await refreshOpenCampaignDetail(campaignId)
+    } catch (err) {
+      setCollabError(err instanceof Error ? err.message : "The task could not be created.")
+    } finally {
+      setIsCreatingTask(false)
     }
   }
 
@@ -4380,16 +4479,57 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                   </div>
 
                   <div>
-                    <p className="text-sm font-semibold mb-2">
-                      Tasks ({campaignDetail.tasks?.length ?? 0})
-                    </p>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-sm font-semibold">
+                        Tasks ({campaignDetail.tasks?.length ?? 0})
+                      </p>
+                      {/* THE MISSING WRITER. createCampaignTask existed with no caller. */}
+                      <Popover open={isTaskComposerOpen} onOpenChange={setIsTaskComposerOpen}>
+                        <PopoverTrigger asChild>
+                          <Button size="sm" variant="outline" className="h-7 gap-1 text-xs">
+                            <Plus className="h-3 w-3" /> Add task
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent align="end" className="w-72 space-y-3">
+                          <div className="space-y-1">
+                            <Label htmlFor="campaign-task-title" className="text-xs">Task</Label>
+                            <Input
+                              id="campaign-task-title"
+                              value={newTaskTitle}
+                              onChange={(e) => setNewTaskTitle(e.target.value)}
+                              placeholder="e.g. Approve the postcard proof"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <Label htmlFor="campaign-task-due" className="text-xs">Due (optional)</Label>
+                            <Input
+                              id="campaign-task-due"
+                              type="date"
+                              value={newTaskDueAt}
+                              onChange={(e) => setNewTaskDueAt(e.target.value)}
+                            />
+                          </div>
+                          <Button
+                            size="sm"
+                            className="w-full"
+                            disabled={isCreatingTask || newTaskTitle.trim().length === 0}
+                            onClick={handleCreateCampaignTask}
+                          >
+                            {isCreatingTask ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckSquare className="h-3 w-3" />}
+                            <span className="ml-1">Create task</span>
+                          </Button>
+                        </PopoverContent>
+                      </Popover>
+                    </div>
                     {(campaignDetail.tasks ?? []).length === 0 ? (
                       <p className="text-sm text-muted-foreground">No tasks on this campaign yet.</p>
                     ) : (
                       <div className="space-y-1">
                         {campaignDetail.tasks.map((t: any) => (
                           <div key={t.id} className="flex items-center justify-between text-sm rounded-md bg-muted/30 px-2 py-1.5">
-                            <span className="truncate">{t.title ?? t.task_name}</span>
+                            {/* `title` is the column (NOT NULL). `task_name` was a
+                                spelling this table has never had. */}
+                            <span className="truncate">{t.title}</span>
                             <Badge variant="outline" className="capitalize text-xs">{t.status}</Badge>
                           </div>
                         ))}
@@ -4411,12 +4551,48 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                               {[c.author?.first_name, c.author?.last_name].filter(Boolean).join(" ") || "Team member"}
                               {c.created_at ? ` · ${format(new Date(c.created_at), "MMM d, h:mm a")}` : ""}
                             </p>
-                            <p className="text-sm">{c.comment_text ?? c.body ?? c.content}</p>
+                            {/* `comment_body` IS THE COLUMN — the only text column on
+                                marketing_campaign_comments (verified against the live
+                                schema). This read was `c.comment_text ?? c.body ??
+                                c.content`: three spellings, none of which exists, so
+                                every comment would have rendered as a blank line under
+                                its author's name. It never showed because nothing could
+                                write a comment either — the two halves were missing
+                                together, which is why neither was visible. */}
+                            <p className="text-sm">{c.comment_body}</p>
                           </div>
                         ))}
                       </div>
                     )}
+                    {/* THE MISSING WRITER. addCampaignComment existed with no caller. */}
+                    <div className="mt-2 space-y-2">
+                      <Textarea
+                        value={newCommentBody}
+                        onChange={(e) => setNewCommentBody(e.target.value)}
+                        placeholder="Leave a note for the team on this campaign…"
+                        rows={2}
+                      />
+                      <div className="flex justify-end">
+                        <Button
+                          size="sm"
+                          disabled={isPostingComment || newCommentBody.trim().length === 0}
+                          onClick={handleAddCampaignComment}
+                        >
+                          {isPostingComment ? <Loader2 className="h-3 w-3 animate-spin" /> : <MessageSquare className="h-3 w-3" />}
+                          <span className="ml-1">Post comment</span>
+                        </Button>
+                      </div>
+                    </div>
                   </div>
+
+                  {/* A refused write must SAY SO. Both writers return
+                      `{ success:false, error }` on an access refusal or a
+                      database error, and a silent failure here would look
+                      exactly like the "nothing to show" this whole panel used
+                      to be. */}
+                  {collabError && (
+                    <p className="text-sm text-destructive">{collabError}</p>
+                  )}
                 </div>
               </ScrollArea>
             ) : null}

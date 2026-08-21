@@ -31,9 +31,21 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth/client"
+// TOMBSTONE (dead-import tranche): `getVideoPerformanceTracking` was imported
+// here and never called. Survivor for what this page needs:
+// `getVideoPerformanceStats` (app/actions/video-generation.ts:894), which reads
+// the SAME table — `video_performance_tracking`, `select("*")`, tenant-scoped —
+// and returns both the brokerage rollup this page's cards render AND the
+// per-video `topPerforming` list its table renders. The raw reader would have
+// been a second query for rows the aggregate already carries.
+//
+// UNRESOLVED, and deliberately not acted on here: with this import gone,
+// `getVideoPerformanceTracking` has no caller anywhere in the tree. That is a
+// question for the ORPHANED-EXPORT census, not this one — it is a "use server"
+// export, i.e. a live HTTP endpoint, and deleting a reachable endpoint on the
+// strength of "no in-tree importer" is the mistake the orphan doctrine names.
 import {
   getVideoPerformanceStats,
-  getVideoPerformanceTracking,
   getVideoEngagementEvents,
 } from "@/app/actions/video-generation"
 

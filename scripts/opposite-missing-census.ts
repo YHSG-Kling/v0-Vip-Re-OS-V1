@@ -969,7 +969,39 @@ const deadImports: ImportBinding[] = []
 let importStatements = 0
 let sideEffectImports = 0
 
-const IMPORT_RE = /^[ \t]*import\s+(?!type\s*\()([\s\S]*?)\bfrom\s*["'`]([^"'`]+)["'`]/gm
+/**
+ * THE IMPORT CLAUSE CANNOT CONTAIN A QUOTE OR A SEMICOLON.
+ *
+ * This was `([\s\S]*?)` and it made the scanner ACCUSE LIVE CODE — the exact
+ * failure mode this file's header is about, one category down from where it was
+ * being watched for.
+ *
+ * A SIDE-EFFECT IMPORT has no `from`:
+ *
+ *     import "server-only"
+ *     export { KernelEvent } from "./events"
+ *
+ * With `[\s\S]*?` the match that STARTS at `import "server-only"` runs on until
+ * the first `from` anywhere below it — here, the one belonging to the RE-EXPORT
+ * on the next line. So the census read those two statements as a single import
+ * of `KernelEvent` from "./events", blanked BOTH lines (spans are blanked so a
+ * name cannot vouch for itself), and then reported `lib/kernel/index.ts::
+ * KernelEvent` as a symbol imported and never used — in a file that does not
+ * import it at all and whose only mention of it is the re-export the scanner had
+ * just erased. A phantom binding and a real statement destroyed, from one
+ * greedy-across-statements clause.
+ *
+ * Restricting the clause to `[^"'`;]*?` fixes both halves at once, because no
+ * legal import clause contains a quote or a semicolon: `{ a, b as c }`,
+ * `Def, { a }`, `* as N`, `type { T }` and every multi-line spelling of them are
+ * quote-free, while `import "x"` has a quote at offset zero and now fails to
+ * match at all — which is correct, since a side-effect import binds no name.
+ * (It is still COUNTED, by the separate side-effect scan below.)
+ *
+ * Both directions are asserted in this category's controls: the shape must stop
+ * being seen (C2 fixture) AND every real clause shape must still be seen.
+ */
+const IMPORT_RE = /^[ \t]*import\s+(?!type\s*\()([^"'`;]*?)\bfrom\s*["'`]([^"'`]+)["'`]/gm
 
 function importClauseNames(clause: string): string[] {
   const names: string[] = []
@@ -1038,6 +1070,34 @@ stage("C2 imports")
   control("C2 does NOT let a COMMENT vouch for an import",
     scanDeadImports("<control>", blankComments(cmt)).length === 1)
   control("C2 saw imports at all across the tree", importStatements > 500, `${importStatements} import statements`)
+
+  // ── THE SIDE-EFFECT-IMPORT SWALLOW, in both directions ────────────────────
+  // This is the shape that made this category accuse lib/kernel/index.ts of a
+  // dead `KernelEvent` import when that file's only mention of the name is a
+  // RE-EXPORT the old clause pattern had blanked. Asserted as a NEGATIVE (the
+  // phantom must not be seen) AND as a POSITIVE (the fix must not have blinded
+  // the scanner to the real import that follows one), because a pattern that
+  // matches nothing would pass the negative half on its own.
+  const sideEffectThenReexport = `import "server-only"\nexport { KernelEvent } from "./events"\nexport const usesNothing = 1\n`
+  control("C2 a side-effect import does NOT swallow the RE-EXPORT below it (no phantom binding)",
+    scanDeadImports("<control>", blankComments(sideEffectThenReexport)).length === 0,
+    scanDeadImports("<control>", blankComments(sideEffectThenReexport)).map((d) => d.local).join(","))
+  const sideEffectThenImport = `import "server-only"\nimport { reallyDead } from "./y"\nconst x = 1\n`
+  control("C2 a side-effect import does NOT hide the real import below it (still sees the dead one)",
+    scanDeadImports("<control>", blankComments(sideEffectThenImport)).map((d) => d.local).join(",") === "reallyDead",
+    scanDeadImports("<control>", blankComments(sideEffectThenImport)).map((d) => d.local).join(","))
+  // Every clause spelling still parses — the restricted character class must not
+  // have cost the scanner a shape it used to understand.
+  for (const [label, fixture, expected] of [
+    ["multi-line named", `import {\n  usedOne,\n  deadOne,\n} from "./y"\nconst a = usedOne\n`, "deadOne"],
+    ["default + named", `import Def, { deadOne } from "./y"\nconst a = Def\n`, "deadOne"],
+    ["namespace", `import * as DeadNs from "./y"\nconst a = 1\n`, "DeadNs"],
+    ["type-only", `import type { DeadType } from "./y"\nconst a = 1\n`, "DeadType"],
+    ["semicoloned side-effect first", `import "server-only";\nimport { deadOne } from "./y"\nconst a = 1\n`, "deadOne"],
+  ] as Array<[string, string, string]>) {
+    const got = scanDeadImports("<control>", blankComments(fixture)).map((d) => d.local).join(",")
+    control(`C2 still parses a ${label} import clause`, got === expected, got)
+  }
 }
 for (const d of deadImports) add("dead-import", `${d.file}::${d.local}`, `${d.file}:${d.line}`, `imported from "${d.from}", never used in this file`)
 

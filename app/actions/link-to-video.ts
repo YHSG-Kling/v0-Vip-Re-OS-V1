@@ -5,9 +5,18 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { generateAIResponse } from "@/lib/ai"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
-import { resolveProvider } from "@/lib/kernel/providers"
-import { KernelEvent } from "@/lib/kernel/events"
-import { processKernelEvent } from "@/lib/kernel/notification-engine"
+// TOMBSTONE (dead-import tranche): `resolveProvider` (lib/kernel/providers.ts:85)
+// was imported here and never called. The VIDEO provider for this lane is
+// resolved by `resolveVideoProvider` inside the canonical creator this file
+// already delegates to — app/actions/video/create-video-project.ts:669 — and the
+// render itself goes out through lib/did:generateVideo, which is platform-locked
+// to D-ID. Nothing was lost.
+//
+// TOMBSTONE (dead-import tranche): `KernelEvent` / `processKernelEvent` were
+// imported and never called. The lifecycle event for this lane is emitted by the
+// same creator: app/actions/video/create-video-project.ts:747 inserts
+// lifecycle_events(VIDEO_GENERATION_REQUESTED) and :765 calls processKernelEvent.
+// A second emission here would have double-notified on every render.
 import {
   buildComplianceSystemBlocks,
   postcheckScript,
@@ -90,6 +99,16 @@ export async function generateVideoScript(params: {
 
   if (!(await verifyOrgAccess(params.organizationId, params.organizationType, auth.brokerageId))) {
     return { success: false, error: "Forbidden" }
+  }
+
+  // ── THE TIER GATE ──────────────────────────────────────────────────────────
+  // BUILT, not tidied. `canAccessFeature` was imported by this file and called
+  // by nothing, so this AI-spending entry ran with no entitlement check at all.
+  // Key `video_generation` — the spelling already in force at
+  // app/dashboard/video/page.tsx:13 and lib/kernel/marketing.ts:904.
+  const access = await canAccessFeature(auth.userId, "video_generation")
+  if (!access.allowed) {
+    return { success: false, error: access.reason ?? "Video generation is not available on your plan" }
   }
 
   const supabase = createServiceClient()
@@ -326,6 +345,16 @@ export async function startVideoGeneration(videoQueueId: string) {
   const access = await verifyVideoAccess(videoQueueId, auth.brokerageId)
   if (!access.ok) return { success: false, error: "Forbidden" }
 
+  // ── THE TIER GATE, ON THE PAID RENDER ──────────────────────────────────────
+  // This is the D-ID spend door. It was gated for TENANCY (verifyVideoAccess
+  // above) and for COMPLIANCE (compliance_approved below) but never for
+  // ENTITLEMENT — `canAccessFeature` was imported by this file and called by
+  // nothing.
+  const entitlement = await canAccessFeature(auth.userId, "video_generation")
+  if (!entitlement.allowed) {
+    return { success: false, error: entitlement.reason ?? "Video generation is not available on your plan" }
+  }
+
   const supabase = createServiceClient()
 
   try {
@@ -445,6 +474,15 @@ export async function startVideoGeneration(videoQueueId: string) {
     if (stampError) {
       console.error("[link-to-video] Provider stamp error:", stampError)
       return { success: false, error: "The render started but could not be tracked — please retry." }
+    }
+
+    // Counted AFTER the render is on the rail, never before — one increment per
+    // video, at the door that actually spends. `incrementFeatureUsage` was
+    // imported by this file and called by nothing, so every link-to-video render
+    // left the per-tier usage counter untouched.
+    const counted = await incrementFeatureUsage(auth.userId, "video_generation")
+    if (!counted.success) {
+      console.error("[link-to-video] feature_usage_tracking increment failed:", counted.error)
     }
 
     revalidatePath("/content-studio")

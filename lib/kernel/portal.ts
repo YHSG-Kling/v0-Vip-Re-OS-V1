@@ -10,19 +10,35 @@ import { KernelEvent } from "./events"
 import type { AgeSegment } from "./education"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { resolveMilestoneIdentity } from "@/lib/transactions/milestone-identity"
+// EIGHT of this block's twelve names were imported and never used. They split
+// cleanly into two classes, and neither is a build:
+//
+// 1. WRONG LAYER — `PORTAL_ERRORS`, `createPortalSuccess`,
+//    `createPortalErrorResponse` and `PORTAL_VALIDATION_RULES` shape an HTTP
+//    RESPONSE. This file is Layer 0: it returns data, it does not answer
+//    requests. The three that are live are live at the layer that owns them —
+//    app/api/portal/[contactId]/view/route.ts:19-21 and
+//    app/api/portal/[contactId]/modules/route.ts:19-21 both import and use them
+//    on every exit path. (`PORTAL_VALIDATION_RULES` has no consumer at all; that
+//    is an ORPHANED-EXPORT question about portal-contracts.ts, not a missing
+//    wire here, and it is left for that census.)
+//
+// 2. A DUPLICATE OF THE WIRED SHAPES — `PortalVisibilityInput/Output` and
+//    `NavigationBuildInput/Output` describe two functions this module already
+//    has under different names, which is the one-vocabulary defect, not a gap:
+//      · visibility  → `determinePortalModules` (:287) returns exactly those
+//        booleans (buyer_smart_search, seller_listing_actions, …) and
+//        `requireContactAccess` (lib/portal/require-contact-access) answers the
+//        `canAccessPortal` half for both routes.
+//      · navigation  → `buildPortalNav` (:452), whose `NavItem[]` is what the
+//        one real caller consumes (app/portal/[contactId]/layout.tsx:258).
+//    The wired pair is the survivor; the declared-but-unconsumed pair is the
+//    duplicate. Nothing was lost, and no capability disappeared with the import.
 import {
   PortalViewOutput,
   PortalModulesOutput,
-  PortalVisibilityOutput,
-  NavigationBuildOutput,
-  PORTAL_VALIDATION_RULES,
-  PORTAL_ERRORS,
-  createPortalSuccess,
-  createPortalErrorResponse,
   type PortalViewInput,
   type PortalModulesInput,
-  type PortalVisibilityInput,
-  type NavigationBuildInput,
 } from "./portal-contracts"
 
 // ─── PORTAL VIEW TYPES ────────────────────────────────────────────────────────

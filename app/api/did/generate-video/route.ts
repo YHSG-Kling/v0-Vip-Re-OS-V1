@@ -144,43 +144,28 @@ export async function POST(request: NextRequest) {
     //                             agent / brokerage attribution)
     // ffmpeg-based visual overlay is deferred (per lib/did/index.ts notes),
     // so the disclosure goes into the script the avatar speaks.
-    let renderScript: string = script
-    let injectedDisclosure = false
-    let captionsEnabled = false
-    {
-      const { data: videoRow } = await supabase
-        .from("ai_video_projects")
-        .select("usage_intent, captions_enabled")
-        .eq("id", video_project_id)
-        .maybeSingle()
-      const usageIntent: string = videoRow?.usage_intent ?? "public_marketing"
-      captionsEnabled = videoRow?.captions_enabled ?? false
-
-      if (usageIntent !== "mls" && auth.brokerageId) {
-        const { data: brokerage } = await supabase
-          .from("brokerages")
-          .select("name, dba, license_number, license_state")
-          .eq("id", auth.brokerageId)
-          .maybeSingle()
-        const tradeName = brokerage?.dba ?? brokerage?.name
-        if (tradeName) {
-          const licenseSuffix = brokerage?.license_number
-            ? `, License ${brokerage.license_number}${brokerage?.license_state ? ` ${brokerage.license_state}` : ""}`
-            : ""
-          // Concise verbal disclosure — kept short so it doesn't disrupt the
-          // narrative. Equal Housing Opportunity is included because most
-          // listing-related videos count as housing-related advertising
-          // under the federal Fair Housing Act.
-          const disclosure = `. Brought to you by ${tradeName}${licenseSuffix}. Equal Housing Opportunity.`
-          renderScript = `${script.replace(/[.!?\s]+$/, "")}${disclosure}`
-          injectedDisclosure = true
-        }
-      }
-
-      await supabase
-        .from("ai_video_projects")
-        .update({ has_verbal_disclosure: injectedDisclosure })
-        .eq("id", video_project_id)
+    //
+    // THE IMPLEMENTATION MOVED, VERBATIM, to lib/video/verbal-disclosure.ts:62
+    // (applyBrokerageVerbalDisclosure) so the OTHER live D-ID door —
+    // app/actions/video-generation.ts:generateVideoFromScript — can run the same
+    // rule instead of running none. It had none: it rendered public-marketing
+    // videos with no brokerage attribution and left has_verbal_disclosure false,
+    // which lib/kernel/brand-compliance.ts:305 reports as a violation forever.
+    // Two spellings of one legal requirement is the §6 defect; there is one now.
+    //
+    // The stamp is now DESTRUCTURED — this call site used to `await` the update
+    // undestructured, so a refused stamp reported a compliant render over a
+    // column that never changed.
+    const { applyBrokerageVerbalDisclosure } = await import("@/lib/video/verbal-disclosure")
+    const disclosure = await applyBrokerageVerbalDisclosure(supabase, {
+      script,
+      projectId: video_project_id,
+      brokerageId: auth.brokerageId,
+    })
+    const renderScript: string = disclosure.renderScript
+    const captionsEnabled: boolean = disclosure.captionsEnabled
+    if (disclosure.stampError) {
+      console.error("[D-ID] has_verbal_disclosure stamp refused:", disclosure.stampError)
     }
 
     // ─── THE FAIR HOUSING HOLD ────────────────────────────────────────────────

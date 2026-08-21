@@ -13,10 +13,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { determinePortalView } from '@/lib/kernel/portal'
 import { requireContactAccess } from '@/lib/portal/require-contact-access'
+import { isValidUUID } from '@/lib/validations'
 import {
   PortalViewOutput,
   PortalResponse,
   PORTAL_ERRORS,
+  PORTAL_VALIDATION_RULES,
   createPortalSuccess,
   createPortalErrorResponse,
   type PortalViewInput,
@@ -29,8 +31,29 @@ export async function GET(
   try {
     const { contactId } = await context.params
 
-    // Validate input contract
-    if (!contactId || typeof contactId !== 'string') {
+    // ── VALIDATE INPUT AGAINST THE DECLARED CONTRACT ────────────────────────
+    //
+    // `PORTAL_VALIDATION_RULES.contactIdFormat` has said 'uuid' since the
+    // contract file was written, and NOTHING read it — the rule was declared,
+    // exported, and enforced by no one, while this check accepted any non-empty
+    // string. So a caller could hand this route arbitrary text; it reached
+    // `requireContactAccess` and then a `.eq("id", <text>)`, where Postgres
+    // answers 22P02 (invalid input syntax for type uuid) rather than a clean
+    // 400. The rule is now the thing being enforced, so contract and code cannot
+    // drift.
+    //
+    // NOT enforced here, and deliberately: `PORTAL_VALIDATION_RULES
+    // .validBuyerStages` is a THIRD buyer-stage vocabulary
+    // ('DISCOVERY'/'SEARCHING'/'UNDER_OFFER'/…) that matches neither the
+    // BuyerState union (lib/buyer-lifecycle/lifecycle-definitions.ts:13) nor the
+    // lowercase `contacts.buyer_stage` values. Gating on it would refuse every
+    // real contact. It is left as an open §6 finding rather than wired to a
+    // spelling nothing produces.
+    if (
+      !contactId ||
+      typeof contactId !== 'string' ||
+      (PORTAL_VALIDATION_RULES.contactIdFormat === 'uuid' && !isValidUUID(contactId))
+    ) {
       return NextResponse.json(
         createPortalErrorResponse(PORTAL_ERRORS.INVALID_INPUT),
         { status: 400 }

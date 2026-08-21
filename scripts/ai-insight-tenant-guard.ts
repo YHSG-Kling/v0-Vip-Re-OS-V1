@@ -1487,7 +1487,16 @@ const W24_WRITER_FLOORS: Array<{ file: string; table: string; floor: number }> =
   { file: "lib/campaign-sequences/step-executor.ts", table: "sequence_step_executions", floor: 4 },
   { file: "app/actions/open-house-automation.ts", table: "open_house_attendees", floor: 2 },
   { file: "lib/kernel/cron-logging.ts", table: "cron_execution_logs", floor: 2 },
-  { file: "app/api/cron/health-check/route.ts", table: "cron_execution_logs", floor: 2 },
+  // DELIBERATE LIST UPDATE (dead-import tranche). `app/api/cron/health-check/
+  // route.ts` no longer writes `cron_execution_logs` at all — its two hand-rolled
+  // inserts were a DUPLICATE of the kernel path and are deleted in favour of it
+  // (createCronRunContextAction / recordCronStartAction / recordCronSuccessAction
+  // / recordCronFailureAction, all four of which that file already imported and
+  // called none of). The writers did not "disappear rather than being stamped",
+  // which is what this floor exists to catch: they MOVED onto
+  // lib/kernel/cron-logging.ts, whose own floor of 2 above is what now holds
+  // them — and the kernel additionally stamps cron_health_snapshot and fires
+  // CRON_FAILED, neither of which the deleted inserts did.
   { file: "app/api/cron/contact-enrichment/route.ts", table: "cron_execution_logs", floor: 1 },
   { file: "lib/social/orchestrate-social-preset-publish.ts", table: "social_posts", floor: 1 },
   { file: "app/actions/social-publishing.ts", table: "social_posts", floor: 2 },
@@ -1513,9 +1522,15 @@ const W24_WRITER_FLOORS: Array<{ file: string; table: string; floor: number }> =
  * absence of a tenant the CALLER declared, not a decision this file makes — D6
  * asserts it carries the input, and a bare `null` there would be a stray.
  */
+// DELIBERATE LIST UPDATE (dead-import tranche): `app/api/cron/health-check/
+// route.ts` is removed because it no longer stamps anything on this table — both
+// of its untenanted inserts moved onto lib/kernel/cron-logging.ts, which reaches
+// the same null through `input.brokerage_id ?? null` (the absence of a tenant the
+// CALLER declared, which is why that file is deliberately NOT on this list — see
+// the note above). D4's "allow-listed site no longer writes untenanted" arm is
+// exactly the prompt for this edit, and this is the edit it asked for.
 const W24_EXPLICIT_NULL_TENANT_SITES: ReadonlySet<string> = new Set([
   "app/api/cron/contact-enrichment/route.ts",
-  "app/api/cron/health-check/route.ts",
 ])
 
 interface TenantReaderCase {

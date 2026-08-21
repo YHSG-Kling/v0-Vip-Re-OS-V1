@@ -7,7 +7,13 @@ import { createClient } from "@/lib/supabase/server"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { dispatchVideo } from "@/lib/providers/dispatch"
 import { generateTextRouted } from "@/lib/ai/models"
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
+// TOMBSTONE (dead-import tranche): `callConnector` was imported here and never
+// called — and this file's own header (line 4) is the reason it must not be:
+// "No escape paths for direct provider calls". Survivor:
+// lib/providers/dispatch.ts:1246 / :1296, reached through `dispatchVideo`
+// (imported above, used at :816), which is where the ElevenLabs and D-ID
+// requests actually go out. Removing the import removes the escape hatch the
+// header forbids.
 import { buildComplianceSystemBlocks, postcheckScript } from "@/lib/video/script-compliance"
 import type { CanonicalVideoStatus } from "@/lib/video/video-status"
 

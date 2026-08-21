@@ -26,6 +26,23 @@ export async function GET(request: NextRequest) {
   const contextId = contextResult.data.context_id
   await recordCronStartAction({ context_id: contextId })
 
+  // ── EVERYTHING AFTER THE START RECORD RUNS INSIDE THE FAILURE WIRE ─────────
+  //
+  // BUILT, not tidied. `recordCronFailureAction` was imported by this route and
+  // called by NOTHING: the run opened a cron_execution_logs row (status
+  // 'started') and closed it only on the success path. Any throw between the two
+  // — a refused `brokerages` read, an unhandled error out of runSpeedToLead, a
+  // 300s timeout — left that row at 'started' FOREVER, and
+  // cron_health_snapshot (written only by recordCronSuccess/recordCronFailure,
+  // lib/kernel/cron-logging.ts:289/385) kept reporting the run before it as the
+  // last known state. The two surfaces that read this ledger with no brokerage
+  // predicate — app/actions/pl-truth-engine.ts:getCronHealth and
+  // lib/kernel/scraping.ts:loadScrapingDiagnostics — therefore showed a speed-to-
+  // lead cron that had never failed, on a cron that had.
+  //
+  // recordCronFailure also fires KernelEvent.CRON_FAILED (cron-logging.ts:401),
+  // so this is the wire that makes the failure REACH someone.
+  try {
   const ranAt    = new Date()
   const supabase = createServiceClient()
 
@@ -75,4 +92,20 @@ export async function GET(request: NextRequest) {
     totalLeads,
     totalContacts,
   })
+  } catch (error) {
+    // Destructured, and its own failure reported: a run whose FAILURE record was
+    // itself refused must not read as a run that closed cleanly.
+    const recorded = await recordCronFailureAction({
+      context_id: contextId,
+      error:      error instanceof Error ? error : String(error),
+      stage:      "speed-to-lead sweep",
+    })
+    if (!recorded.success) {
+      console.error("[speed-to-lead] cron failure record refused:", recorded.error)
+    }
+    return NextResponse.json(
+      { ok: false, error: error instanceof Error ? error.message : "Unknown error" },
+      { status: 500 },
+    )
+  }
 }

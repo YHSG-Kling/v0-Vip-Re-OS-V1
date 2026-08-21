@@ -58,42 +58,21 @@ import {
 import { VideoGenerationButtons } from "@/app/components/video/VideoGenerationButtons"
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
-
-interface VideoScript {
-  id: string
-  brokerage_id: string
-  agent_id: string | null
-  listing_id: string | null
-  contact_id: string | null
-  template_id: string | null
-  script_type: string
-  title: string
-  script_content: string
-  duration_target_seconds: number | null
-  brand_voice_tone: string | null
-  approval_status: "draft" | "pending_review" | "approved" | "rejected"
-  compliance_review_notes: string | null
-  required_brand_assets: Record<string, any> | null
-  ai_generated: boolean
-  is_active: boolean
-  created_at: string
-  updated_at: string
-  variation_count?: number
-  template?: { id: string; template_name: string; category: string } | null
-  script_variations?: ScriptVariation[]
-}
-
-interface ScriptVariation {
-  id: string
-  script_library_id: string
-  variation_label: string
-  variation_goal: string | null
-  script_content: string
-  call_to_action: string | null
-  audience_segment: string | null
-  is_ab_test: boolean
-  created_at: string
-}
+//
+// TOMBSTONE: the local `VideoScript` and `ScriptVariation` interfaces that stood
+// here are deleted. Survivor: app/types/video-generation.ts:46 / :81, which
+// app/actions/video-generation.ts — the module every read on this page comes
+// from — imports and now declares as its return types. The three fields only
+// this copy carried (`variation_count`, `template`, `script_variations`) were
+// merged onto the survivor FIRST; nothing was lost, and the double casts that
+// existed only to bridge the two shapes are gone with them.
+//
+// Only `VideoScript` is named here. `ScriptVariation` reaches this file through
+// it — `VideoScript.script_variations` (app/types/video-generation.ts:81) and
+// `getScriptVariations`'s declared return type carry it, so every variation on
+// this page is typed without a second import. Naming it as well would be a dead
+// import, which is the census category this edit came out of.
+import type { VideoScript } from "@/app/types/video-generation"
 
 // ─── CONSTANTS ───────────────────────────────────────────────────────────────
 
@@ -196,7 +175,7 @@ function VideoLibraryContent() {
       // brokerage from the session instead of trusting the URL, and it is the
       // same reader the rest of the video surface uses.
       const rows = await getVideoScriptLibrary()
-      setScripts(rows as unknown as VideoScript[])
+      setScripts(rows)
     } catch (error) {
       console.error("Error loading scripts:", error)
     } finally {
@@ -235,7 +214,7 @@ function VideoLibraryContent() {
     const full = await getVideoScriptById(script.id)
 
     if (full) {
-      setSelectedScript(full as unknown as VideoScript)
+      setSelectedScript(full)
       setDrawerOpen(true)
     } else {
       const { toast } = await import("sonner")
@@ -282,7 +261,7 @@ function VideoLibraryContent() {
       if (selectedScript?.id === variationScript.id) {
         const variations = await getScriptVariations(variationScript.id)
         setSelectedScript((prev) =>
-          prev ? { ...prev, script_variations: variations as unknown as ScriptVariation[] } : prev
+          prev ? { ...prev, script_variations: variations } : prev
         )
       }
 

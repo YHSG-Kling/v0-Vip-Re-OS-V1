@@ -1,9 +1,21 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateObject } from "@/lib/ai/generate"
-import { resolveModel } from "@/lib/ai/resolve-model"
-import { generateTextRouted as generateText } from "@/lib/ai/models"
+// THE METERED LANE, which this file imported and never used.
+//
+// Every AI call here went through `generateObject` (lib/ai/generate.ts:120) —
+// the UNROUTED compatibility shim, whose own header says it "never calls
+// logAIUsage". So five model calls a day per agent produced NO `ai_tool_usage`
+// row, and `ai_tool_usage` is the cost ledger that feeds
+// `meter_readings.ai_tokens` and the per-tier overage projection (§5: "a wrong
+// number there is a wrong invoice"). The whole direct-mail feature was invisible
+// spend.
+//
+// The import that was sitting here dead was `generateTextRouted as generateText`
+// — the right lane, wrong shape: every call in this file is structured output.
+// The structured sibling is what it should have been, and it books the row
+// itself when handed a brokerageId (lib/ai/models.ts:722).
+import { generateObjectRouted } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
@@ -12,9 +24,17 @@ import { z } from "zod"
 import {
   canAccessFeature,
   incrementFeatureUsage,
-  KernelEvent,
-  processKernelEvent,
 } from "@/lib/kernel"
+// TOMBSTONE (dead-import tranche): `KernelEvent` / `processKernelEvent` were
+// imported here and never called. The wire is real but it is made ONE LAYER
+// DOWN, by the writers this file delegates every state change to:
+//   · createMailCampaign  → app/actions/direct-mail.ts:149 emits
+//     KernelEvent.DIRECT_MAIL_CAMPAIGN_CREATED (called from :524 below)
+//   · sendCampaign        → app/actions/direct-mail.ts:893 emits
+//     KernelEvent.DIRECT_MAIL_SENT (called from :736 below)
+//   · addRecipients / logResponse are handled by the same module.
+// This file is the AI/authoring layer over those; a second emission here would
+// have double-fired both events on every campaign.
 import { applyKernelBrandVoice, isBrandVoiceBlocked } from "@/lib/kernel/adapters/brand-voice"
 import {
   createMailCampaign,
@@ -23,6 +43,29 @@ import {
   logResponse,
 } from "@/app/actions/direct-mail"
 import { createQrCodeAction } from "@/app/actions/marketing-studio"
+
+/**
+ * WHO THE MODEL SPEND IS BILLED TO — from the SESSION, never from the request.
+ *
+ * `generateObjectRouted` writes the `ai_tool_usage` row itself when it is handed
+ * a `brokerageId` (lib/ai/models.ts:722), and that row is what
+ * `meter_readings.ai_tokens` and the per-tier overage projection are computed
+ * from. Every exported function in this file is a public HTTP endpoint (§4), and
+ * several of them accept `brokerageId` as an ARGUMENT — so passing that argument
+ * through to the cost ledger would let a caller bill another tenant for its own
+ * model calls. The tenant comes from `getAgentContext()` instead, the same
+ * resolver `aiAnalyzeCampaignPerformance` below already uses.
+ *
+ * A null tenant means the routed lane books NOTHING rather than booking it to
+ * the wrong tenant — which is the fail-closed direction for a money column. The
+ * `canAccessFeature` gate on each function is what keeps that from being a way
+ * to get free inference: no session, no gate, no call.
+ */
+async function ledgerActorForSpend(): Promise<{ userId?: string; brokerageId: string | null }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return { brokerageId: null }
+  return { userId: ctx.userId, brokerageId: ctx.brokerageId }
+}
 
 // Direct mail piece types — matches the piece_type column on direct_mail_campaigns.
 export type DirectMailPieceType = "postcard" | "letter" | "handwritten_letter" | "thank_you_note"
@@ -109,8 +152,10 @@ export async function aiWritePostcardCopy(params: {
       .eq("id", params.agentId)
       .single()
 
-    const { object: copy } = await generateObject({
-      model: resolveModel("openai/gpt-4o"),
+    const spendActor = await ledgerActorForSpend()
+    const { object: copy } = await generateObjectRouted({
+      ...spendActor,
+      feature: "direct_mail_copy",
       // NOTE: OpenAI strict structured-output (used by generateObject through the
       // gateway) rejects string length constraints (.max → maxLength) and optional
       // properties (.optional). Encode length as guidance in .describe() and use
@@ -191,8 +236,10 @@ export async function aiSuggestDesign(params: {
   targetDemo: string
 }) {
   try {
-    const { object: design } = await generateObject({
-      model: resolveModel("openai/gpt-4o-mini"),
+    const spendActor = await ledgerActorForSpend()
+    const { object: design } = await generateObjectRouted({
+      ...spendActor,
+      feature: "direct_mail_design",
       schema: z.object({
         colorScheme: z.object({
           primary: z.string(),
@@ -275,8 +322,10 @@ export async function aiSelectTargetAudience(params: {
       .order("estimated_response_rate", { ascending: false })
       .limit(10)
 
-    const { object: targeting } = await generateObject({
-      model: resolveModel("openai/gpt-4o"),
+    const spendActor = await ledgerActorForSpend()
+    const { object: targeting } = await generateObjectRouted({
+      ...spendActor,
+      feature: "direct_mail_targeting",
       schema: z.object({
         primarySegment: z.object({
           name: z.string(),
@@ -359,8 +408,10 @@ export async function aiPredictCampaignROI(params: {
     const dataCost = params.quantity * 0.05
     const totalCost = printCost + postageCost + dataCost
 
-    const { object: prediction } = await generateObject({
-      model: resolveModel("openai/gpt-4o-mini"),
+    const spendActor = await ledgerActorForSpend()
+    const { object: prediction } = await generateObjectRouted({
+      ...spendActor,
+      feature: "direct_mail_roi_forecast",
       schema: z.object({
         estimatedResponseRate: z.number(),
         estimatedLeads: z.number(),
@@ -974,8 +1025,11 @@ export async function aiAnalyzeCampaignPerformance(params?: {
       return { success: false, error: "No mailed campaigns yet — nothing to analyse." }
     }
 
-    const { object: analysis } = await generateObject({
-      model: resolveModel("openai/gpt-4o-mini"),
+    const { object: analysis } = await generateObjectRouted({
+      // The tenant is already resolved from the session in this function.
+      userId: ctx.userId,
+      brokerageId: ctx.brokerageId,
+      feature: "direct_mail_performance",
       schema: z.object({
         overallROI: z.number(),
         bestPerformingType: z.string(),

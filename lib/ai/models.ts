@@ -82,6 +82,19 @@ export const AI_TASK_ROUTING: Record<string, {
   video_script_generation:   { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Video scripts — brand voice, persona-aware, Them-First scored" },
   marketing_script_generation:{ model: "claude-sonnet", fallback: "gpt-4o",      reason: "Call/listing/objection scripts saved to the scripts library — agent-facing copy, brand voice" },
   direct_mail_copy:          { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Physical mailer copy — compliance + persona targeting" },
+  // ── The four other AI lanes of app/actions/ai-direct-mail.ts ──────────────
+  // ADDED, not invented. Those lanes called the UNROUTED generateObject shim
+  // (lib/ai/generate.ts:120), which books no ai_tool_usage row at all — so every
+  // direct-mail model call was spend the cost ledger never saw, and §5's "a wrong
+  // number there is a wrong invoice" was wrong by the whole feature. Moving them
+  // onto generateObjectRouted needs a routing key each, and each key is pinned to
+  // the model that call site ALREADY pinned so the migration changes the ledger,
+  // not the cost: gpt-4o for the two that named gpt-4o, gpt-4o-mini for the two
+  // that named gpt-4o-mini. Fallbacks follow the section conventions above.
+  direct_mail_design:        { model: "gpt-4o-mini",  fallback: "claude-haiku",  reason: "Postcard design suggestion — palette/layout JSON, cheapest structured lane" },
+  direct_mail_targeting:     { model: "gpt-4o",       fallback: "claude-sonnet", reason: "Audience segment selection — structured criteria objects from past performance" },
+  direct_mail_roi_forecast:  { model: "gpt-4o-mini",  fallback: "claude-haiku",  reason: "Campaign ROI projection — arithmetic-shaped structured output" },
+  direct_mail_performance:   { model: "gpt-4o-mini",  fallback: "claude-haiku",  reason: "Post-campaign performance analysis — summarises rows already computed" },
   blog_post_generation:      { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Long-form blog — SEO + brand voice" },
   ai_reply_coach:            { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Coaching agent reply drafts — nuanced tone guidance" },
   smart_reply_generation:    { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Generate smart reply suggestions for inbound messages" },

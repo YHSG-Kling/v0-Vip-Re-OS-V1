@@ -191,6 +191,47 @@ export async function POST(request: NextRequest) {
     process.env.SUPABASE_SERVICE_ROLE_KEY!
   )
 
+  // ── THIS RUN JOINS THE CRON LEDGER THROUGH THE KERNEL ──────────────────────
+  //
+  // MERGED ONTO THE SURVIVOR. All four cron-kernel actions were imported by this
+  // file and called by NONE of them; the route hand-rolled its own
+  // `cron_execution_logs` inserts instead — one on each exit path. Those inserts
+  // wrote the same table with the same vocabulary, so they were a DUPLICATE of
+  // lib/kernel/cron-logging.ts, and the duplicate was the poorer half. It could
+  // not do the two things only the kernel does:
+  //
+  //   · upsert `cron_health_snapshot` (cron-logging.ts:289 / :385), the row the
+  //     health dashboard reads for "when did this cron last run and how did it
+  //     go" — so THE MONITORING JOB ITSELF has never appeared on the monitoring
+  //     surface, and
+  //   · fire KernelEvent.CRON_COMPLETED_SUCCESS / CRON_FAILED through
+  //     processKernelEvent (cron-logging.ts:304 / :400) — so when the job that
+  //     watches every provider died, the failure reached nobody.
+  //
+  // Nothing is lost: createCronRunContext defaults `brokerage_id` to null, which
+  // is the same deliberate untenanted stamp this route defended (the sweep polls
+  // `service_status` for EVERY brokerage; the per-tenant findings are the
+  // `system_health_checks` rows, each stamped with its own service row's
+  // brokerage). cron_name / cron_path / started_at / completed_at / duration_ms /
+  // records_processed / error_message / metadata are all carried by the kernel.
+  const runContext = await createCronRunContextAction({
+    cron_name: "System Health Check",
+    cron_path: "/api/cron/health-check",
+  })
+  const contextId = runContext.success ? runContext.data?.context_id ?? null : null
+  if (!contextId) {
+    // FAIL LOUD, NOT CLOSED. The health check still has to run — refusing to
+    // poll every provider because a log row could not be opened would turn a
+    // logging blip into a monitoring outage — but a run with no ledger row must
+    // never pass silently for one that has one.
+    console.error("[health-check] cron run context could not be opened:", runContext.error)
+  } else {
+    const started = await recordCronStartAction({ context_id: contextId })
+    if (!started.success) {
+      console.error("[health-check] cron start record refused:", started.error)
+    }
+  }
+
   try {
     // Get body for manual trigger with brokerageId
     let targetBrokerageId: string | null = null
@@ -530,33 +571,35 @@ export async function POST(request: NextRequest) {
     // and cron_health_snapshot, which reads this ledger, would have called the
     // job healthy while the tables it feeds stayed empty.
     const wroteNothing = writeFailures.length > 0
-    const { error: runLogError } = await supabase.from("cron_execution_logs").insert({
-      // DELIBERATELY UNTENANTED (allow-listed in the tenant-stamp guard). This
-      // run polls `service_status` for EVERY brokerage — `services` is unfiltered
-      // unless a manual trigger names one — and `results` / `writeFailures`
-      // aggregate across all of them. The per-brokerage findings are the
-      // `system_health_checks` rows above, each stamped with the service row's own
-      // `brokerage_id`; this row is the sweep, and the sweep belongs to nobody.
-      // Readable on the two no-predicate platform readers of this ledger
-      // (pl-truth-engine:getCronHealth, scraping:loadScrapingDiagnostics).
-      brokerage_id: null,
-      cron_path: "/api/cron/health-check",
-      cron_name: "System Health Check",
-      status: wroteNothing ? "failed" : "completed",
-      duration_ms: durationMs,
-      records_processed: results.length,
-      ...(wroteNothing
-        ? { error_message: `${writeFailures.length} write(s) refused: ${writeFailures.slice(0, 5).join("; ")}` }
-        : {}),
-      started_at: new Date(startTime).toISOString(),
-      completed_at: new Date().toISOString(),
-      metadata: { results, writeFailures, skippedDecommissioned },
-    })
-    // A monitoring job whose OWN run record was refused reported a clean tick
-    // over a write that never landed — the same "green over an absence" this
-    // route already fixed for `service_status` and `health_check_history`.
-    if (runLogError) {
-      console.error("[health-check] cron_execution_logs write refused:", runLogError.message)
+    // TOMBSTONE: the hand-rolled `cron_execution_logs` insert that stood here is
+    // deleted. Survivor: lib/kernel/cron-logging.ts:244 (recordCronSuccess) and
+    // :336 (recordCronFailure), reached through app/actions/cron-kernel.ts:93 /
+    // :103 — see the note at the top of POST. Same table, same status
+    // vocabulary, same untenanted row, plus cron_health_snapshot and the kernel
+    // event this route never had.
+    if (contextId) {
+      // A HEALTH CHECK THAT COULD NOT RECORD ITS FINDINGS DID NOT SUCCEED — the
+      // same rule the deleted insert encoded, expressed through the kernel's two
+      // terminal commands instead of a status string.
+      const recorded = wroteNothing
+        ? await recordCronFailureAction({
+            context_id: contextId,
+            error: `${writeFailures.length} write(s) refused: ${writeFailures.slice(0, 5).join("; ")}`,
+            stage: "persist findings",
+            context_snapshot: { results, writeFailures, skippedDecommissioned },
+          })
+        : await recordCronSuccessAction({
+            context_id: contextId,
+            records_processed: results.length,
+            output_count: results.length,
+            metadata: { results, writeFailures, skippedDecommissioned },
+          })
+      // A monitoring job whose OWN run record was refused reported a clean tick
+      // over a write that never landed — the same "green over an absence" this
+      // route already fixed for `service_status` and `health_check_history`.
+      if (!recorded.success) {
+        console.error("[health-check] cron run record refused:", recorded.error)
+      }
     }
 
     return NextResponse.json({
@@ -568,29 +611,32 @@ export async function POST(request: NextRequest) {
       ...(skippedDecommissioned.length ? { skippedDecommissioned } : {}),
     })
   } catch (error) {
-    const durationMs = Date.now() - startTime
     console.error("Health check cron failed:", error)
 
     // Log failure.
     //
-    // THE OUTER CATCH OF A PLATFORM-WIDE SWEEP — the wave-23 class exactly, and
-    // allow-listed for the same reason. Nothing here can attribute the failure to
-    // a tenant: it fires before any service row is known (a refused
+    // THE OUTER CATCH OF A PLATFORM-WIDE SWEEP. Nothing here can attribute the
+    // failure to a tenant: it fires before any service row is known (a refused
     // `service_status` read reaches this path), so there is no record to resolve
     // a brokerage through and inventing one would report a platform outage as one
-    // brokerage's problem.
-    const { error: failureLogError } = await supabase.from("cron_execution_logs").insert({
-      brokerage_id: null,
-      cron_path: "/api/cron/health-check",
-      cron_name: "System Health Check",
-      status: "failed",
-      duration_ms: durationMs,
-      error_message: error instanceof Error ? error.message : "Unknown error",
-      started_at: new Date(startTime).toISOString(),
-      completed_at: new Date().toISOString(),
-    })
-    if (failureLogError) {
-      console.error("[health-check] failure cron_execution_logs write refused:", failureLogError.message)
+    // brokerage's problem — which is exactly what the kernel's untenanted row is.
+    //
+    // TOMBSTONE: the hand-rolled failure insert that stood here is deleted.
+    // Survivor: lib/kernel/cron-logging.ts:336 (recordCronFailure), which also
+    // stamps cron_health_snapshot with last_status='failure' and fires
+    // KernelEvent.CRON_FAILED. Neither happened before, so the platform's own
+    // watchdog could die without anything anywhere noticing.
+    if (contextId) {
+      const recorded = await recordCronFailureAction({
+        context_id: contextId,
+        error: error instanceof Error ? error : String(error),
+        stage: "health check sweep",
+      })
+      if (!recorded.success) {
+        console.error("[health-check] cron failure record refused:", recorded.error)
+      }
+    } else {
+      console.error("[health-check] failed with no cron ledger row to close (context could not be opened)")
     }
 
     return NextResponse.json(

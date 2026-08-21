@@ -63,6 +63,19 @@ export interface VideoScript {
   created_by: string | null
   created_at: string
   updated_at: string
+  // ── MERGED ONTO THE SURVIVOR ──────────────────────────────────────────────
+  // These three were declared on a DUPLICATE `VideoScript` interface local to
+  // app/dashboard/videos/library/page.tsx, which existed only because this one
+  // did not carry them; that page then double-cast every row
+  // (`rows as unknown as VideoScript[]`) to get past the mismatch. They are the
+  // three fields app/actions/video-generation.ts:getVideoScriptLibrary actually
+  // maps onto each row, so they belong here and the duplicate is deleted.
+  /** Derived by getVideoScriptLibrary from the `script_variations(id)` embed. */
+  variation_count?: number
+  /** The `video_templates(...)` embed, flattened by the readers to one name. */
+  template?: { id: string; template_name: string; category: string } | null
+  /** Present only on the by-id read, which embeds the variations in full. */
+  script_variations?: ScriptVariation[]
 }
 
 export interface ScriptVariation {

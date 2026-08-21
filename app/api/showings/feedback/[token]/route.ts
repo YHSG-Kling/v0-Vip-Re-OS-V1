@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { processKernelEvent } from "@/lib/kernel"
+// TOMBSTONE (dead-import tranche): `processKernelEvent` was imported here and
+// never called. Survivor: lib/kernel/event-fanout.ts:67, which is what
+// `fanOutKernelEvent` — the CANONICAL fan-out this route uses at :294 — calls.
+// Going direct would have skipped the seller-portal resolution and the sequence
+// auto-enrolment that the fan-out adds on top of processKernelEvent.
 import { KernelEvent } from "@/lib/kernel/events"
 import { aiAnalyzeShowingFeedback } from "@/app/actions/ai-showing-management"
 import { generateAIResponse } from "@/lib/ai"

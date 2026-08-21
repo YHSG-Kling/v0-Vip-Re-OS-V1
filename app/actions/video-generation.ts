@@ -4,12 +4,21 @@ import { toLibraryScriptType } from "@/app/types/video-generation"
 import { createServiceClient } from "@/lib/supabase/service"
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
+// TOMBSTONE (dead-import tranche): `callConnector`
+// (lib/agentic-os/connector-gateway.ts) was imported here and never called —
+// this file makes no outbound HTTP of its own. The provider call for its render
+// path goes through app/actions/external-services.ts:generateAvatarVideo →
+// lib/did/index.ts, which is the one D-ID door. Nothing was lost.
+//
+// TOMBSTONE (dead-import tranche): `resolveProvider` (lib/kernel/providers.ts:85)
+// was imported and never called. The VIDEO provider is resolved by
+// `resolveVideoProvider` inside the canonical creator this file delegates to —
+// app/actions/video/create-video-project.ts:669 — which also stamps the
+// provider_* columns. A second resolution here would have been a second opinion.
 import { isValidUUID } from "@/lib/validations"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
-import { resolveProvider } from "@/lib/kernel/providers"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 import {
   buildComplianceSystemBlocks,
@@ -73,7 +82,7 @@ export async function getVideoScriptLibrary(filters?: {
   templateBacked?: boolean
   approvalStatus?: ApprovalStatus
   includeVariationCount?: boolean
-}) {
+}): Promise<VideoScript[]> {
   const auth = await requireCaller()
   if (!auth.ok) return []
 
@@ -122,7 +131,7 @@ export async function getVideoScriptLibrary(filters?: {
   }))
 }
 
-export async function getVideoScriptById(scriptId: string) {
+export async function getVideoScriptById(scriptId: string): Promise<VideoScript | null> {
   if (!isValidUUID(scriptId)) return null
 
   const auth = await requireCaller()
@@ -146,7 +155,20 @@ export async function getVideoScriptById(scriptId: string) {
     return null
   }
 
-  return data
+  // FLATTENED THE SAME WAY THE LIST READ FLATTENS IT.
+  //
+  // This returned the raw row, whose template embed is named `video_templates`
+  // — but the one reader of this function, the script detail sheet at
+  // app/dashboard/videos/library/page.tsx:873, renders `selectedScript.template
+  // .template_name`. That property was never produced by anything, so the
+  // "Template: …" line in the detail sheet could not render for any script, ever.
+  // getVideoScriptLibrary (above) already does this mapping for the list; the
+  // by-id read simply never got the other half.
+  return {
+    ...data,
+    template: data.video_templates ?? null,
+    variation_count: Array.isArray(data.script_variations) ? data.script_variations.length : 0,
+  } as VideoScript
 }
 
 export async function saveVideoScript(data: {
@@ -453,7 +475,7 @@ export async function getVideoTemplateById(templateId: string) {
 // Table: public.script_variations
 // ============================================
 
-export async function getScriptVariations(scriptLibraryId: string) {
+export async function getScriptVariations(scriptLibraryId: string): Promise<ScriptVariation[]> {
   if (!isValidUUID(scriptLibraryId)) return []
 
   const auth = await requireCaller()
@@ -1166,6 +1188,16 @@ export async function generateVideoScript(params: {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
 
+  // ── THE TIER GATE ──────────────────────────────────────────────────────────
+  // BUILT, not tidied. `canAccessFeature` was imported by this file and called
+  // by NOTHING, so both AI/render doors in it ran with an auth check and no
+  // entitlement check. Key `video_generation` — the spelling already in force at
+  // app/dashboard/video/page.tsx:13 and lib/kernel/marketing.ts:904.
+  const entitlement = await canAccessFeature(auth.userId, "video_generation")
+  if (!entitlement.allowed) {
+    return { success: false, error: entitlement.reason ?? "Video generation is not available on your plan" }
+  }
+
   // Compliance gate — same one the /dashboard/videos/create wizard enforces.
   // This path feeds /video-assistant and the agent superpowers panel, and it
   // used to generate agent-facing marketing copy with no Fair Housing check
@@ -1311,6 +1343,12 @@ export async function generateVideoFromScript(params: {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
 
+  // ── THE TIER GATE, ON THE PAID RENDER ──────────────────────────────────────
+  const entitlement = await canAccessFeature(auth.userId, "video_generation")
+  if (!entitlement.allowed) {
+    return { success: false, error: entitlement.reason ?? "Video generation is not available on your plan" }
+  }
+
   const supabase = createServiceClient()
 
   try {
@@ -1453,6 +1491,58 @@ export async function generateVideoFromScript(params: {
       throw queueError
     }
 
+    // ── THE VERBAL DISCLOSURE + BRAND COMPLIANCE GATE ───────────────────────
+    //
+    // BUILT, not tidied. `checkBrandCompliance` was imported by this file and
+    // called by NOTHING, and this is a live D-ID door: it creates a project and
+    // submits a paid render. Until now it was the only render door with no brand
+    // gate and no disclosure —
+    //   · app/api/did/generate-video/route.ts runs both (its disclosure block is
+    //     now lib/video/verbal-disclosure.ts, shared with this call), and
+    //   · lib/kernel/video.ts:submitVideoGenerationJob carries the atomic claim.
+    // The consequence was not cosmetic: lib/kernel/brand-compliance.ts:305
+    // reports every rendered public-marketing video whose
+    // `has_verbal_disclosure` is false as a violation, so each video this path
+    // produced was both un-attributed on air and permanently non-compliant in
+    // the ledger.
+    //
+    // ORDER MATCHES THE OTHER DOOR: disclosure first (it stamps the column the
+    // gate reads), gate second, spend last.
+    const { applyBrokerageVerbalDisclosure } = await import("@/lib/video/verbal-disclosure")
+    const disclosure = await applyBrokerageVerbalDisclosure(supabase, {
+      script,
+      projectId: project.id,
+      brokerageId: auth.brokerageId,
+    })
+    if (disclosure.stampError) {
+      console.error("[v0] has_verbal_disclosure stamp refused:", disclosure.stampError)
+    }
+    const renderScript = disclosure.renderScript
+
+    const compliance = await checkBrandCompliance({
+      contentType: "video",
+      contentId: project.id,
+      brokerageId: auth.brokerageId,
+    })
+    if (!compliance.passed) {
+      // Same shape the other door uses: park the project as failed with the
+      // reason, and refuse BEFORE the provider is called. Destructured — a
+      // refused stamp must not read as a recorded refusal.
+      const { error: failStampError } = await supabase
+        .from("ai_video_projects")
+        .update({ status: "failed", error_message: `Compliance: ${compliance.violations.join("; ")}` })
+        .eq("id", project.id)
+      if (failStampError) {
+        console.error("[v0] compliance failure stamp refused:", failStampError.message)
+      }
+      return {
+        success: false,
+        complianceBlocked: true,
+        error: "Brand compliance check failed",
+        violations: compliance.violations,
+      }
+    }
+
     // Create video script record for backward compatibility
     // SCHEMA DRIFT: video_scripts_library has no script_text / video_status
     // / persona_validated / video_type columns — only script_content / etc.
@@ -1489,7 +1579,9 @@ export async function generateVideoFromScript(params: {
       const didRes = await generateAvatarVideo({
         avatarId: params.avatarId,
         voiceId: params.voiceId,
-        script: script,
+        // `renderScript`, not `script` — the provider speaks the disclosure; the
+        // stored library row keeps the agent's own text unchanged.
+        script: renderScript,
         brokerageId: auth.brokerageId ?? undefined,
       })
       const didJobId = (didRes as { videoId?: string }).videoId
@@ -1525,6 +1617,15 @@ export async function generateVideoFromScript(params: {
           .eq("id", project.id)
         console.warn("[v0] D-ID kick deferred, video stays queued:", reason)
       }
+    }
+
+    // Counted AFTER the render is on the rail — one increment per video, at the
+    // door that spends. `incrementFeatureUsage` was imported by this file and
+    // called by nothing, so every render from this path left the per-tier usage
+    // counter (feature_usage_tracking) untouched.
+    const counted = await incrementFeatureUsage(auth.userId, "video_generation")
+    if (!counted.success) {
+      console.error("[v0] feature_usage_tracking increment failed:", counted.error)
     }
 
     console.log("[v0] Video queued successfully:", queueRecord.id)

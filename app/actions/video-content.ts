@@ -1,15 +1,31 @@
 "use server"
 
 import { createServerClient } from "@/lib/supabase/server"
-import { agentIdForUser } from "@/lib/agents/agent-for-user"
+// TOMBSTONE (dead-import tranche): `agentIdForUser` (lib/agents/agent-for-user.ts:13)
+// was imported here and never called. Survivor: `resolveAgentId`
+// (lib/kernel/agent-identity.ts:43), imported below and used at the one site that
+// needs the users.id → agents.id bridge. The two run the identical query; the
+// survivor is the safer one (`.order().limit(1)` rather than `.maybeSingle()`,
+// which ERRORS when a user has more than one agents row).
 import { toLibraryScriptType } from "@/app/types/video-generation"
 import { logVideoGenerated } from "@/lib/events"
 import { generateAIResponse } from "@/lib/ai"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
-import { resolveProvider } from "@/lib/kernel/providers"
+// TOMBSTONE (dead-import tranche): `resolveProvider` (lib/kernel/providers.ts:85)
+// was imported and never called — this file dispatches no provider itself. The
+// VIDEO provider is resolved by `resolveVideoProvider`
+// (lib/marketing/video-provider-resolver.ts, called from
+// app/actions/video/create-video-project.ts:669) and the AI provider is chosen
+// inside `generateAIResponse` (lib/ai). Nothing was lost.
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
-import { KernelEvent } from "@/lib/kernel/events"
-import { processKernelEvent } from "@/lib/kernel/notification-engine"
+// TOMBSTONE (dead-import tranche): `KernelEvent` / `processKernelEvent` were
+// imported and never called. This file's lifecycle emission goes through
+// `logVideoGenerated` (lib/events/event-helpers.ts:145 → logEventAndTrigger:29,
+// which inserts lifecycle_events and fires the registered orchestrator
+// dispatcher, lib/orchestrator/internal.ts:1109), and its notifications are
+// written directly by handleVideoGenerated / handleVideoPublished /
+// handleHighEngagement below. Both halves already exist; a second rail here
+// would have double-notified.
 // The ONE way a notifications row gets its tenant — the recipient's
 // users.brokerage_id, the exact value badge-counts compares against.
 import { resolveRecipientBrokerageId } from "@/lib/notifications/recipient-tenant"
@@ -45,6 +61,27 @@ export async function generateVideoScript(params: {
   // Resolve agent ID - never use user.id for agent_id column
   const agentId = await resolveAgentId(supabase, user.id)
   if (!agentId) throw new Error("Agent profile not found")
+
+  // ── THE TIER GATE ──────────────────────────────────────────────────────────
+  //
+  // BUILT, not tidied. `canAccessFeature` / `incrementFeatureUsage` were
+  // imported by this file and called by NOTHING, so the only AI-spending entry
+  // in it ran with no entitlement check and left no usage row — the counter the
+  // per-tier overage projection reads. Every sibling AI action in this tree is
+  // gated this way (app/actions/ai-newsletter.ts:122,
+  // app/actions/podcast-generation.ts:72, app/actions/direct-mail.ts:118).
+  //
+  // The key is `video_generation`, the spelling already in force at
+  // app/dashboard/video/page.tsx:13 and lib/kernel/marketing.ts:904 — NOT the
+  // second `ai_video_generation` row that also exists in feature_flags, which no
+  // code names (§6: one vocabulary per function; that row is a separate finding).
+  // Verified against the live database: feature_flags.video_generation is
+  // enabled with access true and limit NULL on all four tiers, so this gate
+  // refuses nobody today and is in place for the day a tier limit is set.
+  const access = await canAccessFeature(user.id, "video_generation")
+  if (!access.allowed) {
+    throw new Error(access.reason ?? "Video generation is not available on your plan")
+  }
 
   // Generate script using AI
   const scriptResponse = await generateAIResponse({
@@ -93,6 +130,15 @@ Make it conversational, engaging, and authentic. Keep it under 90 seconds.`,
     video_type: params.video_type,
     listing_id: params.context_type === "listing" ? params.context_id : undefined,
   })
+
+  // Counted AFTER the work succeeded, never before — the same order every other
+  // gated action in this tree uses (incrementFeatureUsage's own header says so).
+  // Destructured: a refused counter write must not read as a counted use, or the
+  // per-tier overage projection under-reports.
+  const counted = await incrementFeatureUsage(user.id, "video_generation")
+  if (!counted.success) {
+    console.error("[video-content] feature_usage_tracking increment failed:", counted.error)
+  }
 
   return { success: true, video, script }
 }

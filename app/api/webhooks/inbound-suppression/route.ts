@@ -28,7 +28,19 @@
 
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { evaluateOutboundCompliance } from "@/lib/kernel/communication-compliance"
+// TOMBSTONE (dead-import tranche): `evaluateOutboundCompliance`
+// (lib/kernel/communication-compliance.ts) was imported here and never called —
+// and it never should be. This handler is the INBOUND direction: it reads a
+// stop/unsubscribe message and WRITES the suppression state. The outbound gate
+// is what READS that state, and it has one live caller that every send goes
+// through: lib/providers/dispatch.ts:40. Calling it here would have asked "may I
+// send to this contact?" in a handler that sends nothing.
+//
+// The pairing is intact in both directions and is the reason this is a deletion
+// rather than a build: this route's writers (`syncSuppressionState`,
+// `recordSuppressionEvent`) feed exactly the columns
+// `evaluateOutboundCompliance` reads — call_stop_flag / sms_opt_out /
+// email_opt_out, see lib/lead-intent/lead-opt-out.ts:204 and :437.
 import { syncSuppressionState, recordSuppressionEvent } from "@/lib/kernel/suppression-sync"
 
 export const runtime = "nodejs"

@@ -28,22 +28,56 @@ export interface LifecycleTransitionEvent {
 }
 
 /**
- * Maps buyer lifecycle toState values to the canonical KernelEvent string.
- * Prevents loose string interpolation that won't match the kernel event map.
+ * Maps buyer lifecycle toState values to the canonical KernelEvent.
+ *
+ * THIS FUNCTION WAS THE THING ITS OWN DOCSTRING WARNED ABOUT. It said it
+ * "prevents loose string interpolation that won't match the kernel event map",
+ * and it returned HAND-TYPED STRINGS — `"TOUR_ELIGIBLE"`, `"CONTRACT_SIGNED"`,
+ * `"DEAL_CLOSED"`, `"LIFETIME_CUSTOMER"`, `"BUYER_STATE_CHANGED"` — which are the
+ * MEMBER NAMES of `KernelEvent`, not its VALUES. `KernelEvent` was imported into
+ * this file and never used, which is how the census found it.
+ *
+ * The consequence was not cosmetic. `transitionLifecycle` resolves the fan-out
+ * with `LIFECYCLE_TO_KERNEL_EVENT[eventType]` (lib/kernel/lifecycle.ts), whose
+ * keys are lifecycle STATE names and canonical event VALUES — never member
+ * names. So five of the nine milestones this map exists to raise resolved to
+ * `undefined` and called `processKernelEvent` NOT AT ALL:
+ *
+ *     BUYER_TOUR_ELIGIBLE   → "TOUR_ELIGIBLE"      → no key → no event
+ *     BUYER_OFFER_ELIGIBLE  → "OFFER_ELIGIBLE"     → no key → no event
+ *     BUYER_UNDER_CONTRACT  → "CONTRACT_SIGNED"    → no key → no event, and the
+ *                             transaction milestone CALENDAR BRIDGE, which fires
+ *                             only on KernelEvent.CONTRACT_SIGNED, never ran
+ *     BUYER_CLOSED          → "DEAL_CLOSED"        → no key → no event
+ *     (fallback)            → "BUYER_STATE_CHANGED"→ no key → no event
+ *
+ * and the ledger row was stamped `lifecycle.CONTRACT_SIGNED`, which no reader
+ * matches either — lib/platform/tenant-webhooks-core.ts:87 subscribes to
+ * `lifecycle.contract_signed`. Verified against the live database
+ * (hrvaqgvukzxfskkcrwbt): 0 of 284 `lifecycle_events` rows carry an
+ * upper-case event_type, so every consumer in this system reads lower_snake and
+ * these five were writing into a vocabulary of one.
+ *
+ * Returning `KernelEvent` fixes both halves at once — the value IS the canonical
+ * spelling, the ledger string becomes `lifecycle.contract_signed`, and the map's
+ * identity arm (lib/kernel/lifecycle.ts) resolves it. The return TYPE is what
+ * keeps it fixed: a future member-name typo is now a compile error, which is
+ * exactly what the original docstring was promising and could not deliver.
+ *
  * Unmapped states fall back to BUYER_STATE_CHANGED (catch-all added in B00 Edit 1).
  */
-function resolveBuyerKernelEvent(toState: BuyerState): string {
-  const milestones: Record<string, string> = {
-    BUYER_FINANCIALLY_VERIFIED: "BUYER_FINANCIALLY_VERIFIED",
-    BUYER_SEARCH_CONFIGURED:    "BUYER_SEARCH_CONFIGURED",
-    BUYER_TOUR_ELIGIBLE:        "TOUR_ELIGIBLE",
-    BUYER_OFFER_ELIGIBLE:       "OFFER_ELIGIBLE",
-    BUYER_UNDER_CONTRACT:       "CONTRACT_SIGNED",
-    BUYER_CLOSED:               "DEAL_CLOSED",
-    BUYER_LIFETIME:             "LIFETIME_CUSTOMER",
-    BUYER_DISENGAGED:           "BUYER_DISENGAGED",
+function resolveBuyerKernelEvent(toState: BuyerState): KernelEvent {
+  const milestones: Partial<Record<BuyerState, KernelEvent>> = {
+    BUYER_FINANCIALLY_VERIFIED: KernelEvent.BUYER_FINANCIALLY_VERIFIED,
+    BUYER_SEARCH_CONFIGURED:    KernelEvent.BUYER_SEARCH_CONFIGURED,
+    BUYER_TOUR_ELIGIBLE:        KernelEvent.TOUR_ELIGIBLE,
+    BUYER_OFFER_ELIGIBLE:       KernelEvent.OFFER_ELIGIBLE,
+    BUYER_UNDER_CONTRACT:       KernelEvent.CONTRACT_SIGNED,
+    BUYER_CLOSED:               KernelEvent.DEAL_CLOSED,
+    BUYER_LIFETIME:             KernelEvent.LIFETIME_CUSTOMER,
+    BUYER_DISENGAGED:           KernelEvent.BUYER_DISENGAGED,
   }
-  return milestones[toState] ?? "BUYER_STATE_CHANGED"
+  return milestones[toState] ?? KernelEvent.BUYER_STATE_CHANGED
 }
 
 /**

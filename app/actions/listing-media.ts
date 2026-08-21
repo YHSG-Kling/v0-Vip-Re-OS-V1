@@ -3,8 +3,15 @@
 import { createClient } from "@/lib/supabase/server"
 import { resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
-import { KernelEvent } from "@/lib/kernel/events"
-import { processKernelEvent } from "@/lib/kernel"
+// TOMBSTONE (dead-import tranche): `KernelEvent` / `processKernelEvent` were
+// imported here and never called. This file's event rail is the ORCHESTRATOR,
+// not the notification engine: the hero-photo fan-out at :113 emits through
+// `emitEventFromCron` (lib/orchestrator/internal.ts) with event_type
+// "image.generated", which is a dotted orchestrator type and deliberately not a
+// KernelEvent member. There is no KernelEvent for listing-media approval either
+// — `LISTING_MEDIA_SCHEDULED` (lib/kernel/events.ts:62) is the only media member
+// and it belongs to the scheduler, not to this file — so there is no missing
+// emission here to build, only a pair of imports naming the wrong rail.
 
 // ─────────────────────────────────────────────────────────────
 // LISTING MEDIA

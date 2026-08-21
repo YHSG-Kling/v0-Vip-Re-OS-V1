@@ -5,7 +5,13 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { placeCall } from "@/lib/providers/messaging"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
+// TOMBSTONE (dead-import tranche): `callConnector` was imported here and never
+// called. Every outbound provider request on this lane already goes through the
+// gateway one layer down — `placeCall` (lib/providers/messaging, imported above)
+// and `placeOutboundAiCall` (lib/voice/twilio-outbound.ts:178, dynamically
+// imported at :279) both call `callConnector` themselves. A direct call from
+// here would have been a second Twilio door with none of their vendor
+// selection, budget pre-flight or attribution.
 
 /**
  * Call Whisper Bridge & AI Voice Outreach (Twilio-native)
