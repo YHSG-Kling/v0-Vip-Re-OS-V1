@@ -100,6 +100,59 @@ export async function getAgents(): Promise<
  * was never cross-tenant — but INSIDE a brokerage the agent id came straight
  * from the caller with no ownership check, so one agent could read a colleague's
  * commission and expense ledgers by passing their id. Pay is not team-readable.
+ *
+ * ── TWO ANSWERS OVER ONE TABLE: REPORTED, DELIBERATELY NOT RESOLVED HERE ─────
+ *
+ * This gate asks isAdminOrBroker (TENANT_ADMIN_USER_TYPES — team_lead INCLUDED),
+ * while every MONEY path over business_expenses asks isBrokerageFinanceAdmin
+ * (the same roster MINUS team_lead): app/actions/financials.ts#exportCommissionsCSV,
+ * #exportExpensesCSV, #attachExpenseReceipt, and addAgentExpense below. Two
+ * spellings of "who may touch this table" is normally the §6 defect, so the
+ * mismatch was checked against the live database rather than reconciled on sight.
+ *
+ * MEASURED, live (policy `business_expenses_tenant`, 2026-08-21):
+ *   USING (can_read_tenant_financials()
+ *          OR (has_brokerage_access(brokerage_id) AND can_read_agent_books(agent_id)))
+ *
+ * public.can_read_agent_books(target_agent_id), quoted IN FULL — an earlier draft
+ * of this note quoted only the last disjunct and presented it as the definition,
+ * which made the comparison below look tidier than the database actually is:
+ *   select can_read_tenant_financials()
+ *       or can_read_brokerage_books()
+ *       or (target_agent_id is not null and target_agent_id = current_user_agent_id())
+ *       or (target_agent_id is not null
+ *           and current_user_led_team_id() is not null
+ *           and agent_team_id(target_agent_id) = current_user_led_team_id());
+ * and public.can_read_brokerage_books() is user_type/grant in
+ *   ('admin','broker','broker_owner','broker_admin','compliance_officer').
+ *
+ * So the DATABASE does already admit a team lead to expense READS — but only for
+ * the members of the team they actually LEAD. The two sets DIVERGE IN BOTH
+ * DIRECTIONS, and saying "this gate agrees with RLS" would be an overstatement:
+ *
+ *   · THIS GATE IS WIDER for one shape: isAdminOrBroker admits a team_lead for
+ *     ANY agent in the brokerage, while RLS admits them only for their own team.
+ *     That is CONTAINED, not open — both readers on this rail run on the RLS
+ *     client AND pin the tenant (getAgentExpenses:829, getAgentCommissions), so a
+ *     team lead naming a non-team colleague gets an empty result, not a ledger.
+ *     It is a false success over an empty set, which is ugly, not a leak.
+ *   · RLS IS WIDER for another: can_read_brokerage_books admits
+ *     `compliance_officer`, which isAdminOrBroker does not. The app refuses
+ *     someone the database would allow — the fail-closed direction (CLAUDE.md §4).
+ *
+ * The narrower finance roster is correct where it is used — those are WRITES and
+ * EXPORTS, and the RLS WITH CHECK on the same policy is `is_brokerage_finance_admin()
+ * OR agent_id = current_user_agent_id()`, which is exactly the narrower set. One
+ * table, two questions, two answers ON PURPOSE: read-with-your-team vs.
+ * write-and-extract.
+ *
+ * The owner's wave-15 ruling names EXPORT ("user should only be able to export
+ * their own expenses; brokerages' admins and owner can export their brokerages'
+ * expenses") and is enforced at app/actions/financials.ts#exportExpensesCSV.
+ * Narrowing THIS function to the finance roster would revoke a team lead's
+ * existing in-app VIEW of their own team's books — behaviour the ruling does not
+ * reach, and behaviour RLS would still permit — so it is REPORTED to the wave and
+ * left as it stands rather than changed under cover of an export fix.
  */
 async function requireAgentLedgerAccess(
   agentId: string,
@@ -825,11 +878,24 @@ export async function getAgentExpenses(agentId: string, year?: number) {
  * button points at it.
  *
  * Two things verified live and fixed here rather than left armed:
- *   • business_expenses.brokerage_id is NULLABLE and the tenant policy reads
- *     `(brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id())`.
- *     Every row this function used to write had a NULL brokerage_id — i.e. it was
- *     readable by EVERY brokerage on the platform. The tenant is now stamped AT
- *     the insert.
+ *   • business_expenses.brokerage_id is NULLABLE and every row this function used
+ *     to write had a NULL brokerage_id. The tenant is now stamped AT the insert.
+ *
+ *     CORRECTED 2026-08-21 against the live policy — the version of this note that
+ *     stood here quoted the tenant rule as
+ *       `(brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id())`
+ *     and concluded a NULL-tenant row was "readable by EVERY brokerage". That
+ *     policy is no longer what the database runs, and the conclusion inverts the
+ *     one it does run. MEASURED, policy `business_expenses_tenant`:
+ *       USING (can_read_tenant_financials()
+ *              OR (has_brokerage_access(brokerage_id) AND can_read_agent_books(agent_id)))
+ *     and public.has_brokerage_access() requires `target_brokerage_id IS NOT NULL`.
+ *     A NULL-tenant row is therefore readable by NO tenant — only by platform staff
+ *     through can_read_tenant_financials(). Still a defect, and still worth stamping
+ *     the tenant at the insert, but the failure mode is an INVISIBLE row (an agent's
+ *     own spend missing from their own books) rather than a leaked one. Quoting the
+ *     stale rule was making the hole read as cross-tenant exposure it is not; the
+ *     column is closed for good by supabase/migrations/m516-*.sql.
  *   • agent_id came FROM THE CALLER, so any signed-in user could log spend
  *     against any agent's book. It is resolved from the session; only a
  *     broker/admin may name a different agent, and only inside their own tenant.
@@ -888,8 +954,14 @@ export async function addAgentExpense(expenseData: {
     .from("business_expenses")
     .insert({
       agent_id: agentId,
-      // TENANT ANCHOR — stamped at the insert. A NULL here is readable by every
-      // brokerage under the live policy.
+      // TENANT ANCHOR — stamped at the insert. CORRECTED 2026-08-21: this line
+      // used to claim a NULL here was "readable by every brokerage". It is the
+      // opposite. Under the live policy `business_expenses_tenant`,
+      // has_brokerage_access(NULL) is false for every non-platform caller, so a
+      // NULL-tenant row is readable by NO tenant — invisible to its own agent,
+      // visible only to platform staff. Still a defect, still stamped here; the
+      // column is closed for good by
+      // supabase/migrations/m516-an-expense-with-no-tenant-is-a-row-its-own-agent-cannot-read.sql.
       brokerage_id: ctx.brokerageId,
       category: expenseData.category,
       description: expenseData.description.trim(),

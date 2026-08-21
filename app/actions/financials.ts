@@ -277,12 +277,28 @@ export async function exportCommissionsCSV(agentId: string) {
 
   // Caller may export their own commissions, or an admin/broker can export
   // for any agent within their brokerage.
+  //
+  // ONE refusal string for every failure — not-an-admin, no-such-agent,
+  // agent-in-another-tenant. Distinct messages would make this an ID ORACLE: a
+  // caller could enumerate which agent uuids exist without ever reading a row.
   if (agentId !== ctx.agentId) {
     if (!isFinanceAdmin(ctx.userType)) {
       return { success: false, error: "Forbidden" }
     }
-    const { data: targetAgent } = await svc
+    // MERGED ONTO THE SURVIVOR (CLAUDE.md §1, 2026-08-21). This gate is the shape
+    // exportExpensesCSV was rebuilt onto, but it was missing the one thing that
+    // shape needs most: supabase-js RESOLVES refusals, so `const { data }` alone
+    // left `targetAgent` null on a REFUSED read and the gate reported it as "no
+    // such agent" — the right answer for the wrong reason, and the wrong answer
+    // entirely the day this lookup is refused for an agent who does exist. The
+    // error is now read and the gate FAILS CLOSED on it (§4). A malformed uuid
+    // lands here too (22P02) rather than reaching the ledger read.
+    const { data: targetAgent, error: targetError } = await svc
       .from("agents").select("brokerage_id").eq("id", agentId).maybeSingle()
+    if (targetError) {
+      console.error("[exportCommissionsCSV] agent tenant check refused:", targetError.message)
+      return { success: false, error: "Forbidden" }
+    }
     if (!targetAgent || targetAgent.brokerage_id !== ctx.brokerageId) {
       return { success: false, error: "Forbidden" }
     }
@@ -344,24 +360,165 @@ export async function exportCommissionsCSV(agentId: string) {
 
 // ─── EXPORT EXPENSES AS CSV ───────────────────────────────────────────────────
 
+// OWNER RULING (wave 15), verbatim: "user should only be able to export their own
+// expenses. brokerages' admins and owner can export their brokerages' expenses."
+//
+// WHAT THIS USED TO BE. The only check was `auth.getUser()` — "somebody is signed
+// in" — and the row scope came ENTIRELY from the `agentId` PARAMETER. This is a
+// "use server" export called from CLIENT components
+// (app/components/features/financial/ExportCSVButton.tsx:24,
+// app/dashboard/financials/reports/reports-client.tsx:148), so that parameter
+// crosses the network and is caller-controlled whatever the page passes. Any
+// signed-in user could name any agent id and receive that agent's expense ledger
+// — dates, categories, descriptions, amounts and receipt links — for the year.
+//
+// The gate below is NOT a second invention: it is the same shape as the sibling
+// exportCommissionsCSV above (:268-289), on the same ONE roster. Merging onto the
+// survivor rather than writing a parallel gate is the orphan doctrine (CLAUDE.md
+// §1) and the one-vocabulary rule (§6): two money exports over the same brokerage
+// must not be able to answer "may you?" differently.
+//
+// isFinanceAdmin is admin / broker / broker_owner (BROKERAGE_FINANCE_ADMIN_USER_TYPES
+// = the tenant roster MINUS team_lead) — precisely "brokerages' admins and owner"
+// as the owner ruled it, and precisely what public.is_brokerage_finance_admin()
+// enforces in RLS. `broker_admin` rides along as an INPUT spelling only; it is not
+// a storable user_type (it canonicalizes to `broker`), which is why nothing here
+// compares a bare "broker_admin" string against a live row.
 export async function exportExpensesCSV(agentId: string) {
+  // AUTH GATE — this action had none beyond "signed in". See the header above.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
+
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Unauthorized" }
+  const svc = createServiceClient()
+
+  // Caller may export their OWN expenses, or a brokerage admin/owner may export
+  // for any agent within their OWN brokerage.
+  //
+  // ONE refusal string for three different failures — not-an-admin, no-such-agent,
+  // agent-in-another-tenant — deliberately. A gate that says "no such agent" for an
+  // unknown id and "not in your brokerage" for a real one is an ID ORACLE: it lets
+  // a caller enumerate which agent uuids exist on the platform without ever being
+  // allowed to read a row.
+  if (agentId !== ctx.agentId) {
+    if (!isFinanceAdmin(ctx.userType)) {
+      return { success: false, error: "Forbidden" }
+    }
+    // supabase-js RESOLVES refusals — a swallowed error here would leave
+    // `targetAgent` null and read as "no such agent", so the error is read and
+    // the gate FAILS CLOSED on it (CLAUDE.md §4). A malformed uuid also lands
+    // here (22P02) rather than reaching the ledger read.
+    const { data: targetAgent, error: targetError } = await svc
+      .from("agents").select("brokerage_id").eq("id", agentId).maybeSingle()
+    if (targetError) {
+      console.error("[exportExpensesCSV] agent tenant check refused:", targetError.message)
+      return { success: false, error: "Forbidden" }
+    }
+    if (!targetAgent || targetAgent.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
+  }
 
   const currentYear = new Date().getFullYear()
 
   try {
+    // TENANT PINNED ON THE QUERY, exactly as the commissions sibling pins it at
+    // :301 and as getAgentExpenses pins it at app/actions/agents.ts:829. The gate
+    // above already proved the agent is in this tenant, so this is the second lock
+    // rather than the first — it is what keeps the read correct if this query is
+    // ever moved onto the service client, which bypasses RLS.
+    //
+    // ── THE ORDER TRAP, AND WHY THE PIN IS NOT WHAT DROPS ROWS ────────────────
+    //
+    // A tenant pin added BEFORE the backfill in supabase/migrations/m516-*.sql is
+    // applied looks like it would silently cut a user's own NULL-tenant expenses
+    // out of their own export. MEASURED, live 2026-08-21, it does not — for two
+    // separate reasons, and both were checked rather than assumed:
+    //
+    //   1. business_expenses is EMPTY: null_tenant = 0, total = 0. Both numbers
+    //      published together, because a bare "0 NULLs" would read as "already
+    //      fixed" when it actually says "nothing has been written here yet".
+    //   2. Even on a non-empty table the pin removes nothing this client could
+    //      otherwise see. Policy `business_expenses_tenant`, read live, is
+    //        USING (can_read_tenant_financials()
+    //               OR (has_brokerage_access(brokerage_id)
+    //                   AND can_read_agent_books(agent_id)))
+    //      and public.has_brokerage_access(target) is
+    //        is_platform_admin() OR (target IS NOT NULL AND target = current_user_brokerage_id())
+    //      so for any non-platform caller has_brokerage_access(NULL) is FALSE and a
+    //      NULL-tenant row is ALREADY invisible on this RLS client. The pin is
+    //      redundant with RLS here, not narrower than it.
+    //
+    // So the rows are dropped by the NULL itself, not by this pin — the failure
+    // mode is INVISIBILITY, not exposure. That still under-reports someone's own
+    // books, and there IS a live writer creating such rows today:
+    // app/api/financial/expenses/route.ts:53 inserts on the service client with
+    // brokerage_id taken from the request body (normally absent). Until m516 is
+    // applied, an expense logged through that route is missing from its own
+    // agent's export.
+    //
+    // BETWEEN NOW AND THE MIGRATION, this export therefore does NOT drop such rows
+    // quietly. It counts them and says so — see the probe below. After m516 the
+    // column is NOT NULL and the probe is a permanent zero.
     const { data: expenses, error } = await supabase
       .from("business_expenses")
       .select("id, expense_date, category, description, amount, receipt_url")
       .eq("agent_id", agentId)
+      .eq("brokerage_id", ctx.brokerageId)
       .gte("expense_date", `${currentYear}-01-01`)
       .order("expense_date", { ascending: false })
 
     if (error) throw error
 
+    // DENOMINATOR FOR THE EXPORT (CLAUDE.md §2 — publish the blind spot beside the
+    // number). Counts this agent's rows for the same year that carry NO tenant and
+    // are therefore absent from the CSV above. Runs on the service client because
+    // that is the only client that can SEE them — RLS hides them from everyone but
+    // platform staff, which is precisely the bug being reported.
+    //
+    // supabase-js RESOLVES refusals, so `{ count, error }` is destructured and the
+    // error read. A failed probe must NOT fail the export — the CSV is already
+    // correct — but it must not silently report zero either, so the count comes
+    // back null and the caller is told the blind spot could not be measured.
+    let untenantedRowCount: number | null = 0
+    const { count: nullTenantCount, error: probeError } = await svc
+      .from("business_expenses")
+      .select("id", { count: "exact", head: true })
+      .eq("agent_id", agentId)
+      .is("brokerage_id", null)
+      .gte("expense_date", `${currentYear}-01-01`)
+
+    if (probeError) {
+      console.error("[exportExpensesCSV] untenanted-row probe failed:", probeError.message)
+      untenantedRowCount = null
+    } else {
+      untenantedRowCount = nullTenantCount ?? 0
+      if (untenantedRowCount > 0) {
+        console.warn(
+          `[exportExpensesCSV] ${untenantedRowCount} expense row(s) for agent ${agentId} have a NULL brokerage_id and are OMITTED from this export. Source: app/api/financial/expenses/route.ts:53. Fixed by supabase/migrations/m516-*.sql.`,
+        )
+      }
+    }
+
     const headers = ["Date", "Category", "Description", "Amount", "Receipt URL"]
+    // FLAGGED, NOT CHANGED — a bearer credential leaves the tenancy boundary here.
+    // `receipt_url` is a SIGNED URL into the PRIVATE `receipts` bucket, minted by
+    // attachExpenseReceipt in this file with `bucket: "receipts"` and
+    // `signedTtlSeconds: 60 * 60 * 24 * 365` — VERIFIED at the uploadBufferToBucket
+    // call, this file, the `bucket:`/`signedTtlSeconds:` pair inside
+    // attachExpenseReceipt. Anyone holding the string can fetch the receipt for a YEAR
+    // without signing in, so once it is written into a CSV the file itself is the
+    // credential: mailed to an accountant, dropped in a shared drive, or attached to
+    // a ticket, it outlives the export and no longer answers to the gate above.
+    // Not fixed here because every candidate fix changes what the export IS and
+    // needs the owner: (a) emit the storage PATH plus a "Receipt on file" marker and
+    // let the app re-sign on demand; (b) mint a SHORT-lived URL at export time
+    // instead of reusing the year-long one; (c) keep the URL but only for the
+    // exporting agent's own rows. Recommendation: (a) — the CSV then carries no
+    // credential at all, and the 365-day TTL stays confined to the in-app P&L view
+    // it was minted for. Reported to the wave rather than decided in this lane.
     const rows = (expenses ?? []).map((e: any) => [
       e.expense_date ?? "",
       e.category ?? "",
@@ -379,6 +536,14 @@ export async function exportExpensesCSV(agentId: string) {
       csv,
       filename: `expenses-${currentYear}.csv`,
       rowCount: rows.length,
+      // The blind spot, carried back beside the number. 0 = nothing omitted;
+      // >0 = that many of this agent's rows are untenanted and missing from the
+      // CSV; null = the probe itself could not run, so the omission is UNKNOWN
+      // rather than zero. Both current callers
+      // (app/components/features/financial/ExportCSVButton.tsx,
+      // app/dashboard/financials/reports/reports-client.tsx) read only
+      // success/csv/filename/error, so this is additive and breaks neither.
+      untenantedRowCount,
     }
   } catch (err: any) {
     return { success: false, error: err.message ?? "Export failed" }
