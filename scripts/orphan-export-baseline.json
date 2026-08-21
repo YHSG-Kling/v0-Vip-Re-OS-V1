@@ -27,6 +27,7 @@
     "app/actions/lead-import/import-actions.ts": 1,
     "app/actions/lead-intelligence.ts": 6,
     "app/actions/listings-kernel.ts": 3,
+    "app/actions/marketing-studio.ts": 2,
     "app/actions/multi-persona.ts": 2,
     "app/actions/onboarding/mentor-session.ts": 1,
     "app/actions/open-house-automation.ts": 1,
@@ -77,7 +78,7 @@
     "lib/agents/buyer-match-reel-producer.ts": 1,
     "lib/agents/buyer-reel-delivery.ts": 2,
     "lib/agents/coverage-mode.ts": 1,
-    "lib/agents/education-delivery-producer.ts": 2,
+    "lib/agents/education-delivery-producer.ts": 4,
     "lib/agents/manager-outbound-eval.ts": 2,
     "lib/agents/recruit-outreach-producer.ts": 1,
     "lib/agents/referral-closer.ts": 2,
@@ -121,7 +122,7 @@
     "lib/brokerage-intelligence/miners.ts": 6,
     "lib/brokerage-intelligence/offer-term-outcomes.ts": 3,
     "lib/buyer-search/external-match.ts": 2,
-    "lib/buyer-search/fair-housing.ts": 2,
+    "lib/buyer-search/fair-housing.ts": 3,
     "lib/buyer-search/investor-offmarket-match.ts": 3,
     "lib/campaign-sequences/persona-render-runner.ts": 1,
     "lib/campaign-sequences/touchpoint-bridge.ts": 1,
@@ -352,8 +353,8 @@
     "lib/lead-assignment/default-assignment.ts": 1,
     "lib/lead-assignment/rule-matcher.ts": 2,
     "lib/lead-assignment/tier-routing.ts": 3,
-    "lib/lead-governance/protected-class-signals.ts": 4,
-    "lib/lead-governance/seller-signal-strength.ts": 3,
+    "lib/lead-governance/protected-class-signals.ts": 7,
+    "lib/lead-governance/seller-signal-strength.ts": 5,
     "lib/lead-pipeline/ai-intent-classifier.ts": 3,
     "lib/lead-pipeline/canonical-lead-eligibility.ts": 1,
     "lib/lead-pipeline/enrichment-column-map.ts": 1,
@@ -556,7 +557,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9189,
+  "census": 9211,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -2702,7 +2703,7 @@
     "lib/agents/contact-memory.ts": 2,
     "lib/agents/coverage-mode.ts": 2,
     "lib/agents/deal-coordinator.ts": 1,
-    "lib/agents/education-delivery-producer.ts": 4,
+    "lib/agents/education-delivery-producer.ts": 6,
     "lib/agents/extract-client-messages.ts": 1,
     "lib/agents/listing-concierge.ts": 1,
     "lib/agents/managed-agents-egress.ts": 4,
@@ -2812,6 +2813,7 @@
     "lib/auth/authorize-for-user.ts": 1,
     "lib/auth/contact-access.ts": 1,
     "lib/auth/isa-actor.ts": 2,
+    "lib/auth/lead-visibility.ts": 5,
     "lib/auth/permissions-client.ts": 3,
     "lib/auth/permissions.ts": 11,
     "lib/auth/platform-guard.ts": 2,
@@ -2882,7 +2884,7 @@
     "lib/buyer-search/conversation-criteria.ts": 10,
     "lib/buyer-search/explanation-generator.ts": 1,
     "lib/buyer-search/external-match.ts": 4,
-    "lib/buyer-search/fair-housing.ts": 3,
+    "lib/buyer-search/fair-housing.ts": 4,
     "lib/buyer-search/intent-parser.ts": 3,
     "lib/buyer-search/investor-offmarket-match.ts": 6,
     "lib/buyer-search/investor-offmarket-runner.ts": 3,
@@ -3000,6 +3002,7 @@
     "lib/constants/index.ts": 2,
     "lib/contact-pipeline/contact-capture.ts": 2,
     "lib/contact-promotion/contact-creator.ts": 3,
+    "lib/contact-promotion/conversion-finality.ts": 5,
     "lib/contact-promotion/history-carry.ts": 1,
     "lib/contact-promotion/lead-deactivator.ts": 1,
     "lib/contact-promotion/portal-access.ts": 1,
@@ -3406,7 +3409,7 @@
     "lib/kernel/document-custody.ts": 5,
     "lib/kernel/draft-quality.ts": 3,
     "lib/kernel/dual-intent-linker.ts": 4,
-    "lib/kernel/education.ts": 12,
+    "lib/kernel/education.ts": 15,
     "lib/kernel/egress-scope.ts": 3,
     "lib/kernel/email-deliverability.ts": 2,
     "lib/kernel/emit.ts": 1,
@@ -3430,7 +3433,7 @@
     "lib/kernel/jobs.ts": 1,
     "lib/kernel/journey-snapshot.ts": 2,
     "lib/kernel/launch-war-room.ts": 3,
-    "lib/kernel/lead-acquisition-handlers.ts": 8,
+    "lib/kernel/lead-acquisition-handlers.ts": 7,
     "lib/kernel/lead-intake-cockpit.ts": 6,
     "lib/kernel/lead-magnets.ts": 8,
     "lib/kernel/lender-linkage.ts": 6,
@@ -3570,9 +3573,9 @@
     "lib/lead-assignment/unassigned-escalation.ts": 1,
     "lib/lead-governance/multi-factor-scorer.ts": 1,
     "lib/lead-governance/promotion-readiness.ts": 1,
-    "lib/lead-governance/protected-class-signals.ts": 7,
+    "lib/lead-governance/protected-class-signals.ts": 11,
     "lib/lead-governance/routing-evaluator.ts": 1,
-    "lib/lead-governance/seller-signal-strength.ts": 4,
+    "lib/lead-governance/seller-signal-strength.ts": 6,
     "lib/lead-governance/sla-escalation.ts": 1,
     "lib/lead-governance/sla-monitor.ts": 2,
     "lib/lead-governance/stale-lead-processor.ts": 1,
@@ -4114,6 +4117,7 @@
     "lib/video/repurpose-planner.ts": 3,
     "lib/video/script-compliance.ts": 10,
     "lib/video/script-structure.ts": 3,
+    "lib/video/verbal-disclosure.ts": 1,
     "lib/video/video-director.ts": 11,
     "lib/video/video-identity.ts": 1,
     "lib/video/video-pipeline-reaper-policy.ts": 1,
@@ -12998,6 +13002,8 @@
       "spawnDealCoordinatorForTransaction"
     ],
     "lib/agents/education-delivery-producer.ts": [
+      "pickEducationChannel",
+      "resolveClientAgeBand",
       "conciergeForSide",
       "buildEducationDelivery",
       "produceEducationDelivery",
@@ -13598,6 +13604,13 @@
       "getIsaSystemUserId",
       "getIsaSystemUserIdCached"
     ],
+    "lib/auth/lead-visibility.ts": [
+      "resolveLeadVisibility",
+      "resolveLeadVisibilityForSession",
+      "applyLeadRowScope",
+      "leadRowInScope",
+      "resolveScopedLeadIds"
+    ],
     "lib/auth/permissions-client.ts": [
       "getClientUserRole",
       "clientHasCapability",
@@ -14035,6 +14048,7 @@
     "lib/buyer-search/fair-housing.ts": [
       "scanFairHousing",
       "sanitizeFairHousing",
+      "scanExplanation",
       "sanitizeExplanation"
     ],
     "lib/buyer-search/intent-parser.ts": [
@@ -14607,6 +14621,13 @@
       "motivationToContactType",
       "resolveContactType",
       "createContactFromLead"
+    ],
+    "lib/contact-promotion/conversion-finality.ts": [
+      "conversionVerdictForRow",
+      "assertLeadNotConverted",
+      "excludeConvertedLeads",
+      "partitionConvertedLeads",
+      "describeConversionRefusal"
     ],
     "lib/contact-promotion/history-carry.ts": [
       "carryLeadHistoryToContact"
@@ -16570,6 +16591,9 @@
       "linkDualJourneys"
     ],
     "lib/kernel/education.ts": [
+      "ageSegmentFromAge",
+      "ageMidpointFromAgeRange",
+      "ageSegmentFromAgeRange",
       "ageFromBirthday",
       "generationalCohortFromAge",
       "cohortFraming",
@@ -16746,8 +16770,7 @@
       "handleISAQualificationStarted",
       "handleConsentReceived",
       "handleLeadReadyForAssignment",
-      "handleLeadAssigned",
-      "handleLeadConvertedToContact"
+      "handleLeadAssigned"
     ],
     "lib/kernel/lead-intake-cockpit.ts": [
       "computeFunnel",
@@ -17593,8 +17616,12 @@
       "isProtectedClassSource",
       "assertSellerSignalSourceAllowed",
       "defineSellerSignalSources",
+      "protectedClassSourcesBySignalType",
       "stripProtectedClassCriteria",
-      "redactProtectedClassFields"
+      "labelProtectedClassFields",
+      "redactProtectedClassFields",
+      "protectedClassSegmentationIn",
+      "assertAudienceSegmentationAllowed"
     ],
     "lib/lead-governance/routing-evaluator.ts": [
       "evaluateRoutingEligibility"
@@ -17603,6 +17630,8 @@
       "isSellerSignalStrength",
       "rankOf",
       "isStrongSellerSignal",
+      "isSuppressionSellerSignal",
+      "hasRepresentationSuppression",
       "countStrongSellerSignals"
     ],
     "lib/lead-governance/sla-escalation.ts": [
@@ -20242,6 +20271,9 @@
       "targetWordCount",
       "estimateDurationSeconds"
     ],
+    "lib/video/verbal-disclosure.ts": [
+      "applyBrokerageVerbalDisclosure"
+    ],
     "lib/video/video-director.ts": [
       "selectVideoFormat",
       "selectVideoFormatLearned",
@@ -20796,5 +20828,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 0
+  "trulyDead": 2
 }

@@ -748,24 +748,13 @@ export async function addCampaignComment(params: CreateCommentParams) {
   return { success: true, comment }
 }
 
-export async function getCampaignComments(campaignId: string) {
-  const { brokerageId } = await getAgentContext()
-  const supabase = await createClient()
-
-  const { data: comments, error } = await supabase
-    .from("marketing_campaign_comments")
-    .select("*, author:users(id, first_name, last_name)")
-    .eq("campaign_id", campaignId)
-    .eq("brokerage_id", brokerageId)
-    .order("created_at", { ascending: true })
-
-  if (error) {
-    console.error("[v0] Error fetching comments:", error)
-    return { success: false, error: error.message, comments: [] }
-  }
-
-  return { success: true, comments: comments ?? [] }
-}
+// getCampaignComments REMOVED — TOMBSTONE.
+// SURVIVOR: `getCampaignById` in this file, whose bundle already carries the
+// campaign's comments, which is why the studio client reads them from there.
+// This was a "use server" export, so it was a PUBLIC HTTP ENDPOINT with no
+// caller — an unreferenced server action is reachable by anyone who knows its
+// id, not dead code. Its last importer went in the dead-import tranche; the
+// endpoint is going with it rather than being left addressable.
 
 // ─── TASK ACTIONS ─────────────────────────────────────────────────────────────
 
@@ -800,24 +789,10 @@ export async function createCampaignTask(params: CreateTaskParams) {
   return { success: true, task }
 }
 
-export async function getCampaignTasks(campaignId: string) {
-  const { brokerageId } = await getAgentContext()
-  const supabase = await createClient()
-
-  const { data: tasks, error } = await supabase
-    .from("marketing_campaign_tasks")
-    .select("*, assignee:users(id, first_name, last_name)")
-    .eq("campaign_id", campaignId)
-    .eq("brokerage_id", brokerageId)
-    .order("due_at", { ascending: true, nullsFirst: false })
-
-  if (error) {
-    console.error("[v0] Error fetching tasks:", error)
-    return { success: false, error: error.message, tasks: [] }
-  }
-
-  return { success: true, tasks: tasks ?? [] }
-}
+// getCampaignTasks REMOVED — TOMBSTONE.
+// SURVIVOR: `getCampaignById` in this file, whose bundle already carries the
+// campaign's tasks. Same reasoning as getCampaignComments above: a "use server"
+// export with no caller is still a live public endpoint.
 
 export async function updateTaskStatus(
   taskId: string,

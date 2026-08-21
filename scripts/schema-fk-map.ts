@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1649 of 1706 pairs) — storing them would be
+ * overwhelming majority (1650 of 1707 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -58,15 +58,15 @@
  *   • foreign keys crossing out of `public` (a reference to auth.users cannot be embedded from
  *     the REST surface anyway).
  *
- * MEASURED AT GENERATION: 1781 edges across 706 source tables — every foreign key
+ * MEASURED AT GENERATION: 1782 edges across 706 source tables — every foreign key
  * single-column, and no (table, column) pair carrying FKs to two different targets, so the map is
- * total and unambiguous. 1706 unordered table pairs carry at least one FK; 57
+ * total and unambiguous. 1707 unordered table pairs carry at least one FK; 57
  * carry more than one and are listed below. 12 of the edges are self-referential.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-08-20
+ * generated: 2026-08-21
  * source: public.live_foreign_keys_json()
- * body-sha256: b94505c3f93f26ff862c01a60cf8b02fd5788be06f8ae216fd263ac31e6005d7
+ * body-sha256: 0e6aa2d49e58e50e09d245fcf0df53db4ec06c97bc3b05a3f4299c339e4168d1
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -482,7 +482,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "meter_readings": { "brokerage_id": "brokerages" },
   "milestone_template_items": { "template_id": "transaction_milestone_templates" },
   "model_retraining_log": { "brokerage_id": "brokerages" },
-  "motivated_seller_signals": { "brokerage_id": "brokerages" },
+  "motivated_seller_signals": { "brokerage_id": "brokerages", "contact_id": "contacts" },
   "narration_cache": { "brokerage_id": "brokerages" },
   "negotiation_strategies": { "agent_user_id": "users", "brokerage_id": "brokerages", "contact_id": "contacts", "offer_id": "offers" },
   "neighbor_notification_campaigns": { "agent_user_id": "users", "brokerage_id": "brokerages", "direct_mail_campaign_id": "direct_mail_campaigns", "listing_id": "listings" },
@@ -755,7 +755,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "vendor_ratings": { "vendor_id": "vendors" },
   "vendor_review_flags": { "review_id": "vendor_reviews" },
   "vendor_reviews": { "brokerage_id": "brokerages", "user_id": "users", "vendor_id": "vendors" },
-  "vendor_subscriptions": { "brokerage_id": "vendor_plans", "plan_id": "vendor_plans", "vendor_id": "vendors" },
+  "vendor_subscriptions": { "brokerage_id": "brokerages", "plan_id": "vendor_plans", "vendor_id": "vendors" },
   "vendor_tax_documents": { "vendor_id": "vendors" },
   "vendor_transactions": { "brokerage_id": "brokerages", "subscription_id": "vendor_subscriptions", "vendor_id": "vendor_marketplace_profiles" },
   "vendor_usage_tracking": { "agent_id": "agents", "brokerage_id": "brokerages", "lead_id": "leads" },
@@ -845,7 +845,7 @@ export const SCHEMA_FK_PAIR_CARDINALITY: Record<string, number> = {
   "users|vendor_contact_assignments": 2,
   "users|vendors": 2,
   "users|video_scripts_library": 3,
-  "vendor_plans|vendor_subscriptions": 3,
+  "vendor_plans|vendor_subscriptions": 2,
 }
 
 /** How many distinct foreign keys join these two tables, in EITHER direction.

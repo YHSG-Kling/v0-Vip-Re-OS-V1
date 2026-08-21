@@ -1068,40 +1068,14 @@ export async function getVideoEngagementEvents(filters: {
   return data || []
 }
 
-export async function getVideoPerformanceTracking(filters: {
-  brokerageId?: string  // ignored — derived from session
-  videoAssetId?: string
-  videoProjectId?: string
-  limit?: number
-}) {
-  const auth = await requireCaller()
-  if (!auth.ok) return []
-
-  const supabase = createServiceClient()
-
-  let query = supabase
-    .from("video_performance_tracking")
-    .select("*")
-    .eq("brokerage_id", auth.brokerageId)
-    .order("total_views", { ascending: false })
-    .limit(filters.limit || 50)
-
-  if (filters.videoAssetId) {
-    query = query.eq("video_asset_id", filters.videoAssetId)
-  }
-  if (filters.videoProjectId) {
-    query = query.eq("video_project_id", filters.videoProjectId)
-  }
-
-  const { data, error } = await query
-
-  if (error) {
-    console.error("[video-generation] Error fetching performance tracking:", error)
-    return []
-  }
-
-  return data || []
-}
+// getVideoPerformanceTracking REMOVED — TOMBSTONE.
+// SURVIVOR: `getVideoPerformanceStats` at app/actions/video-generation.ts:916 —
+// same table, same tenant scope, and richer. Its last importer
+// (app/dashboard/videos/analytics/page.tsx) was repointed at the survivor in the
+// dead-import tranche, leaving this a "use server" export with no caller: a
+// public HTTP endpoint nothing addresses. NOTE the same name also exists as a
+// method on services/supabaseService.ts:609, which is a DIFFERENT thing and is
+// left alone.
 
 // ============================================
 // AGENT VIDEO PROFILE
