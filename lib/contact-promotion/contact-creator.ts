@@ -217,6 +217,16 @@ export async function createContactFromLead(
       mailing_address:          data.lead.mailing_address ?? null,
       mailing_address_source:   data.lead.mailing_address_source ?? null,
       mailing_address_verified: data.lead.mailing_address_verified ?? null,
+      // CARRY THE WHEN, NOT JUST THE WHETHER. m511 added this column for the
+      // reason its own title gives — a lead address could be verified forever
+      // with no record of when. The flag above was already carried and this was
+      // not, so a converted contact inherited `verified: true` with a NULL
+      // timestamp: a claim that cannot be aged out, re-checked, or falsified.
+      // That matters here specifically, because a verified mailing address is
+      // one of the facts the conversion gate accepts as qualifying — inheriting
+      // the verdict while dropping its date is how a stale verification becomes
+      // permanent.
+      mailing_address_verified_at: data.lead.mailing_address_verified_at ?? null,
       mailing_city:             data.lead.mailing_city ?? null,
       mailing_state:            data.lead.mailing_state ?? null,
       mailing_zip:              data.lead.mailing_zip ?? null,
