@@ -514,17 +514,20 @@ export async function handleLeadAssigned(params: {
       console.log(`[lead-acquisition] history re-pointed to contact ${contact.id}:`, carry.repointed)
     }
 
-    // `is_active` is NOT the carry's business — it is this file's, which declares
-    // itself the lead lifecycle's only writer. Stamped separately so the carry
-    // stays the single shared implementation of the link + re-point and nothing
-    // else. supabase-js RESOLVES a refusal, so the error is read.
-    const { error: deactivateError } = await supabase
-      .from('leads')
-      .update({ is_active: false, updated_at: new Date().toISOString() })
-      .eq('id', leadId)
-    if (deactivateError) {
+    // DEACTIVATION — delegated, not re-implemented. This used to be an inline
+    // `is_active: false` update and nothing else, which left TWO of the four
+    // conversion markers unwritten on this lane: `ai_isa_owner` stayed true (so
+    // the ISA still considered the lead its own) and any `sequence_enrollments`
+    // stayed 'active'/'paused' (so a campaign step could still fire at a person
+    // who is now a contact). All three converters now call the ONE deactivation
+    // implementation — lib/contact-promotion/lead-deactivator.ts — so they can
+    // no longer drift apart (CLAUDE.md §6). It writes only lead-CLOSURE columns;
+    // `lifecycle_state`, which this file owns, is untouched by it.
+    const { deactivateLead } = await import('@/lib/contact-promotion/lead-deactivator')
+    const deactivated = await deactivateLead(supabase, leadId)
+    if (!deactivated.success) {
       console.error(
-        `[lead-acquisition] lead ${leadId} converted to contact ${contact.id} but was NOT deactivated: ${deactivateError.message}`,
+        `[lead-acquisition] lead ${leadId} converted to contact ${contact.id} but was NOT deactivated: ${deactivated.error ?? 'unknown error'}`,
       )
     }
   }
@@ -618,14 +621,39 @@ export async function handleLeadConvertedToContact(params: {
   const { leadId, brokerageId, contactId } = params
   const supabase = createServiceClient()
 
-  await supabase
+  // A FOURTH CONVERSION WRITER, found while closing the converter gap and
+  // REPORTED rather than deleted: this export has ZERO call sites (the only
+  // other mention in the tree is a comment in lib/audiences/audience-sync.ts:189),
+  // and it is exported through lib/kernel/index.ts:147, so "unreferenced" is not
+  // proof of "dead" without an owner ruling. What it WAS is a fifth spelling of
+  // conversion — `is_active` + `contact_id` and nothing else: no `converted_at`,
+  // no `ai_isa_owner` release, no sequence_enrollments close, no history carry.
+  // Brought onto the same markers as the other three here so that if it is ever
+  // called it cannot re-open the leak; whether it should exist at all is a
+  // consolidation call for the integrator (survivor candidate:
+  // lib/kernel/crm.ts:convertLeadToContact).
+  const nowIso = new Date().toISOString()
+  const { error: linkError } = await supabase
     .from('leads')
     .update({
-      is_active: false,
       contact_id: contactId,
-      updated_at: new Date().toISOString(),
+      converted_at: nowIso,
+      updated_at: nowIso,
     })
     .eq('id', leadId)
+  if (linkError) {
+    console.error(`[lead-acquisition] lead ${leadId} → contact ${contactId} LINK not stamped: ${linkError.message}`)
+  }
+
+  {
+    const { deactivateLead } = await import('@/lib/contact-promotion/lead-deactivator')
+    const deactivated = await deactivateLead(supabase, leadId)
+    if (!deactivated.success) {
+      console.error(
+        `[lead-acquisition] lead ${leadId} converted to contact ${contactId} but was NOT deactivated: ${deactivated.error ?? 'unknown error'}`,
+      )
+    }
+  }
 
   await supabase.from('lifecycle_events').insert({
     entity_type: 'lead',

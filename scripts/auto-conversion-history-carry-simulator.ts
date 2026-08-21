@@ -95,10 +95,18 @@ async function main(): Promise<void> {
     // the automatic lane would write converted_at twice with different clocks.
     check("...and the hand-rolled inline `contact_id + converted_at` UPDATE it replaces\n    is gone — two writers of one pair can disagree about when a lead converted",
       !/\.from\('leads'\)\s*\.update\(\{\s*contact_id: contact\.id,\s*converted_at:/.test(handlers))
-    check("...while `is_active: false` is still stamped by this file, which declares\n    itself the lead lifecycle's only writer",
-      /is_active: false/.test(handlers))
-    check("...and its refusal is READ — supabase-js resolves a refusal, so an\n    undestructured update is a lead that stays active forever, silently",
-      /deactivateError/.test(handlers))
+    // UPDATED with the conversion-finality pass. This used to assert an inline
+    // `is_active: false` update in THIS file. That inline update was the third
+    // hand-rolled deactivation in the tree and it wrote only ONE of the four
+    // closure markers — `ai_isa_owner` stayed true and sequence_enrollments
+    // stayed open, so a converted lead was still ISA-owned and still enrolled.
+    // All converters now delegate to the ONE implementation
+    // (lib/contact-promotion/lead-deactivator.ts), which is what the assertion
+    // tracks now. Guarded end-to-end by npm run test:conversion-finality.
+    check("...while the lead is still CLOSED on this lane — now through the ONE\n    deactivator, not a per-lane inline update that wrote a single marker",
+      /deactivateLead\(supabase, leadId\)/.test(handlers))
+    check("...and its refusal is READ — supabase-js resolves a refusal, so an\n    unchecked deactivation is a lead that stays active forever, silently",
+      /deactivated\.success/.test(handlers))
   }
 
   // ═══ 2. THE CARRY DOES BOTH HALVES ════════════════════════════════════════
@@ -188,7 +196,7 @@ async function main(): Promise<void> {
     check("...and never throws on one — a history-carry failure must not turn a\n    successful assignment into a failed request",
       !/throw[\s\S]{0,120}carry\.warnings/.test(handlers))
     check("...and it runs the carry BEFORE it deactivates the lead, so the lineage\n    link exists before the lead's life ends",
-      handlers.indexOf("carryLeadHistoryToContact(") < handlers.indexOf("is_active: false"))
+      handlers.indexOf("carryLeadHistoryToContact(") < handlers.indexOf("deactivateLead(supabase, leadId)"))
   }
 
   console.log(`\n${"═".repeat(70)}`)

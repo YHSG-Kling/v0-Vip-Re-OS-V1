@@ -80,7 +80,10 @@ export interface PostCallOutcome {
 
 export async function routePostCallOutcome(svc: any, voiceCallId: string): Promise<PostCallOutcome> {
   try {
-    const { data: call } = await svc.from("voice_calls")
+    // `let`, not `const`: the conversion-finality step below re-keys a converted
+    // lead's call onto the contact it became, and the contact branch reads
+    // `call.contact_id`.
+    let { data: call } = await svc.from("voice_calls")
       .select("id, brokerage_id, contact_id, lead_id, agent_id, direction, transcription, duration_seconds, status, call_type")
       .eq("id", voiceCallId).maybeSingle()
     if (!call) return { ok: false, processed: false, error: "call not found" }
@@ -136,9 +139,37 @@ export async function routePostCallOutcome(svc: any, voiceCallId: string): Promi
       }).eq("voice_call_id", call.id)
     } catch { /* best-effort scoring */ }
 
+    // 4. CONVERSION FINALITY — decide WHICH branch owns this call before either
+    //    runs. The lead branch below is entered on `call.lead_id`, and it is
+    //    checked BEFORE the contact branch — so a call placed against a lead that
+    //    has since converted took the lead branch and wrote rolling
+    //    `lead_temperature` / `lead_score` onto a dead lead row, while the
+    //    contact-side routing (opt-out → DNC, positive → agent notify +
+    //    follow-up) never ran at all. That is the ruling inverted: the lead got
+    //    the update and the contact got nothing.
+    //
+    //    RE-ROUTE, not refuse: the call really happened and its outcome is real
+    //    work. A converted lead's call is handed to the CONTACT branch, keyed to
+    //    the contact the lead became. Fails closed — an unreadable lead skips the
+    //    lead-keyed write rather than performing it blind.
+    let effectiveContactId: string | null = (call.contact_id as string | null) ?? null
+    let leadBranchOwns = !!call.lead_id
+    if (call.lead_id) {
+      const { assertLeadNotConverted } = await import("@/lib/contact-promotion/conversion-finality")
+      const verdict = await assertLeadNotConverted(svc, call.lead_id as string)
+      if (!verdict.allowed) {
+        leadBranchOwns = false
+        if (verdict.contactId) effectiveContactId = verdict.contactId
+        else console.error(`[post-call-outcome] ${verdict.reason}`)
+      }
+    }
+    if (effectiveContactId && effectiveContactId !== call.contact_id) {
+      call = { ...call, contact_id: effectiveContactId }
+    }
+
     // 4a. LEAD call → rolling qualification (conversion/halt is routeLeadCallIntent's
     //     job, running alongside this). Additive + idempotent.
-    if (call.lead_id) {
+    if (leadBranchOwns) {
       try {
         await svc.from("leads").update({
           lead_temperature: signalTemperature(signal),

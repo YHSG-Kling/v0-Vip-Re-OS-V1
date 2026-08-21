@@ -20,6 +20,7 @@ import { firstTouchDecision, DEFAULT_AGENT_GRACE_MINUTES } from "@/lib/ai-isa/sp
 import type { FirstTouchConsentInput } from "@/lib/ai-isa/speed-to-lead-policy"
 import { initiateAIISAEngagement } from "@/app/actions/ai-isa/initiate-engagement"
 import { engageContact }           from "@/app/actions/ai-isa/engage-contact"
+import { excludeConvertedLeads }   from "@/lib/contact-promotion/conversion-finality"
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -69,18 +70,28 @@ export async function runSpeedToLead(
   // leg is what starts AI ISA engagement for a freshly un-parked lead.
   const leadCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString()
 
-  const { data: leads, error: leadsError } = await supabase
-    .from("leads")
-    .select(
-      `id, brokerage_id, created_at, first_touched_at,
+  //
+  // CONVERSION FINALITY: this sweep had NEITHER a `contact_id` filter NOR an
+  // `is_active` one — its only gate was `ai_isa_owner=true`, and the manual
+  // converter (lib/kernel/crm.ts) left BOTH `ai_isa_owner` and `is_active`
+  // untouched. So a lead converted through the lead desk was still a first-touch
+  // candidate: the sweep would dispatch an ISA first touch at a person who had
+  // already become a client, then stamp `first_touched_at` on their dead lead
+  // row. `contact_id` is the marker; the sweep no longer selects them.
+  const { data: leads, error: leadsError } = await excludeConvertedLeads(
+    supabase
+      .from("leads")
+      .select(
+        `id, brokerage_id, created_at, first_touched_at,
        email_verified, email_opt_out, mailing_address_verified,
        ai_isa_owner, lifecycle_state`,
-    )
-    .eq("brokerage_id", brokerageId)
-    .eq("ai_isa_owner", true)
-    .is("first_touched_at", null)
-    .or(`created_at.gte.${leadCutoff},distributed_at.gte.${leadCutoff}`)
-    .limit(50) // safety cap per sweep
+      )
+      .eq("brokerage_id", brokerageId)
+      .eq("ai_isa_owner", true)
+      .is("first_touched_at", null)
+      .or(`created_at.gte.${leadCutoff},distributed_at.gte.${leadCutoff}`)
+      .limit(50), // safety cap per sweep
+  )
 
   if (leadsError) {
     await logError(supabase, brokerageId, "speed_to_lead_leads_query", leadsError.message)

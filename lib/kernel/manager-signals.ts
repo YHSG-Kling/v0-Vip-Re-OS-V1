@@ -538,8 +538,20 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const leadId = signal.entityId
     if (!leadId) return null
     const { data: lead } = await ctx.supabase.from("leads")
-      .select("id, first_name, property_interest, email, email_verified").eq("id", leadId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+      .select("id, contact_id, first_name, property_interest, email, email_verified").eq("id", leadId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
     if (!lead) return null
+    // CONVERSION FINALITY — refusal, and it is REPORTED on the bus rather than
+    // dropped. A "long-horizon nurture" touch is by definition for someone who
+    // never became a client; once they DID, the sphere touch is the wrong touch
+    // and the contact's own lifetime-nurture lane owns them
+    // (campaign_orchestrator:contact_outreach_ready and the sphere's contact
+    // handlers). Re-routing this specific copy — "still here whenever you're
+    // ready" — to an active client would be worse than not sending it.
+    {
+      const { conversionVerdictForRow } = await import("@/lib/contact-promotion/conversion-finality")
+      const verdict = conversionVerdictForRow(lead as { id?: string; contact_id?: string | null }, leadId)
+      if (!verdict.allowed) return `long-horizon nurture NOT proposed: ${verdict.reason}`
+    }
     const l = lead as Record<string, any>
     if (!(l.email && l.email_verified === true)) return "long-horizon nurture noted (no verified email for a light touch)"
     const firstName = (l.first_name as string | null) || "there"
@@ -1076,8 +1088,30 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const videoUrl = (signal.payload?.video_url as string | undefined) ?? null
     if (!leadId || !videoUrl) return null
     const { data: lead } = await ctx.supabase.from("leads")
-      .select("id, first_name, brokerage_id").eq("id", leadId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
+      .select("id, contact_id, first_name, brokerage_id").eq("id", leadId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
     if (!lead) return null
+
+    // ── CONVERSION FINALITY — RE-ROUTE to the contact ─────────────────────────
+    // The reel was commissioned for this person and it FINISHED; if they became
+    // a client while it rendered, the video is still theirs. The ruling says the
+    // CONTACT gets the action, not that the action disappears — so the same
+    // gated 1:1 email is proposed against the contact instead of the lead, on
+    // the sibling handler's own rail ("campaign_orchestrator:contact_outreach_ready",
+    // below). Nothing lead-keyed is written.
+    {
+      const { conversionVerdictForRow } = await import("@/lib/contact-promotion/conversion-finality")
+      const verdict = conversionVerdictForRow(lead as { id?: string; contact_id?: string | null }, leadId)
+      if (!verdict.allowed) {
+        if (!verdict.contactId) return `reel follow-up NOT proposed: ${verdict.reason}`
+        const handler = SIGNAL_HANDLERS["campaign_orchestrator:contact_outreach_ready"]
+        const rerouted = await handler(
+          { ...signal, payload: { ...(signal.payload ?? {}), contact_id: verdict.contactId, video_url: videoUrl } },
+          ctx,
+        )
+        return `lead ${leadId} converted to contact ${verdict.contactId} — reel follow-up re-routed to the contact${rerouted ? `: ${rerouted}` : ""}`
+      }
+    }
+
     const firstName = (lead as any).first_name || "there"
     const subject = `A quick personal hello, ${firstName}`
 

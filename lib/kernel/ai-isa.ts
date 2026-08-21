@@ -483,16 +483,40 @@ export async function assignAiIsaToLeadAfterGate(
     const { ctx, leadId, campaignId } = input
     const supabase = createServiceClient()
 
-    // Re-check minimum_viable_for_isa — the gate must have been evaluated
+    // Re-check minimum_viable_for_isa — the gate must have been evaluated.
+    //
+    // `contact_id` and `is_active` ADDED: this select carried NEITHER, so the
+    // second ISA door assigned AI-ISA ownership to leads that had already become
+    // contacts — and then wrote `lifecycle_state='isa_qualifying'`, which is the
+    // exact value lib/ai-isa/ghost-reengagement.ts:detectGhostLeads sweeps on.
+    // lib/contact-promotion/lead-deactivator.ts used to CLAIM this gate checked
+    // is_active + ai_isa_owner. It checked neither; that comment is corrected at
+    // its source.
     const { data: lead, error: fetchErr } = await supabase
       .from("leads")
-      .select("id, call_stop_flag, opted_out_at, lifecycle_state")
+      .select("id, contact_id, is_active, call_stop_flag, opted_out_at, lifecycle_state")
       .eq("id", leadId)
       .eq("brokerage_id", ctx.brokerageId)
       .maybeSingle()
 
     if (fetchErr || !lead) {
       return { success: false, error: "Lead not found" }
+    }
+
+    // CONVERSION FINALITY — refusal, not re-route. There is no contact-side
+    // equivalent of "assign AI-ISA ownership of a LEAD": a contact's ISA
+    // engagement is governed by `contacts.ai_isa_enabled` (which
+    // lib/kernel/crm.ts:convertLeadToContact already turns on at conversion) and
+    // driven by initiateAIISAContactEngagement. Re-arming lead ownership here
+    // would put a client back on the lead outreach queue, which is precisely
+    // what the ruling forbids. The refusal is REPORTABLE — `blockedReason`
+    // carries the contact that owns the relationship now.
+    {
+      const { conversionVerdictForRow } = await import("@/lib/contact-promotion/conversion-finality")
+      const verdict = conversionVerdictForRow(lead as { id?: string; contact_id?: string | null }, leadId)
+      if (!verdict.allowed) {
+        return { success: false, blocked: true, blockedReason: verdict.reason }
+      }
     }
 
     if (lead.call_stop_flag || lead.opted_out_at) {

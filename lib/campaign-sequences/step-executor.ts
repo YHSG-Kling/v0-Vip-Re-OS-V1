@@ -77,6 +77,7 @@ export async function executeSequenceStep(
   const contactId: string | null = enrollment.contact_id
   const previousOutputs: Record<string, Record<string, unknown>> = enrollment.step_outputs ?? {}
 
+
   // ── Step 2: Fetch next step ────────────────────────────────────────────────
   const nextStepNumber = (enrollment.current_step ?? 0) + 1
 
@@ -111,6 +112,41 @@ export async function executeSequenceStep(
     }).catch(() => {})
 
     return { status: "completed" }
+  }
+
+  // ── Step 2b: CONVERSION FINALITY ───────────────────────────────────────────
+  //
+  // A lead-keyed enrollment whose lead has CONVERTED must stop sending. The
+  // conversion path already terminates enrollments
+  // (lib/contact-promotion/lead-deactivator.ts), and it does so for a stated
+  // reason: a paused enrollment that resumes later "would bypass the new
+  // contact's preferences/consent". This is the same ruling enforced at
+  // EXECUTION time, for the rows that predate it or slipped past it — the
+  // executor's lead branch (email / direct mail, Step 6 below) had NO conversion
+  // check at all, so a converted lead's welcome drip kept mailing.
+  //
+  // TERMINATE rather than re-target: switching a live sequence's recipient from
+  // the lead to the contact mid-run is exactly the consent bypass the deactivator
+  // refuses. The contact's own sequences are enrolled by the contact lane. The
+  // skip is LEDGERED (blocked_reason) so a stopped sequence can say why.
+  // Runs AFTER the step is resolved so the skip row carries a real step_id.
+  if (enrollment.lead_id && !contactId) {
+    const { assertLeadNotConverted } = await import("@/lib/contact-promotion/conversion-finality")
+    const verdict = await assertLeadNotConverted(supabase, enrollment.lead_id, { brokerageId })
+    if (!verdict.allowed) {
+      await logAndSkip(supabase, {
+        enrollmentId, enrollment, step, contactId: verdict.contactId,
+        reason: `conversion finality: ${verdict.reason}`,
+      })
+      const { error: closeErr } = await supabase
+        .from("sequence_enrollments")
+        .update({ status: "completed", completed_at: new Date().toISOString(), next_step_at: null })
+        .eq("id", enrollmentId)
+      if (closeErr) {
+        console.error("[executeSequenceStep] conversion-finality enrollment close refused:", closeErr.message)
+      }
+      return { status: "completed", reason: verdict.reason }
+    }
   }
 
   // ── Step 3: Sequence creator user id ──────────────────────────────────────

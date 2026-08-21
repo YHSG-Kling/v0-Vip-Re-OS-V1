@@ -96,6 +96,50 @@ export async function initiateAIISAEngagement(
     }
     brokerageId = (lead.brokerage_id as string) ?? null
 
+    // ── CONVERSION FINALITY — the FIRST stop, and a RE-ROUTE, not a drop ─────
+    //
+    // This function SELECTED `contact_id` (see the select above) and then never
+    // refused on it. Every other stop it has — agent_id, 'representation',
+    // is_active===false — passes cleanly for a lead converted through
+    // lib/kernel/crm.ts:convertLeadToContact, which stamped `contact_id` and left
+    // the lead ACTIVE. So the canonical ISA first-touch door was still
+    // dispatching email / SMS / phone / direct mail at people who had already
+    // become clients.
+    //
+    // The ruling is "only contacts get the actions" — NOT "the action
+    // disappears". A contact-side twin of this exact entry point already exists,
+    // so the engagement is HANDED to it rather than dropped. An unreadable lead
+    // never reaches here (the read above throws into the catch, which files an
+    // automation_errors row), and a converted lead with no resolvable contact
+    // REFUSES rather than falling through — the reason travels back to the
+    // caller either way, so a skip is never silent.
+    //
+    // CALLER NOTE: `opts.forceChannel` does not survive the re-route — the
+    // contact lane picks the channel from the CONTACT's own stored preferences
+    // and opt-out state, which is the correct authority for a converted person.
+    // The one caller that force-channels a converted lead
+    // (app/api/contacts/send-isa-email/route.ts, which looks up
+    // `leads WHERE contact_id = <contact>` and is therefore ALWAYS aiming at a
+    // converted lead) is owned by another lane and is reported, not edited.
+    {
+      const { conversionVerdictForRow, describeConversionRefusal } =
+        await import('@/lib/contact-promotion/conversion-finality')
+      const verdict = conversionVerdictForRow(lead as { id?: string; contact_id?: string | null }, leadId)
+      if (!verdict.allowed) {
+        if (verdict.contactId) {
+          const { initiateAIISAContactEngagement } =
+            await import('@/app/actions/ai-isa/initiate-contact-engagement')
+          const rerouted = await initiateAIISAContactEngagement(verdict.contactId, 'reactivation')
+          return {
+            ...rerouted,
+            rerouted_to_contact: verdict.contactId,
+            reason: rerouted.reason ?? describeConversionRefusal(verdict, 'lead engagement'),
+          } as any
+        }
+        return { success: false, reason: `stop:conversion_check`, error: verdict.reason }
+      }
+    }
+
     if (lead.agent_id) {
       return { success: false, reason: 'Lead already assigned to agent' }
     }
@@ -118,6 +162,13 @@ export async function initiateAIISAEngagement(
     }
 
     // ── Contact-level stops ─────────────────────────────────────────────────
+    // Past the conversion guard above, `lead.contact_id` is always null, so this
+    // block and the phone/SMS branches it feeds no longer fire on THIS path —
+    // which is the ruling working as intended (a lead is email / direct-mail
+    // only; a converted person is engaged as a CONTACT, through
+    // initiateAIISAContactEngagement). Kept as the defence-in-depth read rather
+    // than deleted: it is what makes a contact-linked lead fail safely instead of
+    // being treated as consented.
     let contactRow: Record<string, any> | null = null
     if (lead.contact_id) {
       const { data } = await supabase

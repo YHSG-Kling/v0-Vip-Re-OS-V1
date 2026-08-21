@@ -571,7 +571,31 @@ export async function convertLeadToContact(params: {
     return result
   }
 
-  // Link lead → contact
+  // ── Link lead → contact, THEN close the lead out ──────────────────────────
+  //
+  // THE CONVERTER GAP (closed here). Three converters exist and they did not
+  // agree on what a conversion writes. This one — the MANUAL lead-desk lane —
+  // stamped `contact_id`, `lifecycle_state` and `converted_at` and stopped:
+  // it never set `is_active=false`, never released `ai_isa_owner`, and never
+  // closed `sequence_enrollments`. So a lead converted through this door stayed
+  // ACTIVE and stayed ENROLLED, and therefore sailed through every downstream
+  // "is_active === false" stop the other two converters relied on. That is the
+  // leak that let the AI ISA, the stale-lead sweeps and the campaign sequences
+  // keep working a person who had already become a client.
+  //
+  // Closed by DELEGATION, not by a third copy (CLAUDE.md §6): the deactivation
+  // is `lib/contact-promotion/lead-deactivator.ts:deactivateLead`, the same one
+  // the promotion service uses. One implementation, three callers.
+  //
+  // NOT reconciled here, and deliberately reported rather than quietly changed:
+  // `lifecycle_state`. This writes 'assigned'; `LEAD_CONVERTED_STATE`
+  // (lib/lead-pipeline/lead-lifecycle.ts:51) is 'representation' and NOTHING
+  // writes it. Moving this to 'representation' is not a one-liner — the
+  // transition graph in lib/kernel/lead-acquisition-handlers.ts:19-24 admits
+  // only assigned→appointment→representation, that file declares itself the
+  // column's ONLY writer, and the readers of 'assigned' live in files this lane
+  // does not own. The conversion GUARD therefore keys on `contact_id`, which is
+  // the one marker every converter writes and every reader can trust.
   await supabase
     .from("leads")
     .update({
@@ -581,6 +605,22 @@ export async function convertLeadToContact(params: {
       updated_at:      now,
     })
     .eq("id", params.leadId)
+
+  // is_active=false + ai_isa_owner=false + sequence_enrollments closed.
+  // Best-effort by construction: the contact EXISTS, and a deactivation failure
+  // must not unwind a successful conversion — but it is READ and reported, never
+  // swallowed, because an active converted lead is the exact shape this whole
+  // guard exists to prevent.
+  {
+    const { deactivateLead } = await import("@/lib/contact-promotion/lead-deactivator")
+    const deactivated = await deactivateLead(supabase, params.leadId)
+    if (!deactivated.success) {
+      console.error(
+        `[crm] lead ${params.leadId} converted to contact ${result.contactId} but was NOT deactivated: ${deactivated.error ?? "unknown error"} — ` +
+          `the lead is still is_active=true and may still be picked up by lead-keyed sweeps.`,
+      )
+    }
+  }
 
   // Lifecycle event
   await supabase.from("lifecycle_events").insert({

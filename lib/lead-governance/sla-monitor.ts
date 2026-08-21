@@ -12,6 +12,7 @@
  */
 
 import { resolveLeadBrokerageId } from "@/lib/activities/activity-tenant"
+import { assertLeadNotConverted, conversionVerdictForRow } from "@/lib/contact-promotion/conversion-finality"
 
 export interface SLAStatus {
   isBreached: boolean
@@ -26,7 +27,25 @@ export interface SLAStatus {
  */
 export function evaluateSLA(lead: any): SLAStatus {
   const now = new Date()
-  
+
+  // CONVERSION FINALITY. The SLA lane had NO conversion predicate anywhere — not
+  // here, not in sla-escalation.ts, not on the `lead_sla_tracking` sweep. A
+  // converted lead therefore kept accruing "unassigned for N days" and "no agent
+  // activity for N days" breaches and kept escalating them to the broker, about
+  // a person who is already a client being served on the contact side. A
+  // converted lead owes the brokerage no LEAD SLA: the clock stops.
+  const finality = conversionVerdictForRow(lead as { id?: string; contact_id?: string | null })
+  if (!finality.allowed && finality.converted === true) {
+    return {
+      isBreached: false,
+      daysInState: 0,
+      escalationRequired: false,
+      escalationReason: finality.reason,
+      escalationRecipient: 'none',
+    }
+  }
+
+
   // Calculate days in current state
   const stateEnteredAt = lead.stage_entered_at ? new Date(lead.stage_entered_at) : new Date(lead.created_at)
   const daysInState = Math.floor((now.getTime() - stateEnteredAt.getTime()) / (1000 * 60 * 60 * 24))
@@ -94,6 +113,16 @@ export async function logEscalation(
   // file it against the lead — the same anchor `app/actions/lead-governance/
   // govern-lead.ts:231` already uses for its own routing rows — which is both the
   // tenant path and the reason the row is findable at all.
+  // CONVERSION FINALITY, re-read from the database rather than trusted from the
+  // caller's row: an `activities` row filed against `entity_type:'lead'` is a
+  // lead-keyed UPDATE, and those cease on conversion. Fails closed — an
+  // unreadable lead is NOT escalated, and says so.
+  const finality = await assertLeadNotConverted(supabase, leadId)
+  if (!finality.allowed) {
+    console.log(`[SLAMonitor] Escalation NOT logged for lead ${leadId}: ${finality.reason}`)
+    return
+  }
+
   const tenant = await resolveLeadBrokerageId(supabase, leadId)
   if (!tenant.ok || !tenant.brokerageId) {
     console.error(

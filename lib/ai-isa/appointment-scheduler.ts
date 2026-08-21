@@ -34,8 +34,40 @@ export async function scheduleISAAppointment(params: {
   }
 
   const supabase = createServiceClient()
-  const entityType = params.leadId ? 'lead' : 'contact'
-  const entityId   = params.leadId ?? params.contactId!
+
+  // ── CONVERSION FINALITY — RE-ROUTE the booking to the contact ──────────────
+  //
+  // "once a lead converts, all communication/updates or schedules are to cease
+  // and only contacts get the actions." A SCHEDULE is squarely in that list, and
+  // this function's only guard was `lifecycle_state === 'representation'` — a
+  // value NOTHING in the tree writes. So a converted lead booked here inserted a
+  // lead-keyed calendar_events row, a lead-keyed ai_isa_activities row, a
+  // lead_sla_tracking row, and ADVANCED leads.lifecycle_state.
+  //
+  // An appointment is real work a human is expecting, so this RE-ROUTES rather
+  // than refuses: the booking proceeds against the CONTACT the lead became.
+  // Everything downstream (entityType, the SLA row, the lifecycle advance) then
+  // keys on the contact, because `leadId` is cleared. Fails closed — an
+  // unreadable lead throws rather than booking against an unknown entity.
+  let leadId = params.leadId ?? null
+  let contactId = params.contactId ?? null
+  if (leadId) {
+    const { assertLeadNotConverted } = await import('@/lib/contact-promotion/conversion-finality')
+    const verdict = await assertLeadNotConverted(supabase, leadId)
+    if (!verdict.allowed) {
+      if (!verdict.contactId) {
+        throw new Error(`Cannot schedule ISA appointment: ${verdict.reason}`)
+      }
+      console.log(
+        `[appointment-scheduler] lead ${leadId} converted — booking re-routed to contact ${verdict.contactId}`,
+      )
+      contactId = verdict.contactId
+      leadId = null
+    }
+  }
+
+  const entityType = leadId ? 'lead' : 'contact'
+  const entityId   = leadId ?? contactId!
 
   // ── Zoom branch (additive, round 39) — never blocks the booking ────────────
   let zoomLocation: string | null = null
@@ -83,14 +115,14 @@ export async function scheduleISAAppointment(params: {
   }
 
   // ── Step 1: Guard representation state ──────────────────────────────────────
-  if (params.leadId) {
+  if (leadId) {
     const { data: lead, error } = await supabase
       .from('leads')
       .select('lifecycle_state')
-      .eq('id', params.leadId)
+      .eq('id', leadId)
       .single()
 
-    if (error || !lead) throw new Error(`Lead not found: ${params.leadId}`)
+    if (error || !lead) throw new Error(`Lead not found: ${leadId}`)
     if (lead.lifecycle_state === 'representation') {
       throw new Error('Cannot schedule ISA appointment: lead is under representation')
     }
@@ -128,8 +160,8 @@ export async function scheduleISAAppointment(params: {
     .from('ai_isa_activities')
     .insert({
       brokerage_id:        params.brokerageId,
-      lead_id:             params.leadId ?? null,
-      contact_id:          params.contactId ?? null,
+      lead_id:             leadId,
+      contact_id:          contactId,
       activity_type:       'appointment_set',
       qualifying_response: { calendar_event_id: calendarEvent.id },
     })
@@ -139,15 +171,18 @@ export async function scheduleISAAppointment(params: {
   }
 
   // ── Step 4: Advance lead lifecycle_state → appointment ─────────────────────
-  if (params.leadId) {
+  // `leadId` (not params.leadId): a converted lead was re-routed to its contact
+  // above and cleared here, so none of this lead-keyed block — the lifecycle
+  // advance or the lead_sla_tracking row — runs for a converted person.
+  if (leadId) {
     const { data: lead } = await supabase
       .from('leads')
       .select('lifecycle_state')
-      .eq('id', params.leadId)
+      .eq('id', leadId)
       .single()
 
     if (lead) {
-      await assertValidTransition(lead.lifecycle_state, 'appointment', params.leadId)
+      await assertValidTransition(lead.lifecycle_state, 'appointment', leadId)
 
       const { error: updateError } = await supabase
         .from('leads')
@@ -155,7 +190,7 @@ export async function scheduleISAAppointment(params: {
           lifecycle_state: 'appointment',
           updated_at: new Date().toISOString(),
         })
-        .eq('id', params.leadId)
+        .eq('id', leadId)
 
       if (updateError) {
         throw new Error(`Failed to update lead lifecycle_state: ${updateError.message}`)
@@ -164,7 +199,7 @@ export async function scheduleISAAppointment(params: {
       const { error: slaError } = await supabase
         .from('lead_sla_tracking')
         .insert({
-          lead_id:     params.leadId,
+          lead_id:     leadId,
           brokerage_id: params.brokerageId,
           sla_type:    'appointment',
           target_at:   params.startAt.toISOString(),

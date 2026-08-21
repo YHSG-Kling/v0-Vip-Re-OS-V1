@@ -24,6 +24,9 @@
 // ORDER (deliberate, and asserted by scripts/outbound-call-gates-simulator.ts):
 //   1. autonomy      — trust boundary. Cached posture read; refuses before any
 //                      consumer data is touched. Opt-in by manager (see below).
+//   1b. conversion_finality — a lead that has become a CONTACT is not a dial
+//                      target. `leadId` is a first-class key in this stack and
+//                      nothing asked whether it had converted. FAILS CLOSED.
 //   2. suppression   — checkSuppression: contact flags (dnc_status /
 //                      call_stop_flag) AND contact_suppression_list,
 //                      brokerage-scoped. FAILS CLOSED (an unreadable list
@@ -91,6 +94,7 @@ export interface OutboundCallGateContext {
 
 export type OutboundCallGateKey =
   | "autonomy"
+  | "conversion_finality"
   | "suppression"
   | "tcpa"
   | "deconflict"
@@ -144,7 +148,40 @@ async function runAutonomyGate(ctx: OutboundCallGateContext): Promise<OutboundCa
   }
 }
 
-// ─── 2. SUPPRESSION — the list-aware gate the live lane never had ─────────────
+// ─── 2. CONVERSION FINALITY — a converted lead is not a dial target ───────────
+// Owner ruling: once a lead converts, communication ceases on the lead and only
+// the CONTACT gets the actions. `leadId` is a first-class dial key here (it is
+// passed by the AI-ISA qualification dial and used by the de-conflict counter),
+// and nothing in this stack asked whether that lead had already converted.
+//
+// It REFUSES rather than re-routes, deliberately: this module cannot change the
+// number, the contact or the call context — a re-route from here would place a
+// call built for a lead against a contact whose consent, quiet hours and
+// preferences were never evaluated. The caller re-keys to the contact and dials
+// again; the refusal names the contact so it can.
+//
+// A dial that is ALREADY keyed to the lead's own contact is the legitimate
+// contact action and passes. FAILS CLOSED — an unreadable lead refuses.
+async function runConversionFinalityGate(ctx: OutboundCallGateContext): Promise<OutboundCallRefusal | null> {
+  if (!ctx.leadId) return null
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { assertLeadNotConverted } = await import("@/lib/contact-promotion/conversion-finality")
+  const verdict = await assertLeadNotConverted(createServiceClient(), ctx.leadId, {
+    brokerageId: ctx.brokerageId,
+  })
+  if (verdict.allowed) return null
+  // The call is already aimed at the contact this lead became — that IS the
+  // contact getting the action, so it proceeds.
+  if (verdict.contactId && ctx.contactId && ctx.contactId === verdict.contactId) return null
+  return {
+    ok: false,
+    error: `Outbound blocked: ${verdict.reason}`,
+    blocked: true,
+    blockReason: "lead_converted",
+  }
+}
+
+// ─── 3. SUPPRESSION — the list-aware gate the live lane never had ─────────────
 // checkSuppression reads BOTH the contact flags (dnc_status / call_stop_flag)
 // and contact_suppression_list, brokerage-scoped, and FAILS CLOSED on a refused
 // read (supabase-js resolves a refused query, so both reads destructure `error`
@@ -254,11 +291,12 @@ async function runVendorBudgetGate(ctx: OutboundCallGateContext): Promise<Outbou
  * function body.
  */
 export const OUTBOUND_CALL_GATES: readonly OutboundCallGate[] = [
-  { key: "autonomy",      consumerProtection: true,  run: runAutonomyGate },
-  { key: "suppression",   consumerProtection: true,  run: runSuppressionGate },
-  { key: "tcpa",          consumerProtection: true,  run: runTcpaGate },
-  { key: "deconflict",    consumerProtection: true,  run: runDeconflictGate },
-  { key: "vendor_budget", consumerProtection: false, run: runVendorBudgetGate },
+  { key: "autonomy",            consumerProtection: true,  run: runAutonomyGate },
+  { key: "conversion_finality", consumerProtection: true,  run: runConversionFinalityGate },
+  { key: "suppression",         consumerProtection: true,  run: runSuppressionGate },
+  { key: "tcpa",                consumerProtection: true,  run: runTcpaGate },
+  { key: "deconflict",          consumerProtection: true,  run: runDeconflictGate },
+  { key: "vendor_budget",       consumerProtection: false, run: runVendorBudgetGate },
 ]
 
 /** The declared order, for readiness surfaces and proofs. */
