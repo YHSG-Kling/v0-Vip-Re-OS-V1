@@ -56,18 +56,24 @@ interface ReportsClientProps {
   // resolveActorContext), and used to ACCEPT them from here as well and throw
   // them away. Passing a tenant down a prop chain into a server action is the
   // shape that becomes an IDOR the day someone makes the action honour it.
-  role: string
-  userId: string
-  monthStart: string
+  //
+  // ─── TOMBSTONE: role / userId / monthStart REMOVED ─────────────────────────
+  // All three were accepted, destructured, and never read once — the same
+  // "accepted and thrown away" shape the paragraph above forbids for
+  // agentId/brokerageId, and for the same reason: the day someone wires one up,
+  // the client is stating an identity the server is supposed to resolve.
+  // Nothing is lost, because each already lives somewhere that is authoritative:
+  //   role, userId → resolved server-side per call by
+  //                  app/actions/reporting-kernel.ts resolveActorContext.
+  //   monthStart   → this component computes its own window from the selected
+  //                  period (periodStart() above, and `dateFrom` state); the
+  //                  prop was a second, unused spelling of the same idea.
   initialCampaignData: any
   initialReputationData: any
   initialSourceData: any
 }
 
 export function ReportsClient({
-  role,
-  userId,
-  monthStart,
   initialCampaignData,
   initialReputationData,
   initialSourceData,
@@ -191,7 +197,17 @@ export function ReportsClient({
   const [emailError, setEmailError] = useState("")
   const [emailSuccess, setEmailSuccess] = useState(false)
 
+  // A FAILED EXPORT MUST SAY SO. The catch below used to be empty under the
+  // comment "Error is surfaced to user via disabled button state — no toast
+  // needed for export". No such state existed: the buttons are disabled only
+  // while `isPending`, which the transition clears whether the export succeeded
+  // or threw. So a refused export — an unauthorised report type, a query
+  // failure, a PDF that never rendered — produced NO download and NO message.
+  // The user clicked Export and nothing whatsoever happened.
+  const [exportError, setExportError] = useState<string | null>(null)
+
   const handleExport = (format: "csv" | "pdf", reportType: string) => {
+    setExportError(null)
     startTransition(async () => {
       try {
         if (format === "csv") {
@@ -224,7 +240,11 @@ export function ReportsClient({
           document.body.removeChild(a)
         }
       } catch (error: any) {
-        // Error is surfaced to user via disabled button state — no toast needed for export
+        setExportError(
+          `${format.toUpperCase()} export of the ${reportType} report failed — ${
+            error?.message ?? "the server gave no reason"
+          }`,
+        )
       }
     })
   }
@@ -349,6 +369,15 @@ export function ReportsClient({
           <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
             Some reports could not be refreshed for this period — {periodError}. The figures below are
             from the last window that loaded, not this one.
+          </div>
+        )}
+
+        {/* The export rail's refusal. Every Export CSV / Export PDF button in
+            every tab below routes through handleExport, so one banner covers
+            them all — and a silent failure is no longer possible. */}
+        {exportError && (
+          <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+            {exportError}. Nothing was downloaded.
           </div>
         )}
 

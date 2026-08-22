@@ -2444,24 +2444,36 @@ async function main() {
       //  no broker — and SEATS are the constraint (2/5/unlimited); lender is a
       //  vendor CATEGORY, not a partner role. Assertions updated to that model.)
       const { TIER_INVITABLE_ROLES, tierAllowsRole, TIER_SEAT_LIMITS, PARTNER_ROLES } = await import("../lib/kernel/tier-role-matrix")
-      check("ROUND 15 — THE OWNER'S CANONICAL ROLE MODEL, AUDITED THEN ALIGNED. The audit proved four spec items ALREADY TRUE (solo owner = admin wearing an agents row at 100% split; contact-portal view-as via the Portal button + same-brokerage staff preview rule; vendor invites open to every tier; platform social self-marketing) — untouched. THE FIVE DRIFTS, FIXED: (1) tier→role matrix EXISTED NOWHERE (every tier was offered the full role list) — now a pure kernel module enforced at BOTH tenant grant surfaces AND the god console (target-tenant tier, audited superadminOverride), solo=one seat + partners only, team adds team structure, brokerage/multi add governance roles, honest upgrade-naming errors, legacy null tiers fail CLOSED on the two governance roles (owner ruling that a TEAM tier has no broker either made 'unknown tier => widest tier' hand back the seats a ruling had just removed) while every operational seat stays invitable; (2) vendors are now CHARGEABLE for premium placement — the two unconnected halves (vendor_directory.preferred/display_priority flags, vendor_invoices billing ledger) wired keep-one: offer → 'submitted' invoice (the LIVE vocabulary — 'pending' does not exist in the CHECK) → mark-paid flips featured + records placement_until on the line item → daily expiry rider on the EXISTING vendor-orchestration cron; full flow live-fired (including the category vocabulary catch: lowercase 'stager'), residue 0; payment marking is documented as the tenant's assertion of off-platform collection — never simulated; (3) the platform phone reception surfaced first-class at /communications (mounting the SAME panel — keep-one); (4) per-subscriber usage reports across ALL tiers in one table (seats, book size, monthly metered media) — the spec's oversight view; (5) the marketing staff role got its dashboard route. Platform website builder: the one spec item deliberately DEFERRED as a real feature, reported not faked",
-        // HELD, after I briefly reversed it and was corrected. Round 15's rule
-        // stands: a SOLO subscription has no broker and no broker_owner — "no solo
-        // agent tier subscription does NOT have a broker owner or broker" (owner).
-        // A solo subscription is not a brokerage, so the roles that exist to govern
-        // one are off its menu; its 2 seats are spent inside the rest.
-        !tierAllowsRole("solo_agent", "broker") && !tierAllowsRole("solo_agent", "broker_owner")
+      check("ROUND 15 — THE OWNER'S CANONICAL ROLE MODEL, AUDITED THEN ALIGNED. The audit proved four spec items ALREADY TRUE (solo owner = admin wearing an agents row at 100% split; contact-portal view-as via the Portal button + same-brokerage staff preview rule; vendor invites open to every tier; platform social self-marketing) — untouched. THE FIVE DRIFTS, FIXED: (1) tier→role matrix EXISTED NOWHERE — now a pure kernel module enforced at BOTH tenant grant surfaces AND the god console (target-tenant tier, audited superadminOverride). ROUND 17 SUPERSEDED ITS ROLE HALF: the owner seated a BROKER on TEAM tier ('takes up 3 of 5 seats'), so a tier restricts HOW MANY seats, never WHICH user types fill them — all four tiers now share ONE menu and the tier's only say is the seat cap (2/5/50/unlimited, brokerage moved to 50 per 'a brokerage should be changed to 50 seats'). m518's team_lead lead desk SURVIVES that: is_lead_visible_role() is per-user with no tier clause, so seating a broker only adds someone who passes. The fail-closed duty moved off the role menu onto the seat axis, where an unreadable tier floors to the smallest cap and seatGate refuses outright on an unreadable tenant/count/catalogue; and the menu is intersected with the live users_user_type_check vocabulary so a user type the column cannot store is never offered (broker_admin, pending m530); (2) vendors are now CHARGEABLE for premium placement — the two unconnected halves (vendor_directory.preferred/display_priority flags, vendor_invoices billing ledger) wired keep-one: offer → 'submitted' invoice (the LIVE vocabulary — 'pending' does not exist in the CHECK) → mark-paid flips featured + records placement_until on the line item → daily expiry rider on the EXISTING vendor-orchestration cron; full flow live-fired (including the category vocabulary catch: lowercase 'stager'), residue 0; payment marking is documented as the tenant's assertion of off-platform collection — never simulated; (3) the platform phone reception surfaced first-class at /communications (mounting the SAME panel — keep-one); (4) per-subscriber usage reports across ALL tiers in one table (seats, book size, monthly metered media) — the spec's oversight view; (5) the marketing staff role got its dashboard route. Platform website builder: the one spec item deliberately DEFERRED as a real feature, reported not faked",
+        // ── SUPERSEDED IN FULL (lane A, 2026-08-22) ──────────────────────────
+        //
+        // Both halves above are gone. This used to assert that solo AND team
+        // withheld broker/broker_owner. OWNER, seating a broker on TEAM tier and
+        // counting it as one of the five:
+        //
+        //   "a team is a team tier subscription with 5 seats so can have a team
+        //    lead user type given permission roles, then an agent as a user type
+        //    with permission roles, then a broker as a user type with different
+        //    permisson roles which that takes up 3 of 5 seats"
+        //
+        // A TIER RESTRICTS HOW MANY SEATS, NEVER WHICH USER TYPES FILL THEM. The
+        // earlier "team tier … don't have a broker in the subscription" sentence
+        // described the PACKAGE; m518's team_lead lead-desk grant does not depend
+        // on it (is_lead_visible_role() is per-user with no tier clause), so both
+        // rulings hold and m518 is untouched.
+        tierAllowsRole("solo_agent", "broker") && tierAllowsRole("solo_agent", "broker_owner")
         && tierAllowsRole("solo_agent", "agent") && tierAllowsRole("solo_agent", "admin")
-        // SUPERSEDED: this asserted tierAllowsRole("team","broker"). OWNER, new
-        // ruling — "if team tier subscriptions, they don't have a broker in the
-        // subscription so the team lead can see leads." The team tier keeps
-        // team_lead (the seat that governs a team) and loses broker, exactly as
-        // solo does; a brokerage begins at the BROKERAGE tier.
-        && !tierAllowsRole("team", "broker") && !tierAllowsRole("team", "broker_owner")
-        && tierAllowsRole("team", "team_lead") && tierAllowsRole("brokerage", "broker")
-        && TIER_INVITABLE_ROLES.brokerage.slice().sort().join(",") === TIER_INVITABLE_ROLES.multi_location.slice().sort().join(",")
+        && tierAllowsRole("team", "broker") && tierAllowsRole("team", "team_lead")
+        && tierAllowsRole("brokerage", "broker_admin") && tierAllowsRole("brokerage", "agent")
+        // …and it is ONE menu, identical across all four tiers.
+        && (["solo_agent", "team", "brokerage", "multi_location"] as const).every((t) =>
+          TIER_INVITABLE_ROLES[t].slice().sort().join(",") ===
+          TIER_INVITABLE_ROLES.brokerage.slice().sort().join(","))
+        // SEATS are the whole of the tier's say — 2 / 5 / 50 / unlimited.
+        // brokerage moved null → 50 (owner: "a brokerage should be changed to 50
+        // seats"), matching the live catalogue m529 already set.
         && TIER_SEAT_LIMITS.solo_agent === 2 && TIER_SEAT_LIMITS.team === 5
-        && TIER_SEAT_LIMITS.brokerage === null && TIER_SEAT_LIMITS.multi_location === null
+        && TIER_SEAT_LIMITS.brokerage === 50 && TIER_SEAT_LIMITS.multi_location === null
         && PARTNER_ROLES.join(",") === "vendor"
         && src("app/actions/admin/invite-user.ts").includes("tierAllowsRole")
         && src("app/actions/superadmin/tenant-users.ts").includes("tier_matrix_override")

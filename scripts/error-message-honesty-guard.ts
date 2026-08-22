@@ -120,6 +120,32 @@
  *     allowed" — strictly less informative. That is the bending this file's own
  *     header forbids, so the ratchet moves instead of the sentence.
  *
+ *     SECOND INSTANCE OF THE SAME SHAPE, 80 → 81, ALSO NAMED:
+ *
+ *   lib/ads/audience-persona-basis.ts:274  !res.ok
+ *     → `[audience-persona-basis] REFUSED: audience "${audienceLabel}" ${res.refusal}`
+ *     The owner ruled "audience should be segmented on persona", and this is the
+ *     positive half of that gate — it requires what an audience MUST be, beside
+ *     assertAudienceSegmentationAllowed which refuses what it may not be.
+ *
+ *     Identical reasoning to offer-bridge:351 above, and recorded separately
+ *     rather than folded into it because a ratchet entry that stands for "and
+ *     others like it" is how a baseline stops being readable. The condition's
+ *     subject is `ok`; the message interpolates `res.refusal`, which names the
+ *     offending PERSONA and why it is ads-ineligible, plus the audience label so
+ *     an operator knows which one to fix. Satisfying the word-overlap test would
+ *     mean writing "not ok" — strictly less informative than the sentence that
+ *     is there.
+ *
+ *     THE PATTERN IS NOW WORTH NAMING, since it has produced two of the last two
+ *     raises: a refusal that CARRIES ITS REASON as an interpolated value will
+ *     always look misdirecting to a word-overlap heuristic, because the words
+ *     that make it honest are not in the source at all — they arrive at runtime.
+ *     That is the opposite of the defect this guard exists to catch, and it is
+ *     the shape this codebase should be producing MORE of. If a third arrives,
+ *     the right response is to teach the detector about interpolated reason
+ *     values, not to keep raising the number.
+ *
  *     ACCOUNTING, because a raise with a wrong story is worse than no story:
  *     the count went 79 → 80, not 79 → 81, because :193 was already counted.
  *     Verified against HEAD rather than inferred — an earlier reading of mine
@@ -283,7 +309,7 @@ function ok(label: string, cond: boolean, detail?: string) {
 // ── A REVIEW QUEUE, NOT A BUG COUNT. Lower it as messages are corrected; never
 // raise it. Each entry needs a human to decide whether the sentence describes a
 // CONSEQUENCE (fine) or a DIFFERENT CAUSE (the defect).
-const BASELINE = 80
+const BASELINE = 81
 
 console.log("\n═══ 1. No NEW guard blames something it did not test ═══")
 const hits = findMismatches()

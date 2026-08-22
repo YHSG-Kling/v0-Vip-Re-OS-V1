@@ -41,20 +41,19 @@ export async function requireSubscriptionAdmin(context: SubscriptionContext): Pr
   const { data: { user }, error: authError } = await supabase.auth.getUser()
 
   if (authError || !user) throw new Error("Unauthorized: Not authenticated")
-  if (!context.brokerageId && !context.teamId && !context.agentId) {
-    throw new Error("Authorization context required: must provide brokerageId, teamId, or agentId")
+  // BROKERAGE IS THE ONLY ANCHOR. The team_id / agent_id arms were removed —
+  // see the tombstone on SubscriptionContext in lib/security/types.ts:451.
+  // ai_subscription_tier is written per BROKERAGE and nothing else, so those
+  // arms could only ever widen the filter into rows that do not exist.
+  if (!context.brokerageId) {
+    throw new Error("Authorization context required: must provide brokerageId")
   }
 
   try {
-    const filters: string[] = []
-    if (context.brokerageId) filters.push(`brokerage_id.eq.${context.brokerageId}`)
-    if (context.teamId) filters.push(`team_id.eq.${context.teamId}`)
-    if (context.agentId) filters.push(`agent_id.eq.${context.agentId}`)
-
     const { data: subscription, error: subError } = await supabase
       .from("ai_subscription_tier")
       .select("admin_user_id, tier_name")
-      .or(filters.join(","))
+      .eq("brokerage_id", context.brokerageId)
       .eq("is_active", true)
       .single()
 
@@ -89,19 +88,15 @@ export async function isSubscriptionAdmin(context: SubscriptionContext): Promise
 export async function getSubscriptionAdmin(
   context: SubscriptionContext
 ): Promise<{ userId: string; email: string; tierName: string } | null> {
-  if (!context.brokerageId && !context.teamId && !context.agentId) return null
+  if (!context.brokerageId) return null
 
   try {
     const supabase = await createClient()
-    const filters: string[] = []
-    if (context.brokerageId) filters.push(`brokerage_id.eq.${context.brokerageId}`)
-    if (context.teamId) filters.push(`team_id.eq.${context.teamId}`)
-    if (context.agentId) filters.push(`agent_id.eq.${context.agentId}`)
-
+    // Same single anchor as requireSubscriptionAdmin — lib/security/types.ts:451.
     const { data, error } = await supabase
       .from("ai_subscription_tier")
       .select("admin_user_id, tier_name, users:admin_user_id(email)")
-      .or(filters.join(","))
+      .eq("brokerage_id", context.brokerageId)
       .eq("is_active", true)
       .maybeSingle()
 
@@ -122,9 +117,12 @@ export async function getCurrentUserSubscriptionContext(): Promise<SubscriptionC
     const { data: { user }, error: authError } = await supabase.auth.getUser()
     if (authError || !user) return null
 
+    // team_id / agent_id are no longer selected: nothing writes them, so they
+    // were read out of every row as null and handed back as `undefined`
+    // context that no filter could then use. lib/security/types.ts:451.
     const { data, error } = await supabase
       .from("ai_subscription_tier")
-      .select("brokerage_id, team_id, agent_id")
+      .select("brokerage_id")
       .eq("admin_user_id", user.id)
       .eq("is_active", true)
       .maybeSingle()
@@ -133,8 +131,6 @@ export async function getCurrentUserSubscriptionContext(): Promise<SubscriptionC
 
     return {
       brokerageId: data.brokerage_id || undefined,
-      teamId: data.team_id || undefined,
-      agentId: data.agent_id || undefined,
     }
   } catch (error) {
     console.error("[Security] Error fetching user subscription context:", error)

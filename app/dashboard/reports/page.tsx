@@ -25,7 +25,10 @@ export default async function ReportsPage() {
 
   const today      = new Date()
   const ytdStart   = `${today.getFullYear()}-01-01`
-  const monthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split("T")[0]
+  // `monthStart` removed with the prop it fed — ReportsClient computes its own
+  // window from the selected period (reports-client.tsx periodStart()), so the
+  // value was calculated here and thrown away. See the tombstone on
+  // ReportsClientProps.
 
   // Ensure agentId is resolved — fallback to agents table lookup
   let resolvedAgentId = agentCtx.agentId ?? ""
@@ -98,9 +101,6 @@ export default async function ReportsPage() {
         </section>
       )}
       <ReportsClient
-      role={agentCtx.role || "agent"}
-      userId={user.id}
-      monthStart={monthStart}
       initialCampaignData={campaignResult.data ?? null}
       initialReputationData={reputationResult.data ?? null}
       initialSourceData={sourceResult.data ?? null}

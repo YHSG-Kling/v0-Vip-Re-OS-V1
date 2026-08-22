@@ -55,7 +55,6 @@ import {
   SlidersHorizontal,
   Printer,
 } from "lucide-react"
-import Link from "next/link"
 import {
   getSourcePerformance,
   generateSourceAIInsights,

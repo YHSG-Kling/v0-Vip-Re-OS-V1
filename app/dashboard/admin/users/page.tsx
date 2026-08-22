@@ -9,6 +9,7 @@ import { InviteUserButton } from "./invite-user-button"
 import { EditUserButton } from "./edit-user-button"
 import { CreateAgentRecordButton } from "./create-agent-record-button"
 import { seatCheck, parseSeatOverride, tierLabel } from "@/lib/kernel/tier-role-matrix"
+import { CHECK_VOCABULARIES } from "@/scripts/check-vocabularies"
 import { resolveSeatUsage, resolveCatalogSeatLimits } from "@/lib/kernel/seat-usage"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
@@ -209,6 +210,11 @@ export default async function AdminUsersPage() {
           callerRole={callerType}
           brokerageId={profile?.brokerage_id}
           tier={planTier}
+          // What the COLUMN can store, so the menu never offers a user type the
+          // CHECK would refuse (an INSERT naming one is refused entirely —
+          // CLAUDE.md §3). Read here, on the server, so the ~1600-line generated
+          // vocabulary cache stays out of the client bundle.
+          storableUserTypes={CHECK_VOCABULARIES.users?.user_type}
         />
       </div>
 

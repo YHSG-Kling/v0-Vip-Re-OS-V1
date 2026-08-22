@@ -94,8 +94,23 @@ export function isCampaignPersona(v: string | null | undefined): v is CampaignPe
   return !!v && (CAMPAIGN_PERSONAS as readonly string[]).includes(v)
 }
 
-/** contacts.contact_type values that mean an established, post-close relationship. */
-const LIFETIME_TYPES = new Set(["lifetime", "lifetime_customer", "past_client", "client", "sphere"])
+/**
+ * contacts.contact_type values that mean an established, post-close relationship.
+ *
+ * EXPORTED as a readonly tuple (CLAUDE.md §6 — one vocabulary per function). The
+ * ad-audience `lifetime_customers` source rule needs the SAME set to build its
+ * `.in("contact_type", …)` filter (lib/ads/audience-source-rules.ts), and a second
+ * hand-typed list there would be a second vocabulary: the day a type is added
+ * here, that rule would quietly stop matching the contacts this reader calls
+ * lifetime, and the audience named "Lifetime Customers" would be missing people
+ * with no error anywhere. Every member is admitted by the live
+ * `contacts_contact_type_check` (verified 2026-08-22).
+ */
+export const LIFETIME_CONTACT_TYPES = [
+  "lifetime", "lifetime_customer", "past_client", "client", "sphere",
+] as const
+
+const LIFETIME_TYPES = new Set<string>(LIFETIME_CONTACT_TYPES)
 
 /**
  * PURE — the campaign contact_type for a contact. Defaults to `buyer`, matching
@@ -160,4 +175,34 @@ export function normalizeContactPersona(raw: string | null | undefined): Campaig
   if (!t) return null
   if (isCampaignPersona(t)) return t
   return PERSONA_ALIASES[t] ?? null
+}
+
+/**
+ * PURE — every RAW `contacts.contact_persona` spelling that reads as this canonical
+ * persona: the canonical value itself plus every alias that maps onto it.
+ *
+ * WHY THIS EXISTS AND WHY IT IS DERIVED. `normalizeContactPersona` is the reader —
+ * it answers "what persona is this stored row?". A QUERY needs the inverse: "which
+ * stored values do I have to ask the database for?". `contacts.contact_persona` is
+ * free text with no CHECK and has genuinely drifted (live values on 2026-08-22:
+ * first_time_buyer, luxury_buyer, listing_seller, past_client — not one of them a
+ * canonical spelling), so a query written as `.in("contact_persona", ["luxury"])`
+ * matches nothing and reports it as "no such clients" rather than as drift.
+ *
+ * It is computed by INVERTING `PERSONA_ALIASES` rather than restating it, so the
+ * reader and the query can never disagree about which spellings belong to a
+ * persona (CLAUDE.md §6). Adding an alias above automatically widens the query.
+ *
+ * The only caller today is the ad-audience persona basis
+ * (lib/kernel/ads.ts syncAudience), which must not over-match: values that
+ * `normalizeContactPersona` deliberately maps to NULL because they encode a
+ * CONTACT TYPE rather than a situation (listing_seller, past_client) are absent
+ * here too, by construction — they are not in the alias map.
+ */
+export function rawSpellingsForPersona(persona: CampaignPersona): string[] {
+  const out = [persona as string]
+  for (const [alias, canon] of Object.entries(PERSONA_ALIASES)) {
+    if (canon === persona && !out.includes(alias)) out.push(alias)
+  }
+  return out
 }

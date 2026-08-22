@@ -33,6 +33,29 @@ import { createServiceClient } from "@/lib/supabase/service"
 // not imported here — importing the assertion cannot make an exempt caller refuse,
 // because the refusal is a call, not an import.
 import { assertAudienceSegmentationAllowed } from "@/lib/lead-governance/protected-class-signals"
+// THE POSITIVE HALF (owner ruling: "audience should be segmented on persona").
+// The import above says what an audience may NOT be; this one says what it must
+// BE. They are deliberately two calls in the same place rather than one merged
+// gate: the protected-class refusal must keep refusing rules that declare no
+// persona at all (a `contact_tags: ["seniors-55plus"]` rule is still refused),
+// and the persona rule must keep refusing an UNRESOLVABLE basis that names no
+// protected class (an empty persona list). Neither subsumes the other.
+import { assertAudiencePersonaBasis, declaresPersonaBasis, resolveAudiencePersonaBasis } from "@/lib/ads/audience-persona-basis"
+// THE OTHER MISSING HALF — what each of the fifteen source-rule types actually
+// RESOLVES TO, and a refusal for every one that has no honest definition. See
+// that file's header for the defect: fifteen declared types, two narrowed, and
+// thirteen silently uploading the whole consented book to Meta/Google. It is
+// imported here rather than inlined so the resolution can be proven on FIXTURES
+// (the live tenant holds four contacts, at which size a filter that returns
+// everyone is indistinguishable from no filter).
+import {
+  resolveSourceRuleNarrowing,
+  type SourceRuleType,
+  type NarrowPredicate,
+  type SourceRuleNarrowing,
+  type SourceRuleNarrowingOk,
+} from "@/lib/ads/audience-source-rules"
+import { rawSpellingsForPersona } from "@/lib/campaigns/contact-sources"
 import {
   CONNECTABLE_AD_PLATFORMS,
   AD_PLATFORMS_WITHOUT_CONNECTIONS,
@@ -81,25 +104,41 @@ export interface TargetingConfig {
 }
 
 export interface SourceRule {
-  type:
-    | "website_visitors"
-    | "contact_list"
-    | "engagement"
-    // ── Real-estate prebuilt source rules ─────────────────────────────────
-    | "lifetime_customers"        // contacts with contact_type='lifetime_customer'
-    | "qualified_leads"           // leads with lead_stage='qualified'
-    | "active_buyers"             // contacts with contact_type='buyer' + active in last N days
-    | "active_sellers"            // contacts with contact_type='seller' + listing in pre-listing/active
-    | "consultations_completed"   // contacts who attended a consultation
-    | "open_house_attendees"      // attendees from open_house_attendees table
-    | "high_engagement_contacts"  // engagement_score >= threshold
-    | "investor_contacts"         // contact_type='investor'
-    | "in_pipeline"               // contacts with active_transaction
-    | "lookalike_seed"            // a base audience for FB to lookalike from
-    | "exclusion_active_pipeline" // ALL active contacts (use as exclusion to prevent re-targeting customers)
+  /**
+   * DERIVED, NOT RESTATED (CLAUDE.md §6). The fifteen members and the narrowing
+   * each one resolves to live together in `lib/ads/audience-source-rules.ts`,
+   * because they must never be able to disagree: for most of this file's life the
+   * union here declared FIFTEEN types and `syncAudience` narrowed for TWO, and the
+   * other thirteen fell through to "every consented contact in the tenant" —
+   * hashed and uploaded to Meta/Google under a name promising a narrow slice.
+   *
+   * `SOURCE_RULE_TYPES` is now the single roster, and `NARROWERS` over there is a
+   * `Record` keyed by it, so adding a type without a definition is a COMPILE
+   * error rather than a silent, unnarrowed upload.
+   *
+   * `persona_segment` is the persona lane's member (owner ruling: "audience should
+   * be segmented on persona") and is narrowed by that lane's gate, not re-derived.
+   */
+  type: SourceRuleType
   filters: {
     days_lookback?: number
     contact_tags?: string[]
+    /**
+     * THE AUDIENCE'S DECLARED BASIS — canonical `Persona` values only
+     * (lib/campaigns/contact-sources.ts CAMPAIGN_PERSONAS, mirroring the union at
+     * lib/kernel/types.ts and the live campaign_sequences_persona_check).
+     *
+     * TYPED AS string[] ON PURPOSE. The compiler cannot see what an operator POSTs
+     * or what an old row holds, so narrowing this to `CampaignPersona[]` would buy
+     * a false sense of a check that only ever ran on our own literals. The real
+     * check is `resolveAudiencePersonaBasis`, which runs at DEFINE time and again
+     * at POPULATE time and refuses anything it cannot resolve.
+     *
+     * Personas that are a PROTECTED CHARACTERISTIC rather than a transaction
+     * situation (senior, probate, divorce, military) are REFUSED here and remain
+     * fully valid on the data/education lanes — see lib/ads/audience-persona-basis.ts.
+     */
+    personas?: string[]
     engagement_type?: string
     url_pattern?: string
     // Prebuilt-rule filters
@@ -746,6 +785,240 @@ export async function loadAudienceDefinitions(input: LoadAudienceDefinitionsInpu
   }
 }
 
+// ─── THE ONE PLACE A SOURCE RULE BECOMES A CONTACT LIST ───────────────────────
+//
+// Shared by COMMAND 6 (syncAudience — the path that actually uploads) and
+// COMMAND 6b (previewAudienceResolution — the path that lets an operator SEE the
+// answer before it leaves). One implementation on purpose (CLAUDE.md §6): a
+// preview that resolved differently from the sync would be worse than no preview,
+// because it would be a reassurance about a set that was never delivered.
+//
+// EVERY EXIT IS A DEFINITION OR A REFUSAL. There is no arm that returns the base
+// query unnarrowed — that arm is what uploaded thirteen rule types' worth of
+// "everybody" to Meta and Google, and its absence is the fix.
+
+/** What one contact contributes to a hashed Customer-Match upload. */
+interface AudienceContactRow {
+  id: string
+  email: string | null
+  phone: string | null
+  first_name: string | null
+  last_name: string | null
+}
+
+type AudiencePopulation =
+  | {
+      ok: true
+      narrowing: SourceRuleNarrowingOk
+      /** null ONLY when the rule uploads no CRM contacts (`lookalike_seed`). */
+      contacts: AudienceContactRow[] | null
+      /** The persona spellings the persona gate narrowed on, when it did. */
+      personaSpellings: string[] | null
+    }
+  | { ok: false; error: string; errorKind: "input" | "read"; narrowing: SourceRuleNarrowing }
+
+/** Apply one declarative predicate to a PostgREST query builder. */
+function applyPredicate<Q extends { [k: string]: any }>(query: Q, p: NarrowPredicate): Q {
+  switch (p.op) {
+    case "eq":
+      return query.eq(p.column, p.value)
+    case "in":
+      return query.in(p.column, p.value as unknown[])
+    case "not_in": {
+      // PostgREST has no "not in OR null" primitive. Written as an explicit OR so
+      // a row whose stage was never set is INCLUDED — a buyer with a null
+      // buyer_stage has not gone under contract, and dropping them would make
+      // "active buyers" quietly exclude every contact the buyer pipeline has not
+      // touched yet. `rowMatchesPredicates` in the pure module implements the
+      // identical rule, so the fixture evaluator and this query cannot disagree.
+      const list = (p.value as unknown[]).map((v) => String(v)).join(",")
+      return query.or(`${p.column}.is.null,${p.column}.not.in.(${list})`)
+    }
+    case "gte":
+      return query.gte(p.column, p.value)
+    case "lte":
+      return query.lte(p.column, p.value)
+    case "contains":
+      return query.contains(p.column, p.value as unknown[])
+    case "not_null":
+      return query.not(p.column, "is", null)
+  }
+}
+
+async function resolveAudiencePopulation(args: {
+  supabase: ReturnType<typeof createServiceClient>
+  brokerageId: string
+  sourceRule: SourceRule | null
+  audienceLabel: string
+  now?: Date
+}): Promise<AudiencePopulation> {
+  const { supabase, brokerageId, sourceRule, audienceLabel } = args
+
+  const narrowing = resolveSourceRuleNarrowing(sourceRule, args.now ?? new Date())
+  if (!narrowing.ok) {
+    return {
+      ok: false,
+      narrowing,
+      errorKind: "input",
+      error: `[audience-source-rule] REFUSED: audience "${audienceLabel}" ${narrowing.refusal}`,
+    }
+  }
+
+  // A rule that uploads no CRM contacts resolves to no contact list at all. Null,
+  // not []: "this rule does not produce a list" and "this rule produced an empty
+  // list" are different answers and the caller routes on the difference.
+  if (!narrowing.uploadsContacts) {
+    return { ok: true, narrowing, contacts: null, personaSpellings: null }
+  }
+
+  let contactsQuery = supabase
+    .from("contacts")
+    .select("id, email, phone, first_name, last_name")
+    .eq("brokerage_id", brokerageId)
+    .not("email", "is", null)
+    // CONSENT GATE: an ad-platform custom audience may only contain contacts who
+    // gave marketing consent (e.g. via an ad lead form). m165 already blocks
+    // unconsented leads; this is the per-contact enforcement the policy requires.
+    //
+    // A FLOOR, NEVER A DEFINITION. This was the ONLY filter on thirteen of the
+    // fifteen rule types, and consent to be contacted BY THE BROKERAGE is not
+    // consent to be uploaded to Meta. It stays, underneath the narrowing.
+    .eq("tcpa_consent", true)
+
+  // ── The id-set prefetch, when the rule is true of a contact because of a row
+  //    in ANOTHER table (a qualified lead, an open-house check-in, a live deal) ─
+  if (narrowing.join) {
+    const j = narrowing.join
+    let joinQuery = supabase
+      .from(j.table)
+      .select(j.contactIdColumns.join(", "))
+      // TENANCY (CLAUDE.md §4). This runs on the SERVICE client, so the explicit
+      // brokerage filter is the whole boundary — and it is on the JOIN table too,
+      // not merely on `contacts`. Without it a foreign tenant's transaction ids
+      // would be collected and then intersected away silently, which works today
+      // and stops working the moment two tenants share a contact id.
+      .eq("brokerage_id", brokerageId)
+    for (const p of j.predicates) joinQuery = applyPredicate(joinQuery, p)
+
+    const { data: joinRows, error: joinError } = await joinQuery.limit(20000)
+    // READ THE ERROR (CLAUDE.md §3 — supabase-js RESOLVES refusals). A swallowed
+    // refusal here would leave `ids` empty; an empty id set must never be allowed
+    // to mean "skip the filter", and it must not be reported as a legitimately
+    // empty audience either.
+    if (joinError) {
+      return {
+        ok: false,
+        narrowing,
+        errorKind: "read",
+        error:
+          `[audience-source-rule] could not resolve audience "${audienceLabel}": reading ${j.table} ` +
+          `failed (${joinError.message}). Refusing rather than syncing an audience we could not resolve.`,
+      }
+    }
+
+    const ids = new Set<string>()
+    // `as unknown as` because the column list is built at runtime from the
+    // narrowing, so supabase-js cannot type the row shape and falls back to its
+    // GenericStringError union. The values are read defensively below (a
+    // non-string id is skipped), which is the check the cast gives up.
+    for (const row of (joinRows ?? []) as unknown as Array<Record<string, unknown>>) {
+      for (const col of j.contactIdColumns) {
+        const v = row[col]
+        if (typeof v === "string" && v.length > 0) ids.add(v)
+      }
+    }
+    // AN EMPTY PREFETCH IS AN EMPTY AUDIENCE. Returning early rather than skipping
+    // `.in("id", [])` — the original defect in miniature: "I found nothing to
+    // filter on, so I will not filter".
+    if (ids.size === 0) {
+      return { ok: true, narrowing, contacts: [], personaSpellings: null }
+    }
+    // `contacts.id` is the PK. NOT `contacts.contact_id`, which is a SECOND uuid
+    // column on this table and is what every FK above points at — no: verified on
+    // the live schema, leads.contact_id / transactions.*_contact_id / listings.
+    // seller_contact_id all reference `contacts.id`. Picking the other one
+    // produces a query that always returns nothing (CLAUDE.md §3).
+    contactsQuery = contactsQuery.in("id", [...ids])
+  }
+
+  for (const p of narrowing.predicates) contactsQuery = applyPredicate(contactsQuery, p)
+
+  // ── THE PERSONA BASIS ACTUALLY NARROWS ────────────────────────────────────
+  // Unchanged from the persona lane and deliberately NOT re-implemented in the
+  // source-rule module (CLAUDE.md §6). The define-time and populate-time
+  // assertions above prove the basis is resolvable and ads-eligible; this is the
+  // query that makes the declaration true.
+  //
+  // WHY RAW SPELLINGS AND NOT THE CANONICAL VALUE. `contacts.contact_persona` is
+  // free text with no CHECK and has drifted — every live row on 2026-08-22 held
+  // a non-canonical spelling (first_time_buyer, luxury_buyer, listing_seller,
+  // past_client). Querying the canonical value alone would return zero rows and
+  // report drift as "you have no first-time buyers". `rawSpellingsForPersona`
+  // inverts the ONE existing alias map (lib/campaigns/contact-sources.ts), so the
+  // reader and this query can never disagree. m531 (written, NOT applied)
+  // normalises the column and puts a CHECK on it; until it is applied this
+  // widening is what makes the audience non-empty.
+  //
+  // Runs for ANY rule that declares a persona filter, not only `persona_segment` —
+  // a persona smuggled onto another type is still a persona basis, and the type
+  // string is not an opt-out.
+  let personaSpellings: string[] | null = null
+  if (declaresPersonaBasis(sourceRule)) {
+    const basis = resolveAudiencePersonaBasis(sourceRule)
+    if (!basis.ok) {
+      // Reached only if the assertion and the resolver ever disagree. The answer
+      // is a refusal, never an unnarrowed upload of the whole roster.
+      return {
+        ok: false,
+        narrowing,
+        errorKind: "input",
+        error: `[audience-persona-basis] REFUSED: ${basis.refusal}`,
+      }
+    }
+    // Local `spellings` deliberately, and the call written out in full: the
+    // persona lane's simulator pins this exact call shape
+    // (scripts/audience-persona-basis-simulator.ts — ".in on contact_persona"),
+    // and that assertion is how it proves the persona gate is not theatre. Moving
+    // the query into this shared helper must not cost that proof.
+    const spellings = basis.personas.flatMap((p) => rawSpellingsForPersona(p))
+    personaSpellings = spellings
+    contactsQuery = contactsQuery.in("contact_persona", spellings)
+  } else if (narrowing.narrowedByPersonaGate) {
+    // `type: "persona_segment"` with no persona filter at all. The persona gate
+    // keys on `declaresPersonaBasis`, which is true for that type — so this is
+    // belt-and-braces rather than a live hole. It is here because the ONE thing
+    // this whole change exists to prevent is a rule type reaching the query with
+    // nothing narrowing it.
+    return {
+      ok: false,
+      narrowing,
+      errorKind: "input",
+      error:
+        `[audience-source-rule] REFUSED: audience "${audienceLabel}" is a persona segment but declares ` +
+        `no persona basis, so nothing would narrow it.`,
+    }
+  }
+
+  const { data: contacts, error: contactsError } = await contactsQuery.limit(10000)
+  if (contactsError) {
+    return {
+      ok: false,
+      narrowing,
+      errorKind: "read",
+      error:
+        `[audience-source-rule] could not resolve audience "${audienceLabel}": reading contacts failed ` +
+        `(${contactsError.message}). Refusing rather than syncing an audience we could not resolve.`,
+    }
+  }
+
+  return {
+    ok: true,
+    narrowing,
+    contacts: (contacts ?? []) as unknown as AudienceContactRow[],
+    personaSpellings,
+  }
+}
+
 // ─── COMMAND 6: syncAudience ──────────────────────────────────────────────────
 // Syncs an audience to the ad platform. Creates audience_sync_runs record with real status.
 // NO fake success — always records actual sync outcome.
@@ -811,28 +1084,74 @@ export async function syncAudience(input: SyncAudienceInput): Promise<KernelAdsR
       return { success: false, error: fairHousingRefusal }
     }
 
-    // Build contact query based on source_rule
-    const sourceRule = audience.source_rule as SourceRule | null
-    let contactsQuery = supabase
-      .from("contacts")
-      .select("id, email, phone, first_name, last_name")
-      .eq("brokerage_id", ctx.brokerageId)
-      .not("email", "is", null)
-      // CONSENT GATE: an ad-platform custom audience may only contain contacts who
-      // gave marketing consent (e.g. via an ad lead form). m165 already blocks
-      // unconsented leads; this is the per-contact enforcement the policy requires.
-      .eq("tcpa_consent", true)
-
-    if (sourceRule?.type === "contact_list" && sourceRule.filters.contact_tags) {
-      // Filter by tags if specified
-      contactsQuery = contactsQuery.contains("tags", sourceRule.filters.contact_tags)
+    // THE PERSONA BASIS — the POPULATE side (owner ruling: "audience should be
+    // segmented on persona"). Runs BESIDE the fair-housing refusal above, before a
+    // single contact is read, for the same reason both of those do.
+    //
+    // THIS IS THE HALF THAT WAS ACTUALLY DANGEROUS. `persona_segment` has been a
+    // live `audience_type` CHECK value with no populate branch, so an audience
+    // named "First-Time Buyers" fell straight through the query below — which
+    // narrows for `contact_list` and NOTHING else — and uploaded EVERY consented
+    // contact in the brokerage to Meta under a name promising a narrow slice.
+    // FAILS CLOSED (CLAUDE.md §4): a basis that cannot be resolved refuses here
+    // rather than populating with everyone.
+    const personaBasisRefusal = ((): string | null => {
+      try {
+        assertAudiencePersonaBasis(
+          audience.source_rule,
+          (audience.audience_name as string) || audienceId,
+        )
+        return null
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err)
+      }
+    })()
+    if (personaBasisRefusal) {
+      return { success: false, error: personaBasisRefusal }
     }
 
-    const { data: contacts, error: contactsError } = await contactsQuery.limit(10000)
+    // ── WHO THIS AUDIENCE ACTUALLY RESOLVES TO ────────────────────────────────
+    // THE fix for the thirteen unnarrowed rule types. `resolveAudiencePopulation`
+    // is the ONE place a source rule becomes a contact list, and it has no
+    // permissive default: a rule it cannot resolve REFUSES here, before a single
+    // row is read and long before anything is hashed and handed to Meta/Google.
+    //
+    // Refusal is returned as an ordinary command error so every existing caller
+    // surfaces it (lib/ads/facebook-audience-sync.ts → the ads dashboard's
+    // toast.error, and the six-hourly cron's per-audience result line).
+    const sourceRule = audience.source_rule as SourceRule | null
+    const population = await resolveAudiencePopulation({
+      supabase,
+      brokerageId: ctx.brokerageId,
+      sourceRule,
+      audienceLabel: (audience.audience_name as string) || audienceId,
+    })
+    if (!population.ok) {
+      return { success: false, error: population.error, errorKind: population.errorKind }
+    }
 
-    if (contactsError) throw contactsError
+    const contacts = population.contacts
+    const recordsAttempted = contacts?.length ?? 0
 
-    const recordsAttempted = contacts?.length || 0
+    // A SEED RULE WITH NO SEED IS NOT A CUSTOM AUDIENCE. `lookalike_seed` uploads
+    // no CRM contacts at all — the connector seeds from an already-synced
+    // audience's EXTERNAL id. Routing below keys off `lookalike_seed_audience_id`,
+    // so before this refusal a `lookalike_seed` rule on a row where that column is
+    // null missed the lookalike branch and fell into the Customer-Match branch,
+    // which uploaded every consented contact as the "seed". Refuse instead: this
+    // is a broken definition, and the fail-closed answer to a broken definition is
+    // never a wider audience.
+    if (!population.narrowing.uploadsContacts && !audience.lookalike_seed_audience_id) {
+      return {
+        success: false,
+        errorKind: "input",
+        error:
+          `[audience-source-rule] REFUSED: audience "${(audience.audience_name as string) || audienceId}" ` +
+          `${population.narrowing.label} — but no seed audience is linked ` +
+          `(facebook_custom_audiences.lookalike_seed_audience_id is null). Link a synced audience to seed ` +
+          `from; this refuses rather than uploading your whole consented contact list in its place.`,
+      }
+    }
 
     // ── REAL provider sync via the connector for this audience's platform ──────
     // Routes by audience_type: custom/Customer-Match (upload hashed consented
@@ -901,6 +1220,18 @@ export async function syncAudience(input: SyncAudienceInput): Promise<KernelAdsR
       }
     }
 
+    // THE DELIVERED SET, RECORDED BESIDE THE PROMISE. `records_attempted` alone
+    // is a number with no denominator — it says 4 went, never that the rule that
+    // produced the 4 was "every consented contact". The resolved rule type and its
+    // operator-facing label go into the run ledger so an audit after the fact can
+    // read what the audience MEANT, not merely how many rows left.
+    providerResponse = {
+      ...providerResponse,
+      resolved_rule_type: population.narrowing.ruleType,
+      resolved_rule_label: population.narrowing.label,
+      resolved_records: recordsAttempted,
+    }
+
     const { data: syncRun, error: syncError } = await supabase
       .from("audience_sync_runs")
       .insert({
@@ -938,6 +1269,135 @@ export async function syncAudience(input: SyncAudienceInput): Promise<KernelAdsR
     return {
       success: false,
       error: err instanceof Error ? err.message : "syncAudience failed",
+    }
+  }
+}
+
+// ─── COMMAND 6b: previewAudienceResolution ────────────────────────────────────
+// THE REASON THIS DEFECT SURVIVED IN ONE COMMAND.
+//
+// Nothing ever showed the DELIVERED count against the PROMISED one. An operator
+// picked "Investors", the sync reported "4 records synced", and 4 was in fact the
+// entire consented contact book — the two numbers are identical and the surface
+// had no way to say so. `records_attempted` after the fact is not the same thing:
+// by then the rows have left, and this is an egress path with no undo.
+//
+// So: resolve the audience through the SAME code path the sync uses, count it,
+// name the rule that produced the count, and upload NOTHING. Cheap enough to sit
+// behind a button on the audience card, and it answers the one question the
+// surface could not: "is this actually a slice, or is this everybody?"
+//
+// Tables read: facebook_custom_audiences, contacts (+ the rule's join table)
+// Tables written: none
+// Returns: resolution { ruleType, ruleLabel, resolvedCount, totalConsented, uploadsContacts }
+
+export interface PreviewAudienceResolutionInput {
+  ctx: AdsActorContext
+  audienceId: string
+}
+
+export interface AudienceResolutionPreview {
+  audienceId: string
+  audienceName: string
+  /** The resolved `SourceRule.type`, or null when the rule was refused. */
+  ruleType: SourceRuleType | null
+  /** The operator-facing sentence: what this audience actually selects. */
+  ruleLabel: string
+  /** How many contacts would be uploaded RIGHT NOW. Null when the rule refuses. */
+  resolvedCount: number | null
+  /**
+   * Every consented, emailable contact in the brokerage — the DENOMINATOR
+   * (CLAUDE.md §2: a count without its denominator is not a measurement). When
+   * `resolvedCount === totalConsented` the audience is not a slice, whatever its
+   * name says, and the surface says so in those words.
+   */
+  totalConsented: number | null
+  /** False for `lookalike_seed`: no CRM contacts are uploaded by that rule. */
+  uploadsContacts: boolean
+  /** Set iff the rule was refused. The same sentence the sync would refuse with. */
+  refusal: string | null
+}
+
+export async function previewAudienceResolution(
+  input: PreviewAudienceResolutionInput,
+): Promise<KernelAdsResult> {
+  const { ctx, audienceId } = input
+
+  if (!ctx.brokerageId || !audienceId) {
+    return { success: false, error: "brokerageId and audienceId required", errorKind: "input" }
+  }
+
+  try {
+    const supabase = createServiceClient()
+
+    // TENANCY on the READ, not on a parameter (CLAUDE.md §4). The brokerage comes
+    // from ctx and is applied here; an audience id belonging to another tenant is
+    // simply not in the result.
+    const { data: audience, error: audienceError } = await supabase
+      .from("facebook_custom_audiences")
+      .select("id, audience_name, source_rule")
+      .eq("id", audienceId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+
+    if (audienceError) throw audienceError
+    if (!audience) return { success: false, error: "Audience not found", errorKind: "input" }
+
+    const audienceName = (audience.audience_name as string) || audienceId
+    const population = await resolveAudiencePopulation({
+      supabase,
+      brokerageId: ctx.brokerageId,
+      sourceRule: audience.source_rule as SourceRule | null,
+      audienceLabel: audienceName,
+    })
+
+    // THE DENOMINATOR. Counted with the same floor the population starts from, so
+    // "resolved 4 of 4 consented" is a true statement about the same base set.
+    // head:true → the rows are counted server-side and never travel.
+    const { count: totalConsented } = await supabase
+      .from("contacts")
+      .select("id", { count: "exact", head: true })
+      .eq("brokerage_id", ctx.brokerageId)
+      .not("email", "is", null)
+      .eq("tcpa_consent", true)
+
+    if (!population.ok) {
+      const resolution: AudienceResolutionPreview = {
+        audienceId,
+        audienceName,
+        ruleType: population.narrowing.ok ? population.narrowing.ruleType : null,
+        ruleLabel: population.narrowing.ok
+          ? population.narrowing.label
+          : `refused — ${population.narrowing.refusalKind}`,
+        resolvedCount: null,
+        totalConsented: totalConsented ?? null,
+        uploadsContacts: population.narrowing.ok ? population.narrowing.uploadsContacts : false,
+        refusal: population.error,
+      }
+      // success:true — the PREVIEW succeeded. It successfully determined that this
+      // audience would refuse, which is exactly what an operator asked it to find
+      // out. Reporting a working preview as a failed command would push the
+      // surface into rendering "we could not check" over "we checked, and this
+      // will not sync" — the confusion `errorKind` exists to prevent.
+      return { success: true, audience: resolution }
+    }
+
+    const resolution: AudienceResolutionPreview = {
+      audienceId,
+      audienceName,
+      ruleType: population.narrowing.ruleType,
+      ruleLabel: population.narrowing.label,
+      resolvedCount: population.contacts?.length ?? 0,
+      totalConsented: totalConsented ?? null,
+      uploadsContacts: population.narrowing.uploadsContacts,
+      refusal: null,
+    }
+    return { success: true, audience: resolution }
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : "previewAudienceResolution failed",
+      errorKind: "read",
     }
   }
 }
@@ -1012,6 +1472,52 @@ export async function createAudienceSegment(input: CreateAudienceSegmentInput): 
     // problem and not a read failure. The three are different states and the
     // surface renders them differently (see KernelAdsResult.errorKind).
     return { success: false, error: segmentationRefusal, errorKind: "input" }
+  }
+
+  // THE PERSONA BASIS — the DEFINE side (owner ruling: "audience should be
+  // segmented on persona"). Same fail-closed shape as the refusal above and in the
+  // same place, for the reason finding #298 established: refusing only at populate
+  // time leaves the offending definition PERSISTED in `source_rule`, which is the
+  // row a Meta-side or manual sync reads, and the operator discovers it as an
+  // audience that mysteriously comes back empty.
+  //
+  // Runs AFTER the protected-class assertion deliberately. When an operator names
+  // `personas: ["senior"]` both would refuse, and the protected-class message is
+  // the one that should be quoted first: it is the statutory refusal, and this
+  // module must never be able to become the place that answer gets softened.
+  const personaBasisRefusal = ((): string | null => {
+    try {
+      assertAudiencePersonaBasis(sourceRule, audienceName || "(unnamed audience)")
+      return null
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err)
+    }
+  })()
+  if (personaBasisRefusal) {
+    return { success: false, error: personaBasisRefusal, errorKind: "input" }
+  }
+
+  // THE SOURCE RULE MUST RESOLVE — refused at DEFINE time for the reason finding
+  // #298 established, now for the third rule in this file. Refusing only at
+  // populate time leaves the unresolvable definition PERSISTED in `source_rule`,
+  // which is the row a Meta-side or manual sync reads, and the operator meets it
+  // as an audience that mysteriously errors months later.
+  //
+  // This is a PURE shape check — `resolveSourceRuleNarrowing` touches no database
+  // — so it can run before the insert without a read. FAILS CLOSED: any throw out
+  // of the resolver is a refusal, like the two gates above it.
+  const sourceRuleRefusal = ((): string | null => {
+    try {
+      const narrowing = resolveSourceRuleNarrowing(sourceRule)
+      return narrowing.ok
+        ? null
+        : `[audience-source-rule] REFUSED: audience "${audienceName || "(unnamed audience)"}" ${narrowing.refusal}`
+    } catch (err) {
+      return `[audience-source-rule] REFUSED (unevaluable): ${err instanceof Error ? err.message : String(err)}`
+    }
+  })()
+  if (sourceRuleRefusal) {
+    return { success: false, error: sourceRuleRefusal, errorKind: "input" }
   }
 
   try {

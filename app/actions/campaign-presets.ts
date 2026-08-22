@@ -18,6 +18,8 @@ import { evaluateOutbound } from "@/lib/kernel/compliance"
 // TARGETING RULE — who the ad is shown to. Two different questions, two
 // different inputs; the audience rule has no `content` to hand evaluateOutbound.
 import { assertAudienceSegmentationAllowed } from "@/lib/lead-governance/protected-class-signals"
+import { assertAudiencePersonaBasis } from "@/lib/ads/audience-persona-basis"
+import { resolveSourceRuleNarrowing } from "@/lib/ads/audience-source-rules"
 import { revalidatePath } from "next/cache"
 
 export type PresetChannel =
@@ -180,6 +182,51 @@ export async function upsertCampaignPreset(input: UpsertCampaignPresetInput): Pr
       assertAudienceSegmentationAllowed(f.source_rule ?? {}, input.name.trim() || "(unnamed audience)")
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
+
+    // THE PERSONA BASIS (owner ruling: "audience should be segmented on persona").
+    // The positive half, on the same second door and for the same reason: this
+    // writer bypasses lib/kernel/ads.ts createAudienceSegment entirely, so
+    // `source_rule` comes straight off caller-supplied `fields` and lands in the
+    // exact jsonb column syncAudience turns into the Meta/Google upload. Gating
+    // only the kernel door would leave the persona basis unenforced here.
+    // Fail-closed: any throw — the refusal itself, or a resolver that cannot walk
+    // the rule — refuses (CLAUDE.md §4).
+    try {
+      assertAudiencePersonaBasis(f.source_rule ?? {}, input.name.trim() || "(unnamed audience)")
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
+
+    // THE SOURCE RULE MUST RESOLVE — the third gate on this same second door.
+    //
+    // Both refusals above answer "may this audience be built on that basis?".
+    // Neither answers "does that basis select anybody in particular?", and for
+    // thirteen of the fifteen declared rule types the honest answer was no: they
+    // had no populate branch, so `syncAudience` fell through to every consented
+    // contact in the tenant and shipped the lot to Meta/Google under whatever name
+    // the audience carried.
+    //
+    // This door is the most exposed of the three, because the row it writes takes
+    // `source_rule` straight off caller-supplied `fields` and DEFAULTS IT TO `{}`
+    // — a rule with no type at all, which is precisely the shape that used to
+    // resolve to "everybody". It now refuses (refusalKind "no_rule").
+    // Fail-closed like its two neighbours.
+    try {
+      const narrowing = resolveSourceRuleNarrowing(f.source_rule ?? null)
+      if (!narrowing.ok) {
+        return {
+          success: false,
+          error:
+            `[audience-source-rule] REFUSED: audience "${input.name.trim() || "(unnamed audience)"}" ` +
+            narrowing.refusal,
+        }
+      }
+    } catch (err) {
+      return {
+        success: false,
+        error: `[audience-source-rule] REFUSED (unevaluable): ${err instanceof Error ? err.message : String(err)}`,
+      }
     }
 
     const row = {

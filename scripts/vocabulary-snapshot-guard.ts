@@ -31,6 +31,38 @@
  * declaration is genuinely older than the live CHECK. Those pairs are baselined:
  * a NEW disagreement fails CI, and reconciling an old one shrinks the list.
  * Run UPDATE_VOCAB_SNAPSHOT_BASELINE=1 after deliberately reconciling.
+ *
+ * THE SECOND CAUSE, DOCUMENTED BECAUSE ONE ENTRY NOW HAS IT AND THE FIRST
+ * SENTENCE WOULD HAVE MISDESCRIBED IT. The paragraph above describes a migration
+ * OLDER than the live CHECK. A disagreement can also run the other way: a
+ * migration that is CORRECT, WRITTEN, and DELIBERATELY NOT APPLIED because it is
+ * waiting on a decision only the owner can make. The guard cannot tell the two
+ * apart — both are "the file and the database disagree" — but they retire
+ * differently, and filing one under the other's rationale would leave a false
+ * note beside a real number:
+ *
+ *   · cause 1 retires by RECONCILING (regenerate the cache; the DB was right)
+ *   · cause 2 retires by APPLYING (run the migration; the FILE was right)
+ *
+ *   contacts.contact_persona — declared by
+ *   m531-contact-persona-is-free-text-and-has-drifted-off-the-canon…sql, which
+ *   pins the column to the 13-member canonical Persona union so an audience
+ *   basis can be trusted (owner ruling: "audience should be segmented on
+ *   persona"). It normalises every known alias and then REFUSES rather than
+ *   inventing a persona for the residue. The residue is two live rows:
+ *     Robert  contact_type='seller' contact_persona='listing_seller'
+ *             — the persona merely restates the type; clearing it loses nothing
+ *     James   contact_type='both'   contact_persona='past_client'
+ *             — and lifecycle_state on that SAME row is 'new', so the record
+ *               says he is a past client and a new contact at once
+ *   Neither names a transaction SITUATION, which is what a persona is. Deciding
+ *   whether they become contact_type and clear, or whether the union widens, is
+ *   a product call, not a cleanup — so the migration waits rather than guessing,
+ *   and this entry says WHY instead of the guard going quiet.
+ *
+ * DO NOT re-run UPDATE_VOCAB_SNAPSHOT_BASELINE=1 to absorb a cause-2 entry
+ * without recording it here. A baseline that cannot tell "we accepted this" from
+ * "we have not done this yet" is a list of things nobody will ever look at again.
  */
 import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs"
 import { dirname, join } from "node:path"

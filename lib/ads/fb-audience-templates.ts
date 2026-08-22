@@ -13,12 +13,22 @@
 // resolution happens at sync time inside the kernel `syncAudience` command.
 
 import type { SourceRule, AudienceType } from "@/lib/kernel/ads"
+import {
+  ADS_ELIGIBLE_PERSONAS,
+  PERSONA_SEGMENT_TYPE,
+} from "@/lib/ads/audience-persona-basis"
+import type { CampaignPersona } from "@/lib/campaigns/contact-sources"
 
 export interface AudienceTemplate {
   id: string
   name: string
   description: string
-  category: "remarketing" | "lookalike" | "exclusion" | "geo" | "lifecycle"
+  // "persona" — the basis the owner ruled on ("audience should be segmented on
+  // persona"). Kept as its own category rather than folded into "lifecycle":
+  // lifecycle is WHERE they are in our funnel, persona is WHAT KIND of client they
+  // are and what they are trying to do. Conflating them is how a persona audience
+  // ends up being built out of a lifecycle stage.
+  category: "remarketing" | "lookalike" | "exclusion" | "geo" | "lifecycle" | "persona"
   audienceType: AudienceType
   sourceRule: SourceRule
   consentBasis: string
@@ -26,7 +36,99 @@ export interface AudienceTemplate {
   estimatedSizeLabel: string
 }
 
+/**
+ * WHAT EACH ADS-ELIGIBLE PERSONA IS TRYING TO DO. This is the OPERATOR-FACING
+ * copy for a persona template — the situation, never a characteristic.
+ *
+ * It is a `Record<CampaignPersona, …>` over the ELIGIBLE set only, and the
+ * derivation below reads it through `ADS_ELIGIBLE_PERSONAS`, so the day a persona
+ * is added to the canonical union with no copy here, this file stops compiling
+ * rather than shipping a template labelled `undefined`. A persona ruled INELIGIBLE
+ * (senior, probate, divorce, military) has no entry and gets no template — the
+ * catalog cannot offer an audience the gate would refuse.
+ */
+const PERSONA_TEMPLATE_COPY: Record<
+  Exclude<CampaignPersona, "senior" | "probate" | "divorce" | "military" | "other">,
+  { name: string; situation: string; recommendedFor: string[]; size: string }
+> = {
+  first_time: {
+    name: "First-Time Buyers",
+    situation: "Contacts buying their first home. They need the process explained, not another listing blast.",
+    recommendedFor: ["Buyer education content", "Down payment / loan program explainers", "First-time buyer seminars"],
+    size: "~20–300",
+  },
+  relocated: {
+    name: "Relocating",
+    situation: "Contacts moving into or across your market. Their question is the neighbourhood, not the house.",
+    recommendedFor: ["Neighbourhood guides", "Relocation checklists", "Virtual tour offers"],
+    size: "~10–150",
+  },
+  luxury: {
+    name: "Luxury",
+    situation: "Contacts in the luxury tier. Discretion, comparables and off-market inventory.",
+    recommendedFor: ["Private listing previews", "Luxury market reports", "Off-market opportunities"],
+    size: "~5–80",
+  },
+  fsbo: {
+    name: "For Sale By Owner",
+    situation: "Owners selling on their own. The pitch is what representation adds, with evidence.",
+    recommendedFor: ["FSBO conversion content", "Pricing-accuracy proof", "Net-sheet comparisons"],
+    size: "~5–100",
+  },
+  upsize: {
+    name: "Upsizing",
+    situation: "Contacts who have outgrown their home and are trading up.",
+    recommendedFor: ["Buy-before-you-sell explainers", "Bridge financing", "Larger-home inventory"],
+    size: "~10–200",
+  },
+  downsize: {
+    name: "Downsizing",
+    situation: "Contacts deliberately moving to a smaller home. A stated INTENT, not an inference about anybody's age.",
+    recommendedFor: ["Equity-release explainers", "Single-level / low-maintenance inventory", "Move management"],
+    size: "~10–200",
+  },
+  expired: {
+    name: "Expired Listings",
+    situation: "Owners whose listing expired unsold. They already tried; the pitch is what changes.",
+    recommendedFor: ["Relist strategy", "Pricing post-mortems", "Marketing-plan comparisons"],
+    size: "~5–150",
+  },
+  foreclosure: {
+    name: "Foreclosure / Pre-Foreclosure",
+    situation: "Owners facing foreclosure — a financial and legal situation, sourced from public filings on the parcel.",
+    recommendedFor: ["Options explainers", "Short-sale education", "Timeline guidance"],
+    size: "~5–80",
+  },
+}
+
+/**
+ * PERSONA-BASIS TEMPLATES — the owner's ruling made one-click.
+ *
+ * DERIVED from `ADS_ELIGIBLE_PERSONAS` rather than typed out, so the catalog and
+ * the gate can never disagree: a persona the gate refuses cannot appear here, and
+ * a persona the gate admits gets an audience an operator can actually build.
+ * Hand-listing them would let the two drift, and the drift that matters is the
+ * permissive one — a shipped template for a persona the gate refuses is an
+ * operator clicking a button that always errors.
+ */
+const PERSONA_BASIS_TEMPLATES: AudienceTemplate[] = ADS_ELIGIBLE_PERSONAS.flatMap((persona) => {
+  const copy = PERSONA_TEMPLATE_COPY[persona as keyof typeof PERSONA_TEMPLATE_COPY]
+  if (!copy) return []
+  return [{
+    id: `persona_${persona}`,
+    name: `Persona — ${copy.name}`,
+    description: copy.situation,
+    category: "persona" as const,
+    audienceType: "persona_segment" as AudienceType,
+    sourceRule: { type: PERSONA_SEGMENT_TYPE, filters: { personas: [persona] } } as SourceRule,
+    consentBasis: "Existing contacts with marketing consent — segmented on declared transaction situation",
+    recommendedFor: copy.recommendedFor,
+    estimatedSizeLabel: copy.size,
+  }]
+})
+
 export const FB_AUDIENCE_TEMPLATES: AudienceTemplate[] = [
+  ...PERSONA_BASIS_TEMPLATES,
   // ─── REMARKETING ────────────────────────────────────────────────────────
   {
     id: "qualified_leads_remarketing",

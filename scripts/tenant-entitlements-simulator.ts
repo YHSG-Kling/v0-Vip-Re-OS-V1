@@ -44,9 +44,11 @@ function pureLayer() {
   check("override WINS when set — raises a capped tier and caps an unlimited one",
     effectiveSeatLimit("solo_agent", 12).limit === 12 && effectiveSeatLimit("solo_agent", 12).overridden === true
     && effectiveSeatLimit("brokerage", 25).limit === 25)
-  check("null override ⇒ tier default (Solo 2 · Team 5 · Brokerage unlimited)",
+  check("null override ⇒ tier default (Solo 2 · Team 5 · Brokerage 50 · Multi unlimited)",
     effectiveSeatLimit("solo_agent", null).limit === 2 && effectiveSeatLimit("solo_agent", null).overridden === false
-    && effectiveSeatLimit("team", null).limit === 5 && effectiveSeatLimit("brokerage", null).limit === null)
+    && effectiveSeatLimit("team", null).limit === 5
+    && effectiveSeatLimit("brokerage", null).limit === 50
+    && effectiveSeatLimit("multi_location", null).limit === null)
   check("seatCheck enforces the SAME resolved limit (2 in use: solo denies, solo+override 12 allows)",
     seatCheck("solo_agent", 2).allowed === false
     && seatCheck("solo_agent", 2, 12).allowed === true && seatCheck("solo_agent", 2, 12).overridden === true

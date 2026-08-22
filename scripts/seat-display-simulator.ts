@@ -35,7 +35,7 @@ import { CHECK_VOCABULARIES } from "./check-vocabularies"
 import { stripComments } from "./strip-comments"
 import {
   SEAT_ROLES, PARTNER_ROLES, TIER_SEAT_LIMITS, TIER_ORDER, TIER_INVITABLE_ROLES,
-  seatLimitForTier, roleConsumesSeat, effectiveSeatLimit,
+  seatLimitForTier, roleConsumesSeat, effectiveSeatLimit, seatableUserTypes,
   seatDecision, seatDecisionMessage, agentRoleAdvisory, ADDITIONAL_SEAT_MONTHLY_USD,
   TIER_LABELS,
 } from "../lib/kernel/tier-role-matrix"
@@ -56,8 +56,17 @@ console.log("\n[the limits are the owner's plan]")
 {
   check("Solo = 2 seats", TIER_SEAT_LIMITS.solo_agent === 2)
   check("Team = 5 seats", TIER_SEAT_LIMITS.team === 5)
-  check("Brokerage = unlimited", TIER_SEAT_LIMITS.brokerage === null)
+  // MOVED null → 50 (lane A). OWNER: "a brokerage should be changed to 50 seats".
+  // The live catalogue already said 50 in BOTH subscription_tiers.max_agents and
+  // plan_limits.active_users (m529); this literal, which is the FALLBACK used when
+  // the catalogue cannot be read, still said unlimited — a fail-OPEN answer on the
+  // seat axis at exactly the moment the real number is unavailable.
+  check("Brokerage = 50 seats", TIER_SEAT_LIMITS.brokerage === 50)
   check("Multi-Location = unlimited", TIER_SEAT_LIMITS.multi_location === null)
+  check("…and the fallback ladder is strictly increasing, so an upgrade always buys seats",
+    (TIER_SEAT_LIMITS.solo_agent ?? 0) < (TIER_SEAT_LIMITS.team ?? 0)
+    && (TIER_SEAT_LIMITS.team ?? 0) < (TIER_SEAT_LIMITS.brokerage ?? 0)
+    && TIER_SEAT_LIMITS.multi_location === null)
   check("every canonical tier has a stated limit",
     TIER_ORDER.every((t) => t in TIER_SEAT_LIMITS))
   // DIRECTION CHANGED (seat-cap lane): this used to assert an unknown/legacy
@@ -78,15 +87,49 @@ console.log("\n[every seat role is a real user_type]")
   // like coverage. "broker_admin" was exactly that.
   const admitted = CHECK_VOCABULARIES.users?.user_type ?? []
   check(`users.user_type admits ${admitted.length} values`, admitted.length > 0)
-  const phantom = SEAT_ROLES.filter((r) => !admitted.includes(r))
-  check("no seat role is a value the column rejects", phantom.length === 0, phantom.join(", "))
+
+  // ── THE ONE PENDING VALUE, TRACKED RATHER THAN ASSERTED AWAY (lane A) ─────
+  //
+  // This used to be a flat `SEAT_ROLES ⊆ admitted`, plus a companion assertion
+  // that broker_admin was in NEITHER. The owner has now ruled broker_admin a
+  // user type ("a broker admin is a user type with differnt permission roles"),
+  // and CLAUDE.md §4 has always listed it in the tenant roster — so it belongs in
+  // SEAT_ROLES, and the DEFECT is that the column cannot store it.
+  //
+  // m530 (WRITTEN, NOT APPLIED) adds it. Until it is applied and the vocabulary
+  // cache regenerated, exactly ONE value may be pending, it must be that value,
+  // and nothing may write it — `seatableUserTypes` intersects the invite menu
+  // with `admitted`, so the pending value is simply not offered.
+  //
+  // The check is written so it PASSES BOTH BEFORE AND AFTER m530 without an edit,
+  // and goes RED if any OTHER phantom appears.
+  const pending = SEAT_ROLES.filter((r) => !admitted.includes(r))
+  check("at most one seat user type is pending a migration, and it is broker_admin",
+    pending.length === 0 || (pending.length === 1 && pending[0] === "broker_admin"),
+    `pending: ${pending.join(", ") || "none"}`)
+  check("m530 — the migration that makes it storable — exists on disk",
+    src("supabase/migrations/m530-broker-admin-is-a-user-type-the-column-cannot-hold.sql").length > 0)
+  check("the invite menu HIDES a pending user type, so nothing can write it",
+    pending.every((r) => !seatableUserTypes("brokerage", admitted).includes(r as never)))
+  check("…while every STORABLE seat user type stays on the menu",
+    SEAT_ROLES.filter((r) => admitted.includes(r))
+      .every((r) => seatableUserTypes("brokerage", admitted).includes(r)))
+
+  // POSITIVE CONTROL — the intersection must actually be able to remove something.
+  check("POSITIVE CONTROL seatableUserTypes drops a role a vocabulary omits",
+    !seatableUserTypes("brokerage", admitted.filter((v) => v !== "agent")).includes("agent"))
+  // …and must NOT brick the surface when the vocabulary is unreadable.
+  check("POSITIVE CONTROL an empty/unreadable vocabulary falls back to the full menu",
+    seatableUserTypes("brokerage", []).includes("agent")
+    && seatableUserTypes("brokerage", null).includes("agent")
+    && seatableUserTypes("brokerage", ["nothing_real"]).includes("agent"))
 
   // The inverse: an admitted WORKING role missing from the seat list is a tenant
   // getting a free seat. broker_owner was missing.
   check("broker_owner consumes a seat (it is an admitted role and was in no list)",
     (SEAT_ROLES as readonly string[]).includes("broker_owner") && admitted.includes("broker_owner"))
-  check("broker_admin is NOT treated as a role — the column never admitted it",
-    !(SEAT_ROLES as readonly string[]).includes("broker_admin") && !admitted.includes("broker_admin"))
+  check("broker_admin IS a seat user type now (owner ruling + CLAUDE.md §4 roster)",
+    (SEAT_ROLES as readonly string[]).includes("broker_admin"))
 
   // Partners and the AI actor must never consume a seat.
   for (const r of ["vendor", "lender", "contact", "system", "title_agent", "superadmin", "support"]) {
@@ -241,40 +284,50 @@ console.log("\n[title_agent is a vendor; support is a platform user type]")
 
 console.log("\n[the tier sells SEATS — with ONE role constraint on solo]")
 {
-  // OWNER RULING: "they can use those seats anyway they want" — the tier sells
-  // SEATS, not a narrower menu. AND, held firm after I briefly reversed it and was
-  // corrected: "no solo agent tier subscription does NOT have a broker owner or
-  // broker." A solo subscription is not a brokerage, so the two roles that exist
-  // to GOVERN a brokerage are off its menu. Its 2 seats are spent inside the rest.
-  check("solo has NO broker", !TIER_INVITABLE_ROLES.solo_agent.includes("broker"))
-  check("solo has NO broker_owner", !TIER_INVITABLE_ROLES.solo_agent.includes("broker_owner"))
-  for (const role of SEAT_ROLES.filter((r) => r !== "broker" && r !== "broker_owner")) {
-    check(`solo may invite ${role} — every other working role is on its menu`,
-      TIER_INVITABLE_ROLES.solo_agent.includes(role))
+  // ── SUPERSEDED, AND THE SUPERSESSION IS THE ASSERTION NOW (lane A) ────────
+  //
+  // This block used to pin the OPPOSITE ruling: "solo has NO broker", "team has
+  // NO broker", "solo's menu is brokerage's MINUS exactly the two governance
+  // roles". OWNER, 2026-08-22, seating a broker on TEAM tier explicitly:
+  //
+  //   "a team is a team tier subscription with 5 seats so can have a team lead
+  //    user type given permission roles, then an agent as a user type with
+  //    permission roles, THEN A BROKER AS A USER TYPE with different permisson
+  //    roles which that takes up 3 of 5 seats"
+  //
+  // A tier restricts HOW MANY seats, never WHICH user types fill them. The
+  // earlier "team tier … don't have a broker in the subscription" sentence
+  // described the PACKAGE, not a prohibition — and m518's team_lead lead-desk
+  // grant does not depend on it, because is_lead_visible_role() is per-user and
+  // carries no tier clause. Both rulings hold; see the header of
+  // lib/kernel/tier-role-matrix.ts.
+  for (const tier of TIER_ORDER) {
+    for (const role of SEAT_ROLES) {
+      check(`${tier} may seat ${role} — a tier caps the COUNT, not the menu`,
+        TIER_INVITABLE_ROLES[tier].includes(role))
+    }
   }
-  check("solo's menu is brokerage's MINUS exactly the two governance roles",
-    [...TIER_INVITABLE_ROLES.brokerage].filter((r) => r !== "broker" && r !== "broker_owner").sort().join(",") ===
-    [...TIER_INVITABLE_ROLES.solo_agent].sort().join(","))
-  // SUPERSEDED, and the supersession is the assertion now. This used to read
-  // "team and above DO get them — that is where a brokerage begins". OWNER, new
-  // ruling: "if team tier subscriptions, they don't have a broker in the
-  // subscription so the team lead can see leads." The missing broker is the
-  // PREMISE of the team lead's lead-desk admission (lib/auth/lead-visibility.ts),
-  // so a team tier that could still invite a broker would contradict it.
-  // A brokerage begins at the BROKERAGE tier.
-  check("team has NO broker — the team-tier subscription does not include one",
-    !TIER_INVITABLE_ROLES.team.includes("broker"))
-  check("team has NO broker_owner either",
-    !TIER_INVITABLE_ROLES.team.includes("broker_owner"))
-  check("team's menu is brokerage's MINUS exactly the two governance roles",
-    [...TIER_INVITABLE_ROLES.brokerage].filter((r) => r !== "broker" && r !== "broker_owner").sort().join(",") ===
-    [...TIER_INVITABLE_ROLES.team].sort().join(","))
-  check("team KEEPS team_lead — it is the seat that governs a team",
-    TIER_INVITABLE_ROLES.team.includes("team_lead"))
-  check("brokerage and above DO get them — that is where a brokerage begins",
-    TIER_INVITABLE_ROLES.brokerage.includes("broker") && TIER_INVITABLE_ROLES.brokerage.includes("broker_owner"))
-  check("…and the limits still differ, because SEATS are what a tier sells",
-    TIER_SEAT_LIMITS.solo_agent === 2 && TIER_SEAT_LIMITS.brokerage === null)
+  check("every tier's menu is the SAME menu — no tier subtracts a user type",
+    TIER_ORDER.every((t) =>
+      [...TIER_INVITABLE_ROLES[t]].sort().join(",") ===
+      [...TIER_INVITABLE_ROLES.brokerage].sort().join(",")))
+  check("the owner's team example is seatable: team_lead + agent + broker all on TEAM",
+    ["team_lead", "agent", "broker"].every((r) => TIER_INVITABLE_ROLES.team.includes(r as never)))
+  check("the owner's brokerage example is seatable: broker_admin + team_lead + agent",
+    ["broker_admin", "team_lead", "agent"].every((r) => TIER_INVITABLE_ROLES.brokerage.includes(r as never)))
+  check("…and the LIMITS still differ, because SEATS are the whole of what a tier sells",
+    TIER_SEAT_LIMITS.solo_agent === 2 && TIER_SEAT_LIMITS.team === 5
+    && TIER_SEAT_LIMITS.brokerage === 50 && TIER_SEAT_LIMITS.multi_location === null)
+
+  // POSITIVE CONTROL — the parity finder above must be able to go RED. A tier
+  // whose menu is genuinely short of one role must fail the same comparison.
+  {
+    const sabotaged = TIER_INVITABLE_ROLES.brokerage.filter((r) => r !== "broker")
+    check("POSITIVE CONTROL a tier missing 'broker' fails the parity check",
+      [...sabotaged].sort().join(",") !== [...TIER_INVITABLE_ROLES.brokerage].sort().join(","))
+    check("POSITIVE CONTROL …and fails the team-example check the same way",
+      !["team_lead", "agent", "broker"].every((r) => sabotaged.includes(r as never)))
+  }
 }
 
 console.log("\n[over the limit is a CHOICE — upgrade first, paid seat second]")
@@ -306,10 +359,17 @@ console.log("\n[over the limit is a CHOICE — upgrade first, paid seat second]"
     !/remove|deactivate|suspend/i.test(seatDecisionMessage(full) ?? ""))
 
   const team = seatDecision("team", 5)
-  check("a full Team plan points at Brokerage and its unlimited seats",
-    team.upgradeTo === "brokerage" && team.upgradeSeats === null)
+  check("a full Team plan points at Brokerage and its 50 seats",
+    team.upgradeTo === "brokerage" && team.upgradeSeats === 50)
 
-  check("an unlimited tier is never 'over'", seatDecision("brokerage", 5000).withinLimit)
+  // Brokerage is a NUMBER now (50), so the unlimited case is multi_location —
+  // the only tier the owner calls unlimited.
+  check("an unlimited tier is never 'over'", seatDecision("multi_location", 5000).withinLimit)
+  check("a FULL brokerage is over, and points at Multi-Location", (() => {
+    const d = seatDecision("brokerage", 50)
+    return !d.withinLimit && d.upgradeTo === "multi_location" && d.upgradeSeats === null
+  })())
+  check("…and 49 of 50 is still fine", seatDecision("brokerage", 49).withinLimit)
 
   // A staff-set override is a DELIBERATE cap — answering it with "upgrade" would
   // send a tenant to buy a tier they may already be on.
@@ -384,8 +444,10 @@ console.log("\n[the override still wins, on every surface]")
   const bumped = effectiveSeatLimit("solo_agent", 4)
   check("an override raises the limit and is flagged as custom",
     bumped.limit === 4 && bumped.overridden === true)
-  const unlimited = effectiveSeatLimit("brokerage", null)
-  check("brokerage stays unlimited", unlimited.limit === null)
+  const brokerage = effectiveSeatLimit("brokerage", null)
+  check("brokerage resolves to its 50-seat plan", brokerage.limit === 50 && brokerage.overridden === false)
+  const unlimited = effectiveSeatLimit("multi_location", null)
+  check("multi_location stays unlimited", unlimited.limit === null)
 }
 
 console.log("\n──────────────────────────────────────────────────")

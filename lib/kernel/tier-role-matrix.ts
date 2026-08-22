@@ -6,27 +6,70 @@
 // no drift. Only TYPE imports from the kernel (erased at compile time), so it
 // is safe in client bundles.
 //
-// THE BUSINESS MODEL (owner-corrected, round 16):
-//   • Every tier gets access to the working roles — admin, agent, tc,
-//     compliance_officer, isa, team_lead — and the constraint is SEATS, not the
-//     role menu: "they can use those seats anyway they want" (owner).
-//   • THE EXCEPTION, and it is a hard one: NEITHER a SOLO nor a TEAM
-//     subscription has a broker or a broker_owner.
-//       – Solo: owner, explicitly — "no solo agent tier subscription does NOT
-//         have a broker owner or broker." A solo subscription is not a
-//         brokerage, so the roles that exist to govern one are not on its menu.
-//         Its 2 seats are spent inside the remaining set.
-//       – Team: owner, explicitly — "if team tier subscriptions, they don't have
-//         a broker in the subscription so the team lead can see leads." The
-//         missing broker is the PREMISE of the lead ruling: the team lead is
-//         admitted to the lead desk (lib/auth/lead-visibility.ts) precisely
-//         because on that tier there is nobody else to work it. This header used
-//         to record the exception as SOLO-ONLY while the matrix gave `team` the
-//         full seat list — the two halves of one ruling disagreeing in the same
-//         file. Its 5 seats are spent inside the remaining set.
-//   • SEATS: solo_agent = 2 · team = 5 · brokerage / multi_location =
+// ─── THE FOUR AXES. THEY ARE NOT THE SAME AXIS. ──────────────────────────────
+//
+// This file exists because the repo spent sixteen rounds conflating four
+// independent things. Naming them, in the owner's own terms:
+//
+//   1. SUBSCRIPTION TIER   what the tenant BUYS. Decides SEATS. Nothing else.
+//   2. SEATS               2 / 5 / 50 / unlimited. The ONLY tier-imposed limit.
+//   3. USER TYPE           what a person IS. One per user. Costs ONE seat.
+//   4. PERMISSION ROLES    grants layered ON TOP of a user type
+//                          (user_role_assignments). Never a seat of their own.
+//
+// A TIER DOES NOT RESTRICT WHICH USER TYPES MAY BE SEATED. IT RESTRICTS HOW MANY.
+//
+// ─── THE RULING THAT SUPERSEDED THE OLD ROLE MENU (owner, verbatim) ──────────
+//
+//   "so there is a solo agent tier subscription plan, that has 2 seats and a user
+//    is the type of user it is. so for example ; solo tier subsprition plan is an
+//    independent real estate agent with user type agent and can be granted
+//    permission roles, then the second seat can be a user type of admin and given
+//    permission roles so the 2 seats are not taken up. a team is a team tier
+//    subscription with 5 seats so can have a team lead user type given permission
+//    roles, then an agent as a user type with permission roles, THEN A BROKER AS A
+//    USER TYPE with different permisson roles which that takes up 3 of 5 seats; a
+//    brokerage should be changed to 50 seats with a brokerage tier subscription
+//    where a broker admin is a user type with differnt permission roles, then team
+//    lead usertype with differnt permission roles then an agent usertype with
+//    different permission roles. so that is 3 seats out of 50 and then the same
+//    goes for multiple location brokerages but unlimited seats. everyone gets all
+//    features pertaining to their needs."
+//
+// This file PREVIOUSLY withheld `broker` and `broker_owner` from solo and team.
+// The sentence above seats a BROKER on TEAM tier explicitly, and counts it as one
+// of the five. So the subtraction is gone: every tier's menu is now the SAME menu,
+// and the tier's only say is the seat CAP.
+//
+// ─── THE EARLIER RULING IT COLLIDES WITH, AND WHY BOTH SURVIVE ───────────────
+//
+// EARLIER, owner: "if team tier subscriptions, they don't have a broker in the
+// subscription so the team lead can see leads." m518 added `team_lead` to
+// public.is_lead_visible_role() on that basis, and that grant MUST NOT be
+// reverted.
+//
+// The two sentences do not actually contradict, and the proof is in the predicate
+// rather than in the prose. READ LIVE (2026-08-22), is_lead_visible_role() is:
+//
+//     user_type IN ('broker','broker_owner','admin','team_lead','superadmin')
+//     OR EXISTS (grant IN ('broker','broker_owner','admin','team_lead'))
+//     OR is_ai_isa_system() OR is_platform_admin()
+//
+// It is PER-USER and takes NO tier argument and has NO "…and this tenant seats no
+// broker" clause anywhere in it. Therefore seating a broker on a team tenant ADDS
+// a second person who passes the predicate; it CANNOT remove the team lead from
+// it. The earlier sentence supplied the MOTIVE for m518 (the team plan does not
+// come with a broker, so by default nobody else is on the lead desk) — it was
+// never a prohibition on buying one with a seat. "They don't have a broker IN THE
+// SUBSCRIPTION" describes the PACKAGE, not the tenant's freedom to spend a seat.
+//
+// So: the menu opens (this file), and m518 stands untouched. Verified by
+// scripts/lead-visibility-roster-simulator.ts, which pins the team lead's desk
+// independently of anything here.
+//
+//   • SEATS: solo_agent = 2 · team = 5 · brokerage = 50 · multi_location =
 //     unlimited. A "seat" is a working staff user (SEAT_ROLES). Partner
-//     users do NOT consume seats.
+//     users, contacts, lenders and the AI-ISA system actor do NOT consume seats.
 //   • OVER THE LIMIT IS AN UPGRADE, NOT A PAID EXTRA SEAT — OWNER, VERBATIM,
 //     SUPERSEDING THE EARLIER HALF OF THIS RULE:
 //
@@ -81,66 +124,83 @@ import type { UserDomainRole, CanonicalTier } from "./users"
  *  lenders are a vendor category, not a role. */
 export const PARTNER_ROLES: readonly UserDomainRole[] = ["vendor"]
 
-/** Seat-consuming working roles — the full role set of the OS. */
+/**
+ * Seat-consuming USER TYPES — the full staff roster of the OS. Every one of
+ * these costs exactly ONE seat, on every tier.
+ *
+ * `broker_admin` is in this list on the owner's ruling ("a broker admin is a user
+ * type with differnt permission roles") and on CLAUDE.md §4, whose tenant roster
+ * is broker / broker_admin / broker_owner / team_lead / admin.
+ *
+ * ── broker_admin IS NOT STORABLE YET, AND THAT IS TRACKED, NOT HIDDEN ────────
+ *
+ * MEASURED LIVE 2026-08-22: users_user_type_check admits fourteen values and
+ * `broker_admin` is NOT one of them, which is why m308 and m518 deliberately
+ * REMOVED it from the RLS predicates ("the column cannot hold it"). Listing it
+ * here is the PRODUCT truth; the DATABASE truth catches up in
+ * supabase/migrations/m530-broker-admin-is-a-user-type-the-column-cannot-hold.sql
+ * (WRITTEN, NOT APPLIED — CLAUDE.md §3).
+ *
+ * Nothing silently breaks in the meantime, because the invite menu is INTERSECTED
+ * with the storable vocabulary — see `seatableUserTypes` below. Until m530 is
+ * applied and the vocabulary cache regenerated, broker_admin is simply not
+ * offered; the day it is, it appears with no further code change.
+ * scripts/seat-cap-simulator.ts asserts that coupling in both directions.
+ */
 export const SEAT_ROLES: readonly UserDomainRole[] = [
-  "admin", "broker", "broker_owner", "team_lead", "agent", "tc", "isa", "compliance_officer",
+  "admin", "broker", "broker_admin", "broker_owner", "team_lead", "agent", "tc", "isa", "compliance_officer",
 ]
 
-/** The solo set: every working role EXCEPT the two brokerage-governance ones.
- *  A solo subscription is not a brokerage — owner's ruling, held firm. */
-const SOLO_SEAT_ROLES: readonly UserDomainRole[] =
-  SEAT_ROLES.filter((r) => r !== "broker" && r !== "broker_owner")
-
 /**
- * The TEAM set. Same subtraction as solo, and it is the SAME EXPRESSION on
- * purpose rather than a second literal.
+ * Canonical tier → invitable user types. THE matrix — every invite surface
+ * derives from it.
  *
- * ── THE RULING THAT MOVED THIS ──────────────────────────────────────────────
+ * ── ONE MENU, FOUR TIERS, DELIBERATELY ──────────────────────────────────────
  *
- * OWNER, verbatim: "if team tier subscriptions, they don't have a broker in the
- * subscription so the team lead can see leads."
+ * There is no per-tier subtraction any more, and the four keys hold the SAME
+ * expression rather than four literals. The owner's ruling makes the tier a SEAT
+ * COUNT and nothing else — "everyone gets all features pertaining to their
+ * needs" — so a tenant on any plan may seat any staff user type and spend their
+ * seats as they like.
  *
- * The header of this file recorded the no-broker exception as SOLO-ONLY, and the
- * matrix below duly gave `team` the full SEAT_ROLES including broker and
- * broker_owner. The owner has now said a team-tier subscription has no broker
- * either — which is the PREMISE of the lead ruling, not an aside: the reason the
- * team lead sees leads is that on that tier there is nobody else to. A tier that
- * could still invite a broker would contradict the sentence that admits the team
- * lead to the lead desk in the first place.
- *
- * ── WHY DERIVED, NOT RETYPED ────────────────────────────────────────────────
- *
- * Written as a literal, `team` and `solo_agent` would drift the first time a
- * working role is added to SEAT_ROLES: it would land in one and be forgotten in
- * the other. Both tiers ask the SAME question — "every working role except the
- * two that exist to govern a brokerage" — so both are the same filter, and a new
- * role joins both tiers automatically, which is the safe default for a seat
- * menu. The subtraction is visible in one line instead of buried in a diff
- * between two lists.
- *
- * The two are kept as SEPARATE named constants rather than one shared alias
- * because they are two RULINGS that currently agree, not one ruling: solo has no
- * broker because it is not a brokerage, team has no broker because the
- * subscription does not include one. If either moves, it moves alone.
+ * The keys are kept (rather than collapsing to a single exported list) because
+ * the tier remains the right place to hang a future per-tier rule, and because
+ * every call site already asks the question tier-first. What is gone is the
+ * ANSWER differing by tier.
  */
-const TEAM_SEAT_ROLES: readonly UserDomainRole[] =
-  SEAT_ROLES.filter((r) => r !== "broker" && r !== "broker_owner")
+const ALL_SEATABLE_ROLES: readonly UserDomainRole[] = [...SEAT_ROLES, ...PARTNER_ROLES]
 
-/** Canonical tier → invitable roles. THE matrix — every invite surface derives
- *  from it. The tier sells SEATS and how a tenant spends them is theirs; the
- *  role constraint is that neither solo NOR team has broker/broker_owner. */
 export const TIER_INVITABLE_ROLES: Record<CanonicalTier, readonly UserDomainRole[]> = {
-  solo_agent:     [...SOLO_SEAT_ROLES, ...PARTNER_ROLES],
-  team:           [...TEAM_SEAT_ROLES, ...PARTNER_ROLES],
-  brokerage:      [...SEAT_ROLES, ...PARTNER_ROLES],
-  multi_location: [...SEAT_ROLES, ...PARTNER_ROLES],
+  solo_agent:     ALL_SEATABLE_ROLES,
+  team:           ALL_SEATABLE_ROLES,
+  brokerage:      ALL_SEATABLE_ROLES,
+  multi_location: ALL_SEATABLE_ROLES,
 }
 
-/** Canonical tier → seat limit (null = unlimited). Seats count SEAT_ROLES users only. */
+/**
+ * Canonical tier → seat limit (null = unlimited). Seats count SEAT_ROLES users only.
+ *
+ * ── brokerage MOVED null → 50, TO CATCH UP WITH THE CATALOGUE ───────────────
+ *
+ * OWNER: "a brokerage should be changed to 50 seats". The live catalogue already
+ * says so — MEASURED 2026-08-22, `subscription_tiers.max_agents` is
+ * solo 2 / team 5 / brokerage 50 / multi NULL, and `plan_limits.active_users`
+ * agrees (2 / 5 / 50 / -1). Both were moved live by m529.
+ *
+ * This literal still said `null`, i.e. UNLIMITED. It is the fallback used
+ * whenever the catalogue cannot be read — a client bundle, or a refused read on a
+ * display surface — so the one moment it speaks is the moment the real number is
+ * unavailable, and it was answering "unlimited" for a 50-seat plan. That is a
+ * fail-OPEN fallback on the seat axis, which CLAUDE.md §4 forbids. Now the two
+ * agree, and scripts/seat-cap-simulator.ts pins this map against the live
+ * catalogue so they cannot drift apart again.
+ *
+ * multi_location stays null: unlimited is the product, not a missing number.
+ */
 export const TIER_SEAT_LIMITS: Record<CanonicalTier, number | null> = {
   solo_agent:     2,
   team:           5,
-  brokerage:      null,
+  brokerage:      50,
   multi_location: null,
 }
 
@@ -160,41 +220,83 @@ export function isCanonicalTier(tier: string | null | undefined): tier is Canoni
 }
 
 /**
- * Invitable roles for a tenant tier.
+ * The invitable menu for an UNKNOWN / legacy / NULL tier.
  *
- * ── THIS NOW FAILS CLOSED ON THE TWO GOVERNANCE ROLES ───────────────────────
+ * ── WHY THIS IS NOW THE SAME LIST, AND WHY THAT IS NOT A FAIL-OPEN ──────────
  *
- * It used to return `TIER_INVITABLE_ROLES.brokerage` for an unknown / legacy /
- * null tier — the pre-matrix behaviour, chosen so a tenant whose
- * `brokerages.plan_tier` was never backfilled kept a working invite surface
- * instead of being bricked. That reasoning still holds for MOST of the menu and
- * is kept.
+ * It used to be the brokerage menu MINUS broker and broker_owner, because under
+ * the old ruling a tier SUBTRACTED roles and "unknown tier ⇒ the widest tier"
+ * would have inverted that subtraction where it was least visible.
  *
- * What it can no longer do is hand back the seats a ruling just removed. Under a
- * ruling that SUBTRACTS roles from a tier, "unknown tier ⇒ the widest tier"
- * inverts the ruling exactly where it is least visible: a team-tier tenant whose
- * plan_tier is NULL, mis-cased, or spelled with a legacy value would fall
- * through to the brokerage menu and be offered `broker` and `broker_owner` —
- * the two roles the owner has now removed from both non-brokerage tiers — and
- * nothing would report it, because being offered a role is not an error.
+ * That reasoning is now moot: no tier subtracts anything, so there is no wider
+ * and no narrower menu to fall into. Every tier's answer is this answer.
  *
- * So the fallback is the brokerage menu MINUS the two brokerage-governance
- * roles: every operational seat still invitable (nobody is bricked), and the two
- * roles that only a real brokerage subscription buys withheld until the tenant's
- * tier can actually be read. A tenant that IS on brokerage or multi_location is
- * unaffected — their tier is canonical and matches strictly.
- *
- * Derived from SEAT_ROLES with the same one-line subtraction the tiers use, so a
- * new working role joins the fallback automatically and a new governance role
- * does not have to be remembered in three places.
+ * The fail-CLOSED obligation did not go away — it MOVED to the axis that
+ * actually carries the tier's constraint. `seatLimitForTier` below floors an
+ * unreadable tier to the SMALLEST cap (solo, 2), and `seatGate`
+ * (lib/kernel/seat-usage.ts) REFUSES outright when the tenant, the count or the
+ * catalogue cannot be read. Being offered a user type you have no seat for costs
+ * nothing and is caught one gate later; being handed a seat you did not buy is
+ * the failure that matters, and that path is closed.
  */
-const UNKNOWN_TIER_INVITABLE_ROLES: readonly UserDomainRole[] = [
-  ...SEAT_ROLES.filter((r) => r !== "broker" && r !== "broker_owner"),
-  ...PARTNER_ROLES,
-]
+const UNKNOWN_TIER_INVITABLE_ROLES: readonly UserDomainRole[] = ALL_SEATABLE_ROLES
 
-export function invitableRolesForTier(tier: string | null | undefined): readonly UserDomainRole[] {
+// NO LONGER EXPORTED (CLAUDE.md §1). Every external caller — both invite
+// surfaces, the settings role menu — now goes through `seatableUserTypes` below,
+// which asks this the same question and then removes anything the database
+// cannot store. Leaving BOTH exported would be two spellings of "what may this
+// tenant seat" (§6), and the weaker one would eventually be picked by someone
+// adding a third surface, reintroducing the unstorable-value bug on that surface
+// alone. It stays as a module-private helper because `tierAllowsRole` and
+// `seatableUserTypes` both build on it.
+function invitableRolesForTier(tier: string | null | undefined): readonly UserDomainRole[] {
   return isCanonicalTier(tier) ? TIER_INVITABLE_ROLES[tier] : UNKNOWN_TIER_INVITABLE_ROLES
+}
+
+/**
+ * The invitable menu, INTERSECTED with the user types the database can actually
+ * store — the one place that keeps the product roster from writing a row the
+ * CHECK constraint will refuse.
+ *
+ * ── THE DEFECT THIS CLOSES ──────────────────────────────────────────────────
+ *
+ * `users_user_type_check` is VALIDATED and admits fourteen values. An INSERT
+ * naming a fifteenth is refused ENTIRELY (CLAUDE.md §3 — not "most of the row":
+ * nothing). So a menu offering a user type the column cannot hold is an invite
+ * that cannot succeed, and the person clicking it gets a constraint violation
+ * rather than a teammate.
+ *
+ * `broker_admin` is exactly that value today: the owner has ruled it a user type,
+ * SEAT_ROLES lists it, and the column cannot yet hold it until m530 is applied.
+ * Rather than a flag day — flip the code and the migration in the same breath and
+ * hope the order holds — the menu is derived from what the database SAYS it
+ * admits. Before m530: broker_admin is absent, and every other role is
+ * unaffected. After m530 + `npm run schema:regen:vocabularies`: it appears, with
+ * no code change and no second deploy.
+ *
+ * `storable` is passed IN rather than imported, because this module is
+ * client-bundle-safe by contract (see the file header) and the generated
+ * vocabulary cache is ~1600 lines. Server call sites pass
+ * `CHECK_VOCABULARIES.users.user_type`; a client surface that has no cache passes
+ * nothing and gets the full product menu, which is what it renders today.
+ *
+ * FAILS CLOSED ON AN EMPTY/UNREADABLE VOCABULARY BY DOING NOTHING: an empty list
+ * means "we could not read what is storable", and silently returning an EMPTY
+ * menu would brick every invite surface on the platform. The refusal that matters
+ * is the database's own, which is still there. So an unusable vocabulary is
+ * ignored and the product menu stands.
+ */
+export function seatableUserTypes(
+  tier: string | null | undefined,
+  storable?: readonly string[] | null,
+): readonly UserDomainRole[] {
+  const menu = invitableRolesForTier(tier)
+  if (!storable || storable.length === 0) return menu
+  const admitted = new Set(storable)
+  const filtered = menu.filter((r) => admitted.has(r))
+  // A vocabulary that admits NONE of the menu is not a vocabulary — it is a bad
+  // read. Never brick the surface on it.
+  return filtered.length === 0 ? menu : filtered
 }
 
 /** Is this role invitable on this tier? (Same fail-CLOSED rule for unknown tiers.) */
@@ -466,12 +568,52 @@ export function agentRoleAdvisory(rolesInUse: readonly string[]): { hasAgent: bo
   }
 }
 
-/** Lowest tier whose matrix includes the role — null for platform-only roles. */
-export function minimumTierForRole(role: UserDomainRole): CanonicalTier | null {
-  for (const tier of TIER_ORDER) {
-    if (TIER_INVITABLE_ROLES[tier].includes(role)) return tier
+// TOMBSTONE (lane A): `minimumTierForRole(role)` DELETED.
+//
+// It answered "which is the cheapest tier that unlocks this role?", and it had
+// exactly three callers — app/actions/admin/invite-user.ts,
+// app/actions/admin/update-user.ts, app/actions/superadmin/tenant-users.ts —
+// all three composing the same sentence: "The {tier} plan does not include the
+// '{role}' role. Upgrade to {X}…".
+//
+// THE QUESTION NO LONGER HAS A MEANINGFUL ANSWER. Under the owner's ruling every
+// tier seats every staff user type, so the function could only ever return
+// `solo_agent` (for anything seatable) or `null` (for anything that is not a
+// seat on any plan) — and in the `null` case no upgrade exists to name. Keeping
+// it would leave a function whose entire output is a constant, wired into copy
+// that tells a tenant to buy a tier that would change nothing.
+//
+// WHERE THE JOB WENT: `roleRefusalReason` below. It answers what those three
+// call sites actually needed — WHY was this refused — and it never offers an
+// upgrade, because a refusal is no longer about the plan. All three now call it.
+//
+// The seat axis kept its upgrade copy: `seatDecision` / `seatDecisionMessage`
+// still name the next tier up, because THAT refusal genuinely is about the plan.
+
+/**
+ * WHY was this user type refused? The honest sentence, now that a tier never
+ * withholds one.
+ *
+ * The old copy — "The {tier} plan does not include the '{role}' role. Upgrade to
+ * {X}…" — was true under the subtraction ruling and is a LIE under this one. The
+ * only user types `tierAllowsRole` still refuses are the ones that are not tenant
+ * staff seats at all, on any plan: platform identities (`superadmin`, `support`),
+ * non-staff people (`contact`, `system`), and `lender`, which is a vendor
+ * CATEGORY rather than a role (see PARTNER_ROLES). No upgrade buys any of them,
+ * so no upgrade is offered.
+ *
+ * Returns null when the role IS allowed — callers should not be composing a
+ * refusal at all in that case.
+ */
+export function roleRefusalReason(role: UserDomainRole | string): string | null {
+  if ((ALL_SEATABLE_ROLES as readonly string[]).includes(role)) return null
+  if (role === "superadmin" || role === "support") {
+    return `'${role}' is a platform staff identity, not a workspace seat. It cannot be assigned from a workspace on any plan.`
   }
-  return null
+  if (role === "lender") {
+    return "Lenders join through the vendor directory, not as a workspace seat — invite them as a vendor and pick the lender category."
+  }
+  return `'${role}' is not a workspace seat and cannot be invited on any plan.`
 }
 
 /** Safe label for error copy — canonical tiers get their label, anything else "current". */

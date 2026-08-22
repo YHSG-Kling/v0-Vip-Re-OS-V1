@@ -156,6 +156,15 @@ export async function promoteLeadToContactService(
         carry.repointed,
       )
     }
+    // MOVED is logged separately from RE-POINTED on purpose: a move RELEASES the
+    // lead_id, so it is the only half of the carry that changes what the lead-side
+    // read returns. Folding the two counts together would hide that.
+    if (Object.keys(carry.moved).length > 0) {
+      console.log(
+        `[promoteLeadToContactService] history moved to contact ${contactResult.contactId} (lead released):`,
+        carry.moved,
+      )
+    }
 
     // Step 6: Deactivate lead (preserve for audit)
     const deactivateResult = await deactivateLead(supabase, leadId)

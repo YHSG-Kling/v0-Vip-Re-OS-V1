@@ -18,7 +18,8 @@ import { inviteTenantMember, type UserDomainRole } from "@/lib/kernel/users"
 // spelling that let the admin meter disagree with the invite gate. Neither
 // export is orphaned by this — `roleConsumesSeat` has 8 other references and
 // `SEAT_ROLES` has 37, both still in lib/kernel/tier-role-matrix.ts.
-import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS } from "@/lib/kernel/tier-role-matrix"
+import { tierAllowsRole, roleRefusalReason, seatableUserTypes } from "@/lib/kernel/tier-role-matrix"
+import { CHECK_VOCABULARIES } from "@/scripts/check-vocabularies"
 import { requireSuperadmin } from "@/lib/auth/platform-guard"
 import { seatGate } from "@/lib/kernel/seat-usage"
 import { requirePlatformCapability, resolvePlatformRole } from "@/lib/platform/require-capability"
@@ -226,12 +227,22 @@ export async function createTenantUserAction(params: {
   const targetTier: string | null = (brk as { plan_tier?: string | null }).plan_tier ?? null
   const roleOutsideTier = !tierAllowsRole(targetTier, params.userType as UserDomainRole)
   if (roleOutsideTier && !params.superadminOverride) {
-    const minTier = minimumTierForRole(params.userType as UserDomainRole)
+    // Not a PLAN refusal any more (owner's ruling: the tier sells seats, not a
+    // role menu). These are the values that are not workspace seats on any tier.
     return {
       ok: false,
-      error:
-        `The ${tierLabel(targetTier)} plan does not include the '${params.userType}' role.` +
-        (minTier ? ` The tenant must upgrade to ${TIER_LABELS[minTier]}, or pass superadminOverride.` : ""),
+      error: `${roleRefusalReason(params.userType) ?? `'${params.userType}' cannot be seated.`} Pass superadminOverride to force it.`,
+    }
+  }
+
+  // The CHECK constraint is the last word (CLAUDE.md §3). This one is NOT
+  // overridable — superadminOverride waives PRODUCT rules, and no override makes
+  // Postgres accept a value users_user_type_check forbids; forcing it would just
+  // trade a clear refusal for a constraint violation mid-provision.
+  if (!seatableUserTypes(targetTier, CHECK_VOCABULARIES.users?.user_type).includes(params.userType as UserDomainRole)) {
+    return {
+      ok: false,
+      error: `'${params.userType}' is not a user type this database can store yet (users_user_type_check). No user was created.`,
     }
   }
 

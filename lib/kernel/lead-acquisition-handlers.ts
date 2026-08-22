@@ -513,6 +513,12 @@ export async function handleLeadAssigned(params: {
     if (Object.keys(carry.repointed).length > 0) {
       console.log(`[lead-acquisition] history re-pointed to contact ${contact.id}:`, carry.repointed)
     }
+    // MOVED is logged separately from RE-POINTED on purpose: a move RELEASES the
+    // lead_id, so it is the only half of the carry that changes what the lead-side
+    // read returns. Folding the two counts together would hide that.
+    if (Object.keys(carry.moved).length > 0) {
+      console.log(`[lead-acquisition] history moved to contact ${contact.id} (lead released):`, carry.moved)
+    }
 
     // DEACTIVATION — delegated, not re-implemented. This used to be an inline
     // `is_active: false` update and nothing else, which left TWO of the four

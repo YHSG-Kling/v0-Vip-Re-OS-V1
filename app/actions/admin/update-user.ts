@@ -5,7 +5,8 @@ import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { createServiceClient } from "@/lib/supabase/service"
 import { assignUserRoleAndEntitlements, assignUserToBrokerage } from "@/lib/kernel/users"
 import type { UserDomainRole } from "@/lib/kernel/users"
-import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS } from "@/lib/kernel/tier-role-matrix"
+import { tierAllowsRole, roleRefusalReason, seatableUserTypes } from "@/lib/kernel/tier-role-matrix"
+import { CHECK_VOCABULARIES } from "@/scripts/check-vocabularies"
 import { seatGate } from "@/lib/kernel/seat-usage"
 
 export interface UpdateUserParams {
@@ -113,12 +114,20 @@ export async function updateUser({ userId, updates }: UpdateUserParams): Promise
 
       const tenantTier = tenant?.plan_tier ?? null
       if (!tierAllowsRole(tenantTier, newRole as UserDomainRole)) {
-        const minTier = minimumTierForRole(newRole as UserDomainRole)
+        // No longer a PLAN refusal — every tier seats every staff user type and
+        // the tier decides only how many. What is left are the values that are
+        // not workspace seats on any plan. See roleRefusalReason.
+        return { success: false, error: roleRefusalReason(newRole) ?? `'${newRole}' cannot be assigned.` }
+      }
+
+      // users_user_type_check is VALIDATED — an UPDATE naming a value outside it
+      // is refused entirely (CLAUDE.md §3), and supabase-js RESOLVES that refusal.
+      // Refuse it here, with a sentence, rather than reporting success over a
+      // write that changed nothing.
+      if (!seatableUserTypes(tenantTier, CHECK_VOCABULARIES.users?.user_type).includes(newRole as UserDomainRole)) {
         return {
           success: false,
-          error:
-            `The ${tierLabel(tenantTier)} plan does not include the '${newRole}' role.` +
-            (minTier ? ` Upgrade to ${TIER_LABELS[minTier]} to assign this role.` : ""),
+          error: `'${newRole}' is not a user type this database can store yet. Nothing was changed.`,
         }
       }
     }

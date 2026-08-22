@@ -211,8 +211,34 @@ export function winningDefinitionOf(fn: string, files: Array<{ name: string; bod
   if (!last) return null
   const start = last.body.search(re)
   // The body runs to the end of the dollar-quoted block that closes it.
-  const end = last.body.indexOf("$$;", start)
-  return { name: last.name, def: last.body.slice(start, end === -1 ? undefined : end + 3) }
+  //
+  // THIS USED TO SEARCH FOR THE LITERAL `$$;` and it silently over-read.
+  // Postgres dollar-quoting admits a TAG — `$function$ … $function$` — and that
+  // is exactly what `pg_get_functiondef` emits, so a migration written by
+  // copying a live definition (which is the honest way to write one) never
+  // contains `$$;` at its function boundary. The scan then ran PAST the function
+  // it was asked about, through every later definition in the same file, and
+  // stopped at the first `$$;` it could find — typically the `END $$;` of a
+  // trailing DO verification block.
+  //
+  // The consequence was a WRONG MEASUREMENT, not a wrong answer: S13 asks
+  // whether the ADMIN gate mentions 'compliance_officer', and the over-read
+  // handed it four other function bodies to look in. m530 defines five
+  // functions with `$function$` tags and ends with a DO block, so its
+  // `is_brokerage_admin` "definition" was the whole file — and
+  // `is_tenant_staff_seat`, which legitimately lists compliance_officer as a
+  // staff seat, made the admin gate look like it granted the books.
+  //
+  // Match the tag that OPENS the body and close on the same tag. A definition
+  // that opens `$function$` cannot be terminated by `$$`, so this cannot
+  // over-read again regardless of what follows it in the file.
+  const head = last.body.slice(start)
+  const tagMatch = /\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(head)
+  const tag = tagMatch ? tagMatch[0] : "$$"
+  const bodyOpen = tagMatch ? (tagMatch.index ?? 0) + tag.length : 0
+  const closeAt = head.indexOf(tag, bodyOpen)
+  const end = closeAt === -1 ? -1 : start + closeAt + tag.length
+  return { name: last.name, def: last.body.slice(start, end === -1 ? undefined : end) }
 }
 
 /** The admin gate, by name. Kept as its own export so existing probes read unchanged. */
@@ -334,6 +360,52 @@ function sourceNegativeControls() {
     "NEGATIVE CONTROL renaming the migration still finds the definition — a rename is not a removal",
     !!w3 && w3.def.toLowerCase().includes("user_role_assignments"),
   )
+
+  // ── THE OVER-READ CONTROL ───────────────────────────────────────────────────
+  // The extractor used to close a body on the literal `$$;`. Postgres
+  // dollar-quoting admits a TAG, and `pg_get_functiondef` emits one — so a
+  // migration written by copying a live definition has no `$$;` at its function
+  // boundary, and the scan ran past the function it was asked about into every
+  // later definition in the same file.
+  //
+  // That produced a WRONG MEASUREMENT rather than a wrong verdict, which is the
+  // more expensive kind: S13 asks whether the ADMIN gate mentions
+  // 'compliance_officer', and the over-read handed it four unrelated function
+  // bodies to search. This fixture is that exact shape — a `$function$`-tagged
+  // admin gate followed by a second function that legitimately names
+  // compliance_officer, then a trailing DO block ending `$$;`.
+  const overRead = [{
+    name: "m000-over-read-fixture.sql",
+    body: [
+      "CREATE OR REPLACE FUNCTION public.is_brokerage_admin()",
+      " RETURNS boolean LANGUAGE sql AS $function$",
+      "  select exists (select 1 from public.user_role_assignments ura",
+      "                 where ura.brokerage_id = public.current_user_brokerage_id());",
+      "$function$;",
+      "",
+      "CREATE OR REPLACE FUNCTION public.some_other_gate()",
+      " RETURNS boolean LANGUAGE sql AS $function$",
+      "  select user_type in ('compliance_officer') from public.users;",
+      "$function$;",
+      "",
+      "DO $$ BEGIN RAISE NOTICE 'done'; END $$;",
+    ].join("\n"),
+  }]
+  const ov = winningDefinitionOf("is_brokerage_admin", overRead)
+  check("CONTROL the extractor closes on the body's OWN dollar-tag, not the next $$;",
+    !!ov && !ov.def.includes("some_other_gate"),
+    ov ? `def spans ${(ov.def.match(/create or replace function/gi) ?? []).length} function(s)` : "no definition found")
+  check("…and it still captures the whole body it DID open (not a truncation)",
+    !!ov && ov.def.includes("user_role_assignments") && ov.def.trimEnd().endsWith("$function$"))
+  check("CONTROL a genuinely $$-quoted body is still handled",
+    (() => {
+      const plain = [{
+        name: "m000-plain.sql",
+        body: "CREATE OR REPLACE FUNCTION public.is_brokerage_admin()\n RETURNS boolean LANGUAGE sql AS $$\n  select true from public.user_role_assignments;\n$$;",
+      }]
+      const p = winningDefinitionOf("is_brokerage_admin", plain)
+      return !!p && p.def.includes("user_role_assignments")
+    })())
 }
 
 // ─── LIVE ────────────────────────────────────────────────────────────────────

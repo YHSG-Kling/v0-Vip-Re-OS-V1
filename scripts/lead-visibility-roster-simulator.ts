@@ -57,6 +57,7 @@ import {
   type LeadRowScope,
 } from "../lib/auth/lead-visibility"
 import { TENANT_ADMIN_USER_TYPES } from "../lib/auth/resolve-user-role"
+import { CHECK_VOCABULARIES } from "./check-vocabularies"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -676,11 +677,45 @@ console.log("\n[the SQL predicate agrees with the app — and says what it canno
     check("it keeps the AI-ISA system arm", /is_ai_isa_system\(\)/.test(body))
     check("it keeps the platform-admin arm", /is_platform_admin\(\)/.test(body))
     // Only the FUNCTION BODY is examined. The header and the COMMENT ON string
-    // both discuss 'broker_admin' by name (m308 dropped it and m518 says so);
-    // testing the whole file would fail on its own documentation.
+    // both discuss 'broker_admin' by name; testing the whole file would fail on
+    // its own documentation.
     const fnBody = (body.match(/AS \$function\$([\s\S]*?)\$function\$/) ?? ["", ""])[1]
-    check("the function BODY does NOT reintroduce the phantom 'broker_admin'",
-      fnBody.length > 0 && !/'broker_admin'/.test(fnBody.replace(/^\s*--.*$/gm, "")))
+    const fnCode = fnBody.replace(/^\s*--.*$/gm, "")
+
+    // ── THE PREMISE OF THIS CHECK CHANGED (lane A) ─────────────────────────
+    //
+    // It used to be a flat "the body must NOT name 'broker_admin'", because the
+    // value was a PHANTOM: m308 and m518 removed it for one reason only — the
+    // column could not hold it, so the literal matched nobody and read as
+    // coverage it did not provide.
+    //
+    // m530 makes it storable (owner: "a broker admin is a user type"), which
+    // removes that premise. The rule that actually matters is the invariant
+    // underneath it, and it is now asserted directly: THE BODY MAY ONLY NAME
+    // USER TYPES THE COLUMN CAN STORE. That catches the original defect AND every
+    // future one, instead of hard-coding one value's name.
+    const admitted = CHECK_VOCABULARIES.users?.user_type ?? []
+    const named = [...fnCode.matchAll(/'([a-z_]+)'/g)].map((m) => m[1])
+    const phantoms = [...new Set(named)].filter(
+      (v) => !admitted.includes(v) && v !== "broker_admin",
+    )
+    check("the function BODY names no user_type the column cannot store",
+      admitted.length > 0 && phantoms.length === 0, phantoms.join(", "))
+    // broker_admin is the ONE value allowed to be ahead of the column, and only
+    // while its migration is on disk and unapplied. Once m530 is applied and the
+    // vocabulary cache regenerated, `admitted` contains it and this is trivially
+    // true — no edit needed.
+    check("…and if it names broker_admin, m530 (which makes it storable) is on disk",
+      !/'broker_admin'/.test(fnCode)
+      || admitted.includes("broker_admin")
+      || migs.some((f) => f.startsWith("m530-")))
+    // POSITIVE CONTROL — the phantom finder must still recognise the shape it
+    // was written for: m308's original defect, a body naming a value the column
+    // has never admitted.
+    check("POSITIVE CONTROL the phantom finder still catches an unstorable literal",
+      ["'managing_broker'", "'platform_admin'"]
+        .map((s) => s.slice(1, -1))
+        .every((v) => !admitted.includes(v)))
     check("it states honestly that the predicate CANNOT express team scope",
       /CANNOT EXPRESS TEAM SCOPE/i.test(body))
     check("…and names the application-layer narrowing that does",
@@ -694,15 +729,38 @@ console.log("\n[the SQL predicate agrees with the app — and says what it canno
 // 5. THE TIER HALF — a team-tier subscription has no broker
 // ─────────────────────────────────────────────────────────────────────────────
 
-console.log("\n[the tier half — the premise of the ruling]")
+console.log("\n[the tier half — SUPERSEDED, and the supersession is the assertion]")
 {
   const matrix = code("lib/kernel/tier-role-matrix.ts")
-  check("the team tier is DERIVED from SEAT_ROLES, not retyped",
-    /TEAM_SEAT_ROLES[^=]*=\s*\n?\s*SEAT_ROLES\.filter/.test(matrix) || /const TEAM_SEAT_ROLES/.test(matrix))
-  check("the unknown/legacy tier fallback no longer hands back the brokerage set",
-    !/TIER_INVITABLE_ROLES\.brokerage\s*$/m.test(matrix.split("invitableRolesForTier")[1] ?? ""))
-  check("…and names its fail-closed constant",
+
+  // ── THIS SECTION USED TO PIN THE OPPOSITE (lane A) ────────────────────────
+  //
+  // It asserted "the team tier is DERIVED from SEAT_ROLES, not retyped" — i.e.
+  // that `team` was SEAT_ROLES MINUS broker/broker_owner — on the earlier ruling
+  // that a team-tier subscription has no broker.
+  //
+  // OWNER, 2026-08-22, seating one explicitly: "then a broker as a user type with
+  // different permisson roles which that takes up 3 of 5 seats". A tier caps the
+  // COUNT of seats, never which user types fill them.
+  //
+  // THE TEAM LEAD'S LEAD DESK IS NOT AFFECTED, AND THAT IS THE POINT OF ASSERTING
+  // IT HERE. is_lead_visible_role() is per-user and carries no tier clause, so
+  // seating a broker ADDS someone who passes and cannot remove the team lead.
+  // The rest of this file proves the team lead's admission independently; this
+  // block only proves the tier no longer withholds the seat.
+  check("no tier subtracts broker/broker_owner any more",
+    !/SEAT_ROLES\.filter\(\(r\)\s*=>\s*r\s*!==\s*"broker"/.test(matrix))
+  check("every tier's invitable menu is the same expression",
+    /solo_agent:\s*ALL_SEATABLE_ROLES/.test(matrix) && /team:\s*ALL_SEATABLE_ROLES/.test(matrix))
+  // Read RAW, not through `code()` — this asserts on the file's DOCUMENTATION,
+  // and code() strips comments by design.
+  check("…and the matrix says so out loud, so the next reader is not surprised",
+    /A TIER DOES NOT RESTRICT WHICH USER TYPES MAY BE SEATED/i.test(src("lib/kernel/tier-role-matrix.ts")))
+  check("the unknown/legacy tier fallback still names its constant",
     /UNKNOWN_TIER_INVITABLE_ROLES/.test(matrix))
+  // The fail-closed obligation MOVED to the seat axis — assert it is actually there.
+  check("…and the fail-closed duty now sits on the seat CAP, which floors to the smallest tier",
+    /TIER_ORDER\[0\]/.test(matrix))
 }
 
 console.log("\n──────────────────────────────────────────────────")

@@ -7,7 +7,8 @@ import { inviteTenantMember } from "@/lib/kernel/users"
 import { emitUserProvisionedEvent } from "@/lib/kernel/users"
 import { KernelEvent } from "@/lib/kernel/events"
 import type { UserDomainRole } from "@/lib/kernel/users"
-import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS } from "@/lib/kernel/tier-role-matrix"
+import { tierAllowsRole, roleRefusalReason, seatableUserTypes } from "@/lib/kernel/tier-role-matrix"
+import { CHECK_VOCABULARIES } from "@/scripts/check-vocabularies"
 import { seatGate } from "@/lib/kernel/seat-usage"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
@@ -113,12 +114,23 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
 
   const tenantTier = tenant?.plan_tier ?? null
   if (!tierAllowsRole(tenantTier, requestedRole)) {
-    const minTier = minimumTierForRole(requestedRole)
+    // The refusal is no longer ABOUT THE PLAN. Under the owner's ruling every
+    // tier seats every staff user type and the tier decides only HOW MANY, so
+    // the only values still refused here are the ones that are not workspace
+    // seats on any plan. `roleRefusalReason` says which, and never offers an
+    // upgrade that would buy nothing.
+    return { success: false, error: roleRefusalReason(requestedRole) ?? `'${requestedRole}' cannot be invited.` }
+  }
+
+  // The database is the last word on which user types exist: users_user_type_check
+  // is VALIDATED, and an INSERT naming a value outside it is refused ENTIRELY
+  // (CLAUDE.md §3). Catching it HERE turns a raw constraint violation into a
+  // sentence, and keeps this server action in agreement with the menu the client
+  // rendered from `seatableUserTypes`.
+  if (!seatableUserTypes(tenantTier, CHECK_VOCABULARIES.users?.user_type).includes(requestedRole)) {
     return {
       success: false,
-      error:
-        `The ${tierLabel(tenantTier)} plan does not include the '${requestedRole}' role.` +
-        (minTier ? ` Upgrade to ${TIER_LABELS[minTier]} to invite this role.` : ""),
+      error: `'${requestedRole}' is not a user type this database can store yet. No invite was sent.`,
     }
   }
 

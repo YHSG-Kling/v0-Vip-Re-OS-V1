@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react"
 import { updateUser } from "@/app/actions/admin/update-user"
-import { invitableRolesForTier } from "@/lib/kernel/tier-role-matrix"
+import { seatableUserTypes } from "@/lib/kernel/tier-role-matrix"
 import { InviteUserButton } from "@/app/dashboard/admin/users/invite-user-button"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -60,9 +60,16 @@ interface Props {
   callerRole: string
   /** brokerages.plan_tier — drives the invitable/assignable role menu. */
   tier: string | null
+  /**
+   * The user_type values users_user_type_check actually admits, read server-side.
+   * The menu is intersected with it so it can never offer a value the column
+   * would refuse — an INSERT/UPDATE naming one is refused ENTIRELY (CLAUDE.md §3).
+   * Omitted ⇒ the full product menu (the pre-existing behaviour).
+   */
+  storableUserTypes?: readonly string[] | null
 }
 
-export function UsersManagementClient({ users: initialUsers, currentUserId, brokerageId, callerRole, tier }: Props) {
+export function UsersManagementClient({ users: initialUsers, currentUserId, brokerageId, callerRole, tier, storableUserTypes }: Props) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
   const [users, setUsers] = useState<UserRow[]>(initialUsers)
@@ -73,9 +80,10 @@ export function UsersManagementClient({ users: initialUsers, currentUserId, brok
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Tier-aware assignable roles — the SAME matrix as the invite path, so the
-  // role menu never offers a seat the tenant's plan does not include.
-  const assignableRoles = invitableRolesForTier(tier)
+  // The SAME matrix as the invite path. A tier no longer withholds any user type
+  // (owner, 2026-08-22 — it caps HOW MANY seats, not which), so what this filter
+  // still removes is a value the DATABASE cannot store.
+  const assignableRoles = seatableUserTypes(tier, storableUserTypes)
 
   const filtered = users.filter(u => {
     const q = search.toLowerCase()

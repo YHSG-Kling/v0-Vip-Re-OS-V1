@@ -20,7 +20,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-08-22
  * source: public.live_check_constraints_json()
- * body-sha256: 1eabd878c49b991d2e8b39ffc678df87a87440b770792be0e2d6a813b4475aef
+ * body-sha256: cb32e7e631e539e2561c84fa41b1a2170577c1b19a73b538edfd446b13d54d50
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -1547,7 +1547,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   users: {
     platform_role: ["admin", "ai_isa_system", "marketing", "superadmin", "support"],
-    user_type: ["admin", "agent", "broker", "broker_owner", "compliance_officer", "contact", "isa", "lender", "superadmin", "support", "system", "tc", "team_lead", "vendor"],
+    user_type: ["admin", "agent", "broker", "broker_admin", "broker_owner", "compliance_officer", "contact", "isa", "lender", "superadmin", "support", "system", "tc", "team_lead", "vendor"],
   },
   valuation_requests: {
     condition: ["excellent", "fair", "good", "poor"],

@@ -86,6 +86,8 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { protectedClassSegmentationIn } from "@/lib/lead-governance/protected-class-signals"
+import { assertAudiencePersonaBasis } from "@/lib/ads/audience-persona-basis"
+import { resolveSourceRuleNarrowing } from "@/lib/ads/audience-source-rules"
 
 export interface AudienceSyncOutcome {
   ok:                      boolean
@@ -128,8 +130,54 @@ function protectedClassAudienceRefusal(aud: AudienceRow): string | null {
   } catch (e) {
     return `fair_housing_unevaluable:${aud.id}:${e instanceof Error ? e.message : String(e)}`
   }
-  if (hits.length === 0) return null
-  return `fair_housing_protected_segmentation:${aud.audience_name ?? aud.id}:${hits.join("|")}`
+  if (hits.length > 0) {
+    return `fair_housing_protected_segmentation:${aud.audience_name ?? aud.id}:${hits.join("|")}`
+  }
+
+  // THE POSITIVE HALF (owner ruling: "audience should be segmented on persona").
+  //
+  // The refusal above says what this audience may NOT be. This one says that when
+  // it DECLARES a persona basis, that basis must resolve to an ads-eligible
+  // transaction-situation persona. The two are separate reasons on purpose — an
+  // operator reading `skippedReasons` needs to know whether their audience was
+  // refused because it leans on a protected class or because its basis names
+  // nothing at all, and the fixes are different.
+  //
+  // Why it belongs on THIS drip too: `stageMembership` writes a person into
+  // `audience_members` without ever consulting the audience's rule, so an audience
+  // whose persona basis is unresolvable would accumulate every converted contact —
+  // the same "silently means everyone" failure syncAudience had, one table earlier.
+  // FAILS CLOSED, and the refusal is COUNTED into skippedReasons, never swallowed.
+  try {
+    assertAudiencePersonaBasis(aud.source_rule, aud.audience_name ?? aud.id)
+  } catch (e) {
+    return `persona_basis_unresolved:${aud.audience_name ?? aud.id}:${e instanceof Error ? e.message : String(e)}`
+  }
+
+  // THE SOURCE RULE MUST RESOLVE — the same requirement `syncAudience` now
+  // enforces before it uploads, applied to the drip that fills `audience_members`.
+  //
+  // Why it belongs here and is not redundant: `stageMembership` writes a person
+  // into an audience WITHOUT consulting the audience's rule at all. So an audience
+  // whose rule resolves to nothing in particular — `{}`, an unknown type, a
+  // `contact_list` with no tags, a `high_engagement_contacts` with no threshold —
+  // quietly accumulates every converted contact and every new lifetime customer.
+  // That is the same "silently means everyone" failure the upload path had, one
+  // table earlier, and it survives a fix to the upload path.
+  //
+  // A DISTINCT reason string, like the two above it: an operator reading
+  // `skippedReasons` needs to know whether the audience was refused for leaning on
+  // a protected class, for an unresolvable persona, or for a rule that selects
+  // nobody in particular — three different fixes. FAILS CLOSED.
+  try {
+    const narrowing = resolveSourceRuleNarrowing(aud.source_rule)
+    if (!narrowing.ok) {
+      return `source_rule_unresolved:${aud.audience_name ?? aud.id}:${narrowing.refusalKind}:${narrowing.refusal}`
+    }
+  } catch (e) {
+    return `source_rule_unevaluable:${aud.audience_name ?? aud.id}:${e instanceof Error ? e.message : String(e)}`
+  }
+  return null
 }
 
 async function findAudienceForScope(args: {

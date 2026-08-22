@@ -450,6 +450,23 @@ export interface AuthorizedUser {
 
 export interface SubscriptionContext {
   brokerageId?: string
-  teamId?: string
-  agentId?: string
+  // ─── TOMBSTONE: teamId / agentId REMOVED ───────────────────────────────────
+  // They selected `ai_subscription_tier.team_id` / `.agent_id` filter arms in
+  // lib/security/authorization.ts. Both columns are read-only halves: the sole
+  // writer of that table (app/actions/superadmin/brokerage-management.ts:270,
+  // the tier-change entitlement sync) writes brokerage_id and nothing else, so
+  // neither arm could ever match a row — measured 2026-08-22 on
+  // hrvaqgvukzxfskkcrwbt: ai_subscription_tier holds 0 rows, and neither column
+  // carries a DEFAULT or a trigger.
+  //
+  // NOT REBUILT, because there is no team- or agent-level subscription to hold:
+  // `plan_tier` exists on `brokerages` ONLY (information_schema, same date —
+  // brokerages.plan_tier, plan_limits.plan_tier, subscription_tiers.tier_name,
+  // subscriptions.tier_id; no teams.* or agents.* tier column anywhere), and
+  // §5 prices AI per brokerage tier. A team is a mini brokerage for VISIBILITY,
+  // not a billing entity.
+  //
+  // Behaviour is unchanged and still fails closed: a context carrying only a
+  // team or agent now trips the "Authorization context required" refusal
+  // instead of building a filter that silently matched nothing.
 }

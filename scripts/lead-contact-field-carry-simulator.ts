@@ -23,7 +23,11 @@
  * clients capture the exact rows. No creds, always runs.
  */
 import { createContactFromLead, resolveContactType } from "../lib/contact-promotion/contact-creator"
-import { carryLeadHistoryToContact, REPOINTED_HISTORY_TABLES } from "../lib/contact-promotion/history-carry"
+import {
+  MOVED_HISTORY_TABLES,
+  REPOINTED_HISTORY_TABLES,
+  carryLeadHistoryToContact,
+} from "../lib/contact-promotion/history-carry"
 import {
   grantPortalAccessForPromotedContact,
   PORTAL_EXCLUDED_CONTACT_TYPES,
@@ -227,7 +231,7 @@ async function main(): Promise<void> {
   // ═══ 2. HISTORY ════════════════════════════════════════════════════════════
   console.log("\n[2 · history — linked and re-pointed, never duplicated]")
 
-  for (const t of REPOINTED_HISTORY_TABLES) {
+  for (const t of [...REPOINTED_HISTORY_TABLES, ...MOVED_HISTORY_TABLES]) {
     const cols = SCHEMA_SNAPSHOT[t]
     check(`${t}: lead_id + contact_id + brokerage_id all live (PGRST204 would refuse the update)`,
       !!cols && cols.includes("lead_id") && cols.includes("contact_id") && cols.includes("brokerage_id"))
@@ -249,9 +253,20 @@ async function main(): Promise<void> {
     // but only by accident; say it.
     !!leadUpdate && !("lifecycle_state" in leadUpdate.payload))
 
-  const repointCalls = rec.calls.filter((c) => c.table !== "leads")
+  const movedTables = new Set<string>(MOVED_HISTORY_TABLES as readonly string[])
+  const repointCalls = rec.calls.filter((c) => c.table !== "leads" && !movedTables.has(c.table))
+  const moveCalls = rec.calls.filter((c) => movedTables.has(c.table))
   check(`every curated history table is re-pointed (${REPOINTED_HISTORY_TABLES.length} tables)`,
     repointCalls.length === REPOINTED_HISTORY_TABLES.length)
+  // THE MOVE LANE. A table under an exactly-one CHECK cannot be re-pointed: naming
+  // both entities is refused whole, and supabase-js resolves refusals, so the row
+  // would be stranded behind the retired lead with nothing to show for it.
+  check(`the exactly-one-CHECK table(s) are MOVED instead (${MOVED_HISTORY_TABLES.length})`,
+    moveCalls.length === MOVED_HISTORY_TABLES.length)
+  check("a move names the contact AND releases the lead in one statement",
+    moveCalls.every((c) => c.payload.contact_id === "contact-1" && c.payload.lead_id === null))
+  check("...and a re-point NEVER releases the lead (the negative arm)",
+    repointCalls.every((c) => !("lead_id" in c.payload)))
   check("re-point writes ONLY contact_id — no row is copied, nothing else is rewritten",
     repointCalls.every((c) => Object.keys(c.payload).length === 1 && "contact_id" in c.payload))
   check("re-point never steals a row that already names a contact (contact_id IS NULL guard)",
@@ -272,6 +287,7 @@ async function main(): Promise<void> {
     carryFail.warnings.some((w) => w.includes("voice_calls") && w.includes("refused")))
   check("a refused re-point does not stop the other tables or the link",
     carryFail.linked === true && Object.keys(carryFail.repointed).length === REPOINTED_HISTORY_TABLES.length - 1)
+  check("...nor the move lane", Object.keys(carryFail.moved).length === MOVED_HISTORY_TABLES.length)
 
   const recLinkFail = mockUpdateRecorder({ failTable: "leads" })
   const carryLinkFail = await carryLeadHistoryToContact(recLinkFail.client, {

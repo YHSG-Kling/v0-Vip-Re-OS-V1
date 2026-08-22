@@ -53,6 +53,8 @@
     "lib/ads/ad-manager.ts": 2,
     "lib/ads/ad-outcome-loop.ts": 3,
     "lib/ads/ad-performance-ingest.ts": 1,
+    "lib/ads/audience-persona-basis.ts": 1,
+    "lib/ads/audience-source-rules.ts": 3,
     "lib/ads/connectors/ad-payload.ts": 2,
     "lib/ads/connectors/google.ts": 1,
     "lib/ads/connectors/meta.ts": 1,
@@ -126,7 +128,7 @@
     "lib/campaign-sequences/persona-render-runner.ts": 1,
     "lib/campaign-sequences/touchpoint-bridge.ts": 1,
     "lib/campaigns/channels.ts": 1,
-    "lib/campaigns/contact-sources.ts": 3,
+    "lib/campaigns/contact-sources.ts": 2,
     "lib/charts/cma-reel-data.ts": 1,
     "lib/charts/explainer-diagram.ts": 3,
     "lib/charts/geometry.ts": 3,
@@ -352,7 +354,7 @@
     "lib/lead-assignment/default-assignment.ts": 1,
     "lib/lead-assignment/rule-matcher.ts": 2,
     "lib/lead-assignment/tier-routing.ts": 3,
-    "lib/lead-governance/protected-class-signals.ts": 7,
+    "lib/lead-governance/protected-class-signals.ts": 6,
     "lib/lead-governance/seller-signal-strength.ts": 5,
     "lib/lead-pipeline/ai-intent-classifier.ts": 3,
     "lib/lead-pipeline/canonical-lead-eligibility.ts": 1,
@@ -557,7 +559,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9228,
+  "census": 9239,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -2645,6 +2647,8 @@
     "lib/ads/ad-outcome-loop.ts": 5,
     "lib/ads/ad-performance-ingest.ts": 2,
     "lib/ads/audience-eligibility.ts": 1,
+    "lib/ads/audience-persona-basis.ts": 4,
+    "lib/ads/audience-source-rules.ts": 4,
     "lib/ads/connection-status.ts": 3,
     "lib/ads/connectors/ad-payload.ts": 4,
     "lib/ads/connectors/google.ts": 1,
@@ -2654,7 +2658,7 @@
     "lib/ads/connectors/types.ts": 1,
     "lib/ads/creative-fatigue-runner.ts": 2,
     "lib/ads/ctv-campaign.ts": 4,
-    "lib/ads/facebook-audience-sync.ts": 7,
+    "lib/ads/facebook-audience-sync.ts": 8,
     "lib/ads/fb-audience-templates.ts": 1,
     "lib/ads/launch-assembler.ts": 2,
     "lib/ads/listing-ad-producer.ts": 2,
@@ -2912,7 +2916,7 @@
     "lib/campaign-sequences/step-executor.ts": 1,
     "lib/campaign-sequences/touchpoint-bridge.ts": 3,
     "lib/campaigns/channels.ts": 3,
-    "lib/campaigns/contact-sources.ts": 6,
+    "lib/campaigns/contact-sources.ts": 7,
     "lib/campaigns/enroll-in-sequence.ts": 1,
     "lib/campaigns/roi-calculator.ts": 5,
     "lib/charts/cma-reel-data.ts": 2,
@@ -3327,7 +3331,7 @@
     "lib/kernel/adapters/content-generation.ts": 1,
     "lib/kernel/adapters/financial.ts": 1,
     "lib/kernel/addressing.ts": 1,
-    "lib/kernel/ads.ts": 6,
+    "lib/kernel/ads.ts": 7,
     "lib/kernel/agent-coaching.ts": 8,
     "lib/kernel/agent-identity-resolver.ts": 3,
     "lib/kernel/agent-identity.ts": 4,
@@ -3821,6 +3825,7 @@
     "lib/platform/revenue-analytics.ts": 2,
     "lib/platform/save-offer.ts": 2,
     "lib/platform/self-audit-rollup.ts": 2,
+    "lib/platform/service-catalogue-scope.ts": 1,
     "lib/platform/site-url.ts": 1,
     "lib/platform/staff-action-gate.ts": 2,
     "lib/platform/status-notice.ts": 10,
@@ -4051,7 +4056,7 @@
     "lib/transactions/offer-bridge.ts": 3,
     "lib/transactions/offer-execution-state.ts": 2,
     "lib/transactions/participant-populator.ts": 1,
-    "lib/transactions/role-guard.ts": 6,
+    "lib/transactions/role-guard.ts": 5,
     "lib/transactions/stage-auto-tasks.ts": 1,
     "lib/transactions/stage-progression.ts": 2,
     "lib/transactions/stranded-offer-policy.ts": 1,
@@ -12755,6 +12760,18 @@
     "lib/ads/audience-eligibility.ts": [
       "isAudienceUploadEligible"
     ],
+    "lib/ads/audience-persona-basis.ts": [
+      "personaAdsEligibility",
+      "declaresPersonaBasis",
+      "resolveAudiencePersonaBasis",
+      "assertAudiencePersonaBasis"
+    ],
+    "lib/ads/audience-source-rules.ts": [
+      "isSourceRuleType",
+      "resolveSourceRuleNarrowing",
+      "rowMatchesPredicates",
+      "contactMatchesNarrowing"
+    ],
     "lib/ads/connection-status.ts": [
       "adCredentialPlatform",
       "getAdConnections",
@@ -12799,6 +12816,7 @@
     "lib/ads/facebook-audience-sync.ts": [
       "createFacebookAudience",
       "syncFacebookAudience",
+      "previewAudienceReach",
       "createAudience",
       "syncAudience",
       "approveAudience",
@@ -14177,7 +14195,8 @@
       "isCampaignPersona",
       "contactTypeForContact",
       "contactTypeForSource",
-      "normalizeContactPersona"
+      "normalizeContactPersona",
+      "rawSpellingsForPersona"
     ],
     "lib/campaigns/enroll-in-sequence.ts": [
       "enrollInSequence"
@@ -16105,6 +16124,7 @@
       "updateAdCampaign",
       "loadAudienceDefinitions",
       "syncAudience",
+      "previewAudienceResolution",
       "createAudienceSegment"
     ],
     "lib/kernel/agent-coaching.ts": [
@@ -17331,7 +17351,7 @@
     ],
     "lib/kernel/tier-role-matrix.ts": [
       "isCanonicalTier",
-      "invitableRolesForTier",
+      "seatableUserTypes",
       "tierAllowsRole",
       "roleConsumesSeat",
       "seatLimitForTier",
@@ -17341,7 +17361,7 @@
       "seatDecision",
       "seatDecisionMessage",
       "agentRoleAdvisory",
-      "minimumTierForRole",
+      "roleRefusalReason",
       "tierLabel"
     ],
     "lib/kernel/title-closing-watchtower.ts": [
@@ -18888,6 +18908,9 @@
       "parseFindingKind",
       "computeSelfAuditRollup"
     ],
+    "lib/platform/service-catalogue-scope.ts": [
+      "serviceCatalogueScope"
+    ],
     "lib/platform/site-url.ts": [
       "siteUrl"
     ],
@@ -19976,7 +19999,6 @@
       "canOverrideMilestone",
       "canEditMilestoneDate",
       "canViewFinancials",
-      "canActAsExternalParty",
       "assertUserHasRole"
     ],
     "lib/transactions/stage-auto-tasks.ts": [

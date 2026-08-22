@@ -171,14 +171,35 @@ export function isPlatformStaffIdentity(
 // isTenantAdminOrPlatformStaff below. It is an explicit OR of the two single
 // definitions, not a third roster.
 //
-// ── WHY THE LEGACY SPELLINGS STAY ────────────────────────────────────────────
+// ── broker_admin: FROM "INPUT SPELLING" TO A REAL USER TYPE ──────────────────
 //
-// `broker_admin` canonicalizes to `broker` and `broker_owner` likewise groups with
-// broker at brokerage-wide scope (lib/security/types.ts#LEGACY_ROLE_MAP). Neither
-// broker_admin nor super_admin is STORABLE — accepted on INPUT, never written.
-// They stay HERE and only here, because this function judges a value a CALLER
-// hands in, which can be anything; it is not a query. A `.in("user_type", [...])`
-// RECIPIENT lookup must NOT carry them: there they match nothing, forever.
+// This roster has carried `broker_admin` for a long time as an INPUT SPELLING
+// ONLY — accepted from a caller, canonicalizing to `broker`
+// (lib/security/types.ts#LEGACY_ROLE_MAP), and never written, because
+// users_user_type_check did not admit it. That is why m308/m441/m518 stripped it
+// out of the RLS predicates: it matched nobody.
+//
+// OWNER RULING 2026-08-22 makes it a REAL user type — "a broker admin is a user
+// type with differnt permission roles" — which is also what CLAUDE.md §4's tenant
+// roster has said all along. supabase/migrations/m530 adds it to the CHECK and
+// restores it to the five predicates that dropped it (WRITTEN, NOT APPLIED).
+//
+// NOTHING IN THIS FILE HAS TO CHANGE FOR THAT, and that is the point of it having
+// been kept here: this roster judges a value a CALLER hands in, so it was already
+// correct for a broker_admin who could not exist, and it is already correct for
+// one who can. What DOES change is the caveat below.
+//
+// `super_admin` is still not storable and never will be — it is not in the
+// fourteen (nor the fifteen), and it is a PLATFORM spelling in a TENANT roster.
+//
+// ── THE `.in("user_type", […])` CAVEAT, NARROWED ─────────────────────────────
+//
+// The old rule was blanket: a RECIPIENT lookup must not carry these, because they
+// match nothing forever. That stays true for `super_admin`. For `broker_admin` it
+// is true only UNTIL m530 is applied — and after it, a recipient lookup that
+// OMITS broker_admin is the defect, because it will silently skip real rows. Any
+// such query should be derived from TENANT_ADMIN_USER_TYPES rather than
+// hand-typed, so it follows the roster instead of a snapshot of it.
 /**
  * EXPORTED so that a surface needing a Set (rather than the predicate) DERIVES it
  * instead of restating it — see lib/vendors/vendor-scope.ts and
@@ -191,7 +212,9 @@ export const TENANT_ADMIN_USER_TYPES = new Set([
   "broker",
   "broker_owner",
   "team_lead",
-  // LEGACY INPUT SPELLING — canonicalizes to `broker`, never stored.
+  // A REAL USER TYPE as of the owner's 2026-08-22 ruling; storable once m530 is
+  // applied. Until then it is still only reachable as an input spelling — which
+  // is why this entry did not have to move. See the section header above.
   "broker_admin",
 ])
 
@@ -299,11 +322,21 @@ export const BROKERAGE_FINANCE_ADMIN_USER_TYPES = new Set(
  * team_lead would not be a false success — it would be a real write to the
  * brokerage's books.
  *
- * broker_admin rides along from the roster above as an INPUT spelling only. It
- * is not a storable user_type (users_user_type_check admits fourteen values and
- * that is not one of them, and the constraint is VALIDATED), so it matches no
- * row on either side and cannot make the app wider than the database in
- * practice. It is not carried into any `.in("user_type", [...])` query.
+ * broker_admin rides along from the roster above. It was an INPUT spelling only
+ * — not a storable user_type — so it matched no row on either side and could not
+ * make the app wider than the database in practice.
+ *
+ * THAT SAFETY MARGIN ENDS WITH m530, WHICH IS WHY m530 CARRIES THE SQL HALF.
+ * Once broker_admin is storable, this app-side set admits it while
+ * public.is_brokerage_finance_admin() — live today as
+ * ('admin','broker','broker_owner') — would still refuse. App wider than RLS is
+ * the false-success direction: supabase-js RESOLVES a refused write, so the
+ * surface would report success over a statement that touched zero rows, and
+ * several of these gates run on the SERVICE client where the app predicate is
+ * the ONLY gate and the write would be REAL. m530 step 2b adds broker_admin to
+ * that function (and to is_brokerage_admin, is_lead_visible_role,
+ * can_write_service_area, is_tenant_staff_seat) in the same migration that makes
+ * the value storable. Applying the CHECK change without step 2 creates the gap.
  *
  * ── m526: `is_tenant_principal_team_lead` — THE SECOND, TIER-CONDITIONED HALF ─
  *

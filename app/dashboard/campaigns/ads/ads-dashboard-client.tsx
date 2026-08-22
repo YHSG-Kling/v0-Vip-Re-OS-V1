@@ -81,7 +81,9 @@ import {
   approveAudience,
   deleteAudience,
   getAudienceSyncHistory,
+  previewAudienceReach,
 } from "@/lib/ads/facebook-audience-sync"
+import type { AudienceResolutionPreview } from "@/lib/kernel/ads"
 import { updateAdCampaignAction } from "./ads-campaign-actions"
 import type { AudienceType, SourceRule } from "@/lib/ads/facebook-audience-sync-types"
 import type { AudienceTemplate } from "@/lib/ads/fb-audience-templates"
@@ -190,7 +192,34 @@ const TEMPLATE_CATEGORY_META: Record<
   exclusion: { label: "Exclusion", badge: "bg-red-100 text-red-700" },
   geo: { label: "Geo", badge: "bg-amber-100 text-amber-700" },
   lifecycle: { label: "Lifecycle / Sphere", badge: "bg-green-100 text-green-700" },
+  // The owner's persona basis ("audience should be segmented on persona"). This
+  // Record is EXHAUSTIVE over the category union on purpose — the lookup below is
+  // unguarded (`TEMPLATE_CATEGORY_META[template.category].badge`), so a category
+  // added to the union without an entry here is a runtime crash on the audience
+  // shelf, not a missing badge. Keeping it exhaustive makes that a compile error.
+  persona: { label: "Persona", badge: "bg-teal-100 text-teal-700" },
 }
+
+/**
+ * The source rules the MANUAL create-audience dialog can build — a subset of
+ * `SourceRule["type"]`, so the compiler refuses a picker option that is not a
+ * real rule type. Every member here has a narrowing in
+ * lib/ads/audience-source-rules.ts and a required-input control in the dialog.
+ *
+ * `website_visitors` and `engagement` are deliberately ABSENT: they are built on
+ * the ad platform from its own pixel, this product holds no per-contact web-visit
+ * record, and offering them here meant an operator could create an audience whose
+ * name promised site visitors and whose contents were the entire consented CRM.
+ */
+type ManualSourceRuleType = Extract<
+  SourceRule["type"],
+  | "contact_list"
+  | "investor_contacts"
+  | "lifetime_customers"
+  | "high_engagement_contacts"
+  | "active_buyers"
+  | "exclusion_active_pipeline"
+>
 
 // ─── STATUS CONFIG ────────────────────────────────────────────────────────────
 
@@ -329,15 +358,16 @@ export function AdsDashboardClient({
   const [newAudience, setNewAudience] = useState({
     audienceName: "",
     audienceType: "custom" as AudienceType,
-    sourceRuleType: "contact_list" as "website_visitors" | "contact_list" | "engagement",
+    sourceRuleType: "contact_list" as ManualSourceRuleType,
     daysLookback: 30,
+    minEngagementScore: 70,
     contactTags: "",
     consentBasis: "",
   })
   // When the agent launches the Create Audience dialog from a prebuilt
   // template, we stash the template's full SourceRule + audienceType here so
   // it flows straight to createAudience (the dialog's own source picker only
-  // covers the 3 generic source types).
+  // covers the generic source types).
   const [templateOverride, setTemplateOverride] = useState<{
     sourceRule: SourceRule
     audienceType: AudienceType
@@ -363,6 +393,15 @@ export function AdsDashboardClient({
     completed_at: string | null
   }> | null>(null)
   const [syncHistoryError, setSyncHistoryError] = useState<string | null>(null)
+
+  // ── RESOLVED REACH, per audience (see handlePreviewReach) ────────────────────
+  // The delivered set, shown against the promised one, BEFORE a sync leaves. This
+  // is the thing whose absence let an audience named "Investors" upload the whole
+  // consented contact book: the card could show a name, a status and an after-the
+  // -fact "N records synced", and nothing anywhere compared N to the total.
+  const [reachByAudience, setReachByAudience] = useState<
+    Record<string, { loading: boolean; error?: string; resolution?: AudienceResolutionPreview }>
+  >({})
 
   // Prediction state
   const [predictionDialogOpen, setPredictionDialogOpen] = useState(false)
@@ -579,15 +618,29 @@ export function AdsDashboardClient({
 
     // A template-sourced audience carries its own SourceRule + type; a
     // manually-built one is assembled from the dialog's generic source picker.
+    //
+    // ONLY THE FILTERS THE CHOSEN RULE ACTUALLY USES ARE SENT. This used to post
+    // `days_lookback` AND `contact_tags: []` on every rule regardless — an empty
+    // tag array on a `contact_list` rule, which the old populate code read as
+    // "no tag filter" and turned into the whole consented contact book. An
+    // unused filter is not harmless when the reader treats absence as "all".
+    const manualFilters: SourceRule["filters"] = {}
+    if (newAudience.sourceRuleType === "contact_list") {
+      manualFilters.contact_tags = newAudience.contactTags
+        .split(",")
+        .map((t) => t.trim())
+        .filter((t) => t.length > 0)
+    }
+    if (newAudience.sourceRuleType === "active_buyers") {
+      manualFilters.days_lookback = newAudience.daysLookback
+    }
+    if (newAudience.sourceRuleType === "high_engagement_contacts") {
+      manualFilters.min_engagement_score = newAudience.minEngagementScore
+    }
+
     const sourceRule: SourceRule = templateOverride
       ? templateOverride.sourceRule
-      : {
-          type: newAudience.sourceRuleType,
-          filters: {
-            days_lookback: newAudience.daysLookback,
-            contact_tags: newAudience.contactTags ? newAudience.contactTags.split(",").map((t) => t.trim()) : [],
-          },
-        }
+      : { type: newAudience.sourceRuleType, filters: manualFilters }
 
     const result = await createAudience(userId, {
       brokerageId,
@@ -606,6 +659,7 @@ export function AdsDashboardClient({
         audienceType: "custom",
         sourceRuleType: "contact_list",
         daysLookback: 30,
+        minEngagementScore: 70,
         contactTags: "",
         consentBasis: "",
       })
@@ -641,6 +695,20 @@ export function AdsDashboardClient({
       toast.error(result.error || "Operation failed")
     }
     setIsSyncing(null)
+  }
+
+  // Resolve WHO this audience actually contains — without uploading anything.
+  // Runs the same kernel resolution the sync runs, so what it reports is what
+  // would leave; a preview that resolved differently would be worse than none.
+  const handlePreviewReach = async (audienceId: string) => {
+    setReachByAudience((prev) => ({ ...prev, [audienceId]: { loading: true } }))
+    const result = await previewAudienceReach(userId, { brokerageId, agentId: userId, audienceId })
+    setReachByAudience((prev) => ({
+      ...prev,
+      [audienceId]: result.success
+        ? { loading: false, resolution: result.resolution }
+        : { loading: false, error: result.error || "Could not resolve this audience" },
+    }))
   }
 
   const handleApproveAudience = async (audienceId: string) => {
@@ -1202,6 +1270,68 @@ export function AdsDashboardClient({
                                 Consent basis: {audience.consent_basis}
                               </p>
                             )}
+
+                            {/* ── WHO THIS AUDIENCE ACTUALLY CONTAINS ──────────
+                                The count AND its denominator (CLAUDE.md §2), plus
+                                the rule that produced it. When the two numbers are
+                                equal the audience is not a slice whatever its name
+                                says, and that is stated in those words rather than
+                                left for the operator to notice. */}
+                            {(() => {
+                              const reach = reachByAudience[audience.id]
+                              if (!reach) return null
+                              if (reach.loading) {
+                                return (
+                                  <p className="text-xs text-muted-foreground mt-2">
+                                    Resolving who this audience contains…
+                                  </p>
+                                )
+                              }
+                              if (reach.error) {
+                                return (
+                                  <p className="text-xs text-destructive mt-2">{reach.error}</p>
+                                )
+                              }
+                              const r = reach.resolution
+                              if (!r) return null
+                              if (r.refusal) {
+                                return (
+                                  <div className="mt-2 rounded-md border border-destructive/40 bg-destructive/5 p-2">
+                                    <p className="text-xs font-medium text-destructive">
+                                      This audience will NOT sync
+                                    </p>
+                                    <p className="text-xs text-destructive/90 mt-0.5">{r.refusal}</p>
+                                  </div>
+                                )
+                              }
+                              const everybody =
+                                r.resolvedCount !== null &&
+                                r.totalConsented !== null &&
+                                r.totalConsented > 0 &&
+                                r.resolvedCount === r.totalConsented
+                              return (
+                                <div
+                                  className={`mt-2 rounded-md border p-2 ${
+                                    everybody ? "border-amber-400 bg-amber-50" : "bg-muted/40"
+                                  }`}
+                                >
+                                  <p className="text-xs font-medium">
+                                    {r.uploadsContacts
+                                      ? `Resolves to ${r.resolvedCount} of ${r.totalConsented} consented contacts`
+                                      : "Uploads no contacts — platform-seeded audience"}
+                                  </p>
+                                  <p className="text-xs text-muted-foreground mt-0.5">
+                                    Rule{r.ruleType ? ` (${r.ruleType})` : ""}: {r.ruleLabel}
+                                  </p>
+                                  {everybody && (
+                                    <p className="text-xs text-amber-800 mt-1">
+                                      That is EVERY consented contact in the brokerage — this audience is
+                                      not a slice. Check the rule before syncing.
+                                    </p>
+                                  )}
+                                </div>
+                              )
+                            })()}
                           </div>
                           <div className="flex items-center gap-2">
                             {audience.status === "pending_review" && (
@@ -1230,6 +1360,20 @@ export function AdsDashboardClient({
                                 Sync Now
                               </Button>
                             )}
+                            {/* BEFORE the sync leaves, not after. This is an
+                                egress path with no undo, so the operator gets the
+                                delivered count and the rule that produced it while
+                                the decision is still reversible. */}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => handlePreviewReach(audience.id)}
+                              disabled={reachByAudience[audience.id]?.loading}
+                              title="Resolve who this audience actually contains — uploads nothing"
+                            >
+                              <Users className="h-4 w-4 mr-1" />
+                              Check reach
+                            </Button>
                             <Button
                               size="sm"
                               variant="ghost"
@@ -1760,28 +1904,47 @@ export function AdsDashboardClient({
                 </div>
               ) : (
                 <>
+                  {/* ── THE PICKER NOW OFFERS ONLY RULES THAT RESOLVE ──────────
+                      It used to offer three: "Contact List", "Website Visitors"
+                      and "Engaged Contacts". The last two were NAMES ONLY — no
+                      branch in syncAudience narrowed for them, so either one
+                      uploaded every consented contact in the brokerage to
+                      Meta/Google under a name promising site visitors. They are
+                      built on the ad platform from its own pixel and cannot be
+                      reproduced from this CRM, so they are gone from here and the
+                      note below says where they live instead. Everything offered
+                      now has a real narrowing in lib/ads/audience-source-rules.ts,
+                      and each one's required input is rendered beneath it. */}
                   <div>
                     <Label>Source</Label>
                     <Select
                       value={newAudience.sourceRuleType}
                       onValueChange={(v) =>
-                        setNewAudience({ ...newAudience, sourceRuleType: v as "website_visitors" | "contact_list" | "engagement" })
+                        setNewAudience({ ...newAudience, sourceRuleType: v as ManualSourceRuleType })
                       }
                     >
                       <SelectTrigger>
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="contact_list">Contact List (CRM)</SelectItem>
-                        <SelectItem value="website_visitors">Website Visitors</SelectItem>
-                        <SelectItem value="engagement">Engaged Contacts</SelectItem>
+                        <SelectItem value="contact_list">Contact List — by tag</SelectItem>
+                        <SelectItem value="investor_contacts">Investors</SelectItem>
+                        <SelectItem value="lifetime_customers">Past clients (lifetime)</SelectItem>
+                        <SelectItem value="high_engagement_contacts">High-engagement contacts</SelectItem>
+                        <SelectItem value="active_buyers">Active buyers</SelectItem>
+                        <SelectItem value="exclusion_active_pipeline">Active pipeline (use as EXCLUSION)</SelectItem>
                       </SelectContent>
                     </Select>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Website-visitor and page-engagement audiences are built in Meta or Google Ads from
+                      their own pixel — this product holds no per-contact web-visit record, so it cannot
+                      reproduce them here.
+                    </p>
                   </div>
 
-                  {newAudience.sourceRuleType === "website_visitors" && (
+                  {newAudience.sourceRuleType === "active_buyers" && (
                     <div>
-                      <Label>Days Lookback</Label>
+                      <Label>Days Lookback (required — “active” is a recency claim)</Label>
                       <Input
                         type="number"
                         value={newAudience.daysLookback}
@@ -1792,14 +1955,37 @@ export function AdsDashboardClient({
                     </div>
                   )}
 
+                  {newAudience.sourceRuleType === "high_engagement_contacts" && (
+                    <div>
+                      <Label>Minimum engagement score (required, above 0)</Label>
+                      <Input
+                        type="number"
+                        value={newAudience.minEngagementScore}
+                        onChange={(e) =>
+                          setNewAudience({ ...newAudience, minEngagementScore: parseInt(e.target.value) || 0 })
+                        }
+                        min={1}
+                        max={100}
+                      />
+                      <p className="text-xs text-muted-foreground mt-1">
+                        engagement_score defaults to 0, so a threshold of 0 would match every contact
+                        while still calling itself “high engagement”.
+                      </p>
+                    </div>
+                  )}
+
                   {newAudience.sourceRuleType === "contact_list" && (
                     <div>
-                      <Label>Contact Tags (comma-separated, optional)</Label>
+                      <Label>Contact Tags (comma-separated, REQUIRED)</Label>
                       <Input
                         value={newAudience.contactTags}
                         onChange={(e) => setNewAudience({ ...newAudience, contactTags: e.target.value })}
                         placeholder="buyer, hot-lead"
                       />
+                      <p className="text-xs text-muted-foreground mt-1">
+                        An empty tag list is not “every tag” — it is no basis at all, and it would upload
+                        every consented contact in the brokerage.
+                      </p>
                     </div>
                   )}
                 </>

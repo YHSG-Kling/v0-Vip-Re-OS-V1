@@ -24,7 +24,6 @@ import {
   Square,
   Home,
   Calculator,
-  TreePine,
   Phone,
   Mail,
   Clock,

@@ -30,6 +30,10 @@ function check(name: string, cond: boolean) {
 
 const VALID_CATEGORIES: AudienceTemplate["category"][] = [
   "remarketing", "lookalike", "exclusion", "geo", "lifecycle",
+  // The owner's persona basis ("audience should be segmented on persona"). The
+  // catalog now DERIVES one template per ads-eligible persona; without this member
+  // every one of them would fail the valid-category check above.
+  "persona",
 ]
 
 async function main() {

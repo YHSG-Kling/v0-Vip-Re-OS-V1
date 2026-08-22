@@ -152,9 +152,24 @@ async function main() {
     // Adding an edge is the CORRECT response to a cross-manager seam (the
     // repo's ownership model is cross-cooperative by design). Bumping this
     // number without naming the edges would turn the tripwire off.
-    && Object.keys(MANAGER_COLLABORATIONS).length === 18
+    //
+    // 18 → 19. NAMED, per the rule directly above — bumping the number without
+    // naming the edge is how the tripwire gets turned off:
+    //
+    //   ad_audience_basis                 ads_manager + compliance_officer
+    //     What an ad audience is segmented ON. facebook_custom_audiences.source_rule
+    //     is written and read by ads_manager's commands; the rules deciding whether
+    //     that jsonb may be acted on are compliance_officer's (the protected-class
+    //     refusal and the owner's positive persona rule). The vocabularies OVERLAP by
+    //     construction — four canonical Persona members (senior, probate, divorce,
+    //     military) are also PROTECTED_CLASS_TOKENS — so the seam needs a named owner.
+    //     NON-deliberative: the owner ruled both halves, so there is nothing to argue,
+    //     and no REFERRAL_EMITTERS raiser exists for it.
+    && Object.keys(MANAGER_COLLABORATIONS).length === 19
     && !isDeliberativeDomain("tenant_principal_books")
-    && !isDeliberativeDomain("seller_signal_education_routing"))
+    && !isDeliberativeDomain("seller_signal_education_routing")
+    && !isDeliberativeDomain("ad_audience_basis")
+    && JSON.stringify(MANAGER_COLLABORATIONS.ad_audience_basis.managers.slice().sort()) === JSON.stringify(["ads_manager", "compliance_officer"]))
   check("every deliberative domain's evidence names its LIVE RAISER (no aspirational edges)",
     deliberativeDomains().every((d) => /raiser|sweep|hook|assignVendorToTransaction|publish/i.test(d.evidence)))
 

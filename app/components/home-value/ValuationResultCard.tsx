@@ -2,7 +2,6 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Progress } from "@/components/ui/progress"
 import { MapPin, Calendar, Percent, Sparkles } from "lucide-react"
 
 interface ValuationResultCardProps {

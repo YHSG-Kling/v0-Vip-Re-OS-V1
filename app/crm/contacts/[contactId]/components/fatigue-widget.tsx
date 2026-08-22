@@ -10,9 +10,7 @@
 
 import React, { useState, useTransition } from "react"
 import { useRouter }               from "next/navigation"
-import { Badge }                   from "@/components/ui/badge"
 import { Button }                  from "@/components/ui/button"
-import { Progress }                from "@/components/ui/progress"
 import {
   getBuyerFatigueScore,
   getBuyerFatigueAlerts,

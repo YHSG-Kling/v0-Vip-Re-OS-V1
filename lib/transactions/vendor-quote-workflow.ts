@@ -84,7 +84,85 @@ export async function approveQuote(params: {
   notes?: string
 }) {
   const supabase = createServiceClient()
-  
+
+  // ── THE VENDOR'S CONTACT DETAILS, BEFORE THE ACTIVITY IS CLOSED ────────────
+  //
+  // deal_team_members carries email / phone / company, and FIVE surfaces render
+  // them as the client-facing contact card for this vendor:
+  //   app/crm/page.tsx:674 (call + email buttons, each gated on truthiness)
+  //   app/portal/[contactId]/team/page.tsx:83
+  //   app/portal/[contactId]/buyer-home.tsx:117
+  //   app/portal/[contactId]/seller-home.tsx:154
+  //   app/portal/[contactId]/lifetime-home.tsx:118
+  //
+  // This insert wrote only transaction_id / brokerage_id / member_type / name,
+  // so all three columns were writerless and every one of those cards rendered
+  // a bare name with no way to reach the person — while the details themselves
+  // sat one row away, captured by the SAME workflow that requested the quote:
+  //   inspector  → transaction_inspections.inspector_{company,email,phone}
+  //                (app/actions/transaction-inspections.ts:64 writes them)
+  //   insurance  → transaction_vendor_services.vendor_{email,phone}
+  //                (app/actions/transaction-inspections.ts:322 writes them)
+  //
+  // requestQuoteApproval stamped that source row's id into the activity as
+  // metadata.quote_document_id, so the approval can find it. This read happens
+  // BEFORE the completion update, because the update does not return the row.
+  const { data: approvalActivity, error: activityReadError } = await supabase
+    .from("activities")
+    .select("metadata")
+    .eq("id", params.activityId)
+    .maybeSingle()
+
+  if (activityReadError) {
+    console.error(
+      `[vendor-quote-workflow] approval activity ${params.activityId} metadata NOT read (deal-team contact details will be absent):`,
+      activityReadError.message,
+    )
+  }
+
+  const sourceRowId =
+    ((approvalActivity?.metadata as Record<string, unknown> | null)?.quote_document_id as string | undefined) ?? null
+
+  let vendorEmail: string | null = null
+  let vendorPhone: string | null = null
+  let vendorCompany: string | null = null
+
+  if (sourceRowId) {
+    if (params.quoteType === "inspector") {
+      const { data: inspection, error: inspectionError } = await supabase
+        .from("transaction_inspections")
+        .select("inspector_email, inspector_phone, inspector_company")
+        .eq("id", sourceRowId)
+        .maybeSingle()
+      if (inspectionError) {
+        console.error(
+          `[vendor-quote-workflow] inspection ${sourceRowId} contact lookup refused:`,
+          inspectionError.message,
+        )
+      }
+      vendorEmail = (inspection?.inspector_email as string | null) ?? null
+      vendorPhone = (inspection?.inspector_phone as string | null) ?? null
+      vendorCompany = (inspection?.inspector_company as string | null) ?? null
+    } else {
+      // transaction_vendor_services has no company column — the vendor NAME is
+      // the company on the insurance rail, so company stays null rather than
+      // being duplicated out of `name`.
+      const { data: service, error: serviceError } = await supabase
+        .from("transaction_vendor_services")
+        .select("vendor_email, vendor_phone")
+        .eq("id", sourceRowId)
+        .maybeSingle()
+      if (serviceError) {
+        console.error(
+          `[vendor-quote-workflow] vendor service ${sourceRowId} contact lookup refused:`,
+          serviceError.message,
+        )
+      }
+      vendorEmail = (service?.vendor_email as string | null) ?? null
+      vendorPhone = (service?.vendor_phone as string | null) ?? null
+    }
+  }
+
   // Mark activity complete. A dropped update leaves the approval task sitting
   // open forever on the TC's list for work that IS done.
   const { error: completeError } = await supabase
@@ -99,14 +177,32 @@ export async function approveQuote(params: {
     console.error(`[vendor-quote-workflow] approval activity ${params.activityId} NOT closed:`, completeError.message)
   }
 
-  // Add vendor to deal team
-  await supabase.from("deal_team_members").insert({
+  // Add vendor to deal team. `error` is destructured: supabase-js RESOLVES a
+  // refusal, and a silently dropped row here means the approved vendor never
+  // appears on the client's deal-team card at all.
+  //
+  // portal_access is written EXPLICITLY false rather than left to the column's
+  // `DEFAULT true`. A vendor approved off a quote has no account — member_id is
+  // null on this row — so "true" would have asserted a portal seat that does not
+  // exist. Portal access for an external party is granted, never defaulted.
+  const { error: teamMemberError } = await supabase.from("deal_team_members").insert({
     transaction_id: params.transactionId,
     brokerage_id: params.brokerageId,
     member_type: params.quoteType === "inspector" ? "inspector" : "insurance_provider",
     name: params.vendorName,
+    email: vendorEmail,
+    phone: vendorPhone,
+    company: vendorCompany,
+    portal_access: false,
   })
-  
+
+  if (teamMemberError) {
+    console.error(
+      `[vendor-quote-workflow] deal_team_members row for "${params.vendorName}" on transaction ${params.transactionId} NOT created:`,
+      teamMemberError.message,
+    )
+  }
+
   // Complete milestone
   const milestoneName = params.quoteType === "inspector" 
     ? "inspector_approved" 

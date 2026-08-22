@@ -13,9 +13,14 @@ export { deactivateLead } from "./lead-deactivator"
 export type { PromotionResult } from "./promote-lead-to-contact"
 export { promoteLeadToContactService } from "./promote-lead-to-contact"
 
-// ─── HISTORY CARRY (link + re-point, never duplicate) ─────────────────────────
+// ─── HISTORY CARRY (link + re-point + move, never duplicate) ──────────────────
 export type { HistoryCarryParams, HistoryCarryResult } from "./history-carry"
-export { carryLeadHistoryToContact, REPOINTED_HISTORY_TABLES } from "./history-carry"
+export {
+  CONVERSION_CARRY_OMISSIONS,
+  MOVED_HISTORY_TABLES,
+  REPOINTED_HISTORY_TABLES,
+  carryLeadHistoryToContact,
+} from "./history-carry"
 
 // ─── PORTAL ACCESS ON CONVERSION ──────────────────────────────────────────────
 export type { PortalAccessParams, PortalAccessResult } from "./portal-access"

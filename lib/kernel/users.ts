@@ -47,6 +47,17 @@ import { seatGate } from "./seat-usage"
 export type UserDomainRole =
   | "agent"
   | "broker"
+  // OWNER RULING (2026-08-22): "a broker admin is a user type with differnt
+  // permission roles" — and CLAUDE.md §4's tenant roster has always named it
+  // (broker, broker_admin, broker_owner, team_lead, admin).
+  //
+  // NOT YET STORABLE. users_user_type_check admits fourteen values and this is
+  // not one of them, which is why m308/m518 stripped it out of the RLS
+  // predicates. supabase/migrations/m530-…sql adds it (WRITTEN, NOT APPLIED).
+  // Until then the invite menu cannot offer it — tier-role-matrix.ts
+  // `seatableUserTypes` intersects the menu with the live CHECK vocabulary — so
+  // this union member is reachable by TYPE but never written to the column.
+  | "broker_admin"
   // Admitted by the users.user_type CHECK and mapped to brokerage_admin by
   // normalizeCriticalRole, but it was in no seat list — so a brokerage OWNER
   // consumed no seat on any surface.

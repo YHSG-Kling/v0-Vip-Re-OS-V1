@@ -44,7 +44,11 @@ const TIERS: Record<string, Record<string, boolean>> = {
 // tenant's billing page and the platform voice receptionist QUOTE. m523 moves the
 // catalogue onto these; lib/kernel/tier-role-matrix.ts is the code-side fallback
 // and scripts/seat-cap-simulator.ts (npm run test:seat-cap) is the enforcement proof.
-const MAX_AGENTS: Record<string, number | null> = { solo_agent: 2, team: 5, brokerage: null, multi_location: null }
+// Mirrors `subscription_tiers.max_agents` as MEASURED LIVE 2026-08-22
+// (2 / 5 / 50 / NULL — m523 set solo+team, m529 set brokerage to 50). It is
+// asserted equal to TIER_SEAT_LIMITS below, so if either the catalogue or the
+// code literal moves without the other, this fixture is what reports it.
+const MAX_AGENTS: Record<string, number | null> = { solo_agent: 2, team: 5, brokerage: 50, multi_location: null }
 
 async function main() {
   console.log("\n[isTierFeatureIncluded · pure — object shape]")
@@ -69,11 +73,15 @@ async function main() {
   check("EVERY tier gets EVERY tool capability", Object.values(TIERS).every((t) => ALL_TOOLS.every((k) => isTierFeatureIncluded(t, k) === true)))
   check("multi_location still owns the SCALE flags (usage_metering + multi_brokerage)", isTierFeatureIncluded(TIERS.multi_location, "usage_metering") === true && isTierFeatureIncluded(TIERS.multi_location, "multi_brokerage") === true)
   check("non-multi tiers do NOT get multi_brokerage (scale-gated)", !isTierFeatureIncluded(TIERS.solo_agent, "multi_brokerage") && !isTierFeatureIncluded(TIERS.team, "multi_brokerage") && !isTierFeatureIncluded(TIERS.brokerage, "multi_brokerage"))
-  check("SCALE is the differentiator — seats step 2 → 5 → unlimited (owner's ruling)", MAX_AGENTS.solo_agent === 2 && MAX_AGENTS.team === 5 && MAX_AGENTS.brokerage === null)
+  // OWNER, 2026-08-22: 2 → 5 → 50 → unlimited. m529 moved brokerage to 50 live.
+  check("SCALE is the differentiator — seats step 2 → 5 → 50 → unlimited (owner's ruling)",
+    MAX_AGENTS.solo_agent === 2 && MAX_AGENTS.team === 5 && MAX_AGENTS.brokerage === 50
+    && MAX_AGENTS.multi_location === null)
   check("…and these agree with the seat matrix the gate enforces, so catalogue and code cannot drift",
     MAX_AGENTS.solo_agent === TIER_SEAT_LIMITS.solo_agent
     && MAX_AGENTS.team === TIER_SEAT_LIMITS.team
-    && MAX_AGENTS.brokerage === TIER_SEAT_LIMITS.brokerage)
+    && MAX_AGENTS.brokerage === TIER_SEAT_LIMITS.brokerage
+    && MAX_AGENTS.multi_location === TIER_SEAT_LIMITS.multi_location)
 
   // ═══════════════════════════════════════════════════════════════════════════
   // TIER PARITY — the owner ruling, and the two things it must NOT flatten.
@@ -112,15 +120,20 @@ async function main() {
     resolveEntitlement({ flag: { ...OPEN_FLAG, tierLimit: 5 }, usageCurrent: 5, tier: "solo_agent" }).allowed === false)
 
   console.log("\n[PARITY · SEATS STILL DIFFER — the ruling is the seat count, so flattening it would break it]")
-  check("solo is capped at 2 · team at 5 · brokerage unlimited",
-    TIER_SEAT_LIMITS.solo_agent === 2 && TIER_SEAT_LIMITS.team === 5 && TIER_SEAT_LIMITS.brokerage === null)
+  check("solo is capped at 2 · team at 5 · brokerage at 50 · multi unlimited",
+    TIER_SEAT_LIMITS.solo_agent === 2 && TIER_SEAT_LIMITS.team === 5
+    && TIER_SEAT_LIMITS.brokerage === 50 && TIER_SEAT_LIMITS.multi_location === null)
   check("a 3rd seat on solo is REFUSED and names the upgrade",
     seatDecision("solo_agent", 2, null, 1).withinLimit === false
     && seatDecision("solo_agent", 2, null, 1).upgradeTo === "team")
   check("a 6th seat on team is REFUSED and names the upgrade",
     seatDecision("team", 5, null, 1).withinLimit === false
     && seatDecision("team", 5, null, 1).upgradeTo === "brokerage")
-  check("brokerage keeps hiring", seatDecision("brokerage", 5000, null, 1).withinLimit === true)
+  check("a 51st seat on brokerage is REFUSED and names Multi-Location",
+    seatDecision("brokerage", 50, null, 1).withinLimit === false
+    && seatDecision("brokerage", 50, null, 1).upgradeTo === "multi_location")
+  check("multi_location keeps hiring — the only uncapped tier",
+    seatDecision("multi_location", 5000, null, 1).withinLimit === true)
   // POSITIVE CONTROL — the seat gate is not simply refusing everything.
   check("POSITIVE CONTROL — a 2nd seat on solo is ALLOWED, so the refusals above are the cap, not a stuck gate",
     seatDecision("solo_agent", 1, null, 1).withinLimit === true)

@@ -26,6 +26,13 @@
  *     what makes the ISA history sheet, the contact detail pane and conversation
  *     memory show the lead-phase conversation instead of an empty contact.
  *
+ *  3. MOVE (never duplicate). Identical intent to a re-point, but the lead_id is
+ *     RELEASED in the same statement, because the table's own CHECK says the row may
+ *     name exactly ONE entity. A re-point on such a table sets both columns at once
+ *     and the database refuses the UPDATE — and supabase-js RESOLVES that refusal, so
+ *     the row would be left behind a retired lead with a warning nobody reads. See
+ *     MOVED_HISTORY_TABLES for the one table this applies to and the constraint text.
+ *
  * DUPLICATION IS NOT USED ANYWHERE. Copying rows would double every count, split
  * every audit trail in two, and give the same conversation two created_at truths.
  *
@@ -42,18 +49,17 @@
  * PostgREST UPDATE naming a column the table does not have is refused entirely
  * (PGRST204), and this list runs on the automatic conversion path.
  *
- * The list is curated, not exhaustive: a table earns a place by being HISTORY the
- * agent should see on the contact. Deliberate omissions, with reasons:
- *   sequence_enrollments  — lead-deactivator.ts CLOSES these on conversion on
- *                           purpose; re-pointing would hand the new contact a
- *                           lead-era cadence to resume under new consent.
- *   lead_enrichment_queue — a work queue, not history. The converter already
- *                           queues fresh enrichment against the contact.
- *   audience_members,
- *   direct_mail_*,
- *   campaign_bundle_dispatches — owned by the audience/marketing lane, which
- *                           promotes membership itself (audience-sync's
- *                           onLeadConvertedForAudience).
+ * ── THE LIST IS CURATED, AND THAT USED TO MEAN "UNCHECKED" ──────────────────
+ * A table earns a place by being HISTORY the agent should see on the contact.
+ * The omissions below used to live in this comment ALONE, which meant a new
+ * dual-keyed table could be added to the schema tomorrow and belong to no list at
+ * all — its rows would sit behind a retired lead forever and nothing in the repo
+ * could see it. That is an ORPHANED CHILD in the product sense even though its FK
+ * is perfectly intact, and it is what `npm run test:orphaned-children` now
+ * ratchets: every table carrying BOTH `lead_id` and `contact_id` must appear in
+ * EXACTLY ONE of REPOINTED_HISTORY_TABLES / MOVED_HISTORY_TABLES /
+ * CONVERSION_CARRY_OMISSIONS, or the census fails. The prose became data so that
+ * an omission is a DECISION on the record rather than a gap nobody noticed.
  */
 export const REPOINTED_HISTORY_TABLES = [
   "ai_isa_activities",       // ISA activity feed  (read by ContactDetailPane, conversation-memory)
@@ -72,13 +78,125 @@ export const REPOINTED_HISTORY_TABLES = [
   "website_visitors",
   "unified_lead_profile",
   "copilot_plans",
+  // ── ADDED 2026-08-22 by the orphaned-child census. Each was dual-keyed, in NO
+  // list, and therefore stranded behind the retired lead after conversion. ────
+  "signal_reactivations",          // lib/kernel/returning-customer.ts:212 selects
+                                   // `.not("contact_id","is",null)` — a lead-era
+                                   // reactivation signal could NEVER reach the
+                                   // returning-customer lane without this.
+  "smart_showing_recommendations", // read on the contact page at
+                                   // app/crm/contacts/[contactId]/page.tsx:262,
+                                   // which today has to re-derive the lead ids and
+                                   // build an `.or(...)` to find them.
+  "outcome_reconciliations",       // lib/outcomes/reconciliation-ledger.ts writes
+                                   // both keys at claim time (:80-:81) and reads
+                                   // back on contact_id (:141). Only the forward
+                                   // reference is filled; the claim itself — status,
+                                   // verdict, timestamps — is never touched.
 ] as const
+
+/**
+ * THE MOVE LIST. Dual-keyed history whose table forbids naming BOTH entities, so
+ * the carry must RELEASE the lead in the same statement that names the contact.
+ *
+ * Live evidence (project hrvaqgvukzxfskkcrwbt, pg_constraint, 2026-08-22) — this is
+ * the ONLY exactly-one CHECK among all 30 dual-keyed tables, which is why it is a
+ * named list rather than a rule inferred from the schema cache:
+ *
+ *   motivated_seller_signals_one_entity
+ *     CHECK (((lead_id IS NOT NULL) <> (contact_id IS NOT NULL)))
+ *
+ * The other two entity CHECKs on dual-keyed tables are `OR`, not `<>`, and re-point
+ * satisfies them unchanged:
+ *   lead_score_history.must_have_scoring_entity            CHECK (lead_id IS NOT NULL OR contact_id IS NOT NULL)
+ *   smart_showing_recommendations_target_check             CHECK (lead_id IS NOT NULL OR contact_id IS NOT NULL)
+ *
+ * WHY THIS TABLE MATTERS MORE THAN THE OTHERS. m517 added `contact_id` here on the
+ * owner's ruling that "motivated sellers source is for leads and contacts", and
+ * m519 retired the lead-prefixed twin onto it. Two readers —
+ * app/actions/ai-predictions.ts:211-212 and app/actions/lead-intelligence.ts:
+ * 1390-1391 — already query BOTH columns with the SAME id because they cannot know
+ * which kind of row they hold. That works only while the two ids are the same
+ * string; after a conversion they are not, so a seller signal detected while the
+ * person was a lead disappeared from every contact-keyed read. The signal is the
+ * evidence that this person may sell. Losing it is losing the deal.
+ *
+ * A MOVE IS NOT A DELETION. The row survives with all of its facts; the only change
+ * is which entity it hangs from — and it hangs from the one the owner's ruling says
+ * is now acted upon.
+ */
+export const MOVED_HISTORY_TABLES = [
+  "motivated_seller_signals",
+] as const
+
+/**
+ * DUAL-KEYED TABLES DELIBERATELY NOT CARRIED, each with the reason on the record.
+ *
+ * A name here is a decision, not an oversight — that is the whole point of making
+ * the omissions data. `npm run test:orphaned-children` fails on any dual-keyed table
+ * that is in none of the three lists, and on any name here that is NOT dual-keyed
+ * (a stale entry, which would mean the reason no longer describes anything).
+ */
+/**
+ * DUAL-KEYED RELATIONS THAT ARE NOT TABLES, so they hold no child rows to carry.
+ *
+ * scripts/schema-snapshot.ts is built from information_schema.columns, which does
+ * not separate tables from views — so a view carrying both keys looks exactly like
+ * an uncarried child table to any offline reader. Named here, with the live check
+ * that settles it, rather than inferred:
+ *
+ *   SELECT relkind FROM pg_class … WHERE relname='contact_lead_history'  →  'v'
+ *
+ * and the same query over ALL views proves this is the only one: it is migration
+ * 039's lineage view, joined on `l.contact_id = c.id` — i.e. it is the thing the
+ * LINK half of this file exists to populate, not something that needs carrying.
+ */
+export const DUAL_KEYED_NON_TABLES = ["contact_lead_history"] as const
+
+export const CONVERSION_CARRY_OMISSIONS: Record<string, string> = {
+  sequence_enrollments:
+    "lib/contact-promotion/lead-deactivator.ts CLOSES these on conversion on purpose " +
+    "(status → completed for active AND paused). Re-pointing would hand the new contact " +
+    "a lead-era cadence to resume under new consent.",
+  lead_enrichment_queue:
+    "A work queue, not history. The converter already queues fresh enrichment against the contact.",
+  audience_members:
+    "Owned by the audience/marketing lane, which promotes membership itself — " +
+    "lib/audiences/audience-sync.ts:onLeadConvertedForAudience.",
+  campaign_bundle_dispatches:
+    "Same owner as audience_members: the audience/marketing lane promotes its own membership.",
+  direct_mail_campaigns:
+    "Direct-mail lane. A campaign is addressed to a mailing identity at send time; " +
+    "re-aiming a sent campaign would rewrite who was mailed.",
+  direct_mail_recipients:
+    "Direct-mail lane, and a recipient row IS the record of who received a piece of mail.",
+  direct_mail_responses:
+    "Direct-mail lane. The response belongs to the recipient row it answered.",
+  mail_response_tracking:
+    "Direct-mail lane, same rationale as direct_mail_responses — it is the ROI ledger " +
+    "for a mailing (lib/campaigns/roi-calculator.ts:127) and is aggregated by campaign, " +
+    "never by person, so an uncarried forward reference costs no reader anything.",
+  ai_autopilot_plans:
+    "NOTHING EXECUTES THE PLAN. The only three touches are in app/actions/ai-predictions.ts " +
+    "— insert (:752, writes lead_id only, never contact_id), list-by-agent (:789) and " +
+    "toggle-by-plan-id (:808). No cron or reactor acts on next_action_at, so an uncarried " +
+    "plan produces no lead-keyed action and the conversion ruling is not violated. The " +
+    "missing half here is the EXECUTOR, not the carry; carrying it first would make an " +
+    "inert row look live. Reported to the one-sided census rather than papered over here.",
+  message_threads:
+    "UNRESOLVED, deliberately: no `.from(\"message_threads\")` exists anywhere in the tree — " +
+    "not one reader, not one writer. Carrying rows into a table nothing queries would " +
+    "manufacture data with no consumer. This belongs to the orphan-table sweep, not to " +
+    "the conversion lane; named here so it cannot silently rejoin the gap.",
+}
 
 export interface HistoryCarryResult {
   /** leads.contact_id + converted_at were stamped — the lineage LINK exists. */
   linked: boolean
-  /** table → rows re-pointed at the new contact. */
+  /** table → rows re-pointed at the new contact (lead_id kept). */
   repointed: Record<string, number>
+  /** table → rows MOVED to the new contact (lead_id released — exactly-one CHECK). */
+  moved: Record<string, number>
   /** Human-readable refusals. Never thrown — the conversion outlives them. */
   warnings: string[]
 }
@@ -95,7 +213,7 @@ export async function carryLeadHistoryToContact(
   params: HistoryCarryParams,
 ): Promise<HistoryCarryResult> {
   const { leadId, contactId, brokerageId } = params
-  const result: HistoryCarryResult = { linked: false, repointed: {}, warnings: [] }
+  const result: HistoryCarryResult = { linked: false, repointed: {}, moved: {}, warnings: [] }
   const now = new Date().toISOString()
 
   // ── 1. THE LINK ────────────────────────────────────────────────────────────
@@ -149,6 +267,40 @@ export async function carryLeadHistoryToContact(
       result.warnings.push(`${r.table}: history NOT re-pointed at contact ${contactId} — ${r.error.message}`)
     } else if (r.count > 0) {
       result.repointed[r.table] = r.count
+    }
+  }
+
+  // ── 3. MOVE ────────────────────────────────────────────────────────────────
+  // Same intent as a re-point, one difference that the database enforces: the
+  // lead_id is RELEASED in the SAME statement, because the row may name exactly
+  // one entity (see MOVED_HISTORY_TABLES for the constraint text). Setting both
+  // would be refused whole — and supabase-js resolves a refusal, so the row would
+  // be silently left behind the retired lead.
+  //
+  // `.is("contact_id", null)` is kept for symmetry with the re-point even though
+  // the CHECK already implies it: a row naming a contact belongs to that contact.
+  // Tenant-pinned identically, so a move can never cross a brokerage boundary.
+  const moves = await Promise.all(
+    MOVED_HISTORY_TABLES.map(async (table) => {
+      let q = supabase
+        .from(table)
+        .update({ contact_id: contactId, lead_id: null }, { count: "exact" })
+        .eq("lead_id", leadId)
+        .is("contact_id", null)
+      if (brokerageId) q = q.eq("brokerage_id", brokerageId)
+      const { error, count } = await q
+      return { table, error, count: count ?? 0 }
+    }),
+  )
+
+  for (const m of moves) {
+    if (m.error) {
+      result.warnings.push(
+        `${m.table}: history NOT moved to contact ${contactId} — ${m.error.message}. ` +
+          `The signal stays behind the retired lead and no contact-keyed read will find it.`,
+      )
+    } else if (m.count > 0) {
+      result.moved[m.table] = m.count
     }
   }
 

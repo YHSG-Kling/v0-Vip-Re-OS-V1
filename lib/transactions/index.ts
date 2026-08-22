@@ -36,7 +36,9 @@ export {
   canOverrideMilestone,
   canEditMilestoneDate,
   canViewFinancials,
-  canActAsExternalParty,
+  // canActAsExternalParty removed — see the tombstone at
+  // lib/transactions/role-guard.ts:112. The external-party gate is
+  // lib/kernel/portal-auth.ts:61 requireLenderVendorActor / :111 requireTitleActor.
   assertUserHasRole,
 } from './role-guard'
 export type { UserRole, RoleContext } from './role-guard'

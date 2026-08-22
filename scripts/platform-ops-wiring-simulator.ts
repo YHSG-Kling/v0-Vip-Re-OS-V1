@@ -200,15 +200,36 @@ const KERNEL_CALLS = [
   "generateDomainCoherenceReport(",
 ]
 
-// Readers in system-health.ts that query a tenant table, and the table each one
-// must filter. Every one of these tables has the untenanted-row RLS hole.
-const TENANT_READERS: Array<{ fn: string; table: string }> = [
-  { fn: "getServiceHealthHistory", table: "system_health_checks" },
-  { fn: "getUptimeHistory", table: "health_check_history" },
-  { fn: "getResponseTimeLogs", table: "api_response_logs" },
-  { fn: "getMessageProviderStats", table: "message_provider_logs" },
-  { fn: "readSLASummary", table: "health_check_history" },
-  { fn: "getServiceStatuses", table: "service_status" },
+// Readers in system-health.ts that query a scoped table, the table each one
+// reads, and WHICH scope that table takes. Every one of these tables has the
+// untenanted-row RLS hole; the two scopes are the two correct answers to it.
+//
+//   "tenant"    — the rows are per-brokerage TELEMETRY. An untenanted row is
+//                 nobody's business, so the read must carry a strict
+//                 `.eq("brokerage_id", ctx.brokerageId)`. Dropping it LEAKS.
+//
+//   "catalogue" — the rows are the PLATFORM SERVICE CATALOGUE. Measured
+//                 2026-08-22: all 13 live service_status rows carry
+//                 brokerage_id IS NULL, nothing in the tree ever inserts a
+//                 per-tenant one, and the live RLS SELECT policy deliberately
+//                 admits the NULL row to every tenant
+//                 ((brokerage_id IS NULL) OR (brokerage_id = …)) because it is
+//                 "the surface tenants read to decide whether the platform is
+//                 up" (m409). A strict `.eq` here does not tighten anything —
+//                 `eq.<uuid>` cannot match NULL, so it matched ZERO of the 13
+//                 rows and the System Health page told every brokerage admin
+//                 "no service is registered" over a full table. The read must
+//                 mirror the policy via serviceCatalogueScope(), which still
+//                 admits nothing belonging to another tenant.
+//                 lib/platform/service-catalogue-scope.ts carries the numbers.
+const TENANT_READERS: Array<{ fn: string; table: string; scope: "tenant" | "catalogue" }> = [
+  { fn: "getServiceHealthHistory", table: "system_health_checks", scope: "tenant" },
+  { fn: "getUptimeHistory", table: "health_check_history", scope: "tenant" },
+  { fn: "getResponseTimeLogs", table: "api_response_logs", scope: "tenant" },
+  { fn: "getMessageProviderStats", table: "message_provider_logs", scope: "tenant" },
+  { fn: "readSLASummary", table: "health_check_history", scope: "tenant" },
+  { fn: "readSLASummary", table: "service_status", scope: "catalogue" },
+  { fn: "getServiceStatuses", table: "service_status", scope: "catalogue" },
 ]
 
 const CHECKS: Check[] = [
@@ -284,17 +305,35 @@ const CHECKS: Check[] = [
     id: "tenant-readers-carry-brokerage-filter",
     run: () => {
       const sh = load(F.SH)
-      for (const { fn, table } of TENANT_READERS) {
+      for (const { fn, table, scope } of TENANT_READERS) {
         const body = fnBody(sh, fn)
         const at = body.indexOf(`.from("${table}")`)
         ok(at !== -1, `${F.SH}:${fn} no longer reads ${table}`)
         // the chain runs until the statement that consumes it
         const chain = body.slice(at, at + 700)
-        ok(
-          chain.includes('.eq("brokerage_id"'),
-          `${F.SH}:${fn} reads ${table} without an explicit brokerage filter — RLS admits (brokerage_id IS NULL), so untenanted rows would be served to every brokerage`,
-        )
+        if (scope === "tenant") {
+          ok(
+            chain.includes('.eq("brokerage_id"'),
+            `${F.SH}:${fn} reads ${table} without an explicit brokerage filter — RLS admits (brokerage_id IS NULL), so untenanted rows would be served to every brokerage`,
+          )
+        } else {
+          // A bare `.eq` here is the OPPOSITE defect: it matches none of the
+          // untenanted catalogue rows and renders an empty platform.
+          ok(
+            chain.includes("serviceCatalogueScope("),
+            `${F.SH}:${fn} reads ${table} without serviceCatalogueScope() — every live row of the platform catalogue carries brokerage_id IS NULL, so any brokerage-equality filter reads ZERO rows and reports an unmeasured platform as an unregistered one`,
+          )
+        }
       }
+      // The helper must exist and must mirror the live RLS policy, or the
+      // check above is satisfied by a name that does nothing.
+      // .noComments, not .raw: the prose in that file NAMES the policy, and
+      // prose must never be able to satisfy an assertion about code.
+      const scopeSrc = load("lib/platform/service-catalogue-scope.ts").noComments
+      ok(
+        scopeSrc.includes("brokerage_id.is.null") && scopeSrc.includes("brokerage_id.eq."),
+        "lib/platform/service-catalogue-scope.ts no longer emits the (brokerage_id IS NULL) OR (brokerage_id = …) pair the RLS policy is written as",
+      )
     },
   },
   {
@@ -644,6 +683,27 @@ const NEGATIVES: Neg[] = [
     .eq("brokerage_id", ctx.brokerageId)`,
     replace: `    .from("health_check_history")
     .select("*")`,
+  },
+  {
+    // POSITIVE CONTROL for the catalogue arm: reintroduce the exact defect that
+    // kept the System Health page empty over a 13-row table, and prove the
+    // check now recognises it. Without this the catalogue arm could be a regex
+    // that matches nothing.
+    check: "tenant-readers-carry-brokerage-filter",
+    file: F.SH,
+    find: `    .from("service_status")
+    .select("*")
+    .or(serviceCatalogueScope(ctx.brokerageId))`,
+    replace: `    .from("service_status")
+    .select("*")
+    .eq("brokerage_id", ctx.brokerageId)`,
+  },
+  {
+    // …and prove the helper itself is load-bearing, not just a name.
+    check: "tenant-readers-carry-brokerage-filter",
+    file: "lib/platform/service-catalogue-scope.ts",
+    find: "return `brokerage_id.is.null,brokerage_id.eq.${brokerageId}`",
+    replace: "return `brokerage_id.eq.${brokerageId}`",
   },
   {
     check: "tenant-readers-refuse-without-scope",

@@ -3,6 +3,9 @@ import { redirect } from "next/navigation"
 import { UsersManagementClient } from "./users-management-client"
 import { SsoConnectionCard } from "./sso-connection-card"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+// Read on the SERVER so the ~1600-line generated vocabulary cache stays out of
+// the client bundle; only the ~15 admissible user_type strings cross.
+import { CHECK_VOCABULARIES } from "@/scripts/check-vocabularies"
 
 export const dynamic = "force-dynamic"
 
@@ -56,6 +59,7 @@ export default async function SettingsUsersPage() {
         brokerageId={brokerageId}
         callerRole={userType}
         tier={planTier}
+        storableUserTypes={CHECK_VOCABULARIES.users?.user_type}
       />
       {/* SSO / SAML — team access policy lives with team management. */}
       <SsoConnectionCard />

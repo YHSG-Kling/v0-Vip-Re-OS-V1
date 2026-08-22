@@ -14,10 +14,12 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 import {
   loadAudienceDefinitions,
   syncAudience as kernelSyncAudience,
+  previewAudienceResolution as kernelPreviewAudienceResolution,
   createAudienceSegment,
   type AdsActorContext,
   type AudienceType,
   type SourceRule,
+  type AudienceResolutionPreview,
 } from "@/lib/kernel/ads"
 import type {
   CreateAudienceParams,
@@ -141,6 +143,44 @@ export async function syncFacebookAudience(
     recordsSynced: syncRun?.records_synced ?? 0,
     recordsRejected: syncRun?.records_rejected ?? 0,
   }
+}
+
+// ─── previewAudienceReach ─────────────────────────────────────────────────────
+//
+// WHAT THE OPERATOR COULD NOT SEE, AND WHY THAT MATTERED. Until this existed,
+// nothing on any surface compared the DELIVERED audience against the PROMISED
+// one. An audience named "Investors" that resolved to every consented contact in
+// the brokerage looked identical to one that resolved to the three investors —
+// the card showed a name, a status and, after the fact, "N records synced". N was
+// the whole book and there was no denominator beside it to say so.
+//
+// This resolves the audience through the SAME kernel path the sync uses, returns
+// the count, the DENOMINATOR and the rule label — and uploads NOTHING. It is a
+// read, so it is gated on the same session and the same feature as the sync it
+// previews, and it is deliberately NOT gated more loosely: it discloses how many
+// of a tenant's contacts match a rule.
+export async function previewAudienceReach(
+  _userId: string,
+  params: SyncAudienceParams,
+): Promise<{
+  success: boolean
+  error?: string
+  resolution?: AudienceResolutionPreview
+}> {
+  const actor = await resolveAdsActor()
+  if (!actor.ok) return { success: false, error: actor.error }
+
+  const accessCheck = await canAccessFeature(actor.ctx.userId, "ads_audiences")
+  if (!accessCheck.allowed) {
+    return { success: false, error: accessCheck.reason || "Feature access denied" }
+  }
+
+  const result = await kernelPreviewAudienceResolution({
+    ctx: actor.ctx,
+    audienceId: params.audienceId,
+  })
+  if (!result.success) return { success: false, error: result.error }
+  return { success: true, resolution: result.audience as AudienceResolutionPreview }
 }
 
 // ─── loadFacebookAudiences — DELETED (orphan burn-down lane C) ────────────────

@@ -26,6 +26,31 @@ import { KernelEvent } from "./events"
 import { processKernelEvent } from "./notification-engine"
 import { v4 as uuidv4 } from "uuid"
 
+// ─── WHY THESE UPSERTS DO NOT NAME expected_interval_hours ───────────────────
+//
+// The opposite-missing census reports `cron_health_snapshot.expected_interval_hours`
+// (and run_count_7d / failure_count_7d) as READ-BY-CODE, WRITTEN-BY-NOBODY —
+// lib/platform/ai-ops.ts:34 cronHealth() reads the first to judge staleness.
+// It is a FALSE POSITIVE, and the obvious "fix" is actively destructive.
+// Measured 2026-08-22 against hrvaqgvukzxfskkcrwbt:
+//
+//   · scripts/1053-pl-truth-engine-cron-health.sql:110 SEEDS the column
+//     per-cron, and all 64 live rows carry a real value (1, 24, 8760, …).
+//   · The DDL is `expected_interval_hours int NOT NULL DEFAULT 24`, and
+//     run_count_7d / failure_count_7d are `int NOT NULL DEFAULT 0`.
+//
+// So stamping a derived cadence here would (a) overwrite curated seed values
+// and (b) refuse the ENTIRE upsert with 23502 the moment the derivation came
+// back null for an unregistered path — and because both upserts below are
+// `.then(() => {})` fire-and-forget, that refusal would reach no one and the
+// health dashboard would simply stop updating. CLAUDE.md §3: a column written
+// by a seed or a DEFAULT reads as writerless without being writerless.
+//
+// What IS genuinely one-sided is narrower and needs its own decision:
+// failure_count_7d / run_count_7d are seeded 0 and NOTHING ever increments
+// them, so the ops panel's "failures in 7d" figure is permanently 0. That is a
+// rolling recompute, not a stamp, and it is left named rather than guessed at.
+
 // ─── INPUT / OUTPUT TYPES ─────────────────────────────────────────────────────
 
 export interface CronLoggingActorContext {

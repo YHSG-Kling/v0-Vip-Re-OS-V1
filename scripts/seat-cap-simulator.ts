@@ -32,6 +32,7 @@ import { join } from "node:path"
 import {
   seatDecision, seatDecisionMessage, seatCheck, effectiveSeatLimit, seatLimitForTier,
   roleConsumesSeat, TIER_SEAT_LIMITS, SEAT_ROLES, PARTNER_ROLES, TIER_LABELS,
+  tierAllowsRole,
   type CatalogSeatLimits,
 } from "../lib/kernel/tier-role-matrix"
 import { seatGate, resolveSeatUsage, resolveCatalogSeatLimits } from "../lib/kernel/seat-usage"
@@ -87,12 +88,93 @@ async function main() {
   check("solo_agent (the owner's 'agent tier subscription') caps at 2",
     TIER_SEAT_LIMITS.solo_agent === 2)
   check("team caps at 5", TIER_SEAT_LIMITS.team === 5)
-  check("brokerage and multi_location are NOT capped at those numbers",
-    TIER_SEAT_LIMITS.brokerage === null && TIER_SEAT_LIMITS.multi_location === null)
-  check("…so a brokerage adding a 500th seat is inside its plan",
-    seatDecision("brokerage", 499).withinLimit && seatDecision("multi_location", 4999).withinLimit)
+  // OWNER, 2026-08-22: "a brokerage should be changed to 50 seats … and then the
+  // same goes for multiple location brokerages but unlimited seats." The live
+  // catalogue was moved by m529 (subscription_tiers.max_agents = 50,
+  // plan_limits.active_users = 50); this literal — the FALLBACK when the
+  // catalogue cannot be read — still said unlimited, i.e. it failed OPEN on the
+  // seat axis exactly when the real number was unavailable.
+  check("brokerage caps at 50", TIER_SEAT_LIMITS.brokerage === 50)
+  check("multi_location alone is uncapped", TIER_SEAT_LIMITS.multi_location === null)
+  check("…so a brokerage's 50th seat is inside its plan and its 51st is not",
+    seatDecision("brokerage", 49).withinLimit && !seatDecision("brokerage", 50).withinLimit)
+  check("…while multi_location keeps hiring", seatDecision("multi_location", 4999).withinLimit)
   control("a brokerage capped at the team number would show as over",
     seatDecision("brokerage", 499, null, 1, { brokerage: 5 }).withinLimit)
+  control("a brokerage treated as UNLIMITED would not refuse its 51st seat — the defect this pins",
+    seatDecision("brokerage", 50, null, 1, { brokerage: null }).withinLimit === false)
+
+  // ───────────────────────────────────────────────────────────────────────────
+  console.log("\n[1b · THE OWNER'S FOUR WORKED EXAMPLES, VERBATIM]")
+  //
+  // OWNER, 2026-08-22 — these four shapes ARE the specification, so they are
+  // asserted as written rather than paraphrased:
+  //
+  //   solo (2)      : agent + admin                    = 2 of 2, 3rd refused
+  //   team (5)      : team_lead + agent + broker       = 3 of 5
+  //   brokerage (50): broker_admin + team_lead + agent = 3 of 50
+  //   multi         : the same shapes, unlimited
+  //
+  // The load-bearing claim in each is that EVERY seated user costs exactly ONE
+  // seat WHATEVER THEIR USER TYPE — the tier caps the count, not the menu.
+  {
+    /** Seats consumed by a roster of user types — the rule under test. */
+    const seatsFor = (roster: readonly string[]) =>
+      roster.filter((r) => roleConsumesSeat(r as never)).length
+
+    // ── SOLO: agent + admin = 2 of 2 ────────────────────────────────────────
+    const solo = ["agent", "admin"]
+    check("SOLO · agent + admin both consume a seat → 2 of 2", seatsFor(solo) === 2)
+    check("SOLO · the 2nd seat is still INSIDE the plan",
+      seatDecision("solo_agent", 1).withinLimit)
+    check("SOLO · …and the 3rd is REFUSED, naming Team",
+      !seatDecision("solo_agent", 2).withinLimit
+      && seatDecision("solo_agent", 2).upgradeTo === "team")
+    control("SOLO · a roster of 3 would NOT fit 2 seats",
+      seatsFor([...solo, "tc"]) <= (TIER_SEAT_LIMITS.solo_agent ?? 0))
+
+    // ── TEAM: team_lead + agent + broker = 3 of 5 ───────────────────────────
+    // THE SENTENCE THAT SUPERSEDED THE OLD MATRIX. A broker on TEAM tier.
+    const team = ["team_lead", "agent", "broker"]
+    check("TEAM · team_lead + agent + broker → 3 seats", seatsFor(team) === 3)
+    check("TEAM · a BROKER may be seated on team tier (the ruling that moved this)",
+      tierAllowsRole("team", "broker"))
+    check("TEAM · 3 of 5 is inside the plan, with 2 to spare",
+      seatDecision("team", 3).withinLimit && seatDecision("team", 3).remaining === 2)
+    control("TEAM · the old matrix, which withheld broker, would refuse this example",
+      ["team_lead", "agent", "broker"].every((r) =>
+        (SEAT_ROLES.filter((x) => x !== "broker" && x !== "broker_owner") as readonly string[]).includes(r)))
+
+    // ── BROKERAGE: broker_admin + team_lead + agent = 3 of 50 ───────────────
+    const brokerage = ["broker_admin", "team_lead", "agent"]
+    check("BROKERAGE · broker_admin + team_lead + agent → 3 seats", seatsFor(brokerage) === 3)
+    check("BROKERAGE · broker_admin is a seat-consuming user type",
+      roleConsumesSeat("broker_admin" as never))
+    check("BROKERAGE · 3 of 50 is inside the plan, with 47 to spare",
+      seatDecision("brokerage", 3).withinLimit && seatDecision("brokerage", 3).remaining === 47)
+    control("BROKERAGE · if broker_admin consumed NO seat this example would count 2",
+      seatsFor(["team_lead", "agent"]) === 3)
+
+    // ── MULTI-LOCATION: the same shapes, unlimited ──────────────────────────
+    check("MULTI · the same three shapes are all seatable",
+      [...solo, ...team, ...brokerage].every((r) => tierAllowsRole("multi_location", r as never)))
+    check("MULTI · unlimited — no roster size is ever 'over'",
+      seatDecision("multi_location", 3).withinLimit
+      && seatDecision("multi_location", 50_000).withinLimit
+      && seatDecision("multi_location", 3).remaining === null)
+    control("MULTI · a capped multi_location WOULD refuse at its cap",
+      seatDecision("multi_location", 3, null, 1, { multi_location: 2 }).withinLimit)
+
+    // ── THE RULE UNDERNEATH ALL FOUR ────────────────────────────────────────
+    check("EVERY seat user type costs exactly ONE seat — no type is cheaper or dearer",
+      SEAT_ROLES.every((r) => seatsFor([r]) === 1))
+    check("…and NON-seats cost none: contact, lender, vendor, system (the AI-ISA actor)",
+      seatsFor(["contact", "lender", "vendor", "system"]) === 0)
+    control("a partner counted as a seat would break the contacts rule",
+      seatsFor(["vendor"]) === 0 && roleConsumesSeat("vendor" as never))
+    check("…so a tenant's whole contact book never eats the plan",
+      seatsFor(Array(500).fill("contact")) === 0)
+  }
 
   console.log("\n[2 · THE THIRD SEAT AND THE SIXTH — refused, naming the upgrade]")
   const soloAt2 = seatDecision("solo_agent", 2)
@@ -107,7 +189,7 @@ async function main() {
   const teamAt5 = seatDecision("team", 5)
   check("team tier: the 6th seat is REFUSED", teamAt5.withinLimit === false)
   check("…and the refusal names BROKERAGE", teamAt5.upgradeTo === "brokerage")
-  check("…quoting unlimited seats", teamAt5.upgradeSeats === null)
+  check("…quoting the 50 seats brokerage gives them", teamAt5.upgradeSeats === 50)
   check("…in the sentence a person reads",
     (seatDecisionMessage(teamAt5) ?? "").includes(`Upgrade to ${TIER_LABELS.brokerage}`))
   control("the 5th seat on team tier is NOT refused (the cap is 5, not 4)",

@@ -139,6 +139,7 @@ export type HealthRead<T> =
 // ["superadmin","admin","broker"] literals were dead on 'superadmin': 0 live
 // rows store that users.user_type.
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { serviceCatalogueScope } from "@/lib/platform/service-catalogue-scope"
 
 // ============================================================================
 // Server Actions
@@ -172,15 +173,22 @@ export async function getServiceStatuses(): Promise<{
       lastCheckedAt: null,
       readStatus: "unavailable",
       readDetail:
-        "This session has no brokerage. service_status RLS is (brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id()), so the untenanted service catalog is never read as if it were this tenant's.",
+        "This session has no brokerage. service_status RLS is (brokerage_id IS NULL) OR (brokerage_id = current_user_brokerage_id()); with no tenant to anchor the second arm there is no scope to read under, so the catalogue is not read at all.",
     }
   }
 
   const supabase = await createClient()
+  // SCOPE, NOT `.eq`. `service_status` is the PLATFORM catalogue: all 13 live
+  // rows carry brokerage_id IS NULL and nothing in the tree ever inserts a
+  // per-tenant one, so `.eq("brokerage_id", <uuid>)` matched zero rows and this
+  // page told every brokerage admin "no service is registered" over a full
+  // table. serviceCatalogueScope mirrors the live RLS SELECT policy exactly —
+  // the untenanted platform row plus this tenant's own, never another tenant's.
+  // See lib/platform/service-catalogue-scope.ts for the measurement.
   const { data: services, error } = await supabase
     .from("service_status")
     .select("*")
-    .eq("brokerage_id", ctx.brokerageId)
+    .or(serviceCatalogueScope(ctx.brokerageId))
     .order("is_critical", { ascending: false })
     .order("service_category")
     .order("service_name")
@@ -203,9 +211,9 @@ export async function getServiceStatuses(): Promise<{
   const typedServices = (services ?? []) as ServiceStatus[]
 
   if (typedServices.length === 0) {
-    // No service is registered for this brokerage, so NOTHING has been
-    // measured. Reporting "operational" here is the defect this rail exists
-    // to prevent.
+    // Neither the platform catalogue nor a tenant row is visible, so NOTHING
+    // has been measured. Reporting "operational" here is the defect this rail
+    // exists to prevent.
     return {
       services: [],
       overallStatus: "unknown",
@@ -213,7 +221,7 @@ export async function getServiceStatuses(): Promise<{
       lastCheckedAt: null,
       readStatus: "empty",
       readDetail:
-        "No service is registered in service_status for this brokerage, so no health check has ever run against it. System status is UNKNOWN, not operational.",
+        "No service is registered in service_status — neither the platform catalogue nor a row for this brokerage — so no health check has ever run. System status is UNKNOWN, not operational.",
     }
   }
 
@@ -661,10 +669,13 @@ async function readSLASummary(
 
   // Service display names. A refused read here would silently downgrade every
   // label to its raw key, so it is reported rather than swallowed.
+  // Same platform-catalogue scope as getServiceStatuses: `.eq("brokerage_id",…)`
+  // matched none of the 13 untenanted rows, so EVERY service label in the SLA
+  // report silently degraded to its raw key. lib/platform/service-catalogue-scope.ts
   const { data: services, error: servicesError } = await supabase
     .from("service_status")
     .select("service_key, service_name")
-    .eq("brokerage_id", ctx.brokerageId)
+    .or(serviceCatalogueScope(ctx.brokerageId))
 
   if (servicesError) {
     console.error("Error fetching service names for SLA summary:", servicesError)

@@ -40,7 +40,14 @@
  * No database. Mock clients + source assertions.
  */
 import { readFileSync } from "node:fs"
-import { carryLeadHistoryToContact, REPOINTED_HISTORY_TABLES } from "../lib/contact-promotion/history-carry"
+import {
+  CONVERSION_CARRY_OMISSIONS,
+  DUAL_KEYED_NON_TABLES,
+  MOVED_HISTORY_TABLES,
+  REPOINTED_HISTORY_TABLES,
+  carryLeadHistoryToContact,
+} from "../lib/contact-promotion/history-carry"
+import { LIVE_TABLES } from "./live-tables"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
 import { stripComments } from "./strip-comments"
 
@@ -125,13 +132,37 @@ async function main(): Promise<void> {
       typeof link?.payload?.converted_at === "string")
     check("...and the result reports it landed", res.linked)
 
-    const repointed = calls.filter((c) => c.table !== "leads")
+    const movedNames = new Set<string>(MOVED_HISTORY_TABLES as readonly string[])
+    const repointed = calls.filter((c) => c.table !== "leads" && !movedNames.has(c.table))
+    const movedCalls = calls.filter((c) => movedNames.has(c.table))
     check(`ALL ${REPOINTED_HISTORY_TABLES.length} dual-keyed history tables are re-pointed`,
       repointed.length === REPOINTED_HISTORY_TABLES.length,
       `${repointed.length} of ${REPOINTED_HISTORY_TABLES.length}`)
 
     const missed = REPOINTED_HISTORY_TABLES.filter((t) => !repointed.some((c) => c.table === t))
     check("...and none is skipped", missed.length === 0, missed.join(", "))
+
+    // ── THE MOVE ARM. A re-point on a table under an exactly-one CHECK sets both
+    // columns at once and the database refuses the whole UPDATE; supabase-js
+    // RESOLVES that refusal, so the row would sit behind the retired lead with a
+    // warning nobody reads. The move must therefore RELEASE the lead. ─────────
+    check(`the ${MOVED_HISTORY_TABLES.length} exactly-one-CHECK table(s) are MOVED, not re-pointed`,
+      movedCalls.length === MOVED_HISTORY_TABLES.length,
+      `${movedCalls.length} of ${MOVED_HISTORY_TABLES.length}`)
+    check("...a move names the contact AND releases the lead in ONE statement —\n    setting both would violate motivated_seller_signals_one_entity and be refused whole",
+      movedCalls.every((c) => c.payload?.contact_id === "contact-1" && c.payload?.lead_id === null),
+      JSON.stringify(movedCalls[0]?.payload))
+    check("...and rewrites nothing else — the signal keeps its type, strength and detected_at",
+      movedCalls.every((c) => Object.keys(c.payload ?? {}).length === 2))
+    check("...tenant-pinned, so a move can never cross a brokerage boundary",
+      movedCalls.every((c) => c.filters.some(([k, col, v]) => k === "eq" && col === "brokerage_id" && v === "brok-1")))
+    check("...and the move counts are reported separately from the re-point counts",
+      Object.keys(res.moved).length === MOVED_HISTORY_TABLES.length
+      && Object.keys(res.repointed).every((t) => !movedNames.has(t)))
+
+    // NEGATIVE ARM — the finder must not simply call everything a move.
+    check("...while a re-pointed table NEVER has its lead_id released (the negative arm:\n    a mover that moved everything would erase the lineage on all nineteen)",
+      repointed.every((c) => !("lead_id" in (c.payload ?? {}))))
 
     const one = repointed[0]
     check("a re-point fills contact_id and rewrites NOTHING else — the row keeps its\n    lead_id, its author and its created_at",
@@ -157,15 +188,31 @@ async function main(): Promise<void> {
   console.log("\n[4 · a PGRST204 here kills the whole carry, on the lane that runs by default]")
   {
     const bad: string[] = []
-    for (const t of REPOINTED_HISTORY_TABLES) {
+    for (const t of [...REPOINTED_HISTORY_TABLES, ...MOVED_HISTORY_TABLES]) {
       const cols = (SCHEMA_SNAPSHOT as Record<string, string[] | undefined>)[t]
       if (!cols) { bad.push(`${t} (no such table)`); continue }
       for (const c of ["lead_id", "contact_id", "brokerage_id"]) {
         if (!cols.includes(c)) bad.push(`${t}.${c}`)
       }
     }
-    check("every re-pointed table exists and carries lead_id + contact_id + brokerage_id",
+    check("every carried table exists and carries lead_id + contact_id + brokerage_id",
       bad.length === 0, bad.join(", "))
+
+    // POSITIVE CONTROL for the line above. A clean tree and a broken lookup both
+    // produce an empty `bad`, and the difference is the whole value of the check.
+    // Run the SAME expression over a table that certainly lacks the columns and a
+    // name that is certainly not a table — it must produce two findings, not zero.
+    const controlBad: string[] = []
+    for (const t of ["brokerages", "lead_motivated_seller_signals_gone"]) {
+      const cols = (SCHEMA_SNAPSHOT as Record<string, string[] | undefined>)[t]
+      if (!cols) { controlBad.push(`${t} (no such table)`); continue }
+      for (const c of ["lead_id", "contact_id", "brokerage_id"]) {
+        if (!cols.includes(c)) controlBad.push(`${t}.${c}`)
+      }
+    }
+    check("[control] the same lookup still SEES an absent column and an absent table",
+      controlBad.length >= 2 && controlBad.some((b) => b.includes("no such table")),
+      controlBad.join(", "))
 
     const leadCols = new Set(SCHEMA_SNAPSHOT.leads)
     check("leads carries contact_id, converted_at and is_active",
@@ -180,13 +227,88 @@ async function main(): Promise<void> {
     check("a refused re-point is reported as a warning, not swallowed —\n    supabase-js RESOLVES a refusal, it does not throw",
       res.warnings.some((w) => w.includes("voice_calls")))
     check("...and it names the contact whose history is now short", res.warnings.some((w) => w.includes("contact c")))
-    check("...while the other fifteen tables still carried",
+    check("...while every other re-pointed table still carried",
       Object.keys(res.repointed).length === REPOINTED_HISTORY_TABLES.length - 1)
+    check("...and the MOVE lane is untouched by a re-point refusal",
+      Object.keys(res.moved).length === MOVED_HISTORY_TABLES.length)
 
     const linkFail = recorder({ failTable: "leads" })
     const r2 = await carryLeadHistoryToContact(linkFail.client, { leadId: "l", contactId: "c", brokerageId: "b" })
     check("a refused LINK reports linked:false and says the lineage view will be empty",
       !r2.linked && r2.warnings.some((w) => w.includes("contact_lead_history")))
+
+    // A REFUSED MOVE IS THE ONE THAT MUST SAY WHAT IT COSTS. A seller signal left
+    // behind a retired lead is invisible to every contact-keyed read, and the
+    // signal is the evidence that this person may sell.
+    const moveFail = recorder({ failTable: MOVED_HISTORY_TABLES[0] })
+    const r3 = await carryLeadHistoryToContact(moveFail.client, { leadId: "l", contactId: "c", brokerageId: "b" })
+    check("a refused MOVE is reported as a warning naming the table and the cost",
+      r3.warnings.some((w) => w.includes(MOVED_HISTORY_TABLES[0]) && w.includes("behind the retired lead")))
+    check("...and it does NOT abort the conversion — the link and every re-point still landed",
+      r3.linked && Object.keys(r3.repointed).length === REPOINTED_HISTORY_TABLES.length)
+  }
+
+  // ═══ 7. THE LEDGER IS COMPLETE — NO DUAL-KEYED TABLE BELONGS TO NO LIST ═══
+  //
+  // THE ORPHANED-CHILD CLASS THIS SECTION EXISTS FOR. A row whose FK is perfectly
+  // intact can still be an orphaned child in the PRODUCT sense: it hangs off a
+  // lead that conversion retired, and the owner's ruling is that after conversion
+  // only the contact is acted on. Before this section the omissions lived in a
+  // COMMENT, so a dual-keyed table added tomorrow would belong to no list, be
+  // carried by nothing, and be visible to nothing.
+  console.log("\n[7 · every dual-keyed table has a verdict on the record]")
+  {
+    const notTables = new Set<string>(DUAL_KEYED_NON_TABLES as readonly string[])
+    const dualRaw = Object.entries(SCHEMA_SNAPSHOT)
+      .filter(([, cols]) => cols.includes("lead_id") && cols.includes("contact_id"))
+      .map(([t]) => t)
+      .sort()
+    // A VIEW holds no child rows to carry. SCHEMA_SNAPSHOT is built from
+    // information_schema.columns and cannot tell a view from a table, so the one
+    // dual-keyed view is DECLARED (with its live relkind) rather than guessed.
+    const dual = dualRaw.filter((t) => !notTables.has(t))
+
+    const carried = new Set<string>([...REPOINTED_HISTORY_TABLES, ...MOVED_HISTORY_TABLES])
+    const omitted = new Set(Object.keys(CONVERSION_CARRY_OMISSIONS))
+
+    const unaccounted = dual.filter((t) => !carried.has(t) && !omitted.has(t))
+    check(`every one of the ${dual.length} dual-keyed tables in the schema cache is carried,\n    moved, or omitted WITH A REASON — none is left behind the retired lead unseen`,
+      unaccounted.length === 0, unaccounted.join(", "))
+
+    const doubleBooked = dual.filter((t) => carried.has(t) && omitted.has(t))
+    check("...and none is in two lists at once (a table cannot be both carried and omitted)",
+      doubleBooked.length === 0, doubleBooked.join(", "))
+
+    // STALENESS, measured against LIVE_TABLES rather than SCHEMA_SNAPSHOT. The
+    // snapshot is `referenced ∩ live`, so a live table the CODE never queries is
+    // simply absent from it — reading that absence as "dropped" is the exact
+    // mistake scripts/live-tables.ts's header was written about. An omission whose
+    // table is live but unqueried is UNVERIFIABLE here, not stale, and is counted
+    // as a blind spot beside the number.
+    const staleOmission = [...omitted].filter((t) => !LIVE_TABLES.includes(t))
+    check("...and no omission names a table that is not live — a reason that describes\n    nothing still reads as a decision that was made",
+      staleOmission.length === 0, staleOmission.join(", "))
+    const unverifiableOmission = [...omitted].filter(
+      (t) => LIVE_TABLES.includes(t) && !(t in SCHEMA_SNAPSHOT))
+    console.log(`    · blind spot: ${unverifiableOmission.length} omission(s) name a LIVE table the code never queries,`)
+    console.log(`      so the snapshot cannot confirm they are still dual-keyed${unverifiableOmission.length ? `: ${unverifiableOmission.join(", ")}` : ""}`)
+
+    const reasonless = Object.entries(CONVERSION_CARRY_OMISSIONS).filter(([, r]) => r.trim().length < 40)
+    check("...and every omission carries a real reason, not a placeholder",
+      reasonless.length === 0, reasonless.map(([t]) => t).join(", "))
+
+    // POSITIVE CONTROL, BOTH ARMS. A broken `dual` filter and a complete ledger
+    // both report zero unaccounted tables.
+    check("[control] the dual-keyed finder still SEES the tables it is counting",
+      dual.length >= 25 && dual.includes("motivated_seller_signals") && dual.includes("ai_isa_calls"),
+      `${dual.length} found`)
+    check("[control] ...and does NOT see a single-keyed table (a finder that flagged\n    everything would be as useless as one that flagged nothing)",
+      !dual.includes("lead_intelligence") && !dual.includes("leads") && !dual.includes("brokerages"))
+    check("[control] the unaccounted finder still FIRES on a table with no verdict",
+      [...dual, "a_new_dual_keyed_table"].filter((t) => !carried.has(t) && !omitted.has(t)).length
+        === unaccounted.length + 1)
+    check("[control] the view exclusion is real, not a blanket — the declared non-table\n    IS present in the snapshot's dual-keyed set and IS the only name removed",
+      dualRaw.includes("contact_lead_history") && dualRaw.length - dual.length === 1)
   }
 
   // ═══ 6. THE AUTOMATIC LANE SURFACES WHAT THE CARRY REPORTS ════════════════
