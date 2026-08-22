@@ -187,11 +187,11 @@ const permits = [
 ]
 const outcome = matchPermitsToLeads(permits, leads)
 check("both leads at one address get the signal (never a silent tie-break)",
-  outcome.matches.length === 2 && new Set(outcome.matches.map((m) => m.leadId)).size === 2)
+  outcome.matches.length === 2 && new Set(outcome.matches.map((m) => m.entityId)).size === 2)
 check("a permit with no readable address is counted, not matched", outcome.skippedNoAddress === 2, `got ${outcome.skippedNoAddress}`)
 check("a permit at an address nobody owns is counted, not fuzzy-matched", outcome.skippedNoLeadMatch === 1)
 check("an unusable key on BOTH sides never collides (lead-d never matches P-4)",
-  !outcome.matches.some((m) => m.leadId === "lead-d"))
+  !outcome.matches.some((m) => m.entityId === "lead-d"))
 
 const dataset = getMarketDatasets({ state: "TX", city: "Austin" }).find((d) => d.kind === "permits")!
 const row = buildPermitSignalRow({ match: outcome.matches[0], brokerageId: "brok-1", dataset })
@@ -937,7 +937,7 @@ check("only an https FeatureServer LAYER url is accepted — a service ROOT has 
       { dateColumn: "PermitIssuedDate", kind: "permits" },
     )
     check("a recorded ArcGIS permit matches a lead on the SHARED normalizer (suffix expanded)",
-      outcome.matches.length === 1 && outcome.matches[0].leadId === "lead-mia",
+      outcome.matches.length === 1 && outcome.matches[0].entityId === "lead-mia",
       `matches=${outcome.matches.length} skippedNoLeadMatch=${outcome.skippedNoLeadMatch}`)
     const built = buildPermitSignalRow({
       match: outcome.matches[0], brokerageId: "brok-mia", dataset: arc as any,

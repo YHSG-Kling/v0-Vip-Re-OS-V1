@@ -521,7 +521,17 @@ export enum KernelEvent {
   CONTACT_SUPPRESSION_APPLIED        = 'contact_suppression_applied',
   CONTACT_SUPPRESSION_CLEARED        = 'contact_suppression_cleared',
   CONTACT_SOURCE_ATTRIBUTION_SET     = 'contact_source_attribution_set',
-  CONTACT_LEAD_CONVERTED             = 'contact_lead_converted',
+  // TOMBSTONE — CONTACT_LEAD_CONVERTED ('contact_lead_converted') lived here.
+  // SURVIVOR: LEAD_CONVERTED_TO_CONTACT at lib/kernel/events.ts:147.
+  // It was a SECOND NAME FOR ONE FACT: the manual lane
+  // (lib/kernel/crm.ts convertLeadToContact) emitted this one, the automatic
+  // lane (lib/kernel/lead-acquisition-handlers.ts:538) emitted the survivor.
+  // Because processKernelEvent matches notification_rules.trigger_event on the
+  // event STRING, a conversion rule could only ever cover whichever half of the
+  // traffic happened to use the name it was written against. Retired rather than
+  // aliased: keeping both spellings reachable is what let them drift apart.
+  // Safe to delete outright — measured live before removal: 0 notification_rules
+  // and 0 lifecycle_events rows carried the string.
   CONTACT_AGENT_ASSIGNED             = 'contact_agent_assigned',
   CONTACT_AGENT_NOTIFIED             = 'contact_agent_notified',
   CONTACT_FOLLOWUP_DRAFT_GENERATED   = 'contact_followup_draft_generated',

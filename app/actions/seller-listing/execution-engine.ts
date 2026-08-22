@@ -524,8 +524,13 @@ export async function initiateListingAgreement(params: {
  * Mark listing agreement as signed — provider-routed.
  *
  * Steps (per spec):
- * 1. Resolve esign + transaction provider via provider_overrides cascade.
- * 2. Load integration_credentials for resolved provider_key.
+ * 1. Resolve the esign provider via the provider_overrides cascade. (The spec
+ *    said "esign + transaction"; the transaction half was resolved and never
+ *    read, so it was deleted 2026-08-22 — see the note at the call site.)
+ * 2. (RETIRED 2026-08-22) "Load integration_credentials for resolved
+ *    provider_key" — nothing consumed it and this function makes no provider
+ *    call. See the tombstone at the former call site; credentials resolve
+ *    through lib/connections/resolve-scoped.ts.
  * 3. If manual_upload: store documentUrl to listing_agreements.
  *    If provider_pull: store providerRef to listing_agreements.
  * 4. INSERT listing_agreements (commission terms + document refs).
@@ -598,23 +603,52 @@ export async function markAgreementSigned(params: {
   // ── 1. Resolve providers via kernel cascade ───────────────────────────────
   const actorContext = { userId, brokerageId }
 
-  const [esignResolved, transactionResolved] = await Promise.all([
-    resolveProvider({ providerType: "esign",       actorContext }),
-    resolveProvider({ providerType: "transaction",  actorContext }),
-  ])
+  // ONE resolve, not two. The `transaction` provider was resolved here beside
+  // `esign` and then never read — `transactionResolved` appeared on this line and
+  // nowhere else in the function. It was not free: `resolveProvider` walks the
+  // provider_overrides cascade, so every agreement-signing paid for a second
+  // cascade whose answer was discarded. Deleted rather than kept "for symmetry":
+  // an unread resolve is an orphan read, and this function makes no transaction-
+  // provider call at all (steps 3-7 below touch listing_agreements,
+  // commission_adjustments, listings and lifecycle_events only).
+  const esignResolved = await resolveProvider({ providerType: "esign", actorContext })
 
   const activeProviderKey = esignResolved.providerKey
 
-  // ── 2. Load integration_credentials for the resolved provider_key ─────────
-  const { data: creds } = await supabase
-    .from("integration_credentials")
-    .select("id, provider_name, api_key, api_secret, webhook_url")
-    .eq("brokerage_id", brokerageId)
-    .eq("provider_name", activeProviderKey)
-    .eq("is_active", true)
-    .maybeSingle()
-
-  // Credentials optional — provider may not require them (manual_upload path)
+  // ─── TOMBSTONE — step 2, "Load integration_credentials for the resolved
+  //     provider_key" (2026-08-22) ──────────────────────────────────────────
+  //
+  // SURVIVOR — credential resolution for this and every other provider lane:
+  //   lib/connections/resolve-scoped.ts  resolveScopedConnectionResult /
+  //                                      resolveScopedConnection
+  //   which walks agent → team → brokerage → platform and reaches
+  //   `integration_credentials` through its last tier,
+  //   lib/integrations/connection-manager.ts:resolveConnectionResult.
+  //
+  // DELETED AS AN ORPHAN READ WITH NO READER. It selected six columns —
+  // including `api_key` and `api_secret` — into a `creds` binding that NOTHING
+  // in this function ever touched. `markAgreementSigned` does not CALL an e-sign
+  // provider: `manual_upload` stores a `documentUrl` the agent already uploaded,
+  // `provider_pull` stores a `providerRef` the caller already holds, and the row
+  // is written straight to `listing_agreements` with esign_status EXECUTED. So
+  // this was a needless secret read on every execution — the worst kind of dead
+  // code, because it costs confidentiality rather than cycles.
+  //
+  // IT ALSO SWALLOWED ITS OWN REFUSAL. It destructured `{ data }` only, so a
+  // refused read (supabase-js RESOLVES refusals — CLAUDE.md §3) was byte-for-byte
+  // "no credential configured". Rebuilding it correctly was rejected as the fix:
+  // that would be a SECOND reader of the credential store with its own
+  // brokerage-only lookup, which is exactly the shape the survivor exists to
+  // replace — resolve-scoped reports connected | not_connected | unreadable and
+  // STOPS on an unreadable tier instead of descending onto another owner's
+  // credential (see the ruling at lib/kernel/manager-registry.ts:1010, and the
+  // same deletion already made at app/actions/dispatch-showing.ts:219).
+  //
+  // IF a real e-sign dispatch is ever wired into this function, resolve it
+  // through the survivor above — never with a fresh `.from("integration_credentials")`.
+  //
+  // `resolveProvider` above is NOT the survivor for this: it reads
+  // `provider_overrides` and answers WHICH VENDOR, never WITH WHAT CREDENTIAL.
 
   // ── 2.5 COMPLIANCE GATE (owner's ruling: the same run as the offer side) ──
   //

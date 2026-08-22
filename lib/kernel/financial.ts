@@ -8,7 +8,11 @@
 // Kernel Ownership Rules:
 //   - NO direct DB writes for financial data outside this file
 //   - Every mutation emits a KernelEvent via lifecycle_events
-//   - business_expenses has NO brokerage_id column — filter by agent_id only
+//   - business_expenses HAS a brokerage_id column (and team_id). CORRECTED
+//     2026-08-22: this line claimed the opposite, and createExpenseRecord below
+//     already contradicts it. brokerage_id is NOT NULL since m516 and is stamped
+//     from ctx.brokerageId; trigger business_expenses_derive_tenant is the DB
+//     backstop for writers that omit it. Scope reads by tenant AND agent_id.
 //   - agent_commissions.status transitions: pending → approved → paid
 //   - agent_cap_tracking is source of truth for cap state (not agents.cap_progress)
 //   - All functions are pure async — no global state, no module-level DB calls
@@ -1108,7 +1112,25 @@ export async function createExpenseRecord(
   const supabase = createServiceClient()
 
   try {
-    // Guard: owner can only create own expenses (unless broker/admin)
+    // Guard: owner can only create own expenses (unless broker/admin).
+    //
+    // THIS IS NOT THE WHOLE GATE, and saying so here is the point. `agentId`
+    // arrives as a PARAMETER and this function writes on the SERVICE-ROLE client,
+    // so the roster check below answers "may this rank book someone else's cost"
+    // but NOT "is that someone in the caller's brokerage" — without which a
+    // finance admin could name an agent in ANOTHER tenant while brokerage_id
+    // downstream is stamped with the CALLER's, filing one brokerage's cost onto
+    // another's books.
+    //
+    // The tenant half lives ONE layer up, at
+    // app/actions/financial-kernel.ts#authorizeAgentScope, which every other
+    // agentId-taking action already calls and which createExpenseRecordAction now
+    // calls too (added 2026-08-22). It is not re-implemented here: docs/wave4-slice3.md
+    // rules that authorization belongs in the action layer and that these kernel
+    // functions trust the ctx they are handed, and a second dialect of the same
+    // clause is the drift CLAUDE.md §6 forbids. Any NEW caller of
+    // createExpenseRecord that does not come through that action must apply the
+    // same helper before calling.
     if (ctx.agentId !== agentId && !isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
       return { success: false, error: "Can only create expenses for yourself" }
     }

@@ -391,11 +391,31 @@ export async function recordCommissionDepositReceivedAction(
   }
 }
 
+/**
+ * ADDED 2026-08-22 — the same `authorizeAgentScope` gate the read actions carry.
+ *
+ * This is a `"use server"` export, so `input.agentId` crosses the network from
+ * the client (app/actions/ai-financial-management.ts#createExpense passes it
+ * straight through from ITS caller), and createExpenseRecord writes on the
+ * SERVICE-ROLE client. The kernel's own check asks only whether the caller's RANK
+ * may book someone else's cost; it never asks whether that someone is in the
+ * caller's BROKERAGE. Without this line a finance admin could name an agent in
+ * another tenant and the row would be written with that agent_id under the
+ * CALLER's brokerage_id — one brokerage's cost filed onto another's books, and a
+ * WRITE version of the read defect docs/wave4-slice3.md records.
+ *
+ * Reused, not re-implemented: authorizeAgentScope already refuses a non-self
+ * target off the finance roster, refuses a target in another brokerage, refuses
+ * when the lookup itself is REFUSED (fail closed), and refuses an untenanted
+ * session because no agents row can match a null brokerage.
+ */
 export async function createExpenseRecordAction(
   input: Omit<CreateExpenseRecordInput, "ctx">
 ) {
   try {
     const ctx = await getFinancialActorContext()
+    const scope = await authorizeAgentScope(ctx, input.agentId)
+    if (!scope.ok) return { success: false, error: scope.error }
     return await createExpenseRecord({ ...input, ctx })
   } catch (error) {
     return { success: false, error: String(error) }

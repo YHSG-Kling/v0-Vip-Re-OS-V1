@@ -31,7 +31,9 @@
  * Owner ruling, verbatim: "motivated sellers source is for leads and contacts." A permit at a
  * contact's address is the same fact as a permit at a lead's address, and the contacts board is
  * where an agent actually works. The table could only hold `lead_id` until m517 added
- * `contact_id`; `PermitMatch.entity` is the discriminator that decides which column is written.
+ * `contact_id`; `PermitMatch.entity` is the discriminator that decides which column is written,
+ * and the id it discriminates is `PermitMatch.entityId` (renamed from `leadId` on 2026-08-22 —
+ * the old name claimed "lead" while carrying a `contacts.id` on every contact match).
  *
  * CONVERTED LEADS ARE EXCLUDED, through the ONE conversion guard
  * (lib/contact-promotion/conversion-finality.ts `excludeConvertedLeads`), never an inline
@@ -486,14 +488,21 @@ export interface PermitMatch {
    * The matched entity's id — a `leads.id` when `entity` is "lead", a
    * `contacts.id` when it is "contact".
    *
-   * THE NAME IS A LEGACY ONE AND IS KEPT DELIBERATELY. It is read by
-   * scripts/external-signal-lanes-simulator.ts:190 and :938, a guard this lane
-   * does not own; renaming it there and here in one pass is a change to a file
-   * another lane may be holding. `entity` beside it is the discriminator that
-   * makes the value unambiguous, and `buildPermitSignalRow` chooses the column
-   * from `entity`, never from this field's name. Reported as found-not-renamed.
+   * RENAMED 2026-08-22 from `leadId`, which was a LIE half the time: this lane
+   * has matched contacts since m517 added `contact_id`, so a field spelled
+   * "lead" carried a `contacts.id` on every contact match. The name is now the
+   * SAME SPELLING the sibling seller-signal source already uses for the same
+   * idea — `entityId` beside `entity` in lib/external/batchdata-seller-signals.ts
+   * (:858, :920) — because two spellings of one discriminated id are the defect
+   * CLAUDE.md §6 names, not a style choice.
+   *
+   * NOTHING ON A WIRE CHANGED. This is a TypeScript field name only. The
+   * database columns are `lead_id` / `contact_id` (chosen from `entity` in
+   * `buildPermitSignalRow`), the jsonb keys in `signal_details` are snake_case
+   * and none was ever spelled `leadId`, and `permitDedupeKey` emits the same
+   * string it emitted before — so no stored row and no response body moves.
    */
-  leadId: string
+  entityId: string
   entity: EntityKind
   addressKey: string
   permitId: string | null
@@ -612,7 +621,7 @@ export function matchPermitsToLeads(
       : null
     for (const entity of leadIds) {
       matches.push({
-        leadId: entity.id,
+        entityId: entity.id,
         entity: entity.entity,
         addressKey: key,
         permitId: readPermitId(row),
@@ -695,12 +704,14 @@ export function buildPermitSignalRow(params: {
   const { match, dataset } = params
   const isViolation = dataset.kind === "code_violations"
   return {
-    // The column is chosen from `match.entity`, NEVER from the legacy field name
-    // `leadId`. A contact filed into `lead_id` is a row no reader can ever see —
-    // the failure tombstoned at app/actions/lead-intelligence.ts:2444.
+    // The column is chosen from `match.entity`, NEVER from the id field's name.
+    // A contact filed into `lead_id` is a row no reader can ever see — the
+    // failure tombstoned at app/actions/lead-intelligence.ts:2444. The field is
+    // `entityId` (renamed from `leadId` on 2026-08-22) precisely so the name can
+    // no longer suggest the wrong column to the next reader.
     ...(match.entity === "contact"
-      ? { contact_id: match.leadId }
-      : { lead_id: match.leadId }),
+      ? { contact_id: match.entityId }
+      : { lead_id: match.entityId }),
     brokerage_id: params.brokerageId,
     signal_type: signalTypeForKind(dataset.kind),
     signal_strength: match.strength,
@@ -762,7 +773,7 @@ export function permitDedupeKey(match: PermitMatch, dataset: SocrataDatasetSpec)
   // motivated_seller_signals` → 0 against project hrvaqgvukzxfskkcrwbt on
   // 2026-08-21. With rows present, every one would have re-filed on the next
   // daily sweep.
-  return `${dataset.datasetId}|${tail}|${match.entity}:${match.leadId}`
+  return `${dataset.datasetId}|${tail}|${match.entity}:${match.entityId}`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

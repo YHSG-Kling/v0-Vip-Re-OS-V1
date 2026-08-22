@@ -174,7 +174,9 @@ export async function convertLeadToContact(params: {
 
   // Core conversion via the single canonical kernel command: dedup +
   // contact creation (valid contact_type/persona) + leads.contact_id link +
-  // lifecycle_state='assigned' + CONTACT_LEAD_CONVERTED event. The prior inline
+  // lifecycle_state='assigned' + LEAD_CONVERTED_TO_CONTACT event (this comment
+  // said CONTACT_LEAD_CONVERTED until that second spelling was retired — see the
+  // tombstone at lib/kernel/events.ts:524). The prior inline
   // insert here skipped the link/state/event and had no dedup (drift).
   // QUALIFICATION GATE (owner, round 37): the kernel command REFUSES leads the
   // AI ISA has not marked lead_stage='qualified' — a broker may convert an

@@ -26,7 +26,11 @@
 //
 // Explicit Rules:
 //   - agent_commissions is the correct table (not `commissions`).
-//   - business_expenses has no brokerage_id — filter by agent_id only.
+//   - business_expenses HAS brokerage_id and team_id. CORRECTED 2026-08-22: this
+//     line read "has no brokerage_id — filter by agent_id only", which was false
+//     since m516 closed the column NOT NULL, and "agent_id only" is the exact
+//     habit that let an export scope a ledger off a caller-supplied agent id.
+//     Scope by the SESSION's brokerage_id AND agent_id.
 //   - campaign_roi.budget_spent is nullable — coalesce to 0.
 //   - agent_performance_reports.metrics is jsonb — always serialize before insert.
 //   - generated_documents does NOT exist — never reference it.
@@ -899,7 +903,13 @@ export async function generateFinancialSummaryReport(
       supabase
         .from("business_expenses")
         .select("id, amount, category, expense_date")
-        .eq("agent_id", ctx.agentId)       // no brokerage_id column on business_expenses
+        .eq("agent_id", ctx.agentId)
+        // TENANT PINNED. The comment that stood here said "no brokerage_id column
+        // on business_expenses" — false since m516 closed the column NOT NULL.
+        // This is the SERVICE-ROLE client, so agent_id was the only thing keeping
+        // this read inside a tenant; the pin matches what the commissions export
+        // in app/actions/financials.ts already does, so the two cannot drift.
+        .eq("brokerage_id", ctx.brokerageId)
         .gte("expense_date", from)
         .lte("expense_date", to)
         .order("expense_date", { ascending: false }),

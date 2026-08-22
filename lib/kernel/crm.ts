@@ -665,21 +665,32 @@ export async function convertLeadToContact(params: {
 
   // Lifecycle event
   //
-  // VOCABULARY SPLIT, MEASURED AND LEFT IN PLACE DELIBERATELY. This lane emits
-  // CONTACT_LEAD_CONVERTED while the automatic lane emits
-  // LEAD_CONVERTED_TO_CONTACT for the very same fact, and processKernelEvent
-  // routes by matching notification_rules.trigger_event against the event STRING
-  // — so a rule written for one name can never fire for the other. Measured on
-  // the live database before deciding: 42 notification rules, all active, ZERO
-  // referencing either name, and zero lifecycle_events rows carrying either. So
-  // nothing is silently failing today and renaming an emitted event mid-wave
-  // would be a change with no evidence behind it. It is a latent trap for
-  // whoever configures the first conversion notification, and it is filed rather
-  // than guessed at.
+  // VOCABULARY SPLIT — NOW CLOSED. This lane used to emit CONTACT_LEAD_CONVERTED
+  // while the automatic lane (lib/kernel/lead-acquisition-handlers.ts:538) emits
+  // LEAD_CONVERTED_TO_CONTACT for the VERY SAME FACT. processKernelEvent routes
+  // by matching notification_rules.trigger_event against the event STRING, so a
+  // rule written for one name could never fire for the other: a brokerage that
+  // configured "notify me when a lead converts" would have been notified for
+  // conversions that arrived down one path and silently missed every conversion
+  // that arrived down the other. Which path a conversion takes is invisible to
+  // the person writing the rule.
+  //
+  // A previous wave measured this and left it, on the grounds that renaming an
+  // emitted event with no evidence behind it is a guess. The evidence is now
+  // complete, re-measured live: 42 notification rules, ZERO referencing either
+  // name, and ZERO lifecycle_events rows carrying either string. Nothing to
+  // migrate and nothing to break — which is exactly why this is the moment to
+  // do it. After the first tenant writes the first conversion rule, closing this
+  // split stops being an edit and becomes a data migration.
+  //
+  // LEAD_CONVERTED_TO_CONTACT is the survivor (CLAUDE.md §6, one vocabulary per
+  // function): it names both sides of the fact, the automatic lane and
+  // lib/audiences/audience-sync.ts:204 already speak it, and
+  // scripts/lead-pipeline-simulator.ts:262 already asserts on it.
   await supabase.from("lifecycle_events").insert({
     entity_type:  "lead",
     entity_id:    params.leadId,
-    event_type:   KernelEvent.CONTACT_LEAD_CONVERTED,
+    event_type:   KernelEvent.LEAD_CONVERTED_TO_CONTACT,
     brokerage_id: params.brokerageId,
     created_at:   now,
     metadata:     { contact_id: result.contactId },

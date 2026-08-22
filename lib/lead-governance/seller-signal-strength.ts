@@ -12,7 +12,8 @@
  *   app/actions/lead-intelligence.ts:1218  "weak"
  *   app/actions/lead-intelligence.ts:1236  "strong" | "moderate"   (life event)
  *   app/actions/lead-intelligence.ts:2394  "urgent" | "strong" | "moderate"
- *   lib/external/permit-signals.ts:549     "strong" | "moderate" | "weak"
+ *   lib/external/permit-signals.ts:408     "strong" | "moderate" | "weak"  (permit)
+ *   lib/external/permit-signals.ts:448     "strong" | "moderate" | "weak"  (violation)
  *
  * The ONE reader that scores them did this:
  *
@@ -31,6 +32,14 @@
  * twin with no writer. That repoint made the ROWS reachable; the comparison
  * meant the rows still could not score. Fixing where you read from does not help
  * if you then compare the value against the wrong type.
+ *
+ * That twin is now GONE FROM THE DATABASE, not merely unread: m519 dropped it
+ * (0 rows, 0 inbound FKs, 0 production `.from()` access, survivor
+ * `motivated_seller_signals` verified live). The repoint had landed in the CODE
+ * only, so for months the retired table sat beside the survivor with a name
+ * plausible enough to be repointed onto by mistake — and supabase-js resolves
+ * rather than throws, so that mistake would have read as an empty result, not an
+ * error. Exactly the failure this file was written about, one layer down.
  *
  * TWO OTHER TABLES CARRY A COLUMN OF THE SAME NAME AND A DIFFERENT MEANING, and
  * they are deliberately NOT governed here — naming them so nobody "unifies" them

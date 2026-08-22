@@ -503,7 +503,14 @@ export type {
 // and email delivery flow through these commands.
 // Business rules:
 //   • agent_commissions (not commissions) is the source for YTD financial data
-//   • business_expenses has no brokerage_id — always filter by agent_id only
+//   • business_expenses HAS brokerage_id (and team_id). CORRECTED 2026-08-22:
+//     this line used to read "has no brokerage_id — always filter by agent_id
+//     only", which was false and load-bearing — "filter by agent_id only" is how
+//     an export gate came to scope a whole ledger off a caller-supplied agent id.
+//     The column is NOT NULL since m516; when a writer omits it, trigger
+//     business_expenses_derive_tenant derives it from agents.brokerage_id, then
+//     teams.brokerage_id, and RAISES if neither answers. A reader scopes by the
+//     SESSION's brokerage_id and then by agent_id — never by agent_id alone.
 //   • generated_documents table does NOT exist — exportReportPdf uses Vercel Blob
 //   • generateAgentPerformanceReport is the only command that writes to DB
 //   • exportReportCsv returns CSV string — no DB write; caller drives browser download
@@ -552,7 +559,12 @@ export type {
 // expense creation, and financial reporting flow through these commands only.
 // Business rules:
 //   • agent_commissions.status transitions: calculated → approved → paid
-//   • business_expenses has NO brokerage_id — filter by agent_id only
+//   • business_expenses HAS brokerage_id (and team_id) — see the Reporting OS
+//     note above. NOT NULL since m516; trigger business_expenses_derive_tenant
+//     derives the tenant from agents.brokerage_id / teams.brokerage_id for any
+//     writer that omits it, and raises when neither can answer. createExpenseRecord
+//     in ./financial stamps ctx.brokerageId explicitly. Scope reads by the
+//     SESSION's tenant AND agent_id, never by agent_id alone.
 //   • agent_cap_tracking is source of truth for cap state
 //   • Only broker/admin/superadmin can approve/pay commissions
 //   • Every mutation emits KernelEvent via lifecycle_events

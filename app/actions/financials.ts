@@ -452,16 +452,22 @@ export async function exportExpensesCSV(agentId: string) {
     //      redundant with RLS here, not narrower than it.
     //
     // So the rows are dropped by the NULL itself, not by this pin — the failure
-    // mode is INVISIBILITY, not exposure. That still under-reports someone's own
-    // books, and there IS a live writer creating such rows today:
-    // app/api/financial/expenses/route.ts:53 inserts on the service client with
-    // brokerage_id taken from the request body (normally absent). Until m516 is
-    // applied, an expense logged through that route is missing from its own
-    // agent's export.
+    // mode is INVISIBILITY, not exposure.
     //
-    // BETWEEN NOW AND THE MIGRATION, this export therefore does NOT drop such rows
-    // quietly. It counts them and says so — see the probe below. After m516 the
-    // column is NOT NULL and the probe is a permanent zero.
+    // UPDATED 2026-08-22. The writer this paragraph used to name —
+    // app/api/financial/expenses/route.ts, which inserted `{ ...request.json() }`
+    // on the service client and so took brokerage_id from the request BODY — no
+    // longer exists in that shape. That route now derives both agent and tenant
+    // from the session and accepts an explicit allowlist of five columns
+    // (category, description, amount, expense_date, receipt_url). And m516 IS
+    // applied live: `business_expenses.brokerage_id` is NOT NULL (verified
+    // 2026-08-22 against hrvaqgvukzxfskkcrwbt via information_schema.columns),
+    // with trigger business_expenses_derive_tenant_trg standing behind it.
+    //
+    // The probe below is therefore a PERMANENT ZERO now, not a live count. It is
+    // kept rather than deleted because a zero it reports is evidence the column
+    // stayed closed, and because a refused probe must still be distinguishable
+    // from a genuine zero — see the error handling.
     const { data: expenses, error } = await supabase
       .from("business_expenses")
       .select("id, expense_date, category, description, amount, receipt_url")
@@ -497,7 +503,7 @@ export async function exportExpensesCSV(agentId: string) {
       untenantedRowCount = nullTenantCount ?? 0
       if (untenantedRowCount > 0) {
         console.warn(
-          `[exportExpensesCSV] ${untenantedRowCount} expense row(s) for agent ${agentId} have a NULL brokerage_id and are OMITTED from this export. Source: app/api/financial/expenses/route.ts:53. Fixed by supabase/migrations/m516-*.sql.`,
+          `[exportExpensesCSV] ${untenantedRowCount} expense row(s) for agent ${agentId} have a NULL brokerage_id and are OMITTED from this export. This should be IMPOSSIBLE: business_expenses.brokerage_id is NOT NULL since m516 (verified live 2026-08-22). A non-zero count here means the constraint was dropped or the rows predate it — investigate before trusting any expense total.`,
         )
       }
     }
