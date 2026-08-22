@@ -46,6 +46,7 @@ import {
   HIGH_EQUITY_SIGNAL_TYPE, MARKET_TIMING_SIGNAL_TYPE,
   FSBO_SIGNAL_TYPE, BELOW_MARKET_LISTING_SIGNAL_TYPE, CORPORATE_OWNED_SIGNAL_TYPE,
   FIX_AND_FLIP_SIGNAL_TYPE, VACANT_LOT_SIGNAL_TYPE, ACTIVE_LISTING_SIGNAL_TYPE,
+  TRUST_OWNED_SIGNAL_TYPE,
   at, readQuickList, readSalePropensity, readEquityPercent, readTenureYears,
   readTaxDelinquentYear, readLiens, readForeclosure, readProviderAddress,
   bandSalePropensity, bandEquity, deriveSellerSignals,
@@ -583,6 +584,31 @@ console.log("\n[3f · the six types added 2026-08-21, and the suppression rule]"
     deriveSellerSignals({ quickLists: { vacant: true } }).every((d) =>
       ![FSBO_SIGNAL_TYPE, BELOW_MARKET_LISTING_SIGNAL_TYPE, CORPORATE_OWNED_SIGNAL_TYPE,
         FIX_AND_FLIP_SIGNAL_TYPE, VACANT_LOT_SIGNAL_TYPE, ACTIVE_LISTING_SIGNAL_TYPE].includes(d.signalType)))
+
+  // ── trust-owned: the nineteenth kind, and the LINE it sits on ──────────────
+  // The opposite-missing census caught TRUST_OWNED_SIGNAL_TYPE as a one-sided
+  // export the moment it was added — exported, and named by nothing outside its
+  // own file. Every sibling constant earns its export by being pinned HERE, to
+  // a behavioural assertion that the extractor really fires. This is that half.
+  check("trust ownership derives its own type, at moderate — a REASON to transact, not a clock running",
+    deriveSellerSignals({ quickLists: { trustOwned: true } })[0].signalType === TRUST_OWNED_SIGNAL_TYPE
+    && deriveSellerSignals({ quickLists: { trustOwned: true } })[0].strength === "moderate")
+  check("…and it carries the deed type it read, so the row says what it saw rather than only that it fired",
+    "latest_deed_type" in deriveSellerSignals({ quickLists: { trustOwned: true } })[0].observed)
+  // CONTROL — the flag must actually drive it. A derivation that fires on every
+  // row would satisfy the two checks above and mean nothing.
+  check("CONTROL — a row WITHOUT trustOwned derives no trust_owned signal",
+    deriveSellerSignals({ quickLists: { vacant: true, corporateOwned: true } })
+      .every((d) => d.signalType !== TRUST_OWNED_SIGNAL_TYPE))
+  // THE LINE ITSELF. trustOwned is sourced and `inherited` is not, and the
+  // distinction is the whole reason this kind was allowed to exist: a trust is
+  // how a PARCEL is titled, inheritance is what happened to a PERSON. If the
+  // classifier ever stopped agreeing, this lane would be sourcing a protected
+  // class under a property-fact name — so it is pinned in BOTH directions.
+  check("…and the classifier still says trustOwned is a property fact while `inherited` is protected",
+    protectedClassReasonFor("quickLists.trustOwned") === null
+    && protectedClassReasonFor("quickLists.inherited") !== null
+    && protectedClassReasonFor("quickLists.seniorOwner") !== null)
 }
 
 console.log("\n[3e · derivation is deterministic — same row, same verdict, always]")
