@@ -556,7 +556,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9208,
+  "census": 9207,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -3335,7 +3335,7 @@
     "lib/kernel/ai-search-citation-monitor.ts": 10,
     "lib/kernel/ai-sentinel.ts": 2,
     "lib/kernel/ai-teammates.ts": 7,
-    "lib/kernel/ai-tools.ts": 5,
+    "lib/kernel/ai-tools.ts": 4,
     "lib/kernel/anniversary-equity.ts": 6,
     "lib/kernel/api-auth.ts": 4,
     "lib/kernel/appointment-noshow-autopilot.ts": 4,
@@ -16166,7 +16166,6 @@
     ],
     "lib/kernel/ai-tools.ts": [
       "loadAiToolsWorkspace",
-      "runAiTool",
       "saveAiToolOutput",
       "attachAiOutputToEntity",
       "previewAiOutput"

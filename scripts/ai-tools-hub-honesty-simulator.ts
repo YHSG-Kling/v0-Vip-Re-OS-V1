@@ -152,6 +152,14 @@ const STUBS: Record<string, string> = {
     "export const parseMoney = (v) => globalThis.__AITH.parseMoney(v)",
   "@/app/actions/calculators":
     "export const calculateAffordability = (...a) => globalThis.__AITH.calculateAffordability(...a)",
+  // The two COUNTER rails the hub's own row is responsible for when it — and
+  // not logAIUsage — books the spend. Stubbed so the proof can assert that they
+  // fire exactly when this row carries the tokens, and never when a survivor's
+  // row already did.
+  "@/lib/usage":
+    "export const incrementUsage = (...a) => globalThis.__AITH.incrementUsage(...a)",
+  "@/lib/kernel/billing":
+    "export const recordUsageEvent = (...a) => globalThis.__AITH.recordUsageEvent(...a)",
 }
 
 registerHooks({
@@ -184,6 +192,13 @@ interface World {
   modelUsage: { inputTokens: number; outputTokens: number; totalTokens: number; model: string }
   modelText: string
   modelCalls: number
+  /** Every request the hub handed the routed lane — the tenant on it is what
+   *  decides whether checkAIFairUse caps the call or waves it through. */
+  modelRequests: any[]
+  /** usage_counters.ai_tokens_monthly bumps (the fair-use + overage canon). */
+  counterBumps: Array<{ brokerageId: string; metric: string; amount: number }>
+  /** billing_usage.ai_calls records. */
+  callMeter: Array<{ brokerageId: string; metric: string; units: number }>
   gate: { allowed: boolean; violations: string[] }
   gateCalls: any[]
   listing: any
@@ -217,6 +232,9 @@ function newWorld(over: Partial<World> = {}): World {
     modelUsage: { inputTokens: 123, outputTokens: 45, totalTokens: 168, model: "claude-haiku" },
     modelText: "A real model reply about the client's concern and what you gain by addressing it.",
     modelCalls: 0,
+    modelRequests: [],
+    counterBumps: [],
+    callMeter: [],
     gate: { allowed: true, violations: [] },
     gateCalls: [],
     listing: {
@@ -274,9 +292,17 @@ function chain(result: any): any {
     },
     auth: { getUser: async () => ({ data: { user: { id: SESSION_USER } } }) },
   }),
-  generateTextRouted: async (_req: any) => {
+  generateTextRouted: async (req: any) => {
     W.modelCalls++
+    W.modelRequests.push(req)
     return { text: W.modelText, usage: W.modelUsage }
+  },
+  incrementUsage: async (brokerageId: string, metric: string, amount: number) => {
+    W.counterBumps.push({ brokerageId, metric, amount })
+  },
+  recordUsageEvent: async (input: { brokerageId: string; metric: string; units: number }) => {
+    W.callMeter.push(input)
+    return { success: true }
   },
   // The REAL pricing function is not needed to prove honesty, only that the
   // booked cost is a function of the booked tokens.
@@ -323,26 +349,66 @@ async function behaviourLayer(): Promise<void> {
 
   hub = (await import(pathToFileURL(join(ROOT, F.hub)).href)) as unknown as Hub
 
-  // ── P2: a measured run books the counts the provider returned ────────────
+  // ── THE HUB'S OWN MODEL CALLS CARRY THE SESSION TENANT ───────────────────
+  // The two tools BUILT here (objection_handler, team_performance_analyzer) run
+  // the model on this file's own account. They used to hand generateTextRouted
+  // NO tenant, deliberately, so that logAIUsage would not write a second row for
+  // a call this hub also books. That protected the invoice rail and lost three
+  // others with it — checkAIFairUse reads a missing brokerageId as "background
+  // job → uncapped" (lib/ai/fair-use.ts:123), and logAIUsage is also what bumps
+  // usage_counters.ai_tokens_monthly (which lib/billing/ai-overage.ts derives
+  // the tenant's BILLABLE OVERAGE from) and billing_usage.ai_calls.
+  //
+  // So the tenant is passed, and the double-book is prevented the way the rest
+  // of the file prevents it: `routedTokens` books 0 as booked_by_survivor
+  // exactly when a tenant was handed over, because that is exactly when
+  // logAIUsage wrote the row.
   const built = await run("objection_handler", { objection: "Your commission is too high.", context: "First-time buyer" })
   check("objection_handler: a built tool calls the model exactly once", built.world.modelCalls === 1,
     `modelCalls=${built.world.modelCalls}`)
-  check("objection_handler: the ledger books the provider's own counts (123+45)",
-    built.row?.tokens_used === 168, `tokens_used=${built.row?.tokens_used}`)
-  check("objection_handler: the ledger names the model the provider served",
-    built.row?.model_used === "claude-haiku", `model_used=${built.row?.model_used}`)
-  check("objection_handler: cost is priced off the booked tokens, not left at zero",
-    (built.row?.cost_cents ?? 0) > 0, `cost_cents=${built.row?.cost_cents}`)
+  check("objection_handler: the routed call carries the SESSION brokerage, so the fair-use cap runs",
+    built.world.modelRequests[0]?.brokerageId === SESSION_BROKERAGE,
+    `brokerageId=${built.world.modelRequests[0]?.brokerageId}`)
+  check("objection_handler: the routed call carries the SESSION user and agent, not the browser's claim",
+    built.world.modelRequests[0]?.userId === SESSION_USER &&
+      built.world.modelRequests[0]?.agentId === SESSION_AGENT,
+    `userId=${built.world.modelRequests[0]?.userId}`)
+  check("objection_handler: this row books ZERO — the routed lane's logAIUsage row carries the spend",
+    built.row?.tokens_used === 0 && built.row?.model_used === null && built.row?.cost_cents === 0,
+    `tokens_used=${built.row?.tokens_used}`)
   check("objection_handler: ledgered as a successful run", built.row?.success === true)
   check("objection_handler: the output is the model's text, not a canned string",
     typeof built.res?.result === "string" && built.res.result.includes("what you gain"),
     JSON.stringify(built.res?.result)?.slice(0, 80))
+  check("objection_handler: a row that books 0 bumps NO counter — logAIUsage already did all four writes",
+    built.world.counterBumps.length === 0 && built.world.callMeter.length === 0,
+    `bumps=${built.world.counterBumps.length} calls=${built.world.callMeter.length}`)
+
+  // ── P2: WITHOUT a tenant nothing else ledgered, so THIS row books the counts
+  // the provider returned — and the figure is the provider's, never a literal.
+  //
+  // Run on explain_this rather than objection_handler: a talk track is outbound
+  // copy, and gateOutboundCopy FAILS CLOSED with no brokerage, so the built
+  // tools cannot reach a measured row. The education tools can, and they ride
+  // the same routedTokens rule.
+  const NO_TENANT = {
+    ctx: { isAuthenticated: true, userId: SESSION_USER, agentId: SESSION_AGENT, brokerageId: null, teamId: null, userType: "broker", role: "broker" },
+  }
+  const solo = await run("explain_this", { concept: "escrow" }, NO_TENANT)
+  check("with no tenant: the hub's own row books the provider's own counts (123+45)",
+    solo.row?.tokens_used === 168, `tokens_used=${solo.row?.tokens_used}`)
+  check("with no tenant: the ledger names the model the provider served",
+    solo.row?.model_used === "claude-haiku", `model_used=${solo.row?.model_used}`)
+  check("with no tenant: cost is priced off the booked tokens, not left at zero",
+    (solo.row?.cost_cents ?? 0) > 0, `cost_cents=${solo.row?.cost_cents}`)
+  check("with no tenant: there is no brokerage whose counter could be bumped",
+    solo.world.counterBumps.length === 0 && solo.world.callMeter.length === 0)
 
   // THE FIGURE FOLLOWS THE PROVIDER. A constant cannot do this.
   const moved = await run(
-    "objection_handler",
-    { objection: "Your commission is too high." },
-    { modelUsage: { inputTokens: 7, outputTokens: 3, totalTokens: 10, model: "gpt-4o-mini" } },
+    "explain_this",
+    { concept: "escrow" },
+    { ...NO_TENANT, modelUsage: { inputTokens: 7, outputTokens: 3, totalTokens: 10, model: "gpt-4o-mini" } },
   )
   check("the ledger figure MOVES when the provider reports different counts (7+3)",
     moved.row?.tokens_used === 10, `tokens_used=${moved.row?.tokens_used}`)
@@ -425,6 +491,31 @@ async function behaviourLayer(): Promise<void> {
   check("smart_reply: the draft reply went through the compliance gate",
     smart.world.gateCalls.length === 1)
 
+  // ── THE ROW IS NOT THE WHOLE METER ───────────────────────────────────────
+  // logAIUsage makes FOUR writes for one call: the ai_tool_usage row, the
+  // monthly aggregate, usage_counters.ai_tokens_monthly and
+  // billing_usage.ai_calls. This hub's own insert made only the first, so spend
+  // it booked itself was uncapped for the rest of the period AND never invoiced
+  // as overage — lib/billing/ai-overage.ts derives the tenant's billable
+  // overage from usage_counters and from nothing else. The smart-reply lane is
+  // the live case: it calls generateObjectRouted with no tenant, so nothing
+  // else ledgers it and THIS row is the only one that can carry the figure.
+  check("smart_reply: a row that books tokens ALSO bumps usage_counters.ai_tokens_monthly",
+    smart.world.counterBumps.length === 1 &&
+      smart.world.counterBumps[0]?.metric === "ai_tokens_monthly" &&
+      smart.world.counterBumps[0]?.amount === 90 &&
+      smart.world.counterBumps[0]?.brokerageId === SESSION_BROKERAGE,
+    JSON.stringify(smart.world.counterBumps))
+  check("smart_reply: the counter bump is the SAME figure the row booked, not a second estimate",
+    smart.world.counterBumps[0]?.amount === smart.row?.tokens_used)
+  check("smart_reply: a row that books tokens records exactly one billing_usage ai_call",
+    smart.world.callMeter.length === 1 &&
+      smart.world.callMeter[0]?.metric === "ai_calls" &&
+      smart.world.callMeter[0]?.units === 1,
+    JSON.stringify(smart.world.callMeter))
+  check("smart_reply: the canned-fallback path books nothing, so it bumps nothing",
+    canned.world.counterBumps.length === 0 && canned.world.callMeter.length === 0)
+
   // ── P3: an empty data set is an answer, not a prompt ─────────────────────
   const emptyTeams = await run(
     "team_performance_analyzer",
@@ -436,8 +527,14 @@ async function behaviourLayer(): Promise<void> {
     emptyTeams.row?.tokens_used === 0 && emptyTeams.row?.success === true)
 
   const teams = await run("team_performance_analyzer", { timePeriod: "this-month", focusArea: "conversion" })
-  check("team_performance_analyzer: a real roll-up books the provider's counts",
-    teams.row?.tokens_used === 168, `tokens_used=${teams.row?.tokens_used}`)
+  check("team_performance_analyzer: the routed call carries the SESSION brokerage, so the cap runs",
+    teams.world.modelRequests[0]?.brokerageId === SESSION_BROKERAGE,
+    `brokerageId=${teams.world.modelRequests[0]?.brokerageId}`)
+  check("team_performance_analyzer: this row books ZERO — the routed lane's row carries the spend",
+    teams.row?.tokens_used === 0 && teams.row?.model_used === null,
+    `tokens_used=${teams.row?.tokens_used}`)
+  check("team_performance_analyzer: a row that books 0 bumps no counter",
+    teams.world.counterBumps.length === 0 && teams.world.callMeter.length === 0)
 
   // ── P3: the three unbuilt tools refuse instead of inventing ──────────────
   for (const t of ["document_checklist", "deadline_calculator", "document_explainer"]) {
@@ -753,13 +850,19 @@ async function main(): Promise<void> {
       replace: `  return { output: "AI-generated objection handler", feature: "playbook_response", tokens }`,
     })
 
-    // 3. A token count invented at the point of measurement.
+    // 3. A token count invented at the point of measurement. Aimed at
+    //    routedTokens' `measured` arm — the one place a figure enters the
+    //    ledger from a provider response.
     controlled("a literal token count written where the provider's count belongs", {
       file: F.hub,
-      find: `      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,`,
-      replace: `      inputTokens: 500,
-      outputTokens: 0,`,
+      find: `    measured: true,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    model: usage.model,`,
+      replace: `    measured: true,
+    inputTokens: 500,
+    outputTokens: 0,
+    model: usage.model,`,
     })
 
     // 4. A refusal ledgered as a successful run — the billing-record defect.
@@ -799,7 +902,34 @@ async function main(): Promise<void> {
       replace: "  const userId = _callerSuppliedUserId",
     })
 
-    // 9. The routed helper going back to discarding the provider's counts.
+    // 9a. The hub's own model call going back to no tenant — the shape that
+    //     left objection_handler and team_performance_analyzer outside
+    //     checkAIFairUse and outside every counter logAIUsage bumps.
+    controlled("the hub's own model call made with no tenant again", {
+      file: F.hub,
+      find: `    userId: opts.tenant.userId,
+    brokerageId: opts.tenant.brokerageId,`,
+      replace: `    userId: opts.tenant.userId,
+    brokerageId: null,`,
+    })
+
+    // 9b. The counter rails dropped again — the row lands, the cap and the
+    //     overage invoice never see the spend.
+    controlled("a row that books tokens bumping no fair-use counter", {
+      file: F.hub,
+      find: "  if (run.tokens.measured && brokerageId && ledgerTokens > 0) {",
+      replace: "  if (false && run.tokens.measured && brokerageId && ledgerTokens > 0) {",
+    })
+
+    // 9c. The counter rails fired on EVERY row — the double count. A
+    //     booked_by_survivor row books 0 because logAIUsage already bumped.
+    controlled("the counter bumped on a row whose spend a survivor already booked", {
+      file: F.hub,
+      find: "  if (run.tokens.measured && brokerageId && ledgerTokens > 0) {",
+      replace: "  if (brokerageId) {",
+    })
+
+    // 10. The routed helper going back to discarding the provider's counts.
     controlled("generateTextRouted discarding the provider's usage again", {
       file: F.models,
       find: `    usage: { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, model: modelUsed },

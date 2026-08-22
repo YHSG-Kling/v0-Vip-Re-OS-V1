@@ -149,6 +149,27 @@ export const CORPORATE_OWNED_SIGNAL_TYPE = "corporate_owned"
 export const FIX_AND_FLIP_SIGNAL_TYPE = "fix_and_flip"
 export const VACANT_LOT_SIGNAL_TYPE = "vacant_lot"
 /**
+ * TRUST-OWNED. Added after auditing this lane's coverage against the provider's
+ * LIVE dataset catalogue rather than against memory: of the 38 `quickLists`
+ * flags the provider publishes, this lane sourced 27, and `trustOwned` was the
+ * one genuine motivated-seller signal among the eleven it did not.
+ *
+ * WHY IT IS NOT PROTECTED-CLASS, stated explicitly because the flag next to it
+ * in the provider's catalogue IS. `tokenizeFieldPath("quickLists.trustOwned")`
+ * yields ["quick","lists","trust","owned"] — no token in PROTECTED_CLASS_TOKENS.
+ * It is a TITLE FACT read off a recorded deed: the grantee is a trust. Compare
+ * `quickLists.inherited`, which IS banned ("inherited" is in the list under the
+ * probate ruling), and `quickLists.seniorOwner`, banned on "senior". Those two
+ * describe a PERSON's circumstances; this one describes how a parcel is held.
+ *
+ * WHY A TRUST SELLS: a trust is an instrument for holding and then DISTRIBUTING
+ * an asset. Trustees have a duty to the beneficiaries, real estate is the least
+ * divisible thing a trust can hold, and the ordinary way to divide it is to sell
+ * it. That is a structural reason to transact, and it is legible from the deed
+ * without knowing anything about who the beneficiaries are.
+ */
+export const TRUST_OWNED_SIGNAL_TYPE = "trust_owned"
+/**
  * THE SUPPRESSION KIND — a row that argues AGAINST prospecting, filed in the
  * same table as the rows that argue for it.
  *
@@ -280,6 +301,12 @@ export const BATCHDATA_SELLER_SIGNAL_SOURCES: readonly SellerSignalSourceSpec[] 
       label: "Corporate owner",
       sources: ["quickLists.corporateOwned", "owner.ownerOccupied"],
       why: "Title is held by an entity rather than a natural person. An entity has no residence to be attached to and disposes of assets on a schedule — and, being an entity, it has no protected class to be profiled on at all.",
+    },
+    {
+      signalType: TRUST_OWNED_SIGNAL_TYPE,
+      label: "Held in trust",
+      sources: ["quickLists.trustOwned", "deedHistory.documentType", "deedHistory.buyers"],
+      why: "Title is vested in a TRUST — a recorded fact about the grantee on a public deed, not a fact about a person. A trust exists to hold an asset and eventually distribute it, and real property is the least divisible thing it can hold, so the ordinary route to distribution is a sale. Deliberately NOT sourced from quickLists.inherited, which names the same family of situations through a protected-class term and is banned; the trust instrument is legible from the deed alone.",
     },
     {
       signalType: FIX_AND_FLIP_SIGNAL_TYPE,
@@ -777,6 +804,23 @@ export function deriveSellerSignals(
       variant: "q:corporate-owned",
       reason: "Title is held by an entity rather than a natural person",
       observed: { corporate_owned: true, owner_occupied: at(row, "owner.ownerOccupied") ?? null },
+    })
+  }
+
+  // ── held in trust ──
+  // "moderate", not "strong": a trust is a REASON to transact eventually, not
+  // evidence that anything is happening now. Preforeclosure and tax default get
+  // "strong" because a clock is running; a trust may hold a house for a decade.
+  if (readQuickList(row, "trustOwned")) {
+    out.push({
+      signalType: TRUST_OWNED_SIGNAL_TYPE,
+      strength: "moderate",
+      variant: "q:trust-owned",
+      reason: "Title is vested in a trust rather than in a natural person",
+      observed: {
+        trust_owned: true,
+        latest_deed_type: at(row, "deedHistory.documentType") ?? null,
+      },
     })
   }
 

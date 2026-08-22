@@ -1186,17 +1186,30 @@ export const supabaseService = {
   // AI TOOLS & SUGGESTIONS
   // =====================================================
 
-  async logAIToolUsage(usage: any) {
-    try {
-      const supabase = getSupabaseAdmin()
-      const { data, error } = await supabase.from("ai_tool_usage").insert(usage).select().single()
-      if (error) throw error
-      return data
-    } catch (error) {
-      console.error("[Supabase Service] Error logging AI tool usage:", error)
-      return null
-    }
-  },
+  // TOMBSTONE — `logAIToolUsage` LIVED HERE AND IS GONE.
+  // SURVIVOR: app/actions/ai-tools-hub.ts:164 (executeAITool's ledger insert).
+  //
+  // It was a THIRD writer of `ai_tool_usage`, with no caller anywhere in the
+  // tree (grepped repo-wide for the name and for dynamic `supabaseService[...]`
+  // access; the same search shape finds 41 references to logAIUsage, so it can
+  // see a caller when there is one). What it wrote was `usage: any`, inserted
+  // verbatim on the SERVICE-ROLE client: no column list, no tenant, no cost, no
+  // model, and no idea which of the table's 17 columns a caller might name. On
+  // a cost ledger that is two defects at once —
+  //
+  //   · PGRST204 refuses the ENTIRE insert when a passed-through object names a
+  //     column that does not exist, so one typo drops a whole billing row; and
+  //   · the refusal was SWALLOWED. `catch → console.error → return null` gave a
+  //     caller no way to tell "row written" from "row refused", and supabase-js
+  //     RESOLVES a refusal, so nothing upstream would have noticed either. A
+  //     cost ledger that silently fails to write is a wrong invoice by omission.
+  //
+  // Nothing is merged onto the survivor because this held nothing the survivor
+  // lacks: executeAITool names every column explicitly, derives tokens/model/
+  // cost from a provenance union, reads its insert error, and (since this
+  // change) bumps usage_counters.ai_tokens_monthly and billing_usage.ai_calls
+  // when its own row carries the spend. The other ledger writer,
+  // lib/ai/cost-tracking.ts:169 logAIUsage, is the one for a raw model call.
 
   async saveAIOutput(output: any) {
     try {

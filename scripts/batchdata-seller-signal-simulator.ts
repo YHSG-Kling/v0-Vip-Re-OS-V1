@@ -1073,7 +1073,33 @@ if (m517) {
     /closes the SHAPE class, not the misattribution class/i.test(sql))
   check("…and it names the live measurement it was written against (0 rows, nothing to repair)",
     sql.includes("hrvaqgvukzxfskkcrwbt") && /select count\(\*\) from motivated_seller_signals\s+→ 0/.test(sql))
-  check(`…and the dedupe index now covers ALL ${BATCHDATA_SIGNAL_TYPES.length} signal types this lane can write`,
+}
+
+// ── THE INDEX-COVERAGE CHECK READS THE *LATEST* DEFINITION, NOT m517's ───────
+//
+// It used to read m517's SQL, because m517 was then the newest migration that
+// widened `motivated_seller_signals_external_dedupe`. m520 added a nineteenth
+// type (trust_owned) and redefined the index, and the moment it did, the old
+// check failed — correctly. That failure is the point: the check exists to
+// notice a type added to BATCHDATA_SIGNAL_TYPES without a matching index entry,
+// and it could not tell that case apart from "the index moved to a newer file".
+//
+// Pinning it to one migration filename was the real defect. A partial unique
+// index is defined by the LAST `CREATE` that runs, so the coverage question is
+// only ever about the newest definition. Reading it that way means the next
+// widening does not have to remember to come back and edit this line — the fifth
+// migration on this one lesson (m490, m499, m514, m517, m520) is enough evidence
+// that "remember to update it" is not a mechanism.
+const indexDefiners = migrations
+  .filter((f) => /CREATE UNIQUE INDEX\s+motivated_seller_signals_external_dedupe/i
+    .test(readFileSync(join(root, "supabase/migrations", f), "utf8")))
+  .sort()
+check("at least one migration defines the external dedupe index", indexDefiners.length > 0,
+  indexDefiners.join(",") || "NONE")
+if (indexDefiners.length > 0) {
+  const newest = indexDefiners[indexDefiners.length - 1]
+  const sql = readFileSync(join(root, "supabase/migrations", newest), "utf8")
+  check(`…and the NEWEST definition (${newest}) covers ALL ${BATCHDATA_SIGNAL_TYPES.length} signal types this lane can write`,
     BATCHDATA_SIGNAL_TYPES.every((t) => sql.includes(`'${t}'`)),
     BATCHDATA_SIGNAL_TYPES.filter((t) => !sql.includes(`'${t}'`)).join(",") || "none missing")
   // POSITIVE CONTROL for the line above. A `.every()` over a list is exactly the
@@ -1081,12 +1107,22 @@ if (m517) {
   // the same finder still SPOTS a type that is genuinely absent.
   check("POSITIVE CONTROL — the same finder REPORTS a signal type that is genuinely not in the index",
     !["a_type_no_migration_mentions"].every((t) => sql.includes(`'${t}'`)))
+  // SECOND POSITIVE CONTROL, for the *new* failure mode this rewrite introduces:
+  // picking the wrong file. If `newest` resolved to some unrelated migration the
+  // coverage check would pass or fail for reasons having nothing to do with the
+  // index, so pin that the chosen file really is a definition of THIS index.
+  check("POSITIVE CONTROL — the chosen file really does define this index, not merely mention it",
+    /CREATE UNIQUE INDEX\s+motivated_seller_signals_external_dedupe/i.test(sql))
   check("…including the permit lane's two, so widening does not orphan them",
     sql.includes("'permit_activity'") && sql.includes("'code_violation'"))
   check("…and the SUPPRESSION type is in the index too — a 'do not solicit' fact re-filed daily is still a duplicate",
     sql.includes(`'${ACTIVE_LISTING_SIGNAL_TYPE}'`))
   check("…and the `? 'dedupe_key'` predicate is retained, so lead-intelligence.ts's keyless rows stay unconstrained",
     sql.includes("signal_details ? 'dedupe_key'"))
+}
+
+if (m517) {
+  const sql = readFileSync(join(root, "supabase/migrations", m517), "utf8")
   check("…and m500's strength CHECK is left alone (this file does not reopen the strength vocabulary)",
     !/DROP CONSTRAINT[^\n]*signal_strength/i.test(sql))
 }

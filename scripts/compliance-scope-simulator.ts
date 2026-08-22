@@ -419,6 +419,53 @@ check("the data lane LABELS instead of stripping — a demographic survives stor
 check("wired for real — lib/audiences/audience-sync.ts imports the refusal",
   (graph.get("lib/audiences/audience-sync.ts") ?? []).includes("lib/lead-governance/protected-class-signals.ts"))
 
+// ── THE DEFINE SIDE (finding #298) ──────────────────────────────────────────
+// The refusal used to sit ONLY on the populate half. A protected-class audience
+// could therefore be created and SAVED — the offending source_rule persisting in
+// the row a provider-side or manual sync reads — and the refusal was discoverable
+// only later, as an audience that came back empty. Both halves are asserted now,
+// and they are asserted as a DIRECT depth-1 import plus a call in the file's own
+// (comment-blanked) source, for the same reason block [2] is: a transitive reach
+// through a barrel survives the exact deletion this exists to catch.
+//
+// These are PRESENCE assertions, so they need no injected positive control the
+// way an absence assertion does — a broken reader reports absence and goes red,
+// which is the safe direction. The BEHAVIOURAL controls immediately below are
+// what prove the gate still discriminates rather than refusing everything.
+{
+  const callsIn = (p: string) =>
+    (blankComments(readFileSync(join(root, p), "utf8")).match(/assertAudienceSegmentationAllowed\s*\(/g) ?? []).length
+
+  check("DEFINE — lib/kernel/ads.ts imports the refusal DIRECTLY (not through a barrel)",
+    (graph.get("lib/kernel/ads.ts") ?? []).includes("lib/lead-governance/protected-class-signals.ts"))
+  check("DEFINE + POPULATE — lib/kernel/ads.ts CALLS it twice: createAudienceSegment (before the INSERT) and syncAudience (before any contact is read)",
+    callsIn("lib/kernel/ads.ts") === 2, `${callsIn("lib/kernel/ads.ts")} live call(s) after comment-blanking`)
+  check("DEFINE — app/actions/campaign-presets.ts, the OTHER writer of facebook_custom_audiences.source_rule, calls it too",
+    (graph.get("app/actions/campaign-presets.ts") ?? []).includes("lib/lead-governance/protected-class-signals.ts")
+    && callsIn("app/actions/campaign-presets.ts") === 1,
+    `${callsIn("app/actions/campaign-presets.ts")} live call(s)`)
+}
+
+// ── THE GATE MUST NOT REFUSE THE PRODUCT'S OWN SHIPPED AUDIENCES ────────────
+// The first thing this gate did was refuse `lifetime_customers`, whose filter
+// `min_purchase_age_months` tokenizes to [min,purchase,age,months]. That "age" is
+// the age of a PURCHASE, not of a person. The key was renamed to
+// `min_tenure_months` rather than carving an exception into the gate — a gate
+// that special-cases our own key is a gate the next author weakens. This check is
+// what stops the same collision being re-introduced by a new template.
+{
+  const { FB_AUDIENCE_TEMPLATES } = await import("../lib/ads/fb-audience-templates")
+  const refused = FB_AUDIENCE_TEMPLATES
+    .map((t) => [t.id, protectedClassSegmentationIn(t.sourceRule)] as const)
+    .filter(([, hits]) => hits.length > 0)
+    .map(([id, hits]) => `${id}:${hits.join("|")}`)
+  check(`all ${FB_AUDIENCE_TEMPLATES.length} shipped audience templates PASS the gate (it refuses protected class, not our own product)`,
+    refused.length === 0, refused.join("  ||  "))
+  check("…and the finder that cleared them is not blind — the pre-rename key IS still caught",
+    protectedClassSegmentationIn({ type: "lifetime_customers", filters: { min_purchase_age_months: 0 } }).length > 0,
+    "if this goes green-side-up the check above passes by seeing nothing")
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 console.log(`\n[4 · THE CAPABILITY THE RULING WAS FOR — education routed by AGE BAND]`)
 const { ageSegmentFromAge, ageSegmentFromAgeRange, AGE_SEGMENTS } = await import("../lib/kernel/education")

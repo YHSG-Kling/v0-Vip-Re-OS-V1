@@ -17,8 +17,22 @@
 //   8. Consent basis required for all audience syncs (GDPR/CCPA compliance)
 //   9. Provider account connection required before campaign launch
 //   10. All ad content subject to real estate compliance gates
+//   11. FAIR HOUSING — an ad audience may not be SEGMENTED by a protected class,
+//       refused at DEFINE time (createAudienceSegment) and again at POPULATE time
+//       (syncAudience). See the block comment above COMMAND 7 for the scope
+//       boundary: this gate covers ad TARGETING only. Scraping, enrichment,
+//       signals, scoring, sourcing and buyer property search are EXEMPT by owner
+//       ruling and nothing here reaches them.
 
 import { createServiceClient } from "@/lib/supabase/service"
+// THE canonical ad-audience fair-housing refusal (CLAUDE.md §6 — one vocabulary
+// per function). NOT a second classifier: lib/lead-governance/protected-class-signals.ts
+// is the single protected-class vocabulary in this repo, and this is its one
+// remaining REFUSING arm. Its other arms (defineSellerSignalSources,
+// labelProtectedClassFields) are LABELLERS by owner ruling and are deliberately
+// not imported here — importing the assertion cannot make an exempt caller refuse,
+// because the refusal is a call, not an import.
+import { assertAudienceSegmentationAllowed } from "@/lib/lead-governance/protected-class-signals"
 import {
   CONNECTABLE_AD_PLATFORMS,
   AD_PLATFORMS_WITHOUT_CONNECTIONS,
@@ -90,7 +104,21 @@ export interface SourceRule {
     url_pattern?: string
     // Prebuilt-rule filters
     min_engagement_score?: number
-    min_purchase_age_months?: number  // for lifetime customers — minimum tenure
+    /**
+     * For lifetime customers — minimum OWNERSHIP TENURE in months.
+     *
+     * RENAMED from `min_purchase_age_months` (CLAUDE.md §6). Two spellings of
+     * "elapsed time" existed and one of them was the word "age", which is the
+     * protected-class vocabulary: `tokenizeFieldPath("min_purchase_age_months")`
+     * yields ["min","purchase","age","months"], so the fair-housing audience gate
+     * added below refused the product's OWN `lifetime_customers` template. The
+     * "age" there is the age of a PURCHASE, not of a person — but a gate that has
+     * to special-case our own key is a gate the next author weakens. The key is
+     * renamed instead, so the token vocabulary stays clean and the gate stays
+     * uncarved. Live rows carrying the old key: ZERO (facebook_custom_audiences
+     * was empty on 2026-08-22), so no backfill migration is owed.
+     */
+    min_tenure_months?: number
     zip_codes?: string[]              // narrow by service area
     seed_audience_id?: string         // for lookalike_seed
     seed_country?: string             // for lookalike (default 'US')
@@ -753,6 +781,36 @@ export async function syncAudience(input: SyncAudienceInput): Promise<KernelAdsR
       return { success: false, error: "Consent basis required for audience sync (GDPR/CCPA compliance)" }
     }
 
+    // FAIR HOUSING — the POPULATE side, on the path that actually uploads.
+    //
+    // This is the second populate path the define-side finding (#298) named. The
+    // four staging sites in lib/audiences/audience-sync.ts guard the drip that
+    // fills audience_members; THIS command reads source_rule directly, builds the
+    // contact query below from it, and hands the result to a Meta/Google
+    // connector. A row defined before this gate existed, or defined by any writer
+    // that bypasses createAudienceSegment (app/actions/campaign-presets.ts writes
+    // this same column), reaches Meta through here and nowhere else.
+    //
+    // Sits BESIDE the consent-basis refusal, in the same shape and the same
+    // place, for the same reason: both are compliance refusals of the audience
+    // DEFINITION, both must happen before a single contact is read, and both are
+    // returned as an error the caller surfaces. FAILS CLOSED — any throw out of
+    // the assertion, including a classifier that cannot walk the rule, refuses.
+    const fairHousingRefusal = ((): string | null => {
+      try {
+        assertAudienceSegmentationAllowed(
+          audience.source_rule,
+          (audience.audience_name as string) || audienceId,
+        )
+        return null
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err)
+      }
+    })()
+    if (fairHousingRefusal) {
+      return { success: false, error: fairHousingRefusal }
+    }
+
     // Build contact query based on source_rule
     const sourceRule = audience.source_rule as SourceRule | null
     let contactsQuery = supabase
@@ -885,11 +943,37 @@ export async function syncAudience(input: SyncAudienceInput): Promise<KernelAdsR
 }
 
 // ─── COMMAND 7: createAudienceSegment ─────────────────────────────────────────
-// Creates a new audience segment with source rules. Validates consent basis.
+// Creates a new audience segment with source rules. Validates consent basis AND
+// fair-housing segmentation.
 //
 // Tables read: none
 // Tables written: facebook_custom_audiences
 // Returns: audienceId, audience
+//
+// ── THE DEFINE-SIDE FAIR-HOUSING REFUSAL (finding #298) ──────────────────────
+// The refusal used to sit ONLY on the populate side
+// (lib/audiences/audience-sync.ts, four staging sites). That is the wrong half to
+// guard alone, and the asymmetry was recorded as open in that file's header and
+// in lib/kernel/manager-registry.ts (compliance_scope_boundary) — both of which
+// now record the closure instead. Three concrete costs it carried:
+//   · the refusal was discoverable only at populate time, so an operator got a
+//     saved audience that later came back empty — an audience that silently
+//     fails to fill is its own defect;
+//   · the offending definition PERSISTED in facebook_custom_audiences.source_rule,
+//     which is the record a Meta-side or manual sync reads;
+//   · a SECOND populate path existed and was ungated — syncAudience, right above
+//     this, reads source_rule and uploads the resulting contact list to
+//     Meta/Google. It is gated now too.
+//
+// ── SCOPE: WHAT THIS GATE DOES NOT TOUCH (owner ruling, wave 15) ─────────────
+// Verbatim: "do not run the compliance or fair housing on scrapping, enrichment,
+// scoring, sourcing because we determine the kind of education in channels by the
+// age group". This gate reads ONE input — `sourceRule`, the ad-audience
+// segmentation rule — and it is reached only from the two ad-audience commands in
+// this file. Lead scraping, enrichment, signal scoring, sourcing and buyer
+// property search never call it and never can: they do not build a SourceRule.
+// The classifier itself stays a CLASSIFIER for those lanes (it labels, it does
+// not refuse); only the ads path calls the asserting arm.
 
 export async function createAudienceSegment(input: CreateAudienceSegmentInput): Promise<KernelAdsResult> {
   const { ctx, audienceName, audienceType, sourceRule, consentBasis, adCampaignId } = input
@@ -900,6 +984,34 @@ export async function createAudienceSegment(input: CreateAudienceSegmentInput): 
 
   if (!consentBasis || !consentBasis.trim()) {
     return { success: false, error: "Consent basis required for legal compliance (GDPR/CCPA)" }
+  }
+
+  // FAIR HOUSING — refuse BEFORE the row exists. Deliberately outside the try
+  // below so the refusal cannot be relabelled as an insert failure.
+  //
+  // FAILS CLOSED (CLAUDE.md §4): the catch takes ANY throw out of the assertion,
+  // not only the refusal it raises itself. A classifier that cannot walk this
+  // rule — a shape nobody anticipated, a getter that throws — refuses too.
+  // "Nobody checked" must never render as "checked and fine".
+  //
+  // LEGIBLE: the thrown message names the audience and the exact offending
+  // attributes, and it is returned as `error`, which every caller already
+  // surfaces (lib/ads/facebook-audience-sync.ts:92-94 →
+  // app/dashboard/campaigns/ads/ads-dashboard-client.tsx:614 `toast.error`). The
+  // operator is told which attribute to remove, not merely that something failed.
+  const segmentationRefusal = ((): string | null => {
+    try {
+      assertAudienceSegmentationAllowed(sourceRule, audienceName || "(unnamed audience)")
+      return null
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err)
+    }
+  })()
+  if (segmentationRefusal) {
+    // errorKind "input" — this is a refusal of what was SENT, not an entitlement
+    // problem and not a read failure. The three are different states and the
+    // surface renders them differently (see KernelAdsResult.errorKind).
+    return { success: false, error: segmentationRefusal, errorKind: "input" }
   }
 
   try {

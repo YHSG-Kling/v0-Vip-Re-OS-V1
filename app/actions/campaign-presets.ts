@@ -13,6 +13,11 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
+// NOT a duplicate of evaluateOutbound (CLAUDE.md §6): that one gates outbound
+// COPY (brand voice, TCPA, fair-housing phrasing in a string). This one gates a
+// TARGETING RULE — who the ad is shown to. Two different questions, two
+// different inputs; the audience rule has no `content` to hand evaluateOutbound.
+import { assertAudienceSegmentationAllowed } from "@/lib/lead-governance/protected-class-signals"
 import { revalidatePath } from "next/cache"
 
 export type PresetChannel =
@@ -154,6 +159,29 @@ export async function upsertCampaignPreset(input: UpsertCampaignPresetInput): Pr
     // Live CHECK vocabularies: audience_type (custom/lookalike/…), status
     // (draft/pending_review/…), target_platform (facebook/instagram/…).
     const f = input.fields ?? {}
+
+    // FAIR HOUSING — the SECOND define-side door onto the same column.
+    //
+    // This writer does NOT go through lib/kernel/ads.ts:createAudienceSegment, so
+    // the gate added there (finding #298) does not cover it: `source_rule` comes
+    // straight off caller-supplied `fields` and lands in the exact jsonb column
+    // that lib/kernel/ads.ts:syncAudience turns into the contact list uploaded to
+    // Meta/Google. Gating only the kernel door would have left this one open.
+    //
+    // Same canonical assertion, same fail-closed shape (CLAUDE.md §4 and §6): any
+    // throw out of it — the refusal itself, or a classifier that cannot walk the
+    // rule — refuses. The message names the offending attributes so the operator
+    // knows what to remove.
+    //
+    // SCOPE: this is outbound ad TARGETING, which the wave-15 owner ruling keeps
+    // gated. It is not scraping, enrichment, signals, scoring, sourcing or buyer
+    // property search, none of which reach this action.
+    try {
+      assertAudienceSegmentationAllowed(f.source_rule ?? {}, input.name.trim() || "(unnamed audience)")
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
+
     const row = {
       brokerage_id: ctx.brokerageId,
       agent_user_id: ctx.userId, // users-class column (pass-13 census)

@@ -182,6 +182,58 @@ export async function executeAITool(
     console.error("[ai-tools-hub] ai_tool_usage insert failed:", usageError.message)
   }
 
+  // ── THE THREE RAILS THAT DO NOT LIVE ON THIS ROW ─────────────────────────
+  //
+  // `ai_tool_usage` is the ledger, and it is NOT the whole meter. logAIUsage
+  // (lib/ai/cost-tracking.ts) makes FOUR writes for one call: the row, the
+  // monthly aggregate, `usage_counters.ai_tokens_monthly` and
+  // `billing_usage.ai_calls`. This insert made only the first — so a call THIS
+  // row books reached meter_readings.ai_tokens and nothing else:
+  //
+  //   · uncapped for the rest of the period (checkAIFairUse reads
+  //     usage_counters, not this table), and
+  //   · NEVER INVOICED AS OVERAGE. lib/billing/ai-overage.ts derives the
+  //     tenant's billable overage from usage_counters and from nothing else —
+  //     "usage has a single canon" — so tokens that stop at ai_tool_usage are
+  //     tokens the tenant is never billed for.
+  //
+  // Two writers of one table with different completeness is the defect; this is
+  // the missing half MERGED ONTO the survivor rather than a second ledger.
+  //
+  // WHO BUMPS FOLLOWS WHO BOOKS — the same rule as `routedTokens`. This fires
+  // only when THIS row carries the tokens (`run.tokens.measured`), which is
+  // exactly when no logAIUsage row exists for the call. A `booked_by_survivor`
+  // row books 0 precisely because logAIUsage already made all four writes, so
+  // bumping here would count one call twice on rails that cannot tell.
+  //
+  // It fires even when the insert above was refused: the tokens were spent
+  // either way, and a failed ledger write is not a reason to also lose the cap
+  // and the invoice. Same choice logAIUsage makes.
+  //
+  // KNOWN RESIDUE, named rather than hidden: a run whose lane reports no usage
+  // (`lane_reports_no_usage`) really did call a model, and books 0 here because
+  // there is no honest figure to book. Those tokens reach no rail at all. The
+  // fix belongs in the lane — lib/inbox/smart-replies.ts calls
+  // generateObjectRouted with no tenant, so its spend is unledgered AND
+  // uncapped for its OTHER caller (app/api/inbox/smart-replies/route.ts) too.
+  if (run.tokens.measured && brokerageId && ledgerTokens > 0) {
+    try {
+      const { incrementUsage } = await import("@/lib/usage")
+      await incrementUsage(brokerageId, "ai_tokens_monthly", ledgerTokens)
+    } catch (counterError) {
+      console.error("[ai-tools-hub] failed to bump ai_tokens_monthly counter:", counterError)
+    }
+    try {
+      const { recordUsageEvent } = await import("@/lib/kernel/billing")
+      const metered = await recordUsageEvent({ brokerageId, metric: "ai_calls", units: 1 })
+      if (!metered.success) {
+        console.warn("[ai-tools-hub] billing_usage ai_calls not recorded:", metered.error)
+      }
+    } catch (meterError) {
+      console.error("[ai-tools-hub] failed to record billing_usage ai_calls:", meterError)
+    }
+  }
+
   // `error` is populated on a refusal because the AI Toolkit client reads
   // `result.error` when success is false; without it the panel showed the
   // generic "The tool returned no result." and the real reason was lost.
@@ -359,38 +411,68 @@ function routedTokens(usage: RoutedUsage, tenant: HubTenant, lane: string): Tool
 }
 
 /**
- * The one model call this file makes on its own account.
+ * The two model calls this file makes on its own account (objection_handler and
+ * team_performance_analyzer), CARRYING THE SESSION TENANT.
  *
- * `brokerageId` is deliberately NOT passed: generateTextRouted ledgers through
- * logAIUsage only when it has a tenant, and this hub writes its own
- * ai_tool_usage row for every run. Passing it would put the SAME call on two
- * rows of the same table and usage-metering sums the table without filtering,
- * so the brokerage's ai_tokens meter would read double. The counts come back
- * from the provider and the caller books them exactly once.
+ * IT USED TO OMIT `brokerageId` ON PURPOSE, and that reasoning was half right —
+ * which is exactly why it survived a review. Verbatim, it was: passing the
+ * tenant would make generateTextRouted's logAIUsage write an ai_tool_usage row
+ * for a call this hub also books, and usage-metering sums that table without
+ * filtering, so the brokerage's ai_tokens meter would read double. TRUE, and
+ * still true — the INVOICE rail was never the problem.
+ *
+ * WHAT IT MISSED IS THAT `brokerageId` CARRIES THREE MORE RAILS, and dropping
+ * the tenant to protect one of them silently dropped all four:
+ *
+ *   1. THE CAP. generateTextRouted's pre-flight is checkAIFairUse, and
+ *      lib/ai/fair-use.ts:123 reads a missing brokerageId as "background job →
+ *      uncapped" and returns tokensLimit -1. So these two tools spent the
+ *      tenant's INCLUDED allowance without ever being weighed against it: a
+ *      brokerage at 100% of quota could keep pressing Objection Handler for
+ *      free. Same shape as the four education tools' finding, on the two tools
+ *      that were BUILT here rather than routed to a survivor.
+ *   2. THE FAIR-USE COUNTER. logAIUsage bumps usage_counters.ai_tokens_monthly.
+ *      That counter is not just what the cap reads — lib/billing/ai-overage.ts
+ *      DERIVES the tenant's billable overage from usage_counters and from
+ *      nothing else ("one vocabulary: usage has a single canon"). Spend that
+ *      never reaches it is spend that is never invoiced as overage, no matter
+ *      how correctly it sits in ai_tool_usage.
+ *   3. THE CALL METER. logAIUsage records billing_usage.ai_calls, which the
+ *      overage projection surface reads.
+ *
+ * And a fourth, only visible on the refusal path: when gateOutboundCopy blocks
+ * copy the model already produced, this hub books the row as `refused` with
+ * ZERO tokens. With no tenant on the model call, nothing else had booked it
+ * either — so a compliance-blocked run's real spend vanished from every rail at
+ * once. With the tenant, the routed lane has already ledgered it.
+ *
+ * The double-book that the old comment feared is still prevented, by the rule
+ * the rest of this file already uses instead of a per-call choice: `routedTokens`
+ * books 0 as `booked_by_survivor` whenever a tenant was passed, because that is
+ * exactly when logAIUsage wrote the row. Exactly one row carries the spend.
  */
 async function runHubModel(opts: {
   feature: string
+  /** The session tenant this call is billed, capped and countered against. */
+  tenant: HubTenant
+  /** Named in the ledger detail when the routed lane books the spend. */
+  lane: string
   prompt: string
   system?: string
   temperature?: number
   maxTokens?: number
-}): Promise<{ text: string; tokens: Extract<ToolTokens, { measured: true }> }> {
+}): Promise<{ text: string; usage: RoutedUsage; tokens: ToolTokens }> {
   const { text, usage } = await generateText({
     feature: opts.feature,
     prompt: opts.prompt,
     system: opts.system,
     temperature: opts.temperature,
     maxTokens: opts.maxTokens,
+    userId: opts.tenant.userId,
+    brokerageId: opts.tenant.brokerageId,
+    agentId: opts.tenant.agentId ?? undefined,
   })
-  return {
-    text,
-    tokens: {
-      measured: true,
-      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,
-      model: usage.model,
-    },
-  }
+  return { text, usage, tokens: routedTokens(usage, opts.tenant, opts.lane) }
 }
 
 /**
@@ -1222,8 +1304,10 @@ async function handleObjection(
   if (!objection) return refuse("Paste the objection you heard, then run it again.")
   const situation = field(params.context)
 
-  const { text, tokens } = await runHubModel({
+  const { text, usage, tokens } = await runHubModel({
     feature: "playbook_response",
+    tenant: tenantOf(ctx),
+    lane: "handleObjection",
     temperature: 0.6,
     system: [
       "You are a real estate coach helping an agent respond to a live client objection.",
@@ -1253,14 +1337,16 @@ async function handleObjection(
   if (!gate.allowed) {
     // The model already ran, so this refusal is NOT free. It is ledgered as a
     // refusal (success=false) carrying the reason; the tokens it cost are named
-    // in the detail rather than dropped.
+    // in the detail rather than dropped — and, since runHubModel now carries the
+    // tenant, the spend itself is on the routed lane's own ai_tool_usage row
+    // instead of disappearing along with the blocked copy.
     return {
       ...blockedByCompliance(gate.violations),
       feature: "playbook_response",
       tokens: {
         measured: false,
         reason: "refused",
-        detail: `compliance-blocked after spending ${tokens.inputTokens + tokens.outputTokens} tokens on ${tokens.model}`,
+        detail: `compliance-blocked after spending ${usage.totalTokens} tokens on ${usage.model}`,
       },
     }
   }
@@ -1433,6 +1519,8 @@ async function analyzeTeamPerformance(
 
   const { text, tokens } = await runHubModel({
     feature: "coaching_insight",
+    tenant: tenantOf(ctx),
+    lane: "analyzeTeamPerformance",
     temperature: 0.5,
     system:
       "You are a brokerage operations analyst. Read the team figures you are given and say what they mean. Never invent a metric that was not supplied.",

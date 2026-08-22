@@ -104,6 +104,7 @@ const F = {
   generate: "lib/ai/generate.ts",
   smart: "lib/inbox/smart-replies.ts",
   fairUse: "lib/ai/fair-use.ts",
+  overage: "lib/billing/ai-overage.ts",
   client: "app/dashboard/ai-tools/ai-tools-client.tsx",
 }
 
@@ -152,6 +153,12 @@ const STUBS: Record<string, string> = {
     "export const parseMoney = (v) => globalThis.__AITT.parseMoney(v)",
   "@/app/actions/calculators":
     "export const calculateAffordability = (...a) => globalThis.__AITT.calculateAffordability(...a)",
+  // The two counter rails the hub's own row is responsible for when IT books
+  // the spend (usage_counters.ai_tokens_monthly and billing_usage.ai_calls).
+  "@/lib/usage":
+    "export const incrementUsage = (...a) => globalThis.__AITT.incrementUsage(...a)",
+  "@/lib/kernel/billing":
+    "export const recordUsageEvent = (...a) => globalThis.__AITT.recordUsageEvent(...a)",
   // ── what the REAL lib/ai/models.ts needs, for the modelIdentityFor unit ──
   // resolve-model is deliberately NOT stubbed: alias resolution is part of what
   // modelIdentityFor is being asked to get right.
@@ -210,6 +217,10 @@ interface World {
   social: any
   draft: any
   ledger: LedgerRow[]
+  /** usage_counters.ai_tokens_monthly bumps — the fair-use AND overage canon. */
+  counterBumps: Array<{ brokerageId: string; metric: string; amount: number }>
+  /** billing_usage.ai_calls records. */
+  callMeter: Array<{ brokerageId: string; metric: string; units: number }>
 }
 
 let W: World
@@ -252,6 +263,8 @@ function newWorld(over: Partial<World> = {}): World {
       usage: { inputTokens: 90, outputTokens: 30, totalTokens: 120, estimated: false, model: "gpt-4o-mini" },
     },
     ledger: [],
+    counterBumps: [],
+    callMeter: [],
     ...over,
   }
 }
@@ -302,6 +315,13 @@ function priceOf(model: string, input: number, output: number): number {
     return { text: W.routedText, usage: W.routedUsage }
   },
   calculateCost: (model: string, i: number, o: number) => priceOf(model, i, o),
+  incrementUsage: async (brokerageId: string, metric: string, amount: number) => {
+    W.counterBumps.push({ brokerageId, metric, amount })
+  },
+  recordUsageEvent: async (input: { brokerageId: string; metric: string; units: number }) => {
+    W.callMeter.push(input)
+    return { success: true }
+  },
   getAgentContext: async () => W.ctx,
   evaluateOutbound: async () => ({ allowed: W.gate.allowed, violations: W.gate.violations }),
   generateListingDescription: async () => ({ success: true, data: { headline: "h", medium_description: "d" } }),
@@ -373,6 +393,12 @@ async function tenantLayer(): Promise<void> {
       r.row?.model_used === null && r.row?.cost_cents === 0,
       `model_used=${String(r.row?.model_used)} cost_cents=${r.row?.cost_cents}`)
     check(`${tool}: ledgered as a successful run`, r.row?.success === true, `success=${r.row?.success}`)
+    // ...AND NEITHER DOES IT BUMP A COUNTER. logAIUsage made all four writes
+    // for this call (row + monthly aggregate + usage_counters + ai_calls); a
+    // second bump here would double-count on rails that cannot tell.
+    check(`${tool}: a row that books nothing bumps no counter either`,
+      r.world.counterBumps.length === 0 && r.world.callMeter.length === 0,
+      `bumps=${r.world.counterBumps.length} calls=${r.world.callMeter.length}`)
     check(`${tool}: the row is filed under the SESSION user and brokerage`,
       r.row?.user_id === SESSION_USER && r.row?.brokerage_id === SESSION_BROKERAGE)
     // F4, verified rather than redone: the panel takes a string.
@@ -427,6 +453,59 @@ async function tenantLayer(): Promise<void> {
     routedFeature.call?.feature === "neighborhood_research", `feature=${String(routedFeature.call?.feature)}`)
   check("the ledger row records the routing key the run actually rode",
     routedFeature.row?.feature === "neighborhood_research", `feature=${String(routedFeature.row?.feature)}`)
+
+  // ── THE TWO TOOLS THE HUB RUNS ON ITS OWN ACCOUNT ────────────────────────
+  //
+  // This was FINDING 1 of this proof, and it is now an assertion. runHubModel
+  // (objection_handler, team_performance_analyzer) omitted brokerageId ON
+  // PURPOSE so the hub could book the counts on its own row without logAIUsage
+  // writing a second one. That reasoning was right about the INVOICE rail and
+  // silent about three others: checkAIFairUse reads a missing brokerageId as
+  // "background job → uncapped" (lib/ai/fair-use.ts:123), and logAIUsage is
+  // also the only writer of usage_counters.ai_tokens_monthly — which
+  // lib/billing/ai-overage.ts derives the tenant's BILLABLE OVERAGE from — and
+  // of billing_usage.ai_calls. Same rule as the education tools now: the tenant
+  // goes to the routed lane, and routedTokens books 0 here.
+  const built = await run("objection_handler", { objection: "Your commission is too high." })
+  check("objection_handler: the hub's OWN model call carries the SESSION brokerage, so the cap runs",
+    built.call?.brokerageId === SESSION_BROKERAGE, `brokerageId=${String(built.call?.brokerageId)}`)
+  check("objection_handler: it also carries the session user and agent",
+    built.call?.userId === SESSION_USER && built.call?.agentId === SESSION_AGENT)
+  check("objection_handler: the hub's row books ZERO — the routed lane ledgered this call",
+    built.row?.tokens_used === 0 && built.row?.model_used === null && built.row?.cost_cents === 0,
+    `tokens_used=${built.row?.tokens_used}`)
+  check("objection_handler: a row that books nothing bumps no counter",
+    built.world.counterBumps.length === 0 && built.world.callMeter.length === 0)
+  const builtCapped = await run("objection_handler", { objection: "Your commission is too high." },
+    { routedThrows: "AI fair-use limit reached for this billing period." })
+  check("objection_handler: a tripped fair-use cap can now REFUSE this tool at all",
+    builtCapped.row?.success === false && builtCapped.row?.tokens_used === 0,
+    `success=${builtCapped.row?.success}`)
+
+  // ── THE COUNTER RAILS THE HUB'S OWN ROW OWES ─────────────────────────────
+  //
+  // FINDING 2 of this proof, likewise now an assertion. When the hub books the
+  // spend itself, no logAIUsage ran — so the row was the ONLY write, and the
+  // tokens on it never reached the fair-use counter or the ai_calls meter. The
+  // live case is the smart-reply lane: it calls generateObjectRouted with no
+  // tenant, so nothing else can carry the figure.
+  const smart = await run("smart_reply", { lastMessage: "Can we see it Saturday?", relationshipType: "active-buyer" })
+  check("smart_reply: the hub books the lane's measured counts (70+20)",
+    smart.row?.tokens_used === 90, `tokens_used=${smart.row?.tokens_used}`)
+  check("smart_reply: a row the hub books itself ALSO bumps usage_counters.ai_tokens_monthly",
+    smart.world.counterBumps.length === 1 &&
+      smart.world.counterBumps[0]?.metric === "ai_tokens_monthly" &&
+      smart.world.counterBumps[0]?.brokerageId === SESSION_BROKERAGE,
+    JSON.stringify(smart.world.counterBumps))
+  check("smart_reply: the bump is the row's OWN figure, not a second estimate",
+    smart.world.counterBumps[0]?.amount === smart.row?.tokens_used,
+    `bump=${smart.world.counterBumps[0]?.amount} row=${smart.row?.tokens_used}`)
+  check("smart_reply: and it records exactly one billing_usage ai_call",
+    smart.world.callMeter.length === 1 && smart.world.callMeter[0]?.metric === "ai_calls" &&
+      smart.world.callMeter[0]?.units === 1,
+    JSON.stringify(smart.world.callMeter))
+  check("no brokerage on the session: there is no tenant whose counter could be bumped",
+    noTenant.world.counterBumps.length === 0 && noTenant.world.callMeter.length === 0)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -626,6 +705,38 @@ function constructLayer(): void {
     !/model: "openai\/gpt-4o-mini"/.test(hub), (hub.match(/[^\n]*model: "openai[^\n]*/) ?? [])[0])
   check("the double-book guard is the tenant, not a per-tool decision",
     /function routedTokens\(/.test(hub) && /if \(tenant\.brokerageId\) \{/.test(hub))
+  // The hub's OWN model call rides the same rule — it cannot be made without a
+  // tenant, because the tenant is a required parameter of runHubModel.
+  check("runHubModel cannot be called without a tenant",
+    /async function runHubModel\(opts: \{[\s\S]{0,400}?tenant: HubTenant/.test(hub))
+  check("the hub's own model call hands the routed lane that tenant",
+    /brokerageId: opts\.tenant\.brokerageId/.test(hub))
+  check("its provenance comes from routedTokens, so a tenanted call books 0 here",
+    /return \{ text, usage, tokens: routedTokens\(usage, opts\.tenant, opts\.lane\) \}/.test(hub))
+  check("both hub-owned tools pass the SESSION tenant into it",
+    (hub.match(/tenant: tenantOf\(ctx\)/g) ?? []).length === 2,
+    `matches=${(hub.match(/tenant: tenantOf\(ctx\)/g) ?? []).length}`)
+
+  // THE ROW IS NOT THE WHOLE METER. logAIUsage makes four writes; this hub's
+  // insert made one. The other two that matter are merged onto it here, gated
+  // so they fire only when THIS row carries the tokens.
+  check("the hub's own row bumps the fair-use counter with the figure it booked",
+    /incrementUsage\(brokerageId, "ai_tokens_monthly", ledgerTokens\)/.test(hub))
+  check("the hub's own row records one billing_usage ai_call",
+    /recordUsageEvent\(\{ brokerageId, metric: "ai_calls", units: 1 \}\)/.test(hub))
+  check("both bumps are gated on THIS row carrying the tokens — never on a survivor's row",
+    /if \(run\.tokens\.measured && brokerageId && ledgerTokens > 0\) \{/.test(hub))
+  // WHY THE COUNTER IS AN INVOICE FACT AND NOT ONLY A CAP FACT: the overage
+  // billing run reads usage_counters — not ai_tool_usage — and derives
+  // max(0, used − included) from it. Tokens that stop at the ledger row are
+  // tokens the tenant is never billed for.
+  {
+    const overage = code(F.overage)
+    check("usage_counters is the canon the overage invoice is derived from",
+      /\.from\("usage_counters"\)/.test(overage) &&
+        /Math\.max\(0, usedTokens - includedTokens\)/.test(overage) &&
+        !/ai_tool_usage/.test(overage))
+  }
 
   // F2 — the served model is carried, not named locally.
   check("the generateObject shim reports the model it called",
@@ -677,24 +788,34 @@ function constructLayer(): void {
 // ─────────────────────────────────────────────────────────────────────────────
 function findingsLayer(): void {
   console.log("\n6. FINDINGS")
-  const hub = code(F.hub)
 
-  if (/function runHubModel\(/.test(hub) && !/brokerageId/.test(hub.split("function runHubModel(")[1]?.slice(0, 600) ?? "")) {
-    finding(
-      "the hub's own model calls are still outside the tenant's fair-use cap",
-      "runHubModel deliberately omits brokerageId so the hub can book the counts on its own row — correct for the " +
-      "INVOICE rail (ai_tool_usage → meter_readings.ai_tokens), but checkAIFairUse reads a missing brokerageId as " +
-      "'background job → uncapped', so objection_handler and team_performance_analyzer spend the tenant's included " +
-      "allowance without being counted against it. Closing it means either passing the tenant and booking 0 (as the " +
-      "four education tools now do) or bumping usage_counters from the hub's own insert.",
-    )
-  }
+  // CLOSED, and kept here as a note rather than deleted, because the two
+  // findings this section used to carry are now ASSERTIONS above and the reader
+  // needs to know which way they went:
+  //
+  //   · "the hub's own model calls are still outside the tenant's fair-use cap"
+  //     — CLOSED. runHubModel now takes the session tenant and hands it to
+  //     generateTextRouted, so checkAIFairUse caps these two tools; routedTokens
+  //     books 0 on the hub's row because logAIUsage wrote the survivor's.
+  //   · "the hub's own ai_tool_usage insert bumps no counter but the invoice
+  //     one" — CLOSED. executeAITool now bumps usage_counters.ai_tokens_monthly
+  //     and billing_usage.ai_calls when, and only when, THIS row carries the
+  //     tokens. usage_counters is what lib/billing/ai-overage.ts derives the
+  //     tenant's billable overage from, so this was an invoice defect, not only
+  //     a cap one.
+  //
+  // WHAT IS STILL OPEN, one layer down: a lane that neither ledgers nor names
+  // its model still books 0 here (lane_reports_no_usage), and lib/inbox/
+  // smart-replies.ts calls generateObjectRouted with NO tenant — so its OTHER
+  // caller, app/api/inbox/smart-replies/route.ts, is still unledgered and
+  // uncapped. That is the inbox lane's own fix, not this hub's.
   finding(
-    "the hub's own ai_tool_usage insert bumps no counter but the invoice one",
-    "logAIUsage writes the row AND increment_ai_usage_monthly AND usage_counters.ai_tokens_monthly AND " +
-    "billing_usage.ai_calls. executeAITool's direct insert writes only the row, so a run the hub books itself " +
-    "(no tenant on the session, or a hub-owned model call) reaches meter_readings but never the fair-use counter " +
-    "or the ai_calls meter. Same table, two writers, different completeness.",
+    "the smart-reply LANE still calls the model with no tenant",
+    "lib/inbox/smart-replies.ts:102 calls generateObjectRouted without a brokerageId, so it neither ledgers nor " +
+    "caps. Through this hub that is now covered — executeAITool books the measured counts and bumps both counters " +
+    "itself. Through app/api/inbox/smart-replies/route.ts it is not covered at all: that call is unbilled and " +
+    "uncapped, the same defect class this proof opened on. Fixing it means giving generateSmartReplies the tenant, " +
+    "which is the inbox lane's change, not the AI Toolkit's.",
   )
   finding(
     "three client-education tools ride the 'unspecified' routing row",
@@ -782,6 +903,32 @@ async function main(): Promise<void> {
       file: F.hub,
       find: "  if (tenant.brokerageId) {",
       replace: "  if (false) {",
+    })
+
+    // F1.3 — the HUB'S OWN model call made with no tenant again: uncapped, and
+    //        off every counter logAIUsage bumps.
+    controlled("the hub's own model call made with no tenant again", {
+      file: F.hub,
+      find: `    userId: opts.tenant.userId,
+    brokerageId: opts.tenant.brokerageId,`,
+      replace: `    userId: opts.tenant.userId,
+    brokerageId: null,`,
+    })
+
+    // F1.4 — the counter rails dropped: the row lands, the cap and the overage
+    //        invoice never see the spend.
+    controlled("a row the hub books itself bumping no fair-use counter", {
+      file: F.hub,
+      find: "  if (run.tokens.measured && brokerageId && ledgerTokens > 0) {",
+      replace: "  if (false && run.tokens.measured && brokerageId && ledgerTokens > 0) {",
+    })
+
+    // F1.5 — the counter rails fired on EVERY row, including the ones a
+    //        survivor's logAIUsage already bumped for. Double count.
+    controlled("the counter bumped on a row whose spend a survivor already booked", {
+      file: F.hub,
+      find: "  if (run.tokens.measured && brokerageId && ledgerTokens > 0) {",
+      replace: "  if (brokerageId) {",
     })
 
     // F2.1 — the pinned model asserted back over the served one.

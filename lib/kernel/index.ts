@@ -427,16 +427,18 @@ export type {
 } from "./marketing"
 
 // ─── AI TOOLS OS ─────────────────────────────────────────────────────────────
-// Canonical AI Tools kernel commands — all tool executions, saves, and entity
+// Canonical AI Tools kernel commands — tool history, saves, and entity
 // attachments flow through these commands.
 // Business rules:
-//   • All runs logged to ai_tool_usage — no silent executions
 //   • Output is only persisted when user explicitly saves (saveAiToolOutput)
 //   • attachAiOutputToEntity writes to ai_assistant_notes, not saved_ai_outputs
 //   • tool_name must be a value from AiToolName union — no ad-hoc strings
+//   • THE LEDGER WRITE IS NOT HERE. `runAiTool` was a second, less complete
+//     writer of ai_tool_usage and is gone; the survivor is
+//     app/actions/ai-tools-hub.ts:164 (executeAITool). See the tombstone at
+//     lib/kernel/ai-tools.ts:199.
 export {
   loadAiToolsWorkspace,
-  runAiTool,
   saveAiToolOutput,
   attachAiOutputToEntity,
   previewAiOutput,
@@ -449,7 +451,6 @@ export type {
   AiToolUsageRecord,
   SavedAiOutput,
   LoadAiToolsWorkspaceInput,
-  RunAiToolInput,
   SaveAiToolOutputInput,
   AttachAiOutputToEntityInput,
   PreviewAiOutputInput,

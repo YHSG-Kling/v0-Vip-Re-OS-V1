@@ -140,7 +140,12 @@ export const FB_AUDIENCE_TEMPLATES: AudienceTemplate[] = [
     audienceType: "custom",
     sourceRule: {
       type: "lifetime_customers",
-      filters: { min_purchase_age_months: 0 },
+      // RENAMED from `min_purchase_age_months` — see the field's note at
+      // lib/kernel/ads.ts (SourceRule.filters). The word "age" here meant elapsed
+      // time since purchase, but it collides with the protected-class token
+      // vocabulary, so this shipped template was refused by the fair-housing
+      // audience gate. One vocabulary per function (CLAUDE.md §6): tenure.
+      filters: { min_tenure_months: 0 },
     },
     consentBasis: "Past client — established relationship",
     recommendedFor: ["Annual anniversaries", "Market updates", "Referral asks", "Equity awareness"],

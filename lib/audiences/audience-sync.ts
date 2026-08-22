@@ -68,13 +68,20 @@
  * campaign?" branch: a per-campaign housing flag would be one unchecked
  * checkbox away from turning the gate off.
  *
- * NOT FIXED HERE, and named so it is tracked rather than assumed: the
- * CREATION path (lib/kernel/ads.ts:915) still accepts any `sourceRule`
- * without running this check, so a protected-class audience can still be
- * DEFINED — it just cannot be POPULATED through this module. Wiring
- * `assertAudienceSegmentationAllowed` into `createAudienceSegment` and
- * into `syncAudience`'s contact query belongs to the lane that owns
- * lib/kernel/ads.ts.
+ * CLOSED — the define-side gap this header used to leave open (finding #298).
+ * `createAudienceSegment` and `syncAudience` now both run
+ * `assertAudienceSegmentationAllowed` themselves, so a protected-class audience
+ * can no longer be DEFINED and then discovered empty, and the second populate
+ * path (syncAudience, which reads `source_rule` and uploads the resulting
+ * contact list to Meta/Google) refuses before it reads a single contact:
+ *   · lib/kernel/ads.ts — createAudienceSegment, before the INSERT;
+ *   · lib/kernel/ads.ts — syncAudience, beside the consent-basis refusal;
+ *   · app/actions/campaign-presets.ts — the `facebook_audience` preset branch,
+ *     which writes the same `source_rule` column without going through the
+ *     kernel command.
+ * The four staging refusals below are unchanged and still required: they are the
+ * only gate on the audience_members drip, which does not pass through either
+ * kernel command.
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"

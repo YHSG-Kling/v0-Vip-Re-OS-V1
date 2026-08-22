@@ -37,8 +37,19 @@
  *      strip:
  *        · `assertAudienceSegmentationAllowed` / `protectedClassSegmentationIn`
  *          — an ad audience (Meta/Google custom audience) may not be defined by
- *          a protected-class rule. Enforced at lib/audiences/audience-sync.ts
- *          before a person is staged into an audience.
+ *          a protected-class rule. Enforced on BOTH halves (finding #298 closed
+ *          the define side, which used to let the offending rule persist and be
+ *          discovered only when the audience came back empty):
+ *            DEFINE  — lib/kernel/ads.ts `createAudienceSegment`, before the
+ *                      INSERT, and app/actions/campaign-presets.ts, the other
+ *                      writer of `facebook_custom_audiences.source_rule`;
+ *            POPULATE — lib/kernel/ads.ts `syncAudience`, before it reads a
+ *                      contact or calls a connector, and the four staging sites
+ *                      in lib/audiences/audience-sync.ts.
+ *          Every one of those callers is an AD-TARGETING path. No scraping,
+ *          enrichment, signal, scoring, sourcing or buyer-property-search caller
+ *          reaches this arm — they call the LABELLING arms above, which is the
+ *          whole point of splitting the file this way.
  *        · `stripProtectedClassCriteria` — we do not ask a THIRD-PARTY DATA
  *          BROKER to hand us a population selected by protected class
  *          ("give me owners aged 65+"). That is procurement of a segmented
