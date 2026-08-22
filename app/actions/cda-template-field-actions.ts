@@ -280,7 +280,12 @@ export async function generateFilledCdaPdfAction(input: { cdaId: string }): Prom
     path: `${cda.id}-${cda.transaction_id}-${crypto.randomUUID()}.pdf`,
     buffer: Buffer.from(filledBytes),
     contentType: "application/pdf",
-    public: true, // behavior-preserving (was a public blob URL); access-hardening is a follow-up
+    // The follow-up the previous comment promised. A FILLED closing-disclosure
+    // agreement carries the commission split — a brokerage financial, and
+    // commission is off agent-facing display entirely (CLAUDE.md §5). It was
+    // being stored `public: true`, i.e. at a permanent unauthenticated URL that
+    // was then persisted to closing_disclosure_agreement.generated_pdf_url.
+    public: false,
   })
   if (!stored.ok) return { success: false, error: `pdf_store_failed: ${stored.error}` }
   const url: string = stored.url

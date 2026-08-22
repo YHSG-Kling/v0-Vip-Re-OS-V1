@@ -7,6 +7,8 @@
 // documents bucket; broker admins notified with the link. Honest numbers only
 // — every figure traces to rows in the month window; thin months say so.
 
+import { issueBucketObjectUrl } from "@/lib/storage/document-buckets"
+
 export interface BoardPacketData {
   brokerageName: string
   monthLabel: string
@@ -170,7 +172,18 @@ export async function runBoardPackets(svc: any, now: Date = new Date()): Promise
       const { error: upErr } = await svc.storage.from("documents")
         .upload(path, Buffer.from(pdf), { contentType: "application/pdf", upsert: false })
       if (upErr) { r.errors += 1; continue }
-      const { data: pub } = svc.storage.from("documents").getPublicUrl(path)
+      // THE PACKET IS BROKERAGE FINANCIALS — production, pipeline, attributed GCI
+      // and a QuickBooks reconciliation — and this URL is MAILED into an admin
+      // notification. getPublicUrl would put a permanent, unauthenticated,
+      // never-expiring link to that in a notification body. One issuer, and it
+      // FAILS CLOSED: no signed URL → the packet is an error, not a public link.
+      const issued = await issueBucketObjectUrl(svc as any, { bucket: "documents", objectPath: path })
+      if (!issued.ok) {
+        console.error(`[board-packet] ${b.id}: ${issued.reason}`)
+        r.errors += 1
+        continue
+      }
+      const packetUrl = issued.url
 
       const { data: admins } = await svc.from("users").select("id")
         .eq("brokerage_id", b.id).in("user_type", ["broker", "admin"]).limit(5)
@@ -178,7 +191,7 @@ export async function runBoardPackets(svc: any, now: Date = new Date()): Promise
         await svc.from("notifications").insert({
           user_id: u.id, brokerage_id: b.id, type: "board_packet_ready",
           title: `Your ${monthLabel} board packet is ready`,
-          body: `Production, pipeline, and the AI team's measurable month — ${pub?.publicUrl ?? path}`,
+          body: `Production, pipeline, and the AI team's measurable month — ${packetUrl}`,
           priority: "medium", channel: "in_app", is_read: false,
         }).then(undefined, () => {})
       }

@@ -221,6 +221,14 @@ async function checkDocumentsVerified(
   })
 
   const reasons: string[] = []
+  // AN AUDIT THAT COULD NOT RUN IS NOT A CLEAN AUDIT. This check is the exact
+  // surface finding #105 named ("documents_verified passes with zero
+  // documents"), and the settings end of it had the same shape: a REFUSED
+  // checklist or deal-file read used to come back as the all-zero result of a
+  // clean file. auditListingDocuments now says so, and it BLOCKS here.
+  if (audit.unavailable_reason) {
+    reasons.push(`required-document check could not run: ${audit.unavailable_reason}`)
+  }
   if (audit.missing_blocking.length > 0) {
     reasons.push(`${audit.missing_blocking.length} required document(s) missing: ${audit.missing_blocking.join(", ")}`)
   }
@@ -230,7 +238,7 @@ async function checkDocumentsVerified(
 
   return {
     check: "documents_verified",
-    passed: audit.missing_blocking.length === 0 && unverifiedDocs.length === 0,
+    passed: !audit.unavailable_reason && audit.missing_blocking.length === 0 && unverifiedDocs.length === 0,
     reason: reasons.length > 0 ? reasons.join("; ") : undefined,
     details: {
       attached: data?.length || 0,

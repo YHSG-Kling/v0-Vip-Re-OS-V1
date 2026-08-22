@@ -8,8 +8,8 @@ import { Users, AlertTriangle, CheckCircle2, Building2, ArrowRight } from "lucid
 import { InviteUserButton } from "./invite-user-button"
 import { EditUserButton } from "./edit-user-button"
 import { CreateAgentRecordButton } from "./create-agent-record-button"
-import { effectiveSeatLimit, parseSeatOverride, tierLabel } from "@/lib/kernel/tier-role-matrix"
-import { resolveSeatUsage } from "@/lib/kernel/seat-usage"
+import { seatCheck, parseSeatOverride, tierLabel } from "@/lib/kernel/tier-role-matrix"
+import { resolveSeatUsage, resolveCatalogSeatLimits } from "@/lib/kernel/seat-usage"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
@@ -159,8 +159,28 @@ export default async function AdminUsersPage() {
   // under-counts: a user may hold a seat role by user_role_assignments without
   // their primary type being one, and a user with several roles is still ONE seat.
   const { seatCount } = await resolveSeatUsage(service, profile.brokerage_id)
-  // ONE resolution with the invite gate: staff-set per-tenant override wins over the tier default.
-  const { limit: seatLimit, overridden: seatOverridden } = effectiveSeatLimit(planTier, parseSeatOverride(tenant?.billing_metadata))
+  // ONE resolution with the invite gate: the PLAN CATALOGUE
+  // (subscription_tiers.max_agents) is the number, with the staff-set per-tenant
+  // override on top of it. Reading the same catalogue the gate reads is what
+  // keeps this meter from showing a limit the gate does not enforce.
+  const catalogSeats = await resolveCatalogSeatLimits(service)
+  // ── "IS THIS TENANT AT ITS LIMIT?" IS ASKED ONCE, NOT SPELLED TWICE ────────
+  //
+  // This line resolved only the LIMIT and then re-derived the verdict inline, as
+  // `seatLimit !== null && seatCount >= seatLimit`, to decide whether to paint
+  // the meter red. That inline predicate was a THIRD spelling of a rule this
+  // repo already holds twice (CLAUDE.md §6) — the invite gate enforces it
+  // through seatDecision, and tier-role-matrix exposes exactly this projection
+  // of it as `seatCheck`. Three copies of one rule is three places a grace seat
+  // or a changed clamp has to be remembered, and the meter is the copy nobody
+  // would think to update: it would keep telling a tenant they had room after
+  // the gate had started refusing.
+  //
+  // seatCheck answers limit + at-capacity + "is this a staff override" in ONE
+  // call, and it is computed BY seatDecision, so the number on this page and the
+  // number the gate enforces cannot drift apart.
+  const seats = seatCheck(planTier, seatCount, parseSeatOverride(tenant?.billing_metadata), catalogSeats.limits)
+  const { limit: seatLimit, overridden: seatOverridden } = seats
 
   return (
     <div className="p-6 space-y-6">
@@ -173,7 +193,7 @@ export default async function AdminUsersPage() {
           </h1>
           <p className="text-muted-foreground text-sm mt-0.5">
             {userList.length} user{userList.length !== 1 ? "s" : ""}
-            <span className={`ml-2 font-medium ${seatLimit !== null && seatCount >= seatLimit ? "text-red-600" : "text-slate-700"}`}>
+            <span className={`ml-2 font-medium ${seats.allowed ? "text-slate-700" : "text-red-600"}`}>
               — {seatLimit === null
                 ? `${seatCount} seats in use (unlimited on ${tierLabel(planTier)})`
                 : `${seatCount} of ${seatLimit} seats used${seatOverridden ? " (custom limit)" : ""}`}

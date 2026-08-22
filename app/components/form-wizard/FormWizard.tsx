@@ -39,6 +39,10 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Loader2, ChevronLeft, ChevronRight, Check, Building2, Users, User, AlertCircle, ExternalLink, Sparkles, ShieldCheck, Upload } from "lucide-react"
 import type { Contact } from "@/lib/domain/types"
 import { createClient } from "@/lib/supabase/client"
+// The ONE TTL vocabulary for a persisted document URL — the same constant the
+// server-side signer uses (lib/storage/signed-doc-url.ts). Imported rather than
+// respelled so the wizard and the signer cannot drift.
+import { DOC_URL_TTL_SECONDS as FORM_URL_TTL_SECONDS } from "@/lib/storage/signed-doc-url"
 import { createOffer } from "@/app/actions/buyer-offers"
 import { createListingWithSellerContact, resolveListingIdByMlsAction } from "@/app/actions/listings-kernel"
 import { submitForSignature } from "@/app/actions/buyer-offer/submit-for-signature"
@@ -355,8 +359,17 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
         if (data) {
           for (const f of data) {
             if (f.name.endsWith(".pdf") || f.name.endsWith(".docx")) {
-              const { data: urlData } = supabase.storage.from("brokerage-forms").getPublicUrl(`${prefix}${f.name}`)
-              collected.push({ name: f.name, url: urlData.publicUrl, scope, path: `${prefix}${f.name}` })
+              // brokerage-forms is a DOCUMENT-CLASS bucket: it holds broker
+              // transaction paperwork AND (under filled/) the FILLED copies that
+              // carry a buyer's name, price and terms. getPublicUrl minted a
+              // permanent unauthenticated link to each one. Signed, and skipped
+              // when it cannot be signed — never downgraded to public.
+              const objectPath = `${prefix}${f.name}`
+              const { data: signed, error: signErr } = await supabase.storage
+                .from("brokerage-forms")
+                .createSignedUrl(objectPath, FORM_URL_TTL_SECONDS)
+              if (signErr || !signed?.signedUrl) continue
+              collected.push({ name: f.name, url: signed.signedUrl, scope, path: objectPath })
             }
           }
         }
@@ -820,9 +833,18 @@ function Step2Forms({ mode, state, update, myForms, agentUserId, onUploaded, pro
       const storagePath = `agents/${agentUserId}/uploads/${Date.now()}-${file.name.replace(/[^\w.\-]/g, "_")}`
       const { error: upErr } = await supabase.storage.from("brokerage-forms").upload(storagePath, file, { upsert: false })
       if (upErr) { setUploadError(upErr.message); return }
-      const { data: urlData } = supabase.storage.from("brokerage-forms").getPublicUrl(storagePath)
-      const url = urlData.publicUrl
-      // Use the public URL as the form ref so it opens for review and dispatches to
+      // FAIL CLOSED — a form the agent just uploaded gets a TIME-LIMITED signed
+      // URL, or the upload is reported as failed. It must never fall back to a
+      // permanent public link (was getPublicUrl on a world-readable bucket).
+      const { data: signed, error: signErr } = await supabase.storage
+        .from("brokerage-forms")
+        .createSignedUrl(storagePath, FORM_URL_TTL_SECONDS)
+      if (signErr || !signed?.signedUrl) {
+        setUploadError(signErr?.message ?? "The form uploaded but no secure link could be created for it.")
+        return
+      }
+      const url = signed.signedUrl
+      // Use that URL as the form ref so it opens for review and dispatches to
       // the e-sign provider exactly like a library form.
       const entry = { name: file.name, url, scope: "agent" as const, path: url }
       onUploaded(entry)

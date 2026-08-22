@@ -80,6 +80,44 @@ export const SELLER_SIDE_CLASSIFICATIONS: DocumentClassification[] = [
   "preliminary_closing_statement",
 ]
 
+/**
+ * Classifications that CARRY BINDING EXECUTION MARKS — a signature block, and
+ * (the owner calls it out separately, so it is tracked separately) initials on
+ * the pages that require them. A required document of one of these kinds is not
+ * complete when it is merely PRESENT: the transaction-creation gate additionally
+ * demands `documents.signature_completeness` show every required party signed
+ * AND initialed (lib/compliance/signature-completeness.ts:evaluateExecution).
+ *
+ * Everything NOT in this set is an evidence document — a pre-approval letter, a
+ * proof of funds, an inspection or appraisal report, a title report, HOA docs, a
+ * photo ID. Those are complete when present; demanding a buyer's signature on a
+ * lender's letter would refuse deals for a mark that document never carries.
+ *
+ * NOT THE SAME SET as CONTRACT_TYPES/DISCLOSURE_TYPES in
+ * lib/kernel/document-compliance-audit.ts, and deliberately so: those key off
+ * `client_documents.document_type` (a different table and a different, looser
+ * vocabulary that includes non-classification names such as
+ * 'purchase_agreement'), while this keys off `documents.classification`, whose
+ * members are pinned by the live CHECK above.
+ */
+export const SIGNATURE_BEARING_CLASSIFICATIONS: DocumentClassification[] = [
+  "signed_contract",
+  "counter_offer",
+  "addendum",
+  "disclosure",
+  "agency_disclosure",
+  "commission_agreement",
+  "closing_disclosure",
+  "listing_agreement",
+  "seller_broker_agreement",
+]
+
+/** Does this classification carry signature + initial blocks? Tolerant of a raw value. */
+export function classificationCarriesSignatures(value: string | null | undefined): boolean {
+  if (!value) return false
+  return (SIGNATURE_BEARING_CLASSIFICATIONS as string[]).includes(value)
+}
+
 /** Every member of the union, ordered for a picker. */
 export const ALL_DOCUMENT_CLASSIFICATIONS =
   Object.keys(DOCUMENT_CLASSIFICATION_LABEL) as DocumentClassification[]

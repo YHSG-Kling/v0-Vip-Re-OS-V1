@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { issueBucketObjectUrl } from "@/lib/storage/document-buckets"
+import { removeOrRecordOrphan } from "@/lib/storage/put-and-sign"
 
 /**
  * POST /api/offers/[offerId]/upload-document
@@ -57,8 +59,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ off
   if (upErr || !upRes) {
     return NextResponse.json({ error: `Storage upload failed: ${upErr?.message}` }, { status: 500 })
   }
-  const { data: pub } = supabase.storage.from("documents").getPublicUrl(upRes.path)
-  const storageUrl = pub.publicUrl
+  // A signed contract, a counter, a pre-approval letter — transaction paperwork.
+  // getPublicUrl handed back a permanent, unauthenticated, never-expiring link
+  // and this route PERSISTS it (uploadDocument writes it to the row), so the
+  // link outlived the request. One issuer, fail closed: if it cannot be signed
+  // the upload is undone and the request is refused, never downgraded to public.
+  const issued = await issueBucketObjectUrl(supabase as never, { bucket: "documents", objectPath: upRes.path })
+  if (!issued.ok) {
+    await removeOrRecordOrphan(supabase as never, {
+      bucket: "documents", objectPath: upRes.path,
+      reason: "offer_document_sign_failed", detail: issued.reason,
+      brokerageId: offer.brokerage_id,
+    })
+    return NextResponse.json({ error: issued.reason }, { status: 502 })
+  }
+  const storageUrl = issued.url
 
   // Route through the universal uploader (scanner fires async)
   const { uploadDocument } = await import("@/lib/documents/upload-document")

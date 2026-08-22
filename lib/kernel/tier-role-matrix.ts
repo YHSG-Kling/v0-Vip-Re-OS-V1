@@ -27,11 +27,40 @@
 //   • SEATS: solo_agent = 2 · team = 5 · brokerage / multi_location =
 //     unlimited. A "seat" is a working staff user (SEAT_ROLES). Partner
 //     users do NOT consume seats.
-//   • OVER THE LIMIT IS A CHOICE, NOT A WALL. Owner's ruling: "if they try to
-//     go over alloted seats, we can charge them monthly for each additional
-//     seats but I would rather get them to upgrade to the team level." So the
-//     gate offers both, upgrade first — see seatDecision() below. Blocking the
-//     invite outright loses the expansion the tenant was asking for.
+//   • OVER THE LIMIT IS AN UPGRADE, NOT A PAID EXTRA SEAT — OWNER, VERBATIM,
+//     SUPERSEDING THE EARLIER HALF OF THIS RULE:
+//
+//       "team tier only has 5 seats for the subscription and if they need more
+//        than they need to upgrade to a brokerage plan. agent tier subscription
+//        only has 2 seats and if they need more than they need to upgrade to a
+//        team subscription. but these lower plans need to be treated like mini
+//        brokerages."
+//
+//     The PREVIOUS ruling recorded here was "if they try to go over alloted
+//     seats, we can charge them monthly for each additional seats but I would
+//     rather get them to upgrade to the team level" — an offer of BOTH paths.
+//     The owner has now named the path: solo → team, team → brokerage. So where
+//     a tier ABOVE exists, the add is refused and the refusal names that tier;
+//     the per-seat price is no longer offered beside it, because offering it is
+//     offering the tenant the thing the owner just said they may not have.
+//
+//     The per-seat price SURVIVES in exactly the case the new ruling does not
+//     speak to and the old one did: there is no tier to climb — the top tier, or
+//     a staff-set override, which is a deliberate cap rather than a pricing
+//     accident. That is `paid_seat_only` below, and it is the ONLY outcome that
+//     still quotes a dollar figure.
+//   • THE NUMBERS ARE CATALOGUE DATA, NOT CODE. TIER_SEAT_LIMITS below is the
+//     FALLBACK, not the source: the administrable home is
+//     `subscription_tiers.max_agents`, which the superadmin plan catalogue
+//     already edits (app/actions/superadmin/plan-catalog.ts, validated by
+//     lib/billing/plan-catalog.ts `maxAgents`). Every seat surface may pass a
+//     CatalogSeatLimits map read from that table; when it is absent — a client
+//     bundle, a refused read on a display surface — these literals answer, and
+//     they are kept in agreement with the catalogue by the migration named at
+//     supabase/migrations/m523-the-seat-number-a-prospect-is-quoted-and-the-one-
+//     the-gate-enforces-were-two-different-numbers.sql. See lib/kernel/seat-usage.ts
+//     `resolveCatalogSeatLimits` for the reader and `seatGate` for the one
+//     enforcement entry every add path goes through.
 //   • THE AGENT-ROLE ADVISORY. Owner's ruling: "if they don't use atleast 1
 //     agent role, then they won't get much out of the system." Advisory, never
 //     a block — the OS's whole contact/deal/marketing spine hangs off an agent
@@ -178,9 +207,45 @@ export function roleConsumesSeat(role: UserDomainRole): boolean {
   return (SEAT_ROLES as readonly string[]).includes(role)
 }
 
-/** Seat limit for a tier — unknown/legacy tiers fail OPEN to unlimited. */
-export function seatLimitForTier(tier: string | null | undefined): number | null {
-  return isCanonicalTier(tier) ? TIER_SEAT_LIMITS[tier] : null
+/**
+ * Per-tier seat caps read out of the PLAN CATALOGUE (subscription_tiers.max_agents).
+ * `null` = unlimited. A tier absent from the map falls back to TIER_SEAT_LIMITS.
+ * Produced by lib/kernel/seat-usage.ts `resolveCatalogSeatLimits`; passed through
+ * every resolver below so the catalogue is the administered number and these
+ * literals are only the floor under a missing row.
+ */
+export type CatalogSeatLimits = Partial<Record<CanonicalTier, number | null>>
+
+/**
+ * Seat limit for a tier. Catalogue first, tier literal second — and an
+ * UNRECOGNISED tier now resolves to the SMALLEST tier's limit, not unlimited.
+ *
+ * ── THIS DIRECTION CHANGED, DELIBERATELY ────────────────────────────────────
+ *
+ * It used to return `null` (unlimited) for an unknown / legacy / NULL tier, on
+ * the same "don't brick an unbackfilled tenant" reasoning that shapes
+ * invitableRolesForTier. But a seat cap is not a role menu: "we could not read
+ * this tenant's plan" rendering as "this tenant may hire without limit" is
+ * exactly the shape CLAUDE.md §4 forbids — nobody checked, displayed as checked
+ * and fine. It is also the opposite of what the tier reader beside it already
+ * does: lib/billing/plan-tier.ts `toPlanTier` falls an unreadable tier to
+ * FALLBACK_TIER, the TIGHTEST, so a mis-tagged tenant is never handed a free
+ * upgrade. This now matches that.
+ *
+ * Nobody is bricked by it: `brokerages.plan_tier` is CHECK-constrained to the
+ * four canonical names and DEFAULTs to solo_agent, and both live tenants carry
+ * a canonical value — so "unknown" means genuinely broken, and a broken tenant
+ * gets the floor plus a refusal that names the upgrade, not silent unlimited
+ * hiring. The ROLE menu still fails open-ish (minus the two governance roles),
+ * because being offered a role you cannot fill costs nothing.
+ */
+export function seatLimitForTier(
+  tier: string | null | undefined,
+  catalog?: CatalogSeatLimits | null,
+): number | null {
+  const key: CanonicalTier = isCanonicalTier(tier) ? tier : TIER_ORDER[0]
+  const fromCatalog = catalog?.[key]
+  return fromCatalog !== undefined ? fromCatalog : TIER_SEAT_LIMITS[key]
 }
 
 /**
@@ -202,26 +267,53 @@ export function parseSeatOverride(billingMetadata: unknown): number | null {
 export function effectiveSeatLimit(
   tier: string | null | undefined,
   seatOverride?: number | null,
+  catalog?: CatalogSeatLimits | null,
 ): { limit: number | null; overridden: boolean } {
   if (seatOverride !== null && seatOverride !== undefined) return { limit: seatOverride, overridden: true }
-  return { limit: seatLimitForTier(tier), overridden: false }
+  return { limit: seatLimitForTier(tier, catalog), overridden: false }
 }
 
 /**
  * PURE seat check: given the tier, the CURRENT count of seat-role users, and any staff-set
  * per-tenant override, may one more seat user be added? Returns the honest verdict + copy inputs.
+ *
+ * ── THE VERDICT, WITHOUT THE BILLING OFFER ───────────────────────────────────
+ *
+ * This is the DISPLAY projection of `seatDecision` below: the same four fields,
+ * for a surface that is reporting where a tenant stands rather than selling them
+ * a way past it. The seat meter on the admin roster is exactly that — it prints
+ * "4 of 5 seats used" and turns it red at the line; it must not offer an upgrade
+ * or a $25 seat, because nobody is trying to add anyone at the moment it renders.
+ *
+ * ── AND IT IS COMPUTED BY THE SURVIVOR, NOT BESIDE IT (CLAUDE.md §1, §6) ─────
+ *
+ * It used to re-derive `allowed` and `remaining` from `effectiveSeatLimit` in its
+ * own arithmetic. That was a second spelling of "is this tenant at its limit",
+ * and this file already holds the richer one — so a future change to the seat
+ * rule (a grace seat, a different clamp) could land in `seatDecision`, which the
+ * ENFORCEMENT path uses, while this one, which the DISPLAY path uses, kept the
+ * old answer and told the tenant they were fine. It now delegates: one request,
+ * which is the question this function asks. `withinLimit` and `remaining` are
+ * exactly what the old arithmetic produced for every input — `seatDecision`
+ * clamps `remaining` to 0 on the over-limit branch, and `Math.max(0, limit -
+ * count)` is already 0 whenever `count >= limit` — so this is a merge onto the
+ * survivor, not a behaviour change. scripts/seat-cap-simulator.ts pins the two
+ * together across the whole grid.
  */
-export function seatCheck(tier: string | null | undefined, currentSeatCount: number, seatOverride?: number | null): {
+export function seatCheck(
+  tier: string | null | undefined,
+  currentSeatCount: number,
+  seatOverride?: number | null,
+  catalog?: CatalogSeatLimits | null,
+): {
   allowed: boolean
   limit: number | null
   remaining: number | null
   /** true when the limit came from the staff-set per-tenant override, not the tier. */
   overridden: boolean
 } {
-  const { limit, overridden } = effectiveSeatLimit(tier, seatOverride)
-  if (limit === null) return { allowed: true, limit: null, remaining: null, overridden }
-  const remaining = Math.max(0, limit - currentSeatCount)
-  return { allowed: remaining > 0, limit, remaining, overridden }
+  const d = seatDecision(tier, currentSeatCount, seatOverride, 1, catalog)
+  return { allowed: d.withinLimit, limit: d.limit, remaining: d.remaining, overridden: d.overridden }
 }
 
 /**
@@ -277,8 +369,9 @@ export function seatDecision(
   currentSeatCount: number,
   seatOverride?: number | null,
   seatsRequested = 1,
+  catalog?: CatalogSeatLimits | null,
 ): SeatDecision {
-  const { limit, overridden } = effectiveSeatLimit(tier, seatOverride)
+  const { limit, overridden } = effectiveSeatLimit(tier, seatOverride, catalog)
   const base: SeatDecision = {
     outcome: "within_limit",
     withinLimit: true,
@@ -303,9 +396,16 @@ export function seatDecision(
   // tenant to buy a tier they may already be on.
   let upgradeTo: CanonicalTier | null = null
   let upgradeSeats: number | null = null
-  if (!overridden && isCanonicalTier(tier)) {
-    for (const t of TIER_ORDER.slice(TIER_ORDER.indexOf(tier) + 1)) {
-      const s = TIER_SEAT_LIMITS[t]
+  //
+  // The tier the tenant is ON is resolved the same fail-CLOSED way the limit is
+  // (unknown ⇒ the floor), so a tenant whose plan_tier cannot be read is still
+  // told where to go — "unreadable" must not read as "nothing to offer".
+  const fromTier: CanonicalTier = isCanonicalTier(tier) ? tier : TIER_ORDER[0]
+  if (!overridden) {
+    for (const t of TIER_ORDER.slice(TIER_ORDER.indexOf(fromTier) + 1)) {
+      // Catalogue first — the upgrade copy must quote the seats the tenant will
+      // actually be sold, not a literal that drifted from the plan they buy.
+      const s = seatLimitForTier(t, catalog)
       if (s === null || s >= after) { upgradeTo = t; upgradeSeats = s; break }
     }
   }
@@ -320,13 +420,26 @@ export function seatDecision(
   }
 }
 
-/** PURE: the sentence a tenant reads when they ask for a seat past their limit. */
+/**
+ * PURE: the sentence a tenant reads when they ask for a seat past their limit.
+ *
+ * WHERE A TIER ABOVE EXISTS, THIS NAMES IT AND NOTHING ELSE. The owner's ruling
+ * ("if they need more than they need to upgrade to a brokerage plan… agent tier
+ * … upgrade to a team subscription") makes the upgrade THE answer, so quoting a
+ * per-seat price beside it would offer the tenant the very thing that ruling
+ * withdrew. The dollar figure survives only in `paid_seat_only` — the top tier
+ * or a staff override, where there is no tier to climb and the earlier ruling is
+ * still the only one that speaks.
+ *
+ * It is a REFUSAL and it is also a product moment: it says what they have, what
+ * it costs them, and where to go — never "deactivate someone".
+ */
 export function seatDecisionMessage(d: SeatDecision): string | null {
   if (d.withinLimit) return null
   const over = `${d.seatsOver} seat${d.seatsOver === 1 ? "" : "s"}`
   if (d.outcome === "upgrade_offered" && d.upgradeTo) {
     const seats = d.upgradeSeats === null ? "unlimited seats" : `${d.upgradeSeats} seats`
-    return `That is ${over} past your ${d.limit}-seat plan. Upgrading to ${TIER_LABELS[d.upgradeTo]} gives you ${seats} — or keep this plan and add the seat for $${d.additionalSeatMonthlyUsd}/month.`
+    return `Your plan includes ${d.limit} seats and all ${d.limit} are in use — that is ${over} more. Upgrade to ${TIER_LABELS[d.upgradeTo]} for ${seats} to add this person.`
   }
   return `That is ${over} past your ${d.limit}-seat plan. You can add ${d.seatsOver === 1 ? "it" : "them"} for $${d.additionalSeatMonthlyUsd}/month per seat.`
 }

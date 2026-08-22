@@ -38,6 +38,10 @@ export async function uploadCdaTemplateFile(params: {
     path,
     buffer,
     contentType: "application/pdf",
-    public: true, // a blank brokerage form; the field-reader fetches it by URL
+    // PRIVATE. It is a blank form, but it is the BROKERAGE's commission-disclosure
+    // paperwork and it lives in a bucket that also holds the FILLED copies. The
+    // field-reader fetches it server-side by URL, which a signed URL satisfies —
+    // so nothing about that path needs a permanent public link.
+    public: false,
   })
 }

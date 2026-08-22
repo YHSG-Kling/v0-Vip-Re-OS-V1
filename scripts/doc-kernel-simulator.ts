@@ -22,6 +22,11 @@
 import { readFileSync, existsSync } from "fs"
 import { join, dirname } from "path"
 import { fileURLToPath } from "url"
+// The ONE correct scanner (CLAUDE.md §2 — never hand-roll a comment stripper).
+// Needed because an absence assertion below hunts for a code pattern that this
+// file's own explanatory comment necessarily QUOTES; scanning raw source would
+// match the prose describing the defect and report the defect as still present.
+import { stripComments } from "./strip-comments"
 import { decideDeadlinePolicy } from "../lib/documents/policy-decisions"
 import { deriveDeadlineCandidates, parseDocDate } from "../lib/documents/deadline-derivation"
 import { decideStageCandidate } from "../lib/documents/stage-candidates"
@@ -2478,7 +2483,20 @@ async function main() {
         && routeBaseline.length <= 42
         && src("package.json").includes("test:orphan-routes")
         && src("app/config/navigation-config.ts").includes("/dashboard/gifts")
-        && src("app/dashboard/admin/users/page.tsx").includes("effectiveSeatLimit") // round 31: seatLimitForTier evolved into effectiveSeatLimit (tier default + staff override, ONE math for meter + invite gate)
+        // ROUND 31 asserted this page names `effectiveSeatLimit` directly. The
+        // CLAIM was never about that identifier — it was ONE MATH shared by the
+        // meter and the invite gate. The page has since stopped re-deriving and
+        // now calls `seatCheck`, which computes through `seatDecision` (which is
+        // what resolves effectiveSeatLimit). So the claim is MORE true and the
+        // old spelling is gone; asserting the identifier would now fail on an
+        // improvement, which is a proof measuring the wrong thing.
+        //
+        // Assert the SHARED CALL, not the inner identifier — and assert the
+        // absence of the hand-rolled comparison that used to sit here, because
+        // that inline copy was a THIRD spelling of at-capacity and the reason a
+        // tenant's meter could report room after the gate began refusing.
+        && src("app/dashboard/admin/users/page.tsx").includes("seatCheck(")
+        && !/seatCount\s*>=\s*seatLimit/.test(stripComments(src("app/dashboard/admin/users/page.tsx")))
         && src("app/dashboard/onboarding/OnboardingDashboardClient.tsx").includes("YourWebsiteCard")
         && src("app/components/settings/YourWebsiteCard.tsx").includes("getMyPublicSiteLinks"))
     }
@@ -2757,7 +2775,12 @@ async function main() {
         && src("lib/managers/autonomy-gate.ts").includes("loadTenantAutonomyHalt")
         && src("app/dashboard/admin/command-center/autonomy-halt-banner.tsx").length > 0
         && src("lib/kernel/tier-role-matrix.ts").includes("effectiveSeatLimit")
-        && src("app/actions/admin/invite-user.ts").includes("effectiveSeatLimit"))
+        // seat-cap lane: the invite gate reaches effectiveSeatLimit through
+        // seatGate now — the ONE gate every add path shares (lib/kernel/seat-usage.ts),
+        // which is where the override resolution moved. Same single resolution,
+        // one caller instead of five.
+        && src("app/actions/admin/invite-user.ts").includes("seatGate")
+        && src("lib/kernel/seat-usage.ts").includes("parseSeatOverride"))
     }
     // ── ROUND 30: THE PLATFORM CERTIFICATION — COVERAGE, CLOSED LOOPS, AND THE HONEST 'NEARLY' ──
     {

@@ -23,7 +23,14 @@ export async function signedDocUrl(
   client: SupabaseClient,
   bucket: "offer-documents" | "transaction-documents" | "client-documents" | (string & {}),
   path: string,
+  ttlSeconds: number = DOC_URL_TTL_SECONDS,
 ): Promise<string> {
-  const { data } = await client.storage.from(bucket).createSignedUrl(path, DOC_URL_TTL_SECONDS)
+  // supabase-js RESOLVES a refusal (CLAUDE.md §3) — read the error rather than
+  // reaching past it, so a swallowed refusal cannot become a silent "".
+  const { data, error } = await client.storage.from(bucket).createSignedUrl(path, ttlSeconds)
+  if (error) {
+    console.error(`[storage] createSignedUrl refused for ${bucket}/${path}: ${error.message}`)
+    return ""
+  }
   return data?.signedUrl ?? ""
 }

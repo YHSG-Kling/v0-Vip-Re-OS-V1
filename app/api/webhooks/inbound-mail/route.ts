@@ -21,6 +21,8 @@ import {
   detectInboundProvider, parseInbound, parseFetchInstruction, verifyInbound,
   type ParsedInboundEmail,
 } from "@/lib/inbound-mail/providers"
+import { issueBucketObjectUrl } from "@/lib/storage/document-buckets"
+import { removeOrRecordOrphan } from "@/lib/storage/put-and-sign"
 import { resolveUserByInboundIdentifier } from "@/lib/inbound-mail/resolve-user-provider"
 import { fetchGmailMessagesSinceHistory, fetchOutlookMessage } from "@/lib/inbound-mail/oauth-fetchers"
 
@@ -315,10 +317,24 @@ export async function POST(request: NextRequest) {
       const { data: up, error: upErr } = await supabase.storage
         .from("documents")
         .upload(path, buf, { contentType: att.mime, upsert: false })
+      // An emailed-in attachment is whatever the counterparty sent — a signed
+      // contract, an addendum, a client's bank letter. getPublicUrl put every
+      // one at a permanent, unauthenticated URL that the row then persisted.
+      // One issuer, fail closed: no signed URL → the bytes are removed and the
+      // attachment is skipped, never filed behind a public link.
       let storageUrl: string | null = null
       if (!upErr && up) {
-        const { data: pub } = supabase.storage.from("documents").getPublicUrl(up.path)
-        storageUrl = pub.publicUrl ?? null
+        const issued = await issueBucketObjectUrl(supabase as never, { bucket: "documents", objectPath: up.path })
+        if (issued.ok) {
+          storageUrl = issued.url
+        } else {
+          console.error(`[inbound-mail] ${issued.reason}`)
+          await removeOrRecordOrphan(supabase as never, {
+            bucket: "documents", objectPath: up.path,
+            reason: "inbound_mail_sign_failed", detail: issued.reason,
+            brokerageId,
+          })
+        }
       }
       if (!storageUrl) continue
 

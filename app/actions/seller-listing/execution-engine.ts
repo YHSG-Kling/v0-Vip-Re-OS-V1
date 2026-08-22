@@ -702,10 +702,16 @@ export async function markAgreementSigned(params: {
   const warningDocs     = docAudit.missing_warning ?? []
   const packetWarnings  = packetScan.warnings ?? []
 
-  if (blockingDocs.length > 0 || packetBlockers.length > 0 || !packetScan.success) {
+  // An AUDIT that could not run is a block for the same reason a packet scan
+  // that could not run is: it verified nothing. auditListingDocuments now says
+  // so explicitly instead of returning the all-zero shape of a clean file.
+  const auditUnavailable = docAudit.unavailable_reason
+
+  if (blockingDocs.length > 0 || packetBlockers.length > 0 || !packetScan.success || auditUnavailable) {
     const bits: string[] = []
     if (blockingDocs.length > 0)   bits.push(`${blockingDocs.length} required document(s) missing`)
     if (packetBlockers.length > 0) bits.push(`${packetBlockers.length} packet blocker(s)`)
+    if (auditUnavailable) bits.push(`required-document check could not run (${auditUnavailable})`)
     // A scan that could not RUN is treated as a block, never as a pass — the
     // same rule the listing-launch gate uses.
     if (!packetScan.success) bits.push(`packet check could not run (${packetScan.error ?? "no reason given"})`)

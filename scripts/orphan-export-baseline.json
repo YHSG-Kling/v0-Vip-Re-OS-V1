@@ -183,7 +183,7 @@
     "lib/external/apify-actors.ts": 1,
     "lib/external/arcgis-permits.ts": 8,
     "lib/external/batchdata-client.ts": 2,
-    "lib/external/batchdata-seller-signals.ts": 14,
+    "lib/external/batchdata-seller-signals.ts": 17,
     "lib/external/email-verifier.ts": 1,
     "lib/external/exa-client.ts": 1,
     "lib/external/nextdoor-extract.ts": 1,
@@ -5113,7 +5113,7 @@
     ],
     "app/actions/buyer-financial.ts": [
       "upsertFinancialProfile",
-      "recordDocumentUpload",
+      "uploadFinancialVerificationDocument",
       "markFinanciallyVerified",
       "connectBuyerToLender",
       "loadFinancialProfile",
@@ -6676,7 +6676,7 @@
       "getPodcastAdvancedAnalytics"
     ],
     "app/actions/portal-buyer-financial.ts": [
-      "submitBuyerFinancialFromPortalAction",
+      "uploadBuyerFinancialFromPortalAction",
       "connectBuyerToLenderFromPortalAction",
       "loadFinancialProfileFromPortalAction",
       "getBrokerageLendersFromPortalAction"

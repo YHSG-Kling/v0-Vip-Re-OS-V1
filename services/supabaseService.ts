@@ -342,9 +342,47 @@ export const supabaseService = {
     }
   },
 
+  /**
+   * TRANSACTION CREATION THROUGH THE ADMIN CLIENT — GATED.
+   *
+   * Owner's rule: a transaction exists only after compliance is good, every
+   * required document is present, and every signature AND initial is complete.
+   *
+   * This writer took an OPAQUE `Record<string, unknown>` and pushed it straight
+   * through the SERVICE-ROLE client: no tenant from a session, no compliance
+   * state, no required-document list, no signature and no initial. It is the
+   * shape the gate exists to stop, and it is reachable from anything that
+   * imports `supabaseService`.
+   *
+   * The tenant anchor is taken from the payload's own brokerage_id ONLY to hand
+   * it to the gate; the gate refuses outright when it is absent or unparseable,
+   * and refuses again because a hand-assembled payload carries no offer for
+   * compliance to have passed on. Callers that need a transaction go through
+   * lib/transactions/offer-bridge.ts:createTransactionFromOffer — the documented
+   * single source of truth — which runs the same gate with a session tenant.
+   */
   async createTransaction(transaction: Record<string, unknown>) {
     try {
       const supabase = getSupabaseAdmin()
+      const { assertTransactionCreationAllowed } = await import("@/lib/transactions/transaction-creation-gate")
+      const dealType = String((transaction as any).deal_type ?? "dual")
+      const creationGate = await assertTransactionCreationAllowed(supabase as any, {
+        brokerageId: String((transaction as any).brokerage_id ?? ""),
+        offerId:     ((transaction as any).offer_id as string | null) ?? null,
+        listingId:   ((transaction as any).listing_id as string | null) ?? null,
+        contactIds:  [
+          (transaction as any).contact_id as string | null,
+          (transaction as any).buyer_contact_id as string | null,
+          (transaction as any).seller_contact_id as string | null,
+        ],
+        dealType:    (dealType === "buyer" || dealType === "seller" || dealType === "dual") ? dealType : "dual",
+        stateCode:   ((transaction as any).property_state as string | null) ?? null,
+        door:        "supabaseService.createTransaction",
+      })
+      if (!creationGate.allowed) {
+        console.error("[Supabase Service] Transaction creation refused by the compliance gate:", creationGate.reason)
+        return null
+      }
       const { data, error } = await supabase.from("transactions").insert(transaction).select().single()
       if (error) throw error
       return data

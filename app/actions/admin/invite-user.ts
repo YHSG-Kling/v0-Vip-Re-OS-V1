@@ -7,8 +7,8 @@ import { inviteTenantMember } from "@/lib/kernel/users"
 import { emitUserProvisionedEvent } from "@/lib/kernel/users"
 import { KernelEvent } from "@/lib/kernel/events"
 import type { UserDomainRole } from "@/lib/kernel/users"
-import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS, roleConsumesSeat, seatDecision, seatDecisionMessage, parseSeatOverride } from "@/lib/kernel/tier-role-matrix"
-import { resolveSeatUsage } from "@/lib/kernel/seat-usage"
+import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS } from "@/lib/kernel/tier-role-matrix"
+import { seatGate } from "@/lib/kernel/seat-usage"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export interface InviteUserParams {
@@ -126,31 +126,26 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
   // constraint: Solo 2 · Team 5 · Brokerage/Multi unlimited). A seat is a
   // working staff user; partners (vendor) never consume one. Suspended users
   // don't hold a seat — deactivate one to free it.
-  if (roleConsumesSeat(requestedRole)) {
-    // ONE seat resolver with every display surface. This hand-rolled the count off
-    // users.user_type alone, which under-counts: a user may hold a seat role
-    // through user_role_assignments without their primary type being one. On the
-    // ENFORCEMENT path that is worse than a wrong label — it admits an invite that
-    // pushes the tenant past the limit they pay for.
-    const { seatCount } = await resolveSeatUsage(service, resolvedBrokerageId)
-    // ONE resolution (effectiveSeatLimit inside seatDecision): staff-set per-tenant
-    // override (brokerages.billing_metadata.seat_override) wins when set, else the
-    // tier default.
-    //
-    // PAST THE LIMIT IS A BILLING CHOICE, NOT A DEAD END. This used to refuse the
-    // invite and tell the tenant to deactivate someone — at the exact moment they
-    // were trying to grow. The owner's ruling is to offer the upgrade first and the
-    // per-seat price second, so the answer now names both paths and the decision is
-    // theirs. The invite still does not go through on its own: adding a seat they
-    // have not paid for is a billing event, and the caller confirms which way.
-    const decision = seatDecision(
-      tenantTier, seatCount, parseSeatOverride((tenant as any)?.billing_metadata),
-    )
-    if (!decision.withinLimit) {
+  //
+  // ONE GATE — lib/kernel/seat-usage.ts `seatGate`, shared with the god console,
+  // the role-change path, the reactivation path and the recruiting provisioner,
+  // because a cap enforced on one path is not a cap. It reads the count from the
+  // one seat resolver (BOTH role sources), the limit from the PLAN CATALOGUE
+  // (subscription_tiers.max_agents, with the staff override on top), and it FAILS
+  // CLOSED: an unreadable tenant, count or catalogue REFUSES and says which.
+  //
+  // PAST THE LIMIT IS AN UPGRADE. The owner's ruling — "agent tier subscription
+  // only has 2 seats and if they need more than they need to upgrade to a team
+  // subscription", team → brokerage — makes this a refusal that names the next
+  // tier, not a dead end and not a per-seat upsell. The full decision rides back
+  // so the UI can render that tier as a button.
+  {
+    const verdict = await seatGate(service, resolvedBrokerageId, requestedRole)
+    if (!verdict.allowed) {
       return {
         success: false,
-        seatDecision: decision,
-        error: seatDecisionMessage(decision) ?? undefined,
+        seatDecision: verdict.decision ?? undefined,
+        error: verdict.message ?? undefined,
       }
     }
   }

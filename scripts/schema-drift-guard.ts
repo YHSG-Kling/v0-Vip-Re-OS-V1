@@ -27,7 +27,7 @@ import { readFileSync, readdirSync, statSync, writeFileSync, existsSync } from "
 import { runtimeRoots } from "./runtime-roots"
 import { join } from "node:path"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
-import { SCHEMA_FK_MAP, SCHEMA_FK_PAIR_CARDINALITY, fkPairCount } from "./schema-fk-map"
+import { SCHEMA_FK_COLUMN_AMBIGUOUS, SCHEMA_FK_MAP, SCHEMA_FK_PAIR_CARDINALITY, fkColumnCandidates, fkPairCount } from "./schema-fk-map"
 import { resolveTableManager } from "../lib/kernel/manager-registry"
 import { blankComments } from "./strip-comments"
 
@@ -542,10 +542,15 @@ export function resolveEmbedTable(parent: string | null, relation: string): stri
  *  Order matches resolveEmbedTable's original body, which this is the single source of truth
  *  for: FK column first, table name second. They cannot disagree anyway — no FK column name in
  *  this schema collides with a table name (measured when scripts/schema-fk-map.ts was generated). */
-export function classifyEmbedRelation(parent: string | null, relation: string): { table: string | null; route: "fk-column" | "table-name" | null } {
+export function classifyEmbedRelation(parent: string | null, relation: string): { table: string | null; route: "fk-column" | "table-name" | "fk-column-ambiguous" | null } {
   if (parent) {
     const viaFk = SCHEMA_FK_MAP[parent]?.[relation]
     if (viaFk) return { table: viaFk, route: "fk-column" }
+    // A column carrying foreign keys to MORE THAN ONE table is deliberately absent from the map
+    // (schema-fk-map.ts publishes its candidates instead). It resolves to nothing here rather
+    // than falling through to the table-name route: naming one of two targets is the wrong
+    // answer, and a wrong target would check this embed's columns against the wrong table.
+    if (fkColumnCandidates(parent, relation).length > 1) return { table: null, route: "fk-column-ambiguous" }
   }
   if (Object.prototype.hasOwnProperty.call(SCHEMA_SNAPSHOT, relation)) return { table: relation, route: "table-name" }
   return { table: null, route: null }
@@ -601,6 +606,10 @@ export interface EmbedResolution {
   refs: Array<{ table: string; column: string; path: string }>
   /** embeds whose target could not be named — skipped, never failed */
   unresolved: Array<{ relation: string; parent: string | null; path: string }>
+  /** of those, the ones naming an FK COLUMN that carries foreign keys to more than one table.
+   *  Skipped for a NAMED reason rather than for want of a match — published separately so the
+   *  cost of the "refuse to guess" rule in schema-fk-map.ts is visible instead of buried. */
+  ambiguousFkColumn: number
   /** embeds whose target WAS named (at any depth) */
   resolvedCount: number
   /** resolved embeds that name their target by TABLE NAME and carry no disambiguating hint —
@@ -619,7 +628,7 @@ export interface EmbedResolution {
  *  A nested embed resolves against its immediate parent, never against the root. */
 export function resolveEmbeddedSelects(literal: string, rootTable: string | null = null): EmbedResolution {
   const res: EmbedResolution = {
-    refs: [], unresolved: [], resolvedCount: 0,
+    refs: [], unresolved: [], ambiguousFkColumn: 0, resolvedCount: 0,
     bareTableEmbeds: 0, pairsConsulted: [], ambiguityUnknownParent: 0, ambiguous: [],
   }
   const walk = (list: string, parent: string | null, path: string) => {
@@ -627,7 +636,11 @@ export function resolveEmbeddedSelects(literal: string, rootTable: string | null
       const label = node.alias ? `${node.alias}:${node.relation}` : node.relation
       const here = `${path}.${label}`
       const { table: target, route } = classifyEmbedRelation(parent, node.relation)
-      if (!target) { res.unresolved.push({ relation: node.relation, parent, path: here }); continue }
+      if (!target) {
+        res.unresolved.push({ relation: node.relation, parent, path: here })
+        if (route === "fk-column-ambiguous") res.ambiguousFkColumn++
+        continue
+      }
       res.resolvedCount++
       // ── PGRST201 ambiguity (see the block above). Only a TABLE-NAME embed with no
       // disambiguating hint is even a candidate; an FK-column embed has already picked its
@@ -1144,6 +1157,19 @@ function testPure() {
     check("fkPairCount: a table with ONE self-FK is 1; the one table with TWO is 2 (document_folders vs remotion_composition_renders)",
       fkPairCount("document_folders", "document_folders") === 1 &&
       fkPairCount("remotion_composition_renders", "remotion_composition_renders") === 2)
+    // ── the FK column that carries TWO foreign keys (m497's composite over
+    //    vendor_subscriptions.brokerage_id). It must resolve to NOTHING, not to either candidate:
+    //    a guessed target would check this embed's columns against the wrong table.
+    check("an FK column with two targets resolves to nothing, and says WHY",
+      classifyEmbedRelation("vendor_subscriptions", "brokerage_id").table === null &&
+      classifyEmbedRelation("vendor_subscriptions", "brokerage_id").route === "fk-column-ambiguous")
+    check("…and the cache still publishes both candidates for it",
+      fkColumnCandidates("vendor_subscriptions", "brokerage_id").join(",") === "brokerages,vendor_plans")
+    check("…while the sibling column whose two FKs agree still resolves normally",
+      classifyEmbedRelation("vendor_subscriptions", "plan_id").table === "vendor_plans" &&
+      fkColumnCandidates("vendor_subscriptions", "plan_id").length === 0)
+    check("fkPairCount: a COMPOSITE FK counts as one relationship, not one per column",
+      fkPairCount("vendor_subscriptions", "vendor_plans") === 2)
     check("classifyEmbedRelation: reports the ROUTE — FK column vs table name — without changing resolveEmbedTable",
       classifyEmbedRelation("transactions", "contact_id").route === "fk-column" &&
       classifyEmbedRelation("transactions", "contacts").route === "table-name" &&
@@ -1405,6 +1431,7 @@ interface ScanStats {
   embedColumns: number
   embedsResolved: number
   embedsUnresolved: number
+  embedsAmbiguousFkColumn: number
   embedTargetUnguarded: number
   unresolved: Array<{ file: string; relation: string; parent: string | null }>
   /** ── .or()/.filter() DSL coverage. Every one of these is printed, because the only honest
@@ -1437,7 +1464,7 @@ interface ScanStats {
   computedKeysUnresolved: Array<{ file: string; table: string; expr: string }>
 }
 const newStats = (): ScanStats => ({
-  directColumns: 0, embedColumns: 0, embedsResolved: 0, embedsUnresolved: 0, embedTargetUnguarded: 0, unresolved: [],
+  directColumns: 0, embedColumns: 0, embedsResolved: 0, embedsUnresolved: 0, embedsAmbiguousFkColumn: 0, embedTargetUnguarded: 0, unresolved: [],
   dslStrings: 0, dslTerms: 0, dslColumns: 0, dslTargetUnguarded: 0, dslUnattributed: 0, dslSkipped: [], dslUnattributedSites: [],
   computedKeysResolved: 0, computedKeysUnresolved: [],
   bareTableEmbeds: 0, ambiguityPairsConsulted: new Set(), ambiguityUnknownParent: 0, embedAmbiguous: [],
@@ -1503,6 +1530,7 @@ function scanFile(file: string, rawSrc: string, stats: ScanStats = newStats()): 
       const emb = resolveEmbeddedSelects(sel, table)
       stats.embedsResolved += emb.resolvedCount
       stats.embedsUnresolved += emb.unresolved.length
+      stats.embedsAmbiguousFkColumn += emb.ambiguousFkColumn
       for (const u of emb.unresolved) stats.unresolved.push({ file, relation: u.relation, parent: u.parent })
       // PGRST201: a bare table-name embed across a pair joined by more than one FK. Not a
       // column problem and not a phantom-relation problem — the whole request 400s anyway.
@@ -1675,6 +1703,11 @@ function testScan() {
   console.log(`  · ${stats.directColumns} direct column refs + ${stats.embedColumns} embedded column refs checked`)
   console.log(`  · embeds: ${stats.embedsResolved} resolved to a table, ${stats.embedTargetUnguarded} embedded columns skipped (target table not column-guarded)`)
   console.log(`  · unresolved embeds: ${stats.embedsUnresolved} (skipped, never failed — set GUARD_EMBED_REPORT=1 to list them)`)
+  console.log(
+    `  · of those, ${stats.embedsAmbiguousFkColumn} named an FK column carrying foreign keys to MORE THAN ONE table` +
+    ` (${Object.values(SCHEMA_FK_COLUMN_AMBIGUOUS).reduce((n, c) => n + Object.keys(c).length, 0)} such columns in the schema)` +
+    ` — schema-fk-map.ts refuses to pick one, so the embed is skipped rather than checked against a guessed table`,
+  )
   // ── PGRST201 ambiguity coverage, stated out loud (same rule as every other block here) ──
   console.log(`  · embed ambiguity: ${stats.bareTableEmbeds} bare table-name embeds checked against ${stats.ambiguityPairsConsulted.size} distinct table pairs`)
   console.log(`               (${Object.keys(SCHEMA_FK_PAIR_CARDINALITY).length} pairs in the schema carry >1 FK; ${stats.ambiguityUnknownParent} embeds skipped for an unknown parent table)`)

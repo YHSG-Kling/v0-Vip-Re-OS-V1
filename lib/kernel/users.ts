@@ -38,6 +38,9 @@ import { KernelEvent } from "./events"
 import { requiresAgentRow } from "./tenant-provisioning-spec"
 import { ROLE_DASHBOARD_ROUTES } from "./role-routes"
 import { readRoleGrants, selectAgentId } from "@/lib/auth/role-grants"
+// Runtime-safe both ways: seat-usage imports only TYPES from this module
+// (erased at compile time), so this is not a runtime cycle.
+import { seatGate } from "./seat-usage"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -932,6 +935,25 @@ export async function provisionTenantOwner(params: TenantOwnerParams): Promise<T
   //    free a stale ORPHAN email (failed pre-invite / seed) so the trigger can create
   //    the canonical row; the orphan's children are merged onto the auth id afterwards.
   const { authUserId: linkedId, orphanToMerge } = await resolveEmailHolder(service, email)
+
+  // SEATS — the owner is the tenant's FIRST seat, and on a brand-new tenant this
+  // is a no-op (0 in use, 2 available on the smallest plan). It is here for the
+  // two cases where it is not: this helper takes an EXISTING brokerageId (both
+  // callers create the row first), so re-running it against a live tenant, or
+  // superadmin create-subscriber pointed at one, would otherwise seat another
+  // admin with nothing counting. An idempotent re-run for the SAME owner passes
+  // through `already_seated` on their linked id rather than being charged twice.
+  // Same gate as every other add path; FAILS CLOSED (lib/kernel/seat-usage.ts).
+  {
+    const verdict = await seatGate(service, brokerageId, "admin", { subjectUserId: linkedId })
+    if (!verdict.allowed) {
+      return {
+        success: false, userId: null, agentId: null, teamId: null, inviteSent: false,
+        error: verdict.message ?? "Seat limit reached for this workspace.",
+      }
+    }
+  }
+
   let authUserId: string | null = linkedId
   let inviteSent = false
   let inviteError: string | undefined

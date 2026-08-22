@@ -10,6 +10,16 @@ import { FileCheck, AlertCircle, Download, Loader2, ChevronDown, ChevronUp, Uplo
 import { getTaxCategories } from "@/app/actions/accounting-sync"
 import { aiGenerateProfitLossReport } from "@/app/actions/ai-financial-management"
 import { attachExpenseReceipt } from "@/app/actions/financials"
+// ONE ANSWER TO "DOES THIS ROW HAVE A RECEIPT?" (CLAUDE.md §6).
+//
+// This panel used to test `e.receipt_url` for truthiness, which is a SECOND
+// spelling of the rule the export already owns — and the two disagreed: a
+// `receipt_url` of `"   "` is truthy, so the tile counted it as on file while
+// the CSV, which trims, printed "missing". The agent's dashboard and the file
+// they mail their bookkeeper contradicted each other on the same row.
+// lib/finance/expense-csv.ts is a pure module (no server imports), so the client
+// may hold the one predicate rather than re-spell it.
+import { hasReceipt } from "@/lib/finance/expense-csv"
 import { toast } from "sonner"
 
 interface Expense {
@@ -60,8 +70,10 @@ export function DeductionReadinessPanel({
 
   // Calculate stats
   const totalTracked = expenses.reduce((sum, e) => sum + e.amount, 0)
-  const withReceipts = expenses.filter((e) => e.receipt_url).length
-  const missingReceipts = expenses.filter((e) => !e.receipt_url)
+  // Both halves route through the ONE predicate, so the tile, the completeness
+  // bar and the exported CSV can never disagree about a given row.
+  const withReceipts = expenses.filter((e) => hasReceipt(e)).length
+  const missingReceipts = expenses.filter((e) => !hasReceipt(e))
   const uncategorizedExpenses = expenses.filter((e) => e.category === "uncategorized" || !e.category)
 
   // Group expenses by category

@@ -219,18 +219,97 @@ export function fkMapHeader(f: FkFacts): string {
  *   • foreign keys crossing out of \`public\` (a reference to auth.users cannot be embedded from
  *     the REST surface anyway).
  *
- * MEASURED AT GENERATION: ${f.edges} edges across ${f.tables} source tables — every foreign key
- * single-column, and no (table, column) pair carrying FKs to two different targets, so the map is
- * total and unambiguous. ${f.pairs} unordered table pairs carry at least one FK; ${f.ambiguousPairs}
- * carry more than one and are listed below. ${f.selfRefs} of the edges are self-referential.`
+ * ── COMPOSITE FOREIGN KEYS, AND WHY THIS MAP IS NOT TOTAL ───────────────────────────
+ * This header used to claim "every foreign key single-column, and no (table, column) pair carrying
+ * FKs to two different targets, so the map is total and unambiguous". That was true when written
+ * and is FALSE now: ${f.compositeFks} foreign key${f.compositeFks === 1 ? " spans" : "s span"} more than one column.
+ * \`live_foreign_keys_json()\` unnests \`conkey\`, so a composite FK arrives once PER COLUMN, and one
+ * column can carry a single-column FK to one table AND be part of a composite FK to another.
+ *
+ * THE LIVE CASE: m497 added
+ *     vendor_subscriptions_plan_in_same_brokerage_fkey (plan_id, brokerage_id)
+ *         REFERENCES vendor_plans (id, brokerage_id)
+ * next to the older single-column \`vendor_subscriptions_brokerage_id_fkey (brokerage_id)
+ * REFERENCES brokerages (id)\`. \`vendor_subscriptions.brokerage_id\` therefore has TWO candidate
+ * targets. Such a column is left OUT of the map and published in SCHEMA_FK_COLUMN_AMBIGUOUS with
+ * all of its candidates — the map holds one target per column and cannot say "two", so it says
+ * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
+ * ${f.ambiguousColumns} column${f.ambiguousColumns === 1 ? " is" : "s are"} in that state.
+ *
+ * MEASURED AT GENERATION: ${f.edges} edges across ${f.tables} source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. ${f.pairs} unordered
+ * table pairs carry at least one FK; ${f.ambiguousPairs}
+ * carry more than one and are listed below. ${f.selfRefs} of the constraints are self-referential.
+ * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
+ * however many columns it spans, so counting its unnested rows separately would flag an
+ * unambiguous pair as ambiguous.`
 }
 
 /** What the FK scan measured, for the header and the generator's console line. */
-export type FkFacts = { tables: number; edges: number; pairs: number; ambiguousPairs: number; selfRefs: number }
+export type FkFacts = {
+  tables: number
+  edges: number
+  pairs: number
+  ambiguousPairs: number
+  selfRefs: number
+  /** (table, column) pairs carrying candidate FKs to MORE THAN ONE target — omitted from the
+   *  map and published in SCHEMA_FK_COLUMN_AMBIGUOUS instead. See resolveColumnTarget(). */
+  ambiguousColumns: number
+  /** foreign keys spanning more than one column. Each is emitted once PER COLUMN by the source
+   *  RPC, which is the whole reason the two counting rules below exist. */
+  compositeFks: number
+}
 
 /** PURE — key for the unordered table pair, the encoding fkPairCount() hides from its callers. */
 function pairKey(a: string, b: string): string {
   return a <= b ? `${a}|${b}` : `${b}|${a}`
+}
+
+/** PURE — identity of a CONSTRAINT, as opposed to one of the rows it produced. Constraint names
+ *  are unique per table in Postgres, so (src_table, name) names exactly one foreign key. */
+function constraintKey(r: LiveFk): string {
+  return `${r.src_table} ${r.name}`
+}
+
+/**
+ * ── THE RULE FOR A COLUMN CARRYING MORE THAN ONE FOREIGN KEY ────────────────────────
+ *
+ * `live_foreign_keys_json()` unnests `conkey`, so a COMPOSITE foreign key is emitted once per
+ * column. One column can therefore appear with two different targets — it can hold a
+ * single-column FK to one table AND be part of a composite FK to another.
+ *
+ * WORKED EXAMPLE, and the reason this function exists: m497 added
+ *     vendor_subscriptions_plan_in_same_brokerage_fkey (plan_id, brokerage_id)
+ *         REFERENCES vendor_plans (id, brokerage_id)
+ * alongside the pre-existing single-column `vendor_subscriptions_brokerage_id_fkey
+ * (brokerage_id) REFERENCES brokerages (id)`. So `vendor_subscriptions.brokerage_id` yields two
+ * candidate targets: `brokerages` and `vendor_plans`.
+ *
+ * THE OLD BEHAVIOUR WAS LAST-WRITE-WINS over rows ordered by (src_table, src_col, name), which
+ * silently resolved that column to `vendor_plans` purely because "…plan_in_same_brokerage_fkey"
+ * sorts after "…brokerage_id_fkey". A constraint-NAME sort deciding a schema question is not a
+ * rule, it is an accident, and it happened to land on the target a reader is least likely to mean.
+ *
+ * WHAT WE DO INSTEAD: refuse to choose. The column is left OUT of SCHEMA_FK_MAP and published in
+ * SCHEMA_FK_COLUMN_AMBIGUOUS with every candidate. This is the direction the file's SAFETY
+ * PROPERTY already promises — a missing entry makes the guard SKIP the embed and count it as
+ * unresolved, whereas a WRONG entry makes it check the embed's columns against the wrong table,
+ * which can fail live code or pass broken code. Absent is recoverable; wrong is not.
+ *
+ * WHY NOT PREFER THE SINGLE-COLUMN FK? Because that requires knowing how PostgREST resolves a
+ * bare column-name embed on such a column, and that could not be VERIFIED from this environment:
+ * postgrest.org and supabase.com are blocked by the egress proxy, the project's own REST endpoint
+ * is likewise unreachable (CONNECT tunnel 403), and the Supabase docs reachable through the MCP
+ * do not document the bare FK-column-name embed target at all — they document `!hint` instead.
+ * The day someone can demonstrate the behaviour, the change is small and local: buildFkMap already
+ * computes `constraintArity` (for the pair count), so preferring the single-column FK means passing
+ * it in here and filtering `candidates` to the lowest arity before the distinct-target test — plus
+ * the tests in scripts/schema-cache-drift-guard.ts that pin the current answer. Until then an
+ * honest "ambiguous" beats a confident guess, and the guess had already been wrong once.
+ */
+export function resolveColumnTarget(candidates: LiveFk[]): { target: string | null; targets: string[] } {
+  const targets = [...new Set(candidates.map((r) => r.tgt_table))].sort()
+  return { target: targets.length === 1 ? targets[0] : null, targets }
 }
 
 /**
@@ -242,15 +321,40 @@ export function buildFkMap(rows: LiveFk[]): {
   facts: FkFacts
   map: Record<string, Record<string, string>>
   ambiguous: Record<string, number>
+  ambiguousColumns: Record<string, Record<string, string[]>>
 } {
-  const map: Record<string, Record<string, string>> = {}
-  const pairCounts = new Map<string, number>()
-  let selfRefs = 0
+  // How many columns each CONSTRAINT spans — the row count sharing (src_table, name).
+  const constraintArity = new Map<string, number>()
+  for (const r of rows) constraintArity.set(constraintKey(r), (constraintArity.get(constraintKey(r)) ?? 0) + 1)
+  const compositeFks = [...constraintArity.values()].filter((n) => n > 1).length
+
+  // Every candidate row per (table, column), so the rule sees the whole picture rather than
+  // whichever row happened to be written last.
+  const candidates = new Map<string, Map<string, LiveFk[]>>()
   for (const r of rows) {
-    ;(map[r.src_table] ??= {})[r.src_col] = r.tgt_table
+    const byCol = candidates.get(r.src_table) ?? candidates.set(r.src_table, new Map()).get(r.src_table)!
+    ;(byCol.get(r.src_col) ?? byCol.set(r.src_col, []).get(r.src_col)!).push(r)
+  }
+
+  // PAIR CARDINALITY COUNTS CONSTRAINTS, NOT ROWS. PGRST201 fires on the number of distinct
+  // RELATIONSHIPS between two tables; a composite FK is ONE relationship however many columns it
+  // spans. Counting rows over-counted it and could flag an unambiguous pair as ambiguous.
+  const pairConstraints = new Map<string, Set<string>>()
+  const selfRefConstraints = new Set<string>()
+  for (const r of rows) {
     const k = pairKey(r.src_table, r.tgt_table)
-    pairCounts.set(k, (pairCounts.get(k) ?? 0) + 1)
-    if (r.src_table === r.tgt_table) selfRefs++
+    ;(pairConstraints.get(k) ?? pairConstraints.set(k, new Set()).get(k)!).add(constraintKey(r))
+    if (r.src_table === r.tgt_table) selfRefConstraints.add(constraintKey(r))
+  }
+
+  const map: Record<string, Record<string, string>> = {}
+  const ambiguousColumns: Record<string, Record<string, string[]>> = {}
+  for (const [src, byCol] of candidates) {
+    for (const [col, rowsForCol] of byCol) {
+      const { target, targets } = resolveColumnTarget(rowsForCol)
+      if (target !== null) (map[src] ??= {})[col] = target
+      else (ambiguousColumns[src] ??= {})[col] = targets
+    }
   }
 
   const tables = Object.keys(map).sort()
@@ -263,8 +367,30 @@ export function buildFkMap(rows: LiveFk[]): {
   }
   body += "}\n\n"
 
+  const ambiguousColTables = Object.keys(ambiguousColumns).sort()
+  let ambiguousColumnCount = 0
+  body += `/** \`SCHEMA_FK_COLUMN_AMBIGUOUS[table][column] = [everyCandidateTarget]\` — the columns
+ *  DELIBERATELY ABSENT from SCHEMA_FK_MAP above because they carry foreign keys to more than one
+ *  table (a single-column FK plus a composite FK over the same column). The map cannot express
+ *  "two answers", so it holds none, and the candidates are published here rather than one of them
+ *  being picked silently. A consumer that meets one of these columns must SKIP the embed, not
+ *  guess — see resolveColumnTarget() in scripts/schema-cache-builders.ts for why. */
+export const SCHEMA_FK_COLUMN_AMBIGUOUS: Record<string, Record<string, string[]>> = {\n`
+  for (const t of ambiguousColTables) {
+    const cols = Object.keys(ambiguousColumns[t]).sort()
+    ambiguousColumnCount += cols.length
+    body += `  ${JSON.stringify(t)}: { ${cols.map((c) => `${JSON.stringify(c)}: ${JSON.stringify(ambiguousColumns[t][c])}`).join(", ")} },\n`
+  }
+  body += `}\n
+/** Every candidate target for an FK column that has more than one, or [] when the column is
+ *  unambiguous. \`[]\` and a single-target column are both "nothing to disambiguate here". */
+export function fkColumnCandidates(table: string, column: string): readonly string[] {
+  return SCHEMA_FK_COLUMN_AMBIGUOUS[table]?.[column] ?? []
+}\n\n`
+
   const ambiguous: Record<string, number> = {}
-  for (const [k, n] of [...pairCounts].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) if (n > 1) ambiguous[k] = n
+  for (const [k, s] of [...pairConstraints].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+    if (s.size > 1) ambiguous[k] = s.size
 
   body += `/** \`SCHEMA_FK_PAIR_CARDINALITY["a|b"] = n\` for the SORTED pair (a <= b), n > 1 only.
  *  Read it through fkPairCount() — the key encoding is this file's business, not its callers'. */
@@ -282,9 +408,18 @@ export function fkPairCount(t1: string, t2: string): number {
 
   return {
     body,
-    facts: { tables: tables.length, edges, pairs: pairCounts.size, ambiguousPairs: Object.keys(ambiguous).length, selfRefs },
+    facts: {
+      tables: tables.length,
+      edges,
+      pairs: pairConstraints.size,
+      ambiguousPairs: Object.keys(ambiguous).length,
+      selfRefs: selfRefConstraints.size,
+      ambiguousColumns: ambiguousColumnCount,
+      compositeFks,
+    },
     map,
     ambiguous,
+    ambiguousColumns,
   }
 }
 

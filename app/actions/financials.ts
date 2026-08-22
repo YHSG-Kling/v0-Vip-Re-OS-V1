@@ -5,6 +5,12 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { uploadBufferToBucket } from "@/lib/storage/buckets"
+// THE EXPENSE CSV LIVES THERE, NOT HERE. This file is "use server": every export
+// in it is a public HTTP endpoint and must be async (CLAUDE.md §4), so the pure
+// builder cannot live alongside the action. Keeping it in one importable module
+// is also what lets scripts/expense-export-scope-simulator.ts run the REAL
+// builder and PROVE the owner's "no credentials in csv" ruling holds.
+import { buildExpenseCsv, type ExpenseCsvInput } from "@/lib/finance/expense-csv"
 import { generateTextRouted } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 
@@ -508,40 +514,36 @@ export async function exportExpensesCSV(agentId: string) {
       }
     }
 
-    const headers = ["Date", "Category", "Description", "Amount", "Receipt URL"]
-    // FLAGGED, NOT CHANGED — a bearer credential leaves the tenancy boundary here.
-    // `receipt_url` is a SIGNED URL into the PRIVATE `receipts` bucket, minted by
-    // attachExpenseReceipt in this file with `bucket: "receipts"` and
-    // `signedTtlSeconds: 60 * 60 * 24 * 365` — VERIFIED at the uploadBufferToBucket
-    // call, this file, the `bucket:`/`signedTtlSeconds:` pair inside
-    // attachExpenseReceipt. Anyone holding the string can fetch the receipt for a YEAR
-    // without signing in, so once it is written into a CSV the file itself is the
-    // credential: mailed to an accountant, dropped in a shared drive, or attached to
-    // a ticket, it outlives the export and no longer answers to the gate above.
-    // Not fixed here because every candidate fix changes what the export IS and
-    // needs the owner: (a) emit the storage PATH plus a "Receipt on file" marker and
-    // let the app re-sign on demand; (b) mint a SHORT-lived URL at export time
-    // instead of reusing the year-long one; (c) keep the URL but only for the
-    // exporting agent's own rows. Recommendation: (a) — the CSV then carries no
-    // credential at all, and the 365-day TTL stays confined to the in-app P&L view
-    // it was minted for. Reported to the wave rather than decided in this lane.
-    const rows = (expenses ?? []).map((e: any) => [
-      e.expense_date ?? "",
-      e.category ?? "",
-      e.description ?? "",
-      (e.amount ?? 0).toFixed(2),
-      e.receipt_url ?? "",
-    ])
-
-    const csv = [headers, ...rows]
-      .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
-      .join("\n")
+    // NO CREDENTIAL LEAVES IN THIS FILE.
+    //
+    // OWNER RULING (finding #294), verbatim: "294 no credentials should be listed
+    // in csv." What it resolves: this export used to emit `receipt_url` as its
+    // fifth column, and `receipt_url` is a SIGNED URL into the PRIVATE `receipts`
+    // bucket — minted by attachExpenseReceipt below with `bucket: "receipts"`,
+    // `public: false`, `signedTtlSeconds: 60 * 60 * 24 * 365`. Anyone holding that
+    // string fetches the receipt for a YEAR with no session and no gate, so the
+    // exported CSV did not reference the credential, it WAS the credential — and
+    // it outlived the export the moment the file was mailed to a bookkeeper.
+    //
+    // WHAT A READER SHOULD USE INSTEAD: the `Receipt` column says whether a receipt
+    // exists ("on file" / "missing" — the deduction-readiness fact, which the URL
+    // was only carrying by accident), and `Expense ID` is the locator: open that
+    // expense in the app, signed in, and follow the receipt from there, where this
+    // gate still applies. A uuid authorizes nothing on its own; RLS decides.
+    //
+    // DO NOT ADD THE URL BACK, and do not add a short-lived one "just for the
+    // export" — the owner ruled on PRESENCE, not on TTL. The columns, the
+    // vocabulary and the reasoning for rejecting the storage-path and deep-link
+    // alternatives all live in lib/finance/expense-csv.ts, which is also what the
+    // simulator runs to prove the credential is gone.
+    const exported = (expenses ?? []) as ExpenseCsvInput[]
+    const csv = buildExpenseCsv(exported)
 
     return {
       success: true,
       csv,
       filename: `expenses-${currentYear}.csv`,
-      rowCount: rows.length,
+      rowCount: exported.length,
       // The blind spot, carried back beside the number. 0 = nothing omitted;
       // >0 = that many of this agent's rows are untenanted and missing from the
       // CSV; null = the probe itself could not run, so the omission is UNKNOWN

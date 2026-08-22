@@ -6,6 +6,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { assignUserRoleAndEntitlements, assignUserToBrokerage } from "@/lib/kernel/users"
 import type { UserDomainRole } from "@/lib/kernel/users"
 import { tierAllowsRole, tierLabel, minimumTierForRole, TIER_LABELS } from "@/lib/kernel/tier-role-matrix"
+import { seatGate } from "@/lib/kernel/seat-usage"
 
 export interface UpdateUserParams {
   userId: string
@@ -120,6 +121,35 @@ export async function updateUser({ userId, updates }: UpdateUserParams): Promise
             (minTier ? ` Upgrade to ${TIER_LABELS[minTier]} to assign this role.` : ""),
         }
       }
+    }
+  }
+
+  // ── 5c. SEATS — the role matrix above bounded WHICH roles, never HOW MANY ──
+  //
+  // This surface had the tier check and no seat check, so the cap had a door in
+  // it: promoting a contact, a vendor or a lender to `agent` seats a new working
+  // user, and nothing counted. So did REACTIVATING a suspended seat holder —
+  // resolveSeatUsage excludes suspended users, so suspend/reactivate is
+  // free/charge, and only one half was gated.
+  //
+  // Same gate as the invite, the god console and the recruiting provisioner
+  // (lib/kernel/seat-usage.ts): catalogue limit, one seat count, FAIL CLOSED,
+  // and a refusal that names the upgrade tier. `subjectUserId` keeps an edit to
+  // someone ALREADY seated free — this is a cap on people, not on edits.
+  {
+    const seatTargetBrokerageId =
+      updates.brokerage_id ?? before?.brokerage_id ?? caller?.brokerage_id ?? null
+    const roleAfter = (newRole ?? before?.user_type ?? "") as string
+    const reactivating = updates.status === "active" && before?.status === "suspended"
+    const changingIntoSeat = !!newRole && newRole !== before?.user_type
+    if (seatTargetBrokerageId && (reactivating || changingIntoSeat)) {
+      const verdict = await seatGate(service, seatTargetBrokerageId, roleAfter, {
+        // A reactivation must NOT be excused by the subject already holding a
+        // seat — a suspended user is not in that set, and passing their id is
+        // what proves it. It is the same id either way; the set decides.
+        subjectUserId: userId,
+      })
+      if (!verdict.allowed) return { success: false, error: verdict.message ?? "Seat limit reached." }
     }
   }
 

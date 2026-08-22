@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { issueBucketObjectUrl } from "@/lib/storage/document-buckets"
+import { removeOrRecordOrphan } from "@/lib/storage/put-and-sign"
 
 /**
  * POST /api/listings/[listingId]/upload-document
@@ -73,7 +75,21 @@ export async function POST(
   if (upErr || !upRes) {
     return NextResponse.json({ error: `Storage upload failed: ${upErr?.message}` }, { status: 500 })
   }
-  const { data: pub } = supabase.storage.from("documents").getPublicUrl(upRes.path)
+  // A signed listing agreement and its disclosures — the legal transaction
+  // record. getPublicUrl handed back a permanent, unauthenticated,
+  // never-expiring link and this route PERSISTS it. One issuer, fail closed.
+  // NOTE: this changes only the URL STRING stored on the row. What the document
+  // is filed against, how the scanner classifies it, and the listing/compliance
+  // gate that reads those rows are untouched.
+  const issued = await issueBucketObjectUrl(supabase as never, { bucket: "documents", objectPath: upRes.path })
+  if (!issued.ok) {
+    await removeOrRecordOrphan(supabase as never, {
+      bucket: "documents", objectPath: upRes.path,
+      reason: "listing_document_sign_failed", detail: issued.reason,
+      brokerageId: listing.brokerage_id,
+    })
+    return NextResponse.json({ error: issued.reason }, { status: 502 })
+  }
 
   // Route through the universal uploader — the scanner fires async, classifies
   // against the canonical taxonomy, records per-role signature completeness and
@@ -82,7 +98,7 @@ export async function POST(
   const { uploadDocument } = await import("@/lib/documents/upload-document")
   const r = await uploadDocument({
     brokerageId:  listing.brokerage_id,
-    storageUrl:   pub.publicUrl,
+    storageUrl:   issued.url,
     fileName:     file.name,
     documentType: docTypeHint,
     listingId,

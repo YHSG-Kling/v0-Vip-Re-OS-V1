@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { seatGate } from "@/lib/kernel/seat-usage"
 
 export async function POST(req: Request) {
   try {
@@ -95,6 +96,38 @@ export async function POST(req: Request) {
     }
 
     let newUserId: string | null = existingUser?.id ?? null
+
+    // ── SEATS ─────────────────────────────────────────────────────────────────
+    // A provisioned recruit becomes user_type 'agent' — a working seat — and this
+    // route had no tier or seat check at all, so recruiting was a way past the
+    // subscription cap that the invite surface enforces. Same ONE gate as the
+    // invite, the god console, the role-change and the reactivation paths
+    // (lib/kernel/seat-usage.ts): the count comes from both role sources, the
+    // limit from the plan catalogue, and it FAILS CLOSED if any of the three
+    // reads is refused.
+    //
+    // The tenant is the RECRUIT'S brokerage, which the block above has already
+    // proved the caller may act on (own tenant, or platform staff) — never a
+    // value from the request body. `subjectUserId` keeps a re-provision of
+    // someone already seated here from being charged twice.
+    //
+    // 409, not 403: nothing is wrong with the caller or the recruit. The plan is
+    // full, and the body names the tier that fixes it so the recruiting UI can
+    // put an Upgrade button on the refusal instead of a shrug.
+    {
+      const verdict = await seatGate(service, recruit.brokerage_id as string, "agent", {
+        subjectUserId: existingUser?.id ?? null,
+      })
+      if (!verdict.allowed) {
+        return NextResponse.json({
+          error: verdict.message ?? "Seat limit reached.",
+          reason: verdict.reason,
+          upgradeTo: verdict.decision?.upgradeTo ?? null,
+          upgradeSeats: verdict.decision?.upgradeSeats ?? null,
+          seatLimit: verdict.decision?.limit ?? null,
+        }, { status: 409 })
+      }
+    }
 
     if (!existingUser) {
       // Send auth invite — creates auth.users record

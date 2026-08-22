@@ -20,6 +20,7 @@ import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
 import { normalizeOverrideType } from "../lib/kernel/override-vocab"
 import { parseSeatOverride, effectiveSeatLimit, seatCheck } from "../lib/kernel/tier-role-matrix"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -101,18 +102,54 @@ function sourceLayer() {
   // platform staff already hold the seat_override lever, so for them a stop is
   // actionable rather than a dead end. Both still read the ONE override parser and
   // the ONE seat resolver, which is what "one enforcement point" protects.
-  check("BOTH invite gates resolve seats through parseSeatOverride (one enforcement point)",
-    /seatDecision\(\s*\n?\s*tenantTier, seatCount, parseSeatOverride\(/.test(src("app/actions/admin/invite-user.ts"))
-    && /seatCheck\(targetTier, seatCount, parseSeatOverride\(/.test(src("app/actions/superadmin/tenant-users.ts")))
+  // ONE ENFORCEMENT POINT IS NOW LITERAL. Both gates used to compose the pieces
+  // themselves (each its own resolveSeatUsage + parseSeatOverride + decision),
+  // which is one enforcement RULE written twice; they now call seatGate, the
+  // single async gate in lib/kernel/seat-usage.ts that the role-change,
+  // reactivation and recruiting paths also call. The override parser and the
+  // seat resolver are reached through it, so the probe follows them there.
+  check("BOTH invite gates resolve seats through the ONE gate (one enforcement point)",
+    /seatGate\(/.test(src("app/actions/admin/invite-user.ts"))
+    && /seatGate\(/.test(src("app/actions/superadmin/tenant-users.ts")))
   check("…and the tenant gate offers the upgrade instead of a dead end",
-    /seatDecisionMessage/.test(src("app/actions/admin/invite-user.ts"))
+    /verdict\.message/.test(src("app/actions/admin/invite-user.ts"))
     && !/Deactivate a user to free a seat/.test(src("app/actions/admin/invite-user.ts")))
-  check("…and BOTH take that count from the one seat resolver",
-    /resolveSeatUsage\(/.test(src("app/actions/admin/invite-user.ts"))
-    && /resolveSeatUsage\(/.test(src("app/actions/superadmin/tenant-users.ts")))
+  check("…and the gate they share reads the ONE override parser and the ONE seat resolver",
+    /parseSeatOverride\(/.test(src("lib/kernel/seat-usage.ts"))
+    && /await resolveSeatUsage\(/.test(src("lib/kernel/seat-usage.ts")))
+  // THE METER'S ROUTE GOT LONGER AND STRICTER, so this probe follows it.
+  //
+  // It used to require the literal `effectiveSeatLimit(planTier, parseSeatOverride(`
+  // — the meter resolved the LIMIT from the shared resolver and then re-derived
+  // the at-capacity verdict inline (`seatLimit !== null && seatCount >= seatLimit`),
+  // a third spelling of a rule the gate already owns. The meter now calls
+  // `seatCheck`, which is computed BY `seatDecision`, which resolves through
+  // `effectiveSeatLimit` — so the shared resolution this check was defending is
+  // still there, with the VERDICT shared as well, not just the number. Asserted
+  // at both ends so the chain cannot be cut in the middle.
+  const meterSrc = src("app/dashboard/admin/users/page.tsx")
+  // CODE, NOT PROSE (CLAUDE.md §2). The absence half below asks whether the
+  // inline at-capacity derivation is GONE, and the comment explaining why it is
+  // gone necessarily quotes it — so a raw-text scan accuses the very note that
+  // records the fix. stripComments() is the one correct scanner in this repo;
+  // hand-rolling a second one is the defect §2 names.
+  const meterCode = stripComments(meterSrc)
+  check("POSITIVE CONTROL — the seat meter's source is visible to this scan",
+    meterCode.length > 0 && /seatCount/.test(meterCode))
   check("the tenant seat meter uses the SAME resolution and says 'custom limit' when overridden",
-    /effectiveSeatLimit\(planTier, parseSeatOverride\(/.test(src("app/dashboard/admin/users/page.tsx"))
-    && /custom limit/.test(src("app/dashboard/admin/users/page.tsx")))
+    /seatCheck\(planTier, seatCount, parseSeatOverride\(/.test(meterCode)
+    && /custom limit/.test(meterCode))
+  check("  ↳ …and seatCheck is the gate's own verdict, not a second copy of the arithmetic",
+    /seatDecision\(tier, currentSeatCount, seatOverride, 1, catalog\)/.test(
+      stripComments(src("lib/kernel/tier-role-matrix.ts"))))
+  const INLINE_CAPACITY = /seatLimit !== null && seatCount >= seatLimit/
+  check("  ↳ …and the meter no longer re-derives at-capacity inline",
+    !INLINE_CAPACITY.test(meterCode))
+  check("  ↳ POSITIVE CONTROL: that inline finder still recognises the spelling it replaced",
+    INLINE_CAPACITY.test(
+      'className={`${seatLimit !== null && seatCount >= seatLimit ? "text-red-600" : ""}`}'))
+  check("  ↳ POSITIVE CONTROL: stripComments left the meter's CODE intact, it did not just empty it",
+    /seatCheck\(/.test(meterCode) && meterCode.length > meterSrc.length / 3)
 }
 
 async function liveLayer() {

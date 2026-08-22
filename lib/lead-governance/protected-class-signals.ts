@@ -32,9 +32,8 @@
  *      did not vanish (CLAUDE.md §1); it moved to arm 3 and to the callers that
  *      read the annotation.
  *
- *   3. REFUSE, at the act that is actually restricted — the two functions that
- *      govern SEGMENTING A POPULATION BY A PROTECTED CLASS still throw / still
- *      strip:
+ *   3. REFUSE, at the act that is actually restricted — OUTBOUND AD AUDIENCE
+ *      TARGETING, and since 2026-08-22 that is the ONLY act that refuses:
  *        · `assertAudienceSegmentationAllowed` / `protectedClassSegmentationIn`
  *          — an ad audience (Meta/Google custom audience) may not be defined by
  *          a protected-class rule. Enforced on BOTH halves (finding #298 closed
@@ -50,13 +49,37 @@
  *          enrichment, signal, scoring, sourcing or buyer-property-search caller
  *          reaches this arm — they call the LABELLING arms above, which is the
  *          whole point of splitting the file this way.
- *        · `stripProtectedClassCriteria` — we do not ask a THIRD-PARTY DATA
- *          BROKER to hand us a population selected by protected class
- *          ("give me owners aged 65+"). That is procurement of a segmented
- *          population, which is the same act as targeting one; it is not the
- *          enrichment of a lead we already hold, which the ruling exempts. See
- *          the note on that function for exactly what it does and does not
- *          reach on live traffic.
+ *        · `screenProtectedClassCriteria(criteria, "ad_audience")` — the same
+ *          refusal for a criteria PAYLOAD rather than a segmentation rule.
+ *
+ * ── FINDING #297 — THE LAST DATA-LANE REFUSAL WAS RELEASED (2026-08-22) ──────
+ * Owner ruling, verbatim: "297 just release it from fairhousing." And, in the
+ * same wave: "all motivatied seller classifiers are necessary for data
+ * especially demographics and protected class" and "304 needs inherited and
+ * probate".
+ *
+ * `stripProtectedClassCriteria` was the one remaining fair-housing REFUSAL on
+ * the data lane. An earlier lane kept it deliberately, on the reading that
+ * asking a data broker for "owners aged 65+" is procurement of a segmented
+ * population rather than enrichment. The owner has now ruled the other way for
+ * the SOURCING lane specifically, and the reason is the one the standing scope
+ * ruling already gave: the protected-class attribute is what lets us pick the
+ * EDUCATION and the CHANNEL, and a sourcing query that cannot name it produces
+ * a dataset that cannot answer the question the owner is asking of it.
+ *
+ * SO THE CAPABILITY WAS LANE-PARAMETERISED RATHER THAN DELETED (CLAUDE.md §1 —
+ * the refusal moved lanes, it did not vanish). `screenProtectedClassCriteria`
+ * takes an EXPLICIT `ProtectedClassLane`:
+ *   · "data_sourcing" — scraping, enrichment, signals, scoring, sourcing, buyer
+ *     property search. NOTHING IS REMOVED. Every protected-class criterion is
+ *     returned intact and LABELLED with the classifier's reason sentence, so the
+ *     caller can write down what it asked for and on what grounds.
+ *   · "ad_audience"   — outbound ad audience targeting. The old strip, verbatim,
+ *     plus the same labels.
+ * The lane is REQUIRED and an unrecognised one THROWS (CLAUDE.md §4 — a gate
+ * that cannot tell which lane it is on must refuse, never pass). There is no
+ * default: a default is how the ads lane silently inherits the data lane's
+ * exemption, which is the one regression this split exists to make impossible.
  *
  * ── WHY THE DATA IS WORTH HOLDING ───────────────────────────────────────────
  * Our property-data provider (BatchData) sells, in the SAME response row as the
@@ -72,12 +95,21 @@
  * Beyond the statutory list, two provider signals are classified protected by
  * owner ruling rather than by statute, and they are classified here on the same
  * footing:
- *   · `inherited` / probate — the provider's own quickList slug. Ruled out by a
- *     standing owner instruction asking for a fair-housing filter on probate.
- *     It is also a familial-status proxy in substance: the fact it encodes is a
- *     death in a family.
+ *   · `inherited` / probate — the provider's own quickList slug. It is a
+ *     familial-status proxy in substance: the fact it encodes is a death in a
+ *     family.
  *   · divorce — `demographics.recentlyDivorced`. Marital status, protected by
  *     statute in many states and by the same owner instruction here.
+ *
+ * THOSE TWO TOKENS STAY IN THE VOCABULARY AND THIS IS THE WHOLE POINT OF
+ * FINDING #297'S SHAPE. The owner ruled ("304 needs inherited and probate")
+ * that the seller-signal lane must SOURCE them. Deleting "inherited",
+ * "probate", "heir", "deceased" and "senior" from PROTECTED_CLASS_TOKENS would
+ * have delivered that — and would simultaneously have opened an ad audience
+ * named "probate-heirs-55plus", because `protectedClassSegmentationIn` reads
+ * this same vocabulary. The tokens are what let the ads gate keep refusing.
+ * So the tokens are UNTOUCHED and the LANE decides what the classification
+ * licenses: sourced-and-labelled on the data lane, refused on the ads lane.
  *
  * ── WHAT THE CLASSIFICATION MEANS NOW ────────────────────────────────────────
  * `isProtectedClassSource(x) === true` no longer means "refuse this". It means
@@ -115,6 +147,50 @@
  * notices it.
  */
 export const PROTECTED_CLASS_NAMESPACES: readonly string[] = ["demographics", "demographic"]
+
+/**
+ * THE TWO LANES, AND THE ONLY TWO. Added 2026-08-22 for finding #297.
+ *
+ * A protected-class classification does not mean one thing — it means one thing
+ * per LANE, and before this type existed the code could only express one of the
+ * two. Every caller of `screenProtectedClassCriteria` must name which act it is
+ * performing:
+ *
+ *   · "data_sourcing"  — scraping, enrichment, SIGNALS, SCORING, SOURCING,
+ *     buyer property search. The owner's standing scope ruling exempts these:
+ *     "do not run the compliance or fair housing on scrapping, enrichment,
+ *     scoring, sourcing because we determine the kind of education in channels
+ *     by the age group and other ways to use it without violating the rules."
+ *     Nothing is removed. Everything protected is LABELLED.
+ *
+ *   · "ad_audience"    — choosing who an outbound housing ad is SHOWN TO. This
+ *     is the restricted act (Fair Housing Act, 42 U.S.C. § 3604(c); HUD's
+ *     2019-2022 actions against Meta), and it is not exempted by anything. The
+ *     protected criteria are STRIPPED and named.
+ *
+ * A lane outside this list throws. There is deliberately no default and no
+ * fallback: the failure mode this type exists to prevent is the ads lane
+ * quietly inheriting the data lane's exemption because somebody omitted an
+ * argument (CLAUDE.md §4 — fail closed).
+ */
+export const PROTECTED_CLASS_LANES = ["data_sourcing", "ad_audience"] as const
+export type ProtectedClassLane = (typeof PROTECTED_CLASS_LANES)[number]
+const LANES = new Set<string>(PROTECTED_CLASS_LANES)
+
+/**
+ * ONE protected-class classification, with the classifier's REASON SENTENCE
+ * attached — the shape a caller that LABELS writes down.
+ *
+ * `source` is whatever was classified: a provider field path
+ * (`demographics.age`), a filter name (`min_owner_age`), or a criterion
+ * rendered with its offending value (`quicklist=inherited`, `orQuickLists[senior-owner]`).
+ * `reason` is `protectedClassReasonFor`'s sentence verbatim, never a rewording:
+ * a stored row and an operator error message must be able to say the same thing.
+ */
+export interface ProtectedClassBasis {
+  source: string
+  reason: string
+}
 
 /**
  * Protected-class WORD tokens. A field path is split into words and classified
@@ -348,74 +424,207 @@ export function protectedClassSourcesBySignalType(
 }
 
 /**
- * PURE. Remove protected-class criteria from an outbound DATA-BROKER query.
+ * PURE. The same map as `protectedClassSourcesBySignalType`, but carrying the
+ * classifier's REASON SENTENCE beside each source instead of the bare name.
  *
- * THIS ARM STILL REFUSES, AND HERE IS WHY IT SURVIVED THE RULING. The ruling
- * exempts enrichment of a lead we already hold. This function does not govern
- * that; it governs asking a third party to HAND US A POPULATION SELECTED BY A
- * PROTECTED CLASS — "give me owners aged 65+", "give me households with
- * children". Procuring a segmented population and targeting a segmented
- * population are the same act with the same statute behind them, which is why
- * this sits beside `assertAudienceSegmentationAllowed` rather than beside the
- * labelling arms. A lookup of ONE lead's own address is untouched by it, so
- * nothing the ruling exempts is blocked here.
+ * WHY BOTH EXIST, AND WHY THIS IS NOT A SECOND SPELLING OF ONE IDEA
+ * (CLAUDE.md §6). They answer two different questions and have two different
+ * readers. `protectedClassSourcesBySignalType` answers "which sources" and is
+ * read by code that BRANCHES — the ad-audience gate, the education selector.
+ * This one answers "which sources, and why are they protected" and is read by
+ * code that PERSISTS: lib/external/batchdata-seller-signals.ts writes it into
+ * `motivated_seller_signals.signal_details.protected_class_basis`, so an auditor
+ * reading a stored row a year from now can tell that this signal was derived
+ * from protected-class data and read the grounds without having the classifier
+ * in front of them.
  *
- * Returns the kept criteria and the NAMES of what was removed. The names are
- * returned rather than swallowed because a silently-narrowed query is the
- * measurement defect this repo keeps paying for: the caller reports the removal
- * so "we did not segment on that" is visible, not inferred from a smaller
- * result count.
- *
- * WHAT THIS DOES AND DOES NOT DO ON LIVE TRAFFIC.
- * KEYS are always token-scanned. VALUES are scanned only for the provider's
- * SLUG_VALUED_KEYS (below) — the keys whose value IS the filter. The one live
- * call site, lib/external/batchdata-seller-signals.ts:978, passes only
- * `{ query: "<address>, <city>, <state>, <zip>" }`: the key passes and the
- * value is never examined, so that call removes nothing and cannot. `removed`
- * coming back empty from it therefore means "nothing here was gateable", NOT
- * "nothing here violated". That is the address-lookup shape the ruling exempts
- * anyway. This function is the forward guard for the population-selection
- * payload somebody will eventually assemble; it is exercised for real by
- * scripts/batchdata-seller-signal-simulator.ts, which passes protected keys and
- * protected quickList slugs and asserts both are refused.
+ * The reason is `protectedClassReasonFor`'s sentence VERBATIM. A stored
+ * paraphrase drifts from the live classifier and the drift is invisible.
  */
+export function protectedClassBasisBySignalType(
+  specs: readonly SellerSignalSourceSpec[],
+): Record<string, readonly ProtectedClassBasis[]> {
+  const out: Record<string, readonly ProtectedClassBasis[]> = {}
+  for (const spec of specs) {
+    const sources = spec.protectedClassSources ?? spec.sources.filter(isProtectedClassSource)
+    const basis: ProtectedClassBasis[] = []
+    for (const source of sources) {
+      const reason = protectedClassReasonFor(source)
+      // A source in the label list whose reason reads null is a CONTRADICTION,
+      // not a row to file quietly: the two derive from the same classifier, so
+      // it would mean the label and the reason disagree. It is dropped and the
+      // count difference is visible to the caller, which is why the simulator
+      // asserts basis-length against source-length rather than trusting it.
+      if (reason) basis.push({ source, reason })
+    }
+    if (basis.length > 0) out[spec.signalType] = Object.freeze(basis)
+  }
+  return out
+}
+
 /**
  * Criteria keys whose VALUE is itself the filter — the provider's quickList
  * slugs. `senior-owner` and `inherited` ride in here, not in the key, so the
- * value has to be gated too.
+ * value has to be classified too.
  *
- * SCOPED, NOT UNIVERSAL, and the scope is load-bearing. Gating every string
- * value would refuse `property_type_category: "Single Family Residential"` —
+ * SCOPED, NOT UNIVERSAL, and the scope is load-bearing. Classifying every string
+ * value would flag `property_type_category: "Single Family Residential"` —
  * a building type, not a household — and the author who hit that would weaken
- * the gate rather than narrow it. Narrowing it here is that fix, made once.
+ * the classifier rather than narrow it. Narrowing it here is that fix, made once.
+ *
+ * The five spellings are the ones the provider's own search API publishes,
+ * verified live on 2026-08-22 against BatchData's property-search criteria
+ * catalogue: `quicklist`, `quicklists`, `or_quicklists` — plus the camelCase
+ * wire spellings this tree assembles (`orQuickLists`, `notQuickLists`,
+ * `andQuickLists`). The key is normalised to letters-only before lookup, so
+ * `or_quicklists`, `orQuickLists` and `ORQUICKLISTS` are one entry.
  */
 const SLUG_VALUED_KEYS = new Set([
   "quicklist", "quicklists", "orquicklists", "notquicklists", "andquicklists",
 ])
 
-export function stripProtectedClassCriteria(
+/**
+ * PURE. Classify the protected-class criteria in an outbound provider query and
+ * act on them ACCORDING TO THE LANE.
+ *
+ * ── WHAT THIS REPLACED (2026-08-22, finding #297) ────────────────────────────
+ * `stripProtectedClassCriteria` used to be the whole capability and it was
+ * LANE-BLIND: it stripped for every caller. It survives immediately below, with
+ * the lane bound to `"ad_audience"` — byte-for-byte the same strip, the same
+ * `removed` names, the same SLUG_VALUED_KEYS scoping — so the ads lane's
+ * behaviour is unchanged and there is one implementation, not two.
+ *
+ * Owner ruling, verbatim: "297 just release it from fairhousing." The old
+ * function refused on EVERY lane, and its only live caller was
+ * lib/external/batchdata-seller-signals.ts's provider lookup — a SOURCING call,
+ * which the standing scope ruling exempts. Releasing it by deleting the refusal
+ * outright would have released it for the ads lane too, where the same payload
+ * shape ("give me owners aged 65+") is the restricted act. So the refusal did
+ * not go away: it became conditional on a lane the caller must state.
+ *
+ * WHAT EACH LANE DOES
+ *   · "data_sourcing" — `removed` is ALWAYS empty and `criteria` is returned
+ *     with every key and every quickList slug intact, including the protected
+ *     ones. `labelled` carries one `ProtectedClassBasis` per protected
+ *     criterion, with the classifier's reason sentence, so the caller can record
+ *     WHAT it asked for and ON WHAT GROUNDS.
+ *   · "ad_audience"   — the protected criteria are REMOVED and named in
+ *     `removed`, and also appear in `labelled`. A caller that refuses outright
+ *     reads `removed`; a caller that records reads `labelled`.
+ *
+ * `labelled` is populated on BOTH lanes on purpose. A removal that is not also
+ * a labelled fact is a narrowing nobody can audit afterwards, and this repo has
+ * paid for silently-narrowed queries before: the caller reports it so "we did
+ * not segment on that" is visible, not inferred from a smaller result count.
+ *
+ * WHAT THIS DOES AND DOES NOT REACH ON LIVE TRAFFIC.
+ * KEYS are always token-scanned. VALUES are scanned only for SLUG_VALUED_KEYS.
+ * The one live call site, lib/external/batchdata-seller-signals.ts's
+ * `realBatchDataPropertyLookup`, passes only
+ * `{ query: "<address>, <city>, <state>, <zip>" }`: the key passes and the value
+ * is never examined, so that call classifies nothing and cannot. An empty
+ * `labelled` from it means "nothing here was classifiable", NOT "nothing here
+ * was protected". That is the single-address lookup shape the ruling exempts
+ * either way. The population-selection payload somebody will eventually
+ * assemble is what both lanes are really for, and both are exercised for real
+ * by scripts/batchdata-seller-signal-simulator.ts.
+ *
+ * FAIL CLOSED ON THE LANE ITSELF. An unrecognised lane throws rather than
+ * falling back to either behaviour. Falling back to "data_sourcing" would let a
+ * typo open ad targeting; falling back to "ad_audience" would let a typo
+ * silently narrow a sourcing query. Neither is a thing to guess at.
+ */
+export function screenProtectedClassCriteria(
   criteria: Record<string, unknown> | null | undefined,
-): { criteria: Record<string, unknown>; removed: string[] } {
+  lane: ProtectedClassLane,
+): {
+  lane: ProtectedClassLane
+  criteria: Record<string, unknown>
+  removed: string[]
+  labelled: ProtectedClassBasis[]
+} {
+  if (!LANES.has(lane as string)) {
+    throw new Error(
+      `[protected-class-signals] REFUSED: unknown protected-class lane "${String(lane)}". ` +
+      `A caller that cannot say which act it is performing must not be screened at all ` +
+      `(expected one of: ${PROTECTED_CLASS_LANES.join(", ")}).`,
+    )
+  }
+  const strip = lane === "ad_audience"
   const kept: Record<string, unknown> = {}
   const removed: string[] = []
+  const labelled: ProtectedClassBasis[] = []
+
   for (const [key, value] of Object.entries(criteria ?? {})) {
-    if (isProtectedClassSource(key)) { removed.push(key); continue }
+    const keyReason = protectedClassReasonFor(key)
+    if (keyReason) {
+      labelled.push({ source: key, reason: keyReason })
+      if (strip) { removed.push(key); continue }
+      kept[key] = value
+      continue
+    }
     const slugValued = SLUG_VALUED_KEYS.has(key.toLowerCase().replace(/[^a-z]/g, ""))
     if (Array.isArray(value)) {
       const keptItems: unknown[] = []
       for (const v of value) {
-        if (slugValued && typeof v === "string" && isProtectedClassSource(v)) { removed.push(`${key}[${v}]`); continue }
+        const itemReason = slugValued && typeof v === "string" ? protectedClassReasonFor(v) : null
+        if (itemReason) {
+          labelled.push({ source: `${key}[${v}]`, reason: itemReason })
+          if (strip) { removed.push(`${key}[${v}]`); continue }
+        }
         keptItems.push(v)
       }
+      // An array emptied by the strip drops its key entirely rather than being
+      // sent as `[]`: the provider reads an empty quickList array as "match
+      // nothing", which would turn a narrowed query into a silently dead one.
       if (keptItems.length > 0) kept[key] = keptItems
       continue
     }
-    if (slugValued && typeof value === "string" && isProtectedClassSource(value)) {
-      removed.push(`${key}=${value}`); continue
+    const valueReason = slugValued && typeof value === "string" ? protectedClassReasonFor(value) : null
+    if (valueReason) {
+      labelled.push({ source: `${key}=${value}`, reason: valueReason })
+      if (strip) { removed.push(`${key}=${value}`); continue }
     }
     kept[key] = value
   }
-  return { criteria: kept, removed }
+  return { lane, criteria: kept, removed, labelled }
+}
+
+/**
+ * THE AD-AUDIENCE STRIP, PINNED TO ITS LANE. Refuses nothing else, and cannot
+ * be called for anything else.
+ *
+ * SURVIVOR: `screenProtectedClassCriteria` (immediately above). This is that
+ * function with the lane bound to `"ad_audience"` — no second implementation,
+ * no second vocabulary, and a caller that wants the data lane must name it.
+ *
+ * ── WHY IT KEPT ITS NAME THROUGH FINDING #297 ────────────────────────────────
+ * Before 2026-08-22 this was a lane-BLIND strip, and its one live caller was
+ * the seller-signal provider lookup — a sourcing call the owner's standing
+ * scope ruling exempts. Owner ruling, verbatim: "297 just release it from
+ * fairhousing." So it was released THERE, and only there: the caller moved to
+ * `screenProtectedClassCriteria(..., "data_sourcing")`.
+ *
+ * What did NOT change is what this name does. It strips, and the name is
+ * therefore still literally true — unlike `redactProtectedClassFields` below,
+ * whose header records the opposite situation and calls itself a known lie. The
+ * two are the same shape of edit with opposite verdicts, which is worth stating
+ * so the next author does not "tidy" this one away by analogy with that one.
+ *
+ * WHO CALLS IT: no production caller today. That is BY DESIGN and is recorded
+ * rather than left to be rediscovered — see the header on the survivor. The
+ * live ads path refuses through `assertAudienceSegmentationAllowed`, which
+ * governs a segmentation RULE; this governs a criteria PAYLOAD, which is the
+ * shape a population-procurement call would take, and it is exercised for real
+ * by scripts/batchdata-seller-signal-simulator.ts and
+ * scripts/compliance-scope-simulator.ts. An unwired forward guard on the one
+ * lane that still refuses is work to keep, not work to delete (CLAUDE.md §1).
+ */
+export function stripProtectedClassCriteria(
+  criteria: Record<string, unknown> | null | undefined,
+): { criteria: Record<string, unknown>; removed: string[]; labelled: ProtectedClassBasis[] } {
+  const { criteria: kept, removed, labelled } = screenProtectedClassCriteria(criteria, "ad_audience")
+  return { criteria: kept, removed, labelled }
 }
 
 /**
@@ -516,7 +725,7 @@ export function redactProtectedClassFields(
  * from turning the gate off.
  *
  * BOTH KEYS AND STRING VALUES are scanned, and that is wider than
- * `stripProtectedClassCriteria`'s scoping. A segmentation rule is authored by a
+ * `screenProtectedClassCriteria`'s scoping. A segmentation rule is authored by a
  * human in free text — `{ filters: { contact_tags: ["seniors-55plus"] } }`
  * hides the protected class in the VALUE, and there is no provider vocabulary
  * to scope to. The cost is that a tag literally containing a protected word is

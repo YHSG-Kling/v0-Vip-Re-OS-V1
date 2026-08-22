@@ -31,6 +31,25 @@ const ALLOWED_FULFILLMENT_ROLES = new Set([
   "broker","broker_admin","admin","superadmin","compliance_officer",
 ])
 
+/**
+ * Column names that carry AUTHENTICATION material rather than personal data, and
+ * so must never ride out in an export bundle. Owner ruling (finding #294): "no
+ * credentials should be listed in csv" — ruled on the expense CSV, applied here
+ * because this bundle is an export too and leaves the building the same way.
+ *
+ * A DENYLIST on the way out, not an allowlist on the way in: a data-subject
+ * export is a legal completeness obligation, so a new column must reach the
+ * subject by default. See fulfillExportRequestAction for the measurement that
+ * made this live rather than theoretical.
+ *
+ * Deliberately NOT matched: `*_url` columns (personal_website_url, the social
+ * handles, avatar_url) — those are the subject's own published links and ARE
+ * their personal data. If a storage signed URL is ever added to a table read
+ * here, add it by NAME; a blanket url match would gut the bundle.
+ */
+const EXPORT_SECRET_COLUMN =
+  /(password|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|private[_-]?key|credential|_hash$|^hash$|otp|mfa|totp)/i
+
 // ── PUBLIC: SUBMIT ───────────────────────────────────────────────────────────
 
 export type DSARType = "export" | "delete" | "access" | "portability" | "correction" | "opt_out_sale" | "opt_out_sharing"
@@ -338,12 +357,45 @@ export async function fulfillExportRequestAction(requestId: string): Promise<
     }
   }
 
+  // NO CREDENTIAL LEAVES IN AN EXPORT — owner ruling (finding #294), verbatim:
+  // "294 no credentials should be listed in csv." Ruled on the expense CSV; it is
+  // a rule about EXPORTS, and this bundle is the largest export in the tree.
+  //
+  // The two `select("*")` reads above are deliberate and stay: a data-subject
+  // export is a LEGAL completeness obligation, so a column added tomorrow must
+  // reach the subject without anyone remembering to widen an allowlist. That is
+  // exactly why the credential filter is a DENYLIST applied on the way OUT rather
+  // than an allowlist applied on the way in — completeness by default, secrets
+  // never.
+  //
+  // MEASURED live 2026-08-22 against hrvaqgvukzxfskkcrwbt: `users.password_hash`
+  // exists and 1 of 23 rows carries one, so this was reachable, not theoretical.
+  // A password hash is not a bearer credential — it cannot be replayed at a login
+  // form — but it is offline-crackable credential material, and it has no business
+  // in a file handed to a requester over email. WHAT A READER SHOULD USE INSTEAD:
+  // nothing; authentication material is not personal data the subject is owed, and
+  // its absence is stated in the bundle rather than left as a silent hole.
+  const redactedColumns: string[] = []
+  const stripSecrets = <T extends Record<string, unknown> | null>(row: T): T => {
+    if (!row) return row
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(row)) {
+      if (EXPORT_SECRET_COLUMN.test(k)) { redactedColumns.push(k); continue }
+      out[k] = v
+    }
+    return out as T
+  }
+
   const bundle = {
     generated_at:        new Date().toISOString(),
     subject_email:       email,
     brokerage_id:        req.brokerage_id,
-    user_record:         user.data,
-    contact_records:     contacts.data ?? [],
+    user_record:         stripSecrets(user.data as Record<string, unknown> | null),
+    contact_records:     (contacts.data ?? []).map((c: any) => stripSecrets(c)),
+    // Named, not silent: a bundle that quietly drops a column is indistinguishable
+    // from a bundle whose source was refused, and this file already refuses to ship
+    // a silently short export.
+    redacted_columns:    Array.from(new Set(redactedColumns)),
     communications:      [
       ...(messages.data ?? []).map((m: any) => ({ source: "messages", ...m })),
       ...(isaOutreach.data ?? []).map((o: any) => ({ source: "isa_outreach_log", ...o })),

@@ -107,8 +107,17 @@ export async function upsertFinancialProfile(params: {
 }
 
 // ─── RECORD DOCUMENT UPLOAD ───────────────────────────────────────────────────
+//
+// NO LONGER EXPORTED. In a "use server" file every export is a public HTTP
+// endpoint (CLAUDE.md §4), and this one takes a caller-supplied `documentUrl`
+// and writes it verbatim onto client_documents — which is precisely how a
+// PUBLIC blob URL for a buyer's pre-approval got persisted from two different
+// surfaces. Its public survivor is `uploadFinancialVerificationDocument` below
+// (this file), which takes the BYTES and mints the URL itself, so no caller can
+// hand one in. Kept as an internal helper because the row-writing half is
+// correct and is reused verbatim by that survivor.
 
-export async function recordDocumentUpload(params: {
+async function recordDocumentUpload(params: {
   contactId: string
   brokerageId?: string  // ignored — derived from contact
   uploadedBy?: string  // ignored — derived from session
@@ -144,6 +153,91 @@ export async function recordDocumentUpload(params: {
 
   if (error) return { success: false, error: error.message }
   return { success: true, docId: data.id }
+}
+
+// ─── UPLOAD A FINANCIAL VERIFICATION DOCUMENT (bytes in, signed URL out) ──────
+//
+// THE ONE server-side door for a buyer's pre-approval / proof-of-funds BYTES,
+// for every surface — the agent CRM panel and the buyer portal both land here.
+//
+// Before this existed each surface uploaded on its own and each got it wrong in
+// its own way: the CRM panel put the file in the PUBLIC `agent-media` bucket and
+// took a getPublicUrl (with a `URL.createObjectURL` blob: fallback that is dead
+// the moment the tab closes), and the portal card used @vercel/blob's client
+// upload with access:"public". Both then PERSISTED that URL onto the
+// client_documents row, so the permanent unauthenticated link outlived the
+// upload.
+//
+// Here the bytes go to the PRIVATE `client-documents` bucket — the bucket
+// already created private for exactly this class — and the URL comes from the
+// ONE issuer (lib/storage/document-buckets.ts#issueBucketObjectUrl).
+// FAIL CLOSED: if the URL cannot be signed the object is removed and the caller
+// is refused. There is no public fallback and no object-URL fallback.
+//
+// Gate first, then the service client: requireContactAccess above resolves the
+// tenant from the SESSION and the contact, never from a parameter (CLAUDE.md §4).
+
+export async function uploadFinancialVerificationDocument(params: {
+  contactId: string
+  fileName: string
+  contentType: string
+  /** The file, base64-encoded. next.config.ts sets serverActions.bodySizeLimit to 8mb. */
+  base64: string
+  docCategory: "pre_approval_letter" | "proof_of_funds"
+  verificationAmount?: number
+  verificationLender?: string
+  expirationDate?: string
+}): Promise<{ success: boolean; docId?: string; error?: string }> {
+  const access = await requireContactAccess(params.contactId)
+  if (!access.ok) return { success: false, error: access.error }
+
+  let buffer: Buffer
+  try {
+    buffer = Buffer.from(params.base64, "base64")
+  } catch {
+    return { success: false, error: "Could not read the uploaded file" }
+  }
+  if (buffer.length === 0) return { success: false, error: "The uploaded file is empty" }
+  if (buffer.length > 8 * 1024 * 1024) return { success: false, error: "File exceeds the 8MB limit" }
+
+  const { issueBucketObjectUrl } = await import("@/lib/storage/document-buckets")
+  const { removeOrRecordOrphan } = await import("@/lib/storage/put-and-sign")
+  const { DOCUMENT_BUCKET } = await import("@/lib/kernel/document-autofile")
+
+  const svc = createServiceClient()
+  const safe = (params.fileName || "document").replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120)
+  const objectPath = `${access.brokerageId}/buyer-financial/${params.contactId}/${Date.now()}-${safe}`
+
+  // supabase-js RESOLVES refusals (CLAUDE.md §3) — read the error.
+  const { error: upErr } = await svc.storage
+    .from(DOCUMENT_BUCKET)
+    .upload(objectPath, buffer, {
+      contentType: params.contentType || "application/octet-stream",
+      upsert: false,
+    })
+  if (upErr) return { success: false, error: upErr.message }
+
+  const issued = await issueBucketObjectUrl(svc as never, { bucket: DOCUMENT_BUCKET, objectPath })
+  if (!issued.ok) {
+    await removeOrRecordOrphan(svc as never, {
+      bucket: DOCUMENT_BUCKET,
+      objectPath,
+      reason: "financial_verification_sign_failed",
+      detail: issued.reason,
+      brokerageId: access.brokerageId,
+    })
+    return { success: false, error: issued.reason }
+  }
+
+  return recordDocumentUpload({
+    contactId:          params.contactId,
+    documentName:       params.fileName,
+    documentUrl:        issued.url,
+    docCategory:        params.docCategory,
+    verificationAmount: params.verificationAmount,
+    verificationLender: params.verificationLender,
+    expirationDate:     params.expirationDate,
+  })
 }
 
 // ─── MARK AS FINANCIALLY VERIFIED ────────────────────────────────────────────

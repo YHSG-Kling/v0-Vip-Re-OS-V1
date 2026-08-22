@@ -3,7 +3,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import {
   effectiveSeatLimit, parseSeatOverride, seatDecision, seatDecisionMessage, agentRoleAdvisory,
 } from "@/lib/kernel/tier-role-matrix"
-import { resolveSeatUsage } from "@/lib/kernel/seat-usage"
+import { resolveSeatUsage, resolveCatalogSeatLimits } from "@/lib/kernel/seat-usage"
 import { redirect } from "next/navigation"
 import { SettingsControlOSClient } from "./settings-control-os-client"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
@@ -143,18 +143,27 @@ export default async function SettingsControlOSPage() {
   const seatUsage = await resolveSeatUsage(service, brokerageId)
   const holderIds = new Set(seatUsage.seatHolderIds)
   const seatHolders = users.filter((u) => holderIds.has(u.id))
+  // The LIMIT comes from the plan catalogue (subscription_tiers.max_agents), the
+  // same read the invite gate enforces on — so what this panel shows and what the
+  // gate refuses can never be two different numbers. A refused catalogue read
+  // degrades to the tier literals HERE (a display telling the truth it can reach);
+  // the GATE refuses instead, because a display that guesses low costs nothing and
+  // a gate that guesses high sells seats nobody paid for.
+  const catalogSeats = await resolveCatalogSeatLimits(service)
   const { limit: seatLimit, overridden: seatOverridden } =
-    effectiveSeatLimit(brokerageRow?.plan_tier ?? null, parseSeatOverride(brokerageRow?.billing_metadata))
+    effectiveSeatLimit(brokerageRow?.plan_tier ?? null, parseSeatOverride(brokerageRow?.billing_metadata), catalogSeats.limits)
 
-  // Over the limit is a BILLING CHOICE, not a wall (owner's ruling): the panel
-  // names the upgrade first and the per-seat price second. And the agent-role
-  // advisory — a workspace with seats but no Agent looks staffed and is inert,
-  // because contacts, deals, listings and campaigns all attach to an agent.
+  // Over the limit NAMES THE UPGRADE (owner's ruling: solo → team, team →
+  // brokerage). The per-seat price appears only where there is no tier to climb.
+  // And the agent-role advisory — a workspace with seats but no Agent looks
+  // staffed and is inert, because contacts, deals, listings and campaigns all
+  // attach to an agent.
   const seatDecisionForTenant = seatDecision(
     brokerageRow?.plan_tier ?? null,
     seatUsage.seatCount,
     parseSeatOverride(brokerageRow?.billing_metadata),
     0, // asking about the CURRENT state, not a new invite
+    catalogSeats.limits,
   )
   const agentAdvisory = agentRoleAdvisory(seatUsage.rolesInUse)
 

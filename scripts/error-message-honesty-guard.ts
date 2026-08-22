@@ -99,6 +99,33 @@
  *     Both are true at the visitor's level: chat really is unavailable to them.
  *     Naming the token or the slug tells a stranger about our session model.
  *
+ * 79 → 80, AND THE ONE IS NAMED:
+ *
+ *   lib/transactions/offer-bridge.ts:351  !creationGate.allowed
+ *     → "[offer-bridge] Gate refused transaction creation: ${creationGate.reason}"
+ *     The SECOND of the two transaction-creation chokepoints. Its twin at :193
+ *     is identical in shape and has been inside the baseline since it was
+ *     written; this line is new only because the owner's ruling ("a transaction
+ *     is only created after compliance is good, all documents present with full
+ *     signatures and initials") required gating a SECOND creation path, and the
+ *     honest thing was to refuse there in the same words.
+ *
+ *     The heuristic reads the condition's subject as `allowed` and finds no
+ *     overlap with the message's nouns. But the message does not merely name the
+ *     right cause — it INTERPOLATES it: `creationGate.reason` carries which of
+ *     the four obligations failed and which documents are missing, unsigned or
+ *     un-initialled. A message that hands the reader the specific failing
+ *     requirement is the opposite of the defect this guard exists to catch, and
+ *     the only way to satisfy the word-overlap test would be to say "not
+ *     allowed" — strictly less informative. That is the bending this file's own
+ *     header forbids, so the ratchet moves instead of the sentence.
+ *
+ *     ACCOUNTING, because a raise with a wrong story is worse than no story:
+ *     the count went 79 → 80, not 79 → 81, because :193 was already counted.
+ *     Verified against HEAD rather than inferred — an earlier reading of mine
+ *     guessed that a deleted export had removed some other flagged site, and it
+ *     had not.
+ *
  * Same standard as the 76 above: consequence-descriptions on a surface whose
  * reader cannot act on the cause. If a FOURTH appears, judge it the same way —
  * do not assume this note licenses the next increment.
@@ -256,7 +283,7 @@ function ok(label: string, cond: boolean, detail?: string) {
 // ── A REVIEW QUEUE, NOT A BUG COUNT. Lower it as messages are corrected; never
 // raise it. Each entry needs a human to decide whether the sentence describes a
 // CONSEQUENCE (fine) or a DIFFERENT CAUSE (the defect).
-const BASELINE = 79
+const BASELINE = 80
 
 console.log("\n═══ 1. No NEW guard blames something it did not test ═══")
 const hits = findMismatches()

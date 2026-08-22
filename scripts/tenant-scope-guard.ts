@@ -115,7 +115,39 @@ function unscopedTablesIn(raw: string): Map<string, number> {
     while (idx !== -1) {
       // storage.from("documents") is a BUCKET, not the documents table —
       // storage paths are tenant-prefixed by convention, not by .eq().
-      if (src.slice(Math.max(0, idx - 12), idx).includes("storage")) {
+      //
+      // THIS TEST USED TO MEASURE 12 CHARACTERS: `src.slice(idx - 12, idx)`.
+      // That is a distance heuristic over RAW TEXT, and raw text carries
+      // formatting. It matched the one-line `supabase.storage.from("documents")`
+      // — which is exactly the shape the control below was written in, so the
+      // control passed — and MISSED the wrapped form that real call sites use:
+      //
+      //     await supabase.storage
+      //       .from("documents")
+      //
+      // where a newline plus indentation pushes "storage" past the twelfth
+      // character. Two correct storage uploads were reported as cross-tenant
+      // table reads, which is the §2 failure in its most expensive direction:
+      // not a guard that misses a defect, but a guard that accuses live code and
+      // sends someone to "fix" a bucket upload by adding a brokerage_id filter
+      // to it.
+      //
+      // Measure the RECEIVER instead of the distance. Everything between the
+      // previous statement boundary and this `.from(` is the expression the call
+      // hangs off; if `.storage` appears anywhere in that chain, this is a bucket
+      // no matter how it is wrapped, aligned, or commented. Formatting cannot
+      // move a token across a statement boundary, so this cannot be reopened by
+      // a prettier config.
+      const chainStart = Math.max(
+        src.lastIndexOf(";", idx),
+        src.lastIndexOf("{", idx),
+        src.lastIndexOf("}", idx),
+        src.lastIndexOf("(", idx),
+        src.lastIndexOf(",", idx),
+        src.lastIndexOf("=", idx),
+      )
+      const receiver = src.slice(chainStart + 1, idx)
+      if (/\.\s*storage\b/.test(receiver) || /\bstorage\s*$/.test(receiver.trimEnd())) {
         idx = src.indexOf(needle, idx + 1)
         continue
       }
@@ -186,6 +218,37 @@ function unscopedTablesIn(raw: string): Map<string, number> {
       expect: 0,
       why: "the storage-bucket exemption broke; every signed-URL call site would now read as a tenant leak",
       src: `const { data } = await supabase.storage.from("documents").createSignedUrl(path, 60)`,
+    },
+    {
+      // THE SHAPE THAT ACTUALLY BROKE. The control above is written on ONE LINE,
+      // and the old 12-character look-back passed it for that reason alone — so
+      // the control reported a healthy exemption while the exemption was blind
+      // to every wrapped call site in the repo. A control that only exercises
+      // the convenient formatting is not a control; it is the same assumption
+      // twice. Both real sites (app/api/webhooks/inbound-mail/route.ts and
+      // lib/kernel/reporting.ts) wrap exactly like this.
+      name: "…and it is STILL not reported when the chain wraps across lines",
+      expect: 0,
+      why: "the exemption is measuring distance in raw text again — a newline and an indent will re-break it",
+      src: [
+        `const { data: up, error: upErr } = await supabase.storage`,
+        `  .from("documents")`,
+        `  .upload(path, buf, { contentType: att.mime, upsert: false })`,
+      ].join("\n"),
+    },
+    {
+      // The inverse, so the fix cannot be "exempt everything named documents".
+      // A genuine unscoped read of the documents TABLE must still be reported,
+      // wrapped or not — otherwise this repair would have traded a false alarm
+      // for a real blind spot, which is the worse trade.
+      name: "a wrapped read of the tenant TABLE is still REPORTED",
+      expect: 1,
+      why: "the storage exemption has widened into a table exemption — real cross-tenant reads now pass",
+      src: [
+        `const { data } = await supabase`,
+        `  .from("documents")`,
+        `  .select("id, storage_url")`,
+      ].join("\n"),
     },
   ]
   let controlFailed = false

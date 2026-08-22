@@ -106,6 +106,63 @@ console.log("\n[pure — the comparison itself]")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PURE — THE FK COLUMN RULE, ON SYNTHETIC READINGS.
+//
+// buildFkMap used to collapse a column carrying two foreign keys by last-write-wins over
+// constraint-NAME order, which silently resolved the live vendor_subscriptions.brokerage_id to
+// vendor_plans instead of brokerages (m497 added a composite FK over that column). A rule that
+// cannot be shown to DISCRIMINATE is not a rule, so it is exercised here against both cases —
+// the ordinary one-FK column that must keep working, and the two-FK column that must refuse.
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[pure — the FK column rule]")
+{
+  const fk = (src_table: string, src_col: string, tgt_table: string, name: string) => ({ src_table, src_col, tgt_table, name })
+
+  // (a) the ordinary case — one FK per column, which is 1763 of the 1764 live edges
+  const plain = buildFkMap([
+    fk("listings", "brokerage_id", "brokerages", "listings_brokerage_id_fkey"),
+    fk("listings", "agent_id", "agents", "listings_agent_id_fkey"),
+  ])
+  check("ordinary one-FK-per-column is mapped, unchanged",
+    plain.map.listings?.brokerage_id === "brokerages" && plain.map.listings?.agent_id === "agents")
+  check("ordinary columns are NOT reported ambiguous", plain.facts.ambiguousColumns === 0 && plain.facts.compositeFks === 0)
+
+  // (b) a single-column FK and a COMPOSITE FK over the SAME column — the live m497 shape.
+  //     The composite arrives once per column, exactly as live_foreign_keys_json() emits it.
+  const COMPOSITE = "vendor_subscriptions_plan_in_same_brokerage_fkey"
+  const mixed = [
+    fk("vendor_subscriptions", "brokerage_id", "brokerages", "vendor_subscriptions_brokerage_id_fkey"),
+    fk("vendor_subscriptions", "plan_id", "vendor_plans", "vendor_subscriptions_plan_id_fkey"),
+    fk("vendor_subscriptions", "plan_id", "vendor_plans", COMPOSITE),
+    fk("vendor_subscriptions", "brokerage_id", "vendor_plans", COMPOSITE),
+  ]
+  const built = buildFkMap(mixed)
+  check("a column with TWO targets is NOT silently resolved",
+    built.map.vendor_subscriptions?.brokerage_id === undefined)
+  check("…and is published with BOTH candidates, sorted",
+    JSON.stringify(built.ambiguousColumns.vendor_subscriptions?.brokerage_id) === JSON.stringify(["brokerages", "vendor_plans"]))
+  check("the OLD last-write-wins answer (vendor_plans) is the one no longer produced",
+    built.map.vendor_subscriptions?.brokerage_id !== "vendor_plans")
+  check("a column whose two FKs AGREE on the target is still mapped, not called ambiguous",
+    built.map.vendor_subscriptions?.plan_id === "vendor_plans" &&
+    built.ambiguousColumns.vendor_subscriptions?.plan_id === undefined)
+  check("the composite FK is counted as ONE relationship for the pair, not one per column",
+    built.ambiguous["vendor_plans|vendor_subscriptions"] === 2)
+  check("the composite FK is recognised as composite", built.facts.compositeFks === 1)
+
+  // (c) the defect was ORDER-dependent, so the fix must not be. Reverse the rows and the
+  //     constraint names and nothing may move.
+  const reversed = buildFkMap([...mixed].reverse())
+  check("output does not depend on row order (the old bug's root cause)",
+    JSON.stringify(reversed.map) === JSON.stringify(built.map) &&
+    JSON.stringify(reversed.ambiguousColumns) === JSON.stringify(built.ambiguousColumns))
+  const renamed = buildFkMap(mixed.map((r) => (r.name === COMPOSITE ? { ...r, name: "aaa_sorts_first_fkey" } : r)))
+  check("output does not depend on constraint-NAME order either",
+    renamed.map.vendor_subscriptions?.brokerage_id === undefined &&
+    JSON.stringify(renamed.ambiguousColumns.vendor_subscriptions?.brokerage_id) === JSON.stringify(["brokerages", "vendor_plans"]))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CHECK 1 — SHAPE + STAMP. Runs everywhere.
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[stamp — a hand-edit cannot be silent]")

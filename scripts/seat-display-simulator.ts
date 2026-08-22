@@ -37,6 +37,7 @@ import {
   SEAT_ROLES, PARTNER_ROLES, TIER_SEAT_LIMITS, TIER_ORDER, TIER_INVITABLE_ROLES,
   seatLimitForTier, roleConsumesSeat, effectiveSeatLimit,
   seatDecision, seatDecisionMessage, agentRoleAdvisory, ADDITIONAL_SEAT_MONTHLY_USD,
+  TIER_LABELS,
 } from "../lib/kernel/tier-role-matrix"
 
 let pass = 0, fail = 0
@@ -59,8 +60,16 @@ console.log("\n[the limits are the owner's plan]")
   check("Multi-Location = unlimited", TIER_SEAT_LIMITS.multi_location === null)
   check("every canonical tier has a stated limit",
     TIER_ORDER.every((t) => t in TIER_SEAT_LIMITS))
-  check("an unknown/legacy tier fails OPEN to unlimited, never to zero",
-    seatLimitForTier("something_else") === null && seatLimitForTier(null) === null)
+  // DIRECTION CHANGED (seat-cap lane): this used to assert an unknown/legacy
+  // tier fell OPEN to unlimited. A seat cap is not a role menu — "we could not
+  // read this tenant's plan" rendering as "they may hire without limit" is the
+  // shape CLAUDE.md §4 forbids, and it is the opposite of what the tier reader
+  // beside it does (lib/billing/plan-tier.ts toPlanTier falls to the TIGHTEST).
+  // It now falls to the FLOOR tier's cap — never to zero, which would brick.
+  check("an unknown/legacy tier fails CLOSED to the FLOOR tier's cap, never to zero",
+    seatLimitForTier("something_else") === TIER_SEAT_LIMITS.solo_agent
+    && seatLimitForTier(null) === TIER_SEAT_LIMITS.solo_agent
+    && (seatLimitForTier(null) ?? 0) > 0)
 }
 
 console.log("\n[every seat role is a real user_type]")
@@ -106,8 +115,25 @@ console.log("\n[there is exactly ONE seat list, and ONE seat count]")
     !/activeUsers: users\.length/.test(settingsPage))
 
   const usersPage = src("app/dashboard/admin/users/page.tsx")
+  // The claim is "the same way", never "via this identifier". The page used to
+  // call `effectiveSeatLimit` directly; it now calls `seatCheck`, which resolves
+  // the limit THROUGH `seatDecision` and additionally answers at-capacity and
+  // staff-override in one place. Pinning the old identifier made this assertion
+  // fail on the change that made the claim MORE true — a proof measuring the
+  // spelling instead of the property. Accept either resolution, and separately
+  // forbid the hand-rolled comparison that used to live beside it, since that
+  // inline copy was the third spelling of at-capacity and the reason this page's
+  // meter could report room after the invite gate had begun refusing.
   check("the users page resolves the limit the same way",
-    /effectiveSeatLimit\(/.test(usersPage))
+    /effectiveSeatLimit\(|seatCheck\(/.test(usersPage))
+  // stripComments, NOT the raw source. The page's own comment EXPLAINS that the
+  // inline `seatCount >= seatLimit` was removed and quotes it to say so — so a
+  // raw scan matches the prose describing the defect and reports the defect as
+  // still present. CLAUDE.md §2: the one correct scanner, every time. (This file
+  // already does exactly that at :344 for the panel; the new check just has to
+  // follow the same rule.)
+  check("…and it does not re-derive at-capacity inline beside it",
+    !/seatCount\s*>=\s*seatLimit/.test(stripComments(usersPage)))
 
   // No surface may inline the role list OR hand-roll the count.
   // Display AND enforcement. The gates matter more: a meter that under-counts is
@@ -134,8 +160,15 @@ console.log("\n[the display tells the truth, including when it is exceeded]")
   check("the panel shows SEATS, not raw headcount", /stats\.seatCount/.test(panel))
   check("…shows the plan's limit beside it", /stats\.seatLimit/.test(panel))
   check("…names the tier so the number means something", /TIER_NAMES/.test(panel))
+  // The wording moved with the ruling: "Over your N seats … or add seats at
+  // $X/month each" became "All N seats … are in use. Upgrading gives you room",
+  // because past the seats the answer is the UPGRADE, not a per-seat purchase.
+  // The probe follows the FACT (a distinct over-limit branch that names the
+  // limit), not the old sentence.
   check("…says plainly when the tenant is OVER the limit",
-    /overSeats/.test(panel) && /Over your/.test(panel))
+    /overSeats/.test(panel) && /are in use/.test(panel) && /stats\.seatLimit/.test(panel))
+  check("…and does not quote a per-seat price where an upgrade is the ruling",
+    !/\$\$?\{?stats\.additionalSeatMonthlyUsd[^}]*\}?\/month/.test(panel))
   check("…states that partners never consume a seat",
     /never use(s)? one/.test(panel))
   check("…and still shows total people, labelled as people rather than seats",
@@ -175,8 +208,13 @@ console.log("\n[a seat is a PERSON, across BOTH role sources]")
     "app/actions/superadmin/tenant-users.ts",
     "app/actions/superadmin/tenant-entitlements.ts",
   ]) {
-    check(`${f} resolves seats through it`, /resolveSeatUsage\(/.test(src(f)))
+    // The two ENFORCEMENT surfaces reach the resolver through seatGate now (the
+    // one gate every add path shares — lib/kernel/seat-usage.ts), which is
+    // still exactly one seat count; the DISPLAY surfaces call it directly.
+    check(`${f} resolves seats through it`, /resolveSeatUsage\(|seatGate\(/.test(src(f)))
   }
+  check("…and the gate they share is the one that calls the resolver",
+    /export async function seatGate/.test(usage) && /await resolveSeatUsage\(/.test(usage))
   check("no surface counts seats off user_type alone any more",
     ![
       "app/dashboard/admin/users/page.tsx",
@@ -250,12 +288,20 @@ console.log("\n[over the limit is a CHOICE — upgrade first, paid seat second]"
   check("…and no message, so a healthy tenant is not nagged", seatDecisionMessage(inside) === null)
 
   const full = seatDecision("solo_agent", 2)
-  check("a full Solo plan OFFERS the upgrade rather than refusing",
+  check("a full Solo plan points at the upgrade rather than dead-ending",
     !full.withinLimit && full.outcome === "upgrade_offered" && full.upgradeTo === "team")
   check("…naming the seats the upgrade brings", full.upgradeSeats === 5)
-  check("…and the per-seat price as the alternative, not the only option",
-    (seatDecisionMessage(full) ?? "").includes(`$${ADDITIONAL_SEAT_MONTHLY_USD}/month`) &&
-    (seatDecisionMessage(full) ?? "").includes("Upgrading to Team"))
+  // RULING SUPERSEDED (seat-cap lane). This used to require the per-seat price
+  // to appear BESIDE the upgrade. Owner, later and more specific: "agent tier
+  // subscription only has 2 seats and if they need more than they need to
+  // upgrade to a team subscription." Where a tier above exists the upgrade is
+  // THE answer, so quoting $/month next to it offers what that ruling withdrew.
+  // The price still lives on the top tier / staff-override case (below), where
+  // there is nothing to climb to and the earlier ruling is still the only one
+  // that speaks — asserted here so it cannot be deleted as dead.
+  check("…and the upgrade is the WHOLE offer, with no per-seat price beside it",
+    (seatDecisionMessage(full) ?? "").includes(`Upgrade to ${TIER_LABELS.team}`) &&
+    !(seatDecisionMessage(full) ?? "").includes(`$${ADDITIONAL_SEAT_MONTHLY_USD}/month`))
   check("…never telling a growing tenant to remove someone",
     !/remove|deactivate|suspend/i.test(seatDecisionMessage(full) ?? ""))
 

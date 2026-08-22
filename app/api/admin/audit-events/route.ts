@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { NextRequest, NextResponse } from "next/server"
+import { redactCredentials } from "@/lib/security/export-credential-scan"
 
 // Role validation for admin routes.
 // SCOPE LADDER (kept inline — admits compliance_officer; platform staff pass
@@ -465,6 +466,26 @@ export async function GET(request: NextRequest) {
     const maxExport = 10000
     const exportEvents = filteredEvents.slice(0, maxExport)
     
+    // NO CREDENTIAL LEAVES IN THIS FILE — owner ruling (finding #294), verbatim:
+    // "294 no credentials should be listed in csv."
+    //
+    // `metadata_json` is the one UNBOUNDED column in this export. Nine of the ten
+    // sources above build a small explicit object; the lifecycle_events source
+    // (:176) passes `event.metadata` through WHOLESALE, and its writer set is open
+    // — anything that ever calls emitEvent can put anything in it. One such writer
+    // exists today: lib/kernel/reporting.ts#exportReportPdf stores `blobUrl`, a
+    // PERMANENT, UNAUTHENTICATED Vercel Blob URL where the URL is the whole
+    // authorization, and that would ride out of here verbatim.
+    //
+    // MEASURED live 2026-08-22 (hrvaqgvukzxfskkcrwbt), both numbers together
+    // because a bare zero reads as "already safe": 284 lifecycle_events rows, 0
+    // carrying a signed-object path, query token, JWT, storage URL or blob URL. So
+    // this is a latent channel, not a live leak — and it is closed at the SINK
+    // rather than at each writer, because the writer set is the part that grows.
+    //
+    // WHAT A READER SHOULD USE INSTEAD: the marker names the hole. Open the event
+    // in the admin audit view, signed in, if the withheld value matters — and if a
+    // credential is genuinely turning up in the audit ledger, fix the writer.
     const csvRows = [
       ["timestamp", "entity_type", "summary", "actor", "source_table", "metadata_json"].join(","),
       ...exportEvents.map(e => [
@@ -473,7 +494,7 @@ export async function GET(request: NextRequest) {
         `"${e.summary.replace(/"/g, '""')}"`,
         `"${e.actor_name.replace(/"/g, '""')}"`,
         e.source_table,
-        `"${JSON.stringify(e.metadata_json).replace(/"/g, '""')}"`,
+        `"${redactCredentials(JSON.stringify(e.metadata_json)).replace(/"/g, '""')}"`,
       ].join(","))
     ]
 

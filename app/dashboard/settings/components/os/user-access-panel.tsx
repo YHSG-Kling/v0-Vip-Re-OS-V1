@@ -35,6 +35,14 @@ interface UserStats {
   seatMessage?: string | null
   upgradeTo?: string | null
   upgradeSeats?: number | null
+  /**
+   * The per-seat monthly price. STILL CARRIED, deliberately, though the copy
+   * above no longer prints it: `seatMessage` already contains it in the one case
+   * it still applies — the top tier or a staff-set override, where there is no
+   * tier to upgrade to (lib/kernel/tier-role-matrix.ts seatDecisionMessage). Kept
+   * on the props so a future surface that needs the number does not re-derive it
+   * from a second literal; the ONE source is ADDITIONAL_SEAT_MONTHLY_USD.
+   */
   additionalSeatMonthlyUsd?: number
   /** Seats can be used any way the tenant likes — but with no Agent among them
    *  the OS is inert, because contacts, deals and campaigns attach to an agent. */
@@ -95,10 +103,14 @@ export function UserAccessPanel({ stats }: UserAccessPanelProps) {
           {stats.seatLimit === null
             ? `Unlimited seats on ${tierName}. Vendors, lenders and portal contacts never use one.`
             : overSeats
-              // The choice, in the tenant's favour: upgrade (better value) or keep
-              // the plan and pay per seat. Never "remove someone".
+              // Owner's ruling: past the seats, the answer is the UPGRADE
+              // (agent tier → team, team → brokerage). seatMessage names the
+              // exact tier; this fallback runs only if the message is missing,
+              // and it must not quote a per-seat price where an upgrade is the
+              // ruling — that is the offer the owner withdrew. Never "remove
+              // someone" either.
               ? stats.seatMessage ??
-                `Over your ${tierName} plan's ${stats.seatLimit} seats. Upgrade for more, or add seats at $${stats.additionalSeatMonthlyUsd ?? 25}/month each.`
+                `All ${stats.seatLimit} seats on your ${tierName} plan are in use. Upgrading gives you room for more.`
               : `${stats.seatLimit - stats.seatCount} of ${stats.seatLimit} seats left on ${tierName}. Vendors and lenders never use one.`}
           {overSeats && (
             <a href="/settings/billing" className="ml-1 underline">

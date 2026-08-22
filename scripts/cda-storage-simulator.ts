@@ -23,8 +23,19 @@ console.log("\n── the shared Supabase bucket helper ──")
     h.includes("export async function ensureBucket") &&
     h.includes("export async function uploadBufferToBucket") &&
     h.includes(".storage.") && h.includes("createBucket"))
+  // The branch this used to assert INSIDE buckets.ts moved to the ONE issuer,
+  // lib/storage/document-buckets.ts#issueBucketObjectUrl, so that "how a bucket
+  // object URL is minted" has a single spelling (CLAUDE.md §6). The invariant is
+  // unchanged and is asserted at its new home; buckets.ts must now DELEGATE
+  // rather than carry its own copy.
+  // Matched on the CALL shape (leading dot + paren), not the bare word — the
+  // file names getPublicUrl in prose to say it never falls back to one, and
+  // reading a mention as a use is the mistake scripts/strip-comments.ts exists for.
+  check("uploadBufferToBucket delegates URL minting to the ONE issuer",
+    h.includes("issueBucketObjectUrl(") && !h.includes(".getPublicUrl(") && !h.includes(".createSignedUrl("))
+  const iss = src("lib/storage/document-buckets.ts")
   check("private buckets return a signed URL, public buckets a public URL",
-    h.includes("getPublicUrl") && h.includes("createSignedUrl"))
+    iss.includes(".getPublicUrl(") && iss.includes("signedDocUrl("))
 }
 
 console.log("\n── CDA template upload is Supabase, role-gated, PDF-validated ──")

@@ -310,8 +310,19 @@ export async function awardCertification(
     if (uploadError) {
       console.error('[CertificationEngine] Certificate PDF upload failed (certificate_url will be null):', uploadError)
     } else {
-      const { data: pub } = supabase.storage.from('documents').getPublicUrl(path)
-      certificateUrl = pub?.publicUrl ?? null
+      // `documents` is a document-class bucket (it also holds board packets,
+      // offer attachments and signed listing agreements), so a getPublicUrl here
+      // both leaks by class and STOPS RESOLVING the moment the bucket is flipped
+      // private. Signed via the ONE issuer; honest null when it cannot be signed
+      // (certificate_url is already nullable and the callers handle null).
+      const { issueBucketObjectUrl } = await import('@/lib/storage/document-buckets')
+      const issued = await issueBucketObjectUrl(supabase as never, { bucket: 'documents', objectPath: path })
+      if (issued.ok) {
+        certificateUrl = issued.url
+      } else {
+        console.error('[CertificationEngine] certificate URL not issued (certificate_url will be null):', issued.reason)
+        certificateUrl = null
+      }
     }
   } catch (err) {
     console.error('[CertificationEngine] Certificate PDF generation failed (certificate_url will be null):', err)

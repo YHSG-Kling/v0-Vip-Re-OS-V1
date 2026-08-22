@@ -7,7 +7,8 @@
  * file-completeness gate in submitOfferToCompliance (auditOfferDocuments).
  *
  * Authorization (in addition to belonging to the brokerage):
- *   - broker / broker_admin / admin / superadmin / compliance_* → any scope
+ *   - tc / broker / broker_owner / broker_admin / admin / compliance_* → any scope
+ *   - platform staff (users.platform_role) → any scope
  *   - team_lead → team rows for THEIR team, or their own agent rows
  *   - agent     → only their own agent-scope rows
  */
@@ -16,10 +17,35 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { revalidatePath } from "next/cache"
+import { isPlatformStaffRole } from "@/lib/platform/platform-staff-roster"
 import type { DocumentClassification } from "@/lib/compliance/required-documents"
 
+/**
+ * WHO ADMINISTERS THE REQUIRED-DOCUMENT LIST.
+ *
+ * Owner's ruling, verbatim: "the required document list is in the settings for
+ * the transaction coordinator or admin."
+ *
+ * THE TRANSACTION COORDINATOR WAS NOT ON THIS LIST. `tc` is a LIVE
+ * users.user_type (the compliance-transaction-auto-create chain resolves TCs by
+ * exactly that value, with the note "the TC role is 'tc'"), and it is the role
+ * the owner names FIRST — yet the one person the ruling puts in charge of the
+ * checklist was refused by every write in this file. Added, not invented: the
+ * value is read off the live roster, not guessed.
+ *
+ * `broker_owner` added for the same reason in the other direction — the settings
+ * PAGE has always admitted it (required-documents/page.tsx:ADMIN_ROLES) while
+ * this action did not, so a broker_owner could open the screen and be refused by
+ * every control on it.
+ *
+ * `superadmin` REMOVED as a user_type. SURVIVOR: users.platform_role, checked
+ * below via lib/platform/platform-staff-roster.ts:isPlatformStaffRole — no live
+ * row has user_type='superadmin' (CLAUDE.md §4), so the old member admitted
+ * nobody while the real platform staff were being refused.
+ */
 const PRINCIPAL_ROLES = new Set([
-  "broker", "broker_admin", "admin", "superadmin", "compliance_manager", "compliance_officer",
+  "tc", "broker", "broker_owner", "broker_admin", "admin",
+  "compliance_manager", "compliance_officer",
 ])
 
 type Scope = "brokerage" | "team" | "agent"
@@ -29,28 +55,35 @@ interface Actor {
   brokerageId: string
   teamId: string | null
   userType: string
+  /** users.platform_role — where platform STAFF live (never user_type). */
+  platformRole: string | null
 }
 
 async function resolveActor(): Promise<Actor | { error: string }> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: "Unauthenticated" }
-  const { data: profile } = await supabase
+  // `error` is read: supabase-js RESOLVES a refused read, and a refused profile
+  // read must not render as "no brokerage on your profile".
+  const { data: profile, error: profileError } = await supabase
     .from("users")
-    .select("brokerage_id, team_id, user_type")
+    .select("brokerage_id, team_id, user_type, platform_role")
     .eq("id", user.id)
     .maybeSingle()
+  if (profileError) return { error: `Could not read your profile: ${profileError.message}` }
   if (!profile?.brokerage_id) return { error: "No brokerage on your profile" }
   return {
     userId: user.id,
     brokerageId: profile.brokerage_id as string,
     teamId: (profile.team_id as string | null) ?? null,
     userType: (profile.user_type as string) ?? "",
+    platformRole: (profile.platform_role as string | null) ?? null,
   }
 }
 
 /** Whether this actor may create/edit/delete a rule at (scope, scopeId). */
 function canManage(actor: Actor, scope: Scope, scopeId: string): boolean {
+  if (isPlatformStaffRole(actor.platformRole)) return true
   if (PRINCIPAL_ROLES.has(actor.userType)) return true
   if (actor.userType === "team_lead") {
     if (scope === "team")  return !!actor.teamId && scopeId === actor.teamId

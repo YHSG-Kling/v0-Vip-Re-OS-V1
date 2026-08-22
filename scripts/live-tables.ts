@@ -1,7 +1,7 @@
 /**
  * scripts/live-tables.ts
  *
- * EVERY relation the live public schema exposes — 776 of them — as a flat sorted list.
+ * EVERY relation the live public schema exposes — 767 of them — as a flat sorted list.
  *
  * This is the oracle for "does this name exist in the database", which SCHEMA_SNAPSHOT cannot be:
  * that file holds only the tables the code QUERIES and the database HAS (`referenced ∩ live`), so a
@@ -18,9 +18,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-08-19
+ * generated: 2026-08-22
  * source: public.live_schema_json()
- * body-sha256: 0e5370a34b1d3f1ee8b41bc058b6c5c2b8afb1177fda079d8eb0464c4dd0698e
+ * body-sha256: a507ecbaf2431df7bd88644277ae54f5bf5dfbfe079af4927033882abc9143ff
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -93,7 +93,6 @@ export const LIVE_TABLES: readonly string[] = [
   "ai_autopilot_actions",
   "ai_autopilot_plans",
   "ai_comp_scores",
-  "ai_content_outputs",
   "ai_daily_briefings",
   "ai_feedback_log",
   "ai_generated_content",
@@ -148,7 +147,6 @@ export const LIVE_TABLES: readonly string[] = [
   "blog_post_share_clicks",
   "blog_post_views",
   "blog_posts",
-  "brand_asset_library",
   "brand_templates",
   "brand_voice_profile",
   "brokerage_brand_settings",
@@ -209,7 +207,6 @@ export const LIVE_TABLES: readonly string[] = [
   "client_portal_messages",
   "closing_checklist_items",
   "closing_cost_accuracy_observations",
-  "closing_disclosure",
   "closing_disclosure_agreement",
   "closing_disclosure_agreement_revisions",
   "closing_gifts",
@@ -320,7 +317,6 @@ export const LIVE_TABLES: readonly string[] = [
   "document_templates",
   "documents",
   "drip_campaigns",
-  "earnings_history",
   "email_campaigns",
   "email_presets",
   "email_queue",
@@ -389,7 +385,6 @@ export const LIVE_TABLES: readonly string[] = [
   "lead_intelligence",
   "lead_magnet_submissions",
   "lead_magnets",
-  "lead_motivated_seller_signals",
   "lead_osint_data",
   "lead_people_data",
   "lead_property_ownership",
@@ -493,7 +488,6 @@ export const LIVE_TABLES: readonly string[] = [
   "newsletter_templates",
   "newsletter_video_persona_renders",
   "newsletter_video_renders",
-  "newsletters",
   "nextdoor_activity",
   "notification_log",
   "notification_preferences",
@@ -599,7 +593,6 @@ export const LIVE_TABLES: readonly string[] = [
   "push_subscriptions",
   "qr_codes",
   "qr_scan_events",
-  "quickbooks_sync_log",
   "raw_recruit_prospects",
   "raw_scraped_leads",
   "real_estate_events",
@@ -653,7 +646,6 @@ export const LIVE_TABLES: readonly string[] = [
   "smart_landing_sessions",
   "smart_showing_recommendations",
   "sms_presets",
-  "social_accounts",
   "social_cadence_policy",
   "social_engagement_tracking",
   "social_intelligence",
@@ -783,7 +775,6 @@ export const LIVE_TABLES: readonly string[] = [
   "vendors",
   "video_assets",
   "video_completion_tracking",
-  "video_content",
   "video_engagement_events",
   "video_generation_queue",
   "video_performance_tracking",

@@ -59,9 +59,16 @@ export function RequiredDocsSettingsClient({ brokerageId, teamId, userId, userTy
   // SCOPE LADDER (kept inline — each rung admits a different tier): 'superadmin'
   // removed from every rung — dead as users.user_type (0 live rows);
   // broker_owner added — storable seat that owns the brokerage.
-  if (["broker","broker_owner","broker_admin","admin","compliance_manager","compliance_officer"].includes(userType)) allowedScopes.push("brokerage")
-  if (teamId && ["team_lead","broker","broker_owner","broker_admin","admin","compliance_manager","compliance_officer"].includes(userType)) allowedScopes.push("team")
-  if (["agent","team_lead","broker","broker_owner","broker_admin","admin","compliance_manager","compliance_officer"].includes(userType)) allowedScopes.push("agent")
+  //
+  // 'tc' added to every rung. Owner's ruling: "the required document list is in
+  // the settings for the transaction coordinator or admin." The picker is not
+  // the authorization — app/actions/compliance/manage-required-docs.ts
+  // re-checks the same roster server-side on every write — but a TC whose scope
+  // picker was empty could not compose a rule at all.
+  const PRINCIPALS = ["tc","broker","broker_owner","broker_admin","admin","compliance_manager","compliance_officer"]
+  if (PRINCIPALS.includes(userType)) allowedScopes.push("brokerage")
+  if (teamId && ["team_lead", ...PRINCIPALS].includes(userType)) allowedScopes.push("team")
+  if (["agent","team_lead", ...PRINCIPALS].includes(userType)) allowedScopes.push("agent")
 
   function seed() {
     setResult(null)

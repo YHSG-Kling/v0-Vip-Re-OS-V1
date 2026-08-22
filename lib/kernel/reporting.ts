@@ -1034,40 +1034,71 @@ export async function exportReportCsv(
   }
 }
 
-// 10. exportReportPdf — uploads HTML to Vercel Blob, returns URL
+// 10. exportReportPdf — stores the rendered report in the PRIVATE `documents`
+// bucket and returns a TIME-LIMITED signed URL.
+//
+// It used to `put(…, { access: "public" })` to Vercel Blob. A brokerage report
+// is production, pipeline and commission-bearing figures for ONE tenant, and
+// that URL was persisted into ai_assistant_notes AND into the lifecycle event's
+// metadata — i.e. a permanent, unauthenticated, never-expiring link to another
+// tenant's financials sitting in two ledgers. Storage is now the platform's own
+// Supabase bucket (the owner rule already enforced by lib/storage/buckets.ts)
+// and the URL comes from the ONE issuer, which FAILS CLOSED: if it cannot be
+// signed the export is refused rather than published.
+//
 // Does NOT write to generated_documents (non-existent table).
-// Stores Blob URL in ai_assistant_notes for audit trail.
+// Stores the signed URL in ai_assistant_notes for audit trail.
 export async function exportReportPdf(
   input: ExportReportPdfInput
 ): Promise<KernelReportingResult<ExportReportPdfOutput>> {
   try {
     const { ctx, reportType, title, htmlContent } = input
-    const { put } = await import("@vercel/blob")
-
-    const filename = `${reportType}-${ctx.agentId}-${new Date().toISOString().slice(0, 10)}.html`
-    const blob = await put(`reports/${filename}`, htmlContent, {
-      access:      "public",
-      contentType: "text/html; charset=utf-8",
-    })
-
     const supabase = await createServiceClient()
 
-    // Store Blob URL in ai_assistant_notes for audit trail
+    const filename = `${reportType}-${ctx.agentId}-${new Date().toISOString().slice(0, 10)}.html`
+    // Tenant-scoped path — the brokerage comes from the SESSION ctx, never a body.
+    const objectPath = `reports/${ctx.brokerageId}/${Date.now()}-${filename}`
+
+    const { error: upErr } = await supabase.storage
+      .from("documents")
+      .upload(objectPath, new Blob([htmlContent], { type: "text/html; charset=utf-8" }), {
+        contentType: "text/html; charset=utf-8",
+        upsert: false,
+      })
+    if (upErr) return { success: false, error: `report upload failed: ${upErr.message}` }
+
+    const { issueBucketObjectUrl } = await import("@/lib/storage/document-buckets")
+    const issued = await issueBucketObjectUrl(supabase as never, { bucket: "documents", objectPath })
+    if (!issued.ok) {
+      // The bytes landed but no governed URL could be minted — undo the upload
+      // rather than leave an unreferenced object behind, and refuse.
+      const { removeOrRecordOrphan } = await import("@/lib/storage/put-and-sign")
+      await removeOrRecordOrphan(supabase as never, {
+        bucket: "documents", objectPath,
+        reason: "report_export_sign_failed",
+        detail: issued.reason,
+        brokerageId: ctx.brokerageId,
+      })
+      return { success: false, error: issued.reason }
+    }
+    const reportUrl = issued.url
+
+    // Store the signed URL in ai_assistant_notes for audit trail
     await supabase.from("ai_assistant_notes").insert({
       brokerage_id: ctx.brokerageId, // NOT NULL
       created_by:   ctx.userId,      // NOT NULL (no agent_id column)
       entity_type:  "report",
       entity_id:    crypto.randomUUID(),
-      note_text:    JSON.stringify({ type: "pdf_export", url: blob.url, title, reportType }), // was phantom note
+      note_text:    JSON.stringify({ type: "pdf_export", url: reportUrl, title, reportType }), // was phantom note
       source:       "ai_assistant",
       created_at:   new Date().toISOString(),
     }).select()
 
     await emitEvent(supabase, ctx, KernelEvent.REPORT_EXPORTED_PDF, crypto.randomUUID(), {
-      reportType, blobUrl: blob.url,
+      reportType, blobUrl: reportUrl,
     })
 
-    return { success: true, data: { pdfUrl: blob.url, filename } }
+    return { success: true, data: { pdfUrl: reportUrl, filename } }
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : "exportReportPdf failed" }
   }

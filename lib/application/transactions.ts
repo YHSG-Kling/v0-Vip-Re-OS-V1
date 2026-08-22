@@ -122,6 +122,39 @@ export async function createTransaction(transactionData: {
     lease: "dual",
     dual: "dual",
   }
+
+  // ── THE TRANSACTION-CREATION GATE (the MANUAL door) ───────────────────────
+  //
+  // Owner's rule: "when the transaction is created it is only created after the
+  // compliance is good, all documents are present with full signatures and
+  // initials."
+  //
+  // THIS WAS THE LARGEST HOLE. app/dashboard/transactions/components/
+  // create-transaction-sheet.tsx → app/actions/transactions.ts:createTransaction
+  // → here was a live door that inserted a `transactions` row having checked
+  // NOTHING: no compliance state, no required-document list, no signature and no
+  // initial. Every gate on the offer→transaction chain was irrelevant while this
+  // sheet existed beside it.
+  //
+  // The gate refuses a manual create because a hand-typed deal has no offer to
+  // point compliance at — which is precisely the ruling. The refusal is LEGIBLE
+  // (the sheet renders `result.error` verbatim) and names what to do instead:
+  // take the accepted offer through submit-to-compliance.
+  const { assertTransactionCreationAllowed } = await import("@/lib/transactions/transaction-creation-gate")
+  const creationGate = await assertTransactionCreationAllowed(supabase as any, {
+    // Tenant from the SESSION — app/actions/transactions.ts resolves it from
+    // getAgentContext() and passes it here; it is never read off the form.
+    brokerageId: (transactionData.brokerage_id ?? "") as string,
+    offerId:     null,
+    contactIds:  [transactionData.contact_id ?? null],
+    dealType:    DEAL_TYPE_MAP[transactionData.transaction_type] ?? "dual",
+    stateCode:   transactionData.property_state ?? null,
+    door:        "manual transaction sheet",
+  })
+  if (!creationGate.allowed) {
+    return { success: false, error: creationGate.reason, gate: creationGate.detail }
+  }
+
   const { data, error } = await supabase
     .from("transactions")
     .insert({

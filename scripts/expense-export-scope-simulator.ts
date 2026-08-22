@@ -55,6 +55,20 @@ import {
   isAdminOrBroker,
   isBrokerageFinanceAdmin,
 } from "../lib/auth/resolve-user-role"
+import {
+  EXPENSE_CSV_HEADERS,
+  RECEIPT_ON_FILE,
+  RECEIPT_MISSING,
+  buildExpenseCsv,
+  hasReceipt,
+  type ExpenseCsvInput,
+} from "../lib/finance/expense-csv"
+import {
+  findCredentialsInCsv,
+  redactCredentials,
+  CSV_CREDENTIAL_PATTERNS,
+  CREDENTIAL_REDACTED,
+} from "../lib/security/export-credential-scan"
 import { blankComments, blankStrings } from "./strip-comments"
 
 let pass = 0, fail = 0
@@ -502,6 +516,227 @@ function positiveControls() {
     !!trapped && allClauses(trapped))
 }
 
+// ─── NO CREDENTIAL IN THE FILE ───────────────────────────────────────────────
+//
+// OWNER RULING (finding #294), verbatim: "294 no credentials should be listed in
+// csv."
+//
+// The gate above answers WHO MAY EXPORT. This layer answers WHAT LEAVES — and the
+// two are independent failures: a perfectly gated export that ships a 365-day
+// signed URL has handed the file's holder a key that outlives every check the
+// gate made. `receipt_url` was that key: minted by attachExpenseReceipt with
+// bucket "receipts", public:false, signedTtlSeconds 60*60*24*365.
+//
+// BUILT AS AN ABSENCE ASSERTION WITH ITS CONTROL ATTACHED (CLAUDE.md §2). The
+// claim is "0 credentials in the built CSV". A broken finder reports 0 too, so
+// every claim below is paired with the same finder re-run over the PRE-RULING
+// column, which must go RED.
+
+/** Shaped exactly like what attachExpenseReceipt writes: signed, tokened, JWT. */
+const REAL_SHAPED_SIGNED_URL =
+  "https://hrvaqgvukzxfskkcrwbt.supabase.co/storage/v1/object/sign/receipts/" +
+  "1f7d2b30-0a4e-4c11-b8d9-6a5e3c9f2ab1/9c8b7a65-4321-4fed-cba9-876543210fed/1755820800000.pdf" +
+  "?token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" +
+  ".eyJ1cmwiOiJyZWNlaXB0cy8xZjdkMmIzMC0wYTRlLmpwZyIsImlhdCI6MTc1NTgyMDgwMCwiZXhwIjoxNzg3MzU2ODAwfQ" +
+  ".9tQb3Xk1Zr4mN7pL0sV2wC5yD8fG1hJ3kM6nP9qR2sT"
+
+const SAMPLE_ROWS: ExpenseCsvInput[] = [
+  { id: "9c8b7a65-4321-4fed-cba9-876543210fed", expense_date: "2026-03-04", category: "marketing",
+    description: 'Yard signs, "premium" stock', amount: 412.5, receipt_url: REAL_SHAPED_SIGNED_URL },
+  { id: "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", expense_date: "2026-02-11", category: "mileage",
+    description: "Showings, north county", amount: 88, receipt_url: null },
+  { id: "5f6e7d8c-9b0a-4c1d-8e2f-3a4b5c6d7e8f", expense_date: "2026-01-09", category: "dues",
+    description: "MLS quarterly", amount: 175.25, receipt_url: "   " },
+]
+
+/** The export as it was BEFORE the ruling: the same five columns, URL verbatim. */
+function preRulingCsv(rows: ExpenseCsvInput[]): string {
+  const headers = ["Date", "Category", "Description", "Amount", "Receipt URL"]
+  const body = rows.map((e) => [
+    e.expense_date ?? "", e.category ?? "", e.description ?? "",
+    (Number(e.amount ?? 0)).toFixed(2), e.receipt_url ?? "",
+  ])
+  return [headers, ...body]
+    .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))
+    .join("\n")
+}
+
+/**
+ * `receipt_url` EMITTED as a value, as opposed to merely NAMED in a `.select()`.
+ * The discriminator is the leading dot: a projection list is the bare word inside
+ * a string literal, an emission is a property read off a row.
+ */
+const emitsReceiptUrl = (code: string) => /\.\s*receipt_url\b|\breceiptUrl\s*\?\?/.test(code)
+
+function credentialLayer() {
+  console.log("\n[what leaves · the ruling — \"no credentials should be listed in csv\"]")
+
+  // POSITIVE CONTROLS FIRST. A finder that recognises nothing passes every
+  // absence claim vacuously, and this whole layer is one absence claim.
+  const before = preRulingCsv(SAMPLE_ROWS)
+  const beforeFindings = findCredentialsInCsv(before)
+  check("RED — the PRE-RULING column is caught: the finder still recognises a signed URL in a CSV",
+    beforeFindings.length > 0)
+  check("RED — ...and it is caught on the shapes that make it a BEARER credential, not just on 'it is a URL'",
+    ["supabase_signed_object", "query_token", "jwt", "storage_object_url"]
+      .every((p) => beforeFindings.some((f) => f.pattern === p)))
+  console.log(`      pre-ruling CSV: ${beforeFindings.length} credential finding(s) over ${SAMPLE_ROWS.length} rows`)
+
+  // Every pattern in the finder must be a pattern that FIRES. A regex that can
+  // never match is a line of prose pretending to be a check.
+  const SHAPES: Array<[string, string]> = [
+    ["supabase_signed_object", "https://x.supabase.co/storage/v1/object/sign/receipts/a/b.pdf"],
+    ["query_token", "https://example.com/r?token=abc123"],
+    ["aws_sigv4", "https://b.r2.dev/o?X-Amz-Signature=deadbeef"],
+    ["jwt", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.sig"],
+    ["bearer", "Authorization: Bearer abcdefghijklmnop0123"],
+    ["vos_token", "vos_abcdefghijklmnop0123456789"],
+    ["webhook_secret", "whsec_abcdefghijklmnop0123456789"],
+    ["stripe_secret", "sk_live_abcdefghijklmnop0123"],
+    ["storage_object_url", "https://x.supabase.co/storage/v1/object/public/documents/a.pdf"],
+    ["vercel_blob_url", "https://abc123.public.blob.vercel-storage.com/reports/summary.html"],
+  ]
+  check("RED — every pattern in the finder actually fires on its own shape (no dead regexes)",
+    CSV_CREDENTIAL_PATTERNS.every((p) => {
+      const s = SHAPES.find(([n]) => n === p.name)
+      return !!s && findCredentialsInCsv(`"cell","${s[1]}"`).some((f) => f.pattern === p.name)
+    }) && SHAPES.length === CSV_CREDENTIAL_PATTERNS.length)
+
+  // ...and the finder is not simply screaming at everything: the columns that
+  // REPLACED the URL must come back clean, or "0 findings" below would be luck.
+  check("GREEN — a uuid, a date, a money amount and free-text prose are NOT read as credentials",
+    findCredentialsInCsv(
+      '"2026-03-04","marketing","Signs — see https://app.example.com/dashboard/financials/expenses","412.50","on file","9c8b7a65-4321-4fed-cba9-876543210fed"',
+    ).length === 0)
+
+  // ─── THE CLAIM ───────────────────────────────────────────────────────────
+  const after = buildExpenseCsv(SAMPLE_ROWS)
+  const afterFindings = findCredentialsInCsv(after)
+  console.log(`      shipped CSV:    ${afterFindings.length} credential finding(s) over the SAME ${SAMPLE_ROWS.length} rows`)
+  check("the shipped builder emits NO credential, fed a row carrying a REAL-shaped 365-day signed URL",
+    afterFindings.length === 0)
+  if (afterFindings.length) for (const f of afterFindings) console.log(`      LEAKED: ${f.pattern} — ${f.sample}`)
+
+  check("...and the signed URL is absent VERBATIM too, not merely unrecognised by a pattern",
+    !after.includes(REAL_SHAPED_SIGNED_URL) && !after.includes("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"))
+  check("...and no column NAME invites one back in",
+    !EXPENSE_CSV_HEADERS.some((h) => /url|link|token|signed|secret/i.test(h)))
+
+  // THE EXPORT MUST STILL BE USEFUL. Removing a column is only a fix if the
+  // bookkeeping question it was answering is still answered.
+  check("the reader can still tell a receipt EXISTS — presence survives the credential's removal",
+    EXPENSE_CSV_HEADERS.includes("Receipt" as never) &&
+    after.split("\n")[1].includes(`"${RECEIPT_ON_FILE}"`) &&
+    after.split("\n")[2].includes(`"${RECEIPT_MISSING}"`))
+  check("...and whitespace is not a receipt — a blank string reads as missing, not as on file",
+    after.split("\n")[3].includes(`"${RECEIPT_MISSING}"`))
+
+  // ─── THE RULE ITSELF, NOT ONLY ITS SHADOW IN A CSV CELL ──────────────────
+  //
+  // The three checks above infer the presence rule from a composed 6-column
+  // file, so a change of column ORDER, of quoting, or of the RECEIPT_* words
+  // would move them for a reason that has nothing to do with the rule. These
+  // drive the predicate directly, which is both stricter and narrower — and it
+  // is the predicate the DASHBOARD now shares, so it has to be right in more
+  // than one place.
+  check("hasReceipt — a real signed URL is a receipt",
+    hasReceipt({ receipt_url: REAL_SHAPED_SIGNED_URL }) === true)
+  check("hasReceipt — null, undefined and the empty string are NOT receipts",
+    hasReceipt({ receipt_url: null }) === false
+    && hasReceipt({}) === false
+    && hasReceipt({ receipt_url: "" }) === false)
+  check("hasReceipt — WHITESPACE-ONLY is not a receipt (the spelling the panel used to get wrong)",
+    hasReceipt({ receipt_url: "   " }) === false
+    && hasReceipt({ receipt_url: "\t\n " }) === false)
+  check("  ↳ POSITIVE CONTROL: bare truthiness — the rule this REPLACED — disagrees on exactly that row",
+    Boolean(("   " as unknown as string)) === true
+    && hasReceipt({ receipt_url: "   " }) === false)
+  check("hasReceipt — a non-string (a legacy jsonb blob) is not a receipt either",
+    hasReceipt({ receipt_url: 0 as unknown as string }) === false
+    && hasReceipt({ receipt_url: {} as unknown as string }) === false)
+
+  // ─── ONE VOCABULARY: THE DASHBOARD ASKS THE SAME QUESTION (CLAUDE.md §6) ──
+  //
+  // "Missing Receipts" on the deduction-readiness panel and the CSV's `Receipt`
+  // column are the same bookkeeping fact. While the panel spelled it
+  // `e.receipt_url` an agent could read 100% receipt completeness on screen and
+  // mail a CSV saying the same row has none.
+  const PANEL = join(
+    ROOT, "app", "dashboard", "financials", "components", "planning",
+    "deduction-readiness-panel.tsx",
+  )
+  const panelSrc = readFileSync(PANEL, "utf8")
+  check("POSITIVE CONTROL — the deduction-readiness panel's source is visible to this scan",
+    panelSrc.length > 0 && /missingReceipts/.test(panelSrc))
+  check("the panel imports the ONE presence predicate from the audited builder",
+    /import\s*\{\s*hasReceipt\s*\}\s*from\s*"@\/lib\/finance\/expense-csv"/.test(panelSrc))
+  check("...and both of its receipt tallies route through it",
+    /withReceipts\s*=\s*expenses\.filter\(\(e\)\s*=>\s*hasReceipt\(e\)\)/.test(panelSrc)
+    && /missingReceipts\s*=\s*expenses\.filter\(\(e\)\s*=>\s*!hasReceipt\(e\)\)/.test(panelSrc))
+  // A finder that cannot see the defect it was written for is decoration.
+  const TRUTHINESS = /expenses\.filter\(\(e\)\s*=>\s*!?e\.receipt_url\)/
+  check("  ↳ POSITIVE CONTROL: the truthiness finder still recognises the pre-fix spelling",
+    TRUTHINESS.test("const missingReceipts = expenses.filter((e) => !e.receipt_url)")
+    && TRUTHINESS.test("const withReceipts = expenses.filter((e) => e.receipt_url).length"))
+  check("  ↳ ...and that spelling is gone from the panel",
+    !TRUTHINESS.test(panelSrc))
+  check("the reader can still FIND the receipt — the row's own id is the in-app locator",
+    EXPENSE_CSV_HEADERS.includes("Expense ID" as never) &&
+    SAMPLE_ROWS.every((r) => after.includes(`"${r.id}"`)))
+  check("every row still carries every column — the fix removed a credential, not data",
+    after.split("\n").length === SAMPLE_ROWS.length + 1 &&
+    after.split("\n").every((l) => l.split('","').length === EXPENSE_CSV_HEADERS.length))
+
+  // ─── IS THE RULE WHAT SHIPS? ─────────────────────────────────────────────
+  const src = readFileSync(FINANCIALS, "utf8")
+  const v = functionViews(src, "exportExpensesCSV")
+  check("POSITIVE CONTROL — exportExpensesCSV's body is visible to this scan",
+    v !== null && v.code.length > 0)
+  check("the shipped action builds its CSV through the ONE audited builder",
+    !!v && /buildExpenseCsv\s*\(/.test(v.code))
+  check("...and EMITS no receipt_url of its own (naming it in .select() for presence is not emitting it)",
+    !!v && !emitsReceiptUrl(v.code))
+
+  // The same structural check, re-run on the body that DID emit it.
+  const histView = functionViews(UNGATED_HISTORICAL, "exportExpensesCSV")
+  check("RED — a body that emits `e.receipt_url` into its rows is caught by that same check",
+    !!histView && emitsReceiptUrl(
+      histView.code + '\n  const rows = expenses.map((e: any) => [e.receipt_url ?? ""])'))
+  check("RED — ...and the check is not blind to the sibling spelling `receiptUrl ??` either",
+    emitsReceiptUrl('const cell = row.receiptUrl ?? ""'))
+
+  // ─── THE SHARED SINK REDACTION ───────────────────────────────────────────
+  //
+  // The same finder guards app/api/admin/audit-events/route.ts, whose
+  // `metadata_json` column passes lifecycle_events.metadata through wholesale —
+  // an OPEN writer set, so an allowlist is impossible and the sink is where it
+  // has to be caught. lib/kernel/reporting.ts#exportReportPdf already writes a
+  // permanent public blob URL into exactly that metadata.
+  const REAL_METADATA = JSON.stringify({
+    reportType: "summary",
+    blobUrl: "https://abc123.public.blob.vercel-storage.com/reports/summary-2026-08-22.html",
+    rowCount: 42,
+  })
+  check("RED — an audit metadata blob carrying a permanent public blob URL is caught unredacted",
+    findCredentialsInCsv(REAL_METADATA).some((f) => f.pattern === "vercel_blob_url"))
+  const redacted = redactCredentials(REAL_METADATA)
+  check("the sink redaction removes it",
+    findCredentialsInCsv(redacted).length === 0 && !redacted.includes("blob.vercel-storage.com"))
+  check("...and NAMES the hole rather than blanking it — withheld must not look like empty",
+    redacted.includes(CREDENTIAL_REDACTED))
+  check("...and leaves every non-credential field of the blob intact",
+    redacted.includes('"reportType":"summary"') && redacted.includes('"rowCount":42'))
+  check("...and does not eat an ordinary in-app URL that authorizes nothing",
+    redactCredentials('{"link":"https://app.example.com/dashboard/financials/expenses"}')
+      === '{"link":"https://app.example.com/dashboard/financials/expenses"}')
+
+  console.log("      BLIND SPOTS: this layer proves what the BUILDER emits, over rows it is handed.")
+  console.log("      It does not read the database, so a credential pasted by a user into")
+  console.log("      `description` would ride out as free text — bounded by the finder above,")
+  console.log("      which scans the WHOLE built CSV, not just the receipt column. It also says")
+  console.log("      nothing about exports outside this file; those are swept separately.")
+}
+
 // ─── LIVE ────────────────────────────────────────────────────────────────────
 
 async function liveLayer() {
@@ -562,6 +797,7 @@ async function main() {
   decisionLayer()
   sourceLayer()
   positiveControls()
+  credentialLayer()
   await liveLayer()
 
   console.log("\n" + "═".repeat(78))

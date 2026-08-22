@@ -19,8 +19,10 @@
  */
 
 import { NextRequest, NextResponse } from "next/server"
-import { put } from "@vercel/blob"
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
+import { issueBucketObjectUrl } from "@/lib/storage/document-buckets"
+import { removeOrRecordOrphan } from "@/lib/storage/put-and-sign"
 import { isTenantAdminOrPlatformStaff } from "@/lib/auth/resolve-user-role"
 
 async function authAdmin(): Promise<{ userId: string; brokerageId: string } | NextResponse> {
@@ -99,11 +101,32 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     if (file.size > 10 * 1024 * 1024) {
       return NextResponse.json({ error: "PDF exceeds 10MB limit" }, { status: 413 })
     }
+    // WAS: put(…, { access: "public" }) to Vercel Blob — a brokerage's
+    // transaction-form library at permanent unauthenticated URLs, in a
+    // third-party blob store the owner rule already says not to use. It now goes
+    // to the platform's own `brokerage-forms` Supabase bucket (document-class)
+    // and the URL comes from the ONE issuer. FAIL CLOSED: no signed URL → the
+    // bytes are removed and the request is refused, never a public link.
     const slug = Math.random().toString(36).slice(2, 9)
-    const path = `brokerage-forms/${auth.brokerageId}/${state}-${packetType}-${Date.now()}-${slug}.pdf`
+    const path = `brokerage/${auth.brokerageId}/${state}-${packetType}-${Date.now()}-${slug}.pdf`
     const buffer = Buffer.from(await file.arrayBuffer())
-    const blob = await put(path, buffer, { access: "public", contentType: "application/pdf" })
-    pdfUrl = blob.url
+    const svc = createServiceClient()
+    const { error: upErr } = await svc.storage
+      .from("brokerage-forms")
+      .upload(path, buffer, { contentType: "application/pdf", upsert: false })
+    if (upErr) {
+      return NextResponse.json({ error: `Storage upload failed: ${upErr.message}` }, { status: 500 })
+    }
+    const issued = await issueBucketObjectUrl(svc as never, { bucket: "brokerage-forms", objectPath: path })
+    if (!issued.ok) {
+      await removeOrRecordOrphan(svc as never, {
+        bucket: "brokerage-forms", objectPath: path,
+        reason: "transaction_form_sign_failed", detail: issued.reason,
+        brokerageId: auth.brokerageId,
+      })
+      return NextResponse.json({ error: issued.reason }, { status: 502 })
+    }
+    pdfUrl = issued.url
   }
 
   let fieldSchema: string[] | null = null

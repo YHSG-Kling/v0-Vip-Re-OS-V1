@@ -241,31 +241,73 @@ export async function createListingWithSellerContact(params: {
   const supabase = await createClient()
 
   let transaction: unknown = null
-  const { data: txRow, error: txError } = await supabase
-    .from("transactions")
-    .insert({
-      agent_id:          ctx.agentId,
-      brokerage_id:      ctx.brokerageId,
-      // contact_id is the primary in-house client; on a seller-side deal that is
-      // the seller. seller_contact_id is the same person in its role slot.
-      contact_id:        sellerResult.contactId,
-      seller_contact_id: sellerResult.contactId,
-      listing_id:        newListingId,
-      // Live schema: the column is deal_type (buyer|seller|dual) and status is a
-      // fixed CHECK set. The pre-merge spelling in the deleted copy had once been
-      // transaction_type/"pre_listing", neither of which the constraint admits —
-      // corrected there before the merge and carried across corrected.
-      deal_type:         "seller",
-      status:            "qualifying",
-      deal_name:         params.address, // NOT NULL on transactions
-      property_address:  params.address,
-    })
-    .select()
-    .maybeSingle()
-  if (txError) {
-    console.error("[createListingWithSellerContact] seller transaction insert failed (non-fatal):", txError.message)
+
+  // ── THE TRANSACTION-CREATION GATE, ON THE LISTING-INTAKE SHELL ────────────
+  //
+  // Owner's rule: "when the transaction is created it is only created after the
+  // compliance is good, all documents are present with full signatures and
+  // initials."
+  //
+  // This step opened a real `transactions` row at LISTING INTAKE — the moment a
+  // seller's details are typed in, before any listing agreement is signed and
+  // before compliance has looked at anything. The listing itself is only a
+  // DRAFT at this point (listing_draft_gate: createListingRecord opens 'draft'
+  // and the signed-agreement chain promotes it), so a real deal row beside a
+  // draft listing is the same defect one level down.
+  //
+  // The gate is run rather than the insert simply being deleted, because the
+  // gate is the thing that decides — and it says exactly why: no offer, so no
+  // compliance. The seller-side deal is created when the deal becomes one, on
+  // the offer→transaction path, which runs this same gate.
+  //
+  // NON-FATAL, matching the posture this step already had: a listing that exists
+  // without a deal row is recoverable, and a refusal is LOGGED with its reason
+  // rather than swallowed.
+  const { assertTransactionCreationAllowed } = await import("@/lib/transactions/transaction-creation-gate")
+  const intakeGate = await assertTransactionCreationAllowed(supabase as any, {
+    brokerageId: ctx.brokerageId,               // SESSION tenant (resolveCallerContext)
+    offerId:     null,
+    listingId:   newListingId,
+    contactIds:  [sellerResult.contactId ?? null],
+    agentUserId: ctx.userId ?? null,
+    dealType:    "seller",
+    stateCode:   params.state ?? null,
+    door:        "listing intake seller-side deal",
+  })
+  let transactionGateRefusal: string | null = null
+  if (!intakeGate.allowed) {
+    transactionGateRefusal = intakeGate.reason
+    console.error(
+      "[createListingWithSellerContact] seller deal NOT created — compliance gate refused:",
+      intakeGate.reason,
+    )
   } else {
-    transaction = txRow
+    const { data: txRow, error: txError } = await supabase
+      .from("transactions")
+      .insert({
+        agent_id:          ctx.agentId,
+        brokerage_id:      ctx.brokerageId,
+        // contact_id is the primary in-house client; on a seller-side deal that is
+        // the seller. seller_contact_id is the same person in its role slot.
+        contact_id:        sellerResult.contactId,
+        seller_contact_id: sellerResult.contactId,
+        listing_id:        newListingId,
+        // Live schema: the column is deal_type (buyer|seller|dual) and status is a
+        // fixed CHECK set. The pre-merge spelling in the deleted copy had once been
+        // transaction_type/"pre_listing", neither of which the constraint admits —
+        // corrected there before the merge and carried across corrected.
+        deal_type:         "seller",
+        status:            "qualifying",
+        deal_name:         params.address, // NOT NULL on transactions
+        property_address:  params.address,
+      })
+      .select()
+      .maybeSingle()
+    if (txError) {
+      console.error("[createListingWithSellerContact] seller transaction insert failed (non-fatal):", txError.message)
+    } else {
+      transaction = txRow
+    }
   }
 
   // The provider container at intake is PROVIDER-SPECIFIC. Do NOT assume
@@ -311,6 +353,10 @@ export async function createListingWithSellerContact(params: {
     listingId: newListingId,
     sellerCreated: sellerResult.created,
     transaction,
+    // Non-null when the seller-side deal row was deliberately NOT created because
+    // the transaction-creation gate refused. The caller must be able to tell that
+    // apart from "the insert failed" and from "a deal exists".
+    transactionGateRefusal,
     dotloop,
   }
 }

@@ -784,6 +784,32 @@ export async function createManualTransaction(
   }
   try {
     const supabase = await createServiceClient()
+
+    // ── THE TRANSACTION-CREATION GATE ────────────────────────────────────────
+    // The kernel's manual creator is exported from lib/kernel/index.ts, so it is
+    // one import away from being a live door even though no surface calls it
+    // today. It gets the SAME gate as the surfaces that are live — a gate that
+    // only covers the doors currently in use is a gate with a scheduled expiry.
+    //
+    // deal_type here is the kernel's own {purchase|sale|lease|dual} spelling;
+    // the checklist speaks {buyer|seller|dual}, so it is translated rather than
+    // passed through (a wrong deal_type resolves the wrong required documents).
+    const { assertTransactionCreationAllowed } = await import("@/lib/transactions/transaction-creation-gate")
+    const KERNEL_DEAL_TYPE: Record<string, "buyer" | "seller" | "dual"> = {
+      purchase: "buyer", sale: "seller", lease: "dual", dual: "dual",
+    }
+    const creationGate = await assertTransactionCreationAllowed(supabase as any, {
+      brokerageId: input.brokerageId,   // caller's session tenant
+      offerId:     null,
+      contactIds:  [input.contactId ?? null],
+      dealType:    KERNEL_DEAL_TYPE[input.dealType] ?? "dual",
+      stateCode:   input.propertyState ?? null,
+      door:        "kernel createManualTransaction",
+    })
+    if (!creationGate.allowed) {
+      return { success: false, error: creationGate.reason }
+    }
+
     const { data, error } = await supabase
       .from("transactions")
       .insert({

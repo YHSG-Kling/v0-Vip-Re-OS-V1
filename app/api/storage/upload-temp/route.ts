@@ -12,6 +12,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
+import { isDocumentClassBucket, bucketClassReason, issueBucketObjectUrl } from "@/lib/storage/document-buckets"
 
 const MAX_SIZE_MB = 50
 const MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024
@@ -79,6 +80,22 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "No file provided" }, { status: 400 })
     }
 
+    // The BUCKET is caller-supplied. This endpoint exists for temporary agent
+    // MEDIA (D-ID photos, voice samples) and it hands back a URL — so it must
+    // not be usable as a door into a document-class bucket. Refuse by class
+    // rather than by a hand-kept deny-list.
+    if (isDocumentClassBucket(bucket)) {
+      // Say WHY, from the one classification — a refusal the caller cannot
+      // understand gets worked around rather than fixed.
+      return NextResponse.json(
+        {
+          error: `'${bucket}' is a document-class bucket — use the governed document upload routes, not upload-temp`,
+          reason: bucketClassReason(bucket),
+        },
+        { status: 400 },
+      )
+    }
+
     if (file.size > MAX_SIZE_BYTES) {
       return NextResponse.json(
         { error: `File exceeds ${MAX_SIZE_MB}MB limit` },
@@ -128,9 +145,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: uploadError.message }, { status: 500 })
     }
 
-    const { data: publicData } = supabase.storage.from(bucket).getPublicUrl(safeName)
+    // One issuer. The class check above already guarantees this is a public-media
+    // bucket, so this returns a public URL — routed through the issuer anyway so
+    // there is a single spelling and a reclassification cannot be missed here.
+    const issued = await issueBucketObjectUrl(supabase as never, { bucket, objectPath: safeName })
+    if (!issued.ok) {
+      return NextResponse.json({ error: issued.reason }, { status: 502 })
+    }
 
-    return NextResponse.json({ url: publicData.publicUrl, path: safeName, warnings })
+    return NextResponse.json({ url: issued.url, path: safeName, warnings })
   } catch (error: any) {
     console.error("[upload-temp] Error:", error)
     return NextResponse.json({ error: error.message ?? "Upload failed" }, { status: 500 })

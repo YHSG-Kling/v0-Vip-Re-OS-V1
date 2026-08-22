@@ -12,6 +12,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { isTierFeatureIncluded } from "../lib/kernel/billing"
+import { TIER_SEAT_LIMITS } from "../lib/kernel/tier-role-matrix"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -28,8 +29,13 @@ const TIERS: Record<string, Record<string, boolean>> = {
   brokerage:     { ...TOOLS },
   multi_location:{ ...TOOLS, usage_metering: true, multi_brokerage: true },
 }
-// Max seats per tier — the REAL differentiator now (max_agents).
-const MAX_AGENTS: Record<string, number | null> = { solo_agent: 1, team: 10, brokerage: null, multi_location: null }
+// Max seats per tier — the REAL differentiator now (subscription_tiers.max_agents).
+// THESE ARE THE OWNER'S NUMBERS, not the ones the live catalogue carried: it said
+// solo=1 / team=10 while the seat gate enforced 2 / 5, and max_agents is what the
+// tenant's billing page and the platform voice receptionist QUOTE. m523 moves the
+// catalogue onto these; lib/kernel/tier-role-matrix.ts is the code-side fallback
+// and scripts/seat-cap-simulator.ts (npm run test:seat-cap) is the enforcement proof.
+const MAX_AGENTS: Record<string, number | null> = { solo_agent: 2, team: 5, brokerage: null, multi_location: null }
 
 function main() {
   console.log("\n[isTierFeatureIncluded · pure — object shape]")
@@ -54,7 +60,11 @@ function main() {
   check("EVERY tier gets EVERY tool capability", Object.values(TIERS).every((t) => ALL_TOOLS.every((k) => isTierFeatureIncluded(t, k) === true)))
   check("multi_location still owns the SCALE flags (usage_metering + multi_brokerage)", isTierFeatureIncluded(TIERS.multi_location, "usage_metering") === true && isTierFeatureIncluded(TIERS.multi_location, "multi_brokerage") === true)
   check("non-multi tiers do NOT get multi_brokerage (scale-gated)", !isTierFeatureIncluded(TIERS.solo_agent, "multi_brokerage") && !isTierFeatureIncluded(TIERS.team, "multi_brokerage") && !isTierFeatureIncluded(TIERS.brokerage, "multi_brokerage"))
-  check("SCALE is the differentiator — seats step 1 → 10 → unlimited", MAX_AGENTS.solo_agent === 1 && MAX_AGENTS.team === 10 && MAX_AGENTS.brokerage === null)
+  check("SCALE is the differentiator — seats step 2 → 5 → unlimited (owner's ruling)", MAX_AGENTS.solo_agent === 2 && MAX_AGENTS.team === 5 && MAX_AGENTS.brokerage === null)
+  check("…and these agree with the seat matrix the gate enforces, so catalogue and code cannot drift",
+    MAX_AGENTS.solo_agent === TIER_SEAT_LIMITS.solo_agent
+    && MAX_AGENTS.team === TIER_SEAT_LIMITS.team
+    && MAX_AGENTS.brokerage === TIER_SEAT_LIMITS.brokerage)
 
   console.log("\n[the resolver no longer calls .includes() on the object (the bug)]")
   const billing = src("lib/kernel/billing.ts")

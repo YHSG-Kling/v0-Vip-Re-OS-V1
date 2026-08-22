@@ -13,7 +13,15 @@ export const dynamic = "force-dynamic"
 // SCOPE LADDER (kept inline — admits compliance/team_lead/agent tiers):
 // 'superadmin' removed — dead as users.user_type (0 live rows); broker_owner
 // added — storable seat that owns the brokerage.
-const ADMIN_ROLES = ["broker","broker_owner","broker_admin","admin","compliance_manager","compliance_officer","team_lead","agent"]
+//
+// 'tc' ADDED. Owner's ruling, verbatim: "the required document list is in the
+// settings for the transaction coordinator or admin." The TC is the role the
+// ruling names FIRST and it was the one seat this page did not admit — a
+// transaction coordinator opening Settings → Required documents was told they
+// had no permission to see the list they own. `tc` is a live users.user_type
+// (the auto-create chain resolves TCs by exactly that value), not an invention.
+// The write side agrees: app/actions/compliance/manage-required-docs.ts.
+const ADMIN_ROLES = ["tc","broker","broker_owner","broker_admin","admin","compliance_manager","compliance_officer","team_lead","agent"]
 
 export default async function RequiredDocsSettingsPage() {
   const supabase = await createClient()
@@ -37,7 +45,7 @@ export default async function RequiredDocsSettingsPage() {
     return (
       <div className="p-6 max-w-3xl mx-auto">
         <Card><CardHeader><CardTitle>Required documents</CardTitle></CardHeader>
-        <CardContent>You don't have permission. Only broker / compliance_manager / compliance_officer / team_lead / agent can edit.</CardContent></Card>
+        <CardContent>You don't have permission. Only the transaction coordinator (tc) / broker / broker_owner / broker_admin / admin / compliance_manager / compliance_officer / team_lead / agent can edit.</CardContent></Card>
       </div>
     )
   }

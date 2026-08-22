@@ -31,11 +31,12 @@ import { fileURLToPath } from "node:url"
 import {
   tokenizeFieldPath, protectedClassReasonFor, isProtectedClassSource,
   assertSellerSignalSourceAllowed, defineSellerSignalSources,
-  stripProtectedClassCriteria, redactProtectedClassFields, labelProtectedClassFields,
-  protectedClassSourcesBySignalType,
+  screenProtectedClassCriteria, stripProtectedClassCriteria,
+  redactProtectedClassFields, labelProtectedClassFields,
+  protectedClassSourcesBySignalType, protectedClassBasisBySignalType,
   assertAudienceSegmentationAllowed, protectedClassSegmentationIn,
-  PROTECTED_CLASS_TOKENS, PROTECTED_CLASS_NAMESPACES,
-  type SellerSignalSourceSpec,
+  PROTECTED_CLASS_TOKENS, PROTECTED_CLASS_NAMESPACES, PROTECTED_CLASS_LANES,
+  type SellerSignalSourceSpec, type ProtectedClassLane,
 } from "../lib/lead-governance/protected-class-signals"
 import {
   BATCHDATA_SELLER_SIGNAL_SOURCES, BATCHDATA_SIGNAL_TYPES, BATCHDATA_DETECTED_VIA,
@@ -47,8 +48,12 @@ import {
   FSBO_SIGNAL_TYPE, BELOW_MARKET_LISTING_SIGNAL_TYPE, CORPORATE_OWNED_SIGNAL_TYPE,
   FIX_AND_FLIP_SIGNAL_TYPE, VACANT_LOT_SIGNAL_TYPE, ACTIVE_LISTING_SIGNAL_TYPE,
   TRUST_OWNED_SIGNAL_TYPE,
+  INHERITED_SIGNAL_TYPE, SENIOR_OWNER_SIGNAL_TYPE, RECENT_DIVORCE_SIGNAL_TYPE,
+  HOUSEHOLD_OUTGROWN_SIGNAL_TYPE,
+  BATCHDATA_PROTECTED_CLASS_BASIS, PROBATE_DEED_DOCUMENT_TERMS,
   at, readQuickList, readSalePropensity, readEquityPercent, readTenureYears,
   readTaxDelinquentYear, readLiens, readForeclosure, readProviderAddress,
+  readProbateDeedInstrument, readOwnerAge, readHouseholdPressure,
   bandSalePropensity, bandEquity, deriveSellerSignals,
   batchDataSignalDedupeKey, buildBatchDataSignalRow, selectLeadsToProbe,
   ingestBatchDataSellerSignals,
@@ -108,7 +113,7 @@ check(`${SUBSTRING_TRAPS.length} property fields containing a banned token as a 
   SUBSTRING_TRAPS.every((f) => !isProtectedClassSource(f)),
   SUBSTRING_TRAPS.filter((f) => isProtectedClassSource(f)).join(", "))
 check("…and the value \"Single Family Residential\" survives the criteria gate (it names a building, not a household)",
-  !stripProtectedClassCriteria({ property_type_category: "Single Family Residential" }).removed.length)
+  !screenProtectedClassCriteria({ property_type_category: "Single Family Residential" }, "ad_audience").removed.length)
 
 // ── THE POSITIVE CONTROL FOR THE GATE ITSELF ─────────────────────────────────
 // Every one of these is a real filter or field path the provider sells. If the
@@ -233,17 +238,75 @@ check("INTEGRITY CHECK KEPT — a signal type declaring NO sources is still refu
 // vacant_lot, active_listing) were added by another lane without moving the
 // literal, so four other assertions in this file still read 10 and are RED for
 // that reason alone. Those belong to the lane that added them. This one asserts
-// the INVARIANT instead of a snapshot: the two exported arrays agree, the table
-// has not collapsed, and NONE of the shipped specs is labelled protected —
-// which is what this block is actually about.
-check(`…and the ${BATCHDATA_SELLER_SIGNAL_SOURCES.length} specs this lane ships still load, carrying NO protected labels (it is all parcel state)`,
+// the INVARIANT instead of a snapshot: the two exported arrays agree and the
+// table has not collapsed.
+check(`…and the ${BATCHDATA_SELLER_SIGNAL_SOURCES.length} specs this lane ships still load`,
   BATCHDATA_SELLER_SIGNAL_SOURCES.length === BATCHDATA_SIGNAL_TYPES.length
-  && BATCHDATA_SELLER_SIGNAL_SOURCES.length >= 10
-  && Object.keys(protectedClassSourcesBySignalType(BATCHDATA_SELLER_SIGNAL_SOURCES)).length === 0,
-  `${BATCHDATA_SELLER_SIGNAL_SOURCES.length} specs, labels=${JSON.stringify(protectedClassSourcesBySignalType(BATCHDATA_SELLER_SIGNAL_SOURCES))}`)
+  && BATCHDATA_SELLER_SIGNAL_SOURCES.length >= 10,
+  `${BATCHDATA_SELLER_SIGNAL_SOURCES.length} specs`)
 
-console.log("\n[1c · GATE TWO — a protected filter cannot be ASKED for]")
+// ── A COUNT THAT MOVED, AND WHICH DIRECTION (CLAUDE.md §2) ──────────────────
+//
+// This assertion used to read "carrying NO protected labels (it is all parcel
+// state)" and it was TRUE: the lane shipped 17 types, every one derived from
+// parcel-and-transaction state, and zero labelled. It is now 21 types and FOUR
+// labelled, and the increase is the finding rather than a leak.
+//
+// Owner rulings, verbatim: "304 needs inherited and probate." and "all
+// motivatied seller classifiers are necessary for data especially demographics
+// and protected class." The four are exactly the ones those rulings name.
+//
+// BOTH HALVES ARE ASSERTED, because either alone is a broken instrument. The
+// labelled set must be EXACTLY these four — a fifth would mean a protected
+// source drifted into a parcel signal without anybody deciding to put it there
+// — and the other seventeen must still be labelled with NOTHING, which is what
+// proves the labeller still discriminates instead of tagging everything.
 {
+  const labels = protectedClassSourcesBySignalType(BATCHDATA_SELLER_SIGNAL_SOURCES)
+  const EXPECTED_LABELLED = [
+    INHERITED_SIGNAL_TYPE, SENIOR_OWNER_SIGNAL_TYPE,
+    RECENT_DIVORCE_SIGNAL_TYPE, HOUSEHOLD_OUTGROWN_SIGNAL_TYPE,
+  ].sort()
+  check(`EXACTLY ${EXPECTED_LABELLED.length} of the ${BATCHDATA_SELLER_SIGNAL_SOURCES.length} shipped specs are labelled protected — the four the rulings name`,
+    Object.keys(labels).sort().join("|") === EXPECTED_LABELLED.join("|"),
+    `labelled=${Object.keys(labels).sort().join("|")}`)
+  check("…and the other 17 are labelled with NOTHING (control: the labeller discriminates, it does not tag everything)",
+    BATCHDATA_SELLER_SIGNAL_SOURCES
+      .filter((s) => !EXPECTED_LABELLED.includes(s.signalType))
+      .every((s) => (s.protectedClassSources ?? []).length === 0),
+    BATCHDATA_SELLER_SIGNAL_SOURCES
+      .filter((s) => !EXPECTED_LABELLED.includes(s.signalType) && (s.protectedClassSources ?? []).length > 0)
+      .map((s) => s.signalType).join(","))
+  check("…and each labelled spec names the EXACT provider field that made it protected, not the whole source list",
+    labels[INHERITED_SIGNAL_TYPE]?.join("|") === "quickLists.inherited"
+    && labels[SENIOR_OWNER_SIGNAL_TYPE]?.join("|") === "quickLists.seniorOwner|demographics.age|min_owner_age|max_owner_age"
+    && labels[RECENT_DIVORCE_SIGNAL_TYPE]?.join("|") === "demographics.recentlyDivorced|demographics.maritalStatus",
+    JSON.stringify(labels))
+  // `inherited_property` also sources `deedHistory.documentType` and
+  // `sale.lastSale.documentType`. Those are PARCEL facts — a recorded
+  // instrument on a public deed — and they must NOT be labelled, or the deed
+  // half of the signal would inherit a classification it does not carry.
+  check("…and inherited_property's DEED sources are NOT labelled — a recorded instrument is a parcel fact",
+    !(labels[INHERITED_SIGNAL_TYPE] ?? []).includes("deedHistory.documentType")
+    && !(labels[INHERITED_SIGNAL_TYPE] ?? []).includes("sale.lastSale.documentType"))
+}
+
+console.log("\n[1c · THE LANE SPLIT — finding #297: the data lane SOURCES what the ads lane REFUSES]")
+{
+  // ── THE INVERSION, AND IT IS THE FINDING OF THIS WAVE ─────────────────────
+  //
+  // Owner ruling, verbatim: "297 just release it from fairhousing." Before
+  // 2026-08-22 `stripProtectedClassCriteria` refused on EVERY lane, and this
+  // block asserted the strip unconditionally. Its one live caller —
+  // lib/external/batchdata-seller-signals.ts's provider lookup — is a SOURCING
+  // call, which the standing scope ruling exempts, so the refusal was landing
+  // on the one lane the owner had already exempted and on no other.
+  //
+  // The survivor is `screenProtectedClassCriteria(criteria, lane)`. The two
+  // lanes are asserted against THE SAME PAYLOAD below, which is the only way to
+  // show the split is a real distinction rather than two functions that happen
+  // to differ. If both lanes ever agree on this payload, one of the two rulings
+  // has been implemented over the top of the other.
   const dirty = {
     query: "1234 N Lamar Blvd, Austin, TX",
     min_sale_propensity: 80,
@@ -253,20 +316,90 @@ console.log("\n[1c · GATE TWO — a protected filter cannot be ASKED for]")
     orQuickLists: ["preforeclosure", "senior-owner", "vacant", "inherited"],
     property_type_category: "Single Family Residential",
   }
-  const { criteria, removed } = stripProtectedClassCriteria(dirty)
-  check("age, familial-status and income filters are stripped from the outbound query",
-    !("min_owner_age" in criteria) && !("has_children" in criteria) && !("min_household_income" in criteria))
-  check("…including the two that ride as quickList VALUES rather than as keys (senior-owner, inherited)",
-    (criteria.orQuickLists as string[]).join(",") === "preforeclosure,vacant",
-    JSON.stringify(criteria.orQuickLists))
-  check("…while the legitimate motivation filters survive untouched",
-    criteria.min_sale_propensity === 80 && criteria.query === dirty.query
-    && criteria.property_type_category === "Single Family Residential")
-  check("every removal is NAMED, not silently dropped — a narrowed query must be visible",
-    removed.length === 5 && removed.some((r) => r.includes("senior-owner")) && removed.some((r) => r.includes("inherited")),
-    removed.join(", "))
-  const clean = stripProtectedClassCriteria({ query: "x", min_sale_propensity: 80 })
-  check("a clean query removes NOTHING — the gate is not just deleting criteria", clean.removed.length === 0)
+
+  // ── AD-AUDIENCE LANE — the old behaviour, unchanged, byte for byte ────────
+  const ad = screenProtectedClassCriteria(dirty, "ad_audience")
+  check("ADS LANE — age, familial-status and income filters are still stripped from the outbound query",
+    !("min_owner_age" in ad.criteria) && !("has_children" in ad.criteria) && !("min_household_income" in ad.criteria))
+  check("ADS LANE — …including the two that ride as quickList VALUES rather than as keys (senior-owner, inherited)",
+    (ad.criteria.orQuickLists as string[]).join(",") === "preforeclosure,vacant",
+    JSON.stringify(ad.criteria.orQuickLists))
+  check("ADS LANE — …while the legitimate motivation filters survive untouched",
+    ad.criteria.min_sale_propensity === 80 && ad.criteria.query === dirty.query
+    && ad.criteria.property_type_category === "Single Family Residential")
+  check("ADS LANE — every removal is NAMED, not silently dropped — a narrowed query must be visible",
+    ad.removed.length === 5 && ad.removed.some((r) => r.includes("senior-owner")) && ad.removed.some((r) => r.includes("inherited")),
+    ad.removed.join(", "))
+  check("ADS LANE — a clean query removes NOTHING (control: the gate is not just deleting criteria)",
+    screenProtectedClassCriteria({ query: "x", min_sale_propensity: 80 }, "ad_audience").removed.length === 0)
+
+  // ── DATA-SOURCING LANE — released by #297 ─────────────────────────────────
+  const data = screenProtectedClassCriteria(dirty, "data_sourcing")
+  check("DATA LANE — NOTHING is removed: the age, familial-status and income filters all survive",
+    data.removed.length === 0
+    && data.criteria.min_owner_age === 65 && data.criteria.has_children === true
+    && data.criteria.min_household_income === 150000,
+    `removed=${data.removed.join(",")}`)
+  check("DATA LANE — the protected quickList SLUGS survive too, `inherited` among them (owner ruling #304)",
+    (data.criteria.orQuickLists as string[]).join(",") === "preforeclosure,senior-owner,vacant,inherited",
+    JSON.stringify(data.criteria.orQuickLists))
+  check("DATA LANE — …and every one of them is LABELLED rather than silently passed",
+    data.labelled.length === 5
+    && data.labelled.some((l) => l.source === "min_owner_age")
+    && data.labelled.some((l) => l.source === "orQuickLists[inherited]"),
+    data.labelled.map((l) => l.source).join(", "))
+  check("DATA LANE — each label carries the classifier's REASON SENTENCE, not a bare boolean",
+    data.labelled.every((l) => l.reason.length > 40 && l.reason.includes(l.source.replace(/^.*\[|\]$/g, ""))),
+    data.labelled.map((l) => `${l.source}:${l.reason.length}`).join(" "))
+  check("DATA LANE — the legitimate motivation filters are untouched here too (control: it is not passing everything blindly)",
+    data.criteria.min_sale_propensity === 80 && data.labelled.every((l) => l.source !== "min_sale_propensity"))
+
+  // ── THE DISTINCTION ITSELF, ASSERTED AS A DIFFERENCE ─────────────────────
+  check("THE SPLIT IS REAL — the same payload comes back DIFFERENT on the two lanes",
+    ad.removed.length === 5 && data.removed.length === 0
+    && Object.keys(ad.criteria).length < Object.keys(data.criteria).length)
+  check("…and BOTH lanes label the same five criteria — a strip that is not also a label is a narrowing nobody can audit",
+    ad.labelled.map((l) => l.source).sort().join("|") === data.labelled.map((l) => l.source).sort().join("|"))
+
+  // ── FAIL CLOSED ON THE LANE (CLAUDE.md §4) ───────────────────────────────
+  // The regression this whole split invites is an omitted or mistyped lane
+  // silently taking the permissive branch. It cannot: there is no default, and
+  // an unrecognised lane throws rather than guessing.
+  check(`the lane vocabulary is exactly ${PROTECTED_CLASS_LANES.length}: ${PROTECTED_CLASS_LANES.join(" / ")}`,
+    PROTECTED_CLASS_LANES.length === 2
+    && PROTECTED_CLASS_LANES.includes("data_sourcing") && PROTECTED_CLASS_LANES.includes("ad_audience"))
+  check("FAIL CLOSED — an unrecognised lane THROWS rather than falling back to either behaviour",
+    (throws(() => screenProtectedClassCriteria(dirty, "marketing" as unknown as ProtectedClassLane)) ?? "").includes("REFUSED"))
+  check("…and the refusal names the lanes it would have accepted, so an operator can fix the call",
+    (throws(() => screenProtectedClassCriteria(dirty, "" as unknown as ProtectedClassLane)) ?? "").includes("data_sourcing"))
+
+  // ── THE OLD NAME SURVIVES, PINNED TO THE ADS LANE — one implementation ───
+  //
+  // `stripProtectedClassCriteria` was NOT deleted. It is the ads-lane binding of
+  // the survivor, which is why the name is still literally true (it strips) and
+  // why the ads lane's behaviour is provably unchanged. What it must NOT be is a
+  // SECOND implementation: two spellings of one idea is the defect CLAUDE.md §6
+  // names, and here it would be the defect that lets the two lanes drift.
+  const pcs = stripComments(src("lib/lead-governance/protected-class-signals.ts"))
+  check("the ads-lane binding delegates rather than re-implementing (one strip, not two)",
+    /export\s+function\s+stripProtectedClassCriteria/.test(pcs)
+    && /screenProtectedClassCriteria\(criteria,\s*"ad_audience"\)/.test(pcs))
+  check("POSITIVE CONTROL — the same scan DOES find the survivor's own declaration",
+    /export\s+function\s+screenProtectedClassCriteria/.test(pcs))
+  check("…and it still strips, so the name is not a lie in the way `redactProtectedClassFields` records itself to be",
+    stripProtectedClassCriteria({ min_owner_age: 65, min_sale_propensity: 80 }).removed.join("|") === "min_owner_age")
+  check("…and it CANNOT reach the released lane — it takes no lane argument at all",
+    /export function stripProtectedClassCriteria\(\s*criteria: Record<string, unknown> \| null \| undefined,\s*\)/.test(pcs))
+  check("…and the ruling and the date are named in the file, so this is not 'fixed' back later",
+    src("lib/lead-governance/protected-class-signals.ts").includes("2026-08-22")
+    && src("lib/lead-governance/protected-class-signals.ts").includes("297 just release it from fairhousing"))
+  const lookupSrc = stripComments(src("lib/external/batchdata-seller-signals.ts"))
+  check("THE LIVE CALLER — the provider lookup names the data lane and no longer refuses on `removed`",
+    /screenProtectedClassCriteria\(\s*\{\s*query\s*\}\s*,\s*"data_sourcing"\s*\)/.test(lookupSrc)
+    && !/protected-class criteria refused/.test(lookupSrc),
+    lookupSrc.includes("protected-class criteria refused") ? "the refusal string is still live" : "no screen call found")
+  check("POSITIVE CONTROL — the same scan finds the ADS-lane spelling it would have to catch",
+    /"ad_audience"/.test(pcs))
 }
 
 console.log("\n[1d · STORAGE — a protected value is LABELLED on the way in, not stripped (owner ruling, wave 15)]")
@@ -321,6 +454,277 @@ console.log("\n[1e · THE REFUSAL THAT SURVIVED — a protected class may not de
       type: "contact_list",
       filters: { contact_tags: ["past-client", "open-house-attendee"], seed_country: "US", lifecycle: "lifetime" },
     }).length === 0)
+}
+
+console.log("\n[1f · THE REGRESSION THIS WAVE INVITES — the ads gate must still refuse WHAT THE DATA LANE NOW SOURCES]")
+{
+  // ── WHY THIS BLOCK EXISTS, SPECIFICALLY ──────────────────────────────────
+  //
+  // Findings #297 and #304 released the data lane and added four signal types
+  // sourced from `quickLists.inherited`, `quickLists.seniorOwner` and the
+  // `demographics` namespace. The obvious way to deliver that ask is to delete
+  // "inherited", "probate", "senior" and "age" from PROTECTED_CLASS_TOKENS —
+  // and doing so would ALSO open an ad audience named "probate-heirs-55plus",
+  // because `protectedClassSegmentationIn` reads that same vocabulary. A lane
+  // just before this one closed the gap where `syncAudience` staged people into
+  // Meta/Google with no protected-class gate at all.
+  //
+  // So every field the data lane newly sources is asserted HERE to be still
+  // refused on the ads path. This is the one regression this wave is most
+  // likely to cause, and these are the assertions that would go red the moment
+  // somebody "simplifies" the classifier to make the sourcing work.
+  const NOW_SOURCED_BY_THE_DATA_LANE = [
+    "quickLists.inherited", "quickLists.seniorOwner", "demographics.age",
+    "demographics.recentlyDivorced", "demographics.maritalStatus",
+    "demographics.householdSize", "demographics.childCount", "demographics.hasChildren",
+    "min_owner_age", "max_owner_age", "has_children",
+  ]
+  check(`all ${NOW_SOURCED_BY_THE_DATA_LANE.length} fields the data lane now SOURCES are STILL classified protected`,
+    NOW_SOURCED_BY_THE_DATA_LANE.every(isProtectedClassSource),
+    NOW_SOURCED_BY_THE_DATA_LANE.filter((f) => !isProtectedClassSource(f)).join(", "))
+  check("…and an AD AUDIENCE built on any one of them is still REFUSED, one field at a time",
+    NOW_SOURCED_BY_THE_DATA_LANE.every((f) =>
+      (throws(() => assertAudienceSegmentationAllowed({ filters: { [f]: true } }, "Probate Heirs 55+")) ?? "").includes("REFUSED")),
+    NOW_SOURCED_BY_THE_DATA_LANE.filter((f) =>
+      throws(() => assertAudienceSegmentationAllowed({ filters: { [f]: true } }, "x")) === null).join(", "))
+  check("…including when the slug rides as a VALUE, which is how a quickList reaches an audience rule",
+    (throws(() => assertAudienceSegmentationAllowed(
+      { type: "contact_list", filters: { quicklists: ["inherited", "senior-owner"] } }, "Probate Heirs 55+")) ?? "").includes("REFUSED"))
+  check("…and the ADS LANE of the criteria screen still strips those same slugs",
+    screenProtectedClassCriteria({ quicklists: ["inherited", "senior-owner", "vacant"] }, "ad_audience")
+      .removed.length === 2)
+  check("POSITIVE CONTROL — the SAME ad-audience gate still passes a behavioural rule (it is refusing the class, not everything)",
+    throws(() => assertAudienceSegmentationAllowed(
+      { type: "contact_list", filters: { quicklists: ["vacant", "preforeclosure"], lifecycle: "lifetime" } }, "Distressed Retarget")) === null)
+  // AND THE OTHER DIRECTION, on the identical field list: the data lane accepts
+  // every one of them. An assertion that only ever tested the refusal would go
+  // green on a classifier that refuses everywhere — which is the state #297
+  // took us out of.
+  check(`POSITIVE CONTROL, OTHER DIRECTION — the DATA lane accepts all ${NOW_SOURCED_BY_THE_DATA_LANE.length} of the same fields`,
+    (() => {
+      const payload = Object.fromEntries(NOW_SOURCED_BY_THE_DATA_LANE.map((f) => [f, true]))
+      const r = screenProtectedClassCriteria(payload, "data_sourcing")
+      return r.removed.length === 0
+        && r.labelled.length === NOW_SOURCED_BY_THE_DATA_LANE.length
+        && NOW_SOURCED_BY_THE_DATA_LANE.every((f) => r.criteria[f] === true)
+    })())
+  check("…and the seller-signal DECLARATION accepts them too, labelled rather than refused",
+    (() => {
+      const d = defineSellerSignalSources<readonly SellerSignalSourceSpec[]>([{
+        signalType: "probate_and_demographics", label: "attempt",
+        sources: NOW_SOURCED_BY_THE_DATA_LANE, why: "sourcing is exempt under #297",
+      }])
+      return (d[0].protectedClassSources ?? []).length === NOW_SOURCED_BY_THE_DATA_LANE.length
+    })())
+}
+
+console.log("\n[1g · THE STORED ROW STAYS HONEST — protected-class provenance reaches signal_details]")
+{
+  // The classifier returns a REASON SENTENCE rather than a boolean precisely so
+  // a caller that LABELS can write down what it labelled and on what grounds.
+  // Under #297 this lane now stores four protected-derived signal types, so the
+  // grounds have to reach the row — otherwise "which of these came from
+  // protected-class data" is a question only the source tree can answer, and a
+  // row outlives the code that wrote it.
+  const basis = BATCHDATA_PROTECTED_CLASS_BASIS
+  check("BATCHDATA_PROTECTED_CLASS_BASIS names the same four types the label map does",
+    Object.keys(basis).sort().join("|") ===
+      Object.keys(protectedClassSourcesBySignalType(BATCHDATA_SELLER_SIGNAL_SOURCES)).sort().join("|"),
+    Object.keys(basis).sort().join("|"))
+  check("…and every entry carries a REASON SENTENCE beside its source, verbatim from the classifier",
+    Object.values(basis).every((entries) => entries.length > 0
+      && entries.every((e) => e.reason === protectedClassReasonFor(e.source))))
+  check("…and it is derived from the spec table, so a source count and a basis count cannot disagree",
+    Object.entries(protectedClassSourcesBySignalType(BATCHDATA_SELLER_SIGNAL_SOURCES))
+      .every(([type, sources]) => (basis[type] ?? []).length === sources.length))
+  check("POSITIVE CONTROL — the same builder returns NOTHING for a purely parcel-derived spec table",
+    Object.keys(protectedClassBasisBySignalType([
+      { signalType: "parcel_only", label: "x", sources: ["intel.salePropensity", "quickLists.vacant"], why: "y" },
+    ])).length === 0)
+
+  // ── AND IT REACHES THE ROW ───────────────────────────────────────────────
+  const protectedRow = buildBatchDataSignalRow({
+    signal: {
+      signalType: INHERITED_SIGNAL_TYPE, strength: "strong", variant: "q:inherited",
+      reason: "r", observed: { inherited: true },
+    },
+    entity: "lead", entityId: "11111111-1111-1111-1111-111111111111",
+    brokerageId: "22222222-2222-2222-2222-222222222222",
+    leadAddressKey: "1234 n lamar blvd", providerAddress: "1234 N LAMAR BLVD",
+  })
+  const stored = (protectedRow.signal_details as { protected_class_basis?: Array<{ source: string; reason: string }> })
+    .protected_class_basis ?? []
+  check("a stored inherited_property row RECORDS that it came from a protected-class source",
+    stored.length === 1 && stored[0].source === "quickLists.inherited")
+  check("…and records the GROUNDS as a sentence an auditor can read without the classifier in front of them",
+    stored[0].reason.includes("inherited") && stored[0].reason.length > 40, stored[0]?.reason)
+  check("…and the key is `protected_class_basis`, distinct from `protected_class_fields` (two different facts)",
+    "protected_class_basis" in (protectedRow.signal_details as Record<string, unknown>)
+    && "protected_class_fields" in (protectedRow.signal_details as Record<string, unknown>))
+
+  const parcelRow = buildBatchDataSignalRow({
+    signal: {
+      signalType: VACANCY_SIGNAL_TYPE, strength: "strong", variant: "v:property",
+      reason: "r", observed: { property_vacant: true },
+    },
+    entity: "lead", entityId: "11111111-1111-1111-1111-111111111111",
+    brokerageId: "22222222-2222-2222-2222-222222222222",
+    leadAddressKey: "1234 n lamar blvd", providerAddress: "1234 N LAMAR BLVD",
+  })
+  check("POSITIVE CONTROL — a PARCEL-derived row carries the key with an EMPTY basis, never a missing key",
+    "protected_class_basis" in (parcelRow.signal_details as Record<string, unknown>)
+    && ((parcelRow.signal_details as { protected_class_basis?: unknown[] }).protected_class_basis ?? []).length === 0)
+}
+
+console.log("\n[1h · #304 — INHERITED AND PROBATE, from the LIVE provider catalogue]")
+{
+  // FIELD NAMES READ LIVE ON 2026-08-22, not remembered:
+  //   list_property_datasets                     → 15 datasets
+  //   list_property_dataset_fields quicklist     → 39 entries, incl. quickLists.inherited
+  //   list_property_dataset_fields demographic   → 32 entries
+  //   list_property_dataset_fields deed          → 27 entries
+  //   the property-search criteria enum          → quicklist values incl. `inherited`
+  // THE PROVIDER PUBLISHES NO FIELD NAMED "probate" ANYWHERE. `quickLists.inherited`
+  // IS its probate list, and the deed document type is the recorded instrument.
+  // One signal type covers both words (CLAUDE.md §6) — see the constant's header.
+  const inheritedSpec = BATCHDATA_SELLER_SIGNAL_SOURCES.find((s) => s.signalType === INHERITED_SIGNAL_TYPE)
+  check("the inherited/probate type sources the provider's REAL slug `quickLists.inherited`",
+    !!inheritedSpec && inheritedSpec.sources.includes("quickLists.inherited"))
+  check("…and the DEED instrument beside it, which is where a probate transfer is actually recorded",
+    !!inheritedSpec && inheritedSpec.sources.includes("deedHistory.documentType")
+    && inheritedSpec.sources.includes("sale.lastSale.documentType"))
+  check("NO SECOND SPELLING was coined — there is one type, not `probate` beside `inherited_property`",
+    BATCHDATA_SIGNAL_TYPES.filter((t) => t === INHERITED_SIGNAL_TYPE).length === 1
+    && !BATCHDATA_SIGNAL_TYPES.includes("probate") && !BATCHDATA_SIGNAL_TYPES.includes("inherited"))
+
+  check("the quickList flag alone derives a STRONG inherited_property signal",
+    (() => {
+      const d = deriveSellerSignals({ quickLists: { inherited: true } }, { todayIso: "2026-08-22" })
+      const s = d.find((x) => x.signalType === INHERITED_SIGNAL_TYPE)
+      return s?.strength === "strong" && s.variant === "q:inherited" && s.observed.inherited === true
+    })())
+  check("a probate DEED INSTRUMENT with no flag derives a MODERATE one — recorded, but not the provider's own verdict",
+    (() => {
+      const d = deriveSellerSignals({ deedHistory: { documentType: "Personal Representative's Deed" } }, { todayIso: "2026-08-22" })
+      const s = d.find((x) => x.signalType === INHERITED_SIGNAL_TYPE)
+      return s?.strength === "moderate" && s.observed.probate_deed_instrument === "Personal Representative's Deed"
+    })())
+  check("flag AND deed together file ONE row, not two — lead scoring COUNTS rows",
+    deriveSellerSignals(
+      { quickLists: { inherited: true }, deedHistory: { documentType: "Executor Deed" } },
+      { todayIso: "2026-08-22" },
+    ).filter((x) => x.signalType === INHERITED_SIGNAL_TYPE).length === 1)
+  check("a deedHistory ARRAY (the history shape) is read as well as a flattened object",
+    readProbateDeedInstrument({ deedHistory: { documentType: ["Warranty Deed", "Affidavit of Death"] } })
+      === "Affidavit of Death")
+  check(`all ${PROBATE_DEED_DOCUMENT_TERMS.length} probate instrument terms are recognised`,
+    PROBATE_DEED_DOCUMENT_TERMS.every((t) =>
+      readProbateDeedInstrument({ deedHistory: { documentType: `Recorded ${t} instrument` } }) !== null),
+    PROBATE_DEED_DOCUMENT_TERMS.filter((t) =>
+      readProbateDeedInstrument({ deedHistory: { documentType: `Recorded ${t} instrument` } }) === null).join(", "))
+  // POSITIVE CONTROL FOR THE SUBSTRING MATCH. This reader matches substrings —
+  // the opposite of the classifier's whole-token rule — because county deed
+  // wording varies. That is only safe if the ordinary deed types contain none of
+  // the terms, so prove it on the four commonest.
+  const ORDINARY_DEEDS = ["Warranty Deed", "Quit Claim Deed", "Grant Deed", "Trustee's Deed Upon Sale", "Special Warranty Deed"]
+  check(`${ORDINARY_DEEDS.length} ORDINARY deed types are NOT read as probate (the substring match is not a trap)`,
+    ORDINARY_DEEDS.every((d) => readProbateDeedInstrument({ deedHistory: { documentType: d } }) === null),
+    ORDINARY_DEEDS.filter((d) => readProbateDeedInstrument({ deedHistory: { documentType: d } }) !== null).join(", "))
+  check("…and a row with no deed and no flag derives NO inherited signal at all",
+    deriveSellerSignals({ quickLists: { vacant: true } }, { todayIso: "2026-08-22" })
+      .every((s) => s.signalType !== INHERITED_SIGNAL_TYPE))
+}
+
+console.log("\n[1i · THE DEMOGRAPHIC DATASET — wired, banded, and never a constant]")
+{
+  // Owner ruling, verbatim: "all motivatied seller classifiers are necessary for
+  // data especially demographics and protected class." The dataset is now
+  // REQUESTED (it used to be conspicuously absent) and three signal types read
+  // it. Field paths from `list_property_dataset_fields demographic`, 32 entries,
+  // read live 2026-08-22.
+  check("the outbound request now ASKS for the `demographic` dataset (inverted 2026-08-22 by owner ruling)",
+    BATCHDATA_SIGNAL_DATASETS.includes("demographic"))
+  check("…and for `deed`, without which trust_owned's and inherited_property's declared deed sources never arrive",
+    BATCHDATA_SIGNAL_DATASETS.includes("deed"))
+
+  // ── SENIOR OWNER — the age band, which is what the ruling was FOR ────────
+  check("the bare senior-owner FLAG bands WEAK — a broad provider list must not move every lead equally",
+    (() => {
+      const s = deriveSellerSignals({ quickLists: { seniorOwner: true } }, { todayIso: "2026-08-22" })
+        .find((x) => x.signalType === SENIOR_OWNER_SIGNAL_TYPE)
+      return s?.strength === "weak" && s.variant === "band:flag" && s.observed.owner_age === null
+    })())
+  check("a MEASURED age at 78 bands MODERATE and stores the BAND beside the raw value",
+    (() => {
+      const s = deriveSellerSignals({ demographics: { age: 78 } }, { todayIso: "2026-08-22" })
+        .find((x) => x.signalType === SENIOR_OWNER_SIGNAL_TYPE)
+      return s?.strength === "moderate" && s.observed.owner_age_band === "75plus" && s.observed.owner_age === 78
+    })())
+  check("…and 68 bands WEAK, so the ladder discriminates inside the protected attribute rather than flattening it",
+    deriveSellerSignals({ demographics: { age: 68 } }, { todayIso: "2026-08-22" })
+      .find((x) => x.signalType === SENIOR_OWNER_SIGNAL_TYPE)?.strength === "weak")
+  check("CONTROL — an owner aged 41 derives NO senior signal (it is not firing for everybody)",
+    deriveSellerSignals({ demographics: { age: 41 } }, { todayIso: "2026-08-22" })
+      .every((s) => s.signalType !== SENIOR_OWNER_SIGNAL_TYPE))
+  check("an out-of-range age is REFUSED rather than banded — a provider shape change is not a strong signal",
+    readOwnerAge({ demographics: { age: 0 } }) === null
+    && readOwnerAge({ demographics: { age: 250 } }) === null
+    && readOwnerAge({ demographics: { age: 71 } }) === 71)
+
+  // ── RECENT DIVORCE ───────────────────────────────────────────────────────
+  check("demographics.recentlyDivorced derives a STRONG recent_divorce signal",
+    (() => {
+      const s = deriveSellerSignals({ demographics: { recentlyDivorced: true, maritalStatus: "Divorced" } },
+        { todayIso: "2026-08-22" }).find((x) => x.signalType === RECENT_DIVORCE_SIGNAL_TYPE)
+      return s?.strength === "strong" && s.observed.marital_status === "Divorced"
+    })())
+  check("…and NOT `urgent` — urgent in this lane means a recorded event with a FUTURE DATE, which a divorce flag has none of",
+    deriveSellerSignals({ demographics: { recentlyDivorced: true } }, { todayIso: "2026-08-22" })
+      .find((x) => x.signalType === RECENT_DIVORCE_SIGNAL_TYPE)?.strength !== "urgent")
+  check("CONTROL — `recentlyDivorced: false` derives nothing (the reader is not treating presence as truth)",
+    deriveSellerSignals({ demographics: { recentlyDivorced: false } }, { todayIso: "2026-08-22" })
+      .every((s) => s.signalType !== RECENT_DIVORCE_SIGNAL_TYPE))
+
+  // ── HOUSEHOLD OUTGROWN — a RELATION, never a composition ─────────────────
+  check("a household of 5 in a 2-bed derives household_outgrown at MODERATE",
+    (() => {
+      const s = deriveSellerSignals({ demographics: { householdSize: 5 }, building: { bedroomCount: 2 } },
+        { todayIso: "2026-08-22" }).find((x) => x.signalType === HOUSEHOLD_OUTGROWN_SIGNAL_TYPE)
+      return s?.strength === "moderate" && s.observed.surplus_people === 3
+    })())
+  check("…a household of 4 in a 2-bed is WEAK (one over the line is a nudge, not a crisis)",
+    deriveSellerSignals({ demographics: { householdSize: 4 }, building: { bedroomCount: 2 } },
+      { todayIso: "2026-08-22" }).find((x) => x.signalType === HOUSEHOLD_OUTGROWN_SIGNAL_TYPE)?.strength === "weak")
+  check("THE CONSTANT IS REFUSED — a couple in a 1-bed derives NOTHING (size > bedrooms + 1, the +1 is the couple)",
+    deriveSellerSignals({ demographics: { householdSize: 2 }, building: { bedroomCount: 1 } },
+      { todayIso: "2026-08-22" }).every((s) => s.signalType !== HOUSEHOLD_OUTGROWN_SIGNAL_TYPE))
+  check("…and `hasChildren` ALONE derives nothing — ~40% of households have one, so it is a constant, not a signal",
+    deriveSellerSignals({ demographics: { hasChildren: true, childCount: 2 } }, { todayIso: "2026-08-22" })
+      .every((s) => s.signalType !== HOUSEHOLD_OUTGROWN_SIGNAL_TYPE))
+  check("an unreadable half is REPORTED as unreadable, never assumed roomy",
+    readHouseholdPressure({ demographics: { householdSize: 6 } }).overcrowded === false
+    && readHouseholdPressure({ demographics: { householdSize: 6 } }).bedroomCount === null
+    && readHouseholdPressure({ building: { bedroomCount: 1 } }).householdSize === null)
+
+  // ── AND THE WHOLE DEMOGRAPHIC BLOCK, END TO END ─────────────────────────
+  check("one provider row carrying demographics derives all four protected types AND the parcel ones beside them",
+    (() => {
+      const derived = deriveSellerSignals({
+        intel: { salePropensity: 93 },
+        quickLists: { inherited: true, seniorOwner: true, vacant: true },
+        demographics: { age: 79, recentlyDivorced: true, householdSize: 5 },
+        building: { bedroomCount: 2 },
+      }, { todayIso: "2026-08-22" }).map((s) => s.signalType)
+      return [INHERITED_SIGNAL_TYPE, SENIOR_OWNER_SIGNAL_TYPE, RECENT_DIVORCE_SIGNAL_TYPE,
+        HOUSEHOLD_OUTGROWN_SIGNAL_TYPE, SALE_PROPENSITY_SIGNAL_TYPE, VACANCY_SIGNAL_TYPE]
+        .every((t) => derived.includes(t))
+    })())
+  check("…and every one of them is a declared type this lane may write",
+    deriveSellerSignals({
+      quickLists: { inherited: true, seniorOwner: true },
+      demographics: { age: 79, recentlyDivorced: true, householdSize: 5 },
+      building: { bedroomCount: 2 },
+    }, { todayIso: "2026-08-22" }).every((s) => BATCHDATA_SIGNAL_TYPES.includes(s.signalType)))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1262,11 +1666,23 @@ check("no second spelling of either was coined",
   !BATCHDATA_SIGNAL_TYPES.includes("equity_position") && !BATCHDATA_SIGNAL_TYPES.includes("ownership_tenure"))
 check("the eight NEW types do not collide with the permit lane's two",
   !BATCHDATA_SIGNAL_TYPES.includes("permit_activity") && !BATCHDATA_SIGNAL_TYPES.includes("code_violation"))
-check("the outbound request never asks for the `demographic` dataset",
-  !BATCHDATA_SIGNAL_DATASETS.includes("demographic") && BATCHDATA_SIGNAL_DATASETS.includes("batchrank"))
+// INVERTED 2026-08-22, and the inversion is the finding (CLAUDE.md §2). This
+// used to read "the outbound request never asks for the `demographic` dataset"
+// and the file's own header called that absence "the cheapest of the three fair
+// housing gates". Owner ruling — "all motivatied seller classifiers are
+// necessary for data especially demographics and protected class" — makes it not
+// a gate but the lane declining to collect the input the owner wants. Three
+// signal types now read `demographics.*`, and a declared source that never
+// arrives is a reader with no writer. The full behavioural proof is in [1i].
+check("the outbound request NOW asks for the `demographic` dataset (owner ruling, 2026-08-22)",
+  BATCHDATA_SIGNAL_DATASETS.includes("demographic") && BATCHDATA_SIGNAL_DATASETS.includes("batchrank"))
 check("…and every dataset it DOES ask for is one the provider publishes",
   BATCHDATA_SIGNAL_DATASETS.every((d) =>
-    ["core", "quicklist", "batchrank", "foreclosure", "mortgage-liens", "valuation", "listing", "deed", "comps", "contact", "image", "owner", "permit", "basic", "all"].includes(d)))
+    // The provider's own dataset list, read live 2026-08-22 via
+    // `list_property_datasets` — 15 datasets. `demographic` was missing from
+    // this literal until then, so the check could not have cleared a request
+    // for it even though the provider publishes it.
+    ["core", "quicklist", "batchrank", "foreclosure", "mortgage-liens", "valuation", "listing", "deed", "comps", "contact", "demographic", "image", "owner", "permit", "basic", "all"].includes(d)))
 
 console.log("\n[6d · the session-triggered half — the tenant comes from the SESSION, never a parameter]")
 {

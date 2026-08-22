@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 437 tables, 760 columns.
+ * MEASURED AT GENERATION: 435 tables, 757 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-08-20
+ * generated: 2026-08-22
  * source: public.live_check_constraints_json()
- * body-sha256: cb102af53477ff4c9c24f996919b64396e7afdca1c70143edd75c880f58bdced
+ * body-sha256: 1eabd878c49b991d2e8b39ffc678df87a87440b770792be0e2d6a813b4475aef
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -281,9 +281,6 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     publish_status: ["approved", "archived", "draft", "pending_review", "published", "rejected", "scheduled"],
     publish_target: ["both", "embed", "hosted", "wordpress"],
     visibility_scope: ["agent", "brokerage", "multi_location", "platform", "team"],
-  },
-  brand_asset_library: {
-    asset_kind: ["agent_headshot", "brand_color_palette", "hero_template", "logo", "remotion_composition", "team_logo", "video_avatar", "voice_clone"],
   },
   brand_templates: {
     template_type: ["business_card", "custom", "email_signature", "letterhead"],
@@ -1262,10 +1259,6 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   qr_codes: {
     destination_type: ["anniversary_video", "book_meeting", "cma_form", "landing_page", "listing_detail", "other", "podcast_episode", "video_avatar_tour"],
     purpose: ["business_card", "campaign", "event", "general", "lead_capture", "lead_magnet", "listing", "listing_inquiry", "open_house"],
-  },
-  quickbooks_sync_log: {
-    direction: ["bidirectional", "pull", "push"],
-    status: ["completed", "failed", "in_progress", "partial"],
   },
   raw_scraped_leads: {
     processing_status: ["duplicate_post_enrich", "duplicate_pre_enrich", "enriching", "error", "insufficient_contact_data", "insufficient_identity", "insufficient_identity_for_promotion", "pending", "processing", "promoted", "queued_for_enrichment", "territory_mismatch", "unassigned_no_market"],

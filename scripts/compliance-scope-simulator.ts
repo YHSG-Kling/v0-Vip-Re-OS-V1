@@ -393,8 +393,10 @@ console.log(`\n[3 · THE REFUSAL THAT MOVED — protected class may not segment 
 // The data-lane gates became labels; the refusal landed on ad targeting. If this
 // block goes red the ruling was implemented as pure deletion, which is exactly
 // what CLAUDE.md §1 forbids.
-const { protectedClassSegmentationIn, assertAudienceSegmentationAllowed, labelProtectedClassFields } =
-  await import("../lib/lead-governance/protected-class-signals")
+const {
+  protectedClassSegmentationIn, assertAudienceSegmentationAllowed, labelProtectedClassFields,
+  screenProtectedClassCriteria, isProtectedClassSource, PROTECTED_CLASS_LANES,
+} = await import("../lib/lead-governance/protected-class-signals")
 
 function throws(fn: () => unknown): string | null {
   try { fn(); return null } catch (e) { return e instanceof Error ? e.message : String(e) }
@@ -418,6 +420,63 @@ check("the data lane LABELS instead of stripping — a demographic survives stor
   })())
 check("wired for real — lib/audiences/audience-sync.ts imports the refusal",
   (graph.get("lib/audiences/audience-sync.ts") ?? []).includes("lib/lead-governance/protected-class-signals.ts"))
+
+// ── FINDINGS #297 / #304 (2026-08-22) — THE SAME FIELD, TWO ANSWERS ─────────
+//
+// Owner rulings, verbatim: "297 just release it from fairhousing.", "all
+// motivatied seller classifiers are necessary for data especially demographics
+// and protected class.", "304 needs inherited and probate".
+//
+// The seller-signal lane now SOURCES `quickLists.inherited`, `quickLists.seniorOwner`
+// and the `demographics` namespace, and the ads lane must still REFUSE every
+// one of them. Those two facts are asserted here TOGETHER, on the same field
+// list, because separately either is trivially satisfiable: a classifier that
+// refuses nothing passes the sourcing half, and one that refuses everything
+// passes the ads half. The pair is what pins the boundary.
+//
+// THE OBVIOUS WRONG IMPLEMENTATION of #304 is to delete "inherited", "probate",
+// "senior" and "age" from PROTECTED_CLASS_TOKENS. That would deliver the
+// sourcing ask and simultaneously open an ad audience named
+// "probate-heirs-55plus", because protectedClassSegmentationIn reads the same
+// vocabulary. This block is what goes red if anybody does it.
+{
+  const RELEASED_TO_THE_DATA_LANE = [
+    "quickLists.inherited", "quickLists.seniorOwner",
+    "demographics.age", "demographics.recentlyDivorced", "demographics.maritalStatus",
+    "demographics.householdSize", "demographics.childCount", "demographics.hasChildren",
+    "min_owner_age", "max_owner_age", "has_children",
+  ]
+  check(`the classifier was NOT weakened — all ${RELEASED_TO_THE_DATA_LANE.length} newly-sourced fields are still classified protected`,
+    RELEASED_TO_THE_DATA_LANE.every(isProtectedClassSource),
+    RELEASED_TO_THE_DATA_LANE.filter((f) => !isProtectedClassSource(f)).join(", "))
+  check("ADS LANE STILL REFUSES — an ad audience on any one of those fields throws, one field at a time",
+    RELEASED_TO_THE_DATA_LANE.every((f) =>
+      (throws(() => assertAudienceSegmentationAllowed({ filters: { [f]: true } }, "Probate Heirs 55+")) ?? "").includes("REFUSED")),
+    RELEASED_TO_THE_DATA_LANE.filter((f) =>
+      throws(() => assertAudienceSegmentationAllowed({ filters: { [f]: true } }, "x")) === null).join(", "))
+  check("…and the ads lane of the criteria screen still STRIPS the same quickList slugs",
+    (() => {
+      const r = screenProtectedClassCriteria({ quicklists: ["inherited", "senior-owner", "vacant"] }, "ad_audience")
+      return r.removed.length === 2 && (r.criteria.quicklists as string[]).join(",") === "vacant"
+    })())
+  check("DATA LANE NO LONGER REFUSES — the same slugs and the same demographic filters pass through intact",
+    (() => {
+      const r = screenProtectedClassCriteria(
+        { quicklists: ["inherited", "senior-owner", "vacant"], min_owner_age: 65, has_children: true },
+        "data_sourcing")
+      return r.removed.length === 0
+        && (r.criteria.quicklists as string[]).join(",") === "inherited,senior-owner,vacant"
+        && r.criteria.min_owner_age === 65 && r.criteria.has_children === true
+    })())
+  check("…and it LABELS what it passed, with the classifier's reason sentence, so a sourced protected fact is auditable",
+    (() => {
+      const r = screenProtectedClassCriteria({ quicklists: ["inherited"], min_owner_age: 65 }, "data_sourcing")
+      return r.labelled.length === 2 && r.labelled.every((l) => l.reason.length > 40)
+    })())
+  check(`FAIL CLOSED ON THE LANE — there are exactly ${PROTECTED_CLASS_LANES.length} lanes and an unknown one THROWS, so a typo cannot take the permissive branch`,
+    PROTECTED_CLASS_LANES.length === 2
+    && (throws(() => screenProtectedClassCriteria({ min_owner_age: 65 }, "marketing" as never)) ?? "").includes("REFUSED"))
+}
 
 // ── THE DEFINE SIDE (finding #298) ──────────────────────────────────────────
 // The refusal used to sit ONLY on the populate half. A protected-class audience

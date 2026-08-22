@@ -39,6 +39,10 @@ import { OFFER_EVENT }          from "@/lib/buyer-offer/offer-lifecycle"
 import { emitCompliancePassed } from "@/lib/buyer-offer/compliance-gate"
 import { createTransactionFromOffer } from "@/lib/transactions"
 import { auditOfferDocuments }       from "@/lib/compliance/required-documents"
+// THE SAME PURE READING THE TRANSACTION-CREATION GATE MAKES, made HERE too.
+// Imported, never re-spelled: this checkpoint and the gate that later refuses on
+// the identical fact must not be able to disagree (CLAUDE.md §6).
+import { findUnexecutedDocuments }   from "@/lib/transactions/transaction-creation-gate"
 import { scanOfferPacketCompleteness } from "@/lib/workflow/intelligence/scan-offer-packet"
 import { notifyComplianceFlag }       from "@/lib/notifications/notify-helpers"
 import { resolveOfferComplianceFlags } from "@/lib/compliance/offer-flag-resolution"
@@ -162,6 +166,21 @@ export async function submitOfferToCompliance(
     dealType:     "buyer",
     stateCode,
   })
+
+  // THE AUDIT ITSELF CAN FAIL TO RUN, and that is not a pass.
+  //
+  // auditOfferDocuments used to answer a REFUSED checklist read and a refused
+  // deal-file read with the same all-zero shape a clean file produces — so
+  // "the required-document list could not be read" arrived here indistinguishable
+  // from "this brokerage requires nothing", and the submit sailed through. That
+  // is the finding-#105 shape at the settings end of the gate. It now carries
+  // `unavailable_reason`, and an unavailable audit REFUSES here.
+  if (audit.unavailable_reason) {
+    return {
+      success: false,
+      error: `Cannot submit to compliance — the required-document check could not run (${audit.unavailable_reason}). Nothing was verified, so nothing was submitted.`,
+    }
+  }
 
   const packetScan = await scanOfferPacketCompleteness({
     offerId,
@@ -378,6 +397,44 @@ export async function submitOfferToCompliance(
   // "stops the deal" and "nobody ever hears about it".
   const warningDocs  = audit.missing_warning ?? []
   const packetWarns  = packetScan.warnings ?? []
+
+  // ── PRESENT BUT NOT EXECUTED — the miss this checkpoint could not see ──────
+  //
+  // The audit above answers "is the document THERE". Nothing here answered "is
+  // it SIGNED AND INITIALED", for any required document other than the purchase
+  // contract: the packet scan reads the offer's own staged packet, and the
+  // buyer/seller evidence block reads the offer's columns. A required agency
+  // disclosure, lead-paint addendum or brokerage form could be uploaded blank,
+  // satisfy `missing_blocking`, and pass compliance in silence.
+  //
+  // It did not stay silent forever — lib/transactions/transaction-creation-gate.ts
+  // refuses transaction creation on exactly this, by the owner's rule that a
+  // transaction exists "only after the compliance is good, all documents are
+  // present with full signatures and initials". So the fact was already computed
+  // and already load-bearing; it was just discovered a stage TOO LATE, at the
+  // moment the deal tried to become a transaction, by which point compliance had
+  // been stamped and everyone believed the file was clean.
+  //
+  // This calls the gate's OWN pure reader rather than a second copy of it, so the
+  // warning a TC sees here and the refusal they would hit later are the same
+  // reading of the same deal file. Owner's rule for this path, verbatim, is the
+  // one already quoted above: "whether or not a doc is required or a warning, any
+  // missing item … needs to be a notification to the TC and/or the listing
+  // agent" — an unsigned required document is a missing item.
+  //
+  // WARNING, NOT A BLOCK, and deliberately so. `medium` severity is the in-app
+  // bell only (see the flag below), so this never becomes an email + SMS on every
+  // deal; and turning it into a refusal here would change what submitting to
+  // compliance MEANS, which is a ruling this does not have. The gate still
+  // refuses at creation — this only stops the TC finding out then.
+  const unexecutedRequired = findUnexecutedDocuments(
+    audit.deal_file,
+    audit.required_breakdown.map((r) => r.classification),
+  )
+  // Split the way the gate splits them: a document nobody SCANNED has a different
+  // remedy from one a party has not signed — "scan it" rather than "chase them".
+  const unexecutedNeverScanned = unexecutedRequired.filter((u) => u.unscanned)
+  const unexecutedRealGaps     = unexecutedRequired.filter((u) => !u.unscanned)
   // THE ATTESTATION AND THE SCANNER DISAGREE.
   //
   // A buyer signature established by human attestation carries the classifier's
@@ -394,10 +451,17 @@ export async function submitOfferToCompliance(
     buyerEvidence.source === "attested_executed_contract" &&
     buyerEvidence.ai_corroboration?.checked === true &&
     buyerEvidence.ai_corroboration?.executed === false
-  if (warningDocs.length > 0 || packetWarns.length > 0 || packetIsOneSided || attestationContested) {
+  if (warningDocs.length > 0 || packetWarns.length > 0 || packetIsOneSided
+      || attestationContested || unexecutedRequired.length > 0) {
     const warnBits: string[] = []
     if (warningDocs.length > 0) warnBits.push(`${warningDocs.length} optional document(s) missing`)
     if (packetWarns.length > 0) warnBits.push(`${packetWarns.length} packet warning(s)`)
+    if (unexecutedRealGaps.length > 0) {
+      warnBits.push(`${unexecutedRealGaps.length} required document(s) not fully signed/initialed`)
+    }
+    if (unexecutedNeverScanned.length > 0) {
+      warnBits.push(`${unexecutedNeverScanned.length} required document(s) never scanned`)
+    }
     if (attestationContested) {
       warnBits.push("the document scan could not find the buyer signature that was attested")
     }
@@ -419,6 +483,21 @@ export async function submitOfferToCompliance(
         severity:   "medium",
         title:      `Submitted with warnings: ${warnBits.join(", ")}`,
         body:       `Missing (warning): ${warningDocs.join(", ") || "(none)"}.\nPacket warnings: ${packetWarns.slice(0, 5).map(w => w.title).join("; ") || "(none)"}.`
+                  // NAMED, not counted. The header line says how many; a TC needs
+                  // to know WHICH document and WHOSE signature or initial, because
+                  // that is the difference between an email to the seller and a
+                  // re-scan. Same split, same wording as the creation gate's own
+                  // refusal, so the two read as one system.
+                  + (unexecutedRealGaps.length > 0
+                     ? `\nPresent but NOT fully executed — the transaction gate will refuse creation on these: ${
+                         unexecutedRealGaps.slice(0, 8).map((u) =>
+                           `${u.label} (missing ${[...u.missingSignatures, ...u.missingInitials].join(", ")})`,
+                         ).join("; ")}. A signature block being filled does not make a document complete when a page initial is blank.`
+                     : "")
+                  + (unexecutedNeverScanned.length > 0
+                     ? `\nRequired but NEVER SCANNED — nothing about these has been verified, so they cannot be treated as signed: ${
+                         unexecutedNeverScanned.slice(0, 8).map((u) => u.label).join("; ")}. Open each one and run the document scan.`
+                     : "")
                   + (packetIsOneSided
                      ? `\nBoth-sides check: the staged packet carries signature blocks, but none naming the ${sidesAbsentFromPacket.join(" or ")} side — so that side was NOT verified field-by-field. It rests on the offer record: ${bothSidesRecord.buyer.established_by} and ${bothSidesRecord.seller.established_by}. Open the executed contract and confirm every ${sidesAbsentFromPacket.join(" and ")} signature and initial is on it.`
                      : "")

@@ -218,6 +218,10 @@ export async function createTransactionFromOffer(params: {
   // present == this offer is on OUR listing (the seller side is ours). See deal-type-resolver.ts.
   let resolvedAddress = (offer as any).property_address ?? null
   let sellerContactId: string | null = null
+  // The property's state — needed so the required-document checklist applies the
+  // state-specific rules (the same resolution submitOfferToCompliance does:
+  // in-house → listings.state, outside property → parse it off the address).
+  let stateCode: string | null = null
   if ((offer as any).listing_id) {
     const { data: listing } = await supabase
       .from("listings")
@@ -229,7 +233,12 @@ export async function createTransactionFromOffer(params: {
         resolvedAddress = [listing.address, listing.city, listing.state].filter(Boolean).join(", ")
       }
       sellerContactId = (listing as any).seller_contact_id ?? null
+      stateCode = ((listing as any).state as string | null) ?? null
     }
+  }
+  if (!stateCode && resolvedAddress) {
+    const m = String(resolvedAddress).match(/,\s*([A-Za-z]{2})\s*\d{5}(?:-\d{4})?\b/)
+    stateCode = m ? m[1].toUpperCase() : null
   }
 
   // Who do WE represent? Ground truth: our-listing (seller side) + whether the BUYER is OUR client (in
@@ -294,6 +303,54 @@ export async function createTransactionFromOffer(params: {
   // different facts (see CONTRACT_TERM_COLUMNS) and the two name sets are
   // disjoint, so nothing here can overwrite a date the derivation above produced.
   const contractTerms = copyContractTerms(offer as unknown as Record<string, unknown>)
+
+  // ── THE TRANSACTION-CREATION GATE, AND IT IS NOT SKIPPABLE ────────────────
+  //
+  // Owner's rule: "when the transaction is created it is only created after the
+  // compliance is good, all documents are present with full signatures and
+  // initials. the required document list is in the settings…"
+  //
+  // `skipOfferGate` above lets the authoritative caller skip re-reading the
+  // OFFER COLUMNS it just stamped. It does NOT and must not skip this: no caller
+  // in the tree checked the required-document list AND the per-document
+  // signature/initial state before creating a transaction. submitOfferToCompliance
+  // audited required-document PRESENCE and walked a packet when one was staged,
+  // which is not the same claim as "every required contract in this file carries
+  // every party's signature and every party's initials".
+  //
+  // Fail-closed by construction: assertTransactionCreationAllowed refuses when it
+  // cannot read the checklist, the deal file, or the compliance ledger.
+  // brokerageId is the caller's session tenant, and the gate re-reads the offer's
+  // own brokerage_id and refuses a mismatch.
+  const { assertTransactionCreationAllowed } = await import("./transaction-creation-gate")
+  // agents.id ≠ users.id (23503) — cross via agents.user_id before asking for an
+  // agent-scoped checklist, or the agent scope silently matches nothing.
+  let gateAgentUserId: string | null = null
+  let gateTeamId: string | null = null
+  if ((offer as any).agent_id) {
+    const { data: agentRow } = await supabase
+      .from("agents").select("user_id").eq("id", (offer as any).agent_id).maybeSingle()
+    gateAgentUserId = (agentRow?.user_id as string | null) ?? null
+    if (gateAgentUserId) {
+      const { data: userRow } = await supabase
+        .from("users").select("team_id").eq("id", gateAgentUserId).maybeSingle()
+      gateTeamId = (userRow?.team_id as string | null) ?? null
+    }
+  }
+  const creationGate = await assertTransactionCreationAllowed(supabase as any, {
+    brokerageId: params.brokerageId,
+    offerId:     params.offerId,
+    listingId:   (offer as any).listing_id ?? null,
+    contactIds:  [(offer as any).contact_id ?? null, sellerContactId],
+    agentUserId: gateAgentUserId,
+    teamId:      gateTeamId,
+    dealType,
+    stateCode,
+    door:        "offer → transaction",
+  })
+  if (!creationGate.allowed) {
+    throw new Error(`[offer-bridge] Gate refused transaction creation: ${creationGate.reason}`)
+  }
 
   const { data: transaction, error: txnError } = await supabase
     .from("transactions")

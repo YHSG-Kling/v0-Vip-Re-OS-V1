@@ -112,6 +112,18 @@ export async function runListingAgreementGate(
     stateCode,
   })
 
+  // An audit that could not RUN is not a clean audit. auditListingDocuments now
+  // reports `unavailable_reason` when the settings checklist or the deal file
+  // could not be read; before that, both refusals looked exactly like "nothing
+  // required, nothing missing" and this gate PASSED on them.
+  if (audit.unavailable_reason) {
+    return {
+      passed: false,
+      blockers: [`Required-document check could not run: ${audit.unavailable_reason}. Nothing was verified, so the listing was not taken on.`],
+      listingId: params.listingId,
+    }
+  }
+
   if (audit.missing_blocking.length > 0) {
     const { documentClassificationLabel } = await import("@/lib/compliance/document-classifications")
     return {

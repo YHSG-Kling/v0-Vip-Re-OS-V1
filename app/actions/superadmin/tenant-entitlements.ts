@@ -15,7 +15,7 @@ import { requireSuperadmin } from "@/lib/auth/platform-guard"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { normalizeOverrideType } from "@/lib/kernel/override-vocab"
 import { parseSeatOverride, seatLimitForTier, effectiveSeatLimit } from "@/lib/kernel/tier-role-matrix"
-import { resolveSeatUsage } from "@/lib/kernel/seat-usage"
+import { resolveSeatUsage, resolveCatalogSeatLimits } from "@/lib/kernel/seat-usage"
 import { TENANT_AUTONOMY_FEATURE_KEY, loadTenantAutonomyHalt, __clearAutonomyCache } from "@/lib/managers/autonomy-gate"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
@@ -89,6 +89,11 @@ export async function getTenantEntitlementsAction(brokerageId: string): Promise<
   // user_role_assignments — so the platform-staff entitlements panel could show a
   // tenant under their limit while the gate (correctly) refused the next invite.
   const seatUsage = await resolveSeatUsage(svc, brokerageId)
+  // The tier default staff see here is the CATALOGUE number
+  // (subscription_tiers.max_agents) — the same one the gate enforces — so a
+  // staffer deciding whether a tenant needs an override is not reading a literal
+  // that drifted from the plan the tenant actually bought.
+  const catalogSeats = await resolveCatalogSeatLimits(svc)
 
   const overrideByKey = new Map<string, { type: string; trialEndsAt: string | null }>()
   for (const o of (overrides ?? []) as any[]) overrideByKey.set(o.feature_key, { type: o.override_type, trialEndsAt: o.trial_ends_at })
@@ -118,9 +123,9 @@ export async function getTenantEntitlementsAction(brokerageId: string): Promise<
         const override = parseSeatOverride((brk as any)?.billing_metadata)
         return {
           inUse: seatUsage.seatCount,
-          tierLimit: seatLimitForTier(tier),
+          tierLimit: seatLimitForTier(tier, catalogSeats.limits),
           override,
-          effectiveLimit: effectiveSeatLimit(tier, override).limit,
+          effectiveLimit: effectiveSeatLimit(tier, override, catalogSeats.limits).limit,
         }
       })(),
     },
@@ -316,7 +321,11 @@ export async function setTenantSeatOverrideAction(params: {
   if (error) return { ok: false, error: error.message }
 
   await audit(gate.userId, await staffEmail(svc, gate.userId), "tenant.seat_override_set", params.brokerageId, {
-    old, new: params.seatOverride, tier_default: seatLimitForTier((brk as any).plan_tier), reason,
+    // The tier default written into the ledger is the CATALOGUE number, so an
+    // audit row records what the plan actually allowed at the time, not a literal.
+    old, new: params.seatOverride,
+    tier_default: seatLimitForTier((brk as any).plan_tier, (await resolveCatalogSeatLimits(svc)).limits),
+    reason,
   })
   revalidatePath(`/dashboard/superadmin/brokerages/${params.brokerageId}`)
   revalidatePath("/dashboard/admin/users")

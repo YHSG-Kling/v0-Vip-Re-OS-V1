@@ -80,17 +80,42 @@
  *
  * THIS LANE ADDS NO REFUSAL OF ITS OWN, on the same ruling. What it does keep
  * is honest: it declares every source it reads, so the classifier can label
- * them, and it ships with ZERO labelled sources — every type below is derived
- * from parcel-and-transaction state, which the simulator asserts positively
- * rather than leaving as a claim. Two integrity checks in that function still
- * throw and are NOT fair-housing: a duplicate `signalType` (how a repeating
- * probe starts duplicating rows) and an empty `sources` list (a signal that
- * cannot be classified or explained).
+ * them. Two integrity checks in that function still throw and are NOT
+ * fair-housing: a duplicate `signalType` (how a repeating probe starts
+ * duplicating rows) and an empty `sources` list (a signal that cannot be
+ * classified or explained).
  *
- * `stripProtectedClassCriteria` still runs over the outbound query and
- * `redactProtectedClassFields` still runs over the stored row; both now REPORT
- * rather than refuse on this path. scripts/batchdata-seller-signal-simulator.ts
- * carries the positive control in both directions.
+ * ── FINDINGS #297 AND #304 (2026-08-22) — THE LAST REFUSAL, AND WHAT IT WAS
+ *    BLOCKING ──────────────────────────────────────────────────────────────
+ * Owner rulings, verbatim: "297 just release it from fairhousing.", "all
+ * motivatied seller classifiers are necessary for data especially demographics
+ * and protected class.", "304 needs inherited and probate."
+ *
+ * Until 2026-08-22 this file still carried ONE fair-housing refusal, in
+ * `realBatchDataPropertyLookup`: it ran the outbound criteria through
+ * `stripProtectedClassCriteria` and returned a REFUSED lookup if anything came
+ * back removed. #297 released it. The gate is now
+ * `screenProtectedClassCriteria(criteria, "data_sourcing")` — an explicit LANE
+ * argument, no removal, and the protected criteria come back LABELLED with the
+ * classifier's reason sentence. The ad-audience lane of that same function is
+ * unchanged and still strips; see lib/lead-governance/protected-class-signals.ts.
+ *
+ * SO THIS LANE NOW SHIPS FOUR LABELLED SIGNAL TYPES, and that is the intended
+ * state rather than a leak. `inherited_property` (#304), `senior_owner`,
+ * `recent_divorce` and `household_outgrown` are each derived from a
+ * protected-class source, each carries `protectedClassSources` from the
+ * declaration gate, and each stored row carries `signal_details.protected_class_basis`
+ * — the source AND the classifier's reason sentence — so an auditor reading the
+ * table can tell exactly which signals came from protected-class data and on
+ * what grounds. The other seventeen still declare zero labelled sources,
+ * because they are parcel-and-transaction state, and the simulator asserts BOTH
+ * halves of that split rather than either one alone.
+ *
+ * `redactProtectedClassFields`'s survivor `labelProtectedClassFields` still runs
+ * over the stored row and REPORTS rather than refuses.
+ * scripts/batchdata-seller-signal-simulator.ts carries the positive control in
+ * both directions, and scripts/compliance-scope-simulator.ts proves the ads gate
+ * still refuses the very same fields this lane now sources.
  *
  * ── ONE VOCABULARY ───────────────────────────────────────────────────────────
  * `signal_strength` is the four-value ladder owned by
@@ -112,8 +137,9 @@ import { normalizeStreetAddress } from "./permit-signals"
 import { excludeConvertedLeads } from "@/lib/contact-promotion/conversion-finality"
 import type { SellerSignalStrength } from "@/lib/lead-governance/seller-signal-strength"
 import {
-  defineSellerSignalSources, stripProtectedClassCriteria, labelProtectedClassFields,
-  type SellerSignalSourceSpec,
+  defineSellerSignalSources, screenProtectedClassCriteria, labelProtectedClassFields,
+  protectedClassBasisBySignalType,
+  type SellerSignalSourceSpec, type ProtectedClassBasis,
 } from "@/lib/lead-governance/protected-class-signals"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -183,6 +209,87 @@ export const TRUST_OWNED_SIGNAL_TYPE = "trust_owned"
  * prospecting score up.
  */
 export const ACTIVE_LISTING_SIGNAL_TYPE = "active_listing"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADDED 2026-08-22 — THE FOUR THAT ARE DERIVED FROM PROTECTED-CLASS SOURCES
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Owner rulings, verbatim: "304 needs inherited and probate.", "all motivatied
+// seller classifiers are necessary for data especially demographics and
+// protected class.", "297 just release it from fairhousing."
+//
+// These four are the first signal types in this lane that the classifier labels
+// PROTECTED. That is not a leak — it is the ruling. What makes it safe is that
+// the classification did not weaken: `PROTECTED_CLASS_TOKENS` still contains
+// "inherited", "probate", "heir", "deceased", "senior", "divorce", "child" and
+// "household", and `PROTECTED_CLASS_NAMESPACES` still covers the whole
+// `demographic` dataset. The ad-audience gate reads that same vocabulary and
+// still REFUSES every one of these. Sourced here, labelled here, refused there.
+//
+// THE CONSERVATISM DOCTRINE APPLIES TO THESE EXACTLY AS IT DOES TO THE OTHERS.
+// A fact true of a large fraction of all homes produces no row, because lead
+// scoring COUNTS rows and a signal that fires for everybody is a constant. That
+// is why `senior_owner` bands the bare flag at "weak" and reserves "moderate"
+// for a measured age, and why household composition is read as OVERCROWDING
+// against the parcel's own bedroom count rather than as "has children" — roughly
+// 40% of US households have a child under 18, so `demographics.hasChildren`
+// alone would be a constant wearing a signal's costume.
+
+/**
+ * INHERITED / PROBATE — finding #304, the owner's explicit ask.
+ *
+ * ONE TYPE FOR BOTH WORDS, DELIBERATELY (CLAUDE.md §6). The owner said
+ * "inherited and probate"; the provider publishes ONE surface for them. Read
+ * live from BatchData's own catalogue on 2026-08-22:
+ *   · `list_property_dataset_fields quicklist` → 39 entries, one of which is
+ *     `quickLists.inherited`. There is NO field, filter or quickList slug named
+ *     "probate" anywhere in the provider's catalogue — not in quicklist, not in
+ *     deed, not in foreclosure, not in core.
+ *   · the search API's `quicklist` enum lists `inherited` and has no probate
+ *     member either.
+ * So `quickLists.inherited` IS the provider's probate list. The corroborating
+ * evidence is the DEED INSTRUMENT: a probate transfer is recorded as a personal
+ * representative's / executor's / administrator's deed, which arrives in
+ * `deedHistory.documentType` and `sale.lastSale.documentType`. Coining a second
+ * `probate` signal type beside this one would be the six-spellings defect that
+ * CLAUDE.md §6 names, with the added problem that nothing would ever write it.
+ */
+export const INHERITED_SIGNAL_TYPE = "inherited_property"
+
+/**
+ * SENIOR OWNER — life-stage. `quickLists.seniorOwner` and `demographics.age`.
+ *
+ * This is the exact fact the owner's standing scope ruling was about: "we
+ * determine the kind of education in channels by the age group". It is sourced
+ * and stored so lib/agents/education-delivery-producer.ts can band it; it may
+ * never choose who sees an ad.
+ */
+export const SENIOR_OWNER_SIGNAL_TYPE = "senior_owner"
+
+/**
+ * RECENT DIVORCE — `demographics.recentlyDivorced`.
+ *
+ * A dissolution divides an indivisible asset, and the ordinary way to divide a
+ * house is to sell it. Among the highest-motivation seller circumstances there
+ * is, and the reason the deleted OSINT lane kept trying to infer it from
+ * scraped court records — a generated sentence no field-name classifier could
+ * ever label (the tombstone at app/actions/lead-intelligence.ts:2444). Read as
+ * a declared provider FIELD it is labellable, which is what makes storing it
+ * auditable rather than merely possible.
+ */
+export const RECENT_DIVORCE_SIGNAL_TYPE = "recent_divorce"
+
+/**
+ * HOUSEHOLD OUTGROWN — household size measured AGAINST THE PARCEL's bedroom
+ * count, never household composition on its own.
+ *
+ * `demographics.householdSize` is a person-fact and is classified protected on
+ * the token "household". `building.bedroomCount` is a parcel fact. The SIGNAL
+ * is the relation between them: a household larger than the house can seat is a
+ * household with a structural reason to move. Reading either side alone would
+ * produce a constant (see the doctrine note above).
+ */
+export const HOUSEHOLD_OUTGROWN_SIGNAL_TYPE = "household_outgrown"
 
 /**
  * EVERY signal type this lane may write, with the EXACT provider field paths it
@@ -306,7 +413,7 @@ export const BATCHDATA_SELLER_SIGNAL_SOURCES: readonly SellerSignalSourceSpec[] 
       signalType: TRUST_OWNED_SIGNAL_TYPE,
       label: "Held in trust",
       sources: ["quickLists.trustOwned", "deedHistory.documentType", "deedHistory.buyers"],
-      why: "Title is vested in a TRUST — a recorded fact about the grantee on a public deed, not a fact about a person. A trust exists to hold an asset and eventually distribute it, and real property is the least divisible thing it can hold, so the ordinary route to distribution is a sale. Deliberately NOT sourced from quickLists.inherited, which names the same family of situations through a protected-class term and is banned; the trust instrument is legible from the deed alone.",
+      why: "Title is vested in a TRUST — a recorded fact about the grantee on a public deed, not a fact about a person. A trust exists to hold an asset and eventually distribute it, and real property is the least divisible thing it can hold, so the ordinary route to distribution is a sale. It stays sourced from the deed alone and NOT from quickLists.inherited — not because inherited is refused (finding #297 released that on 2026-08-22 and inherited_property below now sources it), but because they are two different facts: this one is legible without knowing anything about the beneficiaries, and collapsing them would lose that distinction and put a protected-class label on a title fact that does not carry one.",
     },
     {
       signalType: FIX_AND_FLIP_SIGNAL_TYPE,
@@ -329,6 +436,52 @@ export const BATCHDATA_SELLER_SIGNAL_SOURCES: readonly SellerSignalSourceSpec[] 
       ],
       why: "SUPPRESSION, not motivation. The property is on the market and NOT for sale by owner, so a listing broker holds the representation. This is filed so an agent and a scorer can both see the reason NOT to pitch — NAR Code of Ethics Article 16. `quickLists.forSaleByOwner` is named as a source because it is what DISQUALIFIES the suppression: an unrepresented seller is not somebody else's client.",
     },
+
+    // ── THE FOUR PROTECTED-CLASS-DERIVED TYPES (findings #297 / #304) ───────
+    // Every source string below was read live from BatchData's own catalogue on
+    // 2026-08-22 — `list_property_datasets` plus `list_property_dataset_fields`
+    // for quicklist (39 entries), demographic (32), deed (27) and core (258),
+    // and the property-search criteria enum for the filter names. None of them
+    // is remembered or guessed.
+    //
+    // Each is CLASSIFIED PROTECTED by defineSellerSignalSources and comes back
+    // carrying `protectedClassSources`. That label is what
+    // BATCHDATA_PROTECTED_CLASS_BASIS turns into the stored
+    // `signal_details.protected_class_basis`.
+    {
+      signalType: INHERITED_SIGNAL_TYPE,
+      label: "Inherited / probate",
+      sources: [
+        "quickLists.inherited",
+        "deedHistory.documentType", "deedHistory.documentTypeCode",
+        "sale.lastSale.documentType",
+      ],
+      why: "OWNER RULING #304, verbatim: '304 needs inherited and probate'. `quickLists.inherited` is the provider's probate list — its catalogue publishes no field, filter or slug named 'probate' at all — and the deed document type carries the recorded probate INSTRUMENT (personal representative's, executor's, administrator's deed, affidavit of death). Heirs are the archetypal motivated seller: they hold an asset they did not choose, usually at a distance, usually alongside co-heirs, and usually with carrying cost running. CLASSIFIED PROTECTED and sourced anyway: 'inherited' is a familial-status proxy — the fact it encodes is a death in a family — so the row carries its protected_class_basis and the ad-audience gate still refuses to segment on it.",
+    },
+    {
+      signalType: SENIOR_OWNER_SIGNAL_TYPE,
+      label: "Senior owner",
+      sources: [
+        "quickLists.seniorOwner", "demographics.age",
+        "min_owner_age", "max_owner_age",
+      ],
+      why: "Life-stage. Downsizing, moving nearer family and moving into care are among the most common reasons a long-held home reaches the market, and none of them is legible from the parcel. CLASSIFIED PROTECTED on 'age' and 'senior' and sourced under the owner's standing ruling — 'we determine the kind of education in channels by the age group and other ways to use it without violating the rules' — which is exactly what this row feeds: lib/agents/education-delivery-producer.ts reads a BAND, never the raw age, and the ad-audience gate refuses it outright.",
+    },
+    {
+      signalType: RECENT_DIVORCE_SIGNAL_TYPE,
+      label: "Recent divorce",
+      sources: ["demographics.recentlyDivorced", "demographics.maritalStatus"],
+      why: "A dissolution has to divide an asset that cannot be divided, and the ordinary route is a sale — frequently a court-ordered one with a date on it. CLASSIFIED PROTECTED on 'divorce' and 'marital' (marital status is protected by statute in many of our markets) and sourced under the wave-15 and #297 rulings. Read as a DECLARED PROVIDER FIELD, which is what makes it labellable at all: the deleted OSINT lane tried to infer the same fact from scraped court text and produced it as a generated sentence no field-name classifier could ever label (tombstone at app/actions/lead-intelligence.ts:2444).",
+    },
+    {
+      signalType: HOUSEHOLD_OUTGROWN_SIGNAL_TYPE,
+      label: "Household outgrown the home",
+      sources: [
+        "demographics.householdSize", "demographics.childCount", "demographics.hasChildren",
+        "building.bedroomCount", "has_children",
+      ],
+      why: "The household is larger than the parcel can seat. This is a RELATION between a person-fact and a parcel-fact, and it is deliberately not either one alone: about 40% of US households include a child, so `demographics.hasChildren` on its own fires for a huge fraction of all homes and a signal that fires for everybody is a constant, not a signal. CLASSIFIED PROTECTED on 'household' and 'child' — familial status, 42 U.S.C. § 3604 — and sourced under #297; the ad-audience gate refuses every one of these fields.",
+    },
   ] as const)
 
 /** Every signal_type this lane writes — the set the idempotency read and the
@@ -337,6 +490,31 @@ export const BATCHDATA_SELLER_SIGNAL_SOURCES: readonly SellerSignalSourceSpec[] 
  *  permit lane, arriving here for the same reason). */
 export const BATCHDATA_SIGNAL_TYPES: readonly string[] =
   BATCHDATA_SELLER_SIGNAL_SOURCES.map((s) => s.signalType)
+
+/**
+ * signal_type → the protected-class sources it is derived from, each with the
+ * classifier's REASON SENTENCE. Computed from the declaration above, never
+ * hand-written.
+ *
+ * THIS IS THE HONESTY HALF OF FINDING #297. The ruling released the refusal on
+ * this lane; it did not release the record-keeping, and a lane that stores a
+ * protected-class-derived fact without saying so leaves an auditor no way to
+ * find it afterwards. `buildBatchDataSignalRow` writes the entry for each
+ * signal's own type into `signal_details.protected_class_basis`, so the
+ * provenance is ON THE ROW rather than only in this file — a row outlives the
+ * code that wrote it.
+ *
+ * DERIVED, NOT DECLARED, and that is the whole safety property. A future author
+ * who adds a protected source to any spec above gets the stored provenance for
+ * free and cannot forget it; one who removes the last protected source stops
+ * writing a basis that is no longer true. There is no second list to keep in
+ * step (CLAUDE.md §6).
+ *
+ * Absent key = that signal type is derived purely from parcel-and-transaction
+ * state. Seventeen of the twenty-one are.
+ */
+export const BATCHDATA_PROTECTED_CLASS_BASIS: Readonly<Record<string, readonly ProtectedClassBasis[]>> =
+  Object.freeze(protectedClassBasisBySignalType(BATCHDATA_SELLER_SIGNAL_SOURCES))
 
 /** `detected_via` — the provider. Matches the connector id used by
  *  lib/agentic-os/connector-gateway and by app/actions/lead-intelligence.ts:1188. */
@@ -496,6 +674,130 @@ export function readForeclosure(row: unknown): ForeclosureReading {
     auctionDate,
     status: str("foreclosure.status"),
     handle: str("foreclosure.caseNumber") ?? str("foreclosure.documentNumber") ?? str("foreclosure.recordingDate"),
+  }
+}
+
+/**
+ * The recorded deed instruments that mean A DEATH MOVED THIS TITLE.
+ *
+ * These are DEED DOCUMENT TYPES, not marketing words: each is the name a county
+ * recorder puts on the instrument by which a decedent's real property passes.
+ * `deedHistory.documentType` and `sale.lastSale.documentType` are free-text
+ * strings that vary by county, so this matches on lowercase SUBSTRING rather
+ * than exact equality — "Personal Representative's Deed", "PERSONAL REP DEED"
+ * and "Deed of Personal Representative" are the same instrument in three
+ * counties' spellings, and an exact list would have to be per-county forever.
+ *
+ * SUBSTRING IS SAFE HERE AND IS NOT SAFE IN THE CLASSIFIER, which is worth
+ * stating because the two live in the same lane and the distinction has already
+ * cost this repo time. `protectedClassReasonFor` matches WHOLE TOKENS because a
+ * substring "age" is inside `mortgageHistory`. This list matches substrings
+ * because every entry is a multi-word phrase with no shorter word inside it that
+ * names something else: "warranty deed", "quit claim", "grant deed" and
+ * "trustee's deed" contain none of them. The simulator holds that as a control.
+ *
+ * "estate" is DELIBERATELY ABSENT. "Real Estate Deed" and "Estate of ..." are
+ * both common, the first names no death at all, and it is the one entry that
+ * would turn this list into a substring trap.
+ */
+export const PROBATE_DEED_DOCUMENT_TERMS: readonly string[] = [
+  "personal representative", "personal rep deed", "executor", "executrix",
+  "administrator", "administratrix", "probate", "affidavit of death",
+  "affidavit of heirship", "transfer on death", "beneficiary deed",
+]
+
+/**
+ * PURE. The probate deed instrument recorded against this parcel, or null.
+ *
+ * Reads the deed dataset first and the core `sale.lastSale` block second, and
+ * returns the MATCHED PHRASE rather than a boolean so the stored row can say
+ * which instrument it saw. Both paths were read live from the provider's own
+ * catalogue on 2026-08-22 (`deed` → 27 fields, `core` → 258).
+ *
+ * ── WHY THIS AND ITS TWO SIBLINGS ARE EXPORTED WITH NO PRODUCT CALLER ────────
+ * `readProbateDeedInstrument`, `readOwnerAge` and `readHouseholdPressure` are
+ * used in-file by `deriveSellerSignals` and asserted individually by
+ * scripts/batchdata-seller-signal-simulator.ts. Nothing in app/ or lib/ calls
+ * them, and nothing should: each takes a RAW BATCHDATA PROVIDER ROW, and this
+ * module is the only place in the repo that ever holds one. The product-facing
+ * surface is `ingestBatchDataSellerSignals` / `realBatchDataPropertyLookup`.
+ *
+ * That is why `scripts/orphan-export-baseline.json` carries 17 rather than 14
+ * for this file. The alternative was to stop exporting them and drive the proofs
+ * through `deriveSellerSignals`, which is STRICTLY WEAKER: a household reading
+ * with no bedroom count emits no signal at all, so "measured, not overcrowded"
+ * and "never read" become the same observation. Losing that distinction to move
+ * a number is the trade CLAUDE.md §1 forbids in the other direction, and it is
+ * no better here.
+ *
+ * WHAT WOULD RETIRE THE EXEMPTION — and it is a real open loop, not a shrug.
+ * These readers write `signal_details.observed.owner_age_band`,
+ * `probate_deed_instrument` and `household_size`, and NOTHING READS THOSE YET.
+ * The owner's stated purpose for sourcing this data at all is to pick an
+ * education channel by age group; the selector that should consume it,
+ * lib/agents/education-delivery-producer.ts, still bands from
+ * `contacts.age_range` on a different vocabulary. Wiring that is the missing
+ * half (CLAUDE.md §1 — build it). Note it would NOT reference these readers
+ * either, so it does not change this count; it closes the writerless-column
+ * gap, which is the defect that actually matters.
+ */
+export function readProbateDeedInstrument(row: unknown): string | null {
+  for (const path of ["deedHistory.documentType", "sale.lastSale.documentType"]) {
+    const raw = at(row, path)
+    // deedHistory can arrive as an ARRAY of deeds (a history) or as one object
+    // flattened to its latest entry. Both shapes are read; neither is assumed.
+    const candidates = Array.isArray(raw) ? raw : [raw]
+    for (const candidate of candidates) {
+      if (typeof candidate !== "string" || !candidate.trim()) continue
+      const lower = candidate.toLowerCase()
+      const hit = PROBATE_DEED_DOCUMENT_TERMS.find((t) => lower.includes(t))
+      if (hit) return candidate.trim()
+    }
+  }
+  return null
+}
+
+/**
+ * PURE. The owner's age as the provider reports it, or null.
+ *
+ * PROTECTED-CLASS READ, and it exists so the value can be BANDED before it is
+ * stored (lib/agents/education-delivery-producer.ts reads a band, never a raw
+ * age). Range-checked rather than trusted: an age outside 18-120 is a provider
+ * shape change, and banding it would launder that into a confident signal — the
+ * same refusal `readSalePropensity` makes about an out-of-range score.
+ */
+export function readOwnerAge(row: unknown): number | null {
+  const n = num(at(row, "demographics.age"))
+  if (n === null) return null
+  return n >= 18 && n <= 120 ? Math.floor(n) : null
+}
+
+/**
+ * PURE. Household size measured against the parcel's own bedroom count.
+ *
+ * Returns both numbers and the verdict, because "we could not read one of them"
+ * and "they were read and the house is big enough" must not look the same to
+ * the caller. `overcrowded` is true only when BOTH sides were read.
+ *
+ * THE THRESHOLD IS size > bedrooms + 1, and the +1 is the couple. Two people in
+ * a one-bedroom is the ordinary case, not a signal; four people in a
+ * two-bedroom is a household with a structural reason to move. Reading it as
+ * `size > bedrooms` would fire on every couple in the country — the constant
+ * this lane's doctrine refuses to file.
+ */
+export function readHouseholdPressure(row: unknown): {
+  householdSize: number | null
+  bedroomCount: number | null
+  overcrowded: boolean
+} {
+  const rawSize = num(at(row, "demographics.householdSize"))
+  const householdSize = rawSize !== null && rawSize >= 1 && rawSize <= 20 ? Math.floor(rawSize) : null
+  const rawBeds = num(at(row, "building.bedroomCount"))
+  const bedroomCount = rawBeds !== null && rawBeds >= 0 && rawBeds <= 50 ? Math.floor(rawBeds) : null
+  return {
+    householdSize,
+    bedroomCount,
+    overcrowded: householdSize !== null && bedroomCount !== null && householdSize > bedroomCount + 1,
   }
 }
 
@@ -846,6 +1148,102 @@ export function deriveSellerSignals(
     })
   }
 
+  // ── inherited / probate (findings #297 + #304) ──
+  //
+  // TWO SOURCES, ONE SIGNAL TYPE. The quickList flag is the provider's own
+  // probate list; the deed instrument is the county's recorded evidence for the
+  // same event. Either alone files a row; both together file ONE row whose
+  // variant names the deed, because a lead's signal count must not double
+  // merely because two sources agree.
+  const inheritedFlag = readQuickList(row, "inherited")
+  const probateDeed = readProbateDeedInstrument(row)
+  if (inheritedFlag || probateDeed) {
+    out.push({
+      signalType: INHERITED_SIGNAL_TYPE,
+      // "strong" when the provider's own list says so — heirs sell, and this is
+      // a state the provider maintains against recorded transfers. A deed
+      // instrument WITHOUT the flag is "moderate": it proves a probate transfer
+      // happened, but the provider has not concluded the property is in the
+      // inherited population, and the transfer may be old.
+      strength: inheritedFlag ? "strong" : "moderate",
+      variant: probateDeed ? `d:${probateDeed.toLowerCase().slice(0, 60)}` : "q:inherited",
+      reason: "Property was inherited — a recorded probate transfer or the provider's inherited list",
+      observed: {
+        inherited: inheritedFlag,
+        probate_deed_instrument: probateDeed,
+        latest_deed_type: at(row, "deedHistory.documentType") ?? null,
+      },
+    })
+  }
+
+  // ── senior owner ──
+  //
+  // The BARE FLAG is banded "weak" on purpose. The provider's senior-owner list
+  // is broad, so filing it "moderate" would move a large share of all owners
+  // equally — which is the same as moving none of them, while looking like
+  // coverage. A MEASURED age at or past 75 is a narrower population and a real
+  // life-stage read, so that is where the ladder moves.
+  const seniorFlag = readQuickList(row, "seniorOwner")
+  const ownerAge = readOwnerAge(row)
+  if (seniorFlag || (ownerAge !== null && ownerAge >= 65)) {
+    const band = ownerAge === null ? "flag" : ownerAge >= 75 ? "75plus" : "65to74"
+    out.push({
+      signalType: SENIOR_OWNER_SIGNAL_TYPE,
+      strength: band === "75plus" ? "moderate" : "weak",
+      variant: `band:${band}`,
+      reason: "Owner is in a life stage where downsizing and relocation are common",
+      observed: {
+        senior_owner: seniorFlag,
+        // THE BAND, NOT THE RAW AGE, is what a downstream selector reads — the
+        // raw value rides alongside it for the operator and the auditor, in the
+        // same way the raw 0-100 propensity rides beside its band. The
+        // education selector at lib/agents/education-delivery-producer.ts reads
+        // bands; nothing downstream should ever branch on the number.
+        owner_age_band: band,
+        owner_age: ownerAge,
+      },
+    })
+  }
+
+  // ── recent divorce ──
+  if (at(row, "demographics.recentlyDivorced") === true) {
+    out.push({
+      signalType: RECENT_DIVORCE_SIGNAL_TYPE,
+      // "strong", the same band the lane gives a withdrawn listing: a
+      // dissolution has to divide an asset that cannot be divided, and the
+      // ordinary route is a sale. Not "urgent" — urgent in this lane means a
+      // recorded event with a FUTURE DATE on it (a trustee's sale), and a
+      // divorce flag carries no date.
+      strength: "strong",
+      variant: "d:recent",
+      reason: "Owner household recently dissolved — an indivisible asset with two claims on it",
+      observed: {
+        recently_divorced: true,
+        marital_status: at(row, "demographics.maritalStatus") ?? null,
+      },
+    })
+  }
+
+  // ── household outgrown the home ──
+  const household = readHouseholdPressure(row)
+  if (household.overcrowded) {
+    out.push({
+      signalType: HOUSEHOLD_OUTGROWN_SIGNAL_TYPE,
+      // "weak" unless the gap is two bedrooms' worth of people. A household one
+      // over the line is a nudge; a household three or more over it is a
+      // household actively short of rooms.
+      strength: (household.householdSize! - household.bedroomCount!) >= 3 ? "moderate" : "weak",
+      variant: `g:${Math.min(household.householdSize! - household.bedroomCount!, 9)}`,
+      reason: "Household is larger than the property has bedrooms to seat",
+      observed: {
+        household_size: household.householdSize,
+        bedroom_count: household.bedroomCount,
+        surplus_people: household.householdSize! - household.bedroomCount!,
+        child_count: at(row, "demographics.childCount") ?? null,
+      },
+    })
+  }
+
   // ── SUPPRESSION: already represented ──
   //
   // FSBO IS THE DISQUALIFIER, and it is the whole reason this is not simply
@@ -1016,6 +1414,28 @@ export function buildBatchDataSignalRow(params: {
       // An empty array is the EXPECTED state and says the labeller ran and found
       // nothing protected — never that it did not run.
       protected_class_fields: protectedFields,
+      // ── ADDED 2026-08-22, findings #297 + #304 ────────────────────────────
+      // WHY THE STORED ROW NEEDS ITS OWN COPY, and not just a lookup into
+      // BATCHDATA_PROTECTED_CLASS_BASIS. Two reasons, both about honesty over
+      // time. First, a row outlives the code: an auditor asking "which of these
+      // signals came from protected-class data" a year from now must be able to
+      // answer it from the table, without the spec table in front of them and
+      // without hoping it still says what it said the day the row was written.
+      // Second, the classifier returns a REASON SENTENCE rather than a boolean
+      // precisely so a caller that LABELS can write down what it labelled and on
+      // what grounds — a stored boolean would record that something was
+      // protected and lose why.
+      //
+      // THIS IS DISTINCT FROM `protected_class_fields` ABOVE, and the two are
+      // easy to confuse. That one says which fields of THIS PROVIDER ROW are
+      // protected — an observation about the payload, usually empty. This one
+      // says which DECLARED SOURCES this SIGNAL TYPE is derived from — a fact
+      // about the derivation, and it is non-empty for exactly the four types
+      // findings #297/#304 added. A signal can have one without the other.
+      //
+      // `[]` means this signal is derived purely from parcel-and-transaction
+      // state. It never means "nobody classified it": the key is on every row.
+      protected_class_basis: BATCHDATA_PROTECTED_CLASS_BASIS[params.signal.signalType] ?? [],
     },
   }
 }
@@ -1144,6 +1564,24 @@ export interface BatchDataSignalIngestResult {
    *  and they are ON the stored row", not "…and they were stripped". Renamed
    *  from `protectedClassRedacted` alongside the stored key, 2026-08-21. */
   protectedClassFields: string[]
+  /**
+   * signal_type → how many WRITTEN rows of that type were derived from a
+   * protected-class source. Added 2026-08-22 with findings #297/#304.
+   *
+   * NOT a duplicate of `writtenByType` (CLAUDE.md §6): that one counts every
+   * type, this one counts only the protected-derived subset, and the two are
+   * read by different people. `writtenByType` answers "what did the probe
+   * find"; this answers "how much of what we stored today came from data about
+   * a PERSON" — the number a compliance reviewer asks for, and the one that
+   * would otherwise have to be reconstructed by joining the run report against
+   * the spec table.
+   *
+   * `{}` means nothing protected-derived was written this run. It is derived
+   * from the ROW's own stored basis, never from a variable the loop happened to
+   * be holding, for the same reason `writtenByEntity` is read off the row: a
+   * counter derived from intent proves only what the loop believed.
+   */
+  protectedClassDerivedByType: Record<string, number>
   /** Every refusal, verbatim. A run with errors NEVER reports a clean success. */
   errors: string[]
 }
@@ -1195,6 +1633,7 @@ export async function ingestBatchDataSellerSignals(params: {
     writtenByType: {},
     writtenByEntity: { lead: 0, contact: 0 },
     protectedClassFields: [],
+    protectedClassDerivedByType: {},
     errors: [],
   }
 
@@ -1368,6 +1807,15 @@ export async function ingestBatchDataSellerSignals(params: {
       // contacts really are landing in `contact_id`; deriving it from anything
       // other than the row itself would prove only that the loop believed so.
       result.writtenByEntity[r.contact_id ? "contact" : "lead"]++
+      // READ OFF THE ROW, like writtenByEntity above and for the same reason.
+      // The basis is what was actually persisted; counting from
+      // BATCHDATA_PROTECTED_CLASS_BASIS here would prove the spec table agrees
+      // with itself rather than that the stored row says so.
+      const basis = (r.signal_details as { protected_class_basis?: unknown }).protected_class_basis
+      if (Array.isArray(basis) && basis.length > 0) {
+        result.protectedClassDerivedByType[r.signal_type] =
+          (result.protectedClassDerivedByType[r.signal_type] ?? 0) + 1
+      }
     }
   }
 
@@ -1404,14 +1852,32 @@ export async function ingestBatchDataSellerSignals(params: {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The provider datasets this lane requests. `demographic` is CONSPICUOUSLY
- * ABSENT and that absence is the point: not asking for it is the cheapest of the
- * three fair-housing gates, and the two behind it (the declaration gate and the
- * storage redaction) exist because "we did not ask" is not the same as "it did
- * not arrive".
+ * The provider datasets this lane requests. Every name is a member of the
+ * provider's own dataset list, read live on 2026-08-22 via
+ * `list_property_datasets` (15 datasets).
+ *
+ * `demographic` USED TO BE CONSPICUOUSLY ABSENT AND THIS PARAGRAPH IS THE
+ * CORRECTION. Owner ruling, verbatim: "all motivatied seller classifiers are
+ * necessary for data especially demographics and protected class." Not asking
+ * for the dataset was described here as "the cheapest of the three fair-housing
+ * gates"; under the ruling it is not a gate at all, it is the lane declining to
+ * collect the input the owner wants collected. `senior_owner`, `recent_divorce`
+ * and `household_outgrown` all read `demographics.*`, and a declared source that
+ * never arrives is a reader with no writer — the orphan class CLAUDE.md §1 names.
+ *
+ * `deed` was added in the same edit for the same reason and it is NOT a
+ * fair-housing question at all: `trust_owned` has declared `deedHistory.*` as a
+ * source since it shipped, and `inherited_property` reads the probate deed
+ * instrument, but the dataset carrying those fields was never requested — so
+ * both read undefined on live traffic no matter what the property recorded.
+ *
+ * The two gates that remain are the ones that were always doing the work: the
+ * declaration LABELLER (which is why the four new types arrive labelled) and the
+ * storage labeller. The refusal is on the ad-audience lane and nowhere else.
  */
 export const BATCHDATA_SIGNAL_DATASETS: readonly string[] = [
   "core", "quicklist", "batchrank", "foreclosure", "mortgage-liens", "valuation", "listing",
+  "deed", "demographic",
 ]
 
 /**
@@ -1419,19 +1885,46 @@ export const BATCHDATA_SIGNAL_DATASETS: readonly string[] = [
  * same `{ ok, status, data, error }` envelope the injectable seam declares, so a
  * vendor outage is a counted refusal rather than a dead cron.
  *
- * The search criteria go through `stripProtectedClassCriteria` before they leave
- * the process. There is nothing protected in what this function assembles today;
- * the gate is here so that stays true after the next edit, and so a removal is
- * REPORTED rather than silently narrowing the query.
+ * ── THE REFUSAL THAT WAS RELEASED HERE (finding #297, 2026-08-22) ────────────
+ * Owner ruling, verbatim: "297 just release it from fairhousing." And the
+ * standing scope ruling it rests on: "do not run the compliance or fair housing
+ * on scrapping, enrichment, scoring, sourcing because we determine the kind of
+ * education in channels by the age group and other ways to use it without
+ * violating the rules."
+ *
+ * WHAT THIS CODE USED TO DO:
+ *
+ *     const { criteria, removed } = stripProtectedClassCriteria({ query })
+ *     if (removed.length > 0) {
+ *       return { ok: false, …, error: `protected-class criteria refused: …` }
+ *     }
+ *
+ * That was the LAST fair-housing refusal on the data lane. It is gone. The call
+ * now names its LANE — `"data_sourcing"` — and that lane removes nothing: a
+ * protected-class criterion is returned intact and LABELLED with the
+ * classifier's reason sentence.
+ *
+ * THIS IS NOT A DELETION, AND THE DISTINCTION IS THE POINT (CLAUDE.md §1). The
+ * same function called with `"ad_audience"` still strips, byte for byte, and
+ * that lane is where choosing who a housing ad is SHOWN TO lives. Releasing the
+ * refusal by deleting it outright would have released it there too. DO NOT
+ * "fix" this back by removing the lane argument or by reinstating the `removed`
+ * check: the ruling is dated and named above, and the boundary it draws is
+ * pinned in both directions by scripts/batchdata-seller-signal-simulator.ts and
+ * scripts/compliance-scope-simulator.ts.
+ *
+ * The labels are still READ rather than swallowed. `labelled` is non-empty only
+ * when a future edit adds a protected criterion to this payload — today the
+ * function assembles `{ query: "<address>…" }` and nothing in it is
+ * classifiable — so it is reported on the envelope's error channel as a NOTE
+ * with `ok: true`, never as a refusal.
  */
 export async function realBatchDataPropertyLookup(lead: ProbeableEntity): Promise<PropertyLookupResult> {
   try {
     const { callConnector } = await import("@/lib/agentic-os/connector-gateway")
     const query = [lead.address, lead.city, lead.state, lead.zip_code].filter(Boolean).join(", ")
-    const { criteria, removed } = stripProtectedClassCriteria({ query })
-    if (removed.length > 0) {
-      return { ok: false, status: null, data: null, error: `protected-class criteria refused: ${removed.join(", ")}` }
-    }
+    // LANE: data_sourcing. Nothing is removed; protected criteria are labelled.
+    const { criteria, labelled } = screenProtectedClassCriteria({ query }, "data_sourcing")
     const res = await callConnector<any>({
       connector: "batchdata",
       baseUrl: "https://api.batchdata.com/api/v1",
@@ -1444,7 +1937,20 @@ export async function realBatchDataPropertyLookup(lead: ProbeableEntity): Promis
       return { ok: false, status: res.status, data: null, error: res.error ?? "batchdata refused" }
     }
     const properties: any[] = res.data?.results?.properties ?? res.data?.results ?? []
-    return { ok: true, status: res.status, data: (properties[0] as Record<string, unknown>) ?? null, error: null }
+    return {
+      ok: true,
+      status: res.status,
+      data: (properties[0] as Record<string, unknown>) ?? null,
+      // A NOTE, NOT A REFUSAL — `ok` stays true. The ingest pushes a non-null
+      // `error` onto its `errors` list only for a lookup that came back `ok:
+      // false`, so this text reaches an operator without failing a run. It is
+      // written at all because a label nobody can read is a write with no
+      // reader: the day somebody adds `min_owner_age` to this payload, the run
+      // should say so out loud rather than the criterion travelling silently.
+      error: labelled.length > 0
+        ? `protected-class criteria SOURCED and labelled (data_sourcing lane, owner ruling #297): ${labelled.map((l) => l.source).join(", ")}`
+        : null,
+    }
   } catch (e) {
     return { ok: false, status: null, data: null, error: e instanceof Error ? e.message : String(e) }
   }
