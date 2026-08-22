@@ -1165,7 +1165,8 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   data_subject_requests: "data_steward",
   deconflict_suppression_log: "data_steward",
   demo_persona_contacts: "data_steward",
-  earnings_history: "data_steward",
+  // TOMBSTONE (m519) — `earnings_history` was DROPPED; its ownership entry went with it.
+  // SURVIVOR: `agent_monthly_earnings`, which carries its own entry in this same map.
   email_presets: "data_steward",
   email_queue: "data_steward",
   email_sends: "data_steward",
@@ -1367,7 +1368,8 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   brokerage_required_documents: "deal_coordinator",
   client_documents: "deal_coordinator",
   closing_checklist_items: "deal_coordinator",
-  closing_disclosure: "deal_coordinator",
+  // TOMBSTONE (m519) — `closing_disclosure` was DROPPED; its ownership entry went with it.
+  // SURVIVOR: `transaction_documents (doc_type)`, which carries its own entry in this same map.
   closing_disclosure_agreement: "deal_coordinator",
   closing_disclosure_agreement_revisions: "deal_coordinator",
   closing_gifts: "deal_coordinator",
@@ -1454,7 +1456,8 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   trid_timeline: "deal_coordinator",
 
   // campaign_orchestrator (69)
-  ai_content_outputs: "campaign_orchestrator",
+  // TOMBSTONE (m519) — `ai_content_outputs` was DROPPED; its ownership entry went with it.
+  // SURVIVOR: `ai_generated_content`, which carries its own entry in this same map.
   approved_content_library: "campaign_orchestrator",
   blog_cadence_policy: "campaign_orchestrator",
   newsletter_cadence_policy: "campaign_orchestrator",
@@ -1505,7 +1508,8 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   newsletter_subscribers: "campaign_orchestrator",
   newsletter_teasers: "campaign_orchestrator",
   newsletter_templates: "campaign_orchestrator",
-  newsletters: "campaign_orchestrator",
+  // TOMBSTONE (m519) — `newsletters` was DROPPED; its ownership entry went with it.
+  // SURVIVOR: `newsletter_campaigns`, which carries its own entry in this same map.
   orchestrator_tasks: "campaign_orchestrator",
   podcast_analytics_events: "campaign_orchestrator",
   podcast_auto_runs: "campaign_orchestrator",
@@ -1684,7 +1688,8 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   lead_idx_property_interactions: "ai_isa",
   lead_imports: "ai_isa",
   lead_intelligence: "ai_isa",
-  lead_motivated_seller_signals: "ai_isa",
+  // TOMBSTONE (m519) — `lead_motivated_seller_signals` was DROPPED; its ownership entry went with it.
+  // SURVIVOR: `motivated_seller_signals`, which carries its own entry in this same map.
   lead_osint_data: "ai_isa",
   lead_people_data: "ai_isa",
   lead_property_ownership: "ai_isa",
@@ -1732,7 +1737,8 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   nextdoor_activity: "marketing_agent",
   seo_keywords: "marketing_agent",
   seo_optimization_log: "marketing_agent",
-  social_accounts: "marketing_agent",
+  // TOMBSTONE (m519) — `social_accounts` was DROPPED; its ownership entry went with it.
+  // SURVIVOR: `social_media_accounts`, which carries its own entry in this same map.
   social_engagement_tracking: "marketing_agent",
   social_intelligence: "marketing_agent",
   social_media_accounts: "marketing_agent",
@@ -1785,7 +1791,8 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   ai_video_projects: "asset_manager",
   asset_manager_actions: "asset_manager",
   asset_persona_renders: "asset_manager",
-  brand_asset_library: "asset_manager",
+  // TOMBSTONE (m519) — `brand_asset_library` was DROPPED; its ownership entry went with it.
+  // SURVIVOR: `marketing_assets`, which carries its own entry in this same map.
   brand_templates: "asset_manager",
   content_asset_persona_performance: "asset_manager",
   listing_promo_videos: "asset_manager",
@@ -1800,7 +1807,8 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   training_videos: "asset_manager",
   video_assets: "asset_manager",
   video_completion_tracking: "asset_manager",
-  video_content: "asset_manager",
+  // TOMBSTONE (m519) — `video_content` was DROPPED; its ownership entry went with it.
+  // SURVIVOR: `video_assets`, which carries its own entry in this same map.
   video_engagement_events: "asset_manager",
   video_generation_queue: "asset_manager",
   video_performance_tracking: "asset_manager",
