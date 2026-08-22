@@ -14,6 +14,12 @@ import {
   type GenerationalCohort,
 } from "@/lib/kernel/education"
 import { resolveMilestoneIdentity } from "@/lib/transactions/milestone-identity"
+import {
+  readSellerSignalEducationContext,
+  type SellerSignalEducationContext,
+} from "@/lib/education/seller-signal-education-context"
+import type { ProtectedClassBasis } from "@/lib/lead-governance/protected-class-signals"
+import type { Persona } from "@/lib/kernel/types"
 
 // ─── MILESTONE LABEL MAPS ─────────────────────────────────────────────────────
 
@@ -137,16 +143,41 @@ export interface EducationContext {
    * a MEASUREMENT are not the same fact and used to be indistinguishable here:
    * a contact with no birthday silently became "30-50", and every downstream
    * scorer then treated a guess as an observation (CLAUDE.md §2).
-   *   · "birthday"  — computed from contacts.birthday
-   *   · "age_range" — collapsed from the enrichment lane's contacts.age_range
-   *   · "default"   — NOT MEASURED. Treat as unknown, not as 30-50.
+   *   · "birthday"      — computed from contacts.birthday
+   *   · "age_range"     — collapsed from the enrichment lane's contacts.age_range
+   *   · "seller_signal" — collapsed from motivated_seller_signals' senior_owner
+   *                       observation (owner_age, or the provider's coarse
+   *                       owner_age_band). MEASURED, and protected-class-derived:
+   *                       whenever this is the source, `protectedClassBasis` is
+   *                       non-empty and names the grounds.
+   *   · "default"       — NOT MEASURED. Treat as unknown, not as 30-50.
    */
-  ageSegSource: "birthday" | "age_range" | "default"
+  ageSegSource: "birthday" | "age_range" | "seller_signal" | "default"
   /** Generational cohort derived from date_of_birth alongside ageSeg.
    *  Education + marketing modules tag against this for tone routing
    *  (e.g. boomer downsizer vs millennial first-time-buyer). */
   generationalCohort: GenerationalCohort
   completedLessonKeys: string[]
+  /**
+   * EXISTING `Persona` values the seller-signal lane implies for this contact —
+   * "senior", "probate", "divorce", "upsize". Scored against
+   * `learning_modules.audience_personas` by the ONE scorer in
+   * lib/learning-router/composer.ts; never a second tag vocabulary.
+   * Empty when the contact has no such signal.
+   */
+  personaHints: Persona[]
+  /** Which seller-signal types contributed, for the record. */
+  sellerSignalTypes: string[]
+  /**
+   * THE HONESTY RECORD. When a band or a persona hint above came from
+   * protected-class-derived data, these are the classifier's reason sentences,
+   * carried VERBATIM off the stored `motivated_seller_signals` rows. Callers that
+   * PERSIST a selection are expected to write it down: the owner's position is
+   * that this data picks the right EDUCATION and never the housing, and that is
+   * only defensible if the record shows which is which. Empty when nothing
+   * protected-class-derived was involved.
+   */
+  protectedClassBasis: ProtectedClassBasis[]
 }
 
 /**
@@ -193,6 +224,34 @@ export async function resolveEducationContext(
       // alone is how a contact ended up with a real age band and cohort "unknown".
       effectiveAge = ageMidpointFromAgeRange(enrichedRange)
     }
+  }
+
+  // ── THE THIRD SOURCE — the seller-signal lane the wave-15 ruling unlocked ────
+  //
+  // Read UNCONDITIONALLY, not only when the band is still missing, because the
+  // persona hints and the basis sentences are wanted whatever produced the band.
+  // The BAND is taken from it only as the LAST source: a birthday is precise and
+  // the person confirmed it, the enrichment `age_range` is the provider's read of
+  // THIS PERSON, and the seller signal is the provider's read of the OWNER OF A
+  // PARCEL that this contact is linked to — the same person on a live row, but one
+  // inference further out, so it loses every tie it is in.
+  //
+  // Live counts on 2026-08-22 (project hrvaqgvukzxfskkcrwbt): contacts with a
+  // birthday = 0, with an age_range = 0. Today this third source is the ONLY one
+  // that can produce a measured band at all, which is the whole point of wiring
+  // it — before this, "routed by age group" was a capability with no input.
+  const sellerSignals: SellerSignalEducationContext =
+    await readSellerSignalEducationContext(supabase, contactId)
+  if (!ageSeg && sellerSignals.ageSegment) {
+    ageSeg = sellerSignals.ageSegment
+    ageSegSource = "seller_signal"
+    // effectiveAge is deliberately LEFT NULL, so `generationalCohort` stays
+    // "unknown" on this path. The cohort axis is FINER than the band — a person
+    // in 50-65 is boomer or gen_x depending on which side of 1965 they were born,
+    // and 65+ splits boomer/silent — so manufacturing a cohort from a band would
+    // publish precision the band does not carry, which is the defect §2 forbids.
+    // A band routes the channel and scores audience_age_segs; it does not license
+    // a tone claim.
   }
   // The historical default is KEPT for API stability — callers type `ageSeg` as a
   // non-null AgeSegment — but `ageSegSource: "default"` now says out loud that it
@@ -257,5 +316,8 @@ export async function resolveEducationContext(
     ageSegSource,
     generationalCohort,
     completedLessonKeys,
+    personaHints: sellerSignals.personaHints,
+    sellerSignalTypes: sellerSignals.signalTypes,
+    protectedClassBasis: sellerSignals.protectedClassBasis,
   }
 }

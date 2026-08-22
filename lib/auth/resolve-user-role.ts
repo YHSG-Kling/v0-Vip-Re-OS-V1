@@ -16,6 +16,11 @@ import { isPlatformStaffRole } from "@/lib/platform/platform-staff-roster"
 // must not invent a second way to get it wrong. role-grants.ts is pure (its only
 // import is a TYPE), so this stays a pure helper with no server-only leak.
 import { readRoleGrants, holdsAnyRole } from "@/lib/auth/role-grants"
+// m526 — the tier half of "who may read the books". readPlanTier (NOT
+// resolvePlanTier) is the one that keeps the refusal visible; resolvePlanTier
+// floors an unreadable tier to 'solo_agent', which is a GRANTING tier here and
+// would make this gate fail OPEN. See resolveTenantPrincipalTeamLead's header.
+import { readPlanTier, type PlanTier } from "@/lib/billing/plan-tier"
 
 export type UserRole =
   | "agent"
@@ -299,11 +304,43 @@ export const BROKERAGE_FINANCE_ADMIN_USER_TYPES = new Set(
  * that is not one of them, and the constraint is VALIDATED), so it matches no
  * row on either side and cannot make the app wider than the database in
  * practice. It is not carried into any `.in("user_type", [...])` query.
+ *
+ * ── m526: `is_tenant_principal_team_lead` — THE SECOND, TIER-CONDITIONED HALF ─
+ *
+ * OWNER RULING: "yes to the team lead and agents", and — the sentence that makes
+ * it conditional — "brokerages can have teams and agents but that is the
+ * brokerage tier. when we have the team and solo agent subscription tiers, those
+ * subscriptions get the same level of features as brokerages."
+ *
+ * On a TEAM- or SOLO-tier tenant the lead is that tenant's PRINCIPAL: its money
+ * IS their team's money, and if they cannot keep the books nobody can, because
+ * such a tenant seats no broker or broker_owner (m473 — a team is a mini
+ * brokerage). On a BROKERAGE-tier tenant the same person is one of several leads
+ * inside a larger office, and m472/m473 stand: their own team's money, never the
+ * office's. So this is a FACT ABOUT ONE PERSON AND ONE TENANT, resolved against
+ * the database, NOT a fourth role — `BROKERAGE_FINANCE_ADMIN_USER_TYPES` above
+ * is unchanged, and `team_lead` is still not in it.
+ *
+ * IT IS A PARAMETER, NOT A LOOKUP, because this function is pure and sync and
+ * ~40 render paths and `.filter()` callbacks depend on that. The fact is
+ * resolved ONCE, asynchronously, by `resolveTenantPrincipalTeamLead` below (or
+ * carried on `FinancialActorContext.isTenantPrincipal`) and handed in — the same
+ * shape `isTenantAdminOrPlatformStaff` uses for `platform_role`.
+ *
+ * FAIL CLOSED (CLAUDE.md §4): ONLY an explicit `true` grants. `undefined` means
+ * "nobody resolved this" and `null` means "resolved, and no" — both fall through
+ * to the roster, so every one of the ~40 existing callers that passes neither
+ * keeps byte-identical behaviour, and a caller that could not run the resolution
+ * cannot accidentally widen anybody.
  */
 export function isBrokerageFinanceAdmin(profile: {
   user_type?: string | null
   role?: string | null // tolerated on input, intentionally unread — see the module header
+  /** m526 — the RESOLVED fact from `resolveTenantPrincipalTeamLead`. Only `true`
+   *  grants; `undefined` (unresolved) and `null` (resolved-negative) do not. */
+  is_tenant_principal?: boolean | null
 }): boolean {
+  if (profile.is_tenant_principal === true) return true
   return BROKERAGE_FINANCE_ADMIN_USER_TYPES.has(String(profile.user_type ?? "").toLowerCase())
 }
 
@@ -411,7 +448,11 @@ export async function resolveTenantAdmin(
 }
 
 export type FinanceAdminResult =
-  | { ok: true; isFinanceAdmin: boolean; via: "user_type" | "grant" | "none" }
+  // `tenant_principal` (m526) — admitted not by a role but by BEING the principal
+  // of a team-scale tenant. Reported distinctly because it is the one branch whose
+  // answer depends on the SUBSCRIPTION, so a surface debugging "why can this
+  // person see the books" is told the real reason.
+  | { ok: true; isFinanceAdmin: boolean; via: "user_type" | "grant" | "tenant_principal" | "none" }
   | { ok: false; error: string }
 
 /**
@@ -457,5 +498,115 @@ export async function resolveBrokerageFinanceAdmin(
   if (holdsAnyRole(pinned, [...BROKERAGE_FINANCE_ADMIN_USER_TYPES])) {
     return { ok: true, isFinanceAdmin: true, via: "grant" }
   }
+
+  // m526 — the THIRD disjunct, matching public.is_brokerage_finance_admin()'s
+  // third disjunct exactly. Asked LAST because it is the only branch that costs
+  // two more queries, and the two above already answer for every broker/admin.
+  const principal = await resolveTenantPrincipalTeamLead(supabase, userId, brokerageId)
+  if (!principal.ok) return { ok: false, error: principal.reason }
+  if (principal.isPrincipal) return { ok: true, isFinanceAdmin: true, via: "tenant_principal" }
+
   return { ok: true, isFinanceAdmin: false, via: "none" }
+}
+
+export type TenantPrincipalResult =
+  | { ok: true; isPrincipal: boolean; tier: PlanTier | null; teamId: string | null }
+  | { ok: false; reason: string }
+
+/**
+ * THE APP-SIDE TWIN OF public.is_tenant_principal_team_lead() (m526).
+ *
+ * "Is this person the PRINCIPAL of this tenant — the lead of the one team of a
+ * TEAM- or SOLO-tier subscription, whose money IS the tenant's money?"
+ *
+ * ── WHY THE APP HALF IS NOT OPTIONAL (finding #202, the shape that bit) ──────
+ *
+ * #202 was an RLS defect whose APP-SIDE TWIN was left stale, and the same trap
+ * is live here in its worse direction: `lib/kernel/financial.ts` runs its eight
+ * money gates on the SERVICE client, which BYPASSES RLS ENTIRELY. Fixing only
+ * the SQL would leave the team-tier principal admitted by the database and
+ * refused by the kernel — the ruling delivered nowhere the user can see it. So
+ * this ships in the same wave, and it is written to give the SAME ANSWER as the
+ * SQL for the same inputs.
+ *
+ * ── THE ONE PLACE THE TWO COULD HAVE DRIFTED, AND HOW IT IS CLOSED ──────────
+ *
+ * `resolvePlanTier` FLOORS an unreadable or unset tier to 'solo_agent' — the
+ * right fail-safe for a lead ROUTER (a solo tenant's leads all go to one person,
+ * never a leak) and the exactly WRONG one here, because 'solo_agent' is a
+ * GRANTING tier under this rule. A twin built on it would fail OPEN while the
+ * SQL fails CLOSED, and CLAUDE.md §4 forbids "nobody checked" rendering as
+ * "checked and fine".
+ *
+ * So this consumes `readPlanTier` — the same read with the refusal still visible
+ * (§3: supabase-js RESOLVES refusals) — and demands `fromCache: true`, i.e. the
+ * value came from the `plan_tier` COLUMN. That is precisely what
+ * `b.plan_tier in ('team','solo_agent')` expresses in SQL, where a NULL yields
+ * NULL and coalesces to false. Same inputs, same answer, on both sides.
+ *
+ * ── FAIL CLOSED, BRANCH BY BRANCH ───────────────────────────────────────────
+ *
+ *   teams read refused      → { ok: false } — the caller REFUSES, never passes.
+ *   plan_tier read refused  → { ok: false } — same.
+ *   tier not from the column→ isPrincipal false (an inferred tier grants nothing).
+ *   tier is brokerage /
+ *     multi_location        → isPrincipal false. m472/m473 stand.
+ *   more than one live team → isPrincipal false. The ruling's premise ("the
+ *                             team's money is the tenant's money") does not hold,
+ *                             most plausibly a downgraded brokerage; refusing is
+ *                             the safe reading. Mirrors the SQL's count = 1.
+ *   leads no team           → isPrincipal false.
+ *
+ * ── THE ANCHOR IS `teams.team_lead_id`, NOT `users.user_type` (m473) ────────
+ *
+ * Live: buyer@yourbrokerage.com is user_type 'team_lead' and leads NO team;
+ * teamlead@vip.demo is user_type 'agent' and leads the only one. A user_type
+ * check would admit the first and refuse the second — wrong in both directions.
+ * `team_lead_id` is a `users.id`, so this compares userId to userId; it never
+ * touches `agents.id`, which is a DISJOINT id space (CLAUDE.md §3, 23503).
+ *
+ * The tenant pin is not optional and mirrors the SQL's
+ * `t.brokerage_id = current_user_brokerage_id()`: leading a team in some OTHER
+ * brokerage authorises nothing here.
+ *
+ * @param userId      the SESSION user's id — never an id from a request body.
+ * @param brokerageId the SESSION's brokerage — never one from a request body (§4).
+ */
+export async function resolveTenantPrincipalTeamLead(
+  supabase: Parameters<typeof readRoleGrants>[0],
+  userId: string,
+  brokerageId: string | null | undefined,
+): Promise<TenantPrincipalResult> {
+  if (!userId || !brokerageId) {
+    // No identity or no tenancy is not a refusal to read — it is a definite "no".
+    return { ok: true, isPrincipal: false, tier: null, teamId: null }
+  }
+
+  // Every LIVE team of this tenant, in one read: it answers both "does this
+  // person lead one" and "is there exactly one", which is what the SQL's
+  // `count(*) = 1` needs. `deleted_at is null` matches current_user_led_team_id().
+  const { data: teams, error: teamsError } = await supabase
+    .from("teams")
+    .select("id, team_lead_id")
+    .eq("brokerage_id", brokerageId)
+    .is("deleted_at", null)
+
+  // §3 — supabase-js RESOLVES a refused query. Reading that as "this tenant has
+  // no teams" would refuse the principal for the wrong reason, invisibly; and a
+  // gate that cannot run must REFUSE, not pass (§4).
+  if (teamsError) {
+    return { ok: false, reason: "Your team could not be read — finance access is held until it can." }
+  }
+
+  const live = (teams ?? []) as Array<{ id: string; team_lead_id: string | null }>
+  if (live.length !== 1) return { ok: true, isPrincipal: false, tier: null, teamId: null }
+  if (live[0].team_lead_id !== userId) return { ok: true, isPrincipal: false, tier: null, teamId: null }
+
+  const read = await readPlanTier(supabase as unknown as { from: (t: string) => any }, brokerageId)
+  if (!read.ok) return { ok: false, reason: read.reason }
+
+  // `fromCache` is the whole guard — see the header. An inferred or floored tier
+  // is not a stored tier, and only a stored team-scale tier grants.
+  const isPrincipal = read.fromCache && (read.tier === "team" || read.tier === "solo_agent")
+  return { ok: true, isPrincipal, tier: read.tier, teamId: isPrincipal ? live[0].id : null }
 }

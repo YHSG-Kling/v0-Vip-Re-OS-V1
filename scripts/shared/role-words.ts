@@ -45,3 +45,23 @@ export const ROLE_WORDS: ReadonlySet<string> = new Set([
   // platform_role that several literals wrongly matched against user_type.
   "broker_admin", "super_admin", "marketing",
 ])
+
+/**
+ * THE NON-STAFF PORTAL SEATS — the people the standing ruling holds out of every
+ * financial surface: "Contacts, lenders and vendors see no financials — only
+ * their own" (CLAUDE.md §5).
+ *
+ * ALSO NOT A GATE. Nothing imports this into `app/` or `lib/`; it is the subject
+ * list a PROOF iterates when it asserts that a money predicate refuses them, and
+ * it lives here for the reason the header above gives: finance-authority's scan
+ * forbids any module that asks the shared finance predicate from ALSO keeping a
+ * role array, and tenant-principal-books-simulator asks it. That scan caught this
+ * list as a second local roster the first time it was written inline — the guard
+ * working — so it gets the treatment it demands: ONE definition, imported.
+ *
+ * MEASURED live on hrvaqgvukzxfskkcrwbt: 4 `contact`, 2 `lender` and 2 `vendor`
+ * accounts hold tenanted `users` rows, so this is a real population, not a
+ * hypothetical one — which is why a widening of any money gate has to be shown
+ * not to reach them.
+ */
+export const NON_STAFF_PORTAL_ROLES: readonly string[] = ["contact", "lender", "vendor"]

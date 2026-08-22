@@ -4,18 +4,14 @@ import { useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
+  } from "@/components/ui/dropdown-menu"
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { Phone, MessageSquare, ExternalLink, FileText, AlertTriangle, Zap, Pause, ChevronDown, Loader2, ShieldOff, Share2 } from "lucide-react"
+import { Phone, MessageSquare, ExternalLink, FileText, AlertTriangle, Loader2, ShieldOff, Share2 } from "lucide-react"
 import Link from "next/link"
 import { processOptOut } from "@/app/actions/ai-isa/process-opt-out"
 import { createClient } from "@/lib/supabase/client"

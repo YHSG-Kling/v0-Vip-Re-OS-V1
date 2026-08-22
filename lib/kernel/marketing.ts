@@ -1405,6 +1405,22 @@ export interface CreateMarketingCampaignInput {
   listingId?:    string
   budgetTotal?:  number
   visibilityScope?: "agent" | "team" | "brokerage"
+  // ── AUDIENCE CRITERIA — the columns the launch gate reads ─────────────────
+  // These six were read by publishMarketingCampaignSafe
+  // (lib/marketing/campaign-publisher.ts:47-67) and by distributeVideoAsset's
+  // touchpoint recorder (this file, line ~1141) and written by NOTHING, in
+  // either creation path. resolveCampaignAudience reads an empty criteria array
+  // as "no filter" (lib/marketing/audience-resolver.ts:64), so a campaign
+  // created here resolved to EVERY contact in the brokerage up to its 5000-row
+  // cap — and then launched against that. Accepting them here is the writer
+  // half; the reader half was already built.
+  audiencePersonas?:       string[]
+  audienceGenerations?:    string[]
+  audienceAgeSegs?:        string[]
+  audienceLeadSourceTags?: string[]
+  audienceBuyerStages?:    string[]
+  /** Explicit pinned list — overrides every criterion above in the resolver. */
+  audienceContactIds?:     string[]
 }
 
 export async function createMarketingCampaign(
@@ -1424,6 +1440,16 @@ export async function createMarketingCampaign(
       campaign_name:    input.campaignName.trim(),
       campaign_type:    input.campaignType,
       listing_id:       input.listingId    ?? null,
+      // The five text[] criteria are NOT NULL DEFAULT '{}' — an explicit empty
+      // array says "no criterion" in the same words the resolver reads.
+      // audience_contact_ids is nullable and the resolver reads `?? undefined`,
+      // so its floor is NULL: an empty array there would mean "pinned to nobody".
+      audience_personas:         input.audiencePersonas       ?? [],
+      audience_generations:      input.audienceGenerations    ?? [],
+      audience_age_segs:         input.audienceAgeSegs        ?? [],
+      audience_lead_source_tags: input.audienceLeadSourceTags ?? [],
+      audience_buyer_stages:     input.audienceBuyerStages    ?? [],
+      audience_contact_ids:      input.audienceContactIds     ?? null,
       budget_total:     input.budgetTotal  ?? 0,
       budget_spent:     0,
       visibility_scope: input.visibilityScope ?? "agent",

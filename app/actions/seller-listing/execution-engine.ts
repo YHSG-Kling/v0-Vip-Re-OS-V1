@@ -676,6 +676,12 @@ export async function markAgreementSigned(params: {
         .data?.user_id as string | null) ?? null
     : null
 
+  // The seller, resolved ONCE and used by both the document audit below and the
+  // agreement row itself. `listings.contact_id` is the historical fallback and
+  // is not populated live (see the note in the audit call), so seller_contact_id
+  // wins when present.
+  const sellerContactId = ((listingRow?.seller_contact_id ?? listingRow?.contact_id) as string | null) ?? null
+
   const docAudit = await auditListingDocuments(supabase as any, {
     brokerageId,
     // The seller lives in seller_contact_id. listings.contact_id exists but is
@@ -683,7 +689,7 @@ export async function markAgreementSigned(params: {
     // audit skipped every document filed against the seller's CONTACT record.
     // Raised in review; the readiness gate carried the same mistake and both
     // were corrected together so the two checkpoints stay in agreement.
-    sellerContactId: ((listingRow?.seller_contact_id ?? listingRow?.contact_id) as string | null) ?? null,
+    sellerContactId,
     agentUserId:     userId,
     teamId:          (actingUser?.team_id as string | null) ?? null,
     stateCode:       (listingRow?.state as string | null) ?? null,
@@ -789,6 +795,24 @@ export async function markAgreementSigned(params: {
     .insert({
       listing_id:                  listingId,
       brokerage_id:                brokerageId,
+      // THE SELLER, STAMPED ON THE AGREEMENT. This is the only insert of
+      // `listing_agreements` in the tree and it left `seller_contact_id` NULL,
+      // while two consumers key on it:
+      //
+      //   · lib/kernel/compliance/active-representation.ts:59-63 — arm 3 of the
+      //     implied-TCPA-consent test is "a fully-signed listing agreement for
+      //     this contact". With the column NULL that arm could never match, so
+      //     a seller whose agreement THIS FUNCTION had just fully executed
+      //     (esign_status is written executed a few lines below) still counted
+      //     as unconsented on sms/phone, and the dispatch suppression gate
+      //     blocked the servicing team from reaching their own active client.
+      //   · lib/kernel/notification-engine.ts:314-323 — reads seller_contact_id
+      //     off the agreement to find the seller to notify, and skips silently
+      //     on NULL (`if (listingAgreement?.seller_contact_id)`).
+      //
+      // The value was already in scope: the same id is handed to
+      // auditListingDocuments above. It was resolved and then not written down.
+      seller_contact_id:           sellerContactId,
       agent_user_id:               userId,
       upload_mode:                 uploadMode,
       provider_name:               activeProviderKey,

@@ -22,25 +22,16 @@ import {
   Bed,
   Bath,
   Square,
-  Car,
   Home,
-  DollarSign,
-  TrendingUp,
   Calculator,
-  School,
   TreePine,
   Phone,
   Mail,
   Clock,
   CheckCircle,
-  Star,
   MessageSquare,
   Building,
-  Ruler,
-  Thermometer,
-  Droplets,
-  Zap,
-} from "lucide-react"
+  } from "lucide-react"
 import { requestShowing, saveProperty } from "@/app/actions/smart-insights"
 
 interface PropertyDetailsViewProps {

@@ -557,6 +557,117 @@ check("the enrichment lane's own banding collapses onto ours (one age vocabulary
     pickEducationChannel({ ageSegment: "50-65", moduleChannels: ["podcast"], consent: consented, preferredChannel: null }).rejected.length > 0)
 }
 
+// ── WAVE 16 — THE SOURCED SIGNAL ACTUALLY REACHES THE SELECTOR ──────────────
+//
+// Wave 15 built the rail and left it with no current: live on 2026-08-22, ZERO
+// contacts carry a birthday and ZERO carry an age_range, so the only two inputs
+// the band had were empty for every row and "routed by age group" could not
+// happen to anybody. The input the ruling was actually about was already being
+// sourced and read by nothing — `motivated_seller_signals.signal_details` —
+// which lib/external/batchdata-seller-signals.ts:734 names as an open loop
+// against this very file. lib/education/seller-signal-education-context.ts is
+// the consumer.
+//
+// THE BOUNDARY IS ASSERTED IN BOTH DIRECTIONS HERE, because this wire is exactly
+// the shape that could widen the exemption: it takes protected-class-derived
+// data OUT of the sourcing lane and hands it to a selector. It must reach
+// EDUCATION and never AD TARGETING.
+{
+  const {
+    deriveEducationContextFromSignals, SELLER_SIGNAL_EDUCATION_TYPES,
+    SELLER_SIGNAL_EDUCATION_PERSONAS,
+  } = await import("../lib/education/seller-signal-education-context")
+  const { BATCHDATA_PROTECTED_CLASS_BASIS } = await import("../lib/external/batchdata-seller-signals")
+
+  const sig = (t: string, observed: Record<string, unknown>) =>
+    ({ signal_type: t, signal_details: { observed, protected_class_basis: [{ source: "demographics.age", reason: "age — a protected class" }] } })
+
+  check("the PROVIDER's owner_age_band collapses onto the ONE age vocabulary — no second banding function",
+    deriveEducationContextFromSignals([sig("senior_owner", { owner_age_band: "65to74", owner_age: null })]).ageSegment === "65+"
+    && deriveEducationContextFromSignals([sig("senior_owner", { owner_age_band: "75plus", owner_age: null })]).ageSegment === "65+",
+    [deriveEducationContextFromSignals([sig("senior_owner", { owner_age_band: "65to74", owner_age: null })]).ageSegment,
+     deriveEducationContextFromSignals([sig("senior_owner", { owner_age_band: "75plus", owner_age: null })]).ageSegment].join(","))
+  check("…and the provider's BARE FLAG stays UNMEASURED — a broad list with no age never becomes a measured band",
+    deriveEducationContextFromSignals([sig("senior_owner", { owner_age_band: "flag", owner_age: null })]).ageSegment === null)
+  check("CONTROL — the derivation is not simply returning null: a measured raw age bands, and says it was the raw age",
+    (() => {
+      const c = deriveEducationContextFromSignals([sig("senior_owner", { owner_age_band: "75plus", owner_age: 78 })])
+      return c.ageSegment === "65+" && c.ageSource === "owner_age"
+    })())
+  check("CONTROL — a signal type this lane does not consume contributes NOTHING (the reader is not a wildcard)",
+    (() => {
+      const c = deriveEducationContextFromSignals([sig("high_equity", { owner_age: 78 })])
+      return c.ageSegment === null && c.personaHints.length === 0 && c.signalTypes.length === 0
+    })())
+  check("the four consumed kinds ARE the four protected-class-derived kinds the sourcing lane declares",
+    [...SELLER_SIGNAL_EDUCATION_TYPES].sort().join(",") === Object.keys(BATCHDATA_PROTECTED_CLASS_BASIS).sort().join(","),
+    `consumed=[${[...SELLER_SIGNAL_EDUCATION_TYPES].sort().join(",")}] declared=[${Object.keys(BATCHDATA_PROTECTED_CLASS_BASIS).sort().join(",")}]`)
+  check("each maps onto an EXISTING persona the module scorer already matches (no new tag vocabulary)",
+    Object.values(SELLER_SIGNAL_EDUCATION_PERSONAS).join(",") === "senior,probate,divorce,upsize")
+  check("the classifier's REASON SENTENCE is carried verbatim, so a selection can say on what grounds",
+    deriveEducationContextFromSignals([sig("inherited_property", { probate_deed_instrument: "Executor's Deed" })])
+      .protectedClassBasis[0]?.reason === "age — a protected class")
+
+  // ── THE DOOR THAT MUST STAY SHUT ──────────────────────────────────────────
+  // Reverse-transitive importers of the education reader. If an ads-lane module
+  // is in this set, age/household/probate data has a path into ad targeting.
+  const AD_LANE = [
+    "lib/audiences/audience-sync.ts",
+    "lib/kernel/ads.ts",
+    "app/actions/campaign-presets.ts",
+    "lib/ads/fb-audience-templates.ts",
+  ]
+  const EDU_READER = "lib/education/seller-signal-education-context.ts"
+  const EDU_CARRIERS = [EDU_READER, "lib/portal/resolve-education-context.ts", "lib/learning-router/composer.ts"]
+
+  // DEPTH-1, and the bound is the measurement — the same hardening this file
+  // already applied to its marketing-studio control. An UNBOUNDED reverse walk
+  // answers the wrong question in a kernel with barrels, and it is measured and
+  // PUBLISHED below rather than quietly excluded (CLAUDE.md §2).
+  const directImporters = [...graph].filter(([, e]) => e.includes(EDU_READER)).map(([f]) => f).sort()
+  check(`the education reader has exactly ONE direct importer, and it is the education context resolver (${directImporters.length})`,
+    directImporters.join(",") === "lib/portal/resolve-education-context.ts", directImporters.join(", "))
+  check("CONTROL — that importer finder is NOT blind: it sees the real edge it was written to find",
+    directImporters.length > 0, "a finder returning nothing would make the check above pass by seeing nothing")
+
+  const leaked = AD_LANE.filter((f) => EDU_CARRIERS.some((c) => (graph.get(f) ?? []).includes(c)))
+  check("THE EXEMPTION IS NOT WIDENED — no ads-lane module imports the reader OR either module that carries its output",
+    leaked.length === 0, leaked.join(", "))
+  check("CONTROL — that finder DOES catch a carrier import: the delivery producer imports the composer",
+    (graph.get("lib/agents/education-delivery-producer.ts") ?? []).includes("lib/learning-router/composer.ts")
+    || /await import\("@\/lib\/learning-router\/composer"\)/.test(readFileSync(join(root, "lib/agents/education-delivery-producer.ts"), "utf8")))
+  check("…and the reader imports nothing from the ads/audience lane either (the door has no handle on this side)",
+    (graph.get(EDU_READER) ?? []).every((e) => !/^lib\/(ads|audiences)\//.test(e) && e !== "lib/kernel/ads.ts"),
+    (graph.get(EDU_READER) ?? []).join(", "))
+
+  // PUBLISHED BLIND SPOT, not an excluded one. An unbounded reverse-import walk
+  // puts 1600+ modules "upstream" of this reader, app/actions/campaign-presets.ts
+  // among them, by this chain:
+  //   campaign-presets → lib/kernel/compliance.ts → notification-engine →
+  //   event-reactor → education-delivery-producer → composer → the reader
+  // That is the ADS LANE IMPORTING THE COMPLIANCE KERNEL, not education data
+  // reaching ad targeting — the kernel event-reactor sits between them and fans
+  // out to everything. The depth-1 checks above are what is actually asserted;
+  // this number is printed so nobody mistakes the bound for full coverage.
+  {
+    const reach = new Set<string>()
+    let grew = true
+    while (grew) {
+      grew = false
+      for (const [file, edges] of graph) {
+        if (reach.has(file)) continue
+        if (edges.includes(EDU_READER) || edges.some((e) => reach.has(e))) { reach.add(file); grew = true }
+      }
+    }
+    console.log(`  [blind spot] unbounded reverse-import closure of the education reader: ${reach.size} modules — barrel/kernel-fanout inflated, NOT asserted on`)
+  }
+  check("ADS LANE STILL REFUSES the very observations this wire now consumes, one at a time",
+    ["owner_age_band", "household_size", "probate_deed_instrument", "recently_divorced"].every((f) =>
+      (throws(() => assertAudienceSegmentationAllowed({ filters: { [f]: true } }, "Seniors 65+")) ?? "").includes("REFUSED")),
+    ["owner_age_band", "household_size", "probate_deed_instrument", "recently_divorced"]
+      .filter((f) => throws(() => assertAudienceSegmentationAllowed({ filters: { [f]: true } }, "x")) === null).join(", "))
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 console.log(`\n[5 · CONTENT STAYS GATED — and the rewrite is a REPORTED fact]`)
 // The buyer-facing match explanation is copy WE author, so it stays sanitized

@@ -121,7 +121,24 @@ export interface SetupItem {
 
 const AGENTISH: SetupRole[] = ["agent", "team_lead"]
 const TEAMISH: SetupTier[] = ["team", "brokerage", "multi_location"]
-const ORG: SetupTier[] = ["brokerage", "multi_location"]
+/**
+ * "A tenancy with more than one seat to fill." TEAM IS ONE (owner ruling).
+ *
+ * This was `["brokerage", "multi_location"]` — the SECOND spelling of "org
+ * tier" in the codebase, and it disagreed with the first:
+ * `lib/onboarding/critical-setup.ts` ORG_TIERS has always been `["team",
+ * "brokerage", "multi_location"]`. So the same tenant was told by one
+ * onboarding surface that inviting staff was a required setup step and by the
+ * other that it did not apply to them. Two spellings of one idea is a defect,
+ * not a style choice (CLAUDE.md §6) — merged onto the wider one, which is also
+ * the correct one: a team subscription has FIVE seats, so "invite agents &
+ * staff" and "set your recruiting pitch" are real, fillable steps for it.
+ *
+ * Solo stays out, and that is not a tier denial: a solo tenant's 2 seats and
+ * its own `commission_contract` item cover it, and nothing here GATES anything
+ * — this catalogue only decides which checklist rows render.
+ */
+const ORG: SetupTier[] = ["team", "brokerage", "multi_location"]
 
 /**
  * THE CATALOG — every user-fillable setup item, mapped to role + tier + required/optional + the real

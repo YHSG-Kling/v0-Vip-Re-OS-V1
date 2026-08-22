@@ -126,7 +126,35 @@ async function main() {
     && JSON.stringify(MANAGER_COLLABORATIONS.referral_fee_economics.managers.slice().sort()) === JSON.stringify(["finance_manager", "sphere_of_influence"])
     && JSON.stringify(MANAGER_COLLABORATIONS.sequence_touch_cadence.managers.slice().sort()) === JSON.stringify(["ai_isa", "campaign_orchestrator"])
     && JSON.stringify(MANAGER_COLLABORATIONS.public_records_seller_signals.managers.slice().sort()) === JSON.stringify(["ai_isa", "data_steward"])
-    && Object.keys(MANAGER_COLLABORATIONS).length === 16)
+    // 16 → 18. The count is here so an edge cannot be MINTED SILENTLY — a new
+    // collaboration widens canRefer, so the total is a tripwire, not decoration.
+    // But the claim this check makes is about DRIFT, and the two additions do
+    // not drift anything: every per-edge membership asserted above is unchanged,
+    // and the nine-deliberative-domain check directly above still passes, which
+    // is the substantive half. Both new edges are NON-deliberative — a handoff
+    // with no tradeoff to argue — so neither can reach the deliberation path:
+    //
+    //   tenant_principal_books            finance_manager + data_steward + recruiting_manager
+    //     Whether a team-scale tenant's lead reads its books. Money is
+    //     finance_manager's; the tier/identity facts the condition is built from
+    //     (brokerages, subscriptions, users) are data_steward's; `teams` — the
+    //     leadership anchor — is recruiting_manager's. The owner ruled the
+    //     boundary ("yes to the team lead and agents"), so there is nothing to
+    //     deliberate; the edge exists so the seam has a named owner.
+    //
+    //   seller_signal_education_routing   data_steward + ai_isa + shopping_agent + listing_concierge
+    //     A protected-class-derived seller signal reaching the education channel
+    //     selector. Again a handoff: the signal's steward hands a fact to the
+    //     selector. No REFERRAL_EMITTERS raiser exists for it, so flagging it
+    //     deliberative would be aspirational — an edge that declares an argument
+    //     nothing can raise.
+    //
+    // Adding an edge is the CORRECT response to a cross-manager seam (the
+    // repo's ownership model is cross-cooperative by design). Bumping this
+    // number without naming the edges would turn the tripwire off.
+    && Object.keys(MANAGER_COLLABORATIONS).length === 18
+    && !isDeliberativeDomain("tenant_principal_books")
+    && !isDeliberativeDomain("seller_signal_education_routing"))
   check("every deliberative domain's evidence names its LIVE RAISER (no aspirational edges)",
     deliberativeDomains().every((d) => /raiser|sweep|hook|assignVendorToTransaction|publish/i.test(d.evidence)))
 

@@ -1362,12 +1362,25 @@ function testRentcastMarketStats() {
 // ── 19e. Neighborhood intelligence — tier gate, livability, Fair-Housing ─────
 function testNeighborhoodIntelligence() {
   console.log("\n[Neighborhood intelligence — tier gate + livability + Fair-Housing]")
-  // Tier gate: only the most advanced plans.
+  // TIER PARITY (owner ruling) — this block asserted the OPPOSITE until the
+  // ruling landed: "tier gate denies solo_agent / team / null" pinned a
+  // brokerage-and-up floor. OWNER, verbatim: "when we have the team and solo
+  // agent subscription tiers, those subscriptions get the same level of
+  // features as brokerages." Tiers differ by SEAT COUNT, not by feature set,
+  // so those three assertions were pinning a policy that no longer exists and
+  // they are INVERTED here rather than deleted — the direction of the change is
+  // the finding (CLAUDE.md §2), and a silent deletion would leave no record
+  // that this gate was ever closed.
+  //
+  // The AI cost of the report is platform-covered with per-tier overage
+  // (CLAUDE.md §5); that is the lever that scales with plan, not this gate.
+  // Enforcement of the parity lives in scripts/tier-entitlement-simulator.ts
+  // alongside its positive controls.
   check("tier gate allows brokerage", isNeighborhoodReportAllowed("brokerage"))
   check("tier gate allows multi_location", isNeighborhoodReportAllowed("multi_location"))
-  check("tier gate denies solo_agent", !isNeighborhoodReportAllowed("solo_agent"))
-  check("tier gate denies team", !isNeighborhoodReportAllowed("team"))
-  check("tier gate denies null", !isNeighborhoodReportAllowed(null))
+  check("tier parity: solo_agent is ALLOWED (was denied)", isNeighborhoodReportAllowed("solo_agent"))
+  check("tier parity: team is ALLOWED (was denied)", isNeighborhoodReportAllowed("team"))
+  check("tier parity: an unreadable/NULL tier no longer denies either", isNeighborhoodReportAllowed(null))
 
   const rich = {
     lat: 27.95, lon: -82.45,

@@ -144,19 +144,51 @@ function pureLayer() {
 // ─── PURE · THE GRANT HALF ───────────────────────────────────────────────────
 
 /**
- * A stand-in for the one query readRoleGrants makes. It is not a mock of
- * supabase-js: it answers `.from().select().eq()` because that is the shape the
- * shared reader uses, and it can also answer a REFUSAL, which is the case the
- * boolean-returning version of this rule got wrong.
+ * A stand-in for the queries resolveBrokerageFinanceAdmin makes. It is not a
+ * mock of supabase-js: it answers exactly the shapes the shared readers use, and
+ * it can also answer a REFUSAL, which is the case the boolean-returning version
+ * of this rule got wrong.
+ *
+ * ── WIDENED, AND TABLE-AWARE, BY m526 ───────────────────────────────────────
+ *
+ * This fake used to be TABLE-BLIND — `from: () => ...` returned the grant rows
+ * for whatever table was asked — and answered only `.select().eq()`. That was a
+ * faithful model of the rule while the rule read exactly one table.
+ *
+ * m526 gave `resolveBrokerageFinanceAdmin` a THIRD disjunct (the tier-conditioned
+ * tenant principal: on TEAM/SOLO tier the lead of the tenant's one team keeps its
+ * books; on BROKERAGE tier they still do not), which reads `teams` with `.is()`
+ * and `brokerages` via readPlanTier. The old fake threw `.is is not a function`
+ * — which is the RIGHT failure: an incomplete model of the client silently
+ * answering for a table it was never given is how a proof passes while the code
+ * is wrong. So the fake now dispatches BY TABLE and answers `.is()` /
+ * `.maybeSingle()` too.
+ *
+ * `teams` answers EMPTY by default, so every assertion in this layer keeps its
+ * original meaning: nobody here leads a team, so the new disjunct can only ever
+ * return false and the grant rule is measured exactly as before. The principal
+ * branch has its own proof — scripts/tenant-principal-books-simulator.ts.
  */
-function fakeGrantsClient(rows: Array<Record<string, unknown>> | null, error: string | null) {
-  return {
-    from: () => ({
-      select: () => ({
-        eq: async () => (error ? { data: null, error: { message: error } } : { data: rows, error: null }),
-      }),
-    }),
-  } as never
+function fakeGrantsClient(
+  rows: Array<Record<string, unknown>> | null,
+  error: string | null,
+  opts: { teams?: Array<Record<string, unknown>>; planTier?: string | null } = {},
+) {
+  const builder = (table: string) => {
+    const answer = async () => {
+      if (table === "teams") return { data: opts.teams ?? [], error: null }
+      if (table === "brokerages") return { data: { plan_tier: opts.planTier ?? null }, error: null }
+      if (table === "subscriptions") return { data: null, error: null }
+      // user_role_assignments — the original behaviour, refusal included.
+      return error ? { data: null, error: { message: error } } : { data: rows, error: null }
+    }
+    const api: Record<string, unknown> = {}
+    for (const m of ["select", "eq", "in", "is", "order", "limit", "not"]) api[m] = () => api
+    api.maybeSingle = answer
+    api.then = (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) => answer().then(res, rej)
+    return api
+  }
+  return { from: builder } as never
 }
 
 async function grantLayer() {

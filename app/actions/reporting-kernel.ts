@@ -21,19 +21,27 @@ import {
   exportReportPdf,
   emailReport,
 } from "@/lib/kernel/reporting"
+// TOMBSTONE: GenerateTeamPerformanceInput, GenerateFinancialSummaryInput,
+// ExportReportCsvInput, ExportReportPdfInput and EmailReportInput were imported
+// here and never used — the four actions below that could have used them take no
+// options at all, or declare their own inline shape. All five SURVIVE in
+// lib/kernel/reporting.ts, where each is the declared parameter type of the
+// exported command it names (e.g. exportReportCsv(input: ExportReportCsvInput)),
+// so they remain reachable to every consumer through that signature. Only this
+// file's unused bindings are removed — the five the census named and no more.
+// (A first pass also dropped GenerateCampaignROIInput,
+// GenerateTransactionPipelineInput and GenerateReputationInput; all three are
+// live here, at lines ~108/~116/~147, inside `Pick<…>` option types. Deleting an
+// import because it "looks like" its siblings is how a burn-down starts breaking
+// working code — the census listed exactly five, and exactly five went.)
 import type {
   ReportingActorContext,
   LoadReportingWorkspaceInput,
   GenerateSourcePerformanceInput,
   GenerateCampaignROIInput,
   GenerateTransactionPipelineInput,
-  GenerateTeamPerformanceInput,
   GenerateAgentPerformanceInput,
-  GenerateFinancialSummaryInput,
   GenerateReputationInput,
-  ExportReportCsvInput,
-  ExportReportPdfInput,
-  EmailReportInput,
 } from "@/lib/kernel/reporting"
 
 // ─── ACTOR CONTEXT RESOLVER ──────────────────────────────────────────────────
@@ -150,10 +158,15 @@ export async function generateReputationReportAction(
 }
 
 // Self-contained CSV export: fetches report data internally, formats rows, calls kernel CSV.
+// `agentId` / `brokerageId` are NOT parameters of this action, deliberately.
+// They were declared here, destructured away, and never read: every report below
+// is scoped by `ctx`, which resolveActorContext() reads from the SESSION. A
+// caller-supplied tenant on a server action is the IDOR shape this repo has been
+// bitten by (CLAUDE.md §4) — harmless while ignored, and one honest-looking edit
+// away from being honoured. An input that is advertised and discarded invites
+// exactly that edit, so the advertisement is removed with the discard.
 export async function exportReportCsvAction(opts: {
   reportType: string
-  agentId: string
-  brokerageId: string
   dateFrom?: string
 }): Promise<{ success: boolean; data?: string; error?: string }> {
   const ctx = await resolveActorContext()
@@ -194,10 +207,9 @@ export async function exportReportCsvAction(opts: {
 }
 
 // Self-contained PDF export: builds HTML from report data and uploads to Blob.
+// Tenant from the session, not from the caller — see exportReportCsvAction above.
 export async function exportReportPdfAction(opts: {
   reportType: string
-  agentId: string
-  brokerageId: string
   dateFrom?: string
 }): Promise<{ success: boolean; pdfUrl?: string; error?: string }> {
   const ctx = await resolveActorContext()
@@ -252,13 +264,12 @@ export async function exportReportPdfAction(opts: {
 }
 
 // Self-contained email action: accepts array of recipients, builds body from report data.
+// Tenant from the session, not from the caller — see exportReportCsvAction above.
 export async function emailReportAction(opts: {
   reportType: string
   recipients: string[]
   subject: string
   message?: string
-  agentId: string
-  brokerageId: string
   dateFrom?: string
 }): Promise<{ success: boolean; error?: string }> {
   const ctx = await resolveActorContext()

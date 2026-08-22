@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import { WORKFLOW_TRIGGERS, toTriggerSelectValue, fromTriggerSelectValue } from "@/lib/workflow/triggers"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import {
   Select,
   SelectContent,
@@ -24,20 +24,12 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog"
 import {
-  Mail,
-  MessageSquare,
-  Clock,
-  GitBranch,
   Trash2,
   Plus,
   Save,
   Rocket,
   GripVertical,
   ArrowLeft,
-  FileText,
-  CheckSquare,
-  Tag,
-  UserMinus,
   Eye,
 } from "lucide-react"
 import { toast } from "sonner"

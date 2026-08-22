@@ -2128,6 +2128,15 @@ export default function CRMPage() {
                                       agent_user_id: user?.id ?? null, created_by: user?.id ?? null, visibility_scope: "agent",
                                       scheduled_start_at: startDate.toISOString(), scheduled_end_at: endDate.toISOString(),
                                       launched_at: startDate.toISOString(), target_audience: { contact_id: selectedContactId },
+                                      // The audience is THIS ONE CONTACT, and it has to be said in the
+                                      // column the resolver reads. `target_audience` above is a jsonb
+                                      // note nothing resolves; audience_contact_ids is what
+                                      // lib/marketing/audience-resolver.ts:47 pins the list to. Without
+                                      // it, all six criteria columns stay empty, an empty criterion
+                                      // means "no filter" there, and this per-contact follow-up — which
+                                      // is inserted `status: "live"` — resolved to EVERY contact in the
+                                      // brokerage for touchpoint attribution and launch deliverability.
+                                      audience_contact_ids: [selectedContactId],
                                     }).select().maybeSingle()
                                   }
                                   toast.success("7-day plan created — check Campaigns tab")

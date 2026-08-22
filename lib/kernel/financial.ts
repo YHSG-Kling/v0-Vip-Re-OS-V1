@@ -95,6 +95,27 @@ export interface FinancialActorContext {
    * tenant user. Neither value ever grants anything on its own.
    */
   platformRole?: string | null
+  /**
+   * m526 — IS THIS ACTOR THE PRINCIPAL OF A TEAM-SCALE TENANT?
+   *
+   * OWNER RULING: on TEAM and SOLO tier the tenant's money IS the team's money,
+   * so its lead reads and administers its books; on BROKERAGE tier the same
+   * person is one of several leads in a larger office and m472/m473 stand — own
+   * team only, never the office's P&L.
+   *
+   * RESOLVED ONCE, at context build, by
+   * `lib/auth/resolve-user-role.ts#resolveTenantPrincipalTeamLead` — the app-side
+   * twin of `public.is_tenant_principal_team_lead()`. It is carried here for the
+   * same reason `platformRole` is: the eight gates below run on the SERVICE
+   * client (RLS bypassed), so the app predicate is the ONLY gate, and they are
+   * sync and cannot await a two-query lookup eight times.
+   *
+   * OPTIONAL AND FAIL-CLOSED. `undefined` means "nobody resolved this" and
+   * `null` means "resolved, and no"; only an explicit `true` widens anybody.
+   * A caller that cannot run the resolution therefore gets today's behaviour
+   * exactly, never a free grant.
+   */
+  isTenantPrincipal?: boolean | null
 }
 
 export interface KernelFinancialResult<T = void> {
@@ -423,6 +444,15 @@ export async function loadFinancialWorkspace(
 
     let accessLevel: "personal" | "team" | "brokerage" | "system" = "personal"
     if (ledTeamId) accessLevel = "team"
+    // m526 — ON A TEAM-SCALE TENANT THE LEAD'S TEAM SCOPE *IS* THE TENANT SCOPE.
+    // Placed above broker/admin and below superadmin, keeping the "ORDER IS
+    // PRECEDENCE, WIDEST LAST" rule this block already documents: it can only
+    // ever WIDEN a lead from "team" to "brokerage", never narrow a broker who
+    // also happens to lead a team. On BROKERAGE tier `isTenantPrincipal` is
+    // false and the lead stays on "team" — m472/m473 untouched. `undefined`
+    // (unresolved) is not `true`, so a caller that never resolved the fact gets
+    // exactly today's answer (§4, fail closed).
+    if (ctx.isTenantPrincipal === true) accessLevel = "brokerage"
     if (ctx.userType === "broker" || ctx.userType === "admin") accessLevel = "brokerage"
     if (isSuperadmin) accessLevel = "system"
 
@@ -803,7 +833,7 @@ export async function markCommissionApproved(
 
   try {
     // Guard: only brokerage users can approve
-    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
       return { success: false, error: "Insufficient permissions to approve commissions" }
     }
 
@@ -876,7 +906,7 @@ export async function markCommissionPaid(
 
   try {
     // Guard: only brokerage users can mark paid
-    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
       return { success: false, error: "Insufficient permissions to mark commissions as paid" }
     }
 
@@ -1013,7 +1043,7 @@ export async function markCommissionDisputed(input: {
 
     // Gate: the owning agent, or a broker/admin.
     const isOwner = ctx.agentId != null && ctx.agentId === commission.agent_id
-    const isBroker = isBrokerageFinanceAdmin({ user_type: ctx.userType })
+    const isBroker = isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })
     if (!isOwner && !isBroker) return { success: false, error: "Only the owning agent or a broker can dispute this commission" }
 
     if (!COMMISSION_STATUS_TRANSITIONS[commission.status]?.includes("disputed")) {
@@ -1056,7 +1086,7 @@ export async function resolveCommissionDispute(input: {
   const { ctx, commissionId, brokerageId, resolution, notes } = input
   const supabase = createServiceClient()
   try {
-    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
       return { success: false, error: "Only a broker can resolve a dispute" }
     }
     const { data: commission } = await supabase
@@ -1131,7 +1161,7 @@ export async function createExpenseRecord(
     // clause is the drift CLAUDE.md §6 forbids. Any NEW caller of
     // createExpenseRecord that does not come through that action must apply the
     // same helper before calling.
-    if (ctx.agentId !== agentId && !isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
+    if (ctx.agentId !== agentId && !isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
       return { success: false, error: "Can only create expenses for yourself" }
     }
 
@@ -1416,7 +1446,7 @@ export async function exportFinancialReport(
 
   try {
     // Guard: only authorized users can export
-    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
       return { success: false, error: "Insufficient permissions to export reports" }
     }
 
@@ -1488,7 +1518,7 @@ export async function emailFinancialReport(
 
   try {
     // Guard: only authorized users can email reports
-    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
       return { success: false, error: "Insufficient permissions to email reports" }
     }
 

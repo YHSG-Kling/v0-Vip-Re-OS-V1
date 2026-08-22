@@ -30,7 +30,7 @@
 import { revalidatePath } from "next/cache"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveWriteContext } from "@/lib/kernel/identity"
-import { isCanonicalTier, TIER_ORDER, TIER_LABELS } from "@/lib/kernel/tier-role-matrix"
+import { isCanonicalTier, TIER_LABELS } from "@/lib/kernel/tier-role-matrix"
 import {
   validateCustomDomain,
   platformReservedHosts,
@@ -53,16 +53,34 @@ const DOMAIN_CAP = 2
 
 // ── Gating helpers ───────────────────────────────────────────────────────────
 
-/** Brokerage tier and up. Unknown/legacy tiers fail OPEN (matrix rule) so an
- *  un-backfilled legacy tenant isn't bricked out of a surface it can see. */
+/**
+ * EVERY TIER. Not a stub — the ruling.
+ *
+ * OWNER, verbatim: "when we have the team and solo agent subscription tiers,
+ * those subscriptions get the same level of features as brokerages." Tiers
+ * differ by SEAT COUNT, not by feature set. A solo agent's own storefront is
+ * exactly the surface a custom domain is for.
+ *
+ * ── FLAGGED FOR PRICING, NOT WITHHELD ───────────────────────────────────────
+ *
+ * Custom domains are one of the three parity items with a REAL per-tenant
+ * operating cost rather than a code gate: each active domain is a registration
+ * against the Vercel project, a DNS/verification loop to support and a
+ * certificate to keep issued — and DOMAIN_CAP below means up to two per tenant.
+ * Opening it to solo/team multiplies that by the number of tenants on the
+ * cheapest plans. It ships open because the owner ruled it open; the cost is
+ * reported so it can be PRICED rather than silently absorbed.
+ *
+ * Kept as a named function rather than deleted so the shape of the decision
+ * stays visible — restoring a floor is a one-line change.
+ */
 function tierAllowsCustomDomains(tier: string | null | undefined): boolean {
-  if (!isCanonicalTier(tier)) return true
-  return TIER_ORDER.indexOf(tier) >= TIER_ORDER.indexOf("brokerage")
+  void tier
+  return true
 }
 
 const TIER_GATE_ERROR =
-  `Custom domains are a ${TIER_LABELS.brokerage} / ${TIER_LABELS.multi_location} plan feature — ` +
-  "your site stays live on the platform URL on every plan."
+  "Custom domains are not available on your plan — your site stays live on the platform URL."
 
 interface AdminGate {
   ok: true

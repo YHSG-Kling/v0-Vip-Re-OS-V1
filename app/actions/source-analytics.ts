@@ -120,11 +120,10 @@ export interface SourceDrilldownResult {
   error?: string
 }
 
-export interface SourceComparisonResult {
-  success: boolean
-  sources: SourceMetrics[]
-  error?: string
-}
+// TOMBSTONE: SourceComparisonResult went with getSourceComparison — see the
+// tombstone at the former call site below. Its only referent was that
+// function's return type; the surviving path types the same rows as
+// SourceMetrics[], which is what CompareDialog already accepts.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Filters
@@ -909,19 +908,33 @@ export async function emailSourceReport(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// getSourceComparison — compare 2-4 sources side by side
-// ─────────────────────────────────────────────────────────────────────────────
-
-export async function getSourceComparison(
-  brokerageId: string,
-  sourceKeys: string[], // ["source_name::family", ...]
-  filter: SourceAnalyticsFilter
-): Promise<SourceComparisonResult> {
-  try {
-    const result = await getSourcePerformance({ ...filter, brokerageId })
-    const sources = result.sources.filter(s => sourceKeys.includes(`${s.source}::${s.source_family}`))
-    return { success: true, sources }
-  } catch (err) {
-    return { success: false, sources: [], error: err instanceof Error ? err.message : "Comparison failed" }
-  }
-}
+// TOMBSTONE: getSourceComparison + SourceComparisonResult were removed here.
+// SURVIVOR: app/dashboard/analytics/source/source-analytics-client.tsx:501
+//
+//     const selectedSources = sources.filter(
+//       s => selectedKeys.has(`${s.source}::${s.source_family}`))
+//
+// which is handed straight to <CompareDialog sources={selectedSources} />.
+//
+// This action was IMPORTED by that client and never called — the compare
+// feature was fully built (row checkboxes, a Compare button gated on
+// `selectedKeys.size >= 2`, and CompareDialog) and wired to the client-side
+// filter instead. The two produced the same rows by construction: the user can
+// only tick sources that are already rendered, and both filter on the identical
+// `${source}::${source_family}` key.
+//
+// So the survivor is not merely equivalent, it is better on two counts. It
+// needs no round-trip for data the page already holds; and it does not take
+// `brokerageId: string` FROM THE CALLER, which this action did — a
+// caller-supplied tenant handed to a server action is the IDOR shape CLAUDE.md
+// §4 rules out, and it was live on this export.
+//
+// Nothing was merged onto the survivor because nothing was missing from it: the
+// deleted function's whole body was `getSourcePerformance(...)` followed by the
+// same key filter, and getSourcePerformance remains exported and reached.
+//
+// (This was first mistaken for a plain "dead import" and removed from the
+// client alone. That left the action orphaned — capability deleted rather than
+// resolved — and scripts/wired-surface-guard.ts caught it by name. A dead
+// import whose target is a server action is never just a dead import: it is one
+// half of an unwired pair, and it has to be decided, not swept.)

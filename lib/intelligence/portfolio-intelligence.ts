@@ -183,9 +183,25 @@ export async function runPortfolioAdvisor(svc: Svc, brokerageId: string, now: Da
   return { proposed: true }
 }
 
-/** Autonomous: brokerage/multi-location tiers, monthly (rides the weekly recruit-outreach cron, month-idempotent). */
+/**
+ * Autonomous: EVERY tier, monthly (rides the weekly recruit-outreach cron,
+ * month-idempotent).
+ *
+ * TIER PARITY (owner ruling) — this cohort was `.in("plan_tier", ["brokerage",
+ * "multi_location"])`, so a solo or team tenant's Portfolio Advisor never ran
+ * at all: a denial that no gate reported and no error surfaced, because the
+ * tenant simply was not in the loop. OWNER, verbatim: "when we have the team
+ * and solo agent subscription tiers, those subscriptions get the same level of
+ * features as brokerages." A solo agent with a managed contact book has exactly
+ * the cross-portfolio question this advisor answers.
+ *
+ * The AI cost of the extra runs is platform-covered with per-tier overage
+ * (CLAUDE.md §5) and lands in `ai_tool_usage` like every other model call — the
+ * per-tier lever is the token budget, not this cohort. The 500-row cap and the
+ * month-idempotency below are unchanged; they are capacity, not capability.
+ */
 export async function runPortfolioAdvisorAll(svc: Svc): Promise<{ brokerages: number; proposed: number }> {
-  const { data: brokerages } = await svc.from("brokerages").select("id, plan_tier").in("plan_tier", ["brokerage", "multi_location"]).limit(500)
+  const { data: brokerages } = await svc.from("brokerages").select("id, plan_tier").limit(500)
   let proposed = 0
   for (const b of ((brokerages ?? []) as Array<{ id: string }>)) {
     const r = await runPortfolioAdvisor(svc, b.id).catch(() => null)

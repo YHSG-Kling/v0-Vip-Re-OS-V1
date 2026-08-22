@@ -51,8 +51,11 @@ function periodStart(p: ReportPeriod): string {
 }
 
 interface ReportsClientProps {
-  agentId: string
-  brokerageId: string
+  // NO agentId / brokerageId. The three report actions this component calls
+  // resolve both from the SESSION (app/actions/reporting-kernel.ts:
+  // resolveActorContext), and used to ACCEPT them from here as well and throw
+  // them away. Passing a tenant down a prop chain into a server action is the
+  // shape that becomes an IDOR the day someone makes the action honour it.
   role: string
   userId: string
   monthStart: string
@@ -62,8 +65,6 @@ interface ReportsClientProps {
 }
 
 export function ReportsClient({
-  agentId,
-  brokerageId,
   role,
   userId,
   monthStart,
@@ -196,8 +197,6 @@ export function ReportsClient({
         if (format === "csv") {
           const result = await exportReportCsvAction({
             reportType,
-            agentId,
-            brokerageId,
             dateFrom,
           })
           if (!result.success || !result.data) throw new Error(result.error ?? "Export failed")
@@ -213,8 +212,6 @@ export function ReportsClient({
         } else {
           const result = await exportReportPdfAction({
             reportType,
-            agentId,
-            brokerageId,
             dateFrom,
           })
           if (!result.success || !result.pdfUrl) throw new Error(result.error ?? "Export failed")
@@ -246,8 +243,6 @@ export function ReportsClient({
           recipients:  emailRecipients.split(",").map((e) => e.trim()).filter(Boolean),
           subject:     emailSubject,
           message:     emailMessage || undefined,
-          agentId,
-          brokerageId,
           dateFrom,
         })
         if (!result.success) {

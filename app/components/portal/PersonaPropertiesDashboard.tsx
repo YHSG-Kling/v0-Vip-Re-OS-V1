@@ -11,11 +11,9 @@ import { Textarea } from "@/components/ui/textarea"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import {
-  Home, Heart, Calendar, MapPin, TrendingUp, Star, DollarSign, Building, Search,
-  Sparkles, ChevronRight, Eye, Filter, Percent, Calculator, CheckCircle2, X,
-  Users, MessageSquare, ThumbsUp, ThumbsDown, Minus, Send, Loader2, Clock,
-  Target, BarChart3, Briefcase, ArrowUpRight, ArrowDownRight, Mic, Copy,
-  Share2, UserPlus, Crown, Bed, Bath, Square, ExternalLink, Play, CheckCircle,
+  Home, Heart, Calendar, MapPin, TrendingUp, DollarSign, Building, Search,
+  Sparkles, Filter, Calculator, CheckCircle2, X,
+  Users, MessageSquare, ThumbsUp, ThumbsDown, Minus, Loader2, Target, BarChart3, Mic, Bed, Bath, Square, CheckCircle,
   Lightbulb, AlertCircle, User, Pencil, Save
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"

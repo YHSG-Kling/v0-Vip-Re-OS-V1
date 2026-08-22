@@ -10,8 +10,7 @@
 import { useState, useEffect } from "react"
 import { providerPortalMode } from "@/lib/integrations/providers/catalog"
 import {
-  Card, CardContent, CardDescription, CardHeader, CardTitle,
-} from "@/components/ui/card"
+  Card, CardContent, } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -28,9 +27,7 @@ import {
   Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList,
 } from "@/components/ui/command"
 import {
-  FileText, ExternalLink, Search, Building2, CheckCircle2,
-  AlertCircle, Clock, ClipboardList, Send, Download, RefreshCw,
-  Shield, Loader2, Users, Settings, Eye, UserCircle2,
+  FileText, ExternalLink, Search, Building2, AlertCircle, ClipboardList, Send, Download, Shield, Loader2, Users, Settings, Eye, UserCircle2,
 } from "lucide-react"
 import { formatDistanceToNow, format } from "date-fns"
 import Link from "next/link"

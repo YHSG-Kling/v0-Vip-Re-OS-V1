@@ -276,7 +276,6 @@
     "test:tenant-scope",
     "test:territory-coverage",
     "test:territory-marketplace",
-    "test:tier-entitlement",
     "test:touch-provenance",
     "test:touch-provenance-standup",
     "test:tour-followup",

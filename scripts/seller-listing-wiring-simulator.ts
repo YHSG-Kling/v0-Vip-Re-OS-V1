@@ -61,6 +61,8 @@ const code = (p: string) => stripComments(src(p))
 const INTAKE = "app/actions/ai-listing-intake.ts"
 const PAGE   = "app/dashboard/listings/[id]/lifecycle/page.tsx"
 const CARD   = "app/components/dashboard/listings/lifecycle/listing-intelligence-card.tsx"
+const ENGINE = "app/actions/seller-listing/execution-engine.ts"
+const REPRESENTATION = "lib/kernel/compliance/active-representation.ts"
 
 /**
  * Assert a predicate over source AND prove the assertion can fail.
@@ -261,6 +263,52 @@ function sourceLayer() {
     engineRecorders.every((fn) => new RegExp(`case "${fn}":`).test(dispatch) && new RegExp(`\\b${fn}\\b`).test(dispatch)))
   check("   ↳ negative test is real (a made-up recorder is NOT dispatched)",
     !/case "markSomethingInvented":/.test(dispatch))
+
+  // ── THE SELLER IS STAMPED ON THE AGREEMENT ────────────────────────────────
+  //
+  // `listing_agreements.seller_contact_id` had two readers and no writer:
+  //
+  //   · lib/kernel/compliance/active-representation.ts:59-63 — arm 3 of the
+  //     implied-TCPA-consent test ("a fully-signed listing agreement for this
+  //     contact"). NULL there meant the arm could never match, so a seller
+  //     whose agreement had just been fully executed still read as unconsented
+  //     on sms/phone and the dispatch gate blocked their own servicing team.
+  //   · lib/kernel/notification-engine.ts:314-323 — reads it to find the seller
+  //     to notify, and skips silently on NULL.
+  //
+  // executeListingAgreement is the ONLY insert of that table in the tree, and
+  // the id was already in scope — the same value it hands to
+  // auditListingDocuments. It was resolved and never written down.
+  console.log("\n[source · the seller is stamped on the listing agreement]")
+  const engineSrc = code(ENGINE)
+  proves(
+    "executeListingAgreement writes seller_contact_id onto the listing_agreements row",
+    engineSrc,
+    (s) => {
+      const at = s.indexOf('.from("listing_agreements")')
+      if (at < 0) return false
+      const insertAt = s.indexOf(".insert(", at)
+      if (insertAt < 0) return false
+      // Scoped to the insert object, not the file: the identifier also occurs in
+      // the `listings` select above, so a file-wide test would stay green with
+      // the write deleted.
+      const obj = s.slice(insertAt, insertAt + 2000)
+      return /seller_contact_id:\s*sellerContactId/.test(obj)
+    },
+    [["seller_contact_id:           sellerContactId,", ""]],
+  )
+  proves(
+    "the seller id it stamps is the one resolved from the listing (seller_contact_id, falling back to contact_id)",
+    engineSrc,
+    (s) => /const sellerContactId = \(\(listingRow\?\.seller_contact_id \?\? listingRow\?\.contact_id\)/.test(s),
+    [["listingRow?.seller_contact_id ?? listingRow?.contact_id", "null"]],
+  )
+  proves(
+    "the implied-consent reader still keys arm 3 on listing_agreements.seller_contact_id",
+    code(REPRESENTATION),
+    (s) => /\.from\("listing_agreements"\)[\s\S]{0,240}?\.eq\("seller_contact_id", contactId\)/.test(s),
+    [['.eq("seller_contact_id", contactId)', '.eq("listing_id", contactId)']],
+  )
 }
 
 async function liveLayer() {

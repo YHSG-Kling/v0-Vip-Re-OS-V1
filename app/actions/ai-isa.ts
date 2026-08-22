@@ -12,7 +12,15 @@ import {
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { dispatchEmail, dispatchVideo, dispatchDirectMail } from "@/lib/providers/dispatch"
-import { evaluateOutbound } from "@/lib/kernel/compliance"
+// TOMBSTONE: `evaluateOutbound` from "@/lib/kernel/compliance" was imported here
+// and never called. The compliance gate this file actually uses is the local
+// runAiIsaComplianceCheck (line ~49), which wraps evaluateKernelOutbound from
+// "@/lib/kernel/adapters/compliance" — imported on the next line and live at
+// three call sites. The direct import was the older spelling left behind, and
+// its presence is what made two doc comments in this file claim a gate named
+// `evaluateOutbound` runs here. The export survives with 83 referents across
+// app/ and lib/ (e.g. lib/kernel/adapters/compliance.ts:126, which is how this
+// file reaches it); only this file's unused binding is removed.
 import { KernelEvent } from "@/lib/kernel/events"
 import { buildActorContext } from "@/lib/kernel/actor-context"
 import { evaluateKernelOutbound } from "@/lib/kernel/adapters/compliance"
@@ -655,7 +663,27 @@ export async function getGhostRecoveryQueue(_brokerageId?: string): Promise<{
   return { success: true, ghosts }
 }
 
-/** Manual ghost recovery trigger — evaluateOutbound first, then dispatchEmail */
+/**
+ * Manual ghost recovery trigger — runAiIsaComplianceCheck first, then dispatchEmail.
+ *
+ * The gate's verdict WAS COMPUTED AND THROWN AWAY. `const compliance = await
+ * runAiIsaComplianceCheck({…})` ran under a comment reading "Compliance gate —
+ * hard stop", and the next statement checked the lifecycle state and dispatched
+ * the email — `compliance` was never read. Both sibling call sites in this file
+ * refuse on it (line ~332 and line ~799, identically:
+ * `if (!compliance.allowed) return { success: false, error: … }`); this one, the
+ * only manually-triggered send of the three, did not. Every ghost-recovery email
+ * went out with the DNC / TCPA / consent verdict already in hand and discarded.
+ *
+ * "Nobody checked" must never render as "checked and fine" (CLAUDE.md §4) — and
+ * this was worse: it checked, and then ignored the answer.
+ *
+ * The doc comment also named `evaluateOutbound`, and the note at the dispatch
+ * below named `evaluateOutboundCompliance`. Neither function exists in this
+ * file: the gate here is `runAiIsaComplianceCheck`, which wraps
+ * evaluateKernelOutbound. Two wrong names for the live gate is how a reader
+ * concludes the gate is somewhere else and stops looking (CLAUDE.md §6).
+ */
 export async function triggerGhostRecovery(params: {
   contactId: string
   campaignId: string
@@ -691,6 +719,16 @@ export async function triggerGhostRecovery(params: {
     isaReengageAllowed: true,
   })
 
+  // THE HARD STOP THE COMMENT ABOVE ALWAYS CLAIMED. Same refusal shape as the
+  // two sibling send paths in this file, deliberately — a third spelling of
+  // "compliance said no" would be a third thing to keep in agreement.
+  // THE HARD STOP THE COMMENT ABOVE ALWAYS CLAIMED. Same refusal shape as the
+  // two sibling send paths in this file, deliberately — a third spelling of
+  // "compliance said no" would be a third thing to keep in agreement.
+  if (!compliance.allowed) {
+    return { success: false, error: `Compliance blocked: ${compliance.violations?.join(", ") ?? "unknown"}` }
+  }
+
   // Hard stop: blocked lifecycle states
   if (["REPRESENTATION", "ACTIVE_TRANSACTION"].includes(contact.lifecycle_state ?? "")) {
     return { success: false, error: `Contact in blocked lifecycle state: ${contact.lifecycle_state}` }
@@ -709,7 +747,7 @@ export async function triggerGhostRecovery(params: {
     systemSource:   "ghost_recovery",
     // contactId, NOT leadId — the recipient was read out of `contacts`. This is
     // a "campaign" send, the case where express consent matters most, and the
-    // id-space slip was skipping evaluateOutboundCompliance for all of them.
+    // id-space slip was skipping runAiIsaComplianceCheck for all of them.
     contactId:      params.contactId,
   })
 

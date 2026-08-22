@@ -55,7 +55,51 @@ export type CampaignStatus = "draft" | "pending_approval" | "approved" | "live" 
 export type AssetApprovalStatus = "pending" | "approved" | "rejected"
 export type VisibilityScope = "agent" | "team" | "brokerage"
 
-export interface CreateCampaignParams {
+/**
+ * THE CAMPAIGN'S AUDIENCE, in the spelling the resolver actually reads.
+ *
+ * `marketing_campaigns` carries the same idea TWICE and the two halves point in
+ * opposite directions:
+ *
+ *   · `target_audience` (jsonb) — WRITTEN here and at app/crm/page.tsx:2130, and
+ *     read by NOTHING that resolves an audience. A free-form blob.
+ *   · `audience_personas` / `audience_generations` / `audience_age_segs` /
+ *     `audience_lead_source_tags` / `audience_buyer_stages` /
+ *     `audience_contact_ids` (scripts/1046-marketing-audience-and-customer-
+ *     onboarding.sql:31-38, GIN-indexed at :55-57) — READ by the launch gate
+ *     (lib/marketing/campaign-publisher.ts:47-67) and by the touchpoint recorder
+ *     (lib/kernel/marketing.ts:1141), and written by NOBODY.
+ *
+ * The typed set is the SURVIVOR: it has the readers, the index and the resolver
+ * (lib/marketing/audience-resolver.ts). `target_audience` is kept because it is
+ * still a human-readable note on the row, but it is no longer the only thing a
+ * campaign author's audience choice lands in.
+ *
+ * WHY THIS IS NOT COSMETIC. resolveCampaignAudience treats an EMPTY criteria
+ * array as "no filter" (lib/marketing/audience-resolver.ts:64) — so with all six
+ * columns writerless, every campaign resolved to EVERY CONTACT IN THE BROKERAGE,
+ * capped only by that resolver's `.limit(5000)`. publishMarketingCampaignSafe
+ * then measured deliverability against that whole book and flipped the campaign
+ * to `live`, and distributeVideoAsset recorded a touchpoint against every one of
+ * them. An audience filter nothing can write is not a dormant feature; it is a
+ * blast radius.
+ */
+export interface CampaignAudienceParams {
+  /** contacts.contact_persona */
+  audiencePersonas?: string[]
+  /** generational cohort, post-filtered from contacts.age_range */
+  audienceGenerations?: string[]
+  /** contacts.age_range */
+  audienceAgeSegs?: string[]
+  /** contacts.source_family */
+  audienceLeadSourceTags?: string[]
+  /** contacts.buyer_stage */
+  audienceBuyerStages?: string[]
+  /** Explicit pinned list — overrides every criterion above in the resolver. */
+  audienceContactIds?: string[]
+}
+
+export interface CreateCampaignParams extends CampaignAudienceParams {
   campaignName: string
   campaignType: "listing" | "brand" | "recruitment" | "event" | "seasonal"
   listingId?: string
@@ -66,13 +110,47 @@ export interface CreateCampaignParams {
   visibilityScope?: VisibilityScope
 }
 
-export interface UpdateCampaignParams {
+export interface UpdateCampaignParams extends CampaignAudienceParams {
   campaignId: string
   campaignName?: string
   targetAudience?: Record<string, unknown>
   budgetTotal?: number
   scheduledStartAt?: string
   scheduledEndAt?: string
+}
+
+/**
+ * Map the audience params onto the six live columns.
+ *
+ * `"use server"` files export only async functions (CLAUDE.md §4), so this is a
+ * module-local helper and deliberately NOT exported — an exported sync helper
+ * here would be a public HTTP endpoint that cannot be one.
+ *
+ * `mode: "insert"` writes a floor for the five text[] columns, which are
+ * `NOT NULL DEFAULT '{}'` — passing `undefined` would be fine, but writing `[]`
+ * makes the row say plainly "no criterion", which is what the resolver reads.
+ * `mode: "patch"` writes ONLY what the caller named, so an update that touches
+ * the budget cannot silently clear the audience.
+ */
+function audienceColumns(
+  params: CampaignAudienceParams,
+  mode: "insert" | "patch",
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  const put = (column: string, value: string[] | undefined, floor: unknown) => {
+    if (value !== undefined) out[column] = value
+    else if (mode === "insert") out[column] = floor
+  }
+  put("audience_personas", params.audiencePersonas, [])
+  put("audience_generations", params.audienceGenerations, [])
+  put("audience_age_segs", params.audienceAgeSegs, [])
+  put("audience_lead_source_tags", params.audienceLeadSourceTags, [])
+  put("audience_buyer_stages", params.audienceBuyerStages, [])
+  // audience_contact_ids is NULLABLE uuid[] and the resolver reads
+  // `?? undefined` — an empty array would read as "pinned to nobody", so the
+  // floor for this one is NULL, not [].
+  put("audience_contact_ids", params.audienceContactIds, null)
+  return out
 }
 
 export interface CreateAssetParams {
@@ -150,6 +228,7 @@ export async function createCampaign(params: CreateCampaignParams) {
         campaign_type: params.campaignType,
         listing_id: params.listingId ?? null,
         target_audience: params.targetAudience ?? {},
+        ...audienceColumns(params, "insert"),
         budget_total: params.budgetTotal ?? 0,
         budget_spent: 0,
         scheduled_start_at: params.scheduledStartAt || null,
@@ -277,6 +356,7 @@ export async function updateCampaign(params: UpdateCampaignParams) {
   if (params.budgetTotal !== undefined) updateData.budget_total = params.budgetTotal
   if (params.scheduledStartAt !== undefined) updateData.scheduled_start_at = params.scheduledStartAt || null
   if (params.scheduledEndAt !== undefined) updateData.scheduled_end_at = params.scheduledEndAt || null
+  Object.assign(updateData, audienceColumns(params, "patch"))
 
   const { error } = await supabase
     .from("marketing_campaigns")

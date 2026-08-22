@@ -7,6 +7,9 @@
 import { createClient } from "@/lib/supabase/server"
 import type { UserTier, FeatureAccessCheck } from "./types"
 import { resolveEntitlement, rolloutBucket } from "@/lib/entitlements/resolve"
+// THE tenant's billed tier, with the refusal still visible — see the header of
+// readPlanTier. This kernel does not re-spell that read (CLAUDE.md §6).
+import { readPlanTier } from "@/lib/billing/plan-tier"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -27,22 +30,54 @@ const USER_TYPE_TO_TIER: Record<string, UserTier> = {
 }
 
 /**
- * Maps a user_type string (from users.user_type) to a billing UserTier.
- * If brokerageId + teamId are provided, team takes priority over brokerage.
+ * LAST-RESORT INFERENCE — NOT the billed tier. Read this before using it.
+ *
+ * ── WHAT IT USED TO CLAIM, AND WHY THAT WAS THE WRONG QUESTION ──────────────
+ *
+ * This function answered "what tier is this CALLER shaped like?" from
+ * users.user_type plus team/brokerage membership, and `canAccessFeature` then
+ * used the answer to pick which per-tier column of `feature_flags` to read. But
+ * the tier columns describe THE SUBSCRIPTION THE TENANT IS BILLED FOR
+ * (`brokerages.plan_tier`), not the shape of whoever happens to be calling. The
+ * two disagree constantly:
+ *
+ *   • Every tenant is a `brokerages` row — a solo subscription is a brokerage of
+ *     one. So "has a brokerage but no team ⇒ brokerage tier" promoted EVERY solo
+ *     tenant's owner to the brokerage columns, and the `if (mapped ===
+ *     "solo_agent") return "brokerage"` line promoted them a second time,
+ *     explicitly overriding the one signal that said otherwise.
+ *   • Conversely a member of a real BROKERAGE who sits on a team was read out of
+ *     the `team_*` columns — tighter per-tier LIMITS than the brokerage their
+ *     employer pays for.
+ *
+ * It erred OPEN on access, so nothing was locked out, but the limits it selected
+ * were the wrong plan's, and the whole matrix was being asked about the wrong
+ * subject.
+ *
+ * ── WHAT IT IS NOW ──────────────────────────────────────────────────────────
+ *
+ * The truth is `lib/billing/plan-tier.ts` `readPlanTier` — the subscription, not
+ * the caller — and `canAccessFeature` below reads it. This stays only for the
+ * callers that have a user_type and nothing else to go on (all three feed
+ * `whisperTierCapability`, which is tier-blind by ruling), and it now falls to
+ * the FLOOR rather than to brokerage when it cannot tell, matching
+ * `lib/billing/plan-tier.ts` FALLBACK_TIER and `seatLimitForTier` — a tenant
+ * whose plan cannot be inferred is never handed a bigger plan than it bought.
+ *
+ * Membership no longer overrules user_type either: belonging to a team is a
+ * fact about an ORG CHART, not about a subscription. A team inside a brokerage
+ * tenant is on the brokerage plan.
  */
 export function mapUserTypeToTier(
   userType: string,
   brokerageId?: string,
   teamId?: string
 ): UserTier {
-  // If they have a team, they're on the team tier regardless of user_type
-  if (teamId && brokerageId) return "team"
-  // If they have a brokerage but no team, brokerage tier
-  if (brokerageId && !teamId) {
-    const mapped = USER_TYPE_TO_TIER[userType]
-    if (mapped === "solo_agent") return "brokerage"
-    return mapped ?? "brokerage"
-  }
+  // Membership is retained in the signature (three callers pass it) but is no
+  // longer consulted: `brokerages.plan_tier` is the only thing that knows which
+  // plan a tenant bought, and canAccessFeature asks it directly.
+  void brokerageId
+  void teamId
   return USER_TYPE_TO_TIER[userType] ?? "solo_agent"
 }
 
@@ -129,34 +164,45 @@ export async function canAccessFeature(
       // by the TENANT, passing a brokerages.id here. Tier is a tenant property, so
       // resolve it from brokerages.plan_tier instead of hard-failing "User not
       // found" (which silently killed those features for every tier).
-      const { data: brkAsId } = await supabase
-        .from("brokerages").select("plan_tier").eq("id", userId).maybeSingle()
-      const bt = (brkAsId as { plan_tier?: string } | null)?.plan_tier
-      if (bt === "solo_agent" || bt === "team" || bt === "brokerage" || bt === "multi_location") {
-        resolvedTier = bt
-      } else if (brkAsId) {
-        resolvedTier = "brokerage" // legacy/unbackfilled tenant — pre-matrix behavior
-      } else {
-        return { allowed: false, reason: "User not found" }
-      }
+      //
+      // FAILS CLOSED (CLAUDE.md §4). This branch used to answer a legacy /
+      // unbackfilled tenant with `"brokerage"` — the WIDEST tier — so "we could
+      // not read this tenant's plan" rendered as "checked, and they're on the
+      // top-but-one plan". readPlanTier separates the two: a row that answers
+      // with a NULL or legacy tier is floored honestly, a read that DID NOT
+      // ANSWER refuses.
+      const read = await readPlanTier(supabase, userId)
+      if (!read.ok) return { allowed: false, reason: read.reason }
+      resolvedTier = read.tier
       isSuperadmin = false
     } else {
-    resolvedTier = mapUserTypeToTier(user.user_type, user.brokerage_id, user.team_id)
     isSuperadmin = user.user_type === "superadmin" || (user as any).platform_role === "superadmin"
-    // BILLED-TIER TRUTH: the tenant's brokerages.plan_tier is what the customer
-    // pays for — it wins over user_type inference. Without this, a solo_agent
-    // tenant's owner (user_type='admin') was gated by the *brokerage* columns and
-    // a brokerage tenant's team members were gated by the *team* columns (wrong
-    // access + wrong per-tier limits). Inference remains the legacy fallback for
-    // unbackfilled/unknown plan_tier values.
-    if (!isSuperadmin && user.brokerage_id) {
-      const { data: brk } = await supabase
-        .from("brokerages").select("plan_tier").eq("id", user.brokerage_id).maybeSingle()
-      const planTier = (brk as { plan_tier?: string } | null)?.plan_tier
-      if (planTier === "solo_agent" || planTier === "team" || planTier === "brokerage" || planTier === "multi_location") {
-        resolvedTier = planTier
+    // ── BILLED-TIER TRUTH ────────────────────────────────────────────────────
+    // The tier columns of `feature_flags` describe THE SUBSCRIPTION. So the tier
+    // is read from `brokerages.plan_tier` — what the customer is billed for —
+    // and NOT inferred from the caller's user_type or team membership. See the
+    // header of mapUserTypeToTier for what that inference got wrong; it survives
+    // only for a principal who belongs to no tenant at all.
+    //
+    // AND IT FAILS CLOSED. `readPlanTier` returns ok:false only when the
+    // database did not answer (refused query, or no such tenant row); on that
+    // outcome the gate REFUSES rather than proceeding on a guess — "nobody
+    // checked" must never render as "checked and fine" (CLAUDE.md §4).
+    // Superadmins are exempt, as they are from every gate below.
+    if (user.brokerage_id) {
+      const read = await readPlanTier(supabase, user.brokerage_id)
+      if (!read.ok) {
+        if (!isSuperadmin) return { allowed: false, reason: read.reason }
+        resolvedTier = "multi_location"
+      } else {
+        resolvedTier = read.tier
       }
+    } else {
+      // No tenant to bill: the caller is all there is to go on. Inference, which
+      // now falls to the FLOOR rather than to brokerage.
+      resolvedTier = mapUserTypeToTier(user.user_type)
     }
+    if (isSuperadmin) resolvedTier = "multi_location"
     }
   }
 

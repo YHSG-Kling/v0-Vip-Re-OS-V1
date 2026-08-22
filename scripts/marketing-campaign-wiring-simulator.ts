@@ -50,6 +50,16 @@ const F = {
   prelaunchPanel: "app/dashboard/marketing/studio/components/ad-os/prelaunch-prediction-panel.tsx",
   listingCopyPanel: "app/dashboard/marketing/studio/components/ad-os/listing-copy-panel.tsx",
   studio: "app/dashboard/marketing/studio/marketing-studio-client.tsx",
+  // THE CAMPAIGN AUDIENCE WIRE. `marketing_campaigns` carries the audience
+  // criteria twice: `target_audience` (jsonb, written, resolved by nothing) and
+  // six typed columns the resolver actually reads. The typed six had READERS
+  // and no WRITER in either creation path, and resolveCampaignAudience treats
+  // an empty criterion as "no filter" — so every campaign resolved to the whole
+  // brokerage book. These three files are the two writers and the reader.
+  studioActions: "app/actions/marketing-studio.ts",
+  kernelMarketing: "lib/kernel/marketing.ts",
+  publisher: "lib/marketing/campaign-publisher.ts",
+  crm: "app/crm/page.tsx",
 } as const
 
 // ─── SCORING ──────────────────────────────────────────────────────────────────
@@ -684,6 +694,105 @@ const CHECKS: Check[] = [
     assert: (s) =>
       callsFunction(s, "enhanceListingDescription") && /if\s*\(!res\.success\)\s*setError\(/.test(s) && !/\.update\(/.test(s),
     mutate: (raw) => replaceOnce(raw, "      if (!res.success) setError(res.error ?? \"Could not enhance the description\")", ""),
+  },
+
+  // ══ F. THE CAMPAIGN AUDIENCE WIRE ══════════════════════════════════════════
+  //
+  // publishMarketingCampaignSafe reads six audience columns off
+  // marketing_campaigns and hands them to resolveCampaignAudience, which reads
+  // an EMPTY criterion as "no filter" (lib/marketing/audience-resolver.ts:64).
+  // Nothing wrote any of the six. So every campaign resolved to every contact
+  // in the brokerage up to the resolver's 5000-row cap, the launch gate scored
+  // deliverability against that whole book, and distributeVideoAsset recorded a
+  // touchpoint against each of them. The reader half was built; the writer half
+  // was not. These checks hold the writer half in place.
+  //
+  // The reader is asserted too, in the same registry: a later "simplification"
+  // that drops the columns from the publisher's select would silently restore
+  // the blast radius while every writer assertion still passed.
+  {
+    id: "audience/publisher-reads-criteria",
+    file: "publisher",
+    name: "the launch gate still SELECTS all six typed criteria columns before resolving",
+    // Scoped to the SELECT ARGUMENT, not the file. The first spelling of this
+    // check asserted the names appeared anywhere in the file and the negative
+    // layer refused it: the names occur a second time in the `criteria` mapping
+    // twenty lines below, so deleting them from the select left the assertion
+    // green while the read they gate was gone. That is precisely the "assertion
+    // that cannot be made to fail" this harness exists to reject.
+    assert: (s) => {
+      const from = s.indexOf('.from("marketing_campaigns")')
+      if (from < 0) return false
+      const selOpen = s.indexOf(".select(", from)
+      if (selOpen < 0) return false
+      const selClose = s.indexOf(")", s.indexOf("`", selOpen + 8) + 1)
+      const selectArg = s.slice(selOpen, selClose > selOpen ? selClose : selOpen + 400)
+      return ["audience_personas", "audience_generations", "audience_age_segs",
+              "audience_lead_source_tags", "audience_buyer_stages", "audience_contact_ids"]
+        .every((c) => selectArg.includes(c)) && callsFunction(s, "resolveCampaignAudience")
+    },
+    mutate: (raw) => replaceOnce(raw, "      audience_personas, audience_generations, audience_age_segs,", "      "),
+  },
+  {
+    id: "audience/create-writes-criteria",
+    file: "studioActions",
+    name: "createCampaign PERSISTS the audience criteria, not only the free-form target_audience blob",
+    assert: (s) => {
+      const body = fnBody(s, "createCampaign")
+      return body.length > 0 && /audienceColumns\(params,\s*"insert"\)/.test(body)
+    },
+    mutate: (raw) => replaceOnce(raw, '        ...audienceColumns(params, "insert"),\n', ""),
+  },
+  {
+    id: "audience/update-patches-criteria",
+    file: "studioActions",
+    name: "updateCampaign patches the audience criteria (and only what the caller named)",
+    assert: (s) => {
+      const body = fnBody(s, "updateCampaign")
+      return body.length > 0 && /audienceColumns\(params,\s*"patch"\)/.test(body)
+    },
+    mutate: (raw) => replaceOnce(raw, '  Object.assign(updateData, audienceColumns(params, "patch"))\n', ""),
+  },
+  {
+    id: "audience/patch-mode-does-not-clear",
+    file: "studioActions",
+    name: "a patch that names no audience writes NO audience column — a budget edit cannot silently clear the targeting",
+    assert: (s) => {
+      // The floor is applied on "insert" only; on "patch" an unnamed criterion
+      // must be left out of the object entirely.
+      const helper = s.slice(s.indexOf("function audienceColumns("))
+      return helper.length > 0 && /else if \(mode === "insert"\) out\[column\] = floor/.test(helper)
+    },
+    mutate: (raw) => replaceOnce(raw, 'else if (mode === "insert") out[column] = floor', "else out[column] = floor"),
+  },
+  {
+    id: "audience/kernel-create-writes-criteria",
+    file: "kernelMarketing",
+    name: "the kernel's createMarketingCampaign writes all six audience columns too (the other creation path)",
+    assert: (s) => {
+      const body = fnBody(s, "createMarketingCampaign")
+      return ["audience_personas:", "audience_generations:", "audience_age_segs:",
+              "audience_lead_source_tags:", "audience_buyer_stages:", "audience_contact_ids:"]
+        .every((c) => body.includes(c))
+    },
+    mutate: (raw) => replaceOnce(raw, "      audience_personas:         input.audiencePersonas       ?? [],\n", ""),
+  },
+  {
+    id: "audience/pinned-list-floor-is-null",
+    file: "kernelMarketing",
+    name: "audience_contact_ids floors to NULL, never to [] — an empty pin would read as 'targeted at nobody'",
+    assert: (s) => {
+      const body = fnBody(s, "createMarketingCampaign")
+      return /audience_contact_ids:\s*input\.audienceContactIds\s*\?\?\s*null/.test(body)
+    },
+    mutate: (raw) => replaceOnce(raw, "audience_contact_ids:      input.audienceContactIds     ?? null,", "audience_contact_ids:      input.audienceContactIds     ?? [],"),
+  },
+  {
+    id: "audience/crm-followup-pins-its-one-contact",
+    file: "crm",
+    name: "the CRM 7-day follow-up campaign pins audience_contact_ids to the selected contact",
+    assert: (s) => /audience_contact_ids:\s*\[selectedContactId\]/.test(s),
+    mutate: (raw) => replaceOnce(raw, "audience_contact_ids: [selectedContactId],", ""),
   },
 ]
 

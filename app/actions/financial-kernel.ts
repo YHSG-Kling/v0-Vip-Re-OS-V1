@@ -11,7 +11,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
+import { isBrokerageFinanceAdmin, resolveTenantPrincipalTeamLead } from "@/lib/auth/resolve-user-role"
 import {
   loadFinancialWorkspace,
   loadAgentFinancialSummary,
@@ -60,11 +60,30 @@ async function getFinancialActorContext(): Promise<FinancialActorContext> {
 
   if (!brokerageId) throw new Error("Missing brokerage context")
 
+  // m526 — THE TIER-CONDITIONED PRINCIPAL FACT, RESOLVED ONCE PER ACTION.
+  //
+  // Owner ruling: on TEAM/SOLO tier the tenant's money IS the team's money and
+  // its lead keeps its books; on BROKERAGE tier that same person is one of
+  // several leads in a larger office and m472/m473 stand. The kernel's eight
+  // money gates run on the SERVICE client (RLS bypassed) and are sync, so the
+  // fact is resolved HERE — once, from the SESSION's own ids, never from a
+  // request body (CLAUDE.md §4) — and carried on the context.
+  //
+  // FAILS CLOSED: `resolveTenantPrincipalTeamLead` returns ok:false when the
+  // teams or plan_tier read was REFUSED (supabase-js resolves refusals, §3), and
+  // this THROWS rather than degrading — every caller of this builder already
+  // treats a throw as "no context, refuse". It does not fall back to `false`,
+  // because "we could not check" and "checked, and no" must not be the same
+  // value; and it does not fall back to `true` for the obvious reason.
+  const principal = await resolveTenantPrincipalTeamLead(supabase, user.id, brokerageId)
+  if (!principal.ok) throw new Error(principal.reason)
+
   return {
     userId: user.id,
     agentId,
     brokerageId,
     userType: (role ?? "agent") as "agent" | "team_lead" | "broker" | "admin" | "superadmin",
+    isTenantPrincipal: principal.isPrincipal,
   }
 }
 
@@ -132,7 +151,13 @@ async function authorizeAgentScope(
   // BROKERAGE-WIDE MONEY (m472): the ONE finance roster, which excludes
   // team_lead by the owner's ruling and admits broker_owner — the person who
   // OWNS the brokerage, whom the old literal silently refused.
-  const isBrokerLevel = isBrokerageFinanceAdmin({ user_type: ctx.userType })
+  //
+  // ...plus m526's tier-conditioned principal: on a TEAM/SOLO-tier tenant the
+  // lead IS the tenant, so "any agent in my brokerage" is the right scope for
+  // them — and on BROKERAGE tier `isTenantPrincipal` is false and this reverts
+  // to exactly the roster above. The brokerage pin below still applies to them
+  // like everyone else, so this never reaches across tenants.
+  const isBrokerLevel = isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })
   if (!isSelf && !isBrokerLevel) {
     return { ok: false, error: "Forbidden — you may only view your own financials" }
   }
@@ -345,7 +370,7 @@ export async function loadMyDisputableCommissionsAction() {
 export async function loadCommissionDisputesAction() {
   try {
     const ctx = await getFinancialActorContext()
-    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
       return { success: false as const, error: "forbidden" }
     }
     const { createServiceClient } = await import("@/lib/supabase/service")
@@ -374,7 +399,7 @@ export async function recordCommissionDepositReceivedAction(
 ) {
   try {
     const ctx = await getFinancialActorContext()
-    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType })) {
+    if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: ctx.isTenantPrincipal })) {
       return { success: false as const, error: "Insufficient permissions to record a deposit" }
     }
     const { createServiceClient } = await import("@/lib/supabase/service")

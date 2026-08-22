@@ -80,6 +80,56 @@ export async function resolvePlanTier(
   supabase: ReturnType<typeof createServiceClient>,
   brokerageId: string,
 ): Promise<PlanTier> {
+  const read = await readPlanTier(supabase, brokerageId)
+  return read.ok ? read.tier : FALLBACK_TIER
+}
+
+/**
+ * THE SAME READ, WITH THE REFUSAL STILL VISIBLE.
+ *
+ * `resolvePlanTier` above is the never-throws projection: every caller that just
+ * needs a tier to route with gets the floor and carries on, because a lead
+ * router that throws is worse than a lead router that routes conservatively.
+ *
+ * But an ENTITLEMENT GATE cannot use that projection. "The tenant is on the
+ * cheapest plan" and "this process could not read what the tenant pays for" are
+ * the same value out of `resolvePlanTier`, and CLAUDE.md §4 forbids the second
+ * rendering as the first: a gate that cannot run must REFUSE, not pass on a
+ * guess. So this is the same read with the `{ data, error }` outcome preserved
+ * (§3 — supabase-js RESOLVES refusals), and `lib/kernel/0.1-feature-access.ts`
+ * `canAccessFeature` refuses on `ok:false`.
+ *
+ * `ok:false` is reserved for "the database did not answer": a refused/failed
+ * query, or no such brokerage row. A row that ANSWERS with a NULL or legacy
+ * plan_tier is not a failure — the subscription source is consulted and, failing
+ * that, the caller may floor it, exactly as before.
+ *
+ * Deliberately structural in its client parameter: `canAccessFeature` holds the
+ * cookie-bound SSR client from `@/lib/supabase/server`, not the service client,
+ * and both must be able to ask this one question rather than growing a second
+ * spelling of it (§6).
+ */
+export interface PlanTierRead {
+  ok: true
+  tier: PlanTier
+  /** true when the value came from the plan_tier cache; false when it was
+   *  recovered from the subscription, or floored because neither answered. */
+  fromCache: boolean
+}
+export interface PlanTierReadFailure {
+  ok: false
+  /** Caller-safe sentence — never leaks ids or driver internals. */
+  reason: string
+}
+
+interface TierReadClient {
+  from: (table: string) => any
+}
+
+export async function readPlanTier(
+  supabase: TierReadClient,
+  brokerageId: string,
+): Promise<PlanTierRead | PlanTierReadFailure> {
   const { data, error } = await supabase
     .from("brokerages")
     .select("plan_tier")
@@ -87,12 +137,13 @@ export async function resolvePlanTier(
     .maybeSingle()
 
   // supabase-js RESOLVES a refused query, so a swallowed error would be
-  // indistinguishable from "this brokerage has no tier". Both land on the floor,
-  // but only one of them is a fact — and the floor is the safe direction either way.
-  if (error) return FALLBACK_TIER
+  // indistinguishable from "this brokerage has no tier". They are NOT the same
+  // fact, and only the caller knows whether it may proceed on a guess.
+  if (error) return { ok: false, reason: "Your plan could not be read — access is held until it can." }
+  if (!data) return { ok: false, reason: "No subscription found for this account." }
 
   const raw = (data as { plan_tier?: string | null } | null)?.plan_tier
-  if (isPlanTier(raw)) return raw
+  if (isPlanTier(raw)) return { ok: true, tier: raw, fromCache: true }
 
   // NULL / unrecognised cache → ask the SOURCE before falling to the floor.
   const { data: sub, error: subError } = await supabase
@@ -104,7 +155,7 @@ export async function resolvePlanTier(
     .limit(1)
     .maybeSingle()
 
-  if (subError || !sub) return FALLBACK_TIER
+  if (subError || !sub) return { ok: true, tier: FALLBACK_TIER, fromCache: false }
 
   // The embed is an object for a to-one relation, but supabase-js types it as
   // either shape depending on how the FK is introspected — both are handled
@@ -114,5 +165,5 @@ export async function resolvePlanTier(
     ? (embedded[0] as { tier_name?: string } | undefined)?.tier_name
     : (embedded as { tier_name?: string } | null)?.tier_name
 
-  return toPlanTier(tierName)
+  return { ok: true, tier: toPlanTier(tierName), fromCache: false }
 }

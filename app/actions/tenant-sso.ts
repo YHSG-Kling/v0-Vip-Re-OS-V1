@@ -31,7 +31,7 @@
 import { revalidatePath } from "next/cache"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveWriteContext } from "@/lib/kernel/identity"
-import { isCanonicalTier, TIER_ORDER, TIER_LABELS } from "@/lib/kernel/tier-role-matrix"
+import { isCanonicalTier, TIER_LABELS } from "@/lib/kernel/tier-role-matrix"
 import {
   validateSsoEmailDomain,
   validateMetadataUrl,
@@ -53,16 +53,39 @@ const ADMIN_TYPES = new Set(["broker", "broker_owner", "broker_admin", "admin"])
 
 // ── Gating helpers ───────────────────────────────────────────────────────────
 
-/** Brokerage tier and up. Unknown/legacy tiers fail OPEN (matrix rule) so an
- *  un-backfilled legacy tenant isn't bricked out of a surface it can see. */
+/**
+ * EVERY TIER. Not a stub — the ruling.
+ *
+ * OWNER, verbatim: "brokerages can have teams and agents but that is the
+ * brokerage tier. when we have the team and solo agent subscription tiers,
+ * those subscriptions get the same level of features as brokerages." Read with
+ * the seat ruling from the same thread ("these lower plans need to be treated
+ * like mini brokerages"), tiers differ by SEAT COUNT, not by feature set. A
+ * solo subscription is a brokerage of one and a team is a brokerage of five;
+ * both may point their own IdP at their own workspace.
+ *
+ * ── FLAGGED FOR PRICING, NOT WITHHELD ───────────────────────────────────────
+ *
+ * SSO is one of the three parity items that carry a REAL per-tenant operating
+ * cost rather than a code gate: each connection provisions a SAML provider in
+ * the Supabase project (which itself requires the Pro plan + SAML add-on — see
+ * the `error` lifecycle state above), and every tenant that turns it on is one
+ * more identity integration to support. The owner said "same level of
+ * features", so it ships open; the cost is reported so it can be PRICED rather
+ * than silently absorbed. Withholding it here would have been this lane
+ * quietly overruling the ruling.
+ *
+ * Kept as a named function rather than deleted so the shape of the decision
+ * stays visible — and so restoring a floor is a one-line change if the owner
+ * prices it that way.
+ */
 function tierAllowsSso(tier: string | null | undefined): boolean {
-  if (!isCanonicalTier(tier)) return true
-  return TIER_ORDER.indexOf(tier) >= TIER_ORDER.indexOf("brokerage")
+  void tier
+  return true
 }
 
 const TIER_GATE_ERROR =
-  `SSO / SAML is a ${TIER_LABELS.brokerage} / ${TIER_LABELS.multi_location} plan feature — ` +
-  "password and magic-link sign-in stay available on every plan."
+  "SSO / SAML is not available on your plan — password and magic-link sign-in stay available."
 
 interface AdminGate {
   ok: true

@@ -204,28 +204,76 @@ async function scoreFeedback(supabase: Supa, listingId: string): Promise<Listing
   }
 }
 
+/**
+ * OPEN_HOUSE — scored off `open_house_events` + the ATTENDEE LEDGER, not off
+ * `open_houses`' counter columns.
+ *
+ * WAS: `.from("open_houses").select("… total_check_ins, total_leads_generated,
+ * total_rsvps …")`, and every one of those three counters is written by NOBODY.
+ * They exist only as `integer DEFAULT 0` (scripts/994-create-open-houses-
+ * canonical.sql:39-41, scripts/525-create-open-house-automation-system.sql:56-58)
+ * and no TypeScript in the tree ever assigns them — verified by grep across
+ * app/, lib/, services/ and every .sql: the only non-DDL hits were this file's
+ * own read. So `avgCheckIns` was structurally 0, and this component returned
+ * exactly one of two values forever: 80 when `open_houses` had no row for the
+ * listing, and **30 with the issue "Open houses held with zero check-ins"** the
+ * moment it had one — 10% of every listing's health score, and a false
+ * accusation printed at the seller.
+ *
+ * The counters cannot be filled in where they are, either: `open_houses` has NO
+ * child tables. Every open-house child in the live schema — `open_house_attendees`,
+ * `open_house_rsvp_tracking`, `open_house_invitations`, `open_house_feedback`,
+ * `open_house_analytics` — carries `event_id → open_house_events.id` (verified
+ * against the live FK catalogue, project hrvaqgvukzxfskkcrwbt). There is no
+ * attendance data hanging off `open_houses` and no way to derive any.
+ *
+ * SURVIVOR: `open_house_events` is the live open-house table — ~50 call sites
+ * across the whole feature (app/actions/open-house-automation.ts,
+ * app/actions/open-house.ts, app/actions/seller-open-house.ts, the check-in API
+ * at app/api/open-house/attend/route.ts, both open-house crons, the RSVP and
+ * feedback pages) against 4 for `open_houses`. Check-ins are real rows:
+ * app/api/open-house/attend/route.ts:139 inserts an `open_house_attendees` row
+ * stamped with `check_in_time`, and upserts `open_house_rsvp_tracking` to
+ * `rsvp_status='attended'` at :180. Leads generated are the attendee rows that
+ * resolved to a contact (`open_house_attendees.contact_id`).
+ *
+ * So the same three numbers this component always wanted are COUNTED from the
+ * ledger that actually has writers, and the scoring tiers below are unchanged.
+ * `open_houses` itself is left alone: lib/kernel/launch-war-room.ts still
+ * inserts scheduling rows there and retiring the table is a migration, not a
+ * scorer change.
+ */
 async function scoreOpenHouse(supabase: Supa, listingId: string): Promise<ListingComponentScore> {
   const issues: string[] = []
   let score = 80   // neutral default if no open house yet
 
-  // Live schema: open_houses.event_date (date), total_check_ins (int),
-  // total_leads_generated (int), status. There's no completed_at column —
-  // we infer "completed" from event_date < today.
   const ninetyDaysAgo = new Date(Date.now() - 90 * 86_400_000).toISOString().slice(0, 10)
   const today = new Date().toISOString().slice(0, 10)
-  const { data: openHouses } = await supabase
-    .from("open_houses")
-    .select("id, event_date, status, total_check_ins, total_leads_generated, total_rsvps")
+
+  // `error` is destructured and read: supabase-js RESOLVES a refusal, so a
+  // dropped read would otherwise render as "this listing held no open house"
+  // and quietly hand back the neutral 80 — the same silence this rewrite exists
+  // to end, one layer up.
+  const { data: events, error: eventsError } = await supabase
+    .from("open_house_events")
+    .select("id, event_date, status")
     .eq("listing_id", listingId)
     .gte("event_date", ninetyDaysAgo)
 
-  const list = (openHouses ?? []) as Array<{
+  if (eventsError) {
+    return {
+      category: "OPEN_HOUSE",
+      score,
+      weight:   CATEGORY_WEIGHTS.OPEN_HOUSE,
+      issues:   [`Open house data unavailable: ${eventsError.message}`],
+      data:     { unavailable: true, error: eventsError.message },
+    }
+  }
+
+  const list = (events ?? []) as Array<{
     id: string
     event_date: string | null
     status: string | null
-    total_check_ins: number | null
-    total_leads_generated: number | null
-    total_rsvps: number | null
   }>
 
   if (list.length === 0) {
@@ -242,8 +290,47 @@ async function scoreOpenHouse(supabase: Supa, listingId: string): Promise<Listin
   const completed = list.filter(
     (o) => o.event_date && o.event_date < today && o.status !== "cancelled",
   )
-  const totalCheckIns = completed.reduce((s, o) => s + (o.total_check_ins ?? 0), 0)
-  const avgCheckIns   = completed.length > 0 ? totalCheckIns / completed.length : 0
+
+  let totalCheckIns = 0
+  let totalLeads = 0
+  let totalRsvps = 0
+  if (completed.length > 0) {
+    const eventIds = completed.map((o) => o.id)
+    const [attendeesRes, rsvpRes] = await Promise.all([
+      supabase
+        .from("open_house_attendees")
+        .select("id, event_id, check_in_time, contact_id")
+        .in("event_id", eventIds),
+      supabase
+        .from("open_house_rsvp_tracking")
+        .select("id, event_id, rsvp_status")
+        .in("event_id", eventIds),
+    ])
+    if (attendeesRes.error || rsvpRes.error) {
+      const message = attendeesRes.error?.message ?? rsvpRes.error?.message ?? "unknown"
+      return {
+        category: "OPEN_HOUSE",
+        score,
+        weight:   CATEGORY_WEIGHTS.OPEN_HOUSE,
+        issues:   [`Open house attendance unavailable: ${message}`],
+        data:     { unavailable: true, error: message, count: list.length, completed: completed.length },
+      }
+    }
+    const attendees = (attendeesRes.data ?? []) as Array<{
+      check_in_time: string | null
+      contact_id: string | null
+    }>
+    // A CHECK-IN is an attendee row with a check_in_time — the column
+    // app/api/open-house/attend/route.ts:143 stamps. An attendee row without one
+    // was pre-registered and never walked in, and counting it would restore the
+    // same over-count the dead counters could never even reach.
+    totalCheckIns = attendees.filter((a) => a.check_in_time).length
+    totalLeads = attendees.filter((a) => a.check_in_time && a.contact_id).length
+    totalRsvps = ((rsvpRes.data ?? []) as Array<{ rsvp_status: string | null }>)
+      .filter((r) => r.rsvp_status && r.rsvp_status !== "no").length
+  }
+
+  const avgCheckIns = completed.length > 0 ? totalCheckIns / completed.length : 0
 
   // Avg-check-ins scoring tiers
   if (avgCheckIns >= 15)       score = 95
@@ -257,7 +344,7 @@ async function scoreOpenHouse(supabase: Supa, listingId: string): Promise<Listin
     score,
     weight:   CATEGORY_WEIGHTS.OPEN_HOUSE,
     issues,
-    data:     { count: list.length, completed: completed.length, totalCheckIns, avgCheckIns },
+    data:     { count: list.length, completed: completed.length, totalCheckIns, totalLeads, totalRsvps, avgCheckIns },
   }
 }
 

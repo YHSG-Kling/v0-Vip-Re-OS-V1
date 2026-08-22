@@ -44,11 +44,32 @@
 //     `contacts.age_range` — the column the ENRICHMENT lane writes — and publishes
 //     `ageSegSource` so a default is distinguishable from a measurement.
 //
+// ── WAVE 16: THE SIGNAL THE RULING WAS ACTUALLY ABOUT ───────────────────────────
+// Wave 15 built the rail and gave it two inputs that are EMPTY IN THE DATABASE:
+// live on 2026-08-22, zero contacts carry a `birthday` and zero carry an
+// `age_range`. So every client fell to the unbanded default and the "channel by
+// age group" capability had no age to route on — a wire with no current in it.
+//
+// The input the owner meant was already being sourced and read by nothing:
+// lib/external/batchdata-seller-signals.ts writes
+// `motivated_seller_signals.signal_details.observed.owner_age_band` (and
+// `probate_deed_instrument`, `household_size`) plus the classifier's reason
+// sentences in `protected_class_basis`, and its own header at line 734 names the
+// missing consumer as this file. `lib/education/seller-signal-education-context.ts`
+// is that consumer: it collapses the provider's band onto the ONE age vocabulary
+// through the SAME `ageSegmentFromAgeRange` the enrichment vocabulary goes
+// through (no second banding function), and maps the four protected-class-derived
+// signal kinds onto four EXISTING `Persona` values the module scorer already
+// matches. `resolveEducationContext` reads it; the band, the persona hints and the
+// basis sentences ride out on the pick; this file turns the band into a RAIL and
+// writes the basis onto the assignment.
+//
 // READER AND WRITER, BOTH PRESENT (CLAUDE.md §1). `contacts.age_range` is written
-// by lib/lead-pipeline/enrichment-column-map.ts and app/actions/contact-enrichment.ts
-// and is read here; `learning_modules.channels` is written by
-// app/actions/learning-modules.ts:132 and read here. No new column is needed and no
-// migration is shipped with this lane.
+// by lib/lead-pipeline/enrichment-column-map.ts and app/actions/contact-enrichment.ts;
+// `motivated_seller_signals.signal_details` is written by
+// lib/external/batchdata-seller-signals.ts:1438; `learning_modules.channels` is
+// written by app/actions/learning-modules.ts:132. All three are read on this path.
+// No new column is needed and no migration is shipped with this lane.
 //
 // FAIR HOUSING IS NOT ON THIS PATH BY DESIGN. Choosing which lesson and which rail
 // an EXISTING client gets is not housing advertising; the refusal for that lives at
@@ -60,11 +81,9 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { sanitizeProperNoun } from "@/lib/compliance/client-text-guard"
 import {
   getEducationDelivery,
-  ageFromBirthday,
-  ageSegmentFromAge,
-  ageSegmentFromAgeRange,
   type AgeSegment,
 } from "@/lib/kernel/education"
+import type { ProtectedClassBasis } from "@/lib/lead-governance/protected-class-signals"
 import {
   canDispatchToContact,
   honorsChannelPreference,
@@ -177,33 +196,23 @@ export function pickEducationChannel(input: {
   return { channel: "portal", ageSegment: input.ageSegment, rejected, preferredFormat }
 }
 
-/**
- * The DEMOGRAPHIC READ, in one place. Returns the client's age BAND and nothing
- * finer — no birthday, no raw age leaves this function.
- *
- * Two sources, in order of trust: `contacts.birthday` (human-entered, precise,
- * usually null) then `contacts.age_range` (the enrichment lane's own banding).
- * `source` is returned because a band nobody measured must not read as a band
- * somebody measured.
- */
-export async function resolveClientAgeBand(
-  supabase: Svc, contactId: string,
-): Promise<{ ageSegment: AgeSegment | null; source: "birthday" | "age_range" | "unmeasured" }> {
-  const { data, error } = await supabase
-    .from("contacts")
-    .select("birthday, age_range")
-    .eq("id", contactId)
-    .maybeSingle()
-  // supabase-js RESOLVES refusals (CLAUDE.md §3) — an unread error here would
-  // present as "this client has no age", which is a different fact.
-  if (error) return { ageSegment: null, source: "unmeasured" }
-  const row = data as { birthday?: string | null; age_range?: string | null } | null
-  const fromBirthday = ageSegmentFromAge(ageFromBirthday(row?.birthday ?? null))
-  if (fromBirthday) return { ageSegment: fromBirthday, source: "birthday" }
-  const fromRange = ageSegmentFromAgeRange(row?.age_range ?? null)
-  if (fromRange) return { ageSegment: fromRange, source: "age_range" }
-  return { ageSegment: null, source: "unmeasured" }
-}
+// TOMBSTONE (wave 16 — the seller-signal education wire). `resolveClientAgeBand`
+// was DELETED here. It read `contacts.birthday` + `contacts.age_range` and banded
+// them — a SECOND banding of the one idea, run against the same contact the
+// matcher had just banded moments earlier, in a second round trip (CLAUDE.md §6).
+//
+// SURVIVOR: lib/portal/resolve-education-context.ts:resolveEducationContext,
+// which the matcher already calls, and which now resolves the band from THREE
+// sources (birthday → age_range → the seller-signal lane) instead of two. The
+// band and its source ride out on the typed `LearningModulePick.ageSegment` /
+// `.ageSegSource` fields declared at lib/learning-router/composer.ts:38, and
+// `deliverChosenModule` below reads them off the pick.
+//
+// The merge was NOT a like-for-like move: the survivor gained the third source,
+// so this deletion also fixed the reason the duplicate could never route by age
+// — live on 2026-08-22, zero contacts carry a birthday and zero carry an
+// age_range, so both of the deleted function's sources were empty for every row
+// in the database.
 
 /** Which concierge owns the delivery, by the client's side of the deal. */
 export function conciergeForSide(side: "buyer" | "seller" | null): "shopping_agent" | "listing_concierge" {
@@ -298,17 +307,36 @@ export async function produceEducationDelivery(
 /** Extracted so both the poll path and the event path share one delivery body. */
 async function deliverChosenModule(
   supabase: Svc, brokerageId: string, contactId: string,
-  chosen: { id: string; title: string; summary: string | null; estimatedMinutes: number | null; signalSource: string; signalMetadata: unknown; priorityScore: number | null; channels?: readonly string[] },
+  chosen: {
+    id: string; title: string; summary: string | null; estimatedMinutes: number | null
+    signalSource: string; signalMetadata: unknown; priorityScore: number | null
+    channels?: readonly string[]
+    ageSegment?: AgeSegment | null
+    ageSegSource?: "birthday" | "age_range" | "seller_signal" | "default"
+    protectedClassBasis?: readonly ProtectedClassBasis[]
+  },
 ): Promise<{ proposed: boolean; moduleId?: string; reason?: string; channel?: EducationChannel }> {
   const { side, agentName } = await resolveClientContext(supabase, brokerageId, contactId)
   const manager = conciergeForSide(side)
 
   // ── THE OWNER'S ACTUAL USE CASE: the RAIL is chosen by AGE BAND ──────────────
   // "we determine the kind of education in channels by the age group". The band
-  // comes from the enrichment lane's own data, which the wave-15 ruling made
-  // readable; the rail comes from the band, narrowed by the module's publication
-  // channels and by consent + stated preference.
-  const band = await resolveClientAgeBand(supabase, contactId)
+  // is the one the MATCHER already resolved and scored `audience_age_segs`
+  // against — read off the pick rather than re-derived here, so the lesson and
+  // the rail can never disagree about how old the client is. Its sources, in
+  // order: contacts.birthday → contacts.age_range → the seller-signal lane's
+  // senior_owner observation (lib/education/seller-signal-education-context.ts).
+  //
+  // FAIL SOFT, deliberately (see the same note on the reader): `ageSegment: null`
+  // is the answer whenever nothing was measured, and it routes to the portal —
+  // the client's own surface, which needs no consent and assumes nothing. The
+  // client still gets the lesson. Refusing to educate somebody because we could
+  // not guess their age band would be worse than the status quo.
+  const band = {
+    ageSegment: chosen.ageSegment ?? null,
+    source: chosen.ageSegSource ?? "default",
+  }
+  const basis = chosen.protectedClassBasis ?? []
   const { data: consentRow } = await supabase
     .from("contacts")
     .select("tcpa_consent, dnc_status, email_opt_out, email_unsubscribed, sms_opt_out, sms_unsubscribed, phone_opt_out, opt_out_channels, preferred_channel")
@@ -326,7 +354,16 @@ async function deliverChosenModule(
   // The band, its SOURCE and the chosen rail ride in signal_metadata so a routing
   // decision is a reported fact — "delivered on portal" must never be
   // indistinguishable from "nothing else was considered" (CLAUDE.md §2).
-  await supabase.from("learning_assignments").insert({
+  //
+  // `protected_class_basis` RIDES ALONG, verbatim, whenever a protected-class-
+  // derived signal took part. This is what makes the owner's position auditable
+  // rather than merely asserted: the ruling is that this data picks the right
+  // EDUCATION and never the housing, and the stored row is where that claim is
+  // either supported or exposed. An empty array means the classifier ran and
+  // nothing protected-class-derived was involved — never that nobody checked.
+  // The mirror of the row the sourcing lane writes at
+  // lib/external/batchdata-seller-signals.ts:1438.
+  const { error: assignError } = await supabase.from("learning_assignments").insert({
     brokerage_id: brokerageId, module_id: chosen.id, contact_id: contactId,
     signal_source: chosen.signalSource,
     signal_metadata: {
@@ -336,9 +373,15 @@ async function deliverChosenModule(
       delivery_channel: choice.channel,
       delivery_channels_rejected: choice.rejected,
       band_preferred_format: choice.preferredFormat,
+      protected_class_basis: basis,
     },
     priority_score: chosen.priorityScore, status: "open",
   })
+  // supabase-js RESOLVES refusals (CLAUDE.md §3). A dropped error here would let
+  // the nudge reach the gate with no assignment behind it, so the portal feed and
+  // the completion tracker would never see the lesson the client was just told
+  // about — and the idempotency check above would re-propose it forever.
+  if (assignError) return { proposed: false, reason: `learning_assignments insert refused: ${assignError.message}` }
 
   // Propose the nudge into the gate (the side-appropriate concierge).
   const msg = buildEducationDelivery(chosen.title, chosen.summary, chosen.estimatedMinutes, agentName)
@@ -346,11 +389,18 @@ async function deliverChosenModule(
   const bandNote = band.ageSegment
     ? `${choice.channel} chosen for age band ${band.ageSegment} (from ${band.source})`
     : `${choice.channel} — no age band measured, so the client's own portal`
+  // THE HUMAN APPROVER IS TOLD when protected-class-derived data shaped this
+  // proposal. The gate is a person; a person cannot exercise judgement about a
+  // basis they were not shown. Sources only — the reason sentences are on the
+  // assignment row for the auditor, and the rationale line is read at a glance.
+  const basisNote = basis.length > 0
+    ? ` — education selected using protected-class-derived signals (${basis.map((b) => b.source).join(", ")}); recorded on the assignment`
+    : ""
   const res = await proposeClientMessage({
     brokerageId, agentKind: manager, entityType: "learning_module", entityId: chosen.id,
     recipientContactId: contactId, audience: side === "seller" ? "seller" : "buyer",
     subject: msg.subject, body: msg.body,
-    rationale: `Stage-matched lesson "${sanitizeProperNoun(chosen.title, 80) ?? "lesson"}" (${chosen.signalSource}) — ${bandNote} — review/edit before it reaches the client.`,
+    rationale: `Stage-matched lesson "${sanitizeProperNoun(chosen.title, 80) ?? "lesson"}" (${chosen.signalSource}) — ${bandNote}${basisNote} — review/edit before it reaches the client.`,
     channel: choice.channel,
   }, supabase)
   return res.ok

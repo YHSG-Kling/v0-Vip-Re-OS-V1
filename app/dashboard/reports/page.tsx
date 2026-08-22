@@ -98,8 +98,6 @@ export default async function ReportsPage() {
         </section>
       )}
       <ReportsClient
-      agentId={resolvedAgentId}
-      brokerageId={agentCtx.brokerageId ?? ""}
       role={agentCtx.role || "agent"}
       userId={user.id}
       monthStart={monthStart}

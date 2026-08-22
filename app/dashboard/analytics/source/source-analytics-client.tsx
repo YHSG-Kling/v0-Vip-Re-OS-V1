@@ -43,9 +43,6 @@ import {
   Mail,
   RefreshCw,
   Search,
-  ArrowUpRight,
-  ArrowDownRight,
-  Filter,
   ChevronRight,
   Loader2,
   AlertTriangle,
@@ -64,7 +61,6 @@ import {
   generateSourceAIInsights,
   exportSourceCSV,
   emailSourceReport,
-  getSourceComparison,
   type SourceMetrics,
   type SourceFamily,
 } from "@/app/actions/source-analytics"
