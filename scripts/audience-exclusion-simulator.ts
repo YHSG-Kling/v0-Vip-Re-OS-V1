@@ -416,8 +416,38 @@ async function main() {
     && /add column if not exists used_as_suppression_by_campaign_id uuid/.test(mig))
   check("…with ON DELETE SET NULL on the campaign pointer (the fact survives the campaign, m535's lesson applied)",
     /on delete set null/.test(mig) && /used_as_suppression_at.{0,2} deliberately survives/.test(mig))
-  check("…and states its APPLICATION STATUS honestly (files are not the database, §3)",
-    /APPLICATION STATUS: WRITTEN, NOT APPLIED/.test(mig))
+  // THIS ASSERTION USED TO PIN THE LITERAL STRING "WRITTEN, NOT APPLIED", AND
+  // THAT MADE IT THE DEFECT IT WAS WRITTEN TO PREVENT: it could only pass while
+  // the file said the migration was unapplied, so the moment the integrator
+  // APPLIED m538 and truthfully said so, the guard went red for telling the
+  // truth. The preceding wave found six migrations declaring "NOT APPLIED" about
+  // applied migrations and traced it to exactly this shape of assertion.
+  //
+  // What §3 actually requires is a TRUTHFUL declaration, not a particular one.
+  // So: exactly one of the two must be declared, and an APPLIED claim must carry
+  // a date and the project it landed on — a bare "APPLIED" is the same
+  // unfalsifiable sentence as no declaration at all.
+  {
+    const declaresUnapplied = /APPLICATION STATUS:\s*WRITTEN, NOT APPLIED/.test(mig)
+    const declaresApplied = /APPLICATION STATUS:\s*APPLIED\b/.test(mig)
+    check("…and states its APPLICATION STATUS honestly (files are not the database, §3)",
+      declaresUnapplied !== declaresApplied
+        && (!declaresApplied || (/APPLIED\s+\d{4}-\d{2}-\d{2}/.test(mig) && /hrvaqgvukzxfskkcrwbt/.test(mig))))
+    // CONTROLS — a checker that accepts anything would pass the line above too.
+    const shape = (m: string) => {
+      const u = /APPLICATION STATUS:\s*WRITTEN, NOT APPLIED/.test(m)
+      const a = /APPLICATION STATUS:\s*APPLIED\b/.test(m)
+      return u !== a && (!a || (/APPLIED\s+\d{4}-\d{2}-\d{2}/.test(m) && /hrvaqgvukzxfskkcrwbt/.test(m)))
+    }
+    check("CONTROL — a migration declaring NEITHER status is refused",
+      !shape("-- m999 — no declaration anywhere\nbegin; commit;"))
+    check("CONTROL — a migration declaring BOTH is refused (it cannot be both)",
+      !shape("-- APPLICATION STATUS: WRITTEN, NOT APPLIED\n-- APPLICATION STATUS: APPLIED 2026-08-23 hrvaqgvukzxfskkcrwbt"))
+    check("CONTROL — a bare 'APPLIED' with no date and no project is refused",
+      !shape("-- APPLICATION STATUS: APPLIED, trust me"))
+    check("CONTROL — and the honest unapplied declaration still passes",
+      shape("-- APPLICATION STATUS: WRITTEN, NOT APPLIED. Lanes write; the integrator applies."))
+  }
   check("the WRITER names exactly those columns",
     /used_as_suppression_at:/.test(code("lib/ads/audience-exclusion.ts"))
     && /used_as_suppression_by_campaign_id:/.test(code("lib/ads/audience-exclusion.ts")))
