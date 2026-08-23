@@ -3090,7 +3090,13 @@ async function main() {
           "newsletter_sends.status": ["queued","sent","failed","bounced","opened","clicked","suppressed"],
           "newsletter_subscribers.status": ["subscribed","unsubscribed","bounced","complained"],
           "offers.ai_extraction_status": ["pending","extracting","completed","failed","manual"],
-          "open_house_events.status": ["scheduled","marketing","active","completed","cancelled"],
+          // "draft" added by m543, which consolidated the retired `open_houses` onto
+          // this table. The war room stages an open house with NO DATE on purpose, and
+          // the survivor's vocabulary had no word for that; m543 also pins the dateless
+          // state to this one value with a CHECK. This is the THIRD-COPY case the note
+          // above warns about — the live CHECK and scripts/check-vocabularies.ts (a
+          // GENERATED cache, regeneration owed to the integrator) are the other two.
+          "open_house_events.status": ["draft","scheduled","marketing","active","completed","cancelled"],
           "repurposed_content_log.approval_status": ["draft","pending_review","approved","rejected"],
           "repurposed_content_log.status": ["generated","scheduled","published","failed"],
           "scheduled_touchpoints.status": ["scheduled","sent","completed","skipped","failed"],

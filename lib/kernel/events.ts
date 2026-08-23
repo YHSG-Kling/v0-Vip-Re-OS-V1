@@ -34,6 +34,17 @@ export enum KernelEvent {
   LISTING_STAGE_CHANGED                     = 'listing_stage_changed',
   LISTING_CANCELLED                         = 'listing_cancelled',
   LISTING_EXPIRED                           = 'listing_expired',
+  // A listing is RETAINED, never deleted (owner's ruling: "listing shouldn't be
+  // deleted because of rules of needing to keep real estate records"). These two
+  // record the only thing that now happens to it — leaving and re-entering the
+  // working surface — so the record can say WHO took it off the board and when.
+  // An archive with no audit trail is worse than a delete for a retention
+  // record. Survivor of `deleteListing`: lib/kernel/listing-archive.ts.
+  // `lifecycle_events.event_type` carries NO CHECK constraint (verified live on
+  // hrvaqgvukzxfskkcrwbt, 2026-08-23 — only `lifecycle_events_source_check`
+  // exists), so these two values need no migration.
+  LISTING_ARCHIVED                          = 'listing_archived',
+  LISTING_UNARCHIVED                        = 'listing_unarchived',
   COMING_SOON_SENT                          = 'coming_soon_sent',
   OPEN_HOUSE_MARKETING_STARTED              = 'open_house_marketing_started',
   OPEN_HOUSE_ATTENDEE_CAPTURED              = 'open_house_attendee_captured',

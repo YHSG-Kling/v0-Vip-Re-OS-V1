@@ -561,7 +561,9 @@ async function readListing(svc: AnyClient, listingId: string): Promise<ListingRo
 /** The NEXT scheduled open house for this listing — never a past one. */
 async function readOpenHouse(svc: AnyClient, listingId: string, nowIso: string): Promise<OpenHouseRow | null> {
   try {
-    const { data } = await svc.from("open_houses")
+    // open_house_events is the survivor; `open_houses` was a second spelling of it
+    // and was retired by m543 (property_address merged onto this table there).
+    const { data } = await svc.from("open_house_events")
       .select("property_address, description, event_date, start_time, end_time")
       .eq("listing_id", listingId)
       .gte("event_date", nowIso.slice(0, 10))

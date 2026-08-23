@@ -174,10 +174,21 @@ function main() {
   check("names the seam", listings.includes("ACT-AS WRITE SEAM"))
   check("updateListing refuses read_only before writing",
     /if \(auth\.readOnly\) return \{ success: false, error: READ_ONLY_ACTING_ERROR \}/.test(listings))
-  const delStart = listings.indexOf("export async function deleteListing")
-  const delSeg = listings.slice(delStart, listings.indexOf("export async function", delStart + 10))
-  check("deleteListing refuses read_only before writing",
+  // `deleteListing` is GONE — a listing is RETAINED, never destroyed (owner's
+  // ruling). SURVIVOR: archiveListing, app/actions/listings.ts. The seam pin
+  // follows the survivor rather than being dropped: the archive is still a
+  // WRITE, so a read_only act-as grant must still refuse it. `unarchiveListing`
+  // is pinned too — it is the other half of the same write and was the easier
+  // one to leave ungated.
+  const delStart = listings.indexOf("export async function archiveListing")
+  check("archiveListing was located (deleteListing's survivor)", delStart >= 0)
+  const delSeg = delStart < 0 ? "" : listings.slice(delStart, listings.indexOf("export async function", delStart + 10))
+  check("archiveListing refuses read_only before writing",
     /if \(auth\.readOnly\) return \{ success: false, error: READ_ONLY_ACTING_ERROR \}/.test(delSeg))
+  const unStart = listings.indexOf("export async function unarchiveListing")
+  const unSeg = unStart < 0 ? "" : listings.slice(unStart, listings.indexOf("export async function", unStart + 10))
+  check("unarchiveListing refuses read_only before writing",
+    unStart >= 0 && /if \(auth\.readOnly\) return \{ success: false, error: READ_ONLY_ACTING_ERROR \}/.test(unSeg))
   check("updateListing audit lane names the REAL actor (actorUserId, not the impersonated identity)",
     /const actorUserId = auth\.actorUserId/.test(listings))
   check("negative control: getListingById (read) does NOT refuse read_only",
