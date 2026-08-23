@@ -3003,7 +3003,7 @@ async function main() {
         "notifications.priority": ["low","medium","high","critical"],
         "smart_assistant_suggestions.priority": ["low","medium","high"],
         "vendor_messages.sender_type": ["vendor","contact","agent"],
-        "contacts.contact_type": ["lead","prospect","client","lifetime","lifetime_customer","past_client","sphere","vendor","referral_partner","investor","buyer","seller","both","other"],
+        "contacts.contact_type": ["lead","prospect","client","lifetime_customer","sphere","vendor","referral_partner","investor","buyer","seller","both","other"],
       }
       const nsOffenders: string[] = []
       const scanNs = (rel: string) => {

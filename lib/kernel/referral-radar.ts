@@ -19,12 +19,14 @@
 //                    approves+sends. NEVER auto-sends. Copy is GENERATED per the contact's
 //                    persona via generatePersonaCopy (deterministic fallback below).
 //
-// RULES: past clients only (contact_type past_client/lifetime/lifetime_customer/sphere or
-// nurture_status closed). WITHDRAWN excluded. One radar touch per (contact, event-type)
+// RULES: past clients only (contact_type client/lifetime_customer/sphere — the canonical
+// roster at lib/contact-types.ts:LIFETIME_CONTACT_TYPES — or nurture_status closed).
+// WITHDRAWN excluded. One radar touch per (contact, event-type)
 // per 90 days (idempotent). Does NOT duplicate the closing-anniversary play.
 // NOT server-only (simulator-driven; scraper + copyGenerator are injectable seams).
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { LIFETIME_CONTACT_TYPES, isLifetimeRelationshipType } from "@/lib/contact-types"
 import type { CopyGenerator } from "@/lib/kernel/ai-copy"
 
 type Svc = ReturnType<typeof createServiceClient>
@@ -41,8 +43,20 @@ export const EQUITY_MILESTONE = 250_000
 /** referral_score at/above this marks a contact primed to refer. */
 export const REFERRAL_PRIMED_SCORE = 70
 
-/** The contact_type / nurture_status values that mark a PAST (lifetime) client. */
-export const PAST_CLIENT_TYPES = ["past_client", "lifetime", "lifetime_customer", "sphere", "client"] as const
+// TOMBSTONE (CLAUDE.md §1, §6). `PAST_CLIENT_TYPES` was this module's own spelling of
+// the post-close contact_type roster — a third copy alongside
+// lib/campaigns/contact-sources.ts and lib/kernel/returning-customer.ts, all three of
+// which named `past_client` and `lifetime`. m539 retired both, so the `.or(
+// "contact_type.eq.past_client,…")` built below would have carried two clauses the
+// column can never satisfy. Survivor: lib/contact-types.ts:LIFETIME_CONTACT_TYPES,
+// imported above.
+
+/**
+ * contacts.nurture_status values that mark a PAST client. A DIFFERENT column and a
+ * DIFFERENT vocabulary from contact_type — `nurture_status` has NO CHECK constraint, so
+ * m539 does not reach it and its spellings are pinned to their writers, not to a
+ * constraint. `past_client` and `lifetime` stay here for exactly that reason.
+ */
 export const PAST_CLIENT_NURTURE = ["past_client", "closed", "lifetime"] as const
 
 export type LifeEventType =
@@ -82,9 +96,8 @@ export interface DetectedLifeEvent {
 
 /** Pure: is this contact a PAST (lifetime) client the Radar may touch? */
 export function isPastClient(c: Pick<RadarContact, "contact_type" | "nurture_status">): boolean {
-  const t = (c.contact_type ?? "").toLowerCase()
   const n = (c.nurture_status ?? "").toLowerCase()
-  return (PAST_CLIENT_TYPES as readonly string[]).includes(t)
+  return isLifetimeRelationshipType(c.contact_type)
     || (PAST_CLIENT_NURTURE as readonly string[]).includes(n)
 }
 
@@ -232,7 +245,7 @@ export async function runReferralRadar(
   // Pull past clients (by contact_type OR nurture_status). Cast a wide net, filter in code
   // so a single column rename never silently drops the whole feature.
   const orClause = [
-    ...PAST_CLIENT_TYPES.map((t) => `contact_type.eq.${t}`),
+    ...LIFETIME_CONTACT_TYPES.map((t) => `contact_type.eq.${t}`),
     ...PAST_CLIENT_NURTURE.map((n) => `nurture_status.eq.${n}`),
   ].join(",")
   const { data: rows } = await supabase.from("contacts")

@@ -288,6 +288,47 @@ export default async function SearchPage({
         preferences={preferences ?? undefined}
       />
 
+      {/* ── ORPHAN-ROUTE SWEEP (lane G) ───────────────────────────────────────
+          /properties/search is the FILTER-GRID half of buyer search: explicit
+          price / beds / baths / property-type / city / MLS-status controls, a
+          grid-or-list toggle, and a showing-request dialog that works for
+          OUTSIDE (non-brokerage) IDX results. It is not a duplicate of the smart
+          search above — that one asks a question in English against this buyer's
+          own preferences; this one is browsing the board by hand.
+
+          IT BECAME AN ORPHAN IN THIS LANE AND IS RESOLVED IN THIS LANE, said
+          plainly: its only inbound link in the whole tree lived on
+          /properties/saved, which this lane deleted as a duplicate of the portal
+          Properties tab. Deleting a page and letting its neighbour go dark is
+          moving an orphan, not closing one — so the link moves here, to the
+          buyer surface that owns search.
+
+          The contactId query param is required by that page (it refuses to run
+          without one — a "demo-contact-id" fallback was removed from it in an
+          earlier wave precisely because a placeholder id makes every action fail
+          a uuid parse). It is a convenience, not a grant: `saveProperty`,
+          `smartSearch` and `requestShowing` all re-establish access server-side. */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Filter className="h-5 w-5" />
+            Browse the whole MLS
+          </CardTitle>
+          <CardDescription>
+            Prefer to set the filters yourself? Search every active listing by price, beds,
+            baths, type and city — and request a showing on anything you find.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button asChild variant="outline">
+            <Link href={`/properties/search?contactId=${contactId}`}>
+              <Search className="h-4 w-4 mr-2" />
+              Open property search
+            </Link>
+          </Button>
+        </CardContent>
+      </Card>
+
       {/* Saved/Dismissed Properties */}
       <div className="grid gap-6 md:grid-cols-2">
         {/* Saved Properties */}

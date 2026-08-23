@@ -81,6 +81,7 @@ import {
   generateMarketUpdateEmail,
 } from "@/app/actions/market-insight-actions"
 import { predictMarketShift } from "@/app/actions/ai-predictions"
+import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 
 interface MarketInsightsDashboardClientProps {
   brokerageId: string
@@ -142,7 +143,7 @@ export function MarketInsightsDashboardClient({
         .from("contacts")
         .select("id, first_name, last_name, email, contact_type")
         .eq("agent_id", agentId)
-        .in("contact_type", ["seller", "lifetime", "buyer"])
+        .in("contact_type", ["seller", LIFETIME_CUSTOMER_TYPE, "buyer"])
         .not("email", "is", null)
         .limit(50)
       setShareContacts(data ?? [])

@@ -119,7 +119,7 @@ async function liveLayer(): Promise<void> {
     const probeIds: string[] = []
     for (const ct of CONTACT_TYPES) {
       const id = randomUUID(); probeIds.push(id)
-      const ins = await svc.from("contacts").insert({ id, brokerage_id: brokerageId, first_name: `${tag}-${ct}`, contact_type: ct, status: ct === "lifetime" ? "lifetime_customer" : undefined })
+      const ins = await svc.from("contacts").insert({ id, brokerage_id: brokerageId, first_name: `${tag}-${ct}`, contact_type: ct })
       if (ins.error) { allAccepted = false; fails.push(`canonical contact_type "${ct}" was REJECTED by the DB — code/DB drift`) }
     }
     check("every CONTACT_TYPES value is accepted by the live constraint (no code↔DB drift)", allAccepted)

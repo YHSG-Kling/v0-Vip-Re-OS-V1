@@ -115,7 +115,9 @@ function testValueNormalization() {
   // migration changes a constraint, this fails before imports start writing
   // values the DB rejects — or worse, values reporting doesn't recognize.
   const LIVE_CONSTRAINTS: Record<string, string[]> = {
-    contact_type: ['lead', 'prospect', 'client', 'lifetime', 'lifetime_customer', 'past_client',
+    // contact_type re-read 2026-08-23, after m539 collapsed lifetime / past_client
+    // onto lifetime_customer.
+    contact_type: ['lead', 'prospect', 'client', 'lifetime_customer',
       'sphere', 'vendor', 'referral_partner', 'investor', 'buyer', 'seller', 'both', 'other'],
     lead_temperature: ['hot', 'warm', 'cold'],
     lender_status: ['cash', 'pre_approved', 'needs_pre_approval', 'unknown'],

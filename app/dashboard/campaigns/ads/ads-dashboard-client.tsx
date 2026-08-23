@@ -86,7 +86,12 @@ import {
 import type { AudienceResolutionPreview } from "@/lib/kernel/ads"
 import { updateAdCampaignAction } from "./ads-campaign-actions"
 import type { AudienceType, SourceRule } from "@/lib/ads/facebook-audience-sync-types"
-import type { AudienceTemplate } from "@/lib/ads/fb-audience-templates"
+import { templateAudienceUse, type AudienceTemplate } from "@/lib/ads/fb-audience-templates"
+import {
+  EXCLUDED_AUDIENCE_IDS_KEY,
+  INCLUDED_AUDIENCE_IDS_KEY,
+  resolveExclusionSlot,
+} from "@/lib/ads/audience-exclusion"
 import { CtvLane, type CtvEligibleVideo, type CtvCampaignRow } from "./ctv-lane"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -143,6 +148,14 @@ interface Audience {
   consent_basis: string | null
   last_synced_at: string | null
   created_at: string
+  /**
+   * THE SUPPRESSION-USE AUDIT (migration m538). Optional because the columns do
+   * not exist until the integrator applies it — `loadAdsWorkspace` selects `*`,
+   * so they simply arrive undefined until then and this surface says nothing
+   * rather than saying something false.
+   */
+  used_as_suppression_at?: string | null
+  used_as_suppression_by_campaign_id?: string | null
   audience_sync_runs?: Array<{
     id: string
     run_status: string
@@ -189,7 +202,12 @@ const TEMPLATE_CATEGORY_META: Record<
 > = {
   remarketing: { label: "Remarketing", badge: "bg-blue-100 text-blue-700" },
   lookalike: { label: "Lookalike", badge: "bg-purple-100 text-purple-700" },
-  exclusion: { label: "Exclusion", badge: "bg-red-100 text-red-700" },
+  // `exclusion` WAS A MEMBER HERE. It is gone with the category union member it
+  // rendered — SURVIVOR: `templateAudienceUse(template)`
+  // (lib/ads/fb-audience-templates.ts), derived from the source rule, which is
+  // what every gate reads. The red Exclusion badge below is now driven by that
+  // instead, so the shelf can no longer disagree with the rule the way
+  // `exclude_lifetime_customers` did.
   geo: { label: "Geo", badge: "bg-amber-100 text-amber-700" },
   lifecycle: { label: "Lifecycle / Sphere", badge: "bg-green-100 text-green-700" },
   // The owner's persona basis ("audience should be segmented on persona"). This
@@ -348,6 +366,17 @@ export function AdsDashboardClient({
     interests: ["real estate", "home buying"],
     incomePercentile: "any" as "top_25" | "top_50" | "any",
     homeownerStatus: "any" as "renter" | "owner" | "any",
+    // ── THE TWO AUDIENCE SLOTS ────────────────────────────────────────────────
+    // `custom_audience_ids` was written as `[]` by this handler for its whole
+    // life and read by NOTHING (CLAUDE.md §1). Both halves are wired now: this
+    // picker writes them, and lib/ads/launch-assembler.ts resolves them into the
+    // Meta payload at launch.
+    includedAudienceIds: [] as string[],
+    // The exclusion slot the owner ruled must exist ("capability is vital to this
+    // os to have not exclude"). Every id an operator puts here is gated server
+    // side before the campaign is written — a protected-characteristic persona
+    // audience is REFUSED, and the refusal is shown in the toast below.
+    excludedAudienceIds: [] as string[],
     listingAddress: "",
     listingPrice: "",
   })
@@ -432,6 +461,19 @@ export function AdsDashboardClient({
     return performanceData.filter((p) => p.ad_campaign_id === campaignId)
   }
 
+  // ── MAY THIS AUDIENCE BE USED AS AN EXCLUSION? ────────────────────────────
+  // THE SAME PURE GATE THE SERVER RUNS (lib/ads/audience-exclusion.ts), asked
+  // here so the operator is told WHY before they save rather than after. This is
+  // an EXPLANATION, never the enforcement: the server refuses again at the define
+  // door and again at launch, and a client that skipped this call changes
+  // nothing about whether the exclusion is allowed (CLAUDE.md §4).
+  const exclusionVerdictFor = (a: Audience) =>
+    resolveExclusionSlot(
+      [a.id],
+      [{ id: a.id, audience_name: a.audience_name, source_rule: a.source_rule }],
+      newCampaign.campaignName || "this campaign",
+    )
+
   // ─── HANDLERS ───────────────────────────────────────────────────────────────
 
   const handleCreateCampaign = async () => {
@@ -442,7 +484,11 @@ export function AdsDashboardClient({
       age_max: newCampaign.ageMax,
       locations: newCampaign.locations.filter((l) => l.city || l.state),
       interests: newCampaign.interests,
-      custom_audience_ids: [],
+      [INCLUDED_AUDIENCE_IDS_KEY]: newCampaign.includedAudienceIds,
+      // DECLARED IN THE PRODUCT, so the gate can see it. An operator who instead
+      // exports an audience and pastes it into Meta's own Exclude box is doing
+      // something this system cannot check — that is the gap this field closes.
+      [EXCLUDED_AUDIENCE_IDS_KEY]: newCampaign.excludedAudienceIds,
       lookalike_source_audience_id: null,
       income_percentile: newCampaign.incomePercentile,
       homeowner_status: newCampaign.homeownerStatus,
@@ -462,6 +508,11 @@ export function AdsDashboardClient({
     })
 
     if (result.success) {
+      // THE AUDIT REFUSAL IS SHOWN, NOT SWALLOWED. The campaign was created and
+      // its exclusion list WAS gated; what failed is the m538 stamp that records
+      // the suppression on the audience. "Not yet auditable" is a different
+      // sentence from "not checked", and the operator gets the true one.
+      if (result.suppressionAuditWarning) toast.warning(result.suppressionAuditWarning)
       setIsCreateCampaignOpen(false)
       setWizardStep(1)
       setNewCampaign({
@@ -478,6 +529,8 @@ export function AdsDashboardClient({
         interests: ["real estate", "home buying"],
         incomePercentile: "any",
         homeownerStatus: "any",
+        includedAudienceIds: [],
+        excludedAudienceIds: [],
         listingAddress: "",
         listingPrice: "",
       })
@@ -1164,12 +1217,21 @@ export function AdsDashboardClient({
                   <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
                     {audienceTemplates.map((template) => {
                       const categoryMeta = TEMPLATE_CATEGORY_META[template.category]
+                      // DERIVED FROM THE RULE, not from a shelf label (§6).
+                      const subtracts = templateAudienceUse(template) === "exclusion"
                       return (
                         <Card key={template.id} className="flex flex-col bg-muted/30">
                           <CardContent className="flex flex-1 flex-col p-4">
                             <div className="mb-2 flex items-start justify-between gap-2">
                               <span className="text-sm font-medium leading-tight">{template.name}</span>
-                              <Badge className={`${categoryMeta.badge} shrink-0`}>{categoryMeta.label}</Badge>
+                              <Badge
+                                className={`${subtracts ? "bg-red-100 text-red-700" : categoryMeta.badge} shrink-0`}
+                                title={subtracts
+                                  ? "This audience's source rule declares that it SUBTRACTS people. Put it in a campaign's Exclude list."
+                                  : undefined}
+                              >
+                                {subtracts ? "Exclusion" : categoryMeta.label}
+                              </Badge>
                             </div>
                             <p className="mb-3 text-xs text-muted-foreground line-clamp-3">
                               {template.description}
@@ -1268,6 +1330,23 @@ export function AdsDashboardClient({
                             {audience.consent_basis && (
                               <p className="text-xs text-muted-foreground mt-1">
                                 Consent basis: {audience.consent_basis}
+                              </p>
+                            )}
+
+                            {/* ── HAS THIS AUDIENCE BEEN USED TO SUPPRESS? ──────
+                                The reader for m538. Before this, an audience used
+                                as a suppression list left no trace on itself: the
+                                fact lived inside one campaign's targeting_config
+                                jsonb and vanished with that campaign. Withholding
+                                a housing ad is the regulated operation, so the
+                                record has to outlive the campaign that did it. */}
+                            {audience.used_as_suppression_at && (
+                              <p className="text-xs text-red-700 mt-1">
+                                Used as an EXCLUSION (suppression list) on{" "}
+                                {new Date(audience.used_as_suppression_at).toLocaleDateString()}
+                                {audience.used_as_suppression_by_campaign_id
+                                  ? ""
+                                  : " — by a campaign that has since been deleted"}
                               </p>
                             )}
 
@@ -1766,6 +1845,103 @@ export function AdsDashboardClient({
                       <SelectItem value="top_25">Top 25%</SelectItem>
                     </SelectContent>
                   </Select>
+                </div>
+                {/* ── AUDIENCES: WHO THIS CAMPAIGN REACHES, AND WHO IT SUBTRACTS ──
+                    The exclusion half is the owner's ruling made real ("capability
+                    is vital to this os to have not exclude"): an exclusion the
+                    operator intends is DECLARED here, where the fair-housing gate
+                    can see and refuse it, instead of being performed in Meta's own
+                    Exclude box where nothing in this product could. A
+                    protected-characteristic persona audience placed here is
+                    refused server-side and the reason is shown. */}
+                <div className="rounded-md border p-3 space-y-3">
+                  <div>
+                    <Label className="text-sm">Audiences to target</Label>
+                    <p className="text-[11px] text-muted-foreground">
+                      Your synced custom audiences. Leave empty to target the location only.
+                    </p>
+                    {audiences.length === 0 ? (
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        No audiences yet — build one on the Audiences tab.
+                      </p>
+                    ) : (
+                      <div className="mt-2 space-y-1">
+                        {audiences.map((a) => (
+                          <label key={`inc-${a.id}`} className="flex items-center gap-2 text-xs">
+                            <input
+                              type="checkbox"
+                              checked={newCampaign.includedAudienceIds.includes(a.id)}
+                              disabled={newCampaign.excludedAudienceIds.includes(a.id)}
+                              onChange={(e) =>
+                                setNewCampaign({
+                                  ...newCampaign,
+                                  includedAudienceIds: e.target.checked
+                                    ? [...newCampaign.includedAudienceIds, a.id]
+                                    : newCampaign.includedAudienceIds.filter((x) => x !== a.id),
+                                })
+                              }
+                            />
+                            <span>{a.audience_name}</span>
+                            <span className="text-muted-foreground">
+                              ({a.source_rule?.type?.replace(/_/g, " ") ?? "no rule"})
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    <Label className="text-sm">Audiences to exclude</Label>
+                    <p className="text-[11px] text-muted-foreground">
+                      People in these audiences will not be shown this ad. Fair housing: an
+                      audience built on a protected characteristic (senior, probate, divorce,
+                      military) may be TARGETED so the wording fits their situation, and may
+                      NOT be excluded — that is refused when you save.
+                    </p>
+                    {audiences.length === 0 ? (
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        No audiences yet — build one on the Audiences tab.
+                      </p>
+                    ) : (
+                      <div className="mt-2 space-y-1">
+                        {audiences.map((a) => {
+                          const verdict = exclusionVerdictFor(a)
+                          return (
+                            <div key={`exc-${a.id}`}>
+                              <label className="flex items-center gap-2 text-xs">
+                                <input
+                                  type="checkbox"
+                                  checked={newCampaign.excludedAudienceIds.includes(a.id)}
+                                  disabled={
+                                    newCampaign.includedAudienceIds.includes(a.id) || !verdict.ok
+                                  }
+                                  onChange={(e) =>
+                                    setNewCampaign({
+                                      ...newCampaign,
+                                      excludedAudienceIds: e.target.checked
+                                        ? [...newCampaign.excludedAudienceIds, a.id]
+                                        : newCampaign.excludedAudienceIds.filter((x) => x !== a.id),
+                                    })
+                                  }
+                                />
+                                <span className={verdict.ok ? "" : "text-muted-foreground line-through"}>
+                                  {a.audience_name}
+                                </span>
+                                <span className="text-muted-foreground">
+                                  ({a.source_rule?.type?.replace(/_/g, " ") ?? "no rule"})
+                                </span>
+                              </label>
+                              {!verdict.ok && (
+                                <p className="ml-6 text-[11px] text-red-700">
+                                  Cannot be used as an exclusion — {verdict.refusal.replace(/^\[audience-exclusion\] REFUSED: /, "")}
+                                </p>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </div>
                 <div>
                   <Label>Location (City, State)</Label>

@@ -12,6 +12,12 @@ import { evaluateOutbound } from "@/lib/kernel/compliance"
 import type { KernelContact } from "@/lib/kernel/types"
 import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
+// THE EXCLUSION SLOT GATE. Not a second fair-housing classifier (CLAUDE.md §6):
+// it calls the persona gate's exclusion arm and the token gate, both of which
+// already own their answers. See lib/ads/audience-exclusion.ts's header for why
+// the PLACEMENT of an audience — not only its own rule type — decides which
+// operation it performs.
+import { verifyExclusionSlot, recordSuppressionUse } from "@/lib/ads/audience-exclusion"
 import type {
   TargetingConfig,
   CreateAdCampaignParams,
@@ -76,7 +82,7 @@ async function resolveAdActor(): Promise<
 export async function createAdCampaign(
   _userId: string,
   params: CreateAdCampaignParams
-): Promise<{ success: boolean; campaignId?: string; error?: string }> {
+): Promise<{ success: boolean; campaignId?: string; error?: string; suppressionAuditWarning?: string }> {
   // ── 0. Session gate ─────────────────────────────────────────────────────────
   const actor = await resolveAdActor()
   if (!actor.ok) return { success: false, error: actor.error }
@@ -88,6 +94,25 @@ export async function createAdCampaign(
   const accessCheck = await canAccessFeature(userId, "ad_creator")
   if (!accessCheck.allowed) {
     return { success: false, error: accessCheck.reason || "Feature access denied" }
+  }
+
+  // ── 1b. The EXCLUSION SLOT (owner: "capability is vital to this os to have
+  //       not exclude") ──────────────────────────────────────────────────────
+  // This is the door the ads dashboard, the wizard-staging lane and the workflow
+  // adapter all come through, so it is the one an operator's declared
+  // suppression list actually arrives at. Every audience named in
+  // `targeting_config.excluded_audience_ids` is checked against the persona
+  // gate's EXCLUSION arm and the token gate before the row is written; a
+  // protected-characteristic persona audience in that slot is refused. Tenant is
+  // the SESSION's (`actor.brokerageId`), never the params object's (§4).
+  const exclusionVerdict = await verifyExclusionSlot({
+    supabase,
+    brokerageId,
+    targeting: params.targetingConfig,
+    campaignLabel: params.campaignName,
+  })
+  if (!exclusionVerdict.ok) {
+    return { success: false, error: exclusionVerdict.refusal }
   }
 
   // ── 2. Insert ad_campaigns ──────────────────────────────────────────────────
@@ -135,7 +160,22 @@ export async function createAdCampaign(
   // ── 4. Increment usage ──────────────────────────────────────────────────────
   await incrementFeatureUsage(userId, "ad_creator")
 
-  return { success: true, campaignId: campaign.id }
+  // ── 5. The suppression-use audit record (migration m538) ────────────────────
+  // Best-effort by design and its refusal is RETURNED rather than swallowed: the
+  // columns do not exist until the integrator applies m538, and "not yet
+  // auditable" must not read as "not checked". The gate at step 1b already ran.
+  const suppressionAudit = await recordSuppressionUse({
+    supabase,
+    brokerageId,
+    campaignId: campaign.id,
+    governed: exclusionVerdict.governed,
+  })
+
+  return {
+    success: true,
+    campaignId: campaign.id,
+    ...(suppressionAudit.error ? { suppressionAuditWarning: suppressionAudit.error } : {}),
+  }
 }
 
 // ─── generateAdCreative ───────────────────────────────────────────────────────

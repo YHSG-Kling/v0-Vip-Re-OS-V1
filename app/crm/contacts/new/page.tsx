@@ -12,6 +12,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Loader2, ArrowLeft, User } from "lucide-react"
 import Link from "next/link"
 import { createContact } from "@/app/actions/contacts"
+import { CONTACT_TYPES as CANONICAL_CONTACT_TYPES, type ContactType } from "@/lib/contact-types"
 
 // Exactly the values contacts.contact_type accepts. The form used to offer
 // "tenant", "landlord" and "referral"; the column has never accepted any of
@@ -19,16 +20,37 @@ import { createContact } from "@/app/actions/contacts"
 // create error. Tenant/landlord are deliberately NOT added to the column —
 // this OS is not a property-management product — and "referral" was simply
 // the wrong word for referral_partner.
-const CONTACT_TYPES = [
-  { value: "buyer", label: "Buyer" },
-  { value: "seller", label: "Seller" },
-  { value: "both", label: "Buyer & Seller" },
-  { value: "investor", label: "Investor" },
-  { value: "referral_partner", label: "Referral Partner" },
-  { value: "vendor", label: "Vendor" },
-  { value: "sphere", label: "Sphere" },
-  { value: "past_client", label: "Past Client" },
+//
+// IT HAPPENED AGAIN, and this time the hand-kept list was the reason. The menu
+// still offered "past_client", which m539 retired from the CHECK in favour of
+// `lifetime_customer` — so the same generic create error was one click away for
+// every agent filing a past client. The OFFERED SET IS NOW DERIVED from
+// lib/contact-types.ts:CONTACT_TYPES rather than retyped, so the menu cannot
+// offer a value the column refuses; only the LABELS live here.
+const CONTACT_TYPE_LABELS: Record<ContactType, string> = {
+  lead:              "Lead",
+  prospect:          "Prospect",
+  client:            "Client",
+  lifetime_customer: "Lifetime Customer (past client)",
+  sphere:            "Sphere",
+  vendor:            "Vendor",
+  referral_partner:  "Referral Partner",
+  investor:          "Investor",
+  buyer:             "Buyer",
+  seller:            "Seller",
+  both:              "Buyer & Seller",
+  other:             "Other",
+}
+
+// The order agents actually pick in, filtered to what the column admits.
+const CONTACT_TYPE_ORDER: readonly ContactType[] = [
+  "buyer", "seller", "both", "lead", "prospect", "client",
+  "investor", "referral_partner", "vendor", "sphere", "lifetime_customer", "other",
 ]
+
+const CONTACT_TYPES = CONTACT_TYPE_ORDER
+  .filter((v) => (CANONICAL_CONTACT_TYPES as readonly string[]).includes(v))
+  .map((value) => ({ value, label: CONTACT_TYPE_LABELS[value] }))
 
 const LEAD_SOURCES = [
   { value: "website", label: "Website" },

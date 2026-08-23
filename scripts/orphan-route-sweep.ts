@@ -85,6 +85,15 @@ const EXEMPT: Record<string, string> = {
   "/portal/[contactId]/dashboard/[persona]": "legacy redirect stub (bookmark compatibility) → /portal/[contactId] — persona routing is now kernel-decided; portal links were sent to clients externally, so old deep links must not 404",
   "/auth/error": "legacy redirect stub (bookmark compatibility) → /login?message=… — possible OAuth error-redirect target in hosted Supabase auth config (not verifiable in-repo)",
   "/dashboard/leaderboard": "legacy redirect stub (bookmark compatibility) → /dashboard/motivation with scope/metric/period carried across — brokers/team leads had this path in nav; its only in-code self-reference left with the deleted LeaderboardClient (orphan tranche 3)",
+  // ── Orphan burn-down, lane G ──────────────────────────────────────────────
+  // Three more of the SAME SHAPE as the block above, verified individually: each
+  // page.tsx body is an auth check and a `redirect(...)` and nothing else, so
+  // there is no capability here to wire and none to lose. They are EXEMPT rather
+  // than deleted for the reason already recorded above — no middleware routes old
+  // URLs at runtime, so the stub page IS the bookmark-compatibility mechanism.
+  "/transactions": "legacy redirect stub (bookmark compatibility) → /dashboard/transactions. Body is `redirect(\"/dashboard/transactions\")`, nothing else. The old top-level path is still live in the tree beside it (/transactions/[transactionId] IS linked), and lib/application/transactions.ts revalidates \"/transactions\" in nine places — so external bookmarks on the bare path are exactly what this catches",
+  "/listings/new": "legacy redirect stub (bookmark compatibility) → /dashboard/listings?action=new (the destination that /dashboard/listings/page.tsx:317 itself links to). Body is ensureAgentContextInPlace + redirect. Sibling of the linked /listings and /listings/[listingId] public surfaces",
+  "/dashboard/videos": "legacy redirect stub (bookmark compatibility) → /dashboard/video, the canonical Video Studio (lib/kernel/routes.ts:197 marks the singular path canonical/verified). Body is an auth check and `redirect('/dashboard/video')`. NOTE the plural segment is NOT dead: /dashboard/videos/{create,library,board,analytics,voice,templates,education,snippets} are live pages and are linked — only the INDEX redirects away",
 }
 
 /** Files whose ENTIRE content is route configuration — every "/..." string

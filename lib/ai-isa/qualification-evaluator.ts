@@ -131,7 +131,7 @@ export async function persistQualificationSignals(
   //
   // `ai_isa_qualifications.assigned_to_agent_id` FKs **users(id)**, not
   // agents(id) — verified against the live catalogue, and already recorded in
-  // `scripts/agent-fk-columns.ts:258` under `USERS_FK_AGENTISH_COLUMNS`
+  // `scripts/agent-fk-columns.ts` under `USERS_FK_AGENTISH_COLUMNS`
   // ("columns that FK public.users(id) but whose NAME reads agent-ish"). The
   // reader agrees: `app/actions/ai-isa.ts:528` embeds
   // `assigned_agent:users!assigned_to_agent_id (…)`.

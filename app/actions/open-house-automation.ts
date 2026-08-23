@@ -607,6 +607,20 @@ export async function sendOpenHouseInvitations(params: { eventId: string; contac
         // generatePersonalizedInvite writes an sms_message per contact and this
         // was the only place that could carry it to the send.
         personalizedSms: inviteResult.data.sms_message,
+        // ── ORPHAN-ROUTE SWEEP (lane G): THE RSVP LINK'S MISSING HALF. ───────
+        // This is the only place in the tree that knows the staged invitation's
+        // id, and the RSVP page's credential is the PAIR (eventId, invitationId)
+        // — so without it `sendOpenHouseInvitation` could not build a link that
+        // resolves, and it built `/open-house/rsvp/${eventId}` instead, a route
+        // that has never existed. Consequence, not theory: `handleRSVP` (a
+        // complete, hardened writer sitting just below in this file) had no
+        // caller, and `open_house_invitations.rsvp_response` — which the
+        // listing's Marketing tab reads and reports on — was NULL for every
+        // invitee this product has ever mailed.
+        //
+        // The insert above already refuses to continue without `invitation.id`,
+        // so this is always a real row id by the time the send runs.
+        invitationId: invitation.id,
       })
 
       if (sendRes.success) {

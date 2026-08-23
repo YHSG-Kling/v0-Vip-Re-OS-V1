@@ -8,7 +8,7 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
-import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
+import { SPHERE_CONTACT_TYPES } from "@/lib/contact-types"
 
 // ============================================
 // AI REFERRAL MANAGEMENT
@@ -53,7 +53,7 @@ export async function identifyReferralOpportunities(agentId: string) {
         referrals!referrals_referrer_contact_id_fkey(id)
       `)
       .eq("agent_id", agentId)
-      .in("contact_type", [LIFETIME_CUSTOMER_TYPE, "sphere"])
+      .in("contact_type", [...SPHERE_CONTACT_TYPES])
       .order("last_contacted_at", { ascending: false })
       .limit(100)
 

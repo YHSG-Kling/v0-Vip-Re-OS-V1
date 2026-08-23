@@ -746,7 +746,13 @@ async function handleSellerToLifetimeTransition(
     .from("contacts")
     .update({
       contact_type: LIFETIME_CUSTOMER_TYPE,
-      status: LIFETIME_CUSTOMER_TYPE,
+      // WAS `status: LIFETIME_CUSTOMER_TYPE`. `status` is the coarse active/inactive
+      // axis (live rows: 'active', default 'new'); the lifecycle word lives in
+      // `lifecycle_state`. It was written to `status` only to satisfy
+      // contacts_lifetime_consistent, a cross-column CHECK anchored on the wrong
+      // column, which m539 dropped along with the `lifetime` spelling it policed.
+      // All three promotion writers now say the same thing in the same two columns.
+      lifecycle_state: LIFETIME_CUSTOMER_TYPE,
       notes: `Converted to lifetime customer on ${closedDate} after closing at ${propertyAddress}`,
       updated_at: now,
     })

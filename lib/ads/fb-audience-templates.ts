@@ -17,18 +17,40 @@ import {
   ADS_ELIGIBLE_PERSONAS,
   PERSONA_SEGMENT_TYPE,
 } from "@/lib/ads/audience-persona-basis"
+// THE ONE VOCABULARY FOR "does this audience subtract people" (CLAUDE.md §6).
+// `category: "exclusion"` used to be a SECOND spelling of it here — see the
+// tombstone on `category` below.
+import { audienceUseOf, type AudienceUse } from "@/lib/ads/audience-source-rules"
 import type { CampaignPersona } from "@/lib/campaigns/contact-sources"
 
 export interface AudienceTemplate {
   id: string
   name: string
   description: string
-  // "persona" — the basis the owner ruled on ("audience should be segmented on
-  // persona"). Kept as its own category rather than folded into "lifecycle":
-  // lifecycle is WHERE they are in our funnel, persona is WHAT KIND of client they
-  // are and what they are trying to do. Conflating them is how a persona audience
-  // ends up being built out of a lifecycle stage.
-  category: "remarketing" | "lookalike" | "exclusion" | "geo" | "lifecycle" | "persona"
+  /**
+   * WHAT KIND OF RECIPE this is, for browsing. A SHELF LABEL — never the
+   * operation the audience performs.
+   *
+   * ── TOMBSTONE: `"exclusion"` WAS A MEMBER HERE AND IS GONE (CLAUDE.md §6) ──
+   * SURVIVOR: `audienceUseOf(template.sourceRule)` — lib/ads/audience-source-rules.ts:171,
+   * derived by prefix from the one `SOURCE_RULE_TYPES` roster. `templateAudienceUse`
+   * below is the accessor callers use.
+   *
+   * The deleted member was a second spelling of exclusion intent and it had
+   * already drifted from the first: `exclude_lifetime_customers` carried
+   * `category: "exclusion"` while its own `sourceRule.type` was
+   * `lifetime_customers`, which `audienceUseOf` reads as an INCLUSION rule — so
+   * the catalog said "exclusion" and every gate that matters said "inclusion"
+   * about the same template. It also never persisted: `facebook_custom_audiences`
+   * has no category column, so the claim vanished the moment an operator clicked
+   * the template and could not be checked by anything downstream.
+   *
+   * "persona" stays its own shelf rather than folding into "lifecycle": lifecycle
+   * is WHERE someone is in our funnel, persona is WHAT KIND of client they are and
+   * what they are trying to do. Conflating them is how a persona audience ends up
+   * being built out of a lifecycle stage.
+   */
+  category: "remarketing" | "lookalike" | "geo" | "lifecycle" | "persona"
   audienceType: AudienceType
   sourceRule: SourceRule
   consentBasis: string
@@ -237,12 +259,14 @@ export const FB_AUDIENCE_TEMPLATES: AudienceTemplate[] = [
     estimatedSizeLabel: "~6M (3% of US adults)",
   },
 
-  // ─── EXCLUSION ──────────────────────────────────────────────────────────
+  // ─── SUPPRESSION-FIRST (the rule type declares it, not a category) ──────
   {
     id: "exclude_active_pipeline",
     name: "Exclude — Active Pipeline",
-    description: "USE AS EXCLUSION on every retargeting/lookalike campaign. Prevents your ads from spending budget on contacts you're already in conversation with.",
-    category: "exclusion",
+    description: "USE AS EXCLUSION on every retargeting/lookalike campaign. Prevents your ads from spending budget on contacts you're already in conversation with. Its rule type is `exclusion_active_pipeline`, so the product itself knows this audience exists to be subtracted — `templateAudienceUse` reads that, and the gate at lib/ads/audience-exclusion.ts checks it when a campaign actually uses it.",
+    // Its shelf is lifecycle; its OPERATION is derived from the rule type, which
+    // is the only spelling of exclusion intent left in this file (see `category`).
+    category: "lifecycle",
     audienceType: "custom",
     sourceRule: {
       type: "exclusion_active_pipeline",
@@ -252,26 +276,37 @@ export const FB_AUDIENCE_TEMPLATES: AudienceTemplate[] = [
     recommendedFor: ["Apply as exclusion to ALL prospecting campaigns"],
     estimatedSizeLabel: "Your full active pipeline",
   },
-  {
-    id: "exclude_lifetime_customers",
-    name: "Exclude — Lifetime Customers",
-    description: "USE AS EXCLUSION on prospecting ads — your past clients shouldn't see ads asking them to 'find an agent.' Suppresses them from cold-acquisition campaigns.",
-    category: "exclusion",
-    audienceType: "custom",
-    sourceRule: {
-      type: "lifetime_customers",
-      filters: {},
-    },
-    consentBasis: "Internal exclusion list",
-    recommendedFor: ["Prospecting / acquisition campaigns"],
-    estimatedSizeLabel: "Your full lifetime customer roster",
-  },
+  // ── TOMBSTONE: "Exclude — Lifetime Customers" (id `exclude_lifetime_customers`)
+  //    WAS HERE AND IS GONE (CLAUDE.md §1, §6) ───────────────────────────────
+  // SURVIVOR: the `lifetime_customers` template at lib/ads/fb-audience-templates.ts:307,
+  // which declares the identical rule (`{ type: "lifetime_customers" }`) and has
+  // absorbed this one's recommendation.
+  //
+  // It was a DUPLICATE that existed only to carry `category: "exclusion"` — the
+  // second spelling of exclusion intent this file no longer has. The two
+  // spellings disagreed about this very template: the category said "exclusion"
+  // while `audienceUseOf(sourceRule)` said "inclusion", and no gate reads the
+  // category, so an operator who clicked it got an ordinary lifetime-customer
+  // audience with a promise attached to nothing.
+  //
+  // The capability it was reaching for now exists for real: a campaign declares
+  // which audiences it SUPPRESSES in `TargetingConfig.excluded_audience_ids`, and
+  // every audience placed there is gated (lib/ads/audience-exclusion.ts). "Use
+  // this as an exclusion" is a property of the CAMPAIGN that uses it — one
+  // audience, used either way, checked when it is used.
 
   // ─── LIFECYCLE / SPHERE ─────────────────────────────────────────────────
   {
+    // THE SURVIVOR of the `exclude_lifetime_customers` merge (§1). That template
+    // named the SAME rule type with the same filters and differed only in the
+    // deleted `category: "exclusion"` spelling, so its content is merged here:
+    // its use — suppressing past clients from cold-acquisition prospecting — is
+    // now DECLARED where the system can see and gate it, in a campaign's
+    // `excluded_audience_ids` slot, rather than asserted by a catalog label that
+    // never left the browser.
     id: "lifetime_customers",
-    name: "Lifetime Customers — Direct",
-    description: "Reach your past clients with anniversary content, market updates, and referral asks. They've already converted; this is relationship-keeping.",
+    name: "Lifetime Customers",
+    description: "Your past clients. Target them directly with anniversary content, market updates and referral asks — or put this audience in a campaign's Exclude list so prospecting ads never ask a past client to 'find an agent'.",
     category: "lifecycle",
     audienceType: "custom",
     sourceRule: {
@@ -284,7 +319,11 @@ export const FB_AUDIENCE_TEMPLATES: AudienceTemplate[] = [
       filters: { min_tenure_months: 0 },
     },
     consentBasis: "Past client — established relationship",
-    recommendedFor: ["Annual anniversaries", "Market updates", "Referral asks", "Equity awareness"],
+    recommendedFor: [
+      "Annual anniversaries", "Market updates", "Referral asks", "Equity awareness",
+      // Merged from the deleted duplicate.
+      "Exclude from prospecting / acquisition campaigns",
+    ],
     estimatedSizeLabel: "Your full LC roster",
   },
   {
@@ -332,6 +371,26 @@ export const FB_AUDIENCE_TEMPLATES: AudienceTemplate[] = [
     estimatedSizeLabel: "Local market coverage",
   },
 ]
+
+/**
+ * PURE. Which OPERATION a template's audience performs on the people it selects
+ * — derived from its source rule, never from its shelf label.
+ *
+ * THE ONE ACCESSOR (§6). It exists so callers do not each write
+ * `audienceUseOf(t.sourceRule)` and one of them eventually write
+ * `t.category === "exclusion"` instead, which is the drift this file just paid
+ * for: the deleted category said "exclusion" about a template whose rule type
+ * said "inclusion", and the gates read the rule type.
+ *
+ * Note what it is NOT: it answers what the AUDIENCE'S OWN RULE declares. A
+ * campaign can subtract any audience by naming it in
+ * `TargetingConfig.excluded_audience_ids`, and THAT placement is gated by
+ * lib/ads/audience-exclusion.ts, which escalates the persona verdict to
+ * "exclusion" whatever this returns.
+ */
+export function templateAudienceUse(template: AudienceTemplate): AudienceUse {
+  return audienceUseOf(template.sourceRule)
+}
 
 /**
  * Pure synchronous lookup of a template by id. Returns the full template or

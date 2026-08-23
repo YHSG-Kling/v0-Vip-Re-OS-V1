@@ -49,9 +49,29 @@ export function MobileCommandStrip({
     },
   ]
 
+  // ── ORPHAN-ROUTE SWEEP (lane G) — "Activity" was a link to nothing, while the
+  //    page it wanted was a route nothing linked to. Both halves are here:
+  //
+  //    · `/mobile/log` DOES NOT EXIST. `ls app/mobile` is activity, approvals,
+  //      assistant, contacts, voice — there is no `log` segment and never was, so
+  //      this tile 404'd on every tap since it was written.
+  //    · `/mobile/activity` DOES exist and is the reader for exactly this: the
+  //      agent's own logged calls, knocks and notes (its docblock records that
+  //      `getAgentActivities` had no caller and no nav entry, and test:orphan-routes
+  //      listed it as an orphan on that basis).
+  //
+  //    Pointing the tile at the page that was built for it resolves both. The
+  //    label is now "Activity" rather than "Log Activity": the destination is the
+  //    HISTORY, and the logging verbs live on the field surfaces
+  //    (field-quick-actions / contact-command-strip → `logActivity`).
+  //
+  //    STILL DANGLING, reported not guessed: `/mobile/directions` and
+  //    `/mobile/notes/new` have no page either. Neither has an existing surface
+  //    that obviously IS them, so inventing a destination would be a guess —
+  //    they are left as-is and named in the lane report.
   const secondaryActions = [
     { icon: MapPin, label: "Directions", href: "/mobile/directions" },
-    { icon: Clock, label: "Log Activity", href: "/mobile/log" },
+    { icon: Clock, label: "Activity", href: "/mobile/activity" },
     { icon: FileText, label: "Quick Note", href: "/mobile/notes/new" },
     { icon: Plus, label: "New Contact", href: "/mobile/contacts/new" },
   ]

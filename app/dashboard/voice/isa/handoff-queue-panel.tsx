@@ -60,8 +60,8 @@ interface QualifiedContact {
 // `assigned_to_agent_id` is the trap. `tasks.assigned_to_agent_id` — the SAME
 // COLUMN NAME on another table — really does FK `agents(id)`, and a dozen call
 // sites in this tree carry comments saying so. On `ai_isa_qualifications` it does
-// not. The repo already records this: `scripts/agent-fk-columns.ts:258` lists
-// this exact column under `USERS_FK_AGENTISH_COLUMNS`, "columns that FK
+// not. The repo already records this: `scripts/agent-fk-columns.ts` lists this
+// exact column under `USERS_FK_AGENTISH_COLUMNS`, "columns that FK
 // public.users(id) but whose NAME reads agent-ish". And the surface that renders
 // the assignee agrees — `app/actions/ai-isa.ts:528` embeds
 // `assigned_agent:users!assigned_to_agent_id (first_name, last_name)`, a join

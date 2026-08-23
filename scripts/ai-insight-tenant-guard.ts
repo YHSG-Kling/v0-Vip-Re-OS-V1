@@ -2331,7 +2331,7 @@ function assertOneLeadTenantResolver(): boolean {
 // subtlety: `tasks.assigned_to_agent_id` — the SAME COLUMN NAME on another table
 // — really does FK `agents(id)`, and a dozen call sites in this tree carry
 // comments saying so. This repo already recorded the difference:
-// `scripts/agent-fk-columns.ts:258` lists `ai_isa_qualifications.
+// `scripts/agent-fk-columns.ts` lists `ai_isa_qualifications.
 // assigned_to_agent_id` under `USERS_FK_AGENTISH_COLUMNS`. So the brief's
 // premise — "assigned_to_agent_id → an agents.id" — is FALSIFIED BY THE FK, and
 // the contract collapses to ONE identity rather than two.

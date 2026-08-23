@@ -28,8 +28,14 @@ function check(name: string, cond: boolean) {
   else { failed++; failures.push(name); console.log(`  ✗ ${name}`) }
 }
 
+// "exclusion" WAS A MEMBER. It is gone with the union member it mirrored —
+// SURVIVOR: `templateAudienceUse(t)` (lib/ads/fb-audience-templates.ts), derived
+// from the source rule. The category was a second spelling of exclusion intent
+// and it had already drifted: `exclude_lifetime_customers` claimed the category
+// while its rule type said inclusion. A stale member here would keep passing
+// forever, since this list only ever ADMITS.
 const VALID_CATEGORIES: AudienceTemplate["category"][] = [
-  "remarketing", "lookalike", "exclusion", "geo", "lifecycle",
+  "remarketing", "lookalike", "geo", "lifecycle",
   // The owner's persona basis ("audience should be segmented on persona"). The
   // catalog now DERIVES one template per ads-eligible persona; without this member
   // every one of them would fail the valid-category check above.

@@ -18,6 +18,7 @@
  * Pure scorer exported for the sim; the reader composes per agent scope.
  */
 import { createServiceClient } from "@/lib/supabase/service"
+import { LIFETIME_CONTACT_TYPES } from "@/lib/contact-types"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -145,7 +146,7 @@ export async function rankSphereActions(
   const { data: quiet } = await scope(
     svc.from("contacts").select("id, first_name, last_name, last_contacted_at")
       .eq("brokerage_id", input.brokerageId)
-      .in("contact_type", ["past_client", "sphere", "lifetime_customer"])
+      .in("contact_type", [...LIFETIME_CONTACT_TYPES])
       .lt("last_contacted_at", quietCutoff) as any,
   ).limit(30)
   for (const c of ((quiet ?? []) as any[])) {

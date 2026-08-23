@@ -7,7 +7,7 @@ import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
-import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
+import { SPHERE_CONTACT_TYPES } from "@/lib/contact-types"
 
 /**
  * AI Sphere of Influence Management System
@@ -46,7 +46,7 @@ export async function aiScoreSphereEngagement(params: { agentId: string }) {
         transactions!transactions_contact_id_fkey(id, status, close_date)
       `)
       .eq("agent_id", params.agentId)
-      .in("contact_type", [LIFETIME_CUSTOMER_TYPE, "sphere", "referral_partner"])
+      .in("contact_type", [...SPHERE_CONTACT_TYPES])
 
     if (!contacts || contacts.length === 0) {
       return { success: true, data: [] }
@@ -448,7 +448,7 @@ export async function aiSegmentSphere(params: { agentId: string }) {
         referrals:referrals!referrer_contact_id(id)
       `)
       .eq("agent_id", params.agentId)
-      .in("contact_type", [LIFETIME_CUSTOMER_TYPE, "sphere", "referral_partner"])
+      .in("contact_type", [...SPHERE_CONTACT_TYPES])
 
     if (!contacts || contacts.length === 0) {
       return { success: true, data: { segments: [] } }

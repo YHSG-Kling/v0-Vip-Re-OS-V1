@@ -513,6 +513,10 @@ export async function stageAdCampaign(
         : [],
       interests: [],
       custom_audience_ids: [],
+      // NO SUPPRESSION LIST, said explicitly rather than omitted. A staged draft
+      // suppresses nobody; the agent adds exclusions in the ads dashboard, where
+      // every one of them is gated (lib/ads/audience-exclusion.ts).
+      excluded_audience_ids: [],
       lookalike_source_audience_id: null,
       income_percentile: "any" as const,
       homeowner_status: "any" as const,

@@ -444,6 +444,11 @@ export async function advanceStage(params: {
         .from("contacts")
         .update({
           contact_type: LIFETIME_CUSTOMER_TYPE,
+          // The other half of the same fact — see the note at lib/kernel/transactions.ts.
+          // contact_type and lifecycle_state are one idea in two columns; the promotion
+          // writers are what keep them agreeing now that m539 has retired the spelling
+          // the old cross-column CHECK policed.
+          lifecycle_state: LIFETIME_CUSTOMER_TYPE,
           updated_at: new Date().toISOString(),
         })
         .eq("id", closedTxn.seller_contact_id)

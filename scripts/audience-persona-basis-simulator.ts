@@ -69,11 +69,11 @@ import {
 import {
   CAMPAIGN_PERSONAS,
   CAMPAIGN_CONTACT_TYPES,
-  LIFETIME_CONTACT_TYPES,
   rawSpellingsForPersona,
   normalizeContactPersona,
   type CampaignPersona,
 } from "../lib/campaigns/contact-sources"
+import { LIFETIME_CONTACT_TYPES } from "../lib/contact-types"
 import {
   PROTECTED_CLASS_TOKENS,
   protectedClassReasonFor,
@@ -490,7 +490,11 @@ function main() {
   check("…and each of those four templates is an INCLUSION basis, never an exclusion rule type",
     independentlyProtected.every((p) => {
       const t = FB_AUDIENCE_TEMPLATES.find((x) => x.id === `persona_${p}`)
-      return !!t && t.sourceRule.type === PERSONA_SEGMENT_TYPE && t.category !== "exclusion"
+      // ASKS THE RULE, not the shelf label. `category: "exclusion"` is deleted
+      // (§6) — SURVIVOR: audienceUseOf(t.sourceRule), the same function every
+      // gate reads, which is why this assertion is now checking the thing that
+      // actually decides the operation.
+      return !!t && t.sourceRule.type === PERSONA_SEGMENT_TYPE && audienceUseOf(t.sourceRule) !== "exclusion"
     }))
   check("NO shipped template anywhere in the catalog combines an exclusion rule type with a persona basis",
     FB_AUDIENCE_TEMPLATES.every((t) => !(audienceUseOf(t.sourceRule) === "exclusion" && declaresPersonaBasis(t.sourceRule))))
@@ -531,7 +535,7 @@ function main() {
     CAMPAIGN_PERSONAS.every((p) => !contactTypeVocabulary.has(p)),
     CAMPAIGN_PERSONAS.filter((p) => contactTypeVocabulary.has(p)).join(",") || "no overlap")
   check("POSITIVE CONTROL — that overlap scanner recognises a contact type when it sees one",
-    contactTypeVocabulary.has("lifetime") && contactTypeVocabulary.has("past_client"))
+    contactTypeVocabulary.has("lifetime_customer") && contactTypeVocabulary.has("sphere"))
 
   // The verdict per member, printed rather than asserted where the answer is a
   // judgement call. A judgement asserted as a pass is how a review becomes a

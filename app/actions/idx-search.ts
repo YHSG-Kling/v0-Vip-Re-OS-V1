@@ -262,7 +262,10 @@ export async function saveProperty(data: {
       console.error("[idx-search] property_save behavioural event NOT recorded:", e)
     }
 
-    revalidatePath("/properties/saved")
+    // Repointed off the DELETED /properties/saved (orphan-route sweep, lane G):
+    // the surviving reader is the portal Properties tab. See the tombstone at
+    // app/components/portal/PersonaPropertiesDashboard.tsx (Saved tab).
+    revalidatePath(`/portal/${data.contactId}/properties`)
     return { success: true, message: "Property saved successfully" }
   } catch (error: any) {
     console.error("Save property error:", error)
@@ -294,7 +297,10 @@ export async function unsaveProperty(data: {
     return { success: false, error: "That property is not in your saved list" }
   }
 
-  revalidatePath("/properties/saved")
+  // Repointed off the DELETED /properties/saved (orphan-route sweep, lane G):
+  // the surviving reader — and now this action's only caller — is the portal
+  // Properties tab's Saved list.
+  revalidatePath(`/portal/${data.contactId}/properties`)
   return { success: true, message: "Property removed from saved" }
 }
 

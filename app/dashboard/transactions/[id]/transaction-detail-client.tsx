@@ -1429,6 +1429,23 @@ export function TransactionDetailClient({
                 ${transaction.purchase_price?.toLocaleString()} | {transaction.deal_type ?? "Purchase"}
               </p>
             </div>
+            {/* ── ORPHAN-ROUTE SWEEP (lane G) — THE LINK THIS HEADER OWED. ─────
+                /dashboard/transactions/[id]/milestones is the ad-hoc milestone
+                surface `createTransactionMilestone` (app/actions/copilot.ts) was
+                written for — the only lane in the product for adding ONE
+                milestone by hand; everything else writes a SET. The page's own
+                docblock recorded the debt: "There is no LINK into this route yet…
+                The one line still owed on the parent (a link to this route from
+                the deal header) is REPORTED, not written here." The lane boundary
+                that deferred it has since closed. This is that line.
+                Unconditional, unlike CDA Workflow above it: a deal has
+                milestones at every stage, not only in CLOSING_PREP. */}
+            <Link href={`/dashboard/transactions/${transaction.id}/milestones`}>
+              <Button variant="outline" size="sm">
+                <FileText className="h-4 w-4 mr-2" />
+                Milestones
+              </Button>
+            </Link>
             {currentStage === "CLOSING_PREP" && (
               <Link href={`/dashboard/transactions/${transaction.id}/cda`}>
                 <Button variant="outline" size="sm">

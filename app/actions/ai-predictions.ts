@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { generateAIJSON } from "@/lib/ai"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
+import { LIFETIME_CONTACT_TYPES } from "@/lib/contact-types"
 
 // ============================================
 // PREDICTIVE LEAD CONVERSION ENGINE
@@ -3265,7 +3266,10 @@ export async function mineSphereOfInfluence(agentId: string) {
     )
     .eq("brokerage_id", sphereBrokerageId)
     .eq("agent_id", agentId)
-    .in("contact_type", ["past_client", "lifetime", "lifetime_customer", "client", "sphere"])
+    // WAS a fifth inline copy of the post-close roster, naming `past_client` and
+    // `lifetime` — two values m539 retired, so two of its five members matched nothing.
+    // Survivor: lib/contact-types.ts:LIFETIME_CONTACT_TYPES.
+    .in("contact_type", [...LIFETIME_CONTACT_TYPES])
 
   if (pastClientsError) {
     console.error("[ai-predictions] mineSphereOfInfluence: past-client sweep refused:", pastClientsError.message)

@@ -177,7 +177,125 @@ for (const [col, m] of votes) {
 //   · SELF-REFERENCE — `contacts.contact_id` is that table's own SECONDARY unique
 //     id, not a link to a parent contact. A row is not its own child.
 //   · UNRESOLVED — no consensus parent. Counted as a blind spot, never accused.
+//   · A VIEW — a view holds no rows, so it has no child row to orphan, and
+//     PostgreSQL will not accept a foreign key on one at all. See PUBLIC_VIEWS.
+//
+// ── PUBLIC_VIEWS — the relations in `public` that are VIEWS, not tables. ──────
+//
+// WHY THIS EXISTS (lane G, orphan burn-down). OC1 was accusing SIX relations that
+// CANNOT be repaired, because a view cannot carry a foreign key:
+//   contact_lead_history.contact_id, contact_lead_history.lead_id,
+//   social_post_baselines_28d.brokerage_id, sphere_engagement_scores.brokerage_id,
+//   v_brokerage_ai_quota.brokerage_id, v_brokerage_onboarding_progress.brokerage_id,
+//   v_platform_margin.brokerage_id
+// The file already KNEW this in two places and applied it in neither: the OC3 arm
+// excludes `contact_lead_history` with the reason "a view holds no child rows",
+// and the OC1 control block below says in as many words that the columns left out
+// of the FK map "are 5 VIEWS, which cannot carry an FK at all". OC1 counted them
+// anyway. An accusation with no possible fix is the §2 failure of accusing live
+// code: it inflates the burn-down list with work nobody can do, and the next lane
+// either writes a migration that ERRORS on apply or deletes something to move the
+// number.
+//
+// DECLARED, LIVE-VERIFIED, NOT INFERRED. `LIVE_TABLES` is built from
+// information_schema.columns, which its own header says "does not separate" tables
+// from views, and no schema cache carries relkind — the same gap OC2's blind-spot
+// note already records for pg_constraint.confdeltype. So this is a declaration,
+// measured against hrvaqgvukzxfskkcrwbt on 2026-08-23 by:
+//
+//   select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
+//    where n.nspname = 'public' and c.relkind in ('v','m') order by 1;
+//
+// It returned 11 rows — ALL of them are listed, not just the six OC1 was accusing,
+// so a future view that acquires a parent-shaped column is covered without anyone
+// having to notice. `contact_lead_history` is deliberately duplicated here and in
+// lib/contact-promotion/history-carry.ts's DUAL_KEYED_NON_TABLES: that constant
+// answers OC3's question ("does the conversion carry this table's history?") and
+// this one answers OC1's ("can this relation carry an FK?"). Merging them would
+// make one list mean two things.
+//
+// BLIND SPOT, published beside the number: this is a snapshot, like OC2's. A view
+// created after 2026-08-23 is invisible to it and will be accused. The census
+// prints `PUBLIC_VIEWS.length` in the coverage block so the denominator travels
+// with the count.
+const PUBLIC_VIEWS = new Set<string>([
+  "ai_isa_validation_dashboard",
+  "contact_lead_history",
+  "content_topic_persona_performance",
+  "escalation_dashboard",
+  "financial_dashboard_view",
+  "newsletter_video_persona_renders",
+  "social_post_baselines_28d",
+  "sphere_engagement_scores",
+  "v_brokerage_ai_quota",
+  "v_brokerage_onboarding_progress",
+  "v_platform_margin",
+])
+
+// ── CROSS_SCHEMA_FK — links the database DOES enforce, onto a parent the FK ───
+//    cache cannot see.
+//
+// WHY THIS EXISTS (lane G, orphan burn-down). Ten more OC1 findings were
+// accusing columns that ARE enforced. Nine of them carry a foreign key onto
+// `auth.users` — Supabase's own identity table, in the `auth` schema.
+// scripts/schema-fk-map.ts is generated from the PUBLIC schema (as it must be:
+// `auth` is not the app's to describe), so those constraints are invisible to it,
+// and the census read that absence as "no FK". It is the exact error CLAUDE.md §1
+// warns about in the other direction — unreferenced is not dead; here, unseen was
+// not unenforced.
+//
+// MEASURED LIVE against hrvaqgvukzxfskkcrwbt on 2026-08-23:
+//
+//   select cl.relname||'.'||a.attname
+//     from pg_constraint con
+//     join pg_class cl on cl.oid = con.conrelid
+//     join pg_namespace n  on n.oid  = cl.relnamespace and n.nspname = 'public'
+//     join pg_class cl2 on cl2.oid = con.confrelid
+//     join pg_namespace n2 on n2.oid = cl2.relnamespace and n2.nspname <> 'public'
+//     join pg_attribute a on a.attrelid = con.conrelid and a.attnum = con.conkey[1]
+//    where con.contype = 'f' and array_length(con.conkey,1) = 1;
+//
+// 19 pairs, ALL of them listed below (not just the ten OC1 was accusing), so a
+// future column of this shape is covered without anyone having to notice.
+//
+// ONE OF THESE IS ALSO A WRONG-PARENT FINDING, REPORTED NOT SILENCED:
+// `credit_accounts.agent_id` is FK'd to auth.users, but the consensus oracle above
+// votes agent_id → agents 190/191. CLAUDE.md §3: `agents.id` and `users.id` are
+// DISJOINT (23503) and must be crossed via `agents.user_id`. So that column holds
+// a USER id under an AGENT id's name — a §6 one-vocabulary defect in the schema,
+// not an unprotected link. Excluding it here is correct for THIS census (the link
+// is enforced) and the naming defect is named in the lane report.
+//
+// BLIND SPOT, published beside the number: like PUBLIC_VIEWS, a snapshot. A
+// cross-schema FK added after 2026-08-23 is not in it and its column will be
+// accused. The proper end state is an FK-map generator that records the parent's
+// SCHEMA — that generator is scripts/generate-*.ts and belongs to another lane
+// this wave, so this is the census's own declaration, not an edit to the cache.
+const CROSS_SCHEMA_FK = new Set<string>([
+  "ai_tool_favorites.user_id",
+  "automation_logs.user_id",
+  "contact_notes.author_user_id",
+  "contacts.contact_user_id",
+  "credit_accounts.agent_id",
+  "credit_partner_referrals.referring_agent_id",
+  "document_sharing_links.shared_by",
+  "lead_magnets.agent_user_id",
+  "lifecycle_events.user_id",
+  "podcast_distribution_channels.agent_user_id",
+  "push_notification_queue.user_id",
+  "referral_partners.user_id",
+  "seller_share_feed.pushed_by_user_id",
+  "template_feedback.user_id",
+  "template_marketplace.author_user_id",
+  "user_brokerage_roles.user_id",
+  "vendor_access_logs.user_id",
+  "vendor_invitations.accepted_by",
+  "vendor_marketplace_profiles.user_id",
+])
+
 const POLY_BASES_SEEN = new Set<string>()
+let oc1Views = 0
+let oc1CrossSchema = 0
 let oc1SelfRef = 0
 let oc1Poly = 0
 let oc1Protected = 0
@@ -200,18 +318,32 @@ let oc1Examined = 0
  * which cannot be repaired out from under it — and because the census loop calls
  * the same function, there is no second spelling to drift (§6).
  */
-export type Oc1Verdict = "protected" | "self_ref" | "polymorphic" | "unprotected"
+export type Oc1Verdict =
+  | "protected" | "cross_schema_fk" | "self_ref" | "polymorphic" | "view" | "unprotected"
 export function oc1Verdict(
   table: string,
   col: string,
   colSet: Set<string>,
   fks: Record<string, unknown>,
   consensusParent: string | undefined,
+  /** PUBLIC_VIEWS by default; a parameter so the controls can drive it. */
+  views: Set<string> = PUBLIC_VIEWS,
+  /** CROSS_SCHEMA_FK by default; a parameter for the same reason. */
+  crossSchema: Set<string> = CROSS_SCHEMA_FK,
 ): Oc1Verdict | null {
   if (!consensusParent) return null
   if (fks[col]) return "protected"
+  // ENFORCED, JUST NOT BY A PUBLIC-SCHEMA CONSTRAINT. Second, right after the
+  // cache's own answer: if the FK map ever learns about these the cache wins and
+  // this declaration becomes dead weight rather than a competing opinion (§6).
+  if (crossSchema.has(`${table}.${col}`)) return "cross_schema_fk"
   if (consensusParent === table) return "self_ref"
   if (colSet.has(`${col.replace(/_id$/, "")}_type`)) return "polymorphic"
+  // A VIEW HOLDS NO ROWS. Ordered AFTER "protected" deliberately: if a relation
+  // named here ever stops being a view and acquires a real FK, it should read as
+  // protected rather than as excluded, so a stale declaration degrades toward the
+  // truth instead of hiding it.
+  if (views.has(table)) return "view"
   return "unprotected"
 }
 
@@ -228,6 +360,8 @@ for (const table of snapshotTables) {
     if (verdict === "protected") { oc1Protected++; continue }
     if (verdict === "self_ref") { oc1SelfRef++; continue }
     if (verdict === "polymorphic") { oc1Poly++; POLY_BASES_SEEN.add(col.replace(/_id$/, "")); continue }
+    if (verdict === "view") { oc1Views++; continue }
+    if (verdict === "cross_schema_fk") { oc1CrossSchema++; continue }
     add(
       "oc1",
       `${table}.${col}`,
@@ -460,6 +594,27 @@ for (const dir of appDirs) {
     const liveAnchors = [...oc1Keys].filter((k) => k.endsWith(".brokerage_id"))
     console.log(`            [recorded] live unprotected brokerage_id anchors: ${liveAnchors.length}`
       + (liveAnchors.length ? ` — ${liveAnchors.slice(0, 5).join(", ")}` : " (m533 closed this class)"))
+    // ── WHAT THAT NUMBER MEANS TODAY (lane G, measured 2026-08-23) ───────────
+    // It was 6. Five of the six were VIEWS and are now excluded by rule above.
+    // The one that remains — vendor_subscriptions.brokerage_id — IS NOT A REAL
+    // GAP: the constraint exists live. Measured against hrvaqgvukzxfskkcrwbt:
+    //
+    //   vendor_subscriptions_brokerage_id_fkey → public.brokerages, ON DELETE CASCADE
+    //
+    // and the same query m533 reports against returns ZERO public tables whose
+    // brokerage_id carries no FK. So this line is now showing SCHEMA-CACHE DRIFT:
+    // scripts/schema-fk-map.ts does not carry that constraint. The cache is
+    // GENERATED, NEVER HAND-EDITED (CLAUDE.md §3) and belongs to another lane this
+    // wave, so it is REPORTED here rather than patched — `npm run schema:regen`
+    // is the fix, and this finding disappears on its own when that runs.
+    //
+    // NOT folded into CROSS_SCHEMA_FK deliberately: that declaration is for links
+    // whose parent the public cache CANNOT see. This one it simply has not
+    // absorbed yet, and hiding drift behind an exemption is how a stale cache
+    // stops being noticed.
+    console.log("            [recorded] the one entry above is CACHE DRIFT, not a missing FK:")
+    console.log("            vendor_subscriptions_brokerage_id_fkey exists live (→ brokerages, ON DELETE CASCADE).")
+    console.log("            Fix is `npm run schema:regen`, not a migration. See the note at this line.")
   }
   // ── OC1, negative: a link the census MUST NOT flag ────────────────────────
   control("oc1 NEGATIVE: does NOT flag a link the database already enforces",
@@ -470,6 +625,47 @@ for (const dir of appDirs) {
     !oc1Keys.has("audit_log.entity_id") && !oc1Keys.has("notifications.entity_id"))
   control("oc1 NEGATIVE: the rule is a rule, not a special case — the polymorphic\n            filter matched real columns",
     oc1Poly > 0, `${oc1Poly} polymorphic link(s) excluded`)
+  // ── OC1, the VIEW rule (lane G). Three arms, because an exclusion is the
+  //    easiest place in a census to hide a defect: it lowers a number and looks
+  //    like progress. These prove it lowers it for the stated reason only.
+  //
+  //    1. NEGATIVE — the six real view columns OC1 used to accuse are gone.
+  control("oc1 NEGATIVE: does NOT flag a column on a VIEW (a view holds no rows and\n            PostgreSQL refuses an FK on one)",
+    !oc1Keys.has("contact_lead_history.lead_id")
+      && !oc1Keys.has("v_platform_margin.brokerage_id")
+      && !oc1Keys.has("sphere_engagement_scores.brokerage_id"),
+    [...oc1Keys].filter((k) => PUBLIC_VIEWS.has(k.split(".")[0])).join(","))
+  //    2. POSITIVE — and it excluded them by MATCHING, not by returning "view"
+  //       for everything. The same synthetic specimen the arm above uses is still
+  //       "unprotected" when it is not a view, and becomes "view" only when the
+  //       declaration names it.
+  control("oc1 POSITIVE: the VIEW rule is a rule, not a blanket — the same synthetic\n            child is 'unprotected' as a table and 'view' only once declared one",
+    oc1Verdict("zz_synthetic_child", "brokerage_id", new Set(["id", "brokerage_id"]), {}, "brokerages",
+      new Set<string>()) === "unprotected"
+      && oc1Verdict("zz_synthetic_child", "brokerage_id", new Set(["id", "brokerage_id"]), {}, "brokerages",
+        new Set(["zz_synthetic_child"])) === "view")
+  //    3. POSITIVE — the exclusion actually fired on live input, so a declaration
+  //       that had drifted to match nothing could not pass as "clean".
+  control("oc1 POSITIVE: the VIEW exclusion matched real columns (a declaration that\n            matched nothing would report a clean tree it never looked at)",
+    oc1Views > 0, `${oc1Views} column(s) on a view excluded`)
+  // ── OC1, the CROSS-SCHEMA FK rule (lane G). Same three arms, same reason.
+  control("oc1 NEGATIVE: does NOT flag a column the database enforces onto auth.users\n            (the public-schema FK cache cannot see that constraint)",
+    !oc1Keys.has("ai_tool_favorites.user_id")
+      && !oc1Keys.has("push_notification_queue.user_id")
+      && !oc1Keys.has("referral_partners.user_id"),
+    [...oc1Keys].filter((k) => CROSS_SCHEMA_FK.has(k)).join(","))
+  control("oc1 POSITIVE: the cross-schema rule is a rule, not a blanket — the same\n            synthetic child is 'unprotected' undeclared and 'cross_schema_fk' declared",
+    oc1Verdict("zz_synthetic_child", "user_id", new Set(["id", "user_id"]), {}, "users",
+      new Set<string>(), new Set<string>()) === "unprotected"
+      && oc1Verdict("zz_synthetic_child", "user_id", new Set(["id", "user_id"]), {}, "users",
+        new Set<string>(), new Set(["zz_synthetic_child.user_id"])) === "cross_schema_fk")
+  control("oc1 POSITIVE: the cross-schema exclusion matched real columns",
+    oc1CrossSchema > 0, `${oc1CrossSchema} cross-schema-FK column(s) excluded`)
+  // The cache still WINS over the declaration — otherwise a stale entry here would
+  // outlive the fix and quietly hide a link that later lost its constraint.
+  control("oc1 NEGATIVE: a declared cross-schema column whose PUBLIC FK exists reads as\n            'protected', not as the declaration — the cache outranks the declaration",
+    oc1Verdict("zz_synthetic_child", "user_id", new Set(["id", "user_id"]), { user_id: "users" }, "users",
+      new Set<string>(), new Set(["zz_synthetic_child.user_id"])) === "protected")
 
   // ── OC3, both arms ────────────────────────────────────────────────────────
   control("oc3 POSITIVE: the dual-keyed finder still sees the tables it counts",
@@ -535,6 +731,11 @@ if (process.env.ORPHANED_CHILD_VERBOSE === "1") for (const c of controls) consol
 console.log("\n[coverage — denominators and blind spots, printed beside the numbers]")
 console.log(`  OC1 · ${oc1Examined} parent-link column(s) examined across ${snapshotTables.length} cached tables`)
 console.log(`      · ${oc1Protected} already carry an FK · ${oc1Poly} polymorphic (a <base>_type sits beside them) · ${oc1SelfRef} self-referential`)
+console.log(`      · ${oc1Views} column(s) on a VIEW — excluded: a view holds no rows and PostgreSQL refuses an FK on one`)
+console.log(`      · ${oc1CrossSchema} column(s) FK'd to a NON-public parent (auth.users) — excluded: enforced, but by a`)
+console.log(`        constraint the public-schema FK cache cannot see. ${CROSS_SCHEMA_FK.size} declared, measured live 2026-08-23.`)
+console.log(`      · PUBLIC_VIEWS declares ${PUBLIC_VIEWS.size} view(s), measured live 2026-08-23 (relkind is in NO schema cache —`)
+console.log(`        the same gap OC2 records for confdeltype). BLIND SPOT: a view created since is not in it and WILL be accused.`)
 console.log(`      · ${CONSENSUS.size} column names have a consensus parent (≥${MIN_VOTES} votes, ≥${CONSENSUS_RATIO * 100}% agreement)`)
 console.log(`      · ${UNRESOLVED_COLUMNS.length} FK-bearing column name(s) have NO consensus — unresolved, counted, never accused`)
 // BLIND SPOT, beside its number. SCHEMA_SNAPSHOT is `referenced ∩ live`, so a

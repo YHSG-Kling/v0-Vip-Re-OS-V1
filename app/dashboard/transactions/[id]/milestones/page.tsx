@@ -15,15 +15,18 @@
  * sub-route, so this follows it. The one line still owed on the parent (a link to
  * this route from the deal header) is REPORTED, not written here.
  *
- * STILL OWED — SAID PLAINLY. There is no LINK into this route yet.
- * `test:orphan-routes` counts it as referenced only because
- * `createTransactionMilestone` now revalidates
- * `/dashboard/transactions/${tx.id}/milestones`, which is correct on its own merits
- * (this page lists the milestones server-side) but is not a way for a human to arrive.
- * The real entry is one link in app/dashboard/transactions/[id]/transaction-detail-client.tsx,
- * beside the existing MilestoneDeadlinesButton:
- *   <Link href={`/dashboard/transactions/${id}/milestones`}>Milestones</Link>
- * That file belongs to another lane and the line is reported, not written.
+ * OWED, AND NOW PAID (orphan-route sweep, lane G). This block used to end "there
+ * is no LINK into this route yet… the line is reported, not written", naming the
+ * exact link and the lane boundary that stopped it being written. That boundary
+ * has closed and the link now exists: a "Milestones" button in the deal header at
+ * app/dashboard/transactions/[id]/transaction-detail-client.tsx, unconditional
+ * (a deal has milestones at every stage, not only in CLOSING_PREP).
+ *
+ * The revalidatePath this block leaned on as partial cover was in any case NOT
+ * cover: test:orphan-routes has since removed revalidatePath from its reference
+ * patterns — "a cache invalidation is evidence a page is INTENDED to exist, never
+ * evidence that a human can GET to it" — and this route was listed as an outright
+ * orphan on that basis.
  *
  * THE ACTION TAKES A LISTING, NOT A TRANSACTION — it resolves the listing's most
  * recent transaction inside the caller's brokerage itself. So this page reads the

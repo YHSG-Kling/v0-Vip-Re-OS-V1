@@ -143,13 +143,13 @@ console.log("\n── TWO axes, not one (m294 corrects m293) ──")
     kernelPersonas.every((p) => (CAMPAIGN_PERSONAS as readonly string[]).includes(p)))
 
   check("seller resolves from contact_type", contactTypeForContact("seller") === "seller")
-  check("a past client is lifetime", contactTypeForContact("past_client") === "lifetime")
+  check("a past client is lifetime_customer", contactTypeForContact("past_client") === "lifetime_customer")
   check("an unknown type defaults to buyer, never dropped",
     contactTypeForContact("wat") === "buyer" && contactTypeForContact(null) === "buyer")
   check("a home-value capture is a SELLER whatever the type said",
     contactTypeForSource(CONTACT_SOURCE_HOME_VALUE, "buyer") === "seller")
   check("…but a known lifetime customer stays lifetime",
-    contactTypeForSource(CONTACT_SOURCE_HOME_VALUE, "past_client") === "lifetime")
+    contactTypeForSource(CONTACT_SOURCE_HOME_VALUE, "past_client") === "lifetime_customer")
 
   // contacts.contact_persona is free text and has ALREADY drifted from Persona.
   check("'first_time_buyer' (a live value) maps to first_time",

@@ -47,7 +47,8 @@ import {
   type SourceRuleNarrowingOk,
   type SourceRuleType,
 } from "../lib/ads/audience-source-rules"
-import { LIFETIME_CONTACT_TYPES, rawSpellingsForPersona } from "../lib/campaigns/contact-sources"
+import { rawSpellingsForPersona } from "../lib/campaigns/contact-sources"
+import { LIFETIME_CONTACT_TYPES } from "../lib/contact-types"
 import { FB_AUDIENCE_TEMPLATES } from "../lib/ads/fb-audience-templates"
 import { blankComments } from "./strip-comments"
 
@@ -80,7 +81,7 @@ const CONTACTS: Array<Record<string, unknown>> = [
   { id: "c4", contact_type: "both",              status: "active", buyer_stage: null,                    engagement_score: 65, contact_persona: "past_client",      last_contacted_at: daysAgo(200), zip_code: "78702", tags: [] },
   { id: "c5", contact_type: "investor",          status: "active", buyer_stage: null,                    engagement_score: 40, contact_persona: null,               last_contacted_at: daysAgo(10),  zip_code: "78745", tags: [] },
   { id: "c6", contact_type: "lifetime_customer", status: "active", buyer_stage: "BUYER_CLOSED",          engagement_score: 55, contact_persona: null,               last_contacted_at: daysAgo(400), zip_code: "78701", tags: [] },
-  { id: "c7", contact_type: "past_client",       status: "inactive", buyer_stage: null,                  engagement_score: 20, contact_persona: null,               last_contacted_at: daysAgo(900), zip_code: "78704", tags: [] },
+  { id: "c7", contact_type: "lifetime_customer", status: "inactive", buyer_stage: null,                  engagement_score: 20, contact_persona: null,               last_contacted_at: daysAgo(900), zip_code: "78704", tags: [] },
   { id: "c8", contact_type: "lead",              status: "new",    buyer_stage: null,                    engagement_score: 5,  contact_persona: "downsizer",        last_contacted_at: daysAgo(5),   zip_code: "78660", tags: [] },
   { id: "c9", contact_type: "buyer",             status: "active", buyer_stage: null,                    engagement_score: 71, contact_persona: "relocation",       last_contacted_at: daysAgo(60),  zip_code: "78701", tags: ["hot-lead"] },
   { id: "c10", contact_type: "prospect",         status: "active", buyer_stage: null,                    engagement_score: 0,  contact_persona: null,               last_contacted_at: null,          zip_code: null,    tags: null },
@@ -147,7 +148,8 @@ const ADMITTED: AdmittedCase[] = [
   { type: "contact_list", filters: { contact_tags: ["hot-lead"] }, expect: ["c1", "c3", "c9"] },
   { type: "contact_list", filters: { contact_tags: ["hot-lead", "luxury"] }, expect: ["c3"] },
   { type: "investor_contacts", filters: {}, expect: ["c5"] },
-  // LIFETIME_CONTACT_TYPES = lifetime, lifetime_customer, past_client, client, sphere
+  // LIFETIME_CONTACT_TYPES = client, lifetime_customer, sphere (m539 collapsed the three
+  // lifetime spellings; the survivor set is lib/contact-types.ts)
   { type: "lifetime_customers", filters: {}, expect: ["c6", "c7"] },
   { type: "lifetime_customers", filters: { min_tenure_months: 0 }, expect: ["c6", "c7"] },
   // Tenure ≥ 12 months → transactions closed on/before 2025-08-22. c6 closed 2020;
@@ -463,8 +465,8 @@ function main() {
   // ───────────────────────────────────────────────────────────────────────────
   console.log("\n[9 · ONE VOCABULARY — the lifetime set is shared, not re-typed (CLAUDE.md §6)]")
 
-  check("LIFETIME_CONTACT_TYPES is exported from contact-sources and used by the ads rule",
-    LIFETIME_CONTACT_TYPES.length === 5
+  check("LIFETIME_CONTACT_TYPES is the ONE canonical roster and the ads rule uses it",
+    LIFETIME_CONTACT_TYPES.length === 3
     && /LIFETIME_CONTACT_TYPES/.test(code("lib/ads/audience-source-rules.ts")))
   check("…and the source-rule module hard-codes NO lifetime list of its own",
     !/\[\s*"lifetime",\s*"lifetime_customer"/.test(code("lib/ads/audience-source-rules.ts")))

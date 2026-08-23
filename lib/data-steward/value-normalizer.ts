@@ -26,6 +26,8 @@
 // buyer_stage / status / lifecycle_state are intentionally NOT importable — they
 // are kernel-managed state machines a foreign CRM's labels must not fight.
 
+import { CONTACT_TYPES, LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
+
 export interface EnumVocabulary {
   /** The canonical values — must mirror the live check constraint exactly. */
   canonical: readonly string[]
@@ -36,15 +38,19 @@ export interface EnumVocabulary {
 export const ENUM_VOCABULARIES: Record<string, EnumVocabulary> = {
   contact_type: {
     canonical: [
-      'lead', 'prospect', 'client', 'lifetime', 'lifetime_customer', 'past_client',
-      'sphere', 'vendor', 'referral_partner', 'investor', 'buyer', 'seller', 'both', 'other',
+      // m539 collapsed lifetime / lifetime_customer / past_client onto one survivor.
+      // This list is the WRITE side: a value outside the live CHECK is refused (23514)
+      // and supabase-js resolves the refusal, so the whole imported row is lost silently.
+      ...CONTACT_TYPES,
     ],
     synonyms: {
       'new lead': 'lead', 'cold lead': 'lead', 'web lead': 'lead', 'internet lead': 'lead',
       'potential client': 'prospect', 'potential': 'prospect', 'possible client': 'prospect',
       'active client': 'client', 'current client': 'client', 'customer': 'client',
-      'past customer': 'past_client', 'previous client': 'past_client', 'closed client': 'past_client',
-      'sold': 'past_client',
+      'past customer': LIFETIME_CUSTOMER_TYPE, 'previous client': LIFETIME_CUSTOMER_TYPE,
+      'closed client': LIFETIME_CUSTOMER_TYPE, 'past client': LIFETIME_CUSTOMER_TYPE,
+      'sold': LIFETIME_CUSTOMER_TYPE, 'lifetime': LIFETIME_CUSTOMER_TYPE,
+      'lifetime customer': LIFETIME_CUSTOMER_TYPE,
       'soi': 'sphere', 'sphere of influence': 'sphere', 'friend': 'sphere', 'family': 'sphere',
       'personal': 'sphere',
       'home buyer': 'buyer', 'homebuyer': 'buyer', 'purchaser': 'buyer', 'buying': 'buyer',

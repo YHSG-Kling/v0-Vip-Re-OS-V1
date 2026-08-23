@@ -27,6 +27,7 @@ import { KernelEvent }         from "@/lib/kernel/events"
 // sequence auto-enrolment on top; the direct call would have skipped all three.
 import { isValidUUID }         from "@/lib/validations"
 import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
+import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -1275,7 +1276,14 @@ export async function closeTransactionCommand(params: {
     if (lifetimeContactIds.length > 0) {
       await supabase
         .from("contacts")
-        .update({ contact_type: "lifetime_customer", updated_at: nowIso })
+        // BOTH COLUMNS, deliberately. `contacts_lifetime_consistent` (dropped by m539
+        // along with the `lifetime` spelling it policed) said a lifetime-typed contact
+        // must agree with the lifecycle column. m539 does not re-point that CHECK onto
+        // the survivor — this write swallows its result, so a refusal would look exactly
+        // like a success and closed deals would stop becoming lifetime customers in
+        // silence. The invariant is kept HERE instead, at the writer, and asserted by
+        // scripts/contact-vocabulary-guard.ts.
+        .update({ contact_type: LIFETIME_CUSTOMER_TYPE, lifecycle_state: LIFETIME_CUSTOMER_TYPE, updated_at: nowIso })
         .in("id", lifetimeContactIds)
         .eq("brokerage_id", params.brokerageId)
         .then(() => null, () => null)

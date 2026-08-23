@@ -509,6 +509,40 @@ const { data: listingVendorBookings } = await supabase
           </p>
         </div>
 
+        {/* ── LISTING SUB-ROUTE BAR (orphan-route sweep, lane G) ───────────────
+            /dashboard/listings/[id] REDIRECTS here, so this page is the listing's
+            detail hub — and it linked to none of its own siblings. Two of them
+            were outright orphans on test:orphan-routes:
+
+              · /offers    — the seller's decision room: the multi-offer matrix,
+                             the interactive net sheet, `presentOffersToSeller`.
+                             Its only "references" were two revalidatePath calls,
+                             which the sweep no longer counts as reachability.
+              · /showings  — the showing request queue, feedback cards, AI showing
+                             insights and the seller sentiment panel.
+
+            The rest are listed with them because a hub that links two of its nine
+            children is how the next one goes dark. Every href below was checked
+            against app/dashboard/listings/[id]/ — no invented routes. */}
+        <nav className="mb-6 flex flex-wrap gap-2 border-b border-border pb-3">
+          {[
+            { href: `/dashboard/listings/${listingId}/lifecycle`,           label: "Lifecycle" },
+            { href: `/dashboard/listings/${listingId}/offers`,              label: "Offers" },
+            { href: `/dashboard/listings/${listingId}/showings`,            label: "Showings" },
+            { href: `/dashboard/listings/${listingId}/media`,               label: "Media" },
+            { href: `/dashboard/listings/${listingId}/cma`,                 label: "CMA" },
+            { href: `/dashboard/listings/${listingId}/open-house`,          label: "Open House" },
+            { href: `/dashboard/listings/${listingId}/marketing-tier`,      label: "Marketing Tier" },
+            { href: `/dashboard/listings/${listingId}/neighborhood-report`, label: "Neighborhood" },
+            { href: `/dashboard/listings/${listingId}/seller-updates`,      label: "Seller Updates" },
+            { href: `/dashboard/listings/${listingId}/share`,               label: "Share" },
+          ].map((tab) => (
+            <Button key={tab.href} size="sm" variant="outline" asChild>
+              <Link href={tab.href}>{tab.label}</Link>
+            </Button>
+          ))}
+        </nav>
+
         {/* Closed: Seller-to-Lifetime Celebration Card */}
         {currentStage === "CLOSED" && (
           <div className="rounded-lg border border-green-300 bg-green-50 p-4 mb-6">

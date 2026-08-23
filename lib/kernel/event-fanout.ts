@@ -30,6 +30,7 @@ import { processKernelEvent } from "./notification-engine"
 import { renderTemplateText } from "./portal-template-render"
 import { sentinelWrite } from "./write-sentinel"
 import { resolveUserIdToAgentRecord } from "./agent-identity-resolver"
+import { isLifetimeCustomerType } from "@/lib/contact-types"
 
 export interface KernelEventContext {
   event:          KernelEvent
@@ -780,6 +781,6 @@ async function resolveContactRole(
   const t = (data?.contact_type ?? "").toLowerCase()
   if (t.includes("buyer"))             return "buyer"
   if (t.includes("seller"))            return "seller"
-  if (t === "lifetime_customer")       return "lifetime"
+  if (isLifetimeCustomerType(t))       return "lifetime"
   return null
 }

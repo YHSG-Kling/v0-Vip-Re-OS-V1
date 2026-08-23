@@ -55,6 +55,18 @@ import {
   type SourceRuleNarrowing,
   type SourceRuleNarrowingOk,
 } from "@/lib/ads/audience-source-rules"
+// THE EXCLUSION SLOT (owner: "capability is vital to this os to have not
+// exclude"). `TargetingConfig.excluded_audience_ids` lets an operator DECLARE a
+// suppression list in the product instead of performing it invisibly in Meta's
+// UI, and this is the gate that makes that declaration governable: every
+// audience in the slot is run through the persona gate's EXCLUSION arm and the
+// token gate before a campaign may carry it. Not a second classifier — it calls
+// both existing ones (CLAUDE.md §6).
+import {
+  verifyExclusionSlot,
+  recordSuppressionUse,
+  type GovernedExclusion,
+} from "@/lib/ads/audience-exclusion"
 import { rawSpellingsForPersona } from "@/lib/campaigns/contact-sources"
 import {
   CONNECTABLE_AD_PLATFORMS,
@@ -97,7 +109,36 @@ export interface TargetingConfig {
     zip?: string
   }>
   interests?: string[]
+  /**
+   * The audiences this campaign TARGETS — `facebook_custom_audiences.id` values.
+   *
+   * Had NO READER anywhere for its whole life while three writers emitted `[]`
+   * (CLAUDE.md §1). The reader is lib/ads/launch-assembler.ts, which resolves
+   * these to their platform ids and hands them to the Meta payload as
+   * `custom_audiences`.
+   */
   custom_audience_ids?: string[]
+  /**
+   * The audiences this campaign SUBTRACTS — `facebook_custom_audiences.id`
+   * values, read through `excludedAudienceIdsIn` (lib/ads/audience-exclusion.ts).
+   *
+   * ── WHY THIS FIELD EXISTS AT ALL (owner: "capability is vital to this os to
+   * have not exclude") ─────────────────────────────────────────────────────
+   * It is NOT here to make exclusion easier. It is here so exclusion is
+   * VISIBLE. Until this field existed the product governed exclusion only as
+   * DECLARED in an audience's own source rule, so an operator who exported a
+   * persona audience and pasted it into Meta's "Exclude" box performed a
+   * suppression this system could not see, could not gate and could not audit.
+   *
+   * EVERY ID PLACED HERE IS GATED, at all four doors that can write or act on
+   * it (lib/kernel/ads.ts createAdCampaign + updateAdCampaign,
+   * lib/ads/ad-creator.ts createAdCampaign, lib/ads/launch-assembler.ts). A
+   * protected-characteristic persona audience in this slot is REFUSED —
+   * `personaAdsEligibility(persona, "exclusion")`, the arm the owner's
+   * 2026-08-23 ruling left in force: a situation persona may TAILOR an ad and
+   * may not SUPPRESS one (Fair Housing Act, 42 U.S.C. § 3604(c); HUD v. Meta).
+   */
+  excluded_audience_ids?: string[]
   lookalike_source_audience_id?: string | null
   income_percentile?: "top_25" | "top_50" | "any"
   homeowner_status?: "renter" | "owner" | "any"
@@ -193,6 +234,13 @@ export interface KernelAdsResult {
   performance?: any
   accountStatus?: "connected" | "disconnected" | "error"
   accountInfo?: any
+  /**
+   * createAdCampaign / updateAdCampaign: the campaign WAS created and its
+   * exclusion slot WAS gated, but the m538 suppression-use audit stamp did not
+   * land (most likely because m538 is not applied yet). Set only when the audit
+   * write refused — a swallowed refusal is the trap CLAUDE.md §3 names.
+   */
+  suppressionAuditWarning?: string
 }
 
 export interface AdsWorkspaceData {
@@ -583,6 +631,22 @@ export async function createAdCampaign(input: CreateAdCampaignInput): Promise<Ke
   try {
     const supabase = createServiceClient()
 
+    // ── THE EXCLUSION SLOT IS GATED BEFORE THE ROW EXISTS ────────────────────
+    // DEFINE-SIDE, for the same reason the protected-class refusal was moved to
+    // the define side (finding #298): a suppression list that is only checked at
+    // launch PERSISTS in targeting_config in the meantime, and the launch path is
+    // not the only thing that reads it. Tenant comes from `ctx`, which is
+    // session-derived — never from the targeting config (CLAUDE.md §4).
+    const exclusionVerdict = await verifyExclusionSlot({
+      supabase,
+      brokerageId: ctx.brokerageId,
+      targeting: targetingConfig,
+      campaignLabel: campaignName,
+    })
+    if (!exclusionVerdict.ok) {
+      return { success: false, error: exclusionVerdict.refusal, errorKind: "input" }
+    }
+
     // Check platform account connection.
     //
     // This result was FETCHED AND DISCARDED — the file header's rule 9
@@ -626,6 +690,20 @@ export async function createAdCampaign(input: CreateAdCampaignInput): Promise<Ke
 
     if (error) throw error
 
+    // ── THE AUDIT RECORD (m538) ──────────────────────────────────────────────
+    // The fact that an audience was used as a suppression list is now recorded
+    // ON THE AUDIENCE, so it is auditable after the campaign is gone. The write
+    // is best-effort and its refusal is SURFACED, never swallowed: until the
+    // integrator applies m538 these columns do not exist and PostgREST refuses
+    // the update entirely (PGRST204). That means "not yet auditable", not "not
+    // checked" — the gate above already ran and already refused what it must.
+    const suppressionAudit = await recordSuppressionUse({
+      supabase,
+      brokerageId: ctx.brokerageId,
+      campaignId: campaign!.id,
+      governed: exclusionVerdict.governed,
+    })
+
     // Increment feature usage
     await incrementFeatureUsage(ctx.userId, "ads_campaigns")
 
@@ -633,6 +711,7 @@ export async function createAdCampaign(input: CreateAdCampaignInput): Promise<Ke
       success: true,
       campaignId: campaign!.id,
       campaign,
+      suppressionAuditWarning: suppressionAudit.error ?? undefined,
       accountConnected: !!platformCred?.is_active,
       // Distinguishes "you have not connected this yet" from "this product has
       // no way to connect it" — a draft for the latter can never be launched
@@ -694,6 +773,25 @@ export async function updateAdCampaign(input: UpdateAdCampaignInput): Promise<Ke
       return { success: false, error: "Cannot update live or launching campaigns" }
     }
 
+    // ── THE EXCLUSION SLOT IS GATED ON EVERY REWRITE TOO ─────────────────────
+    // The define-side gate is worth nothing if a second command can swap a clean
+    // targeting config for one carrying a protected-characteristic suppression
+    // list. This is that second command, and it is the one the ads dashboard's
+    // edit dialog calls.
+    let suppressionGoverned: GovernedExclusion[] = []
+    if (updates.targetingConfig) {
+      const exclusionVerdict = await verifyExclusionSlot({
+        supabase,
+        brokerageId: ctx.brokerageId,
+        targeting: updates.targetingConfig,
+        campaignLabel: updates.campaignName ?? campaignId,
+      })
+      if (!exclusionVerdict.ok) {
+        return { success: false, error: exclusionVerdict.refusal, errorKind: "input" }
+      }
+      suppressionGoverned = exclusionVerdict.governed
+    }
+
     // Build update object
     const updateObj: any = { updated_at: new Date().toISOString() }
     if (updates.campaignName) updateObj.campaign_name = updates.campaignName
@@ -712,7 +810,15 @@ export async function updateAdCampaign(input: UpdateAdCampaignInput): Promise<Ke
 
     if (error) throw error
 
-    return { success: true, campaign }
+    // Same audit stamp, same honesty about it, as the create door (m538).
+    const suppressionAudit = await recordSuppressionUse({
+      supabase,
+      brokerageId: ctx.brokerageId,
+      campaignId,
+      governed: suppressionGoverned,
+    })
+
+    return { success: true, campaign, suppressionAuditWarning: suppressionAudit.error ?? undefined }
   } catch (err) {
     return {
       success: false,

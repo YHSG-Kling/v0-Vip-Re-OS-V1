@@ -60,12 +60,19 @@
 // that removes people" is a first-class concept here, not one invented for this
 // gate. `EXCLUSION_SOURCE_RULE_TYPES` (lib/ads/audience-source-rules.ts) derives
 // that set by prefix from the one roster, and `audienceUseOf` below reads it.
-// The gap is named there and repeated here because it is real: an audience
-// EXPORTED and pasted into Meta's own "Exclude" box is invisible to this product
-// — `TargetingConfig` has no excluded-audience field and
-// `facebook_custom_audiences` has no column saying an audience was used as a
-// suppression list. This gate governs exclusion as DECLARED, which is the only
-// place the system can see it.
+// THE GAP THAT WAS NAMED HERE IS CLOSED (2026-08-23). It read: an audience
+// EXPORTED and pasted into Meta's own "Exclude" box is invisible to this product,
+// because `TargetingConfig` had no excluded-audience field and
+// `facebook_custom_audiences` had no column saying an audience was used as a
+// suppression list. Owner ruling: "capability is vital to this os to have not
+// exclude" — so the capability exists in order to REFUSE. A campaign now declares
+// its suppression list in `TargetingConfig.excluded_audience_ids`, and
+// lib/ads/audience-exclusion.ts calls THIS gate on every audience in it, passing
+// `resolveAudiencePersonaBasis(rule, "exclusion")` — the escalation, because an
+// audience whose own rule reads "inclusion" still SUBTRACTS people once a
+// campaign places it in that slot. Migration m538 records the fact on the
+// audience. This module is unchanged in what it refuses; it is now asked in one
+// more place, which is the place the exposure actually lived.
 //
 // ── WHY `other` STILL REFUSES, AND WHY THAT IS NOT THE REVERSED OBJECTION ────
 // The owner's definition is load-bearing: "persona is more the situation that the
@@ -241,7 +248,26 @@ export interface PersonaBasisRule {
 
 export type PersonaBasisResolution =
   | { ok: true; personas: CampaignPersona[] }
-  | { ok: false; refusal: string }
+  | {
+      ok: false
+      refusal: string
+      /**
+       * WHICH refusal this is, so a caller can tell them apart without parsing
+       * prose. Mirrors `PersonaAdsEligibility["refusalKind"]` and adds the one
+       * refusal that is about the DECLARATION rather than the persona:
+       *   · "protected_characteristic" — a protected-class persona in a slot
+       *     that SUPPRESSES (the fair-housing refusal);
+       *   · "no_basis"                 — `other`, which names no situation;
+       *   · "unresolvable"             — no personas, an empty list, a
+       *     non-string entry, or a spelling outside the canonical roster.
+       *
+       * ADDED FOR THE EXCLUSION SLOT (lib/ads/audience-exclusion.ts): that gate
+       * must report WHY an audience may not be a suppression list, and
+       * `refusal.includes("PROTECTED")` is a second vocabulary waiting to
+       * happen (CLAUDE.md §6).
+       */
+      refusalKind: "protected_characteristic" | "no_basis" | "unresolvable"
+    }
 
 /**
  * PURE. Does this audience rule DECLARE a persona basis?
@@ -281,13 +307,32 @@ export function declaresPersonaBasis(rule: unknown): boolean {
  * An audience basis is AUTHORED, so it must be authored in the canon; accepting
  * `luxury_buyer` here would make the ads lane a second place the vocabulary is
  * allowed to drift.
+ *
+ * ── `escalateTo` — THE PLACEMENT CAN MAKE AN AUDIENCE SUBTRACT ──────────────
+ * An audience's own rule type is not the only thing that decides which
+ * operation it performs. A campaign that lists an audience in its EXCLUDED
+ * slot (`TargetingConfig.excluded_audience_ids`) subtracts that audience's
+ * people whatever its rule type says — a `persona_segment` audience of
+ * `senior` reads as "inclusion" from its rule and suppresses the elderly from
+ * a housing ad once it is placed there. `lib/ads/audience-exclusion.ts` passes
+ * `"exclusion"` here so the verdict is reached for the operation actually
+ * being performed.
+ *
+ * IT IS TYPED SO IT CAN ONLY ESCALATE. The parameter admits the single literal
+ * `"exclusion"`; there is no way to spell "treat this exclusion rule as an
+ * inclusion". The objection to a `use` parameter was that a caller could get it
+ * wrong in the PERMISSIVE direction, and a one-way parameter cannot: the worst
+ * a confused caller can do is apply the stricter arm.
  */
-export function resolveAudiencePersonaBasis(rule: unknown): PersonaBasisResolution {
+export function resolveAudiencePersonaBasis(
+  rule: unknown,
+  escalateTo?: "exclusion",
+): PersonaBasisResolution {
   // WHICH OPERATION FIRST, then which personas. Read off the rule itself rather
   // than passed in: every caller already hands the whole rule to this function,
-  // and a `use` parameter would be one more thing a caller could get wrong in
-  // the permissive direction.
-  const use = audienceUseOf(rule)
+  // and a two-way `use` parameter would be one more thing a caller could get
+  // wrong in the permissive direction. `escalateTo` is one-way (see above).
+  const use: AudienceUse = escalateTo === "exclusion" ? "exclusion" : audienceUseOf(rule)
   const declared = (rule && typeof rule === "object"
     ? (rule as PersonaBasisRule).filters?.personas
     : undefined)
@@ -300,6 +345,7 @@ export function resolveAudiencePersonaBasis(rule: unknown): PersonaBasisResoluti
         `An audience whose basis cannot be resolved must refuse, not populate: with no persona ` +
         `filter this audience uploads every consented contact in the brokerage. ` +
         `Name one or more of: ${ADS_ELIGIBLE_PERSONAS.join(", ")}.`,
+      refusalKind: "unresolvable",
     }
   }
   if (!Array.isArray(declared)) {
@@ -308,6 +354,7 @@ export function resolveAudiencePersonaBasis(rule: unknown): PersonaBasisResoluti
       refusal:
         `persona basis must be an ARRAY of canonical personas, got ${typeof declared}. ` +
         `Name one or more of: ${ADS_ELIGIBLE_PERSONAS.join(", ")}.`,
+      refusalKind: "unresolvable",
     }
   }
   if (declared.length === 0) {
@@ -317,6 +364,7 @@ export function resolveAudiencePersonaBasis(rule: unknown): PersonaBasisResoluti
         `persona basis is an EMPTY list. A basis of nothing is not a basis — it would ` +
         `populate with every consented contact in the brokerage. ` +
         `Name one or more of: ${ADS_ELIGIBLE_PERSONAS.join(", ")}.`,
+      refusalKind: "unresolvable",
     }
   }
 
@@ -328,6 +376,7 @@ export function resolveAudiencePersonaBasis(rule: unknown): PersonaBasisResoluti
         refusal:
           `persona basis contains a non-string entry (${typeof raw}). ` +
           `Name one or more of: ${ADS_ELIGIBLE_PERSONAS.join(", ")}.`,
+        refusalKind: "unresolvable",
       }
     }
     const candidate = raw.trim().toLowerCase()
@@ -339,6 +388,7 @@ export function resolveAudiencePersonaBasis(rule: unknown): PersonaBasisResoluti
           `is a different audience than the one the operator asked for. The canonical roster is ` +
           `${CAMPAIGN_PERSONAS.join(", ")} (lib/campaigns/contact-sources.ts, mirroring the ` +
           `Persona union at lib/kernel/types.ts and the live campaign_sequences_persona_check).`,
+        refusalKind: "unresolvable",
       }
     }
     const verdict = personaAdsEligibility(candidate, use)
@@ -353,7 +403,7 @@ export function resolveAudiencePersonaBasis(rule: unknown): PersonaBasisResoluti
         verdict.refusalKind === "protected_characteristic"
           ? ` The personas that may not be an EXCLUSION basis are: ${EXCLUSION_INELIGIBLE_PERSONAS.join(", ")}.`
           : ""
-      return { ok: false, refusal: verdict.reason! + suffix }
+      return { ok: false, refusal: verdict.reason! + suffix, refusalKind: verdict.refusalKind! }
     }
     if (!resolved.includes(candidate)) resolved.push(candidate)
   }

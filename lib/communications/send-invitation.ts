@@ -58,6 +58,34 @@ export interface SendInvitationParams {
    * Falls back to the template when absent; never silently discarded.
    */
   personalizedSms?: string
+  /**
+   * The `open_house_invitations` row this send belongs to.
+   *
+   * ── ORPHAN-ROUTE SWEEP (lane G): THE RSVP LINK POINTED AT NOTHING. ─────────
+   * Both channels below used to mint `${APP_URL}/open-house/rsvp/${event.id}`.
+   * NO SUCH ROUTE EXISTS — `find app/open-house -name page.tsx` returns exactly
+   * three pages, and the RSVP one is
+   * `app/open-house/[eventId]/rsvp/[invitationId]/page.tsx`. Every open-house
+   * invitation this product has ever sent carried a 404.
+   *
+   * The consequence was not cosmetic. `handleRSVP` — a complete, hardened writer
+   * that verifies the invitation belongs to the event and refuses a zero-row
+   * update — had no caller, that page was listed as an orphan route by
+   * test:orphan-routes, and `open_house_invitations.rsvp_response` (which the
+   * listing's Marketing tab reads and reports on) stayed permanently NULL for
+   * everyone. A dangling link and an unreachable page, each other's missing half.
+   *
+   * THE PAIR IS THE CREDENTIAL. The invitee is anonymous: the unguessable
+   * (eventId, invitationId) pair is what authorises the RSVP, and `handleRSVP`
+   * re-checks that the invitation really belongs to that event, so holding one id
+   * is not enough. That is why this has to be threaded in rather than derived —
+   * only the caller that staged the row knows its id.
+   *
+   * OPTIONAL, AND FAILS SAFE. When it is absent no RSVP link is rendered at all,
+   * rather than falling back to the 404 this replaces: an invitation with no
+   * button is a smaller failure than one whose button dead-ends.
+   */
+  invitationId?: string
 }
 
 export interface SendFeedbackRequestParams {
@@ -167,6 +195,24 @@ export async function sendOpenHouseInvitation(params: SendInvitationParams): Pro
       day: "numeric",
     })
 
+    // ── THE RSVP LINK (orphan-route sweep, lane G) ───────────────────────────
+    // Built ONCE, for both channels, against the route that actually exists:
+    // app/open-house/[eventId]/rsvp/[invitationId]/page.tsx. See
+    // SendInvitationParams.invitationId for the full history of the
+    // `/open-house/rsvp/${event.id}` link this replaces, which resolved to
+    // nothing on every invitation ever sent.
+    //
+    // NULL rather than a guess when either half is missing. The app URL is read,
+    // not assumed: an unset NEXT_PUBLIC_APP_URL used to interpolate as the
+    // literal string "undefined", minting "undefined/open-house/…" — a link no
+    // mail client can resolve. `.replace(/\/$/, "")` because a configured value
+    // with a trailing slash would mint a double slash.
+    const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "")
+    const rsvpLink =
+      appUrl && params.invitationId
+        ? `${appUrl}/open-house/${params.eventId}/rsvp/${params.invitationId}`
+        : null
+
     let email: ChannelOutcome | undefined
     let sms: ChannelOutcome | undefined
 
@@ -187,7 +233,7 @@ export async function sendOpenHouseInvitation(params: SendInvitationParams): Pro
             eventDate,
             eventTime: `${event.start_time} - ${event.end_time}`,
             propertyImage: property.featured_image || "",
-            rsvpLink: `${process.env.NEXT_PUBLIC_APP_URL}/open-house/rsvp/${event.id}`,
+            rsvpLink,
             personalizedOpening: params.personalizedMessage,
           }),
           channelPurpose: "campaign",
@@ -220,7 +266,7 @@ export async function sendOpenHouseInvitation(params: SendInvitationParams): Pro
           to: contact.phone,
           message:
             params.personalizedSms?.trim() ||
-            `Hi ${contact.first_name}! You're invited to our open house at ${property.address} on ${eventDate} from ${event.start_time} to ${event.end_time}. RSVP: ${process.env.NEXT_PUBLIC_APP_URL}/open-house/rsvp/${event.id}`,
+            `Hi ${contact.first_name}! You're invited to our open house at ${property.address} on ${eventDate} from ${event.start_time} to ${event.end_time}.${rsvpLink ? ` RSVP: ${rsvpLink}` : ""}`,
           systemSource: "open_house_invitation",
         })
         sms = { delivered: res.success, error: res.success ? undefined : (res.error ?? "Text was not delivered") }
@@ -449,7 +495,9 @@ function generateInvitationEmailHTML(data: {
   eventDate: string
   eventTime: string
   propertyImage: string
-  rsvpLink: string
+  /** Absent when the caller could not supply an invitation id — see
+   *  SendInvitationParams.invitationId. No link is better than a 404. */
+  rsvpLink: string | null
   personalizedOpening?: string
 }) {
   return `
@@ -490,7 +538,7 @@ function generateInvitationEmailHTML(data: {
 
           <p>Join us to explore this amazing property and discover if it's the perfect fit for you!</p>
 
-          <a href="${data.rsvpLink}" class="cta-button">RSVP Now</a>
+          ${data.rsvpLink ? `<a href="${data.rsvpLink}" class="cta-button">RSVP Now</a>` : ""}
 
           <p>We look forward to seeing you there!</p>
         </div>

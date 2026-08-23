@@ -18,7 +18,9 @@ import {
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { FitBadge } from "@/app/components/portal/FitBadge"
-import { smartSearch, saveProperty } from "@/app/actions/idx-search"
+// `unsaveProperty` MERGED IN from the deleted /properties/saved duplicate — see
+// the tombstone above the Saved tab below. It was that page's only caller.
+import { smartSearch, saveProperty, unsaveProperty } from "@/app/actions/idx-search"
 import { requestShowing } from "@/app/actions/showings"
 import { updatePropertyAlert } from "@/app/actions/property-alerts/alert-actions"
 import { submitPropertyFeedback } from "@/app/actions/portal-lifetime"
@@ -289,6 +291,44 @@ export default function PersonaPropertiesDashboard({
   const { toast } = useToast()
   const [isPending, startTransition] = useTransition()
   
+  // ── REMOVE-FROM-SAVED (merged from the deleted /properties/saved) ──────────
+  // The server hands `savedProperties` down as a prop, so a removal is reflected
+  // by hiding the row locally until the server component re-renders. A SET of
+  // removed keys (rather than a copy of the list in state) is deliberate: it
+  // composes with the fresh prop that arrives after `unsaveProperty`'s
+  // revalidatePath, instead of pinning a stale snapshot.
+  //
+  // The key is the mls_number, because that is the column `unsaveProperty`
+  // deletes on. A saved row with no mls_number cannot be removed by that action
+  // at all, so its button is not rendered rather than shown and broken.
+  const [removedSavedMls, setRemovedSavedMls] = useState<Set<string>>(new Set())
+  const [removingMls, setRemovingMls] = useState<string | null>(null)
+  const visibleSavedProperties = (savedProperties ?? []).filter(
+    (p: any) => !(p?.mls_number && removedSavedMls.has(String(p.mls_number))),
+  )
+
+  const handleUnsave = (mlsNumber: string) => {
+    setRemovingMls(mlsNumber)
+    startTransition(async () => {
+      // supabase-js RESOLVES a refusal — `unsaveProperty` already destructures
+      // { data, error } and refuses a zero-row delete rather than reporting
+      // success, so the ONLY correct thing to do here is read result.success.
+      // Dropping the card unconditionally is the exact bug its docblock records.
+      const result = await unsaveProperty({ contactId, mlsNumber })
+      setRemovingMls(null)
+      if (!result.success) {
+        toast({
+          title: "Could not remove",
+          description: result.error ?? "That property is still in your saved list.",
+          variant: "destructive",
+        })
+        return
+      }
+      setRemovedSavedMls((prev) => new Set(prev).add(mlsNumber))
+      toast({ title: "Removed", description: result.message ?? "Property removed from saved" })
+    })
+  }
+
   // Get persona-specific tabs
   const tabConfig = PERSONA_TAB_CONFIG[persona] || PERSONA_TAB_CONFIG.default
   const [activeTab, setActiveTab] = useState(tabConfig.tabs[0])
@@ -1180,7 +1220,7 @@ export default function PersonaPropertiesDashboard({
         <div className="flex items-center gap-3">
           <Badge variant="outline" className="py-2 px-3">
             <Heart className="w-4 h-4 mr-2 text-red-500" />
-            {savedProperties.length} Saved
+            {visibleSavedProperties.length} Saved
           </Badge>
           <Badge variant="outline" className="py-2 px-3">
             <Calendar className="w-4 h-4 mr-2 text-purple-500" />
@@ -1431,8 +1471,8 @@ export default function PersonaPropertiesDashboard({
 
             {/* Deal Flow Cards */}
             <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {savedProperties.length > 0 ? (
-                savedProperties.map((property) => renderPropertyCard(property, true))
+              {visibleSavedProperties.length > 0 ? (
+                visibleSavedProperties.map((property: any) => renderPropertyCard(property, true))
               ) : (
                 <Card className="col-span-full">
                   <CardContent className="py-12 text-center">
@@ -1757,9 +1797,9 @@ export default function PersonaPropertiesDashboard({
             </CardContent>
           </Card>
 
-          {savedProperties.length > 0 ? (
+          {visibleSavedProperties.length > 0 ? (
             <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {savedProperties.map((property) => renderPropertyCard(property))}
+              {visibleSavedProperties.map((property: any) => renderPropertyCard(property))}
             </div>
           ) : (
             <Card>
@@ -1827,9 +1867,26 @@ export default function PersonaPropertiesDashboard({
               </section>
             )}
 
-            {savedProperties.length > 0 ? (
+            {/* ── TOMBSTONE (orphan-route sweep, lane G) ─────────────────────
+                `/properties/saved` — app/properties/saved/{page,saved-content}.tsx
+                — IS DELETED. THIS TAB IS THE SURVIVOR.
+
+                That route rendered the same `saved_properties` list and was
+                reachable from nothing (test:orphan-routes listed it; its only
+                "references" were two revalidatePath calls, which the sweep
+                itself no longer counts as reachability). It also took the
+                contact's identity from a QUERY STRING with the literal fallback
+                `"demo-contact-id"` — this tab takes it from the portal route the
+                server already resolved.
+
+                MERGED FIRST, then deleted, per the orphan doctrine: the one
+                thing that page had and this tab did not was the REMOVE verb, and
+                it was `unsaveProperty`'s only caller in the tree. Deleting the
+                page without moving the button would have traded an orphan route
+                for an orphan export. `handleUnsave` above is that merge. */}
+            {visibleSavedProperties.length > 0 ? (
               <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {savedProperties.map((property: any) => (
+                {visibleSavedProperties.map((property: any) => (
                   <Card key={property.id} className="overflow-hidden hover:shadow-lg transition-shadow">
                     <div className="aspect-video bg-slate-200 relative">
                       {property.images?.[0] ? (
@@ -1849,6 +1906,22 @@ export default function PersonaPropertiesDashboard({
                       <p className="text-sm text-muted-foreground">
                         {property.beds || property.bedrooms || 0} bed | {property.baths || property.bathrooms || 0} bath | {(property.sqft || property.square_feet || 0).toLocaleString()} sqft
                       </p>
+                      {property.mls_number && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="mt-3 w-full text-destructive hover:text-destructive"
+                          disabled={removingMls === String(property.mls_number)}
+                          onClick={() => handleUnsave(String(property.mls_number))}
+                        >
+                          {removingMls === String(property.mls_number) ? (
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          ) : (
+                            <X className="w-4 h-4 mr-2" />
+                          )}
+                          Remove from saved
+                        </Button>
+                      )}
                     </CardContent>
                   </Card>
                 ))}

@@ -54,7 +54,7 @@
 // refused entirely by PostgREST (PGRST204), and a filter on a writerless column
 // silently matches everyone or no one, which is the same failure in a new costume.
 
-import { LIFETIME_CONTACT_TYPES } from "@/lib/campaigns/contact-sources"
+import { LIFETIME_CONTACT_TYPES } from "@/lib/contact-types"
 
 // ─── THE ROSTER ───────────────────────────────────────────────────────────────
 
@@ -111,13 +111,33 @@ export function isSourceRuleType(v: unknown): v is SourceRuleType {
  * that it is non-empty (a silently-empty set would make the exclusion refusal
  * unreachable while reading as enforced) and that it equals the prefix scan.
  *
- * PUBLISHED BLIND SPOT, because it is real: this covers exclusion as DECLARED in
- * the audience's own rule. It does NOT cover exclusion as APPLIED on the ad
- * platform — `TargetingConfig` (lib/kernel/ads.ts) has `custom_audience_ids` and
- * no excluded-audience field, and `facebook_custom_audiences` has no column
- * recording that an audience was used as a suppression list, so an operator who
- * exports a persona audience and pastes it into Meta's "Exclude" box is outside
- * anything this system can see. That gap is reported, not papered over.
+ * ── THE BLIND SPOT THIS ONCE PUBLISHED IS CLOSED (2026-08-23) ───────────────
+ * It read: this covers exclusion as DECLARED in the audience's own rule and NOT
+ * exclusion as APPLIED on the ad platform, because `TargetingConfig` had
+ * `custom_audience_ids` and no excluded-audience field and
+ * `facebook_custom_audiences` had no column recording that an audience was used
+ * as a suppression list — so an operator who exported a persona audience and
+ * pasted it into Meta's "Exclude" box was outside anything this system could see.
+ *
+ * Owner ruling: "capability is vital to this os to have not exclude." The
+ * capability is built, and it is built so the OS can REFUSE:
+ *   · `TargetingConfig.excluded_audience_ids` (lib/kernel/ads.ts,
+ *     lib/ads/ad-creator-types.ts) — an exclusion an operator intends is now
+ *     DECLARED in the product, with a control in the campaign wizard;
+ *   · lib/ads/audience-exclusion.ts gates every id in that slot at all four
+ *     doors, escalating the persona verdict to `"exclusion"` whatever the
+ *     audience's own rule type says — because the PLACEMENT is what makes it
+ *     subtract. A protected-characteristic persona audience there is REFUSED;
+ *   · migration m538 records `used_as_suppression_at` /
+ *     `used_as_suppression_by_campaign_id` on the audience, so the fact outlives
+ *     the campaign; the ads dashboard reads it back onto the audience card.
+ *
+ * WHAT REMAINS, STATED RATHER THAN CLAIMED CLOSED: this product can govern the
+ * exclusions that pass through it. An operator with direct access to Meta Ads
+ * Manager can still build an audience there, or upload a list by hand, and
+ * exclude it — no software in this repo is in that path. What has changed is
+ * that the supported way to do it now runs through a gate instead of round the
+ * outside of one.
  */
 export const EXCLUSION_SOURCE_RULE_TYPES: readonly SourceRuleType[] = Object.freeze(
   SOURCE_RULE_TYPES.filter((t) => t.startsWith("exclusion_")),
@@ -270,9 +290,10 @@ export type SourceRuleNarrowing = SourceRuleNarrowingOk | SourceRuleNarrowingRef
 // naming one matches nothing forever — the silent-empty failure mode.
 
 /**
- * `contacts_contact_type_check` admits: lead, prospect, client, lifetime,
- * lifetime_customer, past_client, sphere, vendor, referral_partner, investor,
- * buyer, seller, both, other.
+ * `contacts_contact_type_check` admits (m539): lead, prospect, client,
+ * lifetime_customer, sphere, vendor, referral_partner, investor, buyer, seller,
+ * both, other. `lifetime` and `past_client` were retired as duplicate spellings of
+ * lifetime_customer — see lib/contact-types.ts.
  */
 const BUYER_CONTACT_TYPES = ["buyer", "both"] as const
 const SELLER_CONTACT_TYPES = ["seller", "both"] as const

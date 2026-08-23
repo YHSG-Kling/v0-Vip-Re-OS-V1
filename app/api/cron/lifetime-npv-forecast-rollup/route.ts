@@ -10,6 +10,7 @@ import {
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { LIFETIME_CONTACT_TYPES } from "@/lib/contact-types"
 
 export const dynamic = "force-dynamic"
 
@@ -28,7 +29,14 @@ export const dynamic = "force-dynamic"
  * POST = admin-triggered one-brokerage or one-agent rerun.
  */
 
-const LIFETIME_CONTACT_TYPES = ["past_client", "lifetime_customer", "sphere"]
+// TOMBSTONE (CLAUDE.md §1, §6). This was a FOURTH, private copy of the post-close
+// contact_type roster and the only one with a DIFFERENT membership — so "the lifetime
+// book" meant one population to the NPV forecast and another to the ads, sphere and
+// win-back lanes. It also named `past_client`, which m539 retired: that member matched
+// zero rows from the moment the migration landed. Survivor:
+// lib/contact-types.ts:LIFETIME_CONTACT_TYPES (client / lifetime_customer / sphere).
+// COUNT MOVES: this forecast's population loses `past_client` (0 live rows) and gains
+// `client`, bringing it into line with the other three lanes.
 
 export async function GET(request: NextRequest) {
   // Cron auth — see lib/cron-auth.ts

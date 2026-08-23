@@ -12,6 +12,7 @@
 // Pure prompt/guard is testable; answerTutorQuestion takes an injectable generator so tests spend no tokens.
 
 import type { createServiceClient } from "@/lib/supabase/service"
+import { isLifetimeCustomerType } from "@/lib/contact-types"
 type Svc = ReturnType<typeof createServiceClient>
 
 export interface TutorContext {
@@ -83,7 +84,7 @@ export interface TutorAnswer {
 export async function resolveTutorContext(svc: Svc, contactId: string): Promise<{ ctx: TutorContext; brokerageId: string | null }> {
   const { data: c } = await svc.from("contacts").select("first_name, contact_type, contact_persona, buyer_stage, brokerage_id, agent_id").eq("id", contactId).maybeSingle()
   const cc = c as any
-  const role: TutorContext["role"] = cc?.contact_type === "seller" ? "seller" : cc?.contact_type === "past_client" ? "homeowner" : cc?.contact_type === "buyer" ? "buyer" : "client"
+  const role: TutorContext["role"] = cc?.contact_type === "seller" ? "seller" : isLifetimeCustomerType(cc?.contact_type) ? "homeowner" : cc?.contact_type === "buyer" ? "buyer" : "client"
   let agentName: string | null = null
   if (cc?.agent_id) {
     const { data: a } = await svc.from("agents").select("user_id").eq("id", cc.agent_id).maybeSingle()

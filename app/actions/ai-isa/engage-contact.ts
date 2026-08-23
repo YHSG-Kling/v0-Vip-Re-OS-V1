@@ -756,7 +756,7 @@ async function tryVoiceDrop(
     const { buildSituationalVoicemailScript } = await import('@/lib/ai-isa/situational-voicemail')
     const side = contact.contact_type === 'seller' ? 'seller'
       : contact.contact_type === 'both' ? 'both'
-      : isLifetimeCustomerType(contact.contact_type) ? 'past_client' : 'buyer'
+      : isLifetimeCustomerType(contact.contact_type) ? 'lifetime' : 'buyer'
     const stageHint = (contact.buyer_stage as string | null) ?? (contact.motivation_type as string | null) ?? null
     const fallbackVm = buildSituationalVoicemailScript({
       firstName: contact.first_name || 'there', side, stage: stageHint,

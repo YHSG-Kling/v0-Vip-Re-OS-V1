@@ -16,12 +16,17 @@
  * (`resolveOwnAgentId`). The id passed below is therefore a convenience, not a
  * grant: substituting someone else's is refused by the action.
  *
- * STILL OWED — SAID PLAINLY. There is no NAV ENTRY for this route yet.
- * `test:orphan-routes` counts it as referenced only because `logActivity` and
- * `completeActivity` now revalidate "/mobile/activity" — correct on their own merits
- * (both change what this page renders) but not a way for an agent to reach it. The
- * real entry is one item in app/mobile/mobile-bottom-nav.tsx. That file belongs to
- * another lane and the item is reported, not written.
+ * OWED, AND NOW PAID (orphan-route sweep, lane G). This docblock used to end
+ * "there is no NAV ENTRY for this route yet" — and it was worse than that: the
+ * revalidatePath evidence it leaned on was later REMOVED from the sweep as a false
+ * pass (a cache invalidation is not a way for a human to arrive), so this page was
+ * an outright orphan.
+ *
+ * The entry now exists at app/mobile/components/os/mobile-command-strip.tsx:52 —
+ * the "Activity" tile in the expanded command strip, rendered on /mobile/assistant
+ * and /mobile/voice. It cost nothing to add because that tile was ALREADY THERE
+ * pointing at `/mobile/log`, a route that has never existed. The link with no page
+ * and the page with no link were each other's missing half.
  *
  * FILTERING IS A URL, NOT A CLIENT BUNDLE. The status filter rides searchParams so
  * this stays a server component and no activity row is ever shipped to the client

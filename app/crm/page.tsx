@@ -25,7 +25,6 @@ import { generateContactInsights, draftSmartEmail } from "@/app/actions/ai-insig
 import type { ContactInsight } from "@/app/actions/ai-insights"
 import { aiSuggestFollowUp } from "@/app/actions/ai-lead-nurturing"
 import { getUnifiedLeadProfiles, getSocialIntelligence, createUnifiedLeadProfile } from "@/app/actions/lead-intelligence"
-import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
 import { listCampaignSequences, enrollContactInSequence } from "@/app/actions/campaign-sequences"
 import { aiOptimizeReferralAsk } from "@/app/actions/ai-sphere-management"
 import { generateAIDraft, shareSocialPostWithSeller } from "@/app/actions/portal-messages"
@@ -102,6 +101,8 @@ import { format, formatDistanceToNow } from "date-fns"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 import { FormWizard } from "@/app/components/form-wizard/FormWizard"
+
+import { isLifetimeCustomerType } from "@/lib/contact-types"
 
 // Import all 10 Contact OS components
 import {
@@ -2894,7 +2895,10 @@ export default function CRMPage() {
           const t = (c.contact_type ?? "").toLowerCase()
           const p = (c.contact_persona ?? "").toLowerCase()
           if (typeFilter === "lifetime_customer") {
-            return t === "lifetime_customer" || t === LIFETIME_CUSTOMER_TYPE
+            // WAS `t === "lifetime_customer" || t === LIFETIME_CUSTOMER_TYPE` — a tautology
+            // (the constant IS that string), so the second clause tested nothing. The intent was
+            // to match the legacy spellings too; isLifetimeCustomerType does that for real.
+            return isLifetimeCustomerType(t)
           }
           return t.includes(typeFilter) || p.includes(typeFilter)
         })

@@ -502,8 +502,22 @@ export function buildPortalNav(
       { label: "Showings", href: `${basePath}/showings`, icon: "eye", moduleKey: "showings" },
       { label: "Offers", href: `${basePath}/offers`, icon: "dollar-sign", moduleKey: "offers" },
       { label: "Learn", href: `${basePath}/learn`, icon: "graduation-cap", moduleKey: "education" },
+      // ── ORPHAN-ROUTE SWEEP (lane G) ─────────────────────────────────────────
+      // /portal/[contactId]/assistant existed with NOTHING linking to it, so
+      // `handleBuyerVoiceAssistant` (app/actions/buyer-execution.ts) — hardened
+      // in an earlier wave and then left with no caller at all — has never been
+      // reachable by the audience it was written for. This is the entry.
+      { label: "Assistant", href: `${basePath}/assistant`, icon: "message-circle" },
       { label: "My Team", href: `${basePath}/team`, icon: "users" },
       { label: "Vendors", href: `${basePath}/vendors`, icon: "briefcase" },
+      // /portal/[contactId]/connections — the contact's OWN calendar / social /
+      // financial-provider links (getConnectionCenter, scope "contact"). Also an
+      // orphan route. NO moduleKey, deliberately: the module vocabulary is the
+      // fixed set in determinePortalModules' `defaultModules`
+      // (lib/kernel/portal.ts:316), and inventing a key that map does not carry
+      // is the two-spellings defect, not a toggle. It joins Home / My Team /
+      // Vendors / Help as unconditional.
+      { label: "Connections", href: `${basePath}/connections`, icon: "plug" },
       { label: "Help", href: `${basePath}/help`, icon: "help-circle" },
     ])
   }
@@ -519,8 +533,17 @@ export function buildPortalNav(
       { label: "Offers", href: `${basePath}/offers`, icon: "dollar-sign", moduleKey: "offers" },
       { label: "Insights", href: `${basePath}/insights`, icon: "bar-chart" },
       { label: "Learn", href: `${basePath}/learn`, icon: "graduation-cap", moduleKey: "education" },
+      // ── ORPHAN-ROUTE SWEEP (lane G) ─────────────────────────────────────────
+      // /portal/[contactId]/social is the SELLER's share-my-listing hub
+      // (PortalSocialHub — "available for sellers with an active listing", and
+      // the page itself refuses a contact with no listing). It was reachable
+      // from nothing, so the seller-amplification loop had no front door. Seller
+      // nav only: it is meaningless in the buyer and lifetime views.
+      { label: "Share My Listing", href: `${basePath}/social`, icon: "share-2", moduleKey: "seller_listing_actions" },
       { label: "My Team", href: `${basePath}/team`, icon: "users" },
       { label: "Vendors", href: `${basePath}/vendors`, icon: "briefcase" },
+      // See the buyer nav above for why this carries no moduleKey.
+      { label: "Connections", href: `${basePath}/connections`, icon: "plug" },
       { label: "Help", href: `${basePath}/help`, icon: "help-circle" },
     ])
   }
@@ -534,6 +557,10 @@ export function buildPortalNav(
     { label: "Referrals", href: `${basePath}/referrals`, icon: "share-2" },
     { label: "Documents", href: `${basePath}/documents`, icon: "file-text", moduleKey: "documents" },
     { label: "Learn", href: `${basePath}/learn`, icon: "graduation-cap", moduleKey: "education" },
+    // See the buyer nav above (orphan-route sweep, lane G) for why this carries
+    // no moduleKey. A past client's calendar/social/provider links are theirs in
+    // every view, so it is in all three.
+    { label: "Connections", href: `${basePath}/connections`, icon: "plug" },
     { label: "Help", href: `${basePath}/help`, icon: "help-circle" },
   ])
 }

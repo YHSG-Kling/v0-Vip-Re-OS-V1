@@ -15,12 +15,17 @@
 // runner is simulator-driven (not server-only).
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { isLifetimeRelationshipType } from "@/lib/contact-types"
 import type { ManagerKey } from "@/lib/kernel/manager-registry"
 
 type Svc = ReturnType<typeof createServiceClient>
 
-/** Lifetime-customer taxonomy (the harmonized set the Sphere Agent + portal read). */
-export const LIFETIME_CONTACT_TYPES = new Set(["lifetime_customer", "lifetime", "past_client", "sphere", "client"])
+// TOMBSTONE (CLAUDE.md §1, §6). This module declared its OWN `LIFETIME_CONTACT_TYPES`
+// Set — a second spelling of the tuple in lib/campaigns/contact-sources.ts and a third
+// of PAST_CLIENT_TYPES in lib/kernel/referral-radar.ts. All three named `lifetime` and
+// `past_client`, which m539 retired. The survivor is
+// lib/contact-types.ts:LIFETIME_CONTACT_TYPES, read here through
+// `isLifetimeRelationshipType` so a legacy spelling still resolves on the READ side.
 
 /** Rationale marker — also the idempotency key (one re-engagement per contact per window). */
 export const REENGAGE_TAG = "♻️ RETURNING-CUSTOMER"
@@ -43,7 +48,7 @@ export function isReengageableLifetime(c: ContactLite): boolean {
     (c.lifecycle_state ?? "") === "lifetime_customer" ||
     c.buyer_stage === "BUYER_CLOSED" ||
     c.buyer_stage === "BUYER_LIFETIME" ||
-    LIFETIME_CONTACT_TYPES.has((c.contact_type ?? "").toLowerCase())
+    isLifetimeRelationshipType(c.contact_type)
   )
 }
 

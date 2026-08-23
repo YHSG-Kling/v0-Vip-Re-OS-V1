@@ -7,7 +7,7 @@ import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
-import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
+import { SPHERE_CONTACT_TYPES } from "@/lib/contact-types"
 
 /**
  * AI Client Gifting System
@@ -181,7 +181,7 @@ export async function aiPlanBulkGifting(params: {
         transactions!transactions_contact_id_fkey(purchase_price, close_date)
       `)
       .eq("agent_id", ctx.agentId)
-      .in("contact_type", [LIFETIME_CUSTOMER_TYPE, "sphere", "referral_partner"])
+      .in("contact_type", [...SPHERE_CONTACT_TYPES])
 
     // Fail CLOSED. supabase-js RESOLVES a refused query, so without this a rejected
     // read is indistinguishable from "this agent has nobody to gift" — and the

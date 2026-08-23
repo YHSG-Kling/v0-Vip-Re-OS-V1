@@ -5,12 +5,16 @@
  * THE LIVE DATABASE IS THE SOURCE OF TRUTH FOR SCHEMA. This guard is what makes that sentence
  * enforceable rather than aspirational.
  *
- * Four files in scripts/ describe the schema — schema-snapshot.ts (columns), schema-fk-map.ts
+ * Five files in scripts/ describe the schema — schema-snapshot.ts (columns), schema-fk-map.ts
  * (foreign keys), check-vocabularies.ts (CHECK vocabularies), live-tables.ts (which relations
- * exist at all). Every schema guard in the repo reads them, and they exist only because CI holds no
- * database credentials. They are a CACHE. Two of the first three declared themselves generated
+ * exist at all), agent-fk-columns.ts (which id CLASS a column holds). Every schema guard in the
+ * repo reads them, and they exist only because CI holds no
+ * database credentials. They are a CACHE. Three of them declared themselves generated
  * while having no generator, so the only way to move them was the hand-edit their own banner
- * forbade; both had drifted from the database, and one had drifted from its own header's counts.
+ * forbade; all had drifted from the database, and one had drifted from its own header's counts.
+ * The last of the three was agent-fk-columns.ts, and it had drifted the furthest: it listed 56 of
+ * the 165 tables whose contact_id FKs contacts(id), so the identity-class guard was blind to 109
+ * tables it exists to watch and reported a clean zero for every one of them.
  *
  * The fourth was added because its absence was being papered over: guards asking "is this table
  * live?" were reading SCHEMA_SNAPSHOT, which is `referenced ∩ live` and cannot answer that
@@ -36,11 +40,13 @@
 import { existsSync, readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { AGENT_FK_COLUMNS, CONTACT_FK_TABLES, USERS_FK_AGENTISH_COLUMNS } from "./agent-fk-columns"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
 import { LIVE_TABLES } from "./live-tables"
 import { SCHEMA_FK_MAP, SCHEMA_FK_PAIR_CARDINALITY } from "./schema-fk-map"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
 import {
+  AGENT_FK_SOURCE,
   FK_MAP_SOURCE,
   LIVE_TABLES_SOURCE,
   LiveCheck,
@@ -48,6 +54,7 @@ import {
   LiveSchema,
   SNAPSHOT_SOURCE,
   VOCAB_SOURCE,
+  buildAgentFkColumns,
   buildFkMap,
   buildLiveTables,
   buildSnapshot,
@@ -163,6 +170,47 @@ console.log("\n[pure — the FK column rule]")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PURE — THE IDENTITY-CLASS RULE, ON SYNTHETIC READINGS.
+//
+// Two of its branches cannot be exercised by the live schema as it stands: there are currently
+// ZERO composite foreign keys to agents/users/contacts, so the arity filter never fires, and a
+// filter that never fires is indistinguishable from one that is broken. Both are proven here.
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n[pure — the identity-class rule]")
+{
+  const fk = (src_table: string, src_col: string, tgt_table: string, name: string) => ({ src_table, src_col, tgt_table, name })
+  const built = buildAgentFkColumns([
+    fk("net_sheet_calculations", "agent_id", "agents", "net_sheet_calculations_agent_id_fkey"),
+    fk("activities", "agent_user_id", "users", "activities_agent_user_id_fkey"),
+    fk("blog_posts", "created_by", "users", "blog_posts_created_by_fkey"),
+    fk("tasks", "contact_id", "contacts", "tasks_contact_id_fkey"),
+    fk("listings", "seller_contact_id", "contacts", "listings_seller_contact_id_fkey"),
+    fk("listings", "brokerage_id", "brokerages", "listings_brokerage_id_fkey"),
+  ])
+  check("an agents(id) column is mapped as agents-class", built.agents.net_sheet_calculations?.[0] === "agent_id")
+  check("a users(id) column NAMED like an agent is mapped as the reverse hazard",
+    built.usersAgentish.activities?.[0] === "agent_user_id")
+  check("…and a users(id) column nothing would mistake for one is NOT",
+    built.usersAgentish.blog_posts === undefined)
+  check("a contact_id → contacts table is listed", built.contacts.includes("tasks"))
+  check("…and a table whose only contacts FK is seller_contact_id is not",
+    !built.contacts.includes("listings"))
+  check("an FK to a fourth table is ignored entirely",
+    built.agents.listings === undefined && built.usersAgentish.listings === undefined)
+
+  // The arity filter: the same column, once as a single-column FK and once inside a composite.
+  const composite = buildAgentFkColumns([
+    fk("tasks", "contact_id", "contacts", "tasks_contact_id_fkey"),
+    fk("deal_team_members", "contact_id", "contacts", "deal_team_members_tenant_contact_fkey"),
+    fk("deal_team_members", "brokerage_id", "contacts", "deal_team_members_tenant_contact_fkey"),
+  ])
+  check("[control] a COMPOSITE FK is excluded — no one column of a tuple carries the target's id",
+    !composite.contacts.includes("deal_team_members") && composite.facts.compositeSkipped === 1)
+  check("[control] …and the single-column FK beside it still lands",
+    composite.contacts.includes("tasks"))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CHECK 1 — SHAPE + STAMP. Runs everywhere.
 // ─────────────────────────────────────────────────────────────────────────────
 console.log("\n[stamp — a hand-edit cannot be silent]")
@@ -172,6 +220,7 @@ const CACHE_FILES = [
   { rel: "scripts/schema-fk-map.ts", source: FK_MAP_SOURCE },
   { rel: "scripts/check-vocabularies.ts", source: VOCAB_SOURCE },
   { rel: "scripts/live-tables.ts", source: LIVE_TABLES_SOURCE },
+  { rel: "scripts/agent-fk-columns.ts", source: AGENT_FK_SOURCE },
 ]
 
 const bodies = new Map<string, string>()
@@ -246,6 +295,38 @@ for (const f of CACHE_FILES) {
     `header says ${ltAdvertised}, file holds ${LIVE_TABLES.length}`,
   )
 
+  const cols = (m: Record<string, string[]>) => Object.values(m).reduce((n, c) => n + c.length, 0)
+  const afHeader =
+    /MEASURED AT GENERATION: (\d+) agents\(id\) columns across (\d+) tables, (\d+) agent-ish users\(id\) columns across (\d+) tables, (\d+) contact_id tables/.exec(
+      read("scripts/agent-fk-columns.ts"),
+    )
+  const afActual = [
+    cols(AGENT_FK_COLUMNS),
+    Object.keys(AGENT_FK_COLUMNS).length,
+    cols(USERS_FK_AGENTISH_COLUMNS),
+    Object.keys(USERS_FK_AGENTISH_COLUMNS).length,
+    CONTACT_FK_TABLES.length,
+  ]
+  check(
+    "agent-fk-columns.ts's advertised counts match its contents",
+    afHeader !== null && afHeader.slice(1, 6).join("/") === afActual.join("/"),
+    `header says ${afHeader?.slice(1, 6).join("/")}, file holds ${afActual.join("/")}`,
+  )
+
+  // The identity map is built from the FK graph, so every table it names must still be a live
+  // relation. A cache naming a dropped table makes the guard police a column that is not there,
+  // and — the direction that actually cost coverage — a cache MISSING a live table makes it
+  // report zero for a surface it never looked at.
+  const identityTables = [
+    ...new Set([...Object.keys(AGENT_FK_COLUMNS), ...Object.keys(USERS_FK_AGENTISH_COLUMNS), ...CONTACT_FK_TABLES]),
+  ]
+  const identityDead = identityTables.filter((t) => !LIVE_TABLES.includes(t))
+  check(
+    "every table the identity map names is a live relation",
+    identityDead.length === 0,
+    `${identityDead.length} dead table(s) in agent-fk-columns.ts: ${identityDead.slice(0, 8).join(", ")}`,
+  )
+
   // The two files are built from ONE reading, so this must hold by construction — it is asserted
   // because the failure it catches is silent: a snapshot regenerated against a newer database than
   // live-tables.ts would make some guarded table look retired, which is the exact bug the second
@@ -304,7 +385,7 @@ let liveRan = false
 if (!creds) {
   console.log("\n[live comparison]")
   console.log("  ○ SKIPPED — no SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY in this environment.")
-  console.log("    The four cache files were NOT compared against the database. Nothing below")
+  console.log("    The five cache files were NOT compared against the database. Nothing below")
   console.log("    claims they match it; only that they are machine-shaped and unedited.")
 } else {
   console.log("\n[live comparison — the cache rebuilt from the database]")
@@ -381,6 +462,33 @@ if (!creds) {
       "the file's data matches but its formatting does not",
     )
 
+    // The identity-class map comes off the SAME FK rows as the map above, so it is rebuilt from
+    // this one reading rather than a second one — the two files describe the same edges and must
+    // not be able to disagree about one.
+    const rebuiltAgentFk = buildAgentFkColumns(fkRows)
+    const liftList = (l: readonly string[]): Record<string, Record<string, unknown>> => ({
+      "contact_id FK": Object.fromEntries(l.map((t) => [t, true])),
+    })
+    const agentFkDiff = [
+      ...diffNested(liftColumns(rebuiltAgentFk.agents), liftColumns(AGENT_FK_COLUMNS), (t) => `agents(id) ${t}`),
+      ...diffNested(
+        liftColumns(rebuiltAgentFk.usersAgentish),
+        liftColumns(USERS_FK_AGENTISH_COLUMNS),
+        (t) => `agent-ish users(id) ${t}`,
+      ),
+      ...diffNested(liftList(rebuiltAgentFk.contacts), liftList(CONTACT_FK_TABLES), (_t, k) => `contact_id on ${k}`),
+    ]
+    check(
+      `identity classes: ${rebuiltAgentFk.facts.agentColumns} agents(id) columns, ${rebuiltAgentFk.facts.usersAgentishColumns} agent-ish users(id) columns and ${rebuiltAgentFk.facts.contactTables} contact_id tables agree with the live schema`,
+      agentFkDiff.length === 0,
+      agentFkDiff.slice(0, 8).join(" · "),
+    )
+    check(
+      "identity classes: the committed bytes are what the generator would write",
+      bodies.get("scripts/agent-fk-columns.ts") === rebuiltAgentFk.body,
+      "the file's data matches but its formatting does not",
+    )
+
     const rebuiltVocab = buildVocabularies(checks)
     const vocabDiff = diffNested(rebuiltVocab.map, CHECK_VOCABULARIES, (t, c) => `${t}.${c}`)
     check(
@@ -397,7 +505,7 @@ if (!creds) {
     for (const c of rebuiltVocab.conflicts) console.log(`   · ${c}`)
 
     // The full difference list, so a failure names every drifted object rather than the first eight.
-    const all = [...snapshotDiff, ...fkDiff, ...vocabDiff]
+    const all = [...snapshotDiff, ...fkDiff, ...agentFkDiff, ...vocabDiff]
     if (all.length) {
       console.log(`\n  DRIFT, in full (${all.length}):`)
       for (const d of all) console.log(`    · ${d}`)

@@ -17,9 +17,11 @@
 // writers use the constant, and the loose spellings already in the database are
 // mapped forward by normalizeContactSource() rather than orphaned.
 //
-// TWO AXES, NOT ONE. See below — contact_type (buyer/seller/both/lifetime) and
-// persona (first_time/divorce/probate/fsbo/downsize/…) are independent, and m294
+// TWO AXES, NOT ONE. See below — contact_type (buyer/seller/both/lifetime_customer)
+// and persona (first_time/divorce/probate/fsbo/downsize/…) are independent, and m294
 // corrects an earlier migration of mine that conflated them.
+
+import { LIFETIME_CUSTOMER_TYPE, isLifetimeRelationshipType } from "@/lib/contact-types"
 
 /** Canonical capture sources that a campaign sequence can be keyed on. */
 export const CONTACT_SOURCE_HOME_VALUE = "home_value"
@@ -71,8 +73,16 @@ export function normalizeContactSource(raw: string | null | undefined): Campaign
 // a divorcing seller. lib/agents/campaign-orchestrator.ts already composes each
 // campaign by "trigger + persona + consent state"; this is that persona.
 
-/** WHO they are to us. campaign_sequences.contact_type (m294). */
-export const CAMPAIGN_CONTACT_TYPES = ["buyer", "seller", "both", "lifetime"] as const
+/**
+ * WHO they are to us. campaign_sequences.contact_type (m294, narrowed by m539).
+ *
+ * The COARSE axis of the contacts.contact_type vocabulary, not a second one:
+ * `contactTypeForContact` below maps a stored contacts.contact_type onto it. m539
+ * retired `lifetime` in favour of `lifetime_customer` on BOTH columns, so the two
+ * agree — leaving the coarse axis spelling it `lifetime` would have rebuilt the
+ * exact drift that migration removed, one table over (CLAUDE.md §6).
+ */
+export const CAMPAIGN_CONTACT_TYPES = ["buyer", "seller", "both", LIFETIME_CUSTOMER_TYPE] as const
 export type CampaignContactType = (typeof CAMPAIGN_CONTACT_TYPES)[number]
 
 export function isCampaignContactType(v: string | null | undefined): v is CampaignContactType {
@@ -94,35 +104,31 @@ export function isCampaignPersona(v: string | null | undefined): v is CampaignPe
   return !!v && (CAMPAIGN_PERSONAS as readonly string[]).includes(v)
 }
 
-/**
- * contacts.contact_type values that mean an established, post-close relationship.
- *
- * EXPORTED as a readonly tuple (CLAUDE.md §6 — one vocabulary per function). The
- * ad-audience `lifetime_customers` source rule needs the SAME set to build its
- * `.in("contact_type", …)` filter (lib/ads/audience-source-rules.ts), and a second
- * hand-typed list there would be a second vocabulary: the day a type is added
- * here, that rule would quietly stop matching the contacts this reader calls
- * lifetime, and the audience named "Lifetime Customers" would be missing people
- * with no error anywhere. Every member is admitted by the live
- * `contacts_contact_type_check` (verified 2026-08-22).
- */
-export const LIFETIME_CONTACT_TYPES = [
-  "lifetime", "lifetime_customer", "past_client", "client", "sphere",
-] as const
-
-const LIFETIME_TYPES = new Set<string>(LIFETIME_CONTACT_TYPES)
+// TOMBSTONE (CLAUDE.md §1). `LIFETIME_CONTACT_TYPES` was declared HERE as a
+// five-value tuple — and, independently, three more times: as a Set in
+// lib/kernel/returning-customer.ts, as PAST_CLIENT_TYPES in
+// lib/kernel/referral-radar.ts, and with a DIFFERENT membership in
+// app/api/cron/lifetime-npv-forecast-rollup/route.ts. Three of the four named
+// `lifetime` / `past_client`, which m539 retired, so their `.in("contact_type", …)`
+// filters were about to select on values the column can never hold. The survivor is
+// lib/contact-types.ts:LIFETIME_CONTACT_TYPES. Its readers (the ads source rule, the
+// two simulators) now import it from there — one name, one import path.
 
 /**
  * PURE — the campaign contact_type for a contact. Defaults to `buyer`, matching
  * the resolver engage-contact.ts already uses for situational portal messages:
  * an unknown type is treated as a buyer rather than dropped, so a capture never
  * falls out of the funnel.
+ *
+ * Retired spellings still resolve — `isLifetimeRelationshipType` canonicalises
+ * first — so a legacy `past_client` row is still enrolled in the lifetime
+ * sequence rather than being handed a first-time-buyer drip.
  */
 export function contactTypeForContact(contactType: string | null | undefined): CampaignContactType {
   const t = (contactType ?? "").trim().toLowerCase()
   if (t === "seller") return "seller"
   if (t === "both") return "both"
-  if (LIFETIME_TYPES.has(t)) return "lifetime"
+  if (isLifetimeRelationshipType(t)) return LIFETIME_CUSTOMER_TYPE
   return "buyer"
 }
 
