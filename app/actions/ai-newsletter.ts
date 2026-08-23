@@ -10,6 +10,7 @@ function escapeHtml(str: string): string {
 }
 
 import { createClient } from "@/lib/supabase/server"
+import { LIFETIME_CUSTOMER_SEGMENT } from "@/lib/contact-types"
 import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
@@ -105,7 +106,7 @@ export async function aiGenerateSubjectLines(params: {
   agentId?: string // ignored — derived from session
   brokerageId?: string // ignored — derived from session
   newsletterTopic: string
-  audience?: "all" | "buyers" | "sellers" | "investors" | "lifetime_customers"
+  audience?: "all" | "buyers" | "sellers" | "investors" | typeof LIFETIME_CUSTOMER_SEGMENT
   tone?: "professional" | "friendly" | "urgent" | "curious"
   includeEmoji?: boolean
 }) {

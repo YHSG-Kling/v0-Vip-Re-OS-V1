@@ -18,6 +18,7 @@
  */
 
 import { createClient } from "@/lib/supabase/server"
+import { LIFETIME_CUSTOMER_SEGMENT } from "@/lib/contact-types"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
@@ -85,7 +86,7 @@ export interface AiComposeEmailParams {
   brokerageId: string
   agentId?: string
   topic: string
-  audience?: "buyers" | "sellers" | "investors" | "lifetime_customers" | "all"
+  audience?: "buyers" | "sellers" | "investors" | typeof LIFETIME_CUSTOMER_SEGMENT | "all"
   tone?: "professional" | "friendly" | "urgent" | "informational"
   campaignId?: string
 }

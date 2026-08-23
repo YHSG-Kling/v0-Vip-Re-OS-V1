@@ -1,6 +1,7 @@
 "use client"
 
 import { Input } from "@/components/ui/input"
+import { LIFETIME_CUSTOMER_SEGMENT } from "@/lib/contact-types"
 import { Textarea } from "@/components/ui/textarea" // Added for Direct Mail
 
 import type React from "react"
@@ -385,7 +386,7 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
           brokerageId: brokerageId,
           agentId: userId,
           topic,
-          targetAudience: "lifetime_customers",
+          targetAudience: LIFETIME_CUSTOMER_SEGMENT,
           tone: "friendly",
         }),
         aiGenerateSubjectLines({

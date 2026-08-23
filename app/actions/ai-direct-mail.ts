@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { LIFETIME_CUSTOMER_SEGMENT } from "@/lib/contact-types"
 // THE METERED LANE, which this file imported and never used.
 //
 // Every AI call here went through `generateObject` (lib/ai/generate.ts:120) —
@@ -127,7 +128,7 @@ export async function aiWritePostcardCopy(params: {
     | "expired"
     | "divorce_probate"
     | "investors"
-    | "lifetime_customers"
+    | typeof LIFETIME_CUSTOMER_SEGMENT
     | "geographic_farm"
     | "new_movers"
   callToAction: "call" | "scan_qr" | "visit_website" | "text"
@@ -296,7 +297,7 @@ Consider:
 export async function aiSelectTargetAudience(params: {
   agentId: string
   brokerageId: string
-  campaignGoal: "listings" | "buyers" | "farming" | "brand_awareness" | "lifetime_customers"
+  campaignGoal: "listings" | "buyers" | "farming" | "brand_awareness" | typeof LIFETIME_CUSTOMER_SEGMENT
   budget: number
   area: string
 }) {

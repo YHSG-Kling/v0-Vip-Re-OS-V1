@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { LIFETIME_CUSTOMER_SEGMENT } from "@/lib/contact-types"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
@@ -51,7 +52,7 @@ function stripCodeFences(text: string): string {
 
 export interface NewsletterGenerationParams {
   agentId: string
-  audienceSegment: "buyers" | "sellers" | "investors" | "lifetime_customers" | "sphere" | "all"
+  audienceSegment: "buyers" | "sellers" | "investors" | typeof LIFETIME_CUSTOMER_SEGMENT | "sphere" | "all"
   topic?: string
   tone?: "professional" | "friendly" | "educational" | "urgent"
   includeMarketData?: boolean

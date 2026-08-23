@@ -161,7 +161,23 @@ export interface ExclusionAudienceRow {
   status?: string | null
 }
 
-export type ExclusionRefusalKind =
+/**
+ * MODULE-PRIVATE ON PURPOSE. This was exported and nothing imported it — the
+ * opposite-missing census named it as a one-sided pair, correctly.
+ *
+ * It is NOT a duplicate of `PersonaAdsEligibility.refusalKind`, so §1 does not
+ * call for a merge: that one answers "why is this persona not a valid basis"
+ * (three members) while this answers "why did the exclusion SLOT refuse" — a
+ * superset that also covers the slot's shape, tenancy and gate availability. The
+ * mapping between them is explicit below, and it is a widening, not an alias.
+ *
+ * The missing half here was a READER, and there is no honest one to build: the
+ * exported verdict interface carries the union structurally, so a consumer can
+ * branch on it without naming the type. Exporting it anyway would be a name kept
+ * alive for a caller that does not exist. Same remedy already applied in this
+ * file to `malformedExclusionSlot`.
+ */
+type ExclusionRefusalKind =
   /** The slot is present but is not a list of id strings. */
   | "malformed_slot"
   /** An id in the slot matches no audience in THIS tenant. */
