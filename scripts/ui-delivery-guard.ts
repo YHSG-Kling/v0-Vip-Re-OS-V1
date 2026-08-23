@@ -189,15 +189,66 @@ console.log("\n═══ 3. The screen and the schema share one dictionary ═�
     { file: "app/dashboard/videos/create/video-create-client.tsx", konst: "VIDEO_TYPES", table: "ai_video_projects", column: "video_type" },
   ]
 
+  // A MENU MAY SATISFY THIS RULE IN TWO FORMS, AND THE SECOND IS THE STRONGER ONE.
+  //
+  // This scanner originally read only form (a): a local array literal of
+  // `value: "…"` pairs, every one checked against the live CHECK. When the
+  // contact-creation menu was rewritten to DERIVE its options from the canonical
+  // vocabulary — the fix for a real bug, a form offering "Past Client" after m539
+  // retired it — there was no literal left to read, `offered.length` fell to 0,
+  // and this check FAILED WITH "could not read the vocabulary or the options".
+  //
+  // The code had become unable to offer a refused value BY CONSTRUCTION, and the
+  // guard reported that as a defect. That is §2's failure mode arriving from the
+  // other direction: not a guard blind to a defect, but a guard blind to a FIX.
+  // Enumerating literals is the weaker proof; deriving from the one vocabulary is
+  // what §6 asks for. So form (b) is now recognised and verified structurally.
+  const derivesFromCanon = (src: string, konst: string): boolean => {
+    const decl = src.match(new RegExp(`const\\s+${konst}\\s*=([\\s\\S]*?);?\\n(?:const|export|function|\\n)`))?.[1] ?? ""
+    // The derivation must actually FILTER against the canonical set. A menu that
+    // merely imports it and then maps its own list is form (a) wearing form (b).
+    return /CANONICAL_[A-Z_]+|CONTACT_TYPES\b/.test(decl) && /\.filter\(/.test(decl) && /\.includes\(/.test(decl)
+  }
+
   for (const s0 of SURFACES) {
     const allowed = allowedFor(s0.table, s0.column)
-    const body = constBody(code(read(s0.file)), s0.konst)
+    const src = code(read(s0.file))
+    const body = constBody(src, s0.konst)
     const offered = [...body.matchAll(/value:\s*"([a-z_ ]+)"/g)].map((m) => m[1])
+
+    if (offered.length === 0 && derivesFromCanon(src, s0.konst)) {
+      // Form (b). The filter guarantees membership, so what still needs proving is
+      // that the SOURCE list the filter draws from holds nothing the column
+      // refuses — otherwise a bad entry is merely hidden rather than absent, and
+      // the label map would carry a value no user can ever pick.
+      // Only the ORDER const is read, never the whole file: scanning the file
+      // would sweep up every unrelated string literal in it and report them as
+      // refused values — an accusation against code that offers nothing.
+      const orderBody = constBody(src, `${s0.konst}_ORDER`)
+      const source = [...orderBody.matchAll(/"([a-z_]+)"/g)].map((m) => m[1])
+      const refused = source.filter((v) => !allowed.includes(v))
+      ok(`${s0.table}.${s0.column} — ${s0.konst} is DERIVED from the canonical vocabulary, so it cannot offer a refused value`,
+        allowed.length > 0 && refused.length === 0,
+        refused.length ? `its source list still names: ${refused.join(", ")}` : "the derivation could not be read")
+      continue
+    }
+
     const bad = offered.filter((v) => !allowed.includes(v))
     ok(`${s0.table}.${s0.column} — every value in ${s0.konst} is one the column accepts (${offered.length} offered)`,
       allowed.length > 0 && offered.length > 0 && bad.length === 0,
       bad.length ? `refused by the CHECK: ${bad.join(", ")}` : "could not read the vocabulary or the options")
   }
+
+  // CONTROLS — a form-(b) reader that returns true for anything would pass the
+  // real surface too, so prove it discriminates in both directions.
+  ok("CONTROL — a menu that FILTERS against the canonical set reads as derived",
+    derivesFromCanon(
+      'const CONTACT_TYPES = ORDER.filter((v) => (CANONICAL_CONTACT_TYPES as readonly string[]).includes(v)).map((value) => ({ value }));\nconst x',
+      "CONTACT_TYPES"))
+  ok("CONTROL — a menu that only IMPORTS it and maps its own list does NOT",
+    !derivesFromCanon(
+      'const CONTACT_TYPES = [{ value: "past_client" }].map((o) => o);\nconst x',
+      "CONTACT_TYPES"))
 
   {
     const allowed = allowedFor("recruiting_costs", "cost_type")
