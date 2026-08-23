@@ -1,31 +1,42 @@
-// scripts/agent-fk-columns.ts
-//
-// Every column that FOREIGN KEYs public.agents(id), snapshotted from the live
-// database. Committed rather than queried so the guard runs offline and the map
-// is reviewable in a diff.
-//
-// WHY THIS EXISTS. The schema is split-brain: some columns named agent_id FK
-// agents(id) and others FK users(id) — activities.agent_user_id is a users.id,
-// net_sheet_calculations.agent_id is an agents.id. You cannot tell from the
-// column name, which is exactly how wrong-class writes keep shipping. Only the
-// columns BELOW are agents(id); anything else named agent_id is a different animal.
-//
-// RE-SNAPSHOT AFTER ANY FK MIGRATION. m366 re-pointed 20 columns from users(id)
-// to agents(id) and this map went stale the moment it landed — a stale map makes
-// the guard flag correct writes and, worse, bless wrong ones. Regenerate from:
-//
-//   select con.conrelid::regclass::text as tbl, a.attname as col,
-//          con.confrelid::regclass::text as refs
-//   from pg_constraint con
-//   join lateral unnest(con.conkey) k(attnum) on true
-//   join pg_attribute a on a.attrelid = con.conrelid and a.attnum = k.attnum
-//   where con.contype = 'f'
-//     and con.connamespace = 'public'::regnamespace
-//     and con.confrelid in ('public.agents'::regclass, 'public.users'::regclass)
-//     and array_length(con.conkey, 1) = 1;
+/**
+ * scripts/agent-fk-columns.ts
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHICH ID CLASS DOES THIS COLUMN HOLD? The schema is split-brain: some columns named agent_id
+ * FK agents(id) and others FK users(id) — activities.agent_user_id is a users.id,
+ * net_sheet_calculations.agent_id is an agents.id. You cannot tell from the column NAME, which is
+ * exactly how wrong-class writes keep shipping, and `agents.id` and `users.id` are DISJOINT id
+ * spaces (23503), not two names for one row. scripts/agent-id-class-guard.ts reads the three maps
+ * below; m366 re-pointed 20 columns from users(id) to agents(id) and this map went stale the
+ * moment it landed — a stale map makes the guard flag correct writes and, worse, bless wrong ones.
+ *
+ * Built from the same live reading as scripts/schema-fk-map.ts — public.live_foreign_keys_json() — so the two
+ * files cannot disagree about an edge. SINGLE-COLUMN foreign keys only: a composite FK constrains
+ * a TUPLE, and no one column in it carries the target's id on its own. 0 composite FK(s)
+ * to these three targets were skipped at this reading.
+ *
+ * This file is a CACHE OF THE LIVE DATABASE, not a second opinion about it. CI holds no database
+ * credentials, so without the cache the identity-class guard goes blind — that is the only reason
+ * it is committed.
+ *
+ * MEASURED AT GENERATION: 212 agents(id) columns across 203 tables, 33 agent-ish users(id) columns across 31 tables, 165 contact_id tables.
+ *
+ * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
+ * generated: 2026-08-23
+ * source: public.live_foreign_keys_json()
+ * body-sha256: 91d475d002ad662a9b9df09c48a4f4e66c0078558ab910da454defa799c5fd53
+ *
+ * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
+ * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
+ * a schema change the cache has not absorbed fails the second wherever credentials exist.
+ * To update: regenerate (`npm run schema:regen`), review the diff, commit it.
+ * `generated:` is carried forward when a regeneration changes nothing, so a no-op regen writes
+ * no bytes.
+ */
+// ─── BODY — body-sha256 covers every byte from the next line to EOF ─────────
+/** `AGENT_FK_COLUMNS[table] = [column, …]` — every column that FOREIGN KEYs public.agents(id).
+ *  Anything else named `agent_id` is a different animal; check the map below before assuming. */
 export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   activities: ["agent_id"],
-  agent_achievements: ["agent_id"],
   agent_api_credentials: ["agent_id"],
   agent_assistant_sessions: ["agent_id"],
   agent_avatar_assets: ["agent_id"],
@@ -64,7 +75,6 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   agents: ["covering_agent_id"],
   ai_autopilot_actions: ["agent_id"],
   ai_autopilot_plans: ["agent_id"],
-  ai_content_outputs: ["agent_id"],
   ai_daily_briefings: ["agent_id"],
   ai_feedback_log: ["agent_id"],
   ai_insights: ["agent_id"],
@@ -90,7 +100,6 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   buyer_behavior_predictions: ["agent_id"],
   buyer_broker_agreements: ["agent_id"],
   buyer_fatigue_scores: ["agent_id"],
-  buyer_tours: ["agent_id"],
   calendar_blocks: ["agent_id"],
   call_analyses: ["agent_id"],
   call_coaching_insights: ["agent_id"],
@@ -134,7 +143,6 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   deposits: ["agent_id"],
   direct_mail_campaigns: ["agent_id"],
   drip_campaigns: ["agent_id"],
-  earnings_history: ["agent_id"],
   embed_widgets: ["agent_id", "last_routed_agent_id"],
   fair_housing_logs: ["agent_id"],
   farm_territories: ["agent_id"],
@@ -173,7 +181,7 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   newsletter_video_renders: ["agent_id"],
   objection_scenario_agents: ["agent_id"],
   offer_comparison: ["agent_id"],
-  offers: ["agent_id"],
+  offers: ["agent_id", "presented_to_seller_by_agent_id"],
   onboarding_ai_chats: ["agent_id"],
   open_house_events: ["agent_id"],
   open_houses: ["agent_id"],
@@ -190,7 +198,6 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   property_preferences: ["agent_id"],
   prospects: ["agent_id"],
   qr_codes: ["agent_id"],
-  quickbooks_sync_log: ["agent_id"],
   recruiting_analytics: ["recruited_agent_id"],
   recruiting_costs: ["recruited_agent_id"],
   recruiting_roi: ["recruited_agent_id"],
@@ -203,12 +210,12 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   showing_routes: ["agent_id"],
   showings: ["agent_id"],
   smart_assistant_suggestions: ["agent_id"],
-  social_accounts: ["agent_id"],
   social_media_accounts: ["agent_id"],
   social_posts: ["agent_id"],
   studio_sessions: ["agent_id"],
   support_tickets: ["agent_id"],
   tasks: ["assigned_to_agent_id", "created_by_agent_id"],
+  team_cap_tracking: ["agent_id"],
   team_earnings: ["top_agent_id"],
   team_heatmap_snapshots: ["agent_id"],
   team_members: ["agent_id"],
@@ -227,7 +234,6 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   vendor_usage_tracking: ["agent_id"],
   video_assets: ["agent_id"],
   video_completion_tracking: ["agent_id"],
-  video_content: ["agent_id"],
   video_scripts_library: ["agent_id"],
   voice_assistant_config: ["agent_id"],
   voice_assistant_sessions: ["agent_id"],
@@ -235,22 +241,13 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   website_visitors: ["agent_id"],
 }
 
-/**
- * Columns that FK public.users(id) but whose NAME reads agent-ish — the confusable
- * half of the split-brain. Snapshotted from the live database.
- *
- * These are the REVERSE-direction hazard: writing a resolved agents.id here is just
- * as broken as writing a user.id into an agents(id) FK. `contacts.source_agent_id`
- * is the sharpest trap left — it sits on the same row as `contacts.agent_id`, which
- * is an agents.id, so the two columns one line apart are opposite classes.
- *
- * Only agent-ish NAMES are listed. A column called `created_by` or `uploaded_by` is
- * not going to be confused for an agents.id, and listing every users FK would bury
- * the ones that actually mislead.
- *
- * This half shrank by 20 at m366. If a name you remember living here is gone, it did
- * not stop existing — it became an agents(id) column and moved up.
- */
+/** `USERS_FK_AGENTISH_COLUMNS[table] = [column, …]` — columns that FK public.users(id) whose
+ *  NAME contains "agent", so they read as agents(id) and are not. The REVERSE-direction hazard:
+ *  writing a resolved agents.id here is as broken as the forward case. `contacts.source_agent_id`
+ *  is the sharpest — it sits on the same row as `contacts.agent_id`, which IS an agents.id.
+ *  A misleading users column whose name lacks "agent" (teams.team_lead_id,
+ *  closing_disclosure_agreement.broker_id) is deliberately NOT here — see AGENTISH in
+ *  scripts/schema-cache-builders.ts. */
 export const USERS_FK_AGENTISH_COLUMNS: Record<string, string[]> = {
   activities: ["agent_user_id"],
   ad_campaigns: ["agent_user_id"],
@@ -261,7 +258,7 @@ export const USERS_FK_AGENTISH_COLUMNS: Record<string, string[]> = {
   buyer_financial_profiles: ["agent_user_id"],
   buyer_intake_tokens: ["agent_user_id"],
   campaign_calendar: ["agent_user_id"],
-  closing_disclosure: ["title_agent_id"],
+  closing_disclosure_agreement: ["agent_signed_off_by", "agent_submitted_by"],
   contacts: ["source_agent_id"],
   fatigue_alerts: ["agent_user_id"],
   learning_assignments: ["agent_user_id"],
@@ -270,85 +267,191 @@ export const USERS_FK_AGENTISH_COLUMNS: Record<string, string[]> = {
   listing_presentations: ["agent_user_id"],
   marketing_assets: ["agent_user_id"],
   marketing_campaigns: ["agent_user_id"],
-  message_threads: ["agent_user_id"],
   negotiation_strategies: ["agent_user_id"],
   neighbor_notification_campaigns: ["agent_user_id"],
   objection_training_sessions: ["agent_user_id"],
   platform_credentials: ["agent_user_id"],
-  portal_event_stream: ["agent_user_id"],
+  portal_event_stream: ["agent_action_completed_by", "agent_user_id"],
   property_alerts: ["agent_user_id"],
   property_interests: ["agent_user_id"],
   repurpose_pipelines: ["agent_user_id"],
   seo_keywords: ["agent_user_id"],
   strategy_recommendations: ["agent_user_id"],
+  tours: ["agent_approved_by"],
   workflow_intake_sessions: ["agent_user_id"],
   workflow_runs: ["agent_user_id"],
 }
 
-/**
- * Tables whose `contact_id` FKs public.contacts(id), snapshotted from live.
- *
- * A LEAD is not a CONTACT. Writing a lead id here is FK-rejected and the row is
- * silently lost — the registry records a pass that fixed this, but three sites
- * survived it: the ISA inbound-intent nurture log, three ISA tool writes, and every
- * lead-readiness transition. The repo's own correct shape is
- * `contact_id: null, entity_type: "lead", entity_id: <leadId>`.
- */
+/** Tables whose `contact_id` FKs public.contacts(id).
+ *  A LEAD is not a CONTACT: writing a lead id here is FK-rejected and the row is silently lost,
+ *  because supabase-js RESOLVES a refusal. The repo's correct shape for a lead-era row is
+ *  `contact_id: null, entity_type: "lead", entity_id: <leadId>`.
+ *  Only `contact_id` is listed — the other columns that FK contacts (seller_contact_id,
+ *  buyer_contact_id, viewer_contact_id, …) name their side and do not read as a lead id. */
 export const CONTACT_FK_TABLES: string[] = [
   "activities",
+  "agent_intro_videos",
+  "agent_reviews",
   "ai_assistant_notes",
   "ai_autopilot_plans",
+  "ai_insights",
   "ai_isa_activities",
   "ai_isa_calls",
   "ai_isa_engagement_tracking",
   "ai_isa_qualifications",
   "ai_message_drafts",
+  "ai_video_projects",
   "appointments",
   "behavioral_signals",
+  "business_card_scans",
+  "buyer_behavior_log",
+  "buyer_behavior_predictions",
+  "buyer_fatigue_scores",
+  "buyer_financial_profiles",
+  "buyer_intake_tokens",
   "calculator_history",
   "call_analyses",
   "chat_sessions",
+  "client_detailed_personas",
+  "client_documents",
+  "client_engagement_scores",
+  "client_gifts",
+  "client_portal_activity",
   "client_portal_messages",
+  "closing_gifts",
+  "cma_reports",
+  "collaborative_searches",
   "communication_audit_log",
   "communications",
   "compliance_flags",
   "contact_consent_events",
+  "contact_enrichment_queue",
   "contact_notes",
+  "contact_portal_modules",
+  "contact_portal_preferences",
+  "contact_segments",
+  "contact_suppression_list",
+  "contact_vendors",
   "conversation_insights",
   "conversation_logs",
   "conversations",
   "copilot_plans",
+  "credit_accounts",
+  "credit_conversation_logs",
+  "credit_partner_referrals",
+  "credit_status",
+  "data_health_logs",
+  "deconflict_suppression_log",
+  "demo_persona_contacts",
+  "direct_mail_recipients",
+  "direct_mail_responses",
+  "document_requests",
   "documents",
   "drip_campaigns",
   "email_sends",
   "email_tracking",
+  "embed_sessions",
+  "external_behavior",
   "fair_housing_logs",
   "fatigue_alerts",
   "form_submissions",
   "generated_content",
+  "generated_documents",
+  "home_value_estimates",
+  "income_gap_recommended_actions",
+  "intelligence_signals_log",
+  "intelligent_outreach_log",
   "isa_outreach_log",
+  "journey_stage_progress",
   "journey_states",
+  "journey_task_completions",
   "lead_enrichment_queue",
   "lead_score_history",
   "lead_scores",
   "lead_value_journey",
-  "message_threads",
+  "leads",
+  "learning_assignments",
+  "lender_applications",
+  "lifetime_customer_npv_scores",
+  "lifetime_customer_touchpoints",
+  "listing_engagement",
+  "listing_landing_pages",
+  "listing_presentations",
+  "listings",
+  "mail_response_tracking",
+  "manager_signals",
+  "marketing_attribution_credits",
+  "marketing_campaign_touchpoints",
   "messages",
+  "motivated_seller_signals",
+  "negotiation_strategies",
+  "net_sheet_calculations",
+  "newsletter_sends",
+  "newsletter_subscribers",
   "notifications",
+  "offers",
+  "open_house_attendees",
+  "open_house_feedback",
+  "open_house_invitations",
+  "open_house_rsvp_tracking",
+  "outbound_message_compliance_log",
+  "outcome_reconciliations",
+  "outside_agent_contact_links",
+  "portal_access_logs",
+  "portal_contact_invites",
+  "portal_event_stream",
+  "predictive_listing_actions",
+  "predictive_listing_scores",
+  "privacy_acceptances",
+  "property_alert_delivery_log",
+  "property_alert_results",
   "property_alerts",
+  "property_feedback",
+  "property_intelligence",
+  "property_interactions",
   "property_interests",
+  "property_matches",
+  "property_preferences",
   "property_search_log",
   "property_views",
+  "qr_scan_events",
+  "real_estate_events",
+  "referral_sources",
+  "review_requests",
+  "saved_properties",
   "scheduled_touchpoints",
+  "seller_share_feed",
+  "seller_updates",
+  "seller_weekly_reports",
   "sequence_enrollments",
   "sequence_step_executions",
+  "showing_requests",
+  "showings",
   "signal_reactivations",
+  "signature_requests",
   "site_activity",
+  "smart_landing_sessions",
   "smart_showing_recommendations",
+  "social_intelligence",
+  "strategy_recommendations",
+  "support_tickets",
   "tasks",
+  "thank_you_notes",
+  "tour_stops",
+  "tours",
   "transactions",
+  "transparency_updates",
   "unified_lead_profile",
   "usage_events",
+  "valuation_requests",
+  "vendor_bookings",
+  "vendor_contact_assignments",
+  "vendor_invoices",
+  "video_engagement_events",
   "voice_calls",
+  "wealth_advisor_recommendations",
   "website_visitors",
+  "workflow_intake_sessions",
+  "workflow_runs",
+  "workflow_webhook_events",
 ]

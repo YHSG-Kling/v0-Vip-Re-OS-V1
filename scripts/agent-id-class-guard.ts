@@ -5,8 +5,12 @@
  * THE WRONG-CLASS WRITE. This schema was split-brain: some columns named agent_id
  * FOREIGN KEY agents(id) and others FK users(id). m366 re-pointed the 20 stragglers,
  * so the plain spelling `agent_id` now means agents(id) everywhere — but the hazard
- * did not go away, it moved to the confusable NAMES: contacts.source_agent_id and
- * closing_disclosure.title_agent_id are users ids sitting beside agents ids. The
+ * did not go away, it moved to the confusable NAMES: contacts.source_agent_id sits
+ * on the same row as contacts.agent_id and is a users id, and
+ * ai_isa_qualifications.assigned_to_agent_id is a users id under a name that reads
+ * agents everywhere else. (The example that used to stand here,
+ * closing_disclosure.title_agent_id, is gone — the table was dropped, which is why
+ * scripts/agent-fk-columns.ts is now GENERATED rather than kept by hand.) The
  * column NAME still tells you nothing, so `agent_id: user.id` reads fine in review
  * and is rejected by the foreign key at runtime.
  *

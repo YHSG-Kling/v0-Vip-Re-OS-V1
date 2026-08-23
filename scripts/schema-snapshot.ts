@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-08-21
+ * generated: 2026-08-23
  * source: public.live_schema_json()
- * body-sha256: 9383c0220506342a613983fd4bc7322f79bdd7c39531e1485533096f6b78c927
+ * body-sha256: ffecdd483bd6476814e9c9f529628f10016ee5d7ca6c784469952d946558dfa9
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -308,7 +308,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   error_stack_traces: ["brokerage_id", "created_at", "error_hash", "error_id", "error_type", "file_path", "function_name", "id", "line_number", "runtime_context", "stack_trace"],
   event_processing_log: ["brokerage_id", "created_at", "error_message", "event_id", "handler", "id", "processing_time_ms", "status"],
   external_behavior: ["activity_type", "behavioral_signal_id", "brokerage_id", "confidence_score", "contact_id", "detected_interest_level", "detected_via_zenrows", "id", "location", "occurred_at", "property_addresses_viewed", "scraped_at", "search_criteria_json", "source"],
-  facebook_custom_audiences: ["ad_campaign_id", "agent_user_id", "audience_name", "audience_type", "brokerage_id", "consent_basis", "created_at", "external_audience_id", "id", "last_synced_at", "lookalike_seed_audience_id", "scope_type", "source_rule", "status", "target_platform", "updated_at"],
+  facebook_custom_audiences: ["ad_campaign_id", "agent_user_id", "audience_name", "audience_type", "brokerage_id", "consent_basis", "created_at", "external_audience_id", "id", "last_synced_at", "lookalike_seed_audience_id", "scope_type", "source_rule", "status", "target_platform", "updated_at", "used_as_suppression_at", "used_as_suppression_by_campaign_id"],
   farm_territories: ["agent_id", "brokerage_id", "city", "created_at", "id", "is_active", "marketing_budget_monthly", "name", "notes", "state", "updated_at", "zip_codes"],
   fatigue_alerts: ["agent_user_id", "alert_type", "brokerage_id", "contact_id", "created_at", "dismissed", "dismissed_at", "dismissed_by", "fatigue_score_at_trigger", "id", "message", "risk_level"],
   feature_access_overrides: ["brokerage_id", "created_at", "created_by", "disabled_reason", "feature_key", "id", "notes", "override_type", "team_id", "trial_ends_at", "user_id"],

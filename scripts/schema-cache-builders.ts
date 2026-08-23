@@ -599,3 +599,174 @@ export function buildLiveTables(schema: LiveSchema): { body: string; tables: str
   body += "]\n"
   return { body, tables }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. THE IDENTITY-CLASS MAP (agents(id) vs users(id) vs contacts(id))
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * scripts/agent-fk-columns.ts answers "which id class does this column hold?" — the question
+ * SCHEMA_FK_MAP cannot be read for, because that map is keyed for PostgREST embed resolution and
+ * scripts/agent-id-class-guard.ts needs the three sets sliced the other way round.
+ *
+ * IT WAS THE LAST HAND-KEPT CACHE. It carried "snapshotted from the live database" and a block of
+ * REGENERATE SQL with no generator behind it — the same shape schema-fk-map.ts had before m485,
+ * and it drifted the same way: measured against live on 2026-08-23 it named 6 agents(id) columns
+ * the database no longer has, and MISSED 109 tables whose contact_id FKs contacts(id) — a guard
+ * blind to 109 of the 165 tables it exists to watch.
+ *
+ * The rows come from the SAME RPC as the FK map, live_foreign_keys_json(), so the two files cannot
+ * disagree about an edge.
+ */
+export const AGENT_FK_SOURCE = FK_MAP_SOURCE
+
+/**
+ * A users(id) FK column is listed only when its NAME could be mistaken for an agents.id — the
+ * whole point of the reverse half. The rule is mechanical and published rather than curated:
+ * the column name CONTAINS "agent". `created_by` and `uploaded_by` are users ids too and nobody
+ * would write an agents.id into them, so listing every users FK would bury the ones that mislead.
+ *
+ * BLIND SPOT, stated beside the number: a misleading users column whose name does NOT contain
+ * "agent" is not listed. `teams.team_lead_id` and `closing_disclosure_agreement.broker_id` are the
+ * live examples — both users ids, both plausible places to write the wrong class, neither matched
+ * by this rule.
+ */
+const AGENTISH = /agent/i
+
+/** The three target tables this file describes. Anything else in the FK payload is ignored. */
+const IDENTITY_TARGETS = new Set(["agents", "users", "contacts"])
+
+export type AgentFkFacts = {
+  agentTables: number
+  agentColumns: number
+  usersAgentishTables: number
+  usersAgentishColumns: number
+  contactTables: number
+  /** FKs to these three targets that span more than one column — excluded, and counted so a
+   *  "0 composite" line is a measurement rather than an unexercised branch going unmentioned. */
+  compositeSkipped: number
+}
+
+export function agentFkHeader(f: AgentFkFacts): string {
+  return `/**
+ * scripts/agent-fk-columns.ts
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHICH ID CLASS DOES THIS COLUMN HOLD? The schema is split-brain: some columns named agent_id
+ * FK agents(id) and others FK users(id) — activities.agent_user_id is a users.id,
+ * net_sheet_calculations.agent_id is an agents.id. You cannot tell from the column NAME, which is
+ * exactly how wrong-class writes keep shipping, and \`agents.id\` and \`users.id\` are DISJOINT id
+ * spaces (23503), not two names for one row. scripts/agent-id-class-guard.ts reads the three maps
+ * below; m366 re-pointed 20 columns from users(id) to agents(id) and this map went stale the
+ * moment it landed — a stale map makes the guard flag correct writes and, worse, bless wrong ones.
+ *
+ * Built from the same live reading as scripts/schema-fk-map.ts — ${AGENT_FK_SOURCE} — so the two
+ * files cannot disagree about an edge. SINGLE-COLUMN foreign keys only: a composite FK constrains
+ * a TUPLE, and no one column in it carries the target's id on its own. ${f.compositeSkipped} composite FK(s)
+ * to these three targets were skipped at this reading.
+ *
+ * This file is a CACHE OF THE LIVE DATABASE, not a second opinion about it. CI holds no database
+ * credentials, so without the cache the identity-class guard goes blind — that is the only reason
+ * it is committed.
+ *
+ * MEASURED AT GENERATION: ${f.agentColumns} agents(id) columns across ${f.agentTables} tables, ${f.usersAgentishColumns} agent-ish users(id) columns across ${f.usersAgentishTables} tables, ${f.contactTables} contact_id tables.`
+}
+
+/** PURE — a key as an object literal writes it: bare when it is a valid identifier. */
+function objKey(k: string): string {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) ? k : JSON.stringify(k)
+}
+
+/**
+ * PURE — the whole identity-class file body, from the live FK rows.
+ *
+ * `rows` may be the full live_foreign_keys_json() payload or a narrowing of it to these three
+ * targets: a foreign key has exactly ONE target table, so filtering by target cannot split a
+ * constraint and cannot change the per-constraint column count computed here.
+ */
+export function buildAgentFkColumns(rows: LiveFk[]): {
+  body: string
+  facts: AgentFkFacts
+  /** The same three structures the body encodes, so the drift guard can DIFF rather than only
+   *  compare bytes — a byte mismatch says "regenerate", a diff says which column moved. */
+  agents: Record<string, string[]>
+  usersAgentish: Record<string, string[]>
+  contacts: string[]
+} {
+  const relevant = rows.filter((r) => IDENTITY_TARGETS.has(r.tgt_table))
+
+  // Arity per CONSTRAINT — live_foreign_keys_json() unnests conkey, so a composite FK arrives
+  // once per column and is recognised by (src_table, name) appearing more than once.
+  const arity = new Map<string, number>()
+  for (const r of relevant) arity.set(constraintKey(r), (arity.get(constraintKey(r)) ?? 0) + 1)
+  const compositeSkipped = [...arity.values()].filter((n) => n > 1).length
+  const single = relevant.filter((r) => arity.get(constraintKey(r)) === 1)
+
+  const agents: Record<string, Set<string>> = {}
+  const usersAgentish: Record<string, Set<string>> = {}
+  const contactIdTables = new Set<string>()
+  for (const r of single) {
+    if (r.tgt_table === "agents") (agents[r.src_table] ??= new Set()).add(r.src_col)
+    else if (r.tgt_table === "users" && AGENTISH.test(r.src_col))
+      (usersAgentish[r.src_table] ??= new Set()).add(r.src_col)
+    else if (r.tgt_table === "contacts" && r.src_col === "contact_id") contactIdTables.add(r.src_table)
+  }
+
+  const emitMap = (name: string, doc: string, m: Record<string, Set<string>>) => {
+    let out = `${doc}\nexport const ${name}: Record<string, string[]> = {\n`
+    let columns = 0
+    for (const t of Object.keys(m).sort()) {
+      const cols = [...m[t]].sort()
+      columns += cols.length
+      out += `  ${objKey(t)}: [${cols.map((c) => JSON.stringify(c)).join(", ")}],\n`
+    }
+    out += "}\n"
+    return { out, tables: Object.keys(m).length, columns }
+  }
+
+  const a = emitMap(
+    "AGENT_FK_COLUMNS",
+    `/** \`AGENT_FK_COLUMNS[table] = [column, …]\` — every column that FOREIGN KEYs public.agents(id).
+ *  Anything else named \`agent_id\` is a different animal; check the map below before assuming. */`,
+    agents,
+  )
+  const u = emitMap(
+    "USERS_FK_AGENTISH_COLUMNS",
+    `/** \`USERS_FK_AGENTISH_COLUMNS[table] = [column, …]\` — columns that FK public.users(id) whose
+ *  NAME contains "agent", so they read as agents(id) and are not. The REVERSE-direction hazard:
+ *  writing a resolved agents.id here is as broken as the forward case. \`contacts.source_agent_id\`
+ *  is the sharpest — it sits on the same row as \`contacts.agent_id\`, which IS an agents.id.
+ *  A misleading users column whose name lacks "agent" (teams.team_lead_id,
+ *  closing_disclosure_agreement.broker_id) is deliberately NOT here — see AGENTISH in
+ *  scripts/schema-cache-builders.ts. */`,
+    usersAgentish,
+  )
+
+  const contacts = [...contactIdTables].sort()
+  let contactsBlock = `/** Tables whose \`contact_id\` FKs public.contacts(id).
+ *  A LEAD is not a CONTACT: writing a lead id here is FK-rejected and the row is silently lost,
+ *  because supabase-js RESOLVES a refusal. The repo's correct shape for a lead-era row is
+ *  \`contact_id: null, entity_type: "lead", entity_id: <leadId>\`.
+ *  Only \`contact_id\` is listed — the other columns that FK contacts (seller_contact_id,
+ *  buyer_contact_id, viewer_contact_id, …) name their side and do not read as a lead id. */
+export const CONTACT_FK_TABLES: string[] = [\n`
+  for (const t of contacts) contactsBlock += `  ${JSON.stringify(t)},\n`
+  contactsBlock += "]\n"
+
+  const sorted = (m: Record<string, Set<string>>): Record<string, string[]> =>
+    Object.fromEntries(Object.keys(m).sort().map((t) => [t, [...m[t]].sort()]))
+
+  return {
+    body: `${a.out}\n${u.out}\n${contactsBlock}`,
+    facts: {
+      agentTables: a.tables,
+      agentColumns: a.columns,
+      usersAgentishTables: u.tables,
+      usersAgentishColumns: u.columns,
+      contactTables: contacts.length,
+      compositeSkipped,
+    },
+    agents: sorted(agents),
+    usersAgentish: sorted(usersAgentish),
+    contacts,
+  }
+}
