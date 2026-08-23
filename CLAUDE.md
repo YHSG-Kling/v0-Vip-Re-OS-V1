@@ -42,6 +42,29 @@ zero and reads as a clean bill of health.
   stripping `/* */` blocks *before* `//` lines: one `//` containing `/*`, an
   apostrophe, or a URL makes the block regex swallow real code, and the analyzer
   then accuses live code of being absent.
+- **A TOMBSTONE IS NOT A CALL SITE — strip before you scan for code tokens.**
+  Five guards failed this way in one wave (2026-08-23), all on the same JSDoc
+  block in `lib/listing-health/health-scorer.ts` that names its survivor exactly
+  as §1 requires. Reading raw source made that comment count as a live
+  `.from("open_houses")`, so each guard accused the repo of the very thing the
+  tombstone records having FIXED — and would have done so forever, because the
+  tombstone is meant to stay. **Following the orphan doctrine made the guards go
+  red.** The blast radius was `writerless-read-sweep` (a phantom writer-less
+  read), `legacy-tables-retired` (a retired table "still queried"),
+  `schema-cache-builders.referencedTables` (a DROPPED table written into a
+  ratchet baseline), `open-house-consolidation` (fixture text inside a template
+  literal counted as two call sites), and `content-contract`. If a scan looks for
+  `.from(`, an import, an export or any other code token, it must read stripped
+  source — and `blankStrings` too where a fixture or a specimen could match.
+- **Do not pin an assertion to a WAYPOINT.** Four assertions in that same wave
+  failed *because the work finished*: one pinned to the literal string
+  `"WRITTEN, NOT APPLIED"` (so it could only pass while the migration lied), one
+  to "`property_id` gone, `listing_id` remains" (true after m542, false once m547
+  dropped the table), one to a hardcoded FK count, one to a hardcoded table name.
+  During a multi-step migration every intermediate state is briefly true and then
+  permanently false. Assert the RULE and derive the number, and where a guard
+  hardcodes a table name, check that list against `LIVE_TABLES` so a retired name
+  cannot sit in it reading as enforced.
 - **Every absence assertion needs a POSITIVE CONTROL.** A broken regex and a
   clean tree both report zero. If you claim "0 found", prove the finder still
   recognises the defect it was written for.

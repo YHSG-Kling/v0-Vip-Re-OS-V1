@@ -18,6 +18,7 @@
  * Tighten: GUARD_WRITE_BASELINE=1 npx tsx scripts/writerless-read-sweep.ts
  */
 import { readFileSync, readdirSync, statSync, writeFileSync, existsSync } from "node:fs"
+import { blankComments } from "./strip-comments"
 import { join } from "node:path"
 
 const BASELINE = join(process.cwd(), "scripts/writerless-read-baseline.json")
@@ -120,7 +121,26 @@ function main() {
   // multiline chains and interleaved option args.
   const FROM = /\.from\(\s*["'`]([a-z_][a-z0-9_]*)["'`]\s*\)/g
   for (const f of files) {
-    const s = readFileSync(f, "utf8")
+    // `blankComments`, NOT the raw source, and NOT `stripComments`.
+    //
+    // WHY IT MUST BE STRIPPED AT ALL: this sweep decides whether a table has a
+    // reader with no writer. A §1 TOMBSTONE — the comment naming a survivor that
+    // the orphan doctrine REQUIRES when a read is re-pointed — contains the very
+    // `.from("x").select(…)` text it retired. Read raw, the tombstone counts as a
+    // live reader, so a table correctly moved OFF becomes a "NEW writer-less
+    // read" and the sweep accuses the repo of the thing the comment records
+    // having fixed. lib/listing-health/health-scorer.ts:207 is exactly that: a
+    // JSDoc block explaining that OPEN_HOUSE is now scored off
+    // `open_house_events`, quoting the old query verbatim.
+    //
+    // WHY `blankComments` SPECIFICALLY: this scanner is POSITION-DEPENDENT — it
+    // slices a 160-char window from `m.index` to decide whether the verb beside a
+    // `.from()` is a write or a read. `stripComments` REMOVES bytes and would
+    // shift every subsequent offset, pulling unrelated code into that window and
+    // silently reclassifying reads as writes. `blankComments` overwrites comment
+    // bodies with spaces, so every offset is preserved (CLAUDE.md §2 names which
+    // helper each case wants; this is the match-index case).
+    const s = blankComments(readFileSync(f, "utf8"))
     let m: RegExpExecArray | null
     while ((m = FROM.exec(s))) {
       const table = m[1]
