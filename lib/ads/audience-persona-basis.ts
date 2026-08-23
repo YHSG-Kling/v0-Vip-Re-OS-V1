@@ -25,59 +25,109 @@
 //     `protectedClassReasonFor`, on each persona NAME. There is no hand-written
 //     list of "bad personas" here, and that is deliberate — see below.
 //
-// ── THE TRAP THIS FILE IS BUILT AROUND ───────────────────────────────────────
-// "Segment the audience on persona" is one careless step from being a LAUNDERING
-// ROUTE. Several canonical persona names are not situations at all — they are a
-// protected characteristic wearing a friendlier label:
+// ── THE OWNER RULING OF 2026-08-23, WHICH REVERSED THIS MODULE'S FIRST CUT ───
+// VERBATIM: "military, senior, divorced and probate need to be allowed as
+// situation persona because that is how we show them info or ads that is worded
+// to their situation as part of them-first methology."
+// And, defining what a persona IS: "lifetime and active seller are contact type
+// not persona. persona is more the situation that the contact or lead is in."
 //
-//     senior    → age               probate  → inheritance / a death in a family
-//     divorce   → marital status    military → veteran status
+// The first cut of this file COMPUTED its eligibility split by running every
+// canonical persona name through `protectedClassReasonFor`, which made `senior`,
+// `probate`, `divorce` and `military` ads-INELIGIBLE and flagged `military` for a
+// ruling. The owner has now ruled all four ELIGIBLE **as an inclusion basis**, and
+// gave the reason: the persona selects the WORDING, so a person in that situation
+// gets information written for their situation. That is TAILORING.
 //
-// Every one of those words is already in `PROTECTED_CLASS_TOKENS`, because the
-// owner's data-lane ruling deliberately KEPT them there ("the tokens are what let
-// the ads gate keep refusing"). So an audience rule of
-// `{ type: "persona_segment", filters: { personas: ["senior"] } }` is ALREADY
-// refused by `protectedClassSegmentationIn`, which scans string VALUES as well as
-// keys — verified by positive control in the simulator. Nothing here weakens that,
-// and this module must never become the place somebody adds an exception to it.
+// ── THE LINE THAT REPLACES IT: INCLUSION vs EXCLUSION ────────────────────────
+// The fair-housing exposure in this area — 42 U.S.C. § 3604(c), and HUD's
+// 2019-2022 actions against Meta — is about EXCLUSION: withholding housing
+// advertising from people because of a protected characteristic. Reaching a
+// widow with probate-sale information and REFUSING to show a listing to anyone
+// over 55 are different operations on the same field, and only the second is the
+// regulated act. So the split is no longer "which personas", it is "which
+// OPERATION":
 //
-// What this module adds on top is LEGIBILITY and FAIL-CLOSED RESOLUTION:
-//   · the token gate refuses with `filters.personas[0]=senior`, which tells an
-//     operator that "senior" is a protected token. It does not tell them that
-//     `senior` is a VALID persona everywhere else in the product. This refusal
-//     names the persona, names the characteristic it stands for, and says where
-//     the persona is still usable — so the refusal reads as a scope boundary
-//     rather than as a bug in the persona vocabulary;
-//   · a persona basis that cannot be RESOLVED — absent, empty, misspelled, or the
-//     catch-all `other` — refuses too, and that is a different refusal with a
-//     different reason. Before this existed, `syncAudience` had no branch for a
-//     persona audience at all: it fell through to "every consented contact in the
-//     tenant" and uploaded the WHOLE CRM to Meta under a name that promised a
-//     narrow slice. An unresolvable basis must refuse, not populate (CLAUDE.md §4).
+//   · a persona used to INCLUDE people and choose their wording  → ALLOWED,
+//     all thirteen minus the catch-all, per the ruling;
+//   · a persona that is a PROTECTED CHARACTERISTIC used to EXCLUDE or SUPPRESS
+//     an audience                                                → REFUSED.
+//     Excluding `senior` from a housing ad is withholding housing from the
+//     elderly whatever the field is called.
 //
-// ── THE HONEST ANSWER ON THE FOUR ───────────────────────────────────────────
-// A subset of the canonical persona vocabulary REMAINS ADS-INELIGIBLE. That is
-// the honest reading of the two rulings together, not a hedge: the owner exempted
-// sourcing/enrichment/scoring/education from fair housing so the right EDUCATION
-// reaches the right person, and kept the refusal on outbound ad targeting because
-// choosing who a housing ad is SHOWN to is the regulated act. `senior`, `probate`,
-// `divorce` and `military` stay fully valid for education, sourcing, scoring,
-// campaign sequences and copy. They may not choose who sees a housing ad.
-// `military` is flagged for an owner ruling in the lane report: veteran status is
-// state-protected in several of our markets and is in the token vocabulary, so the
-// gate refuses it consistently — but VA-loan education is a legitimate agent
-// practice and the owner may want to draw that line differently. The gate refuses
-// it TODAY because refusing is the fail-closed direction; a ruling can widen it.
+// THE MODEL CAN EXPRESS THAT, WHICH IS THE ONLY REASON THE SECOND HALF IS BUILT.
+// `SourceRule.type` already carries `exclusion_active_pipeline` — "an audience
+// that removes people" is a first-class concept here, not one invented for this
+// gate. `EXCLUSION_SOURCE_RULE_TYPES` (lib/ads/audience-source-rules.ts) derives
+// that set by prefix from the one roster, and `audienceUseOf` below reads it.
+// The gap is named there and repeated here because it is real: an audience
+// EXPORTED and pasted into Meta's own "Exclude" box is invisible to this product
+// — `TargetingConfig` has no excluded-audience field and
+// `facebook_custom_audiences` has no column saying an audience was used as a
+// suppression list. This gate governs exclusion as DECLARED, which is the only
+// place the system can see it.
+//
+// ── WHY `other` STILL REFUSES, AND WHY THAT IS NOT THE REVERSED OBJECTION ────
+// The owner's definition is load-bearing: "persona is more the situation that the
+// contact or lead is in." `other` is the catch-all for a contact whose situation
+// we have NOT learned. Refusing it is not the fair-housing objection the ruling
+// reversed — it is the fail-closed one (CLAUDE.md §4): before this module existed
+// `syncAudience` had no branch for a persona audience at all, fell through to
+// "every consented contact in the tenant", and uploaded the WHOLE CRM to Meta
+// under a name promising a narrow slice. An audience basis of "everyone we could
+// not classify" is that same upload wearing a persona label, so it refuses with
+// `refusalKind: "no_basis"` — a different reason with a different fix. `other`
+// stays fully valid for campaign sequences, copy and every data lane.
+//
+// ── WHAT THIS MODULE STILL IS NOT ────────────────────────────────────────────
+// It is NOT a licence for raw demographic targeting. The owner permitted a
+// PERSONA — a situation label on a contact WE ALREADY KNOW, stored in
+// `contacts.contact_persona` — not a demographic criterion sent to an ad
+// platform. `min_owner_age`, `demographics.recentlyDivorced` and
+// `quicklists: ["senior-owner"]` are REFUSED on the ads lane exactly as before,
+// by `assertAudienceSegmentationAllowed` / `screenProtectedClassCriteria`, and
+// the simulator proves that separation on every one of those shapes.
 
 import {
   CAMPAIGN_PERSONAS,
   isCampaignPersona,
   type CampaignPersona,
 } from "@/lib/campaigns/contact-sources"
+import { isExclusionSourceRuleType } from "@/lib/ads/audience-source-rules"
 import { protectedClassReasonFor } from "@/lib/lead-governance/protected-class-signals"
 
 /** The `SourceRule.type` and `audience_type` that declare a persona basis. */
 export const PERSONA_SEGMENT_TYPE = "persona_segment"
+
+/**
+ * WHICH OPERATION an audience performs on the people its rule selects.
+ *
+ * `"inclusion"` — the audience is TARGETED: these people are reached, and the
+ * persona chooses the wording they are reached with. This is what the owner
+ * ruled on.
+ * `"exclusion"` — the audience is SUBTRACTED: these people are removed from a
+ * campaign's delivery. A protected characteristic may not do this.
+ */
+export type AudienceUse = "inclusion" | "exclusion"
+
+/**
+ * PURE. Which operation this audience rule declares.
+ *
+ * Derived from `EXCLUSION_SOURCE_RULE_TYPES`, which is itself derived by prefix
+ * from `SOURCE_RULE_TYPES` — so this module coins no second vocabulary for
+ * "exclusion" (CLAUDE.md §6) and a new `exclusion_*` rule type is covered on the
+ * day it is added rather than the day somebody remembers this function.
+ *
+ * DEFAULTS TO `"inclusion"`, and that default is safe in exactly one direction:
+ * an unrecognised rule type is refused outright by `resolveSourceRuleNarrowing`
+ * before it can populate anything, so "inclusion" here can never widen what an
+ * audience delivers — it can only decide which persona rule is applied to a rule
+ * that some other gate is already going to refuse.
+ */
+export function audienceUseOf(rule: unknown): AudienceUse {
+  if (!rule || typeof rule !== "object") return "inclusion"
+  return isExclusionSourceRuleType((rule as { type?: unknown }).type) ? "exclusion" : "inclusion"
+}
 
 /**
  * The catch-all member of the canonical persona union. It is a valid persona
@@ -89,66 +139,115 @@ export const UNRESOLVED_PERSONA: CampaignPersona = "other"
 
 export interface PersonaAdsEligibility {
   persona: CampaignPersona
-  /** True when this persona names a TRANSACTION SITUATION an ad may be aimed at. */
+  /** Which operation this verdict was reached for. A persona is not "eligible"
+   *  in the abstract — it is eligible to INCLUDE, or to EXCLUDE, and those two
+   *  now answer differently for four of the thirteen. */
+  use: AudienceUse
+  /** True when this persona may be the basis of an audience used THIS way. */
   eligible: boolean
   /** Null iff eligible. A sentence an operator reads, never a bare code. */
   reason: string | null
   /**
    * Which of the two refusals this is, so callers and the simulator can tell them
    * apart without parsing prose:
-   *   · "protected_characteristic" — the persona IS a protected class (senior, …)
-   *   · "no_basis"                 — the persona names no situation (`other`)
+   *   · "protected_characteristic" — the persona is a protected class AND the
+   *     audience would SUPPRESS the people it names (the only refusal left on
+   *     that ground after the 2026-08-23 ruling);
+   *   · "no_basis"                 — the persona names no situation (`other`),
+   *     on either operation.
    */
   refusalKind: "protected_characteristic" | "no_basis" | null
 }
 
 /**
- * PURE. Whether one canonical persona may be the basis of an OUTBOUND AD AUDIENCE.
+ * PURE. Whether one canonical persona may be the basis of an OUTBOUND AD AUDIENCE
+ * that performs `use` on the people it selects.
  *
- * DERIVED, NEVER LISTED. The protected half is decided by calling the one
- * protected-class classifier on the persona name itself. Writing the four names
- * into a constant here would be a second vocabulary that silently stops agreeing
- * with `PROTECTED_CLASS_TOKENS` the day a token is added — and the failure would
- * be in the permissive direction, which is the one that ships a violation.
+ * ── THE INCLUSION HALF IS NOW OPEN, BY RULING ────────────────────────────────
+ * Every persona that names a SITUATION is an eligible inclusion basis, the four
+ * protected-characteristic ones included: "military, senior, divorced and probate
+ * need to be allowed as situation persona because that is how we show them info
+ * or ads that is worded to their situation." Only `other` refuses, and on the
+ * other ground entirely (see `UNRESOLVED_PERSONA`).
+ *
+ * ── THE EXCLUSION HALF IS DERIVED, NEVER LISTED ──────────────────────────────
+ * Which personas may not SUPPRESS an audience is decided by calling the one
+ * protected-class classifier on the persona name itself. Writing "senior,
+ * probate, divorce, military" into a constant here would be a second vocabulary
+ * that silently stops agreeing with `PROTECTED_CLASS_TOKENS` the day a token is
+ * added — and the failure would be in the permissive direction, which is the one
+ * that ships a violation.
  */
-export function personaAdsEligibility(persona: CampaignPersona): PersonaAdsEligibility {
+export function personaAdsEligibility(
+  persona: CampaignPersona,
+  use: AudienceUse = "inclusion",
+): PersonaAdsEligibility {
   if (persona === UNRESOLVED_PERSONA) {
     return {
       persona,
+      use,
       eligible: false,
       refusalKind: "no_basis",
       reason:
-        `persona "${persona}" names no transaction situation — it is the catch-all for a contact ` +
-        `whose situation we have not learned yet. An ad audience must declare what kind of client ` +
-        `it is aimed at and what they are trying to do; "${persona}" declares the absence of that, ` +
-        `so it would silently mean "everyone". It stays valid for campaign sequences and copy.`,
+        `persona "${persona}" names no situation — it is the catch-all for a contact whose ` +
+        `situation we have not learned yet ("persona is more the situation that the contact or ` +
+        `lead is in"). An ad audience must declare what kind of client it is aimed at and what ` +
+        `they are trying to do; "${persona}" declares the absence of that, so it would silently ` +
+        `mean "everyone". It stays valid for campaign sequences and copy.`,
     }
   }
-  const protectedReason = protectedClassReasonFor(persona)
-  if (protectedReason) {
-    return {
-      persona,
-      eligible: false,
-      refusalKind: "protected_characteristic",
-      reason:
-        `persona "${persona}" is a PROTECTED CHARACTERISTIC wearing a persona label, not a ` +
-        `transaction situation. ${protectedReason} It remains fully valid for education, ` +
-        `sourcing, enrichment, scoring, campaign sequences and copy — by the owner's standing ` +
-        `exemption on the data lane — and it may not choose who a housing ad is shown to ` +
-        `(Fair Housing Act, 42 U.S.C. § 3604(c)).`,
+  if (use === "exclusion") {
+    const protectedReason = protectedClassReasonFor(persona)
+    if (protectedReason) {
+      return {
+        persona,
+        use,
+        eligible: false,
+        refusalKind: "protected_characteristic",
+        reason:
+          `persona "${persona}" names a PROTECTED CHARACTERISTIC, and this audience SUPPRESSES the ` +
+          `people it selects rather than reaching them. ${protectedReason} Reaching someone with ` +
+          `information written for their situation is the owner's them-first ruling and is allowed; ` +
+          `WITHHOLDING housing advertising from them on that same ground is the restricted act ` +
+          `(Fair Housing Act, 42 U.S.C. § 3604(c); HUD's 2019-2022 actions against Meta). Build this ` +
+          `audience as an inclusion basis, or exclude on a behaviour or pipeline state instead.`,
+      }
     }
   }
-  return { persona, eligible: true, refusalKind: null, reason: null }
+  return { persona, use, eligible: true, refusalKind: null, reason: null }
 }
 
-/** Every canonical persona an ad audience MAY be segmented on. Computed at load. */
+/**
+ * Every canonical persona an ad audience may be TARGETED on. Computed at load.
+ *
+ * Since the 2026-08-23 ruling this is every canonical persona except the
+ * catch-all — the four protected-characteristic personas are in it, because the
+ * persona is what selects the WORDING their information is written in.
+ */
 export const ADS_ELIGIBLE_PERSONAS: readonly CampaignPersona[] = Object.freeze(
-  CAMPAIGN_PERSONAS.filter((p) => personaAdsEligibility(p).eligible),
+  CAMPAIGN_PERSONAS.filter((p) => personaAdsEligibility(p, "inclusion").eligible),
 )
 
-/** Every canonical persona an ad audience MAY NOT be segmented on. Computed at load. */
+/** Every canonical persona an ad audience MAY NOT be targeted on. Computed at load. */
 export const ADS_INELIGIBLE_PERSONAS: readonly CampaignPersona[] = Object.freeze(
-  CAMPAIGN_PERSONAS.filter((p) => !personaAdsEligibility(p).eligible),
+  CAMPAIGN_PERSONAS.filter((p) => !personaAdsEligibility(p, "inclusion").eligible),
+)
+
+/**
+ * Every canonical persona that may not be the basis of an audience which REMOVES
+ * people (`exclusion_*` source-rule types). Computed at load from the classifier,
+ * so it is the protected-characteristic personas plus the null basis and it
+ * cannot drift from `PROTECTED_CLASS_TOKENS`.
+ *
+ * READ, not merely declared (CLAUDE.md §1 — a constant with no reader is an
+ * orphan whatever it documents): `resolveAudiencePersonaBasis` names this set in
+ * the exclusion refusal an operator reads, so the error says which personas may
+ * not suppress an audience rather than only which one was rejected. The ads
+ * dashboard has no surface for it yet; the simulator asserts it against an
+ * independent re-derivation from `PROTECTED_CLASS_TOKENS`.
+ */
+export const EXCLUSION_INELIGIBLE_PERSONAS: readonly CampaignPersona[] = Object.freeze(
+  CAMPAIGN_PERSONAS.filter((p) => !personaAdsEligibility(p, "exclusion").eligible),
 )
 
 /** The shape the ads lane reads a persona basis out of. Matches `SourceRule`. */
@@ -188,7 +287,10 @@ export function declaresPersonaBasis(rule: unknown): boolean {
  *                                               a guessed persona is a silently
  *                                               different audience)
  *   · `other`                                 → refuse (no_basis)
- *   · senior / probate / divorce / military   → refuse (protected_characteristic)
+ *   · senior / probate / divorce / military   → ADMITTED on an INCLUSION rule
+ *                                               (owner ruling 2026-08-23), and
+ *                                               refused on an `exclusion_*` rule
+ *                                               (protected_characteristic)
  *
  * Deliberately NOT run through `normalizeContactPersona`: that function maps
  * DRIFTED DATABASE SPELLINGS forward for a reader, which is right for reading a
@@ -198,6 +300,11 @@ export function declaresPersonaBasis(rule: unknown): boolean {
  * allowed to drift.
  */
 export function resolveAudiencePersonaBasis(rule: unknown): PersonaBasisResolution {
+  // WHICH OPERATION FIRST, then which personas. Read off the rule itself rather
+  // than passed in: every caller already hands the whole rule to this function,
+  // and a `use` parameter would be one more thing a caller could get wrong in
+  // the permissive direction.
+  const use = audienceUseOf(rule)
   const declared = (rule && typeof rule === "object"
     ? (rule as PersonaBasisRule).filters?.personas
     : undefined)
@@ -251,9 +358,19 @@ export function resolveAudiencePersonaBasis(rule: unknown): PersonaBasisResoluti
           `Persona union at lib/kernel/types.ts and the live campaign_sequences_persona_check).`,
       }
     }
-    const verdict = personaAdsEligibility(candidate)
+    const verdict = personaAdsEligibility(candidate, use)
     if (!verdict.eligible) {
-      return { ok: false, refusal: verdict.reason! }
+      // The exclusion refusal names the WHOLE refused set, not only the persona
+      // that tripped it: an operator fixing a suppression list needs to know
+      // which other personas will trip it on the next attempt. Read here rather
+      // than in `personaAdsEligibility` because that function is what computes
+      // the set — referencing it there would be a temporal-dead-zone crash at
+      // module load, not a cycle anybody would see in review.
+      const suffix =
+        verdict.refusalKind === "protected_characteristic"
+          ? ` The personas that may not be an EXCLUSION basis are: ${EXCLUSION_INELIGIBLE_PERSONAS.join(", ")}.`
+          : ""
+      return { ok: false, refusal: verdict.reason! + suffix }
     }
     if (!resolved.includes(candidate)) resolved.push(candidate)
   }
@@ -267,6 +384,13 @@ export function resolveAudiencePersonaBasis(rule: unknown): PersonaBasisResoluti
  * replaces: that one refuses what an audience may not be, this one requires what
  * it must be. `audienceLabel` is quoted back so an operator reading the error
  * knows WHICH audience to fix.
+ *
+ * SINCE 2026-08-23 THIS IS ALSO THE GATE THAT CARRIES THE EXCLUSION REFUSAL. The
+ * token gate can no longer refuse `senior` under `filters.personas` — the owner
+ * ruled that inclusion lawful — so a protected-characteristic persona on an
+ * `exclusion_*` rule is refused HERE, and (belt and braces) by the token gate
+ * too, which keeps its refusal for exactly that shape. Both are wired at all four
+ * doors onto `facebook_custom_audiences`; the simulator pins both.
  */
 export function assertAudiencePersonaBasis(rule: unknown, audienceLabel: string): void {
   if (!declaresPersonaBasis(rule)) return

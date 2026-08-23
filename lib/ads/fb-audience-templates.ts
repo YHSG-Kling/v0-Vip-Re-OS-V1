@@ -43,12 +43,22 @@ export interface AudienceTemplate {
  * It is a `Record<CampaignPersona, …>` over the ELIGIBLE set only, and the
  * derivation below reads it through `ADS_ELIGIBLE_PERSONAS`, so the day a persona
  * is added to the canonical union with no copy here, this file stops compiling
- * rather than shipping a template labelled `undefined`. A persona ruled INELIGIBLE
- * (senior, probate, divorce, military) has no entry and gets no template — the
- * catalog cannot offer an audience the gate would refuse.
+ * rather than shipping a template labelled `undefined`. Only `other` is excluded:
+ * it names no situation, so there is nothing to write copy about.
+ *
+ * ── THE FOUR ADDED BY THE 2026-08-23 RULING ─────────────────────────────────
+ * `senior`, `probate`, `divorce` and `military` were ineligible in this file's
+ * first cut and shipped no template. The owner ruled them in: "that is how we
+ * show them info or ads that is worded to their situation as part of them-first
+ * methology." Their copy below is written to that instruction — each entry names
+ * a TRANSACTION SITUATION and the information a person in it actually needs, and
+ * none of them is phrased as a preference for or against a class of person. A
+ * template here is an INCLUSION basis by construction (`PERSONA_SEGMENT_TYPE`);
+ * a persona audience that SUPPRESSES people is refused by
+ * `assertAudiencePersonaBasis` and the catalog has no way to express one.
  */
 const PERSONA_TEMPLATE_COPY: Record<
-  Exclude<CampaignPersona, "senior" | "probate" | "divorce" | "military" | "other">,
+  Exclude<CampaignPersona, "other">,
   { name: string; situation: string; recommendedFor: string[]; size: string }
 > = {
   first_time: {
@@ -98,6 +108,30 @@ const PERSONA_TEMPLATE_COPY: Record<
     situation: "Owners facing foreclosure — a financial and legal situation, sourced from public filings on the parcel.",
     recommendedFor: ["Options explainers", "Short-sale education", "Timeline guidance"],
     size: "~5–80",
+  },
+  probate: {
+    name: "Probate / Inherited Property",
+    situation: "Contacts settling an estate that includes a property. The questions are the court timeline, the co-heirs and what a sale actually requires — not another listing blast.",
+    recommendedFor: ["Probate timeline explainers", "Executor checklists", "Estate-sale coordination", "As-is vs repair guidance"],
+    size: "~5–80",
+  },
+  divorce: {
+    name: "Divorce / Separation",
+    situation: "Contacts dividing a marital home. They need the buy-out, refinance and sale options laid out plainly, and a process that works with two decision-makers.",
+    recommendedFor: ["Buy-out vs sale explainers", "Equity-split walkthroughs", "Neutral-party listing process"],
+    size: "~5–80",
+  },
+  senior: {
+    name: "Senior Transition",
+    situation: "Contacts making a later-life move — to single-level living, to be near family, or into a care community. The information they need is about equity, timing and the logistics of a move out of a long-held home.",
+    recommendedFor: ["Equity-release explainers", "Move-management resources", "Single-level / low-maintenance inventory", "Timing around a family move"],
+    size: "~10–150",
+  },
+  military: {
+    name: "Military / VA",
+    situation: "Service members and veterans buying or selling around a posting. PCS timelines are short and VA financing has rules most agents explain badly.",
+    recommendedFor: ["VA loan explainers", "PCS relocation timelines", "Base-proximity neighbourhood guides"],
+    size: "~5–100",
   },
 }
 

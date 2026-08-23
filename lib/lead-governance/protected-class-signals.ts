@@ -52,6 +52,30 @@
  *        · `screenProtectedClassCriteria(criteria, "ad_audience")` — the same
  *          refusal for a criteria PAYLOAD rather than a segmentation rule.
  *
+ * ── THE PERSONA RULING (2026-08-23) — WHAT THE ADS ARM NOW REFUSES ──────────
+ * Owner ruling, verbatim: "military, senior, divorced and probate need to be
+ * allowed as situation persona because that is how we show them info or ads that
+ * is worded to their situation as part of them-first methology." And, defining
+ * the term: "persona is more the situation that the contact or lead is in."
+ *
+ * The ads arm below used to refuse a persona VALUE like `senior` wherever it
+ * appeared in an audience rule, because arm 1 classifies the word and arm 3
+ * scans values as well as keys. That is now split by OPERATION rather than by
+ * word:
+ *   · INCLUDING people and choosing the wording they are reached with — allowed,
+ *     for a CANONICAL persona at the `personas` filter key. That is the carve-out
+ *     at `isCanonicalPersonaBasisValue`, and it is the only one in this file.
+ *   · EXCLUDING or suppressing an audience on a protected characteristic —
+ *     REFUSED, unchanged. `exclusion_*` source-rule types turn the carve-out off.
+ *
+ * WHAT DID NOT MOVE, AND IS THE THING TO CHECK FIRST IF YOU ARE EDITING HERE:
+ * the RAW PROVIDER ATTRIBUTE path. `min_owner_age`, `demographics.recentlyDivorced`,
+ * `quicklists: ["senior-owner","inherited"]` and `contact_tags: ["seniors-55plus"]`
+ * are refused/stripped on the ads lane exactly as before — by this same arm and by
+ * `screenProtectedClassCriteria(criteria, "ad_audience")`, which has no carve-out
+ * at all. The owner permitted a persona (a situation label on a contact we know),
+ * not demographic targeting criteria sent to an ad platform.
+ *
  * ── FINDING #297 — THE LAST DATA-LANE REFUSAL WAS RELEASED (2026-08-22) ──────
  * Owner ruling, verbatim: "297 just release it from fairhousing." And, in the
  * same wave: "all motivatied seller classifiers are necessary for data
@@ -139,6 +163,9 @@
  * other half — that no content-compliance entry point is reachable from the
  * data lane, and that it is still reachable from every content lane.
  */
+
+import { isCampaignPersona } from "@/lib/campaigns/contact-sources"
+import { isExclusionSourceRuleType } from "@/lib/ads/audience-source-rules"
 
 /**
  * The provider dataset namespaces classified protected WHOLE. The
@@ -272,7 +299,14 @@ export function protectedClassReasonFor(source: string): string | null {
   }
   const hit = tokens.find((t) => BANNED.has(t))
   if (hit) {
-    return `"${source}" contains the protected-class term "${hit}". It is a characteristic of a PERSON, not of a parcel: it may be held, scored and used to choose an education channel, and it may never segment a housing audience (Fair Housing Act, 42 U.S.C. § 3604).`
+    // "may not be used to WITHHOLD" rather than the older "may never segment".
+    // The old wording became overbroad on 2026-08-23: the owner ruled that a
+    // canonical situation persona MAY choose who an ad reaches and how it is
+    // worded, so a sentence saying the characteristic can never touch an audience
+    // was no longer true of every caller quoting it — and this sentence is quoted
+    // verbatim into stored rows (`signal_details.protected_class_basis`) and into
+    // operator errors, where an overbroad claim reads as a bug in the gate.
+    return `"${source}" contains the protected-class term "${hit}". It is a characteristic of a PERSON, not of a parcel: it may be held, scored and used to choose an education channel, and it may not be used to WITHHOLD housing advertising from anyone (Fair Housing Act, 42 U.S.C. § 3604).`
   }
   return null
 }
@@ -707,6 +741,56 @@ export function redactProtectedClassFields(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * THE PERSONA CARVE-OUT, AND THE REASON IT IS AS NARROW AS IT IS.
+ *
+ * ── THE RULING (owner, 2026-08-23, verbatim) ────────────────────────────────
+ * "military, senior, divorced and probate need to be allowed as situation
+ * persona because that is how we show them info or ads that is worded to their
+ * situation as part of them-first methology." And: "persona is more the
+ * situation that the contact or lead is in."
+ *
+ * Before this, `protectedClassSegmentationIn` refused
+ * `{ filters: { personas: ["senior"] } }` because it scans string VALUES as well
+ * as keys and "senior" is in `PROTECTED_CLASS_TOKENS`. That refusal was correct
+ * under the previous reading and is what the ruling reverses — for INCLUSION.
+ *
+ * ── WHAT THE CARVE-OUT ADMITS, AND NOTHING ELSE ─────────────────────────────
+ * BOTH conditions must hold, and each one is doing work:
+ *   1. the value sits at the `personas` FILTER KEY of an audience rule
+ *      (`filters.personas[0]`, or the degenerate `filters.personas` string form,
+ *      which the persona gate refuses anyway for not being an array); and
+ *   2. the value is a CANONICAL persona — a member of `CAMPAIGN_PERSONAS`, the
+ *      one roster that mirrors the `Persona` union and the live
+ *      `campaign_sequences_persona_check`.
+ *
+ * So `personas: ["senior"]` is admitted (a situation label on a contact WE
+ * ALREADY HOLD, in `contacts.contact_persona`), while every one of these is
+ * still refused, at the same key:
+ *   · `personas: ["senior-owner"]`  — the PROVIDER's quickList slug, not a
+ *     persona. Raw demographic targeting criteria wearing the persona key;
+ *   · `personas: ["min_owner_age"]`, `personas: ["seniors-55plus"]` — same;
+ *   · `contact_tags: ["seniors-55plus"]`, `min_owner_age: 65`,
+ *     `demographics.recentlyDivorced: true`, `quicklists: ["senior-owner"]` —
+ *     untouched by this function's carve-out and untouched by
+ *     `screenProtectedClassCriteria`, which never had one.
+ * The owner permitted a PERSONA. He did not permit sending a demographic
+ * criterion to an ad platform, and the two are told apart by the roster, not by
+ * the key alone.
+ *
+ * ── AND IT DOES NOT APPLY WHEN THE AUDIENCE SUBTRACTS ───────────────────────
+ * `suppresses` in the caller turns the carve-out off for an `exclusion_*` rule
+ * type. Reaching a widow with probate-sale information is the them-first ruling;
+ * removing every `senior` from a housing ad's delivery is withholding housing
+ * from the elderly. `lib/ads/audience-persona-basis.ts` refuses that too — this
+ * is the second, independent refusal on the same shape, which is what "defence
+ * in depth" has meant at these four doors since the gate was built.
+ */
+function isCanonicalPersonaBasisValue(prefix: string, value: string): boolean {
+  if (!/(?:^|\.)personas(?:\[\d+\])?$/.test(prefix)) return false
+  return isCampaignPersona(value.trim().toLowerCase())
+}
+
+/**
  * PURE. The protected-class attributes an ad-audience segmentation rule leans
  * on, as `path=value` strings, or `[]` when the rule segments only on
  * behaviour, lifecycle or transaction state.
@@ -732,11 +816,24 @@ export function redactProtectedClassFields(
  * refused even when innocently meant; the positive control in
  * scripts/compliance-scope-simulator.ts holds both directions so that cost
  * stays visible.
+ *
+ * ONE EXCEPTION, ADDED 2026-08-23 BY OWNER RULING, and it is deliberately the
+ * narrowest shape that can carry it: a CANONICAL persona at the `personas`
+ * filter key of an INCLUSION rule. See `isCanonicalPersonaBasisValue` above for
+ * what that admits and — more importantly — the list of neighbouring shapes it
+ * still refuses. This is the only exception in this function and it must stay
+ * the only one: the next author who wants to widen it is looking at the exact
+ * spot where raw demographic targeting would re-enter the ads lane.
  */
 export function protectedClassSegmentationIn(rule: unknown, path = ""): string[] {
+  // WHICH OPERATION THIS AUDIENCE PERFORMS. An audience that REMOVES people gets
+  // no persona carve-out below: suppressing an audience by a protected
+  // characteristic is the restricted act, whatever field it is spelled in.
+  const suppresses = isExclusionSourceRuleType((rule as { type?: unknown } | null)?.type)
   const hits: string[] = []
   const walk = (node: unknown, prefix: string): void => {
     if (typeof node === "string") {
+      if (isCanonicalPersonaBasisValue(prefix, node) && !suppresses) return
       if (isProtectedClassSource(node)) hits.push(`${prefix}=${node}`)
       return
     }

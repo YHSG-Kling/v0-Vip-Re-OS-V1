@@ -89,6 +89,47 @@ export function isSourceRuleType(v: unknown): v is SourceRuleType {
   return typeof v === "string" && (SOURCE_RULE_TYPES as readonly string[]).includes(v)
 }
 
+/**
+ * THE RULE TYPES THAT DEFINE AN AUDIENCE WHICH **REMOVES** PEOPLE.
+ *
+ * ── WHY THIS EXISTS (owner ruling, 2026-08-23) ───────────────────────────────
+ * The owner ruled that `military`, `senior`, `divorced` and `probate` are valid
+ * situation personas for ADS, "because that is how we show them info or ads that
+ * is worded to their situation as part of them-first methology." That ruling is
+ * about TAILORING — reaching someone and speaking to their situation.
+ *
+ * The fair-housing exposure in this area (HUD v. Meta) is about EXCLUSION —
+ * withholding a housing ad from people because of a protected characteristic.
+ * Those are different operations on the same field, and this product already had
+ * a first-class name for the second one: an audience whose rule type declares it
+ * exists to be SUBTRACTED from a campaign rather than targeted by it.
+ *
+ * DERIVED BY PREFIX FROM THE ONE ROSTER, never hand-listed (CLAUDE.md §6): a
+ * second `exclusion_*` type added above is covered the day it is added, and the
+ * failure mode of a hand-list here would be the permissive one. Today the set has
+ * exactly one member, `exclusion_active_pipeline`, and the simulator asserts both
+ * that it is non-empty (a silently-empty set would make the exclusion refusal
+ * unreachable while reading as enforced) and that it equals the prefix scan.
+ *
+ * PUBLISHED BLIND SPOT, because it is real: this covers exclusion as DECLARED in
+ * the audience's own rule. It does NOT cover exclusion as APPLIED on the ad
+ * platform — `TargetingConfig` (lib/kernel/ads.ts) has `custom_audience_ids` and
+ * no excluded-audience field, and `facebook_custom_audiences` has no column
+ * recording that an audience was used as a suppression list, so an operator who
+ * exports a persona audience and pastes it into Meta's "Exclude" box is outside
+ * anything this system can see. That gap is reported, not papered over.
+ */
+export const EXCLUSION_SOURCE_RULE_TYPES: readonly SourceRuleType[] = Object.freeze(
+  SOURCE_RULE_TYPES.filter((t) => t.startsWith("exclusion_")),
+)
+
+const EXCLUSION_TYPES = new Set<string>(EXCLUSION_SOURCE_RULE_TYPES)
+
+/** PURE. True when this `SourceRule.type` declares a SUBTRACTIVE audience. */
+export function isExclusionSourceRuleType(v: unknown): v is SourceRuleType {
+  return typeof v === "string" && EXCLUSION_TYPES.has(v)
+}
+
 // ─── THE DECLARATIVE NARROWING ────────────────────────────────────────────────
 
 /** The comparison operators both consumers implement. Nothing else is emitted. */

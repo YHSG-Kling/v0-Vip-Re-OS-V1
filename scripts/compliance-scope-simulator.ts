@@ -421,6 +421,31 @@ check("the data lane LABELS instead of stripping — a demographic survives stor
 check("wired for real — lib/audiences/audience-sync.ts imports the refusal",
   (graph.get("lib/audiences/audience-sync.ts") ?? []).includes("lib/lead-governance/protected-class-signals.ts"))
 
+// ── THE ONE CARVE-OUT IN THIS GATE (owner ruling, 2026-08-23) ───────────────
+// "military, senior, divorced and probate need to be allowed as situation
+// persona because that is how we show them info or ads that is worded to their
+// situation as part of them-first methology."
+//
+// This gate used to refuse the persona VALUE `senior` wherever it appeared, so
+// the ruling could not ship until it stood down on the INCLUSION path. Four
+// checks, because the carve-out is a hole in a fair-housing gate and a hole is
+// only safe if its edges are pinned: it admits a CANONICAL persona at the
+// `personas` filter key of an inclusion rule, and nothing on either side of that.
+// The persona lane's own suite (test:audience-persona-basis) holds the rest;
+// these four are here because the code they test lives in THIS file's subject.
+check("PERSONA CARVE-OUT — a canonical persona at the `personas` key of an INCLUSION rule is admitted",
+  throws(() => assertAudienceSegmentationAllowed(
+    { type: "persona_segment", filters: { personas: ["senior", "probate", "divorce", "military"] } }, "A")) === null)
+check("…and the SAME personas on an EXCLUSION rule are still REFUSED (suppression is the restricted act)",
+  (throws(() => assertAudienceSegmentationAllowed(
+    { type: "exclusion_active_pipeline", filters: { personas: ["senior"] } }, "A")) ?? "").includes("REFUSED"))
+check("CONTROL — the carve-out keys on the ROSTER: a provider slug at the same key is still refused",
+  (throws(() => assertAudienceSegmentationAllowed(
+    { type: "persona_segment", filters: { personas: ["senior-owner"] } }, "A")) ?? "").includes("REFUSED"))
+check("CONTROL — the carve-out keys on the KEY: the same word under contact_tags is still refused",
+  (throws(() => assertAudienceSegmentationAllowed(
+    { type: "persona_segment", filters: { contact_tags: ["senior"] } }, "A")) ?? "").includes("REFUSED"))
+
 // ── FINDINGS #297 / #304 (2026-08-22) — THE SAME FIELD, TWO ANSWERS ─────────
 //
 // Owner rulings, verbatim: "297 just release it from fairhousing.", "all
