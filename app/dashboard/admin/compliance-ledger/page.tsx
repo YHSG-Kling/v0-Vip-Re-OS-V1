@@ -5,7 +5,7 @@ import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { loadComplianceLedger } from "@/lib/kernel/compliance-ledger"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
-import { resolveTenantScope, isTenantScopeRefusal, type TenantScope } from "@/lib/kernel/tenant-scope"
+import { resolveTenantScope, isTenantScopeRefusal, describeTenantScope, type TenantScope } from "@/lib/kernel/tenant-scope"
 
 export const metadata = {
   title: "Compliance Ledger | Kernel OS Admin",
@@ -92,6 +92,15 @@ export default async function ComplianceLedgerPage({ searchParams }: { searchPar
     <div className="mx-auto max-w-6xl space-y-6 p-6">
       <div>
         <h1 className="text-2xl font-semibold">⚖️ Compliance Ledger</h1>
+        {/* THE SCOPE IS STATED ON THE PAGE, not just applied to the query.
+            This ledger is the surface where "no tenant" used to silently render
+            as "every tenant" — an admin with no brokerage_id read every
+            brokerage's Fair Housing and consent trail. The scope is now
+            unconflatable in the type, and showing it here means a reader can SEE
+            which one produced these rows rather than inferring it from the row
+            count. A platform scope also prints the REASON it was granted, which
+            is the field `platformScope()` requires at the call site. */}
+        <p className="text-xs font-medium text-muted-foreground">{describeTenantScope(scope)}</p>
         <p className="text-sm text-muted-foreground">
           Every outbound message and its Fair Housing / consent disposition — the Compliance Officer&apos;s audit trail.
         </p>

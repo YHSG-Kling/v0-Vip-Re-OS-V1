@@ -155,7 +155,13 @@ export function applyTenantScope<Q extends EqFilterable>(
   scope: TenantScope,
   column = "brokerage_id",
 ): Q {
-  return scope.kind === "tenant" ? query.eq(column, scope.brokerageId) : query
+  // Routed through `scopeBrokerageId` rather than re-testing `scope.kind` here.
+  // The two were written together and read the discriminant independently, which
+  // is the seam where a third case added to TenantScope later would be handled by
+  // one and silently dropped by the other — the same "two spellings of one
+  // question" defect §6 governs, at function scale.
+  const id = scopeBrokerageId(scope)
+  return id === null ? query : query.eq(column, id)
 }
 
 /** The brokerage id when the scope is a tenant, else null. For row-stamping and logs. */

@@ -99,7 +99,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import type { ChildRule } from "./child-safe-delete"
-import { deleteParentWithChildren } from "./child-safe-delete"
+import { deleteParentWithChildren, describeDeleteFailure } from "./child-safe-delete"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -181,15 +181,28 @@ export async function rollbackTenantCreation(
   const { childrenRemoved, childRefusals } = outcome
 
   if (!outcome.ok) {
-    const blockedBy = childRefusals.length ? ` Child cleanup was refused on: ${childRefusals.join("; ")}.` : ""
-    const why = outcome.parentError ?? outcome.censusFailures.join("; ") ?? "unknown"
+    // MERGED ONTO THE SURVIVOR (§1, §6). This branch hand-built its own sentence
+    // from outcome.parentError / censusFailures / childRefusals — the same job
+    // `describeDeleteFailure` does in the engine, and less completely: it had no
+    // arm for `blocked` or `no-parent-id`, so those two reasons rendered as
+    // "(unknown)" or "()".
+    //
+    // AND THE HAND-ROLLED VERSION CARRIED A BUG that the merge removes:
+    //     outcome.parentError ?? outcome.censusFailures.join("; ") ?? "unknown"
+    // `Array.join` NEVER returns null or undefined — it returns "" for an empty
+    // array — so the `?? "unknown"` arm was unreachable, and a census-failure with
+    // an empty list rendered as "The workspace could not be removed after setup
+    // failed ()." An empty parenthesis is the operator-facing version of "nobody
+    // checked": it reads as a reason having been given.
+    const why = describeDeleteFailure(outcome, "workspace")
+      ?? "The workspace could not be removed after setup failed."
     return {
       ok: false,
       childrenRemoved,
       childRefusals,
-      error:
-        `The workspace could not be removed after setup failed (${why}). ` +
-        `It is still present as ${brokerageId} and needs a support cleanup.${blockedBy}`,
+      // The engine's sentence says WHAT failed; this caller adds the one fact only
+      // it knows — the id support needs to finish the cleanup by hand.
+      error: `${why} It is still present as ${brokerageId} and needs a support cleanup.`,
     }
   }
 

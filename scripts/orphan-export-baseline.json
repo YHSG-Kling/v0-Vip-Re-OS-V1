@@ -54,7 +54,7 @@
     "lib/ads/ad-outcome-loop.ts": 3,
     "lib/ads/ad-performance-ingest.ts": 1,
     "lib/ads/audience-persona-basis.ts": 1,
-    "lib/ads/audience-source-rules.ts": 3,
+    "lib/ads/audience-source-rules.ts": 2,
     "lib/ads/connectors/ad-payload.ts": 2,
     "lib/ads/connectors/google.ts": 1,
     "lib/ads/connectors/meta.ts": 1,
@@ -292,6 +292,7 @@
     "lib/kernel/launch-war-room.ts": 2,
     "lib/kernel/lead-intake-cockpit.ts": 4,
     "lib/kernel/lead-magnets.ts": 1,
+    "lib/kernel/listing-archive.ts": 1,
     "lib/kernel/listing-inventory-radar.ts": 5,
     "lib/kernel/listing-marketing-week.ts": 1,
     "lib/kernel/listing-propensity.ts": 2,
@@ -333,6 +334,7 @@
     "lib/kernel/team-plays.ts": 2,
     "lib/kernel/team-query.ts": 2,
     "lib/kernel/tenant-provisioning-spec.ts": 2,
+    "lib/kernel/tenant-scope.ts": 2,
     "lib/kernel/title-closing-watchtower.ts": 3,
     "lib/kernel/tour-optimizer.ts": 9,
     "lib/kernel/vendor-coverage-forecast.ts": 3,
@@ -559,7 +561,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9235,
+  "census": 9262,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -860,7 +862,7 @@
     "app/actions/listing-risk-agent.ts": 1,
     "app/actions/listing-video.ts": 3,
     "app/actions/listings-kernel.ts": 12,
-    "app/actions/listings.ts": 6,
+    "app/actions/listings.ts": 7,
     "app/actions/market-insight-actions.ts": 10,
     "app/actions/market-insights.ts": 1,
     "app/actions/marketing/image-library.ts": 6,
@@ -2647,8 +2649,9 @@
     "lib/ads/ad-outcome-loop.ts": 5,
     "lib/ads/ad-performance-ingest.ts": 2,
     "lib/ads/audience-eligibility.ts": 1,
+    "lib/ads/audience-exclusion.ts": 5,
     "lib/ads/audience-persona-basis.ts": 4,
-    "lib/ads/audience-source-rules.ts": 4,
+    "lib/ads/audience-source-rules.ts": 5,
     "lib/ads/connection-status.ts": 3,
     "lib/ads/connectors/ad-payload.ts": 4,
     "lib/ads/connectors/google.ts": 1,
@@ -2659,7 +2662,7 @@
     "lib/ads/creative-fatigue-runner.ts": 2,
     "lib/ads/ctv-campaign.ts": 4,
     "lib/ads/facebook-audience-sync.ts": 8,
-    "lib/ads/fb-audience-templates.ts": 1,
+    "lib/ads/fb-audience-templates.ts": 2,
     "lib/ads/launch-assembler.ts": 2,
     "lib/ads/listing-ad-producer.ts": 2,
     "lib/ads/orchestrate-ad-retarget-send.ts": 1,
@@ -3013,7 +3016,7 @@
     "lib/contact-promotion/promote-lead-to-contact.ts": 1,
     "lib/contact-promotion/promotion-eligibility.ts": 1,
     "lib/contact-promotion/promotion-logger.ts": 1,
-    "lib/contact-types.ts": 1,
+    "lib/contact-types.ts": 4,
     "lib/contact-validation.ts": 3,
     "lib/contacts/buyer-stage.ts": 1,
     "lib/contacts/card-classifier.ts": 1,
@@ -3368,6 +3371,7 @@
     "lib/kernel/campaign-center.ts": 4,
     "lib/kernel/capacity-guardian-runner.ts": 1,
     "lib/kernel/capacity-guardian.ts": 4,
+    "lib/kernel/child-safe-delete.ts": 2,
     "lib/kernel/client-framing.ts": 2,
     "lib/kernel/client-pulse.ts": 3,
     "lib/kernel/client-story-drafts.ts": 16,
@@ -3400,7 +3404,7 @@
     "lib/kernel/coordination-kind.ts": 1,
     "lib/kernel/crm.ts": 13,
     "lib/kernel/cron-dispatch.ts": 4,
-    "lib/kernel/cron-logging.ts": 5,
+    "lib/kernel/cron-logging.ts": 6,
     "lib/kernel/deal-autopsy.ts": 3,
     "lib/kernel/deal-confidence.ts": 1,
     "lib/kernel/deal-play-outcomes.ts": 3,
@@ -3445,6 +3449,7 @@
     "lib/kernel/lender-linkage.ts": 6,
     "lib/kernel/lifecycle-promo-policy.ts": 2,
     "lib/kernel/lifecycle.ts": 1,
+    "lib/kernel/listing-archive.ts": 3,
     "lib/kernel/listing-inventory-radar.ts": 7,
     "lib/kernel/listing-marketing-week.ts": 2,
     "lib/kernel/listing-price-advisor.ts": 1,
@@ -3535,9 +3540,11 @@
     "lib/kernel/team-plays.ts": 3,
     "lib/kernel/team-query.ts": 3,
     "lib/kernel/tenancy-principal.ts": 1,
+    "lib/kernel/tenant-creation-rollback.ts": 1,
     "lib/kernel/tenant-guard.ts": 1,
     "lib/kernel/tenant-provisioning-spec.ts": 3,
-    "lib/kernel/tier-role-matrix.ts": 13,
+    "lib/kernel/tenant-scope.ts": 7,
+    "lib/kernel/tier-role-matrix.ts": 15,
     "lib/kernel/title-closing-watchtower.ts": 8,
     "lib/kernel/tour-optimizer.ts": 12,
     "lib/kernel/transactions.ts": 21,
@@ -6281,7 +6288,8 @@
       "getListingById",
       "createListing",
       "updateListing",
-      "deleteListing",
+      "archiveListing",
+      "unarchiveListing",
       "getListingTimeline"
     ],
     "app/actions/market-insight-actions.ts": [
@@ -12760,6 +12768,13 @@
     "lib/ads/audience-eligibility.ts": [
       "isAudienceUploadEligible"
     ],
+    "lib/ads/audience-exclusion.ts": [
+      "excludedAudienceIdsIn",
+      "includedAudienceIdsIn",
+      "resolveExclusionSlot",
+      "verifyExclusionSlot",
+      "recordSuppressionUse"
+    ],
     "lib/ads/audience-persona-basis.ts": [
       "personaAdsEligibility",
       "declaresPersonaBasis",
@@ -12768,6 +12783,7 @@
     ],
     "lib/ads/audience-source-rules.ts": [
       "isSourceRuleType",
+      "audienceUseOf",
       "resolveSourceRuleNarrowing",
       "rowMatchesPredicates",
       "contactMatchesNarrowing"
@@ -12824,6 +12840,7 @@
       "getAudienceSyncHistory"
     ],
     "lib/ads/fb-audience-templates.ts": [
+      "templateAudienceUse",
       "findAudienceTemplate"
     ],
     "lib/ads/launch-assembler.ts": [
@@ -14671,7 +14688,10 @@
       "logPromotionActivity"
     ],
     "lib/contact-types.ts": [
-      "isLifetimeCustomerType"
+      "canonicalContactType",
+      "isStorableContactType",
+      "isLifetimeCustomerType",
+      "isLifetimeRelationshipType"
     ],
     "lib/contact-validation.ts": [
       "validateEmail",
@@ -16346,6 +16366,10 @@
       "computeAgentWorkloadIndex",
       "detectOverload"
     ],
+    "lib/kernel/child-safe-delete.ts": [
+      "deleteParentWithChildren",
+      "describeDeleteFailure"
+    ],
     "lib/kernel/client-framing.ts": [
       "valueNewsTone",
       "clientSafeCtaLine"
@@ -16536,7 +16560,8 @@
       "recordCronStart",
       "recordCronProgress",
       "recordCronSuccess",
-      "recordCronFailure"
+      "recordCronFailure",
+      "recomputeCronSevenDayCounts"
     ],
     "lib/kernel/deal-autopsy.ts": [
       "classifyFailureReason",
@@ -16838,6 +16863,11 @@
     ],
     "lib/kernel/lifecycle.ts": [
       "transitionLifecycle"
+    ],
+    "lib/kernel/listing-archive.ts": [
+      "describeArchiveFailure",
+      "archiveListing",
+      "unarchiveListing"
     ],
     "lib/kernel/listing-inventory-radar.ts": [
       "scoreSellerIntent",
@@ -17341,6 +17371,9 @@
     "lib/kernel/tenancy-principal.ts": [
       "isTenancyPrincipal"
     ],
+    "lib/kernel/tenant-creation-rollback.ts": [
+      "rollbackTenantCreation"
+    ],
     "lib/kernel/tenant-guard.ts": [
       "logTenantFinding"
     ],
@@ -17349,7 +17382,18 @@
       "requiresOnboardingRow",
       "ownerNeedsTeamRow"
     ],
+    "lib/kernel/tenant-scope.ts": [
+      "isTenantScopeRefusal",
+      "tenantScope",
+      "platformScope",
+      "resolveTenantScope",
+      "applyTenantScope",
+      "scopeBrokerageId",
+      "describeTenantScope"
+    ],
     "lib/kernel/tier-role-matrix.ts": [
+      "normalizeCatalogSeatLimit",
+      "formatSeatLimit",
       "isCanonicalTier",
       "seatableUserTypes",
       "tierAllowsRole",
