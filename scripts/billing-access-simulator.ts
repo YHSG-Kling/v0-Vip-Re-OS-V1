@@ -59,6 +59,46 @@ async function main() {
     (() => { const a = resolveBillingAccess(null, now); return !a.blocked && a.state === "none" })())
   check("unknown status → NOT blocked (fail-open)", !resolveBillingAccess({ status: "weird", trial_end: null }, now).blocked)
 
+  // ── THE ROW THIS SUITE NEVER BUILT ─────────────────────────────────────────
+  //
+  // Every assertion above hands the classifier a `trial_end`. Layer 3 below
+  // SEEDS one too. So the suite proved the classifier and never the WRITER —
+  // and the writer was the defect: app/actions/auth/signup-brokerage.ts
+  // inserted status='trialing' with `trial_end` LEFT NULL (it wrote
+  // current_period_end and brokerages.trial_ends_at instead). trial_end's only
+  // writers were the Stripe webhook — which needs a Stripe subscription signup
+  // deliberately does not create — and the superadmin comp. So on a self-serve
+  // signup the column was NULL, the expiry branch never ran, and a 14-day trial
+  // never expired. 11 green checks reported a paywall that could not fire.
+  //
+  // This is the shape the classifier now has to answer for. It stays green two
+  // ways and BOTH are asserted: signup writes trial_end at birth, and
+  // loadBillingAccess reconciles a NULL against brokerages.trial_ends_at.
+  console.log("\n[Layer 1b · the row SIGNUP writes, not the row this test writes]")
+  check("trialing with NO trial_end is NOT treated as an expired trial by the pure classifier",
+    (() => { const a = resolveBillingAccess({ status: "trialing", trial_end: null }, now); return !a.blocked })(),
+    "pure layer is fail-open by design — the RECONCILIATION below is what makes the deadline reachable")
+  check("…so the reconciled value is what decides: a past tenant trial_ends_at BLOCKS",
+    (() => { const a = resolveBillingAccess({ status: "trialing", trial_end: past }, now); return a.blocked && a.state === "expired" })())
+
+  const signupSrc = readFileSync(join(process.cwd(), "app/actions/auth/signup-brokerage.ts"), "utf8")
+  check("signup WRITES subscriptions.trial_end on the trial row (the missing writer)",
+    /from\("subscriptions"\)\s*\.insert\(\{[\s\S]{0,600}?trial_end:/.test(signupSrc),
+    "signup inserted status='trialing' with trial_end NULL — the paywall reads that column")
+  check("signup READS the trial-subscription insert error (§3 — supabase-js resolves refusals)",
+    /const \{ error: trialSubError \}[\s\S]{0,800}?if \(trialSubError\)/.test(signupSrc))
+
+  const accessSrc = readFileSync(join(process.cwd(), "lib/billing/billing-access.ts"), "utf8")
+  check("loadBillingAccess reconciles trial_end against brokerages.trial_ends_at (same rule as subscription-oversight.ts:155)",
+    /trial_ends_at/.test(accessSrc) && /sub\.trial_end \?\? tenantTrialEnd/.test(accessSrc))
+  check("…and a REFUSED brokerages read does not invent a trial end",
+    /brkRes\?\.error[\s\S]{0,120}?\? null/.test(accessSrc))
+  // POSITIVE CONTROL — the three source greps above must be able to go RED.
+  check("↺ control: the source scan can tell a written trial_end from an absent one",
+    !/from\("subscriptions"\)\s*\.insert\(\{[\s\S]{0,600}?trial_end:/.test(
+      `await service.from("subscriptions").insert({ brokerage_id: b, status: "trialing", current_period_end: x })`),
+    "the regex matched a row that has NO trial_end — it proves nothing")
+
   console.log("\n[Layer 2 · gate + de-hardcoded pricing wiring]")
   const onboardingSrc = readFileSync(join(process.cwd(), "lib/kernel/onboarding.ts"), "utf8")
   check("login resolver has the paywall gate (blocked → /dashboard/admin/billing)",

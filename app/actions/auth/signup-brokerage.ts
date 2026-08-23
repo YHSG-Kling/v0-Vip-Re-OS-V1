@@ -214,15 +214,40 @@ export async function signupBrokerageAction(
   // Step 4 — create trial subscription. No Stripe customer at signup —
   // the billing webhook + /dashboard/admin/billing path will collect card
   // before trial_ends_at expires.
-  await service.from("subscriptions").insert({
+  //
+  // `trial_end` IS WRITTEN HERE, and was not before. This row said
+  // status='trialing' and left trial_end NULL, while the paywall
+  // (lib/billing/billing-access.ts resolveBillingAccess) reads exactly that
+  // column to decide whether the trial has run out. NULL skipped the expiry
+  // branch and the tenant classified as "trialing, not blocked" indefinitely —
+  // a 14-day trial that never ended. The only writers of trial_end were the
+  // Stripe webhook (which needs a Stripe subscription this path deliberately
+  // does not create) and the superadmin comp, so on a self-serve signup nothing
+  // ever wrote it. `current_period_end` was already carrying the same instant;
+  // the two now agree at birth instead of only after a Stripe round trip.
+  //
+  // The error is READ (§3): supabase-js RESOLVES a refused insert, so a
+  // discarded result cannot tell "the tenant has a trial" from "the trial row
+  // was rejected". It is not fatal — the brokerage is already provisioned and
+  // brokerages.trial_ends_at is written, which the paywall now reconciles
+  // against — but a silent loss here is a tenant nobody can ever bill.
+  const { error: trialSubError } = await service.from("subscriptions").insert({
     brokerage_id:        brokerage.id,
     tier_id:             tierRow.id,
     status:              "trialing",
     current_period_start: new Date().toISOString(),
     current_period_end:   trialEndsAt.toISOString(),
+    trial_end:           trialEndsAt.toISOString(),
     created_at:          new Date().toISOString(),
     updated_at:          new Date().toISOString(),
   })
+  if (trialSubError) {
+    console.error(
+      "[signupBrokerage] trial subscription INSERT rejected — this tenant has no subscription row:",
+      trialSubError.message,
+      { brokerageId: brokerage.id, tierId: tierRow.id },
+    )
+  }
 
   // AI-ISA SYSTEM ACTOR — provision the tenant's ISA identity at birth.
   // Idempotent (returns the cached ai_isa_system_user_id when present). Without

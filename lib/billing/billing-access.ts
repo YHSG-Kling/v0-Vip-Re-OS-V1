@@ -75,14 +75,62 @@ export function resolveBillingAccess(sub: BillingSubRow | null, now: Date = new 
   return { state: "none", blocked: false, trialDaysLeft: null, reason: `status_unknown_${status || "empty"}` }
 }
 
-/** Load a brokerage's most-recent subscription and classify access. */
+/**
+ * Load a brokerage's most-recent subscription and classify access.
+ *
+ * ── THE TRIAL END IS SPELLED TWICE AND THIS READER ONLY KNEW ONE SPELLING ────
+ *
+ * `subscriptions.trial_end` had exactly TWO writers, and neither runs on a
+ * self-serve signup:
+ *   · app/api/billing/webhook/route.ts (buildSubscriptionPatch) — needs a LIVE
+ *     Stripe subscription, and signup deliberately creates none
+ *     ("No Stripe customer at signup", app/actions/auth/signup-brokerage.ts:214);
+ *   · app/actions/superadmin/brokerage-management.ts extendTrialAction — a
+ *     staff comp, not something every tenant gets.
+ *
+ * What signup DOES write is `brokerages.trial_ends_at` (signup-brokerage.ts:163)
+ * plus a `subscriptions` row with status='trialing' and `trial_end` left NULL.
+ * The clause below reads `sub.trial_end`, finds NULL, skips the expiry branch
+ * entirely and falls through to "trialing ⇒ not blocked" — so a 14-day trial
+ * never expired and the tenant kept the whole product for free, forever. The
+ * simulator could not see it because scripts/billing-access-simulator.ts SEEDS
+ * `trial_end` itself (line 109) rather than signing a tenant up, so it proved
+ * the classifier and never the writer.
+ *
+ * The reconciliation below is NOT invented here — it is the rule the other two
+ * readers of this same fact already use, adopted so all three agree (§6):
+ *   · lib/platform/subscription-oversight.ts:155  `sub?.trial_end ?? b.trial_ends_at`
+ *   · app/api/cron/platform-sentinel/route.ts:312 `subTrialEnd.get(t.id) ?? t.trial_ends_at`
+ *
+ * The subscription column still WINS when present: a staff trial extension
+ * writes both, and a Stripe-linked subscription's trial is the billed truth.
+ * `brokerages.trial_ends_at` is only consulted when the subscription has no
+ * answer — which, before Stripe is reconnected, is every self-serve tenant.
+ *
+ * A refused brokerages read is NOT allowed to invent a trial end: it leaves the
+ * value null, which lands on the same fail-open path a missing row already took.
+ */
 export async function loadBillingAccess(svc: any, brokerageId: string, now: Date = new Date()): Promise<BillingAccess> {
-  const { data } = await svc
-    .from("subscriptions")
-    .select("status, trial_end, created_at")
-    .eq("brokerage_id", brokerageId)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
-  return resolveBillingAccess((data as BillingSubRow) ?? null, now)
+  const [subRes, brkRes] = await Promise.all([
+    svc
+      .from("subscriptions")
+      .select("status, trial_end, created_at")
+      .eq("brokerage_id", brokerageId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    svc.from("brokerages").select("trial_ends_at").eq("id", brokerageId).maybeSingle(),
+  ])
+
+  const sub = (subRes?.data as BillingSubRow | null) ?? null
+  if (!sub) return resolveBillingAccess(null, now)
+
+  // supabase-js RESOLVES refusals (§3) — a refused brokerages read must not be
+  // read as "this tenant has no trial deadline", so the error is checked before
+  // the fallback is trusted.
+  const tenantTrialEnd = brkRes?.error
+    ? null
+    : ((brkRes?.data as { trial_ends_at?: string | null } | null)?.trial_ends_at ?? null)
+
+  return resolveBillingAccess({ ...sub, trial_end: sub.trial_end ?? tenantTrialEnd }, now)
 }

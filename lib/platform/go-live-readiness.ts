@@ -142,7 +142,12 @@ export async function runGoLiveReadiness(svc: any): Promise<GoLiveReadiness> {
       if (res.notConfigured) return r("not_configured", "STRIPE_SECRET_KEY unset — signup checkout, dunning, and vendor billing can't run")
       if (!res.success) return r("broken", `Stripe rejected the key (${res.httpStatus ?? "—"})`)
       const live = res.livemode
-      const whsec = process.env.STRIPE_WEBHOOK_SECRET ? "webhook secret set" : "STRIPE_WEBHOOK_SECRET unset — register https://<app>/api/webhooks/stripe in the dashboard and set it, or paid signups never activate"
+      // THE PATH IN THIS SENTENCE WAS A 404. It said /api/webhooks/stripe;
+      // app/api/webhooks/stripe/ holds ONLY vendor/route.ts, and the tenant
+      // billing webhook is /api/billing/webhook. An operator following it
+      // registered a dead endpoint and paid signups never activated — the exact
+      // outcome this string warns about, caused by the string itself.
+      const whsec = process.env.STRIPE_WEBHOOK_SECRET ? "webhook secret set" : "STRIPE_WEBHOOK_SECRET unset — register https://<app>/api/billing/webhook in the Stripe dashboard and set its signing secret, or paid signups never activate"
       return r(process.env.STRIPE_WEBHOOK_SECRET ? "ready" : "broken", `Key accepted · ${live ? "LIVE mode" : "TEST mode — swap to the live key before charging real customers"} · ${whsec}`)
     },
 

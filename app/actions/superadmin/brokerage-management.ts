@@ -227,7 +227,7 @@ export async function changeBrokerageTierAction(params: {
   brokerageId: string
   newTier:     CanonicalTier
   reason?:     string
-}): Promise<{ ok: boolean; error?: string; previousTier?: string }> {
+}): Promise<{ ok: boolean; error?: string; previousTier?: string; stripeApplied?: boolean; stripeError?: string }> {
   const auth = await requireSuperadmin()
   if (!auth.ok) return auth
   if (!["solo_agent","team","brokerage","multi_location"].includes(params.newTier)) {
@@ -254,12 +254,18 @@ export async function changeBrokerageTierAction(params: {
   // Keep subscriptions.tier_id in lockstep with plan_tier (fixes the drift where tier change wrote only
   // brokerages.plan_tier), and reprice the Stripe subscription to the new tier's price when configured.
   let stripeApplied = false
+  let stripeError: string | undefined
   const { data: tierRow } = await svc.from("subscription_tiers").select("id, stripe_price_id").eq("tier_name", params.newTier).maybeSingle()
   const { data: sub } = await svc.from("subscriptions").select("id, stripe_subscription_id").eq("brokerage_id", params.brokerageId).in("status", ["active", "trialing", "past_due", "paused"]).maybeSingle()
   if (tierRow && sub) {
     await svc.from("subscriptions").update({ tier_id: (tierRow as any).id, updated_at: new Date().toISOString() }).eq("id", (sub as any).id)
+    // NOTE: stripeSwapPrice SKIPS when the tier has no stripe_price_id — which,
+    // measured live, is all four tiers. So a tier change currently moves what the
+    // tenant CAN DO without moving what they are CHARGED, and that fact is now
+    // returned to the operator rather than only written to the audit row.
     const r = await stripeSwapPrice((sub as any).stripe_subscription_id, (tierRow as any).stripe_price_id)
     stripeApplied = r.applied
+    stripeError = r.error
   }
 
   // AI ENTITLEMENT ROW (burn-down round 6): lib/security/authorization.ts gates
@@ -293,12 +299,12 @@ export async function changeBrokerageTierAction(params: {
     action:      "brokerage.tier_changed",
     targetType:  "brokerage",
     targetId:    params.brokerageId,
-    details:     { previous_tier: previousTier, new_tier: params.newTier, reason: params.reason ?? null, stripe_applied: stripeApplied },
+    details:     { previous_tier: previousTier, new_tier: params.newTier, reason: params.reason ?? null, stripe_applied: stripeApplied, stripe_error: stripeError ?? null },
   })
 
   revalidatePath(`/dashboard/superadmin/brokerages/${params.brokerageId}`)
   revalidatePath("/dashboard/superadmin/brokerages")
-  return { ok: true, previousTier }
+  return { ok: true, previousTier, stripeApplied, stripeError }
 }
 
 // ── SUSPEND / REACTIVATE / CANCEL ────────────────────────────────────────────
@@ -338,7 +344,7 @@ export async function suspendBrokerageAction(params: {
   return { ok: true }
 }
 
-export async function reactivateBrokerageAction(brokerageId: string): Promise<{ ok: boolean; error?: string }> {
+export async function reactivateBrokerageAction(brokerageId: string): Promise<{ ok: boolean; error?: string; stripeApplied?: boolean; stripeError?: string }> {
   const auth = await requireSuperadmin()
   if (!auth.ok) return auth
   const svc = createServiceClient()
@@ -356,9 +362,12 @@ export async function reactivateBrokerageAction(brokerageId: string): Promise<{ 
   // Resume Stripe billing (undo any pending cancel / pause) + un-cancel the local subscription.
   const { data: sub } = await svc.from("subscriptions").select("id, stripe_subscription_id, status").eq("brokerage_id", brokerageId).order("created_at", { ascending: false }).limit(1).maybeSingle()
   let stripeApplied = false
+  let stripeError: string | undefined
   if (sub) {
     await svc.from("subscriptions").update({ status: "active", cancel_at: null, cancelled_at: null, updated_at: new Date().toISOString() }).eq("id", (sub as any).id)
-    stripeApplied = (await stripeResume((sub as any).stripe_subscription_id)).applied
+    const r = await stripeResume((sub as any).stripe_subscription_id)
+    stripeApplied = r.applied
+    stripeError = r.error
   }
 
   await writeAuditLog({
@@ -367,18 +376,20 @@ export async function reactivateBrokerageAction(brokerageId: string): Promise<{ 
     action:      "brokerage.reactivated",
     targetType:  "brokerage",
     targetId:    brokerageId,
-    details:     { stripe_applied: stripeApplied },
+    details:     { stripe_applied: stripeApplied, stripe_error: stripeError ?? null },
   })
 
   revalidatePath(`/dashboard/superadmin/brokerages/${brokerageId}`)
   revalidatePath("/dashboard/superadmin/brokerages")
-  return { ok: true }
+  // Returned, not only audited — a reactivation that did not resume BILLING is a
+  // tenant given the product back for free. See the note in cancelBrokerageAction.
+  return { ok: true, stripeApplied, stripeError }
 }
 
 export async function cancelBrokerageAction(params: {
   brokerageId: string
   reason:      string
-}): Promise<{ ok: boolean; error?: string }> {
+}): Promise<{ ok: boolean; error?: string; stripeApplied?: boolean; stripeError?: string }> {
   const auth = await requireSuperadmin()
   if (!auth.ok) return auth
   if (!params.reason || params.reason.trim().length < 5) {
@@ -398,9 +409,18 @@ export async function cancelBrokerageAction(params: {
   // Cancel through to Stripe (at period end) so billing actually stops — not just the local row.
   const { data: subs } = await svc.from("subscriptions").select("id, stripe_subscription_id").eq("brokerage_id", params.brokerageId).in("status", ["active", "trialing", "past_due", "paused"])
   let stripeApplied = false
+  // WHETHER STRIPE WAS TOLD IS RETURNED, NOT ONLY AUDITED. This action flipped
+  // the local rows to 'cancelled' and returned a bare { ok: true } whichever way
+  // the Stripe call went, so an operator cancelling a tenant saw plain success
+  // while the customer's card kept being charged — the local write is only the
+  // INTENT (lib/billing/stripe-subscription-ops.ts header). extendTrialAction
+  // and pauseSubscriptionAction below already surfaced this; the three that did
+  // not were tier-change, reactivate and — most expensively — cancel.
+  let stripeError: string | undefined
   for (const s of (subs ?? []) as any[]) {
     const r = await stripeCancelAtPeriodEnd(s.stripe_subscription_id)
     if (r.applied) stripeApplied = true
+    if (r.error) stripeError = r.error
   }
   await svc.from("subscriptions")
     .update({ status: "cancelled", cancelled_at: new Date().toISOString(), updated_at: new Date().toISOString() })
@@ -413,12 +433,12 @@ export async function cancelBrokerageAction(params: {
     action:      "brokerage.cancelled",
     targetType:  "brokerage",
     targetId:    params.brokerageId,
-    details:     { reason: params.reason.trim(), stripe_applied: stripeApplied },
+    details:     { reason: params.reason.trim(), stripe_applied: stripeApplied, stripe_error: stripeError ?? null },
   })
 
   revalidatePath(`/dashboard/superadmin/brokerages/${params.brokerageId}`)
   revalidatePath("/dashboard/superadmin/brokerages")
-  return { ok: true }
+  return { ok: true, stripeApplied, stripeError }
 }
 
 // ── SUBSCRIPTION PRIMITIVES: EXTEND TRIAL (COMP) / PAUSE ─────────────────────

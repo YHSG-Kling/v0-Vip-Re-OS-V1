@@ -12,15 +12,17 @@ import { loadUsageOverview, type MetricSnapshot } from "@/app/actions/usage-over
 import { Card } from "@/app/components/ui/card"
 import { Badge } from "@/app/components/ui/badge"
 import { AlertTriangle, CheckCircle2, Infinity as InfinityIcon, TrendingUp } from "lucide-react"
+// ONE tier label map (§6). The local one here spelled the RETIRED vocabulary —
+// starter / professional / team / enterprise — which scripts/1023-align-plan-tier-
+// vocabulary.sql migrated away from (starter → solo_agent, professional →
+// brokerage, enterprise → multi_location). Live `brokerages.plan_tier` is
+// CHECK-constrained to solo_agent | team | brokerage | multi_location, so three
+// of the four keys could never match and only 'team' resolved — by coincidence
+// of spelling. The survivor is lib/kernel/tier-role-matrix.ts:TIER_LABELS, which
+// the invite/upgrade copy already reads.
+import { TIER_LABELS, isCanonicalTier } from "@/lib/kernel/tier-role-matrix"
 
 export const dynamic = "force-dynamic"
-
-const TIER_LABELS: Record<string, string> = {
-  starter: "Starter",
-  professional: "Professional",
-  team: "Team",
-  enterprise: "Enterprise",
-}
 
 export default async function UsagePage() {
   const res = await loadUsageOverview()
@@ -77,7 +79,7 @@ export default async function UsagePage() {
         </div>
         <div className="flex items-center gap-2">
           <Badge variant="outline" className="text-sm">
-            {TIER_LABELS[data.planTier] ?? data.planTier} plan
+            {isCanonicalTier(data.planTier) ? TIER_LABELS[data.planTier] : data.planTier} plan
           </Badge>
         </div>
       </div>

@@ -17,11 +17,41 @@ The following are automatically set when you connect Supabase via Vercel:
 - `SUPABASE_JWT_SECRET` - Not needed for standard operations
 
 ### Stripe (Auto-configured via Vercel Integration)
-- `STRIPE_SECRET_KEY` - Server-side Stripe API key
-- `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` - Client-side publishable key
+
+All four are read by live code. The first two alone are NOT enough — with the
+webhook secrets absent the checkout completes at Stripe and the account is never
+activated locally, because `app/api/billing/webhook/route.ts` returns 500 on a
+missing `STRIPE_WEBHOOK_SECRET` and Stripe's delivery simply fails.
+
+- `STRIPE_SECRET_KEY` - Server-side Stripe API key. This ONE variable is the
+  product's real Stripe on/off switch (`lib/billing/stripe-subscription-ops.ts`
+  `isStripeConfigured`). Absent ⇒ the subscription write-through ops no-op, the
+  AI-overage cron refuses with a 503, and `lib/stripe.ts` throws on first use.
+- `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` - Client-side publishable key. Read at
+  module scope by `app/settings/billing/upgrade-modal.tsx`; without it the
+  embedded checkout cannot mount.
+- `STRIPE_WEBHOOK_SECRET` - Signing secret for the TENANT billing webhook
+  (`/api/billing/webhook`). Required for checkout completion, invoice paid /
+  payment failed, subscription updated / deleted, and Connect `account.updated`.
+- `STRIPE_VENDOR_WEBHOOK_SECRET` - Signing secret for the VENDOR marketplace
+  webhook (`/api/webhooks/stripe/vendor`). Separate endpoint, separate secret.
+
+**Beyond the env vars** — reconnecting Stripe also needs data that lives in the
+database, not in configuration:
+- `subscription_tiers.stripe_price_id` is NULL on all four tiers. Checkout does
+  not need it (it builds inline `price_data`), but the weekly price-drift cron
+  `/api/cron/stripe-drift` and the superadmin repricing path
+  (`stripeSwapPrice` on a tier change) both skip silently while it is NULL.
+  `publishTierToStripeAction` in `app/actions/superadmin/plan-catalog.ts` fills
+  it once a key exists (superadmin → /dashboard/superadmin/plans).
+- `platform_credentials` holds ZERO rows, so nothing Stripe-related is stored in
+  the database either — the key must come from the environment.
 
 **DEPRECATED:**
 - `STRIPE_PUBLISHABLE_KEY` - Use `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` instead
+- `NEXT_PUBLIC_FEATURE_STRIPE` - REMOVED. It gated nothing (zero readers in the
+  tree); `STRIPE_SECRET_KEY` presence is the only switch. See the tombstone in
+  `lib/constants/index.ts`.
 
 ### PostgreSQL (Auto-configured via Supabase)
 These are automatically set but not directly used (Supabase client handles connections):
@@ -107,7 +137,6 @@ never need them.
 ### Feature Flags (Optional)
 - `NEXT_PUBLIC_FEATURE_HEYGEN` - Enable HeyGen video generation
 - `NEXT_PUBLIC_FEATURE_DOTLOOP` - Enable Dotloop integration
-- `NEXT_PUBLIC_FEATURE_STRIPE` - Enable Stripe payments
 - `NEXT_PUBLIC_FEATURE_AI_CHAT` - Enable AI chat (default: true)
 - `NEXT_PUBLIC_FEATURE_CONTENT_GEN` - Enable content generation (default: true)
 - `NEXT_PUBLIC_FEATURE_OPEN_HOUSE` - Enable open house automation (default: true)

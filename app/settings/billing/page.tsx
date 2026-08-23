@@ -57,7 +57,11 @@ export default async function BillingSettingsPage() {
   ])
 
   const currentTier = subscription?.subscription_tiers
-  const maxAgents = currentTier?.max_agents || 1
+  // `max_agents || 1` was the bug: the live multi_location tier stores NULL for
+  // UNLIMITED, and `|| 1` turned that into a ONE-seat cap on the tenant's own
+  // billing page — the exact opposite of what they pay for. NULL now travels
+  // through as null and UsageSection folds it via the shared normalizer.
+  const maxAgents: number | null = currentTier?.max_agents ?? null
   const features = currentTier?.features as Record<string, number> | null
 
   // Usage limits from tier features

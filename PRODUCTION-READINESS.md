@@ -120,8 +120,12 @@ The launch checklist tells you *whether* these are done; this is *how*:
 2. **App URL + cron**: `NEXT_PUBLIC_APP_URL` = the https production URL
    (webhooks/magic links register against it); set `CRON_SECRET`.
 3. **Stripe live**: swap `STRIPE_SECRET_KEY` to the live key; register
-   `https://<app>/api/webhooks/stripe` in the Stripe dashboard and set
+   `https://<app>/api/billing/webhook` in the Stripe dashboard and set
    `STRIPE_WEBHOOK_SECRET` — paid signups never activate without it.
+   (The path here used to read `/api/webhooks/stripe`, which is a 404: that
+   directory holds only `vendor/route.ts`.) Register the vendor marketplace
+   endpoint separately at `https://<app>/api/webhooks/stripe/vendor` with its
+   own `STRIPE_VENDOR_WEBHOOK_SECRET`.
 4. **Email**: `SENDGRID_API_KEY` + `SENDGRID_FROM_EMAIL`; complete sender
    domain authentication (the go-live board probes it); register the SendGrid
    event webhook → `/api/webhooks/sendgrid-events` and set

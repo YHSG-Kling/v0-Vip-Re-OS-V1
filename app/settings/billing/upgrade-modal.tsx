@@ -18,6 +18,7 @@ import {
 } from "@stripe/react-stripe-js"
 import { loadStripe } from "@stripe/stripe-js"
 import { startSubscriptionCheckout } from "@/app/actions/billing"
+import { formatSeatLimit, normalizeCatalogSeatLimit } from "@/lib/kernel/tier-role-matrix"
 
 const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY!)
 
@@ -149,10 +150,14 @@ export function UpgradeModal({
                     </div>
                   </CardHeader>
                   <CardContent className="space-y-3">
+                    {/* NULL and -1 both mean unlimited in the catalogue; the live
+                        multi_location row uses NULL, so an `=== -1` test alone
+                        printed "Up to null agents" on the top plan. One fold,
+                        shared with the seat gate (lib/kernel/tier-role-matrix.ts). */}
                     <p className="text-sm text-center text-muted-foreground">
-                      {tier.max_agents === -1 
-                        ? "Unlimited agents" 
-                        : `Up to ${tier.max_agents} agent${tier.max_agents !== 1 ? "s" : ""}`}
+                      {normalizeCatalogSeatLimit(tier.max_agents) === null
+                        ? "Unlimited seats"
+                        : `Up to ${formatSeatLimit(tier.max_agents)} seat${normalizeCatalogSeatLimit(tier.max_agents) === 1 ? "" : "s"}`}
                     </p>
 
                     <ul className="space-y-2 text-sm">

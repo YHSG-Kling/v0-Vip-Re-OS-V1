@@ -10,6 +10,7 @@
 import { resolveWriteContext } from "@/lib/kernel/identity"
 import { currentUsagePeriod } from "@/lib/usage/period"
 import { createServiceClient } from "@/lib/supabase/service"
+import { toPlanTier } from "@/lib/billing/plan-tier"
 
 export interface MetricSnapshot {
   metric: string
@@ -82,7 +83,14 @@ export async function loadUsageOverview(): Promise<{
     .select("plan_tier")
     .eq("id", ctx.brokerageId)
     .maybeSingle()
-  const planTier = brokerage?.plan_tier ?? "starter"
+  // 'starter' is the RETIRED vocabulary (scripts/1023-align-plan-tier-vocabulary.sql
+  // mapped starter → solo_agent). `plan_limits` holds exactly the four canonical
+  // tiers — MEASURED live: solo_agent / team / brokerage / multi_location, 17
+  // metrics each and no 'starter' row — so a NULL plan_tier fell back to a value
+  // the limits join can never match, and the meter rendered every metric with no
+  // limit at all. toPlanTier is the ONE normalizer (§6) and it falls to the
+  // TIGHTEST tier, which is the direction lib/billing/plan-tier.ts documents.
+  const planTier = toPlanTier(brokerage?.plan_tier)
 
   // 2. Counters + limits — pull both, join in memory
   const [{ data: counters }, { data: limits }] = await Promise.all([

@@ -39,17 +39,28 @@ export default async function SettingsUsersPage() {
     : { data: null }
   const planTier = (tenant as { plan_tier?: string | null } | null)?.plan_tier ?? null
 
-  // Fetch all users in the brokerage
+  // Fetch all users in the brokerage.
+  //
+  // ── THE FALSE ARM USED TO BE THE SAME QUERY WITHOUT THE TENANT PREDICATE ────
+  // This read:
+  //
+  //     brokerageId ? …select(…).eq("brokerage_id", brokerageId)… : …select(…)…
+  //
+  // so an admin/broker whose users.brokerage_id is NULL — the entry gate above is
+  // isAdminOrBroker(user_type), which never consults brokerage_id — was handed the
+  // name, email and role of EVERY user on the platform, on a user-management screen
+  // that also offers role edits. The two arms were the same query; only the tenant
+  // boundary differed. CLAUDE.md §4: "a gate that cannot run must refuse, not pass".
+  //
+  // Fail closed: no tenant, no roster. Nothing here changes identity semantics on
+  // public.users — the absent brokerage_id simply stops meaning "every tenant".
   const { data: users } = brokerageId
     ? await supabase
         .from("users")
         .select("id, email, first_name, last_name, user_type, created_at, brokerage_id")
         .eq("brokerage_id", brokerageId)
         .order("created_at", { ascending: false })
-    : await supabase
-        .from("users")
-        .select("id, email, first_name, last_name, user_type, created_at, brokerage_id")
-        .order("created_at", { ascending: false })
+    : { data: null }
 
   return (
     <div className="space-y-6">

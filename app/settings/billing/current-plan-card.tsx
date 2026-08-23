@@ -21,6 +21,7 @@ import {
   acceptCancellationSaveOfferAction,
 } from "@/app/actions/billing"
 import type { SaveOffer } from "@/lib/platform/save-offer"
+import { formatSeatLimit, normalizeCatalogSeatLimit } from "@/lib/kernel/tier-role-matrix"
 import { UpgradeModal } from "./upgrade-modal"
 
 interface CurrentPlanCardProps {
@@ -141,8 +142,13 @@ export function CurrentPlanCard({ subscription, tier, tiers, brokerageId }: Curr
           <div className="flex items-center justify-between p-4 bg-muted rounded-lg">
             <div>
               <p className="text-2xl font-bold">{tier?.display_name || "No Plan"}</p>
+              {/* Unlimited is spelled NULL in subscription_tiers.max_agents (what
+                  the live multi_location row holds) and -1 in the older
+                  plan_limits convention. Testing only for -1 rendered the
+                  UNLIMITED plan as "null agents". One fold, shared with the
+                  seat gate — lib/kernel/tier-role-matrix.ts. */}
               <p className="text-sm text-muted-foreground">
-                {tier?.max_agents === -1 ? "Unlimited" : tier?.max_agents} agent{tier?.max_agents !== 1 ? "s" : ""}
+                {formatSeatLimit(tier?.max_agents)} seat{normalizeCatalogSeatLimit(tier?.max_agents) === 1 ? "" : "s"}
               </p>
             </div>
             <div className="text-right">

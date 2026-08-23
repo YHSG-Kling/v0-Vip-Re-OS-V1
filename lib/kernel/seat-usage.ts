@@ -24,6 +24,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import {
   SEAT_ROLES, isCanonicalTier, roleConsumesSeat,
   seatDecision, seatDecisionMessage, parseSeatOverride,
+  normalizeCatalogSeatLimit,
   type CatalogSeatLimits, type SeatDecision,
 } from "./tier-role-matrix"
 import type { UserDomainRole, CanonicalTier } from "./users"
@@ -158,11 +159,11 @@ export async function resolveCatalogSeatLimits(svc: Svc): Promise<CatalogSeatLim
   for (const row of (data ?? []) as Array<{ tier_name?: string | null; max_agents?: number | null }>) {
     const name = row.tier_name ?? ""
     if (!isCanonicalTier(name)) continue
-    const raw = row.max_agents
-    limits[name as CanonicalTier] =
-      raw === null || raw === undefined || !Number.isFinite(Number(raw)) || Number(raw) < 0
-        ? null // NULL / -1 / unreadable ⇒ unlimited
-        : Math.round(Number(raw))
+    // NULL / -1 / unreadable ⇒ unlimited. The fold moved to
+    // tier-role-matrix.ts:normalizeCatalogSeatLimit so the tenant's billing
+    // page and this gate share ONE implementation — the display surfaces were
+    // testing only for -1 and rendering the live NULL as the word "null".
+    limits[name as CanonicalTier] = normalizeCatalogSeatLimit(row.max_agents)
   }
   return { ok: true, limits, error: null }
 }

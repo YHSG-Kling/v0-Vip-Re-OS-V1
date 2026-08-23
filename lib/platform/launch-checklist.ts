@@ -103,9 +103,30 @@ const ROWS: RowDef[] = [
   },
   {
     key: "stripe_webhook",
-    capability: "Stripe webhook verification",
+    capability: "Stripe webhook verification (tenant billing)",
     envVars: ["STRIPE_WEBHOOK_SECRET"],
-    whatLightsUp: "Paid signups actually ACTIVATE — register https://<app>/api/webhooks/stripe in the Stripe dashboard and set the signing secret.",
+    // THE URL WAS WRONG, AND IT IS THE ONLY INSTRUCTION AN OPERATOR GETS.
+    // This row said "register https://<app>/api/webhooks/stripe". No such route
+    // exists — app/api/webhooks/stripe/ contains ONLY vendor/route.ts, so
+    // /api/webhooks/stripe is a 404. The tenant billing webhook lives at
+    // /api/billing/webhook. An operator who followed this line exactly would
+    // register a dead endpoint, every checkout.session.completed and
+    // customer.subscription.* delivery would fail, paid signups would never
+    // activate — and this very checklist would have gone GREEN, because it
+    // checks that the SECRET is set and cannot see where it was pointed.
+    whatLightsUp: "Paid signups actually ACTIVATE — register https://<app>/api/billing/webhook in the Stripe dashboard (events: checkout.session.completed, invoice.paid, invoice.payment_failed, customer.subscription.updated, customer.subscription.deleted, account.updated) and set its signing secret here.",
+    tier: "launch-blocking",
+  },
+  {
+    // The VENDOR marketplace webhook is a SECOND Stripe endpoint with its OWN
+    // signing secret, and it was absent from this checklist entirely — so an
+    // operator could complete every launch-blocking row and still have vendor
+    // subscriptions silently unreconciled (payment_failed → past_due and
+    // cancellation → suspend never arrive).
+    key: "stripe_vendor_webhook",
+    capability: "Stripe webhook verification (vendor marketplace)",
+    envVars: ["STRIPE_VENDOR_WEBHOOK_SECRET"],
+    whatLightsUp: "Vendor subscription status stays true — register https://<app>/api/webhooks/stripe/vendor as a SEPARATE endpoint (events: customer.subscription.*, invoice.payment_succeeded, invoice.payment_failed) and set its own signing secret. Without it app/api/webhooks/stripe/vendor/route.ts refuses every delivery with a 500.",
     tier: "launch-blocking",
   },
   {

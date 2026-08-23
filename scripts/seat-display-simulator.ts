@@ -48,6 +48,20 @@ const check = (n: string, c: boolean, detail?: string) => {
 }
 const src = (p: string) => (existsSync(join(process.cwd(), p)) ? readFileSync(join(process.cwd(), p), "utf8") : "")
 
+// COMMENT-BLIND vs COMMENT-AWARE (CLAUDE.md §2).
+//
+// `src` above returns RAW source, so every assertion built on it can be
+// satisfied — or defeated — by prose. That is not hypothetical here: an
+// explanatory comment naming the OLD code (`max_agents || 1` was the bug) made
+// the "no longer uses `|| 1`" probe below report the defect as still present in
+// a file that no longer contains it. A tombstone read as live code.
+//
+// `code` is the same read through scripts/strip-comments.ts — the ONE correct
+// scanner — so an absence assertion is about the CODE. `src` is left in place
+// because some checks above deliberately match JSX copy, and re-pointing all of
+// them is a separate change; new absence probes should use `code`.
+const code = (p: string) => stripComments(src(p))
+
 console.log("══════════════════════════════════════════════════")
 console.log(" Seat display — one tenant, one seat number")
 console.log("══════════════════════════════════════════════════")
@@ -220,6 +234,56 @@ console.log("\n[the display tells the truth, including when it is exceeded]")
   // Unlimited must never render as "3/null".
   check("an unlimited tier renders a bare count, not a division by null",
     /stats\.seatLimit === null[\s\S]{0,120}?stats\.seatCount/.test(panel))
+}
+
+// ── THE THREE SEAT SURFACES THIS SUITE WAS NOT LOOKING AT ────────────────────
+//
+// This file scanned /dashboard/settings and /dashboard/admin/users and passed
+// 130 checks. It never opened app/settings/billing/** — the TENANT'S OWN
+// billing page, which is where a customer reads what their plan includes.
+//
+// All three surfaces there tested `max_agents === -1` for "unlimited", and the
+// live catalogue spells unlimited as NULL (measured: subscription_tiers
+// .max_agents is solo 2 / team 5 / brokerage 50 / multi_location NULL). So on
+// the top-priced plan the upgrade modal printed "Up to null agents", the
+// current-plan card printed "null agents", and app/settings/billing/page.tsx's
+// `max_agents || 1` turned unlimited into a ONE-seat cap whose usage bar then
+// drew pegged over the limit. The GATE was always right — only what the paying
+// customer was shown was wrong, which is exactly the kind of defect a suite
+// that checks the gate and not the page reports as 130 green.
+console.log("\n[the TENANT'S BILLING PAGE agrees with the seat ladder]")
+{
+  const matrix = code("lib/kernel/tier-role-matrix.ts")
+  check("ONE fold for the two spellings of unlimited lives in the matrix module",
+    /export function normalizeCatalogSeatLimit/.test(matrix) && /export function formatSeatLimit/.test(matrix))
+  check("…and the seat GATE reads that same fold rather than its own copy",
+    /normalizeCatalogSeatLimit\(row\.max_agents\)/.test(code("lib/kernel/seat-usage.ts")))
+
+  const billingSurfaces = [
+    "app/settings/billing/upgrade-modal.tsx",
+    "app/settings/billing/current-plan-card.tsx",
+    "app/settings/billing/usage-section.tsx",
+  ]
+  for (const f of billingSurfaces) {
+    const s = code(f)
+    check(`${f} no longer tests only for -1`, !/max_agents === -1|maxAgents === -1/.test(s),
+      "NULL is how the live multi_location tier spells unlimited")
+    check(`${f} folds through the shared normalizer`,
+      /normalizeCatalogSeatLimit|formatSeatLimit/.test(s))
+  }
+  check("the billing page passes NULL through instead of `|| 1`",
+    !/max_agents \|\| 1/.test(code("app/settings/billing/page.tsx")))
+
+  // POSITIVE CONTROLS — both absence probes must still recognise the defects
+  // they were written for, and `code` must actually be removing comments.
+  check("↺ control: the -1 probe still recognises the defect it was written for",
+    /max_agents === -1/.test(`{tier.max_agents === -1 ? "Unlimited" : tier.max_agents}`))
+  check("↺ control: the `|| 1` probe still recognises the defect it was written for",
+    /max_agents \|\| 1/.test(`const maxAgents = currentTier?.max_agents || 1`))
+  check("↺ control: `code` strips comments while `src` does not",
+    /max_agents \|\| 1/.test(src("app/settings/billing/page.tsx")) &&
+    !/max_agents \|\| 1/.test(code("app/settings/billing/page.tsx")),
+    "the file's own tombstone naming the old expression must not read as live code")
 }
 
 console.log("\n[a seat is a PERSON, across BOTH role sources]")

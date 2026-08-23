@@ -39,9 +39,26 @@ export const URL_REGEX = /^https?:\/\/.+/
 // FEATURE FLAGS
 // ============================================
 
+// ── REMOVED: `STRIPE_PAYMENTS` (NEXT_PUBLIC_FEATURE_STRIPE) ──────────────────
+//
+// A KILL SWITCH THAT SWITCHED NOTHING. Verified comment-stripped across all
+// 5,373 .ts/.tsx files: `STRIPE_PAYMENTS` and `NEXT_PUBLIC_FEATURE_STRIPE`
+// appeared in exactly ONE file — this one, the definition. Zero readers.
+// ENV_CONFIGURATION.md:110 documented it to an operator as "Enable Stripe
+// payments", so the one thing it did was promise a control that did not exist:
+// setting it to "false" disabled nothing, and an operator reading that line
+// would believe payments were off while every Stripe path kept running.
+//
+// SURVIVOR: lib/billing/stripe-subscription-ops.ts:23 `isStripeConfigured()` —
+// the real gate, `!!process.env.STRIPE_SECRET_KEY`, read by
+// app/actions/superadmin/brokerage-management.ts, app/actions/superadmin/
+// coupons.ts and lib/billing/ai-overage.ts. Stripe is on when a key is present
+// and off when it is not, which is the only condition the SDK can actually
+// honour; a second boolean beside it could only ever disagree with it.
+//
+// Nothing was lost — no branch anywhere consulted this.
 export const FEATURES = {
   DOTLOOP_INTEGRATION: process.env.NEXT_PUBLIC_FEATURE_DOTLOOP === "true",
-  STRIPE_PAYMENTS: process.env.NEXT_PUBLIC_FEATURE_STRIPE === "true",
   AI_CHAT: process.env.NEXT_PUBLIC_FEATURE_AI_CHAT !== "false", // Enabled by default
   CONTENT_GENERATION: process.env.NEXT_PUBLIC_FEATURE_CONTENT_GEN !== "false", // Enabled by default
   OPEN_HOUSE_AUTOMATION: process.env.NEXT_PUBLIC_FEATURE_OPEN_HOUSE !== "false", // Enabled by default

@@ -204,6 +204,45 @@ export const TIER_SEAT_LIMITS: Record<CanonicalTier, number | null> = {
   multi_location: null,
 }
 
+/**
+ * UNLIMITED HAS TWO SPELLINGS IN THE CATALOGUE. This is the ONE place that
+ * folds them, and it is pure so a client component can reach it.
+ *
+ * `subscription_tiers.max_agents` says unlimited as NULL (that is what the live
+ * multi_location row holds) and historically also as -1 (what plan_limits
+ * .active_users still uses, and what the upgrade modal was written against).
+ * lib/kernel/seat-usage.ts `resolveCatalogSeatLimits` already folded both onto
+ * null for the GATE — but three DISPLAY surfaces tested `max_agents === -1`
+ * alone and therefore never recognised the spelling the database actually
+ * stores:
+ *
+ *   · app/settings/billing/upgrade-modal.tsx    → "Up to null agents"
+ *   · app/settings/billing/current-plan-card.tsx → "null agents"
+ *   · app/settings/billing/usage-section.tsx     → a seat bar with max "null",
+ *     fed from app/settings/billing/page.tsx `max_agents || 1`, which turns
+ *     NULL into 1 — so the UNLIMITED plan printed a one-seat cap and drew its
+ *     usage bar pegged over the limit.
+ *
+ * The gate was never wrong; only what the paying customer was shown. Same fold,
+ * one implementation, so the number the tenant reads is the number enforced.
+ *
+ * Returns `null` for unlimited and a non-negative integer otherwise. Anything
+ * unreadable is treated as unlimited ONLY here, where the answer is a LABEL —
+ * seatLimitForTier below is the gate and keeps its own fail-closed direction.
+ */
+export function normalizeCatalogSeatLimit(raw: number | null | undefined): number | null {
+  if (raw === null || raw === undefined) return null
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n < 0) return null
+  return Math.round(n)
+}
+
+/** Display string for a catalogue seat cap — "Unlimited" or the count. */
+export function formatSeatLimit(raw: number | null | undefined): string {
+  const n = normalizeCatalogSeatLimit(raw)
+  return n === null ? "Unlimited" : String(n)
+}
+
 /** Ascending capability order — used to answer "which tier unlocks this?". */
 export const TIER_ORDER: readonly CanonicalTier[] = ["solo_agent", "team", "brokerage", "multi_location"]
 
