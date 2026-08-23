@@ -789,7 +789,22 @@ async function main() {
     process.exit(1)
   }
   console.log(" ✅ A listing leaves the working surface and NOTHING is destroyed:")
-  console.log("    62 FKs ledgered, 42 tables' rows retained, status unrewritten, restorable.")
+  // DERIVED, NOT TYPED. This line read a hardcoded "62" — correct after m542 and
+  // wrong the moment m547 dropped `open_houses`, taking its listing_id with it.
+  // The ledger and the generated cache both hold 61; only the summary sentence
+  // disagreed, which is the worst place for a stale number because it is the one
+  // line a reader takes as the verdict. Counting the ledger means it cannot drift
+  // from what was actually checked.
+  const ledgered = LISTING_CHILD_RULES.length
+  // "retained" is NOT every ledgered table — it is the ones whose rows the hard
+  // delete would have DESTROYED or DETACHED (remove + cascade + detach). The
+  // `block` entries never lost anything, so counting them here would inflate the
+  // claim by exactly the tables that were never at risk. Deriving it from the
+  // dispositions keeps the sentence true as the ledger changes.
+  const retained = new Set(
+    LISTING_CHILD_RULES.filter((r) => r.disposition !== "block").map((r) => r.table),
+  ).size
+  console.log(`    ${ledgered} FKs ledgered, ${retained} tables' rows retained, status unrewritten, restorable.`)
   console.log(" LISTING_ARCHIVE_PASS")
   process.exit(0)
 }

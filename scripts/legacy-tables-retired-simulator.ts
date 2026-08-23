@@ -31,6 +31,7 @@
  */
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs"
 import { join } from "node:path"
+import { stripComments } from "./strip-comments"
 import { LIVE_TABLES } from "./live-tables"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
 
@@ -133,15 +134,39 @@ console.log("\n── the derivation actually resolved (canary against a vacuous
 
 console.log("\n── retired tables have ZERO runtime .from() references (no reader/writer) ──")
 {
+  // COMMENT-STRIPPED, AND THE REASON IS A DEFECT THIS SCAN ACTUALLY SHIPPED.
+  // Reading raw source made a TOMBSTONE read as a live query: retiring a table
+  // correctly means leaving a comment naming its survivor (§1), and
+  // lib/listing-health/health-scorer.ts:211 does exactly that inside a JSDoc
+  // block — ` * WAS: .from("open_houses")…`. This scan then reported the table
+  // as still queried, i.e. it accused the repo of the very thing the tombstone
+  // records having fixed, and would have done so FOREVER, since the tombstone is
+  // meant to stay. Following the doctrine made the guard fail.
+  //
+  // `stripComments`, not `blankComments`: this reports FILE NAMES, not positions
+  // computed from match indices (CLAUDE.md §2 names which helper each case wants).
+  // Never hand-rolled — the recurring defect is stripping /* */ before //, where
+  // one // containing an apostrophe or a URL makes the block regex swallow real
+  // code and the scan then accuses live code of being absent.
   const files = ROOTS.flatMap((r) => walk(r))
-  const sources = files.map((f) => ({ f, src: readFileSync(f, "utf8") }))
-  console.log(`  · ${sources.length} runtime files scanned`)
+  const sources = files.map((f) => ({ f, src: stripComments(readFileSync(f, "utf8")) }))
+  console.log(`  · ${sources.length} runtime files scanned (comments stripped)`)
   for (const t of RETIRED) {
     const re = new RegExp(`\\.from\\(\\s*["'\`]${t}["'\`]`)
     const hits = sources.filter(({ src }) => re.test(src)).map(({ f }) => f)
     check(`no runtime code queries ${t}`, hits.length === 0)
     if (hits.length) console.log(`      ↳ ${hits.slice(0, 5).join(", ")}`)
   }
+  // POSITIVE CONTROL (§2) — a scanner that finds nothing because it is broken and
+  // one that finds nothing because the tree is clean report the same zero. Prove
+  // this finder still sees a real query, and still ignores a commented one.
+  const probeLive = `const x = await sb.from("listings").select("id")`
+  const probeBlock = `/** WAS: .from("listings").select("id") */`
+  const probeLine = `// .from("listings").select("id")`
+  const seesFrom = (s: string) => /\.from\(\s*["'`]listings["'`]/.test(stripComments(s))
+  check("CONTROL — the finder still sees a REAL .from(\"listings\")", seesFrom(probeLive))
+  check("CONTROL — …and ignores one inside a /* */ tombstone", !seesFrom(probeBlock))
+  check("CONTROL — …and ignores one behind a // line comment", !seesFrom(probeLine))
 }
 
 console.log("\n── retired tables are absent from the schema snapshot ──")

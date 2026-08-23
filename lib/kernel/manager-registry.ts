@@ -1223,7 +1223,13 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   // 351-create-demo-contacts*.sql, INSERT display_name/description — columns this
   // table has never had — so both error against the live shape. Live table is now
   // REVOKEd + deny-all; DROP owed to the integrator with a cache regeneration.
-  demo_persona_contacts: "data_steward",
+  // TOMBSTONE — `demo_persona_contacts: "data_steward"` stood here. m547 DROPPED
+  // the table; m543 resolved it under CLAUDE.md §1 branch 3 (functionality already
+  // elsewhere), not by deletion-to-move-a-number. SURVIVORS: the persona vocabulary
+  // is lib/portal/persona-config.ts (the same 16 keys) and the demo seed is
+  // scripts/demo-seed-and-run.ts. An ownership row for a table that no longer exists
+  // names an accountable manager for nothing, which is worse than no row: it reads
+  // as covered.
   // TOMBSTONE (m519) — `earnings_history` was DROPPED; its ownership entry went with it.
   // SURVIVOR: `agent_monthly_earnings`, which carries its own entry in this same map.
   email_presets: "data_steward",
@@ -1712,7 +1718,11 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   // it is the spelling on every public/cron open-house route. Kept in this map only
   // until lib/kernel/listing-archive.ts:234 stops enumerating the table and it can be
   // dropped; the live table is REVOKEd + deny-all so it cannot gain a row meanwhile.
-  open_houses: "listing_concierge",
+  // TOMBSTONE — `open_houses: "listing_concierge"` stood here. m543 established
+  // `open_house_events` as the survivor on evidence (all 5 satellites FK to it,
+  // 61 call sites against 6, 5 public/cron routes against 0) and merged 13 columns
+  // onto it; m547 then DROPPED this table. SURVIVOR: the `open_house_events` row
+  // in this same map — listing_concierge keeps the seat, the table changed name.
   predictive_listing_actions: "listing_concierge",
   predictive_listing_scores: "listing_concierge",
   presentation_sections: "listing_concierge",
