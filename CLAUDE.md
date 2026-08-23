@@ -68,6 +68,13 @@ Supabase project `hrvaqgvukzxfskkcrwbt`.
 
 - **supabase-js RESOLVES refusals.** Always destructure `{ data, error }` and
   READ the error. A swallowed refusal degrades silently.
+- **A DELETE that matches NOTHING also resolves** — `error` is null and `data` is
+  empty, which is byte-identical to a delete that worked. So a wrong-tenant or
+  already-gone parent reports SUCCESS. Reading the error is not enough here:
+  `.select()` the delete and COUNT what came back. Whether zero rows is a failure
+  is the caller's call, not the client's — an already-gone brokerage is the
+  rollback's desired outcome, while an unmatched listing means the tenant
+  predicate just refused and nobody was told.
 - **PGRST204** — an INSERT/UPDATE naming an absent column is refused
   **entirely**. Not "most of the row": nothing.
 - **PGRST201** — a bare embed between two tables joined by more than one FK kills
