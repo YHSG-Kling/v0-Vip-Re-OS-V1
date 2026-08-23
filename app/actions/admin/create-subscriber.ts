@@ -3,6 +3,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { auditStaffAction, gateStaffAction } from "@/lib/platform/staff-action-gate"
 import { provisionTenantOwner } from "@/lib/kernel/users"
+import { rollbackTenantCreation } from "@/lib/kernel/tenant-creation-rollback"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { stripe } from "@/lib/stripe"
 
@@ -91,7 +92,21 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
       callerUserId:  callerUser.id,
     })
     if (!owner.success || !owner.userId) {
-      await service.from("brokerages").delete().eq("id", brokerageId)
+      // ROLL BACK THE HALF-BUILT TENANT — children first, and READ the answer.
+      // The bare `.delete()` this replaces did neither: `users.brokerage_id` is
+      // ON DELETE SET NULL, so it left a live user belonging to no tenant, and
+      // supabase-js RESOLVES a refused delete (CLAUDE.md §3), so a blocked
+      // rollback reported only the provisioning failure. See
+      // lib/kernel/tenant-creation-rollback.ts for the measured delete-rule
+      // census behind this.
+      const rollback = await rollbackTenantCreation(service, brokerageId)
+      if (!rollback.ok) {
+        console.error("[createSubscriber] tenant rollback incomplete:", rollback.error)
+        return {
+          success: false,
+          error: `Owner provisioning failed: ${owner.error}. ${rollback.error}`,
+        }
+      }
       return { success: false, error: `Owner provisioning failed: ${owner.error}` }
     }
     const userId = owner.userId

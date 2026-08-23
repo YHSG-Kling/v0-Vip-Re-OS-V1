@@ -13,7 +13,6 @@ export type {
   ResourceAccess,
   AccessCheckResult,
   AuthorizedUser,
-  SubscriptionContext,
   // Config
   RoleConfig,
   UserContext,
@@ -53,14 +52,16 @@ export {
   getResourceAccessList,
 } from './rbac'
 
-// ─── AUTHORIZATION (super admin / subscription admin) ─────────────────────────
+// ─── AUTHORIZATION (super admin) ──────────────────────────────────────────────
+// TOMBSTONE: the four subscription-admin exports that stood here are deleted —
+// zero callers, and re-exported through a `"use server"` file, so each was a
+// public HTTP endpoint nothing needed. Survivor for "may this user administer
+// the tenant's subscription": app/actions/billing.ts:46 requireTenantBillingAdmin
+// over BROKERAGE_FINANCE_ADMIN_USER_TYPES. Full reasoning, and the live RLS
+// policy that still reads ai_subscription_tier, at ./authorization.ts:39.
 export {
   requireSuperAdmin,
   isSuperAdmin,
-  requireSubscriptionAdmin,
-  isSubscriptionAdmin,
-  getSubscriptionAdmin,
-  getCurrentUserSubscriptionContext,
 } from './authorization'
 
 // ─── PERMISSIONS SERVICE (UI / client-side runtime checks) ────────────────────

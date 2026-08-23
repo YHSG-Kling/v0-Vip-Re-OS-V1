@@ -1,7 +1,17 @@
 -- m533 — SIXTY-EIGHT TENANT ANCHORS THE DATABASE WAS NEVER ALLOWED TO ENFORCE
 --
--- WRITTEN, NOT APPLIED. Lanes write migrations; only the integrator applies them
--- (CLAUDE.md §3). Nothing in this file deletes a row.
+-- APPLICATION STATUS: APPLIED, 2026-08-23, by the integrator. Nothing in this
+-- file deletes a row.
+--
+-- VERIFIED LIVE AFTER APPLYING:
+--     RESTRICT foreign keys onto brokerages ......... 1 → 69  (+68, this file)
+--     of those 68, not-valid ........................ 0
+--
+-- CONSEQUENCE THE NEXT READER MUST KNOW: with these 68 in place a hard
+-- DELETE FROM brokerages now REFUSES (23503) instead of silently orphaning its
+-- children. The two tenant-creation rollback paths were repaired in the same
+-- wave — see lib/kernel/tenant-creation-rollback.ts — because before that
+-- repair they neither deleted children first nor read the refusal.
 --
 -- ── THE FINDING ─────────────────────────────────────────────────────────────
 -- The owner's ruling was "we need to include orphaned children." An orphaned

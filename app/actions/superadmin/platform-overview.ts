@@ -241,6 +241,17 @@ export async function getCronHealthAction(): Promise<
     totals: {
       total:   rows.length,
       stale:   rows.filter(r => r.is_stale).length,
+      // BOTH OF THESE WERE READING A WORD OR A COLUMN NOTHING WROTE, and both
+      // now have a producer rather than being deleted:
+      //   · `failure_count_7d` was seeded 0 and never incremented, so the
+      //     second disjunct of `failing` could not fire and a cron that failed
+      //     six times this week but succeeded on its last tick counted as
+      //     healthy. lib/kernel/cron-logging.ts:recomputeCronSevenDayCounts now
+      //     recomputes it on every health-check tick.
+      //   · `last_status === "running"` matched nothing: the only two writers
+      //     of that column wrote 'success' and 'failure'. createCronRunContext
+      //     now stamps 'running' at the start choke, so this tile counts real
+      //     in-flight runs instead of being pinned to 0.
       failing: rows.filter(r => r.last_status === "failure" || r.failure_count_7d > 0).length,
       running: rows.filter(r => r.last_status === "running").length,
     },

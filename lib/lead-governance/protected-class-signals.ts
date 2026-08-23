@@ -165,7 +165,7 @@
  */
 
 import { isCampaignPersona } from "@/lib/campaigns/contact-sources"
-import { isExclusionSourceRuleType } from "@/lib/ads/audience-source-rules"
+import { audienceUseOf } from "@/lib/ads/audience-source-rules"
 
 /**
  * The provider dataset namespaces classified protected WHOLE. The
@@ -829,7 +829,10 @@ export function protectedClassSegmentationIn(rule: unknown, path = ""): string[]
   // WHICH OPERATION THIS AUDIENCE PERFORMS. An audience that REMOVES people gets
   // no persona carve-out below: suppressing an audience by a protected
   // characteristic is the restricted act, whatever field it is spelled in.
-  const suppresses = isExclusionSourceRuleType((rule as { type?: unknown } | null)?.type)
+  // ONE VOCABULARY (§6): `audienceUseOf` is the same function the persona gate
+  // reads the operation with, so these two doors cannot drift into disagreeing
+  // about what "an audience that subtracts" means.
+  const suppresses = audienceUseOf(rule) === "exclusion"
   const hits: string[] = []
   const walk = (node: unknown, prefix: string): void => {
     if (typeof node === "string") {

@@ -296,7 +296,45 @@ const POLICY_OR_AUDIT_CONSUMED = new Set([
   "brokerage_id", "tenant_id",
   "created_at", "updated_at", "inserted_at", "modified_at",
   "created_by", "updated_by", "deleted_at", "deleted_by",
+
+  // ── QUALIFIED `table.column` ENTRIES ──────────────────────────────────────
+  //
+  // The bare names above are schema-wide: `brokerage_id` is consumed by RLS on
+  // EVERY table, so exempting it everywhere is right. The entries below are
+  // NOT schema-wide — `admin_user_id` on some other table would be a real
+  // finding — so they are qualified, and isPolicyConsumed() checks both forms.
+  //
+  // WHY THESE THREE. `ai_subscription_tier` has one writer
+  // (app/actions/superadmin/brokerage-management.ts:270, the tier-change
+  // entitlement sync) and, since the four zero-caller subscription-admin gates
+  // were deleted (tombstone: lib/security/authorization.ts:39), no TypeScript
+  // reader at all. It is NOT readerless. Verified live against
+  // hrvaqgvukzxfskkcrwbt on 2026-08-23 from pg_policy — the SELECT policy
+  // `ai_usage_monthly_view` on `public.ai_usage_monthly` reads all three:
+  //
+  //     brokerage_id IN (SELECT brokerage_id FROM ai_subscription_tier
+  //                      WHERE admin_user_id = auth.uid() AND is_active = true)
+  //
+  // and `tier_name` is the entitlement value the row exists to carry beside
+  // them. CLAUDE.md §3 records the trap in the writer direction — a column
+  // written only by a trigger, an .rpc() or a backfill reads as writerless
+  // without being writerless. This is its MIRROR, and the census had no name
+  // for it until now: a column read only by an RLS policy reads as readerless
+  // without being readerless. Reporting these three as "write-only" would send
+  // the next lane to delete a write that a live tenancy policy depends on.
+  "ai_subscription_tier.admin_user_id",
+  "ai_subscription_tier.is_active",
+  "ai_subscription_tier.tier_name",
 ])
+
+/**
+ * A column is policy-consumed if its BARE name is exempt schema-wide, or if
+ * this exact `table.column` is. Kept as one function so the two forms cannot
+ * drift apart, and so a future qualified entry needs no second lookup site.
+ */
+function isPolicyConsumed(table: string, column: string): boolean {
+  return POLICY_OR_AUDIT_CONSUMED.has(column) || POLICY_OR_AUDIT_CONSUMED.has(`${table}.${column}`)
+}
 
 /**
  * TOP-LEVEL SHORTHAND PROPERTIES — `{ automation_id, user_id, result }`.
@@ -1051,6 +1089,18 @@ stage("C1 columns")
   const wrote = probe(`await supabase.from("contacts").insert({ first_name: a, phone: b })`)
   control("C1 sees a column WRITE (insert object keys)",
     wrote.write.includes("first_name") && wrote.write.includes("phone"), wrote.write.join(","))
+  // THE QUALIFIED POLICY EXEMPTION. Two directions, because an exemption that
+  // is too wide is the same defect as a scanner that is too narrow — it hides a
+  // real finding instead of inventing one. The bare-name arm is asserted too, so
+  // a refactor of isPolicyConsumed cannot silently drop either form.
+  control("C1 a QUALIFIED policy exemption applies to its own table only",
+    isPolicyConsumed("ai_subscription_tier", "admin_user_id")
+    && !isPolicyConsumed("some_other_table", "admin_user_id"))
+  control("C1 a BARE policy exemption still applies schema-wide",
+    isPolicyConsumed("any_table_at_all", "brokerage_id"))
+  control("C1 the exemption does NOT blanket a column nobody exempted",
+    !isPolicyConsumed("ai_subscription_tier", "monthly_budget_cents"))
+
   const commented = probe(`// await supabase.from("contacts").select("id, first_name")\nconst x = 1`)
   control("C1 does NOT read a query that only exists in a comment",
     commented.read.length === 0 && commented.write.length === 0)
@@ -1196,7 +1246,7 @@ for (const t of pairedTables) {
   const r = readCols.get(t) ?? new Set<string>()
   const w = writeCols.get(t) ?? new Set<string>()
   if (!starRead.has(t)) {
-    for (const c of [...w].sort()) if (!r.has(c) && !POLICY_OR_AUDIT_CONSUMED.has(c)) colWrittenNeverRead.push(`${t}.${c}`)
+    for (const c of [...w].sort()) if (!r.has(c) && !isPolicyConsumed(t, c)) colWrittenNeverRead.push(`${t}.${c}`)
   }
   if (!opaqueWrite.has(t)) {
     const dbWritten = TRIGGER_WRITTEN.get(t)

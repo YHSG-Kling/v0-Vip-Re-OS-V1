@@ -64,7 +64,12 @@ const check = (n: string, c: boolean) => {
 }
 
 const ROOT = process.cwd()
-const MIGRATION = join(ROOT, "supabase/migrations/m526-on-a-team-scale-tenant-the-lead-is-the-principal-and-keeps-its-books.sql")
+// REPOINTED to m526a. m526 was applied on 2026-08-23, REFUSED on its own
+// postcheck and rolled back whole; m526a re-issues it with every GRANTING
+// statement byte-identical and only that postcheck corrected, so every source
+// assertion below reads the same text it always did. m526 is now a tombstone
+// naming this file — see supabase/migrations/m526-*.sql.
+const MIGRATION = join(ROOT, "supabase/migrations/m526a-m526s-negative-control-counted-the-population-instead-of-asking-the-predicate.sql")
 const ROLE_FILE = join(ROOT, "lib/auth/resolve-user-role.ts")
 const KERNEL    = join(ROOT, "lib/kernel/financial.ts")
 const ACTION    = join(ROOT, "app/actions/financial-kernel.ts")
@@ -339,8 +344,31 @@ function sourceLayer() {
   check("the app roster agrees with the SQL rosters, byte for byte",
     [...BROKERAGE_FINANCE_ADMIN_USER_TYPES].sort().join(",") === "admin,broker,broker_admin,broker_owner")
 
-  // NOT APPLIED (CLAUDE.md §3 — lanes write migrations, the integrator applies).
-  check("the migration declares it was NOT applied by this lane", /NOT APPLIED/.test(sql))
+  // THE MIGRATION MUST DECLARE ITS APPLICATION STATE — one of the two, explicitly.
+  //
+  // This used to assert the literal string "NOT APPLIED", which was right while
+  // the file was a lane's un-applied draft and became WRONG the moment the
+  // integrator applied it: a passing assertion would then have meant the file was
+  // lying about the database. CLAUDE.md §3 says a .sql file that exists has not
+  // been applied, so SILENCE reads as "not applied" — which makes an applied
+  // migration that says nothing the one genuinely dangerous state. What must hold
+  // is that the file SAYS which it is, not that the answer is frozen.
+  const declaresNotApplied = /NOT APPLIED/.test(sql)
+  const declaresApplied = /APPLICATION STATUS:\s*APPLIED/.test(sql)
+  check("the migration declares its application state explicitly (applied, or not applied)",
+    declaresNotApplied !== declaresApplied)
+  // POSITIVE CONTROLS — prove each arm still recognises what it was written for,
+  // and that this is not a constant true (§2).
+  check("  control: the finder recognises an un-applied declaration",
+    /NOT APPLIED/.test("-- WRITTEN, NOT APPLIED. Lanes write migrations."))
+  check("  control: the finder recognises an applied declaration",
+    /APPLICATION STATUS:\s*APPLIED/.test("-- APPLICATION STATUS: APPLIED, 2026-08-23"))
+  check("  control: a migration that declares NEITHER is refused",
+    !((/NOT APPLIED/.test("-- m999 does something")) !== (/APPLICATION STATUS:\s*APPLIED/.test("-- m999 does something"))))
+  // An APPLIED migration must also say WHEN — "applied" with no date cannot be
+  // reconciled against the database by anyone reading it later.
+  check("...and if it declares APPLIED, it names the date",
+    !declaresApplied || /APPLICATION STATUS:\s*APPLIED,\s*\d{4}-\d{2}-\d{2}/.test(sql))
 
   // The app twin. #202 was an RLS defect whose app twin was left stale; here the
   // kernel runs on the SERVICE client, so a stale twin is not annoying, it is the

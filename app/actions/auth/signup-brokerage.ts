@@ -21,6 +21,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { provisionTenantOwner } from "@/lib/kernel/users"
+import { rollbackTenantCreation } from "@/lib/kernel/tenant-creation-rollback"
 import { applySnapshotPayload, type SnapshotPayload } from "@/lib/platform/config-snapshots"
 import { validateFunnelCoupon, snapshotForTier } from "@/lib/platform/trial-funnel"
 import { headers } from "next/headers"
@@ -190,7 +191,22 @@ export async function signupBrokerageAction(
     callerUserId: null,
   })
   if (!owner.success || !owner.userId) {
-    await service.from("brokerages").delete().eq("id", brokerage.id)
+    // ROLL BACK THE HALF-BUILT TENANT — children first, and READ the answer.
+    // The bare `.delete()` this replaces did neither: `users.brokerage_id` is
+    // ON DELETE SET NULL, so a failed signup left a live user belonging to no
+    // tenant (the auth trigger seeds that row from the invite metadata, and
+    // provisionTenantOwner can fail after the invite has gone out), and
+    // supabase-js RESOLVES a refused delete (CLAUDE.md §3), so a blocked
+    // rollback was reported to the visitor as an ordinary provisioning failure.
+    // See lib/kernel/tenant-creation-rollback.ts.
+    const rollback = await rollbackTenantCreation(service, brokerage.id)
+    if (!rollback.ok) {
+      console.error("[signupBrokerage] tenant rollback incomplete:", rollback.error)
+      return {
+        ok: false,
+        error: `Owner provisioning failed: ${owner.error ?? "unknown"}. ${rollback.error}`,
+      }
+    }
     return { ok: false, error: `Owner provisioning failed: ${owner.error ?? "unknown"}` }
   }
   const newUser = { id: owner.userId }

@@ -6,6 +6,13 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
+// IMPORTED FROM THE KERNEL DIRECTLY, NOT ADDED TO app/actions/cron-kernel.ts.
+// That file is `"use server"`, so every export in it is a PUBLIC HTTP endpoint
+// (CLAUDE.md §4) — publishing the recompute there would let any caller fire
+// ~128 exact-count queries against cron_execution_logs on demand, for a
+// function no browser surface ever needs. This route already cleared
+// verifyCronAuth before reaching here, and a route handler is server code.
+import { recomputeCronSevenDayCounts } from "@/lib/kernel/cron-logging"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 // The one Stripe client — see the stripe checkFn below for why this probe no
 // longer hand-rolls the key lookup and the /v1/balance request.
@@ -561,6 +568,31 @@ export async function POST(request: NextRequest) {
       }
     } catch (err) {
       console.error("[health-check] status-notice proposal hook failed (health check unaffected):", err)
+    }
+
+    // ── THE ROLLING 7-DAY RECOMPUTE RIDES THIS SWEEP ─────────────────────────
+    //
+    // cron_health_snapshot.run_count_7d / failure_count_7d are seeded 0 by
+    // scripts/1053-pl-truth-engine-cron-health.sql:110 and were incremented by
+    // NOTHING, so two platform-staff surfaces read a permanent zero
+    // (app/actions/superadmin/platform-overview.ts:232 and
+    // lib/platform/ai-ops.ts:113). A 7-day window has to DECAY as well as
+    // climb, so this is a recompute from cron_execution_logs, not a counter —
+    // see lib/kernel/cron-logging.ts:recomputeCronSevenDayCounts.
+    //
+    // THIS ROUTE IS THE RIGHT HOME AND NOT AN ARBITRARY ONE: it is already the
+    // platform's own watchdog, it is registered in lib/kernel/cron-dispatch.ts
+    // at "13,28,43,58 * * * *" (four ticks an hour, so the board is never more
+    // than 15 minutes behind), and it holds a service client for exactly this
+    // class of platform-wide bookkeeping.
+    //
+    // NOT counted into `writeFailures`. A refused recompute leaves last
+    // known-good counts on the board; it does not mean the provider sweep — the
+    // thing this route exists to do — failed. Conflating the two would flip the
+    // whole job to `success: false` over a stale ops tile.
+    const sevenDay = await recomputeCronSevenDayCounts()
+    if (!sevenDay.success) {
+      console.error("[health-check] 7d cron-count recompute refused:", sevenDay.error)
     }
 
     const durationMs = Date.now() - startTime

@@ -55,7 +55,6 @@ import {
   resolveAudiencePersonaBasis,
   assertAudiencePersonaBasis,
   declaresPersonaBasis,
-  audienceUseOf,
   ADS_ELIGIBLE_PERSONAS,
   ADS_INELIGIBLE_PERSONAS,
   EXCLUSION_INELIGIBLE_PERSONAS,
@@ -65,7 +64,7 @@ import {
 import {
   EXCLUSION_SOURCE_RULE_TYPES,
   SOURCE_RULE_TYPES,
-  isExclusionSourceRuleType,
+  audienceUseOf,
 } from "../lib/ads/audience-source-rules"
 import {
   CAMPAIGN_PERSONAS,
@@ -194,7 +193,31 @@ function main() {
     && audienceUseOf({ type: PERSONA_SEGMENT_TYPE }) === "inclusion"
     && audienceUseOf({ type: "contact_list" }) === "inclusion"
     && audienceUseOf(null) === "inclusion"
-    && !isExclusionSourceRuleType(PERSONA_SEGMENT_TYPE))
+    && audienceUseOf({ type: PERSONA_SEGMENT_TYPE }) !== "exclusion")
+
+  // ── §6: BOTH DOORS READ THE OPERATION WITH THE SAME FUNCTION ────────────────
+  // `protectedClassSegmentationIn` used to inline `isExclusionSourceRuleType`
+  // instead — a second spelling of "this audience subtracts", in the module whose
+  // job is to turn the persona carve-out OFF for exactly that case. Two spellings
+  // there is not a style question: if they ever disagree, the compliance door
+  // grants a carve-out the ads door refuses, and the disagreement is silent.
+  // `audienceUseOf` now lives beside the roster BECAUSE of the cycle that made
+  // the second spelling look necessary — audience-persona-basis imports
+  // protectedClassReasonFor from protected-class-signals, so the wire could not
+  // go the other way.
+  {
+    const pcs = code("lib/lead-governance/protected-class-signals.ts")
+    const suppressesLine = /const\s+suppresses\s*=\s*([^\n]+)/.exec(pcs)?.[1] ?? ""
+    check("§6 — protectedClassSegmentationIn reads the operation with audienceUseOf, not a second spelling",
+      /audienceUseOf\s*\(/.test(suppressesLine)
+      && !/isExclusionSourceRuleType/.test(pcs))
+    // POSITIVE CONTROL — the finder still recognises the defect it was written for.
+    check("  control: the same finder REJECTS the inlined second spelling it replaced",
+      !/audienceUseOf\s*\(/.test("const suppresses = isExclusionSourceRuleType((rule as { type?: unknown } | null)?.type)"))
+    // POSITIVE CONTROL — and it is reading a real line, not an empty match.
+    check("  control: the suppresses assignment was actually found in the file",
+      suppressesLine.trim().length > 0)
+  }
 
   // ───────────────────────────────────────────────────────────────────────────
   console.log("\n[3 · INCLUSION — ADMITS every situation persona, the four the owner ruled IN included]")
@@ -470,7 +493,7 @@ function main() {
       return !!t && t.sourceRule.type === PERSONA_SEGMENT_TYPE && t.category !== "exclusion"
     }))
   check("NO shipped template anywhere in the catalog combines an exclusion rule type with a persona basis",
-    FB_AUDIENCE_TEMPLATES.every((t) => !(isExclusionSourceRuleType(t.sourceRule.type) && declaresPersonaBasis(t.sourceRule))))
+    FB_AUDIENCE_TEMPLATES.every((t) => !(audienceUseOf(t.sourceRule) === "exclusion" && declaresPersonaBasis(t.sourceRule))))
   check("EVERY shipped template — persona or not — passes BOTH ads gates (nothing in the catalog errors on click)",
     FB_AUDIENCE_TEMPLATES.every((t) =>
       throws(() => assertAudienceSegmentationAllowed(t.sourceRule, t.name)) === null

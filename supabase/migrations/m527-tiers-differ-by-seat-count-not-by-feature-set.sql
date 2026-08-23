@@ -1,7 +1,14 @@
 -- m527 — TIERS DIFFER BY SEAT COUNT, NOT BY FEATURE SET.
 -- ─────────────────────────────────────────────────────────────────────────────
--- NOT APPLIED BY THIS LANE (CLAUDE.md §3). Data-only: no DDL, no CHECK, so no
--- vocabulary cache needs regenerating afterwards.
+-- APPLICATION STATUS: APPLIED, 2026-08-23, by the integrator. Data-only: no DDL,
+-- no CHECK, so no vocabulary cache needed regenerating afterwards.
+--
+-- VERIFIED LIVE AFTER APPLYING (not inferred from the absence of an error):
+--     feature_flags denied to solo or team while brokerage_access=true ... 0
+--     ...out of a denominator of 66 rows with brokerage_access=true  ← the 0
+--         is a measurement, not an empty scan: 66 rows could have violated.
+--     feature_flags.solo_agent_limit for 'listing_marketing_tiers' ...... 5
+--     rows anywhere still carrying solo_agent_limit = 0 ................. 0
 --
 -- OWNER RULING, verbatim, and it is the whole file:
 --

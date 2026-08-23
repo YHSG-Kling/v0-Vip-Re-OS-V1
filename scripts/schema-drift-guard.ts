@@ -1960,19 +1960,45 @@ function testCoverage() {
 // are read as the same number space, so `063-x.sql` and `m63-y.sql` would collide — an `m` is
 // decoration, not a namespace, and reading them separately would leave the older era unchecked.
 // Leading zeros are insignificant: 023 and 23 are one number.
+/**
+ * THE REVISION SUFFIX — `mNNNa-`, `mNNNb-` — and why it gets its own key.
+ *
+ * A migration sometimes needs a sibling that must sit ADJACENT to it rather than
+ * at the end of the sequence: m531a is m531's PRECONDITION (m531 refuses while
+ * its residue exists), and m526a is m526 RE-ISSUED after m526's own postcheck was
+ * found defective. Numbering either at the tail would put a precondition after
+ * the thing it precedes and separate a re-issue from what it replaces.
+ *
+ * BEFORE THIS, A SUFFIXED FILE MATCHED NEITHER REGEX AND WAS SKIPPED ENTIRELY —
+ * so it was invisible to the duplicate detector, and a SECOND `m526a-…` would
+ * have collided in silence. That is the defect this widening fixes; accepting the
+ * filename is the smaller half.
+ *
+ * `m526a` keys as `526a`, NOT as `526`. Keying it as `526` would make every
+ * revision a false duplicate of its own base; giving it its own key means
+ * m526 + m526a coexist legitimately while two files claiming `526a` still
+ * collide. A revision of a base that does not exist is a typo and is refused
+ * separately, by the caller which can see the whole directory.
+ */
+export function migrationKey(filename: string): string | null {
+  const m = /^m?(\d+)([a-z])?[-._]/.exec(filename)
+  return m ? `${Number(m[1])}${m[2] ?? ""}` : null
+}
+
 export function duplicateMigrationNumbers(filenames: string[]): { num: string; files: string[] }[] {
   const byNum = new Map<string, string[]>()
   for (const f of filenames) {
-    const m = /^m?(\d+)[-._]/.exec(f)
-    if (!m) continue
-    const key = String(Number(m[1]))
+    const key = migrationKey(f)
+    if (!key) continue
     if (!byNum.has(key)) byNum.set(key, [])
     byNum.get(key)!.push(f)
   }
   return [...byNum.entries()]
     .filter(([, fs]) => fs.length > 1)
     .map(([num, files]) => ({ num, files: files.sort() }))
-    .sort((a, b) => Number(a.num) - Number(b.num))
+    // parseInt, not Number: "526a" is a valid key and Number("526a") is NaN,
+    // which would make this comparator return NaN and leave the order undefined.
+    .sort((a, b) => parseInt(a.num, 10) - parseInt(b.num, 10) || a.num.localeCompare(b.num))
 }
 
 function testMigrationNumbers() {
@@ -1987,19 +2013,45 @@ function testMigrationNumbers() {
     duplicateMigrationNumbers(["m1-a.sql", "m9-b.sql"]).length === 0)
   check("duplicate detector: the bare-NNN era shares the mNNN number space",
     duplicateMigrationNumbers(["023-a.sql", "m23-b.sql"]).length === 1)
+  // ── THE REVISION SUFFIX, both directions ──────────────────────────────────
+  check("duplicate detector: a revision (m526a) is NOT a duplicate of its base (m526)",
+    duplicateMigrationNumbers(["m526-base.sql", "m526a-revision.sql"]).length === 0)
+  check("duplicate detector: but two files claiming the SAME revision DO collide",
+    JSON.stringify(duplicateMigrationNumbers(["m526a-one.sql", "m526a-two.sql"])) ===
+      JSON.stringify([{ num: "526a", files: ["m526a-one.sql", "m526a-two.sql"] }]))
+  check("duplicate detector: two different revisions of one base are distinct",
+    duplicateMigrationNumbers(["m526a-x.sql", "m526b-y.sql"]).length === 0)
+  check("migrationKey: reads base, revision and the bare-NNN era",
+    migrationKey("m526-x.sql") === "526" && migrationKey("m526a-x.sql") === "526a"
+      && migrationKey("023-x.sql") === "23" && migrationKey("notamigration.sql") === null)
 
   // repo
   const dir = join(process.cwd(), "supabase/migrations")
   if (!existsSync(dir)) { check("supabase/migrations exists", false); return }
   const sql = readdirSync(dir).filter((f) => f.endsWith(".sql"))
-  const unnumbered = sql.filter((f) => !/^m?\d+[-._]/.test(f)).sort()
+  const unnumbered = sql.filter((f) => migrationKey(f) === null).sort()
   const dupes = duplicateMigrationNumbers(sql)
   console.log(`  · ${sql.length} migrations on disk`)
   check("every migration number names exactly one migration",
     dupes.length === 0,
     dupes.map((d) => `${d.num}: ${d.files.join(" + ")}`).join("; "))
-  check("every migration filename opens with its number (mNNN- or the older bare NNN-)",
+  check("every migration filename opens with its number (mNNN-, mNNNa- for a revision, or the older bare NNN-)",
     unnumbered.length === 0, unnumbered.join(", "))
+
+  // A REVISION OF NOTHING IS A TYPO. `m531a-` earns its adjacency by being m531's
+  // sibling; if no m531 exists, the suffix is a slip that would otherwise buy the
+  // file a number nobody can find. Checked here rather than in the pure helper
+  // because only the caller can see the whole directory.
+  const bases = new Set(sql.map(migrationKey).filter((k): k is string => k !== null)
+    .filter((k) => /^\d+$/.test(k)))
+  const orphanRevisions = sql.filter((f) => {
+    const k = migrationKey(f)
+    return k !== null && /[a-z]$/.test(k) && !bases.has(k.replace(/[a-z]$/, ""))
+  }).sort()
+  check("every revision (mNNNa-) has the base migration it revises",
+    orphanRevisions.length === 0, orphanRevisions.join(", "))
+  const revisions = sql.filter((f) => /[a-z]$/.test(migrationKey(f) ?? "")).sort()
+  console.log(`  · ${revisions.length} revision(s): ${revisions.map((f) => migrationKey(f)).join(", ") || "none"}`)
 }
 
 async function main() {

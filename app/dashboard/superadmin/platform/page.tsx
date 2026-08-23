@@ -530,8 +530,22 @@ export default async function SuperadminPlatformPage() {
                         {r.is_stale && <Badge className="bg-amber-100 text-amber-800 text-xs">stale</Badge>}
                         {!r.is_stale && r.last_status === "success" && <Badge className="bg-emerald-100 text-emerald-800 text-xs">ok</Badge>}
                         {!r.is_stale && r.last_status === "failure" && <Badge className="bg-red-100 text-red-800 text-xs">failure</Badge>}
+                        {/* `running` is now REACHABLE. Nothing wrote the word until
+                            lib/kernel/cron-logging.ts:createCronRunContext began
+                            stamping it at the start choke, so this badge was
+                            unreachable markup for as long as it has existed.
+                            `is_stale` still outranks it, which is what keeps a
+                            hung run from showing a calm blue pill forever. */}
                         {!r.is_stale && r.last_status === "running" && <Badge className="bg-blue-100 text-blue-800 text-xs">running</Badge>}
-                        {!r.is_stale && r.last_status === "partial" && <Badge className="bg-amber-100 text-amber-800 text-xs">partial</Badge>}
+                        {/* TOMBSTONE: the `partial` badge that stood here is deleted.
+                            No survivor is needed because there was never a producer:
+                            cron_health_snapshot.last_status is written in exactly two
+                            places, lib/kernel/cron-logging.ts:319 ('success') and :415
+                            ('failure'), the terminal commands are binary, and the table
+                            carries no CHECK that ever admitted a third terminal word.
+                            The vocabulary that survives is CRON_SNAPSHOT_STATUSES in
+                            lib/kernel/cron-logging.ts:90. If a middle state is ever
+                            wanted it is written there first and rendered here second. */}
                       </td>
                       <td className="px-4 py-2.5 text-xs text-muted-foreground">{fmtAgo(r.last_run_at)}</td>
                       <td className="px-4 py-2.5 text-right text-xs">{fmtDuration(r.last_duration_ms)}</td>

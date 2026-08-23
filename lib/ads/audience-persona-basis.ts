@@ -93,41 +93,24 @@ import {
   isCampaignPersona,
   type CampaignPersona,
 } from "@/lib/campaigns/contact-sources"
-import { isExclusionSourceRuleType } from "@/lib/ads/audience-source-rules"
+// `AudienceUse` / `audienceUseOf` MOVED to lib/ads/audience-source-rules.ts (§6,
+// §1). They answer "which operation does this rule perform", and
+// `protected-class-signals.ts` was answering the SAME question in a second
+// spelling — `isExclusionSourceRuleType(rule?.type)` inlined at its carve-out.
+// It could not call this one from here: this module imports
+// `protectedClassReasonFor` FROM that module, so the wire would have been a
+// cycle. Moving the pair down beside `EXCLUSION_SOURCE_RULE_TYPES` — the roster
+// they are derived from — gives both readers one vocabulary and no cycle.
+import {
+  audienceUseOf,
+  type AudienceUse,
+} from "@/lib/ads/audience-source-rules"
 import { protectedClassReasonFor } from "@/lib/lead-governance/protected-class-signals"
+
+export type { AudienceUse }
 
 /** The `SourceRule.type` and `audience_type` that declare a persona basis. */
 export const PERSONA_SEGMENT_TYPE = "persona_segment"
-
-/**
- * WHICH OPERATION an audience performs on the people its rule selects.
- *
- * `"inclusion"` — the audience is TARGETED: these people are reached, and the
- * persona chooses the wording they are reached with. This is what the owner
- * ruled on.
- * `"exclusion"` — the audience is SUBTRACTED: these people are removed from a
- * campaign's delivery. A protected characteristic may not do this.
- */
-export type AudienceUse = "inclusion" | "exclusion"
-
-/**
- * PURE. Which operation this audience rule declares.
- *
- * Derived from `EXCLUSION_SOURCE_RULE_TYPES`, which is itself derived by prefix
- * from `SOURCE_RULE_TYPES` — so this module coins no second vocabulary for
- * "exclusion" (CLAUDE.md §6) and a new `exclusion_*` rule type is covered on the
- * day it is added rather than the day somebody remembers this function.
- *
- * DEFAULTS TO `"inclusion"`, and that default is safe in exactly one direction:
- * an unrecognised rule type is refused outright by `resolveSourceRuleNarrowing`
- * before it can populate anything, so "inclusion" here can never widen what an
- * audience delivers — it can only decide which persona rule is applied to a rule
- * that some other gate is already going to refuse.
- */
-export function audienceUseOf(rule: unknown): AudienceUse {
-  if (!rule || typeof rule !== "object") return "inclusion"
-  return isExclusionSourceRuleType((rule as { type?: unknown }).type) ? "exclusion" : "inclusion"
-}
 
 /**
  * The catch-all member of the canonical persona union. It is a valid persona

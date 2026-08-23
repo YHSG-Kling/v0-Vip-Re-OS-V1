@@ -24,4 +24,6 @@ export {
 
 // ─── AUTHORIZATION (re-exports from lib/security for backwards compatibility) ─
 // Prefer importing directly from "@/lib/security" for new code.
-export type { AuthorizedUser, SubscriptionContext } from "./authorization"
+// SubscriptionContext removed with the four subscription-admin gates —
+// see the tombstone in ./authorization.ts.
+export type { AuthorizedUser } from "./authorization"

@@ -3,9 +3,18 @@
 --
 -- Owner ruling, verbatim (2026-08-22): "audience should be segmented on persona."
 --
--- WRITTEN, NOT APPLIED. Lanes write migrations; only the integrator applies them
--- (CLAUDE.md §3). READ THE "WHY THIS RAISES" SECTION BEFORE APPLYING — this
--- migration is DESIGNED to refuse rather than guess, and it will refuse today.
+-- APPLICATION STATUS: APPLIED, 2026-08-23, by the integrator, AFTER m531a moved
+-- the two off-canon rows this file was designed to refuse over. It did refuse
+-- first, exactly as its "WHY THIS RAISES" section promised — that refusal was
+-- the file working, not failing.
+--
+-- VERIFIED LIVE AFTER APPLYING:
+--     contacts_contact_persona_check ................. present, convalidated
+--     it admits the same 13 values as campaign_sequences_persona_check, so the
+--         two persona vocabularies now agree (CLAUDE.md §6)
+--     contacts still holding a contact TYPE in the persona column ...... 0
+--     POSITIVE CONTROL: UPDATE ... contact_persona='listing_seller' → 23514,
+--         row unchanged. The CHECK refuses; it is not a decorative constraint.
 --
 -- ── WHAT THIS FIXES ─────────────────────────────────────────────────────────
 -- The owner's ruling makes persona the declared BASIS of an ad audience, and

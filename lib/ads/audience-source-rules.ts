@@ -125,9 +125,52 @@ export const EXCLUSION_SOURCE_RULE_TYPES: readonly SourceRuleType[] = Object.fre
 
 const EXCLUSION_TYPES = new Set<string>(EXCLUSION_SOURCE_RULE_TYPES)
 
-/** PURE. True when this `SourceRule.type` declares a SUBTRACTIVE audience. */
-export function isExclusionSourceRuleType(v: unknown): v is SourceRuleType {
+/**
+ * PURE. True when this `SourceRule.type` declares a SUBTRACTIVE audience.
+ *
+ * MODULE-PRIVATE ON PURPOSE (§6). This is the implementation of `audienceUseOf`
+ * below, not a second public way to ask the same question. It was exported once,
+ * and the one caller that used it — `protectedClassSegmentationIn` — became the
+ * second spelling this module now exists to prevent. Callers outside this file
+ * ask `audienceUseOf(rule)`, which takes the RULE rather than a bare type string
+ * and so cannot be handed the wrong field.
+ */
+function isExclusionSourceRuleType(v: unknown): v is SourceRuleType {
   return typeof v === "string" && EXCLUSION_TYPES.has(v)
+}
+
+/**
+ * WHICH OPERATION an audience performs on the people its rule selects.
+ *
+ * `"inclusion"` — the audience is TARGETED: these people are reached, and the
+ * persona chooses the wording they are reached with. This is what the owner
+ * ruled on.
+ * `"exclusion"` — the audience is SUBTRACTED: these people are removed from a
+ * campaign's delivery. A protected characteristic may not do this.
+ */
+export type AudienceUse = "inclusion" | "exclusion"
+
+/**
+ * PURE. Which operation this audience rule declares.
+ *
+ * LIVES HERE, NOT IN audience-persona-basis.ts, AND THAT IS THE POINT (§6).
+ * Two modules need this answer — the persona gate, which picks the inclusion or
+ * the exclusion rule, and `protectedClassSegmentationIn`, which turns its
+ * persona carve-out off when the audience subtracts. The persona module cannot
+ * be the home: it imports `protectedClassReasonFor` from the compliance module,
+ * so the compliance module importing back would be a cycle, and the cycle is
+ * exactly why the second spelling appeared there in the first place. Beside the
+ * roster, both readers reach one function.
+ *
+ * DEFAULTS TO `"inclusion"`, and that default is safe in exactly one direction:
+ * an unrecognised rule type is refused outright by `resolveSourceRuleNarrowing`
+ * before it can populate anything, so "inclusion" here can never widen what an
+ * audience delivers — it can only decide which persona rule is applied to a rule
+ * that some other gate is already going to refuse.
+ */
+export function audienceUseOf(rule: unknown): AudienceUse {
+  if (!rule || typeof rule !== "object") return "inclusion"
+  return isExclusionSourceRuleType((rule as { type?: unknown }).type) ? "exclusion" : "inclusion"
 }
 
 // ─── THE DECLARATIVE NARROWING ────────────────────────────────────────────────

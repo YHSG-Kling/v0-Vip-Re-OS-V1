@@ -1,8 +1,15 @@
 -- m532 — AN AUDIENCE SOURCE RULE WITH NO RESOLVABLE TYPE UPLOADED THE WHOLE
 --        CONSENTED CONTACT BOOK TO META AND GOOGLE
 --
--- WRITTEN, NOT APPLIED. Lanes write migrations; only the integrator applies them
--- (CLAUDE.md §3).
+-- APPLICATION STATUS: APPLIED, 2026-08-23, by the integrator.
+--
+-- VERIFIED LIVE AFTER APPLYING, on all eight shapes this file exists to stop:
+--     a real rule type, and SQL NULL ......................... ACCEPTED
+--     '{}'::jsonb (what campaign-presets defaulted to) ....... REFUSED 23514
+--     an unknown type, 'null'::jsonb, a bare string,
+--         a non-string type, an array ....................... REFUSED 23514
+--     The two ACCEPTED cases are the positive control: a CHECK that refused
+--     everything would also show six refusals and would be broken.
 --
 -- ── WHAT THIS BACKS UP ──────────────────────────────────────────────────────
 -- `lib/kernel/ads.ts syncAudience` declared FIFTEEN `SourceRule` types and

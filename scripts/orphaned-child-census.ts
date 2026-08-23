@@ -183,6 +183,38 @@ let oc1Poly = 0
 let oc1Protected = 0
 let oc1Examined = 0
 
+/**
+ * THE OC1 PREDICATE, AS ONE FUNCTION — because its positive control has to be
+ * able to run it on an input the live schema no longer contains.
+ *
+ * WHY THIS WAS EXTRACTED (CLAUDE.md §2). This logic was inlined in the loop
+ * below, so the only way to prove it still worked was to assert that some REAL
+ * column was still flagged. m533 then added an FK to every unprotected tenant
+ * anchor in the database — 667 tables carry `brokerage_id` and 0 now lack an FK
+ * on it — and the control failed because THE DEFECT CLASS WAS ELIMINATED. A
+ * control that goes red when the schema is repaired is measuring the schema, not
+ * the finder.
+ *
+ * Re-pointing it at another live column only defers the same failure to whoever
+ * fixes that one. So the control now runs THIS function over a synthetic table,
+ * which cannot be repaired out from under it — and because the census loop calls
+ * the same function, there is no second spelling to drift (§6).
+ */
+export type Oc1Verdict = "protected" | "self_ref" | "polymorphic" | "unprotected"
+export function oc1Verdict(
+  table: string,
+  col: string,
+  colSet: Set<string>,
+  fks: Record<string, unknown>,
+  consensusParent: string | undefined,
+): Oc1Verdict | null {
+  if (!consensusParent) return null
+  if (fks[col]) return "protected"
+  if (consensusParent === table) return "self_ref"
+  if (colSet.has(`${col.replace(/_id$/, "")}_type`)) return "polymorphic"
+  return "unprotected"
+}
+
 const snapshotTables = Object.keys(SCHEMA_SNAPSHOT).sort()
 for (const table of snapshotTables) {
   const cols = SCHEMA_SNAPSHOT[table]
@@ -192,10 +224,10 @@ for (const table of snapshotTables) {
     const c = CONSENSUS.get(col)
     if (!c) continue
     oc1Examined++
-    if (fks[col]) { oc1Protected++; continue }
-    if (c.parent === table) { oc1SelfRef++; continue }
-    const base = col.replace(/_id$/, "")
-    if (colSet.has(`${base}_type`)) { oc1Poly++; POLY_BASES_SEEN.add(base); continue }
+    const verdict = oc1Verdict(table, col, colSet, fks, c.parent)
+    if (verdict === "protected") { oc1Protected++; continue }
+    if (verdict === "self_ref") { oc1SelfRef++; continue }
+    if (verdict === "polymorphic") { oc1Poly++; POLY_BASES_SEEN.add(col.replace(/_id$/, "")); continue }
     add(
       "oc1",
       `${table}.${col}`,
@@ -397,9 +429,38 @@ for (const dir of appDirs) {
   const oc1Keys = new Set(findings.filter((f) => f.cat === "oc1").map((f) => f.key))
   control("oc1 POSITIVE: still flags motivated_seller_signals.lead_id (no FK to leads)",
     oc1Keys.has("motivated_seller_signals.lead_id"))
-  control("oc1 POSITIVE: still flags an unprotected tenant anchor",
-    oc1Keys.has("transaction_documents.brokerage_id") || oc1Keys.has("email_queue.brokerage_id"),
-    "neither transaction_documents.brokerage_id nor email_queue.brokerage_id was flagged")
+  // ── OC1 POSITIVE, on a SYNTHETIC tenant anchor ────────────────────────────
+  // This used to assert that `transaction_documents.brokerage_id` or
+  // `email_queue.brokerage_id` was still flagged. m533 gave BOTH an FK — along
+  // with every other `brokerage_id` in the database — so the control went red
+  // because the class it demonstrated had been ELIMINATED. Measured live at the
+  // time: 667 real tables carry `brokerage_id`, 0 of them lack an FK on it. The
+  // only such columns left out of the FK map are 5 VIEWS, which cannot carry an
+  // FK at all; pointing the control at one of those would make it pass on an
+  // impossibility, which is the §2 failure this control exists to prevent.
+  //
+  // So it runs the real predicate on a table that does not exist. The specimen
+  // cannot be repaired, and `oc1Verdict` is the same function the census loop
+  // calls — if the finder stops recognising an unprotected anchor, this goes red
+  // whatever the live schema happens to look like that day.
+  control("oc1 POSITIVE: the finder still flags an unprotected tenant anchor (synthetic)",
+    oc1Verdict("zz_synthetic_child", "brokerage_id",
+      new Set(["id", "brokerage_id"]), {}, "brokerages") === "unprotected")
+  // ...and the SAME synthetic row, given an FK, must come back protected — so the
+  // control above cannot be passing because the function returns "unprotected"
+  // for everything.
+  control("oc1 POSITIVE: ...and calls that same anchor PROTECTED once an FK exists",
+    oc1Verdict("zz_synthetic_child", "brokerage_id",
+      new Set(["id", "brokerage_id"]), { brokerage_id: "brokerages" }, "brokerages") === "protected")
+  // The real schema's own answer, recorded rather than asserted: m533 closed this
+  // class, so a live specimen is EXPECTED to be absent. If one ever reappears the
+  // census reports it as an ordinary oc1 finding — this line just keeps the fact
+  // visible instead of letting it look like the control was quietly weakened.
+  {
+    const liveAnchors = [...oc1Keys].filter((k) => k.endsWith(".brokerage_id"))
+    console.log(`            [recorded] live unprotected brokerage_id anchors: ${liveAnchors.length}`
+      + (liveAnchors.length ? ` — ${liveAnchors.slice(0, 5).join(", ")}` : " (m533 closed this class)"))
+  }
   // ── OC1, negative: a link the census MUST NOT flag ────────────────────────
   control("oc1 NEGATIVE: does NOT flag a link the database already enforces",
     !oc1Keys.has("activities.contact_id") && !!SCHEMA_FK_MAP.activities?.contact_id)

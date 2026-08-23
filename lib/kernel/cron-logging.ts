@@ -14,7 +14,8 @@
 //   - Correlation IDs persist across all log entries for trace correlation
 //   - Error messages are truncated to 2000 chars for DB safety
 //   - Records processed are tracked for audit trail
-//   - Status enum: 'running', 'success', 'failure', 'partial'
+//   - Status enum: see CRON_SNAPSHOT_STATUSES below. This line used to claim a
+//     fourth word, 'partial', that nothing in this module has ever written.
 //
 // Migration 1053: createCronRunContext() now immediately inserts into
 // cron_execution_logs with cron_name + cron_path so the health dashboard
@@ -50,6 +51,45 @@ import { v4 as uuidv4 } from "uuid"
 // failure_count_7d / run_count_7d are seeded 0 and NOTHING ever increments
 // them, so the ops panel's "failures in 7d" figure is permanently 0. That is a
 // rolling recompute, not a stamp, and it is left named rather than guessed at.
+//
+// ─── THAT DECISION IS NOW TAKEN — recomputeCronSevenDayCounts, below ─────────
+//
+// BUILT, not deleted: two superadmin surfaces read the STORED columns and both
+// were reading a permanent zero —
+//
+//   · app/actions/superadmin/platform-overview.ts:244 counts a cron as failing
+//     when `last_status === "failure" || failure_count_7d > 0`. The second
+//     disjunct could never be true, so a cron that failed six times this week
+//     and succeeded on its last run counted as healthy.
+//   · lib/platform/ai-ops.ts:113 hands `failure7d` to the AI-ops console for
+//     every failing/stale cron, and it was always 0.
+//
+// A THIRD reader, app/actions/pl-truth-engine.ts:379, derives the same two
+// numbers at read time from `cron_execution_logs` and IGNORES these columns.
+// That is NOT a duplicate to be merged away, and it is worth saying why: the
+// pl-truth-engine board is TENANT-SCOPED (`.or(brokerage_id.is.null,
+// brokerage_id.eq.…)` at :306), so its run_count_7d answers "runs THIS BROKER
+// may see". The stored column is platform-wide, which is the only correct
+// number for the two platform-staff surfaces above. Same words, two genuinely
+// different questions — so both survive, and this comment is the record that
+// the difference is deliberate rather than drift.
+
+// ─── cron_health_snapshot.last_status — THE WHOLE VOCABULARY, IN ONE PLACE ───
+//
+// Written HERE and nowhere else. scripts/1053-pl-truth-engine-cron-health.sql:86
+// claimed four words ('success'|'failure'|'partial'|'running') and the table has
+// no CHECK to hold anyone to them (verified against pg_constraint 2026-08-23:
+// cron_health_snapshot has ZERO check constraints), so the claim was decoration
+// and two of the four words had no writer at all. Readers branched on both.
+//
+//   'running' — BUILT. createCronRunContext stamps it at the start choke below.
+//   'partial' — DELETED at its two read sites; recordCronSuccess/recordCronFailure
+//               are binary and no product ruling asks for a middle state.
+//               Tombstones: app/dashboard/superadmin/platform/page.tsx.
+//
+// If a third word is ever wanted, it is written here first and read second.
+export const CRON_SNAPSHOT_STATUSES = ["running", "success", "failure"] as const
+export type CronSnapshotStatus = (typeof CRON_SNAPSHOT_STATUSES)[number]
 
 // ─── INPUT / OUTPUT TYPES ─────────────────────────────────────────────────────
 
@@ -98,7 +138,11 @@ export async function createCronRunContext(
     }
 
     // Persist immediately so cron_name is stored in cron_execution_logs
-    // from the very first moment. recordCronStart() then updates status to 'running'.
+    // from the very first moment. recordCronStart() then re-stamps the same
+    // row 'started' (NOT 'running' — that word is the SNAPSHOT's, and the
+    // ledger's CHECK is started|completed|failed|timeout, which does not admit
+    // it; the previous wording here named a status this module has never
+    // written to this table).
     //
     // THE TENANT WAS ACCEPTED AND THEN DROPPED. `CreateCronRunContextInput`
     // has carried `brokerage_id?` since it was written, and the returned
@@ -137,6 +181,38 @@ export async function createCronRunContext(
     if (insertError) {
       // Log but don't fail — the cron should continue even if logging breaks
       console.error("[cron-kernel] createCronRunContext insert error:", insertError.message)
+    }
+
+    // ── THE 'running' HALF, BUILT AT THE START CHOKE ─────────────────────────
+    //
+    // Four surfaces already branch on `last_status === "running"` (the platform
+    // totals tile and its badge) and NOTHING had ever written the word, so the
+    // tile was hard-wired to 0 and the badge was unreachable markup.
+    //
+    // `last_run_at` IS DELIBERATELY NOT TOUCHED HERE, and that is the whole
+    // safety of this stamp. Every staleness reader — pl-truth-engine.ts:364,
+    // platform-overview.ts:222, ai-ops.ts cronHealth() — measures age from
+    // `last_run_at`. Stamping it at START would make a cron that hangs and never
+    // returns look FRESHER the longer it hangs, which is the exact inversion of
+    // what a health board is for. So a run that dies without reaching
+    // recordCronSuccess/recordCronFailure leaves the row at 'running' over a
+    // stale `last_run_at`, and all three badge sites already gate their status
+    // pill on `!is_stale` — the stale pill wins, which is the honest answer.
+    //
+    // Fire-and-forget with a READ error, not a swallowed one (CLAUDE.md §3):
+    // supabase-js RESOLVES a refusal, so an undestructured call here would make
+    // "the snapshot refused my write" indistinguishable from success.
+    const { error: snapshotError } = await supabase
+      .from("cron_health_snapshot")
+      .upsert({
+        cron_name:   input.cron_name,
+        cron_path:   input.cron_path,
+        last_status: "running" satisfies CronSnapshotStatus,
+        updated_at:  started_at,
+      }, { onConflict: "cron_name" })
+
+    if (snapshotError) {
+      console.error("[cron-kernel] createCronRunContext snapshot start-stamp refused:", snapshotError.message)
     }
 
     return { success: true, data: context }
@@ -437,5 +513,119 @@ export async function recordCronFailure(
       success: false,
       error: error instanceof Error ? error.message : "Unknown error",
     }
+  }
+}
+
+// ─── COMMAND 6: recomputeCronSevenDayCounts ──────────────────────────────────
+//
+// THE ROLLING RECOMPUTE THE HEADER NOTE LEFT NAMED. `run_count_7d` and
+// `failure_count_7d` are `int NOT NULL DEFAULT 0`, seeded 0 by
+// scripts/1053-pl-truth-engine-cron-health.sql:110, and until this function no
+// code path had ever moved either one. Two platform-staff surfaces read them
+// (platform-overview.ts:232 / ai-ops.ts:113); both showed a permanent zero.
+//
+// WHY A RECOMPUTE AND NOT AN INCREMENT. A 7-day window has to DECAY. An
+// increment in recordCronSuccess/recordCronFailure would only ever climb, so a
+// cron that failed on Monday would still read "1 failure in 7d" in October. The
+// counts are therefore derived from the ledger and OVERWRITTEN, never added to.
+//
+// WHY EXACT COUNTS AND NOT A PAGED SCAN. `cron_execution_logs` receives one row
+// per run per cron and vercel.json runs the dispatcher every minute, so a 7-day
+// window is tens of thousands of rows — well past PostgREST's default page. A
+// paged scan that silently stopped at the first page would write an UNDERCOUNT
+// and the surface would present it as truth, which is the same class of defect
+// this function exists to close. `head: true, count: "exact"` is bounded by the
+// number of crons instead of the number of runs and cannot truncate.
+//
+// TWO VOCABULARIES, AND THE LEDGER'S IS THE ONE USED HERE.
+// `cron_execution_logs.status` CHECK = started|completed|failed|timeout
+// (verified against pg_constraint 2026-08-23). `cron_health_snapshot
+// .last_status` = running|success|failure. Counting the SNAPSHOT's word against
+// the LEDGER's column is precisely the bug pl-truth-engine.ts:326 documents
+// having already paid for once, so LEDGER_FAILURE_STATUSES is the ledger's
+// spelling and a timeout counts as a failure: the run did not complete.
+export const LEDGER_FAILURE_STATUSES = ["failed", "timeout"] as const
+
+export interface RecomputeCronSevenDayCountsOutput {
+  cronsExamined: number
+  rowsUpdated:   number
+}
+
+export async function recomputeCronSevenDayCounts(
+  now: Date = new Date(),
+): Promise<KernelCronLoggingResult<RecomputeCronSevenDayCountsOutput>> {
+  try {
+    const supabase = createServiceClient()
+    const since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString()
+
+    // PLATFORM-WIDE ON PURPOSE — no brokerage predicate. Both readers of these
+    // columns are platform-staff-gated; the tenant-scoped answer to the same
+    // question is pl-truth-engine.ts:379 and stays there.
+    const { data: snapshots, error: snapshotError } = await supabase
+      .from("cron_health_snapshot")
+      .select("cron_name, run_count_7d, failure_count_7d")
+
+    if (snapshotError) return { success: false, error: snapshotError.message }
+    const rows = snapshots ?? []
+
+    let rowsUpdated = 0
+
+    // Batched so a 64-row snapshot does not open 128 simultaneous sockets.
+    const BATCH = 8
+    for (let i = 0; i < rows.length; i += BATCH) {
+      const batch = rows.slice(i, i + BATCH)
+      const results = await Promise.all(batch.map(async (row: any) => {
+        const name = row.cron_name as string
+
+        const runQ = supabase
+          .from("cron_execution_logs")
+          .select("id", { count: "exact", head: true })
+          .eq("cron_name", name)
+          .gte("started_at", since)
+
+        const failQ = supabase
+          .from("cron_execution_logs")
+          .select("id", { count: "exact", head: true })
+          .eq("cron_name", name)
+          .gte("started_at", since)
+          .in("status", [...LEDGER_FAILURE_STATUSES])
+
+        const [runR, failR] = await Promise.all([runQ, failQ])
+
+        // A REFUSED COUNT IS NOT A ZERO. Writing 0 over a refusal would render
+        // "the ledger would not answer" as "this cron is clean", which is the
+        // failure mode CLAUDE.md §2 names: a guard that cannot see reports zero
+        // and reads as a clean bill of health. Skip the row and keep the last
+        // known-good number instead.
+        if (runR.error || failR.error) {
+          console.error(
+            `[cron-kernel] recomputeCronSevenDayCounts refused for ${name}:`,
+            runR.error?.message ?? failR.error?.message,
+          )
+          return false
+        }
+
+        const run7d  = runR.count ?? 0
+        const fail7d = failR.count ?? 0
+        if (run7d === row.run_count_7d && fail7d === row.failure_count_7d) return false
+
+        const { error: writeError } = await supabase
+          .from("cron_health_snapshot")
+          .update({ run_count_7d: run7d, failure_count_7d: fail7d, updated_at: now.toISOString() })
+          .eq("cron_name", name)
+
+        if (writeError) {
+          console.error(`[cron-kernel] recomputeCronSevenDayCounts write refused for ${name}:`, writeError.message)
+          return false
+        }
+        return true
+      }))
+      rowsUpdated += results.filter(Boolean).length
+    }
+
+    return { success: true, data: { cronsExamined: rows.length, rowsUpdated } }
+  } catch (error) {
+    console.error("[cron-kernel] recomputeCronSevenDayCounts error:", error)
+    return { success: false, error: error instanceof Error ? error.message : "Unknown error" }
   }
 }

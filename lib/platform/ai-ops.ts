@@ -32,7 +32,20 @@ export type CronHealth = "healthy" | "failing" | "stale" | "unknown"
 
 /** PURE: classify a cron's health from its snapshot (last status + staleness vs its expected interval). */
 export function cronHealth(row: { last_status: string | null; last_run_at: string | null; expected_interval_hours: number | null }, now: Date): CronHealth {
-  if (row.last_status === "failure" || row.last_status === "error") return "failing"
+  // TOMBSTONE: the `|| row.last_status === "error"` disjunct that stood here is
+  // deleted. Survivor: "failure", written by lib/kernel/cron-logging.ts:415 —
+  // the ONLY failure spelling any writer of cron_health_snapshot.last_status
+  // has ever produced. "error" belongs to a DIFFERENT table's vocabulary
+  // (system_health_checks.status, widened by m371), and testing one table's
+  // word against another table's column is the defect
+  // app/actions/pl-truth-engine.ts:326 already records this repo paying for.
+  //
+  // "running" is NOT tested here on purpose. It is a live status as of
+  // lib/kernel/cron-logging.ts:createCronRunContext, but a cron that is running
+  // right now is neither failing nor healthy on its own account — the staleness
+  // arm below still judges it by when it last COMPLETED, which is the honest
+  // reading and the one that catches a run that hangs and never returns.
+  if (row.last_status === "failure") return "failing"
   if (!row.last_run_at) return "unknown"
   const age = now.getTime() - Date.parse(row.last_run_at)
   const interval = (row.expected_interval_hours ?? 24) * 3_600_000

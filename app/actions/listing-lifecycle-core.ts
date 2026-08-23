@@ -721,11 +721,31 @@ async function handleSellerToLifetimeTransition(
   //    contacts_lifetime_consistent CHECK — or was simply out of RLS scope — stayed
   //    an ordinary contact while the UI showed the celebration card claiming they
   //    had been converted. Tenant-anchored and checked.
+  //    contact_persona IS NO LONGER WRITTEN HERE. It used to be set to
+  //    "past_seller" — a sixth spelling of a CONTACT TYPE living in the PERSONA
+  //    column, which is the defect m531/m531a exist to end. The owner's ruling
+  //    (2026-08-23): "lifetime and active seller are contact type not persona.
+  //    persona is more the situation that the contact or lead is in." The line
+  //    directly above ALREADY records the type — contact_type =
+  //    LIFETIME_CUSTOMER_TYPE — so "past_seller" was saying a second time, in the
+  //    wrong column and in a spelling no vocabulary knew, what contact_type had
+  //    just said correctly (CLAUDE.md §6).
+  //
+  //    IT WAS ALSO ABOUT TO BREAK THIS WHOLE UPDATE. m531 pinned
+  //    contacts.contact_persona to the canonical Persona vocabulary, which does
+  //    not contain "past_seller", so this statement would have been refused with
+  //    23514 — and PostgREST refuses the update ENTIRELY, not field by field, so
+  //    contact_type, status and notes would all have failed with it and the
+  //    seller would never have become a lifetime customer at all.
+  //
+  //    The persona is LEFT ALONE rather than nulled: a situation the contact is
+  //    genuinely in (relocating, downsizing, divorce) does not stop being true
+  //    because a sale closed, and erasing it here would be deleting data to tidy
+  //    a column (§1).
   const { error: convertError } = await supabase
     .from("contacts")
     .update({
       contact_type: LIFETIME_CUSTOMER_TYPE,
-      contact_persona: "past_seller",
       status: LIFETIME_CUSTOMER_TYPE,
       notes: `Converted to lifetime customer on ${closedDate} after closing at ${propertyAddress}`,
       updated_at: now,

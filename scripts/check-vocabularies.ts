@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 435 tables, 757 columns.
+ * MEASURED AT GENERATION: 435 tables, 758 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-08-22
+ * generated: 2026-08-23
  * source: public.live_check_constraints_json()
- * body-sha256: cb32e7e631e539e2561c84fa41b1a2170577c1b19a73b538edfd446b13d54d50
+ * body-sha256: 10e80f052eafd3565e98d94846051ea15cdb9a2af34328d6be8575b58fffecb9
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -522,6 +522,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   contacts: {
     ai_autopilot_level: ["aggressive", "conservative", "moderate", "off"],
     buyer_stage: ["BUYER_CLOSED", "BUYER_CONTACT_CREATED", "BUYER_DISENGAGED", "BUYER_FINANCIALLY_VERIFIED", "BUYER_LIFETIME", "BUYER_OFFER_ELIGIBLE", "BUYER_OFFER_SUBMITTED", "BUYER_ON_HOLD", "BUYER_SEARCHING", "BUYER_SEARCH_CONFIGURED", "BUYER_TOURING", "BUYER_TOUR_ELIGIBLE", "BUYER_UNDER_CONTRACT"],
+    contact_persona: ["divorce", "downsize", "expired", "first_time", "foreclosure", "fsbo", "luxury", "military", "other", "probate", "relocated", "senior", "upsize"],
     contact_type: ["both", "buyer", "client", "investor", "lead", "lifetime", "lifetime_customer", "other", "past_client", "prospect", "referral_partner", "seller", "sphere", "vendor"],
     lead_temperature: ["cold", "hot", "warm"],
     lender_status: ["cash", "needs_pre_approval", "pre_approved", "unknown"],

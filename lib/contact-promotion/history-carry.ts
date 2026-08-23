@@ -184,10 +184,23 @@ export const CONVERSION_CARRY_OMISSIONS: Record<string, string> = {
     "missing half here is the EXECUTOR, not the carry; carrying it first would make an " +
     "inert row look live. Reported to the one-sided census rather than papered over here.",
   message_threads:
-    "UNRESOLVED, deliberately: no `.from(\"message_threads\")` exists anywhere in the tree — " +
-    "not one reader, not one writer. Carrying rows into a table nothing queries would " +
-    "manufacture data with no consumer. This belongs to the orphan-table sweep, not to " +
-    "the conversion lane; named here so it cannot silently rejoin the gap.",
+    "RESOLVED — supabase/migrations/m536 DROPS IT (written, not yet applied). It was " +
+    "correctly left UNRESOLVED here and handed to the orphan sweep; the sweep's answer is " +
+    "that message_threads is a THIRD SPELLING of a job two live tables already do, which " +
+    "is why nothing ever wrote it: no `.from(\"message_threads\")` exists anywhere in the " +
+    "tree, it holds 0 live rows and 0 inbound FKs. Its columns split across two survivors " +
+    "— the CONTACT-side thread is `conversations` (id/contact_id/agent_id/brokerage_id/" +
+    "last_message_at/unread_count/type, 48 `.from()` sites) plus `messages` (subject, per " +
+    "message), and the LEAD-side half is `isa_outreach_log`, which already carries " +
+    "lead_id + contact_id + channel and is dual-keyed exactly the way this lifecycle needs. " +
+    "So there is still nothing to carry — not because the table is unqueried, but because " +
+    "both halves of it are already carried under their real names. Adding lead_id to " +
+    "`conversations` was REJECTED: 48 call sites read that table with no lead predicate, so " +
+    "a lead-keyed row there would reach an agent surface CLAUDE.md §5 says shows CONTACTS " +
+    "only. THIS KEY STAYS until m536 is applied — the census at " +
+    "scripts/orphaned-child-census.ts:280 requires every LIVE dual-keyed table to be " +
+    "carried or omitted-with-a-reason, and removing it early would fail that on a table " +
+    "that still exists.",
 }
 
 export interface HistoryCarryResult {

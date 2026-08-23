@@ -559,7 +559,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9239,
+  "census": 9235,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -3957,7 +3957,7 @@
     "lib/repurpose/transcribe.ts": 1,
     "lib/revenue-protection/scorer.ts": 1,
     "lib/security/audio-source-allowlist.ts": 2,
-    "lib/security/authorization.ts": 6,
+    "lib/security/authorization.ts": 2,
     "lib/security/credential-rotation.ts": 3,
     "lib/security/export-credential-scan.ts": 2,
     "lib/security/oauth-refresh.ts": 4,
@@ -19546,11 +19546,7 @@
     ],
     "lib/security/authorization.ts": [
       "requireSuperAdmin",
-      "isSuperAdmin",
-      "requireSubscriptionAdmin",
-      "isSubscriptionAdmin",
-      "getSubscriptionAdmin",
-      "getCurrentUserSubscriptionContext"
+      "isSuperAdmin"
     ],
     "lib/security/credential-rotation.ts": [
       "credentialRotationStatus",
