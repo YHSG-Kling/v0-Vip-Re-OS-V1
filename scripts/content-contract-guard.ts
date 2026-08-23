@@ -28,6 +28,7 @@
  * Reads Root.tsx as text. No Remotion import, no bundling, no DB.
  */
 import { readFileSync } from "node:fs"
+import { LIVE_TABLES } from "./live-tables"
 import { blankComments, stripComments } from "./strip-comments"
 import { CONTENT_CONTRACT, isSupplied, missingContentProps, describeMissingContent } from "../lib/remotion/content-contract"
 import {
@@ -406,9 +407,24 @@ console.log("\n═══ 8. Both enforcement points are wired ═══")
 console.log("\n═══ 9. The Director resolves from ROWS, never from invention ═══")
 {
   const dc = code("lib/video/director-content.ts")
-  for (const table of ["listings", "open_houses", "market_data", "neighborhood_reports", "agent_reviews", "transactions"]) {
+  // `open_houses` STOOD IN THIS LIST AND IS NOW `open_house_events`. m543 chose the
+  // survivor on evidence (all five satellites FK to it, 61 call sites against 6)
+  // and m547 dropped the retired spelling, so the Director was correctly
+  // re-pointed — and this assertion, which names the table it must read, went red
+  // for the re-point. The point of the check is unchanged: the Director resolves
+  // video facts from LIVE ROWS rather than inventing them, and a fabricated fact
+  // about a real person's home is what section 9 exists to prevent. Only the
+  // table's name moved.
+  //
+  // Named against LIVE_TABLES rather than left as a bare literal, so this list
+  // cannot quietly come to name a table that no longer exists — which is exactly
+  // how it would have failed the NEXT time instead of this one.
+  const MUST_READ = ["listings", "open_house_events", "market_data", "neighborhood_reports", "agent_reviews", "transactions"]
+  for (const table of MUST_READ) {
     ok(`reads ${table}`, dc.includes(`from("${table}")`))
   }
+  ok("CONTROL — every table this section demands is one the live database still has,\n    so a retired name cannot sit here reading as enforced",
+    MUST_READ.every((t) => (LIVE_TABLES as readonly string[]).includes(t)))
   ok("the equity numbers are READ BACK from the trigger's facts, never recomputed —\n    a second implementation could disagree with the trigger about a client's equity",
     dc.includes("estimatedEquity") && !/estimatedValue\s*-\s*purchasePrice/.test(dc))
   ok("a failed read returns the base props so the CONTRACT refuses, rather than\n    substituting anything", /catch\s*\{\s*return base/.test(dc.replace(/\s+/g, " ").replace(/ /g, "")) || dc.includes("return base"))
