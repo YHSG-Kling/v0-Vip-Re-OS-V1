@@ -15,6 +15,7 @@
 
 import { peopleDataProfileToContactColumns } from '@/lib/lead-pipeline/enrichment-column-map'
 import { ENUM_VOCABULARIES, normalizeEnumValue } from '@/lib/data-steward/value-normalizer'
+import { canonicalContactType, isStorableContactType } from "@/lib/contact-types"
 // NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
 // not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
 // `server-only` (it holds the service client and the paid PeopleData/OSINT
@@ -72,7 +73,26 @@ export function resolveContactType(
   if (fromMotivation) return fromMotivation as ContactType
   const fromLeadType = motivationToContactType(leadType)
   if (fromLeadType) return fromLeadType as ContactType
-  return (normalizeEnumValue('contact_type', leadType).value as ContactType) ?? 'prospect'
+
+  // A RETIRED SPELLING IS MAPPED FORWARD, NOT CLAMPED TO THE DEFAULT.
+  // `leads.lead_type` is free text and routinely arrives from an import or a partner
+  // feed carrying `past_client` — a spelling m539 retired from contacts.contact_type.
+  // Without this line the normalizer finds no canonical match and the clamp below
+  // files a known past client as a fresh `prospect`, which is not a silent DROP but
+  // is a silent DEMOTION: they lose the lifetime lane, the sphere roster and the
+  // referral radar. canonicalContactType is the one place a retired spelling is
+  // resolved (lib/contact-types.ts).
+  const carriedForward = canonicalContactType(leadType)
+  if (carriedForward) return carriedForward as ContactType
+
+  const normalized = normalizeEnumValue('contact_type', leadType).value as ContactType | null
+  // FINAL CLAMP. The normalizer is the SAME vocabulary the CHECK enforces, but it is
+  // reached through a synonym table that a future edit could widen, so the result is
+  // re-tested against what the database will actually store before it is returned —
+  // a value outside the CHECK is refused entirely (23514) and the lead is never
+  // promoted at all.
+  if (normalized && isStorableContactType(normalized)) return normalized
+  return 'prospect'
 }
 
 export async function createContactFromLead(

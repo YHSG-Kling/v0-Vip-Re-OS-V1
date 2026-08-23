@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 435 tables, 758 columns.
+ * MEASURED AT GENERATION: 434 tables, 757 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-08-23
  * source: public.live_check_constraints_json()
- * body-sha256: 10e80f052eafd3565e98d94846051ea15cdb9a2af34328d6be8575b58fffecb9
+ * body-sha256: 60e8d6f5d9f7d25fbc78bcfd2b310ad30e15b53c216edf2916911e11a0d55768
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -397,7 +397,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     video_situation_kind: ["anniversary", "cma", "coming_soon", "explainer", "just_sold", "market_update", "neighborhood", "new_listing", "open_house", "presentation", "price_drop", "testimonial"],
   },
   campaign_sequences: {
-    contact_type: ["both", "buyer", "lifetime", "seller"],
+    contact_type: ["both", "buyer", "lifetime_customer", "seller"],
     persona: ["divorce", "downsize", "expired", "first_time", "foreclosure", "fsbo", "luxury", "military", "other", "probate", "relocated", "senior", "upsize"],
     sequence_type: ["drip", "nurture", "post_close", "re_engagement", "transaction"],
     trigger_event: ["anniversary_triggered", "appraisal_ordered", "buyer_financially_verified", "buyer_verified", "cda_approved", "coming_soon_sent", "contact_captured", "contact_created", "contact_email_opened", "contact_link_clicked", "contract_signed", "deal_closed", "ghl_contact_tag_added", "ghost_lead_detected", "idx_saved_search_match", "isa_qualified_lead", "lead_assigned", "lead_captured", "lead_scored", "lifetime_customer", "listing_cancelled", "listing_created", "listing_expired", "listing_published", "listing_under_contract", "manual", "new_lead", "offer_accepted", "offer_counter_sent", "offer_rejected", "offer_submitted", "open_house_scheduled", "property_match_found", "qr_scan", "reengagement_started", "review_received", "showing_completed", "showing_feedback_received", "tour_scheduled", "transaction_closed"],
@@ -523,7 +523,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     ai_autopilot_level: ["aggressive", "conservative", "moderate", "off"],
     buyer_stage: ["BUYER_CLOSED", "BUYER_CONTACT_CREATED", "BUYER_DISENGAGED", "BUYER_FINANCIALLY_VERIFIED", "BUYER_LIFETIME", "BUYER_OFFER_ELIGIBLE", "BUYER_OFFER_SUBMITTED", "BUYER_ON_HOLD", "BUYER_SEARCHING", "BUYER_SEARCH_CONFIGURED", "BUYER_TOURING", "BUYER_TOUR_ELIGIBLE", "BUYER_UNDER_CONTRACT"],
     contact_persona: ["divorce", "downsize", "expired", "first_time", "foreclosure", "fsbo", "luxury", "military", "other", "probate", "relocated", "senior", "upsize"],
-    contact_type: ["both", "buyer", "client", "investor", "lead", "lifetime", "lifetime_customer", "other", "past_client", "prospect", "referral_partner", "seller", "sphere", "vendor"],
+    contact_type: ["both", "buyer", "client", "investor", "lead", "lifetime_customer", "other", "prospect", "referral_partner", "seller", "sphere", "vendor"],
     lead_temperature: ["cold", "hot", "warm"],
     lender_status: ["cash", "needs_pre_approval", "pre_approved", "unknown"],
     lifetime_segment: ["local_owner", "relocated"],
@@ -952,9 +952,6 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   message_provider_logs: {
     channel: ["ai_social_dm", "direct_mail", "email", "in_app", "portal", "sms", "video", "voice"],
     direction: ["inbound", "outbound"],
-  },
-  message_threads: {
-    channel: ["direct_mail", "email", "in_app", "sms", "voice"],
   },
   messages: {
     sentiment: ["negative", "neutral", "positive"],
