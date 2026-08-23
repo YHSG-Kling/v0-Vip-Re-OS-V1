@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { loadCommandCenter } from "@/lib/kernel/command-center"
+import { isTenantScopeRefusal } from "@/lib/kernel/tenant-scope"
 import { resolveEgressScope, describeScope } from "@/lib/kernel/egress-scope"
 import { computeManagerTrust } from "@/lib/kernel/outcome-learning"
 import { loadDealPlayLift } from "@/lib/kernel/deal-play-outcomes"
@@ -142,11 +143,42 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
     ? describeScope(effectiveScope)
     : (isSuperadmin ? "Platform — all brokerages" : "Your brokerage")
 
-  const data = await loadCommandCenter({
-    brokerageId: isSuperadmin ? undefined : brokerageId,
-    scope: effectiveScope,
-    limit:       100,
-  })
+  // PLATFORM IS ASKED FOR, NOT INFERRED FROM AN ABSENT ID. This used to read
+  // `brokerageId: isSuperadmin ? undefined : brokerageId`, and loadCommandCenter
+  // applied every one of its seven tenant predicates only `if (brokerageId)` on a
+  // SERVICE client. The entry gate above is isAdminOrBroker(user_type), which never
+  // consults brokerage_id — so a NON-superadmin broker/admin whose
+  // users.brokerage_id is NULL produced the SAME undefined the superadmin does and
+  // would have read every brokerage's approval queue, proposed client messages and
+  // ad-spend proposals. CLAUDE.md §4: the gate that cannot run must refuse.
+  //
+  // Identity semantics on public.users are UNCHANGED — the platform discriminator
+  // is still `platform_role`, resolved above. Only the meaning of an absent
+  // brokerage_id changes, from "all tenants" to "refuse".
+  let data: Awaited<ReturnType<typeof loadCommandCenter>>
+  try {
+    data = await loadCommandCenter({
+      ...(isSuperadmin
+        ? { platform: { reason: "platform_role='superadmin' — the platform-wide Command Center" } }
+        : { brokerageId }),
+      scope: effectiveScope,
+      limit: 100,
+    })
+  } catch (e) {
+    if (!isTenantScopeRefusal(e)) throw e
+    // Honest refusal rather than a fabricated empty queue: "nothing is waiting on
+    // a human" is a claim, and an unscoped viewer has not earned it.
+    return (
+      <div className="mx-auto max-w-6xl space-y-4 p-6">
+        <h1 className="text-2xl font-semibold">Command Center</h1>
+        <p className="text-sm text-red-700">
+          Your account has no brokerage assigned and no platform role, so this queue cannot be
+          scoped. Nothing is shown rather than showing another brokerage&apos;s work. Ask an
+          administrator to set your brokerage.
+        </p>
+      </div>
+    )
+  }
 
   // THE TRUST METER — per-manager human-approval rates + the broker's own rejection
   // reasons (outcome learning made visible; brokerage scope only).

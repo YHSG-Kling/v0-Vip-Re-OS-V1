@@ -89,7 +89,13 @@ const ALLOWED: Record<string, string> = {
   long_form_videos: "DEAD SCHEMA: 0 rows, no writer, and its only reader (a cross-tenant service-client select) was deleted — nothing to scope",
   marketing_stats: "DEAD SCHEMA: 0 rows, no writer, and its only reader (a cross-tenant service-client select) was deleted — nothing to scope",
   transparency_videos: "DEAD SCHEMA: 0 rows, no writer, and its only reader (a cross-tenant service-client select) was deleted — nothing to scope",
-  demo_persona_contacts: "platform demo fixture; writes already restricted to is_platform_admin()",
+  // Was "platform demo fixture; writes already restricted to is_platform_admin()".
+  // m543 RETIRED it as a resolved orphan and the reason is now stronger than that:
+  // its world-readable dpc_select (a finding m471 recorded and left open) is DROPPED,
+  // grants are REVOKEd from anon+authenticated, and the only surviving policy is
+  // deny-all — so there is no tenant lane left to scope. It is also the ONLY one of
+  // the 88 lifecycle children with no brokerage_id, so it never could be scoped.
+  demo_persona_contacts: "RETIRED by m543: 0 rows, no reader, no writer; REVOKEd + deny-all, so nothing to scope. DROP owed to the integrator",
 }
 
 const db = createClient(url, key, { auth: { persistSession: false } })

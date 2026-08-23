@@ -157,12 +157,23 @@ export const supabaseService = {
   // CONTACTS
   // =====================================================
 
+  /**
+   * THE SCOPE IS REQUIRED — same contract, and for the same reason, as
+   * getCommissions/getBusinessExpenses below: this runs on the SERVICE-ROLE
+   * client, so a call with neither an agent nor a brokerage returns every
+   * brokerage's contacts. The old body applied the tenant predicate as
+   * `if (brokerageId) query = query.eq(...)`, which made "I do not know the
+   * tenant" and "I want every tenant" the same call. A refusal names itself;
+   * an unscoped read does not. CLAUDE.md §4.
+   */
   async getContacts(agentId?: string, brokerageId?: string): Promise<Contact[]> {
+    if (!agentId && !brokerageId) {
+      throw new Error("getContacts requires a scope (agentId or brokerageId) — the service client bypasses RLS")
+    }
     try {
       const supabase = getSupabaseAdmin()
       let query = supabase.from("contacts").select("*").is("deleted_at", null)
 
-      // Always scope to brokerage when provided — enforces RLS at the query level
       if (brokerageId) {
         query = query.eq("brokerage_id", brokerageId)
       }
@@ -189,9 +200,13 @@ export const supabaseService = {
     }
   },
 
-  async getAllContacts(): Promise<Contact[]> {
-    return this.getContacts()
-  },
+  // TOMBSTONE — `getAllContacts()` deleted. Its whole body was
+  // `return this.getContacts()`: a no-argument call into the service-role reader
+  // above, i.e. every brokerage's contacts with no tenant predicate at all. It had
+  // no caller anywhere in app/, lib/, services/, components/, hooks/ or scripts/,
+  // so it was an unreferenced way to cross the tenant boundary. Survivor:
+  // `SupabaseService.getContacts(agentId, brokerageId)` in this file, which now
+  // REFUSES a call with neither scope.
 
   async getContactById(id: string): Promise<Contact | null> {
     try {
@@ -306,12 +321,15 @@ export const supabaseService = {
   // TRANSACTIONS (DEALS)
   // =====================================================
 
+  /** Scope required — service-role client, same contract as getContacts above. */
   async getTransactions(agentId?: string, brokerageId?: string) {
+    if (!agentId && !brokerageId) {
+      throw new Error("getTransactions requires a scope (agentId or brokerageId) — the service client bypasses RLS")
+    }
     try {
       const supabase = getSupabaseAdmin()
       let query = supabase.from("transactions").select("*").is("deleted_at", null)
 
-      // Always scope to brokerage when provided — enforces RLS at the query level
       if (brokerageId) {
         query = query.eq("brokerage_id", brokerageId)
       }
@@ -644,7 +662,16 @@ export const supabaseService = {
     }
   },
 
+  /**
+   * Scope required — service-role client. `video_performance_tracking` carries a
+   * brokerage_id, and with every filter optional a `{}` call returned every
+   * tenant's view counts. An asset/project id is a scope of its own (both are
+   * tenant-owned rows); a bare call is not.
+   */
   async getVideoPerformanceTracking(filters: { brokerageId?: string; videoAssetId?: string; videoProjectId?: string }) {
+    if (!filters.brokerageId && !filters.videoAssetId && !filters.videoProjectId) {
+      throw new Error("getVideoPerformanceTracking requires a scope (brokerageId, videoAssetId or videoProjectId)")
+    }
     try {
       const supabase = getSupabaseAdmin()
       let query = supabase

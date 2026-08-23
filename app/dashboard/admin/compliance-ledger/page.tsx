@@ -5,6 +5,7 @@ import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { loadComplianceLedger } from "@/lib/kernel/compliance-ledger"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { resolveTenantScope, isTenantScopeRefusal, type TenantScope } from "@/lib/kernel/tenant-scope"
 
 export const metadata = {
   title: "Compliance Ledger | Kernel OS Admin",
@@ -42,11 +43,47 @@ export default async function ComplianceLedgerPage({ searchParams }: { searchPar
   // consent record this page exists to produce — was unreachable. Same shape as
   // public.is_platform_admin() in RLS; see app/actions/vendor-budget.ts:136-147.
   const isSuperadmin = userType === "superadmin" || userData?.platform_role === "superadmin"
-  const brokerageId = isSuperadmin ? null : (userData?.brokerage_id ?? null)
+
+  // SCOPE IS DECLARED, NOT INFERRED FROM AN ABSENT ID. This line used to read
+  // `const brokerageId = isSuperadmin ? null : (userData?.brokerage_id ?? null)`
+  // and hand that null to a loader whose tenant predicate was conditional, so the
+  // two null-producing paths were indistinguishable: the superadmin who is
+  // ENTITLED to the platform-wide record, and a NON-superadmin broker/admin whose
+  // users.brokerage_id is NULL — who would have read every brokerage's Fair
+  // Housing and consent audit trail. resolveTenantScope takes the platform
+  // authority as an explicit boolean and THROWS on the fourth case (no authority,
+  // no tenant) rather than widening. CLAUDE.md §4, fail closed.
+  //
+  // NOTE — this deliberately does NOT change identity semantics on public.users.
+  // The platform discriminator here is `platform_role`, exactly as before; only
+  // the meaning of the ABSENT brokerage_id changes, from "all tenants" to "refuse".
+  let scope: TenantScope
+  try {
+    scope = resolveTenantScope({
+      brokerageId: userData?.brokerage_id,
+      platformAuthorized: isSuperadmin,
+      platformReason: "platform_role='superadmin' — the cross-tenant compliance audit trail this page exists to produce",
+      where: "compliance ledger page",
+    })
+  } catch (e) {
+    if (!isTenantScopeRefusal(e)) throw e
+    // An honest refusal, never a fabricated empty ledger: an empty table here
+    // reads as "nothing was ever reviewed", which is a claim about compliance.
+    return (
+      <div className="mx-auto max-w-6xl space-y-4 p-6">
+        <h1 className="text-2xl font-semibold">⚖️ Compliance Ledger</h1>
+        <p className="text-sm text-red-700">
+          Your account has no brokerage assigned and no platform role, so this ledger cannot be scoped.
+          Nothing is shown rather than showing another brokerage&apos;s record. Ask an administrator to
+          set your brokerage.
+        </p>
+      </div>
+    )
+  }
 
   const sinceDays = RANGES.includes(Number(days)) ? Number(days) : 30
   const sev = severity && SEVERITIES.includes(severity as any) && severity !== "all" ? severity : undefined
-  const { rows, summary } = await loadComplianceLedger(brokerageId, { sinceDays, severity: sev })
+  const { rows, summary } = await loadComplianceLedger(scope, { sinceDays, severity: sev })
 
   const qs = (d: number, s: string) => `?days=${d}${s !== "all" ? `&severity=${s}` : ""}`
   const activeSev = sev ?? "all"

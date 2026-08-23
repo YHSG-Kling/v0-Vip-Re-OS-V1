@@ -120,14 +120,28 @@ async function handleInboundWhatsapp(params: {
   // Try metadata match first — scoped to the resolved brokerage when the
   // business number could be mapped; the WhatsApp ID is a unique-ish identity
   // (E.164 phone) so the unresolved path stays a limit(1) match.
+  // AMBIGUITY IS NOT A MATCH (tenant fail-closed, CLAUDE.md §4). The tenant
+  // predicate below is CONDITIONAL — applied only when the receiving account could
+  // be mapped to a brokerage — so on the unresolved path the query ran with NO
+  // tenant boundary at all, on the SERVICE client, and `.limit(1)` handed back
+  // whichever brokerage's row happened to sort first. The same person can be a
+  // contact at two brokerages (app/api/webhooks/inbound-mail/route.ts documents
+  // exactly that), and this identity feeds a message INSERT — so the wrong first
+  // row files a client's inbound message into another tenant's CRM. limit(2) +
+  // "one distinct tenant or nothing" is the rule already in force in
+  // app/api/webhooks/sendgrid-events/route.ts; unresolved falls through to the
+  // staging insert with a null tenant, this handler's documented behaviour for an
+  // unmappable account.
   let metaQuery = svc
     .from("contacts")
-    .select("id")
+    .select("id, brokerage_id")
     .contains("metadata", { whatsapp_id: params.senderWaId })
-    .limit(1)
+    .limit(2)
   if (brokerageId) metaQuery = metaQuery.eq("brokerage_id", brokerageId)
-  const { data: byMeta } = await metaQuery
-  if (byMeta && byMeta.length > 0) {
+  const { data: byMetaRows } = await metaQuery
+  const metaCandidates = (byMetaRows ?? []) as Array<{ id: string; brokerage_id: string | null }>
+  const byMeta = new Set(metaCandidates.map((c) => c.brokerage_id)).size === 1 ? metaCandidates : []
+  if (byMeta.length > 0) {
     contactId = byMeta[0].id
   }
 
@@ -135,14 +149,19 @@ async function handleInboundWhatsapp(params: {
   // same brokerage scoping as the metadata match above.
   if (!contactId && phoneDigits.length >= 10) {
     const last10 = phoneDigits.slice(-10)
+    // Same rule, and it matters MORE here: a last-10-digit `ilike` is a fuzzy
+    // match, not an identity — across tenants it can hit several people. One
+    // distinct tenant or nothing.
     let phoneQuery = svc
       .from("contacts")
-      .select("id, phone")
+      .select("id, phone, brokerage_id")
       .ilike("phone", `%${last10}%`)
-      .limit(1)
+      .limit(2)
     if (brokerageId) phoneQuery = phoneQuery.eq("brokerage_id", brokerageId)
-    const { data: byPhone } = await phoneQuery
-    if (byPhone && byPhone.length > 0) {
+    const { data: byPhoneRows } = await phoneQuery
+    const phoneCandidates = (byPhoneRows ?? []) as Array<{ id: string; phone: string | null; brokerage_id: string | null }>
+    const byPhone = new Set(phoneCandidates.map((c) => c.brokerage_id)).size === 1 ? phoneCandidates : []
+    if (byPhone.length > 0) {
       contactId = byPhone[0].id
       // Backfill the WhatsApp ID into metadata for future direct matching
       await svc

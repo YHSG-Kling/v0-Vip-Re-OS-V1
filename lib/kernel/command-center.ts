@@ -18,6 +18,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { describeOutreachReason } from "@/lib/kernel/outreach-reasons"
 import { lintSpamRisk } from "@/lib/kernel/email-deliverability"
 import { loadContentApprovalActions, type ContentQueue } from "./approval-sources"
+import { applyTenantScope, resolveTenantScope } from "./tenant-scope"
 import { evaluateApprovalSla, type ApprovalSlaLevel } from "./approval-sla"
 import { resolveActionManager, type ManagerKey } from "./manager-registry"
 import { compliancePreflight } from "./manager-dissent"
@@ -167,8 +168,27 @@ export interface CommandCenterData {
 }
 
 export interface CommandCenterParams {
-  /** Scope to one brokerage; omit (superadmin) for platform-wide. */
+  /**
+   * Scope to one brokerage. OMITTING THIS IS NO LONGER HOW YOU ASK FOR PLATFORM —
+   * see `platform` below and lib/kernel/tenant-scope.ts. A call with neither is
+   * REFUSED (TenantScopeRefusal) rather than reading every tenant.
+   */
   brokerageId?: string
+  /**
+   * Platform-wide, deliberately. The reason is required and is not decoration: it
+   * is the sentence a reviewer reads to decide whether this cross-tenant read was
+   * authorised, written at the call site.
+   *
+   * WHY THIS FIELD EXISTS. `brokerageId` was optional and every one of the seven
+   * queries below applied its tenant predicate as `if (brokerageId) q.eq(...)` on a
+   * SERVICE-ROLE client. The page computed `brokerageId: isSuperadmin ? undefined :
+   * brokerageId` while its entry gate is `isAdminOrBroker(user_type)`, which does
+   * not consult brokerage_id at all — so a NON-superadmin broker/admin whose
+   * users.brokerage_id is NULL produced the SAME undefined as the superadmin and
+   * read every brokerage's approval queue, proposed client messages and ad-spend
+   * proposals. Identical to the compliance-ledger defect; same fix.
+   */
+  platform?: { reason: string }
   limit?:       number
   /**
    * EGRESS SCOPE — restrict every actionable surface to what THIS user oversees,
@@ -239,6 +259,14 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   const scope = params.scope
   // scope.brokerageId is authoritative when a scope is supplied.
   const brokerageId = scope?.brokerageId ?? params.brokerageId
+  // ONE discriminator for all seven queries below. A missing brokerage id can no
+  // longer decay into "every tenant": platform has to be ASKED for.
+  const tenant = resolveTenantScope({
+    brokerageId,
+    platformAuthorized: !!params.platform,
+    platformReason: params.platform?.reason,
+    where: "loadCommandCenter",
+  })
 
   // location / team / agent scope restrict to the entities (contacts/listings) owned by that
   // location / team / agent (resolved through the entity — the egress tables carry only brokerage_id).
@@ -271,7 +299,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     .select("id, entity_type, entity_id, status, created_at, last_event_at, ended_at, managed_agents!managed_agent_sessions_managed_agent_id_fkey(agent_kind)")
     .order("created_at", { ascending: false })
     .limit(limit)
-  if (brokerageId) sessionsQuery.eq("brokerage_id", brokerageId)
+  applyTenantScope(sessionsQuery, tenant)
   if (sessionIdFilter) sessionsQuery.in("id", sessionIdFilter)
 
   const marketingQuery = supabase
@@ -280,7 +308,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     .eq("status", "proposed")
     .order("proposed_at", { ascending: true })
     .limit(limit)
-  if (brokerageId) marketingQuery.eq("brokerage_id", brokerageId)
+  applyTenantScope(marketingQuery, tenant)
   if (sessionIdFilter) marketingQuery.in("managed_agent_session_id", sessionIdFilter)
 
   const assetQuery = supabase
@@ -289,7 +317,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     .eq("status", "proposed")
     .order("proposed_at", { ascending: true })
     .limit(limit)
-  if (brokerageId) assetQuery.eq("brokerage_id", brokerageId)
+  applyTenantScope(assetQuery, tenant)
   if (sessionIdFilter) assetQuery.in("managed_agent_session_id", sessionIdFilter)
 
   // Ads Manager — paid-ad spend actions awaiting a human (launch/pause/budget/scale).
@@ -299,7 +327,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     .eq("status", "proposed")
     .order("proposed_at", { ascending: true })
     .limit(limit)
-  if (brokerageId) adsQuery.eq("brokerage_id", brokerageId)
+  applyTenantScope(adsQuery, tenant)
   if (sessionIdFilter) adsQuery.in("managed_agent_session_id", sessionIdFilter)
 
   // Customer-facing content awaiting human RELEASE — social posts (incl. avatar/
@@ -312,7 +340,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
   // Content approvals (social / email / direct-mail) are brokerage-level marketing,
   // not tied to one agent's book — withheld from a team/agent scope.
   const contentPromise = brokerageWide
-    ? loadContentApprovalActions(supabase, { brokerageId, limit, now })
+    ? loadContentApprovalActions(supabase, { scope: tenant, limit, now })
     : Promise.resolve([] as Awaited<ReturnType<typeof loadContentApprovalActions>>)
 
   // Deal-critical managers' proposed client messages (seller/buyer updates) awaiting
@@ -323,7 +351,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     .eq("status", "proposed")
     .order("proposed_at", { ascending: true })
     .limit(limit)
-  if (brokerageId) clientMsgQuery.eq("brokerage_id", brokerageId)
+  applyTenantScope(clientMsgQuery, tenant)
   // A team/agent scope sees only messages to its own clients.
   if (contactIdFilter) clientMsgQuery.in("recipient_contact_id", contactIdFilter)
 
@@ -337,7 +365,7 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     .eq("status", "pending")
     .order("created_at", { ascending: true })
     .limit(limit)
-  if (brokerageId) decisionsQuery.eq("brokerage_id", brokerageId)
+  applyTenantScope(decisionsQuery, tenant)
   if (contactIdFilter) decisionsQuery.in("contact_id", contactIdFilter)
 
   const [sessionsRes, marketingRes, assetRes, adsRes, clientMsgRes, contentActions, decisionsRes] = await Promise.all([sessionsQuery, marketingQuery, assetQuery, adsQuery, clientMsgQuery, contentPromise, decisionsQuery])

@@ -17,6 +17,7 @@
  * surface = adding one entry here + a preview in the Command Center client.
  */
 import { createServiceClient } from "@/lib/supabase/service"
+import { applyTenantScope, type TenantScope } from "@/lib/kernel/tenant-scope"
 import { evaluateApprovalSla, type ApprovalSlaLevel } from "./approval-sla"
 import {
   BLOG_PENDING_PUBLISH_STATUS,
@@ -335,14 +336,19 @@ export const CONTENT_SOURCES: Record<ContentQueue, ContentSource> = {
  */
 export async function loadContentApprovalActions(
   supabase: Svc,
-  params: { brokerageId?: string; limit: number; now: Date },
+  // SCOPE, NOT AN OPTIONAL ID. `brokerageId?: string` used to mean "filter when I
+  // happen to have one", so an absent id silently loaded every brokerage's pending
+  // social posts, newsletters and direct-mail campaigns onto one Command Center —
+  // on the service client, where RLS is not there to catch it. A TenantScope makes
+  // the platform case something a caller writes down.
+  params: { scope: TenantScope; limit: number; now: Date },
 ): Promise<ContentApprovalAction[]> {
   const sources = Object.values(CONTENT_SOURCES)
   const results = await Promise.all(sources.map(async (src) => {
     try {
       let q = supabase.from(src.table).select(src.select).order("created_at", { ascending: true }).limit(params.limit)
       q = src.pending(q)
-      if (params.brokerageId) q = q.eq("brokerage_id", params.brokerageId)
+      q = applyTenantScope(q, params.scope)
       const { data } = await q
       return (data ?? []).map((row: any) => src.toAction(row, params.now))
     } catch { return [] as ContentApprovalAction[] }

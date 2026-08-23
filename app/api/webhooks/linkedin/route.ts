@@ -94,13 +94,27 @@ async function handleLinkedInDm(params: {
     .from("contacts")
     .select("id, brokerage_id")
     .contains("metadata", { linkedin_person_id: senderId })
-    .limit(1)
+  // AMBIGUITY IS NOT A MATCH (tenant fail-closed, CLAUDE.md §4). The tenant
+  // predicate here is CONDITIONAL — applied only when the receiving account could
+  // be mapped to a brokerage — so on the unresolved path the query ran with no
+  // tenant boundary at all, on the SERVICE client, and `.limit(1)` then handed back
+  // whichever brokerage's row happened to sort first. The same person can be a
+  // contact at two brokerages (see app/api/webhooks/inbound-mail/route.ts, which
+  // documents exactly that), and this identity feeds a message INSERT — so the
+  // wrong first row files a client's inbound DM into another tenant's CRM.
+  // limit(2) + "one distinct tenant or nothing" is the rule already in force in
+  // app/api/webhooks/sendgrid-events/route.ts; unresolved falls through to the
+  // staging insert with a null tenant, which is this handler's documented
+  // behaviour for an unmappable account.
+    .limit(2)
   if (brokerageId) contactQuery = contactQuery.eq("brokerage_id", brokerageId)
-  const { data: contacts } = await contactQuery
+  const { data: contactRows } = await contactQuery
+  const candidates = (contactRows ?? []) as Array<{ id: string; brokerage_id: string | null }>
+  const contacts = new Set(candidates.map((c) => c.brokerage_id)).size === 1 ? candidates : []
 
   let contactId: string
 
-  if (contacts && contacts.length > 0) {
+  if (contacts.length > 0) {
     contactId = contacts[0].id
   } else {
     // tenant anchor (scope burn-down): stamp the resolved brokerage; when the
