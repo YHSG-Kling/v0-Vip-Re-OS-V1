@@ -9,6 +9,7 @@ import { assignTierToListing } from "@/lib/listings/tier-assigner"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { resolveActingContext, READ_ONLY_ACTING_ERROR } from "@/lib/platform/acting-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { deleteListingWithChildren } from "@/lib/kernel/listing-delete"
 
 /**
  * CRUD operations for listings
@@ -250,6 +251,26 @@ export async function updateListing(listingId: string, updates: any, _actorUserI
   }
 }
 
+/**
+ * CHILD-BLIND HARD DELETE, CLOSED.
+ *
+ * This was one statement — `.from("listings").delete().eq("id",…).eq("brokerage_id",…)`
+ * — and 63 foreign keys point at `listings`. It is a `"use server"` export and
+ * therefore a public HTTP endpoint (CLAUDE.md §4), live whether or not a
+ * component calls it; none does. The gate and the tenant predicate were already
+ * right and the error was already read. What was missing was any view of the
+ * children: 31 keys refused the delete with a raw 23503 the caller could not
+ * act on (every listing that has changed stage once has a
+ * `listing_stage_history` row, so this was the ordinary case), and 16 more
+ * SET NULL keys let the delete SUCCEED while clearing their pointers unseen.
+ *
+ * `lib/kernel/listing-delete.ts` now names a disposition for every one of the
+ * 63 and its header carries the live measurement behind each choice. The engine
+ * underneath it, `lib/kernel/child-safe-delete.ts`, was EXTRACTED from
+ * `lib/kernel/tenant-creation-rollback.ts` — the brokerage rollback that got
+ * this right first — so there is one spelling of "delete a parent without
+ * stranding its children", not two (CLAUDE.md §6).
+ */
 export async function deleteListing(listingId: string) {
   try {
     if (!UUID_REGEX.test(listingId)) return { success: false, error: "Invalid listing ID" }
@@ -259,20 +280,40 @@ export async function deleteListing(listingId: string) {
     // ACT-AS WRITE SEAM — a read_only grant never writes.
     if (auth.readOnly) return { success: false, error: READ_ONLY_ACTING_ERROR }
 
+    // Gate first, THEN the service client (CLAUDE.md §4). The tenant comes from
+    // the session; `listingId` is a parameter and is therefore not trusted until
+    // this read ties it to that tenant. Everything below keys off it as a
+    // tenant-verified anchor, which is what makes the child steps safe.
     const supabase = createServiceClient()
 
-    const { error } = await supabase
+    const { data: owned, error: ownedErr } = await supabase
       .from("listings")
-      .delete()
+      .select("id, brokerage_id")
       .eq("id", listingId)
-      .eq("brokerage_id", auth.brokerageId)
+      .maybeSingle()
 
-    if (error) throw error
+    // supabase-js RESOLVES refusals (§3). A read that failed has NOT proved the
+    // listing absent, and "nobody checked" must not render as "checked and fine"
+    // — so a failed ownership check refuses instead of falling through.
+    if (ownedErr) return { success: false, error: "Could not verify this listing. Nothing was deleted." }
+    if (!owned) return { success: false, error: "Listing not found" }
+    if (owned.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden" }
+
+    const result = await deleteListingWithChildren(supabase, listingId, auth.brokerageId)
+    if (!result.ok) {
+      return { success: false, error: result.error ?? "This listing could not be removed." }
+    }
 
     revalidatePath("/listings")
     revalidatePath("/dashboard")
 
-    return { success: true }
+    return {
+      success: true,
+      // What went with it, and what survived with a cleared pointer. A delete
+      // that cannot say this is the delete that was here before.
+      removed: result.outcome.childrenRemoved,
+      detached: result.outcome.detached,
+    }
   } catch (error) {
     return handleError(error, "deleteListing")
   }

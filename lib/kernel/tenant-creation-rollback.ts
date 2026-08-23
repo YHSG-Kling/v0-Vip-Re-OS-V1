@@ -85,7 +85,21 @@
 // the canonical row. Deleting the `public.users` row — which this DOES do — is
 // what makes that retry clean.
 
+// ── THE DELETE ITSELF NOW LIVES IN ONE PLACE ────────────────────────────────
+//
+// The mechanics below — children first, deepest-first, `count: "exact"` so a
+// zero is a MEASURED zero, read every error, never throw — were re-needed by a
+// second hard delete (`deleteListing`, 63 foreign keys onto `listings`). Rather
+// than write them a second time (CLAUDE.md §6), they were EXTRACTED to
+// `lib/kernel/child-safe-delete.ts` and this function became the tenant-shaped
+// configuration of them: its table manifest, its `brokerage_id` child column,
+// and its caller-facing sentence. Behaviour is unchanged — every table below is
+// still `remove`, still in the same order, and the result shape both call sites
+// destructure is still the one they were written against.
+
 import type { SupabaseClient } from "@supabase/supabase-js"
+import type { ChildRule } from "./child-safe-delete"
+import { deleteParentWithChildren } from "./child-safe-delete"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -109,6 +123,20 @@ export const TENANT_CREATION_CHILD_TABLES: readonly string[] = [
   "teams",
   "users",
 ]
+
+/**
+ * The same manifest expressed as the engine's rules. EVERY entry is `remove`:
+ * a tenant that could not finish being created has no child that belongs to
+ * anybody else, which is exactly why the disposition question the listing
+ * manifest has to answer does not arise here.
+ */
+const TENANT_ROLLBACK_PLAN = {
+  parentTable: "brokerages",
+  parentIdColumn: "id",
+  children: TENANT_CREATION_CHILD_TABLES.map(
+    (table): ChildRule => ({ table, column: "brokerage_id", disposition: "remove" }),
+  ),
+} as const
 
 export interface TenantRollbackResult {
   /** True only when the brokerage row is GONE. Anything else is a live tenant. */
@@ -140,50 +168,27 @@ export async function rollbackTenantCreation(
   service: Svc,
   brokerageId: string,
 ): Promise<TenantRollbackResult> {
-  const childrenRemoved: Record<string, number> = {}
-  const childRefusals: string[] = []
-
   if (!brokerageId) {
     return {
       ok: false,
-      childrenRemoved,
-      childRefusals,
+      childrenRemoved: {},
+      childRefusals: [],
       error: "Tenant rollback could not run: no workspace id was given.",
     }
   }
 
-  for (const table of TENANT_CREATION_CHILD_TABLES) {
-    // `count: "exact"` so a zero is a MEASURED zero rather than an unread one —
-    // the difference between "there was nothing to remove" and "the delete was
-    // refused" is the whole point of this function.
-    const { error, count } = await service
-      .from(table)
-      .delete({ count: "exact" })
-      .eq("brokerage_id", brokerageId)
+  const outcome = await deleteParentWithChildren(service, TENANT_ROLLBACK_PLAN, brokerageId)
+  const { childrenRemoved, childRefusals } = outcome
 
-    if (error) {
-      // READ it (§3). A refused child delete is why the brokerage delete below
-      // will fail, and reporting "denied" without saying which table is what
-      // leaves an operator with nothing to act on.
-      childRefusals.push(`${table} (${error.message})`)
-      continue
-    }
-    if (count) childrenRemoved[table] = count
-  }
-
-  const { error: brokerageErr } = await service
-    .from("brokerages")
-    .delete()
-    .eq("id", brokerageId)
-
-  if (brokerageErr) {
+  if (!outcome.ok) {
     const blockedBy = childRefusals.length ? ` Child cleanup was refused on: ${childRefusals.join("; ")}.` : ""
+    const why = outcome.parentError ?? outcome.censusFailures.join("; ") ?? "unknown"
     return {
       ok: false,
       childrenRemoved,
       childRefusals,
       error:
-        `The workspace could not be removed after setup failed (${brokerageErr.message}). ` +
+        `The workspace could not be removed after setup failed (${why}). ` +
         `It is still present as ${brokerageId} and needs a support cleanup.${blockedBy}`,
     }
   }

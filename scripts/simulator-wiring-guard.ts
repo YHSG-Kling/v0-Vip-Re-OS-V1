@@ -130,8 +130,24 @@ const guardChain = pkg.scripts.guard ?? ""
 
 console.log(`  · ${totalTests} test:* scripts · ${reachable.size} named by the chain · ${unwiredFromChain.length} reached by the sweep instead`)
 
-check("the sweep exists and is the last link in the guard chain",
+// THE LABEL USED TO SAY "and is the LAST link in the guard chain" while the
+// assertion beside it only tested that `test:sweep` appears ANYWHERE in the
+// chain — and the sweep is not in fact last, so the check passed while a reader
+// scanning the ✓ column would believe position had been verified. Nothing
+// requires last position (the sweep computes `reachableFromGuard` from the whole
+// chain string, not from where it sits), so the honest repair is to the CLAIM,
+// not to the chain. Discovery is what actually matters, and the three checks
+// below are what enforce it.
+check("the sweep is wired into the guard chain, so unwired simulators still run",
   sweepSrc.length > 0 && /npm run test:sweep/.test(guardChain))
+// Position is REPORTED rather than asserted: running the sweep's parallel fan-out
+// after the cheap curated links would fail faster, but it is a preference nobody
+// has ruled on, and a guard must not smuggle a preference in as a requirement.
+{
+  const links = guardChain.split("&&").map((s) => s.trim())
+  const at = links.findIndex((l) => /npm run test:sweep\b/.test(l))
+  console.log(`  · sweep sits at link ${at + 1} of ${links.length}${at === links.length - 1 ? " (last)" : " — not last; ordering is a preference, not an invariant"}`)
+}
 check("…it DISCOVERS targets from package.json rather than a hand-kept list",
   /Object\.keys\(pkg\.scripts\)/.test(sweepSrc) && /reachableFromGuard/.test(sweepSrc))
 check("…it runs them through `npm run`, so per-script env survives",
