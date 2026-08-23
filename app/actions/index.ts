@@ -108,7 +108,13 @@ export {
   getListingById,
   createListing,
   updateListing,
-  deleteListing,
+  // TOMBSTONE — `deleteListing` was here. SURVIVOR: `archiveListing` at
+  // app/actions/listings.ts. A listing is RETAINED, never destroyed (owner's
+  // ruling: "listing shouldn't be deleted because of rules of needing to keep
+  // real estate records"). `unarchiveListing` is the way back and is exported
+  // beside it, because a one-way hide is a delete with extra steps.
+  archiveListing,
+  unarchiveListing,
   getListingTimeline,
 } from "./listings"
 export { updateListingStatus } from "./listings-kernel"

@@ -1,142 +1,216 @@
-// lib/kernel/listing-delete.ts
+// lib/kernel/listing-archive.ts
 // ─────────────────────────────────────────────────────────────────────────────
-// WHAT DELETING A LISTING IS ALLOWED TO DESTROY.
+// A LISTING IS RETAINED, NEVER DESTROYED.
 //
-// `app/actions/listings.ts` `deleteListing` was, until this file existed, one
-// statement:
+// ── THE RULING THAT REVERSED THE PREVIOUS WAVE ──────────────────────────────
 //
-//     await supabase.from("listings").delete().eq("id", listingId)
-//                                             .eq("brokerage_id", auth.brokerageId)
+//     "listing shouldn't be deleted because of rules of needing to keep real
+//      estate records."
 //
-// It is a `"use server"` export and therefore a public HTTP endpoint (CLAUDE.md
-// §4), reachable whether or not any component calls it — and no component does.
-// It was gated correctly and it read its own error. What it could not see was
-// the 63 foreign keys pointing at `listings`.
+// The previous wave built a child-safe HARD DELETE for listings and proved it
+// worked. It worked, and it was the wrong thing: a listing is a real-estate
+// record with a statutory retention window, and destroying the row is not a
+// remedy for "the broker wants it off their board". This file is that wave's
+// knowledge, kept, with the destruction taken out.
 //
-// ── MEASURED LIVE on hrvaqgvukzxfskkcrwbt, 2026-08-23 ───────────────────────
+// TOMBSTONE — `deleteListingWithChildren` (was lib/kernel/listing-delete.ts) is
+// GONE. Its survivor is `archiveListing`, below. Its 63-key manifest is NOT gone:
+// it survives as `LISTING_CHILD_RULES` in this file, repurposed from a
+// destruction plan into a RETENTION LEDGER — see the next section, which is the
+// whole reason the manifest was worth keeping.
 //
-//   pg_constraint, contype='f', confrelid = public.listings   →  63 keys
+// TOMBSTONE — the ENGINE `lib/kernel/child-safe-delete.ts` is NOT retired and is
+// NOT changed. It still serves `lib/kernel/tenant-creation-rollback.ts`, which is
+// a genuine hard delete (a half-built tenant created seconds ago, with no
+// records to retain) and is untouched by this ruling. It simply no longer has a
+// second caller. `scripts/listing-archive-simulator.ts` section 4 keeps proving
+// the rollback works, because an engine whose only proof lived in the caller
+// that just walked away is an engine nobody is watching.
 //
-//     NO ACTION (a)   31    the delete is REFUSED while a child exists
-//     CASCADE   (c)   16    the child dies with the listing
-//     SET NULL  (n)   16    the child SURVIVES with its listing pointer nulled
+// ══ WHY THE 63-KEY MANIFEST SURVIVED THE REVERSAL ═══════════════════════════
 //
-// So the old statement had two distinct failure modes and told the caller about
-// neither in terms it could act on:
+// The manifest was built by measuring, live, what every one of the 63 foreign
+// keys onto `listings` would do if the row were deleted. Read backwards it says
+// something an archive needs to be able to say out loud:
 //
-//   * With any of the 31, PostgreSQL refused with a raw 23503 naming a
-//     constraint. `handleError` surfaced that as a foreign-key message. A broker
-//     deleting a listing that had merely CHANGED STAGE ONCE — every listing has
-//     a `listing_stage_history` row — got an unexplainable failure.
-//   * With none of the 31 but some of the 16 SET NULL, the delete SUCCEEDED and
-//     16 tables' pointers were silently cleared.
+//   disposition   what a HARD DELETE did          what ARCHIVE does
+//   ───────────   ──────────────────────────────  ────────────────────────────
+//   remove (11)   DESTROYED the row               retains it, untouched
+//   cascade (16)  DESTROYED it via ON DELETE      retains it — CASCADE never fires
+//   detach (15)   kept the row, NULLED its        retains it AND its listing_id;
+//                 listing pointer                 SET NULL never fires
+//   block  (20)   REFUSED the whole operation     nothing to refuse — see below
 //
-// ── THE 16 SET NULL KEYS ARE NOT AN ORPHAN BUG, AND THAT IS A MEASUREMENT ───
+// So the ledger is the measurement behind the sentence "archive destroys
+// nothing": 42 of the 62 keys name rows a delete would have destroyed or
+// unlinked, and an archive touches none of them. `archiveListing` COUNTS them
+// and reports the total, because "nothing was destroyed" asserted without a
+// number is the same shape as "the database will handle it".
 //
-// The wave that found this defect expected these 16 to become ON DELETE RESTRICT
-// alongside the 68 `brokerage_id` keys of m533, on the reasoning that SET NULL
-// "erases the child's parentage, leaving a live row that tenant-scoped reads can
-// no longer see". That reasoning is exactly right for `brokerage_id`: the tenant
-// column IS the reachability, so nulling it strands the row.
+// ── THE `block` SET IS NOT THE ARCHIVE'S BLOCKER SET ────────────────────────
 //
-// It does not transfer to `listing_id`, and the live database says so. Every one
-// of the 16 child tables carries `brokerage_id` of its own, and every one is
-// read in this codebase by an anchor that is not the listing:
+// This is the part that would be easy to get wrong by carrying the old rule
+// forward unexamined. The 20 `block` tables refused a DELETE because the delete
+// would have destroyed somebody else's record — a seller's signed listing
+// agreement, a contact's saved-properties row, a CMA report already delivered.
+// An ARCHIVE destroys none of those and does not even unlink them: they keep
+// pointing at a listing row that is still there and still readable by id. There
+// is nothing left to refuse. Carrying the 20 across would produce an archive
+// that refuses almost every real listing (every listing with a task, or a
+// saved-properties row, or one CMA) while offering no alternative at all —
+// strictly worse than the delete it replaced.
 //
-//   agent_assistant_sessions  agent_id (5 read sites), conversation_id
-//   ai_assistant_notes        brokerage_id (3), created_by (3)
-//   appointments              agent_id / contact_id / brokerage_id columns
-//   documents                 brokerage_id (37), id (34), contact_id (12),
-//                             transaction_id (4) vs listing_id (4)
-//   generated_documents       brokerage_id (4), transaction_id (1)
-//   income_gap_…_actions      gap_analysis_id (4) — never read by listing
-//   listing_landing_pages     slug (2) — see below
-//   open_houses               brokerage_id, agent_id
-//   portal_event_stream       brokerage_id (4), contact_id (2)
-//   property_feedback         contact_id, brokerage_id
-//   transactions              id (196), brokerage_id (176), agent_id (62)
-//                             vs listing_id (15)
-//   transparency_updates      contact_id (7), transaction_id (3)
-//   vendor_bookings           brokerage_id (24), vendor_id (17)
-//   vendor_invoices           brokerage_id (12), vendor_id (7)
-//   workflow_runs             id (16), chain_key (3), brokerage_id (3)
+// What an archive CAN break is a WORKFLOW, not a record. Taking a listing off
+// the working surface while a deal is in flight strands the deal desk. That, and
+// only that, is `LISTING_ARCHIVE_BLOCKERS`.
 //
-// `listing_landing_pages` is the sharpest case, because the product does not
-// merely tolerate a null listing_id — it RENDERS it. `app/listing/[slug]/page.tsx`
-// branches on `landingPage?.listing_id ? … : …` and its else-branch is commented
-// "Standalone generated landing page (no live listing behind it)". Converting
-// that key to RESTRICT would forbid a state the page is written to display.
+// ── WHY `deleted_at` AND NOT `status` ───────────────────────────────────────
 //
-// A transaction whose listing was deleted is a deal that still has money in it,
-// still belongs to a brokerage and an agent, and is still read 196 times by id.
-// Nulling its listing pointer loses a link. RESTRICT would instead refuse — and
-// this file's `block` set already refuses, in code, with a sentence a human can
-// act on. So the DB-level rule is not the thing standing between a listing and
-// its children; the manifest below is. All 16 stay SET NULL, and each is
-// declared `detach` here so that "the database handles it" is a stated position
-// with a row count attached rather than a blind spot.
+// Both columns exist live on `public.listings` (verified on hrvaqgvukzxfskkcrwbt,
+// 2026-08-23: `deleted_at timestamp without time zone NULL`, no default, 0 of 3
+// rows populated; `status text NULL`). `deleted_at` carries the archive. `status`
+// is not touched. Three measured reasons, in order of how badly `status` fails:
 //
-// ── WHY `block` AND NOT "delete everything" ─────────────────────────────────
+//  1. THE LIVE CHECK REFUSES IT. `listings_status_check` admits exactly ten
+//     values — draft, listing_signed, coming_soon, active, pending, withdrawn,
+//     cancelled, off_market, expired, sold. `archived` is not among them.
 //
-// The rule applied to the 31 NO ACTION keys is mechanical, not a taste call:
-// a child is `remove` only when it has NO foreign key to any table other than
-// `listings` / `brokerages` / `users` / `agents` — i.e. nothing but the listing
-// owns it. Measured live from pg_constraint; the 11 that pass are derived
-// artefacts of the listing itself (its metrics, its stage history, its price
-// history, its media). The other 20 all point at a `contacts`, `transactions`,
-// `offers`, `cma_reports`, `tours` or `marketing_campaigns` row — they are
-// somebody else's record that merely mentions the listing, and a listing delete
-// has no business destroying them. Those refuse the delete and say which table.
+//     NOT REASONED — PROBED, against hrvaqgvukzxfskkcrwbt on 2026-08-23, inside
+//     an exception block that put every value straight back:
 //
-// The practical effect is that a listing with any real history cannot be hard
-// deleted, which is what a foreign key spelled NO ACTION has been saying all
-// along. What changes is that the refusal now names the table and the count
-// instead of quoting a constraint name.
+//       status='archived'  → REFUSED 23514 "new row for relation \"listings\"
+//                            violates check constraint \"listings_status_check\""
+//       CONTROL, the same UPDATE with a value the CHECK admits
+//                          → ACCEPTED — so the probe CAN write this column and
+//                            the refusal is the constraint, not a broken probe
+//       deleted_at=now()   → ACCEPTED, then restored to NULL
+//       final status       → unchanged
 //
-// ── KNOWN, STATED BLIND SPOT ────────────────────────────────────────────────
+//     An archive whose write the database rejects is not an archive.
 //
-// `listing_media` rows are removed; the storage objects they point at are not.
-// Blob cleanup is `deleteListingMedia`'s lane (app/actions/listing-media.ts) and
-// is not wired here. A deleted draft listing can therefore leave storage bytes.
-// That is a smaller and more recoverable failure than the row-level orphaning
-// this file exists to close, and it is written down rather than left to be
-// rediscovered.
+//  2. IT WOULD DESTROY THE FACT RETENTION EXISTS TO KEEP. `status` IS the
+//     real-estate record's own field — whether the property SOLD, was WITHDRAWN,
+//     EXPIRED. Overwriting it to say "archived" erases the outcome of the
+//     transaction while claiming to preserve the record. The ruling asks for the
+//     record to survive; `status` is a large part of what "the record" means.
+//     After an archive a sold listing still reads `sold`, and commission,
+//     transaction-history and compliance readers still see what they saw.
+//
+//  3. IT WOULD SILENTLY REDEFINE EVERY EXISTING READER. `status` is filtered by
+//     more than a hundred call sites as a MARKET state (`.eq("status","active")`,
+//     `.in("status",["active","coming_soon","pending"])`). An eleventh value
+//     meaning "not a market state at all" changes what every one of those
+//     queries means without editing any of them — CLAUDE.md §6's defect exactly.
+//
+// `deleted_at` is also already this repository's ONE spelling of soft-delete
+// (§6). The survivor pattern is `archiveContactRecord` at lib/kernel/crm.ts:936:
+// `.update({ deleted_at: now, updated_at: now })`, guarded `.is("deleted_at",
+// null)` so a second archive is a no-op rather than a lie, and `.select()`ed so
+// a zero-row update cannot report success. Three further writers spell it the
+// same way — lib/services/transaction-management.service.ts:229,
+// lib/services/contact-management.service.ts:269, app/actions/data-health.ts:405.
+// This file follows that pattern rather than inventing a fourth.
+//
+// ── THE READER EVIDENCE, WHICH IS WHAT MAKES IT NOT A NO-OP ─────────────────
+//
+// Measured over lib/ + app/ + scripts/ on 2026-08-23: 511 `.from("listings")`
+// call sites, of which 23 name `deleted_at` in their query chain. The shape of
+// those 23 is the finding, not the count:
+//
+//   EVERY ONE is a working-surface reader — search (idx-alert-search,
+//   idx-search, buyer-offers address lookup, showing-request), inventory
+//   (reception-inventory, twilio-voice), lists and counts (board-packet,
+//   reverse-prospecting, deliberation, critical-setup, video-plays,
+//   social-carousel, listing-brochure, jobs page, agent-assistant tool-call),
+//   and the PUBLIC surfaces (llms.txt, sitemap, /site/[slug], /team/[slug]).
+//
+//   NOT ONE is a by-id record lookup. Every `.eq("id", listingId).maybeSingle()`
+//   that resolves a listing for a transaction, an offer, a commission, a
+//   document or a compliance read is in the other 488 and stays there.
+//
+// So `deleted_at` already means, in this tree, exactly "hide from the working
+// surface, keep for the record". The archive extends that meaning; it does not
+// introduce it. Two canonical surfaces were MISSING the filter and would have
+// made this archive a no-op — both are fixed in this wave and are pinned by the
+// simulator, because a filter that can be deleted without any test going red is
+// the half of a soft-delete that rots:
+//
+//   lib/application/listings.ts        getListingsService — the /listings list
+//   app/dashboard/listings/page.tsx    the agent's listings board
+//
+// DELIBERATELY NOT FILTERED, and this is a ruling not an omission:
+// `app/listings/[listingId]/page.tsx` and every by-id resolver. An archived
+// listing must still open by id — that is the retention surface, the audit
+// surface, and the only way back through `unarchiveListing`. A soft-delete that
+// makes the record unreachable has destroyed it in every sense that matters.
+//
+// ── KNOWN, STATED BLIND SPOTS ───────────────────────────────────────────────
+//
+// · The 488 unfiltered call sites are NOT all correct-by-construction. They were
+//   classified by inspection of the 23 that filter, not by auditing all 511. A
+//   list-shaped reader among the 488 will keep showing archived listings until
+//   somebody adds the filter. What is proved here is that the two canonical
+//   surfaces filter and that the record surfaces do not; the long tail is
+//   unresolved and is written down rather than counted as clean.
+// · RLS is not involved. `deleted_at` is a column, not a policy, so a direct
+//   PostgREST caller with a valid session still sees archived rows. That is the
+//   same posture every other soft-delete in this tree has.
+// · The retention census is a row COUNT per child table. It proves the rows are
+//   still there; it does not diff their contents.
 
-import type { ChildRule, ParentDeletePlan, ParentDeleteOutcome } from "./child-safe-delete"
-import { deleteParentWithChildren, describeDeleteFailure } from "./child-safe-delete"
+import type { ChildRule } from "./child-safe-delete"
+import { isTransactionLive } from "../enrichment/deal-vocabulary"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 type Svc = SupabaseClient<any, any, any>
 
 /**
- * EVERY foreign key that points at `listings`, with a disposition for each.
+ * THE RETENTION LEDGER — every foreign key that points at `listings`, with the
+ * disposition a HARD DELETE would have applied to it.
  *
- * Completeness is the defence, not a nicety: "child-blind" is exactly the state
- * of having no answer for a child table, and a manifest with a hole reads like a
- * manifest with none. `scripts/listing-delete-simulator.ts` checks this list
- * against `SCHEMA_FK_MAP` (generated from the live database) in BOTH directions,
- * so a child table added later fails the check rather than quietly reopening the
- * hole, and a table removed from the schema cannot linger here as a phantom.
+ * It is no longer executed. Nothing in this file deletes, nulls or cascades
+ * anything. The ledger is kept for three jobs a soft-delete still needs done:
  *
- * The `remove` entries are applied IN THIS ORDER. None of the 11 references any
- * other (verified live), so the order is stable rather than load-bearing —
- * derived analytics first, the listing's own media last.
+ *   1. It is the denominator for the retention claim. `archiveListing` counts
+ *      the `remove` + `cascade` + `detach` tables and reports how many rows
+ *      survived that a delete would have destroyed or unlinked.
+ *   2. It is the drift alarm. `scripts/listing-archive-simulator.ts` checks it
+ *      against `SCHEMA_FK_MAP` (generated from the live database) in BOTH
+ *      directions, so a child table added later fails the check rather than
+ *      quietly falling outside the ledger, and a table removed from the schema
+ *      cannot linger here as a phantom.
+ *   3. It records, dated and per key, what the live ON DELETE rules actually are
+ *      — knowledge that took a live pg_constraint sweep to obtain and that the
+ *      next person to touch listing deletion would otherwise have to re-derive.
+ *
+ * MEASURED LIVE on hrvaqgvukzxfskkcrwbt, 2026-08-23, AFTER m542:
+ *
+ *   pg_constraint, contype='f', confrelid = public.listings   →  62 keys
+ *     NO ACTION (a)   31        CASCADE (c)   16        SET NULL (n)   15
+ *
+ * It read 63 / 31 / 16 / 16 before m542 dropped `open_houses.property_id`.
  */
 export const LISTING_CHILD_RULES: readonly ChildRule[] = [
-  // ── remove: nothing but the listing owns these (11) ──────────────────────
+  // ── remove (11): a hard delete DESTROYED these. Archive retains them. ─────
+  // Nothing but the listing owns them, which is exactly why they are the
+  // listing's own record: its price trail, its stage trail, its media.
   { table: "listing_page_analytics", column: "listing_id", disposition: "remove", why: "page-view rows for this listing only" },
   { table: "showing_analytics", column: "listing_id", disposition: "remove", why: "derived showing counters, no other parent" },
   { table: "listing_metrics", column: "listing_id", disposition: "remove", why: "computed metrics for this listing only" },
-  { table: "listing_stage_history", column: "listing_id", disposition: "remove", why: "the listing's own stage trail" },
-  { table: "pricing_history", column: "listing_id", disposition: "remove", why: "the listing's own price trail" },
+  { table: "listing_stage_history", column: "listing_id", disposition: "remove", why: "the listing's own stage trail — a retention record in its own right" },
+  { table: "pricing_history", column: "listing_id", disposition: "remove", why: "the listing's own price trail — a retention record in its own right" },
   { table: "price_predictions", column: "listing_id", disposition: "remove", why: "model output about this listing" },
   { table: "price_trend_alerts", column: "listing_id", disposition: "remove", why: "alerts derived from this listing's price" },
   { table: "neighborhood_reports", column: "listing_id", disposition: "remove", why: "report generated for this listing" },
   { table: "property_upgrades", column: "listing_id", disposition: "remove", why: "upgrade list attached to this listing" },
   { table: "listing_packet_jobs", column: "listing_id", disposition: "remove", why: "packet render jobs for this listing" },
-  { table: "listing_media", column: "listing_id", disposition: "remove", why: "the listing's own media rows (storage blobs NOT cleaned — see header)" },
+  { table: "listing_media", column: "listing_id", disposition: "remove", why: "the listing's own media rows — and their storage blobs, which a delete never cleaned" },
 
-  // ── block: somebody else's record that mentions the listing (20) ─────────
+  // ── block (20): a hard delete was REFUSED by these. Archive is not. ───────
+  // These are somebody else's record MENTIONING the listing. A delete had to
+  // refuse because it would have destroyed them; an archive leaves every one of
+  // them intact and still pointing at a live row, so there is nothing to refuse.
+  // See LISTING_ARCHIVE_BLOCKERS for what an archive genuinely must refuse.
   { table: "listing_agreements", column: "listing_id", disposition: "block", why: "signed agreement with a seller contact" },
   { table: "tasks", column: "listing_id", disposition: "block", why: "also hangs off contacts / transactions" },
   { table: "saved_properties", column: "listing_id", disposition: "block", why: "a contact's saved list" },
@@ -158,15 +232,31 @@ export const LISTING_CHILD_RULES: readonly ChildRule[] = [
   { table: "social_posts", column: "listing_id", disposition: "block", why: "published content on a social account" },
   { table: "ai_message_drafts", column: "listing_id", disposition: "block", why: "belongs to a conversation / message thread" },
 
-  // ── detach: DB nulls the pointer, the row survives under its own owner (16)
-  { table: "transactions", column: "listing_id", disposition: "detach", why: "a deal outlives the listing; read by id/brokerage/agent" },
-  { table: "documents", column: "listing_id", disposition: "detach", why: "owned by brokerage / contact / transaction" },
+  // ── detach (15): a hard delete kept the row and NULLED its pointer. ───────
+  // Archive keeps the row AND the pointer. This is the sharpest single argument
+  // for archive over delete: `transactions.listing_id` is how a closed deal
+  // finds the property it closed on, and a delete cleared it.
+  { table: "transactions", column: "listing_id", disposition: "detach", why: "a closed deal keeps its listing pointer — commission and transaction history read it" },
+  { table: "documents", column: "listing_id", disposition: "detach", why: "owned by brokerage / contact / transaction; disclosures are retention records" },
   { table: "generated_documents", column: "listing_id", disposition: "detach", why: "owned by brokerage / transaction" },
   { table: "vendor_invoices", column: "listing_id", disposition: "detach", why: "owned by a vendor; a bill outlives the listing" },
   { table: "vendor_bookings", column: "listing_id", disposition: "detach", why: "owned by a vendor" },
   { table: "appointments", column: "listing_id", disposition: "detach", why: "owned by agent / contact" },
-  { table: "open_houses", column: "listing_id", disposition: "detach", why: "owned by agent / brokerage" },
-  { table: "open_houses", column: "property_id", disposition: "detach", why: "second listings pointer on the same table" },
+  // TOMBSTONE — `{ table: "open_houses", column: "listing_id" }` stood here and is
+  // GONE, because the TABLE is gone. m543 established `open_house_events` as the
+  // survivor on evidence (all 5 satellites FK to it, 61 call sites against 6, 5
+  // public/cron routes against 0) and merged 13 columns onto it; m547 then dropped
+  // `open_houses` once nothing named it. SURVIVOR: `open_house_events.listing_id`,
+  // in the cascade block below — which is the correct disposition for it, not
+  // `detach`, because the survivor's FK is ON DELETE CASCADE where the retired
+  // table's was SET NULL.
+  //
+  // ORDERING MATTERED AND IS WHY THIS ENTRY OUTLIVED THE TABLE BY ONE STEP: this
+  // manifest checks itself against SCHEMA_FK_MAP, so the entry could only be
+  // removed AFTER the drop and the cache regeneration, and the drop could only
+  // happen after every reader had moved. Removing it first would have failed the
+  // completeness check; dropping first would have made every archive raise
+  // "relation does not exist".
   { table: "portal_event_stream", column: "listing_id", disposition: "detach", why: "a contact's portal event trail" },
   { table: "property_feedback", column: "listing_id", disposition: "detach", why: "owned by the contact who gave it" },
   { table: "transparency_updates", column: "listing_id", disposition: "detach", why: "owned by contact / transaction" },
@@ -174,9 +264,17 @@ export const LISTING_CHILD_RULES: readonly ChildRule[] = [
   { table: "ai_assistant_notes", column: "listing_id", disposition: "detach", why: "owned by brokerage / author" },
   { table: "agent_assistant_sessions", column: "context_listing_id", disposition: "detach", why: "an optional CONTEXT pointer, named as one" },
   { table: "income_gap_recommended_actions", column: "listing_id", disposition: "detach", why: "owned by a gap analysis" },
-  { table: "listing_landing_pages", column: "listing_id", disposition: "detach", why: "app/listing/[slug]/page.tsx RENDERS the null case" },
+  { table: "listing_landing_pages", column: "listing_id", disposition: "detach", why: "app/listing/[slug]/page.tsx renders the null case" },
+  // TOMBSTONE — `{ table: "open_houses", column: "property_id" }` was the 16th
+  // detach entry and is GONE. m542 dropped that column and its foreign key from
+  // the live database (APPLIED 2026-08-23 hrvaqgvukzxfskkcrwbt): under the ruling
+  // "listings are in house properties and property ids are outside listings", a
+  // second FK onto `listings` wearing a property_id's name is the wrong key.
+  // SURVIVOR: `open_houses.listing_id`, five entries above — the pointer every
+  // reader and writer in the tree already used, and the only one indexed.
 
-  // ── cascade: the database removes these with the listing (16) ────────────
+  // ── cascade (16): a hard delete DESTROYED these via ON DELETE CASCADE. ────
+  // Archive retains them; CASCADE never fires because nothing is deleted.
   { table: "offers", column: "listing_id", disposition: "cascade" },
   { table: "showings", column: "listing_id", disposition: "cascade" },
   { table: "open_house_events", column: "listing_id", disposition: "cascade" },
@@ -195,56 +293,327 @@ export const LISTING_CHILD_RULES: readonly ChildRule[] = [
   { table: "seller_weekly_reports", column: "listing_id", disposition: "cascade" },
 ]
 
-export const LISTING_DELETE_PLAN: ParentDeletePlan = {
-  parentTable: "listings",
-  parentIdColumn: "id",
-  // The parent delete carries the session's `brokerage_id` too, so a delete that
-  // matched nothing means the id was not this tenant's. That must not report
-  // success after the child rows have already been removed.
-  requireParentRowRemoved: true,
-  children: LISTING_CHILD_RULES,
+/**
+ * The tables whose rows a HARD DELETE would have destroyed or unlinked, and
+ * which an archive keeps intact. This is the retention claim's denominator.
+ *
+ * `block` is excluded because a delete never got as far as touching those rows —
+ * it refused. Counting them here would inflate the retention number with rows
+ * that were never at risk.
+ */
+export const LISTING_RETAINED_TABLES: readonly ChildRule[] = LISTING_CHILD_RULES.filter(
+  (r) => r.disposition !== "block",
+)
+
+/**
+ * WHAT AN ARCHIVE MUST STILL REFUSE.
+ *
+ * Not "what would be destroyed" — nothing is destroyed. This is "what workflow
+ * would be stranded by the listing leaving the working surface".
+ *
+ * Exactly one entry, and the narrowness is deliberate. A live transaction means
+ * a deal is in flight: people are scheduling inspections against this property,
+ * the closing coordinator's board reads it, and removing it from the listing
+ * surface mid-deal breaks a process rather than protecting a record. Close,
+ * cancel or lose the transaction first, and the archive goes through.
+ *
+ * LIVENESS IS NOT RE-SPELLED HERE. `isTransactionLive` in
+ * lib/enrichment/deal-vocabulary.ts is the one authority (CLAUDE.md §6) and its
+ * partition is verified against the live `transactions_status_check`, re-verified
+ * on 2026-08-23: lead, qualifying, active, under_contract, pending,
+ * clear_to_close, closed, funded, lost, archived — exactly the ten values that
+ * module partitions into BEFORE / ACTIVE / AFTER. A second definition of "is
+ * this deal live" is the defect §6 names, and negating a TERMINAL list is the
+ * specific bug that module's header was written about.
+ *
+ * OFFERS WERE CONSIDERED AND DELIBERATELY EXCLUDED. An open offer is a plausible
+ * second blocker, but `public.offers` carries NO status CHECK constraint (live,
+ * 2026-08-23 — it has `offers_ai_extraction_status_check` and
+ * `offers_esign_status_check`, and nothing on `status`). There is therefore no
+ * database-verified vocabulary for "open offer", and writing a literal list here
+ * would be inventing a second spelling with nothing holding it to the data —
+ * precisely what deal-vocabulary.ts exists to prevent. An offer that matters is
+ * an offer being worked, and an offer being worked has a transaction. Written
+ * down rather than guessed at.
+ */
+export interface ArchiveBlocker {
+  readonly table: string
+  readonly column: string
+  /** Columns to read so `isLive` can judge each row. */
+  readonly readColumns: string
+  /** True when this row would be stranded by the archive. */
+  readonly isLive: (row: Record<string, any>) => boolean
+  readonly why: string
 }
 
-export interface ListingDeleteResult {
+export const LISTING_ARCHIVE_BLOCKERS: readonly ArchiveBlocker[] = [
+  {
+    table: "transactions",
+    column: "listing_id",
+    readColumns: "id, status, stage",
+    isLive: (r) => isTransactionLive({ status: r.status, stage: r.stage }),
+    why: "a deal is in flight on this property; archiving it strands the closing desk",
+  },
+]
+
+export interface ListingArchiveOutcome {
+  /** True only when the listing row is now marked archived. */
+  ok: boolean
+  /** Machine-readable reason for `ok: false`. Null on success. */
+  reason:
+    | "no-listing-id"
+    | "no-tenant"
+    | "blocked"
+    | "blocker-census-failed"
+    | "not-found-or-already-archived"
+    | "update-refused"
+    | null
+  /** Blocking table → the count of LIVE rows that refused the archive. */
+  blocked: Record<string, number>
+  /** Blocker censuses that could not RUN. Any entry here is fatal (§4). */
+  censusFailures: string[]
+  /**
+   * Child table → rows RETAINED that a hard delete would have destroyed
+   * (`remove`/`cascade`) or unlinked (`detach`). Empty when the census was
+   * skipped or could not run; `retainedTotal` says which.
+   */
+  retained: Record<string, number>
+  /** Sum of `retained`. */
+  retainedTotal: number
+  /**
+   * Retention-census reads that failed. NOT fatal, and the asymmetry with
+   * `censusFailures` is the point: a blocker census that cannot run must refuse
+   * because it gates a change; a retention census that cannot run only means the
+   * archive cannot SAY how much it kept, and nothing is at risk either way.
+   */
+  retentionCensusFailures: string[]
+  /** The archived row's own status, read back. Proof the record was not rewritten. */
+  statusAfter: string | null
+  /** ISO timestamp written to `deleted_at`. Null when nothing was archived. */
+  archivedAt: string | null
+  /** The update's own error message, verbatim. Null when it succeeded. */
+  updateError: string | null
+}
+
+function emptyOutcome(): ListingArchiveOutcome {
+  return {
+    ok: false,
+    reason: null,
+    blocked: {},
+    censusFailures: [],
+    retained: {},
+    retainedTotal: 0,
+    retentionCensusFailures: [],
+    statusAfter: null,
+    archivedAt: null,
+    updateError: null,
+  }
+}
+
+export interface ListingArchiveResult {
   ok: boolean
   /** Caller-safe sentence when `ok` is false. Null on success. */
   error: string | null
-  outcome: ParentDeleteOutcome
+  outcome: ListingArchiveOutcome
 }
 
 /**
- * Delete a listing together with the rows that exist only because of it, and
- * refuse when a row belonging to somebody else is attached.
+ * One caller-safe sentence for a failed archive.
+ */
+export function describeArchiveFailure(out: ListingArchiveOutcome): string | null {
+  if (out.ok) return null
+  switch (out.reason) {
+    case "no-listing-id":
+      return "This listing could not be archived: no id was given."
+    case "no-tenant":
+      return "This listing could not be archived: no workspace was resolved for the request."
+    case "blocker-census-failed":
+      return (
+        `This listing could not be archived because its open deals could not be checked ` +
+        `(${out.censusFailures.join("; ")}). Nothing was changed.`
+      )
+    case "blocked": {
+      const parts = Object.entries(out.blocked).map(([t, n]) => `${t} (${n})`)
+      return (
+        `This listing has a deal still in progress and was not archived: ${parts.join(", ")}. ` +
+        `Close, cancel or reassign the deal first. Nothing was deleted — the listing and ` +
+        `everything attached to it are unchanged.`
+      )
+    }
+    case "not-found-or-already-archived":
+      // Deliberately does not distinguish "does not exist" from "not yours" —
+      // that difference is an id-enumeration oracle across tenants. Same reason
+      // as lib/kernel/crm.ts:977.
+      return "Listing not found, already archived, or not yours to archive."
+    case "update-refused":
+      return `This listing could not be archived (${out.updateError}).`
+    default:
+      return "This listing could not be archived."
+  }
+}
+
+/**
+ * Take a listing off the working surface WITHOUT destroying it.
  *
- * TENANCY: `brokerageId` is the SESSION's tenant (CLAUDE.md §4), and the caller
- * must already have confirmed the listing belongs to it. It is applied AGAIN as
- * a predicate on the parent delete, so even a mistaken id cannot cross tenants.
- * The child steps key on `listingId`, which by then is a tenant-verified anchor.
+ * TENANCY: `brokerageId` is the SESSION's tenant (CLAUDE.md §4) and is applied as
+ * a predicate on the update, so even a mistaken id cannot reach another tenant's
+ * listing. The caller should still have tied `listingId` to that tenant first;
+ * this function takes no view on how it got the id.
  *
  * Never throws: the outcome is in the result.
+ *
+ * ORDER: refuse on a live deal → count what is being retained → stamp
+ * `deleted_at`. The blocker census runs FIRST so a refused archive costs nothing
+ * and, more importantly, so the stamp never lands on a listing that was never
+ * going to be archived.
  */
-export async function deleteListingWithChildren(
+export async function archiveListing(
   service: Svc,
   listingId: string,
   brokerageId: string,
-): Promise<ListingDeleteResult> {
-  // Fail closed (§4): without a session tenant there is no scope to delete
-  // inside, and an unscoped listing delete is the IDOR shape this repo has
+  opts?: {
+    /**
+     * Count the retained child rows. Default true. Costs one head-count per
+     * table in LISTING_RETAINED_TABLES (42 after m542). Skip it only where the
+     * retention number is not going to be read.
+     */
+    census?: boolean
+  },
+): Promise<ListingArchiveResult> {
+  const out = emptyOutcome()
+
+  if (!listingId) {
+    out.reason = "no-listing-id"
+    return { ok: false, error: describeArchiveFailure(out), outcome: out }
+  }
+  // Fail closed (§4): without a session tenant there is no scope to archive
+  // inside, and an unscoped listing write is the IDOR shape this repo has
   // already paid for. Refuse rather than widen.
   if (!brokerageId) {
-    return {
-      ok: false,
-      error: "This listing could not be removed: no workspace was resolved for the request.",
-      outcome: {
-        ok: false, blocked: {}, childrenRemoved: {}, childRefusals: [],
-        detached: {}, censusFailures: [], parentError: null, reason: "no-parent-id",
-      },
+    out.reason = "no-tenant"
+    return { ok: false, error: describeArchiveFailure(out), outcome: out }
+  }
+
+  // ── 1. BLOCKERS — fail CLOSED ────────────────────────────────────────────
+  // Not head:true. Liveness is a per-row judgement (`isTransactionLive` reads
+  // status AND stage), so the rows have to come back. Bounded to 500: a listing
+  // with more than 500 transactions is not a case this needs to page through,
+  // and any live one among the first 500 refuses anyway.
+  for (const b of LISTING_ARCHIVE_BLOCKERS) {
+    const { data, error } = await service
+      .from(b.table)
+      .select(b.readColumns)
+      .eq(b.column, listingId)
+      .limit(500)
+
+    // supabase-js RESOLVES refusals (§3). A census that errored has NOT proved
+    // the table empty, and "nobody checked" must never render as "checked and
+    // fine".
+    if (error) {
+      out.censusFailures.push(`${b.table} (${error.message})`)
+      continue
+    }
+    const live = (data ?? []).filter((r: any) => b.isLive(r))
+    if (live.length > 0) out.blocked[b.table] = live.length
+  }
+
+  if (out.censusFailures.length > 0) {
+    out.reason = "blocker-census-failed"
+    return { ok: false, error: describeArchiveFailure(out), outcome: out }
+  }
+  if (Object.keys(out.blocked).length > 0) {
+    out.reason = "blocked"
+    return { ok: false, error: describeArchiveFailure(out), outcome: out }
+  }
+
+  // ── 2. RETENTION CENSUS — fail OPEN ──────────────────────────────────────
+  // This measures what SURVIVES. A failure here cannot endanger anything, so it
+  // is recorded and the archive proceeds. Contrast step 1, which gates.
+  if (opts?.census !== false) {
+    for (const rule of LISTING_RETAINED_TABLES) {
+      const { count, error } = await service
+        .from(rule.table)
+        .select(rule.column, { count: "exact", head: true })
+        .eq(rule.column, listingId)
+
+      if (error) {
+        out.retentionCensusFailures.push(`${rule.table} (${error.message})`)
+        continue
+      }
+      if (count && count > 0) {
+        out.retained[rule.table] = count
+        out.retainedTotal += count
+      }
     }
   }
 
-  const outcome = await deleteParentWithChildren(service, LISTING_DELETE_PLAN, listingId, {
-    brokerage_id: brokerageId,
-  })
+  // ── 3. THE STAMP ─────────────────────────────────────────────────────────
+  // `.is("deleted_at", null)` so archiving twice matches zero rows and is
+  // reported as such rather than as a fresh archive with a new timestamp.
+  // `.select()` because a zero-row UPDATE is NOT an error in PostgREST — it
+  // resolves, empty, byte-identical to an update that worked (§3). That is the
+  // trap that made archiveContactRecord write an audit trail for an archive that
+  // never happened; see lib/kernel/crm.ts:960.
+  //
+  // `status` and `lifecycle_stage` are READ BACK, not written. The record keeps
+  // saying what it really was, and the outcome carries the proof.
+  const now = new Date().toISOString()
+  const { data: updated, error: updErr } = await service
+    .from("listings")
+    .update({ deleted_at: now, updated_at: now })
+    .eq("id", listingId)
+    .eq("brokerage_id", brokerageId)
+    .is("deleted_at", null)
+    .select("id, status, lifecycle_stage")
 
-  return { ok: outcome.ok, error: describeDeleteFailure(outcome, "listing"), outcome }
+  if (updErr) {
+    out.updateError = updErr.message
+    out.reason = "update-refused"
+    return { ok: false, error: describeArchiveFailure(out), outcome: out }
+  }
+  if (!Array.isArray(updated) || updated.length === 0) {
+    out.reason = "not-found-or-already-archived"
+    return { ok: false, error: describeArchiveFailure(out), outcome: out }
+  }
+
+  out.ok = true
+  out.archivedAt = now
+  out.statusAfter = (updated[0] as any)?.status ?? null
+  return { ok: true, error: null, outcome: out }
+}
+
+/**
+ * Put an archived listing back on the working surface.
+ *
+ * THE WAY BACK IS PART OF THE RULING, not a convenience. A record you cannot
+ * un-hide has been destroyed as far as the person looking for it is concerned,
+ * and "keep real estate records" is not satisfied by a one-way door. The mirror
+ * of the archive: `.not("deleted_at","is",null)` so un-archiving a live listing
+ * matches nothing instead of silently reporting success, and `.select()`ed for
+ * the same §3 reason.
+ */
+export async function unarchiveListing(
+  service: Svc,
+  listingId: string,
+  brokerageId: string,
+): Promise<{ ok: boolean; error: string | null }> {
+  if (!listingId) return { ok: false, error: "This listing could not be restored: no id was given." }
+  if (!brokerageId) {
+    return { ok: false, error: "This listing could not be restored: no workspace was resolved for the request." }
+  }
+
+  const now = new Date().toISOString()
+  const { data, error } = await service
+    .from("listings")
+    .update({ deleted_at: null, updated_at: now })
+    .eq("id", listingId)
+    .eq("brokerage_id", brokerageId)
+    .not("deleted_at", "is", null)
+    .select("id")
+
+  if (error) return { ok: false, error: `This listing could not be restored (${error.message}).` }
+  if (!Array.isArray(data) || data.length === 0) {
+    return { ok: false, error: "Listing not found, not archived, or not yours to restore." }
+  }
+  return { ok: true, error: null }
 }

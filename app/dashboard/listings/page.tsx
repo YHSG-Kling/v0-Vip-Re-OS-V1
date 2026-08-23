@@ -67,6 +67,16 @@ export default async function ListingsPage() {
     .from("listings")
     .select("id, address, city, state, list_price, status, lifecycle_stage, bedrooms, bathrooms, sqft, created_at, stage_updated_at, showing_count")
     .eq("agent_id", agentId)
+    // ARCHIVE FILTER. This is the agent's listings BOARD — the working surface a
+    // broker means when they ask for a listing to be removed. A listing is
+    // RETAINED, never deleted (owner's ruling: "listing shouldn't be deleted
+    // because of rules of needing to keep real estate records"), and
+    // `listings.deleted_at` carries that state; see lib/kernel/listing-archive.ts
+    // for why that column and not `status`. Without this predicate the archive is
+    // a no-op here and the archived listing keeps counting toward the active
+    // volume and DOM stats computed below. Pinned by
+    // scripts/listing-archive-simulator.ts section 3.
+    .is("deleted_at", null)
     .order("created_at", { ascending: false })
     .limit(50)
 

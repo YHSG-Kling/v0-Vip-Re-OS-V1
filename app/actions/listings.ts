@@ -9,7 +9,8 @@ import { assignTierToListing } from "@/lib/listings/tier-assigner"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { resolveActingContext, READ_ONLY_ACTING_ERROR } from "@/lib/platform/acting-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
-import { deleteListingWithChildren } from "@/lib/kernel/listing-delete"
+import { archiveListing as archiveListingRecord, unarchiveListing as unarchiveListingRecord } from "@/lib/kernel/listing-archive"
+import { KernelEvent } from "@/lib/kernel/events"
 
 /**
  * CRUD operations for listings
@@ -252,26 +253,42 @@ export async function updateListing(listingId: string, updates: any, _actorUserI
 }
 
 /**
- * CHILD-BLIND HARD DELETE, CLOSED.
+ * A LISTING IS ARCHIVED, NOT DELETED.
  *
- * This was one statement — `.from("listings").delete().eq("id",…).eq("brokerage_id",…)`
- * — and 63 foreign keys point at `listings`. It is a `"use server"` export and
- * therefore a public HTTP endpoint (CLAUDE.md §4), live whether or not a
- * component calls it; none does. The gate and the tenant predicate were already
- * right and the error was already read. What was missing was any view of the
- * children: 31 keys refused the delete with a raw 23503 the caller could not
- * act on (every listing that has changed stage once has a
- * `listing_stage_history` row, so this was the ordinary case), and 16 more
- * SET NULL keys let the delete SUCCEED while clearing their pointers unseen.
+ * TOMBSTONE — `deleteListing` was HERE and is gone. Its survivor is
+ * `archiveListing`, this function, on `lib/kernel/listing-archive.ts:archiveListing`.
  *
- * `lib/kernel/listing-delete.ts` now names a disposition for every one of the
- * 63 and its header carries the live measurement behind each choice. The engine
- * underneath it, `lib/kernel/child-safe-delete.ts`, was EXTRACTED from
- * `lib/kernel/tenant-creation-rollback.ts` — the brokerage rollback that got
- * this right first — so there is one spelling of "delete a parent without
- * stranding its children", not two (CLAUDE.md §6).
+ * OWNER'S RULING, which reverses the previous wave:
+ *
+ *     "listing shouldn't be deleted because of rules of needing to keep real
+ *      estate records."
+ *
+ * What was here: a child-safe HARD delete that had just closed a real defect
+ * (`deleteListing` was one statement against a table with 63 foreign keys onto
+ * it — 31 refused with a raw 23503, 16 SET NULL keys let it succeed while
+ * clearing their pointers unseen). That fix worked. It was the wrong operation:
+ * a listing is a real-estate record under a statutory retention window, and
+ * "the broker wants it off their board" is not a reason to destroy one.
+ *
+ * NOTHING WAS THROWN AWAY TO GET HERE. The 63-key manifest that wave measured is
+ * the retention ledger in `lib/kernel/listing-archive.ts:LISTING_CHILD_RULES`,
+ * read backwards: every `remove` and `cascade` key names rows the delete
+ * DESTROYED and the archive keeps, and every `detach` key names a pointer the
+ * delete NULLED and the archive keeps — `transactions.listing_id` above all,
+ * which is how a closed deal finds the property it closed on.
+ *
+ * THE ENGINE IS NOT RETIRED EITHER. `lib/kernel/child-safe-delete.ts` still
+ * serves `lib/kernel/tenant-creation-rollback.ts`, which is a genuine hard
+ * delete of a half-built tenant with no records to retain, and which this ruling
+ * does not touch. It simply no longer has a second caller.
+ *
+ * The state lives in `listings.deleted_at`, not in `status` — `status` is the
+ * record's own field (sold / withdrawn / expired) and overwriting it would
+ * destroy the fact retention exists to keep, quite apart from the live
+ * `listings_status_check` refusing the value. The full column argument and the
+ * reader evidence behind it are in the archive module's header.
  */
-export async function deleteListing(listingId: string) {
+export async function archiveListing(listingId: string) {
   try {
     if (!UUID_REGEX.test(listingId)) return { success: false, error: "Invalid listing ID" }
 
@@ -282,8 +299,7 @@ export async function deleteListing(listingId: string) {
 
     // Gate first, THEN the service client (CLAUDE.md §4). The tenant comes from
     // the session; `listingId` is a parameter and is therefore not trusted until
-    // this read ties it to that tenant. Everything below keys off it as a
-    // tenant-verified anchor, which is what makes the child steps safe.
+    // this read ties it to that tenant.
     const supabase = createServiceClient()
 
     const { data: owned, error: ownedErr } = await supabase
@@ -295,27 +311,103 @@ export async function deleteListing(listingId: string) {
     // supabase-js RESOLVES refusals (§3). A read that failed has NOT proved the
     // listing absent, and "nobody checked" must not render as "checked and fine"
     // — so a failed ownership check refuses instead of falling through.
-    if (ownedErr) return { success: false, error: "Could not verify this listing. Nothing was deleted." }
+    if (ownedErr) return { success: false, error: "Could not verify this listing. Nothing was changed." }
     if (!owned) return { success: false, error: "Listing not found" }
     if (owned.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden" }
 
-    const result = await deleteListingWithChildren(supabase, listingId, auth.brokerageId)
+    const result = await archiveListingRecord(supabase, listingId, auth.brokerageId)
     if (!result.ok) {
-      return { success: false, error: result.error ?? "This listing could not be removed." }
+      return { success: false, error: result.error ?? "This listing could not be archived." }
     }
+
+    // AUDIT. A retention record that leaves the working surface must say who
+    // took it off and when — that is the half a hard delete could never have.
+    // Best-effort and voided: the archive already happened and must not be
+    // reported as failed because an audit insert did.
+    await supabase.from("lifecycle_events").insert({
+      entity_type:   "listing",
+      entity_id:     listingId,
+      event_type:    KernelEvent.LISTING_ARCHIVED,
+      brokerage_id:  auth.brokerageId,
+      // The REAL accountable actor — under staff act-as this is the
+      // impersonator, not the impersonated identity.
+      actor_user_id: auth.actorUserId ?? null,
+      created_at:    result.outcome.archivedAt,
+      metadata: {
+        // The record's own status, READ BACK rather than written. Proof in the
+        // audit trail that archiving did not rewrite what the listing was.
+        status_at_archive: result.outcome.statusAfter,
+        retained_rows:     result.outcome.retainedTotal,
+        retained_tables:   Object.keys(result.outcome.retained).length,
+      },
+    }).then(() => null, () => null)
 
     revalidatePath("/listings")
     revalidatePath("/dashboard")
 
     return {
       success: true,
-      // What went with it, and what survived with a cleared pointer. A delete
-      // that cannot say this is the delete that was here before.
-      removed: result.outcome.childrenRemoved,
-      detached: result.outcome.detached,
+      // WHAT SURVIVED. The delete that stood here reported `removed` and
+      // `detached`; this reports the opposite number, which is the point of the
+      // reversal — these are the rows a delete would have destroyed or unlinked.
+      retained:      result.outcome.retained,
+      retainedTotal: result.outcome.retainedTotal,
+      status:        result.outcome.statusAfter,
+      archivedAt:    result.outcome.archivedAt,
     }
   } catch (error) {
-    return handleError(error, "deleteListing")
+    return handleError(error, "archiveListing")
+  }
+}
+
+/**
+ * THE WAY BACK. Built, not optional.
+ *
+ * A record that can be hidden and never un-hidden has been destroyed as far as
+ * the person looking for it is concerned, and "keep real estate records" is not
+ * satisfied by a one-way door. This is the second half of the archive
+ * (CLAUDE.md §1.2 — when a capability has only one half and the other is wanted,
+ * BUILD it), and without it `archiveListing` would be a delete with extra steps.
+ */
+export async function unarchiveListing(listingId: string) {
+  try {
+    if (!UUID_REGEX.test(listingId)) return { success: false, error: "Invalid listing ID" }
+
+    const auth = await requireCaller()
+    if (!auth.ok) return { success: false, error: auth.error }
+    if (auth.readOnly) return { success: false, error: READ_ONLY_ACTING_ERROR }
+
+    const supabase = createServiceClient()
+
+    const { data: owned, error: ownedErr } = await supabase
+      .from("listings")
+      .select("id, brokerage_id")
+      .eq("id", listingId)
+      .maybeSingle()
+
+    if (ownedErr) return { success: false, error: "Could not verify this listing. Nothing was changed." }
+    if (!owned) return { success: false, error: "Listing not found" }
+    if (owned.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden" }
+
+    const result = await unarchiveListingRecord(supabase, listingId, auth.brokerageId)
+    if (!result.ok) return { success: false, error: result.error ?? "This listing could not be restored." }
+
+    await supabase.from("lifecycle_events").insert({
+      entity_type:   "listing",
+      entity_id:     listingId,
+      event_type:    KernelEvent.LISTING_UNARCHIVED,
+      brokerage_id:  auth.brokerageId,
+      actor_user_id: auth.actorUserId ?? null,
+      created_at:    new Date().toISOString(),
+      metadata:      {},
+    }).then(() => null, () => null)
+
+    revalidatePath("/listings")
+    revalidatePath("/dashboard")
+
+    return { success: true }
+  } catch (error) {
+    return handleError(error, "unarchiveListing")
   }
 }
 

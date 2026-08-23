@@ -59,6 +59,33 @@ export async function getListingsService(params: {
       // UNCONDITIONAL. Every other predicate below is an optional NARROWING; this
       // one is the tenant boundary and does not get to be skipped.
       .eq("brokerage_id", params.brokerageId)
+      // ARCHIVE FILTER — also unconditional, and this is the reader that makes
+      // archiving mean anything.
+      //
+      // A listing is RETAINED, never deleted (owner's ruling: "listing shouldn't
+      // be deleted because of rules of needing to keep real estate records"), and
+      // `listings.deleted_at` carries that state — see the argument in
+      // lib/kernel/listing-archive.ts. THIS QUERY IS THE /listings LIST, and it
+      // is the path `archiveListing` revalidates. Without this predicate an
+      // archived listing stays on the board and the archive is a no-op: the
+      // record is stamped and nothing changes for the person who asked for it to
+      // go away.
+      //
+      // Measured 2026-08-23: of 511 `.from("listings")` call sites, 23 filtered
+      // `deleted_at` and every one of them was a working-surface reader (search,
+      // inventory, public site, sitemap, counts). Not one was a by-id record
+      // lookup. This is a working-surface reader and was one of the two canonical
+      // ones missing the filter; the other is app/dashboard/listings/page.tsx.
+      //
+      // NOT applied to by-id record reads — getListingById, and every resolver
+      // that pulls a listing for a transaction, offer, commission or document.
+      // Those are the RETENTION surface, and an archived listing must still open
+      // by id or it has been destroyed in every sense that matters.
+      //
+      // Pinned by scripts/listing-archive-simulator.ts section 3, with the
+      // pre-filter text as its positive control — a filter no test can see
+      // deleted is the half of a soft-delete that rots.
+      .is("deleted_at", null)
 
     if (params?.agentId) query = query.eq("agent_id", params.agentId)
     if (params?.status) query = query.eq("status", params.status)
