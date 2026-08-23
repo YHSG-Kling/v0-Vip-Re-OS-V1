@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 705 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 704 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -17,7 +17,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-08-23
  * source: public.live_schema_json()
- * body-sha256: ffecdd483bd6476814e9c9f529628f10016ee5d7ca6c784469952d946558dfa9
+ * body-sha256: c898c6a17d6c08f937bf6bb215fd389b2bc8afd4d5bd886e79a99e5235f4711d
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -461,11 +461,10 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   onboarding_steps: ["brokerage_id", "brokerage_id_or_zero", "category", "created_at", "day_number", "estimated_minutes", "id", "instructions", "required", "step_key", "step_name", "step_order", "success_criteria", "target_role", "updated_at", "video_url"],
   open_house_analytics: ["attendance_vs_predicted", "avg_lead_score", "avg_time_spent_minutes", "created_at", "date", "event_id", "id", "performance_insights", "rsvp_maybe_count", "rsvp_no_count", "rsvp_yes_count", "serious_buyers_count", "total_attendance", "total_attendees", "total_invitations", "total_invites_sent"],
   open_house_attendees: ["ai_lead_score", "arrival_time", "brokerage_id", "check_in_time", "contact_id", "created_at", "departure_time", "email", "event_id", "feedback_collected_at", "feedback_comments", "feedback_rating", "id", "instant_greeting_channel", "instant_greeting_message_id", "instant_greeting_sent_at", "interest_level", "name", "notes", "phone", "tcpa_consent", "working_with_agent"],
-  open_house_events: ["agent_id", "attendance_prediction", "brokerage_id", "competing_events_data", "created_at", "created_by", "description", "end_time", "event_date", "event_type", "id", "listing_id", "marketing_reach", "max_attendees", "notes", "packet_url", "qr_code_id", "registration_required", "start_time", "status", "weather_forecast"],
+  open_house_events: ["agent_id", "ai_recommended_time", "allow_walkins", "attendance_prediction", "brokerage_id", "cancellation_reason", "cancelled_at", "check_in_url", "competing_events_data", "created_at", "created_by", "description", "end_time", "event_date", "event_type", "id", "is_published", "listing_id", "marketing_reach", "max_attendees", "notes", "optimal_timing_score", "packet_url", "property_address", "published_at", "qr_code_id", "registration_required", "scheduled_at", "start_time", "status", "timezone", "title", "updated_at", "weather_forecast"],
   open_house_feedback: ["attendee_id", "brokerage_id", "concerns", "contact_id", "created_at", "event_id", "has_own_agent", "id", "interested_in_offer", "liked_most", "price_opinion", "rating"],
   open_house_invitations: ["brokerage_id", "channel", "clicked_at", "contact_id", "created_at", "event_id", "id", "invitation_type", "match_reasoning", "match_score", "message_id", "opened_at", "personalized_message", "rsvp_response", "rsvp_updated_at", "sent_at", "status"],
   open_house_rsvp_tracking: ["brokerage_id", "contact_id", "created_at", "event_id", "id", "rsvp_status", "rsvp_updated_at", "source"],
-  open_houses: ["agent_id", "ai_recommended_time", "allow_walkins", "attendance_prediction", "brokerage_id", "cancellation_reason", "cancelled_at", "check_in_url", "created_at", "description", "end_time", "event_date", "id", "is_published", "listing_id", "max_attendees", "optimal_timing_score", "property_address", "property_id", "published_at", "qr_code_data", "qr_code_url", "require_rsvp", "scheduled_at", "start_time", "status", "timezone", "title", "total_check_ins", "total_invitations_sent", "total_leads_generated", "total_rsvps", "updated_at", "weather_forecast"],
   orchestrator_tasks: ["attempts", "brokerage_id", "created_at", "executed_at", "id", "last_error", "payload", "scheduled_for", "status", "task_type", "updated_at"],
   outbound_message_compliance_log: ["block_reason", "brokerage_id", "channel", "contact_id", "created_at", "decision", "details", "email", "id", "initiated_by", "phone", "recipient_local_hour", "recipient_state"],
   outcome_reconciliations: ["brokerage_id", "channel", "claimed_at", "claimed_by_manager", "claimed_status", "contact_id", "created_at", "entity_id", "entity_type", "escalated_at", "explanation", "id", "lead_id", "provider_detail", "provider_ref", "provider_reported_at", "provider_status", "truth_source", "updated_at", "verdict"],

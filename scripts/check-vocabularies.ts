@@ -20,7 +20,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-08-23
  * source: public.live_check_constraints_json()
- * body-sha256: 60e8d6f5d9f7d25fbc78bcfd2b310ad30e15b53c216edf2916911e11a0d55768
+ * body-sha256: a7a839a6b12a604ae1e2efddfb0e3d2a18504b9d5a44d0c005db09c25d61f1b6
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -1056,7 +1056,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   open_house_events: {
     event_type: ["broker_open", "open_house", "virtual_open_house"],
-    status: ["active", "cancelled", "completed", "marketing", "scheduled"],
+    status: ["active", "cancelled", "completed", "draft", "marketing", "scheduled"],
   },
   open_house_feedback: {
     price_opinion: ["good_value", "priced_right", "too_high"],

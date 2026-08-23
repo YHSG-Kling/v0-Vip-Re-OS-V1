@@ -1,7 +1,7 @@
 /**
  * scripts/live-tables.ts
  *
- * EVERY relation the live public schema exposes — 766 of them — as a flat sorted list.
+ * EVERY relation the live public schema exposes — 764 of them — as a flat sorted list.
  *
  * This is the oracle for "does this name exist in the database", which SCHEMA_SNAPSHOT cannot be:
  * that file holds only the tables the code QUERIES and the database HAS (`referenced ∩ live`), so a
@@ -20,7 +20,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-08-23
  * source: public.live_schema_json()
- * body-sha256: 1c987c499bd83f8dee4cded0cb838bc09ca33968c2b2b8dc51e7d142a59c9d6e
+ * body-sha256: f8f16ed539367b5a0320229e9b42519f0f174d62be7fdf42df8854c25924d0a4
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -294,7 +294,6 @@ export const LIVE_TABLES: readonly string[] = [
   "deal_health_snapshots",
   "deal_team_members",
   "deconflict_suppression_log",
-  "demo_persona_contacts",
   "deposits",
   "direct_mail_campaigns",
   "direct_mail_presets",
@@ -508,7 +507,6 @@ export const LIVE_TABLES: readonly string[] = [
   "open_house_feedback",
   "open_house_invitations",
   "open_house_rsvp_tracking",
-  "open_houses",
   "orchestrator_tasks",
   "organization_members",
   "outbound_message_compliance_log",

@@ -13,6 +13,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { runtimeRoots, walkTs } from "./runtime-roots"
+import { blankComments } from "./strip-comments"
 
 /** `{ table: [column, …] }` — the shape of live_schema_json(). */
 export type LiveSchema = Record<string, string[]>
@@ -52,6 +53,18 @@ export function referencedTables(root: string): string[] {
       continue
     }
     if (!src.includes(".from(")) continue
+    // COMMENTS ARE NOT REFERENCES. This read the raw source until m547 made the omission
+    // load-bearing: the only `.from("open_houses")` left in any runtime root is a TOMBSTONE inside
+    // a JSDoc block in lib/listing-health/health-scorer.ts describing what the code used to do, and
+    // on the strength of that one comment a dropped table was written into
+    // schema-drift-unguarded-baseline.json — a RATCHET, which no amount of deleting code could ever
+    // clear because there was no code to delete. scripts/schema-drift-guard.ts already refuses to
+    // attribute a commented `.from()` (it carries tests for both the `//` and the `/* */` shape);
+    // the builder that decides what that guard COVERS did not, so the two disagreed about the same
+    // source. blankComments (not stripComments) because the positions below are computed from match
+    // indices and must keep pointing at the same offsets. Measured when this landed: 703 → 702
+    // referenced tables, one name, open_houses.
+    src = blankComments(src)
     let m: RegExpExecArray | null
     while ((m = fromRe.exec(src))) {
       const after = src.slice(m.index + m[0].length, m.index + m[0].length + 40)

@@ -18,12 +18,12 @@
  * credentials, so without the cache the identity-class guard goes blind — that is the only reason
  * it is committed.
  *
- * MEASURED AT GENERATION: 212 agents(id) columns across 203 tables, 33 agent-ish users(id) columns across 31 tables, 165 contact_id tables.
+ * MEASURED AT GENERATION: 212 agents(id) columns across 203 tables, 33 agent-ish users(id) columns across 31 tables, 164 contact_id tables.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-08-23
  * source: public.live_foreign_keys_json()
- * body-sha256: 91d475d002ad662a9b9df09c48a4f4e66c0078558ab910da454defa799c5fd53
+ * body-sha256: 23d5440567cbd9b8e2cc6d78799a84dd8fecff70e567e553c7165bc6dd52885d
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -140,6 +140,7 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   conversations: ["agent_id"],
   copilot_plans: ["agent_id"],
   cost_allocation: ["agent_id"],
+  credit_accounts: ["agent_id"],
   deposits: ["agent_id"],
   direct_mail_campaigns: ["agent_id"],
   drip_campaigns: ["agent_id"],
@@ -184,7 +185,6 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   offers: ["agent_id", "presented_to_seller_by_agent_id"],
   onboarding_ai_chats: ["agent_id"],
   open_house_events: ["agent_id"],
-  open_houses: ["agent_id"],
   pattern_adoptions: ["agent_id"],
   pattern_detections: ["agent_id"],
   pattern_predictions: ["agent_id"],
@@ -342,7 +342,6 @@ export const CONTACT_FK_TABLES: string[] = [
   "credit_status",
   "data_health_logs",
   "deconflict_suppression_log",
-  "demo_persona_contacts",
   "direct_mail_recipients",
   "direct_mail_responses",
   "document_requests",

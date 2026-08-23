@@ -242,11 +242,33 @@ function section1() {
 
   // m542's own outcome, seen through the cache: the pair is gone from BOTH the
   // live database and the generated map, so the ledger dropping it is right.
-  check("the generated cache agrees with m542 — open_houses.property_id is gone, listing_id remains",
-    !fkPairsToListings().has("open_houses.property_id") && fkPairsToListings().has("open_houses.listing_id"))
+  // THESE TWO ASSERTIONS WERE PINNED TO AN INTERMEDIATE STATE AND WENT RED WHEN
+  // THE WORLD MOVED PAST IT — the same shape as the "WRITTEN, NOT APPLIED"
+  // assertion fixed earlier in this session, and worth naming again because it
+  // keeps recurring during a multi-step migration.
+  //
+  // They read: "open_houses.property_id is gone, listing_id REMAINS". That was
+  // exactly right after m542 dropped the wrong FK. Then m543 established
+  // `open_house_events` as the survivor and m547 DROPPED `open_houses` entirely,
+  // so `listing_id` went with the table — and an assertion demanding it still
+  // exist now fails for the correct outcome.
+  //
+  // Re-pinned to the END STATE rather than the waypoint: the retired table is
+  // absent from the generated cache AND from the ledger, and the survivor's
+  // pointer is what carries the relationship.
+  check("the generated cache agrees with m542+m547 — open_houses is gone entirely, survivor remains",
+    !fkPairsToListings().has("open_houses.property_id")
+    && !fkPairsToListings().has("open_houses.listing_id")
+    && fkPairsToListings().has("open_house_events.listing_id"))
   check("and the ledger names only the survivor",
-    !LISTING_CHILD_RULES.some((r) => r.table === "open_houses" && r.column === "property_id") &&
-    LISTING_CHILD_RULES.some((r) => r.table === "open_houses" && r.column === "listing_id"))
+    !LISTING_CHILD_RULES.some((r) => r.table === "open_houses") &&
+    LISTING_CHILD_RULES.some((r) => r.table === "open_house_events" && r.column === "listing_id"))
+  // CONTROL — a checker that merely returns true for anything absent would pass
+  // both lines above. Prove the cache reader still FINDS a pair that is there and
+  // still MISSES one that never was.
+  check("CONTROL — the cache reader discriminates: a live pair is found, an invented one is not",
+    fkPairsToListings().has("transactions.listing_id")
+    && !fkPairsToListings().has("open_house_events.definitely_not_a_column"))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
