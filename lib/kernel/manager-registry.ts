@@ -1427,6 +1427,14 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   // See lib/vendors/vendor-money-directions.ts for all three paths stated as data.
   vendor_plans: "data_steward",
   vendor_ratings: "data_steward",
+  // m551. Coverage hangs off `vendor_marketplace_profiles` (data_steward, above),
+  // not off the per-tenant `vendors` bench row, because a title company's state
+  // licensure is a fact about the COMPANY and does not change when a second
+  // brokerage adds them. Ownership follows the parent for that reason.
+  // CROSS-COOPERATED: data_steward owns what a vendor IS and where it operates;
+  // compliance_officer owns the state-licence gate that makes an unlicensed
+  // cross-state booking unrepresentable; finance_manager owns what reach costs.
+  vendor_service_areas: "data_steward",
   vendor_subscriptions: "data_steward",
   vendor_usage_tracking: "data_steward",
   vendors: "data_steward",
