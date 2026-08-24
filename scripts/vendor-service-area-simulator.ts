@@ -243,6 +243,12 @@ function layerRulingA() {
 const AZ_STATEWIDE_TITLE: VendorCoverageRow = {
   state: "AZ", zipCode: null, tradeCategory: "title", status: "active",
   license: { policy_number: "TX-1", expiry: "2099-01-01" },
+  // REQUIRED, not optional, and null here on purpose: `notes` carries NO weight
+  // in vendorGeoVerdict, so this fixture must prove the verdict is unchanged by
+  // it. Leaving the field optional on VendorCoverageRow would let the next
+  // producer silently drop the column again — which is exactly how it came to be
+  // written by code and read by nobody.
+  notes: null,
 }
 
 /** A marketplace vendor covered and licensed where the job is. One field moves

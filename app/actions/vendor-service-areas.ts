@@ -392,7 +392,7 @@ export async function listSurfaceableBenchAction(params?: {
   if (platformIds.length > 0) {
     const { data: cov, error: covErr } = await svc
       .from("vendor_service_areas")
-      .select("platform_vendor_id, state, zip_code, trade_category, status, license")
+      .select("platform_vendor_id, state, zip_code, trade_category, status, license, notes")
       .in("platform_vendor_id", platformIds)
     if (covErr) {
       console.error("[vendor-service-areas] coverage read failed:", covErr)
@@ -406,6 +406,9 @@ export async function listSurfaceableBenchAction(params?: {
           tradeCategory: r.trade_category,
           status: r.status,
           license: r.license ?? null,
+          // Read back so the operator's caveat reaches the next person. It is
+          // display-only — vendorGeoVerdict never sees it.
+          notes: r.notes ?? null,
         })
         m.set(r.platform_vendor_id, list)
         return m

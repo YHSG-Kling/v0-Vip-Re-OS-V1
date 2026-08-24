@@ -120,7 +120,7 @@ export default async function VendorPortalDashboard({ searchParams }: { searchPa
   if (vendorRow?.platform_vendor_id) {
     const { data: cov, error: covErr } = await supabase
       .from("vendor_service_areas")
-      .select("id, state, zip_code, trade_category, status, license")
+      .select("id, state, zip_code, trade_category, status, license, notes")
       .eq("platform_vendor_id", vendorRow.platform_vendor_id)
       .order("state", { ascending: true })
     if (covErr) {

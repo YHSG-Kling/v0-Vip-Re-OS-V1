@@ -180,6 +180,22 @@ export interface VendorCoverageRow {
   /** The per-state licence, same record shape as
    *  vendors.compliance_credentials -> 'license'. null = none on file. */
   license: { expiry?: string | null; verified_at?: string | null; policy_number?: string | null } | null
+  /**
+   * The declaring operator's own note on this coverage row — "north of the river
+   * only", "licence renewal filed 3 Aug". Free text, no vocabulary.
+   *
+   * WIRED BECAUSE IT WAS WRITTEN AND READ BY NOBODY (§1.2). m551 created the
+   * column and `declareVendorServiceArea` writes it, but the coverage read
+   * selected six columns and this was not one of them, so every note an operator
+   * typed was stored and never shown back to anyone — which is worse than no
+   * field at all, because the operator believes the caveat has been recorded
+   * where the next person will see it.
+   *
+   * It carries NO weight in `vendorGeoVerdict`, deliberately: bookability is
+   * decided by state, ZIP, status and licence, and letting prose into that
+   * decision would make a compliance gate depend on something unparseable.
+   */
+  notes: string | null
 }
 
 /** One place the TENANT works — a `subscriber_service_areas` row, or the

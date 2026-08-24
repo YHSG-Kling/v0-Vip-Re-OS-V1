@@ -45,6 +45,9 @@ export interface VendorCoverageRowView {
   trade_category: string
   status: string
   license: { policy_number?: string; expiry?: string } | null
+  /** The declaring operator's own caveat on this row. Written by
+   *  `declareVendorServiceArea` and, until now, shown back to nobody. */
+  notes?: string | null
 }
 
 export function VendorCoveragePanel({
@@ -173,14 +176,27 @@ export function VendorCoveragePanel({
               No service areas declared yet — until one is, you cannot be booked anywhere.
             </p>
           ) : rows.map((r) => (
-            <div key={r.id} className="flex items-center justify-between rounded-md border p-2">
-              <div className="flex items-center gap-2 text-sm">
-                <Badge variant={r.status === "active" ? "default" : "secondary"}>{r.status}</Badge>
-                <span className="font-medium">{r.state}{r.zip_code ? ` · ${r.zip_code}` : " · statewide"}</span>
-                <span className="text-muted-foreground">{r.trade_category}</span>
-                {r.license?.policy_number && (
-                  <span className="text-xs text-muted-foreground">licence {r.license.policy_number}
-                    {r.license.expiry ? ` · exp ${r.license.expiry}` : ""}</span>
+            <div key={r.id} className="flex items-start justify-between rounded-md border p-2">
+              <div className="flex flex-col gap-1">
+                <div className="flex items-center gap-2 text-sm">
+                  <Badge variant={r.status === "active" ? "default" : "secondary"}>{r.status}</Badge>
+                  <span className="font-medium">{r.state}{r.zip_code ? ` · ${r.zip_code}` : " · statewide"}</span>
+                  <span className="text-muted-foreground">{r.trade_category}</span>
+                  {r.license?.policy_number && (
+                    <span className="text-xs text-muted-foreground">licence {r.license.policy_number}
+                      {r.license.expiry ? ` · exp ${r.license.expiry}` : ""}</span>
+                  )}
+                </div>
+                {/* THE NOTE, READ BACK. `vendor_service_areas.notes` was written by
+                    declareVendorServiceArea and selected by nothing, so a caveat an
+                    operator typed — "north of the river only", "renewal filed" —
+                    was stored and shown to no one. That is worse than having no
+                    field, because they believe it was recorded where the next
+                    person looks. It is display-only: vendorGeoVerdict decides
+                    bookability from state, ZIP, status and licence, and never from
+                    prose. */}
+                {r.notes && (
+                  <p className="text-xs text-muted-foreground">{r.notes}</p>
                 )}
               </div>
               {r.status === "active" && (
