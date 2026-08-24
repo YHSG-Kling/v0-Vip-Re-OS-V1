@@ -101,3 +101,66 @@ export function requireTenantedUnambiguousTenant<T extends TenantCandidate>(
   }
   return { ok: true, brokerageId: r.brokerageId, rows: r.rows }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// "WHICH ROW IS THE SUBJECT?" — ONE TENANT, TWO TABLES.
+//
+// OWNER RULING (2026-08-24), verbatim: "inbound should be checked on contact id
+// and leads are pulled from leads (contactid) which should this should be
+// checking on contacts and leads since the inbound can be for leads that haven't
+// converted yet."
+//
+// A person the OS is still cold-outreaching has a `leads` row and NO `contacts`
+// row — `leads.contact_id` is NULL until the promotion path stamps it. So an
+// identity lookup that reads `contacts` alone answers "we do not know this
+// person" for exactly the population whose do-not-contact request matters most,
+// and the request is dropped in silence.
+//
+// WIDENING THE SEARCH MAKES AMBIGUITY MORE LIKELY, NOT LESS: the same human can
+// be a lead at one brokerage and a contact at another. That is why the candidates
+// from both tables are UNIONED and handed to `resolveUnambiguousTenant` ABOVE
+// before this function is ever reached — resolving each table separately would
+// call each one individually unambiguous and never notice that the two disagree.
+// By the time this runs, exactly one tenant is on the table.
+//
+// PURE, so a simulator can EXECUTE the rule instead of pattern-matching it — the
+// same reason the tenant rule itself lives here (CLAUDE.md §2).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Which table an identity candidate was read from. */
+export type IdentityTable = "contacts" | "leads"
+
+export interface IdentitySubjectCandidate extends TenantCandidate {
+  id: string
+  table: IdentityTable
+}
+
+export type IdentitySubject =
+  | { kind: "contact"; id: string; brokerageId: string | null }
+  | { kind: "lead"; id: string; brokerageId: string | null }
+
+/**
+ * PURE. Pick the row to act on from candidates the tenant rule has ALREADY
+ * accepted (i.e. they all name one brokerage).
+ *
+ * THE CONTACT WINS WHEN THERE IS ONE. A converted person owns BOTH rows in that
+ * tenant, every contact-side compliance gate reads the CONTACT's flags, and the
+ * lead-side writer would only have mirrored back onto the contact anyway. The
+ * LEAD is the subject precisely when no contact row exists — which is the case
+ * the ruling is about.
+ *
+ * It is deliberately NOT "take rows[0]": the query order is an implementation
+ * detail of whichever table was read first, and a rule that depends on it would
+ * suppress the lead and leave the contact reachable the moment the reads are
+ * reordered.
+ */
+export function pickIdentitySubject<T extends IdentitySubjectCandidate>(
+  rows: T[] | null | undefined,
+): IdentitySubject | null {
+  const list = rows ?? []
+  const contact = list.find((r) => r.table === "contacts")
+  if (contact) return { kind: "contact", id: contact.id, brokerageId: contact.brokerage_id ?? null }
+  const lead = list.find((r) => r.table === "leads")
+  if (lead) return { kind: "lead", id: lead.id, brokerageId: lead.brokerage_id ?? null }
+  return null
+}
