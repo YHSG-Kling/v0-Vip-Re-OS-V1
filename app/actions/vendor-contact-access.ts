@@ -15,10 +15,37 @@
  * (caller must belong to the same brokerage as the vendor+contact) BEFORE
  * trusting the DB layer — defense in depth.
  *
- * Future paid add-on (vendor_subscriptions / vendor_plans tables already exist):
- *   vendor.access_level = 'brokerage_full_access' bypasses contact-by-contact
- *   gating via public.vendor_has_contact_access(). Today only superadmin can
- *   set that; commit-G will add the billing path.
+ * ── TWO DOORS, AND A VENDOR WITH NEITHER SEES NOTHING ────────────────────────
+ *
+ * OWNER RULING, verbatim:
+ *
+ *   "unless vendors are paying for contact access, a vendor is only able to
+ *    access a contact if they are assigned to that contact"
+ *
+ *   DOOR 1  ASSIGNMENT — the default, free, per contact. The rows this file
+ *           writes.
+ *   DOOR 2  PAID CONTACT ACCESS — bench-wide within one tenant, spelled
+ *           `vendors.access_level = 'brokerage_full_access'`.
+ *
+ * The note that used to sit here called door 2 a "future paid add-on" that
+ * "commit-G will add". That was stale in both directions: the DOOR has existed
+ * in the database since migration 1059 (public.vendor_has_contact_access is
+ * `EXISTS(active unexpired assignment) OR brokerage_full_access within tenant`),
+ * while the APPLICATION gate knew only about door 1 — so RLS and the business
+ * gate disagreed about who may see a contact, and the read path below could not
+ * show a vendor the contacts the database would have let it read.
+ *
+ * BOTH DOORS ARE NOW SPELLED IN ONE PLACE: lib/vendor/assignment-access.ts ::
+ * vendorContactAccessVerdict. This file reads through it rather than
+ * re-implementing the rule (§6). What is still deliberately NOT built here is
+ * the BILLING for door 2 — what a tenant may charge for contact access needs the
+ * owner's sign-off on price shape, and m549's single-platform-use trigger is not
+ * weakened by anything in this file.
+ *
+ * The paid door buys REACH, NOT DEPTH: it confers `pii_basic`/`pii_full` only.
+ * `transaction_docs` and `financial` stay assignment-only, because CLAUDE.md §5
+ * rules that vendors see no financials but their own — a bought bench-wide
+ * entitlement must not become a financial one. See PAID_ACCESS_GRANTED_SCOPES.
  */
 
 import { createClient } from "@/lib/supabase/server"
@@ -26,6 +53,10 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { readRoleGrants, selectVendorId } from "@/lib/auth/role-grants"
 import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
+import {
+  PAID_CONTACT_ACCESS_LEVEL,
+  type VendorAccessDoor,
+} from "@/lib/vendor/assignment-access"
 
 // SCOPE LADDER (kept inline — admits agent/tc tiers): 'superadmin' removed —
 // dead as users.user_type (0 live rows); broker_owner added — storable seat
@@ -287,23 +318,36 @@ export async function revokeVendorContactAccessAction(params: {
 // ── READ (vendor side) ───────────────────────────────────────────────────────
 
 export interface VendorAssignedContactRow {
-  assignment_id:  string
+  /** NULL for a contact reached through the PAID bench-wide door: there is no
+   *  assignment row behind it, and inventing an id would make a revoke button
+   *  that revokes nothing. */
+  assignment_id:  string | null
   contact_id:     string
   contact_name:   string
   contact_email:  string | null
   contact_phone:  string | null
   scope:          string
+  /** Which door this contact came through — so the portal can label a
+   *  per-contact grant differently from a bench-wide entitlement, and an
+   *  operator can see which is which. */
+  door:           VendorAccessDoor
   transaction_id: string | null
   property_address: string | null
   granted_at:     string
 }
 
 /**
- * Returns ONLY the contacts the calling vendor has active access to.
+ * Returns ONLY the contacts the calling vendor has active access to, through
+ * EITHER door — assignment, or paid bench-wide access.
+ *
  * Reads through service client + explicit join to bypass the cross-table
  * RLS (which would require the vendor to hold direct contacts read at the
  * exact moment of query — needlessly fragile). Business gate is the
- * user_role_assignments → vendor_id lookup.
+ * user_role_assignments → vendor_id lookup plus the checks below.
+ *
+ * THE PAID DOOR IS READ HERE TOO, not only in the per-contact gate. A door that
+ * opens in `assertVendorAssignedToContact` but not in the list is a half-built
+ * door: the vendor would be told it may read a contact it can never find.
  */
 export async function listVendorAssignedContactsAction(): Promise<
   | { ok: true; rows: VendorAssignedContactRow[] }
@@ -337,14 +381,31 @@ export async function listVendorAssignedContactsAction(): Promise<
   const svc = createServiceClient()
 
   // VENDOR-LEVEL EXPIRY (l49-s01, concierge §1.7) — assignment-level
-  // expires_at was already enforced below; this adds the whole-vendor
-  // time box (engagement ended = every assignment goes dark at once).
-  const { data: vendorRow } = await svc
-    .from("vendors").select("access_expires_at, status").eq("id", vendorId).maybeSingle()
-  if (vendorRow?.access_expires_at && new Date(vendorRow.access_expires_at).getTime() < Date.now()) {
+  // expires_at is enforced below; this is the whole-vendor time box (engagement
+  // ended = EVERY door goes dark at once, the paid one included). The read is
+  // error-checked: a refused vendor read must not read as "no time box set",
+  // which would leave an expired vendor listing contacts (CLAUDE.md §3, §4).
+  const { data: vendorRow, error: vendorErr } = await svc
+    .from("vendors")
+    .select("access_expires_at, status, access_level, brokerage_id")
+    .eq("id", vendorId)
+    .maybeSingle()
+  if (vendorErr) {
+    console.error("[vendor-contact-access] vendor read failed:", vendorErr)
+    return { ok: false, error: "Could not verify your vendor account — please retry" }
+  }
+  if (!vendorRow) return { ok: false, error: "Vendor record not found" }
+  // `status` was SELECTed here and never read — an archived or suspended vendor
+  // kept listing its clients. Both doors are gated on it now.
+  if (vendorRow.status && vendorRow.status !== "active") {
+    return { ok: false, error: "This vendor account is not active" }
+  }
+  if (vendorRow.access_expires_at && new Date(vendorRow.access_expires_at).getTime() < Date.now()) {
     return { ok: false, error: "Vendor access has expired — ask the brokerage to renew it" }
   }
 
+  // ── DOOR 1: assignments. Revoked/expired rows are excluded by the predicates,
+  // which is what makes a revoke real rather than cosmetic.
   const { data, error } = await svc
     .from("vendor_contact_assignments")
     .select(`
@@ -369,11 +430,51 @@ export async function listVendorAssignedContactsAction(): Promise<
       contact_email:    c?.email   ?? null,
       contact_phone:    c?.phone   ?? null,
       scope:            r.scope,
+      door:             "assignment" as const,
       transaction_id:   r.transaction_id,
       property_address: tx?.property_address ?? null,
       granted_at:       r.granted_at,
     }
   })
+
+  // ── DOOR 2: PAID bench-wide access. Only when the entitlement is actually set
+  // AND the vendor is anchored to a tenant — a null brokerage_id cannot open a
+  // brokerage-wide door, and reading it as "all contacts everywhere" would be
+  // the cross-tenant read CLAUDE.md §4 forbids. Deliberately NO financial or
+  // document fields: this door confers PII only (PAID_ACCESS_GRANTED_SCOPES).
+  if (vendorRow.access_level === PAID_CONTACT_ACCESS_LEVEL && vendorRow.brokerage_id) {
+    const seen = new Set(rows.map((r) => r.contact_id))
+    const { data: tenantContacts, error: tenantErr } = await svc
+      .from("contacts")
+      .select("id, first_name, last_name, email, phone, created_at")
+      .eq("brokerage_id", vendorRow.brokerage_id)
+      .order("created_at", { ascending: false })
+      .limit(500)
+    if (tenantErr) {
+      // The paid door failing to read is NOT "the vendor has no paid contacts".
+      // Refuse rather than silently serving the assignment list as if it were
+      // the whole answer — a short list that looks complete is the worse failure.
+      console.error("[vendor-contact-access] paid-door contact read failed:", tenantErr)
+      return { ok: false, error: "Could not load your contact access — please retry" }
+    }
+    for (const c of tenantContacts ?? []) {
+      // An explicit assignment WINS: it is the specific, human-made grant and it
+      // may carry a higher scope than the paid door ever confers.
+      if (seen.has(c.id as string)) continue
+      rows.push({
+        assignment_id:    null,
+        contact_id:       c.id as string,
+        contact_name:     [c.first_name, c.last_name].filter(Boolean).join(" ") || "Unknown",
+        contact_email:    (c.email as string) ?? null,
+        contact_phone:    (c.phone as string) ?? null,
+        scope:            "pii_basic",
+        door:             "paid_brokerage_access",
+        transaction_id:   null,
+        property_address: null,
+        granted_at:       (c.created_at as string) ?? new Date().toISOString(),
+      })
+    }
+  }
 
   return { ok: true, rows }
 }

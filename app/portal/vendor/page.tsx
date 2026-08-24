@@ -10,6 +10,7 @@ import { Wrench, Calendar, CheckCircle2, Clock, DollarSign, FileText, MessageSqu
 import { VendorJobsList } from "@/components/vendor/jobs-list"
 import { VendorJobDetail } from "@/components/vendor/job-detail"
 import { InternalAIAssistant } from "@/app/components/shared/internal-ai-assistant"
+import { VendorCoveragePanel } from "./vendor-coverage-panel"
 
 export default async function VendorPortalDashboard({ searchParams }: { searchParams: Promise<{ vendorId?: string; jobId?: string }> }) {
   const params = await searchParams
@@ -97,6 +98,39 @@ export default async function VendorPortalDashboard({ searchParams }: { searchPa
   const selectedJobId = params.jobId
   const selectedJob = selectedJobId ? jobs.find(j => j.id === selectedJobId) : null
 
+  // SERVICE AREAS (m551). Read here rather than in the client panel so the page
+  // is one round trip, and read through the SESSION's own vendor row — the
+  // coverage rows hang off the GLOBAL identity this bench row points at, so a
+  // bench row with no platform_vendor_id simply has none, which the panel says
+  // plainly instead of showing a form that cannot save.
+  //
+  // Errors are destructured and READ (CLAUDE.md §3): a refused coverage read
+  // resolving to `data: null` would render as "you have declared no service
+  // areas", which is the opposite of the truth and would invite the vendor to
+  // re-declare coverage they already hold.
+  const { data: vendorRow, error: vendorRowErr } = await supabase
+    .from("vendors")
+    .select("platform_vendor_id, category")
+    .eq("id", vendorId)
+    .maybeSingle()
+  if (vendorRowErr) console.error("[portal/vendor] vendor row read failed:", vendorRowErr)
+
+  let coverageRows: any[] = []
+  let coverageReadFailed = false
+  if (vendorRow?.platform_vendor_id) {
+    const { data: cov, error: covErr } = await supabase
+      .from("vendor_service_areas")
+      .select("id, state, zip_code, trade_category, status, license")
+      .eq("platform_vendor_id", vendorRow.platform_vendor_id)
+      .order("state", { ascending: true })
+    if (covErr) {
+      console.error("[portal/vendor] service-area read failed:", covErr)
+      coverageReadFailed = true
+    } else {
+      coverageRows = cov ?? []
+    }
+  }
+
   const upcomingCount = jobs?.filter((j: any) => j.status === "scheduled" && new Date(j.vendor_assignments?.scheduled_date) >= new Date())?.length || 0
   const completedCount = jobs?.filter((j: any) => j.status === "completed")?.length || 0
   const activeCount = jobs?.filter((j: any) => j.status === "in_progress")?.length || 0
@@ -172,6 +206,24 @@ export default async function VendorPortalDashboard({ searchParams }: { searchPa
           </CardContent>
         </Card>
       </div>
+
+      {/* WHERE THIS COMPANY WORKS (m551). Without a declared service area the
+          booking gate refuses every booking with `vendor_coverage_unknown` —
+          correctly, and permanently, so this panel is not optional furniture. */}
+      {coverageReadFailed ? (
+        <Card>
+          <CardContent className="p-6 text-sm text-muted-foreground">
+            We could not load your service areas just now. Please refresh — this is a read
+            failure, not a sign that you have none.
+          </CardContent>
+        </Card>
+      ) : (
+        <VendorCoveragePanel
+          platformVendorId={(vendorRow?.platform_vendor_id as string) ?? null}
+          tradeCategory={(vendorRow?.category as string) ?? null}
+          rows={coverageRows as any}
+        />
+      )}
 
       {/* Jobs List and Detail View */}
       {!selectedJobId ? (

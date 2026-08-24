@@ -30,6 +30,7 @@ import {
 } from "@/app/actions/vendor-marketplace"
 import { Store, FileText, Star, CheckCircle2, KeyRound, Layers } from "lucide-react"
 import { VendorAccessPanel } from "./vendor-access-panel"
+import { BenchCoveragePanel } from "./bench-coverage-panel"
 import { VendorPortalInvitePanel } from "./vendor-portal-invite-panel"
 import { VendorPlanCataloguePanel } from "./vendor-plan-catalogue-panel"
 import { listVendorAssignmentsForBrokerageAction } from "@/app/actions/vendor-contact-access"
@@ -611,6 +612,11 @@ export default async function VendorsPage() {
             loadError={accessLoadError}
             canRevoke={canRevokeAccess}
           />
+          {/* WHERE the bench can work, as opposed to WHAT a signed-in vendor may
+              see. m551: coverage belongs to the company, and a vendor that has
+              declared none is not bookable — the panel shows the refusals rather
+              than quietly shortening the list. */}
+          <BenchCoveragePanel />
         </TabsContent>
 
         {/* Tab 6: Vendor packages — the brokerage's own catalogue (money vendor → brokerage) */}

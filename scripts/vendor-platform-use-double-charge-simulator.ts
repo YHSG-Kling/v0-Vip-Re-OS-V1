@@ -45,6 +45,7 @@ import {
   PLATFORM_USE_PAYING_STATUSES,
   PLATFORM_USE_ACTIVE_ENROLMENT_STATUSES,
   SHARED_VENDOR_CONTACT_ACCESS_SURFACE,
+  SHARED_VENDOR_CONTACT_ACCESS_GATE,
   SHARED_VENDOR_CONTACT_ACCESS_VERDICT,
   type PlatformUseFacts,
 } from "../lib/vendors/vendor-platform-identity"
@@ -160,9 +161,29 @@ function layer1() {
   check("contact access is named as an EXISTING surface, not a new one to build",
     SHARED_VENDOR_CONTACT_ACCESS_SURFACE.startsWith("app/actions/vendor-contact-access.ts")
     && existsSync(join(ROOT, "app/actions/vendor-contact-access.ts")))
-  check("…and the verdict says it is GRANTED, not sold",
-    /granted, not sold/i.test(SHARED_VENDOR_CONTACT_ACCESS_VERDICT)
-    && /carries no fee/i.test(SHARED_VENDOR_CONTACT_ACCESS_VERDICT))
+  // WAS: /granted, not sold/ && /carries no fee/. That was a WAYPOINT assertion
+  // (CLAUDE.md §2) and it failed the moment the work finished. Those words were
+  // the previous wave's FAIL-CLOSED reading of a question the owner had not yet
+  // answered — whether contact access may be sold at all — and pinning to them
+  // meant this check could only stay green while that question stayed open. The
+  // owner has since ruled ("unless vendors are paying for contact access, a
+  // vendor is only able to access a contact if they are assigned to that
+  // contact"), so a paid door exists and the old wording is now wrong.
+  //
+  // What m549 actually rules, and what this must therefore assert, is narrower
+  // and permanent: contact access is what a second tenant gets INSTEAD of a
+  // second PLATFORM-USE charge, it points at an existing surface, and it is
+  // decided by one gate. Whether contact access itself carries a fee is not
+  // m549's business and is no longer asserted here.
+  check("…and the verdict scopes the no-double-charge rule to PLATFORM USE, not to contact access",
+    /platform use/i.test(SHARED_VENDOR_CONTACT_ACCESS_VERDICT)
+    && /contact/i.test(SHARED_VENDOR_CONTACT_ACCESS_VERDICT))
+  check("…and it names the ONE gate that decides contact access (no second spelling)",
+    SHARED_VENDOR_CONTACT_ACCESS_GATE.startsWith("lib/vendor/assignment-access.ts")
+    && existsSync(join(ROOT, "lib/vendor/assignment-access.ts"))
+    && SHARED_VENDOR_CONTACT_ACCESS_VERDICT.includes(SHARED_VENDOR_CONTACT_ACCESS_GATE))
+  check("…and it still forbids a contact-access charge riding the platform-use lanes m549 guards",
+    /never be raised on the platform-use lanes/i.test(SHARED_VENDOR_CONTACT_ACCESS_VERDICT))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -417,6 +438,6 @@ async function main() {
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
   console.log(` RESULT: ${pass} passed, ${fail} failed`)
   if (fail > 0) { console.log(" ❌ VENDOR_PLATFORM_USE_FAIL"); process.exit(1) }
-  console.log(" ✅ VENDOR_PLATFORM_USE_PASS — a vendor already paying for platform use cannot be charged for it again; the second tenant gets contact access, free")
+  console.log(" ✅ VENDOR_PLATFORM_USE_PASS — a vendor already paying for platform use cannot be charged for PLATFORM USE again; the second tenant gets contact access instead (whose own two doors are proved by test:vendor-service-area)")
 }
 main()

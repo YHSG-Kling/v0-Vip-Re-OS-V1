@@ -76,7 +76,10 @@ export default async function VendorContactsPage() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {r.rows.map(c => (
-            <Card key={c.assignment_id}>
+            // A contact reached through the PAID bench-wide door has NO
+            // assignment row, so assignment_id is null there and cannot be the
+            // key — every paid row would collide on `null`.
+            <Card key={c.assignment_id ?? `paid:${c.contact_id}`}>
               <CardHeader className="pb-3">
                 <div className="flex justify-between items-start">
                   <CardTitle className="text-base">{c.contact_name}</CardTitle>
@@ -102,8 +105,13 @@ export default async function VendorContactsPage() {
                     {c.contact_phone}
                   </a>
                 )}
+                {/* Say which door this contact came through. "Assigned" on a row
+                    reached by bench-wide access would be a false provenance —
+                    nobody assigned it, and there is nothing to revoke. */}
                 <p className="text-[10px] text-muted-foreground pt-1">
-                  Assigned {new Date(c.granted_at).toLocaleDateString()}
+                  {c.door === "assignment"
+                    ? `Assigned ${new Date(c.granted_at).toLocaleDateString()}`
+                    : "Included in your brokerage-wide contact access"}
                 </p>
                 {vendorId && (
                   <ContactMessagePanel

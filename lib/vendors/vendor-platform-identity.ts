@@ -442,18 +442,49 @@ export async function assertVendorChargeableForPlatformUse(
 
 /**
  * What the second tenant DOES get, named here so no caller has to guess and no
- * one builds a second, paid spelling of it. The ruling grants CONTACT ACCESS —
- * and grants it, rather than selling it. That capability already exists in full
- * (CLAUDE.md §1.3, functionality lives elsewhere):
- * app/actions/vendor-contact-access.ts :: assignVendorToContactAction, backed by
- * vendor_contact_assignments and public.vendor_has_contact_access().
+ * one builds a second spelling of it. The ruling grants CONTACT ACCESS; that
+ * capability already exists in full (CLAUDE.md §1.3, functionality lives
+ * elsewhere): app/actions/vendor-contact-access.ts :: assignVendorToContactAction,
+ * backed by vendor_contact_assignments and public.vendor_has_contact_access().
+ *
+ * ── CORRECTED: AN OPEN QUESTION WAS CLOSED, IN THE OTHER DIRECTION ───────────
+ *
+ * The wording here used to end "Contact access carries no fee on any lane."
+ * That was a FAIL-CLOSED READING of an open question, not a ruling: the m549
+ * ruling named contact access as what REPLACES a second platform-use charge,
+ * and said nothing about whether contact access could itself ever be sold. With
+ * that open, refusing to charge was the safe answer, and the sentence recorded
+ * the safe answer as though it were settled — which is exactly how a placeholder
+ * becomes a rule nobody revisits.
+ *
+ * The owner has now closed it, verbatim:
+ *
+ *   "unless vendors are paying for contact access, a vendor is only able to
+ *    access a contact if they are assigned to that contact"
+ *
+ * So there are TWO doors — ASSIGNMENT (default, free) and PAID CONTACT ACCESS —
+ * and a vendor holding neither sees nothing. Both are spelled in ONE place:
+ * lib/vendor/assignment-access.ts :: vendorContactAccessVerdict.
+ *
+ * WHAT DID NOT CHANGE, and must not: m549's rule that a vendor already paying
+ * for PLATFORM USE is not charged for platform use again. Contact access and
+ * platform use are different products; the trigger m549 installed on
+ * vendor_subscriptions and vendor_invoices is untouched. NOTHING PRICES CONTACT
+ * ACCESS YET — the price shape needs the owner's sign-off, and no lane may make
+ * a contact-access charge ride on the platform-use lanes that trigger guards.
  */
 export const SHARED_VENDOR_CONTACT_ACCESS_SURFACE =
   "app/actions/vendor-contact-access.ts :: assignVendorToContactAction"
 
+export const SHARED_VENDOR_CONTACT_ACCESS_GATE =
+  "lib/vendor/assignment-access.ts :: vendorContactAccessVerdict"
+
 export const SHARED_VENDOR_CONTACT_ACCESS_VERDICT =
-  "A vendor already paying for platform use is not charged again by a second brokerage, team or agent. " +
-  "What the second tenant gets is ACCESS TO THEIR CONTACTS, granted through " +
+  "A vendor already paying for platform use is not charged again for PLATFORM USE by a second brokerage, " +
+  "team or agent. What the second tenant gets is ACCESS TO THEIR CONTACTS, granted through " +
   SHARED_VENDOR_CONTACT_ACCESS_SURFACE +
-  " — and granted, not sold: the ruling names contact access as what replaces the charge, not as a " +
-  "cheaper charge. Contact access carries no fee on any lane."
+  ". Contact access has TWO doors — ASSIGNMENT, the free default, or PAID CONTACT ACCESS — and a vendor " +
+  "holding neither sees nothing; both are decided in one place, " +
+  SHARED_VENDOR_CONTACT_ACCESS_GATE +
+  ". Contact access is NOT priced anywhere yet: the price shape is the owner's to rule on, and a " +
+  "contact-access charge must never be raised on the platform-use lanes m549 guards."
