@@ -69,11 +69,25 @@ import {
   type IsaSettingsResult,
 } from '@/lib/ai-isa/resolve-isa-settings'
 import { type AIISASettings } from '@/lib/ai-isa/settings-types'
+import { TENANT_ADMIN_USER_TYPES } from '@/lib/auth/resolve-user-role'
 
 // ── Roles allowed to write TENANT-scoped settings ───────────────────────────
 // An agent may always write their OWN row (that is the ruling); changing the
 // brokerage's or a team's answer stays a manager decision.
-const TENANT_WRITE_ROLES = new Set(['broker', 'broker_admin', 'broker_owner', 'admin', 'team_lead'])
+//
+// DERIVED, NOT RESTATED (§6). This was `new Set(['broker', 'broker_admin',
+// 'broker_owner', 'admin', 'team_lead'])` — the five members of
+// TENANT_ADMIN_USER_TYPES, retyped. That Set's own header asks surfaces needing
+// a Set to derive it "instead of restating it… retyping the five is the
+// duplication the ruling forbids", and lib/vendors/vendor-scope.ts and
+// lib/auth/authorize-for-user.ts already spread it the same way.
+//
+// The duplication was not theoretical: `broker_admin` became a real user type
+// only under the owner's 2026-08-22 ruling, and every hand-typed copy of this
+// roster is a place it can be missed. An inline copy silently stops agreeing
+// with the roster the moment a member is added — and it would fail OPEN on a
+// write gate, which is the wrong direction (§4).
+const TENANT_WRITE_ROLES = TENANT_ADMIN_USER_TYPES
 
 /**
  * The caller's own cascade scope, from the SESSION. Never from a parameter.
