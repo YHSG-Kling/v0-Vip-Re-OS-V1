@@ -174,23 +174,61 @@ export interface ScopeOwner {
 }
 
 /**
+ * THE ORDER OF THE OWNERSHIP CASCADE, most-specific first — one definition.
+ *
+ * `scopeCascade` below derives from it, and so does every OTHER owner-scoped
+ * store that resolves most-specific-wins: lib/ai-isa/resolve-isa-settings.ts
+ * walks the internal four for `ai_isa_settings`. Those stores could not simply
+ * call `scopeCascade`, because the ID CLASS at the agent tier differs per store —
+ * `platform_credentials` keys the agent tier by **users.id** (hence
+ * `ScopeContext.agentUserId`), while `ai_isa_settings.agent_id` and
+ * `brand_voice_profile.agent_id` key it by **agents.id**, and CLAUDE.md §3 records
+ * that those two id spaces are DISJOINT (23503). Substituting one for the other
+ * produces a query that always returns nothing — i.e. a per-agent customization
+ * that silently falls through to the brokerage's.
+ *
+ * So the ORDER is shared here (one vocabulary, §6) and the id map stays each
+ * store's own. Anything that re-types this order in a second array is the defect
+ * this constant exists to prevent.
+ */
+export const OWNER_CASCADE_ORDER: readonly ConnectionScope[] = [
+  "vendor", "contact", "agent", "team", "brokerage", "platform",
+] as const
+
+/** The tiers an INTERNAL actor (an agent inside a team inside a brokerage) walks. */
+export const INTERNAL_CASCADE_ORDER: readonly ConnectionScope[] =
+  OWNER_CASCADE_ORDER.filter((s) => s !== "vendor" && s !== "contact")
+
+/**
  * Pure: ordered owners to try for a connection, most-specific first. For an internal actor
  * (agent within a team/brokerage) the cascade is agent → team → brokerage → platform. For a
  * leaf actor (vendor/contact) it is just that actor → platform (they are not part of a
  * brokerage's credential cascade — they bring their own social/calendar only).
  */
 export function scopeCascade(ctx: ScopeContext): ScopeOwner[] {
-  const owners: ScopeOwner[] = []
-  if (ctx.vendorId) {
-    owners.push({ ownerType: "vendor", ownerId: ctx.vendorId })
-  } else if (ctx.contactId) {
-    owners.push({ ownerType: "contact", ownerId: ctx.contactId })
-  } else {
-    if (ctx.agentUserId) owners.push({ ownerType: "agent", ownerId: ctx.agentUserId })
-    if (ctx.teamId) owners.push({ ownerType: "team", ownerId: ctx.teamId })
-    if (ctx.brokerageId) owners.push({ ownerType: "brokerage", ownerId: ctx.brokerageId })
+  // Ids per tier for THIS store. `platform` is a singleton, so its id is the
+  // literal — there is exactly one platform.
+  const idFor: Partial<Record<ConnectionScope, string | null | undefined>> = {
+    vendor: ctx.vendorId,
+    contact: ctx.contactId,
+    agent: ctx.agentUserId,
+    team: ctx.teamId,
+    brokerage: ctx.brokerageId,
+    platform: "platform",
   }
-  owners.push({ ownerType: "platform", ownerId: "platform" })
+  // A leaf actor is NOT part of a brokerage's cascade — it is that actor, then the
+  // platform. Selecting the tier list first keeps that rule in one place.
+  const tiers = ctx.vendorId
+    ? (["vendor", "platform"] as const)
+    : ctx.contactId
+      ? (["contact", "platform"] as const)
+      : INTERNAL_CASCADE_ORDER
+
+  const owners: ScopeOwner[] = []
+  for (const ownerType of tiers) {
+    const ownerId = idFor[ownerType]
+    if (ownerId) owners.push({ ownerType, ownerId })
+  }
   return owners
 }
 

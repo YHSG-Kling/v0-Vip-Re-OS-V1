@@ -233,8 +233,13 @@ export default async function VoiceISAPage() {
   // went with it: that test was its only consumer.
   const callingReadiness = await resolveIsaCallingReadiness(supabase, brokerageId)
   const isaActive      = brokerageId ? (await getAIISASettings(brokerageId)).enabled : false
-  // require_broker_approval has no real store (it existed only on the phantom ai_isa_settings
-  // table, which was never written) — its effective value was always the `?? false` fallback.
+  // require_broker_approval still has no WRITER. The `ai_isa_settings` table is no
+  // longer phantom — m552 gave it the per-user owner grain and
+  // lib/ai-isa/resolve-isa-settings.ts::writeIsaSettings writes it — but that
+  // writer sets is_active + settings, and `require_broker_approval` is not a key of
+  // AIISASettings, so the COLUMN remains writer-less and reading it would be
+  // reading a value nobody can set. Still the honest `false`; the open half is a
+  // writer, not a reader.
   const requiresBrokerApproval = false
 
   return (

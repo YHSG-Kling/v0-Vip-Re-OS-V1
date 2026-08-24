@@ -10,6 +10,8 @@ import {
   recordCronFailureAction,
 } from '@/app/actions/cron-kernel'
 import { verifyCronAuth } from "@/lib/cron-auth"
+import { ISA_SERVICE_IDENTITY, isaTenantWorkQueue } from "@/lib/ai-isa/isa-acting-scope"
+import { scopeBrokerageId } from "@/lib/kernel/tenant-scope"
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 300
@@ -73,8 +75,32 @@ export async function GET(request: NextRequest) {
     if (r.brokerage_id) settingsByBrokerage.set(r.brokerage_id as string, (r.additional_settings as Record<string, unknown>) ?? {})
   }
 
-  for (const brokerage of brokerages ?? []) {
-    const brokerageId = brokerage.id
+  // ── THE ISA WORKS FOR ONE TENANT AT A TIME (owner ruling, 2026-08-24) ──────
+  //
+  // This cron IS the AI ISA acting for the PLATFORM: it sweeps every brokerage.
+  // That is legitimate — the ruling says the ISA "works for 1 tenant at a time
+  // and works for the platform as well" — but the platform-wide half must execute
+  // as a SEQUENCE of single-tenant scopes, never as one wide one. The loop used
+  // to carry a raw `brokerage.id` string, which is the shape that lets a tenant
+  // predicate be forgotten on any one of the ~15 reads below and silently return
+  // every brokerage's rows through the service client.
+  //
+  // `isaTenantWorkQueue` turns the brokerage list into exactly that sequence:
+  // each element is a TenantScope of kind "tenant" carrying ONE id, and it
+  // REFUSES rather than widening if a tenant is unset. A brokerage row with a
+  // blank id no longer becomes an unfiltered pass over the platform; it is simply
+  // not in the queue.
+  const isaWork = isaTenantWorkQueue({
+    ...ISA_SERVICE_IDENTITY,
+    brokerageIds: (brokerages ?? []).map((b) => b.id as string | null),
+    where: 'cron/stale-contact-monitor',
+  })
+
+  for (const isaScope of isaWork) {
+    // Singular by construction — scopeBrokerageId returns null only for a
+    // platform scope, and the queue never contains one.
+    const brokerageId = scopeBrokerageId(isaScope)
+    if (!brokerageId) continue
     const settings = settingsByBrokerage.get(brokerageId) ?? null
 
     // Use brokerage-configured threshold or default 14 days

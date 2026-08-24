@@ -25,8 +25,13 @@
 // If the roster changes, it changes HERE, and the DB CHECK plus is_platform_staff()
 // change with it.
 //
-// `ai_isa_system` is deliberately absent. It is a legal users.platform_role value,
-// but it marks the two automated ISA service accounts, not a member of staff.
+// `ai_isa_system` is deliberately absent from THIS array. It is a legal
+// users.platform_role value, but it marks the two automated ISA service accounts,
+// not a member of staff. It IS a platform actor — see PLATFORM_ACTOR_ROLES and
+// platformActorKind() below, added when the owner ruled that the ISA "works for
+// 1 tenant at a time and works for the platform as well". Staff, actor and
+// total-control are three different questions and this file answers all three
+// separately rather than letting one stand in for another.
 
 export const PLATFORM_STAFF_ROLES = ["superadmin", "admin", "marketing", "support"] as const
 export type PlatformStaffRole = (typeof PLATFORM_STAFF_ROLES)[number]
@@ -92,6 +97,92 @@ export type PlatformNonHumanRole = (typeof PLATFORM_NONHUMAN_ROLES)[number]
 
 export function isNonHumanPlatformRole(role: string | null | undefined): role is PlatformNonHumanRole {
   return !!role && (PLATFORM_NONHUMAN_ROLES as readonly string[]).includes(role)
+}
+
+// ── "PLATFORM ACTOR" AND "TOTAL CONTROL" ARE TWO DIFFERENT QUESTIONS ─────────
+//
+// OWNER RULING (2026-08-24), verbatim:
+//
+//   "ai isa system works for 1 tenant at a time and works for the platform as well"
+//
+// This CORRECTS a reading the previous wave shipped. The refusal above is right
+// and stays: `ai_isa_system` must never inherit "total control over the complete
+// os system". But the wave's PROSE went further than the ruling and read as "the
+// ISA is not a platform role at all", which the database contradicts —
+// users_platform_role_check admits it, and the two live rows carry it.
+//
+// The two questions are now spelled apart, because collapsing them is how a
+// service account either gets handed the whole OS (too permissive) or gets
+// treated as a tenant user and loses the platform work it legitimately does
+// (too restrictive):
+//
+//     isPlatformActorRole(role)             ← does this identity act ABOVE one tenant?
+//     isPlatformSuperadminIdentity(…)       ← does it have TOTAL CONTROL?
+//
+// `ai_isa_system` answers YES to the first and NO to the second. Every human
+// staff role answers YES to the first; only superadmin answers YES to the second.
+// A tenant user answers NO to both.
+//
+// THE LOAD-BEARING HALF IS NOT THIS PREDICATE. "Works for one tenant at a time"
+// is a property of a SESSION, not of a role string, and it cannot be answered
+// here because nothing in an identity says which tenant it is currently acting
+// for. That question is answered — and REFUSED when unset or plural — by
+// lib/ai-isa/isa-acting-scope.ts::resolveIsaActingScope, which returns the
+// TenantScope vocabulary from lib/kernel/tenant-scope.ts. This function exists so
+// that resolver has ONE definition of "is this the ISA service actor" to gate on,
+// rather than a 65th re-spelling of a platform_role comparison.
+
+/** Every platform_role: the human staff roster AND the non-human service roles. */
+export const PLATFORM_ACTOR_ROLES = [...PLATFORM_STAFF_ROLES, ...PLATFORM_NONHUMAN_ROLES] as const
+export type PlatformActorRole = (typeof PLATFORM_ACTOR_ROLES)[number]
+
+/**
+ * Does this platform_role act ABOVE a single tenant — as staff OR as a service
+ * account? Deliberately NOT the same test as `isPlatformSuperadminIdentity`:
+ * being a platform actor grants no capability by itself.
+ */
+export function isPlatformActorRole(role: string | null | undefined): role is PlatformActorRole {
+  return isPlatformStaffRole(role) || isNonHumanPlatformRole(role)
+}
+
+/**
+ * WHICH KIND of platform actor an identity is, in one word.
+ *
+ *   "staff"    a human platform employee (capabilities via platformStaffCan)
+ *   "service"  an automated platform account — the AI ISA today
+ *   null       not a platform actor at all (an ordinary tenant user)
+ *
+ * Reads BOTH identity columns for the same reason every predicate in this file
+ * does: neither alone answers it. The legacy `user_type='superadmin'` marker
+ * still counts as staff, and the service refusal is checked FIRST so a row that
+ * somehow carried both could not be promoted by the legacy arm. (The database
+ * already forbids that combination — users_isa_actor_shape_check forces
+ * user_type='system' for an ai_isa_system row — so this is defence in depth, not
+ * a live hole.)
+ */
+export function platformActorKind(
+  userType: string | null | undefined,
+  platformRole: string | null | undefined,
+): "staff" | "service" | null {
+  if (isNonHumanPlatformRole(platformRole)) return "service"
+  if (isPlatformStaffRole(platformRole)) return "staff"
+  return userType === "superadmin" ? "staff" : null
+}
+
+/**
+ * THE ONE TEST for "this identity is the AI ISA service actor".
+ *
+ * Both columns, both required: the DB CHECK pairs platform_role='ai_isa_system'
+ * with user_type='system', so an identity that carries only one of them is not
+ * an ISA actor — it is a malformed row, and the fail-closed answer to a malformed
+ * row is NO. Written here rather than in the ISA module so the ISA scope resolver
+ * and any future ISA gate share one definition (§6).
+ */
+export function isAiIsaSystemIdentity(
+  userType: string | null | undefined,
+  platformRole: string | null | undefined,
+): boolean {
+  return platformRole === "ai_isa_system" && userType === "system"
 }
 
 /**

@@ -19,7 +19,11 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { aiGenerateTouchpoint } from "@/app/actions/ai-sphere-management"
-import { isCapabilityEnabled } from "@/app/actions/ai-isa-settings"
+// THE RESOLVER, not the server action: this is a cron path with no session, so
+// the action's session-derived per-user tier would always be empty here. Calling
+// the resolver directly lets each contact's OWN agent govern their auto-touch
+// (owner ruling: "ai customizations are also per user").
+import { isIsaCapabilityEnabledForScope } from "@/lib/ai-isa/resolve-isa-settings"
 
 type LifeEventType =
   | "job_change"
@@ -134,7 +138,26 @@ async function processBrokerageResonance(
     return { contactsScanned: 0, eventsResonated: 0, autoQueued: 0, surfacedOnly: 0, sensitiveSkipped: 0 }
   }
 
-  const autoTouchEnabled = await isCapabilityEnabled(brokerageId, "predictive_listing_auto_touch")
+  // PER AGENT, not per brokerage. This was one brokerage-wide answer applied to
+  // every contact in the batch, which is precisely the grain the owner's ruling
+  // says is wrong: an agent who turned auto-touch off still had it run for their
+  // own sphere. Memoized per agent so a 500-contact batch costs one resolution
+  // per distinct agent, not one per contact.
+  const autoTouchByAgent = new Map<string, boolean>()
+  const autoTouchAllowed = async (agentId: string | null): Promise<boolean> => {
+    const key = agentId ?? ""
+    const cached = autoTouchByAgent.get(key)
+    if (cached !== undefined) return cached
+    // `contacts.agent_id` is agents.id — the id class ai_isa_settings.agent_id
+    // stores. A null agent falls to the brokerage tier, which is the correct
+    // owner for an unassigned contact.
+    const allowed = await isIsaCapabilityEnabledForScope(
+      { agentId, brokerageId },
+      "predictive_listing_auto_touch",
+    )
+    autoTouchByAgent.set(key, allowed)
+    return allowed
+  }
 
   let eventsResonated = 0
   let autoQueued = 0
@@ -213,7 +236,7 @@ async function processBrokerageResonance(
         messageBody = `Hi — saw the ${humanizeEvent(eventTypeKey).toLowerCase()} news. Just thinking of you. If there's anything I can help with, let me know.`
       }
 
-      const queueAuto = autoTouchEnabled
+      const queueAuto = await autoTouchAllowed(c.agent_id)
       await supabase.from("predictive_listing_actions").insert({
         contact_id: c.id,
         agent_id: c.agent_id,

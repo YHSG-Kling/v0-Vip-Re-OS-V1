@@ -29,7 +29,12 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { AlertCircle, CheckCircle2, Bot, Shield, Clock, Phone, Mail, MessageSquare, Home, Users, TrendingDown } from 'lucide-react'
-import { getAIISASettings, saveAIISASettings, getAIISAStats } from '@/app/actions/ai-isa-settings'
+import {
+  getAIISASettingsResolution,
+  saveAIISASettingsForOwner,
+  getAIISAStats,
+} from '@/app/actions/ai-isa-settings'
+import type { IsaSettingsOwnerType } from '@/lib/ai-isa/resolve-isa-settings'
 import type { AIISASettings } from '@/lib/ai-isa/settings-types'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
 import { createClient } from '@/lib/supabase/client'
@@ -66,6 +71,12 @@ export default function AIISASettingsPage() {
   const [error, setError]               = useState<string | null>(null)
   const [success, setSuccess]           = useState(false)
   const [isPending, startTransition]    = useTransition()
+  // OWNER RULING: "ai customizations are also per user". The settings shown are
+  // whatever the cascade resolved (agent -> team -> brokerage -> platform), and
+  // `resolvedFrom` says WHICH tier answered so an inherited value is never shown
+  // as if the viewer had set it. `saveScope` says which tier the save WRITES.
+  const [resolvedFrom, setResolvedFrom] = useState<IsaSettingsOwnerType | 'default' | 'unreadable'>('default')
+  const [saveScope, setSaveScope]       = useState<IsaSettingsOwnerType>('agent')
 
   // ── Load identity + settings ─────────────────────────────────────────────
   useEffect(() => {
@@ -87,18 +98,33 @@ export default function AIISASettingsPage() {
 
       if (!bid) { setError('No brokerage configured'); setLoading(false); return }
 
-      const [cfg, kpis] = await Promise.all([
-        getAIISASettings(bid),
+      // Session-derived: the action takes NO brokerage argument, so there is no
+      // tenant id on the wire for a caller to substitute.
+      const [res, kpis] = await Promise.all([
+        getAIISASettingsResolution(),
         getAIISAStats(bid),
       ])
-      setSettings(cfg)
+      if (res.status === 'unreadable') {
+        // An unreadable tier is NOT an empty tier. Say so rather than rendering
+        // the defaults as though somebody had chosen them.
+        setResolvedFrom('unreadable')
+        setError(`Could not read the ${res.ownerType} settings — ${res.detail}`)
+        setLoading(false)
+        return
+      }
+      setSettings(res.settings)
+      setResolvedFrom(res.status === 'resolved' ? res.owner.ownerType : 'default')
+      setSaveScope(WRITE_ROLES.has(r ?? '') ? 'brokerage' : 'agent')
       setStats(kpis)
       setLoading(false)
     }
     load()
   }, [])
 
-  const canWrite = role ? WRITE_ROLES.has(role) : false
+  const isManager = role ? WRITE_ROLES.has(role) : false
+  // An agent may ALWAYS customize their own ISA behaviour — that is the ruling.
+  // Changing the TEAM's or the BROKERAGE's answer stays a manager decision.
+  const canWrite = isManager || saveScope === 'agent'
 
   function patchSettings(partial: Partial<AIISASettings>) {
     setSettings(prev => prev ? { ...prev, ...partial } : prev)
@@ -124,7 +150,8 @@ export default function AIISASettingsPage() {
     }
 
     startTransition(async () => {
-      const result = await saveAIISASettings(brokerageId, settings)
+      // The owner TIER is named; the ids come from the session inside the action.
+      const result = await saveAIISASettingsForOwner(saveScope, settings)
       if (!result.success) {
         setError(result.error ?? 'Failed to save settings.')
       } else {
@@ -184,13 +211,41 @@ export default function AIISASettingsPage() {
             Configure autonomous engagement behavior, channel authority, and suppression rules.
           </p>
         </div>
-        {!canWrite && (
+        {!isManager && (
           <Badge variant="outline" className="text-xs">
             <Shield className="h-3 w-3 mr-1" />
-            View only
+            Your own settings only
           </Badge>
         )}
       </div>
+
+      {/* WHOSE SETTINGS — the per-user grain, made visible */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Whose settings</CardTitle>
+          <CardDescription>
+            {resolvedFrom === 'agent'     && 'These are YOUR OWN settings.'}
+            {resolvedFrom === 'team'      && 'You are inheriting your TEAM’s settings.'}
+            {resolvedFrom === 'brokerage' && 'You are inheriting your BROKERAGE’s settings.'}
+            {resolvedFrom === 'platform'  && 'You are inheriting the PLATFORM defaults.'}
+            {resolvedFrom === 'default'   && 'Nobody has configured the ISA yet — these are the product defaults.'}
+            {' '}Saving writes one row at the tier you choose; the most specific tier wins.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-2 max-w-xs">
+            <Label>Save to</Label>
+            <Select value={saveScope} onValueChange={(v) => setSaveScope(v as IsaSettingsOwnerType)}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="agent">My own settings</SelectItem>
+                {isManager && <SelectItem value="team">My team</SelectItem>}
+                {isManager && <SelectItem value="brokerage">The whole brokerage</SelectItem>}
+              </SelectContent>
+            </Select>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Stats */}
       {stats && (

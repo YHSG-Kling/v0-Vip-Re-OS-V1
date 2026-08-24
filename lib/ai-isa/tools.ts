@@ -25,6 +25,8 @@ import { z } from "zod"
 import { createServiceClient } from "@/lib/supabase/service"
 import { haltEngagementForNegativeReply } from "./conversation-handler"
 import { signalScore, signalTemperature } from "./qualification-core"
+import { isIsaCapabilityEnabledForScope } from "./resolve-isa-settings"
+import type { IsaCapability } from "./settings-types"
 
 export interface ISAToolContext {
   /** leads.id — for writes that target the lead row */
@@ -37,13 +39,47 @@ export interface ISAToolContext {
   inboundExcerpt?: string
 }
 
+// ── WHICH TOOLS THE CAPABILITY CATALOG ACTUALLY GOVERNS ─────────────────────
+//
+// ISA_CAPABILITY_CATALOG offers a broker 19 switches, and until now NOTHING in
+// the ISA runtime read any of them: the settings screen saved a list that no tool
+// dispatch consulted, so every switch was decoration. `isCapabilityEnabled` was
+// documented as "the permission check used by every ISA function tool handler"
+// and had never been called by one. This is the missing half (CLAUDE.md §1.2),
+// built onto the resolver so the check is PER USER — the agent who owns this lead
+// governs their own ISA (owner ruling: "ai customizations are also per user").
+//
+// ── TWO TOOLS ARE DELIBERATELY NOT GATED, AND THAT IS THE POINT ─────────────
+// `escalate_to_agent` and `mark_do_not_contact` are NOT switchable:
+//
+//   · escalate_to_agent is how a machine hands a person to a person. Making
+//     "get a human involved" a toggle is fail-open wearing a settings screen —
+//     an unreadable settings tier would silently remove the ISA's only route to
+//     a human and it would keep answering on its own.
+//   · mark_do_not_contact is the TCPA opt-out path. A compliance obligation is
+//     not a preference, and a brokerage must not be able to switch off honouring
+//     "stop contacting me" (CLAUDE.md §5 — compliance-first).
+//
+// The two BUSINESS tools are gated, and both map to capabilities whose catalog
+// default is ENABLED (qualify_lead, book_appointment), so a brokerage that has
+// configured nothing sees exactly the surface it saw before.
+const GATED_TOOLS: Record<string, IsaCapability> = {
+  mark_qualification: "qualify_lead",
+  request_appointment: "book_appointment",
+}
+
 /**
  * Returns the tool map the AI ISA can use during a generation. Bind once
  * at the top of the inbound email handler and pass the result to
  * generateTextRouted({ tools }).
+ *
+ * ASYNC because the capability filter reads the actor's resolved ISA settings.
+ * A tool the actor's tier has switched off is not present in the map at all,
+ * which is the only honest way to disable a tool: leaving it present and failing
+ * inside `execute` would let the model narrate an action that never happened.
  */
-export function buildISATools(ctx: ISAToolContext) {
-  return {
+export async function buildISATools(ctx: ISAToolContext) {
+  const all = {
     escalate_to_agent: tool({
       description:
         "Flag this lead for immediate agent attention. Use when the lead asks to speak to a human, has a high-urgency need, or your reply alone won't be enough. Creates a notification for the assigned agent.",
@@ -203,4 +239,21 @@ export function buildISATools(ctx: ISAToolContext) {
       },
     }),
   }
+
+  // `ctx.agentId` is agents.id (the interface says so, and every read below uses
+  // it as `.from("agents").eq("id", …)`) — the id class ai_isa_settings.agent_id
+  // stores. Resolution cascades agent → team → brokerage → platform; an
+  // UNREADABLE tier answers false, so a settings outage narrows the ISA's
+  // discretionary surface rather than widening it.
+  const out: Record<string, unknown> = {}
+  for (const [name, def] of Object.entries(all)) {
+    const capability = GATED_TOOLS[name]
+    if (!capability) { out[name] = def; continue }
+    const allowed = await isIsaCapabilityEnabledForScope(
+      { agentId: ctx.agentId, brokerageId: ctx.brokerageId },
+      capability,
+    )
+    if (allowed) out[name] = def
+  }
+  return out as Partial<typeof all>
 }

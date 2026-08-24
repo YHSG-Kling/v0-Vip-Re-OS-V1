@@ -8,8 +8,10 @@
  * publish gate, and either sends or blocks.
  *
  * Hard gates (any failure → ineligible):
- *   1. Brokerage capability `predictive_listing_auto_touch` enabled
- *   2. Brokerage AI ISA master switch on
+ *   1. Capability `predictive_listing_auto_touch` enabled for THIS AGENT —
+ *      resolved agent → team → brokerage → platform (the agent's own ISA
+ *      settings row wins if they have one; m552 + lib/ai-isa/resolve-isa-settings.ts)
+ *   2. AI ISA master switch on at whichever tier answered
  *   3. Agent has not opted out (users.predictive_auto_send_opt_out = false)
  *   4. Contact has TCPA consent on file
  *   5. Contact NOT on platform_suppression_list (cross-tenant DNC)
@@ -22,7 +24,13 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { isCapabilityEnabled, getAIISASettings } from "@/app/actions/ai-isa-settings"
+// THE RESOLVER, not the server action. This is a background eligibility path with
+// no session, so `getAgentContext()` inside the action would answer
+// UNAUTHENTICATED and the per-user tier would never be consulted. Calling the
+// resolver directly lets THIS agent's own ISA settings govern their own
+// auto-touch — the owner's ruling ("ai customizations are also per user") applied
+// where it actually decides something.
+import { isIsaCapabilityEnabledForScope, resolveIsaSettings } from "@/lib/ai-isa/resolve-isa-settings"
 import { isSuppressedAny } from "@/lib/platform/suppression-list"
 
 interface EligibilityInput {
@@ -57,14 +65,18 @@ export async function evaluateAutoSendEligibility(
     return { eligible: false, reason: "sensitive_signal_requires_human_review" }
   }
 
-  // 1+2. Capability + ISA master switch
-  const capOk = await isCapabilityEnabled(brokerageId, "predictive_listing_auto_touch")
+  // 1+2. Capability + ISA master switch — resolved for THIS AGENT, cascading
+  // agent → team → brokerage → platform. `agentId` here is agents.id (it is used
+  // as `.from("agents").eq("id", agentId)` twelve lines below), which is the id
+  // class `ai_isa_settings.agent_id` stores.
+  const isaScope = { agentId, brokerageId }
+  const capOk = await isIsaCapabilityEnabledForScope(isaScope, "predictive_listing_auto_touch")
   if (!capOk) {
     return { eligible: false, reason: "capability_disabled" }
   }
 
   // Pull settings once
-  const settings = await getAIISASettings(brokerageId)
+  const settings = await resolveIsaSettings(isaScope)
   const threshold = settings.pls_auto_send_score_threshold ?? DEFAULT_THRESHOLD
   const reviewWindowHours = settings.pls_auto_send_review_window_hours ?? DEFAULT_REVIEW_WINDOW_HOURS
   const cooldownDays = settings.pls_auto_send_cooldown_days ?? DEFAULT_COOLDOWN_DAYS
