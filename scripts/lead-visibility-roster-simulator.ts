@@ -164,8 +164,9 @@ const DECLARED_EXCLUSIONS: Array<{ file: string; why: string }> = [
  * will not notice.
  */
 const NOT_A_LEAD_ROSTER: Array<{ file: string; snippet: string; why: string }> = [
-  { file: "app/actions/ai-isa-settings.ts", snippet: "[broker,broker_admin,admin,superadmin]",
-    why: "WRITE_ROLES — who may WRITE the tenant's AI-ISA settings. Reaches `leads` only for a count on the settings screen." },
+  { file: "app/actions/ai-isa-settings.ts", snippet: "[broker,broker_admin,broker_owner,admin,team_lead]",
+    why: "TENANT_WRITE_ROLES — who may WRITE the tenant's AI-ISA settings (3 gate sites; it decides nothing about who SEES a lead). Reaches `leads` at :278 for a COUNT and only a count: `.select('id', { count: 'exact', head: true })` with `head: true`, so no row is returned at all, and it is tenant-scoped by brokerage_id. " +
+      "SNIPPET UPDATED — and the CHANGE is the point of keying on it. m552 rewrote this roster: `superadmin` was DROPPED because `user_type='superadmin'` matches 0 of 23 live rows (platform access here comes from the `isPlatform` branch at :155, on platform_role), and `broker_owner` + `team_lead` were ADDED under the owner's team-tier ruling. Re-verified as not-a-lead-roster rather than re-allowed on the strength of the old entry." },
   { file: "app/actions/contact-reassignment.ts", snippet: "[broker,broker_owner,broker_admin,admin]",
     why: "requireReassignAuthority — who may move a CONTACT between agents. It updates leads.agent_id as part of the move; it does not decide who SEES leads." },
   { file: "app/actions/privacy/data-subject-requests.ts", snippet: "[broker,broker_admin,admin,superadmin,compliance_officer]",
