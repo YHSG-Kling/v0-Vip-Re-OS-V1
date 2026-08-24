@@ -229,9 +229,16 @@ export function composeForecastSummary(
   cap: CapStatus,
   push: PipelineDeal[],
 ): ForecastSummary {
+  // `agentName` WAS ACCEPTED HERE AND READ BY NOTHING until 2026-08-24 — so the one
+  // brief in this module that is addressed to a PERSON, and that a broker may be
+  // reading about one of several agents, opened with an unattributed "You've booked
+  // …". The first name is the whole reason the caller resolves and passes it.
+  const first = agentName.trim().split(/\s+/)[0] ?? ""
+  const greeting = first ? `${first}, you've` : "You've"
+
   const lines: string[] = []
   lines.push(
-    `You've booked ${usd(forecast.closedYtd)} GCI year-to-date, with ${usd(forecast.weightedPipeline)} more weighted in your pipeline — projecting ${usd(forecast.projectedAnnualGci)} GCI for the year (run-rate pace: ${usd(forecast.paceAnnualizedGci)}).`,
+    `${greeting} booked ${usd(forecast.closedYtd)} GCI year-to-date, with ${usd(forecast.weightedPipeline)} more weighted in your pipeline — projecting ${usd(forecast.projectedAnnualGci)} GCI for the year (run-rate pace: ${usd(forecast.paceAnnualizedGci)}).`,
   )
 
   if (forecast.goal != null) {
@@ -258,9 +265,13 @@ export function composeForecastSummary(
     lines.push(`Highest-leverage move: push ${names} — ${push.length === 1 ? "it's" : "they're"} nearest to closing and would ${target} this quarter.`)
   }
 
+  // The name is ADDED to the subject, never substituted into it: "from your cap" and
+  // "On pace for" are the two phrases the forecaster proof matches on, and a rewrite
+  // that only reads better is not worth blinding a guard for.
+  const whose = first ? `${first}'s forecast` : "your forecast"
   const subject = cap.cap != null && !cap.isCapped
-    ? `💰 ${usd(cap.distanceToCap ?? 0)} from your cap — your forecast`
-    : `💰 On pace for ${usd(forecast.projectedAnnualGci)} GCI — your forecast`
+    ? `💰 ${usd(cap.distanceToCap ?? 0)} from your cap — ${whose}`
+    : `💰 On pace for ${usd(forecast.projectedAnnualGci)} GCI — ${whose}`
 
   return { subject, body: lines.join(" ") }
 }

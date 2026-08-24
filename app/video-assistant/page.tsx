@@ -18,13 +18,11 @@ import {
   Play,
   Loader2,
   Bot,
-  Mic,
-  User,
   ShieldCheck,
   ArrowLeft,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { generateVideoScript } from "@/app/actions/video-generation"
+import { generateVideoScript, getVideoScriptLibrary } from "@/app/actions/video-generation"
 import { VideoGenerationButtons } from "@/components/video/VideoGenerationButtons"
 import { toast } from "sonner"
 
@@ -36,7 +34,6 @@ export default function VideoAssistantPage() {
   const [scripts, setScripts] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [generating, setGenerating] = useState(false)
-  const [generatingVideo, setGeneratingVideo] = useState<string | null>(null)
   const [generatedOptions, setGeneratedOptions] = useState<string[]>([])
   const [showOptions, setShowOptions] = useState(false)
   const [selectedPurpose, setSelectedPurpose] = useState("welcome")
@@ -45,11 +42,33 @@ export default function VideoAssistantPage() {
   const [selectedLength, setSelectedLength] = useState("medium")
 
   useEffect(() => {
-    // Don't load scripts on mount - table query causes delay
+    void loadScripts()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  /**
+   * THE READER THAT HAD NO SOURCE. This set `scripts` to `[]` unconditionally, so
+   * the Video Library tab below rendered its empty state forever and every control
+   * inside a script card — including the Avatar/Voice pair — was unreachable code.
+   *
+   * The canonical, session-tenanted reader already existed:
+   * app/actions/video-generation.ts:78 `getVideoScriptLibrary`, which scopes on
+   * `auth.brokerageId` and reads its own error. Wired to it rather than
+   * hand-rolling a second query — a second reader is how two vocabularies start
+   * (CLAUDE.md §6).
+   */
   async function loadScripts() {
-    setScripts([])
+    setLoading(true)
+    try {
+      const rows = await getVideoScriptLibrary()
+      setScripts(rows ?? [])
+    } catch (error) {
+      console.error("Failed to load video scripts:", error)
+      toast.error("Could not load your script library")
+      setScripts([])
+    } finally {
+      setLoading(false)
+    }
   }
 
   async function validateScript(text: string) {
@@ -137,10 +156,15 @@ export default function VideoAssistantPage() {
     setShowOptions(false)
   }
 
-  async function handleGenerateVideo(scriptId: string, script: string, useAvatar: boolean) {
-    toast.info("Video generation (D-ID + ElevenLabs) must be configured by your administrator before it is available")
-    return
-  }
+  // TOMBSTONE — `handleGenerateVideo(scriptId, script, useAvatar)` stood here and is
+  // DELETED. It accepted all three arguments and read NONE of them: the body was a
+  // toast and a `return`, a stub wearing the shape of a feature. Survivor:
+  // app/components/video/VideoGenerationButtons.tsx:27 `VideoGenerationButtons`,
+  // which the Create tab of this same page already used — it runs the compliance
+  // check, resolves the agent's avatar/voice settings, and calls
+  // app/actions/video-generation.ts:1295 `generateVideoFromScript`, whose own
+  // compliance HOLD refuses a script parked at pending_review or rejected
+  // (CLAUDE.md §5). The `useAvatar` boolean is now the button the user presses.
 
   const canSave = validation?.passed && scriptText.length >= 50
 
@@ -469,12 +493,7 @@ export default function VideoAssistantPage() {
             ) : scripts.length > 0 ? (
               <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {scripts.map((script) => (
-                  <ScriptCard
-                    key={script.id}
-                    script={script}
-                    onGenerateVideo={handleGenerateVideo}
-                    generating={generatingVideo === script.id}
-                  />
+                  <ScriptCard key={script.id} script={script} onRendered={loadScripts} />
                 ))}
               </div>
             ) : (
@@ -493,29 +512,56 @@ export default function VideoAssistantPage() {
   )
 }
 
-function ScriptCard({ script, onGenerateVideo, generating }: any) {
+/**
+ * REPOINTED TO THE COLUMNS THE TABLE ACTUALLY HAS.
+ *
+ * This card was written against `script_text`, `script_purpose`, `them_first_score`
+ * and `video_url` — NONE of which exist on `video_scripts_library`
+ * (scripts/schema-snapshot.ts). It never showed, because `loadScripts` above
+ * returned an empty array, so the phantom shape was never contradicted by a row.
+ * The real columns are `script_content`, `title`, `script_type` and
+ * `approval_status`.
+ *
+ * `them_first_score` is DROPPED rather than replaced: nothing scores these rows, and
+ * an invented number between two real fields reads as measured — the same reason
+ * the "AI Accuracy 98%" tile was removed from the header of this page.
+ *
+ * The rendered VIDEO does not live on the script row either: a render is an
+ * `ai_video_projects` row, and `source_script_id` on that table FKs `public.scripts`,
+ * a DIFFERENT table from this one (see app/actions/copilot.ts:589). So there is no
+ * join from here to a finished file, and the card links to the board that owns them:
+ * app/dashboard/videos/board/page.tsx, which reads ai_video_projects live.
+ */
+function ScriptCard({ script, onRendered }: any) {
   const [expanded, setExpanded] = useState(false)
-  const hasVideo = !!script.video_url
+  const scriptBody: string = script.script_content ?? ""
+  const heldForReview =
+    script.approval_status === "pending_review" || script.approval_status === "rejected"
 
   return (
     <Card className="bg-white shadow-sm border border-slate-200">
       <CardHeader>
         <div className="flex items-center justify-between">
-          <Badge variant={hasVideo ? "default" : "secondary"}>{hasVideo ? "Video Ready" : "Script Only"}</Badge>
-          {script.them_first_score && (
-            <Badge variant="outline" className="border-blue-500 text-blue-700">
-              {(script.them_first_score * 100).toFixed(0)}% Them First
+          <Badge variant="secondary">{script.script_type || "script"}</Badge>
+          {script.approval_status && (
+            <Badge
+              variant="outline"
+              className={cn(
+                heldForReview ? "border-amber-500 text-amber-700" : "border-blue-500 text-blue-700",
+              )}
+            >
+              {String(script.approval_status).replace(/_/g, " ")}
             </Badge>
           )}
         </div>
-        <CardTitle className="text-slate-900 text-sm mt-2">{script.script_purpose || "Video Script"}</CardTitle>
+        <CardTitle className="text-slate-900 text-sm mt-2">{script.title || "Video Script"}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
           <p className={cn("text-sm text-slate-700 whitespace-pre-wrap", !expanded && "line-clamp-3")}>
-            {script.script_text}
+            {scriptBody}
           </p>
-          {script.script_text?.length > 150 && (
+          {scriptBody.length > 150 && (
             <Button
               variant="link"
               size="sm"
@@ -527,62 +573,45 @@ function ScriptCard({ script, onGenerateVideo, generating }: any) {
           )}
         </div>
 
-        {!hasVideo && (
-          <div className="space-y-2">
-            <p className="text-xs text-slate-600 mb-2 flex items-center gap-2">
-              <Wand2 className="h-3 w-3" />
-              Generate video automatically:
+        {/* TOMBSTONE — the hand-rolled Avatar/Voice button pair that stood here is
+            DELETED. It called `onGenerateVideo(script.id, script.script_text, …)`,
+            a stub that read none of its three arguments, on a field
+            (`script_text`) the table does not have. Survivor:
+            app/components/video/VideoGenerationButtons.tsx:27, the same component
+            the Create tab of this page already renders — it runs the Them-First
+            compliance check, resolves the agent's avatar and voice, and passes
+            `scriptId` so the render reuses THIS library row instead of writing a
+            second copy of the script. */}
+        <div className="space-y-2">
+          <p className="text-xs text-slate-600 mb-2 flex items-center gap-2">
+            <Wand2 className="h-3 w-3" />
+            Generate video automatically:
+          </p>
+          {heldForReview ? (
+            <p className="text-xs text-amber-700">
+              This script is held for human compliance review and cannot be rendered
+              until someone approves it.
             </p>
-            <div className="grid grid-cols-2 gap-2">
-              <Button
-                size="sm"
-                className="bg-blue-600 hover:bg-blue-700 text-white"
-                onClick={() => onGenerateVideo(script.id, script.script_text, true)}
-                disabled={generating}
-              >
-                {generating ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                ) : (
-                  <>
-                    <User className="h-3 w-3 mr-1" />
-                    Avatar
-                  </>
-                )}
-              </Button>
-              <Button
-                size="sm"
-                className="bg-purple-600 hover:bg-purple-700 text-white"
-                onClick={() => onGenerateVideo(script.id, script.script_text, false)}
-                disabled={generating}
-              >
-                {generating ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                ) : (
-                  <>
-                    <Mic className="h-3 w-3 mr-1" />
-                    Voice
-                  </>
-                )}
-              </Button>
-            </div>
-          </div>
-        )}
+          ) : (
+            <VideoGenerationButtons
+              script={scriptBody}
+              title={script.title || "Video Script"}
+              scriptId={script.id}
+              size="sm"
+              onSuccess={onRendered}
+            />
+          )}
+        </div>
 
-        {/* Had no handler: the card announced "Video Ready", and the button that
-            was supposed to play it did nothing. The rendered file is on the
-            script row itself (script.video_url — the same field `hasVideo`
-            reads), so the control opens that. */}
-        {hasVideo && (
-          <Button
-            asChild
-            className="w-full bg-gradient-to-r from-green-600 to-blue-600 hover:from-green-700 hover:to-blue-700"
-          >
-            <a href={script.video_url} target="_blank" rel="noopener noreferrer">
-              <Play className="h-4 w-4 mr-2" />
-              Play Video
-            </a>
-          </Button>
-        )}
+        {/* The rendered file is NOT on this row — see the note above this
+            component. Finished renders live on `ai_video_projects` and are listed,
+            with live provider status, by app/dashboard/videos/board/page.tsx. */}
+        <Button asChild variant="outline" size="sm" className="w-full">
+          <a href="/dashboard/videos/board">
+            <Play className="h-4 w-4 mr-2" />
+            Open the video board
+          </a>
+        </Button>
       </CardContent>
     </Card>
   )

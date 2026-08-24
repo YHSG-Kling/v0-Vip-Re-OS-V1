@@ -619,13 +619,45 @@ async function logAndSkip(
 
 // ─── Helper: advance enrollment ───────────────────────────────────────────────
 
+/**
+ * `currentStep` WAS ACCEPTED HERE AND READ BY NOTHING until 2026-08-24, and it is
+ * the only thing that knows WHICH step this advance is advancing PAST.
+ *
+ * Two defects lived in that gap:
+ *
+ *  1. THE NEXT STEP WAS DERIVED FROM THE ENROLLMENT ROW ALONE — `current_step + 2`
+ *     — while the step actually executed was handed in. When those two disagree
+ *     (a step re-run, a hand-edited enrollment, a sequence whose step numbers are
+ *     not contiguous) the schedule silently skipped or repeated a step and nothing
+ *     said so. The executed step's own `step_number` is now the anchor, and a
+ *     disagreement is REPORTED rather than absorbed.
+ *
+ *  2. THE ADVANCE WAS UNCONDITIONAL. `.eq("id", enrollment.id)` with no guard on
+ *     the step it was moving off means two concurrent executors both write
+ *     `current_step + 1` from the same stale read and the enrollment jumps a step —
+ *     and both then fire the completion event. The UPDATE is now conditional on the
+ *     enrollment still sitting where this execution left it, and it `.select()`s so
+ *     the caller can COUNT what matched: an UPDATE that matches NOTHING resolves
+ *     with `error === null`, byte-identical to one that worked (CLAUDE.md §3).
+ */
 async function advanceEnrollment(
   supabase: ReturnType<typeof createServiceClient>,
   enrollment: Record<string, any>,
   currentStep: Record<string, any>,
   executionStatus: string
 ): Promise<ExecuteResult> {
-  const nextStepNumber = (enrollment.current_step ?? 0) + 2
+  const enrolledAt: number = enrollment.current_step ?? 0
+  const executedStepNumber: number =
+    typeof currentStep?.step_number === "number" ? currentStep.step_number : enrolledAt + 1
+
+  if (executedStepNumber !== enrolledAt + 1) {
+    console.warn(
+      `[advanceEnrollment] enrollment ${enrollment.id} sits at current_step=${enrolledAt} ` +
+      `but the step just executed is step_number=${executedStepNumber}; scheduling from the executed step`,
+    )
+  }
+
+  const nextStepNumber = executedStepNumber + 1
 
   const { data: followingStep } = await supabase
     .from("campaign_sequence_steps")
@@ -645,11 +677,30 @@ async function advanceEnrollment(
 
   const isComplete = !followingStep
 
-  await supabase.from("sequence_enrollments").update({
-    current_step: (enrollment.current_step ?? 0) + 1,
-    next_step_at: nextStepAt,
-    ...(isComplete ? { status: "completed", completed_at: new Date().toISOString() } : {}),
-  }).eq("id", enrollment.id)
+  const { data: advancedRows, error: advanceError } = await supabase
+    .from("sequence_enrollments")
+    .update({
+      current_step: executedStepNumber,
+      next_step_at: nextStepAt,
+      ...(isComplete ? { status: "completed", completed_at: new Date().toISOString() } : {}),
+    })
+    .eq("id", enrollment.id)
+    // The guard: only advance an enrollment that is still where this execution
+    // found it. A concurrent executor that already advanced it matches ZERO rows.
+    .eq("current_step", enrolledAt)
+    .select("id")
+
+  if (advanceError) {
+    console.error("[advanceEnrollment] advance refused:", advanceError.message)
+    return { status: executionStatus as ExecuteResult["status"] }
+  }
+  if (!advancedRows || advancedRows.length === 0) {
+    // Not an error: someone else moved it. Do NOT fire the completion event twice.
+    console.warn(
+      `[advanceEnrollment] enrollment ${enrollment.id} was already advanced past step ${enrolledAt} — not advancing again`,
+    )
+    return { status: executionStatus as ExecuteResult["status"] }
+  }
 
   if (isComplete) {
     await processKernelEvent({

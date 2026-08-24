@@ -7,7 +7,10 @@ import { requireSuperadminAuth } from "@/lib/kernel/api-auth"
 import { resolveSubscriptionTier, updateSubscriptionState } from "@/lib/kernel/billing"
 
 export async function GET(
-  req: NextRequest,
+  // Deliberately unread: this handler's only input is the ROUTE PARAM below and the
+  // session gate above it. The Request must keep its POSITION (Next.js passes the
+  // route context second), so it is `_`-prefixed rather than removed.
+  _req: NextRequest,
   { params }: { params: Promise<{ brokerageId: string }> }
 ) {
   const supabase = await createClient()

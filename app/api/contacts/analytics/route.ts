@@ -1,9 +1,14 @@
-import { type NextRequest, NextResponse } from "next/server"
+import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
-export async function GET(request: NextRequest) {
+// TOMBSTONE — this handler took the framework's Request object and read NOTHING
+// from it: no query string, no body, no header. Every input it uses comes from the
+// SESSION (CLAUDE.md §4 — the tenant is never a request field). A route handler
+// may be declared with no parameters at all, and leaving an unread `request` in the
+// signature advertises a filter this endpoint does not honour.
+export async function GET() {
   // Auth guard — agentId and brokerageId always from session
   const supabase = await createClient()
   const auth = await requireAuth(supabase)

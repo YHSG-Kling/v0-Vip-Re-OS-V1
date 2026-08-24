@@ -151,6 +151,17 @@ function detectAppraisalNotOrdered(ctx: TransactionContext, ev: TransactionEvide
   }
 }
 
+/**
+ * `ctx` WAS ACCEPTED HERE AND READ BY NOTHING until 2026-08-24 — and it is the only
+ * thing in scope that knows WHICH SIDE OF THE DEAL this brokerage is on.
+ *
+ * Both branches addressed the action to the "buyer" unconditionally. On a
+ * SELLER-side listing the brokerage does not represent the buyer, cannot schedule
+ * the buyer's inspector, and routing the item to a party it has no relationship with
+ * is how an urgent action gets ignored. The buyer-side gate on `ctx.dealType` is the
+ * same one `detectHazardInsuranceUnbound` already applies in this file — this is that
+ * rule in one more place, not a new one (§6).
+ */
 function detectInspectionWindow(ctx: TransactionContext, ev: TransactionEvidence): DetectedAction | null {
   const insMile = ev.milestones.find((m) => isMilestone(m, "inspection_deadline"))
   const deadline = insMile?.target_date
@@ -159,14 +170,20 @@ function detectInspectionWindow(ctx: TransactionContext, ev: TransactionEvidence
   const completed = ev.inspections.filter((i) => i.completed_date != null).length
   const scheduled = ev.inspections.filter((i) => i.scheduled_date != null && !i.completed_date).length
 
+  // Buyer-side (or dual) deals talk to the buyer; a listing side talks to the
+  // cooperating agent, who is the only person on the other side it can reach.
+  const buyerSide = ctx.dealType === "buyer" || ctx.dealType === "dual" || ctx.dealType == null
+  const recipient: Recipient = buyerSide ? "buyer" : "co_agent"
+  const whom = buyerSide ? "Buyer" : "The buyer's side"
+
   if (daysToDeadline < 0 && completed === 0) {
     return {
       actionType:         "inspection_overdue",
       severity:           "urgent",
       dueDate:            deadline,
       headline:           `Inspection deadline passed — ${Math.abs(daysToDeadline)} days late`,
-      detail:             `Inspection window closed ${Math.abs(daysToDeadline)} days ago and no inspections were marked complete. Buyer may have lost the right to object or terminate.`,
-      suggestedRecipient: "buyer",
+      detail:             `Inspection window closed ${Math.abs(daysToDeadline)} days ago and no inspections were marked complete. ${whom} may have lost the right to object or terminate.`,
+      suggestedRecipient: recipient,
       bucketKey:          `deadline:${deadline}`,
     }
   }
@@ -176,8 +193,8 @@ function detectInspectionWindow(ctx: TransactionContext, ev: TransactionEvidence
       severity:           daysToDeadline <= 1 ? "urgent" : "high",
       dueDate:            deadline,
       headline:           `Inspection window closes in ${daysToDeadline} day${daysToDeadline === 1 ? "" : "s"} — nothing scheduled`,
-      detail:             `Buyer hasn't scheduled any inspections and the deadline is ${daysToDeadline === 0 ? "today" : `${daysToDeadline} day${daysToDeadline === 1 ? "" : "s"} out`}. Get something on the calendar today.`,
-      suggestedRecipient: "buyer",
+      detail:             `${whom} hasn't scheduled any inspections and the deadline is ${daysToDeadline === 0 ? "today" : `${daysToDeadline} day${daysToDeadline === 1 ? "" : "s"} out`}. ${buyerSide ? "Get something on the calendar today." : "Confirm with the cooperating agent today — the contingency runs against your seller either way."}`,
+      suggestedRecipient: recipient,
       bucketKey:          `deadline:${deadline}`,
     }
   }

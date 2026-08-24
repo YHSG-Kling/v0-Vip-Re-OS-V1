@@ -409,20 +409,39 @@ async function proposePostCallFollowUp(svc: any, call: any, summary: string, int
     const audience: "buyer" | "seller" = ctype.includes("seller") ? "seller" : "buyer"
     const agentUserId = await resolveContactAgentUserId(svc, call.contact_id, call.agent_id)
 
-    const { generateClientMessage } = await import("@/lib/agents/generate-client-message")
-    const drafted = await generateClientMessage({
-      brokerageId: call.brokerage_id,
-      agentUserId,
-      audience,
-      recipientFirstName: (contact as any).first_name ?? null,
-      purpose: `Follow up warmly after today's phone call.${intentPrimary ? ` They talked about: ${intentPrimary}.` : ""} Recap the next step you agreed on and make it easy to continue.`,
-      facts: summary ? [{ label: "Call recap", value: summary.slice(0, 200) }] : [],
-      ctas: ["Reply here or grab a time to keep things moving"],
-      fallback: {
-        subject: "Following up on our call",
-        body: `Hi${(contact as any).first_name ? ` ${(contact as any).first_name}` : ""}, great talking with you today — I'll follow up on the next step we discussed. Reply any time and I'll take it from there.`,
-      },
-    })
+    // `pre` IS THE MESSAGE THAT WAS ALREADY WRITTEN. It was accepted here and read by
+    // NOTHING until 2026-08-24: sendPostCallFollowUp above drafts the follow-up, a
+    // gate (quiet hours / budget / Fair Housing / no consent) blocks the SEND, and it
+    // hands the finished draft straight to this fallback — which threw it away and
+    // paid the model to write the same message a second time, from a BYTE-IDENTICAL
+    // copy of the same generateClientMessage call. `ai_tool_usage` is the platform's
+    // AI cost ledger and it feeds the overage projection (CLAUDE.md §5), so a
+    // duplicate generation on every gated call is a wrong invoice, not just latency.
+    //
+    // It was a CORRECTNESS defect too: the agent then one-tapped a message that was
+    // NOT the one the send gate had examined.
+    const reuse =
+      pre && typeof pre.subject === "string" && typeof pre.body === "string" &&
+      pre.subject.trim().length > 0 && pre.body.trim().length > 0
+        ? { subject: pre.subject.trim(), body: pre.body.trim() }
+        : null
+
+    const drafted = reuse ?? await (async () => {
+      const { generateClientMessage } = await import("@/lib/agents/generate-client-message")
+      return generateClientMessage({
+        brokerageId: call.brokerage_id,
+        agentUserId,
+        audience,
+        recipientFirstName: (contact as any).first_name ?? null,
+        purpose: `Follow up warmly after today's phone call.${intentPrimary ? ` They talked about: ${intentPrimary}.` : ""} Recap the next step you agreed on and make it easy to continue.`,
+        facts: summary ? [{ label: "Call recap", value: summary.slice(0, 200) }] : [],
+        ctas: ["Reply here or grab a time to keep things moving"],
+        fallback: {
+          subject: "Following up on our call",
+          body: `Hi${(contact as any).first_name ? ` ${(contact as any).first_name}` : ""}, great talking with you today — I'll follow up on the next step we discussed. Reply any time and I'll take it from there.`,
+        },
+      })
+    })()
 
     const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
     const p = await proposeClientMessage({
@@ -435,7 +454,7 @@ async function proposePostCallFollowUp(svc: any, call: any, summary: string, int
       subject: drafted.subject,
       body: drafted.body,
       channel: "sms",
-      rationale: `${tag} — auto-drafted after a positive AI call so the agent one-taps to send; TCPA/consent/Fair-Housing enforced at dispatch.`,
+      rationale: `${tag} — ${reuse ? "the draft the send gate blocked, staged unchanged" : "auto-drafted after a positive AI call"} so the agent one-taps to send; TCPA/consent/Fair-Housing enforced at dispatch.`,
     }, svc)
     return (p as any)?.ok !== false
   } catch {

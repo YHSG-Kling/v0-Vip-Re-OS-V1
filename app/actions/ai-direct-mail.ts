@@ -984,15 +984,19 @@ export async function getDirectMailAnalytics(params: {
  * gpt-4o-mini call to the platform. Unauthenticated AI spend on top of an
  * unauthenticated cross-tenant read.
  *
- * `agentId`/`brokerageId` are now ignored and derived from the session; the
- * entitlement gate is kept and now runs against the *resolved* agent.
+ * `agentId`/`brokerageId` are derived from the session; the entitlement gate is kept
+ * and runs against the *resolved* agent.
+ *
+ * TOMBSTONE — the `params?: { agentId?: string; brokerageId?: string }` argument that
+ * stood here is DELETED. It was accepted and read by NOTHING, which was correct
+ * behaviour wearing a dangerous signature: every export of a "use server" file is a
+ * public HTTP endpoint (CLAUDE.md §4), and an identity-shaped argument that the body
+ * silently ignores is an open invitation for the next person to "finish wiring it up"
+ * and re-open exactly the cross-tenant read the note above records closing. The one
+ * caller (app/dashboard/campaigns/mail/components/analytics-tab.tsx:91) already
+ * passes nothing. Survivor: `getAgentContext()` on the next line.
  */
-export async function aiAnalyzeCampaignPerformance(params?: {
-  /** Ignored — derived from the session. */
-  agentId?: string
-  /** Ignored — derived from the session. */
-  brokerageId?: string
-}) {
+export async function aiAnalyzeCampaignPerformance() {
   try {
     const ctx = await getAgentContext()
     if (!ctx.isAuthenticated) return { success: false, error: "Not signed in" }

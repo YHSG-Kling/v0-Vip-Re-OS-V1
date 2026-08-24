@@ -2,7 +2,9 @@ import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
 
-export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+// Deliberately unread — the prospect comes from the ROUTE PARAM, the tenant from the
+// session. The Request keeps its position because the route context is passed second.
+export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const supabase = await createClient()
   const auth = await requireAuth(supabase)
   if (!auth.ok) return auth.response

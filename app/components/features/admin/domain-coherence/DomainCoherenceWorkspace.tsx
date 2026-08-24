@@ -553,9 +553,11 @@ export function DomainCoherenceWorkspace({ initial, staffRole }: Props) {
                           <p className="text-xs text-muted-foreground font-mono">
                             Affected: {f.affected.join(", ")}
                           </p>
-                          <p className="text-xs text-muted-foreground">
-                            Fix: {f.recommendation}
-                          </p>
+                          {f.recommendation && (
+                            <p className="text-xs text-muted-foreground">
+                              Fix: {f.recommendation}
+                            </p>
+                          )}
                         </div>
                       </div>
                     ))

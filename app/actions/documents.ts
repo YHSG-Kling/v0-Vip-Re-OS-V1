@@ -329,9 +329,41 @@ export async function uploadDocument(
 // AI DOCUMENT PROCESSING
 // ============================================
 
+/**
+ * `fileType` — THE UPLOAD'S MIME TYPE — WAS ACCEPTED HERE AND READ BY NOTHING until
+ * 2026-08-24, and the two model calls below both attached the file as
+ * `{ type: "image", image: fileUrl }`. A PURCHASE AGREEMENT IS A PDF. Handing a PDF
+ * URL to a provider under an `image` content part does not read the PDF; the model
+ * answers from the prompt alone, and its answer was then stored as this document's
+ * classification AND fed to the signature-completeness compliance scan, which writes
+ * a `compliance_checks` row and an activity entry an agent is meant to act on.
+ * A confident verdict about a document nothing read is exactly the "nobody checked"
+ * rendering as "checked and fine" that CLAUDE.md §4 forbids.
+ *
+ * The part shape now follows the mime type, and a type neither branch can read is
+ * REFUSED BEFORE the paid call rather than after it — `ai_tool_usage` is the cost
+ * ledger (§5), and a call that could not have worked is a wrong invoice as well as a
+ * wrong answer.
+ */
 export async function processDocumentWithAI(documentId: string, fileUrl: string, fileType: string) {
   const supabase = await createClient()
   const startTime = Date.now()
+
+  const mime = (fileType ?? "").toLowerCase().split(";")[0].trim()
+  const isImage = mime.startsWith("image/")
+  const isPdf = mime === "application/pdf"
+  if (!isImage && !isPdf) {
+    console.warn(
+      `[documents] Skipping AI processing for document ${documentId}: ` +
+      `mime "${mime || "unknown"}" is neither an image nor a PDF, so no model can read it.`,
+    )
+    return { success: false, error: `Unsupported document type for AI reading: ${mime || "unknown"}` }
+  }
+
+  /** The file as a content part the provider will actually OPEN. */
+  const documentPart = isImage
+    ? { type: "image" as const, image: fileUrl }
+    : { type: "file" as const, data: fileUrl, mediaType: "application/pdf" }
 
   try {
     // Get document to get brokerage_id
@@ -360,10 +392,7 @@ export async function processDocumentWithAI(documentId: string, fileUrl: string,
   }
 }`,
             },
-            {
-              type: "image",
-              image: fileUrl,
-            },
+            documentPart,
           ] as any),
         },
       ],
@@ -482,7 +511,7 @@ Return this exact structure:
 
 Set overallStatus to "blocking_issues" only if missing signatures would invalidate the contract.`,
                 },
-                { type: "image", image: fileUrl },
+                documentPart,
               ] as any),
             },
           ],

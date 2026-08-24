@@ -321,7 +321,7 @@ async function dispatchAITool(
     // ── BROKER TOOLS ─────────────────────────────────────────────────────
     case "deal_health_monitor":
       return {
-        output: toPanelText(await analyzeDealHealth(params.transactionIds, ctx.userId)),
+        output: toPanelText(await analyzeDealHealth(params.transactionIds, ctx)),
         tokens: { measured: false, reason: "no_model_call", detail: "pure scoring over transactions — no model call" },
       }
 
@@ -870,14 +870,41 @@ Be factual, balanced, and helpful for a homebuyer making a decision.
 // BROKER: DEAL HEALTH MONITOR
 // =====================================================
 
-async function analyzeDealHealth(transactionIds: string[], userId: string) {
+/**
+ * THE TENANT WAS THE MISSING HALF, not the actor id.
+ *
+ * This took `userId: string` and read it NOWHERE, then selected `transactions` by
+ * `.in("id", transactionIds)` alone — transaction ids come straight off the tool
+ * form, so any id a broker could name returned another brokerage's deal, its
+ * property address and its document requests, scored and printed into the panel.
+ * `transactions` carries `brokerage_id` (scripts/schema-snapshot.ts), so the
+ * predicate existed the whole time; the inert parameter was standing where it
+ * should have been.
+ *
+ * It now takes the AgentContext the caller already holds and scopes on the
+ * SESSION's brokerage (CLAUDE.md §4 — tenant from the session, never a parameter),
+ * and FAILS CLOSED when there is no tenant to scope by.
+ */
+async function analyzeDealHealth(transactionIds: string[], ctx: AgentContext) {
+  if (!ctx.brokerageId) {
+    return { health_reports: [], refused: "No brokerage on this session — deal health cannot be scoped." }
+  }
+
   const supabase = await createClient()
-  
-  const { data: transactions } = await supabase
+
+  const { data: transactions, error } = await supabase
     .from("transactions")
     .select("*, document_requests(*)")
     .in("id", transactionIds)
-  
+    .eq("brokerage_id", ctx.brokerageId)
+
+  // supabase-js RESOLVES refusals (§3): an unread error here prints "0 deals, all
+  // healthy" over a query that was refused.
+  if (error) {
+    console.error("[ai-tools-hub] deal-health read refused:", error.message)
+    return { health_reports: [], refused: `Deal health could not be read: ${error.message}` }
+  }
+
   const healthReports = []
   
   for (const txn of transactions || []) {

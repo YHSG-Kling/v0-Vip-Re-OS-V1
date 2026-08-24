@@ -75,7 +75,7 @@ export function FinancialVerificationPanel({ contactId, brokerageId, agentUserId
     try {
       const [profileResult, lendersResult] = await Promise.all([
         loadFinancialProfile({ contactId }),
-        getBrokerageLenders({ brokerageId }),
+        getBrokerageLenders(),
       ])
       if (profileResult.success && profileResult.profile) {
         setProfile(profileResult.profile)

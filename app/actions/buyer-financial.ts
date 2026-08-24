@@ -444,9 +444,16 @@ export async function loadFinancialProfile(params: {
 
 // ─── GET BROKERAGE LENDER USERS ───────────────────────────────────────────────
 
-export async function getBrokerageLenders(params: {
-  brokerageId?: string  // ignored — derived from session
-}): Promise<{ success: boolean; lenders?: { id: string; full_name: string; email: string | null; phone: string | null }[]; error?: string }> {
+/**
+ * TOMBSTONE — this took `params: { brokerageId?: string }` and, as its own comment
+ * said, IGNORED it. Every export of a "use server" file is a public HTTP endpoint
+ * (CLAUDE.md §4), so a `brokerageId` in the signature is an open invitation for a
+ * caller to believe it selects the tenant; leaving an ignored one in place is how the
+ * body-supplied-tenant IDOR shape gets re-introduced by the next person who "wires it
+ * up". Deleted rather than read: the tenant lives in the SESSION, resolved two lines
+ * below by requireWriteContext(), and that is the survivor.
+ */
+export async function getBrokerageLenders(): Promise<{ success: boolean; lenders?: { id: string; full_name: string; email: string | null; phone: string | null }[]; error?: string }> {
   const ctx = await requireWriteContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
@@ -468,9 +475,13 @@ export async function getBrokerageLenders(params: {
 
 // ─── LOAD MORTGAGE BROKER PARTNERS ───────────────────────────────────────────
 
-export async function loadMortgageBrokers(params: {
-  agentUserId?: string  // ignored — derived from session
-}): Promise<{ success: boolean; partners?: any[]; error?: string }> {
+/**
+ * TOMBSTONE — this took `params: { agentUserId?: string }` and IGNORED it, for the
+ * same reason and with the same risk as `getBrokerageLenders` above: a public
+ * endpoint that appears to accept an identity and silently does not. The agent is
+ * resolved from the SESSION (`ctx.agentId`, below), which is the survivor.
+ */
+export async function loadMortgageBrokers(): Promise<{ success: boolean; partners?: any[]; error?: string }> {
   const ctx = await requireWriteContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }

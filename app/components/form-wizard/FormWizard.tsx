@@ -681,11 +681,35 @@ export function FormWizard({ mode, contact, brokerageId, agentUserId, teamId, ag
 
 // ─── Step helpers ────────────────────────────────────────────────────────────
 
+/**
+ * `mode` WAS ACCEPTED HERE AND READ BY NOTHING until 2026-08-24, and step 4 is the
+ * step where the two modes differ most: `buildInitialSigners` below seeds an OFFER
+ * with buyer + agent + an EMPTY listing_agent row, and a LISTING with seller + agent.
+ *
+ * The old rule — "some signer has an email" — was satisfied by the AGENT's own email,
+ * which the wizard fills in for them automatically. So a user could walk straight past
+ * step 4 without ever entering the counterparty, and land on a button that says
+ * "Send for E-Sign" for a document with nobody on the other side to sign it.
+ *
+ * The gate is now the COUNTERPARTY for the mode: a buyer on an offer, a seller on a
+ * listing. The listing_agent row stays optional on purpose — on an offer it is often
+ * unknown at draft time, and blocking on it would stop a legitimate draft.
+ */
 function canAdvance(step: number, state: WizardState, mode: "offer" | "listing"): boolean {
   if (step === 1) return state.propertyAddress.trim().length > 0
   if (step === 2) return state.selectedForms.length > 0
   if (step === 3) return true
-  if (step === 4) return state.signers.some(s => s.email)
+  if (step === 4) {
+    const counterpartyRole = mode === "offer" ? "buyer" : "seller"
+    const hasCounterparty = state.signers.some(
+      (s) => s.role === counterpartyRole && s.email.trim().length > 0,
+    )
+    // Fall back to the old rule ONLY when the wizard seeded no counterparty row at
+    // all (no contact was supplied) — otherwise an empty seeded row would lock a
+    // flow that used to work.
+    const hasCounterpartyRow = state.signers.some((s) => s.role === counterpartyRole)
+    return hasCounterpartyRow ? hasCounterparty : state.signers.some((s) => s.email.trim().length > 0)
+  }
   return true
 }
 

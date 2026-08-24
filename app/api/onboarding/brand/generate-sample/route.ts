@@ -8,7 +8,12 @@
 import { streamTextRouted, AIFairUseError } from "@/lib/ai/models"
 import { createClient } from "@/lib/supabase/server"
 
-export async function POST(req: Request) {
+// TOMBSTONE — this handler took the framework's Request object and read NOTHING
+// from it: no query string, no body, no header. Every input it uses comes from the
+// SESSION (CLAUDE.md §4 — the tenant is never a request field). A route handler
+// may be declared with no parameters at all, and leaving an unread `request` in the
+// signature advertises a filter this endpoint does not honour.
+export async function POST() {
   try {
     const supabase = await createClient()
 

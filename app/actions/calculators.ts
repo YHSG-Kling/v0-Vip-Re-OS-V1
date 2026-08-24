@@ -107,13 +107,28 @@ function boundPublicText(value: string | null | undefined): string | null {
 // SELLER NET PROCEEDS CALCULATOR
 // ============================================
 
-async function getLocalTitleCost(location: string, homeValue: number): Promise<number> {
-  // Title insurance typically ranges from 0.5% to 1% of home value
+/**
+ * TOMBSTONE — `getLocalTitleCost(location, homeValue)` and
+ * `getLocalEscrowFees(location, homeValue)` stood here. Both accepted `location` and
+ * read NOT ONE CHARACTER of it while returning a flat national percentage, so the
+ * word "Local" in the name was the only local thing about the number — and this
+ * number is printed to a SELLER as their title insurance and escrow cost.
+ *
+ * The parameter is deleted rather than wired because wiring it would mean inventing a
+ * per-jurisdiction rate table, and a fabricated rate presented as local is a worse
+ * defect than an honest national estimate. Renamed so the name states what the number
+ * actually is. The place where jurisdiction genuinely does move the figure is
+ * `calculateTransferTax(homeValue, state)` directly below, which carries a real
+ * per-state table — that is the survivor of the "local" idea in this file, and the
+ * shape any future title/escrow table should follow.
+ */
+async function estimateTitleInsuranceNational(homeValue: number): Promise<number> {
+  // Title insurance typically ranges from 0.5% to 1% of home value (national typical).
   return homeValue * 0.007
 }
 
-async function getLocalEscrowFees(location: string, homeValue: number): Promise<number> {
-  // Escrow fees typically range from 1-2% of home value
+async function estimateEscrowFeesNational(homeValue: number): Promise<number> {
+  // Escrow fees typically range from 1-2% of home value (national typical).
   return homeValue * 0.015
 }
 
@@ -147,8 +162,8 @@ export async function calculateSellerNet(data: {
 
   const costs = {
     agent_commission: data.homeValue * totalCommissionRate,
-    title_insurance: await getLocalTitleCost(data.location, data.homeValue),
-    escrow_fees: await getLocalEscrowFees(data.location, data.homeValue),
+    title_insurance: await estimateTitleInsuranceNational(data.homeValue),
+    escrow_fees: await estimateEscrowFeesNational(data.homeValue),
     transfer_tax: calculateTransferTax(data.homeValue, data.state),
     hoa_fees: data.hoaFees || 0,
     repairs_concessions: data.repairsConcessions || data.homeValue * 0.02, // Default 2%

@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 704 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 706 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -17,7 +17,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-08-24
  * source: public.live_schema_json()
- * body-sha256: 6a9762efe62fd1a1265addef3b1612d192d0979adcbfac7f68aef8ae102694da
+ * body-sha256: 2ee9f11aa7bf548a2dc2852cb1974cebf2980f70596680454c2c3ba143eb0f2e
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -98,6 +98,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   ai_isa_campaigns: ["brokerage_id", "campaign_type", "channels", "conversions", "created_at", "direct_mail_enabled", "id", "is_active", "lead_type_filter", "leads_targeted", "max_touches", "motivation_type_filter", "name", "score_threshold", "status", "superadmin_locks", "target_segment", "touch_interval_days", "touches_sent", "updated_at", "video_enabled"],
   ai_isa_engagement_tracking: ["brokerage_id", "campaign_id", "channel", "contact_id", "event_at", "event_type", "id", "lead_id", "metadata", "outreach_id"],
   ai_isa_qualifications: ["agent_id", "assigned_at", "assigned_to_agent_id", "brokerage_id", "campaign_id", "contact_id", "id", "last_outreach_at", "lead_id", "notes", "qualification_result", "qualification_score", "qualification_signals", "qualified_at", "stage"],
+  ai_isa_settings: ["agent_id", "brokerage_id", "created_at", "elevenlabs_voice_id", "id", "is_active", "owner_type", "require_broker_approval", "settings", "team_id", "updated_at"],
   ai_listing_optimizations: ["brokerage_id", "created_at", "estimated_impact", "generated_at", "id", "optimization_category", "priority", "reasoning", "recommendation", "status", "transaction_id"],
   ai_message_drafts: ["acted_at", "agent_user_id", "brokerage_id", "channel", "confidence_score", "contact_id", "context_summary", "conversation_id", "created_at", "draft_body", "draft_subject", "edit_delta", "final_body", "id", "listing_id", "sent_message_id", "source_message_id", "status", "suggested_tone", "trigger_event"],
   ai_overage_invoices: ["amount_cents", "billed_at", "brokerage_id", "created_at", "id", "included_tokens", "metric", "overage_rate_cents_per_1k", "overage_tokens", "period_end", "period_start", "status", "stripe_customer_id", "stripe_invoice_item_id", "used_tokens"],
@@ -705,6 +706,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   vendor_ratings: ["avg_agent_rating", "avg_client_rating", "brokerage_id", "five_star_count", "id", "last_updated", "one_star_count", "review_avg", "review_count", "total_bookings", "vendor_id", "verified_review_count"],
   vendor_review_flags: ["brokerage_id", "created_at", "flagged_by", "id", "reason", "review_id"],
   vendor_reviews: ["booking_id", "brokerage_id", "created_at", "flag_count", "headline", "id", "is_verified", "moderation_status", "rating", "review", "sub_ratings", "transaction_id", "updated_at", "user_id", "vendor_id", "vendor_response", "vendor_response_at", "verification_method"],
+  vendor_service_areas: ["created_at", "id", "license", "notes", "platform_vendor_id", "state", "status", "trade_category", "updated_at", "zip_code"],
   vendor_subscriptions: ["billing_direction", "brokerage_id", "canceled_at", "created_at", "credits_used_this_period", "current_period_end", "current_period_start", "id", "plan_id", "status", "stripe_customer_id", "stripe_subscription_id", "updated_at", "vendor_id"],
   vendor_tax_documents: ["brokerage_id", "business_type", "client_document_id", "created_at", "document_url", "id", "legal_name", "reminder_last_sent_at", "signature_date", "status", "tin_type", "updated_at", "vendor_id", "vendor_name_at_filing"],
   vendor_usage_tracking: ["agent_id", "brokerage_id", "cost_per_unit", "created_at", "id", "lead_id", "request_metadata", "total_cost", "units_used", "usage_type", "vendor_name"],

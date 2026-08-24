@@ -13,6 +13,18 @@ export interface IDXAlertSearchResult {
   error?: string
 }
 
+/**
+ * `alertId` NAMES THE SUBJECT OF EVERY DIAGNOSTIC THIS FUNCTION EMITS — it was
+ * accepted here and read by NOTHING until 2026-08-24. The alert engine runs this
+ * once per alert across a whole cron sweep (lib/property-alerts/alert-engine.ts),
+ * and both failure exits below were anonymous: an operator reading the log saw
+ * "IDX API error" or nothing at all, with no way to tell WHICH alert — or which
+ * brokerage's credential — produced it.
+ *
+ * The machine-readable `error` CODES are deliberately left untouched: the engine
+ * compares `searchResult.error === "not_configured"` by string equality, so putting
+ * an id inside that field would have broken the branch it feeds.
+ */
 export async function searchIDXForAlert(
   alertId: string,
   criteria: AlertCriteria,
@@ -24,6 +36,9 @@ export async function searchIDXForAlert(
   const client = await IDXBrokerClient.forBrokerage(brokerageId)
 
   if (!client.isConfigured()) {
+    console.warn(
+      `[idx-alert-search] alert ${alertId} (brokerage ${brokerageId}) skipped — no IDX credential resolved`,
+    )
     return { results: [], api_called: false, response_time_ms: null, error: "not_configured" }
   }
 
@@ -36,7 +51,10 @@ export async function searchIDXForAlert(
     api_called = true
     idxResults = normaliseIDXResults(raw ?? [])
   } catch (err: any) {
-    console.error("[idx-alert-search] IDX API error:", err?.message)
+    console.error(
+      `[idx-alert-search] IDX API error on alert ${alertId} (brokerage ${brokerageId}):`,
+      err?.message,
+    )
     return {
       results: [],
       api_called: true,

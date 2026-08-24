@@ -291,6 +291,7 @@ function buildEmailPrompt(params: ContentGenerationParams, contextData: any): st
   const property = contextData.property
 
   let prompt = `Generate a professional real estate ${params.emailType} email.\n\n`
+  prompt += audienceDirection(params)
 
   if (contact) {
     prompt += `RECIPIENT: ${contact.full_name || contact.first_name}\n`
@@ -323,6 +324,7 @@ function buildSocialPrompt(params: ContentGenerationParams, contextData: any): s
   const platform = params.platform || "instagram"
 
   let prompt = `Generate an engaging ${platform} post for a real estate listing.\n\n`
+  prompt += audienceDirection(params)
 
   if (property) {
     prompt += `PROPERTY:\n`
@@ -347,10 +349,37 @@ function buildSocialPrompt(params: ContentGenerationParams, contextData: any): s
   return prompt
 }
 
+/**
+ * `targetAudience` IS A DECLARED INPUT NOTHING READ.
+ *
+ * `ContentGenerationParams.targetAudience` is filled in by callers and, until
+ * 2026-08-24, reached NO prompt builder in this file: `buildListingPrompt` and
+ * `buildVideoPrompt` accepted `params` and read nothing out of it at all, and the
+ * two that did read it only reached for `emailType` / `platform`. A field a caller
+ * sets and no reader consumes is the writer-with-no-reader shape §1 names — and here
+ * it is the single biggest lever on the copy, because a listing description written
+ * for a first-time buyer and one written for an investor are different documents.
+ *
+ * FAIR HOUSING (§5): this renders the caller's audience string as WRITING DIRECTION
+ * only, and is paired with the standing instruction below it. It never asks the model
+ * to describe who a home or a neighbourhood is "right for" — that phrasing is what
+ * lib/them-first/validator.ts flags as a critical fair-housing violation.
+ */
+function audienceDirection(params: ContentGenerationParams): string {
+  const audience = (params.targetAudience ?? "").trim()
+  if (!audience) return ""
+  return (
+    `\nWRITE FOR: ${audience}. Shape the emphasis and vocabulary for that reader.\n` +
+    `Never state or imply who the property or area is suitable for, and never describe ` +
+    `the people who live there — describe the HOME and its features only.\n`
+  )
+}
+
 function buildListingPrompt(params: ContentGenerationParams, contextData: any): string {
   const property = contextData.property
 
   let prompt = `Generate a compelling MLS listing description.\n\n`
+  prompt += audienceDirection(params)
 
   if (property) {
     prompt += `PROPERTY DETAILS:\n`
@@ -380,6 +409,7 @@ function buildVideoPrompt(params: ContentGenerationParams, contextData: any): st
   const property = contextData.property
 
   let prompt = `Generate a 30-second video narration script for a property video.\n\n`
+  prompt += audienceDirection(params)
 
   if (property) {
     prompt += `PROPERTY:\n`
@@ -397,7 +427,17 @@ function buildVideoPrompt(params: ContentGenerationParams, contextData: any): st
 /**
  * Parse AI response into structured format
  */
+/**
+ * `params` WAS ACCEPTED HERE AND READ BY NOTHING until 2026-08-24, and it cost this
+ * function the two things it could not otherwise know: WHICH generation failed to
+ * parse (the catch below logged an anonymous line, so a parse failure in a nightly
+ * batch named neither the content type nor the platform), and WHICH PLATFORM the
+ * piece was shaped for. `platform_specific` is a STORED column on the result, and its
+ * only source was whatever the model chose to echo back — so the row recorded the
+ * platform only when the model volunteered it.
+ */
 function parseAIResponse(text: string, params: ContentGenerationParams) {
+  const platformFacts = params.platform ? { platform: params.platform } : {}
   try {
     // Try to extract JSON from response
     const jsonMatch = text.match(/\{[\s\S]*\}/)
@@ -415,11 +455,14 @@ function parseAIResponse(text: string, params: ContentGenerationParams) {
         // had to fire. calculateThemFirstScore actually counts buyer-focused
         // vs agent-focused pronouns in the text that came back.
         qualityScore: themFirstQualityScore(body),
-        platformSpecific: parsed.platformSpecific || {},
+        platformSpecific: { ...platformFacts, ...(parsed.platformSpecific || {}) },
       }
     }
   } catch (e) {
-    console.log("[v0] Failed to parse JSON, using raw text")
+    console.warn(
+      `[content-generation] Failed to parse JSON for contentType="${params.contentType}"` +
+      `${params.platform ? ` platform="${params.platform}"` : ""} — using raw text`,
+    )
   }
 
   // Fallback: use raw text. The score is measured off that raw text — the old
@@ -430,7 +473,7 @@ function parseAIResponse(text: string, params: ContentGenerationParams) {
     hashtags: [],
     cta: "",
     qualityScore: themFirstQualityScore(text),
-    platformSpecific: {},
+    platformSpecific: platformFacts,
   }
 }
 

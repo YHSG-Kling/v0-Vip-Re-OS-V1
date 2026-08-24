@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 434 tables, 757 columns.
+ * MEASURED AT GENERATION: 436 tables, 760 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-08-24
  * source: public.live_check_constraints_json()
- * body-sha256: df91d9344eae58cdddaa4001fee0937aff78e61e57dff5ef541c546b0d100c5f
+ * body-sha256: b3ab04d3cc2bdcab759bc0e7a108fccac43046e57cebbe2d45c6f692c97e5795
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -204,6 +204,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   ai_isa_qualifications: {
     qualification_result: ["appointment_set", "needs_follow_up", "no_response", "not_qualified", "qualified"],
+  },
+  ai_isa_settings: {
+    owner_type: ["agent", "brokerage", "platform", "team"],
   },
   ai_message_drafts: {
     channel: ["email", "in_app", "sms"],
@@ -1590,6 +1593,10 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   vendor_plans: {
     billing_cycle: ["annual", "monthly"],
     status: ["active", "archived"],
+  },
+  vendor_service_areas: {
+    status: ["active", "suspended", "withdrawn"],
+    trade_category: ["3d_tour", "appliance_repair", "attorney", "cleaner", "contractor", "drone_pilot", "electrician", "estate_sale", "financial_advisor", "flooring", "garage_door", "handyman", "home_warranty", "hvac", "inspector", "insurance", "interior_design", "landscaping", "lender", "mover", "organizer", "other", "painter", "pest_control", "photographer", "plumber", "pool_service", "property_management", "refinance_lender", "roofer", "security", "smart_home", "solar", "stager", "tax_pro", "title", "videographer", "window_treatment"],
   },
   vendor_subscriptions: {
     billing_direction: ["vendor_pays_brokerage"],

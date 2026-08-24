@@ -1649,6 +1649,36 @@ let functionsExamined = 0
  * Anything this cannot decide returns null and is COUNTED as unresolved, never
  * judged.
  */
+/**
+ * WORDS THAT CANNOT APPEAR IN A RETURN TYPE — so meeting one means the declaration
+ * being parsed ENDED WITHOUT A BODY and the walk has wandered into the next one.
+ *
+ * THE FALSE-ACCUSATION CLASS THIS CLOSES (2026-08-24). An AMBIENT declaration has
+ * no body at all:
+ *
+ *     declare module 'qrcode' {
+ *       function toDataURL(text: string, options?: Opts): Promise<string>
+ *       function toString(text: string, options?: Opts): Promise<string>
+ *       export { toDataURL, toString }
+ *     }
+ *
+ * The walker terminated on `;` and `=` but on nothing else, so from `toDataURL`'s
+ * `)` it skipped `Promise<string>`, consumed the whole `toString` line as "ordinary
+ * type text" (its parameter list swallowed by the `(` branch), and stopped at the
+ * first `{` it could match — the EXPORT CLAUSE five lines below. That clause became
+ * the "body", the parameter names naturally did not appear in it, and eleven
+ * parameters of two type-declaration files were reported as accepted-and-never-read.
+ * They are not read because there is nothing to read them WITH; a declaration that
+ * has no body cannot have an inert parameter.
+ *
+ * `import` is deliberately ABSENT from this set: `import("./x").Y` is a legal type.
+ * `abstract` is absent too: `abstract new () => T` is a legal constructor type.
+ */
+const BODYLESS_DECLARATION_STARTERS = new Set([
+  "function", "interface", "class", "enum", "namespace", "module",
+  "declare", "export", "const", "let", "var", "type",
+])
+
 function findFunctionBody(src: string, parenClose: number): { start: number; end: number } | null {
   let i = parenClose + 1
   const limit = Math.min(src.length, parenClose + 8000)
@@ -1656,6 +1686,14 @@ function findFunctionBody(src: string, parenClose: number): { start: number; end
     const c = src[i]
     if (/\s/.test(c)) { i++; continue }
     if (c === ";" || c === "=") return null            // overload signature, or not a declaration
+    if (/[A-Za-z_$]/.test(c)) {
+      // An identifier in the type region. If it can only START A DECLARATION, the
+      // one we were parsing had no body — unresolved, never judged.
+      const word = /^[A-Za-z_$][\w$]*/.exec(src.slice(i))![0]
+      if (BODYLESS_DECLARATION_STARTERS.has(word)) return null
+      i += word.length
+      continue
+    }
     if (c === "{") {
       const close = sd.matchBrace(src, i)
       if (close < 0) return null
@@ -1803,6 +1841,48 @@ stage("C4 params")
   const destructured = `export function j({ a, b }: Props) { return 1 }\n`
   control("C4 counts a DESTRUCTURED parameter as unresolved, never as inert",
     scanInertParams("<control>", blankComments(destructured)).length === 0)
+  // THE AMBIENT-DECLARATION TRAP, in the exact shape of types/qrcode.d.ts. Before
+  // 2026-08-24 the body-finder walked off the end of a bodyless declaration and
+  // adopted the `export { … }` clause below it as the body, so every parameter of
+  // every ambient signature was reported inert.
+  const ambient =
+    `declare module 'thing' {\n` +
+    `  function toDataURL(text: string, options?: Opts): Promise<string>\n` +
+    `  function toStr(text: string, options?: Opts): Promise<string>\n\n` +
+    `  export { toDataURL, toStr }\n` +
+    `}\n`
+  control("C4 treats an AMBIENT declaration (no body) as unresolved, never as inert",
+    scanInertParams("<control>", blankComments(ambient)).length === 0,
+    scanInertParams("<control>", blankComments(ambient)).map((g) => `${g.fn}::${g.param}`).join(","))
+  // POSITIVE CONTROL for the line above (§2): the stop-word set must not have blinded
+  // the scan. Give the SAME ambient block a real implementation and the inert
+  // parameter must still be found — a fix that reports zero because it stopped
+  // looking is worse than the defect it replaced.
+  const ambientWithBody =
+    `declare module 'thing' {\n` +
+    `  function toDataURL(text: string, options?: Opts): Promise<string>\n` +
+    `}\n` +
+    `export function realOne(used: string, ignored: number): Promise<string> {\n` +
+    `  return Promise.resolve(used)\n` +
+    `}\n`
+  {
+    const got2 = scanInertParams("<control>", blankComments(ambientWithBody))
+    control("C4 still finds a REAL inert parameter beside an ambient declaration",
+      got2.length === 1 && got2[0].param === "ignored",
+      got2.map((g) => `${g.fn}::${g.param}`).join(","))
+  }
+  // …and the return-type walker must still cross a type that merely CONTAINS one of
+  // the stop words as part of a longer identifier.
+  const typeofReturn =
+    `export function pick(source: string, dropped: number): typeof globalThis.JSON {\n` +
+    `  return JSON.parse(source)\n` +
+    `}\n`
+  {
+    const got3 = scanInertParams("<control>", blankComments(typeofReturn))
+    control("C4 does not mistake `typeof` for the stop-word `type`",
+      got3.length === 1 && got3[0].param === "dropped",
+      got3.map((g) => `${g.fn}::${g.param}`).join(","))
+  }
   control("C4 examined a real population", functionsExamined > 500 && paramsExamined > 500,
     `${functionsExamined} functions / ${paramsExamined} plain params`)
 }

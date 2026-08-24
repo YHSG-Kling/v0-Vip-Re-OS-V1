@@ -40,6 +40,13 @@ const PLATFORM_CONFIGS: Record<string, PlatformConfig> = {
   },
 }
 
+/**
+ * `transactionId` NAMES THE DEAL THIS SYNDICATION BELONGS TO — accepted here and
+ * read by NOTHING until 2026-08-24. Every exit was anonymous, so a syndication
+ * failure in the marketing-package sweep
+ * (app/actions/marketing-package-automation.ts:509 loops over platforms per
+ * transaction) could not be traced back to the deal that produced it.
+ */
 export async function syncToPlatform(
   platformName: string,
   transactionId: string,
@@ -72,18 +79,29 @@ export async function syncToPlatform(
     })
 
     if (!response.ok) {
-      console.error(`[v0] ${platformName} API error:`, response.error)
+      console.error(`[v0] ${platformName} API error (transaction ${transactionId}):`, response.error)
       return { success: false, error: `API error: ${response.status}` }
     }
 
     const result = response.data ?? {}
 
-    return {
-      success: true,
-      listingUrl: result.listing_url || result.url || `https://${normalizedPlatform}.com/listing/${result.id}`
+    // HONESTY FIX, same class as the two the rest of this file already carries:
+    // the third branch of this fallback BUILT a listing URL out of the platform
+    // name and `result.id`, so a response that carried neither a url nor an id
+    // returned `https://zillow.com/listing/undefined` — a fabricated syndication
+    // link the caller then stored as proof the listing was live. A post that
+    // succeeded but told us no URL is a post with no URL, not a guessable one.
+    const listingUrl: string | undefined =
+      result.listing_url || result.url || (result.id ? `https://${normalizedPlatform}.com/listing/${result.id}` : undefined)
+    if (!listingUrl) {
+      console.warn(
+        `[v0] ${platformName} accepted the post for transaction ${transactionId} but returned no listing URL or id`,
+      )
     }
+
+    return { success: true, ...(listingUrl ? { listingUrl } : {}) }
   } catch (error) {
-    console.error(`[v0] Error syncing to ${platformName}:`, error)
+    console.error(`[v0] Error syncing to ${platformName} (transaction ${transactionId}):`, error)
     return { success: false, error: error instanceof Error ? error.message : `${platformName} sync failed` }
   }
 }

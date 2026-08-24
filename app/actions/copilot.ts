@@ -663,6 +663,18 @@ Format as actionable priorities with time estimates and recommended order of exe
   }
 }
 
+/**
+ * `taskId` — the gameplan ROW the agent tapped — WAS ACCEPTED HERE AND READ BY
+ * NOTHING until 2026-08-24, which left this dispatcher unable to say which row it
+ * had refused. Every export of a "use server" file is a public HTTP endpoint
+ * (CLAUDE.md §4), so `taskType` and every field of `params` arrive from the client:
+ * an unknown type, or a known type with its id missing, reached the delegated lane as
+ * `undefined` and came back as an anonymous "that action did not run" toast with no
+ * way to tell WHICH row failed or WHY.
+ *
+ * The required parameter for each lane is now checked before dispatch, and both the
+ * refusal and the server log NAME THE ROW.
+ */
 export async function executeCopilotTask(taskId: string, taskType: string, params: any) {
   const supabase = await createServerClient()
 
@@ -671,26 +683,38 @@ export async function executeCopilotTask(taskId: string, taskType: string, param
   } = await supabase.auth.getUser()
   if (!user) throw new Error("Not authenticated")
 
+  /** Refuse by NAME — the row, the lane, and the field that was missing. */
+  const missing = (field: string) => {
+    console.warn(`[copilot] task ${taskId} (${taskType}) refused — "${field}" was not supplied`)
+    return { success: false, error: `That action is missing its ${field} and did not run (row ${taskId}).` }
+  }
+
   switch (taskType) {
     case "call_hot_lead":
       // No agent id passed: the canonical calling lane derives the agent from
       // the session, which is where user.id came from anyway.
+      if (!params?.contactId) return missing("contactId")
       return await initiateCall(params.contactId)
 
     case "send_property_alert":
+      if (!params?.contactId) return missing("contactId")
       return await sendPropertyMatches(params.contactId)
 
     case "follow_up_showing":
+      if (!params?.showingId) return missing("showingId")
       return await requestShowingFeedback(params.showingId)
 
     case "check_transaction_status":
+      if (!params?.transactionId) return missing("transactionId")
       return await checkTransactionDeadlines(params.transactionId)
 
     case "post_content":
+      if (!params?.videoId) return missing("videoId")
       return await postVideoContent(params.videoId, params.platforms)
 
     default:
-      return { success: false, error: "Unknown task type" }
+      console.warn(`[copilot] task ${taskId} named an unknown task type "${taskType}"`)
+      return { success: false, error: `Unknown task type "${taskType}" (row ${taskId}).` }
   }
 }
 

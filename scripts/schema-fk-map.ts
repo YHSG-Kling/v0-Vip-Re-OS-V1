@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1694 of 1751 pairs) — storing them would be
+ * overwhelming majority (1697 of 1754 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 1825 edges across 713 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1751 unordered
+ * MEASURED AT GENERATION: 1828 edges across 714 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1754 unordered
  * table pairs carry at least one FK; 57
  * carry more than one and are listed below. 12 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -86,7 +86,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-08-24
  * source: public.live_foreign_keys_json()
- * body-sha256: f5737aed3781a7ca967e2ba04e5b839d67a6f78767f0362dfe5e67ee9a54e608
+ * body-sha256: 242e687116bb2308fa62f0163c86ffa8ba46fd758f1cc7b576060b9d52d0f8c3
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -172,7 +172,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "ai_isa_campaigns": { "brokerage_id": "brokerages" },
   "ai_isa_engagement_tracking": { "brokerage_id": "brokerages", "campaign_id": "ai_isa_campaigns", "contact_id": "contacts", "lead_id": "leads", "outreach_id": "isa_outreach_log" },
   "ai_isa_qualifications": { "agent_id": "agents", "assigned_to_agent_id": "users", "brokerage_id": "brokerages", "campaign_id": "ai_isa_campaigns", "contact_id": "contacts", "lead_id": "leads" },
-  "ai_isa_settings": { "brokerage_id": "brokerages" },
+  "ai_isa_settings": { "agent_id": "agents", "brokerage_id": "brokerages", "team_id": "teams" },
   "ai_listing_optimizations": { "brokerage_id": "brokerages", "transaction_id": "transactions" },
   "ai_message_drafts": { "agent_user_id": "users", "brokerage_id": "brokerages", "contact_id": "contacts", "conversation_id": "conversations", "listing_id": "listings", "sent_message_id": "messages", "source_message_id": "messages" },
   "ai_overage_invoices": { "brokerage_id": "brokerages" },
@@ -782,6 +782,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "vendor_ratings": { "brokerage_id": "brokerages", "vendor_id": "vendors" },
   "vendor_review_flags": { "brokerage_id": "brokerages", "review_id": "vendor_reviews" },
   "vendor_reviews": { "brokerage_id": "brokerages", "user_id": "users", "vendor_id": "vendors" },
+  "vendor_service_areas": { "platform_vendor_id": "vendor_marketplace_profiles" },
   "vendor_subscriptions": { "plan_id": "vendor_plans", "vendor_id": "vendors" },
   "vendor_tax_documents": { "brokerage_id": "brokerages", "vendor_id": "vendors" },
   "vendor_transactions": { "brokerage_id": "brokerages", "subscription_id": "vendor_subscriptions", "vendor_id": "vendor_marketplace_profiles" },

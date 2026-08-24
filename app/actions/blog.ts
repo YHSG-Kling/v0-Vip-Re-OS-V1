@@ -364,6 +364,37 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
   }
 }
 
+// ─── THE BLOG ACTOR GATE ──────────────────────────────────────────────────────
+//
+// `userId` arrives from the BROWSER on three exported server actions in this file
+// (updateBlogPost, publishBlogPost, publishToWordPress). Every export of a
+// "use server" file is a public HTTP endpoint (CLAUDE.md §4), and on two of the
+// three that parameter was accepted and READ BY NOTHING — so the actions ran no
+// authorization at all: any authenticated session could name any blog post id, in
+// any brokerage, and edit or publish it.
+//
+// The fix is the rule, not the parameter: THE TENANT COMES FROM THE SESSION. The
+// client-supplied id is now read only as an ASSERTION — if the browser claims to be
+// someone the session is not, that is a refusal, not a fallback — and the session's
+// brokerage becomes the predicate on every subsequent read and write.
+//
+// This is a NON-EXPORTED helper on purpose: exporting it would publish the gate
+// itself as an endpoint.
+async function resolveBlogActor(
+  claimedUserId: string,
+): Promise<{ ok: true; userId: string; brokerageId: string } | { ok: false; error: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.userId || !ctx.brokerageId) {
+    return { ok: false, error: "Not authenticated" }
+  }
+  // FAIL CLOSED (§4): a mismatch is refused rather than quietly preferring the
+  // session, so a caller passing someone else's id is TOLD, not silently corrected.
+  if (claimedUserId && claimedUserId !== ctx.userId) {
+    return { ok: false, error: "Identity mismatch — you may only act as yourself" }
+  }
+  return { ok: true, userId: ctx.userId, brokerageId: ctx.brokerageId }
+}
+
 // ─── updateBlogPost ───────────────────────────────────────────────────────────
 
 export async function updateBlogPost(
@@ -371,13 +402,17 @@ export async function updateBlogPost(
   postId: string,
   updates: UpdateBlogPostParams
 ): Promise<{ success: boolean; error?: string }> {
+  const actor = await resolveBlogActor(userId)
+  if (!actor.ok) return { success: false, error: actor.error }
+
   const supabase = await createClient()
 
-  // ── 1. Fetch post to get brokerageId ────────────────────────────────────────
+  // ── 1. Fetch post to get brokerageId — SCOPED TO THE SESSION'S BROKERAGE ────
   const { data: existingPost, error: fetchError } = await supabase
     .from("blog_posts")
     .select("brokerage_id, publish_status")
     .eq("id", postId)
+    .eq("brokerage_id", actor.brokerageId)
     .maybeSingle()
 
   if (fetchError || !existingPost) {
@@ -390,6 +425,7 @@ export async function updateBlogPost(
       .from("blog_posts")
       .select("content")
       .eq("id", postId)
+      .eq("brokerage_id", actor.brokerageId)
       .maybeSingle()
 
     if (fullPost?.content) {
@@ -421,16 +457,31 @@ export async function updateBlogPost(
   if (updates.category !== undefined) updateData.category = updates.category || null
   if (updates.callToAction !== undefined) updateData.call_to_action = updates.callToAction || null
 
-  const { error: updateError } = await supabase.from("blog_posts").update(updateData).eq("id", postId)
+  const { data: updatedRows, error: updateError } = await supabase
+    .from("blog_posts")
+    .update(updateData)
+    .eq("id", postId)
+    .eq("brokerage_id", actor.brokerageId)
+    .select("id")
 
   if (updateError) {
     console.error("[updateBlogPost] Update failed:", updateError)
     return { success: false, error: "Failed to update blog post" }
   }
+  // An UPDATE that matched NOTHING also resolves with error === null (CLAUDE.md §3):
+  // a refused tenant predicate is byte-identical to a successful write. COUNT the
+  // rows the write actually returned rather than trusting the absent error.
+  if (!updatedRows || updatedRows.length === 0) {
+    return { success: false, error: "Blog post not found" }
+  }
 
   // ── 4. If published, fire kernel event ──────────────────────────────────────
   if (updates.publishStatus === "published") {
-    await supabase.from("blog_posts").update({ published_at: new Date().toISOString() }).eq("id", postId)
+    await supabase
+      .from("blog_posts")
+      .update({ published_at: new Date().toISOString() })
+      .eq("id", postId)
+      .eq("brokerage_id", actor.brokerageId)
 
     await processKernelEvent({
       event: KernelEvent.BLOG_POST_PUBLISHED,
@@ -468,11 +519,15 @@ export async function publishBlogPost(
   userId: string,
   postId: string,
 ): Promise<{ success: boolean; hostedUrl?: string; wordpressPostId?: string; error?: string }> {
+  const actor = await resolveBlogActor(userId)
+  if (!actor.ok) return { success: false, error: actor.error }
+
   const supabase = await createClient()
   const { data: post } = await supabase
     .from("blog_posts")
     .select("id, brokerage_id, slug, publish_status, publish_target")
     .eq("id", postId)
+    .eq("brokerage_id", actor.brokerageId)
     .maybeSingle()
   const p = post as { id: string; brokerage_id: string; slug: string; publish_status: string; publish_target: string } | null
   if (!p) return { success: false, error: "Blog post not found" }
@@ -487,7 +542,7 @@ export async function publishBlogPost(
     await supabase.from("blog_posts").update({
       publish_status: "published",
       published_at:   new Date().toISOString(),
-    }).eq("id", postId)
+    }).eq("id", postId).eq("brokerage_id", actor.brokerageId)
     return { success: true, hostedUrl }
   }
 
@@ -499,7 +554,7 @@ export async function publishBlogPost(
     await supabase.from("blog_posts").update({
       publish_status: "published",
       published_at:   new Date().toISOString(),
-    }).eq("id", postId)
+    }).eq("id", postId).eq("brokerage_id", actor.brokerageId)
     return { success: true, hostedUrl: `${baseUrl}/embed/blog/${p.slug}` }
   }
 
@@ -511,7 +566,7 @@ export async function publishBlogPost(
   await supabase.from("blog_posts").update({
     publish_status: "published",
     published_at:   new Date().toISOString(),
-  }).eq("id", postId)
+  }).eq("id", postId).eq("brokerage_id", actor.brokerageId)
   const wpResult = await publishToWordPress(userId, postId)
   return {
     success:         true,
@@ -525,13 +580,21 @@ export async function publishToWordPress(
   userId: string,
   postId: string
 ): Promise<{ success: boolean; wordpressPostId?: string; error?: string }> {
+  // `userId` was accepted here and read by NOTHING — see the gate's note above
+  // resolveBlogActor. This endpoint pushes a brokerage's article to that
+  // brokerage's WordPress using ITS stored credential, so an un-gated post id was
+  // a cross-tenant publish, not just a cross-tenant read.
+  const actor = await resolveBlogActor(userId)
+  if (!actor.ok) return { success: false, error: actor.error }
+
   const supabase = await createClient()
 
-  // ── 1. Fetch post ───────────────────────────────────────────────────────────
+  // ── 1. Fetch post — SCOPED TO THE SESSION'S BROKERAGE ───────────────────────
   const { data: post, error: fetchError } = await supabase
     .from("blog_posts")
     .select("id, brokerage_id, title, content, excerpt, publish_status")
     .eq("id", postId)
+    .eq("brokerage_id", actor.brokerageId)
     .maybeSingle()
 
   if (fetchError || !post) {
@@ -591,6 +654,7 @@ export async function publishToWordPress(
         publish_status: "published",
       })
       .eq("id", postId)
+      .eq("brokerage_id", actor.brokerageId)
 
     return { success: true, wordpressPostId: String(wpPost.id) }
   } catch (err) {

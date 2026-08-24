@@ -163,5 +163,7 @@ export async function loadFinancialProfileFromPortalAction(input: { contactId: s
 export async function getBrokerageLendersFromPortalAction(input: { contactId: string }) {
   const auth = await authBuyerOwnsContact(input.contactId)
   if (!auth.ok) return { success: false as const, error: auth.error }
-  return getBrokerageLenders({ brokerageId: auth.brokerageId })
+  // The tenant is the SESSION's, resolved inside getBrokerageLenders — this used to
+  // hand it `auth.brokerageId` into a parameter that was documented as ignored.
+  return getBrokerageLenders()
 }

@@ -2811,7 +2811,7 @@ export async function bulkGenerateContent(params: {
     const jobs = targets.map((targetId, index) => ({
       target: targetId,
       status: "queued" as const,
-      priority: calculateJobPriority(targetId, index),
+      priority: calculateJobPriority(index),
     }))
 
     const results: Array<{ target: string; success: boolean; data?: any; error?: string }> = []
@@ -2892,7 +2892,16 @@ export async function bulkGenerateContent(params: {
   }
 }
 
-function calculateJobPriority(targetId: string, index: number): number {
+/**
+ * TOMBSTONE — this took `targetId: string` and read NOTHING of it. Bulk-generation
+ * priority is POSITIONAL and nothing else: it is a function of where the target sits
+ * in the batch, not of which target it is. A parameter that cannot change the answer
+ * reads as an unfinished per-target rule and invites one to be invented; the honest
+ * signature says what the number actually depends on. Survivor of "which target is
+ * this": the `targetId` the caller already carries into the job row itself
+ * (app/actions/ai-content-generation.tsx, the bulk-generate loop).
+ */
+function calculateJobPriority(index: number): number {
   // Higher priority for newer items (lower index)
   return Math.max(1, 10 - Math.floor(index / 10))
 }

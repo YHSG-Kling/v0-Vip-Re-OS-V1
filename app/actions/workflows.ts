@@ -90,12 +90,21 @@ export async function checkFairHousingCompliance(
     if (violations.length > 0) {
       // A COMPLIANCE VIOLATION record. Losing it silently is losing the evidence
       // that the violation was detected at all.
+      //
+      // `contentType` WAS ACCEPTED AND READ BY NOTHING until 2026-08-24, so this
+      // record — the only evidence the detection happened — could not say what was
+      // scanned. A fair-housing flag on a listing description, an outbound email
+      // and a video script are three different remediations, and a reviewer reading
+      // this row had no way to tell them apart. It is written into both the human
+      // title and the machine-readable `metadata` so neither reader has to guess.
+      const scannedKind = contentType?.trim() || "unspecified content"
       const { error: violationLogError } = await supabase.from("activities").insert({
         brokerage_id: brokerageId,
         entity_type: "compliance",
         activity_type: "fair_housing_violation_detected",
-        title: "Fair Housing Violation Detected",
+        title: `Fair Housing Violation Detected — ${scannedKind}`,
         description: violations.join("; "),
+        metadata: { content_type: scannedKind, violation_count: violations.length },
         status: "flagged",
       })
       if (violationLogError) {

@@ -25,15 +25,33 @@ export async function monitorAgentActivity(
 ): Promise<AgentActivityStatus> {
   const supabase = createServiceClient()
 
+  // `brokerageId` IS THE TENANT PREDICATE (CLAUDE.md §4) — accepted here and read by
+  // NOTHING until 2026-08-24. Every read below runs on the SERVICE client, which
+  // bypasses RLS, keyed only on the id the caller handed in: a lead id belonging to
+  // another brokerage returned that brokerage's assignment date, its agent id and its
+  // activity history, and this function then published an SLA verdict about it.
+  // `leads` and `activities` both carry `brokerage_id` (scripts/schema-snapshot.ts).
+  //
+  // FAIL CLOSED (§4): no tenant means refuse, not read wide.
+  if (!brokerageId) {
+    throw new Error("monitorAgentActivity requires a brokerageId — refusing an un-scoped service-client read")
+  }
+
   console.log(`[v0] Monitoring agent activity for lead ${leadId}`)
 
   // Get lead details
-  const { data: lead } = await supabase
+  const { data: lead, error: leadError } = await supabase
     .from("leads")
     .select("agent_id, stage_entered_at, lead_stage")
     .eq("id", leadId)
+    .eq("brokerage_id", brokerageId)
     .single()
 
+  // supabase-js RESOLVES refusals (§3). Without this the refused tenant predicate is
+  // byte-identical to "this lead has no agent", and the caller is told the wrong thing.
+  if (leadError && leadError.code !== "PGRST116") {
+    throw new Error(`Lead lookup refused: ${leadError.message}`)
+  }
   if (!lead || !lead.agent_id) {
     throw new Error("Lead not assigned to agent")
   }
@@ -47,6 +65,7 @@ export async function monitorAgentActivity(
     .from("activities")
     .select("created_at, activity_type")
     .eq("contact_id", leadId)
+    .eq("brokerage_id", brokerageId)
     .eq("agent_id", lead.agent_id)
     .not("activity_type", "in", '("agent_assignment","ai_isa_email","ai_isa_conversation","ai_isa_qualification")')
     .order("created_at", { ascending: false })
@@ -57,6 +76,7 @@ export async function monitorAgentActivity(
     .from("activities")
     .select("created_at, activity_type")
     .eq("contact_id", leadId)
+    .eq("brokerage_id", brokerageId)
     .in("activity_type", ["ai_isa_email", "ai_isa_conversation", "ai_isa_qualification"])
     .order("created_at", { ascending: false })
     .limit(1)

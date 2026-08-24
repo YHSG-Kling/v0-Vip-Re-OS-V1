@@ -1224,7 +1224,15 @@ export async function saveClientJourneyPreferences(data: {
  * this contact or same-brokerage staff before the query runs.
  */
 export async function getClientJourneyPreferences(
-  leadId?: string,
+  // TOMBSTONE — this was `leadId?: string` and was read by NOTHING. The row this
+  // reads (`property_interests`) is keyed on the CONTACT, and the one caller
+  // (app/portal/[contactId]/journey/page.tsx) has always passed `undefined` for it.
+  // Kept as a positional placeholder and `_`-prefixed rather than removed, so the
+  // existing call shape keeps working — the same idiom `forecastBrokerageRevenue`
+  // below already uses for `_brokerageId`. Survivor of the "which record is this
+  // about" question: `contactId`, plus the tenant on the session
+  // (requireContactAccess, below).
+  _leadId?: string,
   contactId?: string
 ) {
   if (!contactId) return null

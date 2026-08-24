@@ -732,12 +732,50 @@ export async function prepareListingEmailCampaign(params: {
   }
 }
 
+/**
+ * `transactionId` WAS ACCEPTED HERE AND READ BY NOTHING until 2026-08-24 — and it is
+ * the only thing that knows WHO IS ALREADY ON THIS DEAL.
+ *
+ * Every branch below builds a marketing blast about one listing, and none of them
+ * excluded that listing's own parties. So the seller of the home received the
+ * "coming soon" and "price drop" campaigns about their own house, and the buyer under
+ * contract received the launch blast for the property they are in escrow on. Those
+ * are not cold prospects; they are clients mid-transaction, and a price-drop email is
+ * the worst possible way for either of them to hear it.
+ *
+ * The deal's parties are resolved once and removed from whatever each branch returns.
+ * The transaction read is TENANT-SCOPED on the listing's own brokerage (§4) — the
+ * caller hands in a transaction id, and an id from another brokerage must resolve to
+ * nothing rather than to that brokerage's contacts.
+ *
+ * `property_interactions` picked up the same tenant predicate while we were here: it
+ * carries `brokerage_id` (scripts/schema-snapshot.ts) and both reads keyed on
+ * `listing_id` alone.
+ */
 async function getListingCampaignRecipients(
   transactionId: string,
   campaignType: string,
   listing: any,
 ): Promise<string[]> {
   const supabase = await createClient()
+
+  const excluded = new Set<string>()
+  if (transactionId) {
+    const { data: deal, error: dealError } = await supabase
+      .from("transactions")
+      .select("contact_id, buyer_contact_id, seller_contact_id")
+      .eq("id", transactionId)
+      .eq("brokerage_id", listing.brokerage_id)
+      .maybeSingle()
+    // supabase-js RESOLVES refusals (§3): a swallowed error here would silently put
+    // the deal's own parties back on the blast list.
+    if (dealError) throw dealError
+    for (const id of [deal?.contact_id, deal?.buyer_contact_id, deal?.seller_contact_id]) {
+      if (id) excluded.add(id as string)
+    }
+  }
+  const withoutDealParties = (ids: (string | null | undefined)[]) =>
+    ids.filter((id): id is string => !!id && !excluded.has(id))
 
   if (campaignType === "coming_soon" || campaignType === "launch") {
     const { data: contacts, error: contactsError } = await supabase
@@ -748,7 +786,7 @@ async function getListingCampaignRecipients(
       .gte("budget_max", (listing.price || 0) * 0.9)
       .lte("budget_min", (listing.price || 0) * 1.1)
     if (contactsError) throw contactsError
-    return contacts?.map((c) => c.id) || []
+    return withoutDealParties((contacts ?? []).map((c) => c.id))
   }
 
   if (campaignType === "open_house") {
@@ -756,9 +794,10 @@ async function getListingCampaignRecipients(
       .from("property_interactions")
       .select("contact_id")
       .eq("listing_id", listing.id)
+      .eq("brokerage_id", listing.brokerage_id)
       .in("interaction_type", ["view", "save"])
     if (interestedError) throw interestedError
-    return interested?.map((i) => i.contact_id).filter((id) => id) || []
+    return withoutDealParties((interested ?? []).map((i) => i.contact_id))
   }
 
   if (campaignType === "price_drop") {
@@ -766,15 +805,16 @@ async function getListingCampaignRecipients(
       .from("property_interactions")
       .select("contact_id")
       .eq("listing_id", listing.id)
+      .eq("brokerage_id", listing.brokerage_id)
       .eq("interaction_type", "view")
     if (viewersError) throw viewersError
-    return viewers?.map((v) => v.contact_id).filter((id) => id) || []
+    return withoutDealParties((viewers ?? []).map((v) => v.contact_id))
   }
 
   const { data: allContacts, error: allContactsError } = await supabase.from("contacts").select("id")
     .eq("brokerage_id", listing.brokerage_id).eq("status", "active").limit(100)
   if (allContactsError) throw allContactsError
-  return allContacts?.map((c) => c.id) || []
+  return withoutDealParties((allContacts ?? []).map((c) => c.id))
 }
 
 function determineListingSegment(campaignType: string): string {

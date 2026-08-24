@@ -34,22 +34,47 @@ import {
 
 export const dynamic = "force-dynamic"
 
+/**
+ * `brokerageId` IS THE TENANT PREDICATE — it was accepted here and read by NOTHING
+ * until 2026-08-24. All three reads below were keyed on `agent_id` alone, so every
+ * row an agent id matched came back no matter which brokerage owned it. That is the
+ * body-shaped-tenant IDOR shape CLAUDE.md §4 names, wearing a parameter it never
+ * asked. Both `commission_splits` and `transactions` carry `brokerage_id`
+ * (scripts/schema-snapshot.ts), so the predicate existed the whole time.
+ *
+ * FAIL CLOSED (§4): with no tenant this refuses rather than running the un-scoped
+ * query. `tenantResolved: false` is NOT "you earned nothing" — the caller renders it
+ * as unavailable, the same no-invented-zero rule the YTD tile already follows.
+ *
+ * Errors are DESTRUCTURED AND READ (§3): supabase-js resolves refusals, so an
+ * ignored `error` degrades a refused tenant predicate into an empty, confident page.
+ */
 async function getFinancialOverview(agentId: string, brokerageId: string) {
+  const empty = {
+    commissionSplits: [] as any[],
+    pendingPayouts: 0,
+    recentTransactions: [] as any[],
+    pendingCount: 0,
+  }
+  if (!brokerageId) return { ...empty, tenantResolved: false as const }
+
   const supabase = await createClient()
-  
+
   // Get commission splits
-  const { data: commissionSplits } = await supabase
+  const { data: commissionSplits, error: splitsError } = await supabase
     .from("commission_splits")
     .select("*")
     .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
     .order("created_at", { ascending: false })
     .limit(10)
 
   // Get pending payouts
-  const { data: pendingPayouts } = await supabase
+  const { data: pendingPayouts, error: pendingError } = await supabase
     .from("commission_splits")
     .select("agent_amount")
     .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
     .eq("status", "pending")
 
   // YTD earnings are NOT computed here any more. They come from
@@ -57,7 +82,7 @@ async function getFinancialOverview(agentId: string, brokerageId: string) {
   // /dashboard/financials/agent report the same number. See the import comment above.
 
   // Get recent transactions with commission data
-  const { data: recentTransactions } = await supabase
+  const { data: recentTransactions, error: txError } = await supabase
     .from("transactions")
     .select(`
       id,
@@ -71,12 +96,23 @@ async function getFinancialOverview(agentId: string, brokerageId: string) {
       )
     `)
     .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
     .order("created_at", { ascending: false })
     .limit(5)
+
+  if (splitsError || pendingError || txError) {
+    console.error("[financials] tenant-scoped read refused", {
+      splitsError: splitsError?.message,
+      pendingError: pendingError?.message,
+      txError: txError?.message,
+    })
+    return { ...empty, tenantResolved: false as const }
+  }
 
   const totalPending = pendingPayouts?.reduce((sum, p) => sum + (p.agent_amount || 0), 0) || 0
 
   return {
+    tenantResolved: true as const,
     commissionSplits: commissionSplits || [],
     pendingPayouts: totalPending,
     recentTransactions: recentTransactions || [],
@@ -128,7 +164,10 @@ export default async function FinancialsPage() {
   const canSeeTeam = canSeeBrokerage || accessLevel === "team"
 
   const [financials, summaryResult] = await Promise.all([
-    getFinancialOverview(context.agentId, context.brokerageId || ""),
+    // The tenant comes from the KERNEL-VALIDATED workspace above (CLAUDE.md §4 —
+    // tenant comes from the session, never from a parameter the page invented),
+    // with the in-place-healed context as the fallback spelling of the same id.
+    getFinancialOverview(context.agentId, workspace.data.brokerageId || context.brokerageId || ""),
     // Kernel command 2 — the canonical earnings figures for THIS agent.
     loadAgentFinancialSummaryAction({ agentId: context.agentId }),
   ])
@@ -166,6 +205,24 @@ export default async function FinancialsPage() {
           </Link>
         </div>
       </div>
+
+      {/* The tenant predicate could not be asked, so nothing below it was read.
+          Reported as unavailable, never as $0 — same rule as the YTD tile. */}
+      {!financials.tenantResolved && (
+        <Card className="border-amber-500/40">
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm font-medium">
+              <AlertTriangle className="h-4 w-4 text-amber-500" />
+              Commission detail unavailable
+            </CardTitle>
+            <CardDescription>
+              We couldn&rsquo;t confirm which brokerage owns these records, so the
+              splits, payouts and recent-deal lists below are empty on purpose
+              rather than showing figures we could not attribute.
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      )}
 
       {/* Financial Radar - Key Metrics */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">

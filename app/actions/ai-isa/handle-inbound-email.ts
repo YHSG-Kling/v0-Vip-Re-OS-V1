@@ -360,7 +360,7 @@ export async function processInboundEmail(params: {
   // Tools share a single context bound to (lead, brokerage, agent). Each
   // tool re-checks brokerage_id; mark_do_not_contact reuses the existing
   // TCPA halt path so the same notifications + sequence stops fire.
-  const isaTools = buildISATools({
+  const isaTools = await buildISATools({
     leadId: lead.id,
     brokerageId: lead.brokerage_id,
     agentId: lead.agent_id ?? null,

@@ -509,6 +509,18 @@ OUTPUT FORMAT (JSON):
   }
 }
 
+/**
+ * `score` WAS ACCEPTED HERE AND READ BY NOTHING until 2026-08-24 — and this string is
+ * printed straight into the prompt that writes a real invitation to a real person,
+ * one line below the match score itself (`- Match Score: ${matchScore}/100`).
+ *
+ * When none of the three specific checks fired, the old code returned the flat
+ * assertion "Good general fit" — for a 12/100 match exactly as confidently as for a
+ * 95/100 one. That is a claim about a person's fit that nothing measured, handed to a
+ * model as a FACT to build an invitation on. The score is the one thing in scope that
+ * knows better, so the no-specific-reason case now defers to it, and the model is
+ * told to be candid rather than to embellish a weak match.
+ */
 function generateMatchReasoning(contact: any, property: any, score: number): string {
   const reasons = []
 
@@ -522,7 +534,17 @@ function generateMatchReasoning(contact: any, property: any, score: number): str
     reasons.push("In preferred neighborhood")
   }
 
-  return reasons.join(", ") || "Good general fit"
+  if (reasons.length > 0) {
+    // A strong score corroborates the specific reasons; a weak one is worth saying
+    // out loud so the copy does not oversell what the data supports.
+    return score >= 70
+      ? `${reasons.join(", ")} (strong match, ${score}/100)`
+      : `${reasons.join(", ")} (partial match, ${score}/100)`
+  }
+
+  if (score >= 70) return `Strong overall fit (${score}/100), though no single stated criterion is on file`
+  if (score >= 40) return `Loose fit (${score}/100) — worth an invite, but do not claim it matches their criteria`
+  return `No recorded criteria match (${score}/100) — invite as a neighbourhood open house, not as a property match`
 }
 
 // ============================================

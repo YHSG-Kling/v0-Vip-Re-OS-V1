@@ -95,6 +95,7 @@
     "lib/ai-isa/contact-reel-situation.ts": 1,
     "lib/ai-isa/ghost-reengagement.ts": 1,
     "lib/ai-isa/inbound-intent-classifier.ts": 1,
+    "lib/ai-isa/isa-acting-scope.ts": 1,
     "lib/ai-isa/lead-nurture.ts": 1,
     "lib/ai-isa/meeting-followthrough.ts": 2,
     "lib/ai-isa/meeting-recap.ts": 8,
@@ -103,6 +104,7 @@
     "lib/ai-isa/portal-link.ts": 1,
     "lib/ai-isa/post-call-outcome.ts": 2,
     "lib/ai-isa/reengagement-policy.ts": 3,
+    "lib/ai-isa/resolve-isa-settings.ts": 1,
     "lib/ai-isa/stale-contact-detector.ts": 1,
     "lib/ai-isa/voice-dial-batch.ts": 2,
     "lib/analytics/ai-prediction-outcomes.ts": 1,
@@ -336,7 +338,6 @@
     "lib/kernel/team-plays.ts": 2,
     "lib/kernel/team-query.ts": 2,
     "lib/kernel/tenant-provisioning-spec.ts": 2,
-    "lib/kernel/tenant-scope.ts": 2,
     "lib/kernel/title-closing-watchtower.ts": 3,
     "lib/kernel/tour-optimizer.ts": 9,
     "lib/kernel/vendor-coverage-forecast.ts": 3,
@@ -450,7 +451,7 @@
     "lib/platform/platform-providers.ts": 1,
     "lib/platform/platform-sentinel.ts": 2,
     "lib/platform/platform-social.ts": 1,
-    "lib/platform/platform-staff-roster.ts": 1,
+    "lib/platform/platform-staff-roster.ts": 2,
     "lib/platform/product-content.ts": 2,
     "lib/platform/prospect-sourcer.ts": 2,
     "lib/platform/provider-posture.ts": 8,
@@ -519,11 +520,13 @@
     "lib/transactions/transaction-status.ts": 3,
     "lib/usage.ts": 1,
     "lib/validations/index.ts": 4,
+    "lib/vendor/assignment-access.ts": 2,
     "lib/vendor-governance/vendor-policy.ts": 1,
     "lib/vendors/rank.ts": 1,
     "lib/vendors/vendor-money-directions.ts": 1,
     "lib/vendors/vendor-platform-identity.ts": 2,
     "lib/vendors/vendor-scope.ts": 1,
+    "lib/vendors/vendor-service-area.ts": 3,
     "lib/video/assistant-options.ts": 1,
     "lib/video/avatar-render-orchestrator.ts": 1,
     "lib/video/broll-picker.ts": 1,
@@ -565,7 +568,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9275,
+  "census": 9301,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -642,7 +645,7 @@
     "app/actions/ai-isa/process-opt-out.ts": 1,
     "app/actions/ai-isa/schedule-appointment.ts": 1,
     "app/actions/ai-isa/speed-to-lead-metrics.ts": 1,
-    "app/actions/ai-isa-settings.ts": 4,
+    "app/actions/ai-isa-settings.ts": 5,
     "app/actions/ai-isa.ts": 18,
     "app/actions/ai-lead-nurturing.ts": 4,
     "app/actions/ai-lead-scoring.ts": 3,
@@ -1095,6 +1098,7 @@
     "app/actions/vendor-premium-placement.ts": 2,
     "app/actions/vendor-requests.ts": 1,
     "app/actions/vendor-respa.ts": 1,
+    "app/actions/vendor-service-areas.ts": 3,
     "app/actions/vendor-verification.ts": 7,
     "app/actions/vendor-w9.ts": 2,
     "app/actions/vendors/vendor-plan-subscriptions.ts": 4,
@@ -2450,6 +2454,7 @@
     "app/dashboard/transactions/components/create-transaction-sheet.tsx": 1,
     "app/dashboard/transactions/components/transaction-command-strip.tsx": 1,
     "app/dashboard/transactions/portfolio-risk-scan.tsx": 1,
+    "app/dashboard/vendors/bench-coverage-panel.tsx": 1,
     "app/dashboard/vendors/premium-placement-panel.tsx": 1,
     "app/dashboard/vendors/vendor-access-panel.tsx": 1,
     "app/dashboard/vendors/vendor-bills-panel.tsx": 1,
@@ -2571,6 +2576,7 @@
     "app/portal/title/[transactionId]/document-upload.tsx": 1,
     "app/portal/title/[transactionId]/title-actions.tsx": 1,
     "app/portal/vendor/contacts/contact-message-panel.tsx": 1,
+    "app/portal/vendor/vendor-coverage-panel.tsx": 1,
     "app/pricing/page.tsx": 1,
     "app/pricing/territory-availability.tsx": 1,
     "app/privacy/request/dsar-form.tsx": 1,
@@ -2775,6 +2781,7 @@
     "lib/ai-isa/ghost-escalation.ts": 1,
     "lib/ai-isa/ghost-reengagement.ts": 2,
     "lib/ai-isa/inbound-intent-classifier.ts": 2,
+    "lib/ai-isa/isa-acting-scope.ts": 2,
     "lib/ai-isa/isa-outreach-logger.ts": 3,
     "lib/ai-isa/lead-call-intent.ts": 1,
     "lib/ai-isa/lead-channel-policy.ts": 1,
@@ -2792,6 +2799,7 @@
     "lib/ai-isa/qualification-core.ts": 5,
     "lib/ai-isa/qualification-evaluator.ts": 2,
     "lib/ai-isa/reengagement-policy.ts": 10,
+    "lib/ai-isa/resolve-isa-settings.ts": 5,
     "lib/ai-isa/saved-home-nudge.ts": 1,
     "lib/ai-isa/settings-types.ts": 1,
     "lib/ai-isa/showing-cancellation-copy.ts": 1,
@@ -3555,7 +3563,7 @@
     "lib/kernel/title-closing-watchtower.ts": 8,
     "lib/kernel/tour-optimizer.ts": 12,
     "lib/kernel/transactions.ts": 21,
-    "lib/kernel/unambiguous-tenant.ts": 2,
+    "lib/kernel/unambiguous-tenant.ts": 3,
     "lib/kernel/urgent-sla.ts": 2,
     "lib/kernel/users.ts": 9,
     "lib/kernel/vendor-categories.ts": 2,
@@ -3829,7 +3837,7 @@
     "lib/platform/platform-providers.ts": 3,
     "lib/platform/platform-sentinel.ts": 8,
     "lib/platform/platform-social.ts": 12,
-    "lib/platform/platform-staff-roster.ts": 6,
+    "lib/platform/platform-staff-roster.ts": 9,
     "lib/platform/product-brand.ts": 5,
     "lib/platform/product-content.ts": 5,
     "lib/platform/prospect-followup.ts": 1,
@@ -4088,7 +4096,7 @@
     "lib/usage.ts": 2,
     "lib/utils.ts": 1,
     "lib/validations/index.ts": 8,
-    "lib/vendor/assignment-access.ts": 1,
+    "lib/vendor/assignment-access.ts": 3,
     "lib/vendor-governance/attribution.ts": 2,
     "lib/vendor-governance/budget-eval.ts": 3,
     "lib/vendor-governance/budget-gate.ts": 4,
@@ -4106,6 +4114,7 @@
     "lib/vendors/vendor-money-directions.ts": 2,
     "lib/vendors/vendor-platform-identity.ts": 3,
     "lib/vendors/vendor-scope.ts": 7,
+    "lib/vendors/vendor-service-area.ts": 7,
     "lib/vendors/vendor-validators.ts": 1,
     "lib/vendors/w9-vocab.ts": 3,
     "lib/vendors/w9.ts": 3,
@@ -4737,9 +4746,10 @@
       "getSpeedToLeadMetrics"
     ],
     "app/actions/ai-isa-settings.ts": [
-      "isCapabilityEnabled",
       "getAIISASettings",
+      "getAIISASettingsResolution",
       "saveAIISASettings",
+      "saveAIISASettingsForOwner",
       "getAIISAStats"
     ],
     "app/actions/ai-isa.ts": [
@@ -7831,6 +7841,11 @@
     ],
     "app/actions/vendor-respa.ts": [
       "acknowledgeVendorDisclosureAction"
+    ],
+    "app/actions/vendor-service-areas.ts": [
+      "declareVendorServiceAreaAction",
+      "withdrawVendorServiceAreaAction",
+      "listSurfaceableBenchAction"
     ],
     "app/actions/vendor-verification.ts": [
       "submitVendorForVerification",
@@ -12128,6 +12143,9 @@
     "app/dashboard/transactions/portfolio-risk-scan.tsx": [
       "PortfolioRiskScan"
     ],
+    "app/dashboard/vendors/bench-coverage-panel.tsx": [
+      "BenchCoveragePanel"
+    ],
     "app/dashboard/vendors/premium-placement-panel.tsx": [
       "PremiumPlacementPanel"
     ],
@@ -12498,6 +12516,9 @@
     ],
     "app/portal/vendor/contacts/contact-message-panel.tsx": [
       "ContactMessagePanel"
+    ],
+    "app/portal/vendor/vendor-coverage-panel.tsx": [
+      "VendorCoveragePanel"
     ],
     "app/pricing/page.tsx": [
       "generateMetadata"
@@ -13307,6 +13328,10 @@
       "keywordIntentFallback",
       "classifyAndRouteInbound"
     ],
+    "lib/ai-isa/isa-acting-scope.ts": [
+      "resolveIsaActingScope",
+      "isaTenantWorkQueue"
+    ],
     "lib/ai-isa/isa-outreach-logger.ts": [
       "logISAOutreach",
       "checkMaxTouches",
@@ -13398,6 +13423,13 @@
       "shouldResurrectReengagement",
       "coldContactReengagementCheck",
       "resolveStaleThreshold"
+    ],
+    "lib/ai-isa/resolve-isa-settings.ts": [
+      "isaSettingsCascade",
+      "resolveIsaSettingsResult",
+      "resolveIsaSettings",
+      "isIsaCapabilityEnabledForScope",
+      "writeIsaSettings"
     ],
     "lib/ai-isa/saved-home-nudge.ts": [
       "classifySavedHomeNudge"
@@ -17478,7 +17510,8 @@
     ],
     "lib/kernel/unambiguous-tenant.ts": [
       "resolveUnambiguousTenant",
-      "requireTenantedUnambiguousTenant"
+      "requireTenantedUnambiguousTenant",
+      "pickIdentitySubject"
     ],
     "lib/kernel/urgent-sla.ts": [
       "hoursSince",
@@ -18916,6 +18949,9 @@
     "lib/platform/platform-staff-roster.ts": [
       "isPlatformStaffRole",
       "isNonHumanPlatformRole",
+      "isPlatformActorRole",
+      "platformActorKind",
+      "isAiIsaSystemIdentity",
       "isPlatformSuperadminIdentity",
       "resolvePlatformRoleIdentity",
       "platformStaffCan",
@@ -20135,7 +20171,9 @@
       "validateTransaction"
     ],
     "lib/vendor/assignment-access.ts": [
-      "assertVendorAssignedToContact"
+      "vendorContactAccessVerdict",
+      "assertVendorAssignedToContact",
+      "readVendorContactAccessFacts"
     ],
     "lib/vendor-governance/attribution.ts": [
       "validateAttribution",
@@ -20214,6 +20252,15 @@
       "agentMayChargeVendor",
       "canManageVendorCharge",
       "resolveVendorActorScope"
+    ],
+    "lib/vendors/vendor-service-area.ts": [
+      "isStateLicensedTrade",
+      "normalizeState",
+      "normalizeZip",
+      "coverageAdmits",
+      "intersectTenantAreas",
+      "licenceIsCurrent",
+      "vendorGeoVerdict"
     ],
     "lib/vendors/vendor-validators.ts": [
       "validateVendorPlan"

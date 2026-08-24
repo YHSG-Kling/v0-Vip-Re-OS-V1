@@ -7,6 +7,7 @@ import { runPipelineSimple } from "@/lib/ai"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { syncStampToAgentLedger } from "@/lib/commission/ledger-sync"
 import { TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-status"
+import { TXN_STATUSES_AFTER, TXN_STAGES_AFTER } from "@/lib/enrichment/deal-vocabulary"
 import { rosterForPrincipal } from "@/lib/notifications/transaction-parties-packet"
 
 // ============================================
@@ -2143,9 +2144,11 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
   
   const personaConfig = getPersonaConfig(persona, transaction.deal_type || "buyer")
   
-  // Calculate progress from milestones
-  const completedMilestones = milestones.filter((m: any) => m.status === "completed").length
-  const progressPercent = Math.round((completedMilestones / Math.max(milestones.length, 1)) * 100)
+  // Calculate progress from milestones. THE INLINE COPY THAT STOOD HERE IS DELETED —
+  // survivor: calculateOverallProgress in this file (search its JSDoc), which was
+  // declared and called by nothing while this line re-typed its body. The survivor
+  // additionally honours a closed/funded deal, which this copy could not.
+  const progressPercent = calculateOverallProgress(transaction, milestones)
   
   // Combine updates from multiple sources
   const combinedUpdates = [
@@ -2765,7 +2768,36 @@ async function generateFriendlyStatusMessage(transaction: any, persona: string):
     : buyerMessages[transaction.status] || "Your transaction is progressing smoothly."
 }
 
+/**
+ * ONE PROGRESS NUMBER FOR THE CLIENT PORTAL.
+ *
+ * This function was declared here and CALLED BY NOTHING, while the very expression
+ * it wraps was re-typed inline at line 2147 and fed straight into
+ * `hero.progress_percent`. Two copies of one rule, one of them unreachable — the
+ * shape §1 exists to collapse. It is now the survivor and the inline copy CALLS it.
+ *
+ * `transaction` was the parameter that made it a survivor worth keeping, and it was
+ * read by NOTHING: milestone rows are seeded and completed by different code paths
+ * from the one that closes a deal, so a FUNDED transaction whose last milestone was
+ * never ticked showed the client "83% complete" on a house they already own. A deal
+ * the deal-vocabulary partition calls finished-and-won is 100% by definition.
+ *
+ * A LOST or ARCHIVED deal is deliberately NOT forced to 100%: it is past, not
+ * complete, and claiming completion for a deal that fell apart is the same class of
+ * lie in the other direction. The finished-and-won subset is named explicitly against
+ * lib/enrichment/deal-vocabulary.ts (TXN_STATUSES_AFTER / TXN_STAGES_AFTER) so a
+ * value added to that partition cannot silently gain or lose this behaviour.
+ */
+const TXN_WON_STATUSES = new Set<string>(
+  TXN_STATUSES_AFTER.filter((v) => v === "closed" || v === "funded"),
+)
+const TXN_WON_STAGES = new Set<string>(TXN_STAGES_AFTER.filter((v) => v === "CLOSED"))
+
 function calculateOverallProgress(transaction: any, timeline: any[]): number {
+  const status = String(transaction?.status ?? "").trim()
+  const stage = String(transaction?.stage ?? "").trim()
+  if (TXN_WON_STATUSES.has(status) || TXN_WON_STAGES.has(stage)) return 100
+
   const completed = timeline.filter((m) => m.status === "completed").length
   return Math.round((completed / Math.max(timeline.length, 1)) * 100)
 }

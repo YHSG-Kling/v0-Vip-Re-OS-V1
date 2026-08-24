@@ -50,6 +50,28 @@ export function classifyClientIntent(message: string, contactType: string | null
 /** Pure routing decision — the compliance contract: search open, showing BBA-gated downstream,
  *  seller action proposed-through-the-gate, question advisory. */
 export function routeClientIntent(intent: ClientIntent, contactType: string | null): RoutedClientAction {
+  // `contactType` WAS ACCEPTED HERE AND READ BY NOTHING until 2026-08-24. Both this
+  // function and `classifyClientIntent` are EXPORTED and separately importable, so
+  // the seller gate lived in exactly one of the two halves: hand this an intent of
+  // "seller_action" from anywhere other than the classifier — an AI-gateway layer
+  // enhancing intent upstream, which the header of this file explicitly anticipates
+  // — and a BUYER's message was routed to the Listing Concierge as a price change on
+  // a listing they do not own.
+  //
+  // FAIL CLOSED (CLAUDE.md §4): a seller action from a non-seller is degraded to
+  // advisory and SAYS SO, rather than being proposed into someone's approval queue.
+  const canSell = contactType === "seller" || contactType === "both"
+  if (intent === "seller_action" && !canSell) {
+    return {
+      kind: "advisory",
+      intent,
+      bbaRelevant: false,
+      gated: false,
+      manager: null,
+      reason: "a listing/price change was requested by a contact who is not a seller on this brokerage — answered advisory-only, never proposed",
+    }
+  }
+
   switch (intent) {
     case "showing_request":
       return { kind: "create_showing", intent, bbaRelevant: true, gated: false, manager: "shopping_agent", reason: "in-person showing — BBA enforced downstream; if unsigned, a signing-link is proposed to the agent (never dropped)" }

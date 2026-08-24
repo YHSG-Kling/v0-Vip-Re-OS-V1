@@ -25,7 +25,8 @@ import {
 } from '@/lib/kernel/portal-contracts'
 
 export async function GET(
-  request: NextRequest,
+  // Deliberately unread — every input is the route param below plus the session gate.
+  _request: NextRequest,
   context: { params: Promise<{ contactId: string }> }
 ): Promise<NextResponse<PortalResponse<PortalViewOutput>>> {
   try {

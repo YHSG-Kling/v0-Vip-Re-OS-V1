@@ -2,13 +2,17 @@
 // VIP Real Estate AI OS — Layer 11
 // API route for generating AI-powered performance reports
 
-import { NextRequest, NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { streamTextRouted, AIFairUseError } from '@/lib/ai/models'
 import { getAgentProgress } from '@/app/actions/onboarding/progress'
 
-export async function POST(request: NextRequest) {
+// TOMBSTONE — this handler took the framework's Request object and read NOTHING from
+// it: no query string, no body, no header. Every input comes from the SESSION
+// (CLAUDE.md §4). A route handler may be declared with no parameters at all, and an
+// unread `request` in the signature advertises a filter this endpoint does not honour.
+export async function POST() {
   const supabase = await createClient()
 
   const { data: { user } } = await supabase.auth.getUser()
@@ -176,7 +180,11 @@ Make the narrative personalized and actionable. If they're doing well, acknowled
   return result.toTextStreamResponse()
 }
 
-export async function GET(request: NextRequest) {
+// TOMBSTONE — this handler took the framework's Request object and read NOTHING from
+// it: no query string, no body, no header. Every input comes from the SESSION
+// (CLAUDE.md §4). A route handler may be declared with no parameters at all, and an
+// unread `request` in the signature advertises a filter this endpoint does not honour.
+export async function GET() {
   const supabase = await createClient()
 
   const { data: { user } } = await supabase.auth.getUser()

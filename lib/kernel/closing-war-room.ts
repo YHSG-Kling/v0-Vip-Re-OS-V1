@@ -47,6 +47,7 @@ import {
   daysBetween,
   fmtChainDate,
   type ChainStep,
+  type ChainStepKey,
   type CriticalPath,
 } from "@/lib/kernel/title-closing-watchtower"
 
@@ -338,18 +339,39 @@ function milestoneStatus(
 export function buildConditions(signals: WarRoomSignals, chain: ChainStep[]): WarRoomCondition[] {
   const out: WarRoomCondition[] = []
 
-  // Chain-driven milestone conditions (inspection / appraisal / financing) — a step is
-  // 'done' when its milestone status is completed; 'open' when the row exists but isn't;
-  // 'unknown' when no milestone row exists at all.
-  const chainConditions: Array<{ key: WarRoomConditionKey; names: string[] }> = [
-    { key: "inspection", names: ["inspection_deadline", "inspection_completed", "inspection"] },
-    { key: "appraisal",  names: ["appraisal_deadline", "appraisal_completed", "appraisal"] },
-    { key: "financing",  names: ["financing_deadline", "financing"] },
+  // THE COCKPIT USED TO ANSWER "IS THE INSPECTION DONE?" TWICE, TWO DIFFERENT WAYS.
+  //
+  // `chain` was accepted by this function and read by NOTHING until 2026-08-24, while
+  // the SAME `chain` is what `computeCriticalPath` runs on one line above the call to
+  // this function (lib/kernel/closing-war-room.ts:531-533). The chain resolves each
+  // step by its CANONICAL key (title-closing-watchtower.ts:47 CHAIN_STEP_KEYS) and
+  // the conditions below resolved it by an ALIAS LIST — so a deal carrying only an
+  // `inspection_completed` row had the condition tile reading "Completed" while the
+  // critical path, which never saw that row, still counted inspection as a remaining
+  // constraint. One screen, two verdicts, from two spellings of one idea (§6).
+  //
+  // The chain is now the AUTHORITY on the canonical key and the alias search only
+  // ADDS rows the chain cannot see. Neither half can now say "done" while the other
+  // says "outstanding" without this function knowing about it.
+  const chainConditions: Array<{ key: WarRoomConditionKey; chainKey: ChainStepKey; names: string[] }> = [
+    { key: "inspection", chainKey: "inspection_deadline", names: ["inspection_deadline", "inspection_completed", "inspection"] },
+    { key: "appraisal",  chainKey: "appraisal_deadline",  names: ["appraisal_deadline", "appraisal_completed", "appraisal"] },
+    { key: "financing",  chainKey: "financing_deadline",  names: ["financing_deadline", "financing"] },
   ]
   for (const cc of chainConditions) {
+    const step = chain.find((s) => s.key === cc.chainKey)
     const m = milestoneStatus(signals.milestones, ...cc.names)
-    const status = conditionStatus({ statusValue: m.status, doneValues: ["completed"], present: m.present })
-    out.push(condition(cc.key, status, chainDetail(signals.milestones, cc.names, status)))
+    const status = conditionStatus({
+      // The chain's `completed` is a normalised boolean over the canonical row; the
+      // alias status is the wider net. Either one saying done is done.
+      done: step?.completed === true ? true : null,
+      statusValue: m.status,
+      doneValues: ["completed"],
+      // A dated chain step is a source that EXISTS even when no alias row matched —
+      // which is the difference between "open" and the honest "unknown".
+      present: m.present || !!step?.date,
+    })
+    out.push(condition(cc.key, status, chainDetail(signals.milestones, cc.names, status, step?.date ?? null)))
   }
 
   // Lender clear-to-close: a clear_to_close_date OR a done underwriting status.
@@ -436,10 +458,17 @@ function condition(key: WarRoomConditionKey, status: ConditionStatus, detail: st
   }
 }
 
-function chainDetail(rows: WarRoomSignals["milestones"], names: string[], status: ConditionStatus): string {
+function chainDetail(
+  rows: WarRoomSignals["milestones"],
+  names: string[],
+  status: ConditionStatus,
+  /** The canonical chain step's date, used when no ALIAS row carried one. */
+  chainDate: string | null = null,
+): string {
   const row = rows.find((r) => names.includes(r.milestone_name))
-  if (status === "done") return row?.target_date ? `Completed (was due ${fmtChainDate(row.target_date)})` : "Completed"
-  if (status === "open") return row?.target_date ? `Due ${fmtChainDate(row.target_date)}` : "Pending"
+  const due = row?.target_date ?? chainDate
+  if (status === "done") return due ? `Completed (was due ${fmtChainDate(due)})` : "Completed"
+  if (status === "open") return due ? `Due ${fmtChainDate(due)}` : "Pending"
   return "No milestone on file"
 }
 

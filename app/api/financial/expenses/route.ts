@@ -43,7 +43,12 @@ const CLIENT_SUPPLIABLE_EXPENSE_COLUMNS = [
   "receipt_url",
 ] as const
 
-export async function GET(request: NextRequest) {
+// TOMBSTONE — this handler took the framework's Request object and read NOTHING
+// from it: no query string, no body, no header. Every input it uses comes from the
+// SESSION (CLAUDE.md §4 — the tenant is never a request field). A route handler
+// may be declared with no parameters at all, and leaving an unread `request` in the
+// signature advertises a filter this endpoint does not honour.
+export async function GET() {
   try {
     const supabase = await createClient()
     const { data: { user }, error: authError } = await supabase.auth.getUser()

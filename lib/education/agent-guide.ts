@@ -50,12 +50,22 @@ export function guideSearchTerms(question: string): string[] {
 /** PURE: the deterministic answer when the gateway is down — honest,
  *  module-pointing, never invented instruction. */
 export function composeGuideFallback(question: string, matches: GuideMatch[]): string {
+  // `question` WAS ACCEPTED HERE AND READ BY NOTHING until 2026-08-24, and this is
+  // the one branch where the agent most needs it: a bare "I don't have a guide on
+  // that yet" gives them no way to tell whether the library is missing the topic or
+  // the search simply misread them. It now says WHAT it looked for — the same terms
+  // `guideSearchTerms` hands the query, which is also what the gap miner logs — so a
+  // misread question is visibly a misread question and can be rephrased.
+  const asked = question.trim()
   if (matches.length === 0) {
-    return "I don't have a published guide on that yet — I've flagged it, and when it keeps coming up the team authors a lesson for it. Meanwhile, ask me about anything on your setup card or the academy, or just tell me what you're trying to do and I'll route you."
+    const terms = guideSearchTerms(asked)
+    const looked = terms.length > 0 ? ` I searched the academy for ${terms.map((t) => `"${t}"`).join(", ")}.` : ""
+    return `I don't have a published guide on that yet — I've flagged it, and when it keeps coming up the team authors a lesson for it.${looked} Meanwhile, ask me about anything on your setup card or the academy, or just tell me what you're trying to do and I'll route you.`
   }
   const top = matches[0]
   const more = matches.length > 1 ? ` There ${matches.length - 1 === 1 ? "is 1 more guide" : `are ${matches.length - 1} more guides`} on this in the academy.` : ""
-  return `Yes — "${top.title}"${top.estimatedMinutes ? ` (${top.estimatedMinutes} min)` : ""} covers exactly that${top.summary ? `: ${top.summary}` : "."} It's in your academy.${more}`
+  const forWhat = asked ? ` for "${asked}"` : ""
+  return `Yes — "${top.title}"${top.estimatedMinutes ? ` (${top.estimatedMinutes} min)` : ""} covers exactly that${top.summary ? `: ${top.summary}` : "."} It's in your academy${forWhat}.${more}`
 }
 
 /**

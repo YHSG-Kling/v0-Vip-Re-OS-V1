@@ -131,7 +131,6 @@ function mapRawEvent(tag: string): LifeEventType | null {
  * Priority: explicit fresh life-event signals first, then derived milestones.
  */
 export function detectLifeEvent(c: RadarContact, now: Date): DetectedLifeEvent | null {
-  const name = (c.first_name ?? "there").toString().trim() || "there"
   const fresh =
     !!c.last_life_event_detected &&
     (now.getTime() - new Date(c.last_life_event_detected).getTime()) <= LIFE_EVENT_FRESH_DAYS * 86_400_000 &&
@@ -142,27 +141,35 @@ export function detectLifeEvent(c: RadarContact, now: Date): DetectedLifeEvent |
     const tags = lifeEventTypes(c.life_events)
     for (const tag of tags) {
       const mapped = mapRawEvent(tag)
-      if (mapped) return buildEvent(mapped, name)
+      if (mapped) return buildEvent(mapped)
     }
     // Marital status flipped to married + fresh stamp → marriage signal.
-    if ((c.marital_status ?? "").toLowerCase() === "married") return buildEvent("marriage", name)
+    if ((c.marital_status ?? "").toLowerCase() === "married") return buildEvent("marriage")
   }
 
   // 2) DERIVED milestones — real numbers on the row, not scraped events.
   if (typeof c.equity_estimate === "number" && c.equity_estimate >= EQUITY_MILESTONE) {
-    return buildEvent("equity_milestone", name)
+    return buildEvent("equity_milestone")
   }
   if (typeof c.referral_score === "number" && c.referral_score >= REFERRAL_PRIMED_SCORE) {
-    return buildEvent("referral_primed", name)
+    return buildEvent("referral_primed")
   }
   if ((c.referral_potential ?? "").toLowerCase() === "high") {
-    return buildEvent("referral_primed", name)
+    return buildEvent("referral_primed")
   }
 
   return null
 }
 
-function buildEvent(type: LifeEventType, name: string): DetectedLifeEvent {
+/**
+ * TOMBSTONE — this took a second parameter, `name`, and read NOTHING out of it. Every
+ * string it returns is a TEMPLATE about the event, not about the person; the name is
+ * applied where the copy is addressed, by `composeReferralTouch` (this file, below)
+ * and `composeReferralNudge` (this file, below), both of which already take it and
+ * both of which already use it. Deleted rather than wired: a second place that
+ * personalises the same copy is how two greetings for one client start (§6).
+ */
+function buildEvent(type: LifeEventType): DetectedLifeEvent {
   switch (type) {
     case "job_change":
       return { type, label: "a job/career change",

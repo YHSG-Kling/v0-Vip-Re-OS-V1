@@ -41,13 +41,40 @@ const PROHIBITED_PHRASES = [
   { phrase: "you'll make money", category: "investment_advice", severity: "critical" },
 ]
 
+/**
+ * How each content type reads, in the analyzer's own terms. `video_script` is a
+ * SPOKEN form and `sms` is one or two lines — categorising either "sentence by
+ * sentence" the way an email is read produced percentages that described a shape
+ * the format cannot have.
+ */
+const CONTENT_TYPE_UNIT: Record<ContentType, string> = {
+  email:        "an email, read sentence by sentence",
+  sms:          "a text message — one or two short lines, not paragraphs",
+  video_script: "a spoken video script — categorise each SPOKEN LINE, not each written sentence",
+  social_post:  "a social post — short lines and a caption, not prose",
+}
+
+/**
+ * `contentType` TELLS THE ANALYZER WHAT IT IS READING — it was accepted here and
+ * read by NOTHING until 2026-08-24, so a 160-character text message and a
+ * thousand-word email were handed to the same "categorize each sentence" prompt
+ * and scored against the same four-way structural split.
+ *
+ * BLIND SPOT, published beside the change (CLAUDE.md §2): the pass THRESHOLDS are
+ * deliberately NOT varied by content type. Per-type numbers would be invented, not
+ * measured, and this gate already refuses on prohibited phrases regardless of type
+ * — which is the fair-housing half (§5) and must not move. What changed is that the
+ * analyzer is told the format, and the writer is told which format was judged.
+ */
 export async function validateThemFirstContent(
   content: string,
   contentType: ContentType,
   personaId?: string,
 ): Promise<ValidationResult> {
+  const readAs = CONTENT_TYPE_UNIT[contentType] ?? CONTENT_TYPE_UNIT.email
+
   // 1. Analyze structure with AI
-  const structure = await analyzeContentStructure(content)
+  const structure = await analyzeContentStructure(content, readAs)
 
   // 2. Analyze sentiment
   const sentiment = await analyzeSentiment(content)
@@ -68,7 +95,7 @@ export async function validateThemFirstContent(
     sentimentScore >= 0.7
 
   // 6. Generate suggestions
-  const suggestions = generateSuggestions(structure, sentiment, passed)
+  const suggestions = generateSuggestions(structure, sentiment, passed, contentType)
 
   return {
     passed,
@@ -80,11 +107,13 @@ export async function validateThemFirstContent(
   }
 }
 
-async function analyzeContentStructure(content: string) {
+async function analyzeContentStructure(content: string, readAs: string) {
   try {
     const { text } = await guardedGenerateText({
       model: resolveModel("openai/gpt-4o-mini"),
-      prompt: `Analyze this content and categorize each sentence into one of four categories:
+      prompt: `You are reading ${readAs}.
+
+Analyze this content and categorize each sentence into one of four categories:
 
 FEELINGS: Sentences that acknowledge emotions, pain points, or empathy
 TRUST: Sentences that build credibility, share experience, or social proof
@@ -185,8 +214,14 @@ function calculateStructureScore(structure: any): number {
   return score
 }
 
-function generateSuggestions(structure: any, sentiment: any, passed: boolean): string[] {
+function generateSuggestions(
+  structure: any,
+  sentiment: any,
+  passed: boolean,
+  contentType: ContentType,
+): string[] {
   const suggestions: string[] = []
+  const label = contentType.replace(/_/g, " ")
 
   if (structure.feelings_percentage < 30) {
     suggestions.push("🫂 Add more empathy - acknowledge their feelings and pain points FIRST before anything else")
@@ -217,7 +252,11 @@ function generateSuggestions(structure: any, sentiment: any, passed: boolean): s
   }
 
   if (passed) {
-    suggestions.push("✅ Great job! This follows the 'Them First' approach perfectly.")
+    suggestions.push(`✅ Great job! This ${label} follows the 'Them First' approach perfectly.`)
+  } else {
+    // Name the rubric that judged it. A writer told only "score too low" cannot
+    // tell whether the analyzer read their video script as prose.
+    suggestions.push(`ℹ️ Scored as a ${label}.`)
   }
 
   return suggestions
