@@ -16,8 +16,30 @@ export interface SmartSuggestionData {
   expiresAt?: Date
 }
 
+/**
+ * TOMBSTONE — the `userId` parameter is DELETED. It was accepted and never
+ * read, which made this look identity-scoped when it is a PURE function over
+ * the `context` its caller assembles: it opens no database and persists
+ * nothing.
+ *
+ * Where identity actually belongs on this rail:
+ * `app/actions/assistant.ts:201` `generateSmartSuggestion` (singular) — the
+ * writer for `smart_assistant_suggestions`, which resolves `user_id` +
+ * `brokerage_id` to an `agents.id` before inserting, because those two id
+ * spaces are disjoint (§3). Stamping a users.id inside a heuristic that never
+ * writes a row would have been the third place that mistake could be made.
+ *
+ * UNRESOLVED, and recorded rather than guessed at: this generator is a SECOND
+ * suggestion producer. The live one is event-driven —
+ * lib/orchestrator/internal.ts calls generateSmartSuggestion at nine points and
+ * the copilot surface reads the table back — while these four heuristics
+ * (hot-lead follow-up, content gaps, task batching, listing follow-up) exist
+ * only in memory and NOTHING calls this function. Collapsing the two means
+ * porting the four heuristics into orchestrator triggers, which is a feature,
+ * not a wire; it is left named here for the integrator rather than deleted to
+ * move a number.
+ */
 export async function generateSmartSuggestions(
-  userId: string,
   context: {
     contacts?: any[]
     tasks?: any[]

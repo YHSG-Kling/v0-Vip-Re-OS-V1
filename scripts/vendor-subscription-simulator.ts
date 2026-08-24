@@ -74,7 +74,24 @@ function sourceLayer() {
     && /(from|import\()\s*"@\/lib\/stripe"/.test(portal) && /stripe\.billingPortal\.sessions\.create/.test(portal))
   check("applyVendorSubscriptionEvent maps Stripe events → status + suspend", /applyVendorSubscriptionEvent/.test(act) && /mapStripeEventToStatus/.test(act) && /update\.status = "suspended"/.test(act))
   const wh = src("app/api/webhooks/stripe/vendor/route.ts")
-  check("the webhook verifies the signature + calls the applier", /constructEvent\(body, sig, secret\)/.test(wh) && /applyVendorSubscriptionEvent\(/.test(wh))
+  // WAS PINNED TO A WAYPOINT (CLAUDE.md §2). This asserted the literal
+  // `constructEvent(body, sig, secret)` — the ONE-hardcoded-secret shape — so it
+  // could only pass while the route verified every delivery against
+  // STRIPE_VENDOR_WEBHOOK_SECRET. The owner ruling ("the stripe account will be
+  // per tenant and platform so no configuration should be hardcoded") makes that
+  // shape wrong: with N+1 Stripe accounts, one secret cannot verify deliveries
+  // from the others, and the route now resolves the roster and identifies the
+  // SIGNING account cryptographically (lib/billing/stripe-webhook-secrets.ts).
+  // So the RULE is asserted instead of the syntax: the delivery is
+  // signature-verified before anything is applied, and only a PLATFORM-signed one
+  // reaches the applier — the vendor marketplace tier is money the vendor pays
+  // the PLATFORM (VENDOR_PLATFORM_TIER), so a tenant's own Stripe account has no
+  // authority to move a vendor's subscription status.
+  check("the webhook signature-verifies before applying, and only a platform-signed delivery reaches the applier",
+    /verifyStripeWebhook\(/.test(wh)
+    && /verification\.status === "verified"|verification\.ownerType !== "platform"/.test(wh)
+    && wh.indexOf("verifyStripeWebhook(") < wh.indexOf("applyVendorSubscriptionEvent(")
+    && /applyVendorSubscriptionEvent\(/.test(wh))
   const ui = src("app/vendor/billing/billing-client.tsx")
   check("the billing UI wires checkout + portal actions", /createVendorSubscriptionCheckout/.test(ui) && /createVendorBillingPortalSession/.test(ui))
   check("editable pricing: an admin setter writes brokerage_settings + the approval UI edits prices", /setVendorTierPricing/.test(src("app/actions/vendor-verification.ts")) && /vendor_tier_pricing/.test(src("app/actions/vendor-verification.ts")) && /setVendorTierPricing\(p\.tier/.test(src("app/dashboard/admin/vendor-approvals/approval-client.tsx")))

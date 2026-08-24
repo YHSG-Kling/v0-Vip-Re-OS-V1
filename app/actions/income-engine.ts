@@ -22,6 +22,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { analyzeIncomeGap } from "@/lib/income-engine/gap-analyzer"
 import { recommendActionsForAgent, type RecommendedAction } from "@/lib/income-engine/action-recommender"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 async function resolveAgentContext(): Promise<
   | { ok: true; userId: string; agentId: string; brokerageId: string }
@@ -99,7 +100,9 @@ export async function computeAndPersistGapAction(params?: {
     // (user_type='admin', platform_role='superadmin'), so the override this gate
     // exists to allow was unreachable. Dual-column check fixes that; 'super_admin'
     // is dropped (not a storable user_type at all).
-    if (!(profile?.user_type === "superadmin" || (profile as any)?.platform_role === "superadmin")) {
+    // ONE DEFINITION (ruling 1, 2026-08-24) — survivor:
+    // lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity.
+    if (!isPlatformSuperadminIdentity(profile?.user_type, (profile as any)?.platform_role)) {
       return { ok: false, error: "Forbidden: only superadmin may override agentId/brokerageId" }
     }
     agentId     = params.agentId

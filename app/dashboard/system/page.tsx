@@ -17,6 +17,7 @@ import {
   SchemaReadinessPanel,
 } from './components/os'
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 // Force dynamic rendering - this page requires authentication
 export const dynamic = 'force-dynamic'
@@ -55,9 +56,12 @@ export default async function SystemPage() {
     .select('platform_role')
     .eq('id', context.userId)
     .maybeSingle()
-  const isSuperadmin =
-    context.userType === 'superadmin' ||
-    (identity as { platform_role?: string | null } | null)?.platform_role === 'superadmin'
+  // ONE DEFINITION (owner ruling 1, 2026-08-24): the both-columns test was spelled
+  // out here. Survivor: lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity.
+  const isSuperadmin = isPlatformSuperadminIdentity(
+    context.userType,
+    (identity as { platform_role?: string | null } | null)?.platform_role,
+  )
 
   return (
     <div className="min-h-screen bg-background">

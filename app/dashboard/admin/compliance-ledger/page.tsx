@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import { loadComplianceLedger } from "@/lib/kernel/compliance-ledger"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { resolveTenantScope, isTenantScopeRefusal, describeTenantScope, type TenantScope } from "@/lib/kernel/tenant-scope"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 export const metadata = {
   title: "Compliance Ledger | Kernel OS Admin",
@@ -42,7 +43,9 @@ export default async function ComplianceLedgerPage({ searchParams }: { searchPar
   // platform-wide compliance audit trail — the cross-tenant Fair Housing /
   // consent record this page exists to produce — was unreachable. Same shape as
   // public.is_platform_admin() in RLS; see app/actions/vendor-budget.ts:136-147.
-  const isSuperadmin = userType === "superadmin" || userData?.platform_role === "superadmin"
+  // ONE DEFINITION (owner ruling 1, 2026-08-24): the both-columns test was spelled
+  // out here. Survivor: lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity.
+  const isSuperadmin = isPlatformSuperadminIdentity(userType, userData?.platform_role)
 
   // SCOPE IS DECLARED, NOT INFERRED FROM AN ABSENT ID. This line used to read
   // `const brokerageId = isSuperadmin ? null : (userData?.brokerage_id ?? null)`

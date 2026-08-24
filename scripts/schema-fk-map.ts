@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1693 of 1750 pairs) — storing them would be
+ * overwhelming majority (1694 of 1751 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 1824 edges across 713 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1750 unordered
+ * MEASURED AT GENERATION: 1825 edges across 713 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1751 unordered
  * table pairs carry at least one FK; 57
  * carry more than one and are listed below. 12 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -84,9 +84,9 @@
  * unambiguous pair as ambiguous.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-08-23
+ * generated: 2026-08-24
  * source: public.live_foreign_keys_json()
- * body-sha256: 4d4580839f68dca0ac2dcce5027e4e72bc3ace79063878859816b94eab28fbb7
+ * body-sha256: f5737aed3781a7ca967e2ba04e5b839d67a6f78767f0362dfe5e67ee9a54e608
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -786,7 +786,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "vendor_tax_documents": { "brokerage_id": "brokerages", "vendor_id": "vendors" },
   "vendor_transactions": { "brokerage_id": "brokerages", "subscription_id": "vendor_subscriptions", "vendor_id": "vendor_marketplace_profiles" },
   "vendor_usage_tracking": { "agent_id": "agents", "brokerage_id": "brokerages", "lead_id": "leads" },
-  "vendors": { "brokerage_id": "brokerages", "invited_by_team_id": "teams", "invited_by_user_id": "users", "team_id": "teams", "verified_by": "users" },
+  "vendors": { "brokerage_id": "brokerages", "invited_by_team_id": "teams", "invited_by_user_id": "users", "platform_vendor_id": "vendor_marketplace_profiles", "team_id": "teams", "verified_by": "users" },
   "video_assets": { "agent_id": "agents", "brokerage_id": "brokerages", "created_by": "users", "team_id": "teams" },
   "video_completion_tracking": { "agent_id": "agents", "brokerage_id": "brokerages", "training_video_id": "training_videos" },
   "video_engagement_events": { "brokerage_id": "brokerages", "contact_id": "contacts", "video_asset_id": "video_assets" },

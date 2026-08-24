@@ -162,34 +162,50 @@ export async function syncSuppressionState(
   }
 }
 
-/**
- * BATCH SYNC: Sync suppression to contact suppression list (audit trail)
- */
-export async function recordSuppressionEvent(
-  contactId: string,
-  suppressionType: "dnc" | "call_stop" | "email_opt_out" | "sms_opt_out" | "manual",
-  reason: string,
-  source: "inbound" | "contact_request" | "admin" | "webhook"
-): Promise<boolean> {
-  const supabase = await createServiceClient()
-
-  try {
-    // contact_suppression_list real cols: suppression_reason (no suppression_type/
-    // reason/recorded_at; created_at defaults).
-    const { error } = await supabase.from("contact_suppression_list").insert({
-      contact_id: contactId,
-      suppression_reason: `${suppressionType}: ${reason}`,
-      source,
-    })
-
-    if (error) {
-      console.error("[Sync] Failed to record suppression event:", error)
-      return false
-    }
-
-    return true
-  } catch (error) {
-    console.error("[Sync] Error recording suppression event:", error)
-    return false
-  }
-}
+// ═══════════════════════════════════════════════════════════════════════════
+// TOMBSTONE — recordSuppressionEvent(contactId, suppressionType, reason, source)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// DELETED (owner ruling 2, 2026-08-24). It was a SECOND writer of
+// `contact_suppression_list`, and it could never have written a row.
+//
+// ── MEASURED, NOT REASONED ABOUT ───────────────────────────────────────────
+// Live on hrvaqgvukzxfskkcrwbt, 2026-08-24. `contact_suppression_list` has FOUR
+// NOT NULL columns with NO DEFAULT:
+//
+//     brokerage_id, channel, suppression_reason, source
+//
+// This function supplied `suppression_reason` and `source`. It named neither
+// `brokerage_id` nor `channel`, so every insert it ever attempted was refused
+// 23502 (not-null violation). Probed directly against the live table inside a
+// trapped block: the exact insert this body performed raises. The table holds
+// ZERO rows. Its ONE caller — app/api/webhooks/inbound-suppression/route.ts —
+// discarded the boolean and returned `success: true` to the feed, so an external
+// opt-out was recorded in the contact FLAGS and never in the AUDIT LEDGER, and
+// nothing anywhere said so.
+//
+// Its own comment is the trap CLAUDE.md §3 warns about, in written form:
+//     "contact_suppression_list real cols: suppression_reason (no
+//      suppression_type/reason/recorded_at; created_at defaults)."
+// Someone checked which of the columns they were WRITING exist, and never
+// checked which REQUIRED columns they were not writing.
+//
+// ── THE SURVIVOR, AT file:line ─────────────────────────────────────────────
+//
+//     lib/kernel/compliance/check-suppression.ts:275  addSuppression()
+//
+// which lib/kernel/crm.ts:1178 already designates as the only writer of this
+// table. It supplies all four required columns, maps the channel through the
+// live CHECK vocabulary, ALSO writes the contact's own opt-out flags and a
+// `contact_consent_events` audit row, and returns an AddSuppressionResult whose
+// `suppressed` is true only when the row is known to have landed — so a caller
+// can no longer tell a person they were suppressed when they were not.
+//
+// Nothing had to be merged forward: this copy carried no column, no channel and
+// no consent event the survivor lacks. The one caller was converted in the same
+// change (see app/api/webhooks/inbound-suppression/route.ts, "RECORD SUPPRESSION
+// EVENT"), and it now derives the `brokerage_id` this function could not supply
+// from the contact the inbound identity actually resolved to.
+//
+// `syncSuppressionState` above is untouched — it is the lead↔contact FLAG mirror,
+// a different job, and it has its own live caller.

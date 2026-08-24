@@ -1,40 +1,41 @@
 "use server"
 
-import { createClient } from "@/lib/supabase/server"
-import type { AuthorizedUser } from "./types"
-
-export async function requireSuperAdmin(): Promise<AuthorizedUser> {
-  const supabase = await createClient()
-  const { data: { user }, error: authError } = await supabase.auth.getUser()
-
-  if (authError || !user) {
-    console.warn("[Security] Unauthorized access attempt to super admin resource")
-    throw new Error("Unauthorized: Not authenticated")
-  }
-
-  try {
-    const { data, error } = await supabase
-      .from("users")
-      .select("platform_role, email")
-      .eq("id", user.id)
-      .single()
-
-    if (error) throw new Error("Authorization check failed")
-    if (!data || data.platform_role !== "superadmin") {
-      throw new Error("Forbidden: Super admin access required")
-    }
-
-    return { id: user.id, email: data.email, platformRole: data.platform_role }
-  } catch (error) {
-    if (error instanceof Error && (error.message.includes("Forbidden") || error.message.includes("Authorization"))) throw error
-    console.error("[Security] Unexpected error in requireSuperAdmin:", error)
-    throw new Error("Authorization check failed")
-  }
-}
-
-export async function isSuperAdmin(): Promise<boolean> {
-  try { await requireSuperAdmin(); return true } catch { return false }
-}
+// ═══════════════════════════════════════════════════════════════════════════
+// TOMBSTONE — requireSuperAdmin / isSuperAdmin
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// BOTH DELETED (owner ruling 1, 2026-08-24). This file is `"use server"`, so each
+// was a PUBLIC HTTP ENDPOINT (CLAUDE.md §4), and each had ZERO callers — verified
+// by name across the whole tree: the only hits were the two re-export shims
+// (lib/security/index.ts, lib/auth/authorization.ts), now also cleared, plus an
+// unrelated local `isSuperAdmin` *prop* on three listing-launch components that
+// never came from here.
+//
+// ── THE SURVIVOR, AT file:line ─────────────────────────────────────────────
+//
+//     lib/auth/platform-guard.ts:63   requireSuperadmin()
+//         → lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity
+//
+// That is the live, called gate every platform surface actually uses, and it
+// returns a result object rather than throwing, which is what its ~40 call sites
+// are written against.
+//
+// ── WHY THIS WAS A DUPLICATE *AND* A DEFECT, NOT A NARROWER GATE ───────────
+//
+// Its whole decision was one line:
+//
+//     if (!data || data.platform_role !== "superadmin") throw …
+//
+// i.e. the `platform_role === 'superadmin'` HALF of the discriminator, with the
+// legacy `user_type = 'superadmin'` arm missing. The survivor and
+// public.is_platform_admin() in RLS both read BOTH columns. So this copy was
+// fail-CLOSED, not fail-open — it would have refused a legacy superadmin account
+// that RLS admits — but "the app gate is tighter than the database in a way
+// nobody chose" is exactly the silent drift §6 exists to stop. Nothing here had
+// to be merged forward before deleting: the survivor already does strictly more.
+//
+// The `AuthorizedUser` TYPE it returned lives on in lib/security/types.ts:445 and
+// is still re-exported through this module's barrels; nothing else used it.
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TOMBSTONE — requireSubscriptionAdmin / isSubscriptionAdmin /

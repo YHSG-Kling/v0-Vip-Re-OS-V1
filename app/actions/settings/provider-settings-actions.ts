@@ -8,6 +8,7 @@ import { requireBrokerageAdmin } from "@/lib/auth/require-brokerage-admin"
 // raw staff row (NULL brokerage → refused). Writers refuse read_only grants and
 // write through the acting db; readers ride resolveActingContext.
 import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting-context"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -53,12 +54,25 @@ async function requireBrokerAdmin(userId: string): Promise<{ brokerageId: string
   return requireBrokerageAdmin(createServiceClient(), userId)
 }
 
-/** "is superadmin" — BOTH columns, never user_type alone. Narrower than platform
- *  staff (superadmin/admin/marketing/support); this stays superadmin-only because
- *  it governs the system-only provider types the whole platform shares. */
-function isSuperadminIdentity(userType: string, platformRole: string | null): boolean {
-  return userType === "superadmin" || platformRole === "superadmin"
-}
+// ═══════════════════════════════════════════════════════════════════════════
+// TOMBSTONE — the local isSuperadminIdentity(userType, platformRole)
+// ═══════════════════════════════════════════════════════════════════════════
+// DELETED (owner ruling 1, 2026-08-24). Its body was
+//     return userType === "superadmin" || platformRole === "superadmin"
+// — a local FIFTH copy of the discriminator, under a doc comment ("BOTH columns,
+// never user_type alone") that was correct and still could not stop the rule from
+// drifting away from the four other copies.
+//
+// SURVIVOR, AT file:line:
+//     lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity
+// Same both-columns rule, plus an explicit refusal of the ai_isa_system service
+// accounts. Its two call sites below now name it directly, so the rule is legible
+// at the gate rather than behind a local alias.
+//
+// WHAT THE DOC COMMENT SAID, KEPT BECAUSE IT IS STILL THE REASON THIS IS THE
+// SUPERADMIN TEST AND NOT THE STAFF ROSTER: it governs the system-only provider
+// types the whole platform shares, so it stays narrower than platform staff
+// (superadmin/admin/marketing/support).
 
 // SYSTEM_ONLY_TYPES mirror kernel/providers.ts — brokerage cannot override these.
 const SYSTEM_ONLY_TYPES = new Set(["direct_mail", "video"])
@@ -89,7 +103,7 @@ export async function getProviderSettings(): Promise<{
   const supabase = ctx.db
 
   const { brokerageId, userType, platformRole } = await requireBrokerAdmin(ctx.userId)
-  const isSuperadmin = isSuperadminIdentity(userType, platformRole)
+  const isSuperadmin = isPlatformSuperadminIdentity(userType, platformRole)
 
   const { data: rows, error } = await supabase
     .from("provider_overrides")
@@ -145,7 +159,7 @@ export async function saveProviderOverride(
   const { brokerageId, userType, platformRole } = await requireBrokerAdmin(ctx.userId)
 
   // Brokerages cannot override system-only types
-  if (SYSTEM_ONLY_TYPES.has(payload.provider_type) && !isSuperadminIdentity(userType, platformRole)) {
+  if (SYSTEM_ONLY_TYPES.has(payload.provider_type) && !isPlatformSuperadminIdentity(userType, platformRole)) {
     throw new Error(`Provider type "${payload.provider_type}" is superadmin-controlled and cannot be overridden by brokerage`)
   }
 

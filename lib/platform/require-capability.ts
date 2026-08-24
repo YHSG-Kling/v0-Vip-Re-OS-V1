@@ -13,7 +13,12 @@
 // downgrade write→read per role×capability. superadmin is NEVER overridable.
 
 import { createClient } from "@/lib/supabase/server"
-import { platformStaffCan, isPlatformStaffRole, type PlatformCapability } from "./platform-staff-roster"
+import {
+  platformStaffCan,
+  isPlatformStaffRole,
+  resolvePlatformRoleIdentity,
+  type PlatformCapability,
+} from "./platform-staff-roster"
 import { loadCapabilityOverrides, mergeCapability } from "./capability-overrides"
 
 export interface CapabilityGate {
@@ -36,11 +41,30 @@ export interface CapabilityGate {
   error?: string
 }
 
-/** Resolve the caller's platform role: platform_role wins; legacy
- *  user_type='superadmin' still counts as superadmin. */
+/**
+ * Resolve the caller's platform role from a users ROW. This is a row-shaped
+ * ADAPTER, not a second definition: the rule itself lives in exactly one place —
+ * lib/platform/platform-staff-roster.ts:resolvePlatformRoleIdentity.
+ *
+ * TOMBSTONE (owner ruling, ruling 1, 2026-08-24). The body used to be:
+ *
+ *     return profile.platform_role ?? (profile.user_type === "superadmin" ? "superadmin" : null)
+ *
+ * which is the SAME sentence written out again in eleven other files (the
+ * app/actions/superadmin/* gates, app/dashboard/superadmin/*, the social OAuth
+ * callback). All of them now call THIS adapter or the roster function it wraps;
+ * the survivor is lib/platform/platform-staff-roster.ts:resolvePlatformRoleIdentity.
+ *
+ * ONE BEHAVIOUR CHANGE, DELIBERATE AND FAIL-CLOSED: the old expression returned
+ * `platform_role` VERBATIM, so a service account came back as the string
+ * "ai_isa_system" and was then compared against a staff roster that has never
+ * heard of it. `ai_isa_system` is a legal users.platform_role and it is NOT a
+ * human superadmin — the survivor answers `null` for it, which is the honest
+ * answer to "which STAFF role is this?".
+ */
 export function resolvePlatformRole(profile: { user_type?: string | null; platform_role?: string | null } | null): string | null {
   if (!profile) return null
-  return profile.platform_role ?? (profile.user_type === "superadmin" ? "superadmin" : null)
+  return resolvePlatformRoleIdentity(profile.user_type, profile.platform_role)
 }
 
 /** Server gate: is the current user platform staff with this capability?

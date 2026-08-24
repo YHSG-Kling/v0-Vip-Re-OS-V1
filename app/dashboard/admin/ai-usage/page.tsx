@@ -9,6 +9,7 @@ import { getAIOverageStatus } from "@/lib/billing/ai-overage"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 export const dynamic = "force-dynamic"
 
@@ -59,8 +60,9 @@ export default async function AIUsagePage() {
     .select("user_type, platform_role, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
-  const isSuperadmin =
-    profile?.user_type === "superadmin" || (profile as any)?.platform_role === "superadmin"
+  // ONE DEFINITION (owner ruling 1, 2026-08-24): the both-columns test was spelled
+  // out here. Survivor: lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity.
+  const isSuperadmin = isPlatformSuperadminIdentity(profile?.user_type, (profile as any)?.platform_role)
   const brokerageId  = profile?.brokerage_id as string | null
 
   // Money (the projected overage bill) is finance-admin territory; tokens are

@@ -8,6 +8,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 // billing_usage writer AND reader in this file filters on it — see the note in
 // lib/usage/period.ts for what happened when neither side did.
 import { currentBillingPeriodLabel } from "@/lib/usage/period"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 /**
  * PURE: is a feature included in a subscription tier's feature set? subscription_tiers.features is a
@@ -244,7 +245,8 @@ function validateSuperadminOnly(actor: BillingActorContext, command: string): bo
   if (!BILLING_VALIDATION_RULES.ONLY_SUPERADMIN.includes(command)) {
     return true
   }
-  return actor.userType === "superadmin" || actor.platformRole === "superadmin"
+  // ONE DEFINITION (ruling 1) — lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity
+  return isPlatformSuperadminIdentity(actor.userType, actor.platformRole)
 }
 
 // ============================================================================

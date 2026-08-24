@@ -35,6 +35,99 @@ export function isPlatformStaffRole(role: string | null | undefined): role is Pl
   return !!role && (PLATFORM_STAFF_ROLES as readonly string[]).includes(role)
 }
 
+// ─── THE PLATFORM / OS DISCRIMINATOR — ONE DEFINITION ────────────────────────
+//
+// OWNER RULING (2026-08-24), verbatim:
+//
+//   "I beilieve when users are created in supabase, they tie directly into
+//    public.users; we used superadmin origninally to discipher for a platform/os
+//    level user but a global/platform/os user has total control over the
+//    complete os system"
+//
+// So `superadmin` is the marker for the platform/OS-level user, and that user has
+// TOTAL CONTROL of the whole OS. A test that decides that is therefore the highest-
+// consequence predicate in the tree, and until now it was SPELLED PER SITE.
+//
+// ── WHAT THIS ENDS, MEASURED ────────────────────────────────────────────────
+// scripts/platform-discriminator-guard.ts counted the re-spellings on stripped
+// source. Every one of them was one of two questions, asked in one of two ways:
+//
+//     userType === "superadmin"                      ← half the answer
+//     platformRole === "superadmin"                  ← the other half
+//     userType === "superadmin" || platformRole === "superadmin"
+//     platform_role ?? (user_type === "superadmin" ? "superadmin" : null)
+//
+// and the halves are NOT interchangeable. MEASURED on hrvaqgvukzxfskkcrwbt
+// 2026-08-24, all 23 live `users` rows:
+//
+//     platform_role   user_type            n   rows with NULL brokerage_id
+//     NULL            agent/contact/…     20   0
+//     ai_isa_system   system               2   0
+//     superadmin      admin                1   0
+//
+//   · ZERO rows carry user_type='superadmin'. A gate spelled on user_type alone
+//     is DEAD CODE — it can never fire for the account it exists to admit.
+//   · The platform's ONLY superadmin is (user_type='admin', platform_role='superadmin').
+//   · 0 of 23 rows have a NULL brokerage_id, and the superadmin HAS one. So on
+//     `public.users` the platform discriminator is `platform_role`, NOT an absent
+//     brokerage_id. (The earlier ruling "platform only has no brokerageid" governs
+//     DATA rows; lib/kernel/tenant-scope.ts is where that lives. This is identity.)
+//
+// This mirrors public.is_platform_admin() in RLS, which reads BOTH columns:
+//     SELECT platform_role = 'superadmin' OR user_type IN ('superadmin','super_admin')
+// (`super_admin` is not a legal users_user_type_check value, so that arm is inert.)
+//
+// ── `ai_isa_system` IS A PLATFORM ROLE AND IS NOT A HUMAN SUPERADMIN ─────────
+// users_platform_role_check admits five values: the four staff roles above PLUS
+// `ai_isa_system`, which marks the two automated ISA service accounts. It must
+// never inherit "total control". The refusal below is EXPLICIT rather than an
+// accident of `!== 'superadmin'`, so a mutation test can prove it is load-bearing
+// and a future non-human marker inherits the refusal by being added to one array.
+// The database agrees: users_isa_actor_shape_check forces user_type='system' for
+// an ai_isa_system row, so it cannot reach the legacy user_type arm either.
+
+/** Platform roles that are SERVICE ACCOUNTS, not members of staff. Never granted control. */
+export const PLATFORM_NONHUMAN_ROLES = ["ai_isa_system"] as const
+export type PlatformNonHumanRole = (typeof PLATFORM_NONHUMAN_ROLES)[number]
+
+export function isNonHumanPlatformRole(role: string | null | undefined): role is PlatformNonHumanRole {
+  return !!role && (PLATFORM_NONHUMAN_ROLES as readonly string[]).includes(role)
+}
+
+/**
+ * THE ONE TEST for "this identity is the platform/OS user with total control".
+ *
+ * Takes BOTH identity columns because neither alone answers it (see above).
+ * Pure — no client, no session — so it can gate a session guard, an API guard, a
+ * server action and a page from the same definition.
+ */
+export function isPlatformSuperadminIdentity(
+  userType: string | null | undefined,
+  platformRole: string | null | undefined,
+): boolean {
+  // A service account is never the OS user, whatever else its row says.
+  if (isNonHumanPlatformRole(platformRole)) return false
+  return userType === "superadmin" || platformRole === "superadmin"
+}
+
+/**
+ * THE ONE derivation of a caller's EFFECTIVE platform role: `platform_role` wins;
+ * the legacy `user_type='superadmin'` marker still counts as superadmin.
+ *
+ * Returns NULL for a non-staff row AND for a service account — every caller of this
+ * shape is a STAFF GATE, so answering `ai_isa_system` would hand a role string to a
+ * capability check that only knows how to compare it against staff roles. Failing
+ * closed here is the honest answer to "which staff role is this?": none.
+ */
+export function resolvePlatformRoleIdentity(
+  userType: string | null | undefined,
+  platformRole: string | null | undefined,
+): PlatformStaffRole | null {
+  if (isPlatformStaffRole(platformRole)) return platformRole
+  if (isNonHumanPlatformRole(platformRole)) return null
+  return userType === "superadmin" ? "superadmin" : null
+}
+
 // ── Platform capability map (pure) ────────────────────────────────────────────
 // What each platform role may do. superadmin = everything; admin = operate the
 // platform but NOT manage other staff's roles; marketing = marketing surfaces +

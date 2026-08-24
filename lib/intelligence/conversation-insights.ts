@@ -32,6 +32,22 @@ interface ConversationInsight {
 
 /**
  * Retrieves aggregated memory for a contact based on recent conversation insights
+ *
+ * ── `brokerageId` WAS ACCEPTED AND NEVER READ ───────────────────────────────
+ *
+ * The tenant is resolved from the SESSION by the only live caller
+ * (app/actions/ai-auto-response.ts:122 `getAgentContext()`, through
+ * buildContextWindow) and was then dropped on the floor here, while the read
+ * runs on `createServiceClient()` — RLS bypassed. So the only thing standing
+ * between one brokerage's contact memory and another's was the caller happening
+ * to pass a contactId/agentId pair it owned: the IDOR shape §4 names, on a
+ * table that carries verbatim client objections, pain points and buying
+ * signals.
+ *
+ * `conversation_insights.brokerage_id` is a live column (scripts/schema-snapshot.ts:254),
+ * and `updateConversationMemory` below already STAMPS it on every insert, so the
+ * predicate matches rows this writer produces. The gate is now the tenant, not
+ * the caller's good manners.
  */
 export async function getContactMemory(
   contactId: string,
@@ -44,6 +60,7 @@ export async function getContactMemory(
   const { data: insights, error } = await supabase
     .from('conversation_insights')
     .select('*')
+    .eq('brokerage_id', brokerageId)
     .eq('contact_id', contactId)
     .eq('agent_id', agentId)
     .order('last_updated_at', { ascending: false, nullsFirst: false })

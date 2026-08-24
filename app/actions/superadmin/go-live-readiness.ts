@@ -8,7 +8,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { headers } from "next/headers"
-import { platformStaffCan } from "@/lib/platform/platform-staff-roster"
+import { platformStaffCan, resolvePlatformRoleIdentity } from "@/lib/platform/platform-staff-roster"
 import { runGoLiveReadiness, type GoLiveReadiness } from "@/lib/platform/go-live-readiness"
 
 export async function getGoLiveReadinessAction(): Promise<{ ok: true; readiness: GoLiveReadiness } | { ok: false; error: string }> {
@@ -16,7 +16,7 @@ export async function getGoLiveReadinessAction(): Promise<{ ok: true; readiness:
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthenticated" }
   const { data } = await supabase.from("users").select("user_type, platform_role, email").eq("id", user.id).maybeSingle()
-  const role = (data as any)?.platform_role ?? ((data as any)?.user_type === "superadmin" ? "superadmin" : null)
+  const role = resolvePlatformRoleIdentity((data as any)?.user_type, (data as any)?.platform_role)
   if (!platformStaffCan(role, "providers")) return { ok: false, error: "Forbidden — platform providers access required" }
 
   const svc = createServiceClient()
@@ -49,7 +49,7 @@ export async function queueRenderPipelineProbeAction(): Promise<{ ok: true; rend
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthenticated" }
   const { data } = await supabase.from("users").select("user_type, platform_role, email, brokerage_id").eq("id", user.id).maybeSingle()
-  const role = (data as any)?.platform_role ?? ((data as any)?.user_type === "superadmin" ? "superadmin" : null)
+  const role = resolvePlatformRoleIdentity((data as any)?.user_type, (data as any)?.platform_role)
   if (!platformStaffCan(role, "providers")) return { ok: false, error: "Forbidden — platform providers access required" }
 
   const svc = createServiceClient()

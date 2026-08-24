@@ -96,7 +96,7 @@ export async function logConversationMetadata(params: {
     }
 
     // Run compliance checks
-    const complianceFlags = await checkConversationCompliance(log.id, params.conversationHistory)
+    const complianceFlags = await checkConversationCompliance(params.conversationHistory)
 
     if (complianceFlags.length > 0) {
       await supabase.from("conversation_audit_flags").insert(
@@ -254,8 +254,18 @@ function determineSentimentJourney(
 // COMPLIANCE CHECKING
 // =====================================================
 
+/**
+ * Pure text scan over one conversation's messages. No id, by design.
+ *
+ * TOMBSTONE — the `conversationId` parameter is deleted. It was accepted by
+ * both call sites and read by neither: the identity is applied by the CALLERS,
+ * which stamp `conversation_id` onto every `conversation_audit_flags` row they
+ * insert from these flags (this file, in `analyzeConversation` and in
+ * `runWeeklyAIAudit`). Threading the id through a function that only reads text
+ * gave a second, silent place for the two to disagree about which conversation
+ * a flag belongs to.
+ */
 async function checkConversationCompliance(
-  conversationId: string,
   conversationHistory: Array<{ role: string; content: string }>
 ): Promise<
   Array<{
@@ -383,7 +393,7 @@ export async function runWeeklyAIAudit() {
       }))
 
       // Run compliance check
-      const flags = await checkConversationCompliance(conv.id, conversationHistory)
+      const flags = await checkConversationCompliance(conversationHistory)
 
       if (flags.length > 0) {
         flaggedCount += flags.length

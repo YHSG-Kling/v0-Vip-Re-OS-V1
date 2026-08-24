@@ -119,13 +119,38 @@ The launch checklist tells you *whether* these are done; this is *how*:
    `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`; **enable PITR**.
 2. **App URL + cron**: `NEXT_PUBLIC_APP_URL` = the https production URL
    (webhooks/magic links register against it); set `CRON_SECRET`.
-3. **Stripe live**: swap `STRIPE_SECRET_KEY` to the live key; register
-   `https://<app>/api/billing/webhook` in the Stripe dashboard and set
-   `STRIPE_WEBHOOK_SECRET` — paid signups never activate without it.
-   (The path here used to read `/api/webhooks/stripe`, which is a 404: that
-   directory holds only `vendor/route.ts`.) Register the vendor marketplace
-   endpoint separately at `https://<app>/api/webhooks/stripe/vendor` with its
-   own `STRIPE_VENDOR_WEBHOOK_SECRET`.
+3. **Stripe — the PLATFORM's account**: swap `STRIPE_SECRET_KEY` to the live key
+   (or, preferred once it exists, store the platform's key on a platform-owned
+   `platform_credentials` row — `owner_type='platform'`, `platform='stripe'` —
+   which overrides the env var, so rotating the account is a database write
+   rather than a redeploy). Register `https://<app>/api/billing/webhook` in the
+   **platform's** Stripe dashboard and set `STRIPE_WEBHOOK_SECRET` — paid signups
+   never activate without it. (The path here used to read
+   `/api/webhooks/stripe`, which is a 404: that directory holds only
+   `vendor/route.ts`.) Register the vendor marketplace endpoint separately at
+   `https://<app>/api/webhooks/stripe/vendor` with its own
+   `STRIPE_VENDOR_WEBHOOK_SECRET`.
+
+   **This step configures the PLATFORM's half only, and there is nothing an
+   operator can do here for the other half.** Owner ruling, verbatim: *"the
+   stripe account will be per tenant and platform so no configuration should be
+   hardcoded."* Money a BROKERAGE collects or pays — vendor package fees, vendor
+   job bills, client payments, agent payouts — runs on that brokerage's OWN
+   Stripe account, connected per tenant in Settings → Connections and resolved by
+   `lib/billing/resolve-stripe-account.ts` through the standard ownership cascade
+   (agent → team → brokerage). A tenant with no Stripe credential **refuses** with
+   a sentence naming what is missing; it never falls back to the platform's
+   account, because charging the wrong Stripe account is a money defect, not a
+   config defect. The go-live board reports the tenant half as its own row
+   (`stripe_tenant_accounts`) so "Stripe: ready" can no longer mean the platform's
+   key alone.
+
+   Webhook secrets are per-account for the same reason. Both endpoints identify
+   the signing account cryptographically
+   (`lib/billing/stripe-webhook-secrets.ts`) rather than verifying against one
+   env secret, and refuse a tenant-signed delivery for the platform's ledger. A
+   tenant's signing secret belongs on that tenant's `platform_credentials` row
+   (`config.webhook_secret`), never in an environment variable.
 4. **Email**: `SENDGRID_API_KEY` + `SENDGRID_FROM_EMAIL`; complete sender
    domain authentication (the go-live board probes it); register the SendGrid
    event webhook → `/api/webhooks/sendgrid-events` and set

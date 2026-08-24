@@ -10,6 +10,7 @@ import {
   upsertVendorStripeAccount,
   setVendorStripeOnboarding,
 } from "@/lib/connections/vendor-stripe"
+import { assertVendorChargeableForPlatformUse } from "@/lib/vendors/vendor-platform-identity"
 
 // ─── Auth helpers ─────────────────────────────────────────────────────────────
 //
@@ -152,6 +153,27 @@ export async function createVendorInvoice(
 
   const svc = createServiceClient()
 
+  // ── NO DOUBLE CHARGE FOR PLATFORM USE ──────────────────────────────────────
+  // billed_to='vendor' is the ONE tenant→vendor ledger, and every charge on it is
+  // a PLATFORM-USE charge (VENDOR_PACKAGE.isPlatformUse) — the tenant billing the
+  // vendor for access and placement in the tenant's marketplace. The owner ruling
+  // forbids raising one against a vendor already paying for platform use, whether
+  // they pay the platform directly or another brokerage.
+  //
+  // The gate sits HERE rather than only in issueVendorCharge because this is a
+  // "use server" file: createVendorInvoice is itself a public HTTP endpoint, and a
+  // caller that skipped issueVendorCharge would otherwise write the identical
+  // billed_to='vendor' row with none of its checks. billed_to='brokerage' (the
+  // vendor billing US for a job) and 'contact' are untouched — a vendor that pays
+  // for platform use must still be paid for the work it does.
+  if (params.billedTo === "vendor") {
+    const platformUse = await assertVendorChargeableForPlatformUse(svc, {
+      vendorId: params.vendorId,
+      brokerageId: ctx.brokerageId,
+    })
+    if (!platformUse.chargeable) return { success: false, error: platformUse.reason }
+  }
+
   if (params.transactionId) {
     const { data: tx } = await svc
       .from("transactions").select("brokerage_id").eq("id", params.transactionId).maybeSingle()
@@ -238,13 +260,20 @@ export async function submitVendorInvoice(invoiceId: string): Promise<InvoiceRes
   if (!verify.ok) return { success: false, error: "Forbidden" }
 
   const svc = createServiceClient()
-  const { error } = await svc
+  // `.select("id")` — same rule as markInvoicePaid below: a zero-row UPDATE resolves
+  // with no error, so without counting the rows this returned success for an invoice
+  // that is still a draft (moved tenant, or cancelled, between the verify and here).
+  const { data: submitted, error } = await svc
     .from("vendor_invoices")
     .update({ status: "submitted" })
     .eq("id", invoiceId)
     .eq("brokerage_id", ctx.brokerageId)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
+  if (!submitted || submitted.length === 0) {
+    return { success: false, error: "Nothing was submitted — that invoice is no longer one of your brokerage's invoices." }
+  }
   return { success: true, invoiceId }
 }
 
@@ -1378,13 +1407,23 @@ export async function issueVendorCharge(params: {
   if (!created.success || !created.invoiceId) return { success: false, error: created.error }
 
   // createVendorInvoice writes 'draft' — issue it (same transition submitVendorInvoice makes).
+  //
+  // `.select("id")` and the zero-row check are load-bearing: a supabase-js UPDATE
+  // that matches nothing resolves with `error` null (CLAUDE.md §3), so without them
+  // this reported {success:true} AND SENT THE VENDOR AN EMAIL saying an invoice had
+  // been issued, while the row sat at 'draft' — a bill announced to the payer that
+  // the ledger says was never raised. Charging nobody, loudly.
   const svc = createServiceClient()
-  const { error: issueErr } = await svc
+  const { data: issued, error: issueErr } = await svc
     .from("vendor_invoices")
     .update({ status: "submitted" })
     .eq("id", created.invoiceId)
     .eq("brokerage_id", ctx.brokerageId)
+    .select("id")
   if (issueErr) return { success: false, error: issueErr.message }
+  if (!issued || issued.length === 0) {
+    return { success: false, error: "The charge was drafted but could not be issued — it is still a draft, and the vendor has not been notified." }
+  }
 
   // Best-effort B2B transactional notification to the vendor.
   try {

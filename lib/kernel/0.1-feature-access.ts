@@ -10,6 +10,7 @@ import { resolveEntitlement, rolloutBucket } from "@/lib/entitlements/resolve"
 // THE tenant's billed tier, with the refusal still visible — see the header of
 // readPlanTier. This kernel does not re-spell that read (CLAUDE.md §6).
 import { readPlanTier } from "@/lib/billing/plan-tier"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -176,7 +177,8 @@ export async function canAccessFeature(
       resolvedTier = read.tier
       isSuperadmin = false
     } else {
-    isSuperadmin = user.user_type === "superadmin" || (user as any).platform_role === "superadmin"
+    // ONE DEFINITION (ruling 1) — lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity
+    isSuperadmin = isPlatformSuperadminIdentity(user.user_type, (user as any).platform_role)
     // ── BILLED-TIER TRUTH ────────────────────────────────────────────────────
     // The tier columns of `feature_flags` describe THE SUBSCRIPTION. So the tier
     // is read from `brokerages.plan_tier` — what the customer is billed for —

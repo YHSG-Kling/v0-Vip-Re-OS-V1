@@ -20,6 +20,7 @@ import { resolvePlatformHalt } from "../lib/platform/platform-controls"
 import { autonomyDecision } from "../lib/managers/autonomy-gate"
 import { resolveEntitlement, rolloutBucket } from "../lib/entitlements/resolve"
 import { platformStaffCan } from "../lib/platform/platform-staff-roster"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -81,7 +82,25 @@ function sourceLayer() {
   check("the autonomy gate consults loadPlatformHalt FIRST → approval_required when halted", /loadPlatformHalt/.test(gate) && /if \(halt\.halted\) return "approval_required"/.test(gate))
   check("autonomyDecision honors the platformHalt circuit-breaker", /platformHalt\?\.halted/.test(gate))
   const act = src("app/actions/superadmin/platform-controls.ts")
-  check("get/set actions are superadmin-gated (user_type|platform_role)", /requireSuperadmin/.test(act) && /user_type.*===.*"superadmin"|platform_role.*===.*"superadmin"/.test(act))
+  // ASSERT THE RULE, NOT THE SPELLING (CLAUDE.md §2 — "do not pin an assertion to
+  // a WAYPOINT"). This pinned the literal `user_type === "superadmin" ||
+  // platform_role === "superadmin"`, so it could only pass while the discriminator
+  // was RE-SPELLED at the gate — it went red the moment that duplicate was merged
+  // onto the one survivor (owner ruling 1, 2026-08-24), i.e. because the work was
+  // FINISHED. The rule is: the gate is superadmin-only AND the superadmin decision
+  // is made from BOTH identity columns. The roster module is read too, because
+  // pinning only the call would let the survivor decay to one column unnoticed.
+  // STRIPPED, NOT RAW. The roster's header quotes the both-columns expression in
+  // prose (it is the tombstone §1 requires), so a raw read is satisfied by the
+  // COMMENT and stays green while the code decays to one column — proved by
+  // mutation, 2026-08-24. CLAUDE.md §2: "a TOMBSTONE IS NOT A CALL SITE".
+  const pcRoster = stripComments(src("lib/platform/platform-staff-roster.ts"))
+  check("get/set actions are superadmin-gated (BOTH identity columns, via the one definition)",
+    /requireSuperadmin/.test(act) &&
+    /isPlatformSuperadminIdentity\(/.test(act) &&
+    /platform-staff-roster/.test(act) &&
+    /export function isPlatformSuperadminIdentity\(/.test(pcRoster) &&
+    /userType === "superadmin" \|\| platformRole === "superadmin"/.test(pcRoster))
   check("every flip is audited to superadmin_audit_log with IP/UA", /superadmin_audit_log"\)\.insert\([\s\S]*?action:\s*"platform_controls_update"[\s\S]*?ip_address/.test(act))
   const ct = src("lib/ai/cost-tracking.ts")
   check("the AI gateway already honors the same switch (emergency_mode / ai_enabled)", /platform_settings"\)[\s\S]*?emergency_mode/.test(ct) && /if \(data\.emergency_mode\)/.test(ct))

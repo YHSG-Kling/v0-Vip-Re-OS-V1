@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -97,7 +98,11 @@ async function requireBrokerAdmin(
   // is_brokerage_admin() does NOT permit — that would push this gate PAST the database.
   // Narrowing to superadmin keeps it at or inside RLS, and on live data it admits
   // nobody new at all: the one superadmin already qualifies via user_type='admin'.
-  const isPlatformSuperadmin = userType === "superadmin" || platformRole === "superadmin"
+  //
+  // TOMBSTONE (ruling 1, 2026-08-24): this line used to re-spell the test as
+  // `userType === "superadmin" || platformRole === "superadmin"`. Survivor:
+  // lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity.
+  const isPlatformSuperadmin = isPlatformSuperadminIdentity(userType, platformRole)
 
   if (!BROKERAGE_ADMIN_USER_TYPES.has(userType) && !isPlatformSuperadmin) {
     throw new Error("Forbidden: insufficient permissions")

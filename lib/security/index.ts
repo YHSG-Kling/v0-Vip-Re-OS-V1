@@ -59,10 +59,13 @@ export {
 // the tenant's subscription": app/actions/billing.ts:46 requireTenantBillingAdmin
 // over BROKERAGE_FINANCE_ADMIN_USER_TYPES. Full reasoning, and the live RLS
 // policy that still reads ai_subscription_tier, at ./authorization.ts:39.
-export {
-  requireSuperAdmin,
-  isSuperAdmin,
-} from './authorization'
+// TOMBSTONE (ruling 1, 2026-08-24): requireSuperAdmin / isSuperAdmin are deleted
+// here too — zero callers, and re-exported through a `"use server"` file, so both
+// were public HTTP endpoints. Survivor for "is this the platform/OS user":
+// lib/auth/platform-guard.ts:63 requireSuperadmin, over the one definition at
+// lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity.
+// Full reasoning, and why the deleted copy was tighter than RLS, at
+// ./authorization.ts:3.
 
 // ─── PERMISSIONS SERVICE (UI / client-side runtime checks) ────────────────────
 export { permissionsService, ROLE_NAVIGATION } from './permissions-service'

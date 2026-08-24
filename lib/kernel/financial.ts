@@ -48,6 +48,7 @@ import { resolveLedTeamId } from "./resolve-user-team"
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 import { readCapProgress } from "@/lib/finance/cap-progress"
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 
 // ─── CONSTANTS & ENUMS ────────────────────────────────────────────────────────
@@ -438,7 +439,8 @@ export async function loadFinancialWorkspace(
       ctx.platformRole !== undefined
         ? ctx.platformRole
         : await resolveActorPlatformRole(supabase, ctx.userId)
-    const isSuperadmin = ctx.userType === "superadmin" || platformRole === "superadmin"
+    // ONE DEFINITION (ruling 1) — lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity
+    const isSuperadmin = isPlatformSuperadminIdentity(ctx.userType, platformRole)
 
     const ledTeamId = await resolveLedTeamId(supabase, ctx.userId)
 

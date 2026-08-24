@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
-import { stripe } from "@/lib/stripe"
+import { getPlatformStripe } from "@/lib/stripe"
+import { verifyStripeWebhook } from "@/lib/billing/stripe-webhook-secrets"
 import { createServiceClient } from "@/lib/supabase/service"
 import { syncBrokeragePlanTier } from "@/lib/billing/sync-plan-tier"
 import { setStripeOnboardingByAccount } from "@/lib/connections/vendor-stripe"
@@ -29,9 +30,31 @@ function normalizeSub(s: Stripe.Subscription): NormalizedStripeSub {
   }
 }
 
-// Stripe webhook handler
+// Stripe webhook handler — THE PLATFORM'S BILLING LEDGER.
 // Handles: checkout.session.completed, invoice.paid, invoice.payment_failed,
 //          customer.subscription.updated, customer.subscription.deleted, account.updated
+//
+// ── WHOSE STRIPE ACCOUNT SIGNS THIS ENDPOINT ────────────────────────────────
+//
+// Every event handled below writes the PLATFORM's ledger of what tenants owe US:
+// `subscriptions`, `billing_invoices`, `brokerages.plan_tier`, and the Connect
+// onboarding flag that gates payouts. The merchant on that money is the platform
+// (lib/billing/stripe-account-scope.ts — the account belongs to the PAYEE), so
+// the only account whose deliveries may write here is the platform's.
+//
+// Verification no longer reads one hardcoded env secret. `verifyStripeWebhook`
+// walks the platform's signing secret and then every TENANT's, and reports WHICH
+// account signed — because with per-tenant Stripe accounts a tenant's own
+// deliveries WILL arrive here, and answering them "invalid signature" is
+// indistinguishable from an attack and so gets investigated as neither.
+//
+// A tenant-signed delivery is REFUSED for this ledger, by name. That refusal is
+// the tenancy gate CLAUDE.md §4 asks for, in the one form available to a request
+// with no session: the principal is the account that signed, and
+// `metadata.brokerage_id` is written by whoever owns that account. Accepting a
+// tenant-signed event here would let any tenant with a Stripe account move any
+// other tenant's subscription row by putting their id in metadata — the IDOR
+// shape, cryptographically closed instead of argued about.
 export async function POST(request: NextRequest) {
   const body = await request.text()
   const signature = request.headers.get("stripe-signature")
@@ -40,20 +63,41 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "No signature" }, { status: 400 })
   }
 
-  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET
-  if (!webhookSecret) {
-    console.error("[Billing Webhook] STRIPE_WEBHOOK_SECRET not configured")
-    return NextResponse.json({ error: "Webhook secret not configured" }, { status: 500 })
+  const verification = await verifyStripeWebhook({ endpoint: "tenant_billing", body, signature })
+
+  if (verification.status === "no_candidates") {
+    console.error("[Billing Webhook] REFUSED —", verification.message)
+    return NextResponse.json({ error: verification.message }, { status: 500 })
   }
-
-  let event: Stripe.Event
-
-  try {
-    event = stripe.webhooks.constructEvent(body, signature, webhookSecret)
-  } catch (err) {
-    console.error("[Billing Webhook] Signature verification failed:", err)
+  if (verification.status === "unreadable") {
+    // Fail CLOSED and say so. A 503 asks Stripe to retry; a 400 would tell the
+    // sender their signature was bad when in fact WE could not check it.
+    console.error("[Billing Webhook] REFUSED —", verification.message)
+    return NextResponse.json({ error: verification.message }, { status: 503 })
+  }
+  if (verification.status === "unverified") {
+    console.error("[Billing Webhook] REFUSED —", verification.message)
     return NextResponse.json({ error: "Invalid signature" }, { status: 400 })
   }
+
+  const event: Stripe.Event = verification.event
+
+  if (verification.ownerType !== "platform") {
+    // Signed by a TENANT's own Stripe account. Their money, their ledger — not
+    // the platform's subscription ledger, which is the only thing this route
+    // writes. 200 so Stripe stops retrying a delivery that will never be
+    // applicable; `applied:false` and a reason so it is never mistaken for done.
+    const reason =
+      `Delivery to /api/billing/webhook was signed by ${verification.ownerType} ${verification.ownerId}'s own Stripe account. ` +
+      `This endpoint writes the PLATFORM's billing ledger (what tenants owe the platform) and accepts platform-signed events only. ` +
+      `Refusing rather than attributing a tenant-account event to the platform's books.`
+    console.error("[Billing Webhook] REFUSED —", reason, "event:", event.type)
+    return NextResponse.json({ received: true, applied: false, reason }, { status: 200 })
+  }
+
+  // THE PLATFORM's Stripe client, resolved (platform-owned credential row first,
+  // STRIPE_SECRET_KEY as the platform's own floor) — never a tenant's.
+  const stripe = await getPlatformStripe()
 
   // Webhook is authenticated by Stripe signature verification above. There is
   // no user session in this request, so the RLS-enforced server client would

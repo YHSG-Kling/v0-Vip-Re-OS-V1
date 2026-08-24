@@ -5,6 +5,7 @@ import { generateTextRouted as generateText } from '@/lib/ai/models'
 import { revalidatePath } from 'next/cache'
 import { isValidUUID } from '@/lib/validations'
 import { handleError } from '@/lib/errors'
+import { evaluateThemFirstFocus } from '@/lib/compliance-rules/rule-evaluators'
 
 // ============================================
 // MAIN: GENERATE LISTING VIDEO
@@ -180,7 +181,7 @@ export async function generateListingVideo(params: {
     const script = await generateVideoNarration(property, videoType, selectedPhotos.photos)
 
     // 6. Validate "Them First"
-    const validation = await validateThemFirstContent(script, 'video_script')
+    const validation = evaluateThemFirstFocus(script)
 
     // 7. Update project with script
     await supabase
@@ -387,50 +388,19 @@ Generate narration script that flows naturally with the visual sequence:`
 // ============================================
 // "THEM FIRST" VALIDATION
 // ============================================
-
-async function validateThemFirstContent(content: string, contentType: string) {
-  const agentCentricPhrases = [
-    /\b(i|me|my|our team|we offer|my expertise|i specialize|i can help)\b/gi,
-    /\b(contact me|call me|reach out|my services)\b/gi,
-  ]
-
-  const buyerCentricPhrases = [
-    /\b(you|your|imagine|picture yourself|envision|experience)\b/gi,
-    /\b(perfect for|ideal for|great for families|enjoy)\b/gi,
-  ]
-
-  let agentCentricCount = 0
-  let buyerCentricCount = 0
-
-  for (const pattern of agentCentricPhrases) {
-    const matches = content.match(pattern)
-    agentCentricCount += matches?.length || 0
-  }
-
-  for (const pattern of buyerCentricPhrases) {
-    const matches = content.match(pattern)
-    buyerCentricCount += matches?.length || 0
-  }
-
-  const totalReferences = agentCentricCount + buyerCentricCount
-  const buyerFocusRatio = totalReferences > 0 ? buyerCentricCount / totalReferences : 0.5
-
-  const passed = buyerFocusRatio >= 0.7
-
-  return {
-    passed,
-    overall_score: buyerFocusRatio,
-    agent_centric_count: agentCentricCount,
-    buyer_centric_count: buyerCentricCount,
-    recommendations: passed
-      ? ['Great job keeping the focus on the buyer!']
-      : [
-          'Reduce agent-centric language (I, me, my)',
-          'Increase buyer-focused language (you, your, imagine)',
-          'Focus on buyer benefits rather than agent credentials',
-        ],
-  }
-}
+//
+// TOMBSTONE — the private `validateThemFirstContent` that stood here is
+// DELETED. Survivor: lib/compliance-rules/rule-evaluators.ts:402
+// `evaluateThemFirstFocus`, imported at the top of this file and called at the
+// narration step below.
+//
+// It was the third spelling of one idea (§6): the same pronoun ratio the
+// compliance REPORT and the kernel GATE already computed, with a third word
+// list. `provider_metadata.them_first_score` and `compliance_status` on
+// `ai_video_projects` are stamped from it, so the number a reviewer sees on a
+// video now matches the number the gate would compute over the same text.
+// The `contentType` argument it accepted was never read — the survivor does
+// not take one, and the content type is already on the row being written.
 
 // ============================================
 // TRACK VIDEO VIEW

@@ -13,6 +13,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 async function requireBrokerAdmin() {
   const supabase = await createClient()
@@ -47,7 +48,8 @@ async function requireBrokerAdmin() {
     // platform-wide cron view and the raw failure text were unreachable. Same
     // shape as public.is_platform_admin() in RLS and requireSuperadmin() in
     // lib/auth/platform-guard.ts; see app/actions/vendor-budget.ts:136-147.
-    isPlatformAdmin: row.user_type === "superadmin" || (row as any).platform_role === "superadmin",
+    // ONE DEFINITION (ruling 1) — lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity
+    isPlatformAdmin: isPlatformSuperadminIdentity(row.user_type, (row as any).platform_role),
   }
 }
 

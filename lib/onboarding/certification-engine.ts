@@ -42,10 +42,13 @@ export async function checkCertificationEligibility(
   const supabase = createServiceClient()
   const missingRequirements: string[] = []
 
-  // Check if already awarded
+  // Check if already awarded. Tenant-scoped like the INSERT that creates these
+  // rows (line 336) — without it, another brokerage's award for the same agent
+  // id would read as "already awarded" and refuse this one.
   const { data: existingCert } = await supabase
     .from('agent_certifications')
     .select('id')
+    .eq('brokerage_id', brokerageId)
     .eq('agent_id', agentId)
     .eq('certification_name', certName)
     .maybeSingle()
@@ -379,6 +382,7 @@ export async function awardCertification(
   const { data: allCerts } = await supabase
     .from('agent_certifications')
     .select('certification_name')
+    .eq('brokerage_id', brokerageId)
     .eq('agent_id', agentId)
     .eq('cert_type', 'onboarding')
 
@@ -528,9 +532,17 @@ export async function getCertificationStatus(
 }> {
   const supabase = createServiceClient()
 
+  // `brokerageId` was accepted and never read. The caller
+  // (app/actions/onboarding/progress.ts:255) resolves `targetBrokerageId` from
+  // the SESSION and hands it here, and the client below is
+  // `createServiceClient()` — RLS off — so the tenant it resolved was the one
+  // thing NOT applied to the read. agent_certifications.brokerage_id is live
+  // (scripts/schema-snapshot.ts) and the awarding path in this same file stamps
+  // it, so the predicate matches the rows this engine writes.
   const { data: certs } = await supabase
     .from('agent_certifications')
     .select('id, certification_name, issued_at, certificate_url')
+    .eq('brokerage_id', brokerageId)
     .eq('agent_id', agentId)
     .eq('cert_type', 'onboarding')
 

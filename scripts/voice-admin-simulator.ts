@@ -12,6 +12,7 @@
  */
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -25,7 +26,23 @@ function main() {
 
   check("the create_tenant_user intent is declared + classified", /\| "create_tenant_user"/.test(route) && /create_tenant_user: a PLATFORM-ADMIN command/.test(route))
   check("it goes ONLY through the AUTHENTICATED route (getUser → 401)", /const \{ data: \{ user \} \} = await supabase\.auth\.getUser\(\)/.test(route) && /status: 401/.test(route))
-  check("it is SUPERADMIN-gated before executing", /intent === "create_tenant_user"[\s\S]*profile\.user_type === "superadmin" \|\| \(profile as any\)\.platform_role === "superadmin"/.test(route))
+  // ASSERT THE RULE, NOT THE SPELLING (CLAUDE.md §2 — "do not pin an assertion to
+  // a WAYPOINT"). This pinned the literal `user_type === "superadmin" ||
+  // platform_role === "superadmin"`, so it could only pass while the discriminator
+  // was RE-SPELLED at the gate — it went red the moment that duplicate was merged
+  // onto the one survivor (owner ruling 1, 2026-08-24), i.e. because the work was
+  // FINISHED. The rule is: the gate is superadmin-only AND the superadmin decision
+  // is made from BOTH identity columns. The roster module is read too, because
+  // pinning only the call would let the survivor decay to one column unnoticed.
+  // STRIPPED, NOT RAW. The roster's header quotes the both-columns expression in
+  // prose (it is the tombstone §1 requires), so a raw read is satisfied by the
+  // COMMENT and stays green while the code decays to one column — proved by
+  // mutation, 2026-08-24. CLAUDE.md §2: "a TOMBSTONE IS NOT A CALL SITE".
+  const vaRoster = stripComments(src("lib/platform/platform-staff-roster.ts"))
+  check("it is SUPERADMIN-gated before executing (BOTH identity columns, via the one definition)",
+    /intent === "create_tenant_user"[\s\S]*isPlatformSuperadminIdentity\(profile\.user_type, \(profile as any\)\.platform_role\)/.test(route) &&
+    /export function isPlatformSuperadminIdentity\(/.test(vaRoster) &&
+    /userType === "superadmin" \|\| platformRole === "superadmin"/.test(vaRoster))
   check("a non-staff caller is refused (no execution)", /superadmin-only command/.test(route))
   check("it routes to the SAME tested + audited createTenantUserAction", /createTenantUserAction\(\{/.test(route) && /from "@\/app\/actions\/superadmin\/tenant-users"/.test(route))
   check("it resolves the target brokerage by name (else the caller's)", /ilike\("name", `%\$\{ex\.brokerageName\}%`\)/.test(route))

@@ -62,6 +62,28 @@ export interface VendorMoneyPath {
   readonly recordedIn: string
   /** The table the collectable amount is billed through, or null when the path is not billed here. */
   readonly billedThrough: string | null
+  /**
+   * TRUE when this path charges the vendor FOR PLATFORM USE — a seat, access,
+   * or placement in the platform — as opposed to paying for work performed.
+   *
+   * This flag exists because of a SECOND owner ruling, verbatim:
+   *
+   *   "vendors whcih include title companies and lenders can be used by other
+   *    brokerages so if a vendor is already on the platform, the brokerage/team/
+   *    agent can't charge them for platform use only access to their contacts."
+   *
+   * Two halves. (a) A vendor is SHARED — a title company or lender may be used
+   * by more than one brokerage. (b) A vendor already paying for platform use
+   * MUST NOT be charged for platform use a second time; the second tenant gets
+   * CONTACT ACCESS ONLY (app/actions/vendor-contact-access.ts, which is free and
+   * stays free). Only the paths flagged here are subject to (b) —
+   * VENDOR_JOB_BILL is money for WORK DONE and is never a platform-use charge,
+   * which is also why it flows the other way.
+   *
+   * Enforced by lib/vendors/vendor-platform-identity.ts and, so it cannot be
+   * forgotten by a future writer, by m549's database trigger.
+   */
+  readonly isPlatformUse: boolean
   /** One sentence a human can check against the ruling. */
   readonly says: string
 }
@@ -86,6 +108,10 @@ export const VENDOR_PACKAGE: VendorMoneyPath = {
   cadence: "recurring",
   recordedIn: "vendor_subscriptions",
   billedThrough: "vendor_invoices",
+  // A package IS platform use: the thing sold is recurring access and placement
+  // in the brokerage's marketplace, which is what the vendor would already be
+  // paying for if they are on the platform. Subject to the no-double-charge rule.
+  isPlatformUse: true,
   says: "The brokerage charges the vendor a recurring fee for a package in the brokerage's marketplace.",
 } as const
 
@@ -102,6 +128,10 @@ export const VENDOR_JOB_BILL: VendorMoneyPath = {
   cadence: "per_job",
   recordedIn: "vendor_invoices",
   billedThrough: "vendor_invoices",
+  // NOT platform use — this is payment for work performed, and it flows the
+  // other way. The no-double-charge ruling does not touch it: a vendor already
+  // paying for platform use must still be paid for the jobs it does.
+  isPlatformUse: false,
   says: "The vendor invoices the brokerage for a job it performed. Never a monthly subscription.",
 } as const
 
@@ -124,10 +154,23 @@ export const VENDOR_PLATFORM_TIER: VendorMoneyPath = {
   cadence: "recurring",
   recordedIn: "vendor_marketplace_profiles",
   billedThrough: null, // Stripe-native, off this ledger entirely
+  // Platform use in its purest form — and the one the vendor pays FIRST. When
+  // this path is live-and-paying, VENDOR_PACKAGE may not also be raised against
+  // the same vendor: that is the double charge the ruling forbids.
+  isPlatformUse: true,
   says: "The vendor pays the platform for its own marketplace tier. Not a brokerage's money.",
 } as const
 
 export const VENDOR_MONEY_PATHS = [VENDOR_PACKAGE, VENDOR_JOB_BILL, VENDOR_PLATFORM_TIER] as const
+
+/**
+ * The money paths that charge a vendor FOR PLATFORM USE. A vendor may hold at
+ * most ONE live platform-use arrangement across the whole platform: a second one
+ * raised by a second brokerage/team/agent is the wrong invoice the owner ruling
+ * names. Derived, never retyped — adding a fourth path with isPlatformUse:true
+ * puts it under the rule automatically.
+ */
+export const PLATFORM_USE_MONEY_PATHS = VENDOR_MONEY_PATHS.filter((p) => p.isPlatformUse)
 
 /**
  * The ONE literal `vendor_subscriptions.billing_direction` may hold. m497 puts a

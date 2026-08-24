@@ -7,16 +7,60 @@
 // ─── STRIPE ────────────────────────────────────────────────────────────────────
 
 import { callConnector, type GatewayResponse } from "@/lib/agentic-os/connector-gateway"
+import {
+  resolvePlatformStripeAccount,
+  resolveTenantStripeAccount,
+  type ResolvedStripeAccount,
+  type TenantStripeContext,
+} from "@/lib/billing/resolve-stripe-account"
 
 const STRIPE_BASE = "https://api.stripe.com"
 
-function getStripeKey(): string | null {
-  return process.env.STRIPE_SECRET_KEY || null
+// ═══════════════════════════════════════════════════════════════════════════
+// WHOSE STRIPE ACCOUNT EACH CALL IS MADE ON — stated at the call, not assumed.
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// OWNER RULING (verbatim): "the stripe account will be per tenant and platform so
+// no configuration should be hardcoded."
+//
+// This module used to answer that question with `process.env.STRIPE_SECRET_KEY`
+// and a header comment reading "Stripe is a PLATFORM connector (one
+// STRIPE_SECRET_KEY)". Under the ruling that is the defect: a brokerage paying a
+// vendor, or a client paying a brokerage, is the TENANT's money, and settling it
+// on the product's account issues a receipt naming the wrong merchant, refunds
+// from the wrong balance, and puts the amount on the wrong entity's books.
+//
+// So the two MONEY-MOVING calls — `createTransfer` and `createPaymentIntent` —
+// now take an explicit `StripeCallScope`. There is no default: a default is how
+// the wrong account gets picked silently, and the payee is a fact the caller
+// knows and this module does not. lib/billing/stripe-account-scope.ts holds the
+// rule (the account belongs to the PAYEE) and names every path in the repo.
+//
+// The three ACCOUNT-ADMIN calls below (`createConnectedAccount`,
+// `createAccountLink`, `getStripeBalance`) stay platform-scoped and say so in
+// their own doc-comments: minting a Connect account happens on the Connect
+// PLATFORM, and the balance probe is a reachability check on the platform's own
+// credential.
+
+/** Which account a call is made on. `tenant` REFUSES when that tenant has no
+ *  Stripe credential — it never falls through to the platform's. */
+export type StripeCallScope = { side: "platform" } | ({ side: "tenant" } & TenantStripeContext)
+
+/** Resolve the account a call runs on, fail-closed, with the refusal as a value. */
+async function resolveCallAccount(
+  on: StripeCallScope,
+): Promise<{ ok: true; account: ResolvedStripeAccount } | { ok: false; error: string; notConfigured: boolean }> {
+  const res =
+    on.side === "platform"
+      ? await resolvePlatformStripeAccount()
+      : await resolveTenantStripeAccount({ brokerageId: on.brokerageId, teamId: on.teamId, agentUserId: on.agentUserId })
+  if (res.status === "resolved") return { ok: true, account: res.account }
+  return { ok: false, error: res.message, notConfigured: res.status === "missing" }
 }
 
 /** Single egress choke point — every Stripe API call leaves through the connector-gateway. Stripe
  *  is form-urlencoded (gateway "form" bodyType); a connected-account call sets the Stripe-Account
- *  header. Stripe is a PLATFORM connector (one STRIPE_SECRET_KEY). */
+ *  header. The KEY is resolved per call scope (platform vs tenant), never read from a global. */
 function stripeReq<T = any>(
   secretKey: string,
   path: string,
@@ -48,16 +92,21 @@ export interface CreateTransferResult {
   mock?: boolean
 }
 
-export async function createTransfer(params: CreateTransferParams): Promise<CreateTransferResult> {
-  const secretKey = getStripeKey()
-
-  if (!secretKey) {
-    return {
-      success: false,
-      error: "Stripe not configured. Add STRIPE_SECRET_KEY to environment variables.",
-      mock: true,
-    }
+/**
+ * Move money from an account's balance to a connected account (an agent's or a
+ * vendor's payout).
+ *
+ * `on` is REQUIRED and has no default. The funds leave the payer's balance, so a
+ * brokerage disbursing to its agent must pass `{ side: "tenant", brokerageId }` —
+ * `{ side: "platform" }` would pay the agent out of the product's balance, which
+ * is not a smaller version of the same thing.
+ */
+export async function createTransfer(params: CreateTransferParams, on: StripeCallScope): Promise<CreateTransferResult> {
+  const resolved = await resolveCallAccount(on)
+  if (!resolved.ok) {
+    return { success: false, error: resolved.error, mock: resolved.notConfigured }
   }
+  const { secretKey, connectedAccountId, mode } = resolved.account
 
   const res = await stripeReq<{ id: string; amount: number }>(secretKey, "v1/transfers", {
     form: {
@@ -66,6 +115,11 @@ export async function createTransfer(params: CreateTransferParams): Promise<Crea
       destination: params.destinationAccountId,
       description: params.description || "Commission transfer",
     },
+    // A `connect`-mode tenant banks through an acct_… under the platform's Connect
+    // platform: the platform's key signs and the header addresses the tenant. Omit
+    // it and the same key debits the PLATFORM's balance instead — the substitution
+    // this whole module was changed to prevent.
+    ...(mode === "connect" && connectedAccountId ? { stripeAccount: connectedAccountId } : {}),
   })
   if (!res.ok || !res.data) throw new Error(res.error || "Stripe API error")
   return { success: true, transferId: res.data.id, amount: res.data.amount / 100 }
@@ -86,18 +140,21 @@ export interface CreatePaymentIntentResult {
   mock?: boolean
 }
 
+/**
+ * Take a payment. `on` is REQUIRED: the merchant of record is whoever COLLECTS,
+ * and a client paying a brokerage is the brokerage's charge — its statement
+ * descriptor, its balance, its refund, its 1099. Passing `{ side: "platform" }`
+ * for that would make the product the merchant on a sale it had no part in.
+ */
 export async function createPaymentIntent(
-  params: CreatePaymentIntentParams
+  params: CreatePaymentIntentParams,
+  on: StripeCallScope,
 ): Promise<CreatePaymentIntentResult> {
-  const secretKey = getStripeKey()
-
-  if (!secretKey) {
-    return {
-      success: false,
-      error: "Stripe not configured. Add STRIPE_SECRET_KEY to environment variables.",
-      mock: true,
-    }
+  const resolved = await resolveCallAccount(on)
+  if (!resolved.ok) {
+    return { success: false, error: resolved.error, mock: resolved.notConfigured }
   }
+  const { secretKey, connectedAccountId, mode } = resolved.account
 
   const form: Record<string, string> = {
     amount: Math.round(params.amount * 100).toString(),
@@ -108,7 +165,10 @@ export async function createPaymentIntent(
     for (const [key, value] of Object.entries(params.metadata)) form[`metadata[${key}]`] = value
   }
 
-  const res = await stripeReq<{ client_secret: string; id: string }>(secretKey, "v1/payment_intents", { form })
+  const res = await stripeReq<{ client_secret: string; id: string }>(secretKey, "v1/payment_intents", {
+    form,
+    ...(mode === "connect" && connectedAccountId ? { stripeAccount: connectedAccountId } : {}),
+  })
   if (!res.ok || !res.data) throw new Error(res.error || "Stripe PaymentIntent error")
   return { success: true, clientSecret: res.data.client_secret, paymentIntentId: res.data.id }
 }
@@ -121,16 +181,17 @@ export interface CreateConnectedAccountResult {
   mock?: boolean
 }
 
+/** PLATFORM-SCOPED BY CONSTRUCTION. A Connect account is minted UNDER a Connect
+ *  platform, and this product has exactly one — so this call is the platform's
+ *  even when the account it creates will belong to an agent, a team or a vendor.
+ *  Ownership of the resulting acct_… is recorded owner-scoped in
+ *  platform_credentials by app/actions/connections/connection-center.ts. */
 export async function createConnectedAccount(email: string): Promise<CreateConnectedAccountResult> {
-  const secretKey = getStripeKey()
-
-  if (!secretKey) {
-    return {
-      success: false,
-      error: "Stripe not configured.",
-      mock: true,
-    }
+  const resolved = await resolveCallAccount({ side: "platform" })
+  if (!resolved.ok) {
+    return { success: false, error: resolved.error, mock: resolved.notConfigured }
   }
+  const secretKey = resolved.account.secretKey
 
   const accountRes = await stripeReq<{ id: string }>(secretKey, "v1/accounts", {
     form: { type: "express", email, "capabilities[transfers][requested]": "true" },
@@ -161,8 +222,11 @@ export async function createAccountLink(
   accountId: string,
   returnPath = "/settings/payments",
 ): Promise<{ success: boolean; onboardingUrl?: string; error?: string }> {
-  const secretKey = getStripeKey()
-  if (!secretKey) return { success: false, error: "Stripe not configured." }
+  // PLATFORM-SCOPED for the same reason as createConnectedAccount: an account link
+  // is issued by the Connect platform that owns the acct_….
+  const resolved = await resolveCallAccount({ side: "platform" })
+  if (!resolved.ok) return { success: false, error: resolved.error }
+  const secretKey = resolved.account.secretKey
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"
   const res = await stripeReq<{ url: string }>(secretKey, "v1/account_links", {
     form: {
@@ -281,17 +345,32 @@ export interface StripeBalanceResult {
   error?: string
   /** HTTP status Stripe returned, or null if the request never got one. */
   httpStatus?: number | null
-  /** TRUE when STRIPE_SECRET_KEY is unset — distinct from a rejected key. */
+  /** TRUE when the PLATFORM has no Stripe credential at all — no platform-owned
+   *  platform_credentials row AND no STRIPE_SECRET_KEY. Distinct from a rejected
+   *  key, and distinct again from a credential store that could not be READ,
+   *  which comes back `success:false` with `notConfigured` false. */
   notConfigured?: boolean
   /** Stripe's own `livemode` flag: false means a TEST key. */
   livemode?: boolean
 }
 
+/** PLATFORM-SCOPED. This is the credential-reachability probe for the PLATFORM's
+ *  own Stripe account, read by app/api/cron/health-check and
+ *  lib/platform/go-live-readiness. It resolves the platform credential the same
+ *  way every other platform call does, so a stored platform row is probed rather
+ *  than a stale env key. A tenant's account is probed through its own connection
+ *  health, never here. */
 export async function getStripeBalance(): Promise<StripeBalanceResult> {
-  const secretKey = getStripeKey()
-  if (!secretKey) {
-    return { success: false, notConfigured: true, httpStatus: null, error: "Stripe not configured." }
+  const resolved = await resolveCallAccount({ side: "platform" })
+  if (!resolved.ok) {
+    return {
+      success: false,
+      notConfigured: resolved.notConfigured,
+      httpStatus: null,
+      error: resolved.error,
+    }
   }
+  const secretKey = resolved.account.secretKey
 
   const res = await stripeReq<{
     available: Array<{ amount: number; currency: string }>

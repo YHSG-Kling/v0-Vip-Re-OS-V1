@@ -15,6 +15,7 @@
 
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveUnambiguousTenant } from "@/lib/kernel/unambiguous-tenant"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -102,10 +103,16 @@ export async function POST(request: NextRequest) {
       // brokerage the send came from; without one, only an unambiguous match counts.
       let trackQuery = svc.from("contacts").select("id, brokerage_id").ilike("email", email)
       if (eventBrokerageId) trackQuery = trackQuery.eq("brokerage_id", eventBrokerageId)
+      // ONE SPELLING OF THE RULE (§6): this used to build its own Set and test
+      // `size === 1` here, and again forty lines down, and again in
+      // app/api/webhooks/inbound-mail/route.ts. Survivor:
+      // lib/kernel/unambiguous-tenant.ts:resolveUnambiguousTenant. Same answer —
+      // one distinct brokerage_id across the candidates, or nothing.
       const { data: trackContacts } = await trackQuery.limit(2)
-      const trackRows = (trackContacts ?? []) as Array<{ id: string; brokerage_id: string | null }>
-      const trackTenants = new Set(trackRows.map((r) => r.brokerage_id))
-      const trackContact = trackTenants.size === 1 ? trackRows[0] : null
+      const trackMatch = resolveUnambiguousTenant(
+        (trackContacts ?? []) as Array<{ id: string; brokerage_id: string | null }>,
+      )
+      const trackContact = trackMatch.ok ? trackMatch.rows[0] : null
       if (trackingType && trackContact) {
         await svc.from("email_tracking").insert({
           contact_id: trackContact.id,
@@ -149,9 +156,13 @@ export async function POST(request: NextRequest) {
         let contactQuery = svc.from("contacts").select("id, brokerage_id").ilike("email", email)
         if (eventBrokerageId) contactQuery = contactQuery.eq("brokerage_id", eventBrokerageId)
         const { data: contacts } = await contactQuery.limit(5)
-        const contactRows = (contacts ?? []) as Array<{ id: string; brokerage_id: string | null }>
-        const fallbackTenants = new Set(contactRows.map((c) => c.brokerage_id))
-        const ids = fallbackTenants.size === 1 ? contactRows.map((c) => c.id) : []
+        // Same one-distinct-tenant rule as the engagement stream above, and the
+        // same survivor — lib/kernel/unambiguous-tenant.ts. limit(5) rather than
+        // limit(2) because this arm wants EVERY id in the tenant, not one.
+        const fallbackMatch = resolveUnambiguousTenant(
+          (contacts ?? []) as Array<{ id: string; brokerage_id: string | null }>,
+        )
+        const ids = fallbackMatch.ok ? fallbackMatch.rows.map((c) => c.id) : []
         if (ids.length > 0) {
           const { data: msg } = await svc.from("messages")
             .select("id, status")

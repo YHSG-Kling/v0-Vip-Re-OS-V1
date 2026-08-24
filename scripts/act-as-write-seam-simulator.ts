@@ -27,6 +27,7 @@ import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { decideWriteChannel } from "../lib/platform/acting-context"
 import { isSessionActive } from "../lib/platform/impersonation"
+import { stripComments } from "./strip-comments"
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
 const read = (p: string) => readFileSync(join(ROOT, p), "utf8")
@@ -204,10 +205,26 @@ function main() {
   check("requireBrokerAdmin accepts an injected ctx-resolved db (act-as tenant resolution)",
     /async function requireBrokerAdmin\(\s*userId: string,\s*db\?: SupabaseLike/.test(gsk) &&
     /const supabase = db \?\? \(await createClient\(\)\)/.test(gsk))
+  // ASSERT THE RULE, NOT THE SPELLING (CLAUDE.md §2 — "do not pin an assertion to a
+  // WAYPOINT"). This used to pin the literal `userType === "superadmin" ||
+  // platformRole === "superadmin"`, so it could only pass while the test was
+  // RE-SPELLED here — i.e. it failed the moment the duplicate was merged onto the
+  // one survivor, which is the fix, not a regression. The rule is: the gate admits
+  // the brokerage-admin roster OR the platform superadmin, and the superadmin half
+  // is decided from BOTH identity columns by the single survivor.
+  // STRIPPED, NOT RAW. The roster's header quotes the both-columns expression in
+  // prose (it is the tombstone §1 requires), so a raw read is satisfied by the
+  // COMMENT and stays green while the code decays to one column — proved by
+  // mutation, 2026-08-24. CLAUDE.md §2: "a TOMBSTONE IS NOT A CALL SITE".
+  const rosterSrc = stripComments(read("lib/platform/platform-staff-roster.ts"))
   check("admin predicate itself unchanged (roster + platform-superadmin both-columns test)",
     /BROKERAGE_ADMIN_USER_TYPES = new Set\(\["admin", "broker", "broker_owner"\]\)/.test(gsk) &&
-    /userType === "superadmin" \|\| platformRole === "superadmin"/.test(gsk) &&
+    /isPlatformSuperadminIdentity\(userType, platformRole\)/.test(gsk) &&
+    /from "@\/lib\/platform\/platform-staff-roster"/.test(gsk) &&
     /if \(!BROKERAGE_ADMIN_USER_TYPES\.has\(userType\) && !isPlatformSuperadmin\)/.test(gsk))
+  check("…and the survivor it delegates to still reads BOTH identity columns",
+    /export function isPlatformSuperadminIdentity\(\s*\n?\s*userType: string \| null \| undefined,\s*\n?\s*platformRole: string \| null \| undefined,?\s*\n?\s*\): boolean/.test(rosterSrc) &&
+    /userType === "superadmin" \|\| platformRole === "superadmin"/.test(rosterSrc))
   check("both kernel entry points thread the db into the gate",
     (gsk.match(/requireBrokerAdmin\(params\.userId, params\.db\)/g) ?? []).length === 2)
   const ugs = read("app/actions/settings/update-global-settings.ts")

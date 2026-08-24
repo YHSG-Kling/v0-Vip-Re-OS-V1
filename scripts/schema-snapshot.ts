@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-08-23
+ * generated: 2026-08-24
  * source: public.live_schema_json()
- * body-sha256: c898c6a17d6c08f937bf6bb215fd389b2bc8afd4d5bd886e79a99e5235f4711d
+ * body-sha256: 6a9762efe62fd1a1265addef3b1612d192d0979adcbfac7f68aef8ae102694da
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -708,7 +708,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   vendor_subscriptions: ["billing_direction", "brokerage_id", "canceled_at", "created_at", "credits_used_this_period", "current_period_end", "current_period_start", "id", "plan_id", "status", "stripe_customer_id", "stripe_subscription_id", "updated_at", "vendor_id"],
   vendor_tax_documents: ["brokerage_id", "business_type", "client_document_id", "created_at", "document_url", "id", "legal_name", "reminder_last_sent_at", "signature_date", "status", "tin_type", "updated_at", "vendor_id", "vendor_name_at_filing"],
   vendor_usage_tracking: ["agent_id", "brokerage_id", "cost_per_unit", "created_at", "id", "lead_id", "request_metadata", "total_cost", "units_used", "usage_type", "vendor_name"],
-  vendors: ["access_expires_at", "access_level", "ai_verification_score", "audience_tags", "brokerage_id", "category", "compliance_credentials", "created_at", "display_priority", "email", "estimated_turnaround_days", "id", "invited_by_team_id", "invited_by_user_id", "name", "notes", "phone", "preferred", "rating", "stage_tags", "status", "team_id", "updated_at", "verification_flags", "verified_at", "verified_by", "visible_in_portal", "website"],
+  vendors: ["access_expires_at", "access_level", "ai_verification_score", "audience_tags", "brokerage_id", "category", "compliance_credentials", "created_at", "display_priority", "email", "estimated_turnaround_days", "id", "invited_by_team_id", "invited_by_user_id", "name", "notes", "phone", "platform_vendor_id", "preferred", "rating", "stage_tags", "status", "team_id", "updated_at", "verification_flags", "verified_at", "verified_by", "visible_in_portal", "website"],
   video_assets: ["agent_id", "brokerage_id", "category", "created_at", "created_by", "description", "duration_seconds", "id", "license_attribution", "license_url", "music_loop", "music_volume_pct", "scope_id", "scope_type", "tags", "team_id", "thumbnail_url", "title", "video_url"],
   video_completion_tracking: ["agent_id", "brokerage_id", "completed", "completed_at", "created_at", "id", "last_position_seconds", "percent_watched", "training_video_id", "updated_at"],
   video_engagement_events: ["brokerage_id", "contact_id", "event_type", "id", "timestamp", "video_asset_id", "watch_duration_seconds"],

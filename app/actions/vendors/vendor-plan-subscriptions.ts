@@ -64,6 +64,8 @@
 import { revalidatePath } from "next/cache"
 import { resolveWriteContext } from "@/lib/platform/acting-context"
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
+import { assertVendorChargeableForPlatformUse } from "@/lib/vendors/vendor-platform-identity"
 import { readRoleGrants, selectVendorGrant } from "@/lib/auth/role-grants"
 import {
   VENDOR_PACKAGE,
@@ -264,6 +266,28 @@ export async function enrolVendorInPackageAction(params: {
   if (!vendor) {
     return { ok: false, error: "That vendor is not on your brokerage's bench, so you cannot charge it." }
   }
+
+  // ── NO DOUBLE CHARGE FOR PLATFORM USE ──────────────────────────────────────
+  //
+  // A package IS platform use (VENDOR_PACKAGE.isPlatformUse) — recurring access
+  // and placement in this brokerage's marketplace. The owner ruling: a vendor
+  // already on the platform cannot be charged for platform use by a second
+  // brokerage, team or agent; that tenant gets ACCESS TO THEIR CONTACTS instead,
+  // free (app/actions/vendor-contact-access.ts).
+  //
+  // The check runs on a SERVICE client on purpose. The arrangements it must see
+  // belong to OTHER tenants and are invisible to ctx.db under RLS, so the question
+  // cannot be asked from inside the tenant. What comes back is a boolean and a
+  // reason — never the other tenant's identity, plan or amount. The gate above
+  // (write context + this vendor is on OUR bench) has already run; this is the
+  // gate-then-service-client order, not a widened read.
+  //
+  // Fail closed: if the answer cannot be determined, no enrolment is written.
+  const platformUseCheck = await assertVendorChargeableForPlatformUse(createServiceClient(), {
+    vendorId: vendor.id,
+    brokerageId: ctx.brokerageId,
+  })
+  if (!platformUseCheck.chargeable) return { ok: false, error: platformUseCheck.reason }
 
   // The live UNIQUE (brokerage_id, vendor_id, plan_id) — checked by name so a
   // repeat enrolment is a sentence, not a 23505. A CANCELED row is reactivated

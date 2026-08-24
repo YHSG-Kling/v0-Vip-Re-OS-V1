@@ -96,14 +96,34 @@ const ROWS: RowDef[] = [
   },
   {
     key: "stripe",
-    capability: "Stripe billing (secret key)",
+    // ── CORRECTED BY OWNER RULING ────────────────────────────────────────────
+    // "the stripe account will be per tenant and platform so no configuration
+    // should be hardcoded."
+    //
+    // This row used to read "Stripe billing (secret key)" and light up "Stripe
+    // Connect payouts" — i.e. it presented ONE env var as the switch for every
+    // Stripe path in the product, tenant money included. That is worse than an
+    // inaccuracy on a LAUNCH board: it goes GREEN on one key and reads as "money
+    // is wired", while every tenant-side path is still unresolvable. A go-live
+    // checklist that goes green on the wrong architecture is worse than one that
+    // fails.
+    //
+    // What this row can honestly gate is the PLATFORM half, and only that. The
+    // TENANT half is not an env var and cannot be — there are N tenants and env
+    // vars are singular. Each tenant connects their own Stripe in
+    // Settings → Connections; until they do,
+    // lib/billing/resolve-stripe-account.ts REFUSES their charges by name rather
+    // than settling them on the platform's account, which is the fail-closed
+    // behaviour a launch board should WANT and cannot itself verify.
+    capability: "Stripe billing — the PLATFORM's own account (secret key)",
     envVars: ["STRIPE_SECRET_KEY"],
-    whatLightsUp: "Signup checkout, subscriptions, dunning, vendor marketplace billing, Stripe Connect payouts.",
+    whatLightsUp:
+      "The money the PLATFORM is the payee on: signup checkout, subscriptions, dunning, AI overage, vendor marketplace tiers, and the Connect PLATFORM that mints tenant acct_… ids. A platform-owned platform_credentials row (owner_type='platform', platform='stripe') overrides this var and is the preferred home once one exists. It does NOT cover tenant-side money — a brokerage's vendor bills, client payments and agent payouts run on that brokerage's OWN Stripe account, connected per tenant in Settings → Connections.",
     tier: "launch-blocking",
   },
   {
     key: "stripe_webhook",
-    capability: "Stripe webhook verification (tenant billing)",
+    capability: "Stripe webhook verification — PLATFORM account (tenant billing)",
     envVars: ["STRIPE_WEBHOOK_SECRET"],
     // THE URL WAS WRONG, AND IT IS THE ONLY INSTRUCTION AN OPERATOR GETS.
     // This row said "register https://<app>/api/webhooks/stripe". No such route
@@ -114,7 +134,7 @@ const ROWS: RowDef[] = [
     // customer.subscription.* delivery would fail, paid signups would never
     // activate — and this very checklist would have gone GREEN, because it
     // checks that the SECRET is set and cannot see where it was pointed.
-    whatLightsUp: "Paid signups actually ACTIVATE — register https://<app>/api/billing/webhook in the Stripe dashboard (events: checkout.session.completed, invoice.paid, invoice.payment_failed, customer.subscription.updated, customer.subscription.deleted, account.updated) and set its signing secret here.",
+    whatLightsUp: "Paid signups actually ACTIVATE — register https://<app>/api/billing/webhook in the PLATFORM's Stripe dashboard (events: checkout.session.completed, invoice.paid, invoice.payment_failed, customer.subscription.updated, customer.subscription.deleted, account.updated) and set its signing secret here. This is the PLATFORM account's secret only: /api/billing/webhook now identifies the signing account cryptographically (lib/billing/stripe-webhook-secrets.ts) and refuses to write the platform's billing ledger from a tenant-signed delivery, so a tenant's own webhook secret belongs on that tenant's platform_credentials row (config.webhook_secret), never here.",
     tier: "launch-blocking",
   },
   {
@@ -124,9 +144,9 @@ const ROWS: RowDef[] = [
     // subscriptions silently unreconciled (payment_failed → past_due and
     // cancellation → suspend never arrive).
     key: "stripe_vendor_webhook",
-    capability: "Stripe webhook verification (vendor marketplace)",
+    capability: "Stripe webhook verification — PLATFORM account (vendor marketplace)",
     envVars: ["STRIPE_VENDOR_WEBHOOK_SECRET"],
-    whatLightsUp: "Vendor subscription status stays true — register https://<app>/api/webhooks/stripe/vendor as a SEPARATE endpoint (events: customer.subscription.*, invoice.payment_succeeded, invoice.payment_failed) and set its own signing secret. Without it app/api/webhooks/stripe/vendor/route.ts refuses every delivery with a 500.",
+    whatLightsUp: "Vendor subscription status stays true — register https://<app>/api/webhooks/stripe/vendor as a SEPARATE endpoint on the PLATFORM's Stripe account (events: customer.subscription.*, invoice.payment_succeeded, invoice.payment_failed) and set its own signing secret. The vendor marketplace tier is money the vendor pays the PLATFORM (VENDOR_PLATFORM_TIER), so this endpoint accepts platform-signed deliveries only. Without a secret — here or on the platform credential's config.vendor_webhook_secret — the route refuses every delivery with a 500 naming what is missing.",
     tier: "launch-blocking",
   },
   {

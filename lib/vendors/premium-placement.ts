@@ -44,6 +44,11 @@
 // No new tables. Every query is anchored on brokerage_id (tenant anchor).
 
 import { createServiceClient } from "@/lib/supabase/service"
+import {
+  assertVendorChargeableForPlatformUse,
+  type PlatformUsePayee,
+  type PlatformUseRefusalCode,
+} from "@/lib/vendors/vendor-platform-identity"
 
 // Priority a paid placement pins the row at (floats to the top of the
 // idx_vendors_portal ordering; manual curation default is 0).
@@ -100,7 +105,22 @@ export async function offerPremiumPlacement(input: {
   notes?: string
 }): Promise<
   | { invoiceId: string; invoiceNumber: string; error: null }
-  | { invoiceId: null; invoiceNumber: null; error: string }
+  | {
+      invoiceId: null
+      invoiceNumber: null
+      error: string
+      /**
+       * Present ONLY when the platform-use gate is what refused. Absent on the
+       * ordinary validation failures above (missing ids, bad months, bad price),
+       * because those are the caller's input being wrong, not a verdict about the
+       * vendor — and flattening the two would invite a caller to retry a typo.
+       */
+      refusalCode?: PlatformUseRefusalCode
+      /** A LABEL, never a tenant id. The answer may cross the tenant line; the data may not. */
+      alreadyPaying?: PlatformUsePayee | null
+      /** True only for `undeterminable` — a read failed, so the question is still open. */
+      retryable?: boolean
+    }
 > {
   const { brokerageId, vendorId, notes } = input
   const months = Math.floor(input.months)
@@ -135,6 +155,41 @@ export async function offerPremiumPlacement(input: {
   }
   if (!vendorRow) {
     return { invoiceId: null, invoiceNumber: null, error: "Vendor not found in your brokerage" }
+  }
+
+  // NO DOUBLE CHARGE FOR PLATFORM USE. Featured placement in a brokerage's
+  // directory IS platform use — it is the same thing a vendor already on the
+  // platform is paying for. The owner ruling forbids a second brokerage, team or
+  // agent charging them for it again; what that tenant gets instead is contact
+  // access, which is free. The gate resolves the vendor's PLATFORM identity and
+  // fails closed: if we cannot tell whether they already pay, no invoice is
+  // written, because an unwanted charge is harder to undo than a missing one.
+  const platformUse = await assertVendorChargeableForPlatformUse(supabase, {
+    vendorId,
+    brokerageId,
+  })
+  if (!platformUse.chargeable) {
+    // THE CODE TRAVELS WITH THE SENTENCE, and the distinction is operational, not
+    // cosmetic. `undeterminable` means a READ was refused or errored — the vendor
+    // may well be chargeable and the caller should try again. The other two are
+    // permanent answers: this vendor already pays for platform use, so under the
+    // owner's ruling nobody may charge them for it a second time. Returning only
+    // `reason` collapsed those into one string, so a retryable outage and a
+    // settled "no" were indistinguishable to every caller — and the natural
+    // response to a settled "no" (retry) is exactly wrong for it.
+    //
+    // `alreadyPaying` is deliberately a LABEL, never a tenant id: the answer may
+    // cross the tenant line, the data may not.
+    const refusalCode: PlatformUseRefusalCode = platformUse.refusalCode
+    const alreadyPaying: PlatformUsePayee | null = platformUse.alreadyPaying
+    return {
+      invoiceId: null,
+      invoiceNumber: null,
+      error: platformUse.reason,
+      refusalCode,
+      alreadyPaying,
+      retryable: refusalCode === "undeterminable",
+    }
   }
 
   const amount = parseFloat((priceCents / 100).toFixed(2)) // ledger stores dollars
@@ -264,7 +319,18 @@ export async function markPlacementPaid(input: {
       : li
   )
 
-  const { error: payError } = await supabase
+  // `.select("id")` IS THE PROOF, and it was missing. A supabase-js UPDATE that
+  // matches NOTHING resolves with `error` null and no rows — byte-identical to
+  // one that worked (CLAUDE.md §3). Three real ways this matched nothing:
+  //   · a concurrent request already flipped it to 'paid', so .neq("status","paid")
+  //     excluded it,
+  //   · the invoice moved tenant between the read above and this write,
+  //   · the row was cancelled in between.
+  // In every one of them this function then went on to FEATURE THE VENDOR and
+  // return success — placement granted with no payment transition recorded, i.e.
+  // the ledger says nobody was ever charged. Counting the returned rows is what
+  // turns "the statement executed" into "the payment was recorded".
+  const { data: paidRows, error: payError } = await supabase
     .from("vendor_invoices")
     .update({
       status: "paid",
@@ -275,8 +341,18 @@ export async function markPlacementPaid(input: {
     .eq("id", invoiceId)
     .eq("brokerage_id", brokerageId)
     .neq("status", "paid") // cheap double-mark guard
+    .select("id")
 
   if (payError) return { invoiceId: null, placementUntil: null, error: payError.message }
+  if (!paidRows || paidRows.length === 0) {
+    return {
+      invoiceId: null,
+      placementUntil: null,
+      error:
+        "Nothing was marked paid — that invoice is no longer a payable placement invoice of your " +
+        "brokerage (it may have just been paid, cancelled, or moved). The vendor was NOT featured.",
+    }
+  }
 
   // THEN flip the placement flags — the paid ledger row is the source of truth
   // the expiry sweep reads, so it must land first.
@@ -361,13 +437,20 @@ export async function expirePlacements(input: {
     if (!until) continue
     if (new Date(until).getTime() >= now) continue
 
-    const { error: resetError } = await supabase
+    // COUNT WHAT ACTUALLY MOVED. Same rule as the two writes above: a zero-row
+    // UPDATE resolves with no error, so `expired++` on the bare statement counted
+    // un-featurings that never happened (the row deleted or moved tenant between
+    // the read above and here) and the nightly sweep reported clean-up it had not
+    // done. The number the cron logs is now the number of rows that changed.
+    const { data: reset, error: resetError } = await supabase
       .from("vendors")
       .update({ preferred: false, display_priority: 0 })
       .eq("id", row.id)
       .eq("brokerage_id", brokerageId)
+      .select("id")
 
     if (resetError) return { expired, error: resetError.message }
+    if (!reset || reset.length === 0) continue
     expired++
   }
 

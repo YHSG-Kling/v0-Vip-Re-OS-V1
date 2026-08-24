@@ -484,6 +484,17 @@ async function scoreDeadlines(
 
 /**
  * COMPLIANCE: Maps to transaction_compliance_log and compliance_checklists
+ *
+ * ── `brokerageId` WAS ACCEPTED AND NEVER READ ───────────────────────────────
+ *
+ * This is the ONLY one of the ten category scorers calculateDealHealth hands a
+ * tenant to — the other nine take `transactionId` alone — so the argument was
+ * not decoration, it was a wire somebody started and did not finish. Both
+ * tables carry `brokerage_id` (scripts/schema-snapshot.ts), the client is
+ * `createServiceClient()` with RLS bypassed, and every read below was keyed on
+ * `transaction_id` alone: a transaction id from one tenant would have scored
+ * against whatever compliance rows any tenant had filed under it. The
+ * predicate is now applied, which is what the parameter was for.
  */
 async function scoreCompliance(
   supabase: ReturnType<typeof createServiceClient>,
@@ -497,6 +508,7 @@ async function scoreCompliance(
   const { data: complianceLog } = await supabase
     .from("transaction_compliance_log")
     .select("id, check_type, check_label, status, is_blocking, failure_reason, checked_at, resolved_at")
+    .eq("brokerage_id", brokerageId)
     .eq("transaction_id", transactionId)
 
   if (complianceLog && complianceLog.length > 0) {
@@ -530,6 +542,7 @@ async function scoreCompliance(
   const { data: checklists } = await supabase
     .from("compliance_checklists")
     .select("id, checklist_type, items, compliance_score, ai_recommendations")
+    .eq("brokerage_id", brokerageId)
     .eq("transaction_id", transactionId)
 
   if (checklists && checklists.length > 0) {

@@ -5,6 +5,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { gatewayChatJSON } from "@/lib/ai/gateway-chat"
 import { captureContact } from "@/lib/contact-pipeline/contact-capture"
+import { tenantScope, applyTenantScope } from "@/lib/kernel/tenant-scope"
 
 // ============================================================================
 // Types
@@ -26,6 +27,15 @@ interface ListingDetails {
   listing_date: string | null
   go_live_date: string | null
   mls_number: string | null
+  /**
+   * THE LISTING'S TENANT. Read from `listings.brokerage_id` and now SURFACED,
+   * because the public page needs it to scope "similar listings" to this
+   * brokerage (owner ruling 3, 2026-08-24 — "public landing pages should not
+   * show cross brokerage comps"). It was already being read here and dropped on
+   * the floor, which is why the page had nothing to pass and the scope silently
+   * never applied. NULLABLE, matching the column.
+   */
+  brokerage_id: string | null
   agent: {
     id: string
     first_name: string
@@ -236,6 +246,7 @@ export async function getListingBySlug(slug: string): Promise<ListingDetails | n
     listing_date: listing.listing_date,
     go_live_date: listing.go_live_date,
     mls_number: listing.mls_number,
+    brokerage_id: (listing.brokerage_id as string | null) ?? null,
     agent,
     brokerage_name,
     photos: photos || [],
@@ -337,10 +348,48 @@ Return this exact JSON structure:
   }
 }
 
-export async function getSimilarListings(listingId: string, zip: string, brokerageId?: string) {
+/**
+ * "More homes like this" on the PUBLIC listing landing page.
+ *
+ * ── OWNER RULING (2026-08-24), verbatim ─────────────────────────────────────
+ *   "public landing pages should not show cross brokerage comps. not sure how
+ *    that got figured in?"
+ *
+ * The answer to the question is: NOBODY CHOSE IT. The signature was
+ *
+ *     getSimilarListings(listingId: string, zip: string, brokerageId?: string)
+ *
+ * with the predicate applied as `if (brokerageId) query = query.eq(…)`, and its
+ * ONE caller — app/listing/[slug]/page.tsx:184 — never passed the third
+ * argument. So the filter never once fired, and every public landing page listed
+ * similar homes from every brokerage in that ZIP. An optional parameter that no
+ * caller passes is indistinguishable from no tenancy at all; the tenant boundary
+ * existed only in the signature.
+ *
+ * ── WHY THE PARAMETER IS NOW REQUIRED, NOT DEFAULTED ────────────────────────
+ * A default would have re-created the same failure with a friendlier face: the
+ * scope would still be something a caller could decline to think about. Required
+ * means the compiler asks the question at every call site, and
+ * lib/kernel/tenant-scope.ts:tenantScope REFUSES a blank at runtime — which
+ * matters because this file is `"use server"`, so this export is a PUBLIC HTTP
+ * ENDPOINT (CLAUDE.md §4) and an empty string is a thing a stranger can send.
+ *
+ * The caller was already holding the answer: getListingBySlug reads
+ * `listings.brokerage_id` and simply did not surface it. It does now
+ * (ListingDetails.brokerage_id), and the page passes it.
+ *
+ * `listings.brokerage_id` IS nullable (verified live 2026-08-24; 0 of 3 rows are
+ * null today). A listing with no brokerage cannot ask "show me MY brokerage's
+ * other listings", so the page renders no similar-listings section at all rather
+ * than falling back to everyone's — the fail-CLOSED direction.
+ */
+export async function getSimilarListings(listingId: string, zip: string, brokerageId: string) {
   const supabase = await createClient()
 
-  let query = supabase
+  // Refuses a blank/whitespace id. A missing tenant is NOT "every tenant".
+  const scope = tenantScope(brokerageId, "getSimilarListings (public landing page)")
+
+  const query = supabase
     .from("listings")
     .select(`
       id,
@@ -358,11 +407,7 @@ export async function getSimilarListings(listingId: string, zip: string, brokera
     .neq("id", listingId)
     .limit(3)
 
-  if (brokerageId) {
-    query = query.eq("brokerage_id", brokerageId)
-  }
-
-  const { data, error } = await query
+  const { data, error } = await applyTenantScope(query, scope)
 
   if (error) {
     return []

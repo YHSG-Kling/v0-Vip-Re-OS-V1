@@ -26,6 +26,21 @@ const TENANT_TABLES = [
 // or a validated parent id. Any ONE within the chain window passes.
 const SCOPE_EVIDENCE = [
   "brokerage_id", "brokerageId",
+  // THE REPAIR MUST READ AS REPAIRED. lib/kernel/tenant-scope.ts applies the
+  // tenant predicate through a HELPER, so a converted chain contains neither the
+  // string "brokerage_id" nor a literal `.eq(`. Without this entry the guard
+  // reports a NEW unscoped query for a site that was just made STRICTER —
+  // `applyTenantScope` refuses a null where `if (brokerageId) …eq(…)` silently
+  // dropped the filter. Measured: converting app/actions/listing-landing.ts:
+  // getSimilarListings (owner ruling 3, 2026-08-24) did exactly that.
+  //
+  // Accepting it is not a widening. `applyTenantScope` takes a TenantScope, and
+  // the only two ways to obtain one are tenantScope(id, where) — which THROWS on a
+  // blank — and platformScope(reason) / resolveTenantScope(), which require proven
+  // platform authority and a written reason. Control 6 below pins that a bare
+  // `.select()` with no scope at all is still reported, so this cannot become a
+  // free pass by being written near an unrelated query.
+  "applyTenantScope",
   '.eq("id"', ".eq('id'", '.in("id"', ".in('id'",
   "vendor_call_id", "call_sid",
   '.eq("user_id"', ".eq('user_id'",
@@ -248,6 +263,33 @@ function unscopedTablesIn(raw: string): Map<string, number> {
         `const { data } = await supabase`,
         `  .from("documents")`,
         `  .select("id, storage_url")`,
+      ].join("\n"),
+    },
+    {
+      // THE FIXED FORM MUST READ AS FIXED. A chain scoped through
+      // lib/kernel/tenant-scope.ts carries no literal "brokerage_id" at all, and
+      // before `applyTenantScope` joined SCOPE_EVIDENCE this guard reported a NEW
+      // unscoped query for a site that had just been made stricter — which is the
+      // shape that teaches people to ignore a guard's real findings.
+      name: "a chain scoped through applyTenantScope is NOT reported",
+      expect: 0,
+      why: "converting a site to the explicit TenantScope discriminator would ACCUSE it, so nobody could tell a repair from a regression",
+      src: [
+        `const query = supabase.from("listings").select("id, address").eq("status", "active")`,
+        `const { data } = await applyTenantScope(query, scope)`,
+      ].join("\n"),
+    },
+    {
+      // …and the inverse, so the new entry cannot become a free pass: naming the
+      // helper somewhere in the file must not excuse an unrelated unscoped read.
+      // The window is per-chain, and this control is what pins that.
+      name: "…and an unscoped read is STILL reported when applyTenantScope is far away",
+      expect: 1,
+      why: "the new evidence entry has widened from a per-chain test into a per-file amnesty",
+      src: [
+        `const scoped = await applyTenantScope(other, scope)`,
+        `/* ${"prose. ".repeat(120)} */`,
+        `const { data } = await supabase.from("leads").select("id")`,
       ].join("\n"),
     },
   ]

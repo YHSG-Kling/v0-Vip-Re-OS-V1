@@ -80,7 +80,18 @@ async function loadLenderContext(service: ReturnType<typeof createServiceClient>
   const { lenderVendorForUser, lenderVendorTransactionIds, lenderFilterIds } =
     await import("@/lib/kernel/lender-linkage")
   const lenderVendor = await lenderVendorForUser(service, userId)
-  const txnIds = lenderFilterIds(lenderVendor ? await lenderVendorTransactionIds(service, lenderVendor.vendorId) : [])
+  // TENANT-PIN THE SERVICE-CLIENT READ. This is the one caller of
+  // lenderVendorTransactionIds that ran on a SERVICE client with no brokerage id,
+  // and the owner ruling on shared vendors is what turned it from theoretical into
+  // live: a lender vendor may now be on more than one brokerage's bench, so the
+  // unpinned read folds two tenants' transaction ids into one AI context and the
+  // model answers brokerage A's questions with brokerage B's deals. The brokerage
+  // comes from the VENDOR'S OWN ROW (lenderVendorForUser already resolved it) —
+  // never from the request — which is the same value the sibling callers
+  // app/lender/documents/page.tsx and the TC/lender brief already pass.
+  const txnIds = lenderFilterIds(
+    lenderVendor ? await lenderVendorTransactionIds(service, lenderVendor.vendorId, lenderVendor.brokerageId) : [],
+  )
   const { data: lenderTxns } = await service
     .from("transaction_lenders")
     .select(`

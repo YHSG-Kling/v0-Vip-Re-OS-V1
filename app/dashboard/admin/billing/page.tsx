@@ -19,6 +19,7 @@ import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { SubscriptionAgreementCard } from "./subscription-agreement-card"
 import { RevenueSummaryCard } from "./revenue-summary-card"
 import { getSubscriptionAgreementAction } from "@/app/actions/admin/subscription-agreement"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 /**
  * Billing & Tiering Admin Workspace
@@ -60,7 +61,9 @@ export default async function BillingAdminPage({
     .eq("id", user.id)
     .maybeSingle()
 
-  const isSuper = userProfile?.user_type === "superadmin" || (userProfile as any)?.platform_role === "superadmin"
+  // ONE DEFINITION (owner ruling 1, 2026-08-24): the both-columns test was spelled
+  // out here. Survivor: lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity.
+  const isSuper = isPlatformSuperadminIdentity(userProfile?.user_type, (userProfile as any)?.platform_role)
   const isTenantBillingAdmin = isBrokerageFinanceAdmin({ user_type: userProfile?.user_type ?? "" })
   if (!userProfile || (!isSuper && !isTenantBillingAdmin)) {
     redirect("/dashboard")

@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { seatGate } from "@/lib/kernel/seat-usage"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 export async function POST(req: Request) {
   try {
@@ -17,7 +18,8 @@ export async function POST(req: Request) {
       .maybeSingle()
 
     const resolvedType = profile?.user_type ?? ""
-    const isPlatformAdmin = profile?.platform_role === "superadmin" || resolvedType === "superadmin"
+    // ONE DEFINITION (ruling 1) — lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity
+    const isPlatformAdmin = isPlatformSuperadminIdentity(resolvedType, profile?.platform_role)
     const isBrokerageAdmin = isAdminOrBroker({ user_type: resolvedType })
     if (!isPlatformAdmin && !isBrokerageAdmin) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 })

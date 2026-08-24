@@ -108,9 +108,18 @@ export const PROVIDER_TENANCY: ProviderTenancy[] = [
   },
   {
     provider: "stripe",
-    models: ["platform_metered"],
-    why: "TWO money flows on one platform account: (1) the platform's own rail — tenant subscriptions, setup fees, Stripe Tax flag, vendor marketplace subscriptions; (2) TENANTS charging THEIR counterparties (vendors, clients) via Stripe CONNECT accounts (stripe_account_id) — the tenant's money never mixes with ours. Never tenant-owned keys.",
-    envVars: ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"],
+    // CORRECTED BY OWNER RULING, verbatim: "the stripe account will be per tenant
+    // and platform so no configuration should be hardcoded."
+    //
+    // This row previously read `models: ["platform_metered"]` and ended "Never
+    // tenant-owned keys." That is the architecture the ruling replaces, and it
+    // was not an isolated sentence — ENV_CONFIGURATION.md, PRODUCTION-READINESS.md,
+    // lib/platform/launch-checklist.ts and lib/platform/go-live-readiness.ts all
+    // derived a four-env-var go-live story from it, so a launch board could go
+    // GREEN on one global key while every tenant's money settled into it.
+    models: ["tenant_optional_key", "platform_metered"],
+    why: "PER TENANT **AND** PLATFORM (owner ruling) — the account is whoever COLLECTS, never whoever triggered the call, and the rule is stated once as data in lib/billing/stripe-account-scope.ts. (1) PLATFORM account: money the platform is the payee on — tenant subscriptions, setup fees, Stripe Tax, AI overage, vendor marketplace tiers, and the Connect PLATFORM that mints acct_… ids. Its credential resolves from a platform-owned platform_credentials row first and falls back to STRIPE_SECRET_KEY, which is the platform's own credential and is NOT a tenant default. (2) TENANT account: money a brokerage/team/agent is the payee or payer on — vendor package fees, vendor job bills, client payments, agent payouts — resolved through the SAME ownership cascade every other connector uses (lib/connections/resolve-scoped.ts: agent → team → brokerage), in either shape (their own Stripe secret key, or an acct_… Connect account addressed with a Stripe-Account header). A tenant with no Stripe credential REFUSES; it never descends to the platform's account, because a charge on the wrong account is a receipt naming the wrong merchant, a refund from the wrong balance and a 1099 from the wrong entity — and it looks exactly like success. Per-tenant accounts mean per-tenant WEBHOOK SECRETS too: both endpoints identify the signing account cryptographically (lib/billing/stripe-webhook-secrets.ts) instead of verifying against one env secret.",
+    envVars: ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "STRIPE_VENDOR_WEBHOOK_SECRET"],
   },
   {
     provider: "quickbooks",

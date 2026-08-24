@@ -16,6 +16,7 @@ import { CONTENT_GENERATION_FEATURES } from "@/lib/ai/content-features"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { evaluateThemFirstFocus } from "@/lib/compliance-rules/rule-evaluators"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import {
@@ -3106,52 +3107,18 @@ export async function getComparableProperties(property: any) {
   return comps || []
 }
 
-export async function validateThemFirstContent(content: string, contentType: string) {
-  // "Them First" validation - checks if content focuses on buyer benefits vs agent promotion
-  
-  const agentCentricPhrases = [
-    /\b(i|me|my|our team|we offer|my expertise|i specialize|i can help)\b/gi,
-    /\b(contact me|call me|reach out|my services)\b/gi,
-  ]
-
-  const buyerCentricPhrases = [
-    /\b(you|your|imagine|picture yourself|envision|experience)\b/gi,
-    /\b(perfect for|ideal for|great for families|enjoy)\b/gi,
-  ]
-
-  let agentCentricCount = 0
-  let buyerCentricCount = 0
-
-  for (const pattern of agentCentricPhrases) {
-    const matches = content.match(pattern)
-    agentCentricCount += matches?.length || 0
-  }
-
-  for (const pattern of buyerCentricPhrases) {
-    const matches = content.match(pattern)
-    buyerCentricCount += matches?.length || 0
-  }
-
-  const totalReferences = agentCentricCount + buyerCentricCount
-  const buyerFocusRatio = totalReferences > 0 ? buyerCentricCount / totalReferences : 0.5
-
-  const overallScore = buyerFocusRatio
-  const passed = buyerFocusRatio >= 0.7 // At least 70% buyer-focused
-
-  return {
-    passed,
-    overall_score: overallScore,
-    agent_centric_count: agentCentricCount,
-    buyer_centric_count: buyerCentricCount,
-    recommendations: passed
-      ? ['Great job keeping the focus on the buyer!']
-      : [
-          'Reduce agent-centric language (I, me, my)',
-          'Increase buyer-focused language (you, your, imagine)',
-          'Focus on buyer benefits rather than agent credentials',
-        ],
-  }
-}
+// TOMBSTONE — `validateThemFirstContent` stood here and is DELETED. Survivor:
+// lib/compliance-rules/rule-evaluators.ts:402 `evaluateThemFirstFocus`,
+// imported at the top of this file and called by
+// enhancedGenerateListingDescription below.
+//
+// It was one of THREE spellings of the same pronoun ratio (§6). This file is
+// `"use server"`, so the export was also a public HTTP endpoint — a second,
+// unauthenticated way to get a compliance verdict that disagreed with the one
+// the kernel gate and the compliance report compute over identical text. Its
+// `contentType` argument was accepted and never read; the survivor does not
+// take one, and the content type is already stamped on the
+// `ai_generated_content` row this path writes.
 
 /**
  * The enhanced listing-description writer.
@@ -3302,7 +3269,7 @@ export async function enhancedGenerateListingDescription(params: {
       return { success: false, error: 'The generator returned no description text' }
     }
 
-    const validation = await validateThemFirstContent(generatedText, 'listing_description')
+    const validation = evaluateThemFirstFocus(generatedText)
 
     if (contentId) {
       const { error: metaError } = await supabase

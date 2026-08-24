@@ -12,7 +12,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { headers } from "next/headers"
-import { platformStaffCan } from "@/lib/platform/platform-staff-roster"
+import { platformStaffCan, resolvePlatformRoleIdentity } from "@/lib/platform/platform-staff-roster"
 import { runA2pRegistration, describeA2pState, nextA2pStep } from "@/lib/voice/a2p-registration"
 
 async function requireProviders(): Promise<{ ok: true; userId: string; email: string } | { ok: false; error: string }> {
@@ -20,7 +20,7 @@ async function requireProviders(): Promise<{ ok: true; userId: string; email: st
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthenticated" }
   const { data } = await supabase.from("users").select("user_type, platform_role, email").eq("id", user.id).maybeSingle()
-  const role = (data as any)?.platform_role ?? ((data as any)?.user_type === "superadmin" ? "superadmin" : null)
+  const role = resolvePlatformRoleIdentity((data as any)?.user_type, (data as any)?.platform_role)
   if (!platformStaffCan(role, "providers")) return { ok: false, error: "Forbidden — platform providers access required" }
   return { ok: true, userId: user.id, email: (data as any)?.email ?? user.email ?? "" }
 }

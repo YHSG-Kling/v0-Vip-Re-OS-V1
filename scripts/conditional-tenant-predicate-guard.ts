@@ -33,6 +33,39 @@
  * Neither was exploitable on today's data (0 of 23 live `users` rows carry a NULL
  * brokerage_id) and both were structurally reachable, because the column is nullable.
  *
+ * ── TWO OWNER RULINGS CLOSED TWO ENTRIES (2026-08-24) ────────────────────────
+ * Both had been recorded here as UNRESOLVED rather than guessed, and both are now
+ * OUT of the population entirely — the baseline moved 58 → 55, removals only:
+ *
+ *  · `app/actions/listing-landing.ts :: brokerageId` (1 → 0).
+ *    Ruling, verbatim: "public landing pages should not show cross brokerage
+ *    comps. not sure how that got figured in?" — nothing figured it in.
+ *    getSimilarListings(listingId, zip, brokerageId?) had ONE caller and it never
+ *    passed the third argument, so the predicate never once fired and every public
+ *    landing page listed similar homes from every brokerage in the ZIP. The
+ *    parameter is now REQUIRED and the predicate goes through
+ *    tenantScope()/applyTenantScope(), which is why the site left the population
+ *    rather than merely being reclassified.
+ *
+ *  · `app/api/webhooks/inbound-suppression/route.ts :: payload.brokerageId` (2 → 0).
+ *    Ruling, verbatim: "inbound suppression could come from an external feeds like
+ *    emails/dms etc." — so the path is live, and a BODY-SUPPLIED brokerageId on a
+ *    service client (CLAUDE.md §4) was the tenant. Both sites are gone: the field
+ *    is removed from the payload, the tenant is DERIVED from the row the inbound
+ *    identity resolves to, and the fuzzy phone/email match now takes limit(2) plus
+ *    the one-distinct-tenant rule — REFUSING on ambiguity instead of the old
+ *    limit(1), which picked whichever brokerage sorted first.
+ *    The rule itself is no longer re-spelled per webhook: it is
+ *    lib/kernel/unambiguous-tenant.ts:resolveUnambiguousTenant, the merge of the
+ *    sendgrid-events and inbound-mail copies (§6).
+ *
+ * NO `unresolved` ENTRY REMAINS. The third and last one —
+ * `lib/kernel/lender-linkage.ts :: brokerageId` — was closed in the same wave by
+ * the owner's shared-vendor ruling; see its CLASSIFICATION entry below. The
+ * `unresolved` verdict itself is DELIBERATELY KEPT in the type: it is how the next
+ * lane records a site whose caller set it could not establish, and deleting a
+ * verdict because it currently has no members would take the option away.
+ *
  * ── WHAT THIS GUARD FREEZES ──────────────────────────────────────────────────
  * The population can only SHRINK. Every site that survives is in the baseline
  * WITH A REASON in CLASSIFICATION below — the list is the argument, not a rubber
@@ -153,10 +186,10 @@ export const CLASSIFICATION: Record<string, { verdict: Verdict; why: string }> =
     verdict: "platform",
     why: "Same conversion as linkedin, on BOTH the metadata match and the last-10-digit phone ilike — the fuzzy one matters more, since an ilike is not an identity.",
   },
-  "app/api/webhooks/inbound-suppression/route.ts :: payload.brokerageId": {
-    verdict: "unresolved",
-    why: "Secret-gated webhook; payload.brokerageId is body-supplied (CLAUDE.md §4 forbids tenant-from-body, but the caller here is the platform's own suppression feed, not a user session). The unresolved path takes limit(1) with no ambiguity check — the same defect the sendgrid/social webhooks just had. NOT converted in this lane: the caller set (which external feeds post here) could not be established from the tree. Reported, not guessed.",
-  },
+  // RESOLVED AND REMOVED (owner ruling 2, 2026-08-24) —
+  // "app/api/webhooks/inbound-suppression/route.ts :: payload.brokerageId" (2 → 0).
+  // See the ruling block in this file's header. The body-supplied tenant is gone and
+  // the fuzzy match now refuses on ambiguity, so there is no predicate left to classify.
   "lib/kernel/command-center.ts :: brokerageId": {
     verdict: "platform",
     why: "CONVERTED IN THIS LANE. loadCommandCenter now resolves a TenantScope up front (resolveTenantScope) and applies it with applyTenantScope; the platform lane requires an explicit `platform: { reason }`. The residual matches here are the applyTenantScope call sites, which carry no truthiness test — see the count move in the lane report.",
@@ -219,13 +252,23 @@ export const CLASSIFICATION: Record<string, { verdict: Verdict; why: string }> =
     verdict: "anchored",
     why: "The chain carries .eq('email', userRow.email) where userRow is the AUTHENTICATED viewer's own users row — the vendor matched is the viewer.",
   },
-  "app/actions/listing-landing.ts :: brokerageId": {
-    verdict: "unresolved",
-    why: "getSimilarListings(listingId, zip, brokerageId?) is called from app/listing/[slug]/page.tsx WITHOUT a brokerage id, so the parameter never fires and the public landing page shows similar listings from every brokerage in that zip. Listings are public MLS-facing data, so this may be intended — but the parameter is then an orphan. Left for the owner's call rather than guessed; the caller already holds listing.brokerage_id if the answer is 'scope it'.",
-  },
+  // RESOLVED AND REMOVED (owner ruling 3, 2026-08-24) —
+  // "app/actions/listing-landing.ts :: brokerageId" (1 → 0). The owner's answer to
+  // "not sure how that got figured in?" is that nothing did: an optional parameter
+  // went unpassed. It is required now and the predicate is unconditional, so there
+  // is no conditional predicate left to classify. Header block has the detail.
+  // RESOLVED (owner ruling on shared vendors, 2026-08-24). The earlier entry read
+  // "unresolved — whether marketplace vendors are genuinely multi-tenant is a
+  // product question this lane could not settle from the tree." The owner settled
+  // it: "vendors whcih include title companies and lenders can be used by other
+  // brokerages". They ARE multi-tenant — which made the SERVICE-client caller a
+  // real cross-tenant read rather than a theoretical one, so it was PINNED rather
+  // than blessed: app/api/internal/ai-chat/route.ts now passes
+  // lenderVendor.brokerageId, taken from the vendor's own row (never the request),
+  // exactly as app/lender/documents/page.tsx and the TC/lender brief already did.
   "lib/kernel/lender-linkage.ts :: brokerageId": {
-    verdict: "unresolved",
-    why: "lenderVendorTransactionIds(client, vendorId, brokerageId?) has six callers; two pass no brokerage id — app/(external-portal)/lender/transactions/page.tsx (RLS client) and app/api/internal/ai-chat/route.ts (SERVICE client). vendor_assignments.vendor_id is entity-scoped, but a marketplace vendor can be assigned by more than one brokerage, so the service-client caller may collect transaction ids across tenants. Whether marketplace vendors are genuinely multi-tenant is a product question this lane could not settle from the tree.",
+    verdict: "anchored",
+    why: "lenderVendorTransactionIds(client, vendorId, brokerageId?) — the optional argument is CORRECT now that the owner has ruled vendors are shared across brokerages: 'every deal this lender vendor is on' is a legitimate question for a company that spans tenants. Every SERVICE-client caller pins it. The one remaining caller that omits it, app/(external-portal)/lender/transactions/page.tsx, reads through the SESSION (RLS) client, so vendor_assignments RLS is the tenant boundary there and the predicate is defence-in-depth. See lib/vendors/vendor-platform-identity.ts for the shared-vendor model and the boundary it must not cross.",
   },
   "lib/kernel/approval-sources.ts :: params.brokerageId": {
     verdict: "platform",

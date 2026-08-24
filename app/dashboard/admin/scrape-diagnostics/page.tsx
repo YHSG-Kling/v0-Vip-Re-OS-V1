@@ -8,6 +8,7 @@ import { rollupIntentPhrases, type IntentPhraseStat } from "@/lib/analytics/inte
 import { IntentPhraseCard } from "./intent-phrase-card"
 import { redirect } from "next/navigation"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 export const metadata = {
   title:       "Scrape Diagnostics | Kernel OS Admin",
@@ -52,7 +53,9 @@ export default async function ScrapeDiagnosticsPage() {
   // "Production", and the tenant-coverage card (a card explicitly not meant for
   // them) rendered instead. Same shape as public.is_platform_admin() in RLS —
   // see app/actions/vendor-budget.ts:136-147.
-  const isSuperadmin = userType === "superadmin" || userData?.platform_role === "superadmin"
+  // ONE DEFINITION (owner ruling 1, 2026-08-24): the both-columns test was spelled
+  // out here. Survivor: lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity.
+  const isSuperadmin = isPlatformSuperadminIdentity(userType, userData?.platform_role)
 
   if (!isAdminOrBroker({ user_type: userType })) {
     redirect("/dashboard")

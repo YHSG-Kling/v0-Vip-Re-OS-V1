@@ -72,10 +72,20 @@ export const DOMAIN_AUTH: Record<ConnectorDomain, DomainAuthSpec> = {
     ],
   },
   financial: {
-    // Both financial providers are OAuth/Connect — NEVER a pasted secret key. Per Stripe Apps API
-    // auth (platform key / OAuth / restricted key), our platform uses the PLATFORM-KEY model for
-    // charging (env STRIPE_SECRET_KEY) and Stripe CONNECT account onboarding for per-actor payouts
-    // (initiateStripeConnectOnboarding → /settings/payments). QuickBooks is OAuth 2.0.
+    // Both financial providers are OAuth/Connect here — NEVER a pasted secret key on THIS form.
+    // QuickBooks is OAuth 2.0; Stripe is per-actor CONNECT onboarding
+    // (app/actions/connections/connection-center.ts :: startStripeConnect → an owner-scoped
+    // acct_… in platform_credentials).
+    //
+    // CORRECTED BY OWNER RULING ("the stripe account will be per tenant and platform so no
+    // configuration should be hardcoded"): this comment used to say the product "uses the
+    // PLATFORM-KEY model for charging (env STRIPE_SECRET_KEY)". That is the platform's half
+    // only. A tenant's own Stripe account is resolved per tenant by
+    // lib/billing/resolve-stripe-account.ts in EITHER shape — a Connect acct_… (what this form
+    // produces) or the tenant's own secret key stored on the credential row. The second shape
+    // has no field spec yet, which is why a tenant who owns a standalone Stripe account cannot
+    // paste its key through this form; that is a known gap, not a decision that they must use
+    // the platform's key.
     method: "oauth",
     fields: [],
   },

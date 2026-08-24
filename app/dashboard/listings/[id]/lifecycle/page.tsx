@@ -39,6 +39,7 @@ import { Button } from "@/components/ui/button"
 import Link from "next/link"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 interface PageProps {
   params: Promise<{ id: string }>
@@ -381,8 +382,9 @@ const { data: listingVendorBookings } = await supabase
   // still required `marketingReady`, so the listing was blocked by a control
   // nobody could see. Same shape as public.is_platform_admin() in RLS; see
   // app/actions/vendor-budget.ts:136-147.
-  const isSuperAdmin =
-    userRow.user_type === "superadmin" || (userRow as any).platform_role === "superadmin"
+  // ONE DEFINITION (owner ruling 1, 2026-08-24): the both-columns test was spelled
+  // out here. Survivor: lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity.
+  const isSuperAdmin = isPlatformSuperadminIdentity(userRow.user_type, (userRow as any).platform_role)
 
   // MLS NUMBER — the kernel's launch gate blocks on it (validateListingLaunchReadiness),
   // but this page never read the column, so the checklist showed "ready to launch"

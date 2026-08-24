@@ -25,6 +25,7 @@ import { issueBucketObjectUrl } from "@/lib/storage/document-buckets"
 import { removeOrRecordOrphan } from "@/lib/storage/put-and-sign"
 import { resolveUserByInboundIdentifier } from "@/lib/inbound-mail/resolve-user-provider"
 import { fetchGmailMessagesSinceHistory, fetchOutlookMessage } from "@/lib/inbound-mail/oauth-fetchers"
+import { requireTenantedUnambiguousTenant } from "@/lib/kernel/unambiguous-tenant"
 
 export async function POST(request: NextRequest) {
   const rawBody = await request.text()
@@ -160,19 +161,33 @@ export async function POST(request: NextRequest) {
         //
         // Take the match only when it is UNAMBIGUOUS. Two or more tenants claiming the
         // sender means we cannot know whose mail this is, and guessing is the bug.
+        //
+        // ONE SPELLING OF THE RULE (§6). This block used to build its own Set and
+        // test `rows.length === 1 || (rows.length > 1 && tenants.size === 1)`,
+        // which is `length >= 1 && size === 1` written the long way — and the same
+        // sentence appeared twice more in app/api/webhooks/sendgrid-events/route.ts.
+        // Survivor: lib/kernel/unambiguous-tenant.ts.
+        //
+        // requireTenantedUnambiguousTenant, not the plain form: `brokerageId`
+        // feeds `.eq("brokerage_id", brokerageId)` for the whole flow below, so a
+        // single candidate whose brokerage_id is NULL must NOT be accepted. The
+        // old expression took it (the row type claimed non-null; the column is
+        // nullable) and the null then flowed into the tenant predicate. That is
+        // the one behavioural change here, and it fails CLOSED.
         const { data: matches } = await supabase
           .from("contacts")
           .select("id, brokerage_id")
           .eq("email", email.fromEmail)
           .limit(2)
-        const rows = (matches ?? []) as Array<{ id: string; brokerage_id: string }>
-        const tenants = new Set(rows.map((r) => r.brokerage_id))
-        if (rows.length === 1 || (rows.length > 1 && tenants.size === 1)) {
-          contactId = rows[0].id
-          brokerageId = rows[0].brokerage_id
-        } else if (tenants.size > 1) {
+        const senderMatch = requireTenantedUnambiguousTenant(
+          (matches ?? []) as Array<{ id: string; brokerage_id: string | null }>,
+        )
+        if (senderMatch.ok) {
+          contactId = senderMatch.rows[0].id
+          brokerageId = senderMatch.brokerageId
+        } else if (senderMatch.reason === "ambiguous_tenant") {
           console.warn(
-            `[inbound-mail] sender ${email.fromEmail} is a contact at ${tenants.size} brokerages — ` +
+            `[inbound-mail] sender ${email.fromEmail} is a contact at ${senderMatch.tenantCount} brokerages — ` +
             "refusing to guess a tenant; skipping this message",
           )
         }

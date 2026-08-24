@@ -310,19 +310,52 @@ export async function getAgentProgress(
 
 // ─── Check Certification Eligibility ─────────────────────────────────────────
 
+// ── TENANT AND ACTOR COME FROM THE SESSION (CLAUDE.md §4) ───────────────────
+// TOMBSTONE (cross-cutting sweep, ruling wave 2026-08-24): the `agentId` and
+// `brokerageId` PARAMETERS are deleted from the decision. They stay in the
+// signature, renamed with a leading underscore, purely so no call site changes
+// arity — exactly the shape getAgentProgress (:76) and getAdminOnboardingOverview
+// (:647) in this same file already use. This finishes a conversion that was
+// applied to those two and stopped.
+//
+// WHY IT MATTERED MORE HERE. This is a `"use server"` file, so every export is a
+// PUBLIC HTTP ENDPOINT, and the gate read:
+//
+//     if (!user && !agentId) return { error: 'Not authenticated' }
+//     const targetAgentId     = agentId || resolveAgentId(session)
+//     const targetBrokerageId = brokerageId || (the agent row's own brokerage)
+//
+// An UNAUTHENTICATED caller who supplied an agentId PASSED the authentication
+// check — the `&&` makes a caller-supplied id a substitute for having a session —
+// and a caller-supplied brokerageId then became the tenant. CLAUDE.md §4: "Tenant
+// comes from the SESSION. Never from a request body, never from a parameter."
+//
+// NOTHING IS LOST. Measured across the whole tree: the only callers are
+// app/dashboard/onboarding/progress/progress-dashboard-client.tsx and
+// app/dashboard/onboarding/OnboardingDashboardClient.tsx, and NOT ONE of them
+// passes a second or third argument. The parameters were never exercised by the
+// product — an optional tenant parameter that no caller passes is
+// indistinguishable from no tenancy at all, the same shape the owner ruled on for
+// getSimilarListings.
+//
+// A cross-agent (admin-viewing-an-agent) path is deliberately NOT invented here.
+// getAgentProgress has one, and ITS `agentId` is a USERS id while this function
+// used the same parameter as an AGENTS id — one name carrying two identity
+// classes, which is the trap CLAUDE.md §3 and test:identity-class exist for.
+// Building that path is a product decision, not a repair.
 export async function checkCertEligibility(
   certName: string,
-  agentId?: string,
-  brokerageId?: string
+  _agentId?: string,      // ignored — the actor is the session user
+  _brokerageId?: string   // ignored — derived from the session actor's agents row
 ): Promise<{ success: boolean; eligible?: boolean; missing?: string[]; error?: string }> {
   const supabase = await createClient()
 
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user && !agentId) {
+  if (!user) {
     return { success: false, error: 'Not authenticated' }
   }
 
-  const targetAgentId = agentId || (user ? await resolveAgentId(supabase, user.id) : null)
+  const targetAgentId = await resolveAgentId(supabase, user.id)
   if (!targetAgentId) {
     return { success: false, error: 'Agent profile not found' }
   }
@@ -337,7 +370,7 @@ export async function checkCertEligibility(
     .eq('id', targetAgentId)
     .maybeSingle()
 
-  const targetBrokerageId = brokerageId || userData?.brokerage_id
+  const targetBrokerageId = userData?.brokerage_id
   if (!targetBrokerageId) {
     return { success: false, error: 'No brokerage found' }
   }
@@ -353,19 +386,56 @@ export async function checkCertEligibility(
 
 // ─── Claim Certification ─────────────────────────────────────────────────────
 
+// ── TENANT AND ACTOR COME FROM THE SESSION (CLAUDE.md §4) ───────────────────
+// TOMBSTONE (cross-cutting sweep, ruling wave 2026-08-24): the `agentId` and
+// `brokerageId` PARAMETERS are deleted from the decision. They stay in the
+// signature, renamed with a leading underscore, purely so no call site changes
+// arity — exactly the shape getAgentProgress (:76) and getAdminOnboardingOverview
+// (:647) in this same file already use. This finishes a conversion that was
+// applied to those two and stopped.
+//
+// WHY IT MATTERED MORE HERE. This is a `"use server"` file, so every export is a
+// PUBLIC HTTP ENDPOINT, and the gate read:
+//
+//     if (!user && !agentId) return { error: 'Not authenticated' }
+//     const targetAgentId     = agentId || resolveAgentId(session)
+//     const targetBrokerageId = brokerageId || (the agent row's own brokerage)
+//
+// An UNAUTHENTICATED caller who supplied an agentId PASSED the authentication
+// check — the `&&` makes a caller-supplied id a substitute for having a session —
+// and a caller-supplied brokerageId then became the tenant. CLAUDE.md §4: "Tenant
+// comes from the SESSION. Never from a request body, never from a parameter."
+//
+// NOTHING IS LOST. Measured across the whole tree: the only callers are
+// app/dashboard/onboarding/progress/progress-dashboard-client.tsx and
+// app/dashboard/onboarding/OnboardingDashboardClient.tsx, and NOT ONE of them
+// passes a second or third argument. The parameters were never exercised by the
+// product — an optional tenant parameter that no caller passes is
+// indistinguishable from no tenancy at all, the same shape the owner ruled on for
+// getSimilarListings.
+//
+// A cross-agent (admin-viewing-an-agent) path is deliberately NOT invented here.
+// getAgentProgress has one, and ITS `agentId` is a USERS id while this function
+// used the same parameter as an AGENTS id — one name carrying two identity
+// classes, which is the trap CLAUDE.md §3 and test:identity-class exist for.
+// Building that path is a product decision, not a repair.
+//
+// THIS ONE IS A WRITE — awardCertEngine below inserts the certification. So the
+// pre-fix shape was an UNAUTHENTICATED CROSS-TENANT WRITE: name any agents id and
+// any brokerage id, and a certification was awarded there.
 export async function claimCertification(
   certName: string,
-  agentId?: string,
-  brokerageId?: string
+  _agentId?: string,      // ignored — the actor is the session user
+  _brokerageId?: string   // ignored — derived from the session actor's agents row
 ): Promise<{ success: boolean; certId?: string; error?: string }> {
   const supabase = await createClient()
 
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user && !agentId) {
+  if (!user) {
     return { success: false, error: 'Not authenticated' }
   }
 
-  const targetAgentId = agentId || (user ? await resolveAgentId(supabase, user.id) : null)
+  const targetAgentId = await resolveAgentId(supabase, user.id)
   if (!targetAgentId) {
     return { success: false, error: 'Agent profile not found' }
   }
@@ -380,21 +450,54 @@ export async function claimCertification(
     .eq('id', targetAgentId)
     .maybeSingle()
 
-  const targetBrokerageId = brokerageId || userData?.brokerage_id
+  const targetBrokerageId = userData?.brokerage_id
   if (!targetBrokerageId) {
     return { success: false, error: 'No brokerage found' }
   }
 
-  const result = await awardCertEngine(certName, targetAgentId, targetBrokerageId, user?.id)
+  const result = await awardCertEngine(certName, targetAgentId, targetBrokerageId, user.id)
 
   return result
 }
 
 // ─── Generate Performance Report ─────────────────────────────────────────────
 
+// ── TENANT AND ACTOR COME FROM THE SESSION (CLAUDE.md §4) ───────────────────
+// TOMBSTONE (cross-cutting sweep, ruling wave 2026-08-24): the `agentId` and
+// `brokerageId` PARAMETERS are deleted from the decision. They stay in the
+// signature, renamed with a leading underscore, purely so no call site changes
+// arity — exactly the shape getAgentProgress (:76) and getAdminOnboardingOverview
+// (:647) in this same file already use. This finishes a conversion that was
+// applied to those two and stopped.
+//
+// WHY IT MATTERED MORE HERE. This is a `"use server"` file, so every export is a
+// PUBLIC HTTP ENDPOINT, and the gate read:
+//
+//     if (!user && !agentId) return { error: 'Not authenticated' }
+//     const targetAgentId     = agentId || resolveAgentId(session)
+//     const targetBrokerageId = brokerageId || (the agent row's own brokerage)
+//
+// An UNAUTHENTICATED caller who supplied an agentId PASSED the authentication
+// check — the `&&` makes a caller-supplied id a substitute for having a session —
+// and a caller-supplied brokerageId then became the tenant. CLAUDE.md §4: "Tenant
+// comes from the SESSION. Never from a request body, never from a parameter."
+//
+// NOTHING IS LOST. Measured across the whole tree: the only callers are
+// app/dashboard/onboarding/progress/progress-dashboard-client.tsx and
+// app/dashboard/onboarding/OnboardingDashboardClient.tsx, and NOT ONE of them
+// passes a second or third argument. The parameters were never exercised by the
+// product — an optional tenant parameter that no caller passes is
+// indistinguishable from no tenancy at all, the same shape the owner ruled on for
+// getSimilarListings.
+//
+// A cross-agent (admin-viewing-an-agent) path is deliberately NOT invented here.
+// getAgentProgress has one, and ITS `agentId` is a USERS id while this function
+// used the same parameter as an AGENTS id — one name carrying two identity
+// classes, which is the trap CLAUDE.md §3 and test:identity-class exist for.
+// Building that path is a product decision, not a repair.
 export async function generatePerformanceReport(
-  agentId?: string,
-  brokerageId?: string
+  _agentId?: string,      // ignored — the actor is the session user
+  _brokerageId?: string   // ignored — derived from the session actor's agents row
 ): Promise<{
   success: boolean
   reportId?: string
@@ -405,11 +508,11 @@ export async function generatePerformanceReport(
   const supabase = await createClient()
 
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user && !agentId) {
+  if (!user) {
     return { success: false, error: 'Not authenticated' }
   }
 
-  const targetAgentId = agentId || (user ? await resolveAgentId(supabase, user.id) : null)
+  const targetAgentId = await resolveAgentId(supabase, user.id)
   if (!targetAgentId) {
     return { success: false, error: 'Agent profile not found' }
   }
@@ -424,7 +527,7 @@ export async function generatePerformanceReport(
     .eq('id', targetAgentId)
     .maybeSingle()
 
-  const targetBrokerageId = brokerageId || userData?.brokerage_id
+  const targetBrokerageId = userData?.brokerage_id
   if (!targetBrokerageId) {
     return { success: false, error: 'No brokerage found' }
   }

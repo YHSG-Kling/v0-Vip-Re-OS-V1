@@ -51,16 +51,43 @@ export async function logVendorUsage(event: VendorUsageEvent): Promise<UsageLogR
     // Generate unique event fingerprint for idempotency
     const eventFingerprint = generateEventFingerprint(event)
 
-    // Check for duplicate (idempotency)
-    const { data: existingLog } = await supabase
+    // ── THE IDEMPOTENCY CHECK COULD NEVER FIRE ──────────────────────────────
+    //
+    // Two halves of one mechanism, each missing the other:
+    //
+    //   · `event_fingerprint` is COMPUTED above and written into
+    //     request_metadata on every insert below — and NOTHING has ever read
+    //     it back. A write with no reader.
+    //   · `isLikelyDuplicate` compares `existingLog.created_at` against a
+    //     five-minute window, and this SELECT asked for `id` ALONE. So
+    //     `created_at` was `undefined`, `new Date(undefined)` is Invalid Date,
+    //     and `InvalidDate > fiveMinutesAgo` is FALSE — for every event, always.
+    //     A read with no writer. The skip branch below was unreachable code.
+    //
+    // The predicate was also too loose to be a fingerprint even if it had run:
+    // vendor + usage_type + brokerage only, so a 1-unit charge and a
+    // 10,000-unit charge for the same vendor were "the same event". This is a
+    // COST LEDGER (§5) — that is a wrong invoice in both directions.
+    //
+    // Now the query asks the fingerprint the writer already stamps, and selects
+    // the column the comparison needs. `.maybeSingle()` because `.single()`
+    // ERRORS on zero rows, which is the ordinary case for a first-ever event.
+    const { data: existingLog, error: dupeReadError } = await supabase
       .from('vendor_usage_tracking')
-      .select('id')
-      .eq('vendor_name', event.vendorName)
-      .eq('usage_type', event.usageType)
+      .select('id, created_at')
       .eq('brokerage_id', event.brokerageId)
-      .limit(1)
+      .eq('request_metadata->>event_fingerprint', eventFingerprint)
       .order('created_at', { ascending: false })
-      .single()
+      .limit(1)
+      .maybeSingle()
+
+    // Destructured and acted on: supabase-js RESOLVES a refused read, and a
+    // refusal arrives as `data: null` — identical to "no prior event". Reported
+    // rather than swallowed, and the charge is still LOGGED, because dropping a
+    // real cost because a dedupe lookup failed is the worse of the two errors.
+    if (dupeReadError) {
+      console.error('[v0] [VENDOR GOVERNANCE] Duplicate lookup refused, logging anyway:', dupeReadError.message)
+    }
 
     if (existingLog && isLikelyDuplicate(existingLog, event)) {
       console.log('[v0] [VENDOR GOVERNANCE] Duplicate usage event detected, skipping')
@@ -179,15 +206,39 @@ function generateEventFingerprint(event: VendorUsageEvent): string {
   return parts.join('|')
 }
 
+/** How close two identically-fingerprinted events must be to count as one. */
+const DEDUPE_WINDOW_MS = 5 * 60 * 1000
+
 /**
- * Check if this is likely a duplicate event
+ * Is this the SAME event we already logged, replayed?
+ *
+ * `event` was accepted and never read — the comparison was pure clock
+ * arithmetic against a `created_at` the caller never selected. It now reads
+ * both sides:
+ *
+ *   · the caller narrows on `request_metadata->>event_fingerprint`, so the row
+ *     handed here is already known to describe the same vendor, usage type,
+ *     source, tenant, agent, lead AND unit count as `event`;
+ *   · the window is anchored on the EVENT's own timestamp rather than on
+ *     `Date.now()`. A queued or retried event carries when it happened, and
+ *     judging it against wall-clock time meant a replay that arrived six
+ *     minutes late got charged twice while an unrelated event could not.
+ *
+ * FAILS OPEN, deliberately: every branch that cannot decide returns false, so
+ * the charge is LOGGED. This is a cost ledger — a duplicated line is visible
+ * and correctable, a silently dropped one is neither.
  */
-function isLikelyDuplicate(existingLog: any, event: VendorUsageEvent): boolean {
-  // Check if the same usage happened within last 5 minutes
-  const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000)
-  const logTime = new Date(existingLog.created_at)
-  
-  return logTime > fiveMinutesAgo
+function isLikelyDuplicate(
+  existingLog: { created_at?: string | null } | null,
+  event: VendorUsageEvent,
+): boolean {
+  const loggedAt = existingLog?.created_at ? new Date(existingLog.created_at).getTime() : NaN
+  if (!Number.isFinite(loggedAt)) return false
+
+  const eventAt = event.timestamp ? event.timestamp.getTime() : Date.now()
+  if (!Number.isFinite(eventAt)) return false
+
+  return Math.abs(eventAt - loggedAt) <= DEDUPE_WINDOW_MS
 }
 
 /**

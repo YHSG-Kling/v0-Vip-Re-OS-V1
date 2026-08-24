@@ -54,6 +54,9 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+// The platform/OS discriminator is defined ONCE. That module is pure (it imports
+// nothing), so this stays free of a server-only leak.
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 /**
  * user_type values that mean "administers this brokerage".
@@ -71,10 +74,28 @@ export type BrokerageAdminContext = {
   platformRole: string | null
 }
 
-/** BOTH identity columns. Neither alone answers the question. */
-export function isPlatformSuperadmin(userType: string | null | undefined, platformRole: string | null | undefined): boolean {
-  return userType === "superadmin" || platformRole === "superadmin"
-}
+// ═══════════════════════════════════════════════════════════════════════════
+// TOMBSTONE — isPlatformSuperadmin(userType, platformRole)
+// ═══════════════════════════════════════════════════════════════════════════
+// DELETED (owner ruling 1, 2026-08-24). Its body was
+//     return userType === "superadmin" || platformRole === "superadmin"
+// which is the SAME sentence lib/auth/platform-guard.ts:requireSuperadmin,
+// lib/kernel/api-auth.ts:requireSuperadminAuth and lib/kernel/global-settings.ts
+// each wrote out independently — four spellings of the single most consequential
+// predicate in the product, since the owner's ruling is that this identity "has
+// total control over the complete os system".
+//
+// ── THE SURVIVOR, AT file:line ─────────────────────────────────────────────
+//     lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity
+// It is the same both-columns rule, in the module that already owns the platform
+// roster, and it carries the one thing every local copy lacked: an EXPLICIT
+// refusal of `ai_isa_system`, the platform_role that marks the two automated ISA
+// service accounts. That role is not a human superadmin and must never inherit
+// total control; refusing it by name (rather than by accident of `!== 'superadmin'`)
+// is what makes the refusal mutation-testable.
+//
+// Nothing was lost in the merge: this copy carried no capability the survivor
+// lacks. The one live caller below now imports it.
 
 /**
  * Resolve the caller's tenant and assert they may administer it.
@@ -110,7 +131,7 @@ export async function requireBrokerageAdmin(
     const userType = String((user as { user_type?: string | null }).user_type ?? "admin")
     const platformRole = (user as { platform_role?: string | null }).platform_role ?? null
 
-    if (!BROKERAGE_ADMIN_USER_TYPES.has(userType) && !isPlatformSuperadmin(userType, platformRole)) {
+    if (!BROKERAGE_ADMIN_USER_TYPES.has(userType) && !isPlatformSuperadminIdentity(userType, platformRole)) {
       throw new Error("Forbidden: insufficient permissions")
     }
     return { brokerageId: user.brokerage_id as string, userType, platformRole }

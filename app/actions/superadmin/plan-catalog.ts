@@ -15,6 +15,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { validatePlanTierInput, validateAIOverageTermsInput, CANONICAL_TIERS, type PlanTierInput, type AIOverageTermsInput } from "@/lib/billing/plan-catalog"
 import { AI_OVERAGE_METRIC } from "@/lib/billing/ai-overage"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 // Audit — same conventions as the other superadmin billing actions (coupons /
 // brokerage-management): every catalog mutation → superadmin_audit_log,
@@ -44,7 +45,7 @@ async function requireSuperadmin(): Promise<{ ok: true; userId: string } | { ok:
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthenticated" }
   const { data } = await supabase.from("users").select("user_type, platform_role").eq("id", user.id).maybeSingle()
-  const isSuper = (data as any)?.user_type === "superadmin" || (data as any)?.platform_role === "superadmin"
+  const isSuper = isPlatformSuperadminIdentity((data as any)?.user_type, (data as any)?.platform_role)
   if (!isSuper) return { ok: false, error: "Forbidden — superadmin only" }
   return { ok: true, userId: user.id }
 }

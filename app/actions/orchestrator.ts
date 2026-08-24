@@ -113,6 +113,7 @@ export async function emitEvent(
 // staff via the dual-column identity the row's platform_role (selected below)
 // actually carries.
 import { isTenantAdminOrPlatformStaff } from "@/lib/auth/resolve-user-role"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 export async function orchestrateEventById(eventId: string) {
   const supabase = await createClient()
@@ -134,10 +135,12 @@ export async function orchestrateEventById(eventId: string) {
   // columns are read — the same shape as public.is_platform_admin() in RLS and
   // requireSuperadmin() in lib/auth/platform-guard.ts. See
   // app/actions/vendor-budget.ts:136-147.
-  const isSuperadmin =
-    u.user_type === "superadmin" ||
-    u.user_type === "super_admin" ||
-    (u as any).platform_role === "superadmin"
+  // ONE DEFINITION (ruling 1, 2026-08-24) — survivor:
+  // lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity.
+  // The dropped `user_type === "super_admin"` arm was INERT: users_user_type_check
+  // admits fourteen values and \super_admin is not one of them, so no live row
+  // could ever match it. Removing it changes no answer.
+  const isSuperadmin = isPlatformSuperadminIdentity(u.user_type, (u as any).platform_role)
 
   try {
     const { data: event, error: fetchError } = await supabase

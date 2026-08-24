@@ -22,6 +22,7 @@ import { listEarnedAutonomyAction } from "@/app/actions/document-kernel-review"
 import { getQuarterlyReviewAction } from "@/app/actions/quarterly-review"
 import { listAiTeammatesAction } from "@/app/actions/ai-teammates"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 export const metadata = {
   title:       "Agent Command Center | Kernel OS Admin",
@@ -57,7 +58,9 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
   // brokerage". Platform-wide scope was never once granted on this surface.
   // Same shape as public.is_platform_admin() in RLS and requireSuperadmin() in
   // lib/auth/platform-guard.ts — see app/actions/vendor-budget.ts:136-147.
-  const isSuperadmin = userType === "superadmin" || userData?.platform_role === "superadmin"
+  // ONE DEFINITION (owner ruling 1, 2026-08-24): the both-columns test was spelled
+  // out here. Survivor: lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity.
+  const isSuperadmin = isPlatformSuperadminIdentity(userType, userData?.platform_role)
   // TIER PARITY (owner rule): the Command Center — the feed, the Trust Meter,
   // Earned Autonomy — is for the tenancy's PRINCIPAL, whatever shape the
   // tenancy has. A solo agent IS their own broker; a team lead governs a team

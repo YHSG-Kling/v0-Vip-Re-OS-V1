@@ -36,7 +36,7 @@ import {
   isPlatformSocialChannel,
 } from "@/lib/platform/platform-social"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
-import { platformStaffCan } from "@/lib/platform/platform-staff-roster"
+import { platformStaffCan, resolvePlatformRoleIdentity } from "@/lib/platform/platform-staff-roster"
 
 type SocialPlatform = SocialOAuthProvider
 
@@ -230,7 +230,7 @@ export async function GET(
       // Defense in depth: the connecting user must STILL hold platform marketing.
       const { data: staffRow } = await svc
         .from("users").select("user_type, platform_role, email").eq("id", stateData.userId).maybeSingle()
-      const role = (staffRow as any)?.platform_role ?? ((staffRow as any)?.user_type === "superadmin" ? "superadmin" : null)
+      const role = resolvePlatformRoleIdentity((staffRow as any)?.user_type, (staffRow as any)?.platform_role)
       if (!platformStaffCan(role, "marketing")) {
         return redirectPlatformResult(baseUrl, false, channel, "Platform marketing access required")
       }

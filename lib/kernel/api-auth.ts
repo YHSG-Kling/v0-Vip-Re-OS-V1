@@ -12,6 +12,7 @@
 
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { isPlatformStaffIdentity, isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 import { NextResponse } from "next/server"
 import type { SupabaseClient, User } from "@supabase/supabase-js"
 
@@ -111,6 +112,12 @@ export async function requireAuth(
  * marker only admits the genuine superadmin; it widens to nobody else, because
  * 'superadmin' in platform_role is written solely by the superadmin-gated staff CRUD.
  * This is exactly the shape public.is_platform_admin() uses in RLS.
+ *
+ * TOMBSTONE (ruling 1, 2026-08-24): the test was spelled inline here as
+ * `auth.userType !== "superadmin" && auth.platformRole !== "superadmin"`. Survivor:
+ * lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity — the ONE
+ * definition, which additionally refuses the `ai_isa_system` service accounts by
+ * name rather than by string inequality.
  */
 export async function requireSuperadminAuth(
   supabase: SupabaseClient
@@ -118,7 +125,7 @@ export async function requireSuperadminAuth(
   const auth = await requireAuth(supabase)
   if (!auth.ok) return auth
 
-  if (auth.userType !== "superadmin" && auth.platformRole !== "superadmin") {
+  if (!isPlatformSuperadminIdentity(auth.userType, auth.platformRole)) {
     return {
       ok: false,
       response: NextResponse.json(

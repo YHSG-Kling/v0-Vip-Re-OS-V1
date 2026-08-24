@@ -15,7 +15,7 @@ import {
   validateProspectInput, rollupGrowthFunnel, composeProspectOutreach, PROSPECT_STATUSES,
   PROPOSAL_SECTIONS, proposalPricingLine, type ProspectProposal, type ProposalSectionKey,
 } from "@/lib/platform/growth-funnel"
-import { platformStaffCan } from "@/lib/platform/platform-staff-roster"
+import { platformStaffCan, resolvePlatformRoleIdentity } from "@/lib/platform/platform-staff-roster"
 
 // ── PUBLIC: capture a prospect (no auth — a "get started / notify me" hand-raise) ──
 export async function capturePlatformProspectAction(input: {
@@ -72,8 +72,13 @@ async function requireMarketingStaff(): Promise<{ ok: true; userId: string; emai
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "Unauthenticated" }
   const { data } = await supabase.from("users").select("user_type, platform_role, email").eq("id", user.id).maybeSingle()
-  const role = (data as any)?.platform_role ?? ((data as any)?.user_type === "superadmin" ? "superadmin" : null)
-  if (!platformStaffCan(role, "marketing")) return { ok: false, error: "Forbidden — platform marketing access required" }
+  const role = resolvePlatformRoleIdentity((data as any)?.user_type, (data as any)?.platform_role)
+  // `!role ||` is a TYPE narrowing, not a second gate: platformStaffCan(null, …) is
+  // already false. It is spelled out because this function RETURNS `role: string`,
+  // and the survivor gives an honest `PlatformStaffRole | null` where the old
+  // inline expression was `any` (it read `(data as any)?.platform_role ?? …`, so
+  // the null was invisible to the compiler). The type is now real; the guard says so.
+  if (!role || !platformStaffCan(role, "marketing")) return { ok: false, error: "Forbidden — platform marketing access required" }
   return { ok: true, userId: user.id, email: (data as any)?.email ?? user.email ?? "", role }
 }
 

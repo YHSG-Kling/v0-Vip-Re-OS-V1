@@ -18,9 +18,9 @@
  * MEASURED AT GENERATION: 434 tables, 757 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-08-23
+ * generated: 2026-08-24
  * source: public.live_check_constraints_json()
- * body-sha256: a7a839a6b12a604ae1e2efddfb0e3d2a18504b9d5a44d0c005db09c25d61f1b6
+ * body-sha256: df91d9344eae58cdddaa4001fee0937aff78e61e57dff5ef541c546b0d100c5f
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -1119,7 +1119,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   platform_credentials: {
     owner_type: ["agent", "brokerage", "contact", "platform", "team", "vendor"],
     platform: ["authentisign", "bandwidth", "brokermint", "buffer", "did", "docusign", "dotloop", "facebook", "followupboss", "formsimplicity", "gmail", "gohighlevel", "google_calendar", "google_flow", "hubspot", "idxbroker", "instagram", "linkedin", "listhub", "lob", "lofty", "mailgun", "mls", "mls_direct", "opcity", "outlook", "pexels", "plaid", "platform_quickbooks", "platform_social_facebook", "platform_social_instagram", "platform_social_linkedin", "platform_social_tiktok", "platform_social_x", "platform_social_youtube", "platform_zoom", "plivo", "postmark", "quickbooks", "realtor_com", "resend", "sendgrid", "showingtime", "sinch", "skyslope", "stripe", "telnyx", "twilio", "twilio_a2p", "twilio_byo", "twilio_subaccount", "zillow", "zoom"],
-    scope: ["agent", "brokerage", "team"],
+    scope: ["agent", "brokerage", "platform", "team"],
     test_status: ["fail", "pass", "pending"],
   },
   platform_impersonation_sessions: {

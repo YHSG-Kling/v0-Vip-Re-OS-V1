@@ -117,7 +117,9 @@
     "lib/billing/dunning.ts": 3,
     "lib/billing/phone-plan-resolve.ts": 2,
     "lib/billing/plan-tier.ts": 1,
+    "lib/billing/stripe-account-scope.ts": 2,
     "lib/billing/stripe-status.ts": 2,
+    "lib/billing/stripe-webhook-secrets.ts": 1,
     "lib/blog/wordpress-connection.ts": 1,
     "lib/branding/resolve-brokerage-brand.ts": 1,
     "lib/brokerage-intelligence/miners.ts": 6,
@@ -448,6 +450,7 @@
     "lib/platform/platform-providers.ts": 1,
     "lib/platform/platform-sentinel.ts": 2,
     "lib/platform/platform-social.ts": 1,
+    "lib/platform/platform-staff-roster.ts": 1,
     "lib/platform/product-content.ts": 2,
     "lib/platform/prospect-sourcer.ts": 2,
     "lib/platform/provider-posture.ts": 8,
@@ -519,6 +522,7 @@
     "lib/vendor-governance/vendor-policy.ts": 1,
     "lib/vendors/rank.ts": 1,
     "lib/vendors/vendor-money-directions.ts": 1,
+    "lib/vendors/vendor-platform-identity.ts": 2,
     "lib/vendors/vendor-scope.ts": 1,
     "lib/video/assistant-options.ts": 1,
     "lib/video/avatar-render-orchestrator.ts": 1,
@@ -561,7 +565,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9262,
+  "census": 9275,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -622,7 +626,7 @@
     "app/actions/ai-closing-workflow.ts": 5,
     "app/actions/ai-cma.ts": 4,
     "app/actions/ai-communication-hub.ts": 9,
-    "app/actions/ai-content-generation.tsx": 42,
+    "app/actions/ai-content-generation.tsx": 41,
     "app/actions/ai-contract-review.ts": 6,
     "app/actions/ai-direct-mail.ts": 11,
     "app/actions/ai-document-intelligence.ts": 7,
@@ -2826,7 +2830,7 @@
     "lib/auth/platform-guard.ts": 2,
     "lib/auth/provision-isa-actor.ts": 1,
     "lib/auth/require-admin-maintenance-access.ts": 1,
-    "lib/auth/require-brokerage-admin.ts": 2,
+    "lib/auth/require-brokerage-admin.ts": 1,
     "lib/auth/resolve-user-role.ts": 9,
     "lib/auth/role-grants.ts": 9,
     "lib/auth/useAuth.ts": 1,
@@ -2841,9 +2845,12 @@
     "lib/billing/phone-plan.ts": 3,
     "lib/billing/plan-catalog.ts": 3,
     "lib/billing/plan-tier.ts": 4,
+    "lib/billing/resolve-stripe-account.ts": 3,
+    "lib/billing/stripe-account-scope.ts": 3,
     "lib/billing/stripe-portal.ts": 1,
     "lib/billing/stripe-status.ts": 4,
     "lib/billing/stripe-subscription-ops.ts": 9,
+    "lib/billing/stripe-webhook-secrets.ts": 2,
     "lib/billing/subscription-activation.ts": 4,
     "lib/billing/sync-plan-tier.ts": 1,
     "lib/blog/seo-optimizer.ts": 2,
@@ -2994,7 +3001,7 @@
     "lib/compliance-rules/compliance-engine.ts": 5,
     "lib/compliance-rules/compliance-logger.ts": 4,
     "lib/compliance-rules/fair-housing-patterns.ts": 1,
-    "lib/compliance-rules/rule-evaluators.ts": 5,
+    "lib/compliance-rules/rule-evaluators.ts": 6,
     "lib/compliance-rules/state-fair-housing-format.ts": 1,
     "lib/compliance-rules/state-fair-housing.ts": 2,
     "lib/connections/accounting-scopes.ts": 10,
@@ -3536,7 +3543,7 @@
     "lib/kernel/stalled-deferrals.ts": 1,
     "lib/kernel/standup-action.ts": 4,
     "lib/kernel/strategy-session.ts": 2,
-    "lib/kernel/suppression-sync.ts": 2,
+    "lib/kernel/suppression-sync.ts": 1,
     "lib/kernel/team-plays.ts": 3,
     "lib/kernel/team-query.ts": 3,
     "lib/kernel/tenancy-principal.ts": 1,
@@ -3548,6 +3555,7 @@
     "lib/kernel/title-closing-watchtower.ts": 8,
     "lib/kernel/tour-optimizer.ts": 12,
     "lib/kernel/transactions.ts": 21,
+    "lib/kernel/unambiguous-tenant.ts": 2,
     "lib/kernel/urgent-sla.ts": 2,
     "lib/kernel/users.ts": 9,
     "lib/kernel/vendor-categories.ts": 2,
@@ -3821,7 +3829,7 @@
     "lib/platform/platform-providers.ts": 3,
     "lib/platform/platform-sentinel.ts": 8,
     "lib/platform/platform-social.ts": 12,
-    "lib/platform/platform-staff-roster.ts": 3,
+    "lib/platform/platform-staff-roster.ts": 6,
     "lib/platform/product-brand.ts": 5,
     "lib/platform/product-content.ts": 5,
     "lib/platform/prospect-followup.ts": 1,
@@ -3964,7 +3972,6 @@
     "lib/repurpose/transcribe.ts": 1,
     "lib/revenue-protection/scorer.ts": 1,
     "lib/security/audio-source-allowlist.ts": 2,
-    "lib/security/authorization.ts": 2,
     "lib/security/credential-rotation.ts": 3,
     "lib/security/export-credential-scan.ts": 2,
     "lib/security/oauth-refresh.ts": 4,
@@ -4017,6 +4024,7 @@
     "lib/storage/signed-doc-url.ts": 1,
     "lib/strategy-learning/close-strategy-loop.ts": 2,
     "lib/strategy-learning/strategy-insights.ts": 2,
+    "lib/stripe.ts": 1,
     "lib/supabase/client.ts": 1,
     "lib/supabase/server.ts": 1,
     "lib/supabase/service.ts": 1,
@@ -4096,6 +4104,7 @@
     "lib/vendors/premium-placement.ts": 3,
     "lib/vendors/rank.ts": 3,
     "lib/vendors/vendor-money-directions.ts": 2,
+    "lib/vendors/vendor-platform-identity.ts": 3,
     "lib/vendors/vendor-scope.ts": 7,
     "lib/vendors/vendor-validators.ts": 1,
     "lib/vendors/w9-vocab.ts": 3,
@@ -4634,7 +4643,6 @@
       "getNeighborhoodData",
       "detectTargetBuyer",
       "getComparableProperties",
-      "validateThemFirstContent",
       "enhancedGenerateListingDescription",
       "logGenerationCost",
       "getMonthlyAICosts",
@@ -13675,7 +13683,6 @@
       "requireAdminMaintenanceAccess"
     ],
     "lib/auth/require-brokerage-admin.ts": [
-      "isPlatformSuperadmin",
       "requireBrokerageAdmin"
     ],
     "lib/auth/resolve-user-role.ts": [
@@ -13758,6 +13765,16 @@
       "resolvePlanTier",
       "readPlanTier"
     ],
+    "lib/billing/resolve-stripe-account.ts": [
+      "resolvePlatformStripeAccount",
+      "resolveTenantStripeAccount",
+      "readTenantStripeWebhookCredentials"
+    ],
+    "lib/billing/stripe-account-scope.ts": [
+      "stripeAccountSideFor",
+      "stripeMoneyPath",
+      "webhookSecretFromConfig"
+    ],
     "lib/billing/stripe-portal.ts": [
       "createBillingPortalUrl"
     ],
@@ -13777,6 +13794,10 @@
       "computeTrialExtension",
       "stripeApplyCoupon",
       "stripeRefundLatestInvoice"
+    ],
+    "lib/billing/stripe-webhook-secrets.ts": [
+      "stripeWebhookCandidates",
+      "verifyStripeWebhook"
     ],
     "lib/billing/subscription-activation.ts": [
       "buildCheckoutConfig",
@@ -14564,7 +14585,8 @@
       "evaluateBrokeragePolicyCompliance",
       "evaluateBrandCompliance",
       "evaluateAISafetyCompliance",
-      "calculateThemFirstScore"
+      "calculateThemFirstScore",
+      "evaluateThemFirstFocus"
     ],
     "lib/compliance-rules/state-fair-housing-format.ts": [
       "formatStateFairHousingAdvisory"
@@ -17355,8 +17377,7 @@
       "composeStrategySession"
     ],
     "lib/kernel/suppression-sync.ts": [
-      "syncSuppressionState",
-      "recordSuppressionEvent"
+      "syncSuppressionState"
     ],
     "lib/kernel/team-plays.ts": [
       "detectConferences",
@@ -17454,6 +17475,10 @@
       "recalculateCommissionStateCommand",
       "emitClientFriendlyUpdateCommand",
       "prefillTransactionFormFromRecord"
+    ],
+    "lib/kernel/unambiguous-tenant.ts": [
+      "resolveUnambiguousTenant",
+      "requireTenantedUnambiguousTenant"
     ],
     "lib/kernel/urgent-sla.ts": [
       "hoursSince",
@@ -18890,6 +18915,9 @@
     ],
     "lib/platform/platform-staff-roster.ts": [
       "isPlatformStaffRole",
+      "isNonHumanPlatformRole",
+      "isPlatformSuperadminIdentity",
+      "resolvePlatformRoleIdentity",
       "platformStaffCan",
       "validateStaffInput"
     ],
@@ -19588,10 +19616,6 @@
       "platformAudioHostRules",
       "checkAudioSourceUrl"
     ],
-    "lib/security/authorization.ts": [
-      "requireSuperAdmin",
-      "isSuperAdmin"
-    ],
     "lib/security/credential-rotation.ts": [
       "credentialRotationStatus",
       "loadRotationRisks",
@@ -19840,6 +19864,9 @@
     "lib/strategy-learning/strategy-insights.ts": [
       "computeStrategyInsights",
       "generateStrategyInsights"
+    ],
+    "lib/stripe.ts": [
+      "getPlatformStripe"
     ],
     "lib/supabase/client.ts": [
       "createClient"
@@ -20173,6 +20200,11 @@
     "lib/vendors/vendor-money-directions.ts": [
       "isVendorPackageDirection",
       "describeDirection"
+    ],
+    "lib/vendors/vendor-platform-identity.ts": [
+      "platformUseChargeVerdict",
+      "readVendorPlatformUseFacts",
+      "assertVendorChargeableForPlatformUse"
     ],
     "lib/vendors/vendor-scope.ts": [
       "canInviteVendors",

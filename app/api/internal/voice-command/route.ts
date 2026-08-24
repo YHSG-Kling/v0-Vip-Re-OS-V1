@@ -5,6 +5,7 @@ import { resolveModel } from "@/lib/ai/resolve-model"
 import { createTenantUserAction } from "@/app/actions/superadmin/tenant-users"
 import { NextRequest, NextResponse } from "next/server"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 // ─── Intent types the voice assistant understands ────────────────────────────
 type VoiceIntent =
@@ -695,7 +696,8 @@ Respond with ONLY the intent string, nothing else.`,
       // is CORRECT here: creating tenant users is superadmin-only by design, and the
       // underlying action re-checks requireSuperadmin. Deliberately NOT widened to the
       // staff roster; only renamed so it cannot be mistaken for it.
-      const isSuperadmin = profile.user_type === "superadmin" || (profile as any).platform_role === "superadmin"
+      // ONE DEFINITION (ruling 1) — lib/platform/platform-staff-roster.ts:isPlatformSuperadminIdentity
+      const isSuperadmin = isPlatformSuperadminIdentity(profile.user_type, (profile as any).platform_role)
       if (!isSuperadmin) {
         spokenResponse = "Creating platform users is a superadmin-only command — I can't run that for your role."
       } else {

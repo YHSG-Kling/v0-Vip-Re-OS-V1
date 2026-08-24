@@ -20,7 +20,14 @@ export interface ErrorClassification {
   category: ErrorCategory
   isRetryable: boolean
   suggestedRetryDelayMs: number
-  groupingKey: string
+  // TOMBSTONE: `groupingKey: string` stood here and is DELETED — it was
+  // computed on every call and read by NOTHING, in this file or anywhere else.
+  // Survivor: `error_hash`, built in lib/errors/collect-error.ts and PERSISTED
+  // to error_stack_traces.error_hash, which is the column the error console
+  // groups on. It is also the better key: groupingKey's third component was
+  // `errorMessage.substring(0, 100)`, so any message carrying an id, a count or
+  // a timestamp produced a NEW group per occurrence, while error_hash is keyed
+  // on file + line.
 }
 
 // Retry delays with exponential backoff
@@ -42,12 +49,28 @@ export function getRetryDelay(attemptNumber: number): number {
 }
 
 /**
- * Classify an error based on its message, workflow name, and optional stack trace
+ * Classify an error based on its message and workflow name.
+ *
+ * TOMBSTONE — the third parameter, `stack?: string`, is DELETED. All three call
+ * sites passed it and this function never read a character of it, so the stack
+ * looked consumed while nothing consumed it.
+ *
+ * Where the stack's job actually went: lib/errors/collect-error.ts
+ * `frameFromStack`, which parses the first non-error-module frame into
+ * error_stack_traces.file_path / line_number / function_name and into the
+ * error_hash those columns key. That is the half that was missing — those three
+ * live columns were written NULL on every in-tree row because the only optional
+ * `fileInfo` argument has no caller anywhere in the tree.
+ *
+ * Feeding the stack into the keyword scan below instead would have been the
+ * wrong build: the severity and retryability branches match bare words like
+ * "auth", "contact" and "payment", and a Next.js stack contains route paths
+ * carrying all three, so every classified error would have escalated to
+ * critical and non-retryable on the strength of its own file paths.
  */
 export function classifyError(
   errorMessage: string,
-  workflowName: string,
-  stack?: string
+  workflowName: string
 ): ErrorClassification {
   const msgLower = errorMessage.toLowerCase()
   const workflowLower = workflowName.toLowerCase()
@@ -166,15 +189,11 @@ export function classifyError(
     isRetryable = msgLower.includes("timeout") || msgLower.includes("network") || msgLower.includes("unavailable")
   }
 
-  // Generate grouping key
-  const groupingKey = `${workflowName}:${category}:${errorMessage.substring(0, 100)}`
-
   return {
     severity,
     category,
     isRetryable,
     suggestedRetryDelayMs: RETRY_DELAYS[0],
-    groupingKey,
   }
 }
 

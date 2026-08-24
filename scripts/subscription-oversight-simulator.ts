@@ -17,6 +17,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
 import { classifySubscription, summarizeOversight, type SubscriptionOversightRow, type ClassifyInput } from "../lib/platform/subscription-oversight"
+import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -54,7 +55,25 @@ function pureLayer() {
 function sourceLayer() {
   console.log("\n[wiring — console, cron, ownership]")
   const act = src("app/actions/superadmin/subscription-oversight.ts")
-  check("the read action is superadmin-gated", /requireSuperadmin/.test(act) && /user_type.*superadmin|platform_role.*superadmin/.test(act))
+  // ASSERT THE RULE, NOT THE SPELLING (CLAUDE.md §2 — "do not pin an assertion to
+  // a WAYPOINT"). This pinned the literal `user_type === "superadmin" ||
+  // platform_role === "superadmin"`, so it could only pass while the discriminator
+  // was RE-SPELLED at the gate — it went red the moment that duplicate was merged
+  // onto the one survivor (owner ruling 1, 2026-08-24), i.e. because the work was
+  // FINISHED. The rule is: the gate is superadmin-only AND the superadmin decision
+  // is made from BOTH identity columns. The roster module is read too, because
+  // pinning only the call would let the survivor decay to one column unnoticed.
+  // STRIPPED, NOT RAW. The roster's header quotes the both-columns expression in
+  // prose (it is the tombstone §1 requires), so a raw read is satisfied by the
+  // COMMENT and stays green while the code decays to one column — proved by
+  // mutation, 2026-08-24. CLAUDE.md §2: "a TOMBSTONE IS NOT A CALL SITE".
+  const soRoster = stripComments(src("lib/platform/platform-staff-roster.ts"))
+  check("the read action is superadmin-gated (BOTH identity columns, via the one definition)",
+    /requireSuperadmin/.test(act) &&
+    /isPlatformSuperadminIdentity\(/.test(act) &&
+    /platform-staff-roster/.test(act) &&
+    /export function isPlatformSuperadminIdentity\(/.test(soRoster) &&
+    /userType === "superadmin" \|\| platformRole === "superadmin"/.test(soRoster))
   const page = src("app/dashboard/superadmin/subscriptions/page.tsx")
   check("the console renders counts + the attention queue + full roster", /getSubscriptionOversightAction/.test(page) && /Needs attention/.test(page) && /All subscriptions/.test(page))
   check("each row links to the tenant's existing lifecycle controls", /\/dashboard\/superadmin\/brokerages\/\$\{r\.brokerageId\}/.test(page))
