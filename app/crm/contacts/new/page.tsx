@@ -13,6 +13,7 @@ import { Loader2, ArrowLeft, User } from "lucide-react"
 import Link from "next/link"
 import { createContact } from "@/app/actions/contacts"
 import { CONTACT_TYPES as CANONICAL_CONTACT_TYPES, type ContactType } from "@/lib/contact-types"
+import { LEAD_SOURCES, LEAD_SOURCE_LABELS } from "@/lib/constants"
 
 // Exactly the values contacts.contact_type accepts. The form used to offer
 // "tenant", "landlord" and "referral"; the column has never accepted any of
@@ -52,17 +53,19 @@ const CONTACT_TYPES = CONTACT_TYPE_ORDER
   .filter((v) => (CANONICAL_CONTACT_TYPES as readonly string[]).includes(v))
   .map((value) => ({ value, label: CONTACT_TYPE_LABELS[value] }))
 
-const LEAD_SOURCES = [
-  { value: "website", label: "Website" },
-  { value: "referral", label: "Referral" },
-  { value: "open_house", label: "Open House" },
-  { value: "social_media", label: "Social Media" },
-  { value: "zillow", label: "Zillow" },
-  { value: "realtor_com", label: "Realtor.com" },
-  { value: "cold_call", label: "Cold Call" },
-  { value: "door_knock", label: "Door Knock" },
-  { value: "other", label: "Other" },
-]
+// TOMBSTONE (§1.1 / §6): the private `LEAD_SOURCES` value/label array that stood
+// here is DELETED. SURVIVOR: lib/constants/index.ts:101 LEAD_SOURCES +
+// LEAD_SOURCE_LABELS, which this list was merged ONTO first — zillow,
+// realtor_com, cold_call and door_knock were unique to this copy and are now in
+// the survivor, so nothing was lost. The survivor also carries "manual", the
+// value lib/kernel/crm.ts:396 writes by default and which this list could never
+// produce. Enforcement of the same vocabulary now runs server-side in
+// app/actions/contacts.ts createContact, because contacts.source has NO CHECK
+// constraint and a TS array cannot bind an HTTP request.
+const LEAD_SOURCE_OPTIONS = LEAD_SOURCES.map((value) => ({
+  value,
+  label: LEAD_SOURCE_LABELS[value],
+}))
 
 export default function NewContactPage() {
   const router = useRouter()
@@ -231,7 +234,7 @@ export default function NewContactPage() {
                       <SelectValue placeholder="Select source" />
                     </SelectTrigger>
                     <SelectContent>
-                      {LEAD_SOURCES.map((source) => (
+                      {LEAD_SOURCE_OPTIONS.map((source) => (
                         <SelectItem key={source.value} value={source.value}>
                           {source.label}
                         </SelectItem>

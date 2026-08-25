@@ -98,7 +98,34 @@ export type TransactionStatus = (typeof TRANSACTION_STATUSES)[number]
 export const LEAD_TEMPERATURES = ["hot", "warm", "cold"] as const
 export type LeadTemperature = (typeof LEAD_TEMPERATURES)[number]
 
+// ── LEAD SOURCE — the AGENT-FACING pick list for contacts.source ─────────────
+//
+// MEASURED FIRST (live, hrvaqgvukzxfskkcrwbt, 2026-08-25):
+//   · There is NO CHECK CONSTRAINT on contacts.source, and none on leads.source
+//     either. `leads` carries source_family and source_origin CHECKs — neither
+//     constrains `source`. So this list is erased at the HTTP boundary: it can
+//     only bind anything if code CALLS it. That is why normalizeLeadSource
+//     exists below and is invoked at the write seam, rather than this array
+//     sitting here looking authoritative.
+//   · Live contacts.source values: referral(2), open_house(1), website_widget(1).
+//
+// THREE SPELLINGS OF ONE IDEA WERE MERGED ONTO THIS ARRAY (CLAUDE.md §6):
+//   1. this list (10 values) — had TWO importers and ZERO uses; both imports
+//      were dead, so nothing was validated anywhere.
+//   2. app/crm/contacts/new/page.tsx — a private copy adding zillow,
+//      realtor_com, cold_call, door_knock and dropping four of this list's.
+//   3. app/dashboard/acquisition/acquisition-quick-capture.tsx `SOURCES` —
+//      a third copy adding business_card and event.
+// Both duplicates now import this array; their extra values are folded in here
+// so the merge LOSES NOTHING (§1.1 — merge onto the survivor before deleting).
+//
+// "manual" IS LOAD-BEARING AND WAS MISSING FROM ALL THREE. It is what the
+// product's own kernel writes by default — lib/kernel/crm.ts:396
+// `params.source_label ?? "manual"`, reached from app/actions/contacts.ts
+// createContact. Wiring the old 10-value list as-is would have started REFUSING
+// the default value the product writes on every manually-added contact.
 export const LEAD_SOURCES = [
+  "manual",          // kernel default — lib/kernel/crm.ts:396. Do not remove.
   "website",
   "referral",
   "open_house",
@@ -108,9 +135,66 @@ export const LEAD_SOURCES = [
   "email_campaign",
   "phone_call",
   "walk_in",
+  "business_card",   // merged from acquisition-quick-capture SOURCES
+  "event",           // merged from acquisition-quick-capture SOURCES
+  "zillow",          // merged from crm/contacts/new LEAD_SOURCES
+  "realtor_com",     // merged from crm/contacts/new LEAD_SOURCES
+  "cold_call",       // merged from crm/contacts/new LEAD_SOURCES
+  "door_knock",      // merged from crm/contacts/new LEAD_SOURCES
   "other",
 ] as const
 export type LeadSource = (typeof LEAD_SOURCES)[number]
+
+/** Display labels — the only lead-source wording the UI may use. */
+export const LEAD_SOURCE_LABELS: Record<LeadSource, string> = {
+  manual:          "Manually Added",
+  website:         "Website",
+  referral:        "Referral",
+  open_house:      "Open House",
+  social_media:    "Social Media",
+  paid_ad:         "Paid Ad",
+  organic_search:  "Organic Search",
+  email_campaign:  "Email Campaign",
+  phone_call:      "Phone Call",
+  walk_in:         "Walk In",
+  business_card:   "Business Card",
+  event:           "Event",
+  zillow:          "Zillow",
+  realtor_com:     "Realtor.com",
+  cold_call:       "Cold Call",
+  door_knock:      "Door Knock",
+  other:           "Other",
+}
+
+/**
+ * Non-canonical spellings folded onto canonical ones.
+ *
+ * DELIBERATELY MINIMAL — every entry is a spelling MEASURED in the live column
+ * or in one of the three merged pick lists, never one invented because it
+ * seemed plausible. `website_widget` is the live value written by the site
+ * capture widget; it is the same idea as the pickers' `website` (§6), so it
+ * folds rather than becoming an eighteenth vocabulary member.
+ */
+export const LEAD_SOURCE_ALIASES: Readonly<Record<string, LeadSource>> = {
+  website_widget: "website",
+}
+
+/**
+ * THE HALF THAT ACTUALLY BINDS. Returns the canonical LeadSource, or null when
+ * the value is not in the vocabulary.
+ *
+ * Because there is no CHECK on contacts.source, a `"use server"` export — i.e.
+ * a public HTTP endpoint (§4) — is the LAST place a bad value can be stopped.
+ * Callers must treat null as a refusal, not fold it to "other": silently
+ * rewriting an attribution value is how a vocabulary drifts in the first place.
+ */
+export function normalizeLeadSource(raw: string | null | undefined): LeadSource | null {
+  if (raw === null || raw === undefined) return null
+  const key = String(raw).trim().toLowerCase()
+  if (!key) return null
+  if ((LEAD_SOURCES as readonly string[]).includes(key)) return key as LeadSource
+  return LEAD_SOURCE_ALIASES[key] ?? null
+}
 
 export const CONTACT_STATUSES = ["active", "archived", "deleted", "do_not_contact"] as const
 export type ContactStatus = (typeof CONTACT_STATUSES)[number]

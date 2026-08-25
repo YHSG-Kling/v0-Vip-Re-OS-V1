@@ -41,11 +41,27 @@ export async function transitionBookingStatus(params: {
   toStatus: VendorBookingStatus
   notes?: string
 }): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user?.id) return { success: false, error: "Unauthorized" }
+  // 🚨 CROSS-TENANT WRITE. This proved only that SOMEBODY was logged in
+  // (`auth.getUser()`), then updated on `id` ALONE. A bare booking uuid let any
+  // authenticated user mark any other brokerage's booking completed, cancelled
+  // or no_show — and `no_show` feeds the vendor no-show autopilot
+  // (lib/kernel/vendor-no-show-autopilot.ts), so this could drive another
+  // tenant's vendor penalties. Found by this file's own tenancy guard while it
+  // was being written for the two READS below; it is the same missing predicate,
+  // on the more damaging verb.
+  const auth = await requireVendorCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
 
-  const { error } = await supabase
+  const supabase = await createClient()
+
+  // §3 — an UPDATE that matches NOTHING also resolves: `error` is null and the
+  // result is empty, byte-identical to an update that worked. So a wrong-tenant
+  // booking would report SUCCESS and the panel would redraw the new status that
+  // was never written. `.select()` the update and COUNT what came back.
+  //
+  // brokerage_id is nullable on this table, so an untenanted row is excluded by
+  // this predicate and refused — an unprovable owner fails closed (§4).
+  const { data: updated, error } = await supabase
     .from("vendor_bookings")
     .update({
       status: params.toStatus,
@@ -55,8 +71,13 @@ export async function transitionBookingStatus(params: {
         : {}),
     })
     .eq("id", params.bookingId)
+    .eq("brokerage_id", auth.brokerageId)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
+  if (!updated || updated.length === 0) {
+    return { success: false, error: "Booking not found" }
+  }
   return { success: true }
 }
 import { generateObject } from "@/lib/ai/generate"
@@ -75,22 +96,24 @@ import { z } from "zod"
  * Get AI-powered vendor recommendations based on job requirements
  */
 export async function getVendorRecommendations(params: {
-  agentId: string
+  /**
+   * Ignored — the actor is the SESSION (see BOOKING HISTORY IS SELF-SCOPED
+   * below). Kept optional so existing call sites type-check; it is NOT
+   * validated, because validating an identity the function never uses only
+   * forces callers to invent a uuid to get past the door. Same shape as
+   * `requestVendorReview` in this file.
+   */
+  agentId?: string
   serviceType: "photography" | "staging" | "inspection" | "appraisal" | "cleaning" | "landscaping" | "repairs" | "moving" | "title" | "escrow"
   propertyId?: string
   budget?: number
   urgency?: "standard" | "rush" | "emergency"
   requirements?: string[]
 }) {
-  // Not an orphan, but the same hole: anonymous AI spend plus a cross-tenant read
-  // of every vendor's email and phone. Gate added; `agentId` is still used as the
-  // data filter it has always been (booked_by), only the anonymity is closed.
+  // Not an orphan, but the same hole as its siblings: anonymous AI spend plus a
+  // cross-tenant read of every vendor's email and phone.
   const auth = await requireVendorCaller()
   if (!auth.ok) return { success: false, error: auth.error }
-
-  if (!isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid agent ID" }
-  }
 
   const supabase = await createClient()
 
@@ -104,14 +127,38 @@ export async function getVendorRecommendations(params: {
       // to filter — so this returned every brokerage's vendor contact list.
       .eq("brokerage_id", auth.brokerageId)
 
-    // Get agent's past vendor usage via vendor_assignments
-    const { data: pastJobs } = await supabase
+    // ── BOOKING HISTORY IS SELF-SCOPED — TENANT AND ACTOR FROM THE SESSION ────
+    // 🚨 This filtered `booked_by` on params.agentId — a REQUEST-BODY identity —
+    // with NO brokerage predicate. `requireVendorCaller()` proves the caller is
+    // authenticated SOMEWHERE; it did not constrain WHOSE history was read. So
+    // any authenticated user read any agent's booking history, spend and vendor
+    // ratings in ANY tenant. That is the body-supplied-identity IDOR shape
+    // CLAUDE.md §4 names.
+    //
+    // TWO corrections, not one:
+    //   • The actor is `auth.userId`, NOT an agents.id. vendor_bookings.booked_by
+    //     holds a users.id — every writer stamps one (vendor-marketplace.ts:338
+    //     and :1386 `booked_by: user.id`; lib/kernel/vendors.ts:552
+    //     `booked_by: agentUserId`). agents.id and users.id are DISJOINT (§3), so
+    //     "fixing" this with ctx.agentId would have matched zero rows and read as
+    //     an empty history rather than as a refusal.
+    //   • The brokerage predicate is added, so the row must ALSO be ours.
+    //
+    // `error` is destructured because a refused read still SPENDS the gpt-4o call
+    // below, recommending against a history it never saw (§3: supabase-js
+    // RESOLVES refusals). Fails closed BEFORE the spend.
+    const { data: pastJobs, error: pastJobsErr } = await supabase
       .from("vendor_bookings")
       .select("id, vendor_id, service_type, agent_rating, client_rating, status, vendors:vendor_id(name, category)")
-      .eq("booked_by", params.agentId)
+      .eq("booked_by", auth.userId)
+      .eq("brokerage_id", auth.brokerageId)
       .eq("status", "completed")
       .order("completed_at", { ascending: false })
       .limit(50)
+
+    if (pastJobsErr) {
+      return { success: false, error: "Could not load your booking history." }
+    }
 
     // Get property details if provided
     let propertyData = null
@@ -208,33 +255,57 @@ Provide:
  * Analyze vendor performance and generate insights
  */
 export async function analyzeVendorPerformance(params: {
-  agentId: string
+  /**
+   * Ignored — the actor is the SESSION. Kept optional so existing call sites
+   * type-check; it is NOT validated, because validating an identity the
+   * function never uses only forces callers to invent a uuid to get past the
+   * door. Same shape as `requestVendorReview` in this file.
+   */
+  agentId?: string
   vendorId?: string
   timeframe?: "30_days" | "90_days" | "6_months" | "1_year"
-}) {
+} = {}) {
   // Not an orphan; gated for the same reason as its siblings above — it was an
   // anonymous gpt-4o call over another agent's booking history and spend.
   const auth = await requireVendorCaller()
   if (!auth.ok) return { success: false, error: auth.error }
 
-  if (!isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid agent ID" }
-  }
-
   const supabase = await createClient()
 
   try {
-    // Get vendor bookings using vendor_bookings table (agent-linked via booked_by)
+    // ── TENANT AND ACTOR FROM THE SESSION (CLAUDE.md §4) ─────────────────────
+    // 🚨 This read `booked_by = params.agentId` — an identity taken from the
+    // REQUEST BODY — with NO brokerage predicate. The gate above proves only
+    // that the caller is authenticated SOMEWHERE, so any authenticated user
+    // could name any agent's uuid and receive that agent's whole booking
+    // history, per-job COST, spend totals and vendor ratings, across tenants —
+    // and this endpoint's own output is a cost analysis, i.e. another
+    // brokerage's financials (§5: contacts, lenders and vendors see no
+    // financials; neither does another tenant).
+    //
+    // The actor is `auth.userId`, NOT an agents.id: vendor_bookings.booked_by
+    // holds a users.id (writers at vendor-marketplace.ts:338/:1386 and
+    // lib/kernel/vendors.ts:552). agents.id and users.id are DISJOINT (§3) —
+    // filtering with an agents.id would return zero rows and read as "this
+    // agent has no history" instead of as a refusal.
     let query = supabase
       .from("vendor_bookings")
       .select("id, vendor_id, service_type, status, agent_rating, client_rating, cost, completed_at, vendors:vendor_id(name, category, rating)")
-      .eq("booked_by", params.agentId)
+      .eq("booked_by", auth.userId)
+      .eq("brokerage_id", auth.brokerageId)
 
     if (params.vendorId && isValidUUID(params.vendorId)) {
       query = query.eq("vendor_id", params.vendorId)
     }
 
-    const { data: jobs } = await query.order("created_at", { ascending: false }).limit(100)
+    // `error` is read for the same reason as in getVendorRecommendations: a
+    // refused read resolves, and the gpt-4o call below would then bill the
+    // tenant for an "analysis" of an empty history. Fail closed BEFORE spend.
+    const { data: jobs, error: jobsErr } = await query.order("created_at", { ascending: false }).limit(100)
+
+    if (jobsErr) {
+      return { success: false, error: "Could not load your booking history." }
+    }
 
     const { object: analysis } = await generateObject({
       model: "openai/gpt-4o",

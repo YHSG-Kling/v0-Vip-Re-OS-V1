@@ -243,6 +243,34 @@ export function formatSeatLimit(raw: number | null | undefined): string {
   return n === null ? "Unlimited" : String(n)
 }
 
+/**
+ * Display string for a tenant's seat cap that DISTINGUISHES "no plan" from
+ * "unlimited plan" — the second half of the NULL/-1 trap above.
+ *
+ * The fix recorded above folded NULL and -1 onto one another so the unlimited
+ * plan stopped printing "null". It left a second reading of the SAME absent
+ * value unaddressed: `formatSeatLimit(tier?.max_agents)` where the TIER ITSELF
+ * is missing. `undefined` normalizes to null, so a tenant with NO subscription
+ * row — which is every tenant on this database today, `subscriptions` holds 0
+ * rows — was shown "No Plan" and "Unlimited seats" in the same card. An absent
+ * entitlement rendered as the largest entitlement sold.
+ *
+ * That is the fail-open §4 forbids: "nobody checked" must never render as
+ * "checked and fine". The unlimited answer must come from a catalogue row that
+ * SAYS unlimited, never from the absence of a row. `hasTier` is the caller's
+ * proof it read one.
+ *
+ * The GATE is unaffected and keeps its own direction — seatLimitForTier is
+ * fail-closed; this is a label only.
+ */
+export function formatTenantSeatLimit(
+  hasTier: boolean,
+  raw: number | null | undefined,
+): string {
+  if (!hasTier) return "No plan"
+  return formatSeatLimit(raw)
+}
+
 /** Ascending capability order — used to answer "which tier unlocks this?". */
 export const TIER_ORDER: readonly CanonicalTier[] = ["solo_agent", "team", "brokerage", "multi_location"]
 

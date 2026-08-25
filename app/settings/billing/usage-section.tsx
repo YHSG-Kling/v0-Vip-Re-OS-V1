@@ -3,7 +3,7 @@
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { Users, Cpu, HardDrive, Video } from "lucide-react"
-import { formatSeatLimit, normalizeCatalogSeatLimit } from "@/lib/kernel/tier-role-matrix"
+import { formatTenantSeatLimit, normalizeCatalogSeatLimit } from "@/lib/kernel/tier-role-matrix"
 
 interface UsageSectionProps {
   usage: {
@@ -17,6 +17,10 @@ interface UsageSectionProps {
    *  This used to be a bare `number` fed by `max_agents || 1`, which turned
    *  the unlimited plan into a ONE-seat cap and drew the bar pegged at 100%. */
   maxAgents: number | null
+  /** Whether a catalogue tier row was actually read. `false` means NO PLAN —
+   *  which reaches `maxAgents` as the same `null` unlimited uses, and used to
+   *  print "Unlimited". An absent entitlement is not the largest one (§4). */
+  hasTier: boolean
   aiCallsLimit: number
   storageLimitGb: number
   videoMinutesLimit: number
@@ -37,6 +41,7 @@ function getProgressColor(percent: number): string {
 export function UsageSection({
   usage,
   maxAgents,
+  hasTier,
   aiCallsLimit,
   storageLimitGb,
   videoMinutesLimit,
@@ -63,7 +68,7 @@ export function UsageSection({
       label: "Seats in use",
       icon: Users,
       current: activeAgents,
-      max: formatSeatLimit(maxAgents),
+      max: formatTenantSeatLimit(hasTier, maxAgents),
       percent: seatCap === null ? 0 : agentPercent,
       unit: "",
     },
