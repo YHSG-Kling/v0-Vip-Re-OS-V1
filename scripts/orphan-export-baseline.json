@@ -153,6 +153,7 @@
     "lib/connections/scope.ts": 2,
     "lib/connections/zoom-transcripts.ts": 1,
     "lib/connections/zoom.ts": 12,
+    "lib/contact-promotion/conversion-welcome.ts": 1,
     "lib/contacts/buyer-stage.ts": 1,
     "lib/contacts/contact-brief.ts": 1,
     "lib/contacts/persona-builder.ts": 5,
@@ -532,7 +533,7 @@
     "lib/video/broll-picker.ts": 1,
     "lib/video/composite-attribution.ts": 1,
     "lib/video/comps-animation-spec.ts": 1,
-    "lib/video/director-content.ts": 14,
+    "lib/video/director-content.ts": 12,
     "lib/video/director-eval-harness.ts": 4,
     "lib/video/finish-spec.ts": 1,
     "lib/video/format-learning.ts": 3,
@@ -568,7 +569,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9294,
+  "census": 9322,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -1111,7 +1112,6 @@
     "app/actions/video-generation.ts": 17,
     "app/actions/video-landing.ts": 3,
     "app/actions/video-repurposing.ts": 13,
-    "app/actions/video-repurposing.utils.ts": 0,
     "app/actions/video-voice.ts": 7,
     "app/actions/video.ts": 8,
     "app/actions/voice-access.ts": 3,
@@ -1274,6 +1274,7 @@
     "app/api/cron/investor-offmarket-refresh/route.ts": 1,
     "app/api/cron/journey-conformance-audit/route.ts": 2,
     "app/api/cron/launch-war-room/route.ts": 1,
+    "app/api/cron/lead-action-plan/route.ts": 1,
     "app/api/cron/lead-scraping/route.ts": 1,
     "app/api/cron/letter-audio-renderer/route.ts": 1,
     "app/api/cron/lifetime-customer-touchpoints/route.ts": 1,
@@ -2679,7 +2680,7 @@
     "lib/ads/stuck-ad-action-policy.ts": 1,
     "lib/ads/stuck-ad-action-reaper.ts": 1,
     "lib/agent-action-queue/composer.ts": 1,
-    "lib/agent-orchestration/action-plan-generator.ts": 1,
+    "lib/agent-orchestration/action-plan-generator.ts": 4,
     "lib/agentic-os/agent-credentials.ts": 5,
     "lib/agentic-os/agent-scopes.ts": 2,
     "lib/agentic-os/app-capability-registry.ts": 3,
@@ -2782,6 +2783,7 @@
     "lib/ai-isa/inbound-intent-classifier.ts": 2,
     "lib/ai-isa/isa-acting-scope.ts": 2,
     "lib/ai-isa/isa-outreach-logger.ts": 3,
+    "lib/ai-isa/lead-action-plan.ts": 7,
     "lib/ai-isa/lead-call-intent.ts": 1,
     "lib/ai-isa/lead-channel-policy.ts": 1,
     "lib/ai-isa/lead-nurture.ts": 2,
@@ -2853,7 +2855,7 @@
     "lib/billing/plan-catalog.ts": 3,
     "lib/billing/plan-tier.ts": 4,
     "lib/billing/resolve-stripe-account.ts": 3,
-    "lib/billing/stripe-account-scope.ts": 3,
+    "lib/billing/stripe-account-scope.ts": 4,
     "lib/billing/stripe-portal.ts": 1,
     "lib/billing/stripe-status.ts": 4,
     "lib/billing/stripe-subscription-ops.ts": 9,
@@ -3020,16 +3022,19 @@
     "lib/connections/vendor-stripe.ts": 4,
     "lib/connections/zoom-transcripts.ts": 2,
     "lib/connections/zoom.ts": 24,
-    "lib/constants/index.ts": 2,
+    "lib/constants/index.ts": 3,
     "lib/contact-pipeline/contact-capture.ts": 2,
     "lib/contact-promotion/contact-creator.ts": 3,
     "lib/contact-promotion/conversion-finality.ts": 5,
+    "lib/contact-promotion/conversion-welcome.ts": 3,
     "lib/contact-promotion/history-carry.ts": 1,
     "lib/contact-promotion/lead-deactivator.ts": 1,
     "lib/contact-promotion/portal-access.ts": 1,
     "lib/contact-promotion/promote-lead-to-contact.ts": 1,
     "lib/contact-promotion/promotion-eligibility.ts": 1,
     "lib/contact-promotion/promotion-logger.ts": 1,
+    "lib/contact-promotion/welcome-avatar-video.ts": 1,
+    "lib/contact-promotion/welcome-situation.ts": 2,
     "lib/contact-types.ts": 4,
     "lib/contact-validation.ts": 3,
     "lib/contacts/buyer-stage.ts": 1,
@@ -3389,7 +3394,7 @@
     "lib/kernel/client-framing.ts": 2,
     "lib/kernel/client-pulse.ts": 3,
     "lib/kernel/client-story-drafts.ts": 16,
-    "lib/kernel/client-welcome.ts": 2,
+    "lib/kernel/client-welcome.ts": 3,
     "lib/kernel/closing-war-room.ts": 8,
     "lib/kernel/command-center.ts": 2,
     "lib/kernel/commission-forecaster.ts": 11,
@@ -3558,14 +3563,14 @@
     "lib/kernel/tenant-guard.ts": 1,
     "lib/kernel/tenant-provisioning-spec.ts": 3,
     "lib/kernel/tenant-scope.ts": 7,
-    "lib/kernel/tier-role-matrix.ts": 15,
+    "lib/kernel/tier-role-matrix.ts": 16,
     "lib/kernel/title-closing-watchtower.ts": 8,
     "lib/kernel/tour-optimizer.ts": 12,
     "lib/kernel/transactions.ts": 21,
     "lib/kernel/unambiguous-tenant.ts": 3,
     "lib/kernel/urgent-sla.ts": 2,
     "lib/kernel/users.ts": 9,
-    "lib/kernel/vendor-categories.ts": 2,
+    "lib/kernel/vendor-categories.ts": 3,
     "lib/kernel/vendor-coverage-forecast.ts": 4,
     "lib/kernel/vendor-doc-compliance.ts": 4,
     "lib/kernel/vendor-no-show-autopilot.ts": 4,
@@ -3925,7 +3930,7 @@
     "lib/providers/messaging/resolve-sms-provider.ts": 1,
     "lib/providers/messaging/sms-adapters.ts": 4,
     "lib/providers/outbound-sender.ts": 7,
-    "lib/providers/payment/index.ts": 5,
+    "lib/providers/payment/index.ts": 7,
     "lib/providers/tenancy-matrix.ts": 1,
     "lib/providers/vibe.ts": 2,
     "lib/providers/web-push.ts": 2,
@@ -4106,6 +4111,7 @@
     "lib/vendor-governance/vendor-policy.ts": 2,
     "lib/vendor-marketplace/resolve-contact-vendors.ts": 2,
     "lib/vendor-tracking.ts": 1,
+    "lib/vendors/appraiser-independence.ts": 1,
     "lib/vendors/insurance-posture.ts": 2,
     "lib/vendors/premium-placement.ts": 3,
     "lib/vendors/rank.ts": 3,
@@ -4119,7 +4125,7 @@
     "lib/video/assistant-faces.ts": 1,
     "lib/video/assistant-options.ts": 1,
     "lib/video/avatar-explainer.ts": 2,
-    "lib/video/avatar-render-orchestrator.ts": 2,
+    "lib/video/avatar-render-orchestrator.ts": 7,
     "lib/video/broll-picker.ts": 2,
     "lib/video/caption-plan.ts": 2,
     "lib/video/chapter-video-generator.ts": 1,
@@ -7941,7 +7947,6 @@
       "scheduleSnippetToSocial",
       "generateCaptionVariations"
     ],
-    "app/actions/video-repurposing.utils.ts": [],
     "app/actions/video-voice.ts": [
       "getVoiceProfiles",
       "createVoiceProfile",
@@ -8490,6 +8495,9 @@
       "POST"
     ],
     "app/api/cron/launch-war-room/route.ts": [
+      "GET"
+    ],
+    "app/api/cron/lead-action-plan/route.ts": [
       "GET"
     ],
     "app/api/cron/lead-scraping/route.ts": [
@@ -12884,7 +12892,10 @@
       "composeAgentActionQueue"
     ],
     "lib/agent-orchestration/action-plan-generator.ts": [
-      "generateAgentActionPlan"
+      "resolveConsentBasis",
+      "generateAgentActionPlan",
+      "hoursUntil",
+      "persistAgentActionPlan"
     ],
     "lib/agentic-os/agent-credentials.ts": [
       "hashAgentToken",
@@ -13324,6 +13335,15 @@
       "logISAOutreach",
       "checkMaxTouches",
       "checkUnderContractPause"
+    ],
+    "lib/ai-isa/lead-action-plan.ts": [
+      "wireChannelFor",
+      "leadAutoSendVerdict",
+      "isPersonalizedForLead",
+      "planNextLeadTouch",
+      "releaseDueLeadTouches",
+      "resolveLeadSettingsResolution",
+      "advanceLeadActionPlans"
     ],
     "lib/ai-isa/lead-call-intent.ts": [
       "routeLeadCallIntent"
@@ -13793,6 +13813,7 @@
     "lib/billing/stripe-account-scope.ts": [
       "stripeAccountSideFor",
       "stripeMoneyPath",
+      "connectDestinationReachable",
       "webhookSecretFromConfig"
     ],
     "lib/billing/stripe-portal.ts": [
@@ -14692,6 +14713,7 @@
       "resolveZoomAttachTarget"
     ],
     "lib/constants/index.ts": [
+      "normalizeLeadSource",
       "canonicalPropertyType",
       "isListingStatus"
     ],
@@ -14711,6 +14733,11 @@
       "partitionConvertedLeads",
       "describeConversionRefusal"
     ],
+    "lib/contact-promotion/conversion-welcome.ts": [
+      "decideWelcomeTiming",
+      "classifyPendingWelcome",
+      "deliverConversionWelcome"
+    ],
     "lib/contact-promotion/history-carry.ts": [
       "carryLeadHistoryToContact"
     ],
@@ -14728,6 +14755,13 @@
     ],
     "lib/contact-promotion/promotion-logger.ts": [
       "logPromotionActivity"
+    ],
+    "lib/contact-promotion/welcome-avatar-video.ts": [
+      "ensureWelcomeAvatarVideo"
+    ],
+    "lib/contact-promotion/welcome-situation.ts": [
+      "buildWelcomeSituation",
+      "describeDroppedFacts"
     ],
     "lib/contact-types.ts": [
       "canonicalContactType",
@@ -16440,6 +16474,7 @@
     ],
     "lib/kernel/client-welcome.ts": [
       "composeClientWelcome",
+      "resolveWelcomeSide",
       "ensureClientWelcome"
     ],
     "lib/kernel/closing-war-room.ts": [
@@ -17434,6 +17469,7 @@
     "lib/kernel/tier-role-matrix.ts": [
       "normalizeCatalogSeatLimit",
       "formatSeatLimit",
+      "formatTenantSeatLimit",
       "isCanonicalTier",
       "seatableUserTypes",
       "tierAllowsRole",
@@ -17517,7 +17553,8 @@
     ],
     "lib/kernel/vendor-categories.ts": [
       "isVendorCategory",
-      "toVendorCategory"
+      "toVendorCategory",
+      "benchCategoryFilter"
     ],
     "lib/kernel/vendor-coverage-forecast.ts": [
       "forecastVendorDemand",
@@ -19379,6 +19416,8 @@
     "lib/providers/payment/index.ts": [
       "createTransfer",
       "createPaymentIntent",
+      "createCheckoutSession",
+      "retrieveCheckoutSession",
       "createConnectedAccount",
       "createAccountLink",
       "getStripeBalance"
@@ -20205,6 +20244,9 @@
     "lib/vendor-tracking.ts": [
       "trackVendorUsage"
     ],
+    "lib/vendors/appraiser-independence.ts": [
+      "modelAuthoredToVendorVerdict"
+    ],
     "lib/vendors/insurance-posture.ts": [
       "daysUntil",
       "readVendorInsurance"
@@ -20271,7 +20313,12 @@
     ],
     "lib/video/avatar-render-orchestrator.ts": [
       "buildAvatarRenderRow",
-      "enqueueAvatarCompositionForProject"
+      "enqueueAvatarCompositionForProject",
+      "buildIntroCompositionRequest",
+      "describeIntroCompositionGap",
+      "declaresAvatarComposition",
+      "classifyAnniversaryPortalDelivery",
+      "resolveAvatarCompositeState"
     ],
     "lib/video/broll-picker.ts": [
       "selectBrollPlan",
