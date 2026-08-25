@@ -229,6 +229,47 @@ export async function promoteLeadToContactService(
         `${portal.reason} (granted=${portal.granted}, emailSent=${portal.emailSent})`,
     )
 
+    // Step 9: THE AGENT'S FIRST-TOUCH PLAN.
+    //
+    // WHY IT LANDS HERE. app/dashboard/agent/page.tsx:252-259 reads
+    // `activities` where activity_type='agent_action_plan' and status='pending'
+    // and renders the rows under "New Assignment Plans"
+    // (agent-next-best-actions.tsx:136 → ActionPlanCard). That reader shipped
+    // with NO WRITER anywhere in the tree — live `agent_action_plan` row count
+    // was 0 — so the section was permanently empty. CLAUDE.md §1 case 2: the
+    // reader is live and the capability is wanted, so the missing half gets
+    // BUILT rather than the reader deleted.
+    //
+    // WHY THIS MOMENT. The plan's subject is the CONTACT (owner ruling: history
+    // stops on the lead and continues on the contact), and this is the first
+    // instant a contact exists with an agent on it. It runs AFTER the history
+    // carry on purpose: the plan's whole value is "here is what the AI ISA
+    // already did", and Step 5b is what re-points that history onto
+    // `contact_id`. Planning before the carry would read an empty contact.
+    //
+    // BEST EFFORT, like every step in this tail: the contact exists and the lead
+    // is deactivated. A refused plan is a warning, never a rollback.
+    {
+      const { generateAgentActionPlan, persistAgentActionPlan } =
+        await import("@/lib/agent-orchestration")
+      const planned = await generateAgentActionPlan(
+        contactResult.contactId,
+        lead.agent_id,
+        lead.brokerage_id,
+        supabase,
+      )
+      if (!planned.ok) {
+        warnings.push(`agent action plan NOT generated: ${planned.reason}`)
+      } else {
+        const persisted = await persistAgentActionPlan(supabase, planned.plan, lead.brokerage_id)
+        warnings.push(...persisted.warnings)
+        console.log(
+          `[promoteLeadToContactService] agent action plan for contact ${contactResult.contactId}: ` +
+            `${persisted.written} action(s) written, consent basis '${planned.plan.consentBasis}'`,
+        )
+      }
+    }
+
     if (warnings.length > 0) {
       console.warn(`[promoteLeadToContactService] lead ${leadId} promoted WITH warnings:`, warnings)
     }

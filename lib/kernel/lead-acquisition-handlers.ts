@@ -536,6 +536,47 @@ export async function handleLeadAssigned(params: {
         `[lead-acquisition] lead ${leadId} converted to contact ${contact.id} but was NOT deactivated: ${deactivated.error ?? 'unknown error'}`,
       )
     }
+
+    // THE AGENT ACTION PLAN — WIRED HERE FOR EXACTLY THE REASON THE HISTORY CARRY
+    // ABOVE IS. The plan's writer was built onto the MANUAL lane
+    // (promote-lead-to-contact.ts step 9) and this — handleLeadAssigned — is the
+    // AUTOMATIC lane, the one the owner's routing ruling makes the NORMAL path.
+    // Leaving it on one lane is how `carryLeadHistoryToContact` came to be wired
+    // into the manual lane only, which is the defect recorded a few lines above.
+    // Both lanes call the SAME function; neither holds a copy (§6).
+    //
+    // WHY THE PLAN IS KEYED ON THE CONTACT AND NOT THE LEAD, since this is the
+    // one place both ids are in scope: leads are not assigned to agents until
+    // qualified or showing positive intent, and on THIS lane assignment IS
+    // conversion — the contact was created moments ago. An agent cannot even read
+    // a lead: live `is_lead_visible_role()` admits broker / broker_admin /
+    // broker_owner / admin / team_lead / superadmin / ISA / platform and NOT
+    // `agent`, so §5 is enforced in the database, not merely in the product.
+    // `activities.contact_id` and `messages.contact_id` are FKs to `contacts(id)`,
+    // so a lead-keyed plan could not read its own evidence either.
+    //
+    // BEST EFFORT, like every step in this tail: the contact exists and the lead
+    // is deactivated. A refused plan is a warning, never a rollback of a
+    // successful assignment.
+    {
+      const { generateAgentActionPlan, persistAgentActionPlan } =
+        await import('@/lib/agent-orchestration')
+      const planned = await generateAgentActionPlan(contact.id, agentId, brokerageId, supabase)
+      if (!planned.ok) {
+        console.warn(
+          `[lead-acquisition] agent action plan NOT generated for contact ${contact.id}: ${planned.reason}`,
+        )
+      } else {
+        const persisted = await persistAgentActionPlan(supabase, planned.plan, brokerageId)
+        for (const w of persisted.warnings) {
+          console.error(`[lead-acquisition] agent action plan: ${w}`)
+        }
+        console.log(
+          `[lead-acquisition] agent action plan for contact ${contact.id}: ` +
+            `${persisted.written} action(s) written, consent basis '${planned.plan.consentBasis}'`,
+        )
+      }
+    }
   }
 
   await supabase.from('lifecycle_events').insert({
