@@ -87,8 +87,6 @@ import {
   APPRAISER_VENDOR_CATEGORY,
   APPRAISER_REACH_ROUTES,
   MODEL_AUTHORED_VENDOR_FACING_ROUTES,
-  isAppraiserTrade,
-  labelNamesAppraisal,
   modelAuthoredToVendorVerdict,
 } from "../lib/vendors/appraiser-independence"
 import {
@@ -339,12 +337,36 @@ function layerSources() {
     resolved: true, vendorCategories: [], serviceLabels: ["Photography and staging"],
   })
   check("C6b POSITIVE CONTROL — an ordinary service list is allowed", byServiceOk.ok)
+  // C6c/C7 GO THROUGH THE PUBLIC DOOR, NOT THE HELPERS DIRECTLY.
+  //
+  // These two used to import `labelNamesAppraisal` and `isAppraiserTrade`. Both
+  // are used INSIDE `modelAuthoredToVendorVerdict` and by nothing else in the
+  // product, so exporting them made the module gain two unreferenced exports —
+  // exports that existed only so a test could reach them. orphan-export-guard
+  // caught it and its instruction is the right one: wire it, do not delete it and
+  // do not raise the baseline.
+  //
+  // The wiring is to STOP exporting them and assert the same behaviour through
+  // the door the product actually calls. Nothing is lost: the verdict's refusal
+  // REASON says which helper fired — `appraisal_service_named` for the label
+  // matcher, `appraiser_named` for the trade test — so these assertions still
+  // distinguish the two, and they now prove the helpers as the product reaches
+  // them rather than in isolation.
+  const byLabel = (label: string) =>
+    modelAuthoredToVendorVerdict({ resolved: true, vendorCategories: [], serviceLabels: [label] })
+  const byTrade = (category: string | null) =>
+    modelAuthoredToVendorVerdict({ resolved: true, vendorCategories: [category], serviceLabels: [] })
+
   check("C6c the label matcher is word-anchored, not a substring free-for-all",
-    labelNamesAppraisal("appraisal") && labelNamesAppraisal("Appraiser visit") &&
-    !labelNamesAppraisal("praise") && !labelNamesAppraisal("appraisalsomething"))
+    byLabel("appraisal").reason === "appraisal_service_named"
+    && byLabel("Appraiser visit").reason === "appraisal_service_named"
+    && byLabel("praise").ok === true
+    && byLabel("appraisalsomething").ok === true)
   check("C7 the trade test tolerates the loose spellings the normaliser already accepts",
-    isAppraiserTrade("appraiser") && isAppraiserTrade("Appraiser") &&
-    !isAppraiserTrade("inspector") && !isAppraiserTrade(null))
+    byTrade("appraiser").reason === "appraiser_named"
+    && byTrade("Appraiser").reason === "appraiser_named"
+    && byTrade("inspector").ok === true
+    && byTrade(null).ok === true)
 
   // THE ROUTE INVENTORY IS A CURRENT AUDIT, NOT A STALE ONE.
   check("C8 the walk names at least one route in each direction (an inventory with no safe routes is a scan that found nothing)",

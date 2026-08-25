@@ -74,7 +74,7 @@ export const APPRAISER_VENDOR_CATEGORY: VendorCategory = VENDOR_CATEGORY_APPRAIS
 /** PURE — is this trade the one §5 governs? Tolerant of the loose spellings
  *  `toVendorCategory` already normalises ("Appraiser", "appraiser"), because a
  *  gate that only recognises one casing is a gate that stops biting. */
-export function isAppraiserTrade(category: string | null | undefined): boolean {
+function isAppraiserTrade(category: string | null | undefined): boolean {
   return toVendorCategory(category) === APPRAISER_VENDOR_CATEGORY
 }
 
@@ -91,7 +91,7 @@ export function isAppraiserTrade(category: string | null | undefined): boolean {
  * accidentally widen into unrelated tokens; case-insensitive because this is
  * free text a human typed into a form.
  */
-export function labelNamesAppraisal(label: string | null | undefined): boolean {
+function labelNamesAppraisal(label: string | null | undefined): boolean {
   if (typeof label !== "string") return false
   return /\bapprais(al|als|er|ers|e|ed|ing)\b/i.test(label)
 }
