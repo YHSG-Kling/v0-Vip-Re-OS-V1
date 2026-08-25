@@ -212,9 +212,25 @@ export const INTRO_VIDEO_COMPOSITION = "AgentTalkingHeadReel"
  * the point: §5 requires the spoken script to be compliance-first, and the way
  * to keep that true through the assembly step is for the assembly step to add no
  * new claims at all.
+ *
+ * ONE TABLE, KEYED BY THE TRIGGER (§6). Both rows of `agent_intro_videos` are
+ * avatar-led personal pieces to camera from the assigned agent, so both ride the
+ * SAME composition; only the eyebrow and the CTA differ, and they differ as
+ * DATA, not as a second builder. Neither string mentions the recipient, a
+ * property, a neighbourhood or a price, so neither can carry a fair-housing or a
+ * value claim the gate never saw.
+ *
+ * Every key is a live value of the `agent_intro_videos.trigger` CHECK
+ * (contact_agent_assigned | home_anniversary) — a trigger with no row here
+ * cannot be assembled, which is the safe direction.
  */
-const INTRO_HOOK = "MEET YOUR AGENT"
-const INTRO_CTA  = "Reply to set up a time"
+const AVATAR_VIDEO_CHROME: Record<string, { hook: string; cta: string }> = {
+  contact_agent_assigned: { hook: "MEET YOUR AGENT",         cta: "Reply to set up a time" },
+  home_anniversary:       { hook: "HAPPY HOME ANNIVERSARY",  cta: "Reply any time" },
+}
+
+/** The trigger a composition request defaults to when a caller names none. */
+export const DEFAULT_AVATAR_TRIGGER = "contact_agent_assigned"
 
 /**
  * The on-screen caption strip, cut VERBATIM from the script that already passed
@@ -259,6 +275,13 @@ export interface IntroCompositionParams {
   agentPhotoUrl?: string | null
   /** brandBlock() over the tenant's live brand rows. */
   brand?: Record<string, unknown> | null
+  /**
+   * `agent_intro_videos.trigger` — picks the eyebrow + CTA out of
+   * AVATAR_VIDEO_CHROME. Omitted ⇒ the assignment chrome, so every call written
+   * before the anniversary lane was wired keeps its exact previous output.
+   * A trigger with no chrome row yields NO request rather than a guessed one.
+   */
+  trigger?: string
 }
 
 /**
@@ -289,11 +312,13 @@ export function buildIntroCompositionRequest(
   p: IntroCompositionParams,
 ): IntroCompositionRequest | null {
   if (!p.projectId) return null
+  const chrome = AVATAR_VIDEO_CHROME[p.trigger ?? DEFAULT_AVATAR_TRIGGER]
+  if (!chrome) return null
   const input_props: Record<string, unknown> = {
-    hook:      INTRO_HOOK,
+    hook:      chrome.hook,
     agentName: (p.agentName ?? "").trim(),
     caption:   captionFromScript(p.script ?? ""),
-    ctaLabel:  INTRO_CTA,
+    ctaLabel:  chrome.cta,
     // avatarVideoUrl is deliberately ABSENT: enqueueAvatarCompositionForProject
     // merges it in on completion, preferring meta.clean_video_url so Remotion's
     // brand chrome is not stacked on top of the D-ID attribution band.
@@ -312,8 +337,10 @@ export function buildIntroCompositionRequest(
 /** The prop names `buildIntroCompositionRequest` could not supply — for the log
  *  line that explains a skipped assembly instead of leaving it silent. */
 export function describeIntroCompositionGap(p: IntroCompositionParams): string[] {
+  const chrome = AVATAR_VIDEO_CHROME[p.trigger ?? DEFAULT_AVATAR_TRIGGER]
+  if (!chrome) return [`no assembly chrome is registered for trigger '${p.trigger}'`]
   return missingContentProps(INTRO_VIDEO_COMPOSITION, {
-    hook:      INTRO_HOOK,
+    hook:      chrome.hook,
     agentName: (p.agentName ?? "").trim(),
     caption:   captionFromScript(p.script ?? ""),
   })
@@ -401,6 +428,69 @@ function classifyAvatarComposite(args: {
     reason: status
       ? `the Remotion assembly is '${status}'`
       : "the Remotion assembly has not been enqueued yet",
+  }
+}
+
+/**
+ * WHAT THE ANNIVERSARY SWEEP DOES WITH ONE LEDGER ROW — the whole decision with
+ * no I/O, so every arm is provable without a database or a provider.
+ *
+ * It lives beside the composite state machine because it is the same question
+ * asked for the other delivery channel: the welcome email waits for the assembly
+ * and then releases the mail; the anniversary waits for the assembly and then
+ * stamps the portal card. One state machine, two consumers, no third copy (§6).
+ *
+ * EVERY ARM IS TERMINAL OR EXPLICITLY RETRIED. A row that can only ever be
+ * 'wait' is the failure this exists to prevent — that is exactly what the
+ * anniversary lane did before it had a sweep at all, sitting at 'rendering'
+ * forever with a paid D-ID render behind it.
+ */
+export type AnniversaryPortalAction =
+  /** Nothing to do this tick; the caller leaves the row where it is. */
+  | { action: "wait"; reason: string }
+  /** Stamp the clip onto the card and mark the ledger delivered. */
+  | { action: "stamp"; assembled: boolean; reason: string }
+  /** Terminal, and not a delivery — the ledger takes this status. */
+  | { action: "close"; ledgerStatus: "suppressed" | "failed"; reason: string }
+
+export function classifyAnniversaryPortalDelivery(args: {
+  /** ai_video_projects.video_url — null while the D-ID job is still in flight. */
+  hasRenderedUrl: boolean
+  /** resolveAvatarCompositeState's verdict, or null when not yet asked. */
+  composite: AvatarCompositeState["state"] | null
+  /** contacts.video_opt_out, re-read at delivery time. */
+  videoOptOut: boolean
+  /** Is there a visible equity_report card to attach the clip to? */
+  hasPortalCard: boolean
+}): AnniversaryPortalAction {
+  // OPT-OUT WINS OVER EVERYTHING, including a finished render. A contact who
+  // turned video off between the render starting and it landing must not have it
+  // pushed onto their portal because we had already paid for it.
+  if (args.videoOptOut) {
+    return { action: "close", ledgerStatus: "suppressed", reason: "video_opt_out flipped during render" }
+  }
+  if (!args.hasRenderedUrl) {
+    return { action: "wait", reason: "the D-ID avatar track has not landed yet" }
+  }
+  if (args.composite === "pending") {
+    return { action: "wait", reason: "the Remotion assembly is still coming" }
+  }
+  // No card means the play that owns the anniversary never got as far as its
+  // portal push, so there is nothing to attach to and nothing honest to invent.
+  if (!args.hasPortalCard) {
+    return {
+      action: "close",
+      ledgerStatus: "failed",
+      reason: "no visible equity_report portal card to attach the anniversary video to",
+    }
+  }
+  const assembled = args.composite === "landed"
+  return {
+    action: "stamp",
+    assembled,
+    reason: assembled
+      ? "the assembled composite is the deliverable"
+      : "no assembly will arrive — the D-ID cut is the deliverable",
   }
 }
 

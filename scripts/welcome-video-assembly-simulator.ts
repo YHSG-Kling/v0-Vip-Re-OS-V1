@@ -260,9 +260,16 @@ function layer2_compliance() {
   check("...and the fair-housing rules still reach the WRITING prompt, not just the scan",
     reactor.includes("RULES THAT GOVERN WHAT YOU MAY WRITE")
     && reactor.includes("Avoid any reference to protected characteristics"))
-  check("...the situation is still threaded into both the draft and the redraft",
-    (reactor.match(/situation:\s*input\.situation/g) ?? []).length === 2,
-    String((reactor.match(/situation:\s*input\.situation/g) ?? []).length))
+  // THE RULE, NOT THE COUNT. This asserted `=== 2` — one per draft call site —
+  // and went red when the second call site was deleted for being a script the
+  // reactor paid for and threw away (§5). §2: assert the rule and DERIVE the
+  // number, so the check is "every draftScript call threads the situation",
+  // whatever the number of them turns out to be. Zero call sites still fails.
+  const draftSites = (reactor.match(/(?<!function\s)draftScript\(\s*\{/g) ?? []).length
+  const situationThreads = (reactor.match(/situation:\s*input\.situation/g) ?? []).length
+  check("...the situation is threaded into EVERY draftScript call site",
+    draftSites > 0 && situationThreads === draftSites,
+    `${situationThreads} threads / ${draftSites} call sites`)
 }
 
 // ── Layer 3 ─────────────────────────────────────────────────────────────────
@@ -460,13 +467,39 @@ function layer5_wiring() {
   // THE EMBED — the reader must wait for the assembled cut.
   check("the welcome-email backfill resolves the composite state",
     backfill.includes("resolveAvatarCompositeState("))
-  check("...skips the tick while the assembly is pending (does not mail the avatar track)",
-    /composite\.state === "pending"[\s\S]{0,200}continue/.test(backfill))
-  check("...and embeds the resolved deliverable, not the raw row snapshot",
-    backfill.includes("embedVideoInEmail(baseHtml, deliverableUrl)"))
-  check("CONTROL: the matcher still recognises the ORIGINAL defect — embedding\n    project.video_url directly",
-    /embedVideoInEmail\(baseHtml, r\.project\.video_url\)/.test(
-      "const html = await embedVideoInEmail(baseHtml, r.project.video_url)"))
+  // ...and skips the tick while the assembly is pending.
+  //
+  // This was pinned to the inline spelling `composite.state === "pending" … continue`,
+  // which both halves of this cron have since moved past: each now hands the
+  // composite state to a PURE classifier and carries out its verdict, which is a
+  // better shape and made the pinned assertion go red for the usual §2 reason —
+  // because the work finished. The RULE is what is asserted now: the composite
+  // state is fed to a decision function, and a 'wait' verdict ends the tick for
+  // that row without any delivery happening.
+  const feedsClassifier =
+    /composite:\s*(state\.state|composite\?\.state)/.test(backfill) ||
+    /composite,\s*$/m.test(backfill)
+  check("...feeds the composite state into the delivery decision rather than acting\n    on the raw row",
+    feedsClassifier && /classify[A-Za-z]*\(\{/.test(backfill))
+  check("...and a 'wait' verdict ends the tick for that row — no send, no stamp",
+    (backfill.match(/verdict\.action === "wait"[\s\S]{0,220}?continue/g) ?? []).length >= 2,
+    String((backfill.match(/verdict\.action === "wait"[\s\S]{0,220}?continue/g) ?? []).length))
+  check("CONTROL: the matcher still fails on a loop that ignores the verdict",
+    !/verdict\.action === "wait"[\s\S]{0,220}?continue/.test(
+      'const verdict = classifyX({}); await send()'))
+  // ...and hands on the RESOLVED deliverable, not the raw row snapshot.
+  //
+  // This used to be pinned to `embedVideoInEmail(baseHtml, deliverableUrl)`,
+  // which was the spelling from when this cron authored and sent its own mail.
+  // It no longer writes client-facing copy at all — the welcome composer does —
+  // so the rule is now "the composite's own output URL is preferred over the
+  // project row's column", which is the same defect stated independently of who
+  // renders the email.
+  check("...and hands on the resolved deliverable, preferring the composite's own URL",
+    /compositeUrl\s*\?\?\s*(\(?\s*)?r\.project(\?)?\.video_url/.test(backfill))
+  check("CONTROL: the matcher still recognises the ORIGINAL defect — using\n    project.video_url on its own",
+    !/compositeUrl\s*\?\?\s*(\(?\s*)?r\.project(\?)?\.video_url/.test(
+      "const url = r.project.video_url"))
   check("...it reads the two columns the state machine needs",
     backfill.includes("provider_metadata") && backfill.includes("completed_at"))
 
@@ -488,9 +521,34 @@ function layer5_wiring() {
   check("CONTROL: no generic/stock avatar fallback was introduced",
     !/fallback[_ ]?avatar|stock[_ ]?avatar|DEFAULT_AVATAR/i.test(reactor))
 
-  // The anniversary lane is deliberately untouched.
-  check("the assembly is requested for the ASSIGNMENT trigger only — the anniversary\n    lane keeps its own (unwired) EquityReportReel intent",
-    /input\.trigger === "contact_agent_assigned"\)\s*\{[\s\S]{0,900}?buildIntroCompositionRequest/.test(reactor))
+  // THE ANNIVERSARY LANE IS NO LONGER EXEMPT.
+  //
+  // This used to assert the assembly was requested "for the ASSIGNMENT trigger
+  // ONLY — the anniversary lane keeps its own (unwired) EquityReportReel
+  // intent". That was a WAYPOINT, and CLAUDE.md §2 says not to pin to one: the
+  // "own intent" was `AnniversaryEquityReelInput`, a type with no writer
+  // anywhere in the tree and no reader in the reactor, so the exemption
+  // preserved nothing and left the anniversary shipping the identical bare
+  // talking head the welcome used to ship. The type is now a tombstone and the
+  // trigger is passed through to the ONE builder.
+  check("the assembly request is NOT gated on a single trigger any more",
+    !/input\.trigger === "contact_agent_assigned"\)\s*\{[\s\S]{0,900}?buildIntroCompositionRequest/.test(reactor))
+  check("...the trigger is threaded into the request so the chrome is chosen, not guessed",
+    /buildIntroCompositionRequest\(/.test(reactor) && /trigger:\s*input\.trigger/.test(reactor))
+  check("...and the orphaned equity-reel intent is gone, with a tombstone naming its survivor",
+    !/AnniversaryEquityReelInput/.test(reactor)
+    && raw("lib/video/intro-video-reactor.ts").includes("TOMBSTONE (orphan doctrine §1.3)")
+    && raw("lib/video/intro-video-reactor.ts").includes("lib/video/video-director.ts"))
+  check("CONTROL: that matcher still recognises the trigger gate it replaced",
+    /input\.trigger === "contact_agent_assigned"\)\s*\{[\s\S]{0,900}?buildIntroCompositionRequest/.test(
+      'if (input.trigger === "contact_agent_assigned") {\n  x = buildIntroCompositionRequest(p)\n}'))
+
+  // ONE DRAFT PER ATTEMPT (§5 — the ledger feeds the invoice).
+  const draftCalls = (reactor.match(/(?<!function\s)draftScript\(\s*\{/g) ?? []).length
+  check("the reactor makes exactly ONE draftScript call site — the compliance loop's,\n    not a second one bought and discarded",
+    draftCalls === 1, `${draftCalls} call sites`)
+  check("CONTROL: the counter still sees a second call site when one is added",
+    ((reactor + "\n  script = await draftScript({ violations: [] })").match(/(?<!function\s)draftScript\(\s*\{/g) ?? []).length === 2)
 
   // No second orchestrator (§6).
   const orchestratorFiles = ["lib/video/avatar-render-orchestrator.ts"]

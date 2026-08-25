@@ -38,11 +38,38 @@ const MEETING_RECAP_UPDATE_TYPE = "meeting_recap"
 // soon" tile, which would imply a recording the agent never made.
 const WELCOME_UPDATE_TYPE = "client_welcome"
 
-/** The playable welcome clip on a card's metadata, or null. */
-function welcomeVideoUrl(u: RecentUpdate): string | null {
+// THE ANNIVERSARY VIDEO, SAME AFFORDANCE. lib/kernel/anniversary-equity.ts
+// pushes the equity_report card and then commissions the agent's anniversary
+// avatar video, which finishes minutes later; the intro-video backfill cron
+// stamps the ASSEMBLED clip onto that card as `anniversary_video_url` once the
+// Remotion composite lands. Before this the clip rendered, was paid for, and
+// reached no client surface at all — the card had no video slot and the cron
+// that delivers the assignment intro filters that trigger out.
+//
+// ONE PLAYER, TWO CARDS (§6): the card kinds and the metadata keys are one
+// table, so a third avatar lane adds a row here instead of a second player.
+const CARD_VIDEO_KEYS: Record<string, { url: string; poster: string; caption: string }> = {
+  [WELCOME_UPDATE_TYPE]: {
+    url:     "welcome_video_url",
+    poster:  "welcome_video_thumbnail_url",
+    caption: "A personal hello from your agent",
+  },
+  equity_report: {
+    url:     "anniversary_video_url",
+    poster:  "anniversary_video_thumbnail_url",
+    caption: "A personal note from your agent",
+  },
+}
+
+/** The playable clip on a card's metadata, or null — never a "coming soon". */
+function cardVideo(u: RecentUpdate): { url: string; poster?: string; caption: string } | null {
+  const spec = CARD_VIDEO_KEYS[u.update_type ?? ""]
+  if (!spec) return null
   const m = u.metadata as Record<string, unknown> | null | undefined
-  const url = m && typeof m.welcome_video_url === "string" ? m.welcome_video_url.trim() : ""
-  return url ? url : null
+  const url = m && typeof m[spec.url] === "string" ? (m[spec.url] as string).trim() : ""
+  if (!url) return null
+  const poster = m && typeof m[spec.poster] === "string" ? (m[spec.poster] as string) : undefined
+  return { url, poster, caption: spec.caption }
 }
 
 export interface RecentUpdate {
@@ -70,6 +97,26 @@ interface Props {
   limit?: number
   /** When true, hides the empty state (so the parent can decide what to render). */
   hideWhenEmpty?: boolean
+}
+
+/** The clip block for one card, or nothing at all when there is no clip. */
+function CardVideoBlock({ update }: { update: RecentUpdate }) {
+  const clip = cardVideo(update)
+  if (!clip) return null
+  return (
+    <div className="pt-2">
+      <video controls poster={clip.poster} className="w-full max-w-md rounded-lg border">
+        <source src={clip.url} type="video/mp4" />
+        <a href={clip.url} className="text-blue-700 hover:underline">
+          Watch the video from your agent
+        </a>
+      </video>
+      <p className="text-[11px] text-muted-foreground pt-1 flex items-center gap-1">
+        <Video className="h-3 w-3" />
+        {clip.caption}
+      </p>
+    </div>
+  )
 }
 
 export function RecentUpdatesFeed({ contactId, updates, limit = 4, hideWhenEmpty }: Props) {
@@ -126,30 +173,10 @@ export function RecentUpdatesFeed({ contactId, updates, limit = 4, hideWhenEmpty
                 </span>
               )}
             </div>
-            {/* The agent's personal welcome video — rendered only when a real
-                playable clip exists on the card. */}
-            {u.update_type === WELCOME_UPDATE_TYPE && welcomeVideoUrl(u) && (
-              <div className="pt-2">
-                <video
-                  controls
-                  poster={
-                    typeof (u.metadata as Record<string, unknown> | null)?.welcome_video_thumbnail_url === "string"
-                      ? ((u.metadata as Record<string, unknown>).welcome_video_thumbnail_url as string)
-                      : undefined
-                  }
-                  className="w-full max-w-md rounded-lg border"
-                >
-                  <source src={welcomeVideoUrl(u) as string} type="video/mp4" />
-                  <a href={welcomeVideoUrl(u) as string} className="text-blue-700 hover:underline">
-                    Watch the video from your agent
-                  </a>
-                </video>
-                <p className="text-[11px] text-muted-foreground pt-1 flex items-center gap-1">
-                  <Video className="h-3 w-3" />
-                  A personal hello from your agent
-                </p>
-              </div>
-            )}
+            {/* The agent's personal clip — rendered only when a real playable
+                URL exists on the card. Never a "coming soon" tile: that would
+                imply a recording the agent has not made. */}
+            <CardVideoBlock update={u} />
             {u.next_step && (
               <div className="text-xs flex items-center gap-1 pt-1">
                 <ArrowRight className="h-3 w-3 text-blue-500" />

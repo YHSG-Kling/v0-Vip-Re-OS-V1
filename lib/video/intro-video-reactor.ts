@@ -22,7 +22,9 @@
  *   3. Gate on agent_voice_profiles — elevenlabs_voice_id + a Supabase-hosted
  *      avatar source URL (our storage, never D-ID-side).
  *   4. Insert agent_intro_videos (m121) — partial unique index = idempotency.
- *   5. Draft the script via Vercel AI Gateway.
+ *   5. Resolve the WRITING CONTEXT (persona, journey, newsletter membership).
+ *      There is no separate draft step: the compliance loop in 6 makes the first
+ *      draft itself, and a second one here was bought and thrown away.
  *   6. PRE-FLIGHT COMPLIANCE — run evaluateOutbound() on the script BEFORE
  *      we submit to D-ID. The canonical surface chains all five gates:
  *        - Brand voice (brokerage prohibited words, tone, key messages)
@@ -41,19 +43,33 @@
  *   7. Create ai_video_projects + dispatchVideo (D-ID-first per
  *      getPlatformVideoProvider). compliance_status is stamped 'passed' on
  *      the project row so the broker cockpit shows we pre-cleared.
- *   7b. REQUEST THE REMOTION ASSEMBLY (assignment trigger). The D-ID talking
- *      head is the avatar TRACK, not the deliverable: provider_metadata carries
+ *   7b. REQUEST THE REMOTION ASSEMBLY — BOTH TRIGGERS. The D-ID talking head is
+ *      the avatar TRACK, not the deliverable: provider_metadata carries
  *      target_composition_id + input_props + entity_type/entity_id so that when
  *      poll-did-videos completes the job, enqueueAvatarCompositionForProject
  *      wires the CLEAN avatar URL into an AgentTalkingHeadReel render and
  *      render-composition stamps the finished, brand-chromed composite back onto
  *      ai_video_projects.video_url. Before this the key was absent and the
- *      handoff skipped every intro video ever made.
- *   8. The intro-video-email-backfill cron sends the email when the ASSEMBLED
- *      render lands (with OUR Supabase storage URL embedded) — it waits on the
- *      composite, not on the intermediate avatar track.
- *   9. Portal card auto-renders via portal-stream-projector when
- *      VIDEO_GENERATION_COMPLETED lands.
+ *      handoff skipped every intro video ever made; the anniversary lane kept
+ *      skipping it one wave longer, on the strength of a type that claimed it had
+ *      its own composition and had neither a writer nor a reader (see the
+ *      tombstone below).
+ *   8. DELIVERY, per trigger, both swept by app/api/cron/intro-video-email-backfill
+ *      and both waiting on the ASSEMBLED render rather than the intermediate
+ *      avatar track:
+ *        - contact_agent_assigned → the ONE welcome email (delivery_channel
+ *          'email'), released through lib/kernel/client-welcome.ts.
+ *        - home_anniversary → the contact's equity_report PORTAL CARD
+ *          (delivery_channel 'portal'), stamped with the assembled clip.
+ *      Either way the ledger row reaches a terminal status; neither lane leaves
+ *      a paid render sitting at 'rendering' with nobody reading it.
+ *
+ *      NOT via portal-stream-projector. This block used to claim the portal card
+ *      "auto-renders via portal-stream-projector when VIDEO_GENERATION_COMPLETED
+ *      lands". It does not and never did: lib/portal-stream/event-translator.ts
+ *      has no entry for that event type — nor for any video event — so it is not
+ *      in PROJECTABLE_EVENT_TYPES and the projector skips it. The lifecycle_events
+ *      row this file writes at the end is an AUDIT record, not a delivery.
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -120,36 +136,38 @@ export interface AssignmentIntroInput extends BaseInput {
   situation?: ScriptSituation
 }
 
-/**
- * The REAL equity numbers (computeEquityLine output) that ride the OPTIONAL
- * personalized Anniversary Equity Reel (remotion/EquityReportReel.tsx). When
- * present, the reactor mints the tracked anniversary QR + stamps the
- * EquityReportReel composition id, its inputProps, and the QR onto the
- * ai_video_projects row's video_metadata so the render coordinator renders the
- * data-driven reel (not a generic talking head). Honest: estimatedEquity null →
- * the reel renders the appreciation-only treatment (NEVER a fabricated number).
- */
-export interface AnniversaryEquityReelInput {
-  /** REAL estimated current value (computeEquityLine's valuation source). */
-  estimatedValue:  number
-  /** What they paid — the basis (computeEquityLine basisPrice). */
-  purchasePrice:   number
-  /** est. value − basis. Can be negative — the reel renders it honestly. */
-  appreciation:    number
-  /** appreciation / basis × 100. */
-  appreciationPct: number
-  /** est. value − est. remaining balance; NULL → appreciation-only mode. */
-  estimatedEquity: number | null
-  /** The past client's home — shown on the cover. Falls back to "your home". */
-  address?:        string | null
-}
-
+// TOMBSTONE (orphan doctrine §1.3) — REMOVED: `AnniversaryEquityReelInput` and
+// the `equityReel` field on AnniversaryVideoInput.
+//
+// It described itself as live — "the reactor mints the tracked anniversary QR +
+// stamps the EquityReportReel composition id, its inputProps, and the QR onto
+// the ai_video_projects row's video_metadata" — and none of that existed. The
+// field had NO WRITER (the only occurrence of the identifier `equityReel` in the
+// whole tree was its own declaration) and NO READER (`dispatchAnniversaryVideo`
+// never forwarded it to runReactor, and `ReactorInput` had no such member, so it
+// could not have been read even if someone had passed it). A type that lies
+// about behaviour is worse than an absent one: it reads to the next lane as a
+// wired capability that only needs a caller.
+//
+// WHERE THE FUNCTIONALITY WENT — it was already there, twice, and both are live:
+//   · lib/video/video-director.ts:283 — selectVideoFormat({ kind: "anniversary" })
+//     returns compositionId "EquityReportReel", and commissionVideo stages the
+//     ai_video_projects row for it.
+//   · lib/kernel/equity-trigger.ts:662 — the Sphere's equity/refi trigger
+//     commissions exactly that reel from the SAME computeEquityLine numbers this
+//     interface was going to re-carry, with the tracked QR
+//     (remotion/EquityReportReel.tsx renders it, remotion_compositions has it
+//     registered and active for every tier).
+// Re-deriving the request here would have been a second path to one composition
+// — §6 — competing with the Director rail that already owns it.
+//
+// The anniversary lane's OWN video still gets a Remotion assembly: it is the
+// avatar-led personal piece to camera, so it rides AgentTalkingHeadReel through
+// the same buildIntroCompositionRequest the assignment lane uses (see step 7b
+// below). That is the half that WAS missing and is built, rather than a
+// duplicate of the data reel.
 export interface AnniversaryVideoInput extends BaseInput {
   yearsAgo: number
-  /** OPTIONAL — when supplied, the avatar reel is the data-driven
-   *  EquityReportReel carrying these REAL numbers + a tracked anniversary QR.
-   *  Absent → the legacy generic anniversary talking-head script path. */
-  equityReel?: AnniversaryEquityReelInput
 }
 
 export interface ReactorResult {
@@ -247,7 +265,19 @@ interface ContactRow {
 
 async function runReactor(input: ReactorInput): Promise<ReactorResult> {
   const svc      = createServiceClient()
-  const delivery = input.delivery ?? "email"
+  // THE WRITER AND THE READER HAD DISAGREED (§6). `delivery` defaulted to
+  // "email" for BOTH triggers, while app/api/cron/intro-video-email-backfill —
+  // the only consumer of the column — filters `trigger='contact_agent_assigned'`
+  // and says in its header that "home-anniversary videos are portal-only by
+  // design". So every anniversary row was stamped 'email', no cron ever mailed
+  // it, and the row sat at status='rendering' forever: a D-ID render that was
+  // paid for, completed, and then read by nobody. The design side of that
+  // disagreement wins — the anniversary NOTE is a gated agent proposal that
+  // never auto-sends (lib/kernel/anniversary-equity.ts), so auto-mailing its
+  // video would have contradicted the gate — and the column now says what the
+  // lane actually does. 'portal' is a live value of the delivery_channel CHECK.
+  const delivery = input.delivery
+    ?? (input.trigger === "home_anniversary" ? "portal" : "email")
 
   // 1. Contact opt-out + persona resolution. Pull the full KernelContact
   //    shape since the compliance gate needs it. Cast the long column list
@@ -334,32 +364,35 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
   }
   const introVideoId = ledger.data?.id as string | undefined
 
-  // 5. Draft initial script
-  let script: string
-  try {
-    script = await draftScript({
-      trigger:     input.trigger,
-      firstName:   contact.first_name ?? "there",
-      personaRaw:  contact.contact_persona ?? null,
-      yearsAgo:    input.yearsAgo,
-      situation:   input.situation,
-      // THE SPEND IS BOOKED, ONCE, BY THE SPENDER. lib/ai/models.ts writes the
-      // ai_tool_usage row only under `if (request.brokerageId)` — so every draft
-      // and every redraft made here was previously unbilled and uncapped, which
-      // is a wrong number in the ledger that feeds meter_readings.ai_tokens and
-      // the overage projection (CLAUDE.md §5). agents-class id for
-      // ai_tool_usage.agent_id (FK agents), users-class for user_id (FK users).
-      brokerageId: input.brokerageId,
-      agentUserId,
-      agentRecordId,
-      violations:  [],
-    })
-  } catch (err) {
-    await svc.from("agent_intro_videos")
-      .update({ status: "failed", error_message: `script: ${(err as Error).message}` })
-      .eq("id", introVideoId!)
-    return { ok: false, status: "failed", reason: "script generation failed" }
-  }
+  // 5. THE WRITING CONTEXT, resolved BEFORE any model call.
+  //
+  // ── ONE DRAFT PER ATTEMPT. THE SECOND ONE WAS PAID FOR AND THROWN AWAY ──────
+  // A separate "5. Draft initial script" block used to sit here, calling
+  // draftScript({ violations: [] }) into `script`. Its result was never used:
+  // runWithComplianceRedraft (lib/kernel/compliance-redraft.ts:58) opens with
+  // `let script = await args.draft({ violations: [] })` — it makes the first
+  // draft ITSELF — and this function then overwrote `script` with
+  // complianceResult.script on the pass path and returned on the fail path. So
+  // every welcome and every anniversary video bought TWO scripts and shipped
+  // ONE, and the redraft path bought three.
+  //
+  // That is a §5 defect, not a tidiness one, and it got WORSE the moment the
+  // tenant was correctly threaded through: while `brokerageId` was missing the
+  // wasted call was merely invisible; once lib/ai/models.ts started writing the
+  // ai_tool_usage row, the wasted call became a real billed token charge on the
+  // tenant, feeding meter_readings.ai_tokens and the overage projection. A
+  // wrong number there is a wrong invoice.
+  //
+  // The two siblings that share this helper never had the defect — both
+  // lib/video/listing-promo-reactor.ts:230 and lib/podcast/auto-producer.ts:336
+  // draft ONLY inside the loop — so this file was the outlier, not the pattern.
+  //
+  // The newsletter lookup and the persona/journey resolution move ABOVE the loop
+  // because they are WRITING inputs, not grading inputs: the discarded draft was
+  // also the only draft that never saw isNewsletterSubscriber, so the line the
+  // recipient was supposed to read only ever appeared on a redraft.
+  const journey: JourneyType = contact.contact_type === "seller" ? "seller" : "buyer"
+  const persona = normalizePersona(contact.contact_persona)
 
   // 6. PRE-FLIGHT COMPLIANCE — runs BEFORE D-ID render submission.
   //    BROADCAST SHAPE: contact is intentionally omitted. The per-contact
@@ -375,9 +408,7 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
   //    prohibited words + tone), Fair Housing (state-specific via
   //    state_protected_classes — Florida included), Them-First, and the
   //    brand-voice corrections layer.
-  const journey: JourneyType = contact.contact_type === "seller" ? "seller" : "buyer"
-  const persona = normalizePersona(contact.contact_persona)
-
+  //
   // Wave 22 — assignment intro is the ONE moment we set context for the
   // ongoing relationship. If this contact is already on the agent's
   // newsletter list, the script mentions the cadence so they recognize
@@ -399,7 +430,10 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     } catch { /* best-effort — fall back to non-newsletter script */ }
   }
 
-  const complianceResult = await runWithComplianceRedraft({
+  let script: string
+  let complianceResult: Awaited<ReturnType<typeof runWithComplianceRedraft>>
+  try {
+    complianceResult = await runWithComplianceRedraft({
     draft: ({ violations }) => draftScript({
       trigger:               input.trigger,
       firstName:             contact.first_name ?? "there",
@@ -425,7 +459,17 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
       })
       return { allowed: r.allowed, violations: r.violations }
     },
-  })
+    })
+  } catch (err) {
+    // A GATEWAY FAILURE IS NOT A COMPLIANCE FAILURE, and it must not read as
+    // one. The discarded draft used to own this catch; the loop owns it now, so
+    // the ledger still lands on 'failed' with the model's own message when the
+    // AI Gateway refuses, times out, or the redraft throws.
+    await svc.from("agent_intro_videos")
+      .update({ status: "failed", error_message: `script: ${(err as Error).message}`.slice(0, 800) })
+      .eq("id", introVideoId!)
+    return { ok: false, status: "failed", reason: "script generation failed" }
+  }
   if (complianceResult.ok) {
     script = complianceResult.script
   } else {
@@ -501,12 +545,19 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
   // request"`, forever, silently. The deliverable was a bare D-ID talking head —
   // no Remotion assembly, no brand chrome, no bookends, no outro CTA.
   //
-  // ASSIGNMENT ONLY, ON PURPOSE. The anniversary trigger declares its own
-  // intended composition (AnniversaryEquityReelInput above names EquityReportReel
-  // with REAL equity numbers); stamping the talking-head composition onto it here
-  // would pre-empt that lane with the wrong reel. It keeps its current behaviour
-  // and is left as an unresolved orphan for whoever owns the equity reel — see
-  // the report, not a guess in the code.
+  // BOTH TRIGGERS, ONE REQUEST. This was assignment-only while
+  // `AnniversaryEquityReelInput` sat above claiming the anniversary lane had its
+  // own intended composition. It did not: that type had no writer and no reader
+  // (see the tombstone at the top of this file), so "the anniversary declares
+  // EquityReportReel" was a comment, not a wire, and the anniversary video
+  // shipped as the same bare talking head the welcome video used to ship as —
+  // the identical defect, one trigger over. The data-driven equity reel lives on
+  // the Director rail (lib/video/video-director.ts selectVideoFormat, commissioned
+  // by lib/kernel/equity-trigger.ts) and is untouched by this.
+  //
+  // The eyebrow and CTA differ per trigger and come out of the ONE chrome table
+  // in lib/video/avatar-render-orchestrator.ts; a trigger with no chrome row
+  // yields no request rather than a guessed one.
   //
   // COMPLIANCE SURVIVES THE STEP (§5). This runs AFTER the pre-flight
   // evaluateOutbound + redraft gate above, and `script` here is the gated text.
@@ -514,7 +565,7 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
   // is cut VERBATIM from that gated script — the assembly authors nothing, so
   // there is no copy in the finished video that the fair-housing gate never saw.
   let compositionRequest: IntroCompositionRequest | null = null
-  if (input.trigger === "contact_agent_assigned") {
+  {
     try {
       const identity = await resolveDirectorIdentity(svc, input.brokerageId, agentUserId)
       const params = {
@@ -523,6 +574,7 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
         agentName:     identity.agentName,
         agentPhotoUrl: identity.agentPhotoUrl,
         brand:         brandBlock(identity),
+        trigger:       input.trigger,
       }
       compositionRequest = buildIntroCompositionRequest(params)
       if (!compositionRequest) {

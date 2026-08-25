@@ -86,6 +86,23 @@ const REACTOR = "lib/video/intro-video-reactor.ts"
 const MANUAL = "lib/contact-promotion/promote-lead-to-contact.ts"
 const AUTO = "lib/kernel/lead-acquisition-handlers.ts"
 const ENSURE = "lib/contact-promotion/welcome-avatar-video.ts"
+/**
+ * THE SHARED CONVERSION ENTRY POINT — added 2026-08-25 when the welcome
+ * consolidated onto ONE email (owner ruling: "the welcome email is the first on
+ * conversion that has the welcome with portal info to also inclue the embedded
+ * personal video").
+ *
+ * THIS IS A WAYPOINT REPAIR, NOT A WEAKENING (CLAUDE.md §2). Section 5 used to
+ * assert that the video call and the portal grant appeared, in that order, INSIDE
+ * `lib/contact-promotion/promote-lead-to-contact.ts` — i.e. it pinned the RULE
+ * ("the grant survives a failed video", "both lanes get the video, neither holds
+ * a copy") to the FILE the calls happened to live in. Both calls moved together
+ * into the one entry point both lanes now share, which is the §6 outcome this
+ * simulator's own 5.2 exists to push toward — so the assertions follow them
+ * rather than reporting the consolidation as a regression. The rule is unchanged
+ * and every control below still re-injects the real defect.
+ */
+const SHARED = "lib/contact-promotion/conversion-welcome.ts"
 
 let pass = 0
 const fails: string[] = []
@@ -526,19 +543,26 @@ async function main() {
   // ═══════════════════════════════════════════════════════════════════════════
   const manual = code(MANUAL)
   const auto = code(AUTO)
+  const shared = code(SHARED)
 
-  check("5.1 the MANUAL lane calls the shared ensure", /ensureWelcomeAvatarVideo\s*\(/.test(manual))
-  check("5.2 the AUTOMATIC lane calls the SAME shared ensure (§6 — neither holds a copy)",
-    /ensureWelcomeAvatarVideo\s*\(/.test(auto))
+  check("5.1 the MANUAL lane reaches the shared ensure (through the one conversion entry point)",
+    /deliverConversionWelcome\s*\(/.test(manual) && /ensureWelcomeAvatarVideo\s*\(/.test(shared))
+  check("5.2 the AUTOMATIC lane reaches the SAME shared ensure (§6 — neither holds a copy)",
+    /deliverConversionWelcome\s*\(/.test(auto) && /ensureWelcomeAvatarVideo\s*\(/.test(shared))
   check(
-    "5.3 neither lane reaches the avatar spine directly (one commissioning path)",
-    !/dispatchAssignmentIntroVideo/.test(manual) && !/dispatchAssignmentIntroVideo/.test(auto),
+    "5.2b NEITHER lane holds its own copy of the call — one entry point, no drift",
+    !/ensureWelcomeAvatarVideo\s*\(/.test(manual) && !/ensureWelcomeAvatarVideo\s*\(/.test(auto),
+  )
+  check(
+    "5.3 nothing on the conversion path reaches the avatar spine directly (one commissioning path)",
+    !/dispatchAssignmentIntroVideo/.test(manual) && !/dispatchAssignmentIntroVideo/.test(auto)
+    && !/dispatchAssignmentIntroVideo/.test(shared),
   )
   check("5.4 the video runs AFTER the portal grant, so it can never cost a contact their portal",
-    checkVideoAfterPortal(manual))
+    checkVideoAfterPortal(shared))
   check(
     "5.5 the video result is folded into WARNINGS, never thrown (a failure cannot unwind a conversion)",
-    checkVideoNeverThrows(manual),
+    checkVideoNeverThrows(shared),
   )
   check(
     "5.6 the idempotency ledger insert precedes the model draft — a retry spends NOTHING",
@@ -585,21 +609,21 @@ async function main() {
   )
   check(
     "6.7 the video moved ABOVE the portal grant → 5.4 goes red",
-    // The markers are the CALL sites, not the bare names: the manual lane
+    // The markers are the CALL sites, not the bare names: the entry point
     // imports `grantPortalAccessForPromotedContact` at the top of the file, so
     // swapping on the bare name inverts the import line and leaves the calls in
     // their original order — a mutation that mutates nothing, which would have
     // reported this control as passing while proving nothing.
     !checkVideoAfterPortal(
-      swapOrder(manual, "grantPortalAccessForPromotedContact(supabase", "ensureWelcomeAvatarVideo(supabase"),
+      swapOrder(shared, "grantPortalAccessForPromotedContact(supabase", "ensureWelcomeAvatarVideo(supabase"),
     ),
   )
   check(
     "6.8 the video result thrown instead of warned → 5.5 goes red",
     !checkVideoNeverThrows(
-      manual.replace(
-        /warnings\.push\(\.\.\.welcomeVideo\.warnings\)/,
-        "if (!welcomeVideo.commissioned) throw new Error(welcomeVideo.reason)",
+      shared.replace(
+        /warnings\.push\(\.\.\.video\.warnings\)/,
+        "if (!video.commissioned) throw new Error(video.reason ?? '')",
       ),
     ),
   )
@@ -624,7 +648,12 @@ async function main() {
   )
   check(
     "6.11 the AUTOMATIC lane losing its call → 5.2 goes red (the drift this exists to prevent)",
-    !/ensureWelcomeAvatarVideo\s*\(/.test(auto.replace(/ensureWelcomeAvatarVideo/g, "somethingElse")),
+    !/deliverConversionWelcome\s*\(/.test(auto.replace(/deliverConversionWelcome/g, "somethingElse")),
+  )
+  check(
+    "6.12 a lane re-growing its OWN copy of the video call → 5.2b goes red",
+    !(!/ensureWelcomeAvatarVideo\s*\(/.test(manual + "\nawait ensureWelcomeAvatarVideo(supabase, {})")
+      && !/ensureWelcomeAvatarVideo\s*\(/.test(auto)),
   )
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -700,14 +729,21 @@ function checkVideoAfterPortal(src: string): boolean {
   return portal >= 0 && video >= 0 && portal < video
 }
 
-/** The video result is warned about, never thrown, in the manual tail. */
+/**
+ * The video result is warned about, never thrown, in the conversion tail.
+ *
+ * The result variable is matched as `\w+` rather than by its name: the call moved
+ * from the manual lane (where it was `welcomeVideo`) into the shared entry point
+ * (where it is `video`), and pinning a finder to a local identifier is the same
+ * waypoint mistake as pinning it to a file.
+ */
 function checkVideoNeverThrows(src: string): boolean {
   const at = src.indexOf("ensureWelcomeAvatarVideo(supabase")
   if (at < 0) return false
   // The window from the call to the end of the step. A `throw` anywhere in it
   // turns a best-effort tail into a rollback.
   const window = src.slice(at, at + 700)
-  return /warnings\.push\(\.\.\.welcomeVideo\.warnings\)/.test(window) && !/\bthrow\b/.test(window)
+  return /warnings\.push\(\.\.\.\w+\.warnings\)/.test(window) && !/\bthrow\b/.test(window)
 }
 
 /**
@@ -734,8 +770,36 @@ function checkVideoNeverThrows(src: string): boolean {
  */
 function checkLedgerBeforeDraft(src: string): boolean {
   const dedup = src.indexOf('"23505"')
-  const draft = src.indexOf("script = await draftScript(")
+  const draft = firstDraftCallSite(src)
   return dedup >= 0 && draft >= 0 && dedup < draft
+}
+
+/**
+ * WHERE THE FIRST MODEL CALL HAPPENS — derived, not pinned to one spelling.
+ *
+ * This used to search for the literal `script = await draftScript(`, which was
+ * the assignment form of a SEPARATE pre-draft step that has since been deleted:
+ * runWithComplianceRedraft makes the first draft itself, so that call bought a
+ * script the reactor threw away and billed the tenant for it. The moment the
+ * waste was removed, an assertion pinned to its spelling reported the ledger
+ * ordering as BROKEN — CLAUDE.md §2's "do not pin an assertion to a WAYPOINT",
+ * failing because the work finished.
+ *
+ * The RULE is "no draftScript call may precede the dedupe branch", so the finder
+ * takes the EARLIEST call site of any spelling and refuses to pass when there is
+ * none at all (a rename must go red, not silently green).
+ *
+ * The function DEFINITION (`async function draftScript(args:`) is excluded — it
+ * sits below the runner and is not a call.
+ */
+function firstDraftCallSite(src: string): number {
+  let earliest = -1
+  const re = /(?<!function\s)draftScript\(\s*\{/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(src)) !== null) {
+    if (earliest < 0 || m.index < earliest) earliest = m.index
+  }
+  return earliest
 }
 
 /**
@@ -745,10 +809,13 @@ function checkLedgerBeforeDraft(src: string): boolean {
  * which is a mutation that mutates nothing.
  */
 function hoistDraftAboveLedger(src: string): string {
-  const led = src.indexOf("  const ledger = await svc")
+  const led    = src.indexOf("  const ledger = await svc")
   const ledEnd = src.indexOf("  const introVideoId = ledger.data?.id")
-  const dStart = src.indexOf("  script = await draftScript(")
-  const dEnd = src.indexOf("  const complianceResult = await runWithComplianceRedraft(")
+  // The whole compliance loop — which now OWNS the first draft — is the block
+  // that gets hoisted. Anchored on its opening `let script: string` declaration
+  // through the end of its gate closure.
+  const dStart = src.indexOf("  let script: string")
+  const dEnd   = src.indexOf("  if (complianceResult.ok) {")
   if (led < 0 || ledEnd < 0 || dStart < 0 || dEnd < 0 || !(led < ledEnd && ledEnd < dStart && dStart < dEnd)) {
     // Anchors moved. Return the source unchanged so the control FAILS loudly
     // rather than quietly proving nothing.
