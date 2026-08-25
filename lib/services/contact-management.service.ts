@@ -50,17 +50,31 @@ export async function createContact(params: CreateContactParams) {
   try {
 
 
-    // Validate inputs
-    if (!isValidUUID(params.agentId)) {
-      throw new ValidationError("Invalid agent ID")
+    // Validate inputs.
+    //
+    // PRESENCE first, then FORMAT through the shared validator. validateContact
+    // (lib/validations/index.ts:133) runs the same three checks this function
+    // used to inline one by one — uuid on agent_id, format on email, format on
+    // phone — but it collects EVERY failure instead of throwing on the first, so
+    // a caller who got both the email and the phone wrong is told both times
+    // instead of being sent round the loop twice. It was imported here and never
+    // called; the inline trio was the second spelling of it (CLAUDE.md §6).
+    //
+    // The required-email rule is NOT delegated: validateContact treats email as
+    // optional (`if (data.email && …)`), so folding the presence check into it
+    // would have let a contact through with no email at all — the field this
+    // function immediately dedupes on.
+    if (!params.email) {
+      throw new ValidationError("Email is required")
     }
 
-    if (!validateEmail(params.email)) {
-      throw new ValidationError("Invalid email address")
-    }
-
-    if (params.phone && !validatePhone(params.phone)) {
-      throw new ValidationError("Invalid phone number")
+    const contactCheck = validateContact({
+      email: params.email,
+      phone: params.phone,
+      agent_id: params.agentId,
+    })
+    if (!contactCheck.valid) {
+      throw new ValidationError(contactCheck.errors.join("; "))
     }
 
     const supabase = await createClient()

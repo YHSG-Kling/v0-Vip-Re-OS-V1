@@ -3,7 +3,6 @@
 import { useState, useMemo } from "react"
 import { Mail, Phone, MessageSquare, Radio, Search, AtSign } from "lucide-react"
 import { Input } from "@/components/ui/input"
-import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
 
 type Conversation = {

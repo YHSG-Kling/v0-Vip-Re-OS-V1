@@ -19,7 +19,6 @@ import { EVENT_TYPES } from "@/lib/orchestrator"
 import { createServerClient } from "@/lib/supabase/server"
 import { generateSmartSuggestion } from "@/app/actions/assistant"
 import { sendNotificationToAgent } from "@/app/actions/communications"
-import { supabaseService } from "@/services/supabaseService"
 import { getChainsByTrigger } from "@/lib/workflow-orchestrator/chains"
 import { startRun as engineStartRun } from "@/lib/workflow-orchestrator/engine"
 // ONE "finished reel in an email" block — shared with the pre-listing section

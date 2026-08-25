@@ -1,6 +1,5 @@
 "use server"
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"

@@ -62,7 +62,6 @@ import {
   Trash2,
   Lock,
   Wand2,
-  ChevronRight,
   FlaskConical,
   GitBranch,
   BarChart2,
@@ -73,7 +72,6 @@ import {
   updateSequenceStep,
   deleteSequenceStep,
   reorderSequenceSteps,
-  updateCampaignSequence,
   cancelEnrollment,
 } from "@/app/actions/campaign-sequences"
 import type {

@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
-import { Mic, MicOff, Loader2, FileText, Home, ExternalLink, ShieldCheck } from "lucide-react"
+import { Mic, Loader2, FileText, Home, ExternalLink, ShieldCheck } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import Link from "next/link"
 import { voiceDraftOffer, type VoiceDraftOfferResponse } from "@/app/actions/voice-assistant/draft-offer-from-voice"

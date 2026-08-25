@@ -1,11 +1,14 @@
 
 
 import { createClient } from "@/lib/supabase/server"
-import { isValidUUID, validateTransactionData } from "@/lib/validations"
+import { isValidUUID, validateTransaction } from "@/lib/validations"
 import { handleError, ValidationError, NotFoundError } from "@/lib/errors"
-import { TRANSACTION_TYPES, TRANSACTION_STATUSES } from "@/lib/constants"
+// TRANSACTION_TYPES was imported here and never used — this service only
+// updates, reads and archives, so it never sees a type. Its live reader is
+// lib/validations/index.ts (validateTransaction), which is where the type
+// vocabulary is now enforced.
+import { TRANSACTION_STATUSES } from "@/lib/constants"
 import { revalidatePath } from "next/cache"
-import { getDefaultCommissionStructure } from "@/lib/brokerage"
 
 /**
  * Unified Transaction Management Service
@@ -37,8 +40,27 @@ export async function updateTransaction(params: UpdateTransactionParams) {
       throw new ValidationError("Invalid transaction ID")
     }
 
-    if (!isValidUUID(params.agentId)) {
-      throw new ValidationError("Invalid agent ID")
+    // validateTransaction (lib/validations/index.ts) collects every id problem
+    // instead of stopping at the first, and is the shared spelling of the check
+    // this function was doing by hand. It was imported into this file under its
+    // deleted alias `validateTransactionData` and never called.
+    const idCheck = validateTransaction({ agent_id: params.agentId })
+    if (!idCheck.valid) {
+      throw new ValidationError(idCheck.errors.join("; "))
+    }
+
+    // STATUS IS CHECKED AGAINST THE VOCABULARY, not written through.
+    // `updates.status` is a bare `string` that reaches `.update()` unexamined
+    // via the `...params.updates` spread below, so a typo — or a caller using
+    // the transaction STAGE vocabulary by mistake — silently parked the row in
+    // a status no reader matches and no pipeline view lists. TRANSACTION_STATUSES
+    // (lib/constants/index.ts:80) is the list every one of those readers filters
+    // on; it was imported here and never consulted.
+    if (
+      params.updates.status !== undefined &&
+      !(TRANSACTION_STATUSES as readonly string[]).includes(params.updates.status)
+    ) {
+      throw new ValidationError(`Invalid transaction status: ${params.updates.status}`)
     }
 
     const supabase = await createClient()

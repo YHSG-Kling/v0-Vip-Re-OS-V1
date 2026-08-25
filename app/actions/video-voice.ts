@@ -14,18 +14,27 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import type {
   VoiceTrainingJobStatus,
   VoiceProfileTrainingStatus,
-  VoiceProfile,
-  VoiceTrainingJob,
   SampleManifest,
-  UploadedSample,
+  VoiceTrainingJob,
   GenerationVoiceOption,
 } from "./video-voice.types"
 import { VOICE_CLONE_SAMPLE_PHRASES } from "./video-voice.constants"
 
 type ServerSupabase = Awaited<ReturnType<typeof createClient>>
 
-/** The in-progress capture for a profile: 'queued' = recorded, not yet submitted. */
-async function findDraftJob(supabase: ServerSupabase, profileId: string) {
+/** The in-progress capture for a profile: 'queued' = recorded, not yet submitted.
+ *
+ *  Typed as a `Pick` of the ROW CONTRACT rather than left to inference, so the
+ *  two columns named in the `.select()` below are checked against
+ *  `VoiceTrainingJob` (app/actions/video-voice.types.ts:65) — the declared shape
+ *  of a `voice_clone_training` row. PGRST204 makes this cheap insurance: a
+ *  select or an update naming a column the table does not have is refused
+ *  ENTIRELY (CLAUDE.md §3), and the draft manifest this function feeds is the
+ *  only place a half-finished recording session survives a page refresh. */
+async function findDraftJob(
+  supabase: ServerSupabase,
+  profileId: string,
+): Promise<Pick<VoiceTrainingJob, "id" | "sample_manifest"> | null> {
   const { data } = await supabase
     .from("voice_clone_training")
     .select("id, sample_manifest")

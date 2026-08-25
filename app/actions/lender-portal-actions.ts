@@ -4,14 +4,10 @@ import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
 import { revalidatePath } from "next/cache"
 import { requireLenderVendorActor, PortalAuthError } from "@/lib/kernel/portal-auth"
-
-const LENDER_VISIBLE_MILESTONES = [
-  "appraisal_ordered",
-  "appraisal_completed",
-  "loan_approved",
-  "clear_to_close",
-  "clear_to_close_received",
-] as const
+// TOMBSTONE: the module-private copy of this list is gone. SURVIVOR:
+// lib/lenders/visible-milestones.ts:25 — the same five names, now shared with the
+// lender portal's display so the entitlement and the query cannot drift (§6).
+import { LENDER_VISIBLE_MILESTONES } from "@/lib/lenders/visible-milestones"
 
 // ─── GET LENDER TRANSACTION DETAIL ───────────────────────────────────────────
 export async function getLenderTransactionDetail(transactionId: string, _lenderId?: string) {

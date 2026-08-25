@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useTransition, useCallback } from "react"
-import { Mail, MessageSquare, Video, FileText, Phone, ExternalLink } from "lucide-react"
+import { Mail, MessageSquare, Video, FileText, Phone } from "lucide-react"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"

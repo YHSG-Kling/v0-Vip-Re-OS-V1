@@ -6,7 +6,6 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { bestEffort } from "@/lib/db/best-effort"
 import { hasActiveRepresentation } from "@/lib/kernel/compliance/active-representation"
-import type { SupabaseClient } from "@supabase/supabase-js"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONTRACTS: Explicit normalized data contracts

@@ -12,7 +12,6 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { getChainByKey } from "./chains"
 import { findReusableRun, type ExistingRun } from "./run-dedupe"
 import type {
-  WorkflowChain,
   WorkflowStep,
   WorkflowRunContext,
   WorkflowRunStatus,
@@ -140,7 +139,14 @@ export async function advanceRun(runId: string): Promise<RunResult> {
     return await completeRun(runId)
   }
 
-  const step = chain.steps[stepIndex]
+  // DECLARED `| undefined` because the very next line believes it can be.
+  // `chain.steps[stepIndex]` types as WorkflowStep with no index check, so the
+  // `if (!step)` guard below reads as dead code to a reviewer and to any tool
+  // that prunes unreachable branches — while `stepIndex` comes out of the
+  // workflow_runs ROW, not out of the chain, and a run whose chain was edited
+  // since it started really can point past the end. The annotation is the only
+  // place the two facts are stated together.
+  const step: WorkflowStep | undefined = chain.steps[stepIndex]
   if (!step) {
     return await completeRun(runId)
   }

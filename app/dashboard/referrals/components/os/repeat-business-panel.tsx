@@ -4,7 +4,6 @@ import { useState, useTransition } from "react"
 import { RefreshCw, Home, MessageSquare, Loader2, ChevronRight, Users, Flame, Snowflake, AlertTriangle } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area"
 import {
   Dialog,

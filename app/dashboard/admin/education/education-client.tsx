@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
@@ -15,7 +15,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog"
-import { BookOpen, Plus, Sparkles, Trash2, Loader2, CheckCircle2, Users, GraduationCap, ChevronDown, ChevronUp } from "lucide-react"
+import { BookOpen, Plus, Sparkles, Trash2, Loader2, CheckCircle2, GraduationCap, ChevronDown, ChevronUp } from "lucide-react"
 import {
   getEducationModules,
   createEducationModule,

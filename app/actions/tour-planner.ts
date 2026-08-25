@@ -568,8 +568,11 @@ export async function finalizeTour(params: {
   /** Optional final edits the agent made before finalizing */
   editedNotes?: string
   editedNarrative?: string
+  /** When the agent plans to leave — carried onto the buyer-lifecycle event.
+   *  MERGED IN from the deleted `confirmTour` wrapper (tombstone below). */
+  departureTime?: string
 }): Promise<{ success: boolean; error?: string; calendarEventCount?: number }> {
-  const { tourId, reportChannels, reportUrl, editedNotes, editedNarrative } = params
+  const { tourId, reportChannels, reportUrl, editedNotes, editedNarrative, departureTime } = params
   if (!isValidUUID(tourId)) return { success: false, error: 'Invalid tour ID' }
 
   const auth = await requireCaller()
@@ -667,6 +670,43 @@ export async function finalizeTour(params: {
       calendar_events:  calendarEventCount,
     },
   }).then(() => null, () => null)
+
+  // ── MERGED FORWARD FROM THE DELETED `confirmTour` WRAPPER ──────────────────
+  // Two writes the wrapper did and this function did not: the agent's own
+  // in-app notification, and the BUYER-LIFECYCLE event (a different rail from
+  // the `tour` lifecycle event above — same event_type, different entity).
+  // Both are best-effort; neither may turn a confirmed tour into a failure.
+  //
+  // The contact id comes from the TOUR ROW, not from a parameter. The wrapper
+  // took `contactId` from its caller and wrote it straight onto a lifecycle
+  // event under the caller's brokerage — a body-supplied entity id on a service
+  // client, which is the shape CLAUDE.md §4 rules out. `tour` was already loaded
+  // above under `.eq('brokerage_id', brokerageId)`, so its `contact_id` is
+  // tenant-proven and cannot be pointed at another brokerage's contact.
+  try {
+    await supabase.from('notifications').insert({
+      user_id:      agentUserId,
+      brokerage_id: brokerageId,
+      type:         'tour.confirmed',
+      title:        'Tour confirmed',
+      body:         'Your tour is confirmed and calendar events have been created.',
+      entity_type:  'tour',
+      entity_id:    tourId,
+      priority:     'high',
+      channel:      'in_app',
+    })
+  } catch { /* non-critical */ }
+
+  if (tour.contact_id) {
+    await supabase.from('lifecycle_events').insert({
+      brokerage_id:  brokerageId,
+      entity_type:   'buyer_lifecycle',
+      entity_id:     tour.contact_id,
+      event_type:    'tour.confirmed',
+      actor_user_id: agentUserId,
+      metadata:      { tour_id: tourId, departure_time: departureTime ?? null },
+    }).then(() => null, () => null)
+  }
 
   return { success: true, calendarEventCount }
 }
@@ -799,64 +839,31 @@ export async function confirmTourStop(params: ConfirmStopParams) {
   return { success: true, allConfirmed }
 }
 
-// ─── 4c. Confirm Tour (legacy entry — routes to finalizeTour) ────────────────
+// ─── 4c. `confirmTour` REMOVED ───────────────────────────────────────────────
 //
-// The pre-canonical tour-confirm UI calls confirmTour() with departureTime +
-// agentNotes. We now route it through finalizeTour() so the canonical
-// per-stop calendar events + buyer-portal message + report-sent timestamps
-// happen on every path.
-
-export async function confirmTour(params: {
-  tourId: string
-  brokerageId?: string  // ignored — derived from session
-  contactId: string
-  agentUserId?: string  // ignored — derived from session
-  departureTime?: string
-  agentNotes?: string
-  reportChannels?: Array<'portal' | 'email' | 'sms'>
-}) {
-  if (!isValidUUID(params.tourId) || !isValidUUID(params.contactId)) {
-    return { success: false, error: 'Invalid ID' }
-  }
-
-  const auth = await requireCaller()
-  if (!auth.ok) return { success: false, error: auth.error }
-
-  const result = await finalizeTour({
-    tourId:         params.tourId,
-    reportChannels: params.reportChannels ?? ['portal'],
-    editedNotes:    params.agentNotes,
-  })
-  if (!result.success) return result
-
-  // Maintain pre-canonical behaviour: agent notification of "tour confirmed"
-  // + buyer-lifecycle event. Both scoped to caller's session brokerage.
-  const supabase = createServiceClient()
-  try {
-    await supabase.from('notifications').insert({
-      user_id:      auth.userId,
-      brokerage_id: auth.brokerageId,
-      type:         'tour.confirmed',
-      title:        'Tour confirmed',
-      body:         'Your tour is confirmed and calendar events have been created.',
-      entity_type:  'tour',
-      entity_id:    params.tourId,
-      priority:     'high',
-      channel:      'in_app',
-    })
-  } catch { /* non-critical */ }
-
-  await supabase.from('lifecycle_events').insert({
-    brokerage_id:  auth.brokerageId,
-    entity_type:   'buyer_lifecycle',
-    entity_id:     params.contactId,
-    event_type:    'tour.confirmed',
-    actor_user_id: auth.userId,
-    metadata:      { tour_id: params.tourId, departure_time: params.departureTime },
-  }).then(() => null, () => null)
-
-  return { success: true }
-}
+// TOMBSTONE: `confirmTour(params)` — DELETED as a legacy wrapper.
+// SURVIVOR: `finalizeTour`, app/actions/tour-planner.ts:560.
+//
+// Its own header called it "legacy entry — routes to finalizeTour", and that is
+// all it did: validate two uuids, re-authenticate, call finalizeTour, then add
+// two best-effort writes of its own. BOTH of those writes were MERGED ONTO THE
+// SURVIVOR FIRST (see the "MERGED FORWARD" block at the end of finalizeTour) —
+// the agent's `tour.confirmed` notification and the `buyer_lifecycle` lifecycle
+// event, plus the `departureTime` that event carries, which finalizeTour now
+// accepts as an optional parameter.
+//
+// THE MERGE MADE IT STRICTLY SAFER, not merely equal. The wrapper required a
+// caller-supplied `contactId` and wrote it onto a lifecycle event under the
+// caller's brokerage; the survivor takes the contact id off the TOUR ROW it
+// already loaded with `.eq('brokerage_id', brokerageId)`, so a body-supplied id
+// can no longer name another tenant's contact (CLAUDE.md §4). The survivor also
+// returns `calendarEventCount`, which the wrapper swallowed and replaced with a
+// bare `{ success: true }`.
+//
+// The single caller — app/crm/contacts/[contactId]/tours/components/
+// tour-confirm-tab.tsx — already imported `finalizeTour` alongside it and now
+// calls it directly, which is what the `approveTourPlan`/`sendTourReport`
+// tombstone above already claimed was true.
 
 // ─── 5. Rate a stop (day-of) ──────────────────────────────────────────────────
 

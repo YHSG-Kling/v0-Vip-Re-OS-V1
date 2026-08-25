@@ -32,7 +32,7 @@ import { requireSuperadmin } from "@/lib/auth/platform-guard"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import {
   stripeCancelAtPeriodEnd, stripeResume, stripeSwapPrice, stripeExtendTrial, stripePauseCollection,
-  computeTrialExtension, isStripeConfigured,
+  computeTrialExtension, 
 } from "@/lib/billing/stripe-subscription-ops"
 
 type CanonicalTier = "solo_agent" | "team" | "brokerage" | "multi_location"

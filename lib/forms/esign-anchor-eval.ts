@@ -9,7 +9,7 @@
 //      must be fully signed before the packet is certified complete; a tagged-but-unsigned form is
 //      surfaced, never waved through.
 
-import { deriveEsignAnchors, type DerivedAnchors, type EsignAnchor } from "./esign-anchors"
+import { deriveEsignAnchors, type DerivedAnchors } from "./esign-anchors"
 
 export interface AnchorPlacementResult {
   ok: boolean

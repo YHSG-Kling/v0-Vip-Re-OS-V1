@@ -17,8 +17,6 @@ import {
   previewAudienceResolution as kernelPreviewAudienceResolution,
   createAudienceSegment,
   type AdsActorContext,
-  type AudienceType,
-  type SourceRule,
   type AudienceResolutionPreview,
 } from "@/lib/kernel/ads"
 import type {

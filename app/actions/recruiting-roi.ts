@@ -1,7 +1,6 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { KernelEvent } from "@/lib/kernel/events"
 
 export async function getRecruitingROISummary(brokerageId: string) {
   const client = await createClient()

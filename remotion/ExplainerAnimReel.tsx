@@ -170,7 +170,12 @@ const EquityDiagram: React.FC<{ data: EquityOverTimeData; accent: string }> = ({
   const vSlice = valuePts.slice(0, shown)
   const bSlice = balancePts.slice(0, shown)
   // Equity wedge = between the value line (top) and balance line (bottom).
-  const wedge = [...vSlice, ...[...bSlice].reverse()]
+  // Annotated at the CONSTRUCTION site rather than left to inference: the wedge
+  // is the one point array in this file assembled by hand instead of returned by
+  // seriesToPoints (lib/charts/geometry.ts:46), so it is the only one where a
+  // shape mistake would surface as a silently malformed `d` attribute inside
+  // linePath rather than as a type error here.
+  const wedge: Point[] = [...vSlice, ...[...bSlice].reverse()]
   const wedgePath = wedge.length ? `${linePath(wedge)} Z` : ""
 
   const finalOp = interpolate(local, [80, 110], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })

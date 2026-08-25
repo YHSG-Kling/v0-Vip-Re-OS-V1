@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Slider } from "@/components/ui/slider"
-import { Mail, MessageSquare, Video, FileText, Phone, Voicemail, Bell } from "lucide-react"
+import { Mail, MessageSquare, FileText, Phone, Voicemail, Bell } from "lucide-react"
 import { createISACampaign, type CampaignType } from "@/app/actions/ai-isa"
 import {
   OUTREACH_CHANNELS, VIDEO_OUTREACH_CHANNELS, channelCarriesVideo,

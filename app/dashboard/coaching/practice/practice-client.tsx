@@ -7,7 +7,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import {
   Sparkles, MessageSquare, Loader2, Trophy, CheckCircle2, AlertCircle,
-  ArrowRight, Volume2, RotateCcw, Mic, PhoneCall, Wand2,
+  Volume2, RotateCcw, Mic, PhoneCall, Wand2,
 } from "lucide-react"
 import {
   startObjectionPracticeSession,

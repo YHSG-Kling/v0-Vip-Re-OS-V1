@@ -3,7 +3,6 @@
 // Uses kernel functions for portal view determination.
 
 import type { SupabaseClient } from "@supabase/supabase-js"
-import { determinePortalView } from "@/lib/kernel/portal"
 
 // The presentation half moved to a kernel-free leaf so CLIENT components can import a
 // status colour map without dragging server-only code into the browser bundle. It is

@@ -47,8 +47,6 @@ import {
   Calendar,
   DollarSign,
   Building2,
-  Users,
-  Clock,
   CheckCircle2,
   AlertCircle,
   Filter,

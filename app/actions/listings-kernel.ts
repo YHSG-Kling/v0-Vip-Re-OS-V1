@@ -33,8 +33,6 @@ import {
   generateListingDescription,
   closeListingLifecycle,
   prefillListingFormFromRecord,
-  type CreateListingInput,
-  type SellerContactInput,
   type ListingUpdate,
   type ListingStage,
 } from "@/lib/kernel/listings"

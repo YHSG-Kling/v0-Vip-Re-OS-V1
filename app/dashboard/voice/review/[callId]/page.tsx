@@ -17,8 +17,6 @@ import {
   Calendar,
   User,
   ArrowLeft,
-  Share2,
-  Flag,
   Volume2,
 } from "lucide-react"
 import Link from "next/link"

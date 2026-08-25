@@ -21,7 +21,6 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { VideoGenerationButtons } from "@/components/video/VideoGenerationButtons"
-import Link from "next/link"
 
 interface ComplianceEvent {
   id: string

@@ -39,7 +39,8 @@ export interface CardClassification {
 // Until m304 this list could only emit six values, because the column only
 // admitted six — so a photographer, a landscaper, a mover, an attorney and an
 // insurance agent were all filed as "other" and the information on the card was
-// thrown away. The column now holds 38, and the classifier fills them: a scanned
+// thrown away. The column now holds 39 (m554 added `appraiser`), and the
+// classifier fills them: a scanned
 // card lands on the trade it actually names, which is what makes the widened
 // bench bookable rather than merely spellable.
 const VENDOR_FAMILIES: Array<{ category: CardClassification["category"]; pattern: RegExp }> = [
@@ -47,6 +48,13 @@ const VENDOR_FAMILIES: Array<{ category: CardClassification["category"]; pattern
   { category: "refinance_lender", pattern: /\b(refinanc|refi\b)/ },
   { category: "lender", pattern: /\b(lender|mortgage|loan officer|nmls|home loans|lending)/ },
   { category: "inspector", pattern: /\b(inspect)/ },
+  // m554 added `appraiser` to the column, and the classifier had to learn the
+  // word in the same change or the widening would have been decorative: until
+  // it did, "Certified Residential Appraiser" matched nothing and the card was
+  // filed as `other`, throwing away the one fact printed on it. Sits above the
+  // generic families for the usual reason — nothing else here matches the stem,
+  // but the transaction block is where a reader looks for it.
+  { category: "appraiser", pattern: /\b(apprais)/ },
   { category: "title", pattern: /\b(title|escrow)/ },
   { category: "attorney", pattern: /\b(attorney|law firm|law office|law group|esq\b)/ },
   // ── listing prep + marketing ──

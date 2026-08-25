@@ -9,7 +9,6 @@ import {
   ArrowRight,
   TrendingUp,
   TrendingDown,
-  AlertTriangle,
 } from "lucide-react"
 
 interface AgentPerformance {

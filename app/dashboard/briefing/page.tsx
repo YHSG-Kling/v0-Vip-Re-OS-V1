@@ -39,7 +39,7 @@ import {
 } from "@/app/actions/briefing-actions"
 import { generateContactInsights, draftSmartEmail } from "@/app/actions/ai-insights"
 import type { ContactInsight } from "@/app/actions/ai-insights"
-import type { DailyBriefing, PriorityAction, HotLead, DealAtRisk } from "@/lib/intelligence/daily-briefing-generator"
+import type { DailyBriefing } from "@/lib/intelligence/daily-briefing-generator"
 import { MANAGERS, type ManagerKey } from "@/lib/kernel/manager-registry"
 import { createClient } from "@/lib/supabase/client"
 import Link from "next/link"

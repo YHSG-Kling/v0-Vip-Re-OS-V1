@@ -775,6 +775,33 @@ export function AdsDashboardClient({
     setIsLoading(false)
   }
 
+  // THE ONLY WAY TO RETIRE AN AUDIENCE. deleteAudience
+  // (lib/ads/facebook-audience-sync.ts:294) was imported by this file and called
+  // by nothing, so a mis-built audience — including one whose reach check just
+  // showed it resolves to EVERY consented contact in the brokerage — could be
+  // approved and synced but never withdrawn from the board. The action itself
+  // refuses to remove an audience attached to a live or launching campaign and
+  // soft-deletes (status → 'deleted') rather than dropping the row, so the sync
+  // history stays auditable; the confirm below exists because an operator who
+  // clicks this on the wrong row loses the definition from the list.
+  const handleDeleteAudience = async (audienceId: string, audienceName: string) => {
+    if (!window.confirm(`Retire the audience "${audienceName}"? It stops appearing on this board; its sync history is kept.`)) {
+      return
+    }
+    setIsLoading(true)
+    const result = await deleteAudience(userId, audienceId, brokerageId)
+    if (result.success) {
+      // Drop it locally too — `audiences` is component state seeded from the
+      // server prop, so a refresh alone would leave the row on screen until the
+      // server round-trip lands.
+      setAudiences((prev) => prev.filter((a) => a.id !== audienceId))
+      router.refresh()
+    } else {
+      toast.error(result.error || "Could not retire this audience")
+    }
+    setIsLoading(false)
+  }
+
   // Prediction handler
   const handlePredictCreative = async (campaign: AdCampaign, creative: AdCreative) => {
     setSelectedCampaign(campaign)
@@ -1461,6 +1488,17 @@ export function AdsDashboardClient({
                             >
                               <Clock className="h-4 w-4 mr-1" />
                               Sync history
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                              onClick={() => handleDeleteAudience(audience.id, audience.audience_name)}
+                              disabled={isLoading}
+                              title="Retire this audience — refused while it is attached to a live campaign"
+                            >
+                              <X className="h-4 w-4 mr-1" />
+                              Retire
                             </Button>
                           </div>
                         </div>

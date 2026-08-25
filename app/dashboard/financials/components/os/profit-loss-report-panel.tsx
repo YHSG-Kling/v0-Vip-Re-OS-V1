@@ -9,12 +9,10 @@ import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
   FileText,
-  Download,
   Loader2,
   TrendingUp,
   TrendingDown,
   DollarSign,
-  PieChart,
   AlertCircle,
   Copy,
   Check,

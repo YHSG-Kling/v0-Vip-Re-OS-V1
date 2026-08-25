@@ -36,7 +36,6 @@ import {
 // Them-first check — reuse the prohibited phrase list from the validator.
 // We call the synchronous helpers only; we do not call validateThemFirstContent
 // (that spawns an LLM call which is not appropriate inside a synchronous gate).
-import type { ContentType } from "@/lib/them-first/validator"
 
 // ─── INTERNAL: FAIR HOUSING ───────────────────────────────────────────────────
 // The FAIR_HOUSING_VIOLATIONS array is not exported from rule-evaluators,

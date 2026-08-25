@@ -3,7 +3,6 @@
 // Bi-directional sync ensures no escape paths for suppression bypass
 
 import { createServiceClient } from "@/lib/supabase/service"
-import type { SupabaseClient } from "@supabase/supabase-js"
 
 export interface SyncSuppressionInput {
   sourceType: "lead" | "contact"

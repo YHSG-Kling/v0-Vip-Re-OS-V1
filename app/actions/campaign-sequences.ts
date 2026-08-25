@@ -27,7 +27,6 @@ import {
   type CampaignSequence,
   type SequenceStep,
   type SequenceEnrollment,
-  type ChannelType,
   type SequenceCategory,
   type SequenceBuilderStep,
   VALID_STEP_TYPES,

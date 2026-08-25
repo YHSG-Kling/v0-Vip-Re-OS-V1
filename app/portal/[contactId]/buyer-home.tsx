@@ -538,6 +538,34 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
           </div>
         )}
 
+        {/*
+          THE BUYER'S OWN OFFER LEDGER. OfferStatusCard
+          (app/components/portal/OfferStatusCard.tsx:76) was imported by this page
+          and rendered by nothing — a built component with no surface. The strip
+          above it only ever shows offers in `pending`/`countered`, so a buyer
+          whose offer was submitted, countered-and-withdrawn, expired or ACCEPTED
+          saw no record of it anywhere on their home screen; the accepted case is
+          the one that matters most and the one the card leads with.
+
+          COLUMN NAMES ARE MAPPED, NOT ASSUMED. The query above selects
+          `offer_price` because that is the live column (see the note at the
+          select); the card's Offer contract says `offer_amount`. Handing the raw
+          row over would have rendered "N/A" for every price — the card would
+          have looked wired and been wrong.
+        */}
+        <OfferStatusCard
+          contactId={contactId}
+          offers={(offers as any[]).map((o) => ({
+            id: o.id,
+            listing_id: o.listing_id ?? null,
+            transaction_id: o.transaction_id ?? null,
+            offer_amount: o.offer_price ?? null,
+            status: o.status,
+            created_at: o.created_at,
+            listing: o.listing ?? null,
+          }))}
+        />
+
         {/* Journey navigation */}
         <div>
           <p className="text-sm font-semibold mb-3">Your Journey</p>

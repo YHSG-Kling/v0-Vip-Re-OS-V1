@@ -8,7 +8,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { canAccessFeature, KernelEvent, processKernelEvent } from "@/lib/kernel"
-import { revalidatePath } from "next/cache"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 

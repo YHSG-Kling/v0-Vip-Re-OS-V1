@@ -18,12 +18,8 @@ import {
   Inbox, 
   Users,
   Zap,
-  FileText,
   ChevronDown,
-  Search,
-  Filter,
-  Bell,
-  Settings
+  Bell
 } from "lucide-react"
 
 interface CommunicationsCommandStripProps {

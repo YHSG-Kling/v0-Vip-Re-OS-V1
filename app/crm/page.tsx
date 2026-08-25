@@ -14,7 +14,7 @@ import {
   // anywhere, so the suggestions the OS writes were never shown to anyone.
   getContactCopilotSuggestions,
 } from "@/app/actions/contact-details"
-import { getContactIntelligence, toggleAIISA, type ContactIntelligence } from "@/app/actions/contact-intelligence"
+import { getContactIntelligence, type ContactIntelligence } from "@/app/actions/contact-intelligence"
 import { FinancialVerificationPanel } from "@/app/crm/components/financial-verification-panel"
 import { ListingConsultationScheduler } from "@/app/crm/components/listing-consultation-scheduler"
 import { ClosingWorkflowTab } from "@/app/crm/components/closing-workflow-tab"
@@ -47,7 +47,6 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import {
@@ -81,7 +80,6 @@ import {
   Home,
   Globe,
   FileText,
-  UserCircle,
   LayoutDashboard,
   Network,
   Send,

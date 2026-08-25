@@ -1,13 +1,28 @@
+import { TRANSACTION_TYPES, type TransactionType } from "@/lib/constants"
+
 
 // ============================================
 // SHARED VALIDATION UTILITIES
 // Central validation module for consistent data validation across all actions
 // ============================================
 //
+// THE TRANSACTION-TYPE VOCABULARY IS IMPORTED, NOT RESTATED.
+// This file carried two more spellings of it: the inline union on
+// TransactionValidation.transaction_type and a `validTypes` array inside
+// validateTransaction. Both listed THREE values — and TRANSACTION_TYPES
+// (lib/constants/index.ts:77) has FOUR. A `rental` transaction, a type the
+// product supports, was reported by this validator as "Invalid transaction
+// type". That is not a style difference; it is a validator rejecting live data
+// because a copy of a list went stale, which is precisely why CLAUDE.md §6
+// treats two spellings as a defect. lib/constants/index.ts imports nothing, so
+// this direction cannot close a cycle.
+//
 // WHAT IS ACTUALLY ADOPTED, AND WHAT HAPPENED TO THE REST (audited, not assumed)
 //
 // isValidUUID is the workhorse — 116 call sites — with validatePhone,
-// validateEmail, validateContact and validateTransactionData also in use.
+// validateEmail, validateContact and validateTransaction also in use.
+// (`validateTransactionData`, the one-line alias of the last of those, is gone —
+// tombstone at the bottom of this file.)
 //
 // A prior wave audited the seven that had no callers (isValidDate, isValidURL,
 // validateArray, validateContentLength, validateHashtags, validateProperty,
@@ -190,7 +205,7 @@ export interface TransactionValidation {
   agent_id: string
   property_id?: string
   contact_id?: string
-  transaction_type?: "listing" | "buyer" | "referral"
+  transaction_type?: TransactionType
   status?: string
 }
 
@@ -209,8 +224,10 @@ export function validateTransaction(data: TransactionValidation): { valid: boole
     errors.push("Invalid contact ID")
   }
 
-  const validTypes = ["listing", "buyer", "referral"]
-  if (data.transaction_type && !validTypes.includes(data.transaction_type)) {
+  // TRANSACTION_TYPES, not a local copy of three of its four values — see the
+  // file header. The local list omitted "rental", so this validator rejected a
+  // transaction type the product supports.
+  if (data.transaction_type && !(TRANSACTION_TYPES as readonly string[]).includes(data.transaction_type)) {
     errors.push("Invalid transaction type")
   }
 
@@ -245,5 +262,12 @@ export function validateTransaction(data: TransactionValidation): { valid: boole
 // attached; every array bound in this tree is a domain rule stated where the
 // array is used.
 
-// Alias for backward compatibility
-export const validateTransactionData = validateTransaction
+// TOMBSTONE: `validateTransactionData` — DELETED as a duplicate spelling.
+// SURVIVOR: `validateTransaction` in this same file (lib/validations/index.ts:
+// the `export function validateTransaction` above). The alias was one line —
+// `export const validateTransactionData = validateTransaction` — kept "for
+// backward compatibility" with a caller that turned out to import it and never
+// call it (lib/services/transaction-management.service.ts). Two exported names
+// for one validator is the §6 defect, and the one that reads as the real
+// function is the one that stays. That service now imports and CALLS
+// validateTransaction.

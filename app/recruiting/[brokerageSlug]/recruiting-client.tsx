@@ -4,14 +4,13 @@ import { useMemo, useState } from "react"
 import { useSearchParams } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Slider } from "@/components/ui/slider"
 import { toast } from "sonner"
 import {
-  Sparkles, Calculator, TrendingUp, Clock, Bot, ShieldCheck, Megaphone, CheckCircle2, ArrowRight, Loader2,
+  Sparkles, Calculator, Bot, ShieldCheck, Megaphone, CheckCircle2, ArrowRight, Loader2,
 } from "lucide-react"
 import { submitRecruitInquiry } from "./actions"
 

@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useTransition } from "react"
-import { Bell, BellOff, Plus, Trash2, Loader2, ChevronDown, ChevronUp, Play, Pause, RefreshCw } from "lucide-react"
+import { Bell, Plus, Trash2, Loader2, ChevronDown, ChevronUp, Play, Pause, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"

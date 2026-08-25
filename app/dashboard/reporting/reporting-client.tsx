@@ -18,7 +18,6 @@ import {
   BarChart3,
   TrendingUp,
   Users,
-  DollarSign,
   Home,
   AlertTriangle,
   RefreshCw,

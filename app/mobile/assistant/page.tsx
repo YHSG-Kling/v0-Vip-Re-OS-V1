@@ -9,8 +9,7 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area"
-import { Clock, MapPin, Home, Search, ChevronRight } from "lucide-react"
-import { format } from "date-fns"
+import { Home, Search } from "lucide-react"
 import Link from "next/link"
 import {
   MobileCommandStrip,

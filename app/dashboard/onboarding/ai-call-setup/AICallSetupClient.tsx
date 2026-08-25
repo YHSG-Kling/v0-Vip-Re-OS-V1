@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Separator } from "@/components/ui/separator"
-import { Phone, ArrowRight, CheckCircle } from "lucide-react"
+import { Phone, ArrowRight } from "lucide-react"
 import { saveAIIdentityProfile, type AIIdentityProfile } from "@/app/actions/ai-identity"
 import { toast } from "sonner"
 

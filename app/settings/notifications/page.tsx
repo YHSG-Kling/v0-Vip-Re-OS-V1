@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { listNotificationRules } from '@/app/actions/settings/list-notification-rules';
 import { NotificationRulesForm } from '@/app/components/settings/NotificationRulesForm';
 import { SettingsCard } from '@/app/components/settings/SettingsCard';

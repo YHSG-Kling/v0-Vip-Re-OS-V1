@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Star, TrendingUp, TrendingDown, Minus } from "lucide-react"
+import { Star, TrendingUp, TrendingDown } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 
 interface VendorPerformanceRadarProps {

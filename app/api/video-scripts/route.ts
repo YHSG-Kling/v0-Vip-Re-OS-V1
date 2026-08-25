@@ -11,7 +11,6 @@
 
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
-import { createServiceClient } from "@/lib/supabase/service"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"

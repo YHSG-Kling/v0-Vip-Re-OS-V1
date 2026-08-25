@@ -24,7 +24,7 @@ import {
   ClosingPrepPanel,
   ExtractedFactsPanel,
 } from "./components/os"
-import { AlertCircle, AlertTriangle, UserCog, ClipboardList, Clock, CheckCircle2, Calendar, ChevronDown } from "lucide-react"
+import { AlertCircle, AlertTriangle, UserCog, ClipboardList, Clock, CheckCircle2, Calendar } from "lucide-react"
 import Link from "next/link"
 import { TcFastActionPanel } from "./components/tc-fast-action-panel"
 import { ClosingReadinessGate } from "./components/closing-readiness-gate"

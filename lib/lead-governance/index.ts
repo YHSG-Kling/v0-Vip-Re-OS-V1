@@ -18,8 +18,12 @@ export { evaluateRoutingEligibility } from "./routing-evaluator"
 // the one resolver.
 
 // ─── SLA MONITOR ──────────────────────────────────────────────────────────────
-export type { SLAStatus } from "./sla-monitor"
-export { evaluateSLA, logEscalation } from "./sla-monitor"
+// `SLAPosture` / `APPROACHING_SLA_WINDOW_HOURS` were MERGED onto evaluateSLA on
+// 2026-08-25 from the retired duplicate lib/agent-orchestration/
+// agent-activity-monitor.ts — see the tombstone at
+// lib/agent-orchestration/index.ts for what went where and why.
+export type { SLAStatus, SLAPosture } from "./sla-monitor"
+export { evaluateSLA, logEscalation, APPROACHING_SLA_WINDOW_HOURS } from "./sla-monitor"
 
 // ─── SLA ESCALATION ───────────────────────────────────────────────────────────
 export type { SLARule, SLABreachResult } from "./sla-escalation"

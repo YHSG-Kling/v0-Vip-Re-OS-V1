@@ -55,7 +55,6 @@ import {
   Pencil,
 } from "lucide-react"
 import {
-  scheduleSocialPost,
   approveSocialPost,
   rejectSocialPost,
   retryFailedPost,

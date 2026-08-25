@@ -27,7 +27,6 @@ import {
   isPlatformSocialChannel,
   CHANNEL_LABELS,
   type PlatformSocialAccountView,
-  type PlatformSocialChannel,
 } from "@/lib/platform/platform-social"
 import { canTransitionDraft } from "@/lib/platform/product-content"
 import { publishToSocialPlatform } from "@/lib/social/publisher"

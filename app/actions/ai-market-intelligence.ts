@@ -3,7 +3,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
-import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"

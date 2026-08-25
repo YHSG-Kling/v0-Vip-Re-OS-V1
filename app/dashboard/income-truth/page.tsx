@@ -2,7 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import {
-  TrendingUp, TrendingDown, Target, AlertTriangle, CheckCircle2,
+  TrendingUp, TrendingDown, Target, CheckCircle2,
   Clock, DollarSign, Sparkles,
 } from "lucide-react"
 import { computeAndPersistGapAction, getLatestGapAction } from "@/app/actions/income-engine"

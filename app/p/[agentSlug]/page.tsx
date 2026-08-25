@@ -5,7 +5,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import {
-  Star, Award, Phone, Mail, MapPin, Home as HomeIcon, ArrowRight, Sparkles,
+  Star, Award, Phone, Mail, MapPin, Home as HomeIcon, Sparkles,
 } from "lucide-react"
 import { ProfileLeadCaptureForm } from "./profile-lead-capture-form"
 import { SiteChatLauncher } from "@/app/components/public-site/SiteChatLauncher"

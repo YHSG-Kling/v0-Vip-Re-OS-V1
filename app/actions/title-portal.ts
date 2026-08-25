@@ -3,7 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
 import { requireTitleActor, PortalAuthError } from "@/lib/kernel/portal-auth"
-import { TITLE_VISIBLE_MILESTONES, TITLE_STATUS_OPTIONS, type TitleStatus } from "@/lib/title-portal/constants"
+import { TITLE_VISIBLE_MILESTONES, type TitleStatus } from "@/lib/title-portal/constants"
 
 // ─── GET TITLE USER DASHBOARD ────────────────────────────────────────────────
 export async function getTitleDashboard(titleUserId: string) {

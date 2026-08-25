@@ -43,7 +43,6 @@ export interface CMAResult {
  * MANDATORY CMA DISCLAIMER (REQUIRED IN EVERY CMA)
  */
 // CMA_DISCLAIMER moved to @/lib/cma/disclaimer (const exports illegal in "use server")
-import { CMA_DISCLAIMER } from "@/lib/cma/disclaimer"
 
 /**
  * Generate CMA for seller (presentation-flow variant).

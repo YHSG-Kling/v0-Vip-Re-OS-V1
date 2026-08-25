@@ -27,7 +27,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Textarea } from "@/components/ui/textarea"
-import { ShieldCheck, AlertTriangle, CheckCircle, XCircle, Loader2, FileWarning, Send } from "lucide-react"
+import { ShieldCheck, AlertTriangle, CheckCircle, Loader2, FileWarning, Send } from "lucide-react"
 import {
   approveCdaAction,
   brokerSignCdaAction,

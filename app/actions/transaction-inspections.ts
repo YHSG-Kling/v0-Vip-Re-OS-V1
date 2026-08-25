@@ -574,31 +574,30 @@ export async function updateEarnestMoneyAction(params: {
 }
 
 // ─── GET PENDING QUOTE APPROVALS ───────────────────────────────────────────────
-
-export async function getPendingQuoteApprovalsAction(transactionId: string) {
-  const auth = await requireCallerForBrokerage()
-  if (!auth.ok) return { success: false, error: auth.error, data: [] }
-
-  if (!(await verifyTransactionInBrokerage(transactionId, auth.brokerageId))) {
-    return { success: false, error: "Transaction not found in your brokerage", data: [] }
-  }
-
-  const supabase = await createClient()
-
-  const { data, error } = await supabase
-    .from("activities")
-    .select("*")
-    .eq("transaction_id", transactionId)
-    .eq("activity_type", "client_quote_approval_needed")
-    .eq("status", "pending")
-    .order("created_at", { ascending: false })
-
-  if (error) {
-    return { success: false, error: error.message, data: [] }
-  }
-
-  return { success: true, data: data ?? [] }
-}
+//
+// TOMBSTONE: `getPendingQuoteApprovalsAction(transactionId)` — DELETED as a
+// duplicate. SURVIVOR: app/dashboard/transactions/[id]/page.tsx:323 — the same
+// query, predicate for predicate (`activities` where transaction_id, activity_type
+// = 'client_quote_approval_needed', status = 'pending'), run in that page's
+// parallel fetch and handed to TransactionDetailClient as the
+// `pendingQuoteApprovals` prop that both the inspection tab and the insurance tab
+// already render.
+//
+// NOTHING WAS LOST IN THE MERGE. This export's only claim over the survivor was
+// its brokerage guard, and the survivor proves strictly more before it reads:
+// the page resolves the transaction under the caller's brokerage and 404s
+// otherwise, then requires the caller to be the owning agent or a
+// broker/admin/tc, and it reads on the RLS-scoped client rather than a service
+// client. It also had no caller: its one importer
+// (app/dashboard/transactions/[id]/page.tsx's client component) imported it and
+// never called it, because every mutation in this file ends in
+// `revalidatePath("/dashboard/transactions/{id}")` and the client follows with
+// `router.refresh()` — so the page re-runs its own read and the prop is already
+// the fresher of the two.
+//
+// It was also one more `"use server"` export, i.e. a public HTTP endpoint over
+// another tenant's pending vendor quotes and amounts, kept alive by an import
+// that never fired.
 
 // ─── GET INSPECTIONS ───────────────────────────────────────────────────────────
 //

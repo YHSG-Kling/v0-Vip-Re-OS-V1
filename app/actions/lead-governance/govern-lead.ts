@@ -269,7 +269,15 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
       scoreExplanation: scoringResult.explanation,
       routingDecision,
       agentAssigned,
-      slaStatus: slaStatus.isBreached ? 'breached' : 'compliant',
+      // THE MERGED THREE-STATE POSTURE (lib/lead-governance/sla-monitor.ts
+      // SLAPosture), not the old two-state 'breached'/'compliant'. This field had
+      // NO reader anywhere in the tree — the only two callers of governLead
+      // (app/dashboard/admin/lead-lineage/lead-lineage-client.tsx:363,376 and
+      // lib/ai-isa/qualification-evaluator.ts:117) both read `message` and
+      // `agentAssigned` and neither touches `slaStatus` — so widening it breaks
+      // nothing and stops the result from hiding the one state that is actionable
+      // BEFORE the miss: approaching_sla.
+      slaStatus: slaStatus.posture,
       promotionReady: promotionReadiness.ready,
       message: 'Lead governance cycle completed successfully',
     }

@@ -19,7 +19,6 @@ import { resolveModel } from "@/lib/ai/resolve-model"
 // operation it performs.
 import { verifyExclusionSlot, recordSuppressionUse } from "@/lib/ads/audience-exclusion"
 import type {
-  TargetingConfig,
   CreateAdCampaignParams,
   GenerateAdCreativeParams,
   AdCreativeVariation,

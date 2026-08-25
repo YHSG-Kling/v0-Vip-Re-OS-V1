@@ -40,8 +40,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   AlertCircle,
   Calendar,
-  Check,
-  Image as ImageIcon,
   Loader2,
   Plus,
   Send,

@@ -6,7 +6,7 @@
 // same real last-practice signals the radar uses. Read-only; best-effort; no model narration in the numbers.
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { computeSkillFreshness, SKILL_LABEL, type SkillArea, type SkillSignal } from "@/lib/education/skill-freshness"
+import { computeSkillFreshness, SKILL_LABEL, type SkillSignal } from "@/lib/education/skill-freshness"
 
 type Svc = ReturnType<typeof createServiceClient>
 

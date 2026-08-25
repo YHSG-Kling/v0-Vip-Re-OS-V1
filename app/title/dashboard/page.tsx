@@ -4,7 +4,7 @@ import { readRoleGrants, selectVendorId } from '@/lib/auth/role-grants'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { FileCheck, Clock, Calendar, Package, CheckCircle2 } from 'lucide-react'
+import { Clock, Calendar, Package, CheckCircle2 } from 'lucide-react'
 import Link from 'next/link'
 import { TitleCommandStrip, TitleOperationsPanel } from '../components/os'
 import {

@@ -3,12 +3,12 @@
 import { useState, useTransition } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { toast } from "sonner"
 import {
-  AlertCircle, Clock, UserPlus, Mail, Phone, MessageSquare, X, CheckCircle2, Loader2,
+  AlertCircle, Clock, UserPlus, Mail, Phone, X, CheckCircle2, Loader2,
   TimerOff, Sparkles, Play,
 } from "lucide-react"
 import {

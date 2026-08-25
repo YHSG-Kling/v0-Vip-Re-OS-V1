@@ -15,8 +15,6 @@ import { batchPassComplianceChecks, getTransactionComplianceChecks } from "@/app
 import { exportAuditTrail } from "@/app/actions/compliance-monitoring"
 import {
   Zap,
-  FileText,
-  CheckSquare,
   ShieldCheck,
   Download,
   Loader2,

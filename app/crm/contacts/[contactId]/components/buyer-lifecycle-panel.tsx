@@ -18,7 +18,7 @@ import {
   getBuyersInSpecificState,
 } from "@/app/actions/buyer-lifecycle-core"
 import Link from "next/link"
-import { getStateDefinition, getStateIndex, BUYER_LIFECYCLE_STATES } from "@/lib/buyer-lifecycle/lifecycle-definitions"
+import { getStateDefinition, getStateIndex } from "@/lib/buyer-lifecycle/lifecycle-definitions"
 import type { BuyerState } from "@/lib/buyer-lifecycle/lifecycle-definitions"
 import type { LifecycleHistoryEntry } from "@/lib/buyer-lifecycle/lifecycle-logger"
 import type { GatingResult, TransitionValidationResult, FinancialVerificationResult } from "@/lib/buyer-lifecycle"

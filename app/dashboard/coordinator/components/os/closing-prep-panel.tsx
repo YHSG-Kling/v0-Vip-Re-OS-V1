@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
-import { CheckCircle2, Home, TrendingUp } from 'lucide-react'
+import { CheckCircle2, Home } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 
 interface ClosingPrepPanelProps {

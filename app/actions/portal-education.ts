@@ -13,7 +13,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveEducationContext } from "@/lib/portal/resolve-education-context"
-import { getEducationPlan, type EducationLesson, type AgeSegment } from "@/lib/kernel/education"
+import { getEducationPlan, type EducationLesson } from "@/lib/kernel/education"
 import { staticLessonModuleId, isUuid, bridgeStaticLessonCompletion } from "@/lib/portal/static-lesson-bridge"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"

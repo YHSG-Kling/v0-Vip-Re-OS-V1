@@ -14,7 +14,6 @@
  */
 
 import { createClient } from "@/lib/supabase/server"
-import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID, validateProperty } from "@/lib/validations"
 // NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
 // not statically at module scope. lib/enrichment/contact-enrichment-core.ts is

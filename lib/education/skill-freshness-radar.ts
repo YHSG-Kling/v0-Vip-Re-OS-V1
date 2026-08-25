@@ -61,6 +61,25 @@ export async function loadAgentSkillFreshness(
 
 export interface SkillRadarResult { scanned: number; nudged: number; staleSkills: number }
 
+/**
+ * The refresher CTA for each skill area — a TOTAL map, not an if/else chain.
+ *
+ * This was written as `skill.area === "objection_handling" ? … : skill.area ===
+ * "product_knowledge" ? … : <coursework copy>`, which types as `string` no matter
+ * what `SkillArea` says. Add a fourth area to the union
+ * (lib/education/skill-freshness.ts:13) and every agent in it silently receives
+ * the COURSEWORK line — a nudge about the wrong skill, sent to a real agent,
+ * with nothing anywhere to report it. `Record<SkillArea, string>` makes the
+ * compiler refuse the build until the new area has its own copy, which is what
+ * CLAUDE.md §6 means by one vocabulary per function: the union and the copy
+ * cannot drift apart because they are checked against each other.
+ */
+const SKILL_REFRESH_CTA: Record<SkillArea, string> = {
+  objection_handling: "Run a 5-minute objection drill — I've queued a fresh scenario for you.",
+  product_knowledge: "Take a quick knowledge check to lock it back in.",
+  coursework: "Revisit the course refresher — a short review keeps it current.",
+}
+
 /** Score a brokerage's active agents' skill freshness and propose gated refreshers on decayed skills. */
 export async function runSkillFreshnessRadar(svc: Svc, params: { brokerageId: string; now?: Date }): Promise<SkillRadarResult> {
   const out: SkillRadarResult = { scanned: 0, nudged: 0, staleSkills: 0 }
@@ -92,11 +111,7 @@ export async function runSkillFreshnessRadar(svc: Svc, params: { brokerageId: st
       if (prior) continue
 
       const label = SKILL_LABEL[skill.area]
-      const cta = skill.area === "objection_handling"
-        ? "Run a 5-minute objection drill — I've queued a fresh scenario for you."
-        : skill.area === "product_knowledge"
-          ? "Take a quick knowledge check to lock it back in."
-          : "Revisit the course refresher — a short review keeps it current."
+      const cta = SKILL_REFRESH_CTA[skill.area]
       try {
         const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
         const res = await proposeClientMessage({

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { createClient } from "@/lib/supabase/client"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -10,9 +10,7 @@ import { Label } from "@/components/ui/label"
 import {
   Home,
   TrendingUp,
-  Users,
   User,
-  Share2,
   Building2,
   MessageCircle,
   MapPin,
@@ -20,7 +18,6 @@ import {
   Sparkles,
   Loader2,
   CheckCircle2,
-  Play,
   BarChart3,
 } from "lucide-react"
 import { cn } from "@/lib/utils"

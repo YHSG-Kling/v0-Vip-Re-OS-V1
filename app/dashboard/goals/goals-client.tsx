@@ -15,7 +15,7 @@ import {
   aiCoachGoalProgress,
   syncGoalCurrentValues,
 } from "@/app/actions/ai-agent-goals"
-import { AGENT_GOAL_LABELS, AGENT_GOAL_TYPES, isAgentGoalType, isAutoSynced } from "@/lib/goals/goal-types"
+import { AGENT_GOAL_LABELS, isAgentGoalType, isAutoSynced } from "@/lib/goals/goal-types"
 
 // DERIVED, not hand-written. This list used to name six goal types of which
 // FOUR were refused by agent_goals_goal_type_check — every save of those four

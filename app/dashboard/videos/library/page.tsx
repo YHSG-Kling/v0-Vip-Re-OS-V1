@@ -4,14 +4,13 @@ import { useState, useEffect, Suspense } from "react"
 import { useRouter } from "next/navigation"
 import { useLocalStorage } from "@/hooks/use-local-storage"
 import { useSearchParams } from "next/navigation"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
@@ -31,14 +30,12 @@ import {
   Copy,
   Trash2,
   GitBranch,
-  Shield,
   Home,
   User,
   TrendingUp,
   Users,
   PresentationIcon,
   Sparkles,
-  Filter,
   Share2,
   Kanban,
   BarChart3,

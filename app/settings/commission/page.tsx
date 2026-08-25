@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { listCommissionStructures } from '@/app/actions/settings/list-commission-structures';
 import { CommissionStructureForm } from '@/app/components/settings/CommissionStructureForm';
 import { CommissionStructureTable } from '@/app/components/settings/CommissionStructureTable';

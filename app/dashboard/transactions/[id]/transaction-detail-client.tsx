@@ -17,7 +17,7 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
-import { TransactionStage, TRANSACTION_STAGES, STAGE_TRANSITIONS } from "@/lib/transactions/transaction-stages"
+import { TransactionStage, STAGE_TRANSITIONS } from "@/lib/transactions/transaction-stages"
 import {
   checkStageAdvancement,
   advanceTransactionStage,
@@ -43,7 +43,6 @@ import {
   submitInsuranceQuoteApprovalAction,
   approveInsuranceQuoteAction,
   updateEarnestMoneyAction,
-  getPendingQuoteApprovalsAction,
 } from "@/app/actions/transaction-inspections"
 import {
   CheckCircle2,
@@ -53,13 +52,10 @@ import {
   FileText,
   Users,
   Sparkles,
-  ChevronDown,
   Loader2,
   Home,
   DollarSign,
-  CalendarDays,
   Building2,
-  Scale,
   ClipboardList,
   PenLine,
   ArrowLeft,
@@ -687,6 +683,17 @@ export function TransactionDetailClient({
   const [inspectorPhone, setInspectorPhone] = useState("")
   const [inspectionDate, setInspectionDate] = useState("")
   const [inspectionCost, setInspectionCost] = useState("")
+  // ATTACHING THE INSPECTION REPORT. The card already renders a link when
+  // `report_url` is set and there was no way to set it: uploadInspectionReportAction
+  // (app/actions/transaction-inspections.ts:253) was imported by this file and
+  // called by nothing, so every inspection report reached the transaction by
+  // email and never reached the file. The action also files the report as a
+  // `transaction_documents` row of type `inspection_report`, which is what the
+  // documents tab and the closing checklist read — so the missing wire cost the
+  // paperwork trail, not just a link.
+  const [attachingReportFor, setAttachingReportFor] = useState<string | null>(null)
+  const [reportUrlDraft, setReportUrlDraft] = useState("")
+  const [reportNameDraft, setReportNameDraft] = useState("")
 
   // Insurance form state
   const [showInsuranceForm, setShowInsuranceForm] = useState(false)
@@ -1263,6 +1270,39 @@ export function TransactionDetailClient({
           toast.error((res as any)?.error ?? "Could not mark the inspection complete.")
           return
         }
+      router.refresh()
+    })
+  }
+
+  async function handleAttachInspectionReport(inspectionId: string) {
+    const url = reportUrlDraft.trim()
+    if (!url) {
+      toast.error("Paste the report's link first.")
+      return
+    }
+    // The action stores this on transaction_inspections.report_url AND as a
+    // transaction document; a non-http value would render as a broken link in
+    // both places, so it is refused here rather than filed.
+    if (!/^https?:\/\//i.test(url)) {
+      toast.error("The report link must start with http:// or https://")
+      return
+    }
+    startTransition(async () => {
+      const res = await uploadInspectionReportAction({
+        inspectionId,
+        transactionId: transaction.id,
+        brokerageId,
+        reportUrl: url,
+        fileName: reportNameDraft.trim() || "Inspection report",
+      })
+      if (!res?.success) {
+        toast.error((res as any)?.error ?? "Could not attach the inspection report.")
+        return
+      }
+      setAttachingReportFor(null)
+      setReportUrlDraft("")
+      setReportNameDraft("")
+      toast.success("Report attached and filed with the transaction documents.")
       router.refresh()
     })
   }
@@ -3502,8 +3542,57 @@ export function TransactionDetailClient({
                                   </a>
                                 </Button>
                               )}
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() =>
+                                  setAttachingReportFor(attachingReportFor === insp.id ? null : insp.id)
+                                }
+                                disabled={isPending}
+                              >
+                                {insp.report_url ? "Replace report" : "Attach report"}
+                              </Button>
                             </div>
                           </div>
+                          {attachingReportFor === insp.id && (
+                            <div className="mt-3 grid gap-2 rounded-md border bg-muted/30 p-3">
+                              <Label htmlFor={`report-url-${insp.id}`} className="text-xs">
+                                Report link
+                              </Label>
+                              <Input
+                                id={`report-url-${insp.id}`}
+                                value={reportUrlDraft}
+                                onChange={(e) => setReportUrlDraft(e.target.value)}
+                                placeholder="https://…"
+                              />
+                              <Label htmlFor={`report-name-${insp.id}`} className="text-xs">
+                                File name shown in documents
+                              </Label>
+                              <Input
+                                id={`report-name-${insp.id}`}
+                                value={reportNameDraft}
+                                onChange={(e) => setReportNameDraft(e.target.value)}
+                                placeholder="Home inspection report"
+                              />
+                              <div className="flex gap-2">
+                                <Button
+                                  size="sm"
+                                  onClick={() => handleAttachInspectionReport(insp.id)}
+                                  disabled={isPending}
+                                >
+                                  {isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Attach"}
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => setAttachingReportFor(null)}
+                                  disabled={isPending}
+                                >
+                                  Cancel
+                                </Button>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>

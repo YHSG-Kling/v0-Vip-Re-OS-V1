@@ -10,7 +10,6 @@ import {
   DollarSign,
   BarChart3,
   PieChart,
-  Calendar,
   Target,
   Activity,
   ArrowUpRight,

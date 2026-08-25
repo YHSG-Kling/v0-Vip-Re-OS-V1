@@ -14,7 +14,6 @@
 // trusts. Same shape as /api/embed/session, the other public session mint.
 
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { randomUUID } from 'crypto'
 import { checkPublicRateLimit } from '@/lib/security/public-rate-limit'

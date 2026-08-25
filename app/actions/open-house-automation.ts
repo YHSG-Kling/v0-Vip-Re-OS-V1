@@ -6,7 +6,6 @@ import { revalidatePath } from "next/cache"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
-import { ContentGenerationResult } from "@/lib/services"
 import {
   sendOpenHouseInvitation,
   sendWeatherAlertToAgent,

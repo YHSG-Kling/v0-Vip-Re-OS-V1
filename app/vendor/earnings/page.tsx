@@ -5,7 +5,6 @@ import { getVendorEarningsSummary, completeStripeConnectOnboarding } from "@/app
 import { readVendorStripeConnect } from "@/lib/connections/vendor-stripe"
 import { readRoleGrants, selectVendorId } from "@/lib/auth/role-grants"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { DollarSign, ArrowLeft, TrendingUp, CreditCard, Clock, CheckCircle2 } from "lucide-react"
 import Link from "next/link"

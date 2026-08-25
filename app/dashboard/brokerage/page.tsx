@@ -19,7 +19,6 @@ import {
   AlertTriangle,
   Shield,
   FileText,
-  Activity,
   Brain,
   ArrowRight,
   BarChart3,

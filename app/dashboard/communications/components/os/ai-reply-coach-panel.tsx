@@ -19,7 +19,6 @@ import {
   Edit2, 
   RefreshCw,
   ThumbsUp,
-  ThumbsDown,
   Thermometer,
   AlertTriangle,
   Zap,

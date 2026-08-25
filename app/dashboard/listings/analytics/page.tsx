@@ -3,7 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { ArrowLeft, TrendingUp, Eye, Clock, DollarSign, BarChart3 } from "lucide-react"
+import { ArrowLeft, Eye, Clock, DollarSign, BarChart3 } from "lucide-react"
 import Link from "next/link"
 import { computeDaysOnMarket } from "@/lib/listings/compute-dom"
 import {

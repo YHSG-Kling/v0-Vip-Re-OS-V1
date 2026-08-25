@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { getGlobalSettings } from '@/app/actions/settings/get-global-settings';
 import {
   getBrokerageIdentity,

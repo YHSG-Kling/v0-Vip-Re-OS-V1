@@ -14,7 +14,6 @@
  */
 
 import { generateTextRouted as generateText } from '@/lib/ai/models'
-import { resolveModel } from '@/lib/ai/resolve-model'
 import { createServiceClient } from '@/lib/supabase/service'
 import { shouldStopAutoResponding, haltEngagementForNegativeReply } from '@/lib/ai-isa/conversation-handler'
 import { evaluateLeadQualification, persistQualificationSignals } from '@/lib/ai-isa'

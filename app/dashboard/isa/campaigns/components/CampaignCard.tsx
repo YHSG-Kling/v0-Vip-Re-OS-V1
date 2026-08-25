@@ -2,7 +2,6 @@
 
 import { useState } from "react"
 import { useRouter } from "next/navigation"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Mail, Video, FileText, Phone, MessageSquare, PlayCircle, PauseCircle, TestTube } from "lucide-react"
 import { toggleCampaignStatus, sendCampaignTestTouch } from "@/app/actions/ai-isa"

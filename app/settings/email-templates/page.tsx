@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { listEmailTemplates } from '@/app/actions/settings/list-email-templates';
 import { EmailTemplateEditor } from '@/app/components/settings/EmailTemplateEditor';
 import { SettingsCard } from '@/app/components/settings/SettingsCard';

@@ -15,7 +15,7 @@
  * is what we own and test.
  */
 import { createServiceClient } from "@/lib/supabase/service"
-import { loadBuyerCriteria, scoreCriteriaFit, MATCH_FIT_THRESHOLD, type BuyerCriteria } from "./market-watch"
+import { loadBuyerCriteria, scoreCriteriaFit, MATCH_FIT_THRESHOLD } from "./market-watch"
 import type { ExternalListing } from "@/lib/property/external-listings-search"
 
 type Svc = ReturnType<typeof createServiceClient>

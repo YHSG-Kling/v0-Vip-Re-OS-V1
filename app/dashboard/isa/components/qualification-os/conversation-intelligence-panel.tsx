@@ -11,7 +11,6 @@ import {
   Heart,
   Clock,
   DollarSign,
-  ThumbsUp,
   Sparkles,
   ChevronRight,
   User,

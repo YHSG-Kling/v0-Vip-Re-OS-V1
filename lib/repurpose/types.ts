@@ -34,14 +34,23 @@ export interface PipelineConfig {
   hashtagPresets?: string[]
 }
 
-export interface PipelineExecution {
-  pipelineId: string
-  sourceId: string
-  brokerageId: string
-  userId: string
-  teamId?: string
-  agentUserId?: string
-}
+// TOMBSTONE: `PipelineExecution` — DELETED as a stale second contract.
+// SURVIVOR: the parameter type of `executePipeline`,
+// lib/repurpose/actions.ts (`{ pipelineId, brokerageId, sourceType?, sourceId? }`).
+//
+// This interface described a run request that the live function does not take
+// and must not take. Three of its six fields — `userId`, `teamId`,
+// `agentUserId` — are ACTOR AND TENANT identity, and executePipeline resolves
+// all three from the session through getAgentContext, precisely so a caller
+// cannot name them: "Tenant comes from the SESSION. Never from a request body,
+// never from a parameter" (CLAUDE.md §4). Keeping an exported contract that
+// invites a caller to pass them is an invitation to reintroduce the IDOR shape.
+//
+// NOTHING WAS LOST. It had no writer, no reader and no importer: its only
+// mention anywhere was a dead `import type` in lib/repurpose/actions.ts, the
+// very file whose live signature contradicts it. `PipelineConfig` above did NOT
+// share its fate — that one describes a pipeline DEFINITION, has no identity
+// fields, and is now composed into createRepurposePipeline's signature.
 
 export interface RepurposedOutput {
   outputType: OutputFormat

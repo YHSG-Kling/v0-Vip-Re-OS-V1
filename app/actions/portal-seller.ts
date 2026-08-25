@@ -35,7 +35,6 @@ import {
   getOfferSummary,
   type SellerContext,
   type ShowingFeedback,
-  type OfferData,
 } from "@/lib/portal/resolve-seller-context"
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────

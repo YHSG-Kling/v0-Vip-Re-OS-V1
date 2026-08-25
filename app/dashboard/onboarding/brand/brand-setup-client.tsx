@@ -6,9 +6,8 @@
 // ============================================================
 // 6-step wizard with split-panel layout and live preview
 
-import { useState, useCallback, useEffect, useRef } from "react"
+import { useState, useCallback, useRef } from "react"
 import { useRouter } from "next/navigation"
-import useSWR, { mutate } from "swr"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -42,7 +41,6 @@ import {
   uploadLogo,
   type BrandSetupStatus,
 } from "@/app/actions/onboarding/brand"
-import { createClient } from "@/lib/supabase/client"
 import confetti from "canvas-confetti"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────

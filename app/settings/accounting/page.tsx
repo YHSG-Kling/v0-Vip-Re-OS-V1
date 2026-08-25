@@ -10,7 +10,7 @@ import {
   getSyncErrors,
   getTaxCategories,
 } from "@/app/actions/accounting-sync"
-import { LinkIcon, RefreshCw, AlertCircle, CheckCircle2, Clock, Settings2 } from "lucide-react"
+import { LinkIcon, AlertCircle, Clock, Settings2 } from "lucide-react"
 import { ACCOUNTING_OFFERINGS, QUICKBOOKS_OAUTH_START } from "@/lib/connections/accounting-scopes"
 import { readScopedZoom } from "@/lib/connections/zoom"
 import { createServiceClient } from "@/lib/supabase/service"

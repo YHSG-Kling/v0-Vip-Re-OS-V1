@@ -185,10 +185,23 @@ export async function setContactAIPilot(params: {
   return { success: true, level: params.level }
 }
 
-/** Legacy entry — routes to the unified pilot setter. */
-export async function toggleAIISA(contactId: string, enabled: boolean) {
-  return setContactAIPilot({
-    contactId,
-    level: enabled ? "moderate" : "off",
-  })
-}
+// TOMBSTONE: `toggleAIISA(contactId, enabled)` — DELETED as a legacy alias.
+// SURVIVOR: `setContactAIPilot`, app/actions/contact-intelligence.ts:146.
+//
+// Its own comment called it "Legacy entry — routes to the unified pilot setter",
+// and that was its entire body: it mapped a boolean onto `level: "moderate" |
+// "off"` and called the survivor. The survivor carries every level the product
+// actually offers, the tenant-scoped `.select()`-checked update that
+// distinguishes a zero-row write from a real one, and the `ai_pilot_changed`
+// activity row — none of which this alias added to or could.
+//
+// NOTHING WAS LOST IN THE MERGE. The two-state toggle is a strict subset of the
+// survivor's level vocabulary, and the live surface is already the survivor's:
+// app/crm/components/ai-pilot-control.tsx:63 calls setContactAIPilot directly,
+// and app/crm/page.tsx renders that control. This alias's only importer was
+// that same page, which imported it and never called it.
+//
+// A boolean alias over a four-level control is also the §6 defect in miniature:
+// it can only ever express two of the levels, so any caller reaching for it
+// silently loses "conservative"/"aggressive" — and reads back a contact whose
+// autonomy setting it cannot describe.

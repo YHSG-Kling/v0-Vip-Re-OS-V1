@@ -18,7 +18,7 @@ import { generateTextRouted } from "@/lib/ai/models"
 import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { z } from "zod"
-import { getScenarioByKey, OBJECTION_SCENARIOS } from "@/lib/training/objection-scenarios"
+import { getScenarioByKey } from "@/lib/training/objection-scenarios"
 import type { ObjectionScenario } from "@/lib/training/objection-scenarios"
 
 // OBJECTION_SCENARIOS + ObjectionScenario were re-exported here but "use server"

@@ -9,7 +9,6 @@ import {
   Users,
   User,
   Heart,
-  Megaphone,
   BookOpen,
   Share2,
 } from "lucide-react"

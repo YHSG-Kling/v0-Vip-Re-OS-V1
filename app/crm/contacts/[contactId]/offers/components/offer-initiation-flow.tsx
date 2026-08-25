@@ -65,10 +65,6 @@ import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
 import { createClient } from "@/lib/supabase/client"
 import { getOfferContext, type OfferContext } from "@/lib/contacts/ownership-model"
 import { FormSelectorStep, type FormFieldValues } from "@/app/components/forms/form-selector-step"
-import {
-  TransactionFormEsignFlow,
-  type FormTemplate,
-} from "@/app/dashboard/transactions/[id]/components/transaction-form-esign-flow"
 
 import { SendForSignaturesPanel } from "@/app/components/shared/SendForSignaturesPanel"
 

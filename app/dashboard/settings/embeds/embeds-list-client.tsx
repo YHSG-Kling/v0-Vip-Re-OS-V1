@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useTransition, useEffect } from "react"
-import { Plus, Globe, Copy, Trash2, Settings, Power, ExternalLink, Check, BarChart2 } from "lucide-react"
+import { Plus, Globe, Copy, Trash2, Settings, Power, Check, BarChart2 } from "lucide-react"
 import { Card } from "@/app/components/ui/card"
 import { Button } from "@/app/components/ui/button"
 import { Badge } from "@/app/components/ui/badge"

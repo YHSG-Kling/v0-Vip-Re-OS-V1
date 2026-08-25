@@ -2,7 +2,7 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { AIQualityDashboardClient } from "./ai-quality-dashboard-client"
 import { createServiceClient } from "@/lib/supabase/service"
-import { getWeeklyMetrics, getLastTwoWeeksMetrics } from "@/lib/intelligence/feedback-aggregator"
+import { getWeeklyMetrics } from "@/lib/intelligence/feedback-aggregator"
 import { getCalibrationLog } from "@/lib/intelligence/prompt-calibrator"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 

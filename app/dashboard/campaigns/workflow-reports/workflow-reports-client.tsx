@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
-import { Loader2, Activity, CheckCircle2, XCircle, Pause, DollarSign, TrendingUp } from "lucide-react"
+import { Loader2, Activity, CheckCircle2, XCircle, TrendingUp } from "lucide-react"
 import type { WorkflowReportSummary, ReportScope } from "@/app/actions/workflow-reports"
 
 interface Props {

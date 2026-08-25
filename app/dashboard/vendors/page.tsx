@@ -24,9 +24,7 @@ import {
   searchVendors,
   getAllVendorBookings,
   getCompletedBookingsForRating,
-  getVendorCostComparison,
   getAgentAssignedVendors,
-  getVendorReviews,
 } from "@/app/actions/vendor-marketplace"
 import { Store, FileText, Star, CheckCircle2, KeyRound, Layers } from "lucide-react"
 import { VendorAccessPanel } from "./vendor-access-panel"

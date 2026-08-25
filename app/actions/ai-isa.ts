@@ -24,7 +24,6 @@ import { dispatchEmail, dispatchVideo, dispatchDirectMail } from "@/lib/provider
 import { KernelEvent } from "@/lib/kernel/events"
 import { buildActorContext } from "@/lib/kernel/actor-context"
 import { evaluateKernelOutbound } from "@/lib/kernel/adapters/compliance"
-import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 /**
  * AI Inside Sales Agent (ISA) System

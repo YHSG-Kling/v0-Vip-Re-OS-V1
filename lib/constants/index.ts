@@ -248,8 +248,13 @@ export type ContentType = (typeof CONTENT_TYPES)[number]
 export const SOCIAL_PLATFORMS = ["facebook", "instagram", "linkedin", "twitter", "tiktok"] as const
 export type SocialPlatform = (typeof SOCIAL_PLATFORMS)[number]
 
-/** @deprecated Use SOCIAL_PLATFORMS */
-export const SOCIAL_MEDIA_PLATFORMS = SOCIAL_PLATFORMS
+// TOMBSTONE: `SOCIAL_MEDIA_PLATFORMS` — DELETED as a duplicate spelling.
+// SURVIVOR: SOCIAL_PLATFORMS, lib/constants/index.ts:248 — the same array; the
+// alias was `export const SOCIAL_MEDIA_PLATFORMS = SOCIAL_PLATFORMS` and carried
+// its own `@deprecated Use SOCIAL_PLATFORMS` note. Its one importer
+// (lib/services/social-publishing.service.ts) never called it; that file now
+// imports the survivor and validates against it before publishing. Two names for
+// one platform vocabulary is exactly what CLAUDE.md §6 forbids.
 
 export const EMAIL_TYPES = [
   "welcome",

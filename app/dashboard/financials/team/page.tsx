@@ -10,7 +10,6 @@ import { DollarSign, Users, TrendingUp, Award, Target, AlertTriangle } from "luc
 import { TeamRevenueChart } from "./team-revenue-chart"
 import {
   FinancialCommandStrip,
-  MarginBreakdownPanel,
   FinancialActionStack,
   type FinancialPriority,
   type FinancialAction,

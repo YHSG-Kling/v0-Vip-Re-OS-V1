@@ -16,7 +16,6 @@ import {
   CalendarPlus,
   Sparkles,
   Loader2,
-  RefreshCw,
 } from "lucide-react"
 import { inviteFarmContacts, createOpenHouseEvent, updateRsvp } from "@/app/actions/seller-open-house"
 import {

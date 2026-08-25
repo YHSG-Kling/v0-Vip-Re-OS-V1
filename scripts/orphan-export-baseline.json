@@ -519,7 +519,7 @@
     "lib/transactions/sync-from-provider.ts": 1,
     "lib/transactions/transaction-status.ts": 3,
     "lib/usage.ts": 1,
-    "lib/validations/index.ts": 4,
+    "lib/validations/index.ts": 3,
     "lib/vendor/assignment-access.ts": 2,
     "lib/vendor-governance/vendor-policy.ts": 1,
     "lib/vendors/rank.ts": 1,
@@ -568,7 +568,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9301,
+  "census": 9294,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -753,7 +753,7 @@
     "app/actions/connections/connection-center.ts": 4,
     "app/actions/contact-details.ts": 8,
     "app/actions/contact-enrichment.ts": 9,
-    "app/actions/contact-intelligence.ts": 3,
+    "app/actions/contact-intelligence.ts": 2,
     "app/actions/contact-quick-actions.ts": 3,
     "app/actions/contact-reassignment.ts": 2,
     "app/actions/contact-vendor-booking.ts": 1,
@@ -1072,11 +1072,11 @@
     "app/actions/tenant-webhooks.ts": 10,
     "app/actions/time-to-value.ts": 1,
     "app/actions/title-portal.ts": 6,
-    "app/actions/tour-planner.ts": 11,
+    "app/actions/tour-planner.ts": 10,
     "app/actions/transaction-compliance.ts": 6,
     "app/actions/transaction-document-signatures.ts": 4,
     "app/actions/transaction-hazard-insurance.ts": 2,
-    "app/actions/transaction-inspections.ts": 10,
+    "app/actions/transaction-inspections.ts": 9,
     "app/actions/transaction-milestones.ts": 8,
     "app/actions/transaction-stage-machine.ts": 3,
     "app/actions/transaction-tasks.ts": 1,
@@ -1111,7 +1111,7 @@
     "app/actions/video-generation.ts": 17,
     "app/actions/video-landing.ts": 3,
     "app/actions/video-repurposing.ts": 13,
-    "app/actions/video-repurposing.utils.ts": 3,
+    "app/actions/video-repurposing.utils.ts": 0,
     "app/actions/video-voice.ts": 7,
     "app/actions/video.ts": 8,
     "app/actions/voice-access.ts": 3,
@@ -2680,7 +2680,6 @@
     "lib/ads/stuck-ad-action-reaper.ts": 1,
     "lib/agent-action-queue/composer.ts": 1,
     "lib/agent-orchestration/action-plan-generator.ts": 1,
-    "lib/agent-orchestration/agent-activity-monitor.ts": 1,
     "lib/agentic-os/agent-credentials.ts": 5,
     "lib/agentic-os/agent-scopes.ts": 2,
     "lib/agentic-os/app-capability-registry.ts": 3,
@@ -3263,7 +3262,7 @@
     "lib/intelligence/dry-run-cockpit.ts": 2,
     "lib/intelligence/dual-transaction-timing-runner.ts": 1,
     "lib/intelligence/dual-transaction-timing.ts": 1,
-    "lib/intelligence/feedback-aggregator.ts": 3,
+    "lib/intelligence/feedback-aggregator.ts": 2,
     "lib/intelligence/geo-gap-runner.ts": 1,
     "lib/intelligence/geo-gap.ts": 2,
     "lib/intelligence/health-lifecycle-play.ts": 1,
@@ -3589,7 +3588,6 @@
     "lib/kernel/write-sentinel.ts": 4,
     "lib/knowledge/embedding-service.ts": 11,
     "lib/knowledge/help-topic-categories.ts": 2,
-    "lib/lead-assignment/assignment-eligibility.ts": 1,
     "lib/lead-assignment/assignment-engine.ts": 3,
     "lib/lead-assignment/capacity-pick.ts": 3,
     "lib/lead-assignment/contact-assignment.ts": 1,
@@ -5515,8 +5513,7 @@
     ],
     "app/actions/contact-intelligence.ts": [
       "getContactIntelligence",
-      "setContactAIPilot",
-      "toggleAIISA"
+      "setContactAIPilot"
     ],
     "app/actions/contact-quick-actions.ts": [
       "runDealInvestigatorAction",
@@ -7602,7 +7599,6 @@
       "scheduleTourStops",
       "finalizeTour",
       "confirmTourStop",
-      "confirmTour",
       "rateTourStop",
       "completeTour",
       "generateTourNarrative",
@@ -7635,8 +7631,7 @@
       "requestInsuranceQuoteAction",
       "submitInsuranceQuoteApprovalAction",
       "approveInsuranceQuoteAction",
-      "updateEarnestMoneyAction",
-      "getPendingQuoteApprovalsAction"
+      "updateEarnestMoneyAction"
     ],
     "app/actions/transaction-milestones.ts": [
       "completeMilestoneAction",
@@ -7946,11 +7941,7 @@
       "scheduleSnippetToSocial",
       "generateCaptionVariations"
     ],
-    "app/actions/video-repurposing.utils.ts": [
-      "getPlatformConfig",
-      "getAllPlatformConfigs",
-      "validateSnippetForPlatform"
-    ],
+    "app/actions/video-repurposing.utils.ts": [],
     "app/actions/video-voice.ts": [
       "getVoiceProfiles",
       "createVoiceProfile",
@@ -12895,9 +12886,6 @@
     "lib/agent-orchestration/action-plan-generator.ts": [
       "generateAgentActionPlan"
     ],
-    "lib/agent-orchestration/agent-activity-monitor.ts": [
-      "monitorAgentActivity"
-    ],
     "lib/agentic-os/agent-credentials.ts": [
       "hashAgentToken",
       "generateAgentToken",
@@ -15844,8 +15832,7 @@
     ],
     "lib/intelligence/feedback-aggregator.ts": [
       "computeWeeklyMetrics",
-      "getWeeklyMetrics",
-      "getLastTwoWeeksMetrics"
+      "getWeeklyMetrics"
     ],
     "lib/intelligence/geo-gap-runner.ts": [
       "runGeoGapScan"
@@ -17691,9 +17678,6 @@
     "lib/knowledge/help-topic-categories.ts": [
       "helpTopicCategoryLabel",
       "isStorableHelpTopicCategory"
-    ],
-    "lib/lead-assignment/assignment-eligibility.ts": [
-      "evaluateAssignmentEligibility"
     ],
     "lib/lead-assignment/assignment-engine.ts": [
       "resolveAgentByRules",

@@ -212,7 +212,14 @@ function fmtScore(n: number): string { return n.toFixed(2) }
 export function recommendFormatAdjustment(
   situation: { kind: string; channel: TargetChannel | string },
   scored: ScoredFormats,
-  fallback: { compositionId: string; mood: MusicMood },
+  // The fallback's composition id IS the Director's chosen format id, not a free
+  // string: selectVideoFormatLearned (lib/video/video-director.ts:367) passes
+  // `def.compositionId` straight from selectVideoFormat's SelectedFormat. Spelling
+  // it `string` here let the two drift — rename or retype SelectedFormat's field
+  // and this signature would keep compiling while silently accepting anything.
+  // Pick<> ties them together without dragging the format's render flags
+  // (needsAvatar/needsBroll/…) into a decision that does not use them.
+  fallback: Pick<SelectedFormat, "compositionId"> & { mood: MusicMood },
 ): FormatRecommendation {
   const def: FormatRecommendation = {
     source: "default",

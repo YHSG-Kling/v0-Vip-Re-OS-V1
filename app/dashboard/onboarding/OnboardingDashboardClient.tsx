@@ -1,7 +1,7 @@
 'use client'
 
 import { YourWebsiteCard } from '@/app/components/settings/YourWebsiteCard'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import useSWR from 'swr'
 import confetti from 'canvas-confetti'
@@ -9,18 +9,16 @@ import {
   Check, 
   Lock, 
   Play, 
-  FileText, 
+  
   Award, 
   Clock, 
   ChevronDown, 
   ChevronUp,
   Loader2,
-  AlertCircle,
   Trophy,
   Star,
   TrendingUp,
   Users,
-  X,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
@@ -216,6 +214,22 @@ export function OnboardingDashboardClient({
 
   const certifications = progressData?.certifications || []
   const isAdmin = isAdminOrBroker({ user_type: userType })
+
+  // THE ADMIN OVERVIEW CARD HAD A TITLE AND A LINK, AND NO OVERVIEW.
+  // getAdminOnboardingOverview (app/actions/onboarding/progress.ts:750) was
+  // imported by this file and called by nothing — the roster roll-up a broker
+  // needs to see who has stalled was built, gated, and never rendered. The key
+  // is null for a non-admin, so SWR does not fetch at all; the action re-checks
+  // the role server-side anyway (progress.ts:780) and scopes to the SESSION
+  // brokerage, never to the `brokerageId` prop — CLAUDE.md §4, fail closed.
+  const { data: adminOverview } = useSWR(
+    isAdmin ? 'admin-onboarding-overview' : null,
+    async () => {
+      const result = await getAdminOnboardingOverview()
+      return result.success ? result.data : null
+    },
+    { refreshInterval: 60000 },
+  )
 
   return (
     <div className="min-h-screen bg-muted/30">
@@ -708,7 +722,30 @@ export function OnboardingDashboardClient({
                     Admin Overview
                   </CardTitle>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="space-y-3">
+                  {adminOverview && (
+                    <div className="grid grid-cols-3 gap-2 text-center">
+                      <div className="rounded-lg bg-muted/50 p-2">
+                        <p className="text-lg font-semibold">{adminOverview.agents.length}</p>
+                        <p className="text-[11px] text-muted-foreground leading-tight">In onboarding</p>
+                      </div>
+                      <div className="rounded-lg bg-muted/50 p-2">
+                        <p className="text-lg font-semibold text-green-600">{adminOverview.completedThisMonth}</p>
+                        <p className="text-[11px] text-muted-foreground leading-tight">Done this month</p>
+                      </div>
+                      <div className="rounded-lg bg-muted/50 p-2">
+                        <p className={`text-lg font-semibold ${adminOverview.stalledCount > 0 ? 'text-amber-600' : ''}`}>
+                          {adminOverview.stalledCount}
+                        </p>
+                        <p className="text-[11px] text-muted-foreground leading-tight">Stalled</p>
+                      </div>
+                    </div>
+                  )}
+                  {adminOverview && adminOverview.avgDaysToComplete > 0 && (
+                    <p className="text-xs text-muted-foreground text-center">
+                      Average {adminOverview.avgDaysToComplete} days to certify
+                    </p>
+                  )}
                   <Button
                     variant="outline"
                     className="w-full"

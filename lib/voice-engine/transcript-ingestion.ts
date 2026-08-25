@@ -9,7 +9,7 @@
  */
 
 import { getOrCreateConversation, normalizeOutboundMessage, persistMessageWithContext } from '@/lib/communication-spine'
-import { normalizeVoiceTranscript, NormalizedTranscript, RawTranscript } from './transcript-normalizer'
+import { normalizeVoiceTranscript, RawTranscript } from './transcript-normalizer'
 
 export interface IngestTranscriptParams {
   rawTranscript: RawTranscript

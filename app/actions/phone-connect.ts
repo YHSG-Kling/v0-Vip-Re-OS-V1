@@ -8,7 +8,6 @@
 //
 // No stub — what this writes is what dispatch (sendSMS/placeCall) actually uses.
 
-import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { getAgentContext } from "@/lib/identity"

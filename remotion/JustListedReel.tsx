@@ -28,7 +28,6 @@ import {
   interpolate,
   Sequence,
   useCurrentFrame,
-  useVideoConfig,
 } from "remotion"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"

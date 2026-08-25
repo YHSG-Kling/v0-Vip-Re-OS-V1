@@ -5,12 +5,11 @@
 
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Switch } from "@/components/ui/switch"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Dialog,
   DialogContent,
@@ -26,7 +25,6 @@ import {
   ExternalLink,
   Image as ImageIcon,
   Calendar,
-  RefreshCw,
   Eye,
   Sparkles,
   TrendingUp,

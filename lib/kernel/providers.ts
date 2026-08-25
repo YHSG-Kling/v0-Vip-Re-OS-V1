@@ -14,7 +14,6 @@
 // No side effects. Read-only.
 
 import { createClient } from "@/lib/supabase/server"
-import type { ProviderType } from "./types"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 

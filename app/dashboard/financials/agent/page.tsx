@@ -7,9 +7,9 @@ import { EarningsKPIRow } from "@/app/components/financials/EarningsKPIRow"
 import { CapProgressBar } from "@/app/components/financials/CapProgressBar"
 import { CommissionBreakdownTable } from "@/app/components/financials/CommissionBreakdownTable"
 import { 
-  DollarSign, 
+  
   PieChart, 
-  TrendingUp, 
+  
   Users, 
   AlertCircle,
   BarChart3,

@@ -27,7 +27,7 @@
 import "server-only"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { OSINTClient } from "@/lib/osint-client"
-import { BatchDataClient, searchProperties } from "@/lib/external/batchdata-client"
+import { searchProperties } from "@/lib/external/batchdata-client"
 import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { z } from "zod"

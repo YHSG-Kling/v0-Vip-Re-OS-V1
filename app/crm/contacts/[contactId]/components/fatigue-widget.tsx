@@ -8,7 +8,7 @@
  * Placed in the right column of buyer-overview-client.tsx below BuyerInsightsPanel.
  */
 
-import React, { useState, useTransition } from "react"
+import { useState, useTransition } from "react"
 import { useRouter }               from "next/navigation"
 import { Button }                  from "@/components/ui/button"
 import {

@@ -2,12 +2,10 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
-import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { processKernelEvent } from "@/lib/kernel"
 import { KernelEvent } from "@/lib/kernel/events"
-import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 

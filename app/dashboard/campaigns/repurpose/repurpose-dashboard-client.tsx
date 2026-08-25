@@ -15,7 +15,6 @@ import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Switch } from "@/components/ui/switch"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Separator } from "@/components/ui/separator"
 import {
   Dialog,
   DialogContent,
@@ -43,9 +42,7 @@ import {
   Plus,
   RefreshCw,
   Play,
-  Pause,
   Trash2,
-  Settings,
   Video,
   FileText,
   Mic,
@@ -75,7 +72,6 @@ import {
   togglePipelineActive,
   deletePipeline,
 } from "@/lib/repurpose/actions"
-import { OUTPUT_FORMAT_CONFIG } from "@/lib/repurpose/types"
 import type { SourceType, OutputFormat } from "@/lib/repurpose/types"
 import { toast } from "sonner"
 import { SnippetWizardPanel } from "./components/snippet-wizard-panel"

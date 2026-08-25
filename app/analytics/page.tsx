@@ -17,9 +17,7 @@ import {
 import {
   Gift,
   Users,
-  Calculator,
   Heart,
-  TrendingUp,
   Sparkles,
   Download,
   DollarSign,

@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useEffect, useState, useTransition } from 'react'
+import { useEffect, useState, useTransition } from 'react'
 import {
   getProviderSettings,
   getSystemProviderStatus,

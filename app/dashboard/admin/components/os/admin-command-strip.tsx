@@ -8,7 +8,7 @@ import {
   AlertTriangle, 
   UserPlus, 
   ClipboardCheck, 
-  Settings,
+  
   ChevronRight,
   Activity,
   Loader2

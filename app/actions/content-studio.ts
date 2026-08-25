@@ -3,8 +3,6 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
-import { isValidUUID } from "@/lib/validations"
-import { handleError } from "@/lib/errors"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 // Most actions in this file used to trust caller-supplied userId/userRole.

@@ -7,10 +7,6 @@ import {
   getCompetitorPosts,
   getAdInsights,
   getTrendAlerts,
-  type CompetitorAd,
-  type CompetitorPost,
-  type AdInsight,
-  type TrendAlert,
 } from "@/lib/ads/ad-monitor"
 
 export const dynamic = "force-dynamic"

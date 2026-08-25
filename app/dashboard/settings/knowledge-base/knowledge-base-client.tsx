@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback } from 'react'
+import { useState } from 'react'
 // The help-topic vocabulary owns its own display labels. `.replace(/_/g,' ')`
 // renders "tech_stack" as "tech stack"; the module renders it as "Tech Stack",
 // which is what the admin picked from and what the CHECK constraint stores.
@@ -23,9 +23,6 @@ import {
 import {
   Card,
   CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
 } from '@/components/ui/card'
 import {
   Sheet,

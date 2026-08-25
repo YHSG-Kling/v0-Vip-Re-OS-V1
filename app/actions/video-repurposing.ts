@@ -8,7 +8,6 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { generateAIResponse } from "@/lib/ai"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { getPlatformConfig, getAllPlatformConfigs, validateSnippetForPlatform } from "./video-repurposing.utils"
 // The repurposed_content_log CHECK vocabularies live in the non-"use server"
 // sibling: a top-level "use server" module may only export async functions.
 import { REPURPOSE_LOG_STATUSES, REPURPOSE_LOG_APPROVAL_STATUSES } from "./video-repurposing.utils"
@@ -109,21 +108,39 @@ export interface RepurposedContentLog {
 }
 
 // Platform-specific configurations
+//
+// THE ONE PLATFORM VOCABULARY FOR REPURPOSING. A second `PlatformTarget` union
+// and a second `PLATFORM_CONFIGS` map lived in ./video-repurposing.utils.ts and
+// disagreed with this one on both the NAMES (`instagram_reel` vs
+// `instagram_reels`, `youtube_short` vs `youtube_shorts`, `linkedin_video` vs
+// `linkedin`) and the LIMITS (tiktok 600s/10 hashtags there, 180s/100 here).
+// Only this map reaches the database — every writer of
+// `video_snippets.platform_target` normalises against it — so this is the
+// survivor and the other is gone (tombstone at video-repurposing.utils.ts).
+//
+// `minDuration` is MERGED FORWARD from that copy: it was the one field the
+// duplicate carried that this map lacked AND that had a real enforcement site
+// (its validateSnippetForPlatform rejected a too-SHORT snippet, while this
+// file's create path only ever checked the maximum). Values follow the
+// duplicate where the platform corresponds; instagram_story and instagram_post
+// exist only here and take Instagram's 3s floor, the same floor the duplicate
+// gave instagram_reel.
 const PLATFORM_CONFIGS: Record<PlatformTarget, {
+  minDuration: number
   maxDuration: number
   aspectRatio: AspectRatio
   maxCaptionLength: number
   hashtagLimit: number
   displayName: string
 }> = {
-  instagram_reels: { maxDuration: 90, aspectRatio: "9:16", maxCaptionLength: 2200, hashtagLimit: 30, displayName: "Instagram Reels" },
-  instagram_story: { maxDuration: 60, aspectRatio: "9:16", maxCaptionLength: 0, hashtagLimit: 10, displayName: "Instagram Stories" },
-  instagram_post: { maxDuration: 60, aspectRatio: "1:1", maxCaptionLength: 2200, hashtagLimit: 30, displayName: "Instagram Post" },
-  tiktok: { maxDuration: 180, aspectRatio: "9:16", maxCaptionLength: 2200, hashtagLimit: 100, displayName: "TikTok" },
-  youtube_shorts: { maxDuration: 60, aspectRatio: "9:16", maxCaptionLength: 100, hashtagLimit: 15, displayName: "YouTube Shorts" },
-  facebook_reels: { maxDuration: 90, aspectRatio: "9:16", maxCaptionLength: 2200, hashtagLimit: 30, displayName: "Facebook Reels" },
-  linkedin: { maxDuration: 600, aspectRatio: "16:9", maxCaptionLength: 3000, hashtagLimit: 5, displayName: "LinkedIn Video" },
-  twitter: { maxDuration: 140, aspectRatio: "16:9", maxCaptionLength: 280, hashtagLimit: 10, displayName: "Twitter/X Video" },
+  instagram_reels: { minDuration: 3, maxDuration: 90, aspectRatio: "9:16", maxCaptionLength: 2200, hashtagLimit: 30, displayName: "Instagram Reels" },
+  instagram_story: { minDuration: 3, maxDuration: 60, aspectRatio: "9:16", maxCaptionLength: 0, hashtagLimit: 10, displayName: "Instagram Stories" },
+  instagram_post: { minDuration: 3, maxDuration: 60, aspectRatio: "1:1", maxCaptionLength: 2200, hashtagLimit: 30, displayName: "Instagram Post" },
+  tiktok: { minDuration: 3, maxDuration: 180, aspectRatio: "9:16", maxCaptionLength: 2200, hashtagLimit: 100, displayName: "TikTok" },
+  youtube_shorts: { minDuration: 15, maxDuration: 60, aspectRatio: "9:16", maxCaptionLength: 100, hashtagLimit: 15, displayName: "YouTube Shorts" },
+  facebook_reels: { minDuration: 3, maxDuration: 90, aspectRatio: "9:16", maxCaptionLength: 2200, hashtagLimit: 30, displayName: "Facebook Reels" },
+  linkedin: { minDuration: 3, maxDuration: 600, aspectRatio: "16:9", maxCaptionLength: 3000, hashtagLimit: 5, displayName: "LinkedIn Video" },
+  twitter: { minDuration: 1, maxDuration: 140, aspectRatio: "16:9", maxCaptionLength: 280, hashtagLimit: 10, displayName: "Twitter/X Video" },
 }
 
 // ============================================
@@ -325,10 +342,17 @@ export async function createVideoSnippet(data: {
   // Auto-determine aspect ratio if not provided
   const aspectRatio = data.aspectRatio || PLATFORM_CONFIGS[normalizedPlatform].aspectRatio
 
-  // Validate duration against platform limits
+  // Validate duration against platform limits — BOTH ends of the range.
+  // The floor arrived with the merge from ./video-repurposing.utils.ts: a
+  // one-second "YouTube Short" or a two-second Reel is rejected by the platform
+  // on upload, and until now it was accepted here, stored, and only failed at
+  // distribution time where the agent could no longer see why.
   const duration = data.endSeconds - data.startSeconds
-  const maxDuration = PLATFORM_CONFIGS[normalizedPlatform].maxDuration
+  const { minDuration, maxDuration } = PLATFORM_CONFIGS[normalizedPlatform]
 
+  if (duration < minDuration) {
+    throw new Error(`Snippet duration (${duration}s) is below the ${normalizedPlatform} minimum of ${minDuration}s`)
+  }
   if (duration > maxDuration) {
     throw new Error(`Snippet duration (${duration}s) exceeds ${normalizedPlatform} limit of ${maxDuration}s`)
   }

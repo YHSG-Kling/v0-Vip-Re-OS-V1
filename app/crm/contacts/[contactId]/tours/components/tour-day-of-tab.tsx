@@ -5,7 +5,6 @@ import { ChevronLeft, ChevronRight, Phone, MapPin, Key, Route, Loader2 } from 'l
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
-import { Badge } from '@/components/ui/badge'
 import { toast } from '@/hooks/use-toast'
 import { rateTourStop, completeTour } from '@/app/actions/tour-planner'
 import { aiOptimizeShowingRoute } from '@/app/actions/ai-showing-management'

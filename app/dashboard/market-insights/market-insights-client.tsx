@@ -67,7 +67,6 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  Legend,
 } from "recharts"
 import {
   addMarketSource,
@@ -139,14 +138,42 @@ export function MarketInsightsDashboardClient({
     setLoadingContacts(true)
     try {
       const supabase = createClient()
-      const { data } = await supabase
-        .from("contacts")
-        .select("id, first_name, last_name, email, contact_type")
-        .eq("agent_id", agentId)
-        .in("contact_type", ["seller", LIFETIME_CUSTOMER_TYPE, "buyer"])
-        .not("email", "is", null)
-        .limit(50)
-      setShareContacts(data ?? [])
+      // THE BUTTON SAYS "SEND TO SELLERS" ABOUT ONE MARKET, and this list is
+      // every contact the agent owns in any market. getSellersInMarket
+      // (app/actions/market-insight-actions.ts:212) is the half that was built
+      // and never wired: the BROKERAGE-scoped, session-derived read of the
+      // active sellers whose address actually falls in the market this insight
+      // is about. It is used here to PRE-SELECT them — the full roster still
+      // renders underneath so a buyer or past client can be added by hand, and
+      // nothing sends until the agent saves the drafts.
+      //
+      // Tenancy note: the roster query below filters on the `agentId` PROP,
+      // while the action derives its brokerage from the SESSION
+      // (getAgentContext) — CLAUDE.md §4. The pre-selection therefore cannot be
+      // widened by a tampered prop.
+      const [rosterRes, inMarketSellers] = await Promise.all([
+        supabase
+          .from("contacts")
+          .select("id, first_name, last_name, email, contact_type")
+          .eq("agent_id", agentId)
+          .in("contact_type", ["seller", LIFETIME_CUSTOMER_TYPE, "buyer"])
+          .not("email", "is", null)
+          .limit(50),
+        selectedMarket
+          ? getSellersInMarket(selectedMarket).catch(() => [] as any[])
+          : Promise.resolve([] as any[]),
+      ])
+      const roster = rosterRes.data ?? []
+      // Union, roster first, deduped by id — an in-market seller the roster
+      // query missed (a different owning agent inside the same brokerage) is
+      // still offered rather than silently dropped.
+      const seen = new Set(roster.map((c: any) => c.id))
+      const extra = (inMarketSellers as any[])
+        .filter((c) => c?.email && !seen.has(c.id))
+        .map((c) => ({ id: c.id, first_name: c.first_name, last_name: c.last_name, email: c.email, contact_type: "seller" }))
+      setShareContacts([...roster, ...extra])
+      const inMarketIds = (inMarketSellers as any[]).filter((c) => c?.email).map((c) => c.id)
+      if (inMarketIds.length > 0) setSelectedIds(inMarketIds)
     } catch {
       toast.error("Failed to load contacts")
     } finally {

@@ -20,7 +20,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { sendSMS, sendEmail } from "@/lib/providers/messaging"
-import { REQUESTABLE_ITEMS, ITEM_LABEL, type RequestableItem } from "@/lib/lenders/status-request-items"
+import { ITEM_LABEL, type RequestableItem } from "@/lib/lenders/status-request-items"
 
 export async function requestLenderStatusUpdateAction(input: {
   transactionId: string

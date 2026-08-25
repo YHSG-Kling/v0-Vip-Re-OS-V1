@@ -7,8 +7,6 @@ import { Button } from "@/components/ui/button"
 import { 
   BookOpen, 
   ChevronRight,
-  AlertCircle,
-  CheckCircle2,
   Loader2,
   FileText,
   Clock

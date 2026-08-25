@@ -12,7 +12,6 @@
 import { revalidatePath } from "next/cache"
 import { getAgentContext } from "@/lib/identity"
 import { createServiceClient } from "@/lib/supabase/service"
-import { createClient } from "@/lib/supabase/server"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TYPES

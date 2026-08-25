@@ -12,8 +12,6 @@ import {
   Target,
   ArrowRight,
   Award,
-  TrendingUp,
-  Gift,
 } from "lucide-react"
 
 interface BadgeProgress {

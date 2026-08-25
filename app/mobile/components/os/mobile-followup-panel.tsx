@@ -9,7 +9,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/co
 import { Clock, Phone, MessageSquare, CheckCircle, AlertCircle, User } from "lucide-react"
 import { formatDistanceToNow } from "date-fns"
 import { toast } from "sonner"
-import { logActivity, completeActivity } from "@/app/actions/activities"
+import { completeActivity } from "@/app/actions/activities"
 
 interface FollowupTask {
   id: string

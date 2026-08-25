@@ -2,7 +2,6 @@ import { createClient } from "@/lib/supabase/server"
 import { resolveIsaCallingReadiness } from "@/lib/voice/isa-readiness"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { getAIISASettings } from "@/app/actions/ai-isa-settings"
-import { redirect } from "next/navigation"
 import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -12,16 +11,14 @@ import {
   Phone, 
   CheckCircle2, 
   Clock, 
-  Users, 
+  
   TrendingUp,
-  PhoneOff,
   ArrowRight
 } from "lucide-react"
 import { ISACallsTable } from "./isa-calls-table"
 import { ISACampaignsPanel } from "./isa-campaigns-panel"
 import { CoachingInsightsPanel } from "./coaching-insights-panel"
 import { HandoffQueuePanel } from "./handoff-queue-panel"
-import { ContactHistorySheet } from "./contact-history-sheet"
 import { ISAConfigSummary } from "./isa-config-summary"
 
 export const dynamic = "force-dynamic"

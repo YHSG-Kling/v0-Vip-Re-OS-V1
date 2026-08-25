@@ -28,7 +28,6 @@ import { AgentPLTable } from "./agent-pl-table"
 import {
   FinancialCommandStrip,
   MarginBreakdownPanel,
-  PayoutReadinessPanel,
   FinancialActionStack,
   ProfitLossReportPanel,
   type FinancialPriority,

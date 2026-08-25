@@ -32,7 +32,6 @@ import {
   logBatchMatchSignals,
   type BuyerProfile,
   type ListingProfile,
-  type MatchScore,
 } from '@/lib/property-matching'
 
 /**

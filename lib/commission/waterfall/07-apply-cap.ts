@@ -1,5 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/service'
-import { dollarsToCents, centsToDollars } from '../utils'
+import { dollarsToCents } from '../utils'
 import type { WaterfallContext } from '../types'
 
 /**

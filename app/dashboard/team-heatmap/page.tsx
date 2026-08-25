@@ -30,8 +30,6 @@ import {
   TrendingUp,
   TrendingDown,
   Users,
-  Home,
-  DollarSign,
   AlertTriangle,
   Target,
 } from "lucide-react"

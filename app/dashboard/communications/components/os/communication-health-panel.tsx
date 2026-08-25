@@ -12,7 +12,6 @@ import {
   AlertTriangle,
   CheckCircle,
   Clock,
-  MessageSquare,
   ArrowRight
 } from "lucide-react"
 

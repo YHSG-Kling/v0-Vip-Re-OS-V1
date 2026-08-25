@@ -51,6 +51,19 @@ export async function generateContent(params: ContentGenerationParams): Promise<
       throw new ValidationError("Invalid agent ID")
     }
 
+    // CONTENT TYPE IS CHECKED AT RUNTIME, not only by the `ContentType`
+    // annotation. CONTENT_TYPES (lib/constants/index.ts:238) was imported here
+    // and never consulted, and the type alone stops nothing: this service is
+    // reached from server actions, so `contentType` arrives across an HTTP
+    // boundary where TypeScript has already been erased. An unrecognised value
+    // fell through the prompt switch's `default` branch, which interpolates it
+    // straight into the model prompt (`Generate ${params.contentType}
+    // content.`) and then writes it to ai_generated_content.content_type — an
+    // untyped string reaching both the prompt and the column.
+    if (!(CONTENT_TYPES as readonly string[]).includes(params.contentType)) {
+      throw new ValidationError(`Unsupported content type: ${params.contentType}`)
+    }
+
     console.log("[v0] Generating content:", params.contentType, "for platform:", params.platform)
 
     const supabase = await createClient()

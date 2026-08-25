@@ -8,7 +8,7 @@
 //      honest "available on Brokerage tier" state)
 // Secrets and tokens are displayed exactly once, at mint.
 
-import React, { useState, useTransition } from "react"
+import { useState, useTransition } from "react"
 import {
   createWebhookSubscription,
   updateWebhookSubscription,

@@ -40,7 +40,6 @@ import {
   recordRenderCompleted,
   estimateCompositionCost,
   type CompositionTier,
-  type RemotionCompositionRow,
 } from "./registry"
 import { concatIntroOutro } from "@/lib/video/composite-attribution"
 import { mixBackgroundMusic } from "./music-mixer"

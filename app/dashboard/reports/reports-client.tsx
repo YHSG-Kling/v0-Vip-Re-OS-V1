@@ -8,7 +8,6 @@ import {
   FileText,
   Mail,
   TrendingUp,
-  AlertCircle,
   CheckCircle2,
   Clock,
   Eye,

@@ -21,8 +21,7 @@ import {
   ExternalLink,
   Activity,
   CheckCircle2,
-  XCircle,
-  Clock
+  XCircle
 } from "lucide-react"
 
 interface ContactHistorySheetProps {

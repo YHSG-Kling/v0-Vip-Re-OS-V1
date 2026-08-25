@@ -24,7 +24,6 @@ import type {
   SourceType,
   OutputFormat,
   PipelineConfig,
-  PipelineExecution,
   RepurposedOutput,
   ExecutePipelineResult,
   SavePipelineResult
@@ -164,26 +163,42 @@ async function logRepurpose(
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. CREATE REPURPOSE PIPELINE
 // ═══════════════════════════════════════════════════════════════════════════════
-export async function createRepurposePipeline(params: {
-  pipelineName: string
-  sourceType: SourceType
-  sourceId: string
-  outputFormats: OutputFormat[]
-  brokerageId: string
-  agentUserId?: string
-  teamId?: string
-  /** External source video URL (used by the video_url source type). */
-  sourceUrl?: string
-  /**
-   * "Skip manual review for generated content" — the switch on the Create
-   * Pipeline dialog. It was collected and never sent: repurpose_pipelines has
-   * no such column (verified live), and the client did not pass it either, so
-   * the toggle governed nothing and every output landed in pending_review
-   * regardless. Carried in output_config, which already holds the pipeline's
-   * other settings, rather than growing the table for one boolean.
-   */
-  autoApprove?: boolean
-}): Promise<SavePipelineResult> {
+/**
+ * THE PIPELINE DEFINITION, TIED TO ITS DECLARED CONTRACT.
+ *
+ * `pipelineName`, `sourceType`, `outputFormats` and `autoApprove` are not
+ * restated here — they are taken from `PipelineConfig`
+ * (lib/repurpose/types.ts:27), which is the module's declared shape for a
+ * pipeline definition. It had been written, exported, and then never referenced
+ * by anything, while this signature spelled the same four fields out again; two
+ * declarations of one contract drift the moment either is edited, which is what
+ * CLAUDE.md §6 rules out.
+ *
+ * `id` is omitted because this call CREATES the row. `brandVoiceOverride` and
+ * `hashtagPresets` are omitted deliberately and the omission is the finding, not
+ * an oversight: the repurpose dashboard's `Pipeline.output_config` type declares
+ * `brand_voice_override` and `hashtag_presets`, and NOTHING in this file writes
+ * either — the insert below stores only `formats`, `sourceId`, `autoApprove` and
+ * an optional `sourceUrl`. Accepting them here would fabricate a wire that ends
+ * nowhere; naming them in the Omit records that the reader has no writer yet.
+ *
+ * On `autoApprove`: "Skip manual review for generated content" — the switch on
+ * the Create Pipeline dialog. It was collected and never sent: repurpose_pipelines
+ * has no such column (verified live), and the client did not pass it either, so
+ * the toggle governed nothing and every output landed in pending_review
+ * regardless. It is carried in output_config, which already holds the pipeline's
+ * other settings, rather than growing the table for one boolean.
+ */
+export async function createRepurposePipeline(
+  params: Omit<PipelineConfig, "id" | "brandVoiceOverride" | "hashtagPresets"> & {
+    sourceId: string
+    brokerageId: string
+    agentUserId?: string
+    teamId?: string
+    /** External source video URL (used by the video_url source type). */
+    sourceUrl?: string
+  },
+): Promise<SavePipelineResult> {
   try {
     const agentContext = await getAgentContext()
     const { userId, brokerageId: contextBrokerageId } = agentContext

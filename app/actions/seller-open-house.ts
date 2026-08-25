@@ -6,7 +6,6 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { markOpenHouseCompleted } from "@/app/actions/seller-listing/execution-engine"
-import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { ingestOpenHouseAttendeeSignalAction } from "@/app/actions/lead-signal-ingest"
 import { interestLevelToSignalScale } from "@/lib/lead-intelligence/interest-level"
 

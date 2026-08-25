@@ -93,8 +93,19 @@ export interface GenerationVoiceOption {
   qualityScore?: number | null
 }
 
-export interface UploadedSample {
-  phrase: string
-  audioUrl: string
-  durationSeconds: number
-}
+// TOMBSTONE: `UploadedSample` — DELETED as a third spelling of one shape.
+// SURVIVOR: `SamplePhrase`, app/actions/video-voice.types.ts:46.
+//
+// It declared `{ phrase, audioUrl, durationSeconds }` in camelCase; the shape
+// that is actually written and read is `SamplePhrase`
+// (`phrase_text` / `audio_url` / `duration_seconds`), which is what
+// `SampleManifest.phrases` holds and what updateVoiceProfileSamples counts and
+// persists. The survivor carries everything this had plus the two fields the
+// capture flow depends on — `phrase_id` and `status` ("pending" | "recorded" |
+// "validated" | "rejected"), the field the recorded-count filter reads.
+//
+// NOTHING WAS LOST. This interface had no writer, no reader and no importer
+// anywhere in the tree — its only mention was a dead `import type` in
+// app/actions/video-voice.ts. A camelCase twin of a snake_case row shape is
+// exactly the two-vocabularies defect CLAUDE.md §6 names: a scorer, or a
+// person, matching one spelling cannot see the other.

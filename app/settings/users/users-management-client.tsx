@@ -7,7 +7,7 @@ import { InviteUserButton } from "@/app/dashboard/admin/users/invite-user-button
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import {
   Dialog,
   DialogContent,
@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/select"
 import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Plus, Search, Pencil, Trash2, Loader2, User, ShieldCheck } from "lucide-react"
+import { Search, Pencil, Trash2, Loader2, User } from "lucide-react"
 import { useRouter } from "next/navigation"
 
 type UserRow = {

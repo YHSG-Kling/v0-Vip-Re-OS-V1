@@ -13,7 +13,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Switch } from "@/components/ui/switch"
 import { saveVideoTemplate } from "@/app/actions/video-generation"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 

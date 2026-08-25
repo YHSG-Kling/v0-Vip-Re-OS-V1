@@ -3,7 +3,7 @@
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { CheckCircle, XCircle, Loader2, Users, Contact, Database } from "lucide-react"
+import { CheckCircle, XCircle, Loader2, Users, Database } from "lucide-react"
 
 interface SeedResult {
   email?: string

@@ -3,8 +3,7 @@
 import { useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { ShieldAlert, ShieldCheck, AlertTriangle, ChevronRight } from "lucide-react"
+import { ShieldAlert, ShieldCheck, ChevronRight } from "lucide-react"
 import Link from "next/link"
 import type { AgentLicenseStatus } from "@/app/actions/admin/license-tracking"
 

@@ -3,7 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
 import { handleError, ValidationError, NotFoundError } from "@/lib/errors"
-import { SOCIAL_MEDIA_PLATFORMS } from "@/lib/constants"
+import { SOCIAL_PLATFORMS } from "@/lib/constants"
 
 /**
  * Consolidated Social Media Publishing Service
@@ -51,6 +51,17 @@ export async function publishToSocialMedia(params: PublishPostParams): Promise<{
 
     const platforms = params.platforms || [post.platform]
     const results: PublishResult[] = []
+
+    // THE PLATFORM VOCABULARY IS CHECKED, not assumed. `params.platforms` is a
+    // bare `string[]` that arrives from a caller, and every unrecognised entry
+    // used to become its own PublishResult row and its own attempted publish.
+    // SOCIAL_PLATFORMS (lib/constants/index.ts:248) is the one list of platforms
+    // this product publishes to; it was imported into this file under its
+    // deprecated alias and never consulted.
+    const unknown = platforms.filter((p) => !(SOCIAL_PLATFORMS as readonly string[]).includes(p))
+    if (unknown.length > 0) {
+      throw new ValidationError(`Unsupported social platform(s): ${unknown.join(", ")}`)
+    }
 
     for (const platform of platforms) {
       const result = await publishToPlatform({

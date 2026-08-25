@@ -10,12 +10,11 @@ import {
   Users, 
   Play, 
   Pause, 
-  CheckCircle, 
+  
   Clock, 
   Mail,
   MessageSquare,
-  SkipForward,
-  AlertTriangle
+  SkipForward
 } from "lucide-react"
 
 interface SequenceEnrollment {

@@ -2,7 +2,6 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { generateObject } from "@/lib/ai/generate"
-import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"

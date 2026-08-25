@@ -36,7 +36,6 @@ import {
 } from '@/app/actions/ai-isa-settings'
 import type { IsaSettingsOwnerType } from '@/lib/ai-isa/resolve-isa-settings'
 import type { AIISASettings } from '@/lib/ai-isa/settings-types'
-import { getAgentContext } from '@/lib/identity/get-agent-context'
 import { createClient } from '@/lib/supabase/client'
 
 const WRITE_ROLES = new Set(['broker', 'broker_admin', 'admin', 'superadmin'])

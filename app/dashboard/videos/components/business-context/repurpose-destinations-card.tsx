@@ -2,7 +2,6 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import Link from "next/link"
@@ -12,8 +11,6 @@ import {
   Mail,
   Smartphone,
   FileText,
-  Heart,
-  Users,
 } from "lucide-react"
 import type { VideoPurpose } from "./video-business-purpose-picker"
 
