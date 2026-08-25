@@ -489,7 +489,14 @@ export async function GET(request: NextRequest) {
           // so every hybrid avatar→Remotion video was drafted into email, SMS, social and
           // campaign assets pointing at the raw avatar clip minutes before the branded
           // composite existed. Both now defer together, on the same condition.
-          const hasPendingComposite = !!(video.provider_metadata as any)?.target_composition_id
+          //
+          // ONE SPELLING OF THE QUESTION (§6). This was an inline
+          // `!!meta.target_composition_id` here and nowhere else, so the email
+          // backfill and lib/video/playable-video — which face the exact same
+          // window — had no way to ask it. It is now the shared predicate that
+          // lib/video/avatar-render-orchestrator owns beside the key it reads.
+          const { declaresAvatarComposition } = await import("@/lib/video/avatar-render-orchestrator")
+          const hasPendingComposite = declaresAvatarComposition(video.provider_metadata)
           if (!hasPendingComposite) {
             // Emit orchestrator event so handleVideoGenerated fans the finished video out
             // to email + SMS drafts, the listing page, social drafts and campaign assets.

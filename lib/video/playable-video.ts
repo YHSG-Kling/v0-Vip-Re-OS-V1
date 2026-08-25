@@ -93,6 +93,9 @@ const RENDER_IN_PROGRESS = ["queued", "rendering"] as const
  * (lib/video/script-compliance) never reaches a recipient, so it resolves to
  * `none` rather than `ready` — a URL that must not be sent is not a playable
  * URL. 'needs_review' is advisory by design and still ships.
+ *
+ * SO IS ASSEMBLY. A hybrid D-ID→Remotion project is not finished when its avatar
+ * track lands; see the composite block below.
  */
 async function resolveVideoProjectPlayable(
   projectId: string,
@@ -101,7 +104,7 @@ async function resolveVideoProjectPlayable(
   const supabase = client ?? createServiceClient()
   const { data, error } = await supabase
     .from("ai_video_projects")
-    .select("id, status, video_url, thumbnail_url, compliance_status")
+    .select("id, status, video_url, thumbnail_url, compliance_status, provider_metadata, completed_at")
     .eq("id", projectId)
     .maybeSingle()
   if (error) return { state: "none", reason: `video project unreadable: ${error.message}` }
@@ -112,10 +115,43 @@ async function resolveVideoProjectPlayable(
     video_url: string | null
     thumbnail_url: string | null
     compliance_status: string | null
+    provider_metadata: unknown
+    completed_at: string | null
   }
   if (p.compliance_status === "failed") {
     return { state: "none", reason: "video failed the script compliance postcheck" }
   }
+
+  // ── THE AVATAR TRACK IS NOT THE DELIVERABLE ────────────────────────────────
+  // A project that declared a Remotion assembly (provider_metadata
+  // .target_composition_id) publishes TWO cuts onto this one video_url column:
+  // poll-did-videos writes the D-ID talking head on provider completion, and
+  // render-composition overwrites it with the brand-chromed composite when the
+  // Remotion render finishes. Answering 'ready' in between hands every sender in
+  // the OS the un-assembled cut — the welcome email, the portal card, the drip,
+  // the social fan-out — and an email cannot be recalled once sent. poll-did-videos
+  // already deferred its own fan-out on exactly this condition and said why; this
+  // is the same ruling, applied at the one resolver every sender goes through.
+  //
+  // Bounded on purpose (COMPOSITE_WAIT_MS): a cancelled, failed or never-enqueued
+  // assembly resolves 'abandoned' and the D-ID cut is served, because a video
+  // that is merely un-assembled beats a video that never arrives.
+  const { resolveAvatarCompositeState } = await import("@/lib/video/avatar-render-orchestrator")
+  const composite = await resolveAvatarCompositeState(
+    { id: projectId, provider_metadata: p.provider_metadata, completed_at: p.completed_at },
+    supabase,
+  )
+  if (composite.state === "pending") return { state: "in_progress", source: "ai_video_project" }
+  if (composite.state === "landed" && composite.outputUrl) {
+    return {
+      state: "ready",
+      videoUrl: composite.outputUrl,
+      thumbnailUrl: p.thumbnail_url,
+      source: "ai_video_project",
+      reviewPending: p.compliance_status !== "passed",
+    }
+  }
+
   if ((VIDEO_FINISHED_STATUSES as readonly string[]).includes(p.status ?? "") && p.video_url) {
     return {
       state: "ready",

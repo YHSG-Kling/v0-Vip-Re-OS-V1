@@ -41,8 +41,17 @@
  *   7. Create ai_video_projects + dispatchVideo (D-ID-first per
  *      getPlatformVideoProvider). compliance_status is stamped 'passed' on
  *      the project row so the broker cockpit shows we pre-cleared.
- *   8. The intro-video-email-backfill cron sends the email when the render
- *      lands (with OUR Supabase storage URL embedded).
+ *   7b. REQUEST THE REMOTION ASSEMBLY (assignment trigger). The D-ID talking
+ *      head is the avatar TRACK, not the deliverable: provider_metadata carries
+ *      target_composition_id + input_props + entity_type/entity_id so that when
+ *      poll-did-videos completes the job, enqueueAvatarCompositionForProject
+ *      wires the CLEAN avatar URL into an AgentTalkingHeadReel render and
+ *      render-composition stamps the finished, brand-chromed composite back onto
+ *      ai_video_projects.video_url. Before this the key was absent and the
+ *      handoff skipped every intro video ever made.
+ *   8. The intro-video-email-backfill cron sends the email when the ASSEMBLED
+ *      render lands (with OUR Supabase storage URL embedded) — it waits on the
+ *      composite, not on the intermediate avatar track.
  *   9. Portal card auto-renders via portal-stream-projector when
  *      VIDEO_GENERATION_COMPLETED lands.
  */
@@ -54,6 +63,12 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { runWithComplianceRedraft } from "@/lib/kernel/compliance-redraft"
 import { resolveAgentRecordToUserId } from "@/lib/kernel/agent-identity-resolver"
+import { resolveDirectorIdentity, brandBlock } from "@/lib/video/director-content"
+import {
+  buildIntroCompositionRequest,
+  describeIntroCompositionGap,
+  type IntroCompositionRequest,
+} from "@/lib/video/avatar-render-orchestrator"
 import type { Persona, JourneyType } from "@/lib/kernel/types"
 
 type IntroTrigger = "contact_agent_assigned" | "home_anniversary"
@@ -467,6 +482,65 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     .update({ video_project_id: project.id, status: "rendering" })
     .eq("id", introVideoId!)
 
+  // ─── ASK FOR THE ASSEMBLY, NOT JUST THE AVATAR ──────────────────────────────
+  // OWNER RULING: "the video for the welcome email/portal info for the newly
+  // converted lead to contact, finishes and then embeds into the email. usually
+  // the did avatar url is taken from the user's settings (twin studio created),
+  // then remotion assembles the complete video together."
+  //
+  // Every part of that was built except the request. Twin Studio writes
+  // agent_voice_profiles, presenter-media resolves the avatar off it, step 3
+  // above gates on it, /api/did/generate-video submits, poll-did-videos polls,
+  // and on completion poll-did-videos calls enqueueAvatarCompositionForProject —
+  // which enqueues the Remotion composition with the avatar URL wired into
+  // input_props. But that handoff fires ONLY when the project declares
+  // provider_metadata.target_composition_id, and the ONLY writers of that key
+  // were the listing-presentation path and the Director rail. This file had ZERO
+  // occurrences of it, so the welcome video was the one avatar lane that skipped
+  // the handoff: `skipped: "no target_composition_id — not a composition
+  // request"`, forever, silently. The deliverable was a bare D-ID talking head —
+  // no Remotion assembly, no brand chrome, no bookends, no outro CTA.
+  //
+  // ASSIGNMENT ONLY, ON PURPOSE. The anniversary trigger declares its own
+  // intended composition (AnniversaryEquityReelInput above names EquityReportReel
+  // with REAL equity numbers); stamping the talking-head composition onto it here
+  // would pre-empt that lane with the wrong reel. It keeps its current behaviour
+  // and is left as an unresolved orphan for whoever owns the equity reel — see
+  // the report, not a guess in the code.
+  //
+  // COMPLIANCE SURVIVES THE STEP (§5). This runs AFTER the pre-flight
+  // evaluateOutbound + redraft gate above, and `script` here is the gated text.
+  // The only client-facing string the assembly adds is the caption strip, which
+  // is cut VERBATIM from that gated script — the assembly authors nothing, so
+  // there is no copy in the finished video that the fair-housing gate never saw.
+  let compositionRequest: IntroCompositionRequest | null = null
+  if (input.trigger === "contact_agent_assigned") {
+    try {
+      const identity = await resolveDirectorIdentity(svc, input.brokerageId, agentUserId)
+      const params = {
+        projectId:     project.id,
+        script,
+        agentName:     identity.agentName,
+        agentPhotoUrl: identity.agentPhotoUrl,
+        brand:         brandBlock(identity),
+      }
+      compositionRequest = buildIntroCompositionRequest(params)
+      if (!compositionRequest) {
+        // The builder asks the SAME content-contract question render-composition
+        // asks, so a null here means the render would have been CANCELLED. Say
+        // which prop was missing rather than parking the welcome email behind a
+        // composite that was never coming; the D-ID cut stands as the deliverable.
+        console.warn(
+          `[intro-video-reactor] project ${project.id}: no Remotion assembly requested — ` +
+          `${describeIntroCompositionGap(params).join(", ") || "unknown"} could not be established. ` +
+          `The D-ID cut will be delivered un-assembled.`
+        )
+      }
+    } catch (e) {
+      console.warn(`[intro-video-reactor] project ${project.id}: assembly request skipped — ${(e as Error).message}`)
+    }
+  }
+
   const submission = await dispatchVideo({
     brokerageId:    input.brokerageId,
     userId:         agentUserId,
@@ -526,6 +600,12 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
         talk_id:        submission.messageId,
         intro_video_id: introVideoId,
         trigger:        input.trigger,
+        // target_composition_id + input_props + entity_type/entity_id. THE
+        // MISSING LINK: without these keys enqueueAvatarCompositionForProject
+        // skips this project and the Remotion assembly is never requested.
+        // Spread last and possibly empty, so the anniversary lane's metadata is
+        // byte-identical to what it was before this change.
+        ...(compositionRequest ?? {}),
       },
       error_message: null,
     })
