@@ -109,6 +109,10 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
   const [bestMatch, setBestMatch] = useState<Vendor | null>(null)
   const [matchLoading, setMatchLoading] = useState(false)
   const [matchError, setMatchError] = useState<string | null>(null)
+  // A refused directory search is its OWN state, not matchError: matchError is
+  // only rendered once a service type AND a date are chosen, so routing a search
+  // failure through it would set a message nobody ever sees.
+  const [searchError, setSearchError] = useState<string | null>(null)
 
   // Rating state
   const [ratingBookingId, setRatingBookingId] = useState<string | null>(null)
@@ -185,9 +189,18 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
   const handleSearch = useCallback(() => {
     if (!searchQuery.trim() && !serviceType) return
     setSearchLoading(true)
+    setSearchError(null)
     searchVendors({ name: searchQuery || undefined, serviceType: serviceType || undefined, limit: 10 })
-      .then((data) => setVendors(data as Vendor[]))
-      .catch(() => null)
+      .then((data) => { setVendors(data as Vendor[]) })
+      // `.catch(() => null)` used to swallow this, leaving the PREVIOUS result
+      // list on screen — so a refused search read as "these are your matches".
+      // m561 gives this call a second way to fail (an unplaceable trade is now
+      // refused instead of silently matching nothing), which makes a silent
+      // catch the difference between "we could not ask" and "there is nobody".
+      .catch((err: any) => {
+        setVendors([])
+        setSearchError(err?.message ?? "Could not search the vendor directory.")
+      })
       .finally(() => setSearchLoading(false))
   }, [searchQuery, serviceType])
 
@@ -529,6 +542,10 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
                 </div>
               </div>
             </div>
+
+            {searchError && (
+              <p className="text-xs text-destructive">{searchError}</p>
+            )}
 
             {/* Vendor list */}
             {displayVendors.length > 0 && (
