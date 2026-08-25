@@ -24,22 +24,55 @@
  * informed while being arbitrary.
  */
 
-/** The live CHECK domain of vendors.category (verified against pg_constraint). */
-export const VENDOR_CATEGORIES = [
-  "inspector", "lender", "title", "attorney", "contractor", "stager",
-  "photographer", "cleaner", "mover", "insurance", "handyman",
-  "property_management", "landscaping", "pest_control", "pool_service", "hvac",
-  "plumber", "electrician", "roofer", "painter", "flooring", "solar",
-  "security", "smart_home", "appliance_repair", "window_treatment",
-  "garage_door", "refinance_lender", "home_warranty", "tax_pro",
-  "financial_advisor", "interior_design", "organizer", "estate_sale",
-  "videographer", "drone_pilot", "3d_tour", "other",
-] as const
+// ─────────────────────────────────────────────────────────────────────────────
+// TOMBSTONE (m561, CLAUDE.md §1.1 / §6). A SECOND COPY of the vendor-trade
+// vocabulary lived here — `VENDOR_CATEGORIES`, `VendorCategory` and
+// `isVendorCategory`, hand-transcribed as "the live CHECK domain of
+// vendors.category (verified against pg_constraint)".
+//
+// IT HAD ALREADY DRIFTED, and drifted in the direction that hurts: it held 38
+// values where the survivor and the live CHECK hold 39. m554 added `appraiser`
+// to both twin CHECKs and to the survivor, and this copy was not moved. So
+// `isVendorCategory("appraiser")` answered FALSE here and TRUE at
+// lib/kernel/vendor-categories.ts:isVendorCategory — one module calling a live,
+// bookable, state-licensed trade invalid while the database accepted it. That is
+// exactly the "scorers cannot match writers across two spellings" failure §6
+// names, and it took nine days to appear.
+//
+// SURVIVOR: lib/kernel/vendor-categories.ts:54 (VENDOR_CATEGORIES),
+// :71 (VendorCategory), :152 (isVendorCategory) — which additionally carries the
+// display labels, the picker groups, the named constants and the
+// loose-spelling normalizer this copy never had.
+//
+// Re-exported rather than deleted outright: the names are part of this module's
+// published surface (scripts/phantom-embed-simulator.ts asserts against them),
+// and a re-export is one definition with two doors, not two definitions.
+// ─────────────────────────────────────────────────────────────────────────────
+export {
+  VENDOR_CATEGORIES,
+  type VendorCategory,
+} from "@/lib/kernel/vendor-categories"
 
-export type VendorCategory = (typeof VENDOR_CATEGORIES)[number]
+import {
+  isVendorCategory as isCanonicalVendorCategory,
+  type VendorCategory,
+} from "@/lib/kernel/vendor-categories"
 
+/**
+ * DELEGATES to lib/kernel/vendor-categories.ts:152. Not a second predicate —
+ * there is no list here for it to disagree with any more.
+ *
+ * Written as a `function` declaration rather than folded into the `export … from`
+ * above ON PURPOSE: scripts/orphan-export-guard.ts recognises `export function`
+ * and `export const x = (`, and is BLIND to re-export specifiers. Moving this
+ * name into the re-export made that guard report the predicate as a capability
+ * REMOVED FROM THE TREE, which is precisely the "deleting to move a number"
+ * reading CLAUDE.md §1 forbids — even though the capability had not moved at all.
+ * Keeping the address costs one delegating line and keeps the guard honest
+ * without re-baselining a file another lane is also burning down.
+ */
 export function isVendorCategory(v: string | null | undefined): v is VendorCategory {
-  return !!v && (VENDOR_CATEGORIES as readonly string[]).includes(v)
+  return isCanonicalVendorCategory(v)
 }
 
 /**

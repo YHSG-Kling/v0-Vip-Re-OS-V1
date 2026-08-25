@@ -153,23 +153,145 @@ export function isVendorCategory(value: string | null | undefined): value is Ven
   return !!value && (VENDOR_CATEGORIES as readonly string[]).includes(value)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// THE RETIRED SPELLINGS (m561 — "consolodate service types")
+//
+// A SECOND taxonomy called "service type" existed in three places and shared
+// almost no spelling with the column it was filtered against. Measured live on
+// project hrvaqgvukzxfskkcrwbt, 2026-08-25, against the 39-value
+// vendors_category_check: of the ten values in the AI action's union, EIGHT
+// matched NOTHING under the `category ILIKE '%serviceType%'` it was used with —
+// photography, staging, inspection, appraisal, cleaning, repairs, moving and
+// escrow all returned an empty bench, and only landscaping and title matched.
+//
+// Every key below is a spelling that ACTUALLY EXISTED in this repo, named with
+// where it came from, so this map is a record of a merge and not a guess at what
+// someone might type. §1.1: these were merged ONTO this survivor FIRST; the
+// three duplicate lists were deleted afterwards, each leaving a tombstone naming
+// this file.
+//
+// Keys are FLATTENED (lowercased, non-alphanumerics removed), so "Title
+// Company", "title_company" and "titlecompany" are one key.
+//
+// NOT A PLACE FOR NEW TRADES. A spelling here resolves to an EXISTING member of
+// VENDOR_CATEGORIES. A genuinely new trade widens the live CHECK (the way m554
+// added `appraiser`) and is added to VENDOR_CATEGORIES above — never smuggled in
+// as a synonym of something it is not.
+// ─────────────────────────────────────────────────────────────────────────────
+export const VENDOR_CATEGORY_SYNONYMS: Readonly<Record<string, VendorCategory>> = {
+  // ── from app/actions/ai-vendor-management.ts :: getVendorRecommendations,
+  //    whose `serviceType` union was the noun-of-the-JOB where the column holds
+  //    the noun-of-the-PERSON. Eight of its ten values could never match.
+  photography: "photographer",
+  staging: "stager",
+  inspection: "inspector",
+  appraisal: "appraiser",
+  cleaning: "cleaner",
+  repairs: "contractor",
+  moving: "mover",
+
+  // ── from app/components/dashboard/listings/lifecycle/vendor-booking-button.tsx,
+  //    which offered the SAME ten in Title Case ("Photography", "Staging", …).
+  //    Flattening makes those the keys above; only 'Other' and 'Landscaping' and
+  //    'Title' ever resolved, and they resolve by exact match, not from here.
+
+  // ── from app/actions/vendor-marketplace.ts :: getSuggestedVendorsByStage,
+  //    whose stage→service map carried a third set of spellings.
+  homeinspector: "inspector",
+  financing: "lender",
+
+  // ── pre-existing, kept verbatim: legacy Title-Case and the one-word short
+  //    form. ('title' itself is NOT a key — it is a real member and resolves by
+  //    exact match above, before this table is consulted.)
+  titlecompany: "title",
+  mortgage: "lender",
+  loanofficer: "lender",
+
+  // ── ESCROW. RETIRED AS A SPELLING OF `title`, NOT ADDED TO THE VOCABULARY.
+  //
+  // It was in the AI union, in both booking pickers, and in NO CHECK — the one
+  // value of the ten with no possible member. Unlike `appraiser` (m554), which
+  // named a distinct state-licensed profession with no home in the taxonomy,
+  // `escrow` already had a home here and the live schema says so:
+  //
+  //   · the deal-side table is public.transaction_title_escrow — ONE row holding
+  //     title_officer_* AND escrow_officer_* for the same counterparty. The
+  //     database already models escrow as a ROLE AT the title company.
+  //   · public.deposits.escrow_company is free text, not a vendors FK — no bench
+  //     row was ever meant to be the escrow holder.
+  //   · lib/compliance/vendor-respa.ts:39 already folds "escrow" and
+  //     "escrowofficer" into the TITLE settlement-service bucket.
+  //   · vendor_assignments.assignment_type (the ten-value deal-ledger subset)
+  //     carries `title` and has never carried `escrow`.
+  //
+  // Four independent writers already treat them as one thing, so widening the
+  // CHECK would have created the §6 defect rather than closing it.
+  escrow: "title",
+}
+
 /**
  * PURE — map a loose spelling onto the CHECK value, or null if there is no
- * confident match. Handles the two shapes that were actually in the codebase:
- * lowercase ('lender') and the one-word short form ('title' for 'Title Company').
+ * confident match.
+ *
+ * Order is exact-first: a value the column already admits is returned unchanged
+ * and never routed through the synonym table, so adding a synonym can never
+ * shadow a real member.
+ *
  * Returns null rather than guessing, so a caller can fall back to 'Other'
- * deliberately instead of silently mis-filing a vendor.
+ * deliberately — or REFUSE — instead of silently mis-filing a vendor or running
+ * a query that cannot match. `surveyor` is the live example: it sat in one
+ * booking picker, is not a member, and is NOT mapped here, because a land
+ * surveyor is not any of the other 39 and inventing a fold would file it under a
+ * trade it is not. It resolves to null and the caller says so. UNRESOLVED —
+ * whether to widen the CHECK for it is an owner call, not this function's.
  */
 export function toVendorCategory(raw: string | null | undefined): VendorCategory | null {
   const t = (raw ?? "").trim()
   if (!t) return null
   const exact = VENDOR_CATEGORIES.find((c) => c.toLowerCase() === t.toLowerCase())
   if (exact) return exact
-  // Legacy Title-Case spellings and common synonyms → the canonical token.
   const flat = t.toLowerCase().replace(/[^a-z0-9]/g, "")
-  if (flat === "title" || flat === "titlecompany" || flat === "escrow") return VENDOR_CATEGORY_TITLE
-  if (flat === "mortgage" || flat === "loanofficer") return VENDOR_CATEGORY_LENDER
+  const synonym = VENDOR_CATEGORY_SYNONYMS[flat]
+  if (synonym) return synonym
   const snake = t.toLowerCase().trim().replace(/[\s-]+/g, "_")
   if ((VENDOR_CATEGORIES as readonly string[]).includes(snake)) return snake as VendorCategory
   return null
+}
+
+/**
+ * PURE — the ONE way to turn a caller-supplied "service type" into a bench
+ * filter, with the refusal spelled out.
+ *
+ * WHY THIS EXISTS AND WHY IT IS NOT `.ilike('%x%')`. Every bench read in the app
+ * used `category ILIKE '%serviceType%'`. Two things are wrong with a LIKE over a
+ * CLOSED vocabulary, and BOTH were live, not hypothetical:
+ *
+ *   · IT MISSES. Eight of the ten AI service types matched no member at all (see
+ *     VENDOR_CATEGORY_SYNONYMS above) — the substring was never a substring.
+ *   · IT OVER-MATCHES. `%lender%` matches `lender` AND `refinance_lender`, so a
+ *     search for a purchase lender silently returned refinance lenders too, and
+ *     the two are separate members of the vocabulary on purpose. Verified live
+ *     against the 39-value CHECK. `%title%` is one `title_agent` away from the
+ *     same bug, and `%pool%` from colliding with a future `pool` trade.
+ *
+ * Exact equality on a normalized value has neither failure mode. A caller that
+ * gets `{ ok: false }` must REFUSE — it must not fall back to a LIKE, and it
+ * must not spend a model call on the empty bench that a LIKE would have handed
+ * it (CLAUDE.md §5).
+ */
+export function benchCategoryFilter(
+  serviceType: string | null | undefined,
+):
+  | { ok: true; category: VendorCategory }
+  | { ok: false; error: string } {
+  const raw = (serviceType ?? "").trim()
+  if (!raw) return { ok: false, error: "No service type was given." }
+  const category = toVendorCategory(raw)
+  if (!category) {
+    return {
+      ok: false,
+      error: `"${raw}" is not a vendor trade this platform books. Choose one of: ${VENDOR_CATEGORIES.join(", ")}.`,
+    }
+  }
+  return { ok: true, category }
 }

@@ -85,6 +85,7 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { modelAuthoredToVendorVerdict } from "@/lib/vendors/appraiser-independence"
+import { benchCategoryFilter, type VendorCategory } from "@/lib/kernel/vendor-categories"
 import { z } from "zod"
 
 // ============================================================================
@@ -104,7 +105,33 @@ export async function getVendorRecommendations(params: {
    * `requestVendorReview` in this file.
    */
   agentId?: string
-  serviceType: "photography" | "staging" | "inspection" | "appraisal" | "cleaning" | "landscaping" | "repairs" | "moving" | "title" | "escrow"
+  /**
+   * ── §6, m561: THE SECOND SPELLING IS GONE. ─────────────────────────────────
+   *
+   * 🚨 THIS WAS A TEN-VALUE UNION OF ITS OWN:
+   *
+   *     "photography" | "staging" | "inspection" | "appraisal" | "cleaning"
+   *   | "landscaping" | "repairs" | "moving" | "title" | "escrow"
+   *
+   * …filtered with `.ilike("category", '%${serviceType}%')` against
+   * `vendors.category`, whose live CHECK admits a DIFFERENT 39-value spelling of
+   * the same taxonomy. Measured live against that CHECK (project
+   * hrvaqgvukzxfskkcrwbt, 2026-08-25): EIGHT OF THE TEN MATCHED NOTHING —
+   * photography/photographer, staging/stager, inspection/inspector,
+   * appraisal/appraiser, cleaning/cleaner, repairs/contractor, moving/mover, and
+   * `escrow`, which has no member at all. Only `landscaping` and `title`
+   * matched. So this action answered "who should I hire?" from an EMPTY BENCH
+   * for 8 of its 10 inputs — and still spent the gpt-4o call below doing it.
+   *
+   * The type is now the vocabulary the column actually admits. It is widened,
+   * not narrowed: all 39 trades are reachable where 2 were, and the old
+   * spellings still resolve through VENDOR_CATEGORY_SYNONYMS at
+   * lib/kernel/vendor-categories.ts, so a caller that has not been updated is
+   * translated rather than silently answered with nothing. `string` is accepted
+   * at the door for exactly that reason; benchCategoryFilter REFUSES anything it
+   * cannot place, rather than falling through to a query that cannot match.
+   */
+  serviceType: VendorCategory | (string & {})
   propertyId?: string
   budget?: number
   urgency?: "standard" | "rush" | "emergency"
@@ -115,17 +142,47 @@ export async function getVendorRecommendations(params: {
   const auth = await requireVendorCaller()
   if (!auth.ok) return { success: false, error: auth.error }
 
+  // REFUSE AN UNPLACEABLE TRADE BEFORE ANY READ OR ANY SPEND. A service type the
+  // vocabulary cannot express is not a thin bench — it is a question this
+  // platform cannot ask, and it used to render as "no vendors available".
+  const filter = benchCategoryFilter(params.serviceType)
+  if (!filter.ok) return { success: false, error: filter.error }
+
   const supabase = await createClient()
 
   try {
     // Get available vendors for the service type — use vendors table (not vendor_directory)
-    const { data: vendors } = await supabase
+    //
+    // `.eq`, NOT `.ilike('%…%')`. Over a CLOSED vocabulary a substring match has
+    // two failure modes and both were live: it missed (8 of 10 above), and it
+    // over-matched — `%lender%` also returns every `refinance_lender`, which is
+    // a separate member of the CHECK on purpose. Verified live against the
+    // 39-value vocabulary. See benchCategoryFilter's header.
+    const { data: vendors, error: benchErr } = await supabase
       .from("vendors")
       .select("id, name, category, email, phone, website, rating, notes, brokerage_id")
-      .ilike("category", `%${params.serviceType}%`)
+      .eq("category", filter.category)
       // The row already carried brokerage_id and it was selected but never used
       // to filter — so this returned every brokerage's vendor contact list.
       .eq("brokerage_id", auth.brokerageId)
+
+    // ── DO NOT SPEND ON AN EMPTY BENCH (CLAUDE.md §5) ────────────────────────
+    // supabase-js RESOLVES a refusal (§3), so `vendors` being empty had two
+    // causes that were indistinguishable here — a refused read and a genuinely
+    // empty bench — and BOTH used to fall through to gpt-4o. There is no product
+    // in recommending three vendors from a list of zero: the model either
+    // returns an empty array (a paid no-op booked against the tenant) or invents
+    // vendor names and ids that no bench row backs. Both fail closed, before the
+    // call.
+    if (benchErr) {
+      return { success: false, error: "Could not read your vendor bench." }
+    }
+    if (!vendors || vendors.length === 0) {
+      return {
+        success: false,
+        error: `No ${filter.category} is on your brokerage's vendor bench yet — add one before asking for a recommendation.`,
+      }
+    }
 
     // ── BOOKING HISTORY IS SELF-SCOPED — TENANT AND ACTOR FROM THE SESSION ────
     // 🚨 This filtered `booked_by` on params.agentId — a REQUEST-BODY identity —
@@ -208,7 +265,7 @@ export async function getVendorRecommendations(params: {
       }),
       prompt: `Recommend vendors for this job:
 
-Service Type: ${params.serviceType}
+Service Type: ${filter.category}
 Budget: ${params.budget ? `$${params.budget}` : "Not specified"}
 Urgency: ${params.urgency || "standard"}
 Special Requirements: ${params.requirements?.join(", ") || "None"}
