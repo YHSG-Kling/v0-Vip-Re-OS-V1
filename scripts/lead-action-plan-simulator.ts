@@ -190,7 +190,12 @@ function mutantIgnoringApproval(res: LeadSettingsResolution, channel: "email" | 
   const real: string = leadAutoSendVerdict({ resolution: r, channel: "email" }).mode
   const mutant: string = mutantIgnoringApproval(r, "email")
   check("MUTATION-APPROVAL: the real gate DISAGREES with a gate that ignores require_broker_approval",
-    real === "stage_for_approval" && mutant === "auto_send" && real !== mutant, `real=${real} mutant=${mutant}`)
+    // `real !== mutant` STOOD HERE and TypeScript proved it dead (TS2367): the two
+    // clauses above pin each side to a DIFFERENT literal, so the inequality is a
+    // tautology. It read as a third, independent check and could never fail —
+    // exactly the shape §2 calls a guard that cannot see what it judges. Pinning
+    // both values is the stronger assertion; the disagreement follows from it.
+    real === "stage_for_approval" && mutant === "auto_send", `real=${real} mutant=${mutant}`)
 }
 {
   // …and the mutant must AGREE everywhere else, or this probe proves nothing:
@@ -213,7 +218,12 @@ function mutantTreatingUnreadableAsDefault(res: LeadSettingsResolution, channel:
   const real: string = leadAutoSendVerdict({ resolution: r, channel: "email" }).mode
   const mutant: string = mutantTreatingUnreadableAsDefault(r, "email")
   check("MUTATION-UNREADABLE: the real gate DISAGREES with a gate that reads a refusal as an absent row",
-    real === "stage_for_approval" && mutant === "auto_send" && real !== mutant, `real=${real} mutant=${mutant}`)
+    // `real !== mutant` STOOD HERE and TypeScript proved it dead (TS2367): the two
+    // clauses above pin each side to a DIFFERENT literal, so the inequality is a
+    // tautology. It read as a third, independent check and could never fail —
+    // exactly the shape §2 calls a guard that cannot see what it judges. Pinning
+    // both values is the stronger assertion; the disagreement follows from it.
+    real === "stage_for_approval" && mutant === "auto_send", `real=${real} mutant=${mutant}`)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
