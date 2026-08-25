@@ -14,9 +14,10 @@
  *      from "ai") outside those chokepoints. Every such file must route through a chokepoint OR be
  *      in the baseline (known legacy direct-importers, tracked debt). A NEW direct importer FAILS CI.
  */
-import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
+import { readFileSync, writeFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { dirname, join, relative } from "node:path"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const BASELINE_PATH = join(root, "scripts", "data-guard-baseline.json")
@@ -28,20 +29,22 @@ const GUARDED = new Set<string>([
   "lib/data-guard/guarded-generate.ts",
 ])
 
-function walk(dir: string, out: string[]) {
-  let entries: string[]
-  try { entries = readdirSync(dir) } catch { return }
-  for (const n of entries) {
-    if (n === "node_modules" || n.startsWith(".")) continue
-    const p = join(dir, n)
-    if (statSync(p).isDirectory()) walk(p, out)
-    else if (/\.(ts|tsx)$/.test(n) && !/\.test\.tsx?$/.test(n)) out.push(relative(root, p).replace(/\\/g, "/"))
-  }
-}
-
-const files: string[] = []
-walk(join(root, "app"), files)
-walk(join(root, "lib"), files)
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk(dir, out)` that stood here
+// was one of 82 copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// The copy was not a style problem. It enumerated DIRECTORIES, and a root-level
+// FILE is not a directory, so `proxy.ts` — the Next 16 edge middleware that gates
+// auth on every request — sat outside this guard's corpus. A file that is never
+// opened reports green, which is the failure shape §2 of CLAUDE.md names.
+// `rootRuntimeFiles()` from the same survivor supplies the root files.
+const files = [
+  ...walkTs(join(root, "app")),
+  ...walkTs(join(root, "lib")),
+  ...rootRuntimeFiles(root),
+]
+  .filter((p) => !/\.test\.tsx?$/.test(p))
+  .map((p) => relative(root, p).replace(/\\/g, "/"))
 
 // The RAW model boundary: a file that imports a model-call fn directly from "ai".
 const rawImportRe = /import\s*\{[^}]*\b(generateText|streamText|generateObject|streamObject)\b[^}]*\}\s*from\s*['"]ai['"]/

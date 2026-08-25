@@ -88,7 +88,8 @@
  *
  * THE POPULATION CAN ONLY SHRINK. A new re-spelling fails the build.
  */
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "node:fs"
+import { readFileSync, writeFileSync, existsSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { join, relative } from "node:path"
 import { blankComments, stripComments } from "./strip-comments"
 
@@ -174,15 +175,19 @@ export const CLASSIFICATION: Record<string, { verdict: Verdict; why: string }> =
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-function* walk(dir: string): Generator<string> {
-  if (!existsSync(dir)) return
-  for (const entry of readdirSync(dir)) {
-    if (entry === "node_modules" || entry === ".next" || entry.startsWith(".")) continue
-    const p = join(dir, entry)
-    const s = statSync(p)
-    if (s.isDirectory()) yield* walk(p)
-    else if (/\.(ts|tsx)$/.test(entry)) yield p
-  }
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk()` generator that stood
+// here was one of 82 copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// It enumerated DIRECTORIES, and a root-level FILE is not a directory, so
+// `proxy.ts` — the Next 16 edge middleware, which gates auth and queries four
+// tables with a SERVICE client on EVERY request — was outside this guard's corpus.
+// A file that is never opened reports green, which is the failure shape §2 of
+// CLAUDE.md names. `scanCorpus()` below is the directory reach PLUS the root-level
+// runtime files, both from the survivor.
+function* scanCorpus(): Generator<string> {
+  for (const dir of SCAN_DIRS) yield* walkTs(join(root, dir))
+  yield* rootRuntimeFiles(root)
 }
 
 const lineOf = (s: string, i: number) => s.slice(0, i).split("\n").length
@@ -424,17 +429,15 @@ export function discriminatorSpellingsIn(raw: string): Finding[] {
 const found = new Map<string, number>()
 const locations = new Map<string, string[]>()
 let scanned = 0
-for (const dir of SCAN_DIRS) {
-  for (const abs of walk(join(root, dir))) {
-    scanned++
-    const rel = relative(root, abs).replace(/\\/g, "/")
-    if (rel === SURVIVOR) continue // the one place the rule may be written out
-    for (const f of discriminatorSpellingsIn(readFileSync(abs, "utf8"))) {
-      found.set(rel, (found.get(rel) ?? 0) + 1)
-      const list = locations.get(rel) ?? []
-      list.push(`${rel}:${f.line}  ${f.text}`)
-      locations.set(rel, list)
-    }
+for (const abs of scanCorpus()) {
+  scanned++
+  const rel = relative(root, abs).replace(/\\/g, "/")
+  if (rel === SURVIVOR) continue // the one place the rule may be written out
+  for (const f of discriminatorSpellingsIn(readFileSync(abs, "utf8"))) {
+    found.set(rel, (found.get(rel) ?? 0) + 1)
+    const list = locations.get(rel) ?? []
+    list.push(`${rel}:${f.line}  ${f.text}`)
+    locations.set(rel, list)
   }
 }
 

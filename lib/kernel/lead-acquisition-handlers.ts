@@ -626,9 +626,7 @@ export async function handleLeadAssigned(params: {
 
   // ── Post-conversion side-effects ──────────────────────────────────────
   // 1. Queue scoring + enrichment so the new contact has fresh data.
-  // 2. Send portal invite for buyer/seller/investor contact types so they
-  //    can self-serve from minute one. Cooperating-agent contacts and
-  //    contacts without a real-estate intent skip the portal.
+  // 2. THE WELCOME — portal access, the personal video, and the ONE email.
   try {
     const { queueContactEnrichmentAndScore } = await import(
       '@/lib/contact-pipeline/contact-capture'
@@ -641,63 +639,61 @@ export async function handleLeadAssigned(params: {
     // best effort — failure should not unwind the assignment
   }
 
-  if (contactType === 'buyer' || contactType === 'seller' || contactType === 'investor') {
-    try {
-      // System path (server-only, not a client action): createPortalInviteForContact required a
-      // logged-in session and silently failed here in the background assignment context.
-      // createSystemPortalInvite authorizes via the assigned agent's user id; the core
-      // compliance-gates the email on opt-out / unsubscribe.
-      const { createSystemPortalInvite } = await import('@/lib/portal/portal-invite-core')
-      await createSystemPortalInvite({
-        contactId:   contact.id,
-        agentUserId: agentUserId,
-        sendMagicLink: true,
-      })
-    } catch {
-      // best effort — agent can re-send invite from CRM if it failed
-    }
-  }
-
-  // 3. THE PERSONAL AVATAR VIDEO FROM THE ASSIGNED AGENT — WIRED HERE FOR
+  // 2. THE WELCOME — WIRED THROUGH THE SAME ENTRY POINT AS THE MANUAL LANE, FOR
   //    EXACTLY THE REASON THE HISTORY CARRY AND THE AGENT ACTION PLAN ABOVE ARE.
   //
-  //    OWNER RULING: "…the welcome portal email with a personal avatar video from
-  //    the agent.. we only sent content to leads and contacts that are
-  //    personalized and situation, them first messaging." The portal invite above
-  //    was wired on both lanes; the VIDEO was wired on neither. Live counts when
-  //    this was added: 50 `contact_agent_assigned` lifecycle rows, ZERO
-  //    `agent_intro_videos` rows of any status — the avatar spine had never run.
+  //    OWNER RULING: "the welcome email is the first on conversion that has the
+  //    welcome with portal info to also inclue the embedded personal video."
+  //
+  //    WHAT USED TO BE HERE, and why it is gone. This lane called
+  //    `createSystemPortalInvite(sendMagicLink: true)` behind its OWN contact-type
+  //    gate — `buyer | seller | investor` — while the manual lane called
+  //    portal-access.ts, whose gate is the documented EXCLUSION list
+  //    (vendor / referral_partner). Two spellings of "who gets a portal" is the §6
+  //    defect, and the narrower one lived here: an `other`/`prospect`/`sphere`
+  //    contact converted automatically got no portal while the same contact
+  //    converted by hand did. Both lanes now resolve it through
+  //    PORTAL_EXCLUDED_CONTACT_TYPES, so the automatic lane MATCHES the manual one
+  //    (this WIDENS automatic-lane portal access — the direction is deliberate and
+  //    is reported). That magic-link mail also carried a hardcoded generic body,
+  //    which the them-first ruling forbids; it is retired (tombstone in
+  //    lib/portal/portal-invite-core.ts) and the agent-signed welcome carries the
+  //    portal door instead.
   //
   //    BOTH LANES CALL THE SAME FUNCTION; NEITHER HOLDS A COPY (§6).
-  //    lib/contact-promotion/promote-lead-to-contact.ts Step 8b makes the
-  //    identical call. Putting it on one lane is precisely how
+  //    lib/contact-promotion/promote-lead-to-contact.ts Step 8 makes the identical
+  //    call. Putting a conversion step on one lane is precisely how
   //    carryLeadHistoryToContact came to be manual-lane-only.
   //
-  //    NOT gated on the buyer/seller/investor branch above. That gate is about
-  //    who gets a PORTAL; the video's own exclusions (vendor / referral_partner,
-  //    contacts.video_opt_out, and the agent's voice/avatar readiness) live in the
-  //    callee where both lanes get them identically. `contactType` is a local
-  //    string here and the callee re-reads the stored value, so it cannot drift.
+  //    ORDER INSIDE IT IS LOAD-BEARING: the portal_contact_invites row is created
+  //    FIRST and unconditionally, so a video that cannot be produced can never cost
+  //    the contact their portal. Only the EMAIL waits for the render, bounded.
   //
   //    BEST EFFORT: the contact exists, the history is carried and the lead is
-  //    deactivated. ensureWelcomeAvatarVideo never throws; a refusal is a logged
-  //    warning, never a rollback of a successful assignment. And it is idempotent
-  //    before it is expensive — the `agent_intro_videos` unique index dedupes
-  //    inside the reactor BEFORE the model is called, so a retried assignment
-  //    spends nothing.
+  //    deactivated. deliverConversionWelcome never throws; a refusal is a logged
+  //    warning, never a rollback of a successful assignment. Idempotent before it
+  //    is expensive — the `agent_intro_videos` unique index dedupes inside the
+  //    reactor BEFORE the model is called, and ensureClientWelcome refuses a second
+  //    welcome on its rationale tag, so a retried assignment spends nothing and
+  //    mails nothing twice.
   {
-    const { ensureWelcomeAvatarVideo } = await import('@/lib/contact-promotion/welcome-avatar-video')
-    const welcomeVideo = await ensureWelcomeAvatarVideo(supabase, {
+    const { deliverConversionWelcome } = await import('@/lib/contact-promotion/conversion-welcome')
+    const welcome = await deliverConversionWelcome(supabase, {
       contactId:   contact.id,
       agentId,
+      agentUserId,
       brokerageId,
+      contactType,
+      firstName:   lead.first_name ?? null,
+      lastName:    lead.last_name ?? null,
     })
-    for (const w of welcomeVideo.warnings) {
-      console.error(`[lead-acquisition] welcome avatar video: ${w}`)
+    for (const w of welcome.warnings) {
+      console.error(`[lead-acquisition] welcome: ${w}`)
     }
     console.log(
-      `[lead-acquisition] welcome avatar video for contact ${contact.id}: ${welcomeVideo.reason} ` +
-        `(commissioned=${welcomeVideo.commissioned}, situational=${welcomeVideo.situational})`,
+      `[lead-acquisition] welcome for contact ${contact.id}: portal=${welcome.portalGranted}, ` +
+        `video=${welcome.videoReason}, email=${welcome.timing}` +
+        `${welcome.emailState ? ` (${welcome.emailState})` : ''} — ${welcome.timingReason}`,
     )
   }
 }

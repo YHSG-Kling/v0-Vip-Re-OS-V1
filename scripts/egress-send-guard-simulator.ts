@@ -11,7 +11,8 @@
  * This is a baseline ratchet (like schema-drift): the CURRENT direct callers are frozen + classified;
  * the surface can only shrink. KNOWN-GAP entries are honest TODOs to route through the gate.
  */
-import { readFileSync, readdirSync, statSync } from "node:fs"
+import { readFileSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { fileURLToPath } from "node:url"
 import { dirname, join, relative } from "node:path"
 import { blankComments } from "./strip-comments"
@@ -53,18 +54,13 @@ const ALLOWLIST: Record<string, { cls: Class; why: string }> = {
 }
 
 // ── Walk lib/ + app/ for every file that touches the low-level senders ──
-function walk(dir: string, out: string[]) {
-  for (const name of readdirSync(dir)) {
-    if (name === "node_modules" || name.startsWith(".")) continue
-    const p = join(dir, name)
-    const st = statSync(p)
-    if (st.isDirectory()) walk(p, out)
-    else if (/\.(ts|tsx)$/.test(name)) out.push(p)
-  }
-}
-const files: string[] = []
-walk(join(root, "lib"), files)
-walk(join(root, "app"), files)
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk(dir, out)` that stood here
+// was one of 82 copies of the same readdirSync walker. Survivor:
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above. It enumerated
+// DIRECTORIES, so the root-level runtime files — `proxy.ts`, the edge middleware
+// that runs on EVERY request — were outside the corpus of an EGRESS guard.
+// `rootRuntimeFiles()` from the same survivor supplies them.
+const files = [...walkTs(join(root, "lib")), ...walkTs(join(root, "app")), ...rootRuntimeFiles(root)]
 
 const importers: string[] = []
 for (const abs of files) {

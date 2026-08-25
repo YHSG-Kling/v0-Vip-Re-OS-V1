@@ -17,7 +17,8 @@
  * Run: npx tsx scripts/writerless-read-sweep.ts  (npm run test:writerless-reads)
  * Tighten: GUARD_WRITE_BASELINE=1 npx tsx scripts/writerless-read-sweep.ts
  */
-import { readFileSync, readdirSync, statSync, writeFileSync, existsSync } from "node:fs"
+import { readFileSync, writeFileSync, existsSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { blankComments } from "./strip-comments"
 import { join } from "node:path"
 
@@ -102,18 +103,23 @@ const DB_FUNCTION_WRITERS: Record<string, string> = {
   agent_points_log: "public.award_agent_points() (m484), called via lib/gamification/award-points.ts",
 }
 
-function walk(dir: string, acc: string[]) {
-  for (const name of readdirSync(dir)) {
-    if (name === "node_modules" || name === ".next" || name === ".git") continue
-    const p = join(dir, name)
-    if (statSync(p).isDirectory()) walk(p, acc)
-    else if (/\.(ts|tsx)$/.test(name)) acc.push(p)
-  }
-}
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk(dir, acc)` that stood here
+// was one of 82 copies of the same readdirSync walker. Survivor:
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// This sweep decides whether a column is READ WITH NO WRITER. A file it cannot
+// open therefore produces a PHANTOM finding, not a gap — and the one file it could
+// never open is `proxy.ts`, the edge middleware, which reads blog_posts,
+// brokerages, users and tenant_custom_domains with a SERVICE client on every
+// request. `walk()` enumerated DIRECTORIES and a root FILE is not a directory.
+// `rootRuntimeFiles()` from the same survivor supplies them.
 
 function main() {
-  const files: string[] = []
-  for (const d of ["app", "lib"]) { try { walk(join(process.cwd(), d), files) } catch {} }
+  const files: string[] = [
+    ...walkTs(join(process.cwd(), "app")),
+    ...walkTs(join(process.cwd(), "lib")),
+    ...rootRuntimeFiles(process.cwd()),
+  ]
 
   const readers = new Map<string, Set<string>>()
   const writers = new Set<string>()

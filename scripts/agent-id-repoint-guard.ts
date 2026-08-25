@@ -45,7 +45,8 @@
  * constraint last. A migration that outruns its callers is indistinguishable, at
  * runtime, from the defect it was meant to cure.
  */
-import { readFileSync, existsSync, readdirSync } from "node:fs"
+import { readFileSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { stripComments } from "./strip-comments"
 
 const REPOINTED = new Set([
@@ -66,17 +67,12 @@ const REPOINTED = new Set([
 const USERS_CLASS = /(?:^|\.)(?:userId|user_id|hostUserId|ownerUserId|targetUserId|signerUserId|agentUserId|healthAgentUserId)$|(?:^|\.)user\.id$|^user\.id$/
 
 const read = (p: string) => { try { return readFileSync(p, "utf8") } catch { return "" } }
-function walk(dir: string, out: string[] = []): string[] {
-  if (!existsSync(dir)) return out
-  for (const e of readdirSync(dir, { withFileTypes: true })) {
-    const full = `${dir}/${e.name}`
-    if (e.isDirectory()) {
-      if (e.name === "node_modules" || e.name === ".next") continue
-      walk(full, out)
-    } else if (/\.tsx?$/.test(e.name)) out.push(full)
-  }
-  return out
-}
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk(dir, out)` that stood here
+// was one of 82 byte-identical copies of the same readdirSync walker. Survivor:
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above. It enumerated
+// DIRECTORIES, and a root-level FILE is not a directory, so `proxy.ts` — the edge
+// middleware that queries users with a SERVICE client on every request — was
+// outside this guard's corpus. `rootRuntimeFiles()` supplies the root files.
 /** Strip comments so the guard measures CODE, never its own prose. */
 const code = (s: string) =>
   stripComments(s)
@@ -85,7 +81,7 @@ interface Site { file: string; line: number; table: string; expr: string; kind: 
 
 function findUnconverted(): Site[] {
   const out: Site[] = []
-  for (const file of [...walk("app"), ...walk("lib"), ...walk("components"), ...walk("hooks")]) {
+  for (const file of [...walkTs("app"), ...walkTs("lib"), ...walkTs("components"), ...walkTs("hooks"), ...rootRuntimeFiles(".")]) {
     const s = code(read(file))
     for (const m of s.matchAll(/\.from\(\s*[`"']([a-z_]+)[`"']\s*\)/g)) {
       const table = m[1]

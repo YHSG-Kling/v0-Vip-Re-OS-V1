@@ -30,7 +30,8 @@
  * positives out of 15 on the first sweep, including flagging
  * newsletter_scheduled_sends.agent_id, which is CORRECTLY a users.id.
  */
-import { readFileSync, readdirSync, statSync } from "node:fs"
+import { readFileSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { join, relative } from "node:path"
 import { AGENT_FK_COLUMNS, USERS_FK_AGENTISH_COLUMNS, CONTACT_FK_TABLES } from "./agent-fk-columns"
 
@@ -52,16 +53,16 @@ const AGENT_ID_EXPR = /\b(resolveAgentId|requireAgentId|agentRecordId|actingAgen
 /** A plain users.id — correct for a users(id) FK. */
 const USER_ID_OK = /\b(user\.user\.id|user\.id|userId|agentUserId|\w*[Uu]serId|session\.user\.id)\b/
 
-function* walk(dir: string): Generator<string> {
-  let entries: string[]
-  try { entries = readdirSync(dir) } catch { return }
-  for (const n of entries) {
-    if (n === "node_modules" || n === ".next" || n.startsWith(".")) continue
-    const p = join(dir, n)
-    if (statSync(p).isDirectory()) yield* walk(p)
-    else if (/\.(ts|tsx)$/.test(n)) yield p
-  }
-}
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk()` generator that stood
+// here was one of 82 copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// It enumerated DIRECTORIES, and a root-level FILE is not a directory, so
+// `proxy.ts` — the Next 16 edge middleware, which gates auth and queries
+// blog_posts, brokerages, users and tenant_custom_domains with a SERVICE client on
+// EVERY request — was outside this guard's corpus. A file that is never opened
+// reports green. `rootRuntimeFiles()` from the same survivor supplies the root
+// files, so the directory loop is no longer the whole answer to "what ships".
 
 export interface WrongClassWrite { file: string; table: string; column: string; expr: string }
 
@@ -267,7 +268,9 @@ check("catches the WRITE side too (upsert payload, not just a filter)",
 
 console.log("\n[repo scan]")
 const files: string[] = []
-for (const d of ["app", "lib", "services"]) for (const f of walk(join(root, d))) files.push(f)
+for (const d of ["app", "lib", "services"]) for (const f of walkTs(join(root, d))) files.push(f)
+// Root-level runtime FILES are not directories, so the loop above cannot reach them.
+for (const f of rootRuntimeFiles(root)) files.push(f)
 const offenders: WrongClassWrite[] = []
 for (const f of files) {
   let src = ""

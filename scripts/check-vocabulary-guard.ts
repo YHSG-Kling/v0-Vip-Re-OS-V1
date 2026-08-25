@@ -67,7 +67,8 @@
  * the column with a migration when the state is genuinely new and something can write it.
  * UPDATE_CHECK_VOCAB_BASELINE=1 still exists for a deliberate, reviewed schema change.
  */
-import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from "node:fs"
+import { readFileSync, writeFileSync, existsSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { dirname, join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
@@ -90,16 +91,16 @@ function stripComments(src: string): string {
   return canonicalStripComments(src)
 }
 
-function* walk(dir: string): Generator<string> {
-  let entries: string[]
-  try { entries = readdirSync(dir) } catch { return }
-  for (const n of entries) {
-    if (n === "node_modules" || n === ".next" || n.startsWith(".")) continue
-    const p = join(dir, n)
-    if (statSync(p).isDirectory()) yield* walk(p)
-    else if (/\.(ts|tsx)$/.test(n)) yield p
-  }
-}
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk()` generator that stood
+// here was one of 82 copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// It enumerated DIRECTORIES, and a root-level FILE is not a directory, so
+// `proxy.ts` — the Next 16 edge middleware, which gates auth and queries
+// blog_posts, brokerages, users and tenant_custom_domains with a SERVICE client on
+// EVERY request — was outside this guard's corpus. A file that is never opened
+// reports green. `rootRuntimeFiles()` from the same survivor supplies the root
+// files, so the directory loop is no longer the whole answer to "what ships".
 
 /**
  * TOP-LEVEL keys of an object literal, as `name: "literal"` pairs. Values that are
@@ -364,7 +365,9 @@ check("leaves a column with no CHECK alone",
 
 console.log("\n[repo scan]")
 const files: string[] = []
-for (const d of ["app", "lib", "services"]) for (const f of walk(join(root, d))) files.push(f)
+for (const d of ["app", "lib", "services"]) for (const f of walkTs(join(root, d))) files.push(f)
+// Root-level runtime FILES are not directories, so the loop above cannot reach them.
+for (const f of rootRuntimeFiles(root)) files.push(f)
 
 const found: VocabViolation[] = []
 for (const f of files) {

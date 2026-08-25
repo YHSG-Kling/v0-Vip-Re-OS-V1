@@ -10,8 +10,7 @@ import { createContactFromLead, resolveContactType } from "./contact-creator"
 import { deactivateLead } from "./lead-deactivator"
 import { logPromotionActivity } from "./promotion-logger"
 import { carryLeadHistoryToContact } from "./history-carry"
-import { grantPortalAccessForPromotedContact } from "./portal-access"
-import { ensureWelcomeAvatarVideo } from "./welcome-avatar-video"
+import { deliverConversionWelcome } from "./conversion-welcome"
 
 export interface PromotionResult {
   success: boolean
@@ -209,63 +208,42 @@ export async function promoteLeadToContactService(
       warnings.push(`promotion activity NOT logged: ${promotionLog.error ?? "unknown error"}`)
     }
 
-    // Step 8: PORTAL ACCESS. "since this is a new contact record, the contact gets
-    // access to their portal" (owner). Delegates to the canonical system invite path
-    // — see lib/contact-promotion/portal-access.ts for why that one and not the
-    // session-bound server action. `agent.user_id` was already resolved in Step 4,
-    // so the agents.id → users.id crossing costs no extra read.
+    // Step 8: THE WELCOME — PORTAL ACCESS, THE PERSONAL VIDEO, AND THE ONE EMAIL.
     //
-    // BEST EFFORT, and it CANNOT unwind the conversion: the contact, its history and
-    // the deactivated lead are all already committed. A portal failure comes back as
-    // a warning the caller reports, exactly like the deactivation failure above.
-    const portal = await grantPortalAccessForPromotedContact(supabase, {
+    // OWNER RULING: "the welcome email is the first on conversion that has the
+    // welcome with portal info to also inclue the embedded personal video."
+    //
+    // This used to be TWO steps here (portal access, then the avatar video) and the
+    // welcome EMAIL was a third sender living somewhere else entirely — the invite
+    // core's hardcoded generic magic-link mail, with the video arriving later in a
+    // separate cron email. Three senders, one ruling. They are consolidated behind
+    // ONE entry point, which lib/kernel/lead-acquisition-handlers.ts calls
+    // identically: neither lane holds a copy (§6), which is the lesson recorded on
+    // the history carry above.
+    //
+    // ORDER INSIDE IT IS LOAD-BEARING: the portal_contact_invites row is created
+    // FIRST and unconditionally, so a video that cannot be produced can never cost
+    // the contact their portal. Only the EMAIL waits for the render, and only when
+    // a render is actually in flight — with a bounded deadline past which the
+    // welcome goes without the video rather than never going at all.
+    //
+    // BEST EFFORT and IDEMPOTENT: Step 2 above returns early on an already-promoted
+    // lead; the reactor's unique index dedupes the render before any spend; and
+    // ensureClientWelcome refuses a second welcome on the rationale tag.
+    const welcome = await deliverConversionWelcome(supabase, {
       contactId: contactResult.contactId,
       agentId: lead.agent_id,
       agentUserId: agent.user_id ?? null,
-      contactType: resolveContactType(lead.motivation_type, lead.lead_type),
-    })
-    warnings.push(...portal.warnings)
-    console.log(
-      `[promoteLeadToContactService] portal access for contact ${contactResult.contactId}: ` +
-        `${portal.reason} (granted=${portal.granted}, emailSent=${portal.emailSent})`,
-    )
-
-    // Step 8b: THE PERSONAL AVATAR VIDEO FROM THE ASSIGNED AGENT.
-    //
-    // OWNER RULING: "…the welcome portal email with a personal avatar video from
-    // the agent.. we only sent content to leads and contacts that are personalized
-    // and situation, them first messaging."
-    //
-    // The portal half above was wired; this half was not, on EITHER lane. Live
-    // counts when this was added: 50 `contact_agent_assigned` lifecycle rows and
-    // ZERO `agent_intro_videos` rows of any status — so the avatar spine had never
-    // run for anybody. See lib/contact-promotion/welcome-avatar-video.ts for why
-    // (the m122 trigger writes an audit-only lifecycle row that nothing dispatches
-    // back into the reactor). CLAUDE.md §1 case 2: build the missing half.
-    //
-    // IT RUNS **AFTER** THE PORTAL INVITE, NOT BEFORE. The portal grant is the
-    // thing the owner is certain about and the thing a contact cannot do without;
-    // the video is the thing that can be refused for a dozen legitimate reasons
-    // (the agent has no avatar yet, the contact opted out of video, the model
-    // refused the script). Ordering it second means a video that cannot be
-    // produced can never cost the contact their portal.
-    //
-    // BOTH LANES CALL THIS SAME FUNCTION — lib/kernel/lead-acquisition-handlers.ts
-    // makes the identical call. Neither holds a copy (§6). That is the lesson
-    // recorded on the history carry, which was wired into this lane only and drifted.
-    //
-    // BEST EFFORT and IDEMPOTENT: Step 2 above returns early on an already-promoted
-    // lead, and inside the reactor the `agent_intro_videos` unique index dedupes
-    // BEFORE the model is called, so a retried conversion spends nothing.
-    const welcomeVideo = await ensureWelcomeAvatarVideo(supabase, {
-      contactId: contactResult.contactId,
-      agentId: lead.agent_id,
       brokerageId: lead.brokerage_id,
+      contactType: resolveContactType(lead.motivation_type, lead.lead_type),
+      firstName: lead.first_name ?? null,
+      lastName: lead.last_name ?? null,
     })
-    warnings.push(...welcomeVideo.warnings)
+    warnings.push(...welcome.warnings)
     console.log(
-      `[promoteLeadToContactService] welcome avatar video for contact ${contactResult.contactId}: ` +
-        `${welcomeVideo.reason} (commissioned=${welcomeVideo.commissioned}, situational=${welcomeVideo.situational})`,
+      `[promoteLeadToContactService] welcome for contact ${contactResult.contactId}: ` +
+        `portal=${welcome.portalGranted}, video=${welcome.videoReason}, email=${welcome.timing}` +
+        `${welcome.emailState ? ` (${welcome.emailState})` : ""} — ${welcome.timingReason}`,
     )
 
     // Step 9: THE AGENT'S FIRST-TOUCH PLAN.

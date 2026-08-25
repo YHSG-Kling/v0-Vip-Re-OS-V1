@@ -427,6 +427,19 @@ function mutate(source: string, find: string, replaceWith: string, label: string
     check(`M· the mutation "${label}" could be APPLIED (a find-string that stopped matching is theatre, not a control)`, false)
     return null
   }
+  // A find-string that matches TWICE is worse than one that stopped matching:
+  // `String.replace` takes the FIRST hit, so the mutation lands somewhere the
+  // predicate does not judge, the predicate stays true, and the control reports
+  // "this mutation does not go red" about a site it never touched. That is
+  // exactly what happened when m561 added a second
+  // `const { data: vendors, error: … }` destructure to this same action, ABOVE
+  // the one M4 aims at — the read was renamed so the anchor is unique again, and
+  // this assertion is what makes the next collision say so instead of lying.
+  const occurrences = source.split(find).length - 1
+  if (occurrences !== 1) {
+    check(`M· the mutation "${label}" has a UNIQUE anchor (found ${occurrences}; replace() would hit the wrong site)`, false)
+    return null
+  }
   pass++
   console.log(`  ✓ M· the mutation "${label}" applied`)
   return source.replace(find, replaceWith)

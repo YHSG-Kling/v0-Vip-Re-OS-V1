@@ -35,6 +35,18 @@ export interface CopyRequest {
   persona: CopyPersona
   /** ~ target length in words. */
   words?: number
+  /**
+   * WRITING CONSTRAINTS, not facts — the difference matters. `facts` is the closed
+   * set the copy may draw ON; `directives` are rules the writer must obey WHILE
+   * drawing. CLAUDE.md §5 asks for fair housing "in the writing prompt, not only in
+   * the post-hoc scan", and laundering a directive through `facts` would invite the
+   * model to repeat it back to the reader as though it were something we know about
+   * them.
+   *
+   * ADDITIVE: omitting it reproduces the prior system prompt BYTE-FOR-BYTE (the
+   * simulator asserts exactly that), so no existing caller's copy changes.
+   */
+  directives?: string[]
 }
 
 export interface CopyDraft { subject?: string; body: string }
@@ -59,6 +71,9 @@ export const realCopyGenerator: CopyGenerator = async (req) => {
     "2. Use ONLY the facts provided — invent nothing (no prices, dates, names, or claims not given).",
     "3. Write to THIS persona's situation and tone; make it feel one-to-one, not a blast.",
     `4. Keep it ~${req.words ?? 60} words, warm, no pressure.`,
+    ...(req.directives?.length
+      ? ["5. Additional non-negotiable constraints for THIS piece:", ...req.directives.map((d) => `   - ${d}`)]
+      : []),
     SCRIPT_QUALITY_CHARTER,
     `Return STRICT JSON: {"subject": "<short subject or empty>", "body": "<the copy>"}.`,
   ].join("\n")

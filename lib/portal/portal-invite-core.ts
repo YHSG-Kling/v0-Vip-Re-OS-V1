@@ -11,8 +11,15 @@ import { randomUUID } from "crypto"
  * path can invite cross-tenant.
  *
  * Email (Supabase OTP magic link) is sent only when the contact has an email AND has not opted out /
- * unsubscribed — TCPA/CAN-SPAM safe. The invite row + welcome message are always (re)created so an
- * opted-out contact still has a portal they can reach via an agent-shared link.
+ * unsubscribed — TCPA/CAN-SPAM safe. The invite ROW is always (re)created so an opted-out contact
+ * still has a portal they can reach via an agent-shared link.
+ *
+ * `sendMagicLink` IS A DELIVERY DECISION AND THE CALLER OWNS IT. On the conversion lanes it is
+ * FALSE: the ONE welcome email (lib/kernel/client-welcome.ts) carries the portal door, and a
+ * second OTP mail racing it is the duplicate the owner's "welcome email is the FIRST on
+ * conversion" ruling forbids. It stays TRUE where no agent-signed welcome will be produced
+ * (an agent's manual CRM invite, a home-value report, a contact type resolveWelcomeSide
+ * declines) — there it is the only thing that tells the contact their portal exists.
  */
 export interface IssuePortalInviteParams {
   contactId:        string
@@ -101,20 +108,29 @@ export async function issuePortalInvite(
     }
   }
 
-  // Welcome message — direction MUST be 'agent_to_client' (CHECK constraint) and agent_id is a NOT
-  // NULL FK to *agents* (contacts.agent_id is the agents.id). Skip if the contact has no assigned
-  // agent (the NOT NULL FK would otherwise drop the row).
-  if (contact.agent_id) {
-    void supabase.from("client_portal_messages").insert({
-      contact_id:   contactId,
-      brokerage_id: brokerageId,
-      agent_id:     contact.agent_id,
-      direction:    "agent_to_client",
-      body:         `Hi ${contact.first_name ?? "there"}, your client portal is ready. Log in to track your journey.`,
-      channel:      "portal",
-      read:         false,
-    })
-  }
+  // ─── TOMBSTONE (orphan doctrine §1.1) ──────────────────────────────────────
+  // REMOVED: the hardcoded generic portal greeting this function used to insert
+  // into `client_portal_messages` —
+  //   "Hi ${first_name}, your client portal is ready. Log in to track your journey."
+  //
+  // SURVIVOR: lib/kernel/client-welcome.ts::writePortalWelcomeCard (the
+  // `transparency_updates` card the ONE welcome writes, carrying the agent-signed
+  // situational copy AND the personal video URL the portal home feed plays).
+  //
+  // WHY IT HAD TO GO, not merely why it could. OWNER RULING: "we only sent content
+  // to leads and contacts that are personalized and situation, them first
+  // messaging." That sentence is exactly one line long and this greeting broke it
+  // in every clause — no situation, no agent voice, brokerage-first framing, and
+  // it was the FIRST thing a converted contact saw. Two spellings of "the portal
+  // greeting" also put the welcome on two rails (client_portal_messages and
+  // transparency_updates), which is the §6 defect that lets a scorer match neither.
+  //
+  // MEASUREMENT: `client_portal_messages` held ZERO rows on hrvaqgvukzxfskkcrwbt
+  // when this was removed, so nothing live is losing a message it already had.
+  //
+  // The ACCESS GRANT above is deliberately untouched: the invite row IS the portal,
+  // it is still created immediately and unconditionally, and no contact can lose
+  // portal access because a video render, an email, or a greeting failed.
 
   return { success: true, inviteId, emailSent }
 }

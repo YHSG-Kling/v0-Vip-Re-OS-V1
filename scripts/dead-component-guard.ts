@@ -10,26 +10,27 @@
  * Zero false positives by design: "imported by nothing" is a hard fact (unlike full reachability,
  * which has Next.js-convention edge cases) — so this guard never blocks a legitimate component.
  */
-import { readFileSync, readdirSync, statSync } from "node:fs"
+import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { dirname, join, normalize, relative } from "node:path"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 
-function walk(dir: string, out: string[]) {
-  let entries: string[]
-  try { entries = readdirSync(dir) } catch { return }
-  for (const n of entries) {
-    if (n === "node_modules" || n.startsWith(".")) continue
-    const p = join(dir, n)
-    if (statSync(p).isDirectory()) walk(p, out)
-    else if (/\.(ts|tsx)$/.test(n)) out.push(relative(root, p).replace(/\\/g, "/"))
-  }
-}
-
-const all: string[] = []
-walk(join(root, "app"), all)
-walk(join(root, "lib"), all)
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk(dir, out)` that stood here
+// was one of 82 copies of the same readdirSync walker. Survivor:
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// It enumerated DIRECTORIES, and a root-level FILE is not a directory, so the two
+// runtime files at the repository root were outside the corpus in BOTH directions:
+// `proxy.ts` was never checked for dead imports, and every module whose ONLY
+// importer is `proxy.ts` (`@/app/constants/auth`, `@/lib/platform/site-url`) read
+// as dead here. `rootRuntimeFiles()` from the same survivor supplies them.
+const all = [
+  ...walkTs(join(root, "app")),
+  ...walkTs(join(root, "lib")),
+  ...rootRuntimeFiles(root),
+].map((p) => relative(root, p).replace(/\\/g, "/"))
 const set = new Set(all)
 
 /** Resolve an import specifier to a repo-relative file (mirrors tsconfig paths + relative + index). */

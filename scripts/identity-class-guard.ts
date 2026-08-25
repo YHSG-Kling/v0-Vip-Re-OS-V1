@@ -63,7 +63,8 @@
  *   where tc.constraint_type='FOREIGN KEY' and tc.table_schema='public'
  *     and kcu.column_name='agent_id' and ccu.table_name='users';
  */
-import { readFileSync, existsSync, readdirSync } from "node:fs"
+import { readFileSync, existsSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
@@ -95,17 +96,16 @@ const code = (p: string) =>
  */
 const USERS_CLASS_TABLES = new Set<string>([])
 
-function walk(dir: string, out: string[] = []): string[] {
-  if (!existsSync(dir)) return out
-  for (const e of readdirSync(dir, { withFileTypes: true })) {
-    const full = `${dir}/${e.name}`
-    if (e.isDirectory()) {
-      if (e.name === "node_modules" || e.name === ".next") continue
-      walk(full, out)
-    } else if (/\.tsx?$/.test(e.name)) out.push(full)
-  }
-  return out
-}
+// TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+// 82 byte-identical copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// The copy was not a style problem. It enumerated DIRECTORIES, and a root-level
+// FILE is not a directory, so `proxy.ts` — the Next 16 edge middleware, which
+// gates auth and queries blog_posts, brokerages, users and tenant_custom_domains
+// with a SERVICE client on EVERY request — was outside this guard's corpus. A file
+// that is never opened reports green, which is the failure shape §2 of CLAUDE.md
+// names. `rootRuntimeFiles()` from the same survivor supplies the root files.
 
 /** Split a file into rough function bodies — the scope in which a contradiction
  *  is meaningful. A top-level split on `function`/arrow-assignment keywords is
@@ -186,7 +186,7 @@ function classifyUsages(chunk: string): { expr: string; cls: "agents" | "users";
 
 function findContradictions(): Contradiction[] {
   const found: Contradiction[] = []
-  for (const file of [...walk("app"), ...walk("lib")]) {
+  for (const file of [...walkTs("app"), ...walkTs("lib"), ...rootRuntimeFiles(".")]) {
     const c = code(file)
     if (!c.includes("agent_id")) continue
     for (const chunk of functionChunks(c)) {
@@ -480,7 +480,7 @@ console.log("\n═══ 3. The canonical resolver is the one place this is deci
 
   // Adoption is a RATCHET, not a target. It only has to go up.
   const ADOPTION_FLOOR = 20
-  const adopters = [...walk("app"), ...walk("lib")].filter((f) =>
+  const adopters = [...walkTs("app"), ...walkTs("lib"), ...rootRuntimeFiles(".")].filter((f) =>
     /resolveUserIdToAgentRecord|resolveAgentRecordToUserId/.test(code(f)))
   ok(`at least ${ADOPTION_FLOOR} files route identity through the resolver (found ${adopters.length}) —\n    a ratchet: this number may only go up, so each pass that touches a\n    mixed-class query is expected to convert it rather than work around it`,
     adopters.length >= ADOPTION_FLOOR, String(adopters.length))

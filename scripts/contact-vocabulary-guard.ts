@@ -47,7 +47,8 @@
  * a fixture containing the defect it exists to catch, and must still see it.
  * The denominator (files scanned) is printed beside the count.
  */
-import { readFileSync, readdirSync, statSync } from "node:fs"
+import { readFileSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { dirname, join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
@@ -149,16 +150,16 @@ check("a retired spelling still resolves as a lifetime RELATIONSHIP (a legacy ro
 // ─── 2. the repo scan ────────────────────────────────────────────────────────
 console.log("\n[2 · repo scan — no retired spelling may reach Postgres]")
 
-function* walk(dir: string): Generator<string> {
-  let entries: string[]
-  try { entries = readdirSync(dir) } catch { return }
-  for (const n of entries) {
-    if (n === "node_modules" || n === ".next" || n.startsWith(".")) continue
-    const p = join(dir, n)
-    if (statSync(p).isDirectory()) yield* walk(p)
-    else if (/\.(ts|tsx)$/.test(n)) yield p
-  }
-}
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk()` generator that stood
+// here was one of 82 copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// It enumerated DIRECTORIES, and a root-level FILE is not a directory, so
+// `proxy.ts` — the Next 16 edge middleware, which gates auth and queries
+// blog_posts, brokerages, users and tenant_custom_domains with a SERVICE client on
+// EVERY request — was outside this guard's corpus. A file that is never opened
+// reports green. `rootRuntimeFiles()` from the same survivor supplies the root
+// files, so the directory loop is no longer the whole answer to "what ships".
 
 export interface RetiredHit { file: string; line: number; kind: "write" | "filter"; value: string; text: string }
 
@@ -242,8 +243,10 @@ check("never reads its own documentation",
 
 const files: string[] = []
 for (const d of ["app", "lib", "services", "scripts", "components", "hooks", "contexts", "constants", "workflows"]) {
-  for (const f of walk(join(ROOT, d))) files.push(f)
+  for (const f of walkTs(join(ROOT, d))) files.push(f)
 }
+// Root-level runtime FILES are not directories, so the loop above cannot reach them.
+for (const f of rootRuntimeFiles(ROOT)) files.push(f)
 const hits: RetiredHit[] = []
 for (const f of files) {
   let src = ""

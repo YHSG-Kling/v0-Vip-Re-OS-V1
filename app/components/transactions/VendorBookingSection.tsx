@@ -22,12 +22,43 @@ import {
   type VendorAvailability,
 } from "@/app/actions/vendor-marketplace"
 import { requestVendorReview } from "@/app/actions/ai-vendor-management"
+import { VendorCategorySelect } from "@/app/components/vendors/vendor-category-select"
 
-const SERVICE_TYPES = [
-  "inspector", "appraiser", "title", "escrow", "lender",
-  "contractor", "plumber", "electrician", "hvac", "roofer",
-  "stager", "photographer", "cleaner", "mover", "surveyor",
-]
+// ─────────────────────────────────────────────────────────────────────────────
+// TOMBSTONE (m561, CLAUDE.md §1.1 / §6). A FOURTH SERVICE-TYPE PICK LIST lived
+// here:
+//
+//   ["inspector","appraiser","title","escrow","lender","contractor","plumber",
+//    "electrician","hvac","roofer","stager","photographer","cleaner","mover",
+//    "surveyor"]
+//
+// Thirteen of the fifteen were real members, which is what made this one
+// dangerous: it looked correct. The two that were not — `escrow` and `surveyor`
+// — fed `searchVendors`, `checkVendorAvailability` and `matchVendorToTransaction`,
+// each of which filtered `category ILIKE '%serviceType%'`, so both returned an
+// EMPTY DIRECTORY that the panel rendered as "no vendors found" rather than as
+// "that is not a trade this platform books". Verified live against the 39-value
+// vendors_category_check on 2026-08-25: 0 matches for either.
+//
+// `lender` was the other half of the same bug, in the opposite direction — the
+// substring `%lender%` also matched every `refinance_lender`, silently mixing
+// refinance shops into a purchase-lender search. Those reads are `.eq` now.
+//
+// SURVIVOR: app/components/vendors/vendor-category-select.tsx, built from
+// VENDOR_CATEGORY_GROUPS at lib/kernel/vendor-categories.ts:99.
+//
+// COUNTS THAT MOVED: 15 options → 39, every one of which matches a bench row
+// (was 13 of 15). `escrow` is not lost — it resolves to `title` through
+// VENDOR_CATEGORY_SYNONYMS, which is what four other writers in this repo
+// already did with it.
+//
+// `surveyor` IS A REAL LOSS AND IS DELIBERATELY NOT PAPERED OVER. It is not a
+// member of the CHECK and it is not a spelling of any of the 39 — a land
+// surveyor is its own licensed trade. It is NOT mapped to `other`, because that
+// would file a surveyor under a catch-all and call the vocabulary complete.
+// UNRESOLVED: whether to widen the CHECK for it the way m554 widened it for
+// `appraiser` is an owner call, and it is recorded here rather than guessed.
+// ─────────────────────────────────────────────────────────────────────────────
 
 interface Vendor {
   id: string
@@ -472,16 +503,15 @@ export function VendorBookingSection({ transactionId, transactionStage, initialB
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <Label className="text-xs">Service Type</Label>
-                <Select value={serviceType} onValueChange={setServiceType}>
-                  <SelectTrigger className="h-8 text-xs mt-1">
-                    <SelectValue placeholder="Any service" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {SERVICE_TYPES.map((t) => (
-                      <SelectItem key={t} value={t} className="text-xs capitalize">{t}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <div className="mt-1">
+                  {/* The ONE control that authors a vendor trade — see the
+                      tombstone at the top of this file. */}
+                  <VendorCategorySelect
+                    value={serviceType}
+                    onChange={setServiceType}
+                    placeholder="Any service"
+                  />
+                </div>
               </div>
               <div>
                 <Label className="text-xs">Search by name</Label>

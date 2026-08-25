@@ -67,6 +67,20 @@ export interface PortalAccessParams {
   agentUserId?: string | null
   /** Canonical contacts.contact_type, used only for the exclusion gate. */
   contactType?: string | null
+  /**
+   * Send the invite core's own Supabase OTP magic-link mail?
+   *
+   * DEFAULTS TRUE so no existing caller changes behaviour. The conversion lane
+   * passes FALSE when `resolveWelcomeSide` says an agent-signed welcome email is
+   * going out for this contact type, because that welcome carries the portal door
+   * and the ruling allows exactly ONE email. It passes TRUE when no welcome will
+   * be produced, so a contact is never handed a portal nobody told them about.
+   *
+   * THE GRANT DOES NOT DEPEND ON THIS. The `portal_contact_invites` row — which is
+   * the access itself — is created either way, immediately, before any video or
+   * email work is attempted.
+   */
+  sendMagicLink?: boolean
 }
 
 /**
@@ -124,12 +138,13 @@ export async function grantPortalAccessForPromotedContact(
     return out
   }
 
+  const sendMagicLink = params.sendMagicLink !== false
   try {
     const { createSystemPortalInvite } = await import("@/lib/portal/portal-invite-core")
     const invite = await createSystemPortalInvite({
       contactId: params.contactId,
       agentUserId,
-      sendMagicLink: true,
+      sendMagicLink,
     })
 
     if (!invite.success) {
@@ -147,7 +162,11 @@ export async function grantPortalAccessForPromotedContact(
     // Access exists; delivery did not. The contact has a portal, but no email left
     // the building — because they have no email address, or because they opted out
     // and the core (correctly) refused to mail them. The agent has to share the link.
-    if (!out.emailSent) {
+    //
+    // NOT a warning when the caller ASKED for no magic link: there the agent's own
+    // welcome email is the delivery, and reporting "no invite email was sent" would
+    // be a false alarm about a deliberate decision.
+    if (!out.emailSent && sendMagicLink) {
       out.warnings.push(
         `portal created for contact ${params.contactId} but NO invite email was sent ` +
           `(no email address, or the contact has opted out / unsubscribed). The agent must share the portal link.`,

@@ -512,11 +512,20 @@ export async function captureContact(
       ? await supabase.from('agents').select('user_id').eq('id', createAgentId).maybeSingle()
       : { data: null }
     if (agentRow?.user_id) {
+      // ONE EMAIL, HERE TOO. `ensureClientWelcome` ran a few lines above and, for
+      // any contact type resolveWelcomeSide accepts, it has already granted portal
+      // access (sendMagicLink: false) and sent an agent-signed welcome carrying the
+      // portal door. Re-inviting with the OTP mail armed put a SECOND, generic
+      // email on top of it — the same duplicate the conversion lanes were carrying,
+      // and the owner's them-first ruling forbids the generic one specifically.
+      // The invite row itself is still (re)created either way: the grant and the
+      // email are different things.
+      const { resolveWelcomeSide } = await import('@/lib/kernel/client-welcome')
       const { createSystemPortalInvite } = await import('@/lib/portal/portal-invite-core')
       await createSystemPortalInvite({
         contactId,
         agentUserId: agentRow.user_id,
-        sendMagicLink: true,
+        sendMagicLink: resolveWelcomeSide(params.contact_type ?? null) === null,
       })
     }
   } catch (err) {

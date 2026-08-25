@@ -29,7 +29,8 @@
  * state — that is drift, the exact thing this work exists to remove. Each batch
  * is: read every caller, rename column + constraint, convert callers, prove.
  */
-import { readFileSync, existsSync, readdirSync } from "node:fs"
+import { readFileSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
@@ -40,17 +41,16 @@ function ok(label: string, cond: boolean, detail?: string) {
 }
 const read = (p: string) => { try { return readFileSync(p, "utf8") } catch { return "" } }
 
-function walkDir(dir: string, out: string[] = []): string[] {
-  if (!existsSync(dir)) return out
-  for (const e of readdirSync(dir, { withFileTypes: true })) {
-    const full = `${dir}/${e.name}`
-    if (e.isDirectory()) {
-      if (e.name === "node_modules" || e.name === ".next") continue
-      walkDir(full, out)
-    } else if (/\.tsx?$/.test(e.name)) out.push(full)
-  }
-  return out
-}
+// TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+// 82 byte-identical copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// The copy was not a style problem. It enumerated DIRECTORIES, and a root-level
+// FILE is not a directory, so `proxy.ts` — the Next 16 edge middleware, which
+// gates auth and queries blog_posts, brokerages, users and tenant_custom_domains
+// with a SERVICE client on EVERY request — was outside this guard's corpus. A file
+// that is never opened reports green, which is the failure shape §2 of CLAUDE.md
+// names. `rootRuntimeFiles()` from the same survivor supplies the root files.
 /** Strip comments — otherwise this guard asserts against its own explanation. */
 const code = (s: string) => stripComments(s)
 
@@ -114,7 +114,7 @@ function queryWindows(src: string, table: string): string[] {
 
 console.log("\n═══ 1. A converted table never sees `agent_id` again ═══")
 {
-  const files = [...walkDir("app"), ...walkDir("lib")]
+  const files = [...walkTs("app"), ...walkTs("lib"), ...rootRuntimeFiles(".")]
   for (const table of CONVERTED) {
     const offenders: string[] = []
     for (const f of files) {

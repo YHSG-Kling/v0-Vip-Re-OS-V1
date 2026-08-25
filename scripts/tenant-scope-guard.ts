@@ -10,7 +10,8 @@
 // (tenant-scope-baseline.json): existing debt is frozen and the surface can
 // only SHRINK — any NEW unscoped query fails the build with its location.
 
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "node:fs"
+import { readFileSync, writeFileSync, existsSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { stripComments } from "./strip-comments"
 import { join, relative } from "node:path"
 
@@ -62,14 +63,28 @@ const WINDOW = 500 // chars of chain examined after .from("table")
 const root = process.cwd()
 const baselinePath = join(root, "scripts", "tenant-scope-baseline.json")
 
-function* walk(dir: string): Generator<string> {
-  for (const entry of readdirSync(dir)) {
-    if (entry === "node_modules" || entry === ".next" || entry.startsWith(".")) continue
-    const p = join(dir, entry)
-    const s = statSync(p)
-    if (s.isDirectory()) yield* walk(p)
-    else if (/\.(ts|tsx)$/.test(entry) && !/\.test\.|simulator|guard/.test(entry)) yield p
-  }
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk()` generator that stood
+// here was one of 82 copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// It enumerated DIRECTORIES, and a root-level FILE is not a directory, so
+// `proxy.ts` was outside the corpus of the TENANCY guard — while being the one
+// runtime file that resolves a tenant from an untrusted request HOST and then
+// queries tenant_custom_domains, brokerages and users with a SERVICE client, RLS
+// bypassed, on every request. That is the exact shape §4 of CLAUDE.md names, in
+// the exact file this guard could not open. `rootRuntimeFiles()` supplies it.
+//
+// The name filter is NOT part of the survivor and is kept here: this guard quotes
+// the forbidden shapes in its own positive controls, so a simulator or guard file
+// in the corpus would report its own fixtures as violations.
+const scanNameOk = (p: string) => !/\.test\.|simulator|guard/.test(p.split("/").pop() ?? "")
+function* walkScoped(dir: string): Generator<string> {
+  for (const p of walkTs(dir)) if (scanNameOk(p)) yield p
+}
+/** The directory reach PLUS the root-level runtime files, both from the survivor. */
+function* scanCorpus(dirs: string[]): Generator<string> {
+  for (const d of dirs) yield* walkScoped(join(root, d))
+  for (const p of rootRuntimeFiles(root)) if (scanNameOk(p)) yield p
 }
 
 /**
@@ -118,8 +133,10 @@ function* walk(dir: string): Generator<string> {
  * check over a 500-character window of a `.from()` chain. It cannot see a filter
  * applied through a helper, a predicate more than 500 characters downstream, or
  * the difference between a predicate that always runs and one behind an `if`.
- * Files named `*simulator*`, `*guard*` and `*.test.*` are excluded by walk(),
- * and only `app/` and `lib/` are scanned.
+ * Files named `*simulator*`, `*guard*` and `*.test.*` are excluded by scanNameOk(),
+ * and the corpus is `app/` + `lib/` PLUS the root-level runtime files (proxy.ts,
+ * types.ts) — which a directory walk could not reach and which no guard in this
+ * repository had ever opened.
  */
 function unscopedTablesIn(raw: string): Map<string, number> {
   const found = new Map<string, number>()
@@ -311,13 +328,11 @@ function unscopedTablesIn(raw: string): Map<string, number> {
 
 const violations = new Map<string, number>() // "file :: table" → count
 let scanned = 0
-for (const dir of ["app", "lib"]) {
-  for (const abs of walk(join(root, dir))) {
-    scanned += 1
-    for (const [table, count] of unscopedTablesIn(readFileSync(abs, "utf8"))) {
-      const key = `${relative(root, abs).replace(/\\/g, "/")} :: ${table}`
-      violations.set(key, (violations.get(key) ?? 0) + count)
-    }
+for (const abs of scanCorpus(["app", "lib"])) {
+  scanned += 1
+  for (const [table, count] of unscopedTablesIn(readFileSync(abs, "utf8"))) {
+    const key = `${relative(root, abs).replace(/\\/g, "/")} :: ${table}`
+    violations.set(key, (violations.get(key) ?? 0) + count)
   }
 }
 
@@ -465,8 +480,7 @@ const GLOBAL_LOOKUP_EXEMPT: Record<string, string> = {
 
   const offenders: string[] = []
   const scanDirs = ["app", "lib"]
-  const allFiles: string[] = []
-  for (const d of scanDirs) for (const abs of walk(join(root, d))) allFiles.push(abs)
+  const allFiles: string[] = [...scanCorpus(scanDirs)]
 
   for (const file of allFiles) {
     const rel = relative(root, file)

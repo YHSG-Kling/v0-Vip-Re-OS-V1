@@ -26,7 +26,8 @@
  * Run: npx tsx scripts/orphan-route-sweep.ts  (npm run test:orphan-routes)
  * Tighten: GUARD_ROUTE_BASELINE=1 npx tsx scripts/orphan-route-sweep.ts
  */
-import { readFileSync, readdirSync, statSync, writeFileSync, existsSync } from "node:fs"
+import { readFileSync, writeFileSync, existsSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { join } from "node:path"
 
 const BASELINE = join(process.cwd(), "scripts/orphan-route-baseline.json")
@@ -113,14 +114,14 @@ const REFERENCE_SCAN_EXCLUDE = new Set(["app/sitemap.ts"])
 
 // ─── route inventory ─────────────────────────────────────────────────────────
 
-function walk(dir: string, acc: string[]) {
-  for (const name of readdirSync(dir)) {
-    if (name === "node_modules" || name === ".next" || name === ".git") continue
-    const p = join(dir, name)
-    if (statSync(p).isDirectory()) walk(p, acc)
-    else if (/\.(ts|tsx)$/.test(name)) acc.push(p)
-  }
-}
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk(dir, acc)` that stood here
+// was one of 82 copies of the same readdirSync walker. Survivor:
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above. It enumerated
+// DIRECTORIES, so `proxy.ts` — the edge middleware that owns PROTECTED_ROUTES and
+// PUBLIC_ROUTES and rewrites white-label hosts onto /site/[slug] — was outside the
+// corpus of the sweep that decides which routes are reachable. The single most
+// route-aware file in the tree was the one this sweep could not read.
+// `rootRuntimeFiles()` from the same survivor supplies it.
 
 /** app/(group)/x/[id]/page.tsx → /x/[id]  (route groups vanish; api skipped) */
 function routeFromPage(rel: string): string | null {
@@ -307,8 +308,17 @@ function refMatchesRoute(refSegs: string[], routeSegs: string[]): boolean {
 
 function main() {
   const cwd = process.cwd()
-  const files: string[] = []
-  for (const d of ["app", "lib", "components"]) { try { walk(join(cwd, d), files) } catch {} }
+  // A LINK FROM A FILE THIS SWEEP CANNOT OPEN IS AN ORPHAN THAT ISN'T ONE.
+  // `components` is kept in the list for the day one exists — there is no
+  // top-level components/ directory in this repo today (they live under
+  // app/**/components, already covered), and walkTs returns [] for an absent dir
+  // rather than throwing, so the entry is honest rather than load-bearing.
+  const files: string[] = [
+    ...walkTs(join(cwd, "app")),
+    ...walkTs(join(cwd, "lib")),
+    ...walkTs(join(cwd, "components")),
+    ...rootRuntimeFiles(cwd),
+  ]
   const rel = (f: string) => f.replace(cwd + "/", "")
 
   // 1. Route inventory

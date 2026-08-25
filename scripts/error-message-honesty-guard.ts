@@ -156,20 +156,20 @@
  * reader cannot act on the cause. If a FOURTH appears, judge it the same way —
  * do not assume this note licenses the next increment.
  */
-import { readFileSync, existsSync, readdirSync } from "node:fs"
+import { readFileSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 
 const read = (p: string) => { try { return readFileSync(p, "utf8") } catch { return "" } }
-function walk(dir: string, out: string[] = []): string[] {
-  if (!existsSync(dir)) return out
-  for (const e of readdirSync(dir, { withFileTypes: true })) {
-    const full = `${dir}/${e.name}`
-    if (e.isDirectory()) {
-      if (e.name === "node_modules" || e.name === ".next") continue
-      walk(full, out)
-    } else if (/\.tsx?$/.test(e.name)) out.push(full)
-  }
-  return out
-}
+// TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+// 82 byte-identical copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// The copy was not a style problem. It enumerated DIRECTORIES, and a root-level
+// FILE is not a directory, so `proxy.ts` — the Next 16 edge middleware, which
+// gates auth and queries blog_posts, brokerages, users and tenant_custom_domains
+// with a SERVICE client on EVERY request — was outside this guard's corpus. A file
+// that is never opened reports green, which is the failure shape §2 of CLAUDE.md
+// names. `rootRuntimeFiles()` from the same survivor supplies the root files.
 
 /** `if (!X) ... "message"` — the guard and the sentence it blames. */
 const GUARD_RE = new RegExp(
@@ -288,7 +288,7 @@ interface Hit { file: string; line: number; cond: string; msg: string }
 
 function findMismatches(): Hit[] {
   const hits: Hit[] = []
-  for (const file of [...walk("app"), ...walk("lib"), ...walk("components")]) {
+  for (const file of [...walkTs("app"), ...walkTs("lib"), ...walkTs("components"), ...rootRuntimeFiles(".")]) {
     const s = read(file)
     for (const m of s.matchAll(GUARD_RE)) {
       const [, cond, msg] = m

@@ -64,7 +64,8 @@
  * same expression. Writing the reason down is not the same as fixing it, and a
  * fallback is where a fix goes to be quietly undone.
  */
-import { readFileSync, existsSync, readdirSync } from "node:fs"
+import { readFileSync, existsSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { stripComments as canonicalStripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
@@ -75,17 +76,16 @@ function ok(label: string, cond: boolean, detail?: string) {
 }
 const read = (p: string) => { try { return readFileSync(p, "utf8") } catch { return "" } }
 
-function walkDir(dir: string, out: string[] = []): string[] {
-  if (!existsSync(dir)) return out
-  for (const e of readdirSync(dir, { withFileTypes: true })) {
-    const full = `${dir}/${e.name}`
-    if (e.isDirectory()) {
-      if (e.name === "node_modules" || e.name === ".next") continue
-      walkDir(full, out)
-    } else if (/\.tsx?$/.test(e.name)) out.push(full)
-  }
-  return out
-}
+// TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+// 82 byte-identical copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// The copy was not a style problem. It enumerated DIRECTORIES, and a root-level
+// FILE is not a directory, so `proxy.ts` — the Next 16 edge middleware, which
+// gates auth and queries blog_posts, brokerages, users and tenant_custom_domains
+// with a SERVICE client on EVERY request — was outside this guard's corpus. A file
+// that is never opened reports green, which is the failure shape §2 of CLAUDE.md
+// names. `rootRuntimeFiles()` from the same survivor supplies the root files.
 
 /**
  * Strip comments before matching. Every guard in this repo that skipped this
@@ -141,8 +141,8 @@ function findFallbacks(): Hit[] {
   // spelling (m358), this one is missing COVERAGE. When it says zero, check
   // what it walks before believing it.
   for (const file of [
-    ...walkDir("app"), ...walkDir("lib"), ...walkDir("components"),
-    ...walkDir("hooks"), ...walkDir("services"), ...walkDir("contexts"),
+    ...walkTs("app"), ...walkTs("lib"), ...walkTs("components"),
+    ...walkTs("hooks"), ...walkTs("services"), ...walkTs("contexts"), ...rootRuntimeFiles("."),
   ]) {
     const lines = code(read(file)).split("\n")
     lines.forEach((raw, i) => {

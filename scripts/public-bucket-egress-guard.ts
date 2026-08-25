@@ -53,7 +53,8 @@
  *       and an /object/public/ path would not be seen; section 5 checks the one
  *       issuer instead of trying to catch every possible hand-rolled URL.
  */
-import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
+import { readFileSync, writeFileSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { fileURLToPath } from "node:url"
 import { dirname, join, relative } from "node:path"
 import { blankComments, blankStrings } from "./strip-comments"
@@ -74,16 +75,16 @@ function check(name: string, cond: boolean, detail?: string) {
   else { fail++; failures.push(name + (detail ? ` — ${detail}` : "")); console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`) }
 }
 
-function walk(dir: string, out: string[]) {
-  let entries: string[]
-  try { entries = readdirSync(dir) } catch { return }
-  for (const n of entries) {
-    if (n === "node_modules" || n.startsWith(".")) continue
-    const p = join(dir, n)
-    if (statSync(p).isDirectory()) walk(p, out)
-    else if (/\.(ts|tsx)$/.test(n) && !/\.test\.tsx?$/.test(n)) out.push(relative(root, p).replace(/\\/g, "/"))
-  }
-}
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk(dir, out)` that stood here
+// was one of 82 copies of the same readdirSync walker. Survivor:
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above. It enumerated
+// DIRECTORIES, so `proxy.ts` — the edge middleware, which handles the PUBLIC
+// embed surface and its CSP allowlist — was outside this egress guard's corpus.
+// `rootRuntimeFiles()` from the same survivor supplies the root files.
+const scanCorpus = () =>
+  [...walkTs(join(root, "app")), ...walkTs(join(root, "lib")), ...rootRuntimeFiles(root)]
+    .filter((p) => !/\.test\.tsx?$/.test(p))
+    .map((p) => relative(root, p).replace(/\\/g, "/"))
 
 const lineOf = (src: string, idx: number) => src.slice(0, idx).split("\n").length
 
@@ -196,17 +197,18 @@ console.log("══════════════════════�
 console.log(" Public-bucket egress guard")
 console.log("══════════════════════════════════════════════════")
 
-const files: string[] = []
-walk(join(root, "app"), files)
-walk(join(root, "lib"), files)
-files.sort()
+const files = scanCorpus().sort()
 
 const sources = new Map<string, string>()
 for (const f of files) sources.set(f, blankComments(readFileSync(join(root, f), "utf8")))
 
-console.log(`\n  scanned ${files.length} .ts/.tsx files under app/ and lib/`)
+console.log(`\n  scanned ${files.length} .ts/.tsx files under app/, lib/ and the repository ROOT (${rootRuntimeFiles(root).length} root runtime files)`)
 console.log(`  document-class buckets: ${Object.keys(DOCUMENT_CLASS_BUCKETS).length} · public-media buckets: ${Object.keys(PUBLIC_MEDIA_BUCKETS).length}`)
-console.log("  EXCLUDED: scripts/, components/ (simulators quote these strings), *.test.ts")
+// The blind spot, stated exactly. `components/` used to be named here as an exclusion;
+// there is no top-level components/ directory in this repo — components live under
+// app/**/components and were always scanned. Naming a directory that does not exist as
+// "excluded" published a blind spot that was not real while hiding that none was.
+console.log("  EXCLUDED: scripts/ and e2e/ (simulators quote these strings verbatim), *.test.ts")
 
 // ── 1 · no getPublicUrl on a document-class (or unresolvable) bucket ─────────
 console.log("\n[1 · no getPublicUrl against a document-class bucket]")

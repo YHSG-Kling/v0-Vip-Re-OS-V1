@@ -36,7 +36,8 @@
  * Run: npx tsx scripts/portal-signal-visibility-simulator.ts
  *      npx tsx scripts/portal-signal-visibility-simulator.ts --assert-only   (skip the controls)
  */
-import { readFileSync, writeFileSync, readdirSync, statSync } from "node:fs"
+import { readFileSync, writeFileSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { join, relative } from "node:path"
 import { registerHooks } from "node:module"
 import { spawnSync } from "node:child_process"
@@ -362,13 +363,18 @@ async function behaviourLayer() {
 // ─────────────────────────────────────────────────────────────────────────────
 const TABLE = ["client", "portal", "activity"].join("_")
 
-function* walk(dir: string): Generator<string> {
-  for (const entry of readdirSync(dir)) {
-    if (entry === "node_modules" || entry === ".next" || entry.startsWith(".")) continue
-    const p = join(dir, entry)
-    if (statSync(p).isDirectory()) yield* walk(p)
-    else if (/\.(ts|tsx)$/.test(entry)) yield p
-  }
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk()` generator that stood
+// here was one of 82 copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// It enumerated DIRECTORIES, and a root-level FILE is not a directory, so
+// `proxy.ts` — the Next 16 edge middleware, which gates auth and queries four
+// tables with a SERVICE client on EVERY request — was outside this guard's corpus.
+// A file that is never opened reports green, which is the failure shape §2 of
+// CLAUDE.md names. `rootRuntimeFiles()` from the same survivor supplies it.
+function* scanCorpus(dirs: string[]): Generator<string> {
+  for (const d of dirs) yield* walkTs(join(ROOT, d))
+  yield* rootRuntimeFiles(ROOT)
 }
 
 /** Balance braces from an opening `{` and return the literal, so a payload can be inspected. */
@@ -392,8 +398,8 @@ interface Site { file: string; kind: "insert" | "select"; payload: string; windo
 function findSites(): Site[] {
   const out: Site[] = []
   const needle = `.from("${TABLE}")`
-  for (const dir of ["app", "lib"]) {
-    for (const abs of walk(join(ROOT, dir))) {
+  {
+    for (const abs of scanCorpus(["app", "lib"])) {
       const text = readFileSync(abs, "utf8")
       let idx = text.indexOf(needle)
       while (idx !== -1) {

@@ -31,22 +31,26 @@
  * ZERO BASELINE, on purpose. This is not a burn-down: one instance breaks the
  * production build outright, so there is no such thing as an acceptable count.
  */
-import { readFileSync, readdirSync, statSync, existsSync } from "node:fs"
+import { readFileSync, existsSync, statSync } from "node:fs"
+import { walkTs } from "./runtime-roots"
 import { join, dirname, resolve } from "node:path"
 import { stripComments } from "./strip-comments"
 
 const root = process.cwd()
 
-function* walk(dir: string): Generator<string> {
-  let entries: string[]
-  try { entries = readdirSync(dir) } catch { return }
-  for (const n of entries) {
-    if (n === "node_modules" || n === ".next" || n === ".git" || n.startsWith(".")) continue
-    const p = join(dir, n)
-    if (statSync(p).isDirectory()) yield* walk(p)
-    else if (/\.(ts|tsx)$/.test(n)) yield p
-  }
-}
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk()` generator that stood
+// here was one of 82 copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// This one was NOT blind to the repository root: it walked `root` itself, so
+// `proxy.ts` and `types.ts` were already in its corpus — it is deduplicated here,
+// not corrected, and the corpus is deliberately left exactly as wide as it was.
+// `runtimeFiles()` would have been the wrong survivor to reach for: it excludes
+// `e2e/` and `scripts/` via NON_RUNTIME_ROOTS, so swapping it in would have
+// SHRUNK this guard's reach while looking like a cleanup. Narrowing a corpus to
+// dedupe a walker is the same defect as the one being fixed, pointed the other
+// way. `walkTs(root)` plus the existing scripts/ filter is byte-for-byte the same
+// question this guard was already asking.
 
 const read = (p: string) => { try { return readFileSync(p, "utf8") } catch { return "" } }
 
@@ -133,7 +137,7 @@ const isClientModule = (src: string) => leadingDirective(src) === "use client"
  */
 const isServerActionModule = (src: string) => leadingDirective(src) === "use server"
 
-const files = [...walk(root)].filter((f) => !f.includes(`${root}/scripts/`))
+const files = walkTs(root).filter((f) => !f.includes(`${root}/scripts/`))
 const clientFiles = files.filter((f) => isClientModule(read(f)))
 
 interface Violation { entry: string; chain: string[] }

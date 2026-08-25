@@ -29,7 +29,8 @@
  * This does NOT replace `next build`. It covers one specific, recurring, and
  * previously invisible failure — the one that actually bit.
  */
-import { readFileSync, existsSync, readdirSync } from "node:fs"
+import { readFileSync, existsSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { dirname, resolve as resolvePath } from "node:path"
 import { blankComments } from "./strip-comments"
 
@@ -41,17 +42,16 @@ function ok(label: string, cond: boolean, detail?: string) {
 }
 const read = (p: string) => { try { return readFileSync(p, "utf8") } catch { return "" } }
 
-function walkDir(dir: string, out: string[] = []): string[] {
-  if (!existsSync(dir)) return out
-  for (const e of readdirSync(dir, { withFileTypes: true })) {
-    const full = `${dir}/${e.name}`
-    if (e.isDirectory()) {
-      if (e.name === "node_modules" || e.name === ".next") continue
-      walkDir(full, out)
-    } else if (/\.tsx?$/.test(e.name)) out.push(full)
-  }
-  return out
-}
+// TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+// 82 byte-identical copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// The copy was not a style problem. It enumerated DIRECTORIES, and a root-level
+// FILE is not a directory, so `proxy.ts` — the Next 16 edge middleware, which
+// gates auth and queries blog_posts, brokerages, users and tenant_custom_domains
+// with a SERVICE client on EVERY request — was outside this guard's corpus. A file
+// that is never opened reports green, which is the failure shape §2 of CLAUDE.md
+// names. `rootRuntimeFiles()` from the same survivor supplies the root files.
 
 /** Resolve an import specifier to a file on disk, or null for a package. */
 function resolveSpecifier(fromFile: string, spec: string): string | null {
@@ -117,7 +117,7 @@ function findViolations(inject?: Record<string, string>): Violation[] {
     return cache.get(p)!
   }
 
-  const all = [...walkDir("app"), ...walkDir("lib"), ...walkDir("components"), ...Object.keys(inject ?? {})]
+  const all = [...walkTs("app"), ...walkTs("lib"), ...walkTs("components"), ...rootRuntimeFiles("."), ...Object.keys(inject ?? {})]
   const clients = all.filter((f) => firstDirective(srcOf(f)) === "use client")
 
   const violations: Violation[] = []

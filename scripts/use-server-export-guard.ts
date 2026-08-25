@@ -10,22 +10,22 @@
  * (a type re-export, then const arrays) because earlier checks grepped "Compiled successfully"
  * instead of the exit code.
  */
-import { readFileSync, readdirSync, statSync } from "node:fs"
+import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { dirname, join, relative } from "node:path"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 
-function walk(dir: string, out: string[]) {
-  let entries: string[]
-  try { entries = readdirSync(dir) } catch { return }
-  for (const n of entries) {
-    if (n === "node_modules" || n.startsWith(".")) continue
-    const p = join(dir, n)
-    if (statSync(p).isDirectory()) walk(p, out)
-    else if (/\.ts$/.test(n)) out.push(relative(root, p).replace(/\\/g, "/"))
-  }
-}
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk(dir, out)` that stood here
+// was one of 82 copies of the same readdirSync walker. Survivor:
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// The header below already states this guard's own rule — a guard that inspects a
+// SUBSET of the surface its rule applies to reports green over the files it never
+// opened. The private walker was that same defect one level up: it enumerated
+// DIRECTORIES, and a root-level FILE is not a directory, so `proxy.ts` was one of
+// the files this guard never opened. `rootRuntimeFiles()` supplies it.
 
 // SCAN EVERY TREE THAT CAN HOLD A "use server" MODULE, not just app/actions.
 //
@@ -40,9 +40,13 @@ function walk(dir: string, out: string[]) {
 // for the files it never opened, which is worse than no guard — it is a green light
 // over an unexamined area. `app` also covers route handlers and co-located action
 // files outside app/actions.
-const files: string[] = []
-walk(join(root, "app"), files)
-walk(join(root, "lib"), files)
+const files = [
+  ...walkTs(join(root, "app")),
+  ...walkTs(join(root, "lib")),
+  ...rootRuntimeFiles(root),
+]
+  .filter((p) => p.endsWith(".ts"))   // a .tsx cannot carry the "use server" module directive
+  .map((p) => relative(root, p).replace(/\\/g, "/"))
 
 const violations: string[] = []
 for (const f of files) {

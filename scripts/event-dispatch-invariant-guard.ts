@@ -45,7 +45,8 @@
  * type-safe switch instead. That is acknowledged in the file's own header with an
  * activation plan, so it is documented debt, not a finding.
  */
-import { readFileSync, readdirSync, statSync } from "node:fs"
+import { readFileSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { dirname, join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
 import { stripComments } from "./strip-comments"
@@ -137,17 +138,12 @@ check("the orchestrator still routes something (the switch was not gutted)", rou
 check("every routed case resolved to a real string value",
   routedValues.every((v) => v.includes(".")))
 
-const files: string[] = []
-const walk = (d: string) => {
-  for (const e of readdirSync(d)) {
-    if (["node_modules", ".next", ".git", "scripts"].includes(e)) continue
-    const p = join(d, e)
-    if (statSync(p).isDirectory()) walk(p)
-    else if (/\.tsx?$/.test(e)) files.push(p)
-  }
-}
-walk(join(root, "app"))
-walk(join(root, "lib"))
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk(d)` that stood here was one
+// of 82 copies of the same readdirSync walker. Survivor: scripts/runtime-roots.ts:61
+// (`walkTs`), imported above. It enumerated DIRECTORIES, so an event emitted from a
+// root-level runtime file — `proxy.ts` runs on every request — could never be seen,
+// and would have read as "dispatched by nobody". `rootRuntimeFiles()` supplies them.
+const files = [...walkTs(join(root, "app")), ...walkTs(join(root, "lib")), ...rootRuntimeFiles(root)]
 
 const violations: string[] = []
 let emitSites = 0

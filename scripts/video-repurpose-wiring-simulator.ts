@@ -22,7 +22,8 @@
  * on its behalf.
  */
 
-import { readFileSync, existsSync, readdirSync, statSync } from "node:fs"
+import { readFileSync, existsSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { join } from "node:path"
 import { blankComments, blankStrings } from "./strip-comments"
 
@@ -286,21 +287,24 @@ console.log("\n[Layer 1 · no THIRD writer of the render slot]")
   const RENDER_ACTIONS = ["submitAvatarVideoRender", "retryVideoGeneration", "pollVideoStatus"]
 
   // Walk every source file in the app/lib trees and look for a reference.
-  function* walk(dir: string): Generator<string> {
-    let entries: string[]
-    try { entries = readdirSync(dir) } catch { return }
-    for (const e of entries) {
-      if (e === "node_modules" || e === ".next" || e.startsWith(".")) continue
-      const p = join(dir, e)
-      if (statSync(p).isDirectory()) yield* walk(p)
-      else if (/\.(ts|tsx)$/.test(e)) yield p
-    }
+  // TOMBSTONE (orphan doctrine §1.1) — the private `walk()` generator that stood
+  // here was one of 82 copies of the same readdirSync walker. The survivor is
+  // scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+  // It enumerated DIRECTORIES, and a root-level FILE is not a directory, so
+  // `proxy.ts` — the Next 16 edge middleware, which gates auth and queries four
+  // tables with a SERVICE client on EVERY request — was outside this guard's corpus.
+  // A file that is never opened reports green, which is the failure shape §2 of
+  // CLAUDE.md names. `rootRuntimeFiles()` from the same survivor supplies it.
+  function* scanCorpus(dirs: string[]): Generator<string> {
+    for (const d of dirs) yield* walkTs(join(root, d))
+    yield* rootRuntimeFiles(root)
   }
 
   const referrers: Record<string, string[]> = { submitAvatarVideoRender: [], retryVideoGeneration: [], pollVideoStatus: [] }
   let scanned = 0
-  for (const dir of ["app", "lib"]) {
-    for (const p of walk(join(root, dir))) {
+  {
+    for (const p of scanCorpus(["app", "lib"])) {
       const rel = p.slice(root.length + 1).replace(/\\/g, "/")
       // The defining file may of course name them; nobody else may.
       if (rel === CREATE_PROJECT) continue

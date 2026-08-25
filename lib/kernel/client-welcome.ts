@@ -75,9 +75,59 @@
  * welcome is care, never a dependency — it must never fail contact creation.
  * PURE composer + a thin ensure; NOT server-only (every server dependency is a
  * dynamic import so the simulators can load the composer).
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * 2026-08-25 — THIS IS NOW **THE** WELCOME EMAIL. THERE IS ONLY ONE.
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * OWNER RULING, verbatim: "the welcome email is the first on conversion that has
+ * the welcome with portal info to also inclue the embedded personal video." With
+ * his earlier one — "the video for the welcome email/portal info for the newly
+ * converted lead to contact, FINISHES AND THEN EMBEDS into the email" — the
+ * design is unambiguous: ONE email, the FIRST thing a converted contact
+ * receives, carrying portal information AND the embedded personal avatar video.
+ * The email WAITS for the video; the video never arrives in a second, later mail.
+ *
+ * THREE senders were doing welcome-ish work and this one is the SURVIVOR (§1.1),
+ * chosen on evidence, not on name — it is the only one of the three that already
+ * carried all four required parts: portal block, agent signature
+ * (sendAsAgentUserId → the agent's own mailbox), a video block, and compliance
+ * gating (managerKey arms contentSafetyBackstop in hard-block mode on top of the
+ * canonical consent rail). The two retired duplicates:
+ *
+ *   · lib/portal/portal-invite-core.ts — its HARDCODED GENERIC portal greeting
+ *     ("Hi ${first_name}, your client portal is ready. Log in to track your
+ *     journey.") is gone; the tombstone there names `writePortalWelcomeCard`
+ *     below. Live evidence for the retirement: client_portal_messages held ZERO
+ *     rows on hrvaqgvukzxfskkcrwbt. The invite ROW — the actual portal access —
+ *     is untouched and still created immediately at conversion.
+ *   · app/api/cron/intro-video-email-backfill — it no longer AUTHORS an email.
+ *     It is now the SWEEPER that releases this one welcome once the render lands
+ *     (or once the wait deadline says it never will).
+ *
+ * WHAT WAS MERGED ONTO THIS SURVIVOR BEFORE THEY WERE RETIRED:
+ *   (1) `videoOverride` — the cron knew the assembled composite's URL a tick
+ *       before render-composition stamps it onto ai_video_projects.video_url.
+ *       That knowledge had no home here, so it was added rather than dropped.
+ *   (2) THEM-FIRST SITUATIONAL COPY — lib/contact-promotion/welcome-situation.ts
+ *       (compliance-first: a HIGH-severity fair-housing phrase in the CRM row is
+ *       DROPPED before the prompt, medium/low rides through as a warning, a named
+ *       market forces its own steering ban). Owner ruling: "we only sent content
+ *       to leads and contacts that are personalized and situation, them first
+ *       messaging." No second personalizer was written — this calls that one.
+ *   (3) `resolveWelcomeSide` is EXPORTED, so the conversion lane can ask "will an
+ *       agent-signed welcome go out for this contact type?" BEFORE it decides
+ *       whether the portal invite's own magic-link mail is needed as the fallback
+ *       delivery. That is what keeps the count at exactly one email per contact —
+ *       never two, never zero.
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import {
+  buildWelcomeSituation,
+  describeDroppedFacts,
+  type WelcomeSituationContact,
+} from "@/lib/contact-promotion/welcome-situation"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -213,11 +263,77 @@ export interface WelcomeOutcome {
   videoReason: string | null
   /** A portal invite row exists for this contact. */
   portalAccess: boolean
+  /** True when the copy was built from REAL facts about this contact, not a generic hello. */
+  situational: boolean
+  /**
+   * Fair-housing advisories and hard DROPS found in the contact's own CRM free
+   * text while building the situation. A drop means a human should look at the
+   * row — the fact never reached the writing prompt (§5).
+   */
+  situationWarnings: string[]
 }
 
 const SKIPPED: WelcomeOutcome = {
   proposed: false, sent: false, state: "skipped", messageId: null,
   reason: null, videoIncluded: false, videoReason: null, portalAccess: false,
+  situational: false, situationWarnings: [],
+}
+
+/**
+ * DOES THIS CONTACT TYPE GET AN AGENT-SIGNED WELCOME, AND ON WHICH JOURNEY?
+ *
+ * EXPORTED because the conversion lane must ask this question BEFORE it grants
+ * portal access: when the answer is a side, the agent's welcome IS the delivery
+ * and the invite core's own magic-link mail must be suppressed (one email, per
+ * the ruling). When the answer is null, that magic link is the ONLY thing that
+ * would ever tell the contact their portal exists, so it must still go. One
+ * function answers it for both callers — two spellings of "who gets a welcome"
+ * is exactly the §6 defect that produced three senders in the first place.
+ *
+ * `investor` maps to the BUYER journey and `both` to the SELLER journey: a
+ * dual-sided move starts with the home they already own. `vendor` and
+ * `referral_partner` are counterparties, not clients — the same exclusion
+ * lib/contact-promotion/portal-access.ts applies to the portal itself.
+ */
+export function resolveWelcomeSide(contactType: string | null | undefined): "buyer" | "seller" | null {
+  const type = (contactType ?? "").trim().toLowerCase()
+  if (!type) return null
+  if (type === "vendor" || type === "referral_partner") return null
+  if (type === "both") return "seller"
+  if (type === "investor") return "buyer"
+  if (type.includes("seller")) return "seller"
+  if (type.includes("buyer")) return "buyer"
+  return null
+}
+
+/**
+ * The video the welcome is allowed to embed. Structurally the same union
+ * lib/kernel/welcome-personal-video.ts returns, widened at `scope` to a plain
+ * string so a CALLER-SUPPLIED override (the sweeper's assembled composite) fits
+ * the same shape as a locally-resolved clip and travels the same code path.
+ */
+type ResolvedWelcomeVideo =
+  | { state: "ready"; videoUrl: string; thumbnailUrl: string | null; scope: string; videoProjectId: string }
+  | { state: "in_progress"; reason: string }
+  | { state: "none"; reason: string }
+
+/**
+ * A finished video the CALLER already resolved. The sweeper reads the assembled
+ * composite's URL off the Remotion render row a tick before render-composition
+ * stamps it onto `ai_video_projects.video_url`; without this the welcome would
+ * either mail the un-assembled avatar track or wait an extra tick for a stamp it
+ * can already see. Supplying it SKIPS the local lookup entirely.
+ */
+export interface WelcomeVideoOverride {
+  videoUrl: string
+  thumbnailUrl: string | null
+  /** Provenance, carried verbatim into the ledger evidence line. */
+  scope: string
+  videoProjectId: string
+}
+
+export interface EnsureClientWelcomeOptions {
+  videoOverride?: WelcomeVideoOverride | null
 }
 
 /**
@@ -231,10 +347,8 @@ export async function ensureClientWelcome(svc: Svc, contact: {
   firstName: string | null
   lastName: string | null
   preferredName?: string | null
-}): Promise<WelcomeOutcome> {
-  const type = (contact.contactType ?? "").toLowerCase()
-  const side: "buyer" | "seller" | null =
-    type.includes("buyer") ? "buyer" : type.includes("seller") ? "seller" : null
+}, opts: EnsureClientWelcomeOptions = {}): Promise<WelcomeOutcome> {
+  const side = resolveWelcomeSide(contact.contactType)
   if (!side) return SKIPPED
 
   // IDEMPOTENCY. Same tag the first-touch surface reads.
@@ -254,7 +368,13 @@ export async function ensureClientWelcome(svc: Svc, contact: {
   // the users id is reached only through agents.user_id.
   const { data: contactRow, error: contactError } = await svc
     .from("contacts")
-    .select("id, agent_id, email, email_opt_out, email_unsubscribed, preferred_name, first_name, last_name")
+    .select(
+      "id, agent_id, email, email_opt_out, email_unsubscribed, preferred_name, first_name, last_name, " +
+        // THE SITUATION (them-first ruling). Every one of these is a live column on
+        // `contacts` that the converter carries across from the lead — the welcome
+        // never reaches back to `leads`, because conversion is FINAL (§5).
+        "contact_type, contact_persona, timeline, city, state, property_type, budget_min, budget_max, beds",
+    )
     .eq("id", contact.id)
     .maybeSingle()
   if (contactError) return { ...SKIPPED, reason: `contact unreadable: ${contactError.message}` }
@@ -262,7 +382,7 @@ export async function ensureClientWelcome(svc: Svc, contact: {
     agent_id?: string | null; email?: string | null
     email_opt_out?: boolean | null; email_unsubscribed?: boolean | null
     preferred_name?: string | null; first_name?: string | null; last_name?: string | null
-  }
+  } & WelcomeSituationContact
   const agentRecordId = c.agent_id ?? null
 
   let agentUserId: string | null = null
@@ -296,6 +416,18 @@ export async function ensureClientWelcome(svc: Svc, contact: {
   // the fact set AND the guaranteed fallback — the generator personalizes,
   // it never invents steps.
   const steps = side === "buyer" ? BUYER_JOURNEY : SELLER_JOURNEY
+
+  // ── THEM-FIRST, SITUATIONAL, COMPLIANCE-SCREENED BEFORE THE PROMPT ─────────
+  // Owner ruling: "we only sent content to leads and contacts that are
+  // personalized and situation, them first messaging." The facts are drawn from
+  // the CONTACT row by the ONE resolver the welcome video already uses — no
+  // second personalizer — and a HIGH-severity fair-housing phrase in the CRM's
+  // own free text is DROPPED before the writer can see it (§5). The directives
+  // ride in `directives`, NOT in `facts`: a constraint the model mistakes for a
+  // fact is a constraint it can repeat back to the reader.
+  const situation = buildWelcomeSituation(c as WelcomeSituationContact)
+  const situationWarnings = [...situation.warnings, ...describeDroppedFacts(situation.droppedFacts)]
+
   const { generatePersonaCopy } = await import("@/lib/kernel/ai-copy")
   const draft = await generatePersonaCopy(
     {
@@ -304,7 +436,9 @@ export async function ensureClientWelcome(svc: Svc, contact: {
         `Address them as "${addressing.addressAs}"`,
         ...(agentName ? [`The sender is their assigned agent, ${agentName}`] : []),
         ...steps.map((s, i) => `Journey step ${i + 1}: ${s}`),
+        ...situation.facts,
       ],
+      directives: situation.complianceDirectives,
       channel: agentUserId && c.email ? "email" : "portal",
       persona: { name: addressing.addressAs, audience: side, situation: `just became a ${side} client` },
       words: 140,
@@ -315,9 +449,13 @@ export async function ensureClientWelcome(svc: Svc, contact: {
 
   // ── (b) PORTAL ACCESS + (c) THE PERSONAL VIDEO ────────────────────────────
   const portalAccess = await ensurePortalAccess(contact.id, agentUserId)
-  const video = agentRecordId
-    ? await resolveVideo(svc, { brokerageId: contact.brokerageId, contactId: contact.id, agentRecordId })
-    : { state: "none" as const, reason: "no assigned agent — there is nobody for the video to be from" }
+  // A caller-supplied finished video SHORT-CIRCUITS the lookup — see
+  // WelcomeVideoOverride for why the sweeper knows the assembled URL first.
+  const video: ResolvedWelcomeVideo = opts.videoOverride
+    ? { state: "ready", ...opts.videoOverride }
+    : agentRecordId
+      ? await resolveVideo(svc, { brokerageId: contact.brokerageId, contactId: contact.id, agentRecordId })
+      : { state: "none", reason: "no assigned agent — there is nobody for the video to be from" }
   const videoReady = video.state === "ready" ? video : null
 
   // ── THE GOVERNED LEDGER ROW ───────────────────────────────────────────────
@@ -340,13 +478,20 @@ export async function ensureClientWelcome(svc: Svc, contact: {
     outreachReason: "welcome",
   }, svc)
   if (!res.ok || !res.id) {
-    return { ...SKIPPED, reason: res.error ?? "welcome ledger write failed", videoReason: video.state === "ready" ? null : video.reason }
+    return {
+      ...SKIPPED,
+      reason: res.error ?? "welcome ledger write failed",
+      videoReason: video.state === "ready" ? null : video.reason,
+      situational: situation.isSituational,
+      situationWarnings,
+    }
   }
   const messageId = res.id
 
   const base: WelcomeOutcome = {
     proposed: true, sent: false, state: "held_for_approval", messageId,
     reason: null, videoIncluded: false,
+    situational: situation.isSituational, situationWarnings,
     // Narrowed on `video` itself, not on the derived `videoReady` boolean: the
     // union only carries `reason` on its in_progress/none arms, and TypeScript
     // cannot discriminate one value from a truthiness test on another.
@@ -527,7 +672,7 @@ async function ensurePortalAccess(contactId: string, agentUserId: string | null)
 async function resolveVideo(
   svc: Svc,
   input: { brokerageId: string; contactId: string; agentRecordId: string },
-): Promise<import("@/lib/kernel/welcome-personal-video").WelcomePersonalVideo> {
+): Promise<ResolvedWelcomeVideo> {
   try {
     const { resolveWelcomePersonalVideo } = await import("@/lib/kernel/welcome-personal-video")
     return await resolveWelcomePersonalVideo(svc, input)

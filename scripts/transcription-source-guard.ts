@@ -101,6 +101,7 @@
  * restore by sha256. Two SPECIFICITY controls must stay GREEN.
  */
 import { readFileSync, writeFileSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { resolve } from "node:path"
 import { createHash } from "node:crypto"
 import { pathToFileURL } from "node:url"
@@ -559,23 +560,26 @@ import { readdirSync, statSync } from "node:fs"
 import { join, relative } from "node:path"
 import { blankComments } from "./strip-comments"
 
-function* walk(dir: string): Generator<string> {
-  let entries: string[]
-  try { entries = readdirSync(dir) } catch { return }
-  for (const n of entries) {
-    if (n === "node_modules" || n === ".next" || n.startsWith(".")) continue
-    const p = join(dir, n)
-    if (statSync(p).isDirectory()) yield* walk(p)
-    else if (/\.tsx?$/.test(n)) yield relative(ROOT, p).replace(/\\/g, "/")
-  }
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk()` generator that stood
+// here was one of 82 copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// It enumerated DIRECTORIES, and a root-level FILE is not a directory, so
+// `proxy.ts` — the Next 16 edge middleware, which gates auth and queries four
+// tables with a SERVICE client on EVERY request — was outside this guard's corpus.
+// A file that is never opened reports green, which is the failure shape §2 of
+// CLAUDE.md names. `rootRuntimeFiles()` from the same survivor supplies it.
+/** The reach, as repo-relative paths — directories PLUS the root runtime files. */
+function* scanCorpus(dirs: string[]): Generator<string> {
+  const rel = (p: string) => relative(ROOT, p).replace(/\\/g, "/")
+  for (const d of dirs) for (const p of walkTs(join(ROOT, d))) yield rel(p)
+  for (const p of rootRuntimeFiles(ROOT)) yield rel(p)
 }
 
 function productionFilesCalling(construct: string): string[] {
   const hits: string[] = []
-  for (const dir of ["app", "lib"]) {
-    for (const f of walk(join(ROOT, dir))) {
-      if (blankComments(raw(f)).includes(construct)) hits.push(f)
-    }
+  for (const f of scanCorpus(["app", "lib"])) {
+    if (blankComments(raw(f)).includes(construct)) hits.push(f)
   }
   return hits.sort()
 }
