@@ -22,8 +22,53 @@
  *
  * Reads Root.tsx as text (no Remotion import, no bundling) against a snapshot of
  * the live registry, so it runs in a plain CI process in milliseconds.
+ *
+ * ── TOMBSTONE: THREE COPIES OF THE REMOTION SKILL, NOW ONE (2026-08-25) ──────
+ *
+ * The vendored Remotion agent skill existed THREE times, and no two agreed:
+ *
+ *   · .claude/skills/remotion-best-practices/     SKILL.md + 36 flat rules/
+ *   · .agents/skills/remotion-best-practices/     byte-identical to the above
+ *   · plugins/ecc/skills/remotion-video-creation/ SKILL.md + 29 flat rules/,
+ *     a RENAMED fork carrying an older upstream snapshot
+ *
+ * Neither rule set was a superset of the other, so whichever one an agent
+ * happened to load decided what it knew — and the ecc fork's different NAME meant
+ * §6 could not even see them as the same thing. `plugins/ecc/skills/manim-video/
+ * SKILL.md` pointed readers at the stale fork by that name.
+ *
+ * SURVIVOR: .claude/skills/remotion-best-practices/, re-vendored whole from
+ * upstream remotion-dev/skills@7c5c10caa5294d01b168a08c9648b4deef717274
+ * (`skills/remotion-best-practices/`, plugin version 4.0.517) — the exact source
+ * skills-lock.json already named, and content-identical to the published plugin
+ * github.com/remotion-dev/remotion/tree/main/packages/claude-code-plugin except
+ * for five .tsx specimen components that upstream's own build.mts filters out
+ * while its TECHNIQUE.md files still link to them. Upstream restructured the
+ * skill: the flat rules/ directory is gone, replaced by a SKILL.md router over
+ * eleven embedded sub-skills (remotion-markup/, remotion-multimedia/, …), each
+ * fronted by REFERENCE.md rather than a second SKILL.md.
+ *
+ * .agents/skills/remotion-best-practices/ is KEPT as a byte-identical mirror,
+ * NOT collapsed: nothing in this repo reads .agents/ (runtime-roots.ts:93 calls
+ * it "config, not runtime"), but a skill directory is loaded by CONVENTION, not
+ * by an import, so §1's "unreferenced is not dead" applies and whether some other
+ * harness loads it is UNRESOLVED. The defect that was real — the two copies
+ * drifting apart in silence — is closed by section 6 below instead.
+ *
+ * plugins/ecc/skills/remotion-video-creation/ (32 files) is DELETED. Three of its
+ * rules have no successor upstream at all — charts.md, can-decode.md and
+ * extract-frames.md, which upstream retired in the restructure. They are not lost:
+ * they remain retrievable at remotion-dev/skills before that commit. Upstream is
+ * the authority on Remotion content, and upstream retiring a rule is upstream
+ * disagreeing with our copy about whether it should exist.
+ *
+ * Everything else the fork carried WAS already on the survivor under a different
+ * spelling, so those gaps were renames rather than gaps: fonts.md is upstream's
+ * google-fonts.md + local-fonts.md, assets.md is images.md + embedding-videos.md
+ * + audio.md, animations.md is timing.md + effects.md.
  */
-import { readFileSync, readdirSync } from "node:fs"
+import { readFileSync, readdirSync, existsSync, statSync } from "node:fs"
+import { join, relative } from "node:path"
 import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
@@ -196,6 +241,107 @@ console.log("\n═══ 5. The rules that silently do not render ═══")
   ok(`scanned ${files.length} composition files`, files.length >= 33)
   ok("no CSS transition/animation or Tailwind animate- class — these render as a\n    STATIC frame and the render still reports success",
     offenders.length === 0, offenders.slice(0, 5).join(" | "))
+}
+
+console.log("\n═══ 6. ONE vendored Remotion skill, and it matches upstream ═══")
+{
+  // Sanctioned homes. The survivor is what Claude Code loads; the mirror is kept
+  // because §1's "unreferenced is not dead" applies to a convention-loaded skill
+  // directory. Both are listed so a THIRD copy cannot appear unnoticed.
+  const SURVIVOR = ".claude/skills/remotion-best-practices"
+  const MIRROR = ".agents/skills/remotion-best-practices"
+
+  /**
+   * Does this SKILL.md declare a Remotion agent skill?
+   *
+   * Frontmatter `name:` only. Upstream fronts its ELEVEN embedded sub-skills with
+   * REFERENCE.md rather than SKILL.md, so the survivor's own subtree contributes
+   * exactly one manifest and nesting cannot inflate the count.
+   */
+  function isRemotionSkillManifest(content: string): boolean {
+    const fm = content.split(/^---\s*$/m)[1]
+    return fm !== undefined && /^name:\s*remotion[\w-]*\s*$/m.test(fm)
+  }
+
+  /** Every SKILL.md in the tree that declares a Remotion skill. */
+  function findRemotionSkillManifests(root: string): string[] {
+    const found: string[] = []
+    const walk = (dir: string) => {
+      let entries
+      try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+      for (const e of entries) {
+        if (e.name === "node_modules" || e.name === ".git" || e.name === ".next" || e.name === ".vercel") continue
+        const full = join(dir, e.name)
+        if (e.isDirectory()) walk(full)
+        else if (e.name === "SKILL.md") {
+          let src = ""
+          try { src = readFileSync(full, "utf8") } catch { continue }
+          if (isRemotionSkillManifest(src)) found.push(relative(root, full).replace(/\\/g, "/"))
+        }
+      }
+    }
+    walk(root)
+    return found.sort()
+  }
+
+  // ── POSITIVE CONTROL (§2: an absence assertion must prove its finder works) ──
+  // A broken frontmatter parse and a clean tree both report "no extra copies".
+  ok("finder recognises a Remotion skill manifest",
+    isRemotionSkillManifest("---\nname: remotion-video-creation\ndescription: x\n---\n# body"))
+  ok("...and the current survivor's own manifest",
+    isRemotionSkillManifest(readFileSync(`${SURVIVOR}/SKILL.md`, "utf8")))
+  ok("...and does NOT fire on a non-Remotion skill (no false duplicates)",
+    !isRemotionSkillManifest("---\nname: manim-video\ndescription: remotion-best-practices is related\n---"))
+  ok("...nor on prose that merely MENTIONS the skill — a tombstone is not a manifest",
+    !isRemotionSkillManifest("---\nname: video-editing\n---\nsee .claude/skills/remotion-best-practices"))
+
+  const manifests = findRemotionSkillManifests(".")
+  const expected = [`${SURVIVOR}/SKILL.md`, `${MIRROR}/SKILL.md`].sort()
+  const strays = manifests.filter((m) => !expected.includes(m))
+
+  ok("the survivor exists — the skill an agent actually loads", existsSync(`${SURVIVOR}/SKILL.md`))
+  ok(`exactly the ${expected.length} sanctioned copies, no third has reappeared —\n    a renamed fork is how three disagreeing rule sets happened before`,
+    strays.length === 0, strays.join(", "))
+  ok("...and the finder really did read the tree (not zero files)", manifests.length >= 1,
+    `found ${manifests.length}`)
+
+  // The mirror must AGREE with the survivor. Two copies that drift are worse than
+  // one copy, because whichever an agent loads silently decides what it knows.
+  const fileSet = (root: string): Map<string, string> => {
+    const out = new Map<string, string>()
+    const walk = (dir: string) => {
+      let entries
+      try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+      for (const e of entries) {
+        const full = join(dir, e.name)
+        if (e.isDirectory()) walk(full)
+        else if (statSync(full).isFile()) out.set(relative(root, full).replace(/\\/g, "/"), readFileSync(full).toString("base64"))
+      }
+    }
+    walk(root)
+    return out
+  }
+  if (existsSync(MIRROR)) {
+    const a = fileSet(SURVIVOR), b = fileSet(MIRROR)
+    const onlyA = [...a.keys()].filter((k) => !b.has(k))
+    const onlyB = [...b.keys()].filter((k) => !a.has(k))
+    const differing = [...a.keys()].filter((k) => b.has(k) && b.get(k) !== a.get(k))
+    ok(`the .agents mirror carries the same ${a.size} files as the survivor`,
+      onlyA.length === 0 && onlyB.length === 0,
+      [...onlyA.map((f) => `survivor-only ${f}`), ...onlyB.map((f) => `mirror-only ${f}`)].slice(0, 4).join(" | "))
+    ok("...and every one of them byte-for-byte — a drifted mirror teaches a\n    different Remotion to whichever harness loads it",
+      differing.length === 0, differing.slice(0, 4).join(" | "))
+    ok("...and the comparison actually read files", a.size > 0, `${a.size} files`)
+  }
+
+  // Pin the upstream version. Re-vendoring must be a deliberate act that moves
+  // this number, not a silent partial edit of a third-party tree.
+  const skillMd = readFileSync(`${SURVIVOR}/SKILL.md`, "utf8")
+  const version = skillMd.split(/^---\s*$/m)[1]?.match(/^version:\s*(\S+)\s*$/m)?.[1]
+  ok("the vendored skill declares the upstream version it came from —\n    otherwise nobody can tell a stale fork from a current one",
+    !!version && /^\d+\.\d+\.\d+$/.test(version), `version=${version ?? "absent"}`)
+  ok("...and the router names itself remotion-best-practices (§6, one spelling)",
+    /^name:\s*remotion-best-practices\s*$/m.test(skillMd.split(/^---\s*$/m)[1] ?? ""))
 }
 
 console.log(`\n${"═".repeat(70)}`)

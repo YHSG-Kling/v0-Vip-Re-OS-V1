@@ -55,10 +55,16 @@ export const NEVER_WALK = new Set(["node_modules", ".next", ".git", ".vercel"])
 export const NON_RUNTIME_ROOTS = new Set([
   "scripts",  // guards, migrations and codemods — they name dropped tables on purpose
   "e2e",      // test harness, not served
-  // Claude Code plugin/skill payloads. The three .tsx files under
-  // plugins/ecc/skills/remotion-video-creation/rules/assets/ are DOCUMENTATION —
-  // specimen components a skill shows an author — and nothing in the shipped tree
-  // imports them. The authority is not a judgement call: tsconfig.json carries
+  // Claude Code plugin/skill payloads. Skills ship specimen .tsx components —
+  // DOCUMENTATION a skill shows an author — and nothing in the shipped tree
+  // imports them. (The worked example used to be the three .tsx files under
+  // plugins/ecc/skills/remotion-video-creation/rules/assets/; that skill was a
+  // stale, renamed fork of the vendored Remotion skill and is gone — survivor
+  // .claude/skills/remotion-best-practices, tombstone at
+  // scripts/remotion-setup-guard.ts:27. Its specimens now live under that
+  // survivor's remotion-maps/techniques/*/assets/, which is a DOT-directory and
+  // so is already outside every census by the `startsWith(".")` test below.)
+  // The authority is not a judgement call: tsconfig.json carries
   // `"exclude": ["node_modules", "plugins"]`, so the build never compiles them.
   //
   // This module is the answer to "what ships", so it disagreeing with the compiler
