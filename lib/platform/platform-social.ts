@@ -259,13 +259,24 @@ async function upsertPlatformCredential(
     .select("id")
     .eq("owner_type", "platform").eq("owner_id", "platform").eq("platform", credKey)
     .maybeSingle()
-  const credWrite = existingCred?.id
-    ? await svc.from("platform_credentials").update(credRow).eq("id", existingCred.id).select("id").single()
-    : await svc.from("platform_credentials").insert(credRow).select("id").single()
-  if (credWrite.error || !credWrite.data?.id) {
-    return { ok: false, error: credWrite.error?.message ?? "Failed to store the credential" }
+  // Split from a ternary so each branch's error capture sits beside its own
+  // write — in the ternary form the shared capture was too far from the INSERT
+  // branch to be read as covering it. Behaviour is unchanged.
+  let credId: string | null = null
+  let credWriteError: { message: string } | null = null
+  if (existingCred?.id) {
+    const { data, error } = await svc.from("platform_credentials").update(credRow).eq("id", existingCred.id).select("id").single()
+    credId = (data as { id?: string } | null)?.id ?? null
+    credWriteError = error
+  } else {
+    const { data, error } = await svc.from("platform_credentials").insert(credRow).select("id").single()
+    credId = (data as { id?: string } | null)?.id ?? null
+    credWriteError = error
   }
-  return { ok: true, id: String(credWrite.data.id) }
+  if (credWriteError || !credId) {
+    return { ok: false, error: credWriteError?.message ?? "Failed to store the credential" }
+  }
+  return { ok: true, id: String(credId) }
 }
 
 /** Update-or-insert the channel status row (unique(platform)). */
@@ -646,9 +657,16 @@ export async function verifyPlatformChannel(svc: ServiceClient, channel: Platfor
   if (profile.name) patch.account_name = profile.name
   await svc.from("platform_social_accounts").update(patch).eq("id", account.id)
   if (profile.accountId) {
-    await svc.from("platform_credentials")
+    // test_status/'pass' + the resolved provider account id ARE the verification
+    // result. Written silently, a refusal meant Verify reported "connected"
+    // while the credential still carried the previous (or no) account id — and
+    // the publisher then posts with the stale one.
+    const { error: credVerifyError } = await svc.from("platform_credentials")
       .update({ account_id: profile.accountId, account_name: profile.name ?? undefined, last_tested_at: nowIso, test_status: "pass", updated_at: nowIso })
       .eq("id", cred.id)
+    if (credVerifyError) {
+      return markError(`Verified with ${channel}, but the credential could not be updated: ${credVerifyError.message}`)
+    }
   }
   return { ok: true, status: "connected", accountName: profile.name ?? null }
 }
@@ -663,9 +681,16 @@ export async function disconnectPlatformChannel(svc: ServiceClient, channel: Pla
     .maybeSingle()
   if (!account) return { ok: false, error: "Channel row not found" }
   if (account.credential_ref) {
-    await svc.from("platform_credentials")
+    // THE REVOCATION. Deactivating the credential is what actually withdraws
+    // the stored OAuth token; the account row below is only the label. Written
+    // silently, a refusal reported the channel disconnected while a live token
+    // stayed active and usable.
+    const { error: revokeError } = await svc.from("platform_credentials")
       .update({ is_active: false, updated_at: new Date().toISOString() })
       .eq("id", account.credential_ref)
+    if (revokeError) {
+      return { ok: false, error: `The stored credential could not be deactivated — the channel is NOT disconnected: ${revokeError.message}` }
+    }
   }
   const { error } = await svc.from("platform_social_accounts")
     .update({ status: "disconnected", credential_ref: null, updated_at: new Date().toISOString() })

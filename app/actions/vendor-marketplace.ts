@@ -663,12 +663,21 @@ export async function recalculateVendorRatings(vendorId: string, brokerageId: st
       })
   }
 
-  // Also update the main vendors table rating
+  // Also update the main vendors table rating. vendors.rating carries a CHECK
+  // (0 <= rating <= 5) — an out-of-range average is refused outright, and this
+  // write said nothing either way, so the directory kept showing the previous
+  // star rating with no sign the recompute had been rejected.
   if (avgAgentRating) {
-    await supabase
+    const { error: ratingError } = await supabase
       .from("vendors")
       .update({ rating: avgAgentRating })
       .eq("id", vendorId)
+    if (ratingError) {
+      console.error(
+        `[vendor-marketplace] vendors.rating update REFUSED for vendor ${vendorId} (value ${avgAgentRating}):`,
+        ratingError.message,
+      )
+    }
   }
 }
 

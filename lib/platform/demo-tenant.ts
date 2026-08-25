@@ -359,10 +359,15 @@ export async function ensureDemoTenant(): Promise<EnsureDemoTenantResult> {
 
   // Never bills: pause the trial subscription (the same comp mechanism
   // brokerage-management uses; there is no Stripe customer at signup).
-  await svc
+  // If this pause does not land, the demo tenant stays billable — the one thing
+  // "never bills" has to guarantee. The provisioning result said ok either way.
+  const { error: pauseError } = await svc
     .from("subscriptions")
     .update({ status: "paused", updated_at: now })
     .eq("brokerage_id", brokerageId)
+  if (pauseError) {
+    return { ok: false, created: true, error: `Provisioned but could not pause billing on the demo subscription: ${pauseError.message}` }
+  }
 
   const brokerage = await findDemoBrokerage(svc)
   return { ok: true, created: true, brokerage: brokerage ?? { id: brokerageId, name: DEMO_TENANT_NAME, slug: DEMO_TENANT_SLUG, status: "active", created_at: now } }

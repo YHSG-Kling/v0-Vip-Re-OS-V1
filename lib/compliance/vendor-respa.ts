@@ -22,6 +22,7 @@
 // an injectable Supabase client so tests spend no tokens and clean up their own rows.
 
 import type { createServiceClient } from "@/lib/supabase/service"
+import { bestEffort } from "@/lib/db/best-effort"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -405,7 +406,10 @@ export async function guardVendorReferralFee(
         brokerageId: input.brokerageId, actorUserId: input.actorUserId, actorRole: input.actorRole,
         vendorCategory: input.category, partnerName: input.partnerName, verdict,
       })
-      await svc.from("compliance_events").insert(row)
+      await bestEffort(
+        svc.from("compliance_events").insert(row),
+        "the RESPA referral-fee BLOCK must stand even when its ledger row cannot be written — the verdict returned below is what refuses the kickback, and making the audit echo able to throw here would turn a ledger outage into a gate that stops refusing",
+      )
     } catch { /* audit best-effort; the block still stands */ }
   }
   return verdict

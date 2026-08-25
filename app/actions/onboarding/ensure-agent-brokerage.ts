@@ -157,13 +157,23 @@ export async function ensureAgentBrokerage(): Promise<EnsureAgentBrokerageResult
       .eq("is_active", true)
       .maybeSingle()
     if (tierRow) {
-      await svc.from("subscriptions").insert({
+      // The try/catch does NOT catch a refusal — supabase-js resolves one. This
+      // is the row that decides what the new tenant may do on day one; without
+      // it they have no subscription at all and every fair-use gate reads
+      // "no plan". Stays non-fatal to onboarding, but no longer inaudible.
+      const { error: subError } = await svc.from("subscriptions").insert({
         brokerage_id: brokerage.id,
         tier_id: tierRow.id,
         status: "trialing",
         current_period_start: new Date().toISOString(),
         current_period_end: trialEndsAt,
       })
+      if (subError) {
+        console.error(
+          `[ensure-agent-brokerage] subscriptions insert REFUSED for brokerage ${brokerage.id} — the new tenant has NO trialing subscription and fair-use will read as no plan:`,
+          subError.message,
+        )
+      }
     }
   } catch { /* non-fatal */ }
 

@@ -151,7 +151,16 @@ export async function runVendorApprovalQueue(svc: Svc, params: { brokerageId: st
     const isDuplicate = activeKeys.has(`${(v.name ?? "").trim().toLowerCase()}|${(v.category ?? "").trim().toLowerCase()}`)
     const result = scoreVendorApplication({ name: v.name, email: v.email, phone: v.phone, website: v.website, category: v.category, estimatedTurnaroundDays: v.estimated_turnaround_days, isDuplicate })
     if (v.ai_verification_score == null) {
-      await svc.from("vendors").update({ ai_verification_score: result.score, verification_flags: result.flags }).eq("id", v.id)
+      // The score is what the broker's approval brief ranks on. A refused write
+      // means this vendor is re-scored on every run and the stored score the
+      // approval UI reads stays null, while the brief below shows a number.
+      const { error: scoreError } = await svc.from("vendors").update({ ai_verification_score: result.score, verification_flags: result.flags }).eq("id", v.id)
+      if (scoreError) {
+        console.error(
+          `[vendor-verification] vendors verification-score write REFUSED for vendor ${v.id} — the stored score stays null:`,
+          scoreError.message,
+        )
+      }
     }
     scored.push({ id: v.id, name: v.name ?? "A vendor", score: v.ai_verification_score ?? result.score, rec: result.recommendation })
   }

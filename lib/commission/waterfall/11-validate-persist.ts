@@ -241,7 +241,12 @@ export async function validateAndPersist(
       const splitPercent = context.grossCommissionCents > 0
         ? Math.min(100, Math.max(0, (context.agentFinalNetCents / context.grossCommissionCents) * 100))
         : 0
-      await supabase.from('agent_commissions').insert({
+      // The try/catch around this block does NOT see a refused write: supabase-js
+      // RESOLVES a constraint or RLS refusal as `{ error }` instead of throwing,
+      // so the catch below has never once fired for the failure mode that
+      // actually happens here. Read the error, or the agent's dashboard silently
+      // shows $0 on a closed deal and only the leak reaper notices.
+      const { error: bridgeError } = await supabase.from('agent_commissions').insert({
         transaction_id: context.transactionId,
         brokerage_id: context.brokerageId,
         agent_id: context.agentId,
@@ -250,6 +255,12 @@ export async function validateAndPersist(
         status: 'pending',
         close_date: new Date().toISOString(),
       })
+      if (bridgeError) {
+        console.error(
+          `[commission-engine] agent_commissions dashboard-bridge insert REFUSED for transaction ${context.transactionId} — the agent's earnings dashboard will read $0 for this closed deal:`,
+          bridgeError.message,
+        )
+      }
     }
   } catch (e) {
     console.error('[commission-engine] agent_commissions dashboard-bridge insert failed:', e)

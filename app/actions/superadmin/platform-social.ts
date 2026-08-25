@@ -189,7 +189,17 @@ export async function publishProductDraftAction(input: { id: string; imageUrl?: 
     accountId = profile.accountId
     const { data: acct } = await svc.from("platform_social_accounts").select("credential_ref").eq("platform", channel).maybeSingle()
     if (acct?.credential_ref) {
-      await svc.from("platform_credentials").update({ account_id: accountId, updated_at: new Date().toISOString() }).eq("id", acct.credential_ref)
+      // Persisting the LinkedIn member id is what stops every subsequent post
+      // re-fetching it. Written silently, a refusal is invisible — this post
+      // still goes out with the id in hand, and the next call pays the same
+      // profile ping again forever.
+      const { error: persistError } = await svc.from("platform_credentials").update({ account_id: accountId, updated_at: new Date().toISOString() }).eq("id", acct.credential_ref)
+      if (persistError) {
+        console.error(
+          `[platform-social] platform_credentials account_id persist REFUSED for credential ${acct.credential_ref} — the LinkedIn member id will be re-fetched on every post:`,
+          persistError.message,
+        )
+      }
     }
   }
 

@@ -209,7 +209,7 @@ Be thorough but practical. Focus on actionable issues.`,
       const { data: agentRow } = ctx.agentId
         ? await supabase.from("agents").select("user_id").eq("id", ctx.agentId).maybeSingle()
         : { data: null }
-      await supabase.from("compliance_events").insert({
+      const { error: complianceLogError } = await supabase.from("compliance_events").insert({
         brokerage_id: brokerageId,
         actor_role: ctx.role,
         actor_user_id: agentRow?.user_id ?? ctx.userId,
@@ -225,6 +225,15 @@ Be thorough but practical. Focus on actionable issues.`,
           critical_count: criticalIssues.length,
         },
       })
+      if (complianceLogError) {
+        // The review itself is saved and returned; this is the ledger row a
+        // broker would produce as evidence that the issues were flagged. It is
+        // not allowed to disappear without a word.
+        console.error(
+          `[ai-contract-review] compliance_events insert REFUSED for transaction ${params.transactionId} — ${review.issues.length} contract issue(s) are UNRECORDED:`,
+          complianceLogError.message,
+        )
+      }
     }
 
     revalidatePath(`/transactions/${params.transactionId}`)

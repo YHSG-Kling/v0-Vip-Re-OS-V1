@@ -236,7 +236,14 @@ export async function forceComplianceOverrideAndSend(
   // Audit row: allowed=false because the original gate failed, with the
   // OVERRIDE_REASON appended to violations + OVERRIDDEN prefix on
   // blocked_reason so compliance reports can filter for these.
-  await supabase
+  //
+  // FAIL CLOSED (CLAUDE.md §4). This row was written with
+  // `.then(() => null, () => null)` — a fair-housing / brand-voice gate being
+  // BYPASSED by a broker, with its written reason, thrown on the floor. If the
+  // record of the override cannot be written, the override does not happen: an
+  // unrecorded compliance bypass is the one thing this action must never
+  // produce. The send below is skipped by returning here.
+  const { error: overrideAuditError } = await supabase
     .from("compliance_events")
     .insert({
       brokerage_id:   overrideCtx.brokerageId,
@@ -255,7 +262,17 @@ export async function forceComplianceOverrideAndSend(
         ? `OVERRIDDEN: ${originalBlockedReason}`
         : `OVERRIDDEN by ${overrideCtx.userType}`,
     })
-    .then(() => null, () => null)
+
+  if (overrideAuditError) {
+    console.error(
+      "[inbox] compliance override audit row REFUSED — refusing to send:",
+      overrideAuditError.message,
+    )
+    return {
+      success: false,
+      error: "The compliance-override audit record could not be written, so the message was not sent. Nothing may bypass the gate without a record.",
+    }
+  }
 
   // Resolve agent_id for the insert (mirrors sendInboxReply)
   const { data: agentRow } = await supabase

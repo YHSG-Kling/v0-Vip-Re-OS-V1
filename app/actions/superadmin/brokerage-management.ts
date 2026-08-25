@@ -258,7 +258,14 @@ export async function changeBrokerageTierAction(params: {
   const { data: tierRow } = await svc.from("subscription_tiers").select("id, stripe_price_id").eq("tier_name", params.newTier).maybeSingle()
   const { data: sub } = await svc.from("subscriptions").select("id, stripe_subscription_id").eq("brokerage_id", params.brokerageId).in("status", ["active", "trialing", "past_due", "paused"]).maybeSingle()
   if (tierRow && sub) {
-    await svc.from("subscriptions").update({ tier_id: (tierRow as any).id, updated_at: new Date().toISOString() }).eq("id", (sub as any).id)
+    // subscriptions.tier_id is what the entitlement gates read. A refused write
+    // here left the tenant on the OLD tier while brokerages.plan_tier (checked
+    // above) said the new one — the exact drift this line was added to close,
+    // reintroduced silently.
+    const { error: tierSyncError } = await svc.from("subscriptions").update({ tier_id: (tierRow as any).id, updated_at: new Date().toISOString() }).eq("id", (sub as any).id)
+    if (tierSyncError) {
+      return { ok: false, error: `Brokerage plan_tier changed but the subscription tier did not: ${tierSyncError.message}` }
+    }
     // NOTE: stripeSwapPrice SKIPS when the tier has no stripe_price_id — which,
     // measured live, is all four tiers. So a tier change currently moves what the
     // tenant CAN DO without moving what they are CHARGED, and that fact is now
@@ -364,7 +371,13 @@ export async function reactivateBrokerageAction(brokerageId: string): Promise<{ 
   let stripeApplied = false
   let stripeError: string | undefined
   if (sub) {
-    await svc.from("subscriptions").update({ status: "active", cancel_at: null, cancelled_at: null, updated_at: new Date().toISOString() }).eq("id", (sub as any).id)
+    // Un-cancelling the local row is what re-opens the paywall. Reported as
+    // success regardless, a refusal left the brokerage un-suspended but its
+    // subscription still 'cancelled' — access restored on one surface only.
+    const { error: resumeError } = await svc.from("subscriptions").update({ status: "active", cancel_at: null, cancelled_at: null, updated_at: new Date().toISOString() }).eq("id", (sub as any).id)
+    if (resumeError) {
+      return { ok: false, error: `Brokerage reactivated but the subscription could not be un-cancelled: ${resumeError.message}` }
+    }
     const r = await stripeResume((sub as any).stripe_subscription_id)
     stripeApplied = r.applied
     stripeError = r.error
@@ -422,10 +435,16 @@ export async function cancelBrokerageAction(params: {
     if (r.applied) stripeApplied = true
     if (r.error) stripeError = r.error
   }
-  await svc.from("subscriptions")
+  // THE PAYWALL WRITE. This is the line the silent-write guard's header is
+  // about: a cancelled tenant whose subscription row keeps its old status is a
+  // tenant the paywall still lets in. It reported ok whatever happened.
+  const { error: cancelError } = await svc.from("subscriptions")
     .update({ status: "cancelled", cancelled_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq("brokerage_id", params.brokerageId)
     .in("status", ["active", "trialing", "past_due", "paused"])
+  if (cancelError) {
+    return { ok: false, error: `Brokerage marked cancelled but the subscription row was NOT — the tenant may still have paid access: ${cancelError.message}`, stripeApplied, stripeError }
+  }
 
   await writeAuditLog({
     actorUserId: auth.userId,
@@ -458,7 +477,14 @@ export async function extendTrialAction(params: { brokerageId: string; days: num
   const currentEnd = (sub as any)?.trial_end ?? (brk as any)?.trial_ends_at ?? null
   const ext = computeTrialExtension(currentEnd, days, now)
 
-  if (sub) await svc.from("subscriptions").update({ trial_end: ext.iso, status: "trialing", updated_at: now.toISOString() }).eq("id", (sub as any).id)
+  // A comped trial extension that does not land is free time the operator
+  // believes they granted; the action returned the new trial end either way.
+  if (sub) {
+    const { error: trialError } = await svc.from("subscriptions").update({ trial_end: ext.iso, status: "trialing", updated_at: now.toISOString() }).eq("id", (sub as any).id)
+    if (trialError) {
+      return { ok: false, error: `Could not extend the trial on the subscription: ${trialError.message}` }
+    }
+  }
   await svc.from("brokerages").update({ trial_ends_at: ext.iso, updated_at: now.toISOString() }).eq("id", params.brokerageId)
   const stripeApplied = (await stripeExtendTrial((sub as any)?.stripe_subscription_id, ext.unix)).applied
 
@@ -477,7 +503,12 @@ export async function pauseSubscriptionAction(params: { brokerageId: string; pau
   const { data: sub } = await svc.from("subscriptions").select("id, stripe_subscription_id, status").eq("brokerage_id", params.brokerageId).order("created_at", { ascending: false }).limit(1).maybeSingle()
   if (!sub) return { ok: false, error: "No subscription to pause" }
 
-  await svc.from("subscriptions").update({ status: params.pause ? "paused" : "active", updated_at: new Date().toISOString() }).eq("id", (sub as any).id)
+  // paused/active is an ACCESS state, not just a billing one. Reported ok
+  // regardless, a refusal left the tenant on whichever side they were already on.
+  const { error: pauseError } = await svc.from("subscriptions").update({ status: params.pause ? "paused" : "active", updated_at: new Date().toISOString() }).eq("id", (sub as any).id)
+  if (pauseError) {
+    return { ok: false, error: `Could not ${params.pause ? "pause" : "resume"} the subscription: ${pauseError.message}` }
+  }
   const stripeApplied = (await stripePauseCollection((sub as any).stripe_subscription_id, params.pause)).applied
 
   await writeAuditLog({ actorUserId: auth.userId, actorEmail: auth.email, action: params.pause ? "subscription.paused" : "subscription.resumed", targetType: "brokerage", targetId: params.brokerageId, details: { reason: params.reason ?? null, stripe_applied: stripeApplied } })

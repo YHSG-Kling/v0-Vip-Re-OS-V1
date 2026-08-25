@@ -250,7 +250,11 @@ export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<
   //         actor_user_id, message_type, created_at
   // ══════════════════════════════════════════════════════════════════════════
 
-  const { data: complianceEvent } = await supabase
+  // The `data` was captured but the `error` was not, so a refused ledger insert
+  // read here as "no event id" — indistinguishable from a write that worked but
+  // returned nothing. Every refusal then ALSO silently skipped the
+  // COMPLIANCE_VIOLATION notification below, because that is gated on the id.
+  const { data: complianceEvent, error: complianceEventError } = await supabase
     .from("compliance_events")
     .insert({
       brokerage_id: actorContext.brokerageId,
@@ -266,6 +270,16 @@ export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<
     })
     .select("id")
     .single()
+
+  if (complianceEventError) {
+    // The gate decision itself still stands — it is computed above and returned
+    // below — but the row a broker would hand a regulator did not land, and the
+    // violation notification will not fire. Say so instead of vanishing.
+    console.error(
+      `[compliance] compliance_events insert REFUSED (gate outbound_compliance, allowed=${allowed}) — this decision is UNRECORDED:`,
+      complianceEventError.message,
+    )
+  }
 
   if (complianceEvent && !allowed) {
     // FAILURE ISOLATION: Notification processing is non-blocking

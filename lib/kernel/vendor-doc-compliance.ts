@@ -138,14 +138,35 @@ export async function runVendorDocCompliance(svc: Svc, params: { brokerageId: st
     if (evalResult.shouldSuspend && v.status === "active") {
       const flags = Array.isArray(v.verification_flags) ? v.verification_flags : []
       const reason = evalResult.credentials.find((c) => c.action === "suspend")?.reason ?? "credential expired"
-      await svc.from("vendors").update({ status: "inactive", verification_flags: [...flags, `suspended:${reason}`], updated_at: new Date().toISOString() }).eq("id", v.id)
-      out.suspended += 1
+      // THE SUSPENSION. status='inactive' is what stops a vendor with an expired
+      // insurance certificate being booked or shown to a client. `out.suspended`
+      // was incremented unconditionally, so a refused write reported a
+      // suspension that never happened — the run's own summary said the vendor
+      // was pulled while they stayed bookable.
+      const { error: suspendError } = await svc.from("vendors").update({ status: "inactive", verification_flags: [...flags, `suspended:${reason}`], updated_at: new Date().toISOString() }).eq("id", v.id)
+      if (suspendError) {
+        console.error(
+          `[vendor-doc-compliance] vendors suspension REFUSED for vendor ${v.id} (${reason}) — the vendor is STILL ACTIVE and bookable:`,
+          suspendError.message,
+        )
+      } else {
+        out.suspended += 1
+      }
     } else if (evalResult.shouldSoftFlag) {
       const flags: string[] = Array.isArray(v.verification_flags) ? v.verification_flags : []
       const flagText = `license_grace:${week}`
       if (!flags.includes(flagText)) {
-        await svc.from("vendors").update({ verification_flags: [...flags, flagText], updated_at: new Date().toISOString() }).eq("id", v.id)
-        out.flagged += 1
+        // The grace flag is the compliance record that this vendor's licence is
+        // lapsing. `out.flagged` was incremented regardless of the outcome.
+        const { error: flagError } = await svc.from("vendors").update({ verification_flags: [...flags, flagText], updated_at: new Date().toISOString() }).eq("id", v.id)
+        if (flagError) {
+          console.error(
+            `[vendor-doc-compliance] vendors grace-flag write REFUSED for vendor ${v.id} — ${flagText} is UNRECORDED:`,
+            flagError.message,
+          )
+        } else {
+          out.flagged += 1
+        }
       }
     }
 

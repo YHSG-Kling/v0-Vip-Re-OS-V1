@@ -110,7 +110,11 @@ export async function POST(request: NextRequest) {
       const { data: fullCall } = await svc.from("voice_calls").select("brokerage_id, contact_id").eq("id", (call as any).id).maybeSingle()
       const brokerageId = (fullCall as any)?.brokerage_id
       if (brokerageId) {
-        await svc.from("compliance_events").insert({
+        // This row IS the escalation record — a call that tripped a
+        // fair-housing / steering / unlicensed-advice operator. It was written
+        // `.then(undefined, () => {})`, so a refusal left the reviewers notified
+        // about an event with no immutable ledger entry behind it.
+        const { error: ciLedgerError } = await svc.from("compliance_events").insert({
           brokerage_id: brokerageId,
           actor_role: "system",
           entity_type: "voice_call",
@@ -120,7 +124,13 @@ export async function POST(request: NextRequest) {
           allowed: true, // the call already happened — this is detection, not a block
           violations: hits.map((h) => `CI operator hit: ${h?.name ?? h?.operator_type}`),
           blocked_reason: null,
-        }).then(undefined, () => {})
+        })
+        if (ciLedgerError) {
+          console.error(
+            `[twilio-ci] compliance_events insert REFUSED for voice_call ${(call as any).id} — ${hits.length} compliance-watch hit(s) are UNRECORDED:`,
+            ciLedgerError.message,
+          )
+        }
         const { data: reviewers } = await svc.from("users").select("id")
           .eq("brokerage_id", brokerageId)
           .in("user_type", ["compliance_officer", "admin", "broker"]).limit(10)

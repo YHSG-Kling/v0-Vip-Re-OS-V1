@@ -396,9 +396,18 @@ export async function GET(
         .select("id")
         .eq("owner_type", ownerType).eq("owner_id", ownerId).eq("platform", storedPlatform)
         .maybeSingle()
-      const { error: credError } = existingCred
-        ? await supabase.from("platform_credentials").update(credRow).eq("id", existingCred.id)
-        : await supabase.from("platform_credentials").insert(credRow)
+      // Split from a ternary so each branch's error capture sits next to its own
+      // write: in the ternary form the `const { error: credError }` was far
+      // enough from the INSERT branch that no reviewer (and no guard) could see
+      // that branch was covered. Behaviour is unchanged.
+      let credError: { message: string } | null = null
+      if (existingCred) {
+        const { error } = await supabase.from("platform_credentials").update(credRow).eq("id", existingCred.id)
+        credError = error
+      } else {
+        const { error } = await supabase.from("platform_credentials").insert(credRow)
+        credError = error
+      }
 
       if (credError) {
         console.error("[OAuth] Failed to store credentials:", credError)

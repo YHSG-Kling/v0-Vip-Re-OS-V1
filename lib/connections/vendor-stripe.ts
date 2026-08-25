@@ -118,14 +118,27 @@ export async function setStripeOnboardingByAccount(
     .eq("platform", "stripe")
     .eq("account_id", accountId)
 
+  // `stripe_onboarding_complete` hard-gates initiateVendorPayout immediately
+  // before stripe.transfers.create(). A silently refused DEMOTE (true → false)
+  // keeps the payout lane transferring to a destination that can no longer
+  // receive — the exact money defect the caller's comment describes. Throwing
+  // makes the billing webhook return 500 so Stripe redelivers the event, which
+  // is the behaviour a lost account.updated needs.
+  const failures: string[] = []
   for (const r of rows ?? []) {
     const config = {
       ...((r.config ?? {}) as Record<string, unknown>),
       stripe_onboarding_complete: complete,
     }
-    await svc
+    const { error } = await svc
       .from("platform_credentials")
       .update({ config, updated_at: new Date().toISOString() })
       .eq("id", r.id)
+    if (error) failures.push(`${r.id}: ${error.message}`)
+  }
+  if (failures.length > 0) {
+    throw new Error(
+      `stripe_onboarding_complete=${complete} could not be written for account ${accountId} (${failures.length} credential row(s)): ${failures.join("; ")}`,
+    )
   }
 }

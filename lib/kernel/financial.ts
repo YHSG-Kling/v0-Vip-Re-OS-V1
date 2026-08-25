@@ -861,10 +861,16 @@ export async function markCommissionApproved(
 
     // Update status
     const approvedAt = new Date().toISOString()
-    await supabase
+    // A refused status transition used to return { success: true } — the caller,
+    // the splits mirror and the deal stamp all then proceeded as if the
+    // commission had been approved while the row stayed 'pending'.
+    const { error: approveError } = await supabase
       .from("agent_commissions")
       .update({ status: newStatus, approved_at: approvedAt, approved_by: approvedBy })
       .eq("id", commissionId)
+    if (approveError) {
+      return { success: false, error: `Could not approve the commission: ${approveError.message}` }
+    }
 
     // Mirror onto the splits ledger (same lifecycle, keyed by commission_id).
     await supabase.from("commission_splits").update({ status: "approved", updated_at: approvedAt }).eq("commission_id", commissionId)
@@ -934,11 +940,16 @@ export async function markCommissionPaid(
 
     const paidAt = paidAtInput ?? new Date().toISOString()
 
-    // Update status
-    await supabase
+    // Update status. THIS IS THE PAYOUT RECORD. A refused write here previously
+    // returned success, and the splits ledger and the seven-year deal stamp were
+    // then mirrored to 'paid' against a row still reading 'pending'.
+    const { error: payError } = await supabase
       .from("agent_commissions")
       .update({ status: newStatus, paid_at: paidAt, payment_method: method ?? null })
       .eq("id", commissionId)
+    if (payError) {
+      return { success: false, error: `Could not mark the commission paid: ${payError.message}` }
+    }
 
     // Mirror onto the splits ledger (same lifecycle, keyed by commission_id).
     await supabase.from("commission_splits").update({ status: "paid", paid_at: paidAt, updated_at: paidAt }).eq("commission_id", commissionId)
@@ -1053,10 +1064,15 @@ export async function markCommissionDisputed(input: {
     }
 
     const now = new Date().toISOString()
-    await supabase
+    // A dispute that reports success without landing leaves the agent believing
+    // their objection is on the record when the row is untouched.
+    const { error: disputeError } = await supabase
       .from("agent_commissions")
       .update({ status: "disputed", dispute_reason: trimmed, disputed_at: now, disputed_by: ctx.userId, dispute_resolution: null, dispute_resolved_at: null, updated_at: now })
       .eq("id", commissionId)
+    if (disputeError) {
+      return { success: false, error: `Could not file the dispute: ${disputeError.message}` }
+    }
 
     // Mirror onto the splits ledger (same lifecycle, keyed by commission_id).
     await supabase.from("commission_splits").update({ status: "disputed", updated_at: now }).eq("commission_id", commissionId)
@@ -1106,7 +1122,9 @@ export async function resolveCommissionDispute(input: {
     }
 
     const now = new Date().toISOString()
-    await supabase
+    // Resolving a dispute moves money back into the payable lifecycle; a refused
+    // write reported as resolved leaves the commission stuck on 'disputed'.
+    const { error: resolveError } = await supabase
       .from("agent_commissions")
       .update({
         status: nextStatus,
@@ -1117,6 +1135,9 @@ export async function resolveCommissionDispute(input: {
         updated_at: now,
       })
       .eq("id", commissionId)
+    if (resolveError) {
+      return { success: false, error: `Could not resolve the dispute: ${resolveError.message}` }
+    }
 
     // Mirror onto the splits ledger (same lifecycle, keyed by commission_id).
     await supabase.from("commission_splits").update({ status: nextStatus, updated_at: now }).eq("commission_id", commissionId)

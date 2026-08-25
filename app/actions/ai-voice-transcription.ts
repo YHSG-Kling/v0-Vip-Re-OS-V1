@@ -225,7 +225,7 @@ Extract:
       // compliance_events.actor_user_id FKs users; params.agentId is an agents.id, so resolve the
       // agent's user_id for the actor.
       const { data: agentRow } = await supabase.from("agents").select("user_id").eq("id", params.agentId).maybeSingle()
-      await supabase.from("compliance_events").insert({
+      const { error: complianceLogError } = await supabase.from("compliance_events").insert({
         // Mapped onto the canonical gate-event schema (13 consumers); severity + details carry the
         // richer voice-flag metadata.
         actor_role: "agent",
@@ -242,6 +242,15 @@ Extract:
           flags: analysis.complianceFlags,
         },
       })
+      if (complianceLogError) {
+        // The call analysis is saved and returned; this row is the compliance
+        // record of what the call tripped. A refusal must not read as "the call
+        // was clean".
+        console.error(
+          `[ai-voice-transcription] compliance_events insert REFUSED for contact ${params.contactId} — ${analysis.complianceFlags.length} call flag(s) are UNRECORDED:`,
+          complianceLogError.message,
+        )
+      }
     }
 
     // TENANT: the contact this call is filed against — the same record the

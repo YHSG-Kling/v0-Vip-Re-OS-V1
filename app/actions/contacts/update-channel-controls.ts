@@ -132,7 +132,7 @@ export async function updateChannelControls(
 
     // Log the change as a compliance event for audit trail
     if (input.callStopFlag !== undefined) {
-      await supabase.from('compliance_events').insert({
+      const { error: auditError } = await supabase.from('compliance_events').insert({
         brokerage_id: auth.brokerageId,
         gate_name: input.callStopFlag
           ? 'call_stop_flag_set'
@@ -149,6 +149,17 @@ export async function updateChannelControls(
         message_type: 'phone',
         created_at: new Date().toISOString(),
       })
+      if (auditError) {
+        // The consent flag itself DID commit — the contacts update above is
+        // error-checked and returns on failure — so the caller is still told the
+        // truth by returning success. What did not happen is the audit trail of
+        // WHO set the contact's call-stop flag and WHEN, which is what a TCPA
+        // complaint is answered with. It must not vanish unsaid.
+        console.error(
+          `[update-channel-controls] compliance_events insert REFUSED for contact ${input.contactId} — the call_stop_flag change committed but is UNAUDITED:`,
+          auditError.message,
+        )
+      }
     }
 
     revalidatePath(`/crm/contacts`)

@@ -1154,11 +1154,18 @@ export async function calculateCommissions(transactionId: string) {
     await Promise.all(writes)
   }
 
+  // These are the recalculated payout amounts on the seven-year deal stamp. The
+  // loop returned { success: true, data: updatedCommissions } whatever happened,
+  // so a refused write handed the caller the NEW numbers while the stored rows
+  // kept the OLD ones — the caller displayed a recalculation that never landed.
   for (const comm of updatedCommissions) {
-    await supabase
+    const { error: recalcError } = await supabase
       .from("transaction_commissions")
       .update({ calculated_amount: comm.calculated_amount })
       .eq("id", comm.id)
+    if (recalcError) {
+      return { success: false, error: `Could not persist the recalculated commission ${comm.id}: ${recalcError.message}` }
+    }
   }
 
   revalidatePath("/transactions")

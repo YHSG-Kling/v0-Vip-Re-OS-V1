@@ -307,7 +307,13 @@ export async function ensureFreshZoomToken(
     throw new Error(`Zoom token refresh failed (${res.status ?? "—"}): ${res.error ?? ""}`)
   }
   const tokenExpiresAt = new Date(Date.now() + (res.data.expires_in ?? 3600) * 1000).toISOString()
-  await svc
+  // ZOOM ROTATES THE REFRESH TOKEN: the one we just spent is now dead. If this
+  // persist is refused and nobody is told, the row keeps the spent token and the
+  // integration is permanently broken at the next refresh — while this call
+  // still returns a working access token, so the failure surfaces an hour later
+  // with nothing pointing back here. The function already throws on a failed
+  // refresh; a failed persist is the same class of failure.
+  const { error: persistError } = await svc
     .from("platform_credentials")
     .update({
       access_token: res.data.access_token,
@@ -316,6 +322,9 @@ export async function ensureFreshZoomToken(
       updated_at: new Date().toISOString(),
     })
     .eq("id", cred.id)
+  if (persistError) {
+    throw new Error(`Zoom token refreshed but could not be stored — the stored refresh token is now spent: ${persistError.message}`)
+  }
   return res.data.access_token
 }
 

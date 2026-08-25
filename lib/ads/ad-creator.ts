@@ -346,9 +346,16 @@ Respond with ONLY valid JSON array of 3 objects, no other text.
       if (!insertError && creativeRecord) {
         // If rejected due to compliance, log the reason
         if (!complianceResult.allowed) {
-          await supabase.from("compliance_events").insert({
+          // actor_role IS NOT NULL ON compliance_events (live schema, no default,
+          // no BEFORE-INSERT trigger). This insert omitted it, so every one of
+          // these rows was refused 23502 and the error was dropped — the
+          // fair-housing / brand-voice rejection of an ad creative has NEVER
+          // reached the compliance ledger. "agent" is the same role this
+          // function hands evaluateOutbound above; it is not a new claim.
+          const { error: complianceLogError } = await supabase.from("compliance_events").insert({
             brokerage_id: context.brokerageId,
             actor_user_id: userId,
+            actor_role: "agent",
             entity_type: "ad_creative_variation",
             entity_id: creativeRecord.id,
             gate_name: "evaluateOutbound",
@@ -357,6 +364,12 @@ Respond with ONLY valid JSON array of 3 objects, no other text.
             blocked_reason: complianceResult.blockedReason ?? null,
             allowed: false,
           })
+          if (complianceLogError) {
+            console.error(
+              "[ad-creator] compliance_events insert REFUSED — an ad-creative rejection went unrecorded:",
+              complianceLogError.message,
+            )
+          }
         }
       }
 
@@ -426,10 +439,15 @@ export async function approveCreativeVariation(
   })
 
   if (!complianceResult.allowed) {
-    // Log the rejection event
-    await supabase.from("compliance_events").insert({
+    // Log the rejection event.
+    // actor_role IS NOT NULL on compliance_events (live schema, no default, no
+    // trigger) — omitting it refused this row 23502 every single time, so the
+    // approval refusal was shown to the operator and recorded nowhere. "agent"
+    // is the role this same function passes to evaluateOutbound above.
+    const { error: complianceLogError } = await supabase.from("compliance_events").insert({
       brokerage_id: brokerageId,
       actor_user_id: userId,
+      actor_role: "agent",
       entity_type: "ad_creative_variation",
       entity_id: variationId,
       gate_name: "approveCreativeVariation",
@@ -438,6 +456,12 @@ export async function approveCreativeVariation(
       blocked_reason: complianceResult.blockedReason ?? "Compliance check failed",
       allowed: false,
     })
+    if (complianceLogError) {
+      console.error(
+        "[ad-creator] compliance_events insert REFUSED — a creative-approval refusal went unrecorded:",
+        complianceLogError.message,
+      )
+    }
 
     // Also mark the variation as rejected so the UI surfaces the failure
     await supabase

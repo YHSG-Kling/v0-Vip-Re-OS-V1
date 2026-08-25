@@ -309,7 +309,12 @@ export async function ensureFreshQuickBooksToken(
     throw new Error(`QuickBooks token refresh failed (${res.status ?? "—"}): ${res.error ?? ""}`)
   }
   const tokenExpiresAt = new Date(Date.now() + (res.data.expires_in ?? 3600) * 1000).toISOString()
-  await svc
+  // INTUIT ROTATES THE REFRESH TOKEN on every exchange: the one just spent is
+  // dead. A silently refused persist leaves the spent token on the row, so the
+  // QuickBooks connection dies at the next refresh — hours later, with nothing
+  // pointing back here. This function already throws when the refresh fails;
+  // failing to STORE the result is the same failure.
+  const { error: persistError } = await svc
     .from("platform_credentials")
     .update({
       access_token: res.data.access_token,
@@ -318,6 +323,9 @@ export async function ensureFreshQuickBooksToken(
       updated_at: new Date().toISOString(),
     })
     .eq("id", cred.id)
+  if (persistError) {
+    throw new Error(`QuickBooks token refreshed but could not be stored — the stored refresh token is now spent: ${persistError.message}`)
+  }
   return res.data.access_token
 }
 

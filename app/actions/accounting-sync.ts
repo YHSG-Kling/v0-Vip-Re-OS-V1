@@ -107,12 +107,17 @@ export async function disconnectProvider(data: {
 
   // Also deactivate the OWNER-SCOPED row the OAuth callback writes (exact owner
   // match — only this brokerage's own connection is touched).
-  await createServiceClient()
+  // This is the ACCESS REVOCATION half. The integration_credentials row above
+  // is error-checked and throws; this one was not, so a refusal left the
+  // OAuth token on the owner-scoped row still active while the action reported
+  // the integration disconnected.
+  const { error: ownerCredError } = await createServiceClient()
     .from("platform_credentials")
     .update({ is_active: false, updated_at: new Date().toISOString() })
     .eq("owner_type", "brokerage")
     .eq("owner_id", data.brokerageId)
     .eq("platform", data.provider)
+  if (ownerCredError) throw new Error(`Integration deactivated, but the stored credential is still active: ${ownerCredError.message}`)
 
   // Log kernel event
   await supabase.from("lifecycle_events").insert({
