@@ -11,6 +11,7 @@ import { calculateFuzzyMatch } from '@/lib/lead-pipeline/fuzzy-matcher'
 import { calculateLeadScore } from '@/lib/lead-governance/multi-factor-scorer'
 import { resolveAgentForContact } from '@/lib/lead-assignment/contact-assignment'
 import { mergeIdentityFields } from '@/lib/data-steward/field-steward'
+import { bestEffort } from '@/lib/db/best-effort'
 // NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
 // not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
 // `server-only` (it holds the service client and the paid PeopleData/OSINT
@@ -344,7 +345,14 @@ export async function captureContact(
     ]
     const mergedNotes = [existing?.notes, ...noteAdditions].filter(Boolean).join('\n')
 
-    await supabase
+    // FAIL CLOSED (CLAUDE.md §4). This payload CARRIES TCPA CONSENT — it upgrades
+    // an existing contact to consented (and moves preferred_channel to phone with
+    // it) whenever the incoming capture ticked the box. supabase-js RESOLVES a
+    // refused UPDATE, so this returned `{ action: 'merged' }` and emitted
+    // CONTACT_DEDUP_MERGED for a merge that never landed — the consent, the notes,
+    // the agent assignment, all of it. The CREATE path below already throws on
+    // `createError`; the MERGE path now refuses the same way.
+    const { error: mergeError } = await supabase
       .from('contacts')
       .update({
         ...stewardMerged,
@@ -366,6 +374,10 @@ export async function captureContact(
         updated_at: new Date().toISOString(),
       })
       .eq('id', bestId)
+
+    if (mergeError) {
+      throw new Error(`Failed to merge contact ${bestId}: ${mergeError.message}`)
+    }
 
     await supabase.from('lifecycle_events').insert({
       brokerage_id: params.brokerageId,
@@ -513,19 +525,24 @@ export async function captureContact(
       : { data: null }
     if (agentRow?.user_id) {
       // ONE EMAIL, HERE TOO. `ensureClientWelcome` ran a few lines above and, for
-      // any contact type resolveWelcomeSide accepts, it has already granted portal
-      // access (sendMagicLink: false) and sent an agent-signed welcome carrying the
-      // portal door. Re-inviting with the OTP mail armed put a SECOND, generic
-      // email on top of it — the same duplicate the conversion lanes were carrying,
-      // and the owner's them-first ruling forbids the generic one specifically.
-      // The invite row itself is still (re)created either way: the grant and the
-      // email are different things.
-      const { resolveWelcomeSide } = await import('@/lib/kernel/client-welcome')
+      // any contact type a manager picks up, it has already granted portal access
+      // (sendMagicLink: false) and sent an agent-signed welcome carrying the portal
+      // door. Re-inviting with the OTP mail armed put a SECOND, generic email on top
+      // of it — the same duplicate the conversion lanes were carrying, and the
+      // owner's them-first ruling forbids the generic one specifically. The invite
+      // row itself is still (re)created either way: the grant and the email are
+      // different things.
+      //
+      // ARMED BY EXACTLY THE COMPLEMENT of resolveWelcomeManagers — an EMPTY manager
+      // set means no agent-signed welcome exists to carry the door, so the magic
+      // link is the only thing that will ever tell this contact their portal is
+      // there. One function decides on both lanes (§6).
+      const { resolveWelcomeManagers } = await import('@/lib/kernel/client-welcome')
       const { createSystemPortalInvite } = await import('@/lib/portal/portal-invite-core')
       await createSystemPortalInvite({
         contactId,
         agentUserId: agentRow.user_id,
-        sendMagicLink: resolveWelcomeSide(params.contact_type ?? null) === null,
+        sendMagicLink: resolveWelcomeManagers(params.contact_type ?? null).length === 0,
       })
     }
   } catch (err) {
@@ -580,10 +597,13 @@ export async function queueContactEnrichmentAndScore(params: {
     scored_at: new Date().toISOString(),
   })
 
-  await supabase
-    .from('contacts')
-    .update({ last_scored_at: new Date().toISOString() })
-    .eq('id', params.contactId)
+  await bestEffort(
+    supabase
+      .from('contacts')
+      .update({ last_scored_at: new Date().toISOString() })
+      .eq('id', params.contactId),
+    'round-robin recency stamp for the scorer; the score itself is already on lead_score_history above and re-scoring is idempotent, so a lost stamp costs an early re-score, not a fact',
+  )
 
   await supabase.from('lifecycle_events').insert({
     brokerage_id: params.brokerageId,

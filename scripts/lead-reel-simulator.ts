@@ -55,6 +55,13 @@ import {
   loadRecentManagerTalk,
 } from "../lib/kernel/manager-signals"
 import type { GenerationalCohort } from "../lib/kernel/education"
+import { readFileSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
+import { stripComments } from "./strip-comments"
+
+/** Every source scan reads STRIPPED source — a tombstone is not a call site (§2). */
+const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 
 let passed = 0, failed = 0
 const failures: string[] = []
@@ -107,6 +114,32 @@ async function pureLayer() {
   }
   check("brief: no age / protected-class language in any cohort's facts (Fair Housing)", clean)
   void situations
+
+  // ── A LEAD'S CONTENT SITUATION IS THEIR TYPE AND/OR PERSONA ───────────────
+  // OWNER RULING, verbatim: "leads are handled by their type and or persona for
+  // content situation." Before this the persona (motivation_type) was the WHOLE
+  // situation, so a lead whose motivation was never classified reached the writer as
+  // "exploring a move" with the one thing we did know about them — buyer or seller —
+  // absent from the brief entirely.
+  const sitOf = (i: Record<string, unknown>) =>
+    (buildLeadIntroReelBrief({ ...base, cohort: "unknown", ...i } as any).persona.situation ?? "")
+  check("lead brief: PERSONA + TYPE both reach the situation when both are known",
+    /relocation buyer/.test(sitOf({ leadType: "buyer", motivationType: "relocation_buyer" }))
+    && /\bbuyer\b/.test(sitOf({ leadType: "buyer", motivationType: "relocation_buyer" })))
+  check("lead brief: TYPE ALONE is a situation — a lead with no persona classified\n    yet is no longer written to as an anonymous 'exploring a move'",
+    sitOf({ leadType: "seller", motivationType: null }).startsWith("seller"))
+  check("lead brief: PERSONA ALONE still works unchanged",
+    sitOf({ leadType: null, motivationType: "first_time_buyer" }).startsWith("first time buyer"))
+  check("lead brief: NEITHER known falls to the honest generic phrase rather than a\n    guessed side",
+    sitOf({ leadType: null, motivationType: null }).startsWith("exploring a move"))
+  check("CONTROL: 'unknown' is the pipeline's own ambiguous-source value and is the\n    ABSENCE of an answer — it must never be written as a situation",
+    !/unknown/.test(sitOf({ leadType: "unknown", motivationType: "unknown" }))
+    && sitOf({ leadType: "unknown", motivationType: "unknown" }).startsWith("exploring a move"))
+  check("CONTROL: the finder can see the defect — dropping the type from a\n    persona-less lead reproduces the old anonymous brief",
+    sitOf({ leadType: null, motivationType: null }) !== sitOf({ leadType: "seller", motivationType: null }))
+  const managerSignals = stripComments(readFileSync(join(root, "lib/kernel/manager-signals.ts"), "utf8"))
+  check("the ONE live caller actually READS leads.lead_type and threads it — a brief\n    field nothing supplies is a capability that does not exist",
+    /lead_type/.test(managerSignals) && /leadType:\s*l\.lead_type/.test(managerSignals))
 
   const sit = { kind: "lead_intro" as const, tier: "solo_agent" as const, targetChannel: "email" as const }
   const fmt = selectVideoFormat(sit)

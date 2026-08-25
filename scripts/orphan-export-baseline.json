@@ -569,7 +569,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9322,
+  "census": 9323,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -3394,7 +3394,7 @@
     "lib/kernel/client-framing.ts": 2,
     "lib/kernel/client-pulse.ts": 3,
     "lib/kernel/client-story-drafts.ts": 16,
-    "lib/kernel/client-welcome.ts": 3,
+    "lib/kernel/client-welcome.ts": 4,
     "lib/kernel/closing-war-room.ts": 8,
     "lib/kernel/command-center.ts": 2,
     "lib/kernel/commission-forecaster.ts": 11,
@@ -16474,7 +16474,8 @@
     ],
     "lib/kernel/client-welcome.ts": [
       "composeClientWelcome",
-      "resolveWelcomeSide",
+      "resolveWelcomeManagers",
+      "welcomeJourneyFor",
       "ensureClientWelcome"
     ],
     "lib/kernel/closing-war-room.ts": [

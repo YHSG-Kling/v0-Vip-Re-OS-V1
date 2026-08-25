@@ -115,11 +115,61 @@
  *       market forces its own steering ban). Owner ruling: "we only sent content
  *       to leads and contacts that are personalized and situation, them first
  *       messaging." No second personalizer was written — this calls that one.
- *   (3) `resolveWelcomeSide` is EXPORTED, so the conversion lane can ask "will an
- *       agent-signed welcome go out for this contact type?" BEFORE it decides
+ *   (3) `resolveWelcomeManagers` is EXPORTED, so the conversion lane can ask "will
+ *       an agent-signed welcome go out for this contact type?" BEFORE it decides
  *       whether the portal invite's own magic-link mail is needed as the fallback
  *       delivery. That is what keeps the count at exactly one email per contact —
  *       never two, never zero.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * 2026-08-25 — THE WELCOME IS ROUTED TO ITS MANAGER(S), NOT TO A "SIDE".
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * OWNER RULING, verbatim: "contact types are seller, buyer, both, lifetime customer
+ * so the welcome email is picked up by the listing concierge if it is a seller,
+ * shopping agent for a buyer, both listing concierge and shopping agent for both
+ * seller and buyer, sphere if lifetime. kernel says that the wording is by their
+ * situation or persona; leads are handled by their type and or persona for content
+ * situation."
+ *
+ * The predecessor of `resolveWelcomeManagers` was `resolveWelcomeSide`, and it
+ * answered a TWO-VALUED question ("buyer or seller?") that the ruling does not ask.
+ * Two of the four cases came out wrong, and both wrongnesses were invisible:
+ *
+ *   · `both` collapsed to "seller". A dual-sided move got seller-only copy and ONE
+ *     manager, when the ruling names two.
+ *   · `lifetime_customer` matched NO branch and fell to null — which, read against
+ *     deliverConversionWelcome, armed `sendMagicLink: true` and returned SKIPPED
+ *     before any ledger row was written. A converting lifetime customer therefore
+ *     received NO agent-signed welcome, NO portal welcome card and NO agent
+ *     notification: the only mail they ever got was the invite core's bare Supabase
+ *     OTP magic link, which carries no agent voice, no situation and no video.
+ *
+ * THE VOCABULARY IS NOT NEW (§6). `lib/ai-isa/contact-reel-situation.ts`
+ * ::contactReelPersona already routes the WELCOME REEL by exactly the owner's four
+ * values — buyer / seller / both / lifetime — so the video side had been honouring
+ * the ruling while the EMAIL side collapsed it. `WelcomeJourney` IS that type, and
+ * `isLifetimeCustomerType` (lib/contact-types) is the same canonical, retired-
+ * spelling-tolerant test every other persona resolver in the OS goes through.
+ *
+ * ── HOW `both` REACHES TWO MANAGERS ─────────────────────────────────────────
+ *
+ * `agent_client_messages.agent_kind` is ONE text column (verified live) and
+ * `dispatchEmail`'s `managerKey` arms ONE manager's autonomy posture. There is no
+ * two-manager client message in this schema and inventing one would mean a second
+ * ledger row — i.e. a second welcome, which the ruling above forbids. So:
+ *
+ *   · the FIRST manager in the set OWNS the artefacts — the ledger row's agent_kind
+ *     (what resolveActionManager renders in the Command Center) and the governed
+ *     send's managerKey. For `both` that is listing_concierge, keeping the reading
+ *     this file has always carried: a dual-sided move starts with the home they
+ *     already own;
+ *   · every OTHER manager in the set picks it up through the EXISTING inter-manager
+ *     bus — lib/kernel/manager-signals.ts::publishManagerSignal, the first-class
+ *     "managers talking" rail. Nothing parallel was built. The route
+ *     listing_concierge → shopping_agent is a DECLARED collaboration edge already
+ *     (MANAGER_COLLABORATIONS.listing_demand_bridge), and the signal type
+ *     `client_welcome_co_owned` is catalogued in lib/kernel/signal-registry.ts.
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js"
@@ -128,6 +178,10 @@ import {
   describeDroppedFacts,
   type WelcomeSituationContact,
 } from "@/lib/contact-promotion/welcome-situation"
+import { PORTAL_EXCLUDED_CONTACT_TYPES } from "@/lib/contact-promotion/portal-access"
+import { isLifetimeCustomerType } from "@/lib/contact-types"
+import type { ManagerKey } from "@/lib/kernel/manager-registry"
+import type { ContactReelPersona } from "@/lib/ai-isa/contact-reel-situation"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -152,21 +206,120 @@ const SELLER_JOURNEY = [
   "We close — and I keep watching your equity after",
 ]
 
+/**
+ * The `both` map. NOT the seller map with a buyer sentence bolted on: a move-up is
+ * ONE move with two transactions that have to line up, which is the same fact
+ * welcome-situation.ts states to the writer ("They are selling AND buying — one
+ * move, two transactions that have to line up") and the same fact the
+ * `dual_transaction_timing` bus signal exists to coordinate. Both owning managers
+ * are visible in it, because both of them are on the file.
+ */
+const BOTH_JOURNEY = [
+  "We map both halves first — what selling your current home takes, and what the next one has to have",
+  "Your home gets its pricing story and a prep plan before anything goes live",
+  "Your search starts on the SAME calendar, so neither side is waiting on the other",
+  "Every showing, every offer, both directions — each one comes back to you with my read",
+  "We line the two closings up so you move once — and I keep watching your equity after",
+]
+
+/**
+ * The LIFETIME map. A past client is not mid-transaction and promising them a
+ * transaction journey would be the brokerage-first framing the them-first ruling
+ * forbids. What the Sphere Manager actually owns is the relationship AFTER the
+ * deal — so the map is what keeps arriving, not what they are about to do.
+ */
+const LIFETIME_JOURNEY = [
+  "Nothing is expected of you here — this is simply where I keep showing up",
+  "What your home is worth comes to you on a schedule, not when I need something",
+  "Vetted people for whatever the house needs, whenever it needs them",
+  "Anyone you send me is treated exactly the way you were",
+  "And whenever your next move starts, we pick up where we left off",
+]
+
+/**
+ * WHICH JOURNEY MAP THE COPY IS BUILT FROM.
+ *
+ * This is `ContactReelPersona` — the SAME four values lib/ai-isa/contact-reel-
+ * situation.ts already routes the welcome REEL by (buyer / seller / both /
+ * lifetime). §6: the email and the video answer "which lane is this person on"
+ * with one vocabulary, not two.
+ */
+export type WelcomeJourney = ContactReelPersona
+
+const JOURNEY_STEPS: Readonly<Record<WelcomeJourney, readonly string[]>> = Object.freeze({
+  buyer:    BUYER_JOURNEY,
+  seller:   SELLER_JOURNEY,
+  both:     BOTH_JOURNEY,
+  lifetime: LIFETIME_JOURNEY,
+})
+
+const JOURNEY_SUBJECT: Readonly<Record<WelcomeJourney, string>> = Object.freeze({
+  buyer:    "Welcome — here's how we'll find your home",
+  seller:   "Welcome — here's how we'll sell your home",
+  both:     "Welcome — here's how we'll sell yours and find the next one",
+  lifetime: "Welcome — here's how I stay in your corner",
+})
+
+/**
+ * The `CopyPersona.audience` hint for each journey. Free text on the prompt (see
+ * lib/kernel/ai-copy.ts's documented vocabulary "buyer | seller | lead |
+ * past_client | investor | neighbor | agent") — NOT the storable
+ * `agent_client_messages.audience`, whose live CHECK admits only four values.
+ */
+const JOURNEY_PERSONA_AUDIENCE: Readonly<Record<WelcomeJourney, string>> = Object.freeze({
+  buyer:    "buyer",
+  seller:   "seller",
+  both:     "buyer and seller",
+  lifetime: "past_client",
+})
+
+/**
+ * THE FALLBACK SITUATION, used ONLY when the contact row carries no persona.
+ *
+ * The ruling puts the WORDING on the contact's situation or persona, so the
+ * type-derived phrase is the floor, never the first answer — see the
+ * `personaLabel` read in `ensureClientWelcome`.
+ */
+/** What the welcome IS, per journey — the generator's brief. */
+const JOURNEY_GOAL: Readonly<Record<WelcomeJourney, string>> = Object.freeze({
+  buyer:    "a warm welcome for a brand-new buyer client",
+  seller:   "a warm welcome for a brand-new seller client",
+  both:     "a warm welcome for a brand-new client who is selling their current home AND buying the next one — one move, two transactions that have to line up",
+  lifetime: "a warm welcome for a past client crossing into the lifetime relationship — nothing is being sold and nothing is expected of them",
+})
+
+const JOURNEY_SITUATION: Readonly<Record<WelcomeJourney, string>> = Object.freeze({
+  buyer:    "just became a buyer client",
+  seller:   "just became a seller client",
+  both:     "is selling their current home and buying the next one",
+  lifetime: "is a past client we have already closed with",
+})
+
+/** The ledger's one-line description of WHAT this welcome is. */
+function welcomeRationaleSubject(journey: WelcomeJourney): string {
+  return journey === "lifetime"
+    ? "warm lifetime-relationship welcome + what-to-expect map for a past client"
+    : `warm onboarding welcome + journey map for a new ${JOURNEY_PERSONA_AUDIENCE[journey]} client`
+}
+
 /** PURE deterministic FALLBACK (owner rule: content is never hardcoded —
  *  production routes through generatePersonaCopy with THIS as the guaranteed
  *  floor; the journey steps are the FACTS the generator may rephrase but
  *  never invent beyond). */
 export function composeClientWelcome(input: {
-  side: "buyer" | "seller"
+  journey: WelcomeJourney
   addressAs: string
   agentName: string | null
 }): { subject: string; body: string } {
-  const steps = input.side === "buyer" ? BUYER_JOURNEY : SELLER_JOURNEY
+  const steps = JOURNEY_STEPS[input.journey] ?? BUYER_JOURNEY
   const who = input.agentName ? `I'm ${input.agentName}, and my` : `My`
+  const opening = input.journey === "lifetime"
+    ? `${input.addressAs}, welcome. ${who} whole team stays yours long after the closing — here's the map so you always know what to expect from me:`
+    : `${input.addressAs}, welcome. ${who} whole team is now working for you — here's the map so you always know where we are:`
   return {
-    subject: input.side === "buyer" ? "Welcome — here's how we'll find your home" : "Welcome — here's how we'll sell your home",
+    subject: JOURNEY_SUBJECT[input.journey] ?? JOURNEY_SUBJECT.buyer,
     body: [
-      `${input.addressAs}, welcome. ${who} whole team is now working for you — here's the map so you always know where we are:`,
+      opening,
       ...steps.map((s, i) => `${i + 1}. ${s}`),
       `You'll never have to chase me for a status — updates come to you, and every one ends with "here's what's next." Questions at any hour go to your portal; a human reads everything.`,
     ].join("\n"),
@@ -244,7 +397,7 @@ export type WelcomeSendState =
   | "no_assigned_agent"
   /** No reachable email — the welcome was written to the portal rail instead. */
   | "no_email_on_file"
-  /** Not a buyer/seller client, or a welcome already exists. Nothing written. */
+  /** No manager picks this contact type up, or a welcome already exists. Nothing written. */
   | "skipped"
 
 export interface WelcomeOutcome {
@@ -280,29 +433,79 @@ const SKIPPED: WelcomeOutcome = {
 }
 
 /**
- * DOES THIS CONTACT TYPE GET AN AGENT-SIGNED WELCOME, AND ON WHICH JOURNEY?
+ * The managers a welcome can be picked up by. `Extract<ManagerKey, …>` rather than
+ * three string literals ON PURPOSE: it is a COMPILE-TIME proof that every name here
+ * is a real key of `MANAGERS` in lib/kernel/manager-registry.ts, so a fourth
+ * spelling of a manager cannot be introduced here without the registry gaining it
+ * first (§6).
+ */
+export type WelcomeManagerKey = Extract<
+  ManagerKey,
+  "listing_concierge" | "shopping_agent" | "sphere_of_influence"
+>
+
+/**
+ * WHICH MANAGER(S) PICK UP THIS WELCOME?
+ *
+ * OWNER RULING: seller → listing_concierge, buyer → shopping_agent, both → BOTH of
+ * those, lifetime customer → sphere_of_influence.
+ *
+ * ORDER IS MEANINGFUL. The FIRST entry is the OWNER: it becomes
+ * `agent_client_messages.agent_kind` (which is what `resolveActionManager` renders
+ * in the Command Center) and the governed send's `managerKey` (which is whose
+ * autonomy posture gates it). Every later entry is a CO-OWNER, reached through the
+ * inter-manager bus — see `notifyCoOwningManagers` below. `both` puts
+ * listing_concierge first because a dual-sided move starts with the home they
+ * already own; that reading predates this ruling and the ruling does not disturb it.
  *
  * EXPORTED because the conversion lane must ask this question BEFORE it grants
- * portal access: when the answer is a side, the agent's welcome IS the delivery
- * and the invite core's own magic-link mail must be suppressed (one email, per
- * the ruling). When the answer is null, that magic link is the ONLY thing that
- * would ever tell the contact their portal exists, so it must still go. One
- * function answers it for both callers — two spellings of "who gets a welcome"
- * is exactly the §6 defect that produced three senders in the first place.
+ * portal access: when the answer is non-empty, the agent's welcome IS the delivery
+ * and the invite core's own magic-link mail must be suppressed (one email, per the
+ * ruling). When the answer is EMPTY, that magic link is the ONLY thing that would
+ * ever tell the contact their portal exists, so it must still go. One function
+ * answers it for both callers — two spellings of "who gets a welcome" is exactly
+ * the §6 defect that produced three senders in the first place.
  *
- * `investor` maps to the BUYER journey and `both` to the SELLER journey: a
- * dual-sided move starts with the home they already own. `vendor` and
- * `referral_partner` are counterparties, not clients — the same exclusion
- * lib/contact-promotion/portal-access.ts applies to the portal itself.
+ * `investor` is a BUYER-side client (the shopping agent's charter is the buyer
+ * side, tours and offers). `vendor` and `referral_partner` are counterparties, not
+ * clients — the exclusion list is IMPORTED from portal-access rather than re-typed,
+ * because two hand-kept copies of "who is not a client" is the same §6 defect one
+ * layer down.
+ *
+ * `lifetime_customer` is matched through `isLifetimeCustomerType`, the canonical
+ * test (lib/contact-types) that is deliberately tolerant of the spellings m539
+ * retired — a `past_client` row imported from a legacy CRM is the SAME person and
+ * must not be dropped on the floor. `client` and `sphere` are NOT routed here: the
+ * ruling enumerates four types and does not name them, and guessing a welcome for a
+ * type the owner did not rule on is the kind of invention §1 forbids.
  */
-export function resolveWelcomeSide(contactType: string | null | undefined): "buyer" | "seller" | null {
+export function resolveWelcomeManagers(contactType: string | null | undefined): WelcomeManagerKey[] {
   const type = (contactType ?? "").trim().toLowerCase()
-  if (!type) return null
-  if (type === "vendor" || type === "referral_partner") return null
-  if (type === "both") return "seller"
-  if (type === "investor") return "buyer"
-  if (type.includes("seller")) return "seller"
-  if (type.includes("buyer")) return "buyer"
+  if (!type) return []
+  if (PORTAL_EXCLUDED_CONTACT_TYPES.includes(type)) return []
+  if (isLifetimeCustomerType(type)) return ["sphere_of_influence"]
+  if (type === "both") return ["listing_concierge", "shopping_agent"]
+  if (type === "investor") return ["shopping_agent"]
+  if (type.includes("seller")) return ["listing_concierge"]
+  if (type.includes("buyer")) return ["shopping_agent"]
+  return []
+}
+
+/**
+ * THE JOURNEY MAP THE COPY IS BUILT FROM, derived from the manager set — never from
+ * `contact_type` a second time. One resolver decides who picks the welcome up, and
+ * the wording follows from that answer; re-reading the type here would be the
+ * second spelling all over again.
+ *
+ * NULL for an empty set: no manager, no welcome, no journey.
+ */
+export function welcomeJourneyFor(managers: readonly WelcomeManagerKey[]): WelcomeJourney | null {
+  if (managers.includes("sphere_of_influence")) return "lifetime"
+  const seller = managers.includes("listing_concierge")
+  const buyer = managers.includes("shopping_agent")
+  if (seller && buyer) return "both"
+  if (seller) return "seller"
+  if (buyer) return "buyer"
   return null
 }
 
@@ -348,8 +551,13 @@ export async function ensureClientWelcome(svc: Svc, contact: {
   lastName: string | null
   preferredName?: string | null
 }, opts: EnsureClientWelcomeOptions = {}): Promise<WelcomeOutcome> {
-  const side = resolveWelcomeSide(contact.contactType)
-  if (!side) return SKIPPED
+  // WHO PICKS THIS UP. The FIRST manager owns the ledger row and the governed send;
+  // the rest are co-owners reached on the bus once the row exists.
+  const managers = resolveWelcomeManagers(contact.contactType)
+  const journey = welcomeJourneyFor(managers)
+  if (managers.length === 0 || !journey) return SKIPPED
+  const owningManager = managers[0]
+  const coOwningManagers = managers.slice(1)
 
   // IDEMPOTENCY. Same tag the first-touch surface reads.
   const { data: prior, error: priorError } = await svc.from("agent_client_messages")
@@ -410,12 +618,12 @@ export async function ensureClientWelcome(svc: Svc, contact: {
     preferredName: contact.preferredName ?? c.preferred_name ?? null,
     namePronunciation: null, salutationStyle: null,
   })
-  const fallback = composeClientWelcome({ side, addressAs: addressing.addressAs, agentName })
+  const fallback = composeClientWelcome({ journey, addressAs: addressing.addressAs, agentName })
 
   // PERSONA-GENERATED body (never hardcoded); the deterministic journey map is
   // the fact set AND the guaranteed fallback — the generator personalizes,
   // it never invents steps.
-  const steps = side === "buyer" ? BUYER_JOURNEY : SELLER_JOURNEY
+  const steps = JOURNEY_STEPS[journey]
 
   // ── THEM-FIRST, SITUATIONAL, COMPLIANCE-SCREENED BEFORE THE PROMPT ─────────
   // Owner ruling: "we only sent content to leads and contacts that are
@@ -428,10 +636,23 @@ export async function ensureClientWelcome(svc: Svc, contact: {
   const situation = buildWelcomeSituation(c as WelcomeSituationContact)
   const situationWarnings = [...situation.warnings, ...describeDroppedFacts(situation.droppedFacts)]
 
+  // ── THE WORDING IS CHOSEN BY THEIR SITUATION OR PERSONA, NOT BY THEIR TYPE ──
+  // OWNER RULING: "kernel says that the wording is by their situation or persona".
+  // `personaLabel` is the contact's own `contact_persona` AFTER the fair-housing
+  // screen (a HIGH-severity phrase in that column is DROPPED, so it can never reach
+  // the writer through this door either — the label is null in that case and the
+  // floor below takes over). Underscores are spaced exactly as the LEAD side already
+  // does it (lib/ai-isa/lead-reel-brief.ts) so 'first_time' reads as a situation and
+  // not as a database value (§6). The type-derived phrase is the FLOOR, used only
+  // when the row records no persona at all.
+  const personaSituation = situation.personaLabel
+    ? situation.personaLabel.replace(/_/g, " ")
+    : JOURNEY_SITUATION[journey]
+
   const { generatePersonaCopy } = await import("@/lib/kernel/ai-copy")
   const draft = await generatePersonaCopy(
     {
-      goal: `a warm welcome for a brand-new ${side} client — introduce how the team works, walk the journey map steps IN ORDER, and promise that every update ends with "here's what's next"; no one is dropped into complexity`,
+      goal: `${JOURNEY_GOAL[journey]} — introduce how the team works, walk the journey map steps IN ORDER, and promise that every update ends with "here's what's next"; no one is dropped into complexity`,
       facts: [
         `Address them as "${addressing.addressAs}"`,
         ...(agentName ? [`The sender is their assigned agent, ${agentName}`] : []),
@@ -440,7 +661,11 @@ export async function ensureClientWelcome(svc: Svc, contact: {
       ],
       directives: situation.complianceDirectives,
       channel: agentUserId && c.email ? "email" : "portal",
-      persona: { name: addressing.addressAs, audience: side, situation: `just became a ${side} client` },
+      persona: {
+        name: addressing.addressAs,
+        audience: JOURNEY_PERSONA_AUDIENCE[journey],
+        situation: personaSituation,
+      },
       words: 140,
     },
     { body: fallback.body },
@@ -466,14 +691,23 @@ export async function ensureClientWelcome(svc: Svc, contact: {
   const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
   const res = await proposeClientMessage({
     brokerageId: contact.brokerageId,
-    agentKind: side === "buyer" ? "shopping_agent" : "listing_concierge",
+    // THE OWNING MANAGER. One text column, so it carries the FIRST manager in the
+    // set; the co-owners are told on the bus below. resolveActionManager reads this
+    // to render the Command Center row under a named manager.
+    agentKind: owningManager,
     entityType: "contact",
     entityId: contact.id,
     recipientContactId: contact.id,
-    audience: side,
+    // agent_client_messages_audience_check admits ONLY seller|buyer|lead|agent
+    // (verified live). A `both` welcome rides its OWNER's side, and a lifetime
+    // client rides 'buyer' — the same spelling lib/kernel/referral-radar.ts already
+    // uses for every past-client message it proposes, rather than a fifth value the
+    // CHECK would refuse (23514). The real persona travels on `persona.audience`
+    // above, which is free text on the prompt.
+    audience: journey === "seller" || journey === "both" ? "seller" : "buyer",
     subject: copy.subject,
     body: copy.body,
-    rationale: `${WELCOME_RATIONALE_TAG} — warm onboarding welcome + journey map for a new ${side} client (concierge methodology: no one is dropped into complexity).`,
+    rationale: `${WELCOME_RATIONALE_TAG} — ${welcomeRationaleSubject(journey)}, picked up by ${managers.join(" + ")} (concierge methodology: no one is dropped into complexity).`,
     channel,
     outreachReason: "welcome",
   }, svc)
@@ -487,6 +721,21 @@ export async function ensureClientWelcome(svc: Svc, contact: {
     }
   }
   const messageId = res.id
+
+  // ── EVERY OTHER MANAGER IN THE SET PICKS IT UP TOO ────────────────────────
+  // Published as soon as the LEDGER ROW exists, not after the send: the welcome is
+  // the co-owner's whether the provider accepted it, the autonomy gate held it, or
+  // it failed — and a co-owner who only hears about the ones that went out is a
+  // co-owner who cannot notice the ones that did not.
+  await notifyCoOwningManagers(svc, {
+    brokerageId: contact.brokerageId,
+    contactId: contact.id,
+    contactName: addressing.addressAs,
+    owner: owningManager,
+    coOwners: coOwningManagers,
+    journey,
+    messageId,
+  })
 
   const base: WelcomeOutcome = {
     proposed: true, sent: false, state: "held_for_approval", messageId,
@@ -557,9 +806,14 @@ export async function ensureClientWelcome(svc: Svc, contact: {
     // THE APPROVAL RULE: a governed autonomous manager send. An explicit
     // approval_required posture, a platform/tenant halt, or a failed accuracy
     // gate HOLDS this and leaves the draft for the Command Center.
-    managerKey: side === "buyer" ? "shopping_agent" : "listing_concierge",
+    // The OWNING manager's posture gates the send — the same one on the ledger row.
+    managerKey: owningManager,
     metadata: {
-      welcome_side: side,
+      // `welcome_side` is retired here; `welcome_journey` is the one spelling, and
+      // it is the same four-value vocabulary the welcome REEL routes on (§6).
+      welcome_journey: journey,
+      welcome_managers: managers,
+      welcome_owner_manager: owningManager,
       welcome_video_scope: videoReady?.scope ?? null,
       welcome_video_project_id: videoReady?.videoProjectId ?? null,
       portal_access: portalAccess,
@@ -594,7 +848,7 @@ export async function ensureClientWelcome(svc: Svc, contact: {
 
   // ── EVIDENCE. 'sent' is written ONLY here, behind a provider ACCEPT. ───────
   const sentAt = new Date().toISOString()
-  const evidence = `${WELCOME_RATIONALE_TAG} — warm onboarding welcome + journey map for a new ${side} client (concierge methodology: no one is dropped into complexity). | delivered via ${send.providerKey}${send.messageId ? ` ref ${send.messageId}` : ""} at ${sentAt}${videoReady ? ` | personal video ${videoReady.scope} ${videoReady.videoProjectId}` : " | no personal video on file"}`
+  const evidence = `${WELCOME_RATIONALE_TAG} — ${welcomeRationaleSubject(journey)}, picked up by ${managers.join(" + ")} (concierge methodology: no one is dropped into complexity). | delivered via ${send.providerKey}${send.messageId ? ` ref ${send.messageId}` : ""} at ${sentAt}${videoReady ? ` | personal video ${videoReady.scope} ${videoReady.videoProjectId}` : " | no personal video on file"}`
   const { error: stampError } = await svc.from("agent_client_messages")
     .update({ status: "sent", sent_at: sentAt, rationale: evidence.slice(0, 2000) })
     .eq("id", messageId)
@@ -678,6 +932,72 @@ async function resolveVideo(
     return await resolveWelcomePersonalVideo(svc, input)
   } catch (e) {
     return { state: "none", reason: `video lookup unavailable: ${(e as Error).message}` }
+  }
+}
+
+/** The signal type a co-owned welcome rides. Catalogued in lib/kernel/signal-registry.ts. */
+export const WELCOME_CO_OWNERSHIP_SIGNAL = "client_welcome_co_owned"
+
+/**
+ * "BOTH LISTING CONCIERGE AND SHOPPING AGENT FOR BOTH SELLER AND BUYER" — the
+ * second half of that ruling, made real on the rail that already exists for it.
+ *
+ * WHY A BUS SIGNAL AND NOT A SECOND LEDGER ROW. `agent_client_messages.agent_kind`
+ * is a single text column (verified live: no array, no join table), so a message
+ * has exactly one owning manager. A second row would be a second welcome, and the
+ * ruling this file exists to serve says there is exactly ONE. The inter-manager bus
+ * — `manager_signals`, publishManagerSignal, the Command Center's "managers
+ * talking" feed — is the codebase's EXISTING answer to "this belongs to you too",
+ * and listing_concierge ↔ shopping_agent is already a DECLARED collaboration edge
+ * (MANAGER_COLLABORATIONS.listing_demand_bridge). Nothing parallel was built; one
+ * row was added to the signal registry, which is what that registry is for.
+ *
+ * BEST-EFFORT, like everything else here: a welcome is care, never a dependency.
+ * Dynamic import because manager-signals pulls the service client.
+ */
+async function notifyCoOwningManagers(svc: Svc, args: {
+  brokerageId: string
+  contactId: string
+  contactName: string
+  owner: WelcomeManagerKey
+  coOwners: readonly WelcomeManagerKey[]
+  journey: WelcomeJourney
+  messageId: string
+}): Promise<void> {
+  if (args.coOwners.length === 0) return
+  try {
+    const { publishManagerSignal } = await import("@/lib/kernel/manager-signals")
+    for (const to of args.coOwners) {
+      const r = await publishManagerSignal({
+        brokerageId: args.brokerageId,
+        fromManager: args.owner,
+        toManager: to,
+        signalType: WELCOME_CO_OWNERSHIP_SIGNAL,
+        message:
+          `${args.contactName}'s welcome is co-owned: contact_type '${args.journey}' means this client is ` +
+          `on BOTH desks. ${args.owner} owns the one welcome email; you own your side of the same move from here.`,
+        entityType: "contact",
+        entityId: args.contactId,
+        contactId: args.contactId,
+        payload: {
+          welcome_journey: args.journey,
+          agent_client_message_id: args.messageId,
+          owning_manager: args.owner,
+          co_owning_manager: to,
+        },
+      }, svc)
+      // supabase-js RESOLVES a refusal; publishManagerSignal reports it as ok:false
+      // with a reason. Say it out loud rather than letting a silent no-op read as a
+      // manager who was told.
+      if (!(r as { ok?: boolean }).ok) {
+        console.error(
+          `[client-welcome] co-ownership signal ${args.owner} → ${to} not published: ` +
+            `${(r as { reason?: string }).reason ?? "unknown"}`,
+        )
+      }
+    }
+  } catch (e) {
+    console.error(`[client-welcome] co-ownership signals failed: ${(e as Error).message}`)
   }
 }
 

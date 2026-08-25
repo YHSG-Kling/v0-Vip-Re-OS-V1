@@ -71,10 +71,10 @@ export interface PortalAccessParams {
    * Send the invite core's own Supabase OTP magic-link mail?
    *
    * DEFAULTS TRUE so no existing caller changes behaviour. The conversion lane
-   * passes FALSE when `resolveWelcomeSide` says an agent-signed welcome email is
-   * going out for this contact type, because that welcome carries the portal door
-   * and the ruling allows exactly ONE email. It passes TRUE when no welcome will
-   * be produced, so a contact is never handed a portal nobody told them about.
+   * passes FALSE when `resolveWelcomeManagers` returns a NON-EMPTY manager set —
+   * i.e. some manager picks this contact type's welcome up — because that welcome
+   * carries the portal door and the ruling allows exactly ONE email. It passes TRUE
+   * on the EMPTY set, so a contact is never handed a portal nobody told them about.
    *
    * THE GRANT DOES NOT DEPEND ON THIS. The `portal_contact_invites` row — which is
    * the access itself — is created either way, immediately, before any video or

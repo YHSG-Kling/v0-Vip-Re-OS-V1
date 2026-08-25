@@ -751,7 +751,7 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     const leadId = signal.entityId
     if (!leadId) return null
     const { data: lead } = await ctx.supabase.from("leads")
-      .select("id, first_name, last_name, email, email_verified, property_interest, timeline, motivation_type, budget_min, budget_max, enrichment_profile, brokerage_id, agent_id, mailing_address, mailing_city, mailing_state, mailing_zip, mailing_address_verified")
+      .select("id, first_name, last_name, email, email_verified, property_interest, timeline, lead_type, motivation_type, budget_min, budget_max, enrichment_profile, brokerage_id, agent_id, mailing_address, mailing_city, mailing_state, mailing_zip, mailing_address_verified")
       .eq("id", leadId).eq("brokerage_id", ctx.brokerageId).maybeSingle()
     if (!lead) return null
     const l = lead as Record<string, any>
@@ -779,6 +779,9 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
         firstName: l.first_name ?? "there",
         propertyInterest: l.property_interest ?? null,
         timeline: l.timeline ?? null,
+        // TYPE AND/OR PERSONA (owner ruling) — both are read, the brief folds in
+        // whichever are actually known.
+        leadType: l.lead_type ?? null,
         motivationType: l.motivation_type ?? null,
         budgetMin: l.budget_min ?? null,
         budgetMax: l.budget_max ?? null,

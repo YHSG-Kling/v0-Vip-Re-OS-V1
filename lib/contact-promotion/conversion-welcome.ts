@@ -104,7 +104,7 @@
  */
 
 import { COMPOSITE_WAIT_MS } from "@/lib/video/avatar-render-orchestrator"
-import { resolveWelcomeSide } from "@/lib/kernel/client-welcome"
+import { resolveWelcomeManagers, welcomeJourneyFor } from "@/lib/kernel/client-welcome"
 import { grantPortalAccessForPromotedContact } from "./portal-access"
 import { ensureWelcomeAvatarVideo, type WelcomeAvatarVideoReason } from "./welcome-avatar-video"
 
@@ -307,6 +307,19 @@ export interface ConversionWelcomeResult {
   portalGranted: boolean
   /** Was the invite core's own OTP mail used as the delivery (no agent welcome due)? */
   magicLinkSent: boolean
+  /**
+   * The manager(s) that pick this welcome up, owner first. EMPTY is the exact
+   * complement of "the magic link was armed" — that is the one-email invariant,
+   * stated as data rather than left implicit in a boolean.
+   */
+  welcomeManagers: string[]
+  /**
+   * Which journey map the welcome is written from — buyer / seller / both /
+   * lifetime, the same four values the welcome REEL routes on. NULL when no
+   * manager picks this contact up. Derived from the manager set, never from
+   * contact_type a second time (§6).
+   */
+  welcomeJourney: string | null
   videoReason: WelcomeAvatarVideoReason
   timing: WelcomeTimingAction
   /** Why the email waited, or why it did not. Always populated. */
@@ -332,7 +345,14 @@ export async function deliverConversionWelcome(
   // WILL AN AGENT-SIGNED WELCOME GO OUT AT ALL? Asked FIRST, because it decides
   // whether the portal invite must carry its own magic-link mail as the delivery.
   // One function answers it here and inside the survivor (§6).
-  const side = resolveWelcomeSide(params.contactType)
+  //
+  // It answers with the SET OF MANAGERS that pick this welcome up — seller →
+  // listing_concierge, buyer → shopping_agent, both → BOTH, lifetime customer →
+  // sphere_of_influence (owner ruling). This lane only needs the SIZE of that set:
+  // non-empty means a welcome is coming and carries the portal door; empty means the
+  // magic link is the only thing that will ever tell them the portal exists.
+  const welcomeManagers = resolveWelcomeManagers(params.contactType)
+  const welcomeJourney = welcomeJourneyFor(welcomeManagers)
 
   // ── STEP 1: THE ACCESS GRANT. IMMEDIATE, AND FIRST. ───────────────────────
   // The portal_contact_invites row IS the access. It is created before any video
@@ -345,7 +365,7 @@ export async function deliverConversionWelcome(
     contactType: params.contactType ?? null,
     // ONE EMAIL: suppressed when the agent's welcome will carry the door, kept as
     // the fallback delivery when no welcome is due for this contact type.
-    sendMagicLink: side === null,
+    sendMagicLink: welcomeManagers.length === 0,
   })
   warnings.push(...portal.warnings)
 
@@ -365,6 +385,8 @@ export async function deliverConversionWelcome(
   const out: ConversionWelcomeResult = {
     portalGranted: portal.granted,
     magicLinkSent: portal.emailSent,
+    welcomeManagers: [...welcomeManagers],
+    welcomeJourney,
     videoReason: video.reason,
     timing: timing.action,
     timingReason: timing.reason,
@@ -372,19 +394,20 @@ export async function deliverConversionWelcome(
     warnings,
   }
 
-  if (side === null) {
+  if (welcomeManagers.length === 0) {
     // No agent-signed welcome is due for this contact type. The magic link above
     // was the delivery; saying so is what keeps "one email" auditable.
     warnings.push(
       `no agent-signed welcome for contact ${params.contactId}: contact_type '${params.contactType ?? "null"}' ` +
-        `resolves to no welcome journey, so the portal invite's magic link is the delivery.`,
+        `is picked up by no manager, so the portal invite's magic link is the delivery.`,
     )
     return out
   }
 
   if (timing.action === "wait_for_video") {
     warnings.push(
-      `the welcome email for contact ${params.contactId} is WAITING for the personal video ` +
+      `the ${welcomeJourney} welcome email for contact ${params.contactId} (picked up by ` +
+        `${welcomeManagers.join(" + ")}) is WAITING for the personal video ` +
         `(${timing.reason}). /api/cron/intro-video-email-backfill releases it when the render lands, ` +
         `or without the video after ${Math.round(WELCOME_VIDEO_WAIT_MS / 60000)} minutes.`,
     )
