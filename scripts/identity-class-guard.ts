@@ -3,13 +3,20 @@
  *
  * test:identity-class — ONE VALUE CANNOT BE TWO IDENTITIES.
  *
- * THE DEFECT. 195 columns in this schema are named `agent_id`. 175 of them FK
- * `agents.id`; 20 FK `users.id`. Same name, two meanings. The obvious assumption
- * is right about ninety percent of the time, which is exactly why it survives
- * review and exactly why it is dangerous: the ten percent fails silently at read
- * time (a filter that matches nothing) or loudly at write time (a foreign-key
- * violation on a path nobody has exercised yet, because this OS has not rolled
- * out and every table is empty).
+ * THE DEFECT, IN THE PAST TENSE — AND SAY SO, BECAUSE THIS PARAGRAPH WAS ITSELF
+ * A WAYPOINT. 195 columns in this schema were named `agent_id`; 175 FK'd
+ * `agents.id` and 20 FK'd `users.id`. Same name, two meanings. The obvious
+ * assumption was right about ninety percent of the time, which is exactly why it
+ * survived review and exactly why it was dangerous: the ten percent failed
+ * silently at read time (a filter that matches nothing) or loudly at write time
+ * (a foreign-key violation on a path nobody has exercised yet, because this OS
+ * has not rolled out and every table is empty).
+ *
+ * m366 ENDED THE AMBIGUITY by re-pointing all 20 at agents(id). `agent_id` now
+ * means one thing. Section 8 asserts that as a RULE derived from the generated
+ * FK cache rather than as a roster of table names, because a roster is only ever
+ * true for one moment of a migration — which is what killed the guard whose
+ * claims section 8 inherited (see the tombstone above it).
  *
  * It has already cost, all found by audit rather than by users:
  *   · lib/lifetime-customer-npv/scorer.ts read contacts.agent_id (AGENTS) and
@@ -66,6 +73,7 @@
 import { readFileSync, existsSync } from "node:fs"
 import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { stripComments } from "./strip-comments"
+import { AGENT_FK_COLUMNS, USERS_FK_AGENTISH_COLUMNS } from "./agent-fk-columns"
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -209,6 +217,10 @@ function findContradictions(): Contradiction[] {
   return found
 }
 
+/** What §1 actually measured, so the closing line reports the run rather than a
+ *  number typed into the prose and left there. */
+let BASELINE_REPORTED = 0
+
 console.log("\n═══ 1. No function uses one value as both identity classes ═══")
 {
   const found = findContradictions()
@@ -262,11 +274,37 @@ console.log("\n═══ 1. No function uses one value as both identity classes 
   //     · lib/workflow-orchestrator/chains/listing-appt-prep  resolves
   //       users->agents at all three of its lookups
   //
-  // So the number cannot go below 11 by fixing anything — only by WIRING or
-  // DELETING the three unwired functions, which is a product decision, not a
-  // correctness one. A ratchet that cannot move is still worth keeping: it
-  // fails the moment a TWELFTH contradiction appears.
-  const BASELINE = 11
+  // MEASURED AGAIN (m376) — 5, NOT 11, AND THE DROP IS THE FINDING.
+  // m373's note said the number could not go below 11 "by fixing anything —
+  // only by WIRING or DELETING the three unwired functions". Six of the eleven
+  // have since left, and every departure was read before this floor moved,
+  // because a count that falls for the wrong reason means the detector went
+  // blind and a blind guard reports zero as a clean bill of health:
+  //
+  //   · ai-content-generation.tsx  generateContentPlan now takes only
+  //     { month, includeListings } — the caller-supplied agentId that carried
+  //     both classes is gone from the signature. (The file is .tsx and IS in
+  //     this guard's corpus — walkTs takes ts and tsx — so its absence from the
+  //     report is a rewrite, not a file that stopped being scanned.)
+  //   · ai-document-intelligence  aiGenerateDocument and
+  //   · ai-transaction-coordinator draftTransactionCommunication  both moved to
+  //     a gate-derived ctx: ctx.agentId for the agents-class tables and
+  //     ctx.userId for the users-class ones, two names for two classes, which
+  //     is the whole rule.
+  //   · listing-promo-reactor and listing-appt-prep resolve and then write the
+  //     resolved value (agentRecordId / kitAgentId), so no expression is used
+  //     twice in two classes.
+  //   · onboarding/license.ts contributed two entries and now contributes one.
+  //
+  // The five that remain are all from m373's "LIVE AND ALREADY CORRECT" list —
+  // the detector pairs two uses that the code resolves BETWEEN, which is the
+  // artifact this ratchet exists to tolerate: ai-showing-management x2,
+  // onboarding/license.ts, onboarding/progress.ts, cron/podcast-weekly-auto.
+  // None is a defect; each is asserted fixed elsewhere in this file or was read
+  // against the live schema. So 5 is a floor made of artifacts, and it still
+  // fails the moment a SIXTH contradiction appears.
+  const BASELINE = 5
+  BASELINE_REPORTED = found.length
   ok(`self-contradicting identity uses at or below the baseline of ${BASELINE} (found ${found.length})`,
     found.length <= BASELINE,
     found.length > BASELINE
@@ -275,6 +313,52 @@ console.log("\n═══ 1. No function uses one value as both identity classes 
   if (found.length < BASELINE) {
     console.log(`     ↓ ${BASELINE - found.length} below baseline — lower BASELINE to ${found.length} to lock the gain in.`)
   }
+}
+
+console.log("\n═══ 1b. ...and §1 would actually notice if a SIXTH appeared ═══")
+{
+  // §2 of CLAUDE.md: every absence assertion needs a POSITIVE CONTROL. A ratchet
+  // is an absence assertion wearing a number — a regex that matches nothing
+  // passes it exactly the way a clean tree does, and the pass above is the ONLY
+  // thing standing between a broken classifier and a silent all-clear. This
+  // section was written when the floor came down from 11 to 5: lowering a ratchet
+  // on the strength of an undemonstrated finder is how a guard starts lying.
+  const contradictionsIn = (source: string) => {
+    let n = 0
+    for (const chunk of functionChunks(stripComments(source))) {
+      const byExpr = new Map<string, Set<string>>()
+      for (const u of classifyUsages(chunk)) {
+        if (!byExpr.has(u.expr)) byExpr.set(u.expr, new Set())
+        byExpr.get(u.expr)!.add(u.cls)
+      }
+      for (const [, classes] of byExpr) if (classes.size > 1) n++
+    }
+    return n
+  }
+  ok("one expression used as BOTH an agents id and a users id IS caught",
+    contradictionsIn(
+      `export async function f(p: { agentId: string }) {\n`
+      + `  await svc.from("users").select("id").eq("id", p.agentId)\n`
+      + `  await svc.from("showings").insert({ agent_id: p.agentId })\n`
+      + `}`) === 1)
+  ok("...and the same shape written as a WRITE on both sides is caught too —\n    the object-literal path and the .eq() path are separate scanners",
+    contradictionsIn(
+      `export async function f(p: { agentId: string }) {\n`
+      + `  await svc.from("agents").select("id").eq("id", p.agentId)\n`
+      + `  await svc.from("agents").select("x").eq("user_id", p.agentId)\n`
+      + `}`) === 1)
+  ok("...while a function that is single-class throughout is NOT flagged, so the\n    ratchet is not a count of every file that mentions agent_id",
+    contradictionsIn(
+      `export async function f(p: { agentId: string }) {\n`
+      + `  await svc.from("showings").select("id").eq("agent_id", p.agentId)\n`
+      + `  await svc.from("activities").insert({ agent_id: p.agentId })\n`
+      + `}`) === 0)
+  ok("...and two DIFFERENT expressions, one per class, are not paired — that is\n    the correct shape (resolve, then use the resolved value), not a defect",
+    contradictionsIn(
+      `export async function f(p: { userId: string }) {\n`
+      + `  const a = await svc.from("agents").select("id").eq("user_id", p.userId)\n`
+      + `  await svc.from("showings").insert({ agent_id: agentRecordId })\n`
+      + `}`) === 0)
 }
 
 console.log("\n═══ 2. The three verified defects stay fixed ═══")
@@ -479,7 +563,15 @@ console.log("\n═══ 3. The canonical resolver is the one place this is deci
     !/\.eq\('user_id', userId\)\s*\n\s*\.maybeSingle\(\)/.test(idm) && /\.limit\(1\)/.test(idm))
 
   // Adoption is a RATCHET, not a target. It only has to go up.
-  const ADOPTION_FLOOR = 20
+  //
+  // 49 IS MEASURED, NOT CHOSEN (m376). The floor sat at 20 while the real
+  // adopter count was 49, so twenty-nine files could have stopped routing
+  // identity through the resolver and this line would still have printed a
+  // tick. A ratchet whose floor sits below reality cannot fail, which makes it
+  // indistinguishable from no ratchet at all — the §2 failure shape exactly.
+  // The number below is the count this scan returned on 2026-08-25; raise it
+  // again whenever a pass leaves it lower than the truth.
+  const ADOPTION_FLOOR = 49
   const adopters = [...walkTs("app"), ...walkTs("lib"), ...rootRuntimeFiles(".")].filter((f) =>
     /resolveUserIdToAgentRecord|resolveAgentRecordToUserId/.test(code(f)))
   ok(`at least ${ADOPTION_FLOOR} files route identity through the resolver (found ${adopters.length}) —\n    a ratchet: this number may only go up, so each pass that touches a\n    mixed-class query is expected to convert it rather than work around it`,
@@ -815,14 +907,303 @@ console.log("\n═══ 7. The two fields that looked like wiring are GONE (m37
     /ALWAYS do: agentId = await resolveAgentId/.test(src("lib/kernel/agent-identity.ts")))
 }
 
+/**
+ * TOMBSTONE (orphan doctrine §1.3) — scripts/agent-user-id-rename-guard.ts stood
+ * here and is deleted. Its survivor is section 8 of this file, which begins at
+ * scripts/identity-class-guard.ts:955, together with
+ * scripts/agent-id-repoint-guard.ts:116 — which already held the schema half of
+ * the claim and was already green. The claims worth keeping were merged onto the
+ * survivor BEFORE the delete, in that order, as §1 requires.
+ *
+ * WHY IT DIED. It asserted a migration that was abandoned and superseded. Its
+ * premise was that the 20 users-class `agent_id` columns were being RENAMED to
+ * `agent_user_id` in batches, and it listed 8 as converted and 12 as remaining.
+ * m366 did something else entirely: it re-pointed all 20 at agents(id), keeping
+ * the name. Verified live against pg_constraint on 2026-08-25 —
+ *
+ *     select a.attname, c.conrelid::regclass, c.confrelid::regclass
+ *     from pg_constraint c
+ *     join unnest(c.conkey) with ordinality k(attnum, ord) on true
+ *     join pg_attribute a on a.attrelid = c.conrelid and a.attnum = k.attnum
+ *     where c.contype = 'f' and a.attname in ('agent_id','agent_user_id')
+ *       and c.connamespace = 'public'::regnamespace;
+ *
+ * — returns ZERO `agent_id` columns pointing at users. All eight of its
+ * "CONVERTED" tables still carry a column named `agent_id`, and it FKs agents.
+ * So its 13 failures were accusing correct code of a defect, and obeying it
+ * would have meant writing `agent_user_id` to columns that do not have that
+ * name: PGRST204, which refuses the write ENTIRELY, not partially.
+ *
+ * It was pinned to a WAYPOINT — the exact §2 failure. During a multi-step
+ * migration every intermediate state is briefly true and then permanently false,
+ * and this one froze the intermediate state of a migration that then changed
+ * destination. It was also an ORPHAN, and in the one way that is total: no
+ * `test:agent-user-id-rename` script was ever defined in package.json at all.
+ * That put it beyond the reach of BOTH runners — the curated chain never named
+ * it, and scripts/simulator-sweep.ts, which exists precisely to run the proofs
+ * the chain does not, DISCOVERS its targets from package.json and so could not
+ * see it either. It sat red and unread for as long as it had been wrong.
+ *
+ * THE STRUCTURAL HOLE IS STILL OPEN, and is recorded here rather than guessed
+ * at: nothing asserts that a `scripts/*-guard.ts` file HAS an npm script. Eight
+ * more guard/simulator files were in that state when this one was deleted, and
+ * each needs its own §1 adjudication (duplicate → merge, wanted → wire, moved →
+ * delete) rather than a blanket answer.
+ *
+ * WHAT SURVIVED IT, and where each claim went, is section 8.
+ */
+console.log("\n═══ 8. The column NAME states the class, derived from the live cache ═══")
+{
+  // 8a. THE RULE, NOT THE ROSTER (merged from the deleted rename guard's §2,
+  // which asserted `8 converted + 12 remaining === 20` — three hardcoded numbers
+  // describing one moment of a migration that has since ended somewhere else).
+  //
+  // The rule that outlives every batch is the one the two names are FOR:
+  //
+  //     `agent_id`      is an agents(id).
+  //     `agent_user_id` is a users(id).
+  //
+  // Derived from scripts/agent-fk-columns.ts, which is MACHINE-WRITTEN from
+  // public.live_foreign_keys_json() and checked against the live database by
+  // scripts/schema-cache-drift-guard.ts. Nothing here is typed by hand, so a
+  // schema change cannot leave this section asserting yesterday's roster.
+  const tablesWith = (map: Record<string, string[]>, col: string) =>
+    Object.entries(map).filter(([, cols]) => cols.includes(col)).map(([t]) => t)
+
+  const agentIdAgents = tablesWith(AGENT_FK_COLUMNS, "agent_id")
+  const agentIdUsers = tablesWith(USERS_FK_AGENTISH_COLUMNS, "agent_id")
+  const agentUserIdUsers = tablesWith(USERS_FK_AGENTISH_COLUMNS, "agent_user_id")
+  const agentUserIdAgents = tablesWith(AGENT_FK_COLUMNS, "agent_user_id")
+
+  console.log(`     agent_id: ${agentIdAgents.length} tables → agents(id), ${agentIdUsers.length} → users(id)`)
+  console.log(`     agent_user_id: ${agentUserIdUsers.length} tables → users(id), ${agentUserIdAgents.length} → agents(id)`)
+
+  ok(`no \`agent_id\` column FKs users — ${agentIdAgents.length} of them FK agents and that is\n    the whole meaning of the name; a users-class one is the ambiguity m337-m366\n    spent thirty migrations removing`,
+    agentIdUsers.length === 0, agentIdUsers.join(", "))
+  ok(`no \`agent_user_id\` column FKs agents — ${agentUserIdUsers.length} of them FK users; the name\n    says users and a column that FKs agents under it is the same lie in reverse`,
+    agentUserIdAgents.length === 0, agentUserIdAgents.join(", "))
+  // A DERIVED denominator, not a hardcoded one. The deleted guard asserted
+  // `8 + 12 === 20`; when the twenty stopped being twenty that assertion could
+  // only ever fail. This one says the two classes partition the identity
+  // columns with nothing in both and nothing in neither, whatever the counts.
+  ok("...and the two names PARTITION: every identity column the cache knows is in\n    exactly one class, so there is no column a reader has to guess about",
+    agentIdAgents.length > 0 && agentUserIdUsers.length > 0 &&
+    agentIdAgents.filter((t) => agentIdUsers.includes(t)).length === 0,
+    `${agentIdAgents.length} + ${agentUserIdUsers.length}`)
+
+  // POSITIVE CONTROL (§2). Both assertions above are absence assertions over a
+  // generated map, and a lookup typo would report zero exactly the way a clean
+  // schema does. Run the same classifier over synthetic maps carrying the two
+  // defects it exists to name.
+  const syntheticUsersAgentId = { made_up_table: ["agent_id", "brokerage_id"] }
+  const syntheticAgentsAgentUserId = { made_up_table: ["agent_user_id"] }
+  ok("...and the finder recognises a users-class `agent_id` when there is one",
+    tablesWith(syntheticUsersAgentId, "agent_id").length === 1)
+  ok("...and an agents-class `agent_user_id` when there is one",
+    tablesWith(syntheticAgentsAgentUserId, "agent_user_id").length === 1)
+
+  // 8b. THE POSTGREST EMBED HINT (merged from the deleted guard's §1, which
+  // required the literal `users!pattern_adoptions_agent_user_id_fkey` on
+  // app/dashboard/admin/intelligence-mesh/page.tsx). The CLAIM was right and is
+  // kept: a `!constraint` hint that names the wrong relationship is a 400 at
+  // runtime, and nothing else in the repo checks one. The SPELLING was the
+  // waypoint — that constraint does not exist. The live name is
+  // `pattern_adoptions_agent_id_fkey`, pointing at agents, and the page already
+  // uses it.
+  //
+  // So assert the RULE across every hint in the tree instead of one literal on
+  // one page: a hint whose constraint the identity cache recognises must embed
+  // the class that constraint actually points at. Reverse (O2M) embeds name the
+  // FK-HOLDING table as their target and are correct that way round, so both
+  // spellings are accepted and neither is guessed at.
+  const conname = new Map<string, { table: string; cls: "agents" | "users" }>()
+  for (const [t, cols] of Object.entries(AGENT_FK_COLUMNS)) {
+    for (const c of cols) conname.set(`${t}_${c}_fkey`, { table: t, cls: "agents" })
+  }
+  for (const [t, cols] of Object.entries(USERS_FK_AGENTISH_COLUMNS)) {
+    for (const c of cols) conname.set(`${t}_${c}_fkey`, { table: t, cls: "users" })
+  }
+  const HINT = /([a-z_]+)\s*!\s*([a-z0-9_]+_fkey)/g
+  // TWO WAYS A HINT IS WRONG, AND THE SECOND ONE ALMOST GOT MISSED. The first
+  // draft of this scan resolved the constraint name and checked its target — so
+  // a hint naming a constraint that DOES NOT EXIST resolved to nothing and was
+  // skipped as unresolvable. The positive control below is what exposed it: the
+  // exact string the deleted guard demanded,
+  // `users!pattern_adoptions_agent_user_id_fkey`, sailed through as "not an
+  // identity constraint" when it is precisely the 400 this section exists to
+  // prevent. A finder that cannot see the defect it was written for is the §2
+  // failure, and the control is the only reason it was seen at all.
+  //
+  // So a constraint spelled `<table>_agent_id_fkey` or `<table>_agent_user_id_fkey`
+  // on a table the identity cache KNOWS is checked for existence too: the cache
+  // carries every agents/users FK column those tables have, so a name it does
+  // not carry names a relationship that is not there. Tables absent from the
+  // cache are skipped — including the two whose agent_user_id FKs auth.users
+  // (see 8b), which the cache cannot see and must not be accused over.
+  const PHANTOM = /^(.+)_(agent_id|agent_user_id)_fkey$/
+  const scanHints = (source: string) => {
+    const bad: string[] = []
+    let seen = 0, known = 0
+    for (const m of stripComments(source).matchAll(HINT)) {
+      seen++
+      const hit = conname.get(m[2])
+      if (hit) {
+        known++
+        if (m[1] !== hit.cls && m[1] !== hit.table) bad.push(`${m[0]} → points at ${hit.cls}`)
+        continue
+      }
+      const p = PHANTOM.exec(m[2])
+      const table = p?.[1] ?? ""
+      if (p && (table in AGENT_FK_COLUMNS || table in USERS_FK_AGENTISH_COLUMNS)) {
+        known++
+        const real = [...(AGENT_FK_COLUMNS[table] ?? []), ...(USERS_FK_AGENTISH_COLUMNS[table] ?? [])]
+        bad.push(`${m[0]} → NO SUCH CONSTRAINT (${table} has ${real.join(", ") || "no identity FK"})`)
+      }
+    }
+    return { bad, seen, known }
+  }
+  let hintsSeen = 0, hintsKnown = 0
+  const staleHints: string[] = []
+  // A WIDER CORPUS THAN §1's ON PURPOSE. §1 pairs usages inside a function and
+  // only app/, lib/ and the root files hold those. An embed hint is a string
+  // that can sit anywhere a query is written, so this takes the same corpus
+  // scripts/agent-id-repoint-guard.ts:84 uses — components/ and hooks/ included.
+  for (const f of [...walkTs("app"), ...walkTs("lib"), ...walkTs("components"), ...walkTs("hooks"), ...rootRuntimeFiles(".")]) {
+    const r = scanHints(src(f))
+    hintsSeen += r.seen
+    hintsKnown += r.known
+    for (const b of r.bad) staleHints.push(`${f}: ${b}`)
+  }
+  // BLIND SPOT, PUBLISHED BESIDE THE NUMBER (§2). Only hints whose constraint is
+  // named `<table>_<column>_fkey` for a column the identity cache carries are
+  // checked. The rest — abbreviated constraint names like `cci_agent_id_fkey`,
+  // and every hint on a non-identity column — are counted and skipped, not
+  // guessed at.
+  console.log(`     embed hints: ${hintsSeen} seen, ${hintsKnown} name an identity constraint this cache resolves`)
+  ok(`every identity embed hint names the class its constraint actually points at\n    (${hintsKnown} checked of ${hintsSeen} hints; the rest carry constraint names this cache\n    cannot resolve and are skipped rather than guessed)`,
+    staleHints.length === 0, staleHints.slice(0, 3).join(" | "))
+
+  // POSITIVE CONTROL (§2) — including the exact stale hint the deleted guard
+  // DEMANDED. If this repo had obeyed that guard, this is the string it would
+  // have shipped, and PostgREST would have answered 400 on the brokerage
+  // intelligence mesh page for every admin who opened it.
+  ok("...and the finder catches the stale hint the deleted guard demanded —\n    `users!pattern_adoptions_agent_user_id_fkey`, a constraint that does not exist",
+    scanHints(`.select(\`agent:users!pattern_adoptions_agent_user_id_fkey(x)\`)`).bad.length === 1)
+  ok("...and catches a hint that names a real constraint but the WRONG side of it",
+    scanHints(`.select(\`agent:users!pattern_adoptions_agent_id_fkey(x)\`)`).bad.length === 1)
+  ok("...while the hint the page actually carries passes, and so does the reverse\n    (O2M) spelling that names the FK-holding table",
+    scanHints(`.select(\`agent:agents!pattern_adoptions_agent_id_fkey(x)\`)`).bad.length === 0 &&
+    scanHints(`.select(\`transactions!transactions_agent_id_fkey(id)\`)`).bad.length === 0)
+
+  // 8c. THE COMMENT THAT CONTRADICTED ITS OWN WRITE SITE (merged from the
+  // deleted guard's §3). lib/podcast/auto-producer.ts once said `agents.id` in
+  // its file header and `users.id` at the write site 130 lines down — two
+  // deliberate comments about ONE column, one of them necessarily wrong. That
+  // was the deleted guard's own proof that the name defeats careful people, and
+  // it is the one claim of its §3 that is about PROSE rather than about a query,
+  // so nothing else in this file can hold it.
+  //
+  // Re-expressed for the m366 world: the old assertion required the header to
+  // read `podcast_episodes.agent_id FKs USERS`, which the live schema now
+  // contradicts. What is worth holding is the AGREEMENT, not either spelling —
+  // so this reads the RAW source deliberately (the subject of the assertion IS
+  // the comments) and the STRIPPED source for the write site, which is the
+  // distinction §2 exists to enforce.
+  const apRaw = src("lib/podcast/auto-producer.ts")
+  const apCode = code("lib/podcast/auto-producer.ts")
+  ok("auto-producer's prose and its write site agree that podcast_episodes.agent_id\n    is an AGENTS id — they once disagreed, in two comments both written on purpose",
+    /podcast_episodes\.agent_id[\s\S]{0,120}agents\(id\)/.test(apRaw) &&
+    !/podcast_episodes\.agent_id FKs USERS/.test(apRaw) &&
+    !/agents\.id for agent_id per the FK/.test(apRaw) &&
+    /agent_id:\s+hostAgentRecordId,/.test(apCode),
+    "lib/podcast/auto-producer.ts")
+
+  // 8d. THE NEWSLETTER RENDER'S VOICE CLONE (merged from the deleted guard's
+  // §3). The defect was real: the voice-clone lookup asked agent_voice_profiles
+  // — an agents-class table — under a users id, matched nothing, and threw
+  // "agent has no elevenlabs_voice_id", which blames the agent's setup for a
+  // lookup made under the wrong key.
+  //
+  // The old assertion required a users→agents RESOLVE of `ledger.agent_user_id`.
+  // Since m366 the ledger column IS agents-class, so the resolve would re-create
+  // the identical breakage in the opposite direction. The claim survives because
+  // the HAZARD survives: this route holds BOTH classes at once — `ledger.agent_id`
+  // (agents) and `ledgerAgentUserId` (users, for the compliance actor and the
+  // authored-record ledger) — which is exactly the shape that produced the bug.
+  const nv = code("app/api/internal/remotion/render-newsletter-video/route.ts")
+  ok("the newsletter render asks for the voice clone under the AGENTS id it already\n    holds — the file carries a users id too, and reaching for that one is the\n    bug that made every render fail with a message blaming the agent",
+    /\.from\("agent_voice_profiles"\)[\s\S]{0,160}\.eq\("agent_id", ledger\.agent_id\)/.test(nv) &&
+    !/\.eq\("agent_id", ledgerAgentUserId\)/.test(nv),
+    "app/api/internal/remotion/render-newsletter-video/route.ts")
+  ok("...and the users-class value it derives is still spent where a users id is\n    genuinely required, rather than the two being collapsed into one",
+    /const ledgerAgentUserId = await resolveUserIdForAgentRecord\(/.test(nv) &&
+    /agent_user_id: ledgerAgentUserId,/.test(nv))
+
+  // 8e. THE INCOME-FORECAST ACCURACY RAIL (merged from the deleted guard's §3).
+  // summarizeIncomeForecastRows joins snapshots to closed deals BY agent id. The
+  // two sides were different classes, so the join never hit, `realized` was 0 for
+  // every window, and every forecast graded as a total miss — in the surface that
+  // governs how much autonomy the OS is allowed to take.
+  //
+  // The old assertion required a translation map (`agentToUser`) plus
+  // `s.agent_user_id`. m366 made both sides agents-class, so that translation is
+  // now the thing that would break the join. The CLAIM — join like with like — is
+  // the reason the assertion existed at all, and it re-expresses cleanly: both
+  // sides read `agent_id` off their own table, with no hop between them.
+  const pa = code("lib/analytics/prediction-accuracy.ts")
+  ok("the income-forecast accuracy rail joins agents-class to agents-class with no\n    translation hop — a hop in either direction empties the join and grades every\n    forecast a total miss while looking like a measurement",
+    /agentId: s\.agent_id \?\? null,/.test(pa) &&
+    /agentId: \(d\.agent_id as string \| null\) \?\? null,/.test(pa) &&
+    !/agentToUser/.test(pa) &&
+    !/agentId: s\.agent_user_id/.test(pa),
+    "lib/analytics/prediction-accuracy.ts")
+}
+
+console.log("\n═══ 8b. NOT CLOSED — two agent_user_id columns FK auth.users ═══")
+{
+  // A §6 finding (one vocabulary per function) reported rather than acted on,
+  // because acting on it is a migration and this lane is a guard consolidation.
+  //
+  // The live reading on 2026-08-25 found 29 `agent_user_id` foreign keys. 27
+  // point at public.users. TWO point at auth.users instead:
+  //
+  //     lead_magnets.agent_user_id                 → auth.users
+  //     podcast_distribution_channels.agent_user_id → auth.users
+  //
+  // The owner has ruled that Supabase auth users tie directly into public.users,
+  // so one column name has two targets — two spellings of the same idea, which
+  // §6 calls a defect rather than a style choice. It is not merely cosmetic:
+  // scripts/agent-fk-columns.ts is built from FKs to public.agents, public.users
+  // and public.contacts ONLY, so these two columns are invisible to the identity
+  // cache and therefore to section 8a above and to agent-id-class-guard. They
+  // are the one place a wrong-class write into an `agent_user_id` could land
+  // with no guard watching.
+  //
+  // NOT ASSERTED ON PURPOSE. An assertion naming these two tables would be a
+  // waypoint: re-pointing them at public.users is the plausible fix, and it
+  // would turn this guard red for the repair. Re-derive instead — the query is
+  // in the tombstone above, with `c.confrelid::regclass::text` telling the two
+  // targets apart.
+  console.log("     lead_magnets.agent_user_id → auth.users (not public.users)")
+  console.log("     podcast_distribution_channels.agent_user_id → auth.users (not public.users)")
+  console.log("     unresolved: deliberate or drift. Reported, not migrated — see the comment.")
+}
+
 console.log(`\n${"═".repeat(70)}`)
 console.log(`IDENTITY CLASS — ${pass} passed, ${fail} failed`)
 if (fail > 0) {
   console.log("\nFailures:")
   for (const f of failures) console.log(`  · ${f}`)
-  console.log("\n195 columns are named agent_id; 175 mean agents.id and 20 mean users.id.")
-  console.log("Route it through lib/kernel/agent-identity-resolver instead of guessing.")
+  // DERIVED, NOT REMEMBERED. This used to read "195 columns are named agent_id;
+  // 175 mean agents.id and 20 mean users.id" — true before m366, false after it,
+  // and printed on every failure as the advice a reader acts on. The counts come
+  // off the generated cache now, so the closing words cannot outlive the schema.
+  const agentsCols = Object.values(AGENT_FK_COLUMNS).flat().length
+  const usersCols = Object.values(USERS_FK_AGENTISH_COLUMNS).flat().length
+  console.log(`\n${agentsCols} columns FK agents(id); ${usersCols} agent-named columns FK users(id).`)
+  console.log("`agent_id` is an agents id and `agent_user_id` is a users id — crossing between")
+  console.log("them is a RESOLVE through lib/kernel/agent-identity-resolver, never a substitution.")
   process.exit(1)
 }
-console.log("Verified defects fixed and locked; 11 candidates remain behind a ratchet")
+console.log(`Verified defects fixed and locked; ${BASELINE_REPORTED} candidates remain behind a ratchet`)
 console.log("that may only go down. The resolver is the one place this should be decided.")
