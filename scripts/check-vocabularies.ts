@@ -18,9 +18,9 @@
  * MEASURED AT GENERATION: 436 tables, 760 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-08-24
+ * generated: 2026-08-25
  * source: public.live_check_constraints_json()
- * body-sha256: b3ab04d3cc2bdcab759bc0e7a108fccac43046e57cebbe2d45c6f692c97e5795
+ * body-sha256: 6a62adf78e71d94733151d48f6cd8a8b8635e53b9d6a3e63af82790f996d5737
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -1596,7 +1596,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   vendor_service_areas: {
     status: ["active", "suspended", "withdrawn"],
-    trade_category: ["3d_tour", "appliance_repair", "attorney", "cleaner", "contractor", "drone_pilot", "electrician", "estate_sale", "financial_advisor", "flooring", "garage_door", "handyman", "home_warranty", "hvac", "inspector", "insurance", "interior_design", "landscaping", "lender", "mover", "organizer", "other", "painter", "pest_control", "photographer", "plumber", "pool_service", "property_management", "refinance_lender", "roofer", "security", "smart_home", "solar", "stager", "tax_pro", "title", "videographer", "window_treatment"],
+    trade_category: ["3d_tour", "appliance_repair", "appraiser", "attorney", "cleaner", "contractor", "drone_pilot", "electrician", "estate_sale", "financial_advisor", "flooring", "garage_door", "handyman", "home_warranty", "hvac", "inspector", "insurance", "interior_design", "landscaping", "lender", "mover", "organizer", "other", "painter", "pest_control", "photographer", "plumber", "pool_service", "property_management", "refinance_lender", "roofer", "security", "smart_home", "solar", "stager", "tax_pro", "title", "videographer", "window_treatment"],
   },
   vendor_subscriptions: {
     billing_direction: ["vendor_pays_brokerage"],
@@ -1613,7 +1613,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   vendors: {
     access_level: ["brokerage_full_access", "team_full_access", "transaction_only"],
-    category: ["3d_tour", "appliance_repair", "attorney", "cleaner", "contractor", "drone_pilot", "electrician", "estate_sale", "financial_advisor", "flooring", "garage_door", "handyman", "home_warranty", "hvac", "inspector", "insurance", "interior_design", "landscaping", "lender", "mover", "organizer", "other", "painter", "pest_control", "photographer", "plumber", "pool_service", "property_management", "refinance_lender", "roofer", "security", "smart_home", "solar", "stager", "tax_pro", "title", "videographer", "window_treatment"],
+    category: ["3d_tour", "appliance_repair", "appraiser", "attorney", "cleaner", "contractor", "drone_pilot", "electrician", "estate_sale", "financial_advisor", "flooring", "garage_door", "handyman", "home_warranty", "hvac", "inspector", "insurance", "interior_design", "landscaping", "lender", "mover", "organizer", "other", "painter", "pest_control", "photographer", "plumber", "pool_service", "property_management", "refinance_lender", "roofer", "security", "smart_home", "solar", "stager", "tax_pro", "title", "videographer", "window_treatment"],
     status: ["active", "archived", "inactive", "pending"],
   },
   video_assets: {

@@ -63,6 +63,7 @@ import { generateObject } from "@/lib/ai/generate"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+import { modelAuthoredToVendorVerdict } from "@/lib/vendors/appraiser-independence"
 import { z } from "zod"
 
 // ============================================================================
@@ -368,12 +369,39 @@ export async function coordinateVendors(params: {
       .filter(s => s.vendorId && isValidUUID(s.vendorId))
       .map(s => s.vendorId as string)
 
-    const { data: vendors } = await supabase
+    // `error` is destructured for the same reason it is above AND for a new one:
+    // the appraiser-independence gate below is computed FROM this read, so a
+    // refused read is a gate that could not run. supabase-js resolves refusals,
+    // so discarding `error` here would have turned "we could not see the bench"
+    // into "there is no appraiser on it" (CLAUDE.md §3, §4).
+    const { data: vendors, error: vendorsErr } = await supabase
       .from("vendors")
       .select("id, name, category, phone, email")
       .in("id", vendorIds)
       // Vendor phone/email is contact PII — never return another tenant's.
       .eq("brokerage_id", auth.brokerageId)
+
+    // ── CLAUDE.md §5 — NOTHING MODEL-AUTHORED MAY REACH A LICENSED APPRAISER ──
+    //
+    // This is the one surface m554's widening put at risk. The schema below asks
+    // the model for `communicationPlan.vendorMessages[]` — messages ADDRESSED TO
+    // a named vendor, which the panel renders with a Copy button for the agent to
+    // send. Since m554 `appraiser` is a bench category, so an appraiser can now be
+    // one of those named vendors, and a model writing to an appraiser about a
+    // specific listing is exactly what appraiser-independence rules exist to stop.
+    //
+    // The check runs BEFORE the model call, not after: refusing afterwards would
+    // still have produced the text and spent the platform's key producing it. The
+    // rule itself lives once, at lib/vendors/appraiser-independence.ts — this is a
+    // call site, not a second copy of the rule.
+    const reach = modelAuthoredToVendorVerdict({
+      resolved: !vendorsErr,
+      vendorCategories: (vendors ?? []).map((v: { category?: string | null }) => v.category),
+      // A request can ask for appraisal work without naming a bench row, and the
+      // model would then write to an appraiser who has no id here to check.
+      serviceLabels: params.services.flatMap((s) => [s.serviceType, s.notes]),
+    })
+    if (!reach.ok) return { success: false, error: reach.message }
 
     const { object: coordination } = await generateObject({
       model: "openai/gpt-4o",

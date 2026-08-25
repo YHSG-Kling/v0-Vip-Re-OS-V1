@@ -75,6 +75,10 @@
 // bookable at all. That is why `vendorGeoVerdict` returns one refusal reason per
 // distinct cause and never collapses "we could not tell" into "fine".
 //
+// Appraisers only became expressible on the bench at m554; until then this
+// sentence named a trade the vocabulary could not spell. It can now, and
+// `appraiser` is on STATE_LICENSED_VENDOR_CATEGORIES below.
+//
 // The licence RECORD SHAPE is not a new one. `vendors.compliance_credentials`
 // already carries a bag validated by the live `vendor_credential_bag_ok` /
 // `vendor_credential_record_ok` functions with keys license / insurance /
@@ -103,11 +107,12 @@ export type VendorServiceAreaStatus = (typeof VENDOR_SERVICE_AREA_STATUSES)[numb
  * The trades whose practitioners are STATE-LICENSED, so coverage in a state is
  * only real if a licence backs it.
  *
- * Every value is a `VendorCategory` — the one 38-value taxonomy in
+ * Every value is a `VendorCategory` — the one taxonomy in
  * lib/kernel/vendor-categories.ts that `vendors.category` and
- * `vendor_directory.category` both CHECK against (§6: no second spelling).
+ * `vendor_service_areas.trade_category` both CHECK against (§6: no second
+ * spelling).
  *
- * WHY THESE FIVE, and why the omissions are deliberate:
+ * WHY THESE SIX, and why the omissions are deliberate:
  *
  *   lender / refinance_lender  a mortgage originator holds a state licence per
  *                              state they lend in (NMLS state authority). This
@@ -118,22 +123,35 @@ export type VendorServiceAreaStatus = (typeof VENDOR_SERVICE_AREA_STATUSES)[numb
  *   attorney                   admission is per state bar. An out-of-state
  *                              attorney on a closing is unauthorised practice.
  *   insurance                  producers hold per-state appointments.
+ *   appraiser                  ADDED m554, on the owner ruling "an appraiser can
+ *                              be another vendor type and is state licensed".
  *
  *   inspector is NOT here ON PURPOSE. Home-inspector licensure is not universal
  *   across states, so a hard refusal would refuse legitimate inspectors in every
  *   state that does not license them — a gate that is wrong in one direction is
  *   not safer than no gate, it is a gate that gets switched off.
  *
- * APPRAISER IS MISSING FROM THE VOCABULARY ITSELF, and that is a finding, not an
- * omission here. The owner named appraisers as state-licensed and CLAUDE.md §5
- * already treats them as first-class ("anything reaching a licensed appraiser
- * must not be model-authored"), but `vendors.category` has NO 'appraiser' value:
- * the live CHECK admits 38 values and appraiser is not among them, because
- * appraisers are reached through lib/kernel/appraiser-packet.ts rather than the
- * vendor bench. Adding it means widening a live CHECK and regenerating the
- * vocabulary cache, which is not this lane's to do. The list below is the ONE
- * place that would change, so wiring appraisers in later is a one-line edit here
- * plus the CHECK — not a hunt.
+ *   APPRAISER IS THE OPPOSITE CASE, and the difference is not a judgement call:
+ *   Title XI of FIRREA requires an appraisal for a federally related transaction
+ *   to be performed by a state-certified or state-licensed appraiser, and every
+ *   state runs a board to issue that credential. There is no state in which an
+ *   unlicensed appraiser is legitimate, so the gate cannot be wrong in the
+ *   direction that made `inspector` unsafe to include.
+ *
+ * SUPERSEDED NOTE (m551 → m554). This block previously recorded that appraiser
+ * was MISSING FROM THE VOCABULARY ITSELF — `vendors.category` admitted 38 values
+ * and appraiser was not among them, because appraisers were reached only through
+ * lib/kernel/appraiser-packet.ts and not through the vendor bench. m554 widened
+ * both live CHECKs (`vendors_category_check` and
+ * `vendor_service_areas_trade_category_check`) to 39 and added the value to
+ * `public.vendor_trade_requires_state_license`, which this Set mirrors exactly.
+ *
+ * WHAT THAT WIDENING COST, AND WHERE IT IS PAID. Benching appraisers opened NEW
+ * routes to a licensed appraiser — vendor messaging, vendor communications,
+ * vendor jobs, the vendor portal — and CLAUDE.md §5 forbids model-authored
+ * content on any of them. That rule is NOT restated here: it lives once, at
+ * lib/vendors/appraiser-independence.ts, together with the inventory of every
+ * route that was walked and what each one was found to carry.
  */
 export const STATE_LICENSED_VENDOR_CATEGORIES: ReadonlySet<VendorCategory> = new Set<VendorCategory>([
   "lender",
@@ -141,6 +159,7 @@ export const STATE_LICENSED_VENDOR_CATEGORIES: ReadonlySet<VendorCategory> = new
   "title",
   "attorney",
   "insurance",
+  "appraiser",
 ])
 
 /** PURE — does a job in this trade require a state licence to be bookable? */

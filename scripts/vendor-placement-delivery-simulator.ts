@@ -53,6 +53,7 @@
 import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import { VENDOR_CATEGORIES } from "../lib/kernel/vendor-categories"
 import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
@@ -173,7 +174,14 @@ console.log("\n── ONE TAXONOMY, ONE TABLE (m304 widened it, m355 made it sin
   // marketplace was capped at six trades by a CHECK nobody had revisited. m304
   // widened the bench to the directory's taxonomy verbatim.
   const bench = CHECK_VOCABULARIES.vendors?.category ?? []
-  check("the taxonomy is known", bench.length === 38)
+  // DERIVED, NOT PINNED (CLAUDE.md §2). `bench.length === 38` was true only
+  // between m304 and m554, which added `appraiser`; a count that a migration can
+  // legitimately move is a waypoint, not a rule. The rule is that the cache and
+  // lib/kernel/vendor-categories.ts hold the SAME taxonomy — and that it is not
+  // empty, because `?? []` above would otherwise make this pass on a missing key.
+  check("the taxonomy is known, and it is the ONE the module declares",
+    bench.length > 0 && bench.length === VENDOR_CATEGORIES.length &&
+    (VENDOR_CATEGORIES as readonly string[]).every((c) => bench.includes(c)))
   // Asserted as ABSENCE, not equality: `?? []` on a removed key would make an
   // equality check pass vacuously — a false green is worse than no check.
   check("there is no second vendor trade taxonomy to drift from",

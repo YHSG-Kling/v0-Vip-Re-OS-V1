@@ -57,7 +57,15 @@ const src = (p: string) =>
 console.log("\n── the module matches the live CHECK, exactly ──")
 {
   const live = CHECK_VOCABULARIES.vendors?.category ?? []
-  check(`the snapshot carries the widened taxonomy (${live.length})`, live.length === 38)
+  // DERIVED, NOT PINNED (CLAUDE.md §2). This read `live.length === 38` and went
+  // red the day m554 added `appraiser` — not because anything broke, but because
+  // the taxonomy legitimately grew and a hardcoded count could only ever be true
+  // between two migrations. The RULE is that the cache and the module hold the
+  // SAME list, which the two checks below already prove element by element; all
+  // this one has to add is that the list is not EMPTY, since `?? []` would make
+  // both of those pass vacuously against a missing key.
+  check(`the snapshot carries the widened taxonomy (${live.length})`,
+    live.length > 0 && live.length === VENDOR_CATEGORIES.length)
   check("every category the module declares is admitted",
     VENDOR_CATEGORIES.every((c) => live.includes(c)))
   check("every category the CHECK admits is declared",
@@ -182,9 +190,17 @@ console.log("\n── downstream consumers still speak the same spelling ──"
     ["Interior Designer", "interior_design"],
     // Generic enough that only the family fits.
     ["Kitchen Remodeling", "contractor"],
-    // Still genuinely "other": the taxonomy has no appraiser token, and pretending
-    // otherwise would be worse than an honest catch-all.
-    ["Certified Residential Appraiser", "other"],
+    // WAS "other", AND THAT WAS HONEST UNTIL m554. This fixture used to read
+    // `"other"` with the note "the taxonomy has no appraiser token, and pretending
+    // otherwise would be worse than an honest catch-all" — true then, false the
+    // moment the owner ruled that an appraiser is a vendor type. The count that
+    // moved is one card, in the direction of MORE information kept.
+    ["Certified Residential Appraiser", "appraiser"],
+    // The negative half of that pair: the stem must not swallow a card that only
+    // MENTIONS an appraisal in passing while naming a different trade. `lender`
+    // sits above `appraiser`, so a lender who orders appraisals still files as a
+    // lender rather than being re-trade-d by one word.
+    ["Mortgage Loan Officer — appraisal coordination", "lender"],
   ]
   for (const [title, expected] of cards) {
     const cls = classifyCardTarget({ title, company: null })

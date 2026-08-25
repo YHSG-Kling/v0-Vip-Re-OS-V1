@@ -44,6 +44,16 @@ import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createClient } from "@supabase/supabase-js"
 import { stripComments, blankStrings } from "./strip-comments"
+// ONE parser for the migration DDL, shared with scripts/appraiser-bench-simulator.ts
+// (scripts/vendor-trade-vocab-source.ts) — see that file for why it is not imported
+// from the other guard and not copied into both.
+import {
+  sqlLicensedTrades,
+  sqlTradeVocabulary,
+  latestMigrationDefining,
+  LICENSED_TRADE_FN_DDL,
+  TRADE_CATEGORY_CHECK_DDL,
+} from "./vendor-trade-vocab-source"
 import { LIVE_TABLES } from "./live-tables"
 import { VENDOR_CATEGORIES, type VendorCategory } from "../lib/kernel/vendor-categories"
 import {
@@ -410,37 +420,6 @@ function layerRulingB() {
 // LAYER 3 — SOURCE: one gate, one vocabulary, no drift between TS and SQL
 // ═════════════════════════════════════════════════════════════════════════════
 
-/**
- * PURE — the trade list inside m551's vendor_trade_requires_state_license.
- *
- * ANCHORED ON THE `create` STATEMENT, not on an occurrence count. The first
- * version of this split the file on the function NAME and took chunk [2], which
- * silently returned [] because the name appears in prose comments as well as in
- * the DDL. Both callers below pair the comparison with a non-empty assertion
- * precisely so a parser that has gone blind fails LOUD instead of reporting a
- * clean match of nothing (CLAUDE.md §2 — a broken regex and a clean tree both
- * report zero).
- */
-export function sqlLicensedTrades(migrationSql: string): string[] {
-  const fn = migrationSql.match(
-    /create or replace function public\.vendor_trade_requires_state_license[\s\S]*?\$fn\$([\s\S]*?)\$fn\$/i,
-  )
-  if (!fn) return []
-  const arr = fn[1].match(/array\s*\[([\s\S]*?)\]/i)
-  if (!arr) return []
-  return [...arr[1].matchAll(/'([a-z0-9_]+)'/g)].map((m) => m[1])
-}
-
-/** PURE — the trade vocabulary inside m551's trade_category CHECK. Anchored on
- *  the `add constraint`, for the same reason. */
-export function sqlTradeVocabulary(migrationSql: string): string[] {
-  const chunk = migrationSql.match(
-    /add constraint vendor_service_areas_trade_category_check[\s\S]*?array\s*\[([\s\S]*?)\]/i,
-  )
-  if (!chunk) return []
-  return [...chunk[1].matchAll(/'([a-z0-9_]+)'/g)].map((m) => m[1])
-}
-
 function layerSource() {
   section("Layer 3 — source: the migration, the one gate, and no vocabulary drift")
 
@@ -451,17 +430,29 @@ function layerSource() {
 
   // THE TWO LISTS MUST BE THE SAME LIST. A licensed trade only one side knows
   // about is a gate enforced in one place and open in the other.
-  const sqlTrades = sqlLicensedTrades(mig).slice().sort()
+  //
+  // READ FROM THE MIGRATION THAT MOST RECENTLY STATES EACH DEFINITION, not from
+  // m551 by name: m554 redefined both, and a guard pinned to the file that
+  // happened to define them first reports the module as drifted the moment the
+  // definition legitimately moves (CLAUDE.md §2 — do not pin to a waypoint).
+  const licSrc = latestMigrationDefining(ROOT, LICENSED_TRADE_FN_DDL)
+  check("some migration DEFINES vendor_trade_requires_state_license (the parser is not blind)",
+    !!licSrc, "no migration matched")
+  const sqlTrades = sqlLicensedTrades(licSrc?.sql ?? "").slice().sort()
   const tsTrades = [...STATE_LICENSED_VENDOR_CATEGORIES].slice().sort()
-  check("the SQL and TypeScript state-licensed lists are IDENTICAL",
+  check(`the SQL and TypeScript state-licensed lists are IDENTICAL (sql from ${licSrc?.name ?? "nothing"})`,
     sqlTrades.length > 0 && JSON.stringify(sqlTrades) === JSON.stringify(tsTrades),
     `sql=${JSON.stringify(sqlTrades)} ts=${JSON.stringify(tsTrades)}`)
 
   // …and so must the trade vocabulary itself, against the ONE taxonomy.
-  const sqlVocab = sqlTradeVocabulary(mig).slice().sort()
+  const vocabSrc = latestMigrationDefining(ROOT, TRADE_CATEGORY_CHECK_DDL)
+  check("some migration DEFINES vendor_service_areas_trade_category_check",
+    !!vocabSrc, "no migration matched")
+  const sqlVocab = sqlTradeVocabulary(vocabSrc?.sql ?? "").slice().sort()
   const tsVocab = [...VENDOR_CATEGORIES].slice().sort()
-  check("m551's trade_category CHECK is the ONE 38-value vendor taxonomy, verbatim (§6)",
-    sqlVocab.length === tsVocab.length && JSON.stringify(sqlVocab) === JSON.stringify(tsVocab),
+  check(`the trade_category CHECK is the ONE vendor taxonomy, verbatim (§6) (sql from ${vocabSrc?.name ?? "nothing"})`,
+    sqlVocab.length > 0 && sqlVocab.length === tsVocab.length &&
+    JSON.stringify(sqlVocab) === JSON.stringify(tsVocab),
     `sql has ${sqlVocab.length}, taxonomy has ${tsVocab.length}`)
 
   // GEOGRAPHY: the grain must be the repo's, not a third one.

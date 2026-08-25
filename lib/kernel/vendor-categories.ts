@@ -2,7 +2,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // THE ONE vendors.category vocabulary.
 //
-// The live CHECK is the 38-value lowercase_snake taxonomy below, shared verbatim
+// The live CHECK is the 39-value lowercase_snake taxonomy below, shared verbatim
 // with vendor_directory.category since m304. Before m304 it was SIX Title-Case
 // values ('Contractor','Inspector','Lender','Other','Stager','Title Company') —
 // and because `vendors` is the FK target of vendor_bookings, a trade the bench
@@ -39,13 +39,21 @@
 // `referral_partners` (which are free text) into a comparable token for RESPA
 // matching. This module is only about the `vendors.category` CHECK.
 
-/** Every value the CHECK admits — the SAME 38-value taxonomy vendor_directory
- *  uses, since m304 widened the bench to match it. Ordered by how a brokerage
+/** Every value the CHECK admits — the SAME taxonomy vendor_directory used,
+ *  since m304 widened the bench to match it. Ordered by how a brokerage
  *  thinks about them: the transaction trades first, then the home-service trades
- *  a lifetime client actually asks for, then the catch-all. */
+ *  a lifetime client actually asks for, then the catch-all.
+ *
+ *  m554 added `appraiser` (39 values) on the owner ruling "an appraiser can be
+ *  another vendor type and is state licensed". It sits with the transaction
+ *  trades because that is when a brokerage meets one. NOTE: `appraiser` is the
+ *  one value here that carries a rule of its own — CLAUDE.md §5, anything
+ *  reaching a licensed appraiser must not be model-authored. That rule and the
+ *  routes it governs live at lib/vendors/appraiser-independence.ts, which is the
+ *  ONE place it is spelled; do not re-implement it beside a call site. */
 export const VENDOR_CATEGORIES = [
   // transaction-side (several are RESPA settlement services — see lib/compliance/vendor-respa.ts)
-  "lender", "refinance_lender", "title", "attorney", "inspector",
+  "lender", "refinance_lender", "title", "attorney", "inspector", "appraiser",
   // listing prep + marketing
   "stager", "photographer", "videographer", "drone_pilot", "3d_tour", "interior_design",
   // move + turnover
@@ -66,7 +74,7 @@ export type VendorCategory = (typeof VENDOR_CATEGORIES)[number]
  *  one, or labelled without existing. */
 export const VENDOR_CATEGORY_LABELS: Record<VendorCategory, string> = {
   lender: "Lender", refinance_lender: "Refinance Lender", title: "Title Company",
-  attorney: "Attorney", inspector: "Inspector",
+  attorney: "Attorney", inspector: "Inspector", appraiser: "Appraiser",
   stager: "Stager", photographer: "Photographer", videographer: "Videographer",
   drone_pilot: "Drone Pilot", "3d_tour": "3D Tour", interior_design: "Interior Design",
   mover: "Mover", cleaner: "Cleaner", organizer: "Organizer", estate_sale: "Estate Sale",
@@ -82,7 +90,7 @@ export const VENDOR_CATEGORY_LABELS: Record<VendorCategory, string> = {
 }
 
 /**
- * The same 38 values, in the groups the ordering above already implies — so a
+ * The same values, in the groups the ordering above already implies — so a
  * picker can render optgroups without restating the vocabulary. A category
  * belongs to exactly one group; the guard proves the groups partition
  * VENDOR_CATEGORIES exactly, which is what stops a value being added here and
@@ -92,7 +100,7 @@ export const VENDOR_CATEGORY_GROUPS: ReadonlyArray<{
   label: string
   categories: readonly VendorCategory[]
 }> = [
-  { label: "Transaction", categories: ["lender", "refinance_lender", "title", "attorney", "inspector"] },
+  { label: "Transaction", categories: ["lender", "refinance_lender", "title", "attorney", "inspector", "appraiser"] },
   { label: "Listing prep & marketing", categories: ["stager", "photographer", "videographer", "drone_pilot", "3d_tour", "interior_design"] },
   { label: "Move & turnover", categories: ["mover", "cleaner", "organizer", "estate_sale"] },
   { label: "Trades & home services", categories: ["contractor", "handyman", "landscaping", "pest_control", "pool_service", "hvac", "plumber", "electrician", "roofer", "painter", "flooring", "solar", "security", "smart_home", "appliance_repair", "window_treatment", "garage_door"] },
@@ -127,6 +135,13 @@ export const VENDOR_CATEGORY_TITLE: VendorCategory = "title"
  *  .eq("category", …) filter, which TypeScript cannot check because the argument
  *  is a plain string. Named here so they read the vocabulary instead. */
 export const VENDOR_CATEGORY_INSPECTOR: VendorCategory = "inspector"
+/** The appraiser trade (m554). Named rather than spelled inline because it is the
+ *  ONE category that gates behaviour rather than only labelling a row — see
+ *  lib/vendors/appraiser-independence.ts (CLAUDE.md §5) and
+ *  STATE_LICENSED_VENDOR_CATEGORIES in lib/vendors/vendor-service-area.ts. A
+ *  hand-typed "appraiser" at a call site is a gate that silently stops matching
+ *  the day the spelling moves. */
+export const VENDOR_CATEGORY_APPRAISER: VendorCategory = "appraiser"
 /** The catch-all, spelled as the CHECK does. The business-card scanner wrote the
  *  Title-Case "Other" — valid before m304, rejected after it — so every scanned
  *  card the classifier could not place failed its INSERT outright. Named here so
