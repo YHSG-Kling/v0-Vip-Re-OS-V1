@@ -158,10 +158,21 @@ export async function POST(req: NextRequest) {
         updatePayload.tcpa_consent_ip = ip_address ?? null
       }
 
-      await supabase
+      // FAIL CLOSED (CLAUDE.md §4). `updatePayload` CARRIES TCPA CONSENT — the
+      // block above stamps tcpa_consent/at/text/source/ip when the visitor ticks
+      // the box on a contact that had not consented before. supabase-js RESOLVES
+      // a refused UPDATE, so this returned 200 with the consent event logged at
+      // step 5 while the contact row still said `tcpa_consent = false`: an audit
+      // trail asserting a consent the gate would never see. The CREATE branch
+      // below already refuses on `insertError`; this branch now answers the same.
+      const { error: updateError } = await supabase
         .from('contacts')
         .update(updatePayload)
         .eq('id', contactId)
+      if (updateError) {
+        console.error('[widget/intake] contact update error:', updateError)
+        return NextResponse.json({ error: 'Failed to update contact' }, { status: 500 })
+      }
 
     } else {
       // ── 3b. CREATE new contact ───────────────────────────────────────────
@@ -224,7 +235,9 @@ export async function POST(req: NextRequest) {
     }
 
     // ── 6. Create activity record for audit trail ────────────────────────────
-    await supabase.from('activities').insert({
+    // A PUBLIC endpoint's record of an inbound consumer submission — this is
+    // the row that says the person made contact and when.
+    const { error: intakeActivityError } = await supabase.from('activities').insert({
       brokerage_id,
       agent_id: assignedAgentId,
       contact_id: contactId,
@@ -234,6 +247,9 @@ export async function POST(req: NextRequest) {
       status: 'completed',
       completed_at: new Date().toISOString(),
     })
+    if (intakeActivityError) {
+      console.error('[Widget/intake] widget_intake activity REJECTED — the contact exists but the inbound submission has no record:', intakeActivityError.message)
+    }
 
     // ── 7. Enrichment queue ──────────────────────────────────────────────────
     // This route is PUBLIC (a website widget posts to it), and it used to write

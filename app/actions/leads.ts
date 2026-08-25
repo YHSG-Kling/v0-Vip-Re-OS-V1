@@ -19,6 +19,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { getAgentContext } from "@/lib/identity"
+import { bestEffort } from "@/lib/db/best-effort"
 import {
   resolveLeadVisibility,
   applyLeadRowScope,
@@ -243,18 +244,21 @@ export async function qualifyLead(leadId: string) {
     if (error) return { success: false, error: error.message }
 
     // Log activity
-    await supabase.from("activities").insert({
-      activity_type: "lead_qualified",
-      entity_type: "lead",
-      contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
-      entity_id: lead.id,
-      agent_id: await resolveAgentId(supabase as any, userId),
-      brokerage_id: brokerageId,
-      title: "Lead qualified",
-      description: `Lifecycle moved to isa_qualifying`,
-      status: "completed",
-      created_at: new Date().toISOString(),
-    }).then(() => {}, () => {})
+    await bestEffort(
+      supabase.from("activities").insert({
+        activity_type: "lead_qualified",
+        entity_type: "lead",
+        contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
+        entity_id: lead.id,
+        agent_id: await resolveAgentId(supabase as any, userId),
+        brokerage_id: brokerageId,
+        title: "Lead qualified",
+        description: `Lifecycle moved to isa_qualifying`,
+        status: "completed",
+        created_at: new Date().toISOString(),
+      }),
+      "the leads row above has already moved to isa_qualifying and that write's error IS checked and returned; this timeline row narrates the move and must not fail a lead whose lifecycle already changed",
+    )
 
     return { success: true }
   } catch (err: any) {
@@ -352,18 +356,21 @@ export async function assignLeadToAgent(leadId: string, agentId: string) {
       .is("routing_reason", null)
       .then(() => {}, () => {})
 
-    await supabase.from("activities").insert({
-      activity_type: "lead_assigned",
-      entity_type: "lead",
-      contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
-      entity_id: leadId,
-      agent_id: await resolveAgentId(supabase as any, userId),
-      brokerage_id: brokerageId,
-      title: "Lead assigned to agent",
-      description: `Agent ID: ${agentId}`,
-      status: "completed",
-      created_at: new Date().toISOString(),
-    }).then(() => {}, () => {})
+    await bestEffort(
+      supabase.from("activities").insert({
+        activity_type: "lead_assigned",
+        entity_type: "lead",
+        contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
+        entity_id: leadId,
+        agent_id: await resolveAgentId(supabase as any, userId),
+        brokerage_id: brokerageId,
+        title: "Lead assigned to agent",
+        description: `Agent ID: ${agentId}`,
+        status: "completed",
+        created_at: new Date().toISOString(),
+      }),
+      "the leads row and the assignment_log above are the assignment itself and their errors are checked; this timeline row narrates it and must not fail an assignment that already took effect",
+    )
 
     return { success: true }
   } catch (err: any) {
@@ -391,17 +398,20 @@ export async function pauseAIISA(leadId: string) {
 
     if (error) return { success: false, error: error.message }
 
-    await supabase.from("activities").insert({
-      activity_type: "ai_isa_paused",
-      entity_type: "lead",
-      contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
-      entity_id: leadId,
-      agent_id: await resolveAgentId(supabase as any, userId),
-      brokerage_id: brokerageId,
-      title: "AI-ISA outreach paused",
-      status: "completed",
-      created_at: new Date().toISOString(),
-    }).then(() => {}, () => {})
+    await bestEffort(
+      supabase.from("activities").insert({
+        activity_type: "ai_isa_paused",
+        entity_type: "lead",
+        contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
+        entity_id: leadId,
+        agent_id: await resolveAgentId(supabase as any, userId),
+        brokerage_id: brokerageId,
+        title: "AI-ISA outreach paused",
+        status: "completed",
+        created_at: new Date().toISOString(),
+      }),
+      "ai_outreach_paused is already set on the leads row above with its error checked and returned; this timeline row narrates the pause and must not fail a pause that is already in force",
+    )
 
     return { success: true }
   } catch (err: any) {
@@ -427,17 +437,20 @@ export async function resumeAIISA(leadId: string) {
 
     if (error) return { success: false, error: error.message }
 
-    await supabase.from("activities").insert({
-      activity_type: "ai_isa_resumed",
-      entity_type: "lead",
-      contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
-      entity_id: leadId,
-      agent_id: await resolveAgentId(supabase as any, userId),
-      brokerage_id: brokerageId,
-      title: "AI-ISA outreach resumed",
-      status: "completed",
-      created_at: new Date().toISOString(),
-    }).then(() => {}, () => {})
+    await bestEffort(
+      supabase.from("activities").insert({
+        activity_type: "ai_isa_resumed",
+        entity_type: "lead",
+        contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
+        entity_id: leadId,
+        agent_id: await resolveAgentId(supabase as any, userId),
+        brokerage_id: brokerageId,
+        title: "AI-ISA outreach resumed",
+        status: "completed",
+        created_at: new Date().toISOString(),
+      }),
+      "ai_outreach_paused is already cleared on the leads row above with its error checked and returned; this timeline row narrates the resume and must not fail a resume that is already in force",
+    )
 
     return { success: true }
   } catch (err: any) {
@@ -503,18 +516,21 @@ export async function handOffToHumanAgent(leadId: string, targetAgentId?: string
       created_at: new Date().toISOString(),
     }).then(() => {}, () => {})
 
-    await supabase.from("activities").insert({
-      activity_type: "ai_isa_handoff",
-      entity_type: "lead",
-      contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
-      entity_id: leadId,
-      agent_id: await resolveAgentId(supabase as any, userId),
-      brokerage_id: brokerageId,
-      title: "AI-ISA handed off to human agent",
-      description: resolvedAgentId ? `Assigned to agent: ${resolvedAgentId}` : "Queued for manual assignment",
-      status: "completed",
-      created_at: new Date().toISOString(),
-    }).then(() => {}, () => {})
+    await bestEffort(
+      supabase.from("activities").insert({
+        activity_type: "ai_isa_handoff",
+        entity_type: "lead",
+        contact_id: null, // leads are NOT contacts — activities.contact_id FKs contacts(id)
+        entity_id: leadId,
+        agent_id: await resolveAgentId(supabase as any, userId),
+        brokerage_id: brokerageId,
+        title: "AI-ISA handed off to human agent",
+        description: resolvedAgentId ? `Assigned to agent: ${resolvedAgentId}` : "Queued for manual assignment",
+        status: "completed",
+        created_at: new Date().toISOString(),
+      }),
+      "the leads row and the agent_handoffs ledger above carry the handoff; this timeline row narrates it and must not fail a handoff the human agent has already been given",
+    )
 
     return { success: true }
   } catch (err: any) {

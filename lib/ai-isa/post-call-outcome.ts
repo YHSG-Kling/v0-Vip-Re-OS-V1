@@ -31,6 +31,7 @@
 import { voiceSignalFor, signalScore, signalTemperature } from "./qualification-core"
 import { detectOptOutIntent } from "./opt-out-utils"
 import { isAnalyzableCall, analyzeVoiceCallRow } from "@/lib/voice/call-analysis"
+import { bestEffort } from "@/lib/db/best-effort"
 
 const POS_INTENT = /(appointment|schedul|book|ready to (buy|list|sell)|pre-?approv|tour|showing|see the (home|house|property)|make an offer)/i
 const APPT_INTENT = /(appointment|schedul|book|tour|showing)/i
@@ -184,8 +185,13 @@ export async function routePostCallOutcome(svc: any, voiceCallId: string): Promi
     if (call.contact_id) {
       if (isOptOut) {
         // The ONLY DNC trigger: an explicit, high-confidence caller opt-out.
-        await haltEngagementForNegativeContact(svc, call, summary)
-        return { ok: true, processed: true, branch: "contact", signal, optOut: true, negative: true }
+        // FAIL CLOSED (CLAUDE.md §4): a REFUSED suppression write must not come
+        // back as ok — the caller asked to be left alone and the row does not
+        // say so.
+        const dncError = await haltEngagementForNegativeContact(svc, call, summary)
+        return dncError
+          ? { ok: false, processed: true, branch: "contact", signal, optOut: true, negative: true, error: `contact DNC write refused: ${dncError}` }
+          : { ok: true, processed: true, branch: "contact", signal, optOut: true, negative: true }
       }
       if (isPositive) {
         await notifyAgentPositive(svc, call, summary, intentPrimary, urgencyScore)
@@ -221,29 +227,45 @@ async function resolveContactAgentUserId(svc: any, contactId: string | null, age
 /** The CONTACT twin of haltEngagementForNegativeReply — mirrors its column +
  *  notification shape (incl. notifications.body, not the phantom `message`).
  *  Idempotent: DNC flags are set-true; the activity/notify dedupe per call. */
-async function haltEngagementForNegativeContact(svc: any, call: any, summary: string): Promise<void> {
+async function haltEngagementForNegativeContact(svc: any, call: any, summary: string): Promise<string | null> {
   // The DNC write is the compliance-critical one — do it first, isolated so a
   // later activity/notify failure can never undo the opt-out.
+  //
+  // The try/catch here NEVER SAW THE FAILURE IT WAS WRITTEN FOR: supabase-js
+  // RESOLVES a refused write with `{ error }` rather than throwing, so a CHECK
+  // violation, an RLS refusal or a PGRST204 phantom column left `catch`
+  // untouched and this returned void — and the caller answered `{ ok: true,
+  // optOut: true }` for an opt-out the row never took. The error is read now
+  // and handed back; the catch stays for a genuine rejection (network, client).
+  let dncError: string | null = null
   try {
-    await svc.from("contacts").update({
+    const { error } = await svc.from("contacts").update({
       dnc_status: true, call_stop_flag: true, isa_reengage_allowed: false, updated_at: new Date().toISOString(),
     }).eq("id", call.contact_id)
-  } catch { /* best-effort — the sweep re-attempts a lost DNC write */ }
+    if (error) {
+      dncError = error.message ?? "contacts DNC update refused"
+      console.error(`[post-call-outcome] contact DNC write REFUSED for ${call.contact_id}:`, dncError)
+    }
+  } catch (e: any) {
+    dncError = e?.message ?? "contacts DNC update threw"
+    console.error(`[post-call-outcome] contact DNC write threw for ${call.contact_id}:`, dncError)
+  }
 
   const tag = `[POST_CALL_OPTOUT] [${call.id}]`
   const { data: dup } = await svc.from("activities").select("id")
     .eq("contact_id", call.contact_id).eq("activity_type", "call_negative_outcome")
     .ilike("description", `${tag}%`).limit(1).maybeSingle()
-  if (dup) return
+  if (dup) return dncError
 
-  try {
-    await svc.from("activities").insert({
+  await bestEffort(
+    svc.from("activities").insert({
       contact_id: call.contact_id, brokerage_id: call.brokerage_id, activity_type: "call_negative_outcome",
       title: "Contact requested no further phone/SMS contact",
       description: `${tag} Caller made an explicit opt-out request on a call — Do Not Contact + call-stop set. ${summary ?? ""}`.slice(0, 500),
       status: "completed",
-    })
-  } catch { /* best-effort */ }
+    }),
+    "the suppression itself is applied on contacts above and re-attempted by the sweep; this row narrates the opt-out on the timeline and must not fail the post-call handler that also has to notify the agent below",
+  )
 
   const notifUserId = await resolveContactAgentUserId(svc, call.contact_id, call.agent_id)
   if (notifUserId) {
@@ -256,6 +278,8 @@ async function haltEngagementForNegativeContact(svc: any, call: any, summary: st
       })
     } catch { /* best-effort */ }
   }
+
+  return dncError
 }
 
 /** Negative TONE with NO opt-out → flag the assigned agent for a human touch.
@@ -373,15 +397,16 @@ async function sendPostCallFollowUp(svc: any, call: any, summary: string, intent
     }
 
     if (channel) {
-      try {
-        await svc.from("activities").insert({
+      await bestEffort(
+        svc.from("activities").insert({
           contact_id: call.contact_id, brokerage_id: call.brokerage_id, agent_id: call.agent_id ?? null,
           activity_type: channel === "sms" ? "sms_sent" : "email_sent",
           title: "AI post-call follow-up sent",
           description: `${sentTag} auto-sent after a positive AI call (${channel}). ${drafted.subject}`.slice(0, 500),
           status: "completed",
-        })
-      } catch { /* best-effort audit */ }
+        }),
+        "the follow-up has ALREADY been dispatched by the time this runs and returning false here would stage a duplicate proposal for the agent; the loss is real (the AI will not see this touch) so it is logged rather than swallowed, but it must not re-drive the send",
+      )
       return true
     }
 

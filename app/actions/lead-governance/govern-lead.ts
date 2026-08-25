@@ -121,7 +121,11 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
     // STEP 4: LOG SCORING EXPLANATION — Agent task (correct location, no changes) — activity_type: lead_scoring, agent_assignment, routing_decision, promotion_signal
     let agentAssigned: string | null = null
 
-    await supabase.from('activities').insert({
+    // Every activities row in this function is a GOVERNANCE DECISION — the
+    // explanation of a score, a routing choice, an assignment, a promotion
+    // signal. A silent loss makes a governed lead indistinguishable from an
+    // ungoverned one, which is the exact thing this function exists to prove.
+    const { error: scoringActivityError } = await supabase.from('activities').insert({
       activity_type: 'lead_scoring',
       title: `Lead Scored: ${scoringResult.finalScore}/100`,
       description: scoringResult.explanation,
@@ -133,6 +137,9 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
       entity_type: 'lead',
       created_at: new Date().toISOString(),
     })
+    if (scoringActivityError) {
+      console.error(`[LeadGovernance] lead_scoring activity REJECTED for lead ${leadId} — the score has no explanation on the record:`, scoringActivityError.message)
+    }
 
     // STEP 5: EVALUATE ROUTING ELIGIBILITY
     const routingEligibility = await evaluateRoutingEligibility(
@@ -177,7 +184,7 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
         // A manual rule matched: the broker asked for this lead to wait for a
         // person. Recording it is the point — a silent non-assignment is
         // indistinguishable from a broken router.
-        await supabase.from('activities').insert({
+        const { error: heldActivityError } = await supabase.from('activities').insert({
           activity_type: 'routing_decision',
           title: 'Held for Manual Assignment',
           description: ruled.reason ?? 'A manual assignment rule matched this lead.',
@@ -188,6 +195,9 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
           entity_type: 'lead',
           created_at: new Date().toISOString(),
         })
+        if (heldActivityError) {
+          console.error(`[LeadGovernance] routing_decision (held) activity REJECTED for lead ${leadId} — a silent non-assignment is exactly what this row exists to prevent:`, heldActivityError.message)
+        }
         console.log(`[LeadGovernance] Lead ${leadId} held for manual assignment`)
       } else if (selectedAgentId) {
         await supabase
@@ -205,7 +215,7 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
 
         // The description records what ACTUALLY decided. The retired selector
         // wrote "using load balancing" for a pick made by sorting on id.
-        await supabase.from('activities').insert({
+        const { error: assignmentActivityError } = await supabase.from('activities').insert({
           activity_type: 'agent_assignment',
           title: 'Agent Assigned via Governance',
           description: selectionReason,
@@ -216,12 +226,15 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
           entity_type: 'lead',
           created_at: new Date().toISOString(),
         })
+        if (assignmentActivityError) {
+          console.error(`[LeadGovernance] agent_assignment activity REJECTED for lead ${leadId} — the lead moved to an agent with no record of why:`, assignmentActivityError.message)
+        }
 
         console.log(`[LeadGovernance] Agent ${agentAssigned} assigned to lead ${leadId}`)
       }
     } else {
       // Log reason for not assigning
-      await supabase.from('activities').insert({
+      const { error: nurturingActivityError } = await supabase.from('activities').insert({
         activity_type: 'routing_decision',
         title: 'Lead Held in AI Nurturing',
         description: routingEligibility.reason,
@@ -233,6 +246,9 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
         entity_type: 'lead',
         created_at: new Date().toISOString(),
       })
+      if (nurturingActivityError) {
+        console.error(`[LeadGovernance] routing_decision (nurturing) activity REJECTED for lead ${leadId} — the reason for NOT assigning is unrecorded:`, nurturingActivityError.message)
+      }
     }
 
     // STEP 7: SLA MONITORING
@@ -247,7 +263,7 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
     const promotionReadiness = evaluatePromotionReadiness(lead)
     
     if (promotionReadiness.ready) {
-      await supabase.from('activities').insert({
+      const { error: promotionActivityError } = await supabase.from('activities').insert({
         activity_type: 'promotion_signal',
         title: 'Lead Ready for Contact Promotion',
         description: promotionReadiness.reason,
@@ -258,6 +274,9 @@ export async function governLead(leadId: string, _brokerageId?: string, _actorAg
         entity_type: 'lead',
         created_at: new Date().toISOString(),
       })
+      if (promotionActivityError) {
+        console.error(`[LeadGovernance] promotion_signal activity REJECTED for lead ${leadId} — the promotion signal never reaches its reader:`, promotionActivityError.message)
+      }
 
       console.log(`[LeadGovernance] Lead ${leadId} signaled as ready for promotion`)
     }

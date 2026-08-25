@@ -1,8 +1,9 @@
 "use server"
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateText } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+// ROUTED, was raw — see lib/ai/models.ts:buyer_prediction, pinned to
+// claude-sonnet, the model this call site already passed. Only the ledger changes.
+import { generateTextRouted } from "@/lib/ai/models"
 
 interface GenerateBuyerPredictionsParams {
   contactId:   string
@@ -90,8 +91,10 @@ export async function generateBuyerPredictions(
   let ai: AIOutput
 
   try {
-    const { text } = await generateText({
-      model: resolveModel("anthropic/claude-sonnet-4-20250514"),
+    const { text } = await generateTextRouted({
+      feature: "buyer_prediction",
+      brokerageId,
+      agentId,
       system:
         "You are a real estate buyer behavior analyst. Based on buyer signals, predict what property " +
         "they're most likely to make an offer on. Return JSON only with these exact keys: " +

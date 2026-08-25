@@ -67,10 +67,12 @@ export async function assignVendorToListingAction(
 //
 // vendor_assignments.assignment_type is CHECK-constrained, and its vocabulary is
 // NOT the vendors.category vocabulary — the column admits ten values where
-// vendors.category admits thirty-eight. A picker built from service types (the
-// obvious mistake, and what the neighbouring booking form offers: "escrow",
-// "plumber", "hvac", "roofer", "surveyor") would produce an INSERT the database
-// refuses. Read off the live constraint `vendor_assignments_assignment_type_check`
+// vendors.category admits FORTY (38 at m304, +appraiser m554, +surveyor m562). A
+// picker built from service types (the obvious mistake, and what the
+// neighbouring booking form offers: "plumber", "hvac", "roofer", "surveyor")
+// would produce an INSERT the database refuses. Note that this stays true for
+// the two trades the bench gained: an appraiser and a surveyor are valid
+// vendors.category values but are still NOT valid assignment_types here. Read off the live constraint `vendor_assignments_assignment_type_check`
 // and enforced BEFORE the kernel is called, so an unknown value comes back as a
 // sentence rather than a 23514. Module-local: every export of a "use server"
 // module must be an async function.

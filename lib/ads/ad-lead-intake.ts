@@ -80,7 +80,11 @@ export async function ingestConsentedAdLead(
   let created = false
   if (existingId) {
     // Upgrade an existing contact to consented (the form is fresh opt-in).
-    await supabase.from("contacts").update(consentCols).eq("id", existingId)
+    // The CREATE branch below already refuses on `error`; this branch dropped it,
+    // so a refused consent stamp returned ok:true with a contactId and the caller
+    // proceeded as though TCPA consent were on file. Same refusal, same answer.
+    const { error: consentError } = await supabase.from("contacts").update(consentCols).eq("id", existingId)
+    if (consentError) return { ok: false, reason: consentError.message }
     contactId = existingId
   } else {
     const { data, error } = await supabase.from("contacts").insert({

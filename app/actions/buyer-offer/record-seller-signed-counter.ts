@@ -186,7 +186,7 @@ export async function recordSellerSignedCounter(
   // the canonical `buyer.offer.counter.received` is emitted separately below,
   // against the PARENT, which is the offer that has actually been countered.
   const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
-  await sentinelWrite(supabase, supabase.from("activities").insert({
+  const provenanceRowLanded = await sentinelWrite(supabase, supabase.from("activities").insert({
     brokerage_id:   brokerageId,
     agent_user_id:  raiserUserId,
     agent_id:       parentOffer.agent_id,
@@ -215,6 +215,12 @@ export async function recordSellerSignedCounter(
     status:    "completed",
     priority:  "high",
   }), { table: "activities", flow: "record_seller_signed_counter", brokerageId })
+  // sentinelWrite ledgers the loss to self_heal_events and returns false; read
+  // it, because this row is the human/audit record of a SIGNED document and a
+  // silent gap in it is the thing a broker would be asked to produce.
+  if (!provenanceRowLanded) {
+    console.error(`[recordSellerSignedCounter] provenance activity was NOT written for counter ${counterId} — the signature is recorded on the offer but not on the audit rail`)
+  }
 
   // ── THE PARENT'S LIFECYCLE EVENT ───────────────────────────────────────────
   // A seller-signed counter arriving IS the parent offer being countered, and

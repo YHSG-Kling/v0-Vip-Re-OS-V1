@@ -94,8 +94,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true })
   }
 
-  // direct_mail — log the request as an activity for fulfillment
-  await service.from("activities").insert({
+  // direct_mail — log the request as an activity for fulfillment. THIS ROW IS
+  // THE QUEUE: nothing else records that a mail piece was asked for, so a lost
+  // row is a piece that is never fulfilled while the caller is told "success".
+  const { error: directMailActivityError } = await service.from("activities").insert({
     brokerage_id: contact.brokerage_id,
     contact_id: contact.id,
     activity_type: "direct_mail_queued",
@@ -104,6 +106,9 @@ export async function POST(req: NextRequest) {
     status: "pending",
     created_at: new Date().toISOString(),
   })
+  if (directMailActivityError) {
+    console.error("[send-isa-email] direct_mail_queued activity REJECTED — nothing was queued for fulfillment:", directMailActivityError.message)
+  }
 
   return NextResponse.json({ success: true })
 }

@@ -19,6 +19,7 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
+import { bestEffort } from '@/lib/db/best-effort'
 import { resolveWriteContext } from '@/lib/kernel/identity'
 import { collectError } from '@/lib/errors/collect-error'
 import {
@@ -448,8 +449,10 @@ async function dispatchContactChannel(
       }
     } catch { /* inbox mirror is best-effort; isa_outreach_log + activities are the record */ }
 
-    // Write activity
-    await supabase.from('activities').insert({
+    // Write activity. This is THE record that an ISA email went out — the
+    // kernel reads it into the AI's picture of the contact, so a lost row makes
+    // the assistant believe no outreach happened and send again.
+    const { error: isaEmailActivityError } = await supabase.from('activities').insert({
       activity_type: 'ai_isa_email',
       entity_type: 'contact',
       contact_id: contact.id,
@@ -460,6 +463,9 @@ async function dispatchContactChannel(
       status: 'completed',
       created_at: new Date().toISOString(),
     })
+    if (isaEmailActivityError) {
+      console.error('[aiIsaEngageContact] ai_isa_email activity REJECTED — the AI will not see this email as sent:', isaEmailActivityError.message)
+    }
 
     // Emit lifecycle event
     await emitLifecycleEvent({
@@ -482,10 +488,13 @@ async function dispatchContactChannel(
     })
 
     // Update contact last_contacted_at
-    await supabase
-      .from('contacts')
-      .update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-      .eq('id', contact.id)
+    await bestEffort(
+      supabase
+        .from('contacts')
+        .update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq('id', contact.id),
+      'recency stamp after the ISA email already went out — the send is the fact, ai_isa_activities is its ledger; a lost stamp only makes the contact look staler than it is (the next sweep re-engages), never less consented',
+    )
 
     // Trigger direct mail if eligible
     const shouldSendMail = await shouldTriggerDirectMail(contact.id)
@@ -589,10 +598,13 @@ async function dispatchContactChannel(
       summary: `AI ISA SMS (trigger: ${reason})`,
     })
 
-    await supabase
-      .from('contacts')
-      .update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-      .eq('id', contact.id)
+    await bestEffort(
+      supabase
+        .from('contacts')
+        .update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq('id', contact.id),
+      'recency stamp after the ISA SMS already went out — the send is the fact, ai_isa_activities is its ledger; a lost stamp only makes the contact look staler than it is, never less consented',
+    )
 
     await emitLifecycleEvent({
       eventType: 'AI_ISA_CONTACT_SMS_SENT',
@@ -712,7 +724,10 @@ async function dispatchContactChannel(
       contact_id: contact.id, brokerage_id: brokerageId, channel: 'phone',
       activity_type: 'call', outcome: 'initiated', summary: `AI ISA call (trigger: ${reason})`,
     }).then(() => {}, () => {})
-    await supabase.from('contacts').update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', contact.id)
+    await bestEffort(
+      supabase.from('contacts').update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', contact.id),
+      'recency stamp after the ISA call was already placed with Twilio — the call SID is the fact; a lost stamp only makes the contact look staler than it is, never less consented',
+    )
     await emitLifecycleEvent({
       eventType: 'AI_ISA_CONTACT_CALL_INITIATED', entityType: 'contact', entityId: contact.id,
       actorId: actorId ?? brokerageId, brokerageId, metadata: { reason, channel: 'phone', call_sid: placed.callSid },
@@ -800,7 +815,10 @@ async function tryVoiceDrop(
       contact_id: contact.id, brokerage_id: brokerageId, channel: 'voicedrop',
       activity_type: 'voicedrop', outcome: 'sent', summary: `AI ISA voice drop (trigger: ${reason})`,
     }).then(() => {}, () => {})
-    await supabase.from('contacts').update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', contact.id)
+    await bestEffort(
+      supabase.from('contacts').update({ last_contacted_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', contact.id),
+      'recency stamp after the ringless voicemail was already dropped — the drop is the fact; a lost stamp only makes the contact look staler than it is, never less consented',
+    )
     await emitLifecycleEvent({
       eventType: 'AI_ISA_CONTACT_VOICEDROP_SENT', entityType: 'contact', entityId: contact.id,
       actorId: brokerageId, brokerageId, metadata: { reason, channel: 'voicedrop' },

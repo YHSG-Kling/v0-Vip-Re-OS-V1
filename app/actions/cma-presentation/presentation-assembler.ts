@@ -245,7 +245,9 @@ export async function assemblePresentation(input: PresentationInput): Promise<Pr
     const presentationId = narrative.presentationId
 
     // Emit presentation created event — Agent task (correct location, no changes) — type: seller.presentation.created, seller.decision.ready
-    await supabase.from("activities").insert({
+    // The comment above records what a FABRICATED presentation row cost. The
+    // mirror of that is a LOST one — read the error rather than assume it landed.
+    const { error: presentationCreatedError } = await supabase.from("activities").insert({
       activity_type: "seller.presentation.created",
       listing_id: input.listingId,
       contact_id: input.contactId,
@@ -260,6 +262,9 @@ export async function assemblePresentation(input: PresentationInput): Promise<Pr
         attached_to_existing: narrative.attachedToExisting === true,
       }
     })
+    if (presentationCreatedError) {
+      console.error("[presentationAssembler] seller.presentation.created activity REJECTED — the presentation exists but nothing downstream will know:", presentationCreatedError.message)
+    }
 
     // GOVERNANCE VOCABULARY. The row above says `seller.presentation.created`, but
     // presentation-readiness (the gate on the seller's decision) reads
@@ -305,7 +310,7 @@ export async function assemblePresentation(input: PresentationInput): Promise<Pr
 
     // Emit decision readiness signal if all artifacts complete
     if (readyForDecision) {
-      await supabase.from("activities").insert({
+      const { error: decisionReadyError } = await supabase.from("activities").insert({
         activity_type: "seller.decision.ready",
         listing_id: input.listingId,
         contact_id: input.contactId,
@@ -316,6 +321,9 @@ export async function assemblePresentation(input: PresentationInput): Promise<Pr
           has_all_artifacts: true
         }
       })
+      if (decisionReadyError) {
+        console.error("[presentationAssembler] seller.decision.ready activity REJECTED — the readiness signal never reaches the decision engine:", decisionReadyError.message)
+      }
     }
 
     return {
@@ -377,7 +385,7 @@ async function generatePresentationVideo(params: {
 
     if (videoResult.success && videoResult.project) {
       // Emit video generation event — type: seller.presentation.video_generated
-      await supabase.from("activities").insert({
+      const { error: videoGeneratedError } = await supabase.from("activities").insert({
         activity_type: "seller.presentation.video_generated",
         listing_id: params.listingId,
         contact_id: params.contactId,
@@ -387,6 +395,9 @@ async function generatePresentationVideo(params: {
           video_status: videoResult.project.status
         }
       })
+      if (videoGeneratedError) {
+        console.error("[presentationAssembler] seller.presentation.video_generated activity REJECTED:", videoGeneratedError.message)
+      }
 
       // Same vocabulary gap as `assembled` above — the readiness engine reads
       // `seller.presentation_video.ready`, not `seller.presentation.video_generated`.

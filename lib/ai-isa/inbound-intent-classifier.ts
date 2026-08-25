@@ -328,12 +328,17 @@ export async function classifyAndRouteInbound(
 
   // ── Gate 0: NEGATIVE intent halts everything FIRST — never reaches a converter ─
   if (detectNegativeIntent(params.message)) {
-    await haltEngagementForNegativeReply({
+    const halt = await haltEngagementForNegativeReply({
       leadId: params.leadId,
       body: params.message,
       brokerageId: params.brokerageId,
     })
-    return { outcome: "halted", halted: true, reason: "negative" }
+    // FAIL CLOSED (CLAUDE.md §4): we still refuse to convert, but a REFUSED
+    // contact-side DNC write means the row does not carry the opt-out. The
+    // result carries that instead of asserting a suppression that never landed.
+    return halt.contactSuppressionError
+      ? { outcome: "halted", halted: true, reason: "negative", error: halt.contactSuppressionError }
+      : { outcome: "halted", halted: true, reason: "negative" }
   }
 
   // ── Read the lead's known side + what's already known ───────────────────────

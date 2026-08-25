@@ -71,7 +71,11 @@ export async function POST(req: NextRequest) {
     if (existingContact) {
       contactId = existingContact.id
       // Update with any new info
-      await supabase
+      // The error is READ. This is the RETURNING-attendee branch: it refreshes
+      // identity only and deliberately writes NO consent column (the CREATE
+      // branch below is where tcpa_consent is stamped), so a refusal does not
+      // move a consent flag — but it did return 200 while nothing changed.
+      const { error: attendeeUpdateError } = await supabase
         .from("contacts")
         .update({
           first_name: firstName,
@@ -80,6 +84,9 @@ export async function POST(req: NextRequest) {
           updated_at: new Date().toISOString(),
         })
         .eq("id", contactId)
+      if (attendeeUpdateError) {
+        console.error(`[open-house/attend] returning-attendee update REFUSED for ${contactId}:`, attendeeUpdateError.message)
+      }
     } else {
       const now = new Date().toISOString()
       const { data: newContact, error: contactErr } = await supabase

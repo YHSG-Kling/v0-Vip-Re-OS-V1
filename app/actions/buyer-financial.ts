@@ -397,8 +397,9 @@ export async function connectBuyerToLender(params: {
     })
   }
 
-  // 4. Log activity
-  await supabase.from("activities").insert({
+  // 4. Log activity. This row IS the record that the introduction was made —
+  // both the agent's timeline and the AI's memory of this contact read it.
+  const { error: introActivityError } = await supabase.from("activities").insert({
     brokerage_id:  access.brokerageId,
     // FKs agents(id), not users(id) — a raw user id is FK-rejected (agent-identity rule).
     agent_id:      await resolveAgentId(supabase, access.userId),
@@ -409,6 +410,9 @@ export async function connectBuyerToLender(params: {
     notes:         `Buyer ${params.buyerName} introduced to lender ${params.partnerName}`,
     status:        "completed",
   })
+  if (introActivityError) {
+    console.error("[buyerFinancial] lender.introduced activity REJECTED — the introduction was sent but has no record:", introActivityError.message)
+  }
 
   return { success: true }
 }

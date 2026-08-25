@@ -121,8 +121,9 @@ export async function requestContactVendorBooking(
   const contactName = [contact.first_name, contact.last_name].filter(Boolean).join(" ") || "Your client"
   const vendorLabel = vendor?.name ?? "a vendor"
 
-  // Activity on contact timeline
-  await svc.from("activities").insert({
+  // Activity on contact timeline. This row is what tells the agent their client
+  // asked for a vendor at all — the booking row alone is not on the timeline.
+  const { error: vendorRequestActivityError } = await svc.from("activities").insert({
     contact_id: input.contactId,
     brokerage_id: contact.brokerage_id,
     agent_user_id: agentUserId,
@@ -135,6 +136,9 @@ export async function requestContactVendorBooking(
       preferred_time_window: input.preferredTimeWindow,
     },
   })
+  if (vendorRequestActivityError) {
+    console.error("[contactVendorBooking] vendor_request_from_contact activity REJECTED — the booking exists but the contact timeline will not show it:", vendorRequestActivityError.message)
+  }
 
   // Notify the agent
   if (agentUserId) {

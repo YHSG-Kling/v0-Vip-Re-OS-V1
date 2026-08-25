@@ -87,8 +87,10 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
       .from("agents").select("id").eq("user_id", input.agentId).maybeSingle()
     const cmaAgentRecordId = (cmaAgentRow as { id?: string } | null)?.id ?? null
 
-    // Emit start event
-    await supabase.from("activities").insert({
+    // Emit start event. The m355 note above is exactly why the error must be
+    // read: these three rows were FK-rejected for months and the only symptom
+    // was an activity feed that never mentioned the CMA.
+    const { error: cmaStartedError } = await supabase.from("activities").insert({
       brokerage_id: agentCMA?.brokerage_id ?? null,
       agent_id: cmaAgentRecordId,
       contact_id: input.contactId,
@@ -104,6 +106,9 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
       status: "pending",
       entity_type: "contact",
     })
+    if (cmaStartedError) {
+      console.error("[generateCMA] seller.cma.started activity REJECTED:", cmaStartedError.message)
+    }
 
     // Load listing for property data
     const { data: listing, error: listingError } = await supabase
@@ -202,7 +207,10 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
     // written because it is the key downstream readers join on — the
     // presentation assembler's CMA check used to look for exactly this row by
     // listing_id and never found one, because this insert did not carry it.
-    await supabase.from("activities").insert({
+    // READ THE ERROR. The presentation assembler joins on THIS row by
+    // listing_id to decide whether a CMA exists; if it is rejected the
+    // assembler silently concludes there is no CMA.
+    const { error: cmaCompletedError } = await supabase.from("activities").insert({
       brokerage_id: agentCMA?.brokerage_id ?? null,
       agent_id: cmaAgentRecordId,
       contact_id: input.contactId,
@@ -221,6 +229,9 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
       status: "completed",
       entity_type: "contact",
     })
+    if (cmaCompletedError) {
+      console.error("[generateCMA] seller.cma.completed activity REJECTED — downstream readers will not see a CMA for this listing:", cmaCompletedError.message)
+    }
 
     return {
       success: true,
@@ -255,7 +266,9 @@ async function emitCMAFailed(
   const { data: failAgentRow } = await supabase
     .from("agents").select("id").eq("user_id", agentId).maybeSingle()
 
-  await supabase.from("activities").insert({
+  // The record that a CMA FAILED. Losing it leaves the seller's timeline
+  // showing a started-but-never-finished CMA with no stated reason.
+  const { error: cmaFailedError } = await supabase.from("activities").insert({
     brokerage_id: agentFail?.brokerage_id ?? null,
     agent_id: (failAgentRow as { id?: string } | null)?.id ?? null,
     contact_id: contactId,
@@ -267,4 +280,7 @@ async function emitCMAFailed(
     status: "completed",
     entity_type: "contact",
   })
+  if (cmaFailedError) {
+    console.error("[generateCMA] seller.cma.failed activity REJECTED — the failure has no record:", cmaFailedError.message)
+  }
 }

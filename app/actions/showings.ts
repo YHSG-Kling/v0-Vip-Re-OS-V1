@@ -6,6 +6,7 @@ import { requireActiveBBA } from "@/lib/buyer-broker/gate"
 import { guardShowingFinancialGate } from "@/lib/buyer-execution/showing-financial-policy"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { bestEffort } from "@/lib/db/best-effort"
 
 export async function requestShowing(data: {
   contactId: string
@@ -215,7 +216,10 @@ caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: s
       }
 
       if (assignedAgentId) {
-        await supabase.from("activities").insert({
+        // The two console.errors above exist because nobody being handed the
+        // request is the failure that matters. A REJECTED row is that same
+        // failure and supabase-js reports it as { error }, not a throw.
+        const { error: showingRequestActivityError } = await supabase.from("activities").insert({
           brokerage_id:  brokerageId,
           agent_id:      assignedAgentId,
           contact_id:    data.contactId,
@@ -228,6 +232,9 @@ caller?: { client: { from: (t: string) => any; auth?: unknown }; actorUserId?: s
           status:        "pending",
           priority:      "high",
         })
+        if (showingRequestActivityError) {
+          console.error(`[showings] showing request activity REJECTED (${showingRequestActivityError.message}) — the request is saved, but no agent feed row was written.`)
+        }
       }
     } catch { /* non-critical */ }
 
@@ -644,13 +651,14 @@ export async function confirmShowing(showingId: string, confirmedDate: string) {
     } catch { /* non-critical */ }
 
     // Update activities row status to completed
-    try {
-      await supabase
+    await bestEffort(
+      supabase
         .from("activities")
         .update({ status: "completed", completed_at: new Date().toISOString() })
         .eq("entity_type", "showing_request")
-        .eq("entity_id", showingId)
-    } catch { /* non-critical */ }
+        .eq("entity_id", showingId),
+      "the showing itself is already confirmed and error-checked above; closing out the feed task is cosmetic and must not fail a confirmation the client has been given",
+    )
 
     revalidatePath("/dashboard")
     revalidatePath(`/crm/contacts/${data.contact_id}`)

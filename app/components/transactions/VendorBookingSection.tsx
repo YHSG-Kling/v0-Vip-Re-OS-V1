@@ -37,8 +37,10 @@ import { VendorCategorySelect } from "@/app/components/vendors/vendor-category-s
 // — fed `searchVendors`, `checkVendorAvailability` and `matchVendorToTransaction`,
 // each of which filtered `category ILIKE '%serviceType%'`, so both returned an
 // EMPTY DIRECTORY that the panel rendered as "no vendors found" rather than as
-// "that is not a trade this platform books". Verified live against the 39-value
-// vendors_category_check on 2026-08-25: 0 matches for either.
+// "that is not a trade this platform books". Verified live against the then
+// 39-value vendors_category_check on 2026-08-25: 0 matches for either. (Since
+// m562 `surveyor` IS a member; `escrow` still is not, and still resolves to
+// `title` — see below.)
 //
 // `lender` was the other half of the same bug, in the opposite direction — the
 // substring `%lender%` also matched every `refinance_lender`, silently mixing
@@ -47,17 +49,23 @@ import { VendorCategorySelect } from "@/app/components/vendors/vendor-category-s
 // SURVIVOR: app/components/vendors/vendor-category-select.tsx, built from
 // VENDOR_CATEGORY_GROUPS at lib/kernel/vendor-categories.ts:99.
 //
-// COUNTS THAT MOVED: 15 options → 39, every one of which matches a bench row
-// (was 13 of 15). `escrow` is not lost — it resolves to `title` through
-// VENDOR_CATEGORY_SYNONYMS, which is what four other writers in this repo
-// already did with it.
+// COUNTS THAT MOVED: 15 options → 39 at m561, then → 40 at m562, every one of
+// which matches a bench row (was 13 of 15). `escrow` is not lost — it resolves
+// to `title` through VENDOR_CATEGORY_SYNONYMS, which is what four other writers
+// in this repo already did with it.
 //
-// `surveyor` IS A REAL LOSS AND IS DELIBERATELY NOT PAPERED OVER. It is not a
-// member of the CHECK and it is not a spelling of any of the 39 — a land
-// surveyor is its own licensed trade. It is NOT mapped to `other`, because that
-// would file a surveyor under a catch-all and call the vocabulary complete.
-// UNRESOLVED: whether to widen the CHECK for it the way m554 widened it for
-// `appraiser` is an owner call, and it is recorded here rather than guessed.
+// `surveyor` WAS THE ONE REAL LOSS, AND IT IS NOW CLOSED. m561 refused to paper
+// over it: a land surveyor is its own licensed trade and is not a spelling of
+// any other member, so it was NOT mapped to `other` — that would have filed a
+// surveyor under a catch-all and called the vocabulary complete. It was recorded
+// as UNRESOLVED and put to the owner instead, who ruled "surveyor is a vendor
+// category". m562 widened both twins to 40 and put the trade behind the state
+// licence gate, so this picker offers it again — this time as a value the
+// database actually admits.
+//
+// THAT IS THE POINT OF REFUSING IN WORDS. Had the retired picker's `surveyor`
+// been folded into `other` to make the list "work", the gap would have rendered
+// as a working dropdown forever and no one would have asked the owner anything.
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface Vendor {

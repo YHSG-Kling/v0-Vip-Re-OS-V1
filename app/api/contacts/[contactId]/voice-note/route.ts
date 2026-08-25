@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { parseVoiceNote } from "@/lib/contacts/voice-note-parser"
+import { bestEffort } from "@/lib/db/best-effort"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -50,12 +51,17 @@ export async function POST(
   const appendedNote = `[${stamp.slice(0, 10)}] ${parsed.noteBody}`
   const newNotes = contact.notes ? `${contact.notes}\n\n${appendedNote}` : appendedNote
 
-  await supabase
-    .from("contacts")
-    .update({ notes: newNotes, last_contacted_at: stamp })
-    .eq("id", contactId)
+  await bestEffort(
+    supabase
+      .from("contacts")
+      .update({ notes: newNotes, last_contacted_at: stamp })
+      .eq("id", contactId),
+    "one-line notes stamp + recency; the dictated note's real home is the activities row inserted below, whose error IS checked, so a refused stamp does not lose the agent's words",
+  )
 
-  await supabase.from("activities").insert({
+  // The transcript summary lives ONLY here — the contacts.notes append above is
+  // a one-line stamp. A lost row loses the note the agent just dictated.
+  const { error: voiceNoteActivityError } = await supabase.from("activities").insert({
     contact_id: contactId,
     brokerage_id: auth.brokerageId,
     agent_id: auth.agentId,
@@ -72,6 +78,9 @@ export async function POST(
     channel: "voice",
     entity_type: "contact",
   })
+  if (voiceNoteActivityError) {
+    console.error("[voice-note] voice_note activity REJECTED — the dictated note was NOT saved:", voiceNoteActivityError.message)
+  }
 
   const createdTasks: Array<{ id: string; title: string; due_date: string | null }> = []
   for (const t of parsed.tasks) {

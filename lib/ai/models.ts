@@ -121,6 +121,35 @@ export const AI_TASK_ROUTING: Record<string, {
   onboarding_performance_report:{ model: "claude-sonnet", fallback: "gpt-4o",       reason: "Onboarding coaching report — long-form, encouraging-but-honest narrative" },
   brand_voice_sample:           { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Brand-voice sample email during setup — brand quality showcase" },
 
+  // ── THE lib/intelligence LANES (were RAW-SDK generateObject call sites) ────
+  // ADDED, not invented, and pinned the same way the direct-mail block above is.
+  // These five call sites imported `generateObject` straight from the "ai" SDK,
+  // which is not a lane at all: no routing, no fair-use pre-flight, no Data
+  // Guard redaction and — the reason they are here — NO ai_tool_usage ROW. Every
+  // one of them ran with a real `brokerageId` already in scope, so the spend was
+  // attributable the whole time and simply never booked. §5's "a wrong number
+  // there is a wrong invoice" was wrong by the whole lib/intelligence surface.
+  //
+  // EVERY KEY BELOW IS PINNED TO claude-sonnet BECAUSE THAT IS WHAT THE CALL
+  // SITE ALREADY PINNED — each one passed
+  // resolveModel("anthropic/claude-sonnet-4-20250514"), which is byte-identical
+  // to MODEL_CONFIG["claude-sonnet"]. The migration therefore changes the
+  // LEDGER, not the model, not the prompt and not the output. Fallbacks follow
+  // the claude-sonnet section convention (gpt-4o); a raw call had no fallback at
+  // all, so the error path gains a retry it did not have — the success path is
+  // unchanged.
+  inbound_intent_classification:   { model: "claude-sonnet", fallback: "gpt-4o", reason: "Inbound message intent + urgency classification (lib/intelligence/intent-classifier.ts) — drives routing and escalation, so nuance beats cost. DISTINCT from intent_classification (gpt-4o-mini), which is the voice/command-bar router." },
+  conversation_insight_extraction: { model: "claude-sonnet", fallback: "gpt-4o", reason: "Structured insight extraction over a whole agent/contact thread (lib/intelligence/conversation-insights.ts) — long context, feeds conversation_insights" },
+  feedback_theme_analysis:         { model: "claude-sonnet", fallback: "gpt-4o", reason: "Top themes across negative feedback (lib/intelligence/feedback-aggregator.ts) — feeds ai_improvement_metrics" },
+  prompt_calibration:              { model: "claude-sonnet", fallback: "gpt-4o", reason: "System-prompt improvement suggestions from feedback themes (lib/intelligence/prompt-calibrator.ts) — writes model_retraining_log" },
+  market_insight_narrative:        { model: "claude-sonnet", fallback: "gpt-4o", reason: "Narrates market rows ALREADY in the database (lib/intelligence/market-insight-generator.ts). DISTINCT from market_insight_generation (perplexity-sonar-pro): that one needs live web search, this one needs none — which is exactly why the call site pinned sonnet rather than perplexity." },
+
+  // Same migration, the raw generateText (not generateObject) call sites. Same
+  // pinning rule: each already passed anthropic/claude-sonnet-4-20250514.
+  buyer_stage_coaching:            { model: "claude-sonnet", fallback: "gpt-4o", reason: "Per-stage buyer-journey coaching for the agent (lib/intelligence/coaching-engine.ts). DISTINCT from coaching_insight (claude-haiku), which is the nightly internal nudge." },
+  seller_stage_coaching:           { model: "claude-sonnet", fallback: "gpt-4o", reason: "Per-stage seller-journey coaching for the listing agent (lib/seller-coaching/coaching-generator.ts) — the seller twin of buyer_stage_coaching" },
+  buyer_prediction:                { model: "claude-sonnet", fallback: "gpt-4o", reason: "Predicts a buyer's likely offer price band / type / timeline from behaviour signals (lib/behavior-learning/prediction-engine.ts). DISTINCT from behavioral_pattern_detect (claude-haiku), which only classifies a signal." },
+
   // ── RESEARCH + LIVE DATA (needs internet) ─────────────────────────────────
   market_insight_generation: { model: "perplexity-sonar-pro", fallback: "claude-sonnet", reason: "Live market data + neighborhood stats — requires web search" },
   neighborhood_research:     { model: "perplexity-sonar-pro", fallback: "claude-sonnet", reason: "Current school ratings, walkability, local stats" },

@@ -309,7 +309,13 @@ export async function updateContactContext(
   // Merge into existing metadata in place — preserve sibling keys, overwrite the one spine.
   const { data: cur } = await supabase.from("contacts").select("metadata").eq("id", contactId).maybeSingle()
   const metadata = { ...(((cur as any)?.metadata ?? {}) as Record<string, any>), context_spine: spine }
-  await supabase.from("contacts").update({ metadata }).eq("id", contactId)
+  // The error is READ. This returns the freshly composed spine either way, so a
+  // refusal handed the caller a summary that was never persisted — and every
+  // later loadContactContext read the STALE one, or none at all.
+  const { error: spineWriteError } = await supabase.from("contacts").update({ metadata }).eq("id", contactId)
+  if (spineWriteError) {
+    console.error(`[conversation-memory] context_spine write REFUSED for contact ${contactId}:`, spineWriteError.message)
+  }
   return spine
 }
 

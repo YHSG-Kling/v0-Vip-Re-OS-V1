@@ -128,7 +128,10 @@ export async function logSystemGateEnabled(
     gateDescription?: string
   }
 ): Promise<void> {
-  await supabase.from("activities").insert({
+  // A GATE DECISION on a listing — the record that a system gate opened, and
+  // when. This function returns void, so the error has nowhere to go but the
+  // log; silence would make a logger that logs nothing look identical.
+  const { error: gateActivityError } = await supabase.from("activities").insert({
     activity_type: "listing_lifecycle_gate_enabled",
     title: `System Gate Enabled: ${data.gateName}`,
     description: data.gateDescription || `System gate "${data.gateName}" is now enabled for this listing at stage "${data.stage}"`,
@@ -143,6 +146,9 @@ export async function logSystemGateEnabled(
       timestamp: new Date().toISOString(),
     }),
   })
+  if (gateActivityError) {
+    console.error(`[lifecycle-logger] gate-enabled activity REJECTED for listing ${data.listingId} (${data.gateName}):`, gateActivityError.message)
+  }
 }
 
 /**

@@ -355,10 +355,16 @@ export async function agentAssistSearchConfiguration(params: {
       agent_notes: notes,
     }
     
-    await supabase
+    // The error is READ. The agent's configured search preferences live in this
+    // JSON blob and nowhere else, and the function returns `{ success: true }`
+    // regardless — a refusal silently discarded the whole configuration.
+    const { error: prefsWriteError } = await supabase
       .from('contacts')
       .update({ notes: JSON.stringify(existingNotes) })
       .eq('id', contactId)
+    if (prefsWriteError) {
+      console.error(`[multi-party-updates] search-preference write REFUSED for contact ${contactId}:`, prefsWriteError.message)
+    }
   }
   
   return { success: true }

@@ -1,6 +1,8 @@
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateObject } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+// ROUTED, was raw — see lib/ai/models.ts:feedback_theme_analysis. The key is
+// pinned to claude-sonnet, the model this call site already passed, so only the
+// ledger changes.
+import { generateObjectRouted } from "@/lib/ai/models"
 import { z } from "zod"
 import { KernelEvent } from "@/lib/kernel/events"
 
@@ -75,13 +77,14 @@ export async function computeWeeklyMetrics(
 
       if (feedbackTexts && feedbackTexts.length > 0) {
         try {
-          const { object } = await generateObject({
-            model: resolveModel("anthropic/claude-sonnet-4-20250514"),
+          const { object } = await generateObjectRouted({
+            feature: "feedback_theme_analysis",
+            brokerageId,
             schema: ThemesSchema,
             system:
               "Identify the top 3 themes in negative feedback. Return JSON: {themes: string[]}",
             prompt: feedbackTexts.join("\n---\n"),
-            maxOutputTokens: 150,
+            maxTokens: 150,
           })
           topNegativeThemes = object.themes
         } catch (error) {

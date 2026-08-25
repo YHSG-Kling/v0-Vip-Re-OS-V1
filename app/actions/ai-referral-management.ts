@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { bestEffort } from "@/lib/db/best-effort"
 import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
@@ -132,13 +133,16 @@ Identify:
 
     // Update contacts with referral scores
     for (const candidate of analysis.topReferralCandidates) {
-      await supabase
-        .from("contacts")
-        .update({
-          referral_score: candidate.referralScore,
-          referral_approach: candidate.bestApproach,
-        })
-        .eq("id", candidate.contactId)
+      await bestEffort(
+        supabase
+          .from("contacts")
+          .update({
+            referral_score: candidate.referralScore,
+            referral_approach: candidate.bestApproach,
+          })
+          .eq("id", candidate.contactId),
+        `derived referral score for contact ${candidate.contactId}; the full analysis is returned to the caller regardless and the next run recomputes it — one contact's stamp must not fail the whole batch`,
+      )
     }
 
     return { success: true, analysis }
@@ -229,7 +233,7 @@ ${params.channel === 'call_script' ? 'Include talking points and responses to co
 
     // Log the referral request. pass 14: referral_requests was a PHANTOM table —
     // the draft rides the canonical activities ledger (brokerage from the contact).
-    await supabase.from("activities").insert({
+    const { error: referralActivityError } = await supabase.from("activities").insert({
       brokerage_id: contact.brokerage_id,
       contact_id: params.contactId,
       activity_type: "referral_request_draft",
@@ -239,6 +243,12 @@ ${params.channel === 'call_script' ? 'Include talking points and responses to co
       status: "pending",
       metadata: { ai_generated: true, requested_by: params.agentId },
     })
+    // The activities row IS the draft's storage (referral_requests was a phantom
+    // table, per the note above). If it was rejected the draft returned below
+    // exists only in this response and is gone on the next page load — say so.
+    if (referralActivityError) {
+      console.error("[generateReferralRequest] referral_request_draft activity REJECTED — the draft was NOT persisted:", referralActivityError.message)
+    }
 
     return { success: true, referralRequest }
   } catch (error) {

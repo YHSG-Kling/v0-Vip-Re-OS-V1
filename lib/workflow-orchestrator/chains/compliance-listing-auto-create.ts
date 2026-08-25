@@ -248,7 +248,9 @@ export const complianceListingAutoCreateChain: WorkflowChain = {
           is_read: false,
         })
 
-        await svc.from("activities").insert({
+        // The record that compliance passing an agreement AUTO-CREATED a
+        // listing — the provenance of a row nobody typed.
+        const { error: autoCreateActivityError } = await svc.from("activities").insert({
           contact_id: ctx.contactId,
           brokerage_id: ctx.brokerageId,
           agent_user_id: ctx.agentUserId,
@@ -256,6 +258,9 @@ export const complianceListingAutoCreateChain: WorkflowChain = {
           description: "Listing record auto-created from compliance-passed listing agreement.",
           metadata: { listing_id: listingId, workflow_run_id: ctx.runId },
         })
+        if (autoCreateActivityError) {
+          console.error(`[compliance-listing-auto-create] listing_auto_created activity REJECTED for listing ${listingId} — the listing has no provenance record:`, autoCreateActivityError.message)
+        }
 
         return { success: true, output: { notified: true } }
       },

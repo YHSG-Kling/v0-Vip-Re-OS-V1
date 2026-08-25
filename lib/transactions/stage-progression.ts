@@ -440,7 +440,10 @@ export async function advanceStage(params: {
     //    past-client journey AND every contact_type reader (reel persona, referral radar, portal role)
     //    recognizes them. Writing the legacy 'lifetime' here drifted from the listing close path.
     if (closedTxn?.seller_contact_id) {
-      await supabase
+      // The error is READ. The past-client journey, the reel persona, the referral
+      // radar and the portal role all branch on contact_type — a refusal left the
+      // seller of a CLOSED deal outside every one of them, silently.
+      const { error: lifetimePromotionError } = await supabase
         .from("contacts")
         .update({
           contact_type: LIFETIME_CUSTOMER_TYPE,
@@ -452,6 +455,12 @@ export async function advanceStage(params: {
           updated_at: new Date().toISOString(),
         })
         .eq("id", closedTxn.seller_contact_id)
+      if (lifetimePromotionError) {
+        console.error(
+          `[stage-progression] lifetime-customer promotion REFUSED for seller contact ${closedTxn.seller_contact_id}:`,
+          lifetimePromotionError.message,
+        )
+      }
 
       // Promote the past client into the FB retargeting audiences (brokerage + agent) —
       // past clients are the highest-ROI referral/repeat + lookalike-seed audience, and the
@@ -535,7 +544,9 @@ export async function advanceStage(params: {
 
         // Schedule an agent notification 5 days from now to send the review
         const sendDate = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000)
-        await supabase.from("activities").insert({
+        // The identity-class note below is exactly the kind of rejection the
+        // catch cannot see: supabase-js resolves an FK refusal as { error }.
+        const { error: reviewScheduledActivityError } = await supabase.from("activities").insert({
           brokerage_id: params.brokerageId,
           // FKs agents(id), not users(id) — a raw user id is FK-rejected (agent-identity rule).
           agent_id: agentRecordId,
@@ -547,6 +558,9 @@ export async function advanceStage(params: {
           status: "pending",
           scheduled_at: sendDate.toISOString(),
         })
+        if (reviewScheduledActivityError) {
+          console.error("[stage-progression] review_request_scheduled activity REJECTED — the draft exists but nothing reminds the agent to send it:", reviewScheduledActivityError.message)
+        }
       } catch {
         // Non-blocking — review request draft failure doesn't affect close
       }

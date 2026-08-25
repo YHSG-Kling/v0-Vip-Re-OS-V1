@@ -2027,10 +2027,19 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
   // withdraw into a client-facing play).
   "sphere_of_influence:contact_withdrawn": async (signal, ctx) => {
     if (!signal.entityId) return null
-    const { data: updated } = await ctx.supabase.from("contacts")
+    // The error is READ, not just the row. `nurture_status='withdrawn'` is the
+    // consent-recovery chain giving up and releasing the relationship — a refusal
+    // (CHECK, RLS, wrong tenant) came back indistinguishable from the zero-row
+    // case, so the reason this handler went quiet was unknowable. The `!updated`
+    // guard already fails closed; this names WHY.
+    const { data: updated, error: withdrawError } = await ctx.supabase.from("contacts")
       .update({ nurture_status: "withdrawn" })
       .eq("id", signal.entityId).eq("brokerage_id", ctx.brokerageId)
       .select("id, first_name, last_name").maybeSingle()
+    if (withdrawError) {
+      console.error(`[manager-signals] contact_withdrawn write REFUSED for ${signal.entityId}:`, withdrawError.message)
+      return null
+    }
     if (!updated) return null
     const { resolveResponsibleAgentUserId } = await import("@/lib/intelligence/mobile-approval-queue")
     const agentUserId = await resolveResponsibleAgentUserId(ctx.supabase, {

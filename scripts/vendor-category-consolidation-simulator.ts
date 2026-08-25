@@ -301,9 +301,22 @@ console.log("\n── m561 · the synonym table is a merge record, not a second 
     ["Photography", "Staging", "Inspection", "Appraisal", "Cleaning",
      "Landscaping", "Repairs", "Moving", "Title", "Escrow", "Other"]
       .every((s) => isVendorCategory(toVendorCategory(s) as string)))
-  // The honest loss, asserted so it cannot be quietly "fixed" by a fold.
-  check("'surveyor' is NOT folded into some other trade — it resolves to null",
-    toVendorCategory("surveyor") === null)
+  // m562 — `surveyor` WAS the honest loss, asserted here so it could not be
+  // quietly "fixed" by a fold. The owner ruled it a category instead, so the
+  // assertion now runs in the other direction. THE RULE IS UNCHANGED and is what
+  // is actually being tested: a real trade resolves to ITSELF and is never
+  // aliased onto a neighbour. Derived from the live vocabulary cache rather than
+  // pinned to the word "surveyor", so this cannot rot the way the old form did
+  // (CLAUDE.md §2 — do not pin an assertion to a waypoint).
+  check("'surveyor' is a MEMBER and resolves to itself, not onto a neighbour",
+    (live as readonly string[]).includes("surveyor") &&
+    toVendorCategory("surveyor") === "surveyor" &&
+    !Object.keys(VENDOR_CATEGORY_SYNONYMS).includes("surveyor"))
+  // POSITIVE CONTROL on the line above: a value that is genuinely not a trade
+  // must STILL resolve to null. If the fold ban had been "fixed" by making
+  // toVendorCategory permissive, this goes red.
+  check("a genuine non-trade still resolves to null (the fold ban still bites)",
+    toVendorCategory("astrologer") === null && toVendorCategory("locksmith") === null)
 }
 
 console.log("\n── m561 · benchCategoryFilter refuses; it never matches loosely ──")
@@ -319,14 +332,26 @@ console.log("\n── m561 · benchCategoryFilter refuses; it never matches loos
       const r = benchCategoryFilter(k)
       return r.ok && r.category === VENDOR_CATEGORY_SYNONYMS[k]
     }))
-  for (const bad of ["surveyor", "astrologer", "", "   ", "%", "titl"]) {
+  // `surveyor` was in this list until m562 made it a member; it moved to the
+  // ADMITTED assertions above rather than being deleted, so the count of proven
+  // refusals did not silently drop by one (CLAUDE.md §2 — a count that moves is
+  // the finding). `locksmith` replaces it as the live example of a real trade
+  // the taxonomy still has no token for.
+  for (const bad of ["locksmith", "astrologer", "", "   ", "%", "titl"]) {
     const r = benchCategoryFilter(bad)
     check(`'${bad}' is REFUSED rather than turned into a query that cannot match`, !r.ok)
   }
   check("null / undefined are refused", !benchCategoryFilter(null).ok && !benchCategoryFilter(undefined).ok)
-  const refusal = benchCategoryFilter("surveyor")
+  const refusal = benchCategoryFilter("locksmith")
   check("the refusal names the trade the caller asked for",
-    !refusal.ok && refusal.error.includes("surveyor"))
+    !refusal.ok && refusal.error.includes("locksmith"))
+  // m562 — the value that USED to be refused here is now accepted, and the
+  // filter must return it exactly rather than falling back to a LIKE or to
+  // `other`. This is the assertion that would have caught a "fix" that widened
+  // the CHECK but left the module behind.
+  const surveyed = benchCategoryFilter("surveyor")
+  check("'surveyor' now passes the filter and comes back exactly",
+    surveyed.ok && surveyed.category === "surveyor")
   // A LIKE would have matched 'titl' against 'title'. Exact equality does not —
   // and this is the assertion that would go red if someone reverted to ilike.
   check("a PREFIX of a real member does not resolve ('titl' ↛ 'title')",

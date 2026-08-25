@@ -357,7 +357,7 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
       // (the offer update below is the load-bearing write) but sentinel-ledgered
       // rather than swallowed, so a feed that never records faults is detectable.
       const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
-      await sentinelWrite(supabase, supabase.from("activities").insert({
+      const faultRowLanded = await sentinelWrite(supabase, supabase.from("activities").insert({
         activity_type: OFFER_AUDIT_EVENT.PROVIDER_SIGNATURE_FAILED,
         agent_id:      actorAgentId,
         entity_type:   "offer",
@@ -367,6 +367,12 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
         description:   `Offer ${offerId} could not be dispatched to ${credential.platform}: ${providerError}`,
         priority:      "high",
       }), { table: "activities", flow: "buyer_offer_submit_for_signature", brokerageId })
+      // The comment above says this must be human-visible, not console-only.
+      // sentinelWrite returns false when the row was lost — if that happens the
+      // agent is NOT being told, and that has to be visible too.
+      if (!faultRowLanded) {
+        console.error(`[submit-for-signature] the provider-failure activity for offer ${offerId} was NOT written — the agent has no feed entry telling them nothing was sent`)
+      }
     }
   }
 

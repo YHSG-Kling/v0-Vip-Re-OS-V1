@@ -70,13 +70,20 @@ export async function recordContactConsentAction(input: {
   const consentText = input.note ? `${baseText} [recorded by staff: ${input.note}]` : `${baseText} [recorded by staff]`
 
   try {
-    await persistContactConsent({
+    // FAIL CLOSED (CLAUDE.md §4). `input.consented` may be FALSE — this panel is
+    // how staff record an opt-out. persistContactConsent used to return void, so a
+    // refused contacts write landed here as success and the panel told the human
+    // the opt-out was on file when the row still said otherwise.
+    const consentWrite = await persistContactConsent({
       brokerageId: actor.brokerageId,
       contactId: input.contactId,
       consentText,
       consentSource: "compliance_panel:tcpa",
       consented: input.consented,
     })
+    if (!consentWrite.ok) {
+      return { success: false, error: consentWrite.error ?? "Failed to record consent on the contact" }
+    }
     return { success: true }
   } catch (e: any) {
     return { success: false, error: e?.message ?? "Failed to record consent" }

@@ -440,8 +440,10 @@ export async function shareNetSheetToPortal(params: {
 
     if (error) return { success: false, error: error.message }
 
-    // Log an activity so the timeline reflects this action
-    await supabase.from("activities").insert({
+    // Log an activity so the timeline reflects this action. The portal message
+    // above already checked its error; this row is what the agent and the AI
+    // read back as "the net sheet was shared", so it checks its own too.
+    const { error: netSheetActivityError } = await supabase.from("activities").insert({
       activity_type: "net_sheet_shared_to_portal",
       contact_id: params.contactId,
       agent_id: agentRecordId,
@@ -449,6 +451,9 @@ export async function shareNetSheetToPortal(params: {
       title: "Net sheet shared to seller portal",
       description: `Estimated net: ${formatCurrency(params.netSheetData.estimatedNet)}`,
     })
+    if (netSheetActivityError) {
+      console.error("[shareNetSheetToPortal] net_sheet_shared_to_portal activity REJECTED — the seller sees the net sheet but the timeline does not:", netSheetActivityError.message)
+    }
 
     return { success: true }
   } catch (err: any) {

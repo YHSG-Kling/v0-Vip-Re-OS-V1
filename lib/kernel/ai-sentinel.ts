@@ -316,7 +316,10 @@ export async function runSentinelOnInbound(
   // Mirrors the opt-out seed's activity write (free-text activity_type, no fabricated
   // table). status 'open' so the idempotency lookup + the timeline both see it.
   let incidentId: string | undefined
-  const { data: incident } = await supabase
+  // The incident row IS the halt record AND the idempotency key for it — if it
+  // is rejected, the lookup that suppresses a duplicate halt finds nothing and
+  // the Sentinel re-escalates. `{ data }` alone cannot see a refusal.
+  const { data: incident, error: incidentError } = await supabase
     .from("activities")
     .insert({
       contact_id: contactId, // null for a lead — honest (activities has no lead_id column)
@@ -341,6 +344,9 @@ export async function runSentinelOnInbound(
     })
     .select("id")
     .maybeSingle()
+  if (incidentError) {
+    console.error("[ai-sentinel] license-risk incident activity REJECTED — the halt has no compliance record and will not de-duplicate:", incidentError.message)
+  }
   incidentId = (incident as { id?: string } | null)?.id
 
   // Audit line on the manager bus — the Command Center talk feed shows the Sentinel

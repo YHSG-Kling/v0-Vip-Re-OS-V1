@@ -99,8 +99,10 @@ export async function searchAndPushToBuyer(params: {
     .filter(Boolean)
     .join(" · ")
 
-  // Log as activity on the contact record
-  await svc.from("activities").insert({
+  // Log as activity on the contact record. This row IS the record that the
+  // agent pushed these properties — the AI reads it back as outreach that
+  // happened, so a lost row is a false memory, not a missing log line.
+  const { error: pushActivityError } = await svc.from("activities").insert({
     contact_id: contactId,
     brokerage_id: ctx.brokerageId,
     agent_user_id: ctx.userId,
@@ -113,6 +115,9 @@ export async function searchAndPushToBuyer(params: {
       listing_ids: results.map((r) => r.listing_id),
     },
   })
+  if (pushActivityError) {
+    console.error("[aiBuyerSearchPush] agent_property_push activity REJECTED — the contact timeline will not show this push:", pushActivityError.message)
+  }
 
   // Create in-app notification for the buyer (via their portal user_id if set)
   if (contact.user_id) {

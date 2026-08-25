@@ -196,7 +196,10 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
 
   // ── 9. Audit log to activities ────────────────────────────────────────────
   try {
-    await service
+    // The catch below can never see a REJECTED row — supabase-js resolves those
+    // as { error } — so the audit entry could stop landing without a sound.
+    // Read it: the invite itself is already committed, so this only reports.
+    const { error: auditError } = await service
       .from("activities")
       .insert({
         activity_type: "admin.user.invited",
@@ -211,6 +214,7 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
+    if (auditError) console.error("[inviteUser] audit activity REJECTED:", auditError.message)
   } catch (err: unknown) {
     console.error("[v0] Audit log error:", err)
   }

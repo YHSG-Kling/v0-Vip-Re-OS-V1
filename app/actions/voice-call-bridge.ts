@@ -128,13 +128,18 @@ export async function initiateWhisperBridge(params: {
     }
 
     // Create activity log — Agent task (correct location, no changes) — activity_type: whisper_bridge_initiated, call_made
-    await supabase.from("activities").insert({
+    // The record that a CALL WAS PLACED. Every other write in this block reads
+    // its error; this one is the one a compliance review would ask for.
+    const { error: whisperActivityError } = await supabase.from("activities").insert({
       agent_user_id: agentUserId,
       activity_type: "whisper_bridge_initiated",
       entity_type: "contact",
       entity_id: contactId,
       description: `Whisper bridge call initiated: ${context}`,
     })
+    if (whisperActivityError) {
+      console.error("[Whisper Bridge] whisper_bridge_initiated activity REJECTED — the call was placed but has no activity record:", whisperActivityError.message)
+    }
 
     return {
       success: true,
@@ -299,7 +304,8 @@ export async function triggerAiVoiceCall(params: {
 
     // Activity trail (engine-agnostic).
     if (ctx.agentId) {
-      await supabase.from("activities").insert({
+      // The record that an AI voice call was placed to this contact.
+      const { error: voiceActivityError } = await supabase.from("activities").insert({
         agent_id: ctx.agentId,
         brokerage_id: contactBroker.brokerage_id,
         contact_id: contactId,
@@ -310,6 +316,9 @@ export async function triggerAiVoiceCall(params: {
         metadata: { call_sid: placed.callSid, trigger_event: triggerEvent },
         status: "completed",
       })
+      if (voiceActivityError) {
+        console.error("[voiceCallBridge] ai_voice_initiated activity REJECTED — the call is live but unrecorded:", voiceActivityError.message)
+      }
     }
 
     return { success: true, callId: placed.callSid, status: "initiated" }

@@ -50,10 +50,19 @@
  *  one value here that carries a rule of its own — CLAUDE.md §5, anything
  *  reaching a licensed appraiser must not be model-authored. That rule and the
  *  routes it governs live at lib/vendors/appraiser-independence.ts, which is the
- *  ONE place it is spelled; do not re-implement it beside a call site. */
+ *  ONE place it is spelled; do not re-implement it beside a call site.
+ *
+ *  m562 added `surveyor` (40 values) on the owner ruling "surveyor is a vendor
+ *  category", closing the gap m561 recorded as UNRESOLVED rather than folding it
+ *  into `other`. Like `appraiser` it is STATE-LICENSED — every US state licenses
+ *  professional land surveyors, so it is on STATE_LICENSED_VENDOR_CATEGORIES in
+ *  lib/vendors/vendor-service-area.ts. UNLIKE `appraiser` it carries NO §5 rule:
+ *  appraiser independence (USPAP, Dodd-Frank §1472) protects an OPINION OF
+ *  VALUE, and a boundary measurement is not one, so isAppraiserTrade stays exact
+ *  equality and must not grow to cover it. */
 export const VENDOR_CATEGORIES = [
   // transaction-side (several are RESPA settlement services — see lib/compliance/vendor-respa.ts)
-  "lender", "refinance_lender", "title", "attorney", "inspector", "appraiser",
+  "lender", "refinance_lender", "title", "attorney", "inspector", "appraiser", "surveyor",
   // listing prep + marketing
   "stager", "photographer", "videographer", "drone_pilot", "3d_tour", "interior_design",
   // move + turnover
@@ -75,6 +84,7 @@ export type VendorCategory = (typeof VENDOR_CATEGORIES)[number]
 export const VENDOR_CATEGORY_LABELS: Record<VendorCategory, string> = {
   lender: "Lender", refinance_lender: "Refinance Lender", title: "Title Company",
   attorney: "Attorney", inspector: "Inspector", appraiser: "Appraiser",
+  surveyor: "Land Surveyor",
   stager: "Stager", photographer: "Photographer", videographer: "Videographer",
   drone_pilot: "Drone Pilot", "3d_tour": "3D Tour", interior_design: "Interior Design",
   mover: "Mover", cleaner: "Cleaner", organizer: "Organizer", estate_sale: "Estate Sale",
@@ -100,7 +110,7 @@ export const VENDOR_CATEGORY_GROUPS: ReadonlyArray<{
   label: string
   categories: readonly VendorCategory[]
 }> = [
-  { label: "Transaction", categories: ["lender", "refinance_lender", "title", "attorney", "inspector", "appraiser"] },
+  { label: "Transaction", categories: ["lender", "refinance_lender", "title", "attorney", "inspector", "appraiser", "surveyor"] },
   { label: "Listing prep & marketing", categories: ["stager", "photographer", "videographer", "drone_pilot", "3d_tour", "interior_design"] },
   { label: "Move & turnover", categories: ["mover", "cleaner", "organizer", "estate_sale"] },
   { label: "Trades & home services", categories: ["contractor", "handyman", "landscaping", "pest_control", "pool_service", "hvac", "plumber", "electrician", "roofer", "painter", "flooring", "solar", "security", "smart_home", "appliance_repair", "window_treatment", "garage_door"] },
@@ -239,11 +249,20 @@ export const VENDOR_CATEGORY_SYNONYMS: Readonly<Record<string, VendorCategory>> 
  *
  * Returns null rather than guessing, so a caller can fall back to 'Other'
  * deliberately — or REFUSE — instead of silently mis-filing a vendor or running
- * a query that cannot match. `surveyor` is the live example: it sat in one
- * booking picker, is not a member, and is NOT mapped here, because a land
- * surveyor is not any of the other 39 and inventing a fold would file it under a
- * trade it is not. It resolves to null and the caller says so. UNRESOLVED —
- * whether to widen the CHECK for it is an owner call, not this function's.
+ * a query that cannot match.
+ *
+ * `surveyor` USED TO BE the live example here: it sat in one booking picker, was
+ * not a member, and was deliberately NOT folded onto a neighbouring trade,
+ * because a land surveyor is not any of the other 39 and inventing a fold would
+ * have filed it under a trade it is not. m561 recorded that as UNRESOLVED rather
+ * than papering over it, and m562 resolved it the only way that keeps the
+ * information — the owner ruled "surveyor is a vendor category", so it is now a
+ * MEMBER and resolves to itself by exact match, never through the synonym table.
+ * The refusal path is unchanged and still has live examples ("astrologer", a
+ * bare prefix like "titl"); what changed is that it no longer swallows a real
+ * trade. THE LESSON THE COMMENT IS KEPT FOR: an unplaceable value returns null
+ * so it can be REFUSED IN WORDS and surface as a question, which is what got
+ * this one fixed — folding it into `other` would have hidden it forever.
  */
 export function toVendorCategory(raw: string | null | undefined): VendorCategory | null {
   const t = (raw ?? "").trim()

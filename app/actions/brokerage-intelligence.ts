@@ -225,7 +225,15 @@ async function applyAction(input: {
     case "enable_ai_isa_on_existing_leads": {
       // Flip ai_isa_enabled=true on the agent's contacts where eligibility
       // is met (not dnc, not opted out). Bounded write to avoid surprise.
-      const onlyExisting = action.type === "enable_ai_isa_on_existing_leads"
+      // Both arms flip the SAME set. For "new leads" we still only flip current
+      // leads — net effect is the same; future leads inherit the agent's default
+      // elsewhere (a separate brokerage default flag is a v2 surface). The
+      // `let q = …` builder that used to stand here existed only to hold the
+      // query across an `if (!onlyExisting) { }` block with an empty body, and it
+      // hid the write from review: the error check sat far enough below the
+      // `.from(` that neither a reader nor scripts/silent-write-guard.ts could
+      // see the two belong together.
+      //
       // IDENTITY CLASS (m352). agentUserId is a users id —
       // adoptInsightAction reads the target list straight out of `users`. But
       // contacts.agent_id FKs AGENTS, so this update matched ZERO rows for every
@@ -236,19 +244,22 @@ async function applyAction(input: {
       const { data: agentRow } = await svc
         .from("agents").select("id").eq("user_id", agentUserId).eq("brokerage_id", brokerageId).maybeSingle()
       if (!agentRow?.id) return false
-      let q = svc.from("contacts")
+      // FAIL CLOSED (CLAUDE.md §4). `ai_isa_enabled` is an AUTONOMY flag — it
+      // decides whether the AI may reach out to these people on its own. This
+      // discarded its result, so a refusal returned true and the playbook told
+      // the broker the pattern was "applied" (exactly the shape the id-class bug
+      // above already produced once).
+      const { error: enableError } = await svc.from("contacts")
         .update({ ai_isa_enabled: true })
         .eq("brokerage_id", brokerageId)
         .eq("agent_id", agentRow.id)
         .neq("dnc_status", true)
         .neq("ai_outreach_paused", true)
         .neq("ai_isa_enabled", true)
-      if (!onlyExisting) {
-        // For "new leads" we still only flip current leads — net effect
-        // is the same; future leads inherit the agent's default elsewhere
-        // (a separate brokerage default flag is a v2 surface).
+      if (enableError) {
+        console.error("[brokerage-intelligence] ai_isa_enabled bulk write REFUSED:", enableError.message)
+        return false
       }
-      await q
       return true
     }
     case "first_touch_target_minutes":

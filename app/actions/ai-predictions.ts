@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { bestEffort } from "@/lib/db/best-effort"
 import { generateAIJSON } from "@/lib/ai"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { LIFETIME_CONTACT_TYPES } from "@/lib/contact-types"
@@ -1282,13 +1283,21 @@ Provide ACTIONABLE coaching. Respond with JSON:
         })
         .eq("id", data.leadId)
     } catch (e) {
-      // Try contacts table if leads doesn't exist
-      await supabase
-        .from("contacts")
-        .update({
-          last_contacted_at: new Date().toISOString(),
-        })
-        .eq("id", data.leadId)
+      // ⚠ THIS BRANCH IS UNREACHABLE FOR THE CASE IT WAS WRITTEN FOR. supabase-js
+      // RESOLVES a refused write — a missing table, a missing row, an RLS refusal
+      // all come back as `{ error }` — so the `leads` update above never throws
+      // for "leads doesn't exist" and this fallback never runs on it. Left in
+      // place and NOT rewired here (that is a behaviour change, not a silent-write
+      // fix); recorded so the owner can decide. See the lane report.
+      await bestEffort(
+        supabase
+          .from("contacts")
+          .update({
+            last_contacted_at: new Date().toISOString(),
+          })
+          .eq("id", data.leadId),
+        "recency stamp on the fallback branch of an AI-prediction write-back; the prediction itself is already persisted and this branch is only reached on a THROWN client error",
+      )
     }
 
     // Create AI insight for immediate actions

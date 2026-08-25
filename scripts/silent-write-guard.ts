@@ -42,6 +42,9 @@ import { join } from "node:path"
 import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
+/** Live undeclared-silent-write sites this run found. Read by the closing line,
+ *  which must not claim the strong invariant while any remain. */
+let liveSilentSites = 0
 const fails: string[] = []
 const check = (n: string, c: boolean, detail?: string) => {
   if (c) { pass++; console.log(`  ✓ ${n}`) }
@@ -167,15 +170,50 @@ function judgeOneWrite(stmt: string, at: number, table: string): string | null {
   if (!/\.(insert|update|upsert|delete)\s*\(/.test(chain)) return null
   // Declared as allowed-to-fail, with a reason. The wrapper sits BEFORE .from(,
   // so look at the lookbehind for it too.
+  //
+  // TWO WRAPPERS, NOT ONE. `sentinelWrite` (lib/kernel/write-sentinel.ts:47) is a
+  // STRICTLY STRONGER declaration than `bestEffort`: it awaits the op, reads
+  // `error`, and then LEDGERS every loss to self_heal_events for the repair
+  // digest, where bestEffort only console.warns. This guard knew one word and not
+  // the other, so the stronger form was counted as UNDECLARED — the finder
+  // accusing the better-behaved call site. Both lanes that burned this table down
+  // hit it independently, which is what made it a finder bug rather than a corpus
+  // one. §6 asks whether two names for "declared allowed-to-fail" should be one;
+  // that is a merge, not a detector fix, and it is left for the owner. Recognising
+  // both is what makes the NUMBER honest in the meantime.
   const lookbehind = stmt.slice(Math.max(0, at - 160), at)
-  if (/\bbestEffort\s*\(/.test(lookbehind) || /\bbestEffort\s*\(/.test(chain)) return null
+  const declared = /\b(?:bestEffort|sentinelWrite)\s*\(/
+  if (declared.test(lookbehind) || declared.test(chain)) return null
   // The result is captured somewhere the caller can inspect — the binding is to
   // the LEFT of `.from(`.
+  //
+  // THE BUILDER SHAPE. PostgREST query builders are values: this codebase writes
+  //
+  //     let query = supabase.from("contacts").update(patch).eq("id", id)
+  //     if (userType === "agent") query = query.eq("agent_id", agentId)
+  //     const { data, error } = await query.select("id")
+  //
+  // when the PREDICATE is conditional — and the predicate is the authorization, so
+  // this shape guards the tenant check itself. The chain is bound to a name and
+  // awaited later, so none of the patterns above (which all expect `await` on the
+  // same line) could see it, and two correct call sites in lib/kernel/crm.ts were
+  // reported as silent. One of them carries a long comment about the zero-row
+  // fail-open it ALREADY fixed with `.select()`, so the guard was accusing the fix.
+  //
+  // Contorting real code to satisfy a regex is the wrong direction. Instead: if the
+  // chain is bound to a name, look for that NAME being awaited with its error read
+  // anywhere in the chunk. Requiring the name (not merely "something was assigned")
+  // keeps this from becoming a blanket amnesty for assignment.
+  const bound = /(?:const|let|var)\s+(\w+)\s*=\s*[\w.$]*\s*$/.exec(lookbehind)
+  const boundAndInspected = bound !== null && new RegExp(
+    `\\{[^}]*\\berror\\b[^}]*\\}\\s*=\\s*await\\s+${bound[1]}\\b`,
+  ).test(stmt)
   const captured =
     /(const|let|var)\s*\{[^}]*\berror\b/.test(lookbehind) ||
     /(const|let|var)\s+\w+\s*=\s*await/.test(lookbehind) ||
     /\breturn\s+await/.test(lookbehind) ||
-    /(^|\n)\s*return\s+[^\n]*$/.test(lookbehind)
+    /(^|\n)\s*return\s+[^\n]*$/.test(lookbehind) ||
+    boundAndInspected
   // Explicitly thrown away — only when it hangs off THIS chain.
   const swallowed =
     /\.catch\(\s*\(\s*\)\s*=>\s*\{\s*\}\s*\)/.test(chain) ||
@@ -234,6 +272,29 @@ console.log("\n[pure — the detector]")
   check("ignores a write to a table outside the consequential set",
     isSilentWrite(`await svc.from("page_views").insert(row)`) === null)
 
+  // THE TWO RECOGNITIONS ADDED AFTER THE 177 BURN-DOWN, each proved in BOTH
+  // directions. A recognition that only ever says "not a defect" is an amnesty,
+  // not a detector, so every accept below is paired with a reject that must still
+  // fire — otherwise widening the finder would quietly hide the next real one.
+  check("accepts a sentinelWrite — it reads the error AND ledgers the loss,\n    which is stronger than bestEffort, not weaker",
+    isSilentWrite(`await sentinelWrite(svc, svc.from("contacts").update(p).eq("id", i), ctx)`) === null)
+  check("...but a bare write to the same table is STILL flagged, so recognising\n    the wrapper did not blanket-excuse the table",
+    isSilentWrite(`await svc.from("contacts").update(p).eq("id", i)`) === "contacts")
+  check("accepts the BUILDER shape when the bound name is later awaited and its\n    error read — the conditional predicate IS the tenant authorization",
+    isSilentWrite(
+      `let query = svc.from("contacts").update(p).eq("id", i)\n` +
+      `if (t === "agent") query = query.eq("agent_id", a)\n` +
+      `const { data, error } = await query.select("id")`) === null)
+  check("...and STILL flags a builder that is bound and then never inspected —\n    binding a chain to a name is not, by itself, checking it",
+    isSilentWrite(
+      `let query = svc.from("contacts").update(p).eq("id", i)\n` +
+      `if (t === "agent") query = query.eq("agent_id", a)\n` +
+      `await query`) === "contacts")
+  check("...and does not credit a DIFFERENT variable's error check",
+    isSilentWrite(
+      `let query = svc.from("contacts").update(p).eq("id", i)\n` +
+      `const { error } = await somethingElse`) === "contacts")
+
   // No `.from("…")` in this fixture on purpose: the schema-drift guard also
   // scans this file and would read a fake table name here as a real one.
   check("splitStatements keeps a multi-line chain together",
@@ -274,6 +335,7 @@ console.log("\n[repo scan — server surface]")
     }
   }
   const total = [...found.values()].reduce((a, b) => a + b, 0)
+  liveSilentSites = found.size
   console.log(`  · ${files.length} server files scanned · ${CONSEQUENTIAL_TABLES.length} consequential tables`)
 
   // ── RATCHET, NOT AN INVARIANT — and the reason is the whole point ───────────
@@ -282,14 +344,25 @@ console.log("\n[repo scan — server surface]")
   // existed, at ZERO. That zero was not a clean tree: `isSilentWrite` matched only
   // the FIRST `.from(` in a chunk, and splitStatements makes a semicolon-free
   // module ONE chunk, so in most files exactly one write was ever judged and every
-  // later one was skipped unexamined. Fixing the finder took the count 0 → the
-  // baseline below. NONE of these sites is new code and none is in proxy.ts — they
-  // are pre-existing writes that this guard has never once looked at.
+  // later one was skipped unexamined. Fixing the finder took the count 0 → 177
+  // across 127 sites, none of it new code and none of it in proxy.ts — they were
+  // pre-existing writes this guard had never once looked at.
   //
-  // They are FROZEN rather than accepted. The list names every site, growth fails
-  // CI, and the number may only go down — the same shape tenant-scope-guard and
-  // data-guard-guard use for debt they can see but have not yet burned. Raising it
-  // to make a new violation pass is the one thing it must never be used for.
+  // THE BASELINE IS NOW EMPTY, AND THAT IS THE SECOND ZERO, NOT THE FIRST. The
+  // difference between them is the only thing worth remembering here: the first
+  // zero was a blind finder reporting a clean tree, and this one is 177 writes
+  // that were each read and closed — 84 on activities, 56 on contacts, 37 on the
+  // money/access/compliance tables — plus three that were never defects at all and
+  // were fixed in the FINDER (sentinelWrite, and the builder shape), because
+  // freezing correct code as debt is its own kind of lie.
+  //
+  // Keep the ratchet even at {}. Two things it earns while empty: an empty baseline
+  // gives every site an allowance of ZERO, which closes the hole both burn-down
+  // lanes hit independently — a site with unburned allowance n silently absorbs n
+  // brand-new violations, so the count can look flat while a fresh defect lands.
+  // And it is the shape tenant-scope-guard and data-guard-guard use, so a future
+  // wave that cannot finish in one pass has somewhere honest to put the remainder.
+  // Raising it to make a new violation pass is the one thing it must never be for.
   const baselinePath = join(process.cwd(), "scripts", "silent-write-baseline.json")
   const baseline: Record<string, number> =
     existsSync(baselinePath) ? JSON.parse(readFileSync(baselinePath, "utf8")) : {}
@@ -328,7 +401,14 @@ console.log("\n─────────────────────�
 if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
 console.log(` RESULT: ${pass} passed, ${fail} failed`)
 if (fail > 0) { console.log(" ❌ SILENT_WRITE_FAIL"); process.exit(1) }
-// The old wording here was "every consequential write checks its error or declares
-// it may fail". That was the claim the broken finder licensed, and it was not true:
-// 177 writes do neither. The guard's honest promise is that no NEW one appears.
-console.log(" ✅ SILENT_WRITE_PASS — no NEW undeclared silent write; the frozen debt may only shrink")
+// "Every consequential write checks its error or declares it may fail" was the
+// claim the BROKEN finder licensed, and it was false — 177 writes did neither.
+// It was then softened to the honest "no NEW one appears". The 177 are now closed,
+// so the strong claim is true again — but it is asserted by the scan above rather
+// than promised in prose, which is the difference that matters. If the count ever
+// leaves zero this line says so instead of reassuring.
+console.log(
+  liveSilentSites === 0
+    ? " ✅ SILENT_WRITE_PASS — every consequential write reads its error or declares it may fail"
+    : " ✅ SILENT_WRITE_PASS — no NEW undeclared silent write; the frozen debt may only shrink",
+)

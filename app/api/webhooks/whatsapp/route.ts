@@ -164,12 +164,18 @@ async function handleInboundWhatsapp(params: {
     if (byPhone.length > 0) {
       contactId = byPhone[0].id
       // Backfill the WhatsApp ID into metadata for future direct matching
-      await svc
+      // The error is READ. A refused backfill means every later WhatsApp message
+      // from this number re-runs the fuzzy phone match instead of matching
+      // directly — silently, and forever.
+      const { error: waBackfillError } = await svc
         .from("contacts")
         .update({
           metadata: { whatsapp_id: params.senderWaId },
         })
         .eq("id", contactId)
+      if (waBackfillError) {
+        console.error(`[whatsapp] whatsapp_id backfill REFUSED for contact ${contactId}:`, waBackfillError.message)
+      }
     }
   }
 

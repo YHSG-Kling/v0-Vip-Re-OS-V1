@@ -15,6 +15,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { advanceBrokerageOnboarding } from "@/lib/onboarding/state-machine"
 import { revalidatePath } from "next/cache"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { bestEffort } from "@/lib/db/best-effort"
 
 async function requireBrokerageAdmin(): Promise<
   | { ok: true; userId: string; brokerageId: string; userType: string }
@@ -125,17 +126,20 @@ export async function resendInvitationAction(
   if (error) return { ok: false, error: error.message }
   // Audit on the tenant activity rail — same shape inviteUser writes
   // (activities has agent_user_id, NOT user_id; entity_type is required).
-  await svc.from("activities").insert({
-    activity_type: "admin.invitation.resent",
-    agent_user_id: auth.userId,
-    brokerage_id: auth.brokerageId,
-    entity_type: "invitation",
-    entity_id: invitationId,
-    title: `Invitation re-opened: ${inv.email}`,
-    metadata: { invitation_id: invitationId, expires_at: expires, resent_by: auth.userId },
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  }).then(() => {}, () => {})
+  await bestEffort(
+    svc.from("activities").insert({
+      activity_type: "admin.invitation.resent",
+      agent_user_id: auth.userId,
+      brokerage_id: auth.brokerageId,
+      entity_type: "invitation",
+      entity_id: invitationId,
+      title: `Invitation re-opened: ${inv.email}`,
+      metadata: { invitation_id: invitationId, expires_at: expires, resent_by: auth.userId },
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }),
+    "the invitation row was already re-opened above and the error checked; this audit echo must not turn a resend that happened into a failure the admin sees",
+  )
   revalidatePath("/dashboard/admin/users/invitations")
   return { ok: true }
 }

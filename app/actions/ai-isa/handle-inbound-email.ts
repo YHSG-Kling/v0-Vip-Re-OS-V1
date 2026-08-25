@@ -118,12 +118,23 @@ export async function processInboundEmail(params: {
   }
 
   if (leadForDnc?.brokerage_id) {
-    const halted = await haltEngagementForNegativeReply({
+    const halt = await haltEngagementForNegativeReply({
       leadId: params.leadId,
       body: params.body,
       brokerageId: leadForDnc.brokerage_id,
     })
-    if (halted) {
+    if (halt.halted) {
+      // FAIL CLOSED (CLAUDE.md §4). We still stop responding either way — but if
+      // the contact-side DNC write was REFUSED, the row does not carry the
+      // opt-out, so this must not report `negative_reply_dnc_set`.
+      if (halt.contactSuppressionError) {
+        return {
+          success: false,
+          responded: false,
+          reason: 'negative_reply_dnc_write_refused',
+          error: halt.contactSuppressionError,
+        }
+      }
       return { success: true, responded: false, reason: 'negative_reply_dnc_set' }
     }
   }
@@ -463,7 +474,9 @@ export async function processInboundEmail(params: {
   }).catch(() => null)
 
   // ── Activity log — entity refs carry the lead; contact_id stays honest ────
-  await supabase.from('activities').insert({
+  // THE record that the ISA replied to this lead. A lost row is a reply the
+  // assistant no longer knows it sent — read the error rather than assume.
+  const { error: isaReplyActivityError } = await supabase.from('activities').insert({
     contact_id: null, // leads are NOT contacts
     entity_type: 'lead',
     entity_id: params.leadId,
@@ -473,6 +486,9 @@ export async function processInboundEmail(params: {
     notes: JSON.stringify({ provider_key: sendResult.providerKey, source: 'ai_isa_reply', channel: 'email' }),
     created_at: new Date().toISOString(),
   })
+  if (isaReplyActivityError) {
+    console.error('[handleInboundEmail] ai_isa_conversation activity REJECTED — the reply is sent but unrecorded:', isaReplyActivityError.message)
+  }
 
   // ── Qualification signals ─────────────────────────────────────────────────
   const qualificationSignals = await evaluateLeadQualification(params.leadId).catch(() => null)

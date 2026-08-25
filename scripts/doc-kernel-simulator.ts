@@ -3288,7 +3288,7 @@ async function main() {
       && src("app/api/cron/onboarding-reminders/route.ts").includes("runTenantCheckIns")
       && src("lib/onboarding/checkin-cadence.ts").includes('priority: "medium"'))
     const { composeClientWelcome } = await import("../lib/kernel/client-welcome")
-    const welcome = composeClientWelcome({ side: "buyer", addressAs: "Bill", agentName: "Dana Reed" })
+    const welcome = composeClientWelcome({ journey: "buyer", addressAs: "Bill", agentName: "Dana Reed" })
     check("CLIENT WELCOME (client #1–2) — the warm intro + numbered journey map + the here's-what's-next promise, addressed by preferred name; proposed as ONE gated draft on the canonical rail from BOTH capture paths",
       welcome.body.startsWith("Bill, welcome") && welcome.body.includes("1. ") && welcome.body.includes("here's what's next")
       && src("lib/kernel/client-welcome.ts").includes("proposeClientMessage")

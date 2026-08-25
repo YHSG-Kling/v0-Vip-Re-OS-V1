@@ -14,6 +14,7 @@ import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { bestEffort } from "@/lib/db/best-effort"
 
 /**
  * CRM-specific actions - uses consolidated contact service
@@ -324,18 +325,21 @@ export async function mergeContacts(params: {
     }
 
     // ── 3. Audit — the activities idiom (same as updateContactStage) ──
-    await svc.from("activities").insert({
-      contact_id:    params.primaryContactId,
-      brokerage_id:  (primary as any).brokerage_id,
-      agent_id:      (primary as any).agent_id,
-      activity_type: "contact_merged",
-      title:         "Duplicate contact merged",
-      description:   `Merged duplicate ${params.duplicateContactId} into this contact. Moved: ${
-        Object.entries(moved).map(([t, n]) => `${t}(${n})`).join(", ") || "no child rows"
-      }.`,
-      status:        "completed",
-      metadata:      { duplicate_contact_id: params.duplicateContactId, moved, by: auth.ctx.userId },
-    }).then(() => {}, (e: unknown) => console.error("[mergeContacts] audit failed:", e))
+    await bestEffort(
+      svc.from("activities").insert({
+        contact_id:    params.primaryContactId,
+        brokerage_id:  (primary as any).brokerage_id,
+        agent_id:      (primary as any).agent_id,
+        activity_type: "contact_merged",
+        title:         "Duplicate contact merged",
+        description:   `Merged duplicate ${params.duplicateContactId} into this contact. Moved: ${
+          Object.entries(moved).map(([t, n]) => `${t}(${n})`).join(", ") || "no child rows"
+        }.`,
+        status:        "completed",
+        metadata:      { duplicate_contact_id: params.duplicateContactId, moved, by: auth.ctx.userId },
+      }),
+      "the merge is already done and irreversible by the time this runs — child rows moved, fields merged; failing the caller here would report a rollback that did not happen. The old rejection handler could not see a REFUSED row at all; bestEffort logs both.",
+    )
 
     revalidatePath("/crm")
     revalidatePath("/dashboard/crm")

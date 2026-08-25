@@ -82,7 +82,10 @@ export async function GET(req: NextRequest) {
           const sellerContactId = listing.seller_contact_id ?? listing.contact_id ?? null
           const propertyAddress = [listing.address, listing.city, listing.state].filter(Boolean).join(", ")
 
-          await supabase.from("activities").insert({
+          // This row IS the task — nothing else tells the agent an update is
+          // due, so a rejected row means the cron ran and produced nothing
+          // while reporting a processed listing.
+          const { error: sellerUpdateActivityError } = await supabase.from("activities").insert({
             agent_id: listing.agent_id,
             brokerage_id: listing.brokerage_id,
             contact_id: sellerContactId,
@@ -96,6 +99,9 @@ export async function GET(req: NextRequest) {
             priority: "medium",
             notes: sentiment ? JSON.stringify(sentiment) : null,
           })
+          if (sellerUpdateActivityError) {
+            console.error(`[seller-updates] seller_update_due activity REJECTED for listing ${listing.id} — no task was created:`, sellerUpdateActivityError.message)
+          }
 
           // MANAGER-ORCHESTRATED, NOT LINEAR — when the feedback points at a play (price pressure /
           // strong interest / presentation), hand it to the Listing Concierge over the bus so it

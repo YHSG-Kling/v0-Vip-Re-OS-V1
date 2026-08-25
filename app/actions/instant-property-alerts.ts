@@ -101,7 +101,9 @@ export async function sendFirstLookText(input: {
     return { success: false, error: (sendResult as any)?.error ?? "send_failed" }
   }
 
-  await supabase.from("activities").insert({
+  // The SMS is already out the door (send error returned above). This row is
+  // the record of that send — the AI reads it back as outreach that happened.
+  const { error: firstLookActivityError } = await supabase.from("activities").insert({
     contact_id: contact.id,
     brokerage_id: auth.brokerageId,
     agent_id: auth.agentId,
@@ -113,6 +115,9 @@ export async function sendFirstLookText(input: {
     channel: "sms",
     entity_type: "contact",
   })
+  if (firstLookActivityError) {
+    console.error("[instantPropertyAlerts] first_look_text activity REJECTED — the SMS was sent but is not on the contact's record:", firstLookActivityError.message)
+  }
 
   return { success: true }
 }

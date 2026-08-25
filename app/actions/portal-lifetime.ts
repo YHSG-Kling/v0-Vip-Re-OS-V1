@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { bestEffort } from "@/lib/db/best-effort"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { resolveContactOwnerAgent } from "@/lib/identity/resolve-contact-owner"
@@ -383,9 +384,12 @@ export async function setLifetimeSegment(params: {
         },
       })
       const meta = ((c as { metadata?: Record<string, unknown> } | null)?.metadata ?? {}) as Record<string, unknown>
-      await svc.from("contacts").update({
-        metadata: { ...meta, relocated_welcome: { subject: welcome.subject, body: welcome.body, generated: welcome.generated } },
-      }).eq("id", params.contactId).eq("brokerage_id", access.brokerageId)
+      await bestEffort(
+        svc.from("contacts").update({
+          metadata: { ...meta, relocated_welcome: { subject: welcome.subject, body: welcome.body, generated: welcome.generated } },
+        }).eq("id", params.contactId).eq("brokerage_id", access.brokerageId),
+        "caches a generated relocation welcome draft on contact metadata; the card renders its own fallback copy when the draft is absent, so a lost cache costs a regeneration and never blocks the segment change (the enclosing catch already said this — it just could not see a RESOLVED refusal)",
+      )
     } catch { /* floor lives in the card — never block the segment change */ }
   }
 

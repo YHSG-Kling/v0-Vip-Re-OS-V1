@@ -71,6 +71,7 @@
  */
 
 import { detectFairHousingViolations } from "@/lib/compliance-rules/fair-housing-patterns"
+import { isLifetimeCustomerType } from "@/lib/contact-types"
 
 /**
  * The live `contacts_timeline_check` / `leads_timeline_check` vocabulary mapped
@@ -136,6 +137,23 @@ export interface WelcomeSituationResult {
   warnings: string[]
   /** True when at least one situational fact survived — i.e. this is not generic. */
   isSituational: boolean
+  /**
+   * THE CONTACT'S OWN PERSONA, AFTER THE FAIR-HOUSING SCREEN — the live
+   * `contacts_contact_persona_check` vocabulary (first_time, relocated, luxury,
+   * fsbo, probate, upsize, downsize, military, divorce, senior, expired,
+   * foreclosure, other), or whatever free text a legacy row carries.
+   *
+   * NULL means one of two things and both of them mean "do not use it": the column
+   * is empty, or the value carried a HIGH-severity fair-housing phrase and was
+   * DROPPED. Exposing the SCREENED value rather than letting callers re-read
+   * `contact_persona` off the row is the whole point — a second reader of the raw
+   * column would walk straight past the screen this module exists to run (§5).
+   *
+   * OWNER RULING: "the wording is by their situation or persona". This is the
+   * persona half; lib/kernel/client-welcome.ts feeds it to the writer as the
+   * `CopyPersona.situation` and falls back to a journey phrase only when it is null.
+   */
+  personaLabel: string | null
 }
 
 /**
@@ -241,6 +259,7 @@ export function buildWelcomeSituation(
     droppedFacts: [],
     warnings: [],
     isSituational: false,
+    personaLabel: null,
   }
   if (!contact) return out
 
@@ -254,6 +273,16 @@ export function buildWelcomeSituation(
     out.facts.push("They are buying — they are looking for a home, they do not have one to sell first.")
   } else if (type === "investor") {
     out.facts.push("They are investing — this is a numbers decision, not a nesting decision.")
+  } else if (isLifetimeCustomerType(type)) {
+    // The LIFETIME arm. Added when the owner ruled that a lifetime customer's
+    // welcome is picked up by the Sphere Manager: without it a past client reached
+    // the writer with NO side fact at all, and the copy could only be generic —
+    // which is the them-first defect this module exists to prevent. Tolerant of the
+    // spellings m539 retired, like every other persona resolver in the OS.
+    out.facts.push(
+      "They have already closed with us — this is a lifetime relationship, not a new transaction. " +
+        "Nothing is being sold to them here.",
+    )
   }
 
   // ── TIMELINE. Buckets only (§5). An unrecognised value produces NO fact. ───
@@ -288,6 +317,11 @@ export function buildWelcomeSituation(
   if (personaRaw) {
     const persona = screenFreeText("contact_persona", personaRaw, out)
     if (persona) {
+      // The SCREENED persona is published so the writing prompt's `situation` can be
+      // the contact's persona rather than their contact_type (owner ruling). It is
+      // set INSIDE the `if (persona)` — a dropped persona leaves it null, so the
+      // fair-housing screen governs this exit exactly as it governs the fact.
+      out.personaLabel = persona
       out.facts.push(
         `Their situation as the CRM records it is "${persona}" — match that register without ` +
           `naming the label back at them.`,

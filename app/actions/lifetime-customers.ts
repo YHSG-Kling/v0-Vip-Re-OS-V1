@@ -12,6 +12,7 @@ import {
 } from "@/app/actions/ai-sphere-management"
 import { getRecentLifeChanges } from "@/app/actions/contact-enrichment"
 import { identifyReferralOpportunities } from "@/app/actions/ai-referral-management"
+import { bestEffort } from "@/lib/db/best-effort"
 
 /**
  * Log a touchpoint for a lifetime customer
@@ -54,17 +55,20 @@ export async function logTouchpoint({
   }
 
   // Record activity with kernel event reference
-  await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    agent_id: agentId,
-    contact_id: contactId,
-    activity_type: "lifetime_customer_touchpoint_sent",
-    title: `Lifetime customer touchpoint: ${touchpointType}`,
-    description: notes ?? `${touchpointType} sent via ${channel}`,
-    notes: JSON.stringify({ touchpoint_type: touchpointType, channel, kernel_event: KernelEvent.LIFETIME_CUSTOMER_TOUCHPOINT_SENT }),
-    status: "completed",
-    entity_type: "contact",
-  }).then(() => {}, err => console.error("Error recording activity:", err))
+  await bestEffort(
+    supabase.from("activities").insert({
+      brokerage_id: brokerageId,
+      agent_id: agentId,
+      contact_id: contactId,
+      activity_type: "lifetime_customer_touchpoint_sent",
+      title: `Lifetime customer touchpoint: ${touchpointType}`,
+      description: notes ?? `${touchpointType} sent via ${channel}`,
+      notes: JSON.stringify({ touchpoint_type: touchpointType, channel, kernel_event: KernelEvent.LIFETIME_CUSTOMER_TOUCHPOINT_SENT }),
+      status: "completed",
+      entity_type: "contact",
+    }),
+    "the lifetime_customer_touchpoints row above is the ledger of the send and its error is already checked and returned; this timeline echo must not fail a touchpoint that was recorded. The old rejection handler could not see a REFUSED row at all — bestEffort logs both.",
+  )
 
   return { success: true, touchpoint: data }
 }
@@ -122,17 +126,20 @@ export async function sendMarketUpdate({
   }
 
   // Record activity with kernel event reference
-  await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    agent_id: agentId,
-    contact_id: contactId,
-    activity_type: "market_update_sent",
-    title: "Market update sent",
-    description: messageBody.substring(0, 200),
-    notes: JSON.stringify({ message_id: message.id, kernel_event: KernelEvent.MARKET_UPDATE_SENT }),
-    status: "completed",
-    entity_type: "contact",
-  }).then(() => {}, err => console.error("Error recording activity:", err))
+  await bestEffort(
+    supabase.from("activities").insert({
+      brokerage_id: brokerageId,
+      agent_id: agentId,
+      contact_id: contactId,
+      activity_type: "market_update_sent",
+      title: "Market update sent",
+      description: messageBody.substring(0, 200),
+      notes: JSON.stringify({ message_id: message.id, kernel_event: KernelEvent.MARKET_UPDATE_SENT }),
+      status: "completed",
+      entity_type: "contact",
+    }),
+    "the message row and the touchpoint ledger above are the record of the send and both are error-checked; this timeline echo must not fail a market update that already went out. The old rejection handler could not see a REFUSED row at all — bestEffort logs both.",
+  )
 
   return { success: true, message }
 }

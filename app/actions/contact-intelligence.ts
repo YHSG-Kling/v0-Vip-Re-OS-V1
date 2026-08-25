@@ -2,6 +2,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
+import { bestEffort } from "@/lib/db/best-effort"
 
 export interface ContactIntelligence {
   // Scores
@@ -173,14 +174,17 @@ export async function setContactAIPilot(params: {
   if (!updated?.length) return { success: false, error: "Contact not found in your brokerage" }
 
   // Activity log for audit trail
-  await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    agent_id: agentId,
-    contact_id: params.contactId,
-    activity_type: "ai_pilot_changed",
-    title: `AI Pilot set to ${params.level}`,
-    metadata: { level: params.level, enabled },
-  }).then(() => {}, () => {})
+  await bestEffort(
+    supabase.from("activities").insert({
+      brokerage_id: brokerageId,
+      agent_id: agentId,
+      contact_id: params.contactId,
+      activity_type: "ai_pilot_changed",
+      title: `AI Pilot set to ${params.level}`,
+      metadata: { level: params.level, enabled },
+    }),
+    "the autopilot level is already set on contacts above and that write's error IS checked and returned; this row only narrates the change on the timeline and must not turn a setting that took effect into an error the agent sees",
+  )
 
   return { success: true, level: params.level }
 }

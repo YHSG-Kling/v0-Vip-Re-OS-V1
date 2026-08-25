@@ -7,6 +7,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { captureContact } from '@/lib/contact-pipeline/contact-capture'
+import { bestEffort } from "@/lib/db/best-effort"
 
 export async function POST(req: NextRequest) {
   try {
@@ -84,13 +85,16 @@ export async function POST(req: NextRequest) {
 
     // ── Log activity note if provided ─────────────────────────────────────
     if (notes) {
-      await supabase.from('activities').insert({
-        activity_type: 'widget_capture',
-        contact_id: contactId,
-        brokerage_id: session.brokerage_id,
-        title: 'Widget lead capture',
-        description: notes,
-      }).then(() => {}, () => {})
+      await bestEffort(
+        supabase.from('activities').insert({
+          activity_type: 'widget_capture',
+          contact_id: contactId,
+          brokerage_id: session.brokerage_id,
+          title: 'Widget lead capture',
+          description: notes,
+        }),
+        "this is a PUBLIC widget endpoint and the contact plus the chat_sessions link are already written above; a note row must not turn a captured lead into a 500 the visitor sees",
+      )
     }
 
     return NextResponse.json({ success: true, contact_id: contactId, action })

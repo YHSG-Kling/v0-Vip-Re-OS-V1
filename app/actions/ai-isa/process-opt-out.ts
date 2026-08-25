@@ -198,7 +198,10 @@ export async function processOptOut(params: OptOutParams): Promise<{
       channels_suppressed: channelsSuppressed,
     })
 
-    await supabase
+    // THE consumer-facing compliance record of an opt-out. This is the row a
+    // broker would hand a regulator to show the request was received and acted
+    // on, so it does not get to fail quietly.
+    const { error: optOutActivityError } = await supabase
       .from("activities")
       .insert({
         agent_id: entity.agent_id,
@@ -215,6 +218,9 @@ export async function processOptOut(params: OptOutParams): Promise<{
         priority: "high",
         notes: notesPayload,
       })
+    if (optOutActivityError) {
+      console.error("[processOptOut] opt-out activity REJECTED — the suppression is applied but has no timeline record:", optOutActivityError.message)
+    }
   }
 
   // Kernel event — downstream automation stops automatically

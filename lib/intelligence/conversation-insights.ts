@@ -1,5 +1,7 @@
-import { generateObject } from 'ai'
-import { resolveModel } from '@/lib/ai/resolve-model'
+// ROUTED, was raw — see lib/ai/models.ts:conversation_insight_extraction. The
+// key is pinned to claude-sonnet, the model this call site already passed, so
+// only the ledger changes.
+import { generateObjectRouted } from '@/lib/ai/models'
 import { z } from 'zod'
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
@@ -236,12 +238,13 @@ export async function updateConversationMemory(
     .maybeSingle()
 
   // Step 3: Call Claude to extract structured insights
-  const { object: insights } = await generateObject({
-    model: resolveModel('anthropic/claude-sonnet-4-20250514'),
+  const { object: insights } = await generateObjectRouted({
+    feature: 'conversation_insight_extraction',
+    brokerageId,
     schema: insightSchema,
     system: `You are an expert conversation analyst. Extract structured insights from the following conversation between an agent and a contact. Focus on identifying key information that would help the agent in future interactions. Be concise but thorough. Return valid JSON only.`,
     prompt: `Analyze this conversation and extract insights:\n\n${formattedMessages}`,
-    maxOutputTokens: 500,
+    maxTokens: 500,
   })
 
   // Estimate token count for context window tracking

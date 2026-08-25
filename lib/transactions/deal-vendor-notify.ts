@@ -72,7 +72,9 @@ export async function notifyDealVendorsOfIssue(
       const ok = (r as { success?: boolean } | null)?.success
       if (ok) {
         notified.push(role)
-        await supabase.from("activities").insert({
+        // The record that a B2B status request actually went to this vendor.
+        // The catch below cannot see a REFUSED row, only a thrown one.
+        const { error: vendorNotifyActivityError } = await supabase.from("activities").insert({
           brokerage_id: params.brokerageId,
           transaction_id: params.transactionId,
           entity_type: "transaction",
@@ -84,6 +86,9 @@ export async function notifyDealVendorsOfIssue(
           completed_at: new Date().toISOString(),
           channel: "email",
         })
+        if (vendorNotifyActivityError) {
+          console.error(`[deal-vendor-notify] ${role} notification activity REJECTED — the email went out but the transaction has no record of it:`, vendorNotifyActivityError.message)
+        }
       }
     } catch {
       // best-effort — a vendor send failure never breaks the huddle
@@ -134,13 +139,18 @@ export async function deliverCdaToClosingAgent(
     const r = await sendEmail({ to: recipient, subject, body, brokerageId: params.brokerageId } as never)
     const ok = (r as { success?: boolean } | null)?.success
     if (ok) {
-      await supabase.from("activities").insert({
+      // The record that an approved disbursement authorization was DELIVERED —
+      // a compliance artifact, not a log line.
+      const { error: cdaDeliveredActivityError } = await supabase.from("activities").insert({
         brokerage_id: params.brokerageId, transaction_id: params.transactionId, entity_type: "transaction",
         activity_type: "cda_delivered_to_title", title: "CDA delivered to the closing agent",
         description: `Approved disbursement authorization sent to the title/escrow officer${propertyLine}.`,
         notes: JSON.stringify({ recipient, grossCommission: params.grossCommission }),
         status: "completed", completed_at: new Date().toISOString(), channel: "email",
       })
+      if (cdaDeliveredActivityError) {
+        console.error("[deal-vendor-notify] cda_delivered_to_title activity REJECTED — the CDA was emailed to title but the delivery is unrecorded:", cdaDeliveredActivityError.message)
+      }
       return { delivered: true, recipient }
     }
   } catch { /* best-effort */ }

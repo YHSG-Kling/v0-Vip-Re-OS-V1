@@ -65,7 +65,8 @@ export async function checkAndTriggerGiftOrder(params: {
     .eq("brokerage_id", params.brokerageId)
     .single()
 
-  await supabase.from("activities").insert({
+  // THIS ROW IS THE TC TASK — nothing else asks anyone to order the gift.
+  const { error: giftTaskActivityError } = await supabase.from("activities").insert({
     transaction_id: params.transactionId,
     brokerage_id: params.brokerageId,
     // transactions.agent_id IS an agents.id; params.userId is a users.id (it is
@@ -79,6 +80,9 @@ export async function checkAndTriggerGiftOrder(params: {
     status: 'pending',
     metadata: { assigned_to: params.userId }, // TC who completed milestone
   })
+  if (giftTaskActivityError) {
+    console.error("[gift-order-trigger] tc.gift.order activity REJECTED — no one was asked to order the closing gift:", giftTaskActivityError.message)
+  }
 
   // Log lifecycle event via kernel
   await transitionLifecycle({

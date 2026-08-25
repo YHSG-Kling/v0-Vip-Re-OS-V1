@@ -214,7 +214,10 @@ export async function updateUser({ userId, updates }: UpdateUserParams): Promise
 
   // ── 8. Audit log ──────────────────────────────────────────────────────────
   try {
-    await service
+    // The catch below can never see a REJECTED row — supabase-js resolves those
+    // as { error } — so who-changed-what could stop being recorded in silence.
+    // The user update is already committed; reading this only reports the loss.
+    const { error: auditError } = await service
       .from("activities")
       .insert({
         activity_type: "admin.user.updated",
@@ -225,6 +228,7 @@ export async function updateUser({ userId, updates }: UpdateUserParams): Promise
         created_at:    new Date().toISOString(),
         updated_at:    new Date().toISOString(),
       })
+    if (auditError) console.error("[updateUser] audit activity REJECTED:", auditError.message)
   } catch (err: unknown) {
     console.error("[v0] Audit log error:", err)
   }

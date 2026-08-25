@@ -86,8 +86,15 @@ export async function triggerSignalRescrape(params: {
       })
       if (r.data) {
         // Flip mailing_address_verified per Lob's deliverability verdict.
-        await svc.from("contacts").update({ mailing_address_verified: r.data.verified }).eq("id", contact.id)
-        out.tasks.push({ name: "lob_address_verify", ok: true, cost: r.cost })
+        // The error is READ. The task below reports ok:true and the Lob call was
+        // PAID FOR — a refused flag means the money was spent and the verdict that
+        // gates direct-mail spend never landed on the row.
+        const { error: addrFlagError } = await svc.from("contacts").update({ mailing_address_verified: r.data.verified }).eq("id", contact.id)
+        if (addrFlagError) {
+          out.tasks.push({ name: "lob_address_verify", ok: false, error: `verified but NOT persisted: ${addrFlagError.message}`, cost: r.cost })
+        } else {
+          out.tasks.push({ name: "lob_address_verify", ok: true, cost: r.cost })
+        }
       } else {
         out.tasks.push({ name: "lob_address_verify", ok: false, error: "Lob not configured" })
       }

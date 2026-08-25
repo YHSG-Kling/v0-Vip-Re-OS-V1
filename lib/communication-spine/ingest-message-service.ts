@@ -76,6 +76,9 @@ export async function ingestMessageService(
     // STEP 3: Determine direction and normalize
     let normalizedMessage
     let authorType: AuthorType
+    // Set when the STEP 3b suppression write is REFUSED — read at the final
+    // return so this never reports success on a lost opt-out.
+    let suppressionError: string | null = null
 
     if (params.rawMessage) {
       normalizedMessage = normalizeInboundMessage(params.rawMessage, params.contactId)
@@ -119,8 +122,14 @@ export async function ingestMessageService(
         const optOutChannel = globalOptOut ? 'all' : (channel === 'email' ? 'email' : 'sms')
         const source = channel === 'sms' ? 'inbound_sms' : 'inbound_email'
 
-        // Fire-and-forget: update contact suppression flags
-        supabase
+        // AWAITED, NOT FIRE-AND-FORGET. This is the consumer's STOP. It used to
+        // be launched un-awaited with a `.then` that console.error'd the failure
+        // and nothing else — so the function ran on and returned `{ success:
+        // true }` for an opt-out the row never took, which is a fail-open on
+        // suppression (CLAUDE.md §4). The message is STILL persisted below
+        // either way (the audit trail must survive a refused suppression); what
+        // changes is that the caller stops being told this succeeded.
+        const { error: suppressWriteError } = await supabase
           .from('contacts')
           .update({
             ...(globalOptOut ? {
@@ -137,9 +146,10 @@ export async function ingestMessageService(
             updated_at: new Date().toISOString(),
           })
           .eq('id', params.contactId)
-          .then(({ error }) => {
-            if (error) console.error('[communication-spine] DNC update failed:', error)
-          })
+        if (suppressWriteError) {
+          suppressionError = suppressWriteError.message
+          console.error('[communication-spine] DNC update REFUSED:', suppressWriteError.message)
+        }
       }
     }
 
@@ -213,6 +223,19 @@ export async function ingestMessageService(
       void pauseActiveSequenceEnrollmentsOnReply(params.contactId).catch((e) => {
         console.error('[communication-spine] pause-on-reply failed:', e)
       })
+    }
+
+    // FAIL CLOSED (CLAUDE.md §4). The message landed — that is why messageId and
+    // conversationId still come back — but if the contact's opt-out flags were
+    // REFUSED at STEP 3b, outreach is not actually suppressed and no caller may
+    // read this as a clean success.
+    if (suppressionError) {
+      return {
+        success: false,
+        conversationId: convResult.conversationId,
+        messageId: persistResult.messageId,
+        error: `Message stored, but the contact's opt-out was NOT applied: ${suppressionError}`,
+      }
     }
 
     return {

@@ -56,8 +56,10 @@ export async function requireAdminMaintenanceAccess(request: Request): Promise<
     }
   }
 
-  // Non-blocking audit log to activities table
-  await supabase
+  // Audit log to activities table. This is the record of WHO reached an
+  // operational maintenance endpoint and from where — the row a security
+  // review would ask for. Non-blocking, but not unobserved.
+  const { error: maintenanceAuditError } = await supabase
     .from("activities")
     .insert({
       activity_type: "maintenance.access",
@@ -68,6 +70,9 @@ export async function requireAdminMaintenanceAccess(request: Request): Promise<
         ip: request.headers.get("x-forwarded-for") || "unknown",
       },
     })
+  if (maintenanceAuditError) {
+    console.error("[require-admin-maintenance-access] maintenance.access audit REJECTED — this admin's access is unlogged:", maintenanceAuditError.message)
+  }
 
   return { authorized: true }
 }

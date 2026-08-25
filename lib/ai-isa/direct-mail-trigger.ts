@@ -155,8 +155,22 @@ export async function triggerDirectMailCampaign(context: DirectMailContext) {
         .eq('id', campaign.id)
     }
 
-    await supabase.from('activities').insert({
-      contact_id:    context.leadId,
+    // The record that a physical mail piece was sent to this person.
+    const { error: directMailActivityError } = await supabase.from('activities').insert({
+      // activities.contact_id FKs contacts(id) — verified live against
+      // activities_contact_id_fkey. `context.leadId` is a leads(id): shouldTriggerDirectMail
+      // reads it with .from('leads').eq('id', leadId), and the same value is written to
+      // direct_mail_campaigns.lead_id a few lines above. So this insert was FK-rejected
+      // (23503) on every send, and until the error above was read it was rejected in
+      // silence — the piece went to the printer and the touch never reached the record.
+      //
+      // Leads travel on entity_type/entity_id, which is the shape the two siblings in
+      // this directory already use for exactly this reason: lib/ai-isa/conversation-handler.ts:115
+      // and lib/ai-isa/tools.ts:120 both carry the same correction. This was the third
+      // copy of the defect and the only one still uncorrected.
+      contact_id:    null,
+      entity_type:   'lead',
+      entity_id:     context.leadId,
       brokerage_id:  context.brokerageId,
       activity_type: 'ai_isa_direct_mail',
       title:         `Direct Mail (${piece}) Triggered`,
@@ -164,6 +178,9 @@ export async function triggerDirectMailCampaign(context: DirectMailContext) {
       status:        result.success ? 'completed' : 'failed',
       created_at:    new Date().toISOString(),
     })
+    if (directMailActivityError) {
+      console.error('[directMailTrigger] ai_isa_direct_mail activity REJECTED — the piece was dispatched but the touch is not on the record:', directMailActivityError.message)
+    }
 
     return { piece, success: result.success, campaignId: campaign?.id, error: result.error }
   }

@@ -25,6 +25,7 @@ import { rollbackTenantCreation } from "@/lib/kernel/tenant-creation-rollback"
 import { applySnapshotPayload, type SnapshotPayload } from "@/lib/platform/config-snapshots"
 import { validateFunnelCoupon, snapshotForTier } from "@/lib/platform/trial-funnel"
 import { headers } from "next/headers"
+import { bestEffort } from "@/lib/db/best-effort"
 
 export type CanonicalTier = "solo_agent" | "team" | "brokerage" | "multi_location"
 
@@ -467,12 +468,12 @@ export async function signupBrokerageAction(
   } catch (err) { console.warn("[signupBrokerage] SUBSCRIPTION_CREATED emit failed:", (err as any)?.message) }
 
   // Step 5 — audit log entry (non-fatal)
-  try {
-    await service.from("activities").insert({
+  await bestEffort(
+    service.from("activities").insert({
       activity_type: "brokerage.self_serve_signup",
       brokerage_id:  brokerage.id,
       // IDENTITY CLASS (m365). activities.agent_id FKs AGENTS and newUser.id is
-      // a users id, so this insert was rejected — inside a try/catch marked
+      // a users id, so this insert was rejected — under a swallow marked
       // "non-fatal", which is why the audit entry for a brokerage signing up
       // has never once been written. No agents row exists at signup, and the
       // column is nullable: NULL is the truthful value, not a users id.
@@ -495,8 +496,9 @@ export async function signupBrokerageAction(
       }),
       created_at:    new Date().toISOString(),
       updated_at:    new Date().toISOString(),
-    })
-  } catch { /* non-fatal */ }
+    }),
+    "the brokerage, its owner and its subscription are already committed above; a signup audit echo must not fail a tenant that already exists — but the loss is now logged instead of vanishing the way the m365 FK rejection did",
+  )
 
   // (The magic-link invite was sent by provisionTenantOwner in Step 2.)
 

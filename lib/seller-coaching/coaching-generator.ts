@@ -1,5 +1,6 @@
-import { generateText } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+// ROUTED, was raw — see lib/ai/models.ts:seller_stage_coaching, pinned to
+// claude-sonnet, the model this call site already passed. Only the ledger changes.
+import { generateTextRouted } from "@/lib/ai/models"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export type SellerPersona =
@@ -98,8 +99,11 @@ async function generateSellerCoachingWithAI(
   const personaLabel = persona ?? "standard"
   const stageLabel   = listingStage.replace(/_/g, " ").toLowerCase()
 
-  const { text } = await generateText({
-    model: resolveModel("anthropic/claude-sonnet-4-20250514"),
+  const { text } = await generateTextRouted({
+    feature: "seller_stage_coaching",
+    // Same scope the row is written under; "" = shared system default, which
+    // bills to no tenant rather than to an arbitrary one.
+    brokerageId: rowScope,
     system:
       "You are a real estate coaching AI. Generate coaching for a listing agent at a specific " +
       "stage of the seller journey. Return JSON only with keys: " +

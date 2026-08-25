@@ -32,6 +32,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
+import { bestEffort } from "@/lib/db/best-effort"
 
 export async function getErrorGroups(filters?: {
   severity?: string
@@ -123,15 +124,18 @@ export async function dismissErrorGroup(groupId: string, reason: string) {
   }
 
   // Record activity (fire-and-forget)
-  void supabase
-    .from("activities")
-    .insert({
-      brokerage_id: brokerageId,
-      agent_user_id: userId,
-      activity_type: "error_group_dismissed",
-      status: "completed",
-      metadata: { error_group_id: groupId, reason },
-    })
+  void bestEffort(
+    supabase
+      .from("activities")
+      .insert({
+        brokerage_id: brokerageId,
+        agent_user_id: userId,
+        activity_type: "error_group_dismissed",
+        status: "completed",
+        metadata: { error_group_id: groupId, reason },
+      }),
+    "the error_groups row above already carries dismissed and its error is checked and thrown; this un-awaited echo exists only so the action shows on the activity feed and must never delay or fail the response",
+  )
 
   return { success: true }
 }
@@ -157,15 +161,18 @@ export async function resolveErrorGroup(groupId: string, solution: string) {
   }
 
   // Record activity (fire-and-forget)
-  void supabase
-    .from("activities")
-    .insert({
-      brokerage_id: brokerageId,
-      agent_user_id: userId,
-      activity_type: "error_group_resolved",
-      status: "completed",
-      metadata: { error_group_id: groupId, solution },
-    })
+  void bestEffort(
+    supabase
+      .from("activities")
+      .insert({
+        brokerage_id: brokerageId,
+        agent_user_id: userId,
+        activity_type: "error_group_resolved",
+        status: "completed",
+        metadata: { error_group_id: groupId, solution },
+      }),
+    "the error_groups row above already carries resolved and its error is checked and thrown; this un-awaited echo exists only so the action shows on the activity feed and must never delay or fail the response",
+  )
 
   return { success: true }
 }

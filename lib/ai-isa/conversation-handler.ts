@@ -29,12 +29,32 @@ export function detectNegativeIntent(body: string): boolean {
   return NEGATIVE_INTENT_PHRASES.some((phrase) => lower.includes(phrase))
 }
 
+export interface HaltEngagementResult {
+  /** True when a negative intent was detected and the halt path ran. */
+  halted: boolean
+  /** Set when the CONTACT-side suppression write was REFUSED. `halted` is still
+   *  true (the intent was detected and everything else ran) but the contact row
+   *  does NOT carry the DNC flags, so no caller may report the opt-out as done. */
+  contactSuppressionError?: string
+}
+
+/**
+ * WHY THIS RETURNS A RESULT (it used to return a bare boolean).
+ *
+ * The contacts write below is the consumer's opt-out. supabase-js RESOLVES a
+ * refused UPDATE, and this function discarded that result, so every caller —
+ * handle-inbound-email ("negative_reply_dnc_set"), classifyAndRouteInbound
+ * ("halted"), and the ISA's own mark_do_not_contact tool ({ success: true },
+ * read back by the model) — reported a Do-Not-Contact that the row never took.
+ * That is a fail-open on suppression, which CLAUDE.md §4 forbids. The error is
+ * read here and each caller stops claiming success on it.
+ */
 export async function haltEngagementForNegativeReply(params: {
   leadId: string
   body: string
   brokerageId: string
-}): Promise<boolean> {
-  if (!detectNegativeIntent(params.body)) return false
+}): Promise<HaltEngagementResult> {
+  if (!detectNegativeIntent(params.body)) return { halted: false }
 
   const supabase = createServiceClient()
 
@@ -66,8 +86,9 @@ export async function haltEngagementForNegativeReply(params: {
     .eq('id', params.leadId)
     .maybeSingle()
 
+  let contactSuppressionError: string | undefined
   if (lead?.contact_id) {
-    await supabase
+    const { error: contactSuppressError } = await supabase
       .from('contacts')
       .update({
         dnc_status: true,
@@ -75,10 +96,19 @@ export async function haltEngagementForNegativeReply(params: {
         updated_at: new Date().toISOString(),
       })
       .eq('id', lead.contact_id)
+    if (contactSuppressError) {
+      contactSuppressionError = contactSuppressError.message
+      console.error(
+        `[haltEngagementForNegativeReply] contact suppression REFUSED for contact ${lead.contact_id}:`,
+        contactSuppressError.message,
+      )
+    }
   }
 
-  // Log an activity so the agent sees this clearly in the timeline
-  await supabase.from('activities').insert({
+  // Log an activity so the agent sees this clearly in the timeline.
+  // The comment below records that this row was FK-rejected and "was never
+  // written" — invisibly. Reading the error is what stops that recurring.
+  const { error: optOutTimelineError } = await supabase.from('activities').insert({
     // activities.contact_id FKs contacts(id) — a lead id here violates the FK and
     // the insert is rejected, so the timeline entry the agent is supposed to see
     // was never written. Leads travel on entity_type/entity_id.
@@ -92,6 +122,9 @@ export async function haltEngagementForNegativeReply(params: {
     status: 'completed',
     created_at: new Date().toISOString(),
   })
+  if (optOutTimelineError) {
+    console.error('[conversationHandler] lead_opted_out activity REJECTED — the agent will not see the opt-out on the timeline:', optOutTimelineError.message)
+  }
 
   // Notify the agent
   await supabase.from('notifications').insert({
@@ -106,7 +139,7 @@ export async function haltEngagementForNegativeReply(params: {
     is_read: false,
   })
 
-  return true
+  return { halted: true, contactSuppressionError }
 }
 
 export async function shouldStopAutoResponding(leadId: string): Promise<boolean> {

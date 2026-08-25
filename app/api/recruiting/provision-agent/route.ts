@@ -4,6 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { seatGate } from "@/lib/kernel/seat-usage"
 import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
+import { bestEffort } from "@/lib/db/best-effort"
 
 export async function POST(req: Request) {
   try {
@@ -269,15 +270,18 @@ export async function POST(req: Request) {
     }).eq("id", recruitId)
 
     // Activity log
-    await service.from("activities").insert({
-      activity_type: "recruiting.agent_provisioned",
-      agent_user_id: user.id,
-      brokerage_id: recruit.brokerage_id,
-      title: `Agent provisioned from recruit: ${recruit.first_name} ${recruit.last_name}`,
-      notes: JSON.stringify({ recruit_id: recruitId, new_user_id: resolvedUserId, agent_id: agentId }),
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    }).then(() => {}, () => {})
+    await bestEffort(
+      service.from("activities").insert({
+        activity_type: "recruiting.agent_provisioned",
+        agent_user_id: user.id,
+        brokerage_id: recruit.brokerage_id,
+        title: `Agent provisioned from recruit: ${recruit.first_name} ${recruit.last_name}`,
+        notes: JSON.stringify({ recruit_id: recruitId, new_user_id: resolvedUserId, agent_id: agentId }),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }),
+      "the users, agents and recruits rows are already provisioned above; an audit echo must not fail a provisioning that has already created a live login",
+    )
 
     // MANAGERS TALKING — the Recruiting Manager tells the Deal Coordinator a recruit just
     // became an ACTIVE AGENT (provisioned users+agents rows). No contacts are involved at

@@ -411,10 +411,15 @@ export async function captureFormSubmission(
         // tenant anchor: the contact was resolved by email WITHIN this brokerage,
         // so the update must be pinned to it too — a bare `.eq("id", …)` on a
         // service client is a cross-tenant write waiting to happen.
-        await supabase.from("contacts")
+        // The error is READ. An unclaimed contact staying unclaimed is invisible:
+        // the capture reports success, the agent's CRM simply never shows the lead.
+        const { error: claimError } = await supabase.from("contacts")
           .update({ agent_id: form.agent_id })
           .eq("brokerage_id", input.brokerageId)
           .eq("id", contactId)
+        if (claimError) {
+          console.error(`[lead-magnets] agent claim REFUSED for contact ${contactId}:`, claimError.message)
+        }
       }
     } else {
       // Stamp the new contact's intent from the magnet so determinePortalView shows the right portal +
@@ -435,7 +440,11 @@ export async function captureFormSubmission(
       }
       if (intentRouting.contactType) newRow.contact_type = intentRouting.contactType
       capturedContactType = (intentRouting.contactType as string | null) ?? null
-      const { data: newContact } = await supabase
+      // The error is READ. `if (newContact)` below already fails closed, but a
+      // refused INSERT and a client that simply returned no row were
+      // indistinguishable — so a rejected contact create (a CHECK on
+      // contact_type, a PGRST204 phantom column) went by with no trace at all.
+      const { data: newContact, error: newContactError } = await supabase
         .from("contacts")
         // tenant anchor (scope burn-down): re-stamped ON the chain, not only
         // inside `newRow` — the scope guard reads the window after `.from(`, and
@@ -444,6 +453,10 @@ export async function captureFormSubmission(
         .insert({ ...newRow, brokerage_id: input.brokerageId })
         .select("id")
         .maybeSingle()
+
+      if (newContactError) {
+        console.error(`[lead-magnets] contact INSERT REFUSED for brokerage ${input.brokerageId}:`, newContactError.message)
+      }
 
       if (newContact) {
         contactId = newContact.id

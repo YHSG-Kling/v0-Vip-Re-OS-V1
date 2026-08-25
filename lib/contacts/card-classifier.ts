@@ -39,8 +39,8 @@ export interface CardClassification {
 // Until m304 this list could only emit six values, because the column only
 // admitted six — so a photographer, a landscaper, a mover, an attorney and an
 // insurance agent were all filed as "other" and the information on the card was
-// thrown away. The column now holds 39 (m554 added `appraiser`), and the
-// classifier fills them: a scanned
+// thrown away. The column now holds 40 (m554 added `appraiser`, m562
+// `surveyor`), and the classifier fills them: a scanned
 // card lands on the trade it actually names, which is what makes the widened
 // bench bookable rather than merely spellable.
 const VENDOR_FAMILIES: Array<{ category: CardClassification["category"]; pattern: RegExp }> = [
@@ -55,6 +55,14 @@ const VENDOR_FAMILIES: Array<{ category: CardClassification["category"]; pattern
   // generic families for the usual reason — nothing else here matches the stem,
   // but the transaction block is where a reader looks for it.
   { category: "appraiser", pattern: /\b(apprais)/ },
+  // m562 added `surveyor` to the column, for the same reason and with the same
+  // consequence as `appraiser` at m554: until it did, "Smith Land Surveying, PLS"
+  // matched only the catch-all stem at the bottom of this list and was filed as
+  // `other`, throwing away the one fact printed on the card. `\b(survey)` is
+  // safe above the generic families because no other trade here contains the
+  // stem — "surveillance" is matched by the `security` family further down and
+  // does not start with it.
+  { category: "surveyor", pattern: /\b(survey)/ },
   { category: "title", pattern: /\b(title|escrow)/ },
   { category: "attorney", pattern: /\b(attorney|law firm|law office|law group|esq\b)/ },
   // ── listing prep + marketing ──
@@ -100,7 +108,18 @@ const VENDOR_FAMILIES: Array<{ category: CardClassification["category"]; pattern
   { category: "tax_pro", pattern: /\b(cpa\b|accountant|accounting|tax (prep|advis|service|consult)|enrolled agent)/ },
   { category: "financial_advisor", pattern: /\b(financial advis|financial plan|wealth manage)/ },
   // ── the genuine long tail: real vendors the taxonomy still has no token for ──
-  { category: "other", pattern: /\b(apprais|survey(or|ing)|locksmith)/ },
+  //
+  // This list SHRINKS as the vocabulary grows, and both departures were already
+  // UNREACHABLE by the time they were removed — first match wins, and each had
+  // gained a real family above:
+  //   `apprais`          dead since m554 added `appraiser` (matched at :57)
+  //   `survey(or|ing)`   dead since m562 added `surveyor`  (matched above)
+  // Leaving them here would have been worse than untidy: it would read as though
+  // a scanned appraiser or surveyor card still lands on the catch-all, which is
+  // exactly the "vocabulary looks complete while the information is lost" shape
+  // m561 refused to create for `surveyor`. `locksmith` is the honest remainder —
+  // a real trade the 40-value taxonomy still has no token for.
+  { category: "other", pattern: /\b(locksmith)/ },
 ]
 
 /** a fellow agent's card is a RECRUIT — agents are USERS of this platform

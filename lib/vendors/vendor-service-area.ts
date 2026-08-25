@@ -70,14 +70,16 @@
 //
 // ── LICENSURE IS A GATE, NOT A FILTER ────────────────────────────────────────
 //
-// Title companies, lenders and appraisers are STATE-LICENSED. A vendor that is
-// not licensed in the state where the job sits is not "ranked lower"; it is not
-// bookable at all. That is why `vendorGeoVerdict` returns one refusal reason per
-// distinct cause and never collapses "we could not tell" into "fine".
+// Title companies, lenders, appraisers and land surveyors are STATE-LICENSED. A
+// vendor that is not licensed in the state where the job sits is not "ranked
+// lower"; it is not bookable at all. That is why `vendorGeoVerdict` returns one
+// refusal reason per distinct cause and never collapses "we could not tell" into
+// "fine".
 //
-// Appraisers only became expressible on the bench at m554; until then this
-// sentence named a trade the vocabulary could not spell. It can now, and
-// `appraiser` is on STATE_LICENSED_VENDOR_CATEGORIES below.
+// Appraisers only became expressible on the bench at m554, and surveyors at
+// m562; until each of those, this sentence named a trade the vocabulary could
+// not spell. Both can be spelled now, and both are on
+// STATE_LICENSED_VENDOR_CATEGORIES below.
 //
 // The licence RECORD SHAPE is not a new one. `vendors.compliance_credentials`
 // already carries a bag validated by the live `vendor_credential_bag_ok` /
@@ -112,7 +114,7 @@ export type VendorServiceAreaStatus = (typeof VENDOR_SERVICE_AREA_STATUSES)[numb
  * `vendor_service_areas.trade_category` both CHECK against (§6: no second
  * spelling).
  *
- * WHY THESE SIX, and why the omissions are deliberate:
+ * WHY THESE SEVEN, and why the omissions are deliberate:
  *
  *   lender / refinance_lender  a mortgage originator holds a state licence per
  *                              state they lend in (NMLS state authority). This
@@ -125,18 +127,33 @@ export type VendorServiceAreaStatus = (typeof VENDOR_SERVICE_AREA_STATUSES)[numb
  *   insurance                  producers hold per-state appointments.
  *   appraiser                  ADDED m554, on the owner ruling "an appraiser can
  *                              be another vendor type and is state licensed".
+ *   surveyor                   ADDED m562, on the owner ruling "surveyor is a
+ *                              vendor category". Professional land surveying is
+ *                              a licensed practice in EVERY US state — each runs
+ *                              a board of licensure for engineers and land
+ *                              surveyors, the credential comes through the NCEES
+ *                              FS/PS sequence, and it is the surveyor's seal
+ *                              that makes a plat recordable. So an unlicensed
+ *                              survey is not a lesser service; it is one the
+ *                              county will not accept.
  *
  *   inspector is NOT here ON PURPOSE. Home-inspector licensure is not universal
  *   across states, so a hard refusal would refuse legitimate inspectors in every
  *   state that does not license them — a gate that is wrong in one direction is
  *   not safer than no gate, it is a gate that gets switched off.
  *
- *   APPRAISER IS THE OPPOSITE CASE, and the difference is not a judgement call:
- *   Title XI of FIRREA requires an appraisal for a federally related transaction
- *   to be performed by a state-certified or state-licensed appraiser, and every
- *   state runs a board to issue that credential. There is no state in which an
- *   unlicensed appraiser is legitimate, so the gate cannot be wrong in the
- *   direction that made `inspector` unsafe to include.
+ *   APPRAISER AND SURVEYOR ARE THE OPPOSITE CASE, and the difference is not a
+ *   judgement call in either instance. Title XI of FIRREA requires an appraisal
+ *   for a federally related transaction to be performed by a state-certified or
+ *   state-licensed appraiser, and every state runs a board to issue that
+ *   credential. Land surveying is licensed in every state on the same
+ *   all-or-nothing footing. There is no state in which an unlicensed appraiser
+ *   or an unlicensed land surveyor is legitimate, so the gate cannot be wrong in
+ *   the direction that made `inspector` unsafe to include.
+ *
+ *   THE TEST IS UNIVERSALITY, NOT IMPORTANCE. `inspector` is excluded despite
+ *   being a more common booking than either, because a dozen states license no
+ *   home inspectors at all. Anything added here must clear that bar.
  *
  * SUPERSEDED NOTE (m551 → m554). This block previously recorded that appraiser
  * was MISSING FROM THE VOCABULARY ITSELF — `vendors.category` admitted 38 values
@@ -152,6 +169,19 @@ export type VendorServiceAreaStatus = (typeof VENDOR_SERVICE_AREA_STATUSES)[numb
  * content on any of them. That rule is NOT restated here: it lives once, at
  * lib/vendors/appraiser-independence.ts, together with the inventory of every
  * route that was walked and what each one was found to carry.
+ *
+ * m562 ADDED `surveyor` AND DELIBERATELY DID NOT WIDEN THAT §5 RULE. Benching
+ * surveyors opens the same routes, but §5 names appraisers for a reason —
+ * appraiser independence (USPAP, Dodd-Frank §1472) exists to stop anyone
+ * influencing an OPINION OF VALUE. A land surveyor measures a boundary; there is
+ * no opinion to influence. isAppraiserTrade is exact equality and must stay that
+ * way: a gate that quietly grew to cover a trade its rule never named is the
+ * over-wide gate this block already warns gets switched off.
+ *
+ * MIRRORS public.vendor_trade_requires_state_license EXACTLY. Both simulators
+ * assert the two lists are identical, and they locate the SQL definition by
+ * taking the highest-numbered migration that states it, so this Set and the
+ * database move together or a guard goes red.
  */
 export const STATE_LICENSED_VENDOR_CATEGORIES: ReadonlySet<VendorCategory> = new Set<VendorCategory>([
   "lender",
@@ -160,6 +190,7 @@ export const STATE_LICENSED_VENDOR_CATEGORIES: ReadonlySet<VendorCategory> = new
   "attorney",
   "insurance",
   "appraiser",
+  "surveyor",
 ])
 
 /** PURE — does a job in this trade require a state licence to be bookable? */

@@ -61,6 +61,7 @@
 // which is what the production pipeline's request-scoped client needs.
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { bestEffort } from "@/lib/db/best-effort"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -805,7 +806,10 @@ export async function seedDealRoomDemo(): Promise<DealRoomSeedReport> {
         throw new Error(`Engine 2 did not convert (stage=${l?.lead_stage}, contact=${l?.contact_id ?? "none"})`)
       }
       ids.contactId = l.contact_id
-      await svc.from("contacts").update({ tags: [DEAL_ROOM_TAG, "buyer"] }).eq("id", l.contact_id).eq("brokerage_id", brokerageId)
+      await bestEffort(
+        svc.from("contacts").update({ tags: [DEAL_ROOM_TAG, "buyer"] }).eq("id", l.contact_id).eq("brokerage_id", brokerageId),
+        "showcase-only tag so the demo cleanup can find its own rows; every assertion in this beat reads the REAL kernel rows (lead_stage, contact_id, assignment_log), never the tag",
+      )
       const { count: logCount } = await svc.from("assignment_log").select("id", { count: "exact", head: true }).eq("lead_id", ids.leadId!)
       steps.push({
         beat: "2 · AI-ISA qualification → conversion + policy assignment", rail: "real", ok: true,

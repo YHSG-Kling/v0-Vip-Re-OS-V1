@@ -13,6 +13,7 @@ import {
   earliestListingAppointmentAt,
 } from "@/lib/home-value/listing-appointment"
 import { composeHomeValueReportEmail } from "@/lib/home-value/report-email"
+import { bestEffort } from "@/lib/db/best-effort"
 
 // ============================================================================
 // WHY THIS FILE USES THE SERVICE CLIENT FOR THE PUBLIC LANE
@@ -487,24 +488,27 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
 
     // Activity for immediate agent CRM visibility
     if (resolvedAgentId) {
-      await supabase.from("activities").insert({
-        activity_type: "home_value_request_received",
-        title: `Home value request: ${firstName} ${lastName}`,
-        description: `${propertyAddress}, ${city}, ${state}`,
-        notes: JSON.stringify({
-          email,
-          phone: tcpaConsent ? phone : null,
-          sell_timeline: qualificationData?.sellTimeline ?? null,
-          motivation: qualificationData?.motivation ?? null,
-          valuation_request_id: valuationRequest.id,
+      await bestEffort(
+        supabase.from("activities").insert({
+          activity_type: "home_value_request_received",
+          title: `Home value request: ${firstName} ${lastName}`,
+          description: `${propertyAddress}, ${city}, ${state}`,
+          notes: JSON.stringify({
+            email,
+            phone: tcpaConsent ? phone : null,
+            sell_timeline: qualificationData?.sellTimeline ?? null,
+            motivation: qualificationData?.motivation ?? null,
+            valuation_request_id: valuationRequest.id,
+          }),
+          contact_id: contactId,
+          agent_id: resolvedAgentId,
+          brokerage_id: resolvedBrokerageId,
+          entity_type: "contact",
+          status: "pending",
+          priority: qualificationData?.sellTimeline === "immediately" ? "high" : "medium",
         }),
-        contact_id: contactId,
-        agent_id: resolvedAgentId,
-        brokerage_id: resolvedBrokerageId,
-        entity_type: "contact",
-        status: "pending",
-        priority: qualificationData?.sellTimeline === "immediately" ? "high" : "medium",
-      }).then(() => {}, () => {})
+        "the contact, the valuation_request and the lifecycle event are all already committed and error-checked above; this row only front-runs them onto the agent's CRM feed, so it must not fail a home-value request the consumer has already submitted",
+      )
     }
 
     // Step 5: Generate the estimate from adjusted comparable sales (runAiCma).

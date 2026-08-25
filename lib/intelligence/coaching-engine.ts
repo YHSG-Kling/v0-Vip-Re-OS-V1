@@ -3,8 +3,9 @@
 // lib/kernel/agent-coaching.ts (composeCoachingBrief → strengths/leaks/focus from REAL
 // stats, delivered as a gated manager-facing brief). This module now owns ONLY the distinct
 // BUYER-FACING per-stage coaching playbook feature (getBuyerCoaching).
-import { generateText } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+// ROUTED, was raw — see lib/ai/models.ts:buyer_stage_coaching, pinned to
+// claude-sonnet, the model this call site already passed. Only the ledger changes.
+import { generateTextRouted } from "@/lib/ai/models"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export type BuyerPersona =
@@ -104,8 +105,13 @@ async function generateBuyerCoachingWithAI(
   const personaLabel = persona ?? "standard"
   const stageLabel = buyerStage.replace(/_/g, " ").toLowerCase()
 
-  const { text } = await generateText({
-    model: resolveModel("anthropic/claude-sonnet-4-20250514"),
+  const { text } = await generateTextRouted({
+    feature: "buyer_stage_coaching",
+    // The SAME scope the row is written under. "" is the shared system default —
+    // a PLATFORM-level generation with no tenant to bill, which lands as
+    // brokerageId null rather than being attributed to someone who did not ask
+    // for it. See the report at the end of lib/ai/cost-tracking.ts:122.
+    brokerageId: rowScope,
     system:
       "You are a real estate coaching AI. Generate coaching for a buyer's agent at a specific " +
       "stage of the buyer journey. Return JSON only with keys: " +

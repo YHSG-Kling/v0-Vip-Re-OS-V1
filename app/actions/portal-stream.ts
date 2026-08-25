@@ -244,7 +244,9 @@ export async function dispositionPortalEventAction(params: {
     ai_delegate: "portal_action_delegated_to_ai",
     dismiss:     "portal_action_dismissed",
   }
-  await svc.from("activities").insert({
+  // The comment above calls this the CANONICAL audit trail of a disposition.
+  // A canonical trail that can lose rows without telling anyone is not one.
+  const { error: dispositionActivityError } = await svc.from("activities").insert({
     brokerage_id:  row.brokerage_id,
     contact_id:    row.contact_id,
     transaction_id: row.transaction_id ?? null,
@@ -260,6 +262,9 @@ export async function dispositionPortalEventAction(params: {
       disposition_mode:       params.mode,
     },
   })
+  if (dispositionActivityError) {
+    console.error("[portalStream] disposition activity REJECTED — the portal event is resolved but the audit trail has no row for it:", dispositionActivityError.message)
+  }
 
   // AI delegation: fire a kernel-style lifecycle event so AI ISA / draft
   // generators can pick it up. We use a generic 'agent.delegated_to_ai'

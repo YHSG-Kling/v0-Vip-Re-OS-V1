@@ -243,7 +243,14 @@ Rules:
       const appended = contact?.notes
         ? `${contact.notes}\n\n[AI Note - ${ts}]\n${noteText}`
         : `[AI Note - ${ts}]\n${noteText}`
-      await service.from("contacts").update({ notes: appended }).eq("id", contactId)
+      // The error is READ. This appends the AI's note to contact-authored text —
+      // a refusal loses the note outright, and the route answered 200 either way.
+      // Not failed over (the activity row above is the note's primary home), but
+      // a lost append is no longer invisible.
+      const { error: notesAppendError } = await service.from("contacts").update({ notes: appended }).eq("id", contactId)
+      if (notesAppendError) {
+        console.error(`[ai-note] contacts.notes append REFUSED for ${contactId}:`, notesAppendError.message)
+      }
     }
 
     // ── 4. leads.notes append (when entity is lead) ────────────────────────────

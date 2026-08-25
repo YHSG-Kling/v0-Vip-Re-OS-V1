@@ -28,6 +28,7 @@ import { KernelEvent }         from "@/lib/kernel/events"
 import { isValidUUID }         from "@/lib/validations"
 import { OFFER_AUDIT_EVENT } from "@/lib/buyer-offer/offer-lifecycle"
 import { LIFETIME_CUSTOMER_TYPE } from "@/lib/contact-types"
+import { bestEffort } from "@/lib/db/best-effort"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -1164,36 +1165,46 @@ export async function closeTransactionCommand(params: {
     const activityWrites: any[] = []
     if (txBefore?.buyer_contact_id) {
       activityWrites.push(
-        supabase.from("activities").insert({
-          brokerage_id:   params.brokerageId,
-          agent_id:       agentRecordId,
-          contact_id:     txBefore.buyer_contact_id,
-          transaction_id: params.transactionId,
-          activity_type:  "transaction_closed",
-          title:          "Transaction Closed",
-          description:    params.reason ? `Transaction closed: ${params.reason}` : "Transaction closed — congratulations!",
-          status:         "completed",
-          priority:       "high",
-          entity_type:    "transaction",
-          created_at:     nowIso,
-        })
+        (async () => {
+          const { error: closedActivityError } = await supabase.from("activities").insert({
+            brokerage_id:   params.brokerageId,
+            agent_id:       agentRecordId,
+            contact_id:     txBefore.buyer_contact_id,
+            transaction_id: params.transactionId,
+            activity_type:  "transaction_closed",
+            title:          "Transaction Closed",
+            description:    params.reason ? `Transaction closed: ${params.reason}` : "Transaction closed — congratulations!",
+            status:         "completed",
+            priority:       "high",
+            entity_type:    "transaction",
+            created_at:     nowIso,
+          })
+          if (closedActivityError) {
+            console.error("[closeTransaction] buyer transaction_closed activity REJECTED — the CRM Activity tab will not show the close:", closedActivityError.message)
+          }
+        })()
       )
     }
     if (txBefore?.seller_contact_id && txBefore.seller_contact_id !== txBefore.buyer_contact_id) {
       activityWrites.push(
-        supabase.from("activities").insert({
-          brokerage_id:   params.brokerageId,
-          agent_id:       agentRecordId,
-          contact_id:     txBefore.seller_contact_id,
-          transaction_id: params.transactionId,
-          activity_type:  "transaction_closed",
-          title:          "Transaction Closed",
-          description:    params.reason ? `Transaction closed: ${params.reason}` : "Transaction closed — congratulations!",
-          status:         "completed",
-          priority:       "high",
-          entity_type:    "transaction",
-          created_at:     nowIso,
-        })
+        (async () => {
+          const { error: closedActivityError } = await supabase.from("activities").insert({
+            brokerage_id:   params.brokerageId,
+            agent_id:       agentRecordId,
+            contact_id:     txBefore.seller_contact_id,
+            transaction_id: params.transactionId,
+            activity_type:  "transaction_closed",
+            title:          "Transaction Closed",
+            description:    params.reason ? `Transaction closed: ${params.reason}` : "Transaction closed — congratulations!",
+            status:         "completed",
+            priority:       "high",
+            entity_type:    "transaction",
+            created_at:     nowIso,
+          })
+          if (closedActivityError) {
+            console.error("[closeTransaction] seller transaction_closed activity REJECTED — the CRM Activity tab will not show the close:", closedActivityError.message)
+          }
+        })()
       )
     }
 
@@ -1274,19 +1285,29 @@ export async function closeTransactionCommand(params: {
     if (txBefore?.buyer_contact_id)  lifetimeContactIds.push(txBefore.buyer_contact_id)
     if (txBefore?.seller_contact_id) lifetimeContactIds.push(txBefore.seller_contact_id)
     if (lifetimeContactIds.length > 0) {
-      await supabase
+      // THE ERROR IS NOW READ — the comment below already named this exact defect
+      // ("this write swallows its result, so a refusal would look exactly like a
+      // success and closed deals would stop becoming lifetime customers in
+      // silence") and the `.then(() => null, () => null)` that caused it is gone.
+      // Not failed over: the transaction really did close and unwinding it over a
+      // downstream promotion would be the larger harm.
+      const { error: lifetimePromotionError } = await supabase
         .from("contacts")
         // BOTH COLUMNS, deliberately. `contacts_lifetime_consistent` (dropped by m539
         // along with the `lifetime` spelling it policed) said a lifetime-typed contact
         // must agree with the lifecycle column. m539 does not re-point that CHECK onto
-        // the survivor — this write swallows its result, so a refusal would look exactly
-        // like a success and closed deals would stop becoming lifetime customers in
-        // silence. The invariant is kept HERE instead, at the writer, and asserted by
-        // scripts/contact-vocabulary-guard.ts.
+        // the survivor, so the invariant is kept HERE instead, at the writer, and
+        // asserted by scripts/contact-vocabulary-guard.ts. (This write USED TO swallow
+        // its result — see the note above; it no longer does.)
         .update({ contact_type: LIFETIME_CUSTOMER_TYPE, lifecycle_state: LIFETIME_CUSTOMER_TYPE, updated_at: nowIso })
         .in("id", lifetimeContactIds)
         .eq("brokerage_id", params.brokerageId)
-        .then(() => null, () => null)
+      if (lifetimePromotionError) {
+        console.error(
+          `[transactions] lifetime-customer promotion REFUSED for contacts ${lifetimeContactIds.join(", ")}:`,
+          lifetimePromotionError.message,
+        )
+      }
     }
 
     // 3. Commission records — recalculate + upsert transaction_commissions rows.
@@ -1349,20 +1370,23 @@ export async function closeTransactionCommand(params: {
     //    the task; we just need to plant the prompt here.
     try {
       for (const contactId of lifetimeContactIds) {
-        await supabase.from("activities").insert({
-          brokerage_id:   params.brokerageId,
-          agent_id:       agentRecordId,
-          contact_id:     contactId,
-          transaction_id: params.transactionId,
-          activity_type:  "closing_gift_due",
-          title:          "Send closing gift",
-          description:    "Pick a gift from the marketplace or generate an AI recommendation. Suggested timing: within 7 days of close.",
-          status:         "pending",
-          priority:       "high",
-          entity_type:    "contact",
-          scheduled_at:   new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-          created_at:     nowIso,
-        }).then(() => null, () => null)
+        await bestEffort(
+          supabase.from("activities").insert({
+            brokerage_id:   params.brokerageId,
+            agent_id:       agentRecordId,
+            contact_id:     contactId,
+            transaction_id: params.transactionId,
+            activity_type:  "closing_gift_due",
+            title:          "Send closing gift",
+            description:    "Pick a gift from the marketplace or generate an AI recommendation. Suggested timing: within 7 days of close.",
+            status:         "pending",
+            priority:       "high",
+            entity_type:    "contact",
+            scheduled_at:   new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+            created_at:     nowIso,
+          }),
+          "the transaction is already CLOSED and error-checked above; a gift-reminder task is a nudge, and one missing nudge must not report a completed closing as failed",
+        )
       }
     } catch {}
 
@@ -1498,8 +1522,12 @@ export async function recalculateCommissionStateCommand(params: {
     const agentNet         = agentGross - txFee - royaltyFee
     const brokerageNet     = grossCommission - agentNet
 
-    // Upsert transaction_commissions rows
-    await supabase.from("transaction_commissions").upsert([
+    // Upsert transaction_commissions rows. THIS IS THE DEAL STAMP — the record
+    // retention keeps for seven years and the numbers the agent is paid on. The
+    // command returned { success: true } with freshly computed grossCommission /
+    // agentNet / brokerageNet whatever the write did, so a refusal handed the
+    // caller a recalculation that exists only in memory.
+    const { error: stampError } = await supabase.from("transaction_commissions").upsert([
       {
         transaction_id:    params.transactionId,
         brokerage_id:      params.brokerageId,
@@ -1525,6 +1553,9 @@ export async function recalculateCommissionStateCommand(params: {
         updated_at:        new Date().toISOString(),
       },
     ], { onConflict: "transaction_id,recipient_type" })
+    if (stampError) {
+      return { success: false, error: `Could not persist the recalculated commission stamp: ${stampError.message}` }
+    }
 
     // Write commission_calculations record for audit trail
     await supabase.from("commission_calculations").insert({

@@ -9,6 +9,7 @@ import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { bestEffort } from "@/lib/db/best-effort"
 
 // ============================================================================
 // AI SHOWING MANAGEMENT SYSTEM
@@ -375,8 +376,8 @@ Return JSON only:
 
     // Write an activities row so the showing appears on the agent's activity feed as pending.
     // No calendar_event yet — that is written only when the agent confirms the showing time.
-    try {
-      await supabase.from("activities").insert({
+    await bestEffort(
+      supabase.from("activities").insert({
         brokerage_id:  agentUser?.brokerage_id ?? null,
         agent_id:      agentRecordId,
         contact_id:    params.contactId,
@@ -386,8 +387,9 @@ Return JSON only:
         scheduled_at:  scheduledAt,
         status:        "pending",
         priority:      "high",
-      })
-    } catch { /* non-critical */ }
+      }),
+      "the showings row above is the booking and its error is already checked; this feed row only surfaces the booking to the agent and must not fail a showing that is already scheduled",
+    )
 
     revalidatePath("/showings")
     revalidatePath("/dashboard")

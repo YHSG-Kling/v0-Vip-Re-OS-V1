@@ -28,6 +28,7 @@ import { buildVariableContext, resolveVariables } from "@/lib/workflow/variables
 import { checkSequenceAuthority }  from "./compliance-gate"
 import { decideFirstTouch, FIRST_TOUCH_OUTREACH_CHANNELS } from "./first-touch-coordination"
 import { recordSequenceTouchpoint } from "./touchpoint-bridge"
+import { bestEffort } from "@/lib/db/best-effort"
 import { isDeconflictDeferral, decideDeferral, MAX_DEFERS } from "./deferral-policy"
 import { publishManagerSignal }    from "@/lib/kernel/manager-signals"
 import { KernelEvent }             from "@/lib/kernel/events"
@@ -553,11 +554,14 @@ export async function executeSequenceStep(
   // Stamp the SAME shared ledger speed-to-lead reads; the `.is(null)` guard is idempotent and
   // race-safe — if the ISA stamped between our read and now, we never clobber its channel.
   if (dispatchResult.status === "sent" && claimFirstTouch && contactId) {
-    await supabase
-      .from("contacts")
-      .update({ first_touched_at: now, first_touch_channel: step.channel })
-      .eq("id", contactId)
-      .is("first_touched_at", null)
+    await bestEffort(
+      supabase
+        .from("contacts")
+        .update({ first_touched_at: now, first_touch_channel: step.channel })
+        .eq("id", contactId)
+        .is("first_touched_at", null),
+      "first-touch ledger claim, written AFTER dispatchResult.status === 'sent'; the `.is(null)` guard makes it race-safe and a lost claim only means speed-to-lead does not stand down, never an unconsented send (dispatch re-gates every touch)",
+    )
 
     void publishManagerSignal({
       brokerageId,

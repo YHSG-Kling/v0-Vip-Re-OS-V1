@@ -53,6 +53,7 @@ import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
 import { revalidatePath } from "next/cache"
 import { canApproveCda, canBrokerSignCda, canSendCdaToTitle } from "@/lib/transactions/cda-signing-policy"
 import { buildCdaContractVerdict, expectedGrossFromTerms, sumOutstandingAgentFees, type CdaDiscrepancy } from "@/lib/commission/cda-discrepancy"
+import { bestEffort } from "@/lib/db/best-effort"
 
 const COMPLIANCE_ROLES = new Set([
   "compliance_officer",
@@ -288,7 +289,9 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
     channel: "in_app",
   })
 
-  await supabase.from("activities").insert({
+  // The record that the preliminary CD arrived and a CDA draft is now required.
+  // A lost row here is a compliance step nobody knows is outstanding.
+  const { error: prelimCdActivityError } = await supabase.from("activities").insert({
     transaction_id: input.transactionId,
     brokerage_id: txn.brokerage_id,
     agent_id: txn.agent_id,
@@ -300,6 +303,9 @@ export async function notifyAgentOfPreliminaryCdAction(input: {
     status: "pending",
     notes: JSON.stringify({ cda_id: cdaId, document_id: input.documentId }),
   })
+  if (prelimCdActivityError) {
+    console.error("[cdaPortal] preliminary_cd_received activity REJECTED — the CDA-required step will not appear on the transaction:", prelimCdActivityError.message)
+  }
 
   // ── Cross-party notifications + task (additive) ───────────────────────
   // Existing code above notified the AGENT. Spec calls for cross-portal
@@ -610,17 +616,20 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
   // and outstanding fees, not just gross), so the activity now rides the verdict
   // that actually gates approval instead of a parallel comparison.
   if (submitVerdict && !submitVerdict.passed) {
-    await supabase.from("activities").insert({
-      transaction_id: cda.transaction_id,
-      brokerage_id:   cda.brokerage_id,
-      entity_type:    "transaction",
-      activity_type:  "cda_review_required",
-      title:          "CDA discrepancy — review before approving",
-      description:    `The submitted CDA disagrees with the agent's contract in ${submitVerdict.discrepancies.length} place${submitVerdict.discrepancies.length === 1 ? "" : "s"}. Approval is blocked until it is resolved or manually overridden.`,
-      priority:       "urgent",
-      status:         "pending",
-      notes:          JSON.stringify({ cda_id: cda.id, discrepancies: submitVerdict.discrepancies }),
-    }).then(() => {}, () => {})
+    await bestEffort(
+      supabase.from("activities").insert({
+        transaction_id: cda.transaction_id,
+        brokerage_id:   cda.brokerage_id,
+        entity_type:    "transaction",
+        activity_type:  "cda_review_required",
+        title:          "CDA discrepancy — review before approving",
+        description:    `The submitted CDA disagrees with the agent's contract in ${submitVerdict.discrepancies.length} place${submitVerdict.discrepancies.length === 1 ? "" : "s"}. Approval is blocked until it is resolved or manually overridden.`,
+        priority:       "urgent",
+        status:         "pending",
+        notes:          JSON.stringify({ cda_id: cda.id, discrepancies: submitVerdict.discrepancies }),
+      }),
+      "this only SURFACES the discrepancy for a human; approval is blocked by submitVerdict itself, not by this row, so losing it must not roll back a CDA the agent has already submitted — but the loss is now logged instead of silent",
+    )
   }
 
   // Run signature/initials pre-scan so compliance sees gate status the

@@ -96,7 +96,10 @@ export async function captureProfileLead(input: ProfileLeadInput): Promise<{
     supabase: svc,
   }).catch(() => {})
 
-  await svc.from("activities").insert({
+  // THIS ROW IS THE RECORD OF THE INQUIRY. The kernel's conversation memory
+  // reads it back as "this person reached out"; losing it silently makes the
+  // assistant believe the inquiry never happened. Read the error and say so.
+  const { error: inquiryActivityError } = await svc.from("activities").insert({
     contact_id: contact.id,
     brokerage_id: agent.brokerage_id,
     agent_user_id: agent.user_id,
@@ -104,6 +107,9 @@ export async function captureProfileLead(input: ProfileLeadInput): Promise<{
     description: `Inquiry from agent public profile: ${input.message ? `"${input.message}"` : "general contact request"}`,
     metadata: { source: "agent_public_profile" },
   })
+  if (inquiryActivityError) {
+    console.error("[agentPublicProfile] profile_inquiry activity REJECTED — the contact's timeline will not show this inquiry:", inquiryActivityError.message)
+  }
 
   await svc.from("notifications").insert({
     user_id: agent.user_id,

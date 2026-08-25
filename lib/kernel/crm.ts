@@ -350,7 +350,9 @@ export async function createOrUpdateContactFromDirectIntake(
   })
 
   // ── 4. Create first activity (intake note) ──────────────────────────────
-  await supabase.from("activities").insert({
+  // The CRM contact timeline is built from `activities` (see COMMAND 12), so
+  // this is the row that makes a new contact look like it exists at all.
+  const { error: intakeActivityError } = await supabase.from("activities").insert({
     brokerage_id:  params.brokerage_id,
     agent_id:      params.agent_id,
     contact_id:    contactId,
@@ -360,6 +362,9 @@ export async function createOrUpdateContactFromDirectIntake(
     entity_type:   "contact",
     status:        "completed",
   })
+  if (intakeActivityError) {
+    console.error("[kernel/crm] intake activity REJECTED — the contact exists but its timeline starts empty:", intakeActivityError.message)
+  }
 
   // ── 5. Queue enrichment (non-blocking) ──────────────────────────────────
   void enrichContactAfterIntake({ contactId, brokerageId: params.brokerage_id }).catch(() => {})
@@ -701,7 +706,23 @@ export async function convertLeadToContact(params: {
   // serviceConvertLeadToContact). Skip on a dedup-merge so we never silently
   // re-enable ISA on an existing contact an agent had toggled off.
   if (!result.isDuplicate) {
-    await supabase.from("contacts").update({ ai_isa_enabled: true }).eq("id", result.contactId)
+    // READ AND REPORTED, NEVER SWALLOWED — the same contract the deactivateLead
+    // block above states in words. `ai_isa_enabled` is an AUTONOMY flag, and a
+    // refusal here used to be indistinguishable from success, so a conversion
+    // could report "done" while the ISA was never actually armed for the new
+    // contact and nobody could tell which contacts that had happened to.
+    //
+    // The conversion itself is NOT failed over this: the contact EXISTS, and
+    // failing to ARM autonomy errs toward less automated outreach, not more —
+    // the opposite direction from a lost suppression. Reversing a completed
+    // conversion would be the larger harm.
+    const { error: armError } = await supabase.from("contacts").update({ ai_isa_enabled: true }).eq("id", result.contactId)
+    if (armError) {
+      console.error(
+        `[crm] lead ${params.leadId} converted to contact ${result.contactId} but ai_isa_enabled was NOT set: ${armError.message} — ` +
+          `the AI ISA will not engage this contact until an agent toggles it on.`,
+      )
+    }
   }
 
   return result
@@ -748,11 +769,21 @@ export async function attachLeadOriginHistoryToContact(params: {
   if (lead.source_subtype)                          updates.source_subtype = lead.source_subtype
   if (lead.campaign_attribution_id)                 updates.campaign_attribution_id = lead.campaign_attribution_id
 
-  await supabase
+  // The error is READ. This write is the WHOLE POINT of the command — the
+  // referral_sources mirror was deliberately removed (note below), so contacts is
+  // now the only place the attribution lands. A refusal returned { success: true }
+  // with nothing attached.
+  const { error: attributionError } = await supabase
     .from("contacts")
     .update(updates)
     .eq("id", params.contactId)
     .eq("brokerage_id", params.brokerageId)
+  if (attributionError) {
+    console.error(
+      `[crm] lead-origin attribution write REFUSED for contact ${params.contactId}:`,
+      attributionError.message,
+    )
+  }
 
   // Keep-one: the same values already land on contacts.source/source_family above,
   // which is the read surface for attribution — the referral_sources insert was a
@@ -1004,7 +1035,10 @@ export async function archiveContactRecord(params: {
   // `notes: JSON.stringify(...)` spelling is deliberately NOT ported, because the
   // timeline reader selects title/description and would have shown nothing.
   const archivedRow = archived[0] as { contact_user_id?: string | null; agent_id?: string | null }
-  await supabase.from("activities").insert({
+  // The comment above is precisely about a record that "vanished with no entry
+  // saying who removed it or when". A rejected insert reproduces that exactly,
+  // so this one reports instead of assuming.
+  const { error: archiveActivityError } = await supabase.from("activities").insert({
     brokerage_id:  params.brokerageId,
     agent_id:      params.agentId ?? archivedRow.agent_id ?? null,
     contact_id:    params.contactId,
@@ -1024,6 +1058,9 @@ export async function archiveContactRecord(params: {
     },
     created_at:    now,
   })
+  if (archiveActivityError) {
+    console.error("[kernel/crm] contact_archived activity REJECTED — the archive left no trace on the timeline the CRM renders:", archiveActivityError.message)
+  }
 
   return { success: true }
 }

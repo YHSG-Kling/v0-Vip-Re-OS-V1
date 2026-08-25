@@ -1165,11 +1165,19 @@ export async function routeHistoryToCanonicalEntity(
           .eq("id", entityId)
           .eq("brokerage_id", ctx.brokerageId)
       } else {
-        await supabase
+        // FAIL CLOSED (CLAUDE.md §4). supabase-js RESOLVES a refused UPDATE, so
+        // this discarded result let a rejected opt-out return `{ success: true }`
+        // — the inbound "STOP" was acknowledged to the caller while the contact
+        // row still permitted outreach.
+        const { error: dncError } = await supabase
           .from("contacts")
           .update({ dnc_status: true, isa_reengage_allowed: false, updated_at: now })
           .eq("id", entityId)
           .eq("brokerage_id", ctx.brokerageId)
+        if (dncError) {
+          console.error(`[ai-isa] contact opt-out write REFUSED for ${entityId}:`, dncError.message)
+          return { success: false, error: `Contact opt-out write refused: ${dncError.message}` }
+        }
       }
     }
 

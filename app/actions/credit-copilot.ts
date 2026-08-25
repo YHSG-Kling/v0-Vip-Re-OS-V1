@@ -1,6 +1,7 @@
 "use server"
 
 import { createServerClient } from "@/lib/supabase/server"
+import { bestEffort } from "@/lib/db/best-effort"
 import { getAgentContext } from "@/lib/identity"
 import { agentIdForUser } from "@/lib/agents/agent-for-user"
 import { logCreditStatusUpdated } from "@/lib/events"
@@ -650,7 +651,10 @@ async function triggerCreditFlowActions(accountId: string, stage: string, accoun
         // notifications requires a user recipient and external credit partners have
         // no platform user — record the submission on the contact's activity
         // timeline instead (the phantom recipient_type insert failed silently).
-        await supabase.from("activities").insert({
+        // The comment above records that the previous shape "failed silently".
+        // This one does not get to: the row IS the notice to the partner, since
+        // an external credit partner has no platform user to notify.
+        const { error: creditSubmittedError } = await supabase.from("activities").insert({
           contact_id: account.contact_id,
           activity_type: "credit_application_submitted",
           title: "Credit application submitted to partner",
@@ -658,10 +662,16 @@ async function triggerCreditFlowActions(accountId: string, stage: string, accoun
           status: "completed",
           created_at: new Date().toISOString(),
         })
+        if (creditSubmittedError) {
+          console.error("[creditCopilot] credit_application_submitted activity REJECTED — the partner submission has no record:", creditSubmittedError.message)
+        }
       }
 
       // Update contact credit pipeline stage
-      await supabase.from("contacts").update({ credit_pipeline_stage: "in_program" }).eq("id", account.contact_id)
+      await bestEffort(
+        supabase.from("contacts").update({ credit_pipeline_stage: "in_program" }).eq("id", account.contact_id),
+        "mirrors credit_accounts onto the contact for CRM display; credit_accounts is the ledger of record and this flow already wrote it, so a lost mirror is a stale badge, not a lost fact",
+      )
       break
 
     case "flow_d": // Approved
@@ -698,13 +708,16 @@ async function triggerCreditFlowActions(accountId: string, stage: string, accoun
         .eq("id", accountId)
 
       // Update contact status
-      await supabase
-        .from("contacts")
-        .update({
-          credit_pipeline_stage: "target_score_reached",
-          credit_status: "good",
-        })
-        .eq("id", account.contact_id)
+      await bestEffort(
+        supabase
+          .from("contacts")
+          .update({
+            credit_pipeline_stage: "target_score_reached",
+            credit_status: "good",
+          })
+          .eq("id", account.contact_id),
+        "mirrors the closed credit_accounts row onto the contact for CRM display; credit_accounts.account_status='closed' was written just above and is the ledger of record, so a lost mirror is a stale badge, not a lost fact",
+      )
 
       // Create celebration task
       await insertCreditTask({

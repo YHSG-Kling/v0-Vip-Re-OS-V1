@@ -23,6 +23,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { bestEffort } from "@/lib/db/best-effort"
 
 export type SignalSource =
   | "offer_lost"
@@ -234,7 +235,10 @@ export async function applySignalDelta(delta: SignalDelta): Promise<{ applied: b
     contactUpdate.intent_score = next.intent
   }
   if (Object.keys(contactUpdate).length) {
-    await supabase.from("contacts").update(contactUpdate).eq("id", delta.contactId)
+    await bestEffort(
+      supabase.from("contacts").update(contactUpdate).eq("id", delta.contactId),
+      "only-pushes-up mirror of two derived score columns; the authoritative snapshot is the lead_score_history row inserted below (whose error IS checked), and the next signal recomputes from it",
+    )
   }
 
   // Write the full audit snapshot. Readiness lives in factors only (no

@@ -77,9 +77,11 @@ export async function searchVendors(filters: {
   // Apply filters
   //
   // §6 / m561 — WAS `.ilike("category", '%serviceType%')`. The picker that feeds
-  // this offered "escrow" and "surveyor", neither of which is a member of the
-  // 39-value CHECK, so both returned an empty directory that read as "your
-  // brokerage has no vendors". And `%lender%` over-matched, silently folding
+  // this offered "escrow" and "surveyor", neither of which was a member of the
+  // then 39-value CHECK, so both returned an empty directory that read as "your
+  // brokerage has no vendors". (`surveyor` became a member at m562 and now
+  // matches exactly; `escrow` normalises to `title`.) And `%lender%`
+  // over-matched, silently folding
   // every `refinance_lender` into a purchase-lender search. Normalize to a
   // member, then match it exactly; an unplaceable trade is REFUSED and says so
   // rather than rendering as an empty bench.

@@ -18,8 +18,9 @@ import { randomUUID } from "crypto"
  * FALSE: the ONE welcome email (lib/kernel/client-welcome.ts) carries the portal door, and a
  * second OTP mail racing it is the duplicate the owner's "welcome email is the FIRST on
  * conversion" ruling forbids. It stays TRUE where no agent-signed welcome will be produced
- * (an agent's manual CRM invite, a home-value report, a contact type resolveWelcomeSide
- * declines) — there it is the only thing that tells the contact their portal exists.
+ * (an agent's manual CRM invite, a home-value report, a contact type no manager picks
+ * up — see resolveWelcomeManagers) — there it is the only thing that tells the contact
+ * their portal exists.
  */
 export interface IssuePortalInviteParams {
   contactId:        string

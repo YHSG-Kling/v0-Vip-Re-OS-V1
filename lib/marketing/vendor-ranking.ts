@@ -31,13 +31,19 @@
 // vendors.category (verified against pg_constraint)".
 //
 // IT HAD ALREADY DRIFTED, and drifted in the direction that hurts: it held 38
-// values where the survivor and the live CHECK hold 39. m554 added `appraiser`
-// to both twin CHECKs and to the survivor, and this copy was not moved. So
-// `isVendorCategory("appraiser")` answered FALSE here and TRUE at
+// values where the survivor and the live CHECK held 39 at the time (40 since
+// m562 added `surveyor`). m554 added `appraiser` to both twin CHECKs and to the
+// survivor, and this copy was not moved. So `isVendorCategory("appraiser")`
+// answered FALSE here and TRUE at
 // lib/kernel/vendor-categories.ts:isVendorCategory — one module calling a live,
 // bookable, state-licensed trade invalid while the database accepted it. That is
 // exactly the "scorers cannot match writers across two spellings" failure §6
 // names, and it took nine days to appear.
+//
+// DELETING THE COPY IS WHAT MADE m562 CHEAP. Because this module now re-exports
+// the survivor, adding `surveyor` was one edit in one file instead of a hunt —
+// and no count here needs maintaining. The numbers above are history, not a
+// live assertion; the guard derives every count from the vocabulary cache.
 //
 // SURVIVOR: lib/kernel/vendor-categories.ts:54 (VENDOR_CATEGORIES),
 // :71 (VendorCategory), :152 (isVendorCategory) — which additionally carries the

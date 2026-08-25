@@ -10,6 +10,7 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel"
 import { processOptOut } from "@/app/actions/ai-isa/process-opt-out"
 import { detectOptOutIntent } from "@/lib/ai-isa/opt-out-utils"
+import { bestEffort } from "@/lib/db/best-effort"
 
 export const dynamic = "force-dynamic"
 
@@ -228,10 +229,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const now = new Date().toISOString()
 
   if (entityType === "contact") {
-    await supabase
-      .from("contacts")
-      .update({ last_contacted_at: now })
-      .eq("id", entityId)
+    await bestEffort(
+      supabase
+        .from("contacts")
+        .update({ last_contacted_at: now })
+        .eq("id", entityId),
+      "recency stamp on an inbound message that is already persisted by the spine; the OPT-OUT detection for this same message runs at step 7b below and is a separate, error-checked write",
+    )
   } else {
     await supabase
       .from("leads")

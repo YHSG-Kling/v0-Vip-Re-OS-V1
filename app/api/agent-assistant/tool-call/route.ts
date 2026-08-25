@@ -31,6 +31,7 @@ import "server-only"
 import { type NextRequest, NextResponse } from "next/server"
 import { timingSafeEqual } from "node:crypto"
 import { createServiceClient } from "@/lib/supabase/service"
+import { bestEffort } from "@/lib/db/best-effort"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const runtime = "nodejs"
@@ -1459,10 +1460,13 @@ async function logActivity(
   if (error || !data) return { error: error?.message ?? "Failed to log activity" }
 
   // Bump contacts.last_contacted_at so the CRM reflects the touchpoint.
-  await supabase
-    .from("contacts")
-    .update({ last_contacted_at: new Date().toISOString() })
-    .eq("id", contactId)
+  await bestEffort(
+    supabase
+      .from("contacts")
+      .update({ last_contacted_at: new Date().toISOString() })
+      .eq("id", contactId),
+    "recency stamp mirroring the activities row that was just inserted AND error-checked above; the activity is the record of the touchpoint, this only keeps the CRM's 'last touched' column agreeing with it",
+  )
 
   // Surface the spoken action on the manager bus → the Command Center's "managers talking".
   const { surfaceVoiceActionOnBus } = await import("@/lib/voice/voice-bus")

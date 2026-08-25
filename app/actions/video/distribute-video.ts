@@ -135,8 +135,9 @@ export async function distributeVideo(
         return { success: false, error: postError.message }
       }
 
-      // Log activity
-      await supabase.from("activities").insert({
+      // Log activity. The social_posts row above already checked its error and
+      // returns on failure; this is the record that distribution happened.
+      const { error: distributedActivityError } = await supabase.from("activities").insert({
         brokerage_id: params.brokerageId,
         agent_id: actingAgentId,
         activity_type: "video_distributed",
@@ -145,6 +146,9 @@ export async function distributeVideo(
         status: "completed",
         entity_type: "video_project",
       })
+      if (distributedActivityError) {
+        console.error("[distributeVideo] video_distributed activity REJECTED — the post is scheduled but unrecorded:", distributedActivityError.message)
+      }
 
       return { success: true, socialPostId: post?.id }
     }

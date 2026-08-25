@@ -638,7 +638,15 @@ export async function removeCommuteDestination(
   const cf = readMetadata(data?.metadata)
   const existing: CommuteDestination[] = Array.isArray(cf.commute_destinations) ? cf.commute_destinations : []
   const next = existing.filter((d) => d.name.toLowerCase() !== name.toLowerCase())
-  await supabase.from("contacts").update({ metadata: { ...cf, commute_destinations: next } }).eq("id", contactId)
+  // The error is READ. This returns `{ success: true, destinations: next }` and
+  // the UI redraws from `next`, so a refused write showed the destination gone
+  // while the row still held it — the list reappears on the next load with no
+  // trace of why. Not failed over (the caller's contract is unchanged and this is
+  // a display preference, not consent), but the loss is no longer invisible.
+  const { error: removeError } = await supabase.from("contacts").update({ metadata: { ...cf, commute_destinations: next } }).eq("id", contactId)
+  if (removeError) {
+    console.error(`[smart-insights] commute destination removal REFUSED for contact ${contactId}:`, removeError.message)
+  }
   let commute: Record<string, any> | null = null
   if (refresh) commute = await regeneratePropertyCommute(refresh.propertyId, contactId, refresh.propertyData, next).catch(() => null)
   return { success: true, destinations: next, commute }

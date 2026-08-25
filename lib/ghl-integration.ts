@@ -128,7 +128,13 @@ export class GHLIntegration {
         const result = response.data ?? {}
 
         // Save GHL contact ID back to Supabase
-        await supabase.from("contacts").update({ ghl_contact_id: result.contact?.id }).eq("id", contactId)
+        // The error is READ. This is the ONLY link back to the row just created in
+        // GHL — a refusal returns success with a ghlContactId the platform never
+        // stored, so the next sync creates a SECOND GHL contact for the same person.
+        const { error: ghlLinkError } = await supabase.from("contacts").update({ ghl_contact_id: result.contact?.id }).eq("id", contactId)
+        if (ghlLinkError) {
+          console.error(`[ghl] ghl_contact_id link-back REFUSED for contact ${contactId}:`, ghlLinkError.message)
+        }
 
         return { success: true, ghlContactId: result.contact?.id }
       }

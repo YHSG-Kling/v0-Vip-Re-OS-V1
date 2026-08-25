@@ -541,7 +541,9 @@ export async function createTransactionFromOffer(params: {
   } catch { /* best-effort — the deadline-watcher + reapers are the safety net */ }
 
   // Create first activity — Agent task (correct location, no changes) — activity_type: transaction_started
-  await supabase.from("activities").insert({
+  // The transaction's first task. A lost row is a deal under contract whose
+  // "schedule inspection" next-action never appears for the agent.
+  const { error: transactionStartedActivityError } = await supabase.from("activities").insert({
     transaction_id: transaction.id,
     brokerage_id:   params.brokerageId,
     agent_id:       (offer as any).agent_id,  // buyer_agents table does NOT exist
@@ -552,6 +554,9 @@ export async function createTransactionFromOffer(params: {
     status:         "pending",
     created_at:     new Date().toISOString(),
   })
+  if (transactionStartedActivityError) {
+    console.error(`[offer-bridge] transaction_started activity REJECTED for transaction ${transaction.id} — the agent gets no first task:`, transactionStartedActivityError.message)
+  }
   
   // Client-facing "under contract" card now flows through the canonical kernel template path
   // (idempotent + buyer/seller-aware) instead of a one-off direct transparency_updates write — this

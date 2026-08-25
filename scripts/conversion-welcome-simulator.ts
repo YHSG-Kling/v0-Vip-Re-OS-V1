@@ -28,8 +28,11 @@
  *   Layer 2  THE SWEEPER STATE MACHINE, including the deadline that is checked
  *            BEFORE the assembly gate so nothing waits forever, and the ledger
  *            statuses derived from the LIVE CHECK vocabulary rather than hardcoded.
- *   Layer 3  ONE EMAIL, NEVER TWO AND NEVER ZERO: resolveWelcomeSide decides, and
- *            the magic-link fallback is armed by exactly its complement.
+ *   Layer 3  ONE EMAIL, NEVER TWO AND NEVER ZERO, AND IT IS PICKED UP BY A NAMED
+ *            MANAGER: resolveWelcomeManagers decides WHO owns it (seller →
+ *            listing_concierge, buyer → shopping_agent, both → BOTH, lifetime
+ *            customer → sphere_of_influence), and the magic-link fallback is armed
+ *            by exactly the complement — the EMPTY manager set.
  *   Layer 4  THEM-FIRST AND COMPLIANCE-FIRST: the situation resolver is the one
  *            personalizer, a HIGH-severity fair-housing phrase in the CRM never
  *            reaches the writing prompt, medium/low rides through as a warning.
@@ -54,7 +57,17 @@ import {
   PENDING_WELCOME_STATUSES,
   WELCOME_VIDEO_WAIT_MS,
 } from "../lib/contact-promotion/conversion-welcome"
-import { resolveWelcomeSide } from "../lib/kernel/client-welcome"
+import {
+  resolveWelcomeManagers,
+  welcomeJourneyFor,
+  composeClientWelcome,
+  WELCOME_CO_OWNERSHIP_SIGNAL,
+  type WelcomeManagerKey,
+} from "../lib/kernel/client-welcome"
+import { MANAGERS, MANAGER_COLLABORATIONS } from "../lib/kernel/manager-registry"
+import { SIGNAL_REGISTRY } from "../lib/kernel/signal-registry"
+import { classifyCoordination } from "../lib/kernel/coordination-kind"
+import { contactReelPersona } from "../lib/ai-isa/contact-reel-situation"
 import {
   buildWelcomeSituation,
   describeDroppedFacts,
@@ -210,7 +223,7 @@ function layer2_sweeper() {
 // ─── LAYER 3 — ONE EMAIL, NEVER TWO AND NEVER ZERO ───────────────────────────
 
 function layer3_oneEmail() {
-  console.log("\nLayer 3 — exactly one welcome email per converted contact")
+  console.log("\nLayer 3 — exactly one welcome email per converted contact, picked up by a NAMED manager")
 
   // Every value the conversion lanes can produce (resolveContactType clamps to
   // the live contacts_contact_type_check vocabulary).
@@ -218,24 +231,125 @@ function layer3_oneEmail() {
   check("CONTROL: the live contacts.contact_type vocabulary is readable",
     liveTypes.length > 0, `read ${liveTypes.length} values`)
 
-  check("a buyer gets the buyer journey", resolveWelcomeSide("buyer") === "buyer")
-  check("a seller gets the seller journey", resolveWelcomeSide("seller") === "seller")
-  check("an INVESTOR gets a welcome (buyer journey) — the conversion lanes produce\n    this type and it used to fall through to no welcome at all",
-    resolveWelcomeSide("investor") === "buyer")
-  check("'both' starts on the SELLER side — a dual-sided move starts with the home\n    they already own",
-    resolveWelcomeSide("both") === "seller")
-  check("a VENDOR gets no agent welcome — a counterparty is not a client",
-    resolveWelcomeSide("vendor") === null)
-  check("a REFERRAL PARTNER gets no agent welcome",
-    resolveWelcomeSide("referral_partner") === null)
-  check("an empty/unknown type gets no welcome rather than a guessed journey",
-    resolveWelcomeSide(null) === null && resolveWelcomeSide("") === null && resolveWelcomeSide("prospect") === null)
+  // ── THE OWNER'S FOUR CASES, VERBATIM ──────────────────────────────────────
+  // "the welcome email is picked up by the listing concierge if it is a seller,
+  //  shopping agent for a buyer, both listing concierge and shopping agent for both
+  //  seller and buyer, sphere if lifetime."
+  const eq = (a: readonly string[], b: readonly string[]) =>
+    a.length === b.length && a.every((v, i) => v === b[i])
 
-  // THE ONE-EMAIL INVARIANT. The magic link is armed by EXACTLY the complement of
-  // resolveWelcomeSide, so no contact type can produce two emails or none.
+  check("a SELLER is picked up by the listing concierge",
+    eq(resolveWelcomeManagers("seller"), ["listing_concierge"]),
+    resolveWelcomeManagers("seller").join(",") || "none")
+  check("a BUYER is picked up by the shopping agent",
+    eq(resolveWelcomeManagers("buyer"), ["shopping_agent"]),
+    resolveWelcomeManagers("buyer").join(",") || "none")
+  check("'both' is picked up by BOTH the listing concierge AND the shopping agent —\n    two managers, not one; the old resolver collapsed this to seller-only",
+    eq(resolveWelcomeManagers("both"), ["listing_concierge", "shopping_agent"]),
+    resolveWelcomeManagers("both").join(",") || "none")
+  check("a LIFETIME CUSTOMER is picked up by the Sphere Manager — this contact\n    previously matched NO branch and got no agent-signed welcome at all",
+    eq(resolveWelcomeManagers("lifetime_customer"), ["sphere_of_influence"]),
+    resolveWelcomeManagers("lifetime_customer").join(",") || "none")
+
+  // MUTATION CONTROLS — the assertions above must FAIL on the old behaviour.
+  // (§2: an assertion that passes on the broken code is worthless.)
+  const collapsedBoth = ["listing_concierge"]                      // the OLD `both` → "seller"
+  const unroutedLifetime: string[] = []                            // the OLD lifetime → null
+  check("CONTROL: a 'both' contact routed to only ONE manager FAILS the assertion\n    above — the finder can still see the exact defect it was written for",
+    !eq(collapsedBoth, resolveWelcomeManagers("both")))
+  check("CONTROL: a 'lifetime_customer' routed to NOTHING FAILS the assertion above",
+    !eq(unroutedLifetime, resolveWelcomeManagers("lifetime_customer")))
+
+  // A RETIRED SPELLING IS THE SAME PERSON (m539 retired 'lifetime'/'past_client').
+  check("a legacy 'past_client' row reaches the Sphere Manager too — the canonical\n    isLifetimeCustomerType is tolerant of the spellings m539 retired, so an\n    imported row is not dropped on the floor",
+    eq(resolveWelcomeManagers("past_client"), ["sphere_of_influence"]))
+
+  check("an INVESTOR is picked up by the shopping agent — the conversion lanes\n    produce this type and it used to fall through to no welcome at all",
+    eq(resolveWelcomeManagers("investor"), ["shopping_agent"]))
+  check("a VENDOR is picked up by nobody — a counterparty is not a client",
+    resolveWelcomeManagers("vendor").length === 0)
+  check("a REFERRAL PARTNER is picked up by nobody",
+    resolveWelcomeManagers("referral_partner").length === 0)
+  check("an empty/unknown type is picked up by nobody rather than a guessed journey",
+    resolveWelcomeManagers(null).length === 0
+    && resolveWelcomeManagers("").length === 0
+    && resolveWelcomeManagers("prospect").length === 0)
+
+  // EVERY NAME IS A REAL REGISTERED MANAGER (§6 — no second spelling).
+  const everyManager = liveTypes.flatMap((t) => resolveWelcomeManagers(t))
+  check("every manager the resolver can name is a REAL key of the manager registry",
+    everyManager.length > 0 && everyManager.every((m) => m in MANAGERS),
+    `named: ${[...new Set(everyManager)].join(",")}`)
+  check("CONTROL: the registry lookup is real — an invented manager is NOT a key",
+    !("listing_conceirge" in MANAGERS))
+
+  // ── THE JOURNEY VOCABULARY IS THE ONE THE REEL ALREADY USES (§6) ──────────
+  check("the journey is derived from the MANAGER SET, not from contact_type a\n    second time: seller→seller, buyer→buyer, both→both, lifetime→lifetime",
+    welcomeJourneyFor(resolveWelcomeManagers("seller")) === "seller"
+    && welcomeJourneyFor(resolveWelcomeManagers("buyer")) === "buyer"
+    && welcomeJourneyFor(resolveWelcomeManagers("both")) === "both"
+    && welcomeJourneyFor(resolveWelcomeManagers("lifetime_customer")) === "lifetime")
+  check("...and an empty manager set has NO journey",
+    welcomeJourneyFor([]) === null && welcomeJourneyFor(resolveWelcomeManagers("vendor")) === null)
+  check("the EMAIL's journey and the welcome REEL's persona agree on every type the\n    email is sent for — one vocabulary for 'which lane is this person on', not\n    two (the reel side already honoured the ruling while the email collapsed it)",
+    liveTypes
+      .filter((t) => resolveWelcomeManagers(t).length > 0)
+      .every((t) => welcomeJourneyFor(resolveWelcomeManagers(t)) === contactReelPersona(t)),
+    liveTypes.filter((t) => resolveWelcomeManagers(t).length > 0)
+      .map((t) => `${t}:${welcomeJourneyFor(resolveWelcomeManagers(t))}/${contactReelPersona(t)}`).join(" "))
+  check("CONTROL: the two resolvers are NOT trivially equal — contactReelPersona\n    defaults a vendor to 'buyer' while the welcome sends them nothing, so the\n    agreement above is a real match and not an identity",
+    contactReelPersona("vendor") === "buyer" && resolveWelcomeManagers("vendor").length === 0)
+
+  // EVERY JOURNEY HAS ITS OWN COPY — a 'both' or a lifetime client must not be
+  // handed the seller map with a different subject line.
+  const bodies = (["buyer", "seller", "both", "lifetime"] as const)
+    .map((j) => composeClientWelcome({ journey: j, addressAs: "Sam", agentName: "Dana Reed" }))
+  check("all FOUR journeys compose a distinct subject AND a distinct body — the two\n    new journeys are real copy, not a relabelled seller map",
+    new Set(bodies.map((b) => b.subject)).size === 4
+    && new Set(bodies.map((b) => b.body)).size === 4)
+  check("the LIFETIME welcome sells nothing — no journey step promises a transaction\n    the past client did not ask for",
+    !/we'll (sell|find)/i.test(bodies[3].subject) && /lifetime|stay in your corner|next move/i.test(bodies[3].subject + bodies[3].body))
+  check("the BOTH welcome names BOTH halves of the move",
+    /sell/i.test(bodies[2].body) && /search|next one|buy/i.test(bodies[2].body))
+
+  // ── HOW THE SECOND MANAGER ACTUALLY PICKS IT UP ───────────────────────────
+  const welcome = src("lib/kernel/client-welcome.ts")
+  check("the co-ownership signal type is CATALOGUED in the signal registry — an\n    uncatalogued published type is the orphan test:signal-integrity fails on",
+    !!SIGNAL_REGISTRY[WELCOME_CO_OWNERSHIP_SIGNAL])
+  check("...and its declared kind matches the live classifier (the feed renders it\n    as declared)",
+    SIGNAL_REGISTRY[WELCOME_CO_OWNERSHIP_SIGNAL]?.kind === classifyCoordination(WELCOME_CO_OWNERSHIP_SIGNAL))
+  check("...and it is FEED-ONLY with no declared consumer, so it promises no handler\n    that does not exist",
+    SIGNAL_REGISTRY[WELCOME_CO_OWNERSHIP_SIGNAL]?.disposition === "feed_only"
+    && (SIGNAL_REGISTRY[WELCOME_CO_OWNERSHIP_SIGNAL]?.consumers.length ?? 1) === 0)
+  check("the co-owner is reached on the EXISTING inter-manager bus — publishManagerSignal,\n    not a second rail invented for this",
+    /publishManagerSignal\(/.test(welcome) && /manager-signals/.test(welcome))
+  check("CONTROL: the survivor writes NO second agent_client_messages row for the\n    co-owner — a second ledger row would be a second welcome",
+    (welcome.match(/proposeClientMessage\(\{/g) ?? []).length === 1)
+  const bothRoute = resolveWelcomeManagers("both") as WelcomeManagerKey[]
+  check("the `both` route is a DECLARED collaboration edge in the manager registry —\n    the co-ownership signal rides governance that already existed",
+    Object.values(MANAGER_COLLABORATIONS).some((d) =>
+      bothRoute.every((m) => (d.managers as readonly string[]).includes(m))))
+  check("CONTROL: an UNDECLARED pair would not be found by that matcher",
+    !Object.values(MANAGER_COLLABORATIONS).some((d) =>
+      (d.managers as readonly string[]).includes("sphere_of_influence")
+      && (d.managers as readonly string[]).includes("cron_manager")))
+  check("the co-ownership signal is published as soon as the LEDGER ROW exists, not\n    behind a successful send — a co-owner who only hears about the welcomes that\n    went out cannot notice the ones the autonomy gate held",
+    welcome.indexOf("notifyCoOwningManagers(") > -1
+    && welcome.indexOf("notifyCoOwningManagers(", welcome.indexOf("const messageId = res.id"))
+       < welcome.indexOf("const send = await dispatchEmail("))
+
+  // THE OWNING MANAGER IS THE ONE ON BOTH ARTEFACTS.
+  check("the ledger row's agent_kind AND the governed send's managerKey are the SAME\n    owning manager — one manager gates what one manager is credited with",
+    /agentKind:\s*owningManager/.test(welcome) && /managerKey:\s*owningManager/.test(welcome))
+  check("CONTROL: the retired `welcome_side` metadata spelling is gone — one\n    vocabulary, not two (§6)",
+    !/welcome_side/.test(welcome) && /welcome_journey/.test(welcome))
+
+  // ── THE ONE-EMAIL INVARIANT ───────────────────────────────────────────────
+  // The magic link is armed by EXACTLY the complement of resolveWelcomeManagers,
+  // so no contact type can produce two emails or none.
   const conversionSource = src("lib/contact-promotion/conversion-welcome.ts")
-  check("the invite core's magic link is armed by exactly `side === null` — the\n    complement of 'an agent welcome is going out', which is what makes the count\n    exactly one for every contact type",
-    /sendMagicLink:\s*side === null/.test(conversionSource))
+  check("the invite core's magic link is armed by exactly `welcomeManagers.length === 0`\n    — the complement of 'a manager picks this welcome up', which is what makes the\n    count exactly one for every contact type",
+    /sendMagicLink:\s*welcomeManagers\.length === 0/.test(conversionSource))
   check("CONTROL: the finder would see a hardcoded `sendMagicLink: true` here",
     !/sendMagicLink:\s*true/.test(conversionSource))
 
@@ -245,16 +359,19 @@ function layer3_oneEmail() {
   // duplicate, one lane over.
   const capture = src("lib/contact-pipeline/contact-capture.ts")
   check("the warm-capture path arms its magic link by the SAME complement, so it\n    cannot stack a generic OTP mail on top of the agent-signed welcome",
-    /sendMagicLink:\s*resolveWelcomeSide\([\s\S]{0,60}?\)\s*===\s*null/.test(capture))
+    /sendMagicLink:\s*resolveWelcomeManagers\([\s\S]{0,60}?\)\.length === 0/.test(capture))
   check("CONTROL: capture still issues the invite ROW unconditionally — the grant\n    and the email are different things",
     /createSystemPortalInvite\(\{/.test(capture))
 
   // POSITIVE CONTROL for the whole layer: at least one live type on each side.
-  const sided = liveTypes.filter((t) => resolveWelcomeSide(t) !== null)
-  const unsided = liveTypes.filter((t) => resolveWelcomeSide(t) === null)
+  const welcomed = liveTypes.filter((t) => resolveWelcomeManagers(t).length > 0)
+  const unwelcomed = liveTypes.filter((t) => resolveWelcomeManagers(t).length === 0)
   check("CONTROL: the live vocabulary splits BOTH ways — some types welcome, some\n    do not (a resolver that answered uniformly would pass every case above)",
-    sided.length > 0 && unsided.length > 0,
-    `welcomed: ${sided.join(",")} | not: ${unsided.join(",")}`)
+    welcomed.length > 0 && unwelcomed.length > 0,
+    `welcomed: ${welcomed.join(",")} | not: ${unwelcomed.join(",")}`)
+  check("CONTROL: EXACTLY ONE live contact_type produces a TWO-manager welcome —\n    'both'. A resolver that co-owned everything would pass the `both` case above",
+    liveTypes.filter((t) => resolveWelcomeManagers(t).length > 1).join(",") === "both",
+    liveTypes.filter((t) => resolveWelcomeManagers(t).length > 1).join(",") || "none")
 }
 
 // ─── LAYER 4 — THEM-FIRST, COMPLIANCE-FIRST ──────────────────────────────────
@@ -297,6 +414,40 @@ function layer4_situation() {
   // Every fact is written from the client's side of the table.
   check("every situational fact is them-first (\"they\"/\"their\"), never\n    brokerage-first (\"we specialise in\")",
     situational.facts.every((f) => /\b(they|their|them)\b/i.test(f)))
+
+  // ── THE WORDING IS CHOSEN BY SITUATION OR PERSONA, NOT BY CONTACT TYPE ────
+  // OWNER RULING: "kernel says that the wording is by their situation or persona".
+  const withPersona = buildWelcomeSituation({ contact_type: "buyer", contact_persona: "first_time" })
+  check("the ONE situation resolver publishes the contact's SCREENED persona, so the\n    writing prompt's `situation` can be their persona rather than their type",
+    withPersona.personaLabel === "first_time")
+  check("...and a row with NO persona publishes NULL — the journey phrase is the\n    honest floor, never a guessed persona",
+    buildWelcomeSituation({ contact_type: "buyer" }).personaLabel === null)
+  check("CONTROL: a HARD fair-housing phrase in contact_persona leaves personaLabel\n    NULL — the screen governs THIS exit too, so the wording door cannot be used\n    to walk a dropped phrase past the writer (§5)",
+    dirty.personaLabel === null && dirty.droppedFacts.length > 0)
+
+  // Every persona the live CHECK admits must survive the screen — a vocabulary
+  // value the screener silently ate would be a wording nobody could ever use.
+  const livePersonas = CHECK_VOCABULARIES.contacts?.contact_persona ?? []
+  check("CONTROL: the live contacts.contact_persona vocabulary is readable",
+    livePersonas.length > 0, `read ${livePersonas.length} values`)
+  check("every persona the live CHECK admits reaches the writer as the situation",
+    livePersonas.every((p) => buildWelcomeSituation({ contact_type: "buyer", contact_persona: p }).personaLabel === p),
+    livePersonas.filter((p) => buildWelcomeSituation({ contact_type: "buyer", contact_persona: p }).personaLabel !== p).join(",") || "all pass")
+
+  const welcomeSrc = src("lib/kernel/client-welcome.ts")
+  check("the welcome feeds that persona to the writer as the CopyPersona.situation,\n    falling back to the journey phrase only when there is no persona on file",
+    /situation\.personaLabel/.test(welcomeSrc) && /JOURNEY_SITUATION\[journey\]/.test(welcomeSrc))
+  check("CONTROL: the retired type-derived spelling `just became a ${side} client` is\n    gone from the prompt — that was the wording keyed off contact_type",
+    !/just became a \$\{side\}/.test(welcomeSrc))
+
+  // A LIFETIME CUSTOMER REACHES THE WRITER WITH A REAL SITUATION FACT.
+  const lifetime = buildWelcomeSituation({ contact_type: "lifetime_customer", city: "Austin", state: "TX" })
+  check("a LIFETIME customer now produces a situational side fact — before the\n    ruling they reached the writer with none, so the copy could only be generic",
+    lifetime.isSituational && lifetime.facts.some((f) => /already closed with us/i.test(f)))
+  check("...and it says nothing is being sold to them",
+    lifetime.facts.some((f) => /nothing is being sold/i.test(f)))
+  check("CONTROL: the lifetime arm is reached through the CANONICAL tolerant test —\n    a legacy 'past_client' row gets the same fact, not a generic hello",
+    buildWelcomeSituation({ contact_type: "past_client" }).facts.some((f) => /already closed with us/i.test(f)))
 }
 
 // ─── LAYER 5 — THE DIRECTIVES SEAM ───────────────────────────────────────────

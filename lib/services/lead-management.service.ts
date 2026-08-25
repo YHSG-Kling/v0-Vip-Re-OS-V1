@@ -1,6 +1,7 @@
 
 
 import { createClient } from "@/lib/supabase/server"
+import { bestEffort } from "@/lib/db/best-effort"
 import { isValidUUID, validateEmail, validatePhone } from "@/lib/validations"
 // TOMBSTONE (§1.3): the `LEAD_SOURCES` import that stood here is DELETED. It was
 // never referenced anywhere in this file — a dead import that made the vocabulary
@@ -285,14 +286,17 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
 
     // Update appropriate database table
     if (table === "contacts") {
-      await supabase
-        .from("contacts")
-        .update({
-          lead_score: totalScore,
-          lead_temperature: temperature,
-          last_scored_at: new Date().toISOString(),
-        })
-        .eq("id", params.id)
+      await bestEffort(
+        supabase
+          .from("contacts")
+          .update({
+            lead_score: totalScore,
+            lead_temperature: temperature,
+            last_scored_at: new Date().toISOString(),
+          })
+          .eq("id", params.id),
+        "derived score mirror on the contact row; the explanation snapshot written to lead_scores immediately below is the record of fact, and the score is fully recomputed on every call",
+      )
 
       // ── CONTACT-SIDE SNAPSHOT: lead_scores ────────────────────────────
       // contacts.lead_score is the score ON the contact; lead_scores carries the

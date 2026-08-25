@@ -267,7 +267,10 @@ async function finalizeMatchingOffer(
   // the agents table join so both surfaces fire together.
   const agentId = (matchedOffer.agent_id as string | null) ?? null
   if (agentId) {
-    const { data: activityRow } = await supabase.from("activities").insert({
+    // `{ data }` alone cannot tell a REJECTED insert from one that landed —
+    // both come back with data null-ish. This row records a SIGNED document,
+    // so the error is read too.
+    const { data: activityRow, error: signedActivityError } = await supabase.from("activities").insert({
       brokerage_id:  matchedOffer.brokerage_id,
       agent_id:      agentId,           // agents(id) FK
       contact_id:    matchedOffer.contact_id,
@@ -290,6 +293,9 @@ async function finalizeMatchingOffer(
       status:        "completed",
       priority:      "high",
     }).select("id").maybeSingle()
+    if (signedActivityError) {
+      console.error(`[finalize-packet] buyer-signed activity REJECTED for offer ${matchedOffer.id} — the signature is on the offer row but not on the audit feed:`, signedActivityError.message)
+    }
 
     // ── THE LIFECYCLE EVENT (wave 7) ─────────────────────────────────────────
     // The row above is an AUDIT/QUEUE row: its title and description are written

@@ -274,14 +274,19 @@ export async function declineQuote(params: {
 }) {
   const supabase = createServiceClient()
   
-  // Mark activity declined
-  await supabase
+  // Mark activity declined. A .update() that matches nothing ALSO resolves
+  // clean, so read the error at minimum — a wrong activityId here leaves the
+  // quote task sitting open while the caller is told the decline worked.
+  const { error: declineUpdateError } = await supabase
     .from("activities")
     .update({
       status: "cancelled",
       completed_at: new Date().toISOString()
     })
     .eq("id", params.activityId)
+  if (declineUpdateError) {
+    console.error(`[vendor-quote-workflow] declining activity ${params.activityId} REJECTED — the quote task stays open:`, declineUpdateError.message)
+  }
   
   // Log event via kernel
   await transitionLifecycle({
@@ -296,8 +301,9 @@ export async function declineQuote(params: {
     metadata:    { reason: params.reason ?? null },
   })
   
-  // Create TC activity to get alternative
-  await supabase.from("activities").insert({
+  // Create TC activity to get alternative. THIS ROW IS THE TASK — without it
+  // a declined quote produces no follow-up work for anyone.
+  const { error: alternativeQuoteActivityError } = await supabase.from("activities").insert({
     transaction_id: params.transactionId,
     brokerage_id: params.brokerageId,
     activity_type: "get_alternative_quote",
@@ -307,6 +313,9 @@ export async function declineQuote(params: {
     status: "pending",
     created_at: new Date().toISOString()
   })
-  
+  if (alternativeQuoteActivityError) {
+    console.error("[vendor-quote-workflow] get_alternative_quote activity REJECTED — the decline produced no follow-up task:", alternativeQuoteActivityError.message)
+  }
+
   return { success: true }
 }

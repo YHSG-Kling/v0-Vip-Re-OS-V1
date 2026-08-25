@@ -111,7 +111,9 @@ export async function buildISATools(ctx: ISAToolContext) {
           }
         }
         // Always log on the lead so the conversation timeline shows it.
-        await supabase.from("activities").insert({
+        // The note below records that this row was FK-rejected and "never
+        // reached the timeline it claims to write to" — silently. Read it.
+        const { error: escalationActivityError } = await supabase.from("activities").insert({
           // activities.contact_id FKs contacts(id); ctx.leadId is a LEAD id, so this
           // was FK-rejected and the escalation never reached the timeline it claims
           // to write to. entity_type/entity_id carry the lead (same shape as above).
@@ -125,6 +127,9 @@ export async function buildISATools(ctx: ISAToolContext) {
           status: "completed",
           completed_at: new Date().toISOString(),
         })
+        if (escalationActivityError) {
+          console.error("[isaTools] ai_isa_escalation activity REJECTED — the escalation is not on the lead's timeline:", escalationActivityError.message)
+        }
         return { success: true, urgency, escalatedAt: new Date().toISOString() }
       },
     }),
@@ -154,7 +159,7 @@ export async function buildISATools(ctx: ISAToolContext) {
           })
           .eq("id", ctx.leadId)
           .eq("brokerage_id", ctx.brokerageId)
-        await supabase.from("activities").insert({
+        const { error: qualificationActivityError } = await supabase.from("activities").insert({
           contact_id: null,
           entity_type: "lead",
           entity_id: ctx.leadId,
@@ -165,6 +170,9 @@ export async function buildISATools(ctx: ISAToolContext) {
           status: "completed",
           completed_at: new Date().toISOString(),
         })
+        if (qualificationActivityError) {
+          console.error("[isaTools] ai_isa_qualification activity REJECTED — the qualification signal has no timeline record:", qualificationActivityError.message)
+        }
         return { success: true, signal, leadScore: tempScore }
       },
     }),
@@ -184,7 +192,10 @@ export async function buildISATools(ctx: ISAToolContext) {
       }),
       execute: async ({ meeting_type, preferred_window, notes }) => {
         const supabase = createServiceClient()
-        await supabase.from("activities").insert({
+        // THIS ROW IS THE APPOINTMENT REQUEST. Nothing else records that the
+        // lead asked for a meeting, so a lost row is a lead who asked and was
+        // never called back.
+        const { error: appointmentActivityError } = await supabase.from("activities").insert({
           contact_id: null,
           entity_type: "lead",
           entity_id: ctx.leadId,
@@ -198,6 +209,9 @@ export async function buildISATools(ctx: ISAToolContext) {
           status: "scheduled",
           created_at: new Date().toISOString(),
         })
+        if (appointmentActivityError) {
+          console.error("[isaTools] appointment_request activity REJECTED — the lead asked for a meeting and nothing recorded it:", appointmentActivityError.message)
+        }
         // Page the agent so they can confirm + book.
         if (ctx.agentId) {
           const { data: agent } = await supabase
@@ -230,11 +244,18 @@ export async function buildISATools(ctx: ISAToolContext) {
       execute: async ({ reason }) => {
         // Reuse the existing TCPA halt path so all the same notifications +
         // sequence stops fire as if a human had set DNC.
-        await haltEngagementForNegativeReply({
+        const halt = await haltEngagementForNegativeReply({
           leadId: ctx.leadId,
           body: ctx.inboundExcerpt ?? reason,
           brokerageId: ctx.brokerageId,
         })
+        // FAIL CLOSED (CLAUDE.md §4). This result is read back BY THE MODEL, which
+        // then tells the human "done". A refused contact-side DNC write reported as
+        // success is how the assistant comes to believe an opt-out is on file when
+        // the row still permits outreach.
+        if (halt.contactSuppressionError) {
+          return { success: false, reason, error: `Do-Not-Contact write was refused: ${halt.contactSuppressionError}` }
+        }
         return { success: true, reason }
       },
     }),

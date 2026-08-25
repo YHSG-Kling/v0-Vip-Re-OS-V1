@@ -81,7 +81,10 @@ export async function sendSMS(params: {
 
   // Log to activities for local tracking
   if (result.success) {
-    await supabase.from("activities").insert({
+    // THE record that an SMS went out. The kernel reads channel/outcome/title
+    // straight into the AI's picture of this contact, so a lost row makes the
+    // assistant believe the message was never sent — and send it again.
+    const { error: smsActivityError } = await supabase.from("activities").insert({
       brokerage_id: contact.brokerage_id,
       agent_id: contact.agent_id,
       contact_id: params.contactId,
@@ -92,6 +95,9 @@ export async function sendSMS(params: {
       status: "completed",
       entity_type: "contact",
     })
+    if (smsActivityError) {
+      console.error("[communications] sms_sent activity REJECTED — the SMS was delivered but is not on the contact's record:", smsActivityError.message)
+    }
   }
 
   return { ...result, providerKey: result.providerKey }
@@ -156,7 +162,8 @@ export async function sendEmail(params: {
   })
 
   if (result.success) {
-    await supabase.from("activities").insert({
+    // Same as sendSMS above: this row is the record of the send, not a log line.
+    const { error: emailActivityError } = await supabase.from("activities").insert({
       brokerage_id: contact.brokerage_id,
       agent_id: contact.agent_id,
       contact_id: params.contactId,
@@ -167,6 +174,9 @@ export async function sendEmail(params: {
       status: "completed",
       entity_type: "contact",
     })
+    if (emailActivityError) {
+      console.error("[communications] email_sent activity REJECTED — the email was delivered but is not on the contact's record:", emailActivityError.message)
+    }
   }
 
   return { ...result, providerKey: result.providerKey }
