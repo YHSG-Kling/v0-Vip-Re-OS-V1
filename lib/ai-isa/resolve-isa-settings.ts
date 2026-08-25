@@ -162,6 +162,18 @@ function rowToSettings(row: Record<string, unknown>): AIISASettings {
     // `is_active` is the column spelling of `enabled` — ONE idea, and the column
     // is authoritative over anything stale inside the blob (§6).
     enabled: row.is_active === false ? false : (row.is_active === true ? true : (blob.enabled ?? DEFAULT_AISA_SETTINGS.enabled)),
+    // THE AUTO-SEND GATE, finally READ. `require_broker_approval` was in this
+    // file's SELECT list from the start and was then dropped on the floor here:
+    // the fold returned only `settings` + `is_active`, so the column that decides
+    // whether an AI may send on a brokerage's behalf reached no caller, ever.
+    // Same treatment as `is_active` — the COLUMN wins over a stale blob copy (§6),
+    // and an absent/unknown column value falls to the constant default (true).
+    require_broker_approval:
+      row.require_broker_approval === false
+        ? false
+        : row.require_broker_approval === true
+          ? true
+          : (blob.require_broker_approval ?? DEFAULT_AISA_SETTINGS.require_broker_approval),
   }
 }
 
@@ -269,6 +281,12 @@ export async function writeIsaSettings(args: {
     team_id: owner.ownerType === "team" ? owner.ownerId : null,
     agent_id: owner.ownerType === "agent" ? owner.ownerId : null,
     is_active: merged.enabled,
+    // THE WRITER HALF for the auto-send gate. Before this the column had no
+    // writer anywhere in the tree, so it sat at its `DEFAULT TRUE` forever and a
+    // brokerage that WANTED the ISA to send could not say so. Written to the
+    // COLUMN (not only into the blob) because `rowToSettings` reads the column
+    // first — writing one and not the other is how the two spellings drift.
+    require_broker_approval: merged.require_broker_approval,
     settings: merged,
     updated_at: now,
   }

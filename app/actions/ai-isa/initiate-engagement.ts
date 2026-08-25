@@ -437,6 +437,38 @@ async function dispatchToChannel(
     // honest "intro is being prepared and will be sent shortly" note.
     const finalEmailBody = await embedVideoInEmail(body, null)
 
+    // ── THEM-FIRST / SITUATIONAL FLOOR ────────────────────────────────────
+    //
+    // OWNER RULING (2026-08-25), verbatim: "we only sent content to leads and
+    // contacts that are personalized and situation, them first messaging."
+    //
+    // This path could emit UNPERSONALIZED copy and did not know it.
+    // `buildFirstTouchEmail` degrades gracefully when a lead carries no facts —
+    // `property_interest` falls back to the literal "properties in the area" and
+    // the motivation line becomes "a few resources that might be useful" — so a
+    // bare lead (no interest, no timeline, no motivation, no city) received a
+    // message that is, by construction, the same message anyone else would get.
+    // Nothing downstream caught it: `evaluateOutbound` grades Fair Housing and
+    // tone, not whether the message is actually about THIS person.
+    //
+    // The floor is the shared one (lib/ai-isa/lead-action-plan.ts), not a second
+    // copy of the rule (§6), and it REFUSES rather than degrading silently. The
+    // refusal is fully observable: `logEmailActivity(..., false, reason)` writes
+    // the `ai_isa_email` activity row for the failed case AND files an
+    // automation_errors row, so a lead the ISA declined to blast is visible work
+    // rather than a lead nobody ever contacted for reasons nobody recorded.
+    const { isPersonalizedForLead } = await import('@/lib/ai-isa/lead-action-plan')
+    const personalized = isPersonalizedForLead({
+      body: finalEmailBody.replace(/<[^>]+>/g, ' '),
+      firstName: lead.first_name ?? null,
+      situationFacts: [lead.property_interest, lead.timeline, lead.motivation_type, lead.city],
+    })
+    if (!personalized.ok) {
+      const why = `first-touch copy is not them-first / situational (${personalized.reason}) — refusing to send generic copy to a lead`
+      await logEmailActivity(leadId, lead.brokerage_id, false, why)
+      return { success: false, reason: 'stop:not_personalized', error: why, channel }
+    }
+
     // Run compliance on final content
     const finalCompliance = await evaluateOutbound({
       actorContext: { userId: lead.brokerage_id, role: 'isa', brokerageId: lead.brokerage_id },
@@ -776,7 +808,12 @@ export async function getAIISAEngagementStatus(leadId: string) {
   // this function's only tenancy — and it is checked before anything else is read.
   const { data: lead, error: leadError } = await supabase
     .from('leads')
-    .select('lead_stage, lead_score, agent_id')
+    // ONE STRING LITERAL, NOT A CONCATENATION. supabase-js parses the select at
+    // the TYPE level; splitting it with `+` collapses the row type to
+    // `GenericStringError` and every field access below becomes a TS2339 —
+    // including `lead_stage`, `lead_score` and `agent_id`, which were fine before
+    // the column list grew. Keep it on one line however long it gets.
+    .select('lead_stage, lead_score, agent_id, contact_id, lifecycle_state, first_touched_at, first_touch_channel, email, email_verified, email_opt_out, direct_mail_opt_out, mailing_address, mailing_address_verified, mailing_city, mailing_state, mailing_zip, enrichment_profile')
     .eq('id', leadId)
     .eq('brokerage_id', ctx.brokerageId)
     .maybeSingle()
@@ -824,9 +861,99 @@ export async function getAIISAEngagementStatus(leadId: string) {
   const inboundCount = 0
   const outboundCount = outreachCount ?? 0
 
+  // ── WHAT THE ISA IS GOING TO DO NEXT, AND WHETHER IT WILL SEND IT ─────────
+  //
+  // The console could say what the ISA HAD done and never what it WOULD do, so
+  // the answer to "is anything still going to happen to this lead?" was a shrug.
+  // The plan and the settings gate are the SHARED ones
+  // (lib/ai-isa/lead-action-plan.ts) — this renders them, it does not re-decide
+  // them, so the panel and the cron can never disagree (§6).
+  //
+  // Best-effort by construction: a status panel must not fail because the plan
+  // could not be computed. `nextPlannedTouch: null` renders as "no plan
+  // available", which is honest, rather than as "nothing is planned".
+  let nextPlannedTouch: {
+    channel: string | null
+    wireChannel: string | null
+    code: string
+    reason: string
+    dueAt: string | null
+    /** 'auto_send' → the ISA will send it; 'stage_for_approval' → a human releases it. */
+    autoSendMode: string
+    autoSendReason: string
+  } | null = null
+  try {
+    const {
+      planNextLeadTouch, wireChannelFor, resolveLeadSettingsResolution, leadAutoSendVerdict,
+    } = await import('@/lib/ai-isa/lead-action-plan')
+    const { cohortFromEnrichment: cohortOf } = await import('@/lib/ai-isa/adaptive-reengagement')
+
+    const resolution = await resolveLeadSettingsResolution({ brokerageId: ctx.brokerageId })
+    const settings = resolution.status === 'unreadable'
+      ? (await import('@/lib/ai-isa/settings-types')).DEFAULT_AISA_SETTINGS
+      : resolution.settings
+
+    const [{ data: lastTouch }, { data: stagedRows }] = await Promise.all([
+      supabase.from('isa_outreach_log').select('channel, created_at')
+        .eq('lead_id', leadId).eq('brokerage_id', ctx.brokerageId)
+        .order('created_at', { ascending: false }).limit(1).maybeSingle(),
+      supabase.from('agent_client_messages').select('channel')
+        .eq('brokerage_id', ctx.brokerageId).eq('recipient_lead_id', leadId)
+        .in('status', ['proposed', 'approved', 'sent']),
+    ])
+
+    const stagedChannels: Array<'email' | 'video_email' | 'direct_mail'> = []
+    for (const s of (stagedRows ?? []) as Array<{ channel: string }>) {
+      if (s.channel === 'direct_mail') stagedChannels.push('direct_mail')
+      else if (s.channel === 'email') { stagedChannels.push('email'); stagedChannels.push('video_email') }
+    }
+    if (lead.first_touched_at) stagedChannels.push('email')
+
+    // The reel lives in the JSONB, not in a column — ai_video_projects has no
+    // lead_id (live information_schema); the lead reel play stamps
+    // video_metadata.lead_id so a personalized reel routes 1:1.
+    const { count: reelCount } = await supabase
+      .from('ai_video_projects').select('id', { count: 'exact', head: true })
+      .eq('brokerage_id', ctx.brokerageId).eq('video_metadata->>lead_id', leadId)
+
+    const plan = planNextLeadTouch({
+      now: new Date(),
+      settings,
+      touchesSoFar: outboundCount,
+      lastTouchAt: lastTouch?.created_at ? new Date(lastTouch.created_at as string)
+        : (lead.first_touched_at ? new Date(lead.first_touched_at as string) : null),
+      lastChannel: (lastTouch?.channel as string | null) ?? (lead.first_touch_channel as string | null) ?? null,
+      channelsAlreadyStaged: stagedChannels,
+      emailUsable: !!(lead.email && lead.email_verified === true && lead.email_opt_out !== true),
+      mailingVerified: !!(
+        lead.mailing_address_verified === true &&
+        lead.mailing_address && lead.mailing_city && lead.mailing_state && lead.mailing_zip &&
+        lead.direct_mail_opt_out !== true
+      ),
+      reelReady: (reelCount ?? 0) > 0,
+      lifecycleState: (lead.lifecycle_state as string | null) ?? null,
+      cohort: cohortOf(lead.enrichment_profile as { age?: number | null; age_range?: string | null } | null),
+    })
+
+    const wire = plan.channel ? wireChannelFor(plan.channel) : null
+    const gate = leadAutoSendVerdict({ resolution, channel: wire ?? 'email' })
+    nextPlannedTouch = {
+      channel: plan.channel,
+      wireChannel: wire,
+      code: plan.code,
+      reason: plan.reason,
+      dueAt: plan.dueAt ? plan.dueAt.toISOString() : null,
+      autoSendMode: gate.mode,
+      autoSendReason: gate.reason,
+    }
+  } catch (err) {
+    console.error('[getAIISAEngagementStatus] next-touch plan unavailable:', (err as Error)?.message)
+  }
+
   return {
     success: true as const,
     activities: activities ?? [],
+    nextPlannedTouch,
     conversationStats: {
       inboundMessages: inboundCount,
       outboundMessages: outboundCount,
