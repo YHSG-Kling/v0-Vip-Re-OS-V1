@@ -8,7 +8,6 @@ import { redirect } from "next/navigation"
 import Link from "next/link"
 import { resolveContactOwnerAgent } from "@/lib/identity/resolve-contact-owner"
 import { selectClientMilestones } from "@/lib/kernel/portal"
-import { BUYER_MILESTONE_LABELS } from "@/lib/portal/resolve-education-context"
 import { getPersonaMessagingGuidelines } from "@/lib/buyer-search/persona-inference"
 import { DealTeamCard } from "@/app/components/portal/DealTeamCard"
 import { OfferStatusCard } from "@/app/components/portal/OfferStatusCard"
@@ -24,7 +23,7 @@ import { BuyerPulseCard } from "@/app/components/portal/BuyerPulseCard"
 import { BuyerBrokerAgreementSignCard } from "@/app/components/portal/BuyerBrokerAgreementSignCard"
 import { Badge } from "@/app/components/ui/badge"
 import { Button } from "@/app/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
+import { Card, CardContent } from "@/app/components/ui/card"
 import { Avatar, AvatarFallback, AvatarImage } from "@/app/components/ui/avatar"
 import {
   Home,
@@ -32,13 +31,9 @@ import {
   Calendar,
   FileText,
   MessageSquare,
-  Eye,
   BookOpen,
-  Briefcase,
   ArrowRight,
-  Building,
   Bell,
-  MapPin,
   Clock,
 } from "lucide-react"
 import { RecentUpdatesFeed } from "./components/RecentUpdatesFeed"

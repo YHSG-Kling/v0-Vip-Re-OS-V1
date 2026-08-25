@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState } from "react"
+import { useState } from "react"
 import { createRule, editRule, removeRule } from "@/app/actions/settings/manage-notification-rules"
 import { updateNotificationRules as toggleRule } from "@/app/actions/settings/update-notification-rules"
 import type { NotificationRuleRow } from "@/lib/kernel"

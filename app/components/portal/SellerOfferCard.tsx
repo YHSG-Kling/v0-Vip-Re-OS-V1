@@ -10,16 +10,14 @@ import { Button } from "@/app/components/ui/button"
 import { Skeleton } from "@/app/components/ui/skeleton"
 import {
   FileText,
-  DollarSign,
   ArrowRight,
   PartyPopper,
   Clock,
   TrendingUp,
 } from "lucide-react"
-import { cn } from "@/lib/utils"
 import {
-  OFFER_STATUS_CONFIG,
   formatPrice,
+  OFFER_STATUS_CONFIG,
   type OfferData,
 } from "@/lib/portal/seller-context-presentation"
 
@@ -49,6 +47,17 @@ export function SellerOfferCard({
   // Accepted offer celebration card
   if (accepted) {
     const buyerName = accepted.buyer?.first_name || "Buyer"
+    // The offer's own status, spelled ONCE. OFFER_STATUS_CONFIG
+    // (lib/portal/seller-context-presentation.ts:122) is the single label/colour
+    // vocabulary for offer status in the portal; this card used to hardcode its
+    // own amber pair for "pending" and show no status chip at all on the
+    // accepted branch, which is the two-spellings-of-one-idea defect CLAUDE.md §6
+    // names. An unknown status falls back to the raw value rather than rendering
+    // an empty chip — a seller must never be shown a blank where a state goes.
+    const acceptedChip = OFFER_STATUS_CONFIG[accepted.status] ?? {
+      label: accepted.status,
+      color: "bg-slate-100 text-slate-600",
+    }
     return (
       <Card className="bg-gradient-to-r from-green-50 to-emerald-50 border-green-200">
         <CardContent className="py-6">
@@ -57,9 +66,14 @@ export function SellerOfferCard({
               <PartyPopper className="h-6 w-6 text-green-600" />
             </div>
             <div className="space-y-2 flex-1">
-              <h3 className="text-lg font-semibold text-green-800">
-                Congratulations! Offer Accepted!
-              </h3>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-lg font-semibold text-green-800">
+                  Congratulations! Offer Accepted!
+                </h3>
+                <Badge variant="secondary" className={acceptedChip.color}>
+                  {acceptedChip.label}
+                </Badge>
+              </div>
               <p className="text-green-700">
                 {buyerName} for {formatPrice(accepted.offer_amount)}
               </p>
@@ -121,8 +135,8 @@ export function SellerOfferCard({
             <FileText className="h-4 w-4" />
             Offers
             {pending > 0 && (
-              <Badge variant="secondary" className="bg-amber-100 text-amber-800 ml-1">
-                {pending} pending
+              <Badge variant="secondary" className={`${OFFER_STATUS_CONFIG.pending.color} ml-1`}>
+                {pending} {OFFER_STATUS_CONFIG.pending.label.toLowerCase()}
               </Badge>
             )}
           </CardTitle>

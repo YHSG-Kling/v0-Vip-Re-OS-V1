@@ -42,7 +42,6 @@ import {
   Check,
   Heart,
   BookTemplate,
-  Clock,
   PackageCheck,
   PlusCircle,
   Mail,

@@ -12,7 +12,6 @@ import {
   Clock,
   CheckCircle2,
   AlertCircle,
-  Upload,
   Calendar,
   User,
   Phone,

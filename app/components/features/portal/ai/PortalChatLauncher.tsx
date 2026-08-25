@@ -3,7 +3,6 @@
 import { useState } from "react"
 import { Video, Phone, X } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
 import { toast } from "sonner"
 import PortalAIAssistant from "./PortalAIAssistant"
 import { AgentsWidget } from "@/app/components/features/ai-avatar-chat/AgentsWidget"

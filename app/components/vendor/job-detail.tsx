@@ -23,7 +23,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { FileText, MessageSquare, DollarSign, Clock, CheckCircle2, Upload } from "lucide-react"
+import { FileText, MessageSquare, DollarSign, CheckCircle2, Upload } from "lucide-react"
 import {
   updateVendorJobStatus,
   addVendorJobNote,

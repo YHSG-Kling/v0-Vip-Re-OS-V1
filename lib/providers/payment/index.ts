@@ -13,6 +13,7 @@ import {
   type ResolvedStripeAccount,
   type TenantStripeContext,
 } from "@/lib/billing/resolve-stripe-account"
+import { connectDestinationReachable } from "@/lib/billing/stripe-account-scope"
 
 const STRIPE_BASE = "https://api.stripe.com"
 
@@ -77,11 +78,40 @@ function stripeReq<T = any>(
   })
 }
 
+/**
+ * A payer label an operator can act on, built from the resolved account rather
+ * than from whatever the caller happened to know. Used only in refusals.
+ */
+function payerLabel(account: ResolvedStripeAccount): string {
+  return account.side === "platform" ? "The platform" : `${account.ownerType} ${account.ownerId}`
+}
+
+/**
+ * THE SECOND HALF OF THE RULING, applied once for every money-moving call that
+ * names a `destination`: the right account must also be able to ADDRESS the
+ * payee. lib/billing/stripe-account-scope.ts :: connectDestinationReachable holds
+ * the rule; this is the one place the resolved `mode` and a destination meet, so
+ * it is the one place that can ask.
+ *
+ * Returns the refusal SENTENCE, or null when the pairing is addressable.
+ */
+function destinationRefusal(account: ResolvedStripeAccount, destinationAccountId?: string): string | null {
+  if (!destinationAccountId) return null
+  const reach = connectDestinationReachable({
+    payerMode: account.mode,
+    payerLabel: payerLabel(account),
+    destinationAccountId,
+  })
+  return reach.ok ? null : reach.reason
+}
+
 export interface CreateTransferParams {
   amount: number
   destinationAccountId: string
   description?: string
   transactionId?: string
+  /** Flat metadata carried onto the Stripe object. Form-encoded as metadata[k]. */
+  metadata?: Record<string, string>
 }
 
 export interface CreateTransferResult {
@@ -97,9 +127,20 @@ export interface CreateTransferResult {
  * vendor's payout).
  *
  * `on` is REQUIRED and has no default. The funds leave the payer's balance, so a
- * brokerage disbursing to its agent must pass `{ side: "tenant", brokerageId }` —
- * `{ side: "platform" }` would pay the agent out of the product's balance, which
- * is not a smaller version of the same thing.
+ * brokerage disbursing to its agent — or paying a vendor for a job it commissioned
+ * — must pass `{ side: "tenant", brokerageId }`. `{ side: "platform" }` would pay
+ * that vendor out of the PRODUCT's balance, which is not a smaller version of the
+ * same thing.
+ *
+ * WIRED: `app/actions/vendor-payments.ts :: initiateVendorPayout` is this
+ * function's caller. It previously called `stripe.transfers.create()` on the
+ * platform seam directly — the `vendor_job_bill` residual named in
+ * TENANT_MONEY_ON_PLATFORM_KEY — and was repointed here rather than growing a
+ * second transfer implementation (CLAUDE.md §6).
+ *
+ * A Stripe API failure comes back as `{ success: false, error }` rather than as a
+ * throw: every caller is a `"use server"` action whose client renders `error`, and
+ * a thrown provider error there renders as "Unexpected error" with the reason lost.
  */
 export async function createTransfer(params: CreateTransferParams, on: StripeCallScope): Promise<CreateTransferResult> {
   const resolved = await resolveCallAccount(on)
@@ -108,20 +149,28 @@ export async function createTransfer(params: CreateTransferParams, on: StripeCal
   }
   const { secretKey, connectedAccountId, mode } = resolved.account
 
+  const unreachable = destinationRefusal(resolved.account, params.destinationAccountId)
+  if (unreachable) return { success: false, error: unreachable }
+
+  const form: Record<string, string> = {
+    amount: Math.round(params.amount * 100).toString(),
+    currency: "usd",
+    destination: params.destinationAccountId,
+    description: params.description || "Commission transfer",
+  }
+  for (const [k, v] of Object.entries(params.metadata ?? {})) form[`metadata[${k}]`] = v
+
   const res = await stripeReq<{ id: string; amount: number }>(secretKey, "v1/transfers", {
-    form: {
-      amount: Math.round(params.amount * 100).toString(),
-      currency: "usd",
-      destination: params.destinationAccountId,
-      description: params.description || "Commission transfer",
-    },
+    form,
     // A `connect`-mode tenant banks through an acct_… under the platform's Connect
     // platform: the platform's key signs and the header addresses the tenant. Omit
     // it and the same key debits the PLATFORM's balance instead — the substitution
     // this whole module was changed to prevent.
     ...(mode === "connect" && connectedAccountId ? { stripeAccount: connectedAccountId } : {}),
   })
-  if (!res.ok || !res.data) throw new Error(res.error || "Stripe API error")
+  if (!res.ok || !res.data) {
+    return { success: false, error: res.error || `Stripe transfer error (${res.status ?? "—"})` }
+  }
   return { success: true, transferId: res.data.id, amount: res.data.amount / 100 }
 }
 
@@ -171,6 +220,152 @@ export async function createPaymentIntent(
   })
   if (!res.ok || !res.data) throw new Error(res.error || "Stripe PaymentIntent error")
   return { success: true, clientSecret: res.data.client_secret, paymentIntentId: res.data.id }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HOSTED CHECKOUT — the payer is a person on a page, so the merchant is visible.
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// BUILT (CLAUDE.md §1.2 — no duplicate existed): `createPaymentIntent` above takes
+// a payment, but it returns a client secret for an in-page element. The portal
+// pay-online lane needs a HOSTED Stripe Checkout URL, and there was no
+// scope-carrying way to make one — `app/actions/vendor-payments.ts` reached for
+// the platform seam instead, which is the `client_payment` residual that was named
+// in TENANT_MONEY_ON_PLATFORM_KEY.
+//
+// This matters more here than on any other path, because Checkout is the one place
+// the merchant of record is SHOWN: Stripe's hosted page carries the account's
+// business name, its support email and its statement descriptor, and the card
+// statement carries them again. On the platform's key a buyer paying their
+// brokerage's vendor saw the PRODUCT's name on the page and on their statement,
+// and their refund would have come from the product's balance.
+//
+// `on` is REQUIRED, for the same reason it is on the two calls above.
+
+export interface CreateCheckoutSessionParams {
+  /** Major units (dollars). Converted to the smallest unit here, once. */
+  amount: number
+  currency?: string
+  /** What the payer sees as the line item. */
+  productName: string
+  successUrl: string
+  cancelUrl: string
+  customerEmail?: string
+  /** DESTINATION CHARGE: the connected account the funds settle onto. Must belong
+   *  to the same Connect platform as the account resolved from `on` — asserted, and
+   *  refused with a sentence rather than an opaque Stripe error. */
+  destinationAccountId?: string
+  /** Metadata on the Checkout Session itself (read back by the confirm path). */
+  metadata?: Record<string, string>
+  /** Metadata on the resulting PaymentIntent (what a webhook sees). */
+  paymentIntentMetadata?: Record<string, string>
+}
+
+export interface CreateCheckoutSessionResult {
+  success: boolean
+  url?: string
+  sessionId?: string
+  error?: string
+  /** TRUE when the refusal is "this party has no Stripe account", not "Stripe said no". */
+  notConfigured?: boolean
+}
+
+export async function createCheckoutSession(
+  params: CreateCheckoutSessionParams,
+  on: StripeCallScope,
+): Promise<CreateCheckoutSessionResult> {
+  const resolved = await resolveCallAccount(on)
+  if (!resolved.ok) {
+    return { success: false, error: resolved.error, notConfigured: resolved.notConfigured }
+  }
+  const { secretKey, connectedAccountId, mode } = resolved.account
+
+  const unreachable = destinationRefusal(resolved.account, params.destinationAccountId)
+  if (unreachable) return { success: false, error: unreachable }
+
+  const amountMinor = Math.round(params.amount * 100)
+  if (!(amountMinor > 0)) return { success: false, error: "Checkout amount must be greater than zero" }
+
+  // The gateway's "form" bodyType takes a FLAT map with pre-flattened keys.
+  const form: Record<string, string> = {
+    mode: "payment",
+    "line_items[0][quantity]": "1",
+    "line_items[0][price_data][currency]": params.currency || "usd",
+    "line_items[0][price_data][unit_amount]": amountMinor.toString(),
+    "line_items[0][price_data][product_data][name]": params.productName,
+    success_url: params.successUrl,
+    cancel_url: params.cancelUrl,
+  }
+  if (params.customerEmail) form.customer_email = params.customerEmail
+  if (params.destinationAccountId) {
+    form["payment_intent_data[transfer_data][destination]"] = params.destinationAccountId
+  }
+  for (const [k, v] of Object.entries(params.metadata ?? {})) form[`metadata[${k}]`] = v
+  for (const [k, v] of Object.entries(params.paymentIntentMetadata ?? {})) {
+    form[`payment_intent_data[metadata][${k}]`] = v
+  }
+
+  const res = await stripeReq<{ id: string; url: string | null }>(secretKey, "v1/checkout/sessions", {
+    form,
+    // Same header, same reason as createTransfer: omit it on a connect-mode tenant
+    // and the platform becomes the merchant of record on the hosted page.
+    ...(mode === "connect" && connectedAccountId ? { stripeAccount: connectedAccountId } : {}),
+  })
+  if (!res.ok || !res.data) {
+    return { success: false, error: res.error || `Stripe Checkout error (${res.status ?? "—"})` }
+  }
+  if (!res.data.url) return { success: false, error: "Stripe did not return a checkout URL" }
+  return { success: true, url: res.data.url, sessionId: res.data.id }
+}
+
+export interface RetrievedCheckoutSession {
+  success: boolean
+  paymentStatus?: string
+  metadata?: Record<string, string>
+  paymentIntentId?: string | null
+  error?: string
+  notConfigured?: boolean
+}
+
+/**
+ * Read a Checkout Session back — the settlement half of the pair above.
+ *
+ * `on` is REQUIRED and MUST name the same account the session was created on. A
+ * session lives on ONE Stripe account: retrieving it with a different key returns
+ * "No such checkout session", which the confirm path would read as a mismatched or
+ * unpaid session and refuse to mark a genuinely paid invoice as paid. That is why
+ * this moved out of the platform seam together with its creator rather than after
+ * it.
+ */
+export async function retrieveCheckoutSession(
+  sessionId: string,
+  on: StripeCallScope,
+): Promise<RetrievedCheckoutSession> {
+  const resolved = await resolveCallAccount(on)
+  if (!resolved.ok) {
+    return { success: false, error: resolved.error, notConfigured: resolved.notConfigured }
+  }
+  const { secretKey, connectedAccountId, mode } = resolved.account
+
+  const res = await stripeReq<{
+    id: string
+    payment_status: string
+    metadata: Record<string, string> | null
+    payment_intent: string | { id: string } | null
+  }>(secretKey, `v1/checkout/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "GET",
+    ...(mode === "connect" && connectedAccountId ? { stripeAccount: connectedAccountId } : {}),
+  })
+  if (!res.ok || !res.data) {
+    return { success: false, error: res.error || `Stripe Checkout read error (${res.status ?? "—"})` }
+  }
+  const pi = res.data.payment_intent
+  return {
+    success: true,
+    paymentStatus: res.data.payment_status,
+    metadata: res.data.metadata ?? {},
+    paymentIntentId: typeof pi === "string" ? pi : pi?.id ?? null,
+  }
 }
 
 export interface CreateConnectedAccountResult {

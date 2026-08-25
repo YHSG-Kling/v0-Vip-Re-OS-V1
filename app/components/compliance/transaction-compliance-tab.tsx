@@ -27,11 +27,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible"
-import {
   Select,
   SelectContent,
   SelectItem,
@@ -63,7 +58,6 @@ import {
   AlertOctagon,
   FileDown,
   ScanSearch,
-  ChevronDown,
 } from "lucide-react"
 import { toast } from "sonner"
 

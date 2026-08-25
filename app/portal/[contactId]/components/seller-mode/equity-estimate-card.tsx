@@ -9,7 +9,7 @@
 import { useState, useTransition } from "react"
 import Link from "next/link"
 import { Wallet, TrendingUp, Pencil, Check } from "lucide-react"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useToast } from "@/hooks/use-toast"

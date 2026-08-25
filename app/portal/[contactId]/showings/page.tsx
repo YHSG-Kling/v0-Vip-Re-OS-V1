@@ -3,7 +3,7 @@ import { redirect } from "next/navigation"
 import Link from "next/link"
 import { determinePortalView } from "@/lib/kernel/portal"
 import { ShowingsManager } from "@/components/portal/ShowingsManager"
-import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
+import { Card, CardContent } from "@/app/components/ui/card"
 import { Button } from "@/app/components/ui/button"
 import { Badge } from "@/app/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/app/components/ui/tabs"
@@ -12,7 +12,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/app/components/ui/collapsible"
-import { ArrowLeft, Calendar, Eye, Clock, CheckCircle, XCircle, MapPin, Home, MessageSquare, Star, ChevronDown, Route, Sparkles } from "lucide-react"
+import { ArrowLeft, Calendar, Eye, Clock, CheckCircle, XCircle, Home, MessageSquare, Star, ChevronDown, Route, Sparkles } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { BuyerTourCard } from "./components/buyer-tour-card"
 import { getPortalBuyerTours } from "@/app/actions/portal-tours"

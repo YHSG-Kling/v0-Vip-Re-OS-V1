@@ -11,7 +11,7 @@
 // Per-event rules live below this card in NotificationRulesForm; this is the gate
 // those rules run through.
 
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { getGlobalSettings } from '@/app/actions/settings/get-global-settings';
 import { updateGlobalSettings } from '@/app/actions/settings/update-global-settings';
 import { SettingsCard } from './SettingsCard';

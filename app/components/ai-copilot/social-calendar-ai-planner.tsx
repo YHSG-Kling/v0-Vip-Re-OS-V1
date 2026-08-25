@@ -3,7 +3,6 @@
 import { useState, useMemo } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Calendar, ChevronLeft, ChevronRight, Sparkles, Loader2, Clock } from "lucide-react"
 import { generateWeeklyContentPlan } from "@/app/actions/social/generate-social-post"
 import { toast } from "sonner"

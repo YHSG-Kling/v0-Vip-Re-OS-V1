@@ -29,7 +29,6 @@ import { Badge } from "@/app/components/ui/badge"
 import { Button } from "@/app/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
 import {
-  AlertTriangle,
   ArrowRight,
   BarChart3,
   BookOpen,

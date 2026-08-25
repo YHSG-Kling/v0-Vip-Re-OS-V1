@@ -6,7 +6,7 @@ import { getOpenHouseDashboard } from "@/app/actions/seller-open-house"
 import { getSellerDocuments } from "@/app/actions/portal-seller"
 import { resolvePersonaContext } from "@/lib/agents/persona-context"
 import { buildListingMarketingChannels } from "@/lib/listings/marketing-channels"
-import { FileText, Download, ExternalLink } from "lucide-react"
+import { FileText, ExternalLink } from "lucide-react"
 import {
   SellerJourneyMeaningCard,
   ListingActivityCard,

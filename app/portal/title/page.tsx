@@ -1,9 +1,9 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { getTitleDashboard } from "@/app/actions/title-portal"
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Building, FileText, AlertTriangle, CheckCircle2, DollarSign, Clock, Calendar } from "lucide-react"
+import { Building, FileText, AlertTriangle, CheckCircle2, DollarSign, Calendar } from "lucide-react"
 import { TitleTransactionList } from "@/components/title/transaction-list"
 
 export default async function TitlePortalDashboard() {

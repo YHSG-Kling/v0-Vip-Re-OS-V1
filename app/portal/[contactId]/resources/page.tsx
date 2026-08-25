@@ -8,14 +8,12 @@ import { PortalFinancialTools } from "./portal-financial-tools"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Input } from "@/components/ui/input"
 import {
   ArrowLeft,
   Star,
   Phone,
   Globe,
   Mail,
-  Search,
   Wrench,
   Zap,
   Droplets,

@@ -17,10 +17,9 @@ import Link from "next/link"
 import { useRef, useState, useTransition } from "react"
 import {
   Sparkles, RefreshCw, AlertCircle, AlertTriangle, ShieldAlert,
-  ArrowRight, Play, Pause, Loader2, Volume2,
+  Play, Pause, Loader2, Volume2,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import type { UserTypeBrief, Severity } from "@/lib/intelligence/user-type-briefs"
 import { generateBriefAudio } from "@/app/actions/brief-audio"

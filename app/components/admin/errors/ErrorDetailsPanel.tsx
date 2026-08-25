@@ -8,7 +8,6 @@ import {
 } from "@/app/actions/error-handler"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   Select,
@@ -17,7 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { AlertTriangle, Copy, Trash2, CheckCircle, UserPlus, Loader2 } from "lucide-react"
+import { Trash2, CheckCircle, UserPlus, Loader2 } from "lucide-react"
 
 interface ErrorDetailsPanelProps {
   groupId: string

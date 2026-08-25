@@ -4,7 +4,33 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { createClient } from "@/lib/supabase/server"
 import { resolveWriteContext } from "@/lib/kernel/identity"
 import { requireVendorActor } from "@/lib/kernel/portal-auth"
+// ── WHICH STRIPE ACCOUNT THIS FILE USES, AND WHY IT IS TWO IMPORTS ──────────
+//
+// OWNER RULING (verbatim): "no sites should move tenant money on the platform key."
+//
+// `stripe` (the PLATFORM seam) survives here for exactly three CONNECT-PLATFORM
+// ADMIN calls — `accounts.create`, `accountLinks.create`, `accounts.retrieve`. An
+// `acct_…` is minted and onboarded ON the Connect platform that will own it, this
+// product has exactly one, and none of those three moves a cent. That is the same
+// reasoning lib/providers/payment/index.ts :: createConnectedAccount states for
+// itself.
+//
+// Every call in this file that MOVES MONEY goes through lib/providers/payment,
+// which resolves the account per call scope and refuses when the tenant has none:
+//
+//   initiateVendorPayout        → createTransfer      { side: "tenant", brokerageId }
+//   startVendorInvoiceCheckout  → createCheckoutSession       ditto
+//   confirmVendorInvoiceCheckout→ retrieveCheckoutSession     ditto (same account
+//                                 as the session's creator, or the read 404s)
+//
+// The brokerage in every one of those comes from the SESSION (CLAUDE.md §4) — from
+// `resolveWriteContext()` on the staff side, and from the session-verified contact
+// row on the portal side. Never from a parameter: a body-supplied brokerage id here
+// would select whose bank account the money leaves.
+//
+// scripts/stripe-account-scope-simulator.ts (C8/C9) holds both halves of that.
 import { stripe } from "@/lib/stripe"
+import { createTransfer, createCheckoutSession, retrieveCheckoutSession } from "@/lib/providers/payment"
 import {
   readVendorStripeConnect,
   upsertVendorStripeAccount,
@@ -576,13 +602,40 @@ export async function initiateVendorPayout(params: {
       return { success: false, error: "Vendor Stripe account not set up" }
     }
 
-    const transfer = await stripe.transfers.create({
-      amount: Math.round(params.amount * 100), // cents
-      currency: "usd",
-      destination: connect.accountId,
-      metadata: { vendorId: params.vendorId, brokerageId: ctx.brokerageId },
-    })
-    stripeTransferId = transfer.id
+    // ── THE BROKERAGE'S MONEY LEAVES THE BROKERAGE'S ACCOUNT ─────────────────
+    //
+    // `vendor_job_bill` (lib/billing/stripe-account-scope.ts): the payer is the
+    // BROKERAGE and the payee is the vendor. This used to be
+    // `stripe.transfers.create()` on the platform seam, so the funds left the
+    // PRODUCT's balance — a payout that succeeded, returned a transfer id and
+    // rendered a green badge while paying a vendor the product never hired, out of
+    // a balance that owes them nothing, on a 1099 issued by the wrong entity.
+    //
+    // The scope is the BROKERAGE and deliberately not `ctx.userId` / the caller's
+    // team: `vendor_payouts.brokerage_id` and `vendor_earnings.brokerage_id` name
+    // the brokerage as the party on the hook, and the rule this repo states once is
+    // that the account belongs to the PAYER/PAYEE — never to whoever clicked. An
+    // agent-scoped resolution would let WHO PRESSED THE BUTTON pick the balance.
+    //
+    // Fail-closed: a brokerage with no Stripe credential gets the resolver's
+    // sentence back as `error`, which app/vendor/earnings/payout-button.tsx renders
+    // verbatim. It never falls through to the platform's account.
+    const transfer = await createTransfer(
+      {
+        amount: params.amount,
+        destinationAccountId: connect.accountId,
+        description: `Vendor payout — ${params.vendorId}`,
+        metadata: { vendorId: params.vendorId, brokerageId: ctx.brokerageId },
+      },
+      { side: "tenant", brokerageId: ctx.brokerageId },
+    )
+    if (!transfer.success || !transfer.transferId) {
+      // No payout row is written. A `vendor_payouts` row with no transfer would
+      // read as a pending payout nobody is going to make, and the earnings it
+      // covers would be marked paid_out against money that never moved.
+      return { success: false, error: transfer.error ?? "The payout could not be sent.", w9Warning }
+    }
+    stripeTransferId = transfer.transferId
   }
 
   const { data: payout, error } = await svc
@@ -1097,10 +1150,15 @@ export async function markClientInvoiceCollected(params: {
 
 // ---------------------------------------------------------------------------
 // Contact pay-online lane — Stripe Checkout DESTINATION CHARGE on the vendor's
-// connected account. The platform key creates the session; funds settle on the
-// VENDOR's Stripe account (transfer_data.destination). 'paid' is only recorded
-// after Stripe confirms payment_status='paid' on the session (real provider
-// acceptance — never on redirect alone).
+// connected account. The BROKERAGE's Stripe account creates the session (it is the
+// merchant of record — the name on the hosted page and on the payer's statement);
+// funds settle on the VENDOR's Stripe account (transfer_data.destination). 'paid'
+// is only recorded after Stripe confirms payment_status='paid' on the session (real
+// provider acceptance — never on redirect alone).
+//
+// It was the PLATFORM's key that created the session until the ruling "no sites
+// should move tenant money on the platform key"; see the import header at the top
+// of this file for where each half went.
 // ---------------------------------------------------------------------------
 
 async function verifyContactCaller(
@@ -1163,6 +1221,18 @@ export async function startVendorInvoiceCheckout(params: {
     return { success: false, error: `Invoice is not payable (status: ${invoice.status})` }
   }
 
+  // THE TENANT COMES FROM THE SESSION (CLAUDE.md §4). `gate.contact` is the row
+  // verifyContactCaller matched against the SIGNED-IN user; its brokerage_id is the
+  // only tenant claim on this request that the caller did not supply. The invoice's
+  // own brokerage_id is caller-reachable data, so it is CHECKED against the session's
+  // rather than trusted — otherwise the invoice id would be selecting which
+  // brokerage's Stripe account collects, which is the IDOR shape this repo keeps
+  // finding, pointed at a bank account.
+  const sessionBrokerageId = gate.contact.brokerage_id
+  if (!sessionBrokerageId || invoice.brokerage_id !== sessionBrokerageId) {
+    return { success: false, error: "Invoice not found" }
+  }
+
   // The vendor must have completed Stripe Connect onboarding — otherwise the portal
   // shows honest pay-the-vendor-directly instructions instead of this button.
   const connect = await readVendorStripeConnect(svc, invoice.vendor_id)
@@ -1180,38 +1250,42 @@ export async function startVendorInvoiceCheckout(params: {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"
   const invoiceLabel = invoice.invoice_number ?? `INV-${invoice.id.slice(0, 8).toUpperCase()}`
 
-  try {
-    const session = await stripe.checkout.sessions.create({
-      mode: "payment",
-      line_items: [
-        {
-          quantity: 1,
-          price_data: {
-            currency: "usd",
-            unit_amount: amountCents,
-            product_data: { name: `Invoice ${invoiceLabel} — ${vendorName}` },
-          },
-        },
-      ],
-      // DESTINATION CHARGE: funds settle on the vendor's connected account.
-      payment_intent_data: {
-        transfer_data: { destination: connect.accountId },
-        metadata: {
-          vendor_invoice_id: invoice.id,
-          vendor_id: invoice.vendor_id,
-          brokerage_id: invoice.brokerage_id ?? "",
-        },
-      },
+  // ── THE MERCHANT OF RECORD IS THE BROKERAGE, NOT THE PRODUCT ──────────────
+  //
+  // `client_payment` (lib/billing/stripe-account-scope.ts): a contact pays; the
+  // brokerage collects. This used to be `stripe.checkout.sessions.create()` on the
+  // platform seam, which made the PRODUCT the merchant on a sale it had no part in
+  // — Stripe's hosted page carries the account's business name and support email,
+  // and the buyer's card statement carries its descriptor, so the wrong merchant was
+  // not a bookkeeping detail here but the thing the payer actually read. The refund
+  // would have come out of the product's balance too.
+  //
+  // The DESTINATION CHARGE is unchanged in intent — funds still settle on the
+  // VENDOR's connected account — but it is now made FROM the brokerage's account, so
+  // the two sides of the charge finally name the same tenant. `createCheckoutSession`
+  // refuses, with a sentence, when those two cannot address each other.
+  const checkout = await createCheckoutSession(
+    {
+      amount: Number(invoice.total_amount ?? 0),
+      currency: "usd",
+      productName: `Invoice ${invoiceLabel} — ${vendorName}`,
+      destinationAccountId: connect.accountId,
+      customerEmail: gate.contact.email ?? undefined,
       metadata: { vendor_invoice_id: invoice.id, contact_id: params.contactId },
-      customer_email: gate.contact.email ?? undefined,
-      success_url: `${appUrl}/portal/${params.contactId}/invoices?checkout=success&invoice=${invoice.id}&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${appUrl}/portal/${params.contactId}/invoices?checkout=cancelled&invoice=${invoice.id}`,
-    })
-    if (!session.url) return { success: false, error: "Stripe did not return a checkout URL" }
-    return { success: true, url: session.url }
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : String(err) }
+      paymentIntentMetadata: {
+        vendor_invoice_id: invoice.id,
+        vendor_id: invoice.vendor_id,
+        brokerage_id: sessionBrokerageId,
+      },
+      successUrl: `${appUrl}/portal/${params.contactId}/invoices?checkout=success&invoice=${invoice.id}&session_id={CHECKOUT_SESSION_ID}`,
+      cancelUrl: `${appUrl}/portal/${params.contactId}/invoices?checkout=cancelled&invoice=${invoice.id}`,
+    },
+    { side: "tenant", brokerageId: sessionBrokerageId },
+  )
+  if (!checkout.success || !checkout.url) {
+    return { success: false, error: checkout.error ?? "Could not start checkout" }
   }
+  return { success: true, url: checkout.url }
 }
 
 export async function confirmVendorInvoiceCheckout(params: {
@@ -1235,23 +1309,32 @@ export async function confirmVendorInvoiceCheckout(params: {
   if (!invoice) return { success: false, error: "Invoice not found" }
   if (invoice.status === "paid") return { success: true, alreadyPaid: true }
 
+  // Same session-derived tenant as startVendorInvoiceCheckout, and checked the same
+  // way — the session lives on the BROKERAGE's Stripe account, so this read has to
+  // be made on that same account or Stripe answers "no such checkout session" and a
+  // genuinely paid invoice never settles.
+  const sessionBrokerageId = gate.contact.brokerage_id
+  if (!sessionBrokerageId || invoice.brokerage_id !== sessionBrokerageId) {
+    return { success: false, error: "Invoice not found" }
+  }
+
   // REAL provider acceptance: retrieve the session and require payment_status='paid'
   // for THIS invoice. A redirect with an unpaid/foreign session changes nothing.
-  let session
-  try {
-    session = await stripe.checkout.sessions.retrieve(params.sessionId)
-  } catch (err) {
-    return { success: false, error: err instanceof Error ? err.message : String(err) }
+  const session = await retrieveCheckoutSession(params.sessionId, {
+    side: "tenant",
+    brokerageId: sessionBrokerageId,
+  })
+  if (!session.success) {
+    return { success: false, error: session.error ?? "The payment could not be verified with Stripe." }
   }
   if (session.metadata?.vendor_invoice_id !== params.invoiceId) {
     return { success: false, error: "Checkout session does not match this invoice" }
   }
-  if (session.payment_status !== "paid") {
+  if (session.paymentStatus !== "paid") {
     return { success: false, error: "Payment not completed" }
   }
 
-  const paymentIntentId =
-    typeof session.payment_intent === "string" ? session.payment_intent : session.payment_intent?.id ?? null
+  const paymentIntentId = session.paymentIntentId
 
   const { error } = await svc
     .from("vendor_invoices")

@@ -10,7 +10,7 @@
 // It belongs on the Widget page: that page already owns the launcher's appearance
 // and placement for an agent; this owns whose identity the conversation carries.
 
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   fetchGlobalSettings,
   fetchWidgetScope,

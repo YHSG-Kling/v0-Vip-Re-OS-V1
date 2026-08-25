@@ -7,7 +7,6 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Button }   from "@/components/ui/button"
 import { cn }       from "@/lib/utils"
 import {
-  ChevronDown,
   ChevronUp,
   RefreshCw,
   Target,

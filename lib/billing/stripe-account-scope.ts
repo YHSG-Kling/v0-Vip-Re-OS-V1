@@ -140,6 +140,68 @@ export function stripeMoneyPath(id: string): StripeMoneyPath | null {
 
 /**
  * ═══════════════════════════════════════════════════════════════════════════
+ * CONNECT TOPOLOGY — an `acct_…` is only addressable from its OWN platform.
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Picking the right ACCOUNT is the first half of the ruling; addressing a
+ * DESTINATION from it is the second, and getting that half wrong is the failure
+ * the owner's sentence does not cover on its own: the money leaves the correct
+ * balance and lands nowhere, or Stripe refuses with "No such destination account"
+ * — an opaque provider error at a portal button, which is what a payer sees
+ * instead of a sentence naming what is missing.
+ *
+ * A transfer's `destination`, and a Checkout session's
+ * `payment_intent_data[transfer_data][destination]`, may only name a connected
+ * account belonging to the SAME Connect platform as the account the call is made
+ * on. There are exactly two shapes a payer can be (the `mode` the resolver
+ * returns, lib/billing/resolve-stripe-account.ts):
+ *
+ *   connect  the payer is itself an `acct_…` under the PLATFORM's Connect
+ *            platform. Its siblings — every other `acct_…` this product minted —
+ *            are addressable.
+ *   direct   the payer holds its OWN Stripe account, and therefore its own Connect
+ *            platform. Accounts minted under the product's platform are foreign to
+ *            it and cannot be addressed at all.
+ *
+ * ── THE PREMISE, AND WHERE IT IS HELD ──────────────────────────────────────
+ *
+ * "Every `acct_…` in this product was minted under the PLATFORM's Connect
+ * platform" is a fact about the CODE, not a stored field, so it is not carried as
+ * a column that would have exactly one possible value and no second writer
+ * (CLAUDE.md §1). There are two minting sites — `stripe.accounts.create` in
+ * app/actions/vendor-payments.ts and `v1/accounts` in
+ * lib/providers/payment/index.ts :: createConnectedAccount — and BOTH resolve the
+ * platform account. scripts/stripe-account-scope-simulator.ts asserts that, so a
+ * tenant-side minter cannot appear without this function being given a real input
+ * for where the destination came from.
+ */
+export type StripePayerMode = "direct" | "connect"
+
+export type ConnectReachability = { ok: true } | { ok: false; reason: string }
+
+/**
+ * THE RULE, pure and total over the two payer modes. `payerLabel` is only used to
+ * write the refusal — a sentence naming the tenant is what an operator needs.
+ */
+export function connectDestinationReachable(args: {
+  payerMode: StripePayerMode
+  payerLabel: string
+  destinationAccountId: string
+}): ConnectReachability {
+  if (args.payerMode === "connect") return { ok: true }
+  return {
+    ok: false,
+    reason:
+      `${args.payerLabel} holds its OWN Stripe account (a direct credential), so it is its own Connect platform — but ` +
+      `${args.destinationAccountId} was created under THIS PRODUCT's Connect platform and is not reachable from it. ` +
+      `Stripe would refuse the call with an opaque "no such destination account". Either onboard this payee under the ` +
+      `brokerage's own Stripe Connect platform, or connect the brokerage through Stripe Connect (Settings → Connections) ` +
+      `so payer and payee sit under the same platform. Refusing rather than paying out of the wrong balance.`,
+  }
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
  * THE RESIDUAL, NAMED — tenant money still running on the PLATFORM's key.
  * ═══════════════════════════════════════════════════════════════════════════
  *
@@ -148,43 +210,88 @@ export function stripeMoneyPath(id: string): StripeMoneyPath | null {
  * known-wrong money path that lives only in prose gets re-derived as correct by
  * the next reader.
  *
- * `app/actions/vendor-payments.ts` still imports the synchronous `stripe` proxy
- * from lib/stripe.ts — i.e. the PLATFORM's env key — for calls whose payee is
- * NOT the platform. That file belongs to the vendor-billing lane and was
- * explicitly out of scope for the wave that built this resolver, so it is
- * recorded here rather than half-changed.
+ * ── THE LIST IS EMPTY. THE MECHANISM IS NOT. ───────────────────────────────
  *
- * `scripts/stripe-account-scope-simulator.ts` holds the importer roster of
- * lib/stripe.ts against this list, so the set can SHRINK but a new tenant-money
- * importer cannot be added quietly.
+ * OWNER RULING (verbatim): "no sites should move tenant money on the platform key."
  *
- * THE FIX, per call site, is one line each: resolve the brokerage from the
- * session (it is already in scope at every one of them), call
- * `resolveTenantStripeAccount`, and construct the client from the resolved
- * `secretKey` — passing `Stripe-Account` when `mode === "connect"`. The refusal
- * path is already written; only the call sites need repointing.
+ * Both entries this list carried are GONE BY REPOINTING, not by deletion — the
+ * §1 "deleting to move a number" failure is exactly what an empty list would be
+ * if the finder went with it. Each names where it went:
+ *
+ *   · `app/actions/vendor-payments.ts` :: `stripe.transfers.create()`
+ *     (pathId `vendor_job_bill` — a brokerage paying a vendor for a job it
+ *     commissioned) → SURVIVOR `lib/providers/payment/index.ts :: createTransfer`,
+ *     called from `initiateVendorPayout` with `{ side: "tenant", brokerageId }`
+ *     taken from `resolveWriteContext()`. That function existed with no caller;
+ *     this is its first, so nothing was duplicated to get here.
+ *
+ *   · `app/actions/vendor-payments.ts` :: `stripe.checkout.sessions.create()`
+ *     (pathId `client_payment` — a contact paying a vendor invoice through the
+ *     portal) → SURVIVOR `lib/providers/payment/index.ts :: createCheckoutSession`,
+ *     BUILT for it (§1.2 — no duplicate existed; `createPaymentIntent` cannot
+ *     produce a hosted Checkout URL), called from `startVendorInvoiceCheckout`
+ *     with the brokerage of the SESSION-VERIFIED contact. Its paired read,
+ *     `checkout.sessions.retrieve`, moved with it to
+ *     `retrieveCheckoutSession` — a session created on the tenant's account is
+ *     invisible to the platform's key, so leaving the read behind would have
+ *     turned a paid invoice into "checkout session does not match".
+ *
+ * WHAT STILL IMPORTS THE PLATFORM SEAM THERE, AND WHY THAT IS CORRECT: three
+ * Connect-PLATFORM admin calls — `accounts.create`, `accountLinks.create`,
+ * `accounts.retrieve`. Minting and onboarding an `acct_…` happens on the Connect
+ * platform that will own it, and this product has exactly one, so those are
+ * platform-scoped by construction (the same reasoning
+ * lib/providers/payment/index.ts :: createConnectedAccount states). They move no
+ * money and are not residuals.
+ *
+ * ── THE CONTROLS THAT KEEP THE EMPTY LIST HONEST ───────────────────────────
+ *
+ * An empty list proves nothing on its own — a broken finder and a clean tree
+ * report the same zero (CLAUDE.md §2). So
+ * `scripts/stripe-account-scope-simulator.ts` (C8) does not read this list as a
+ * fact; it DERIVES the set by scanning comment-stripped product source for
+ * money-moving calls on the platform seam, and asserts the found set equals the
+ * declared set. That gives three live behaviours:
+ *
+ *   · a NEW tenant-money importer is found, is not declared, and fails CI;
+ *   · a declaration with no matching call site is stale and fails CI;
+ *   · a POSITIVE CONTROL injects `stripe.transfers.create(` into a real file and
+ *     requires the finder to go red, so "0 found" is a measurement rather than a
+ *     broken regex.
+ *
+ * The importer roster of lib/stripe.ts is held in the same block, so the platform
+ * client cannot gain an undeclared consumer either.
  */
 export interface StripeAccountResidual {
   readonly file: string
-  /** The line as of 2026-08-24, for orientation — not asserted (lines move). */
+  /** The call site, spelled as it appears in source — C8 uses this to prove the
+   *  declaration still matches a real call, so it is asserted, not decorative. */
   readonly at: string
   readonly pathId: string
   readonly why: string
 }
 
-export const TENANT_MONEY_ON_PLATFORM_KEY: readonly StripeAccountResidual[] = [
-  {
-    file: "app/actions/vendor-payments.ts",
-    at: "stripe.transfers.create()",
-    pathId: "vendor_job_bill",
-    why: "Pays a vendor for a job the BROKERAGE commissioned. The funds should leave the brokerage's balance; today they leave the platform's.",
-  },
-  {
-    file: "app/actions/vendor-payments.ts",
-    at: "stripe.checkout.sessions.create()",
-    pathId: "client_payment",
-    why: "A contact paying a vendor invoice through the portal. The merchant of record should be the brokerage (or the vendor's Connect account under it), not the platform.",
-  },
+export const TENANT_MONEY_ON_PLATFORM_KEY: readonly StripeAccountResidual[] = [] as const
+
+/**
+ * The Stripe SDK calls that MOVE MONEY, spelled as they appear on the
+ * `lib/stripe.ts` platform-client proxy. C8 hunts for these in comment-stripped
+ * product source; anything found must be declared in
+ * TENANT_MONEY_ON_PLATFORM_KEY above (i.e. admitted as a known-wrong residual) or
+ * be a platform-payee path on the published importer roster.
+ *
+ * Account ADMIN calls are deliberately absent: `accounts.create`,
+ * `accountLinks.create` and `accounts.retrieve` administer the Connect platform
+ * and move nothing.
+ */
+export const MONEY_MOVING_STRIPE_CALLS = [
+  "transfers.create",
+  "payouts.create",
+  "charges.create",
+  "paymentIntents.create",
+  "checkout.sessions.create",
+  "invoices.pay",
+  "refunds.create",
 ] as const
 
 /**

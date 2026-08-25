@@ -23,7 +23,6 @@ import {
   Trash2,
   RefreshCw,
   Save,
-  MessageSquare,
   ShieldAlert,
   BookOpen,
   GitBranch,

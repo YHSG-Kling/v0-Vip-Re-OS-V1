@@ -5,7 +5,6 @@ import { determinePortalView } from "@/lib/kernel/portal"
 import { getTransactionHistory } from "@/app/actions/portal-lifetime"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import {
   ArrowLeft,
   CheckCircle2,

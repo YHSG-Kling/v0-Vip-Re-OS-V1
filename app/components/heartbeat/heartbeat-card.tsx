@@ -18,7 +18,6 @@ import Link from "next/link"
 import type { ReactNode } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { TrendingUp, TrendingDown, Minus, ArrowRight } from "lucide-react"
 
 export type HeartbeatStatus = "ok" | "attention" | "critical" | "neutral"

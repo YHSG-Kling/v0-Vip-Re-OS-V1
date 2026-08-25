@@ -2,7 +2,6 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import Link from "next/link"
 import { getTitleTransactionDetail } from "@/app/actions/title-portal"
-import { TITLE_VISIBLE_MILESTONES } from "@/lib/title-portal/constants"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -17,7 +16,6 @@ import {
   User,
   Phone,
   Mail,
-  DollarSign,
   AlertTriangle,
 } from "lucide-react"
 import { TitleDocumentUpload } from "./document-upload"

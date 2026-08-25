@@ -98,6 +98,8 @@ import {
   stripeAccountSideFor,
   stripeMoneyPath,
   webhookSecretFromConfig,
+  connectDestinationReachable,
+  MONEY_MOVING_STRIPE_CALLS,
   TENANT_MONEY_ON_PLATFORM_KEY,
   type StripeMoneyParty,
 } from "../lib/billing/stripe-account-scope"
@@ -113,6 +115,7 @@ const F = {
   webhooks: "lib/billing/stripe-webhook-secrets.ts",
   seam: "lib/stripe.ts",
   payment: "lib/providers/payment/index.ts",
+  vendorPayments: "app/actions/vendor-payments.ts",
   billingRoute: "app/api/billing/webhook/route.ts",
   vendorRoute: "app/api/webhooks/stripe/vendor/route.ts",
   tenancy: "lib/providers/tenancy-matrix.ts",
@@ -231,6 +234,33 @@ function productSourceFiles(): string[] {
   }
   walk(ROOT)
   return out.sort()
+}
+
+/**
+ * THE RESIDUAL FINDER — every MONEY-MOVING call made on the `stripe` proxy that
+ * lib/stripe.ts exports (i.e. on the PLATFORM's key), across the files given.
+ *
+ * Reads COMMENT-STRIPPED source, without exception. lib/stripe.ts, this file and
+ * app/actions/vendor-payments.ts all spell these call names out in prose — the
+ * vendor-payments header is a tombstone naming where each repointed site went, and
+ * it is meant to STAY. A raw-source scan would count those sentences as call sites
+ * and accuse the repo of exactly what the tombstone records having fixed, which is
+ * the failure five guards in this tree hit on 2026-08-23 (CLAUDE.md §2).
+ *
+ * A file that does not import the platform seam is skipped: `stripe.transfers` on
+ * a locally-resolved tenant client would be a different (and correct) thing.
+ */
+function moneyMovingPlatformSeamCalls(files: string[]): Array<{ file: string; at: string }> {
+  const hits: Array<{ file: string; at: string }> = []
+  for (const rel of files) {
+    let src: string
+    try { src = code(rel) } catch { continue }
+    if (!/(from|import\()\s*["']@\/lib\/stripe["']/.test(src)) continue
+    for (const call of MONEY_MOVING_STRIPE_CALLS) {
+      if (src.includes(`stripe.${call}(`)) hits.push({ file: rel, at: call })
+    }
+  }
+  return hits
 }
 
 /** Which of the four env vars a file actually READS (process.env.X), prose and
@@ -487,46 +517,53 @@ console.log("\n═══ C7 · the replaced architecture is corrected wherever i
   }
 }
 
-// ─── NEGATIVE CONTROLS ───────────────────────────────────────────────────────
-// Each writes the DEFECT into the real file, VERIFIES THE PATCH APPLIED, requires
-// the corresponding check to flip red, then restores and re-verifies by sha256.
-// A control whose find-string silently stopped matching proves nothing, so the
-// application is asserted before the flip is measured.
-if (RUN_NEGATIVE) {
-  console.log("\n═══ C8 · the platform key's importer roster — the residual is visible, and cannot grow ═══")
+console.log("\n═══ C8 · the platform key moves no tenant money — DERIVED, not declared ═══")
 {
-  // THE COUNT THAT MOVES. lib/stripe.ts hands out the PLATFORM's client. Every
-  // importer is either a platform-payee path (correct) or a NAMED residual —
-  // tenant money still running on the platform's key, declared as data in
-  // TENANT_MONEY_ON_PLATFORM_KEY because a known-wrong money path that lives only
-  // in prose gets re-derived as correct by the next reader.
+  // OWNER RULING (verbatim): "no sites should move tenant money on the platform key."
   //
-  // The roster may SHRINK. A NEW importer that is not on it fails here, which is
-  // the point: the next person to reach for the platform key on a tenant-money
-  // path has to say so out loud.
-  const PLATFORM_CLIENT_IMPORTERS: Record<string, string> = {
-    "app/api/billing/webhook/route.ts":
-      "PLATFORM-PAYEE. The platform's billing ledger; uses getPlatformStripe() and refuses tenant-signed deliveries.",
-    "app/actions/vendor-billing.ts":
-      "PLATFORM-PAYEE. VENDOR_PLATFORM_TIER — the vendor pays the PLATFORM for its marketplace tier. Correct account, legacy source (the sync env proxy rather than the resolver).",
-    "app/actions/admin/create-subscriber.ts":
-      "PLATFORM-PAYEE. Provisions a tenant's subscription customer on the platform's account. Correct account, legacy source.",
-    "app/actions/billing.ts":
-      "PLATFORM-PAYEE. tenant_saas_subscription — a brokerage's checkout for its own plan. The platform is the merchant.",
-    "lib/billing/stripe-portal.ts":
-      "PLATFORM-PAYEE. The billing portal a tenant manages its PLATFORM subscription in — the portal belongs to the account that holds the customer.",
-    "lib/billing/stripe-subscription-ops.ts":
-      "PLATFORM-PAYEE. Cancel / resume / reprice / extend-trial on the platform's own subscriptions.",
-    "lib/billing/ai-overage.ts":
-      "PLATFORM-PAYEE. tenant_ai_overage — CLAUDE.md §5, AI is platform-covered with per-tier overage. Platform revenue, platform account.",
-    "app/actions/superadmin/plan-catalog.ts":
-      "PLATFORM-PAYEE. Publishes subscription_tiers prices to Stripe — the platform's OWN price catalogue.",
-    "app/actions/superadmin/coupons.ts":
-      "PLATFORM-PAYEE. Platform discounts against platform prices.",
-    "app/api/cron/stripe-drift/route.ts":
-      "PLATFORM-PAYEE. Weekly drift check on the platform's own tier prices.",
-    "app/actions/vendor-payments.ts":
-      "RESIDUAL — tenant money on the platform's key. Declared in TENANT_MONEY_ON_PLATFORM_KEY; the vendor-billing lane owns this file.",
+  // THE COUNT THAT MOVES: 2 → 0. Both entries TENANT_MONEY_ON_PLATFORM_KEY carried
+  // were repointed at lib/providers/payment (createTransfer / createCheckoutSession
+  // / retrieveCheckoutSession), which resolve per call scope and refuse rather than
+  // substitute the platform's account. The list is empty; the MECHANISM is not —
+  // deleting the finder to move the number is the §1 failure this block exists to
+  // make impossible.
+  //
+  // So the residual set is DERIVED here rather than read. lib/stripe.ts hands out
+  // the PLATFORM's client; this scans every importer's comment-stripped source for
+  // the calls that MOVE MONEY and requires each hit to be either
+  //   · in a file the roster classifies `platform_payee` (the platform really is
+  //     the merchant — a subscription checkout, a refund of one), or
+  //   · declared in TENANT_MONEY_ON_PLATFORM_KEY as a known-wrong residual.
+  // Anything else is a new tenant-money site on the platform key, and it fails here.
+  //
+  // `connect_admin` is the third classification and the strictest: a file that may
+  // import the platform seam ONLY to administer the Connect platform (mint an
+  // acct_…, issue an onboarding link, read one back). Those move nothing, so ANY
+  // money-moving call in such a file is a violation whether or not it is declared.
+  type ImporterKind = "platform_payee" | "connect_admin"
+  const PLATFORM_CLIENT_IMPORTERS: Record<string, { kind: ImporterKind; why: string }> = {
+    "app/api/billing/webhook/route.ts": { kind: "platform_payee",
+      why: "The platform's billing ledger; uses getPlatformStripe() and refuses tenant-signed deliveries." },
+    "app/actions/vendor-billing.ts": { kind: "platform_payee",
+      why: "VENDOR_PLATFORM_TIER — the vendor pays the PLATFORM for its marketplace tier. Correct account, legacy source (the sync env proxy rather than the resolver)." },
+    "app/actions/admin/create-subscriber.ts": { kind: "platform_payee",
+      why: "Provisions a tenant's subscription customer on the platform's account. Correct account, legacy source." },
+    "app/actions/billing.ts": { kind: "platform_payee",
+      why: "tenant_saas_subscription — a brokerage's checkout for its own plan. The platform is the merchant." },
+    "lib/billing/stripe-portal.ts": { kind: "platform_payee",
+      why: "The billing portal a tenant manages its PLATFORM subscription in — the portal belongs to the account that holds the customer." },
+    "lib/billing/stripe-subscription-ops.ts": { kind: "platform_payee",
+      why: "Cancel / resume / reprice / extend-trial / refund on the platform's own subscriptions." },
+    "lib/billing/ai-overage.ts": { kind: "platform_payee",
+      why: "tenant_ai_overage — CLAUDE.md §5, AI is platform-covered with per-tier overage. Platform revenue, platform account." },
+    "app/actions/superadmin/plan-catalog.ts": { kind: "platform_payee",
+      why: "Publishes subscription_tiers prices to Stripe — the platform's OWN price catalogue." },
+    "app/actions/superadmin/coupons.ts": { kind: "platform_payee",
+      why: "Platform discounts against platform prices." },
+    "app/api/cron/stripe-drift/route.ts": { kind: "platform_payee",
+      why: "Weekly drift check on the platform's own tier prices." },
+    "app/actions/vendor-payments.ts": { kind: "connect_admin",
+      why: "CONNECT-PLATFORM ADMIN ONLY — accounts.create / accountLinks.create / accounts.retrieve. An acct_… is minted on the Connect platform that will own it and this product has exactly one; none of the three moves a cent. Its money paths (vendor payout, portal checkout) go through lib/providers/payment on the TENANT's account." },
   }
   const importers = productSourceFiles().filter((f) => {
     let src = ""
@@ -538,15 +575,155 @@ if (RUN_NEGATIVE) {
   const stale = Object.keys(PLATFORM_CLIENT_IMPORTERS).filter((f) => !importers.includes(f))
   check(`every importer of the platform client is on the roster (unknown: ${unknown.length}${unknown.length ? " → " + unknown.join(", ") : ""})`, unknown.length === 0)
   check(`the roster carries no entry that stopped importing (stale: ${stale.length}${stale.length ? " → " + stale.join(", ") : ""})`, stale.length === 0)
-  check("every declared residual names a real money path and a real file",
-    TENANT_MONEY_ON_PLATFORM_KEY.length > 0
-    && TENANT_MONEY_ON_PLATFORM_KEY.every((r) => stripeMoneyPath(r.pathId) !== null && importers.includes(r.file)))
+  check("every roster entry carries a stated reason", Object.values(PLATFORM_CLIENT_IMPORTERS).every((e) => e.why.length > 40))
+
+  // THE FINDER. Comments stripped — this very file, lib/stripe.ts and
+  // vendor-payments.ts all NAME these calls in prose describing the defect, and a
+  // prose-blind scan would accuse the explanations and miss the code.
+  const found = moneyMovingPlatformSeamCalls(importers)
+  console.log(`    money-moving calls hunted: ${MONEY_MOVING_STRIPE_CALLS.join(", ")}`)
+  console.log(`    money-moving calls ON the platform seam: ${found.length} — ${found.map((h) => `${h.file}::${h.at}`).join(" · ") || "none"}`)
+
+  const undeclared = found.filter((h) => {
+    const entry = PLATFORM_CLIENT_IMPORTERS[h.file]
+    if (entry?.kind === "platform_payee") return false
+    return !TENANT_MONEY_ON_PLATFORM_KEY.some((r) => r.file === h.file && r.at.includes(h.at))
+  })
+  check(
+    `every money-moving call on the platform seam is either a platform-payee path or a DECLARED residual (undeclared: ${undeclared.length}${undeclared.length ? " → " + undeclared.map((h) => `${h.file}::${h.at}`).join(", ") : ""})`,
+    undeclared.length === 0,
+  )
+  const connectAdminViolations = found.filter((h) => PLATFORM_CLIENT_IMPORTERS[h.file]?.kind === "connect_admin")
+  check(
+    `no file classified connect_admin moves money on the platform seam (violations: ${connectAdminViolations.length}${connectAdminViolations.length ? " → " + connectAdminViolations.map((h) => `${h.file}::${h.at}`).join(", ") : ""})`,
+    connectAdminViolations.length === 0,
+  )
+  // The list may be EMPTY — that is the goal state — but it may not be STALE. A
+  // declaration with no matching call site is a residual someone fixed without
+  // deleting the paperwork, and it would keep a red flag flying over clean code.
+  const staleResiduals = TENANT_MONEY_ON_PLATFORM_KEY.filter(
+    (r) => !found.some((h) => h.file === r.file && r.at.includes(h.at)),
+  )
+  check(
+    `every declared residual still matches a real call site (stale declarations: ${staleResiduals.length}${staleResiduals.length ? " → " + staleResiduals.map((r) => `${r.file}::${r.at}`).join(", ") : ""})`,
+    staleResiduals.length === 0,
+  )
+  check("every declared residual names a real money path and a real importer",
+    TENANT_MONEY_ON_PLATFORM_KEY.every((r) => stripeMoneyPath(r.pathId) !== null && importers.includes(r.file)))
   check("every declared residual is a TENANT-side path — a platform-payee path on the platform key is not a residual, it is correct",
     TENANT_MONEY_ON_PLATFORM_KEY.every((r) => stripeAccountSideFor(stripeMoneyPath(r.pathId)!.payee) === "tenant"))
-  console.log(`    residual tenant-money call sites still on the platform key: ${TENANT_MONEY_ON_PLATFORM_KEY.length} (all in ${[...new Set(TENANT_MONEY_ON_PLATFORM_KEY.map((r) => r.file))].join(", ")})`)
+
+  // POSITIVE CONTROL for the finder. "0 residuals" and "the regex broke" print the
+  // same number, so the defect is written into the real file and the finder is
+  // required to see it. The file restored is checked by sha256.
+  const probeFile = "app/actions/vendor-payments.ts"
+  const probeSrc = raw(probeFile)
+  const probeSha = createHash("sha256").update(probeSrc).digest("hex")
+  writeFileSync(
+    resolve(ROOT, probeFile),
+    probeSrc + "\nasync function __probeTenantMoney() { await stripe.transfers.create({ amount: 1 } as never) }\n",
+  )
+  const probeFound = moneyMovingPlatformSeamCalls([probeFile])
+  writeFileSync(resolve(ROOT, probeFile), probeSrc)
+  const probeRestored = createHash("sha256").update(readFileSync(resolve(ROOT, probeFile), "utf8")).digest("hex") === probeSha
+  check("POSITIVE CONTROL — the residual finder detects an injected stripe.transfers.create() on the platform seam",
+    probeFound.some((h) => h.file === probeFile && h.at === "transfers.create"))
+  check("POSITIVE CONTROL — and the probe file was restored byte-identically", probeRestored)
+
+  console.log(`    residual tenant-money call sites still on the platform key: ${TENANT_MONEY_ON_PLATFORM_KEY.length}${TENANT_MONEY_ON_PLATFORM_KEY.length ? " (in " + [...new Set(TENANT_MONEY_ON_PLATFORM_KEY.map((r) => r.file))].join(", ") + ")" : " — the owner ruling is met"}`)
 }
 
-console.log("\n═══ NEGATIVE CONTROLS (mutation) ═══")
+console.log("\n═══ C9 · the two repointed sites resolve the TENANT from the SESSION, and fail closed ═══")
+{
+  const pay = code(F.vendorPayments)
+
+  // Both money paths call the scope-carrying survivors, not the platform seam.
+  check("initiateVendorPayout pays through createTransfer on the TENANT's account",
+    /createTransfer\(\s*\{[\s\S]{0,600}?\},\s*\{\s*side:\s*"tenant",\s*brokerageId:\s*ctx\.brokerageId\s*\}/.test(pay))
+  check("startVendorInvoiceCheckout collects through createCheckoutSession on the TENANT's account",
+    /createCheckoutSession\(\s*\{[\s\S]{0,1400}?\},\s*\{\s*side:\s*"tenant",\s*brokerageId:\s*sessionBrokerageId\s*\}/.test(pay))
+  check("confirmVendorInvoiceCheckout reads the session back on the SAME account it was created on",
+    /retrieveCheckoutSession\(\s*params\.sessionId,\s*\{\s*side:\s*"tenant",\s*brokerageId:\s*sessionBrokerageId,?\s*\}/.test(pay))
+  check("neither site passes { side: \"platform\" } anywhere in this file",
+    !/side:\s*"platform"/.test(pay))
+
+  // THE TENANT COMES FROM THE SESSION (CLAUDE.md §4). On the staff side that is
+  // resolveWriteContext(); on the portal side it is the contact row
+  // verifyContactCaller matched against the signed-in user. Neither is a parameter.
+  check("the payout's brokerage is the session's (ctx.brokerageId from resolveWriteContext), never a parameter",
+    /const ctx = await resolveWriteContext\(\)/.test(pay) && !/brokerageId:\s*params\./.test(pay))
+  check("the portal's brokerage is the SESSION-VERIFIED contact's, not the invoice's own claim",
+    /const sessionBrokerageId = gate\.contact\.brokerage_id/.test(pay))
+  check("…and the invoice's brokerage is CHECKED against it rather than trusted (an invoice id must not select a bank account)",
+    (pay.match(/invoice\.brokerage_id\s*!==\s*sessionBrokerageId/g) ?? []).length >= 2)
+
+  // FAIL CLOSED, and legibly: the refusal is returned as `error`, which both
+  // client components render verbatim. `platform_credentials` holds 0 rows live, so
+  // this is the branch that actually runs today.
+  check("a refused payout returns the resolver's sentence and writes NO vendor_payouts row",
+    /if \(!transfer\.success \|\| !transfer\.transferId\) \{[\s\S]{0,400}?return \{ success: false, error: transfer\.error/.test(pay))
+  check("a refused checkout returns the resolver's sentence rather than a redirect",
+    /if \(!checkout\.success \|\| !checkout\.url\) \{[\s\S]{0,200}?return \{ success: false, error: checkout\.error/.test(pay))
+  check("a refused session read is reported, not read past (an unreadable session must not settle an invoice)",
+    /if \(!session\.success\) \{[\s\S]{0,200}?return \{ success: false, error: session\.error/.test(pay))
+  for (const [label, rel, needle] of [
+    ["payout button", "app/vendor/earnings/payout-button.tsx", /res\.error/],
+    ["portal pay button", "app/portal/[contactId]/invoices/pay-invoice-button.tsx", /res\.error/],
+  ] as const) {
+    check(`${label} renders the refusal sentence to the operator rather than swallowing it`, needle.test(code(rel)))
+  }
+
+  // mode: "connect" — the header AND the destination. Omitting the header sends the
+  // platform's key with no address and debits the PLATFORM; omitting the destination
+  // settles into the payer's own balance instead of the payee's.
+  const payment = code(F.payment)
+  check("all three tenant-money calls attach Stripe-Account when the resolved mode is connect",
+    (payment.match(/mode === "connect" && connectedAccountId \? \{ stripeAccount/g) ?? []).length >= 4)
+  // The destination key is a STRING literal (the gateway's form bodies are flat,
+  // pre-flattened maps), so this reads comment-stripped source WITH strings intact —
+  // blankStrings would erase the very token being asserted.
+  check("createCheckoutSession sends a DESTINATION so the funds land on the payee, not the payer",
+    payment.includes("payment_intent_data[transfer_data][destination]"))
+  check("createTransfer and createCheckoutSession both REQUIRE a call scope (no default)",
+    /createTransfer\(\s*params:\s*CreateTransferParams,\s*on:\s*StripeCallScope\s*\)/.test(payment)
+      && /createCheckoutSession\(\s*[\s\S]{0,120}?on:\s*StripeCallScope,?\s*\)/.test(payment)
+      && /retrieveCheckoutSession\(\s*[\s\S]{0,120}?on:\s*StripeCallScope,?\s*\)/.test(payment))
+
+  // THE CONNECT TOPOLOGY RULE, run rather than read.
+  check("connectDestinationReachable: a connect-mode payer can address a sibling acct_… under the same platform",
+    connectDestinationReachable({ payerMode: "connect", payerLabel: "brokerage b", destinationAccountId: "acct_v" }).ok === true)
+  const direct = connectDestinationReachable({ payerMode: "direct", payerLabel: "brokerage b", destinationAccountId: "acct_v" })
+  check("…and a direct-mode payer (its own Stripe account, its own Connect platform) CANNOT, and the refusal names both parties",
+    direct.ok === false && direct.reason.includes("brokerage b") && direct.reason.includes("acct_v"))
+  check("the rule is applied at the money calls, not just exported",
+    /destinationRefusal\(resolved\.account, params\.destinationAccountId\)/.test(payment)
+      && (payment.match(/if \(unreachable\) return \{ success: false, error: unreachable \}/g) ?? []).length >= 2)
+
+  // THE PREMISE that rule stands on: every acct_… in this product is minted under
+  // the PLATFORM's Connect platform, so a direct-mode tenant is provably foreign to
+  // it. That is a fact about the CODE — asserted here rather than stored as a column
+  // with one possible value (CLAUDE.md §1).
+  const minters = productSourceFiles().filter((f) => {
+    let src = ""
+    try { src = code(f) } catch { return false }
+    return /stripe\.accounts\.create\(/.test(src) || /"v1\/accounts"/.test(src)
+  })
+  console.log(`    Connect-account minting sites: ${minters.length} — ${minters.join(" · ")}`)
+  check(`every Connect-account minter resolves the PLATFORM account (${minters.length} found)`,
+    minters.length > 0 && minters.every((f) => {
+      const src = code(f)
+      // Either the platform seam (lib/stripe.ts) or an explicit { side: "platform" }.
+      return /(from|import\()\s*["']@\/lib\/stripe["']/.test(src) || /resolveCallAccount\(\{\s*side:\s*"platform"\s*\}\)/.test(src)
+    }))
+}
+
+// ─── NEGATIVE CONTROLS ───────────────────────────────────────────────────────
+// Each writes the DEFECT into the real file, VERIFIES THE PATCH APPLIED, requires
+// the corresponding check to flip red, then restores and re-verifies by sha256.
+// A control whose find-string silently stopped matching proves nothing, so the
+// application is asserted before the flip is measured.
+if (RUN_NEGATIVE) {
+  console.log("\n═══ NEGATIVE CONTROLS (mutation) ═══")
   const mutate = (
     label: string,
     rel: string,
@@ -631,6 +808,63 @@ console.log("\n═══ NEGATIVE CONTROLS (mutation) ═══")
     `const VERIFIER_KEY_IS_UNUSED = "sk_signature_verification_only_never_sent_to_stripe"`,
     `const VERIFIER_KEY_IS_UNUSED = process.env.STRIPE_SECRET_KEY ?? "x"`,
     () => envReadsIn(F.webhooks).length > 0 && !(F.webhooks in PLATFORM_ENV_READERS),
+  )
+
+  // ── THE TWO SITES THE OWNER RULED ON ────────────────────────────────────────
+  // "no sites should move tenant money on the platform key." Each of these puts
+  // ONE of them back on the platform's key, as it stood before this lane, and
+  // requires the residual finder to see it. If the finder ever stops seeing them,
+  // an empty TENANT_MONEY_ON_PLATFORM_KEY stops meaning anything.
+  const seesResidualIn = (rel: string, call: string) =>
+    moneyMovingPlatformSeamCalls([rel]).some((h) => h.file === rel && h.at === call)
+
+  mutate(
+    "SITE 1 — the vendor payout falls back to stripe.transfers.create() on the platform key",
+    F.vendorPayments,
+    `    const transfer = await createTransfer(`,
+    `    const transfer = await stripe.transfers.create({ amount: 1 } as never) ?? await createTransfer(`,
+    () => seesResidualIn(F.vendorPayments, "transfers.create"),
+  )
+
+  mutate(
+    "SITE 2 — the portal checkout falls back to stripe.checkout.sessions.create() on the platform key",
+    F.vendorPayments,
+    `  const checkout = await createCheckoutSession(`,
+    `  const checkout = await stripe.checkout.sessions.create({} as never) ?? await createCheckoutSession(`,
+    () => seesResidualIn(F.vendorPayments, "checkout.sessions.create"),
+  )
+
+  // AND THE SCOPE ITSELF: repointing the call is only half the ruling — handing the
+  // survivor `{ side: "platform" }` charges the same wrong account through a
+  // correct-looking function, so C9 must go red on that too.
+  mutate(
+    'SITE 1 — createTransfer is handed { side: "platform" } instead of the session\'s tenant',
+    F.vendorPayments,
+    `      { side: "tenant", brokerageId: ctx.brokerageId },`,
+    `      { side: "platform" },`,
+    () => {
+      const pay = code(F.vendorPayments)
+      return /side:\s*"platform"/.test(pay)
+        && !/createTransfer\(\s*\{[\s\S]{0,600}?\},\s*\{\s*side:\s*"tenant",\s*brokerageId:\s*ctx\.brokerageId\s*\}/.test(pay)
+    },
+  )
+
+  mutate(
+    "SITE 2 — the portal's tenant is taken from the INVOICE rather than from the session",
+    F.vendorPayments,
+    // `mutate` replaces the FIRST occurrence, which is startVendorInvoiceCheckout's.
+    // confirmVendorInvoiceCheckout's identical block survives, so the assertion below
+    // must count call sites rather than ask whether the phrase still appears at all.
+    `  const sessionBrokerageId = gate.contact.brokerage_id
+  if (!sessionBrokerageId || invoice.brokerage_id !== sessionBrokerageId) {
+    return { success: false, error: "Invoice not found" }
+  }`,
+    `  const sessionBrokerageId = invoice.brokerage_id ?? ""`,
+    () => {
+      const pay = code(F.vendorPayments)
+      return !/const sessionBrokerageId = gate\.contact\.brokerage_id/.test(pay)
+        || (pay.match(/invoice\.brokerage_id\s*!==\s*sessionBrokerageId/g) ?? []).length < 2
+    },
   )
 } else {
   console.log("\n(negative controls skipped — --no-negative)")
