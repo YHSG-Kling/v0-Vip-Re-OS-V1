@@ -69,7 +69,41 @@ interface BaseInput {
   delivery?:    "email" | "portal" | "both"
 }
 
-export interface AssignmentIntroInput extends BaseInput {}
+/**
+ * THE SITUATION THE SCRIPT IS WRITTEN FROM, and the compliance rules it is
+ * written UNDER. Both are INPUTS to the writing prompt — CLAUDE.md §5: "Video
+ * scripts are written COMPLIANCE-FIRST — fair housing in the writing prompt,
+ * not only in the post-hoc scan."
+ *
+ * OPTIONAL and ADDITIVE. Omitting it reproduces the prior prompt exactly, which
+ * is what the anniversary trigger and any caller that has no situation to give
+ * still do. Supplying it is how the conversion lanes satisfy the owner's ruling
+ * that content be "personalized and situation, them first" — a welcome video
+ * that opens with a generic hello is the defect, not the baseline.
+ *
+ * The producer is lib/contact-promotion/welcome-situation.ts
+ * `buildWelcomeSituation`, which SCREENS every free-text fact against the
+ * fair-housing pattern bank before it can land here: a hard (severity 'high')
+ * hit drops the fact, softer hits ride through as warnings per the ruling. So
+ * the strings arriving here are already scrubbed, and `complianceDirectives`
+ * carries the floor plus the market-specific steering ban.
+ *
+ * This does NOT replace the pre-flight `evaluateOutbound` gate below — that
+ * still runs, still redrafts once, and still refuses to spend render credit on
+ * a script that fails. It makes the FIRST draft clean rather than hoping the
+ * scan catches it.
+ */
+export interface ScriptSituation {
+  /** Them-first fact lines the writer may use. Already fair-housing screened. */
+  facts: string[]
+  /** Writing constraints, phrased as instructions. Never empty in practice. */
+  complianceDirectives: string[]
+}
+
+export interface AssignmentIntroInput extends BaseInput {
+  /** Optional situational fact set + compliance directives for the writer. */
+  situation?: ScriptSituation
+}
 
 /**
  * The REAL equity numbers (computeEquityLine output) that ride the OPTIONAL
@@ -149,6 +183,7 @@ interface ReactorInput extends BaseInput {
   trigger:     IntroTrigger
   triggerYear: number | null
   yearsAgo?:   number
+  situation?:  ScriptSituation
 }
 
 /**
@@ -292,6 +327,16 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
       firstName:   contact.first_name ?? "there",
       personaRaw:  contact.contact_persona ?? null,
       yearsAgo:    input.yearsAgo,
+      situation:   input.situation,
+      // THE SPEND IS BOOKED, ONCE, BY THE SPENDER. lib/ai/models.ts writes the
+      // ai_tool_usage row only under `if (request.brokerageId)` — so every draft
+      // and every redraft made here was previously unbilled and uncapped, which
+      // is a wrong number in the ledger that feeds meter_readings.ai_tokens and
+      // the overage projection (CLAUDE.md §5). agents-class id for
+      // ai_tool_usage.agent_id (FK agents), users-class for user_id (FK users).
+      brokerageId: input.brokerageId,
+      agentUserId,
+      agentRecordId,
       violations:  [],
     })
   } catch (err) {
@@ -345,6 +390,12 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
       firstName:             contact.first_name ?? "there",
       personaRaw:            contact.contact_persona ?? null,
       yearsAgo:              input.yearsAgo,
+      situation:             input.situation,
+      // A REDRAFT IS A SECOND BILLABLE CALL. It was invisible for the same
+      // reason the first draft was; both are booked now.
+      brokerageId:           input.brokerageId,
+      agentUserId,
+      agentRecordId,
       isNewsletterSubscriber,
       violations,
     }),
@@ -520,6 +571,38 @@ async function draftScript(args: {
   firstName:   string
   personaRaw:  string | null
   yearsAgo?:   number
+  /**
+   * THE SITUATION, AND THE RULES, AS INPUTS TO THE WRITING (§5).
+   *
+   * Owner ruling: "we only sent content to leads and contacts that are
+   * personalized and situation, them first messaging." A welcome video that
+   * opens "Hi there, great to have you" is the defect — the platform already
+   * knows why this person is here.
+   *
+   * Both halves are rendered into the prompt BELOW the role line and ABOVE the
+   * length rules, so the model reads what it may say and what it may not before
+   * it reads how long to be. The facts arrive already fair-housing screened by
+   * lib/contact-promotion/welcome-situation.ts; the directives are the floor
+   * (protected classes, "perfect for", steering proxies, no price promises)
+   * plus, when a market is named, the explicit "name the place, say nothing
+   * about its people" rule.
+   *
+   * Omitted → the prompt is byte-identical to the prior one.
+   */
+  situation?:  ScriptSituation
+  /**
+   * THE TENANT THE SPEND BELONGS TO. lib/ai/models.ts writes the
+   * `ai_tool_usage` row only when `brokerageId` is present; without it the call
+   * is not ledgered anywhere and the caller is responsible for booking it. No
+   * caller here ever did, so every intro / anniversary script and every
+   * compliance redraft was unbilled and uncapped spend against a ledger that
+   * feeds `meter_readings.ai_tokens` and the overage projection.
+   */
+  brokerageId?: string | null
+  /** users.id — `ai_tool_usage.user_id` FKs to users. */
+  agentUserId?: string | null
+  /** agents.id — `ai_tool_usage.agent_id` FKs to agents. The two are DISJOINT. */
+  agentRecordId?: string | null
   /** Wave 22 — when the contact is already on the newsletter list at
    *  assignment time, the script mentions the weekly cadence so they
    *  recognize the next Tuesday send. Ignored for anniversary trigger. */
@@ -532,6 +615,18 @@ async function draftScript(args: {
   const personaLine = args.personaRaw
     ? `The recipient's persona is: ${args.personaRaw}. Match that register.`
     : ""
+  // The situation block. THEM-FIRST is stated as an instruction, not assumed:
+  // the gate scores the produced script on client-focused pronouns, so the
+  // writer is told the target rather than being graded against it afterwards.
+  const situationBlock = args.situation && args.situation.facts.length > 0
+    ? `\n\nWHAT YOU ALREADY KNOW ABOUT THEM — build the script around THIS, not around yourself. Speak to their situation in their words, and never read a fact back as a label:\n- ${args.situation.facts.join("\n- ")}\n\nEvery sentence should be about THEM and what happens next for them. Do not list your credentials, your brokerage's history, or your production numbers.`
+    : ""
+  // The compliance block, written as WRITING RULES. This is the §5 requirement
+  // in its literal form — the rules reach the model that composes the script,
+  // not only the scan that grades it.
+  const complianceBlock = args.situation && args.situation.complianceDirectives.length > 0
+    ? `\n\nRULES THAT GOVERN WHAT YOU MAY WRITE (these bind the script itself — a script that breaks one is rewritten, not published):\n- ${args.situation.complianceDirectives.join("\n- ")}`
+    : ""
   // Wave 22 — newsletter cadence reference (assignment trigger only).
   const newsletterLine = args.trigger === "contact_agent_assigned" && args.isNewsletterSubscriber
     ? "They're also signed up for the weekly newsletter — mention they'll get the first issue next Tuesday so they recognize it in their inbox. Keep it to one short line."
@@ -541,7 +636,7 @@ async function draftScript(args: {
     : ""
   const basePrompt = args.trigger === "contact_agent_assigned"
     ? `Write a 30-45 second video script for a real estate agent introducing themselves to a new contact named ${args.firstName}.
-Voice: first-person, warm, professional. ${personaLine} ${newsletterLine}
+Voice: first-person, warm, professional. ${personaLine} ${newsletterLine}${situationBlock}${complianceBlock}
 Open with a hook tied to their journey, not a sales pitch. State your role in one line. Close with a single, specific next step (text/email back to schedule a call). 90-130 words. No jargon left unexplained. No commitments on specific rates or valuations. No exclamation marks. Avoid any reference to protected characteristics (race, religion, family status, national origin, gender, sexual orientation, disability, source of income). Avoid words like "perfect for families" or any phrasing that implies preference. Return ONLY the script text the agent will speak on camera.`
     : `Write a 30-40 second home-anniversary video script. The recipient ${args.firstName} closed on their home ${args.yearsAgo} year${(args.yearsAgo ?? 0) > 1 ? "s" : ""} ago.
 Voice: first-person, warm, professional. ${personaLine}
@@ -552,6 +647,13 @@ Acknowledge the anniversary without being saccharine. Mention you've been thinki
     prompt:      basePrompt + violationLine,
     maxTokens:   300,
     temperature: 0.6,
+    // BOOK THE SPEND. `?? null` and not `?? ""` — these land in uuid columns and
+    // Postgres refuses '' with 22P02, which logAIUsage swallows into a console
+    // line, so a malformed id would vanish from the ledger exactly like the
+    // missing brokerage did.
+    brokerageId: args.brokerageId ?? null,
+    ...(args.agentUserId   ? { userId:  args.agentUserId }   : {}),
+    ...(args.agentRecordId ? { agentId: args.agentRecordId } : {}),
   })
   return text.trim()
 }

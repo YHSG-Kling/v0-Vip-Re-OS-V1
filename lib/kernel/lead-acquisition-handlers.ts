@@ -657,6 +657,49 @@ export async function handleLeadAssigned(params: {
       // best effort — agent can re-send invite from CRM if it failed
     }
   }
+
+  // 3. THE PERSONAL AVATAR VIDEO FROM THE ASSIGNED AGENT — WIRED HERE FOR
+  //    EXACTLY THE REASON THE HISTORY CARRY AND THE AGENT ACTION PLAN ABOVE ARE.
+  //
+  //    OWNER RULING: "…the welcome portal email with a personal avatar video from
+  //    the agent.. we only sent content to leads and contacts that are
+  //    personalized and situation, them first messaging." The portal invite above
+  //    was wired on both lanes; the VIDEO was wired on neither. Live counts when
+  //    this was added: 50 `contact_agent_assigned` lifecycle rows, ZERO
+  //    `agent_intro_videos` rows of any status — the avatar spine had never run.
+  //
+  //    BOTH LANES CALL THE SAME FUNCTION; NEITHER HOLDS A COPY (§6).
+  //    lib/contact-promotion/promote-lead-to-contact.ts Step 8b makes the
+  //    identical call. Putting it on one lane is precisely how
+  //    carryLeadHistoryToContact came to be manual-lane-only.
+  //
+  //    NOT gated on the buyer/seller/investor branch above. That gate is about
+  //    who gets a PORTAL; the video's own exclusions (vendor / referral_partner,
+  //    contacts.video_opt_out, and the agent's voice/avatar readiness) live in the
+  //    callee where both lanes get them identically. `contactType` is a local
+  //    string here and the callee re-reads the stored value, so it cannot drift.
+  //
+  //    BEST EFFORT: the contact exists, the history is carried and the lead is
+  //    deactivated. ensureWelcomeAvatarVideo never throws; a refusal is a logged
+  //    warning, never a rollback of a successful assignment. And it is idempotent
+  //    before it is expensive — the `agent_intro_videos` unique index dedupes
+  //    inside the reactor BEFORE the model is called, so a retried assignment
+  //    spends nothing.
+  {
+    const { ensureWelcomeAvatarVideo } = await import('@/lib/contact-promotion/welcome-avatar-video')
+    const welcomeVideo = await ensureWelcomeAvatarVideo(supabase, {
+      contactId:   contact.id,
+      agentId,
+      brokerageId,
+    })
+    for (const w of welcomeVideo.warnings) {
+      console.error(`[lead-acquisition] welcome avatar video: ${w}`)
+    }
+    console.log(
+      `[lead-acquisition] welcome avatar video for contact ${contact.id}: ${welcomeVideo.reason} ` +
+        `(commissioned=${welcomeVideo.commissioned}, situational=${welcomeVideo.situational})`,
+    )
+  }
 }
 
 // ─── HANDLER 7 REMOVED — handleLeadConvertedToContact (manual path) ──────────

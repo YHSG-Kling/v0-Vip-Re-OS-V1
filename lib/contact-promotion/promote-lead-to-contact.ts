@@ -11,6 +11,7 @@ import { deactivateLead } from "./lead-deactivator"
 import { logPromotionActivity } from "./promotion-logger"
 import { carryLeadHistoryToContact } from "./history-carry"
 import { grantPortalAccessForPromotedContact } from "./portal-access"
+import { ensureWelcomeAvatarVideo } from "./welcome-avatar-video"
 
 export interface PromotionResult {
   success: boolean
@@ -227,6 +228,44 @@ export async function promoteLeadToContactService(
     console.log(
       `[promoteLeadToContactService] portal access for contact ${contactResult.contactId}: ` +
         `${portal.reason} (granted=${portal.granted}, emailSent=${portal.emailSent})`,
+    )
+
+    // Step 8b: THE PERSONAL AVATAR VIDEO FROM THE ASSIGNED AGENT.
+    //
+    // OWNER RULING: "…the welcome portal email with a personal avatar video from
+    // the agent.. we only sent content to leads and contacts that are personalized
+    // and situation, them first messaging."
+    //
+    // The portal half above was wired; this half was not, on EITHER lane. Live
+    // counts when this was added: 50 `contact_agent_assigned` lifecycle rows and
+    // ZERO `agent_intro_videos` rows of any status — so the avatar spine had never
+    // run for anybody. See lib/contact-promotion/welcome-avatar-video.ts for why
+    // (the m122 trigger writes an audit-only lifecycle row that nothing dispatches
+    // back into the reactor). CLAUDE.md §1 case 2: build the missing half.
+    //
+    // IT RUNS **AFTER** THE PORTAL INVITE, NOT BEFORE. The portal grant is the
+    // thing the owner is certain about and the thing a contact cannot do without;
+    // the video is the thing that can be refused for a dozen legitimate reasons
+    // (the agent has no avatar yet, the contact opted out of video, the model
+    // refused the script). Ordering it second means a video that cannot be
+    // produced can never cost the contact their portal.
+    //
+    // BOTH LANES CALL THIS SAME FUNCTION — lib/kernel/lead-acquisition-handlers.ts
+    // makes the identical call. Neither holds a copy (§6). That is the lesson
+    // recorded on the history carry, which was wired into this lane only and drifted.
+    //
+    // BEST EFFORT and IDEMPOTENT: Step 2 above returns early on an already-promoted
+    // lead, and inside the reactor the `agent_intro_videos` unique index dedupes
+    // BEFORE the model is called, so a retried conversion spends nothing.
+    const welcomeVideo = await ensureWelcomeAvatarVideo(supabase, {
+      contactId: contactResult.contactId,
+      agentId: lead.agent_id,
+      brokerageId: lead.brokerage_id,
+    })
+    warnings.push(...welcomeVideo.warnings)
+    console.log(
+      `[promoteLeadToContactService] welcome avatar video for contact ${contactResult.contactId}: ` +
+        `${welcomeVideo.reason} (commissioned=${welcomeVideo.commissioned}, situational=${welcomeVideo.situational})`,
     )
 
     // Step 9: THE AGENT'S FIRST-TOUCH PLAN.
