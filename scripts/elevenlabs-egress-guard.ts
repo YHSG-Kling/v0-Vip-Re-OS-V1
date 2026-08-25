@@ -38,7 +38,8 @@
  * a users id, so it could never resolve a voice). The route is gone; §5 is now
  * the inverse claim, swept across the whole app rather than one known path.
  */
-import { readFileSync, existsSync, readdirSync } from "node:fs"
+import { readFileSync, existsSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
@@ -126,18 +127,21 @@ console.log("\n═══ 5. THE GAP IS CLOSED — swept, not spot-checked ══
   // The ONE legitimate exception is the streaming read in the TTS library, which
   // §4 already pins by count and reason.
   const offenders: string[] = []
-  const walk = (dir: string) => {
-    for (const e of readdirSync(dir, { withFileTypes: true })) {
-      const full = `${dir}/${e.name}`
-      if (e.isDirectory()) { if (e.name !== "node_modules") walk(full); continue }
-      if (!/\.tsx?$/.test(e.name)) continue
-      if (full === TTS_LIB) continue
-      const c = code(full)
-      if (/await fetch\([^)]*api\.elevenlabs\.io/.test(c) ||
-          /await fetch\(\s*`\$\{EL_API_BASE\}/.test(c)) offenders.push(full)
-    }
+  // TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+  // 82 copies of the same readdirSync walker. The survivor is
+  // scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+  // It enumerated DIRECTORIES, and a root-level FILE is not a directory, so
+  // `proxy.ts` — the Next 16 edge middleware, which gates auth and queries four
+  // tables with a SERVICE client on EVERY request — was outside this guard's corpus.
+  // A file that is never opened reports green, which is the failure shape §2 of
+  // CLAUDE.md names. `rootRuntimeFiles()` from the same survivor supplies it.
+  for (const full of [...walkTs("app"), ...walkTs("lib"), ...rootRuntimeFiles(".")]) {
+    if (full === TTS_LIB) continue
+    const c = code(full)
+    if (/await fetch\([^)]*api\.elevenlabs\.io/.test(c) ||
+        /await fetch\(\s*`\$\{EL_API_BASE\}/.test(c)) offenders.push(full)
   }
-  for (const d of ["app", "lib"]) if (existsSync(d)) walk(d)
   ok("NO file outside the documented streaming exception raw-fetches ElevenLabs",
     offenders.length === 0, offenders.join(", "))
 }

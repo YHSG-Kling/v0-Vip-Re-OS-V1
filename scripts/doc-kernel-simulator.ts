@@ -20,6 +20,7 @@
  * conflict signal — then clean to count==0.
  */
 import { readFileSync, existsSync } from "fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { join, dirname } from "path"
 import { fileURLToPath } from "url"
 // The ONE correct scanner (CLAUDE.md §2 — never hand-roll a comment stripper).
@@ -42,6 +43,24 @@ function check(name: string, cond: boolean, detail?: string) {
   else { failed++; failures.push(name); console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`) }
 }
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
+
+// TOMBSTONE (orphan doctrine §1.1) — this file carried SEVEN private readdirSync
+// walkers (walkDemo, walkSecret, walk, walk13, walk9, walk3, walk2), one per pass, each a
+// copy of the same recursion. The survivor is scripts/runtime-roots.ts:61
+// (`walkTs`), imported above; they are replaced by the single corpus below.
+//
+// Seven copies meant seven chances to be wrong in the same way, and they all were:
+// each enumerated DIRECTORIES, and a root-level FILE is not a directory, so
+// `proxy.ts` — the Next 16 edge middleware, which gates auth and queries four
+// tables with a SERVICE client on EVERY request — was in none of their corpora.
+// Every pass that swept "app/ and lib/" for a forbidden shape reported green over
+// a file it had never opened, and the demo-roster and public-bearer sweeps below
+// are precisely the kind that should be reading the auth gate.
+const REPO_TS_FILES: string[] = [
+  ...walkTs(join(ROOT, "app")),
+  ...walkTs(join(ROOT, "lib")),
+  ...rootRuntimeFiles(ROOT),
+].map((f) => f.slice(ROOT.length + 1))
 /** Text of each `.from("<table>")` chain, cut at the next `.from(` — so an
  *  assertion about one table cannot be tripped by a sibling table's query in the
  *  same file. */
@@ -991,15 +1010,11 @@ async function main() {
     // than the filenames: the demo roster lives in exactly one gated place, and
     // nothing anywhere mints a self-signed role cookie.
     {
-      const { readdirSync, statSync } = await import("fs")
       const ROSTER_HOME = new Set(["app/constants/auth.ts", "app/actions/demo-auth.ts"])
       const rosterCopies: string[] = []
       const cookieMinters: string[] = []
-      const walkDemo = (dir: string) => {
-        for (const name of readdirSync(join(ROOT, dir))) {
-          const rel = `${dir}/${name}`
-          if (statSync(join(ROOT, rel)).isDirectory()) { if (name !== "node_modules") walkDemo(rel); continue }
-          if (!/\.(ts|tsx)$/.test(name)) continue
+      for (const rel of REPO_TS_FILES) {
+        {
           const text = readFileSync(join(ROOT, rel), "utf-8")
           // A roster copy is what lets a surface answer "who are the demo
           // users" without ever asking DEMO_CONFIG whether demo mode is on.
@@ -1013,7 +1028,6 @@ async function main() {
           if (/name:\s*["']auth-token["']/.test(text)) cookieMinters.push(rel)
         }
       }
-      walkDemo("app"); walkDemo("lib")
       check(`DEMO-AUTH SINGLE SURFACE (the hard gate is only hard if nothing routes around it) — the demo roster exists ONLY in the DEMO_CONFIG-gated source, no surface mints a self-signed \`auth-token\` role cookie, and the four ungated auth routes are gone. Roster copies: [${rosterCopies.join(", ") || "none"}] · cookie minters: [${cookieMinters.join(", ") || "none"}]`,
         rosterCopies.length === 0
         && cookieMinters.length === 0
@@ -1076,18 +1090,11 @@ async function main() {
     // is used as a bearer token anywhere, and the admin reports whether the
     // embedding actually landed instead of only its own success.
     {
-      const { readdirSync, statSync } = await import("fs")
       const bearerPublic: string[] = []
-      const walkSecret = (dir: string) => {
-        for (const name of readdirSync(join(ROOT, dir))) {
-          const rel = `${dir}/${name}`
-          if (statSync(join(ROOT, rel)).isDirectory()) { if (name !== "node_modules") walkSecret(rel); continue }
-          if (!/\.(ts|tsx)$/.test(name)) continue
-          const text = readFileSync(join(ROOT, rel), "utf-8")
-          if (/Bearer \$\{\s*process\.env\.NEXT_PUBLIC_/.test(text)) bearerPublic.push(rel)
-        }
+      for (const rel of REPO_TS_FILES) {
+        const text = readFileSync(join(ROOT, rel), "utf-8")
+        if (/Bearer \$\{\s*process\.env\.NEXT_PUBLIC_/.test(text)) bearerPublic.push(rel)
       }
-      walkSecret("app"); walkSecret("lib")
       const kb = src("app/dashboard/settings/knowledge-base/knowledge-base-client.tsx")
       check(`KB ADMIN GOES THROUGH THE SERVER ACTIONS (a secret shipped to the browser is not a secret, and an embed that 401s is not a save) — no NEXT_PUBLIC_ value is used as a bearer token, the admin calls createHelpTopic/updateHelpTopic/deleteHelpTopic, and it tells the admin when the embedding did NOT land. Public-secret bearers: [${bearerPublic.join(", ") || "none"}]`,
         bearerPublic.length === 0
@@ -1815,18 +1822,11 @@ async function main() {
       && src("app/actions/ai-isa/engage-contact.ts").includes("ensureConversationForContact"))
     // ── PASS 4: THE WRITE SENTINEL (the silencer class becomes self-reporting) ──
     {
-      const { readdirSync, statSync } = await import("fs")
       const silencerRe = /\.then\((undefined|\(\) *=> *(null|\{\})), *\(\) *=> *(null|\{\}|undefined)\)/g
       let silencerCount = 0
-      const walk = (dir: string) => {
-        for (const name of readdirSync(join(ROOT, dir))) {
-          const rel = `${dir}/${name}`
-          const full = join(ROOT, rel)
-          if (statSync(full).isDirectory()) { if (name !== "node_modules") walk(rel) }
-          else if (/\.(ts|tsx)$/.test(name)) silencerCount += (readFileSync(full, "utf-8").match(silencerRe) ?? []).length
-        }
+      for (const rel of REPO_TS_FILES) {
+        silencerCount += (readFileSync(join(ROOT, rel), "utf-8").match(silencerRe) ?? []).length
       }
-      walk("lib"); walk("app")
       // RATCHET: 195 is the frozen baseline. New best-effort writes must use
       // sentinelWrite (which ledgers every loss) — this check FAILS if the
       // silencer population GROWS. Converting old sites only shrinks it.
@@ -1939,7 +1939,6 @@ async function main() {
 
       // ── PASS 13: GLOBAL agent_user_id CLASS AUDIT + CAP-LEDGER CONSOLIDATION + E2E-IN-GUARD ──
       {
-        const { readdirSync, statSync } = await import("fs")
         // The class-crossing shape: an agents-FK row field stamped straight into a
         // users-class agent_user_id column. Live DB proof: ALL 36 agent_user_id
         // columns are users-class. Zero of these may exist anywhere in app/ or lib/.
@@ -1950,14 +1949,7 @@ async function main() {
             crossers.push(`${rel}: agent_user_id ← ${m[1]}.agent_id`)
           }
         }
-        const walk13 = (dir: string) => {
-          for (const name of readdirSync(join(ROOT, dir))) {
-            const rel = `${dir}/${name}`
-            if (statSync(join(ROOT, rel)).isDirectory()) { if (name !== "node_modules") walk13(rel) }
-            else if (/\.(ts|tsx)$/.test(name)) scan13(rel)
-          }
-        }
-        walk13("lib"); walk13("app")
+        for (const rel of REPO_TS_FILES) scan13(rel)
         check(`PASS 13 — GLOBAL agent_user_id CLASS AUDIT (items 1-3 approved after pass 12). Live census: ALL 36 agent_user_id columns are USERS-class (30 FK users, 6 no-FK same convention) — so the global rule is simple: agent_user_id never meets an agents.id. The sweep found the filters CLEAN (50/50 users-class) and SIX class-crossing STAMPS, each FK-throwing in production: the 'offer received' activity (listing.agent_id), EVERY buyer fatigue alert (contact.agent_id), promote-to-asset in the campaign registry (getAgentContext agents.id), the CMA presentation + net-sheet events AND the net-sheet's users-table brokerage lookup (presentation tab passes listing.agent_id — net sheets errored outright), the auto-on-live listing packet job, and the brand-voice agent profile read (agents-FK filtered by users.id). BONUS CATCH: aiGenerateClosingChecklist wrote FIVE PHANTOM COLUMNS (agent_user_id/phase/item_label/owner/due_date don't exist on closing_checklist_items) — every checklist generate THREW and the tab rendered the same phantom fields; both now speak the live schema (item_name/category/notes with owner+due embedded). CONSOLIDATION (item 2): agent_cap_tracking is the ONE cap ledger (CapProgressBar, CDA portal, waterfall, kernel) — aiCalculateCommission now reads it and its parallel agents.cap_progress ratchet is REMOVED (the kernel owns the ratchet). E2E-IN-GUARD (item 3): the lifecycle harness rides the guard chain, credential-gated. MANAGER COVERAGE: all 14 managers own ≥1 maintenance domain, zero domains point at unknown managers. SINCE-THEN: the 'offer received' fix's host function (ai-offer-creation.ts:submitCompleteOffer) was deleted as a duplicate offer writer — survivor app/actions/buyer-offers.ts:createOffer — so this pass now asserts the class through the global sweep plus the surviving listing-side notification, not through the vanished line. In-code sweep offenders now: [${crossers.join("; ") || "none"}]`,
           crossers.length === 0
           // The 'offer received' stamp this pass fixed lived inside
@@ -3004,7 +2996,6 @@ async function main() {
     }
     // ── PASS 9: NON-STATUS ENUM CHECK VOCABULARY (direction / priority / call_type / …) ──
     {
-      const { readdirSync, statSync } = await import("fs")
       const NS_VOCAB: Record<string, string[]> = {
         "client_portal_messages.direction": ["agent_to_client","client_to_agent"],
         "message_provider_logs.direction": ["inbound","outbound"],
@@ -3026,14 +3017,7 @@ async function main() {
           }
         }
       }
-      const walk9 = (dir: string) => {
-        for (const name of readdirSync(join(ROOT, dir))) {
-          const rel = `${dir}/${name}`
-          if (statSync(join(ROOT, rel)).isDirectory()) { if (name !== "node_modules") walk9(rel) }
-          else if (/\.(ts|tsx)$/.test(name)) scanNs(rel)
-        }
-      }
-      walk9("lib"); walk9("app")
+      for (const rel of REPO_TS_FILES) scanNs(rel)
       check(`PASS 9 — NON-STATUS ENUM CHECK SWEEP (the columns passes 3/6 didn't cover: direction / priority / call_type / sender_type / contact_type; live pg_constraint map × every write literal): the headline catch — client_portal_messages.direction admits ONLY 'agent_to_client'/'client_to_agent', but TEN portal-message writes across the seller-update, listing-lifecycle, tour, title, lender, vendor, ISA and video-distribution rails wrote 'outbound'/'inbound' — every client-facing portal message was SILENTLY REJECTED and never reached the client's portal thread; all ten mapped to the real vocabulary (outbound→agent_to_client, inbound→client_to_agent) WITH the one reader that filtered the old value; notifications.priority rejected 'normal' (widget intake) → 'medium'. Re-runs the sweep in-code — offenders now: [${nsOffenders.join(", ") || "none"}]`,
         nsOffenders.length === 0
         && src("app/actions/seller-updates.ts").includes('direction: "agent_to_client"')
@@ -3045,7 +3029,6 @@ async function main() {
     {
       // Re-run the exact sweep predicates in-code so regressions fail the sim:
       // every lifecycle_events / tasks insert literal must carry its required columns.
-      const { readdirSync, statSync } = await import("fs")
       const offenders: string[] = []
       const checkFile = (rel: string) => {
         const text = readFileSync(join(ROOT, rel), "utf-8")
@@ -3057,14 +3040,7 @@ async function main() {
           if (!m[1].includes("brokerage_id") && !m[1].includes("...fields")) offenders.push(`${rel}:tasks`)
         }
       }
-      const walk2 = (dir: string) => {
-        for (const name of readdirSync(join(ROOT, dir))) {
-          const rel = `${dir}/${name}`
-          if (statSync(join(ROOT, rel)).isDirectory()) { if (name !== "node_modules") walk2(rel) }
-          else if (/\.(ts|tsx)$/.test(name)) checkFile(rel)
-        }
-      }
-      walk2("lib"); walk2("app")
+      for (const rel of REPO_TS_FILES) checkFile(rel)
       // ── PASS 8: PORTAL-IDENTITY RLS (the family-collaboration surface) ──
       check("PASS 8 — PORTAL-IDENTITY RLS (the pass-7 deferral, closed): investigation found portal visitors are AUTHENTICATED Supabase users identified by EMAIL (the portal layout matches auth email → contacts.email; family members are invited by email and may not be contacts at all) — so the scoping identity is the JWT email, not a token scheme. THE HOLE WAS WORSE THAN A READ LEAK: collaborative_search_members/properties, property_family_ratings and property_consensus had USING(true) on SELECT *and UPDATE and INSERT* — any authenticated user of ANY tenant could read AND MODIFY any family's members, shortlist, ratings and consensus; meanwhile the tenant-scoped parent DENIED portal clients their own search (they have no brokerage membership). RESOLUTION (migration l72-s06): ONE SECURITY DEFINER helper portal_member_searches() (owner-contact by email ∪ invited-member by email) + a portal read lane on the parent beside the tenant policies + every child verb scoped to (portal member of the search OR tenant member of its brokerage), with family ratings tightened to OWN-ROW writes (member_email must equal the JWT email — a member can never rewrite another member's vote; tenant staff may moderate). Live four-persona proof: the invited family member sees the whole search and updated their OWN rating (4→3) while the other member's stayed untouched; the stranger saw ZERO rows and their attack update hit ZERO rows; the tenant agent sees everything via the brokerage lane; service-role rails unchanged",
         src("lib/kernel/manager-registry.ts").includes("portal_member_searches")
@@ -3136,14 +3112,7 @@ async function main() {
             }
           }
         }
-        const walk3 = (dir: string) => {
-          for (const name of readdirSync(join(ROOT, dir))) {
-            const rel = `${dir}/${name}`
-            if (statSync(join(ROOT, rel)).isDirectory()) { if (name !== "node_modules") walk3(rel) }
-            else if (/\.(ts|tsx)$/.test(name)) scanVocab(rel)
-          }
-        }
-        walk3("lib"); walk3("app")
+        for (const rel of REPO_TS_FILES) scanVocab(rel)
         check(`PASS 6 — STATUS-VOCABULARY SWEEP over UPDATE + INSERT paths (the sibling passes 3 promised; live pg_constraint dump of ~180 status CHECKs cross-checked against every write literal): SIXTY-THREE drifted sites found — every one silently rejected: the ghost-recovery ladder's reengagement states, the sequence engine's cancel/unenroll, the direct-mail drain's failure terminals, the e-sign doc state, the vendor procurement ladder, manager-signal consumption, compliance pass/fail stamps, ISA draft approvals, newsletter suppression refusals, audience sync states, onboarding progress and more. RESOLUTION: 39 write literals normalized to the canonical vocabulary + 9 CHECKs widened where the code's vocabulary is a REAL business state (l72-s03: reengagement ladder, procurement ladder, pending_signature, suppressed, superseded, archived, deleted, cancel/unenroll, mail failure terminals) + 13 READERS aligned (including the two manager-signal outcome resolvers whose skip-filter watched a status that could never exist, and the newsletter subscriber counts filtering a value never written). This block re-runs the sweep with the post-migration vocabulary — offenders now: [${vocabOffenders.join(", ") || "none"}]`,
           vocabOffenders.length === 0
           && src("lib/kernel/transactions.ts").includes('.eq("status", "fail")')

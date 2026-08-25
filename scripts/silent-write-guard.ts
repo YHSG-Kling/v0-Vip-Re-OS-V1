@@ -36,7 +36,8 @@
  * belong there; a .tsx client component writing money or access directly would
  * be its own finding, and excluding JSX keeps the statement parser honest.
  */
-import { readFileSync, readdirSync, existsSync } from "node:fs"
+import { readFileSync, existsSync, writeFileSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { join } from "node:path"
 import { stripComments } from "./strip-comments"
 
@@ -99,9 +100,49 @@ export function splitStatements(src: string): string[] {
 
 /** PURE — does this statement write a consequential table without acknowledging failure? */
 export function isSilentWrite(stmt: string, tables: readonly string[] = CONSEQUENTIAL_TABLES): string | null {
-  const m = stmt.match(/\.from\(["'](\w+)["']\)/)
-  if (!m || !tables.includes(m[1])) return null
+  // EVERY `.from(` IN THE CHUNK, NOT THE FIRST ONE.
+  //
+  // This used to be `stmt.match(...)` — a single, non-global match — so the whole
+  // careful per-write windowing below ran against exactly ONE write per chunk, and
+  // if that first `.from(` named a table outside the consequential list the
+  // function returned null for everything after it.
+  //
+  // Combined with splitStatements, which cuts on DEPTH-0 SEMICOLONS, that is a
+  // whole-file blind spot rather than an edge case: a module written without
+  // trailing semicolons is ONE chunk, so the first `.from()` in the file decided
+  // the verdict for the entire file. `proxy.ts` is exactly such a module — its
+  // first `.from()` is `blog_posts`, not consequential — and a silent write to
+  // `commissions` appended to it was not judged clean, it was never examined.
+  //
+  // Found because the runtime-roots merge put proxy.ts in this guard's corpus for
+  // the first time; the identical fixture in lib/ was caught, which is what made
+  // the difference a finder bug rather than a corpus one. The header below already
+  // described per-write scoping — this loop is what makes that description true
+  // for the second and subsequent writes in a chunk.
+  return silentWritesIn(stmt, tables)[0] ?? null
+}
 
+/**
+ * PURE — EVERY silent consequential write in this chunk, not just the first.
+ *
+ * `isSilentWrite` answers with one verdict because its positive controls are
+ * written that way, but the repo scan must not stop at the first hit: chunks here
+ * are frequently WHOLE FILES (see the semicolon note above), so "first silent
+ * write in the chunk" would report at most one site per file and undercount every
+ * module that has more than one.
+ */
+export function silentWritesIn(stmt: string, tables: readonly string[] = CONSEQUENTIAL_TABLES): string[] {
+  const out: string[] = []
+  for (const m of stmt.matchAll(/\.from\(["'](\w+)["']\)/g)) {
+    if (!tables.includes(m[1])) continue
+    const table = judgeOneWrite(stmt, m.index!, m[1])
+    if (table) out.push(table)
+  }
+  return out
+}
+
+/** PURE — the verdict for the single write whose `.from(` sits at `at`. */
+function judgeOneWrite(stmt: string, at: number, table: string): string | null {
   // SCOPED TO THE WRITE, not to the whole chunk.
   //
   // splitStatements cuts on depth-0 semicolons, and much of this codebase omits
@@ -121,12 +162,12 @@ export function isSilentWrite(stmt: string, tables: readonly string[] = CONSEQUE
   // by an unrelated `.update(…)` would be read as a silent write. Walk the
   // actual method chain — `.name( … )` runs with balanced parens — and stop at
   // the first token that is not part of it.
-  const chain = chainFrom(stmt, m.index!)
+  const chain = chainFrom(stmt, at)
 
   if (!/\.(insert|update|upsert|delete)\s*\(/.test(chain)) return null
   // Declared as allowed-to-fail, with a reason. The wrapper sits BEFORE .from(,
   // so look at the lookbehind for it too.
-  const lookbehind = stmt.slice(Math.max(0, m.index! - 160), m.index!)
+  const lookbehind = stmt.slice(Math.max(0, at - 160), at)
   if (/\bbestEffort\s*\(/.test(lookbehind) || /\bbestEffort\s*\(/.test(chain)) return null
   // The result is captured somewhere the caller can inspect — the binding is to
   // the LEFT of `.from(`.
@@ -139,7 +180,7 @@ export function isSilentWrite(stmt: string, tables: readonly string[] = CONSEQUE
   const swallowed =
     /\.catch\(\s*\(\s*\)\s*=>\s*\{\s*\}\s*\)/.test(chain) ||
     /\bvoid\s+Promise/.test(lookbehind)
-  return (!captured || swallowed) ? m[1] : null
+  return (!captured || swallowed) ? table : null
 }
 
 /** PURE — the contiguous `.method(…)` chain starting at `.from(` at index i. */
@@ -204,28 +245,76 @@ console.log("\n[pure — the detector]")
 console.log("\n[repo scan — server surface]")
 {
   const roots = ["app/actions", "app/api", "lib"]
-  const files: string[] = []
-  const walk = (d: string) => {
-    if (!existsSync(d)) return
-    for (const e of readdirSync(d, { withFileTypes: true })) {
-      const p = join(d, e.name)
-      if (e.isDirectory()) walk(p)
-      else if (e.name.endsWith(".ts")) files.push(p)
-    }
-  }
-  roots.forEach(walk)
+  // TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+  // 82 copies of the same readdirSync walker. The survivor is
+  // scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+  // It enumerated DIRECTORIES, and a root-level FILE is not a directory, so
+  // `proxy.ts` — the Next 16 edge middleware, which gates auth and queries four
+  // tables with a SERVICE client on EVERY request — was outside this guard's corpus.
+  // A file that is never opened reports green, which is the failure shape §2 of
+  // CLAUDE.md names. `rootRuntimeFiles()` from the same survivor supplies it.
+  //
+  // `proxy.ts` belongs in a SILENT-WRITE corpus specifically: it is a server
+  // surface that talks to Supabase with a service client, which is exactly the
+  // shape this guard judges — it simply is not inside any of the three roots.
+  const files: string[] = [
+    ...roots.flatMap((d) => walkTs(d)),
+    ...rootRuntimeFiles("."),
+  ].filter((p) => p.endsWith(".ts"))
 
-  const found: string[] = []
+  const found = new Map<string, number>()   // "file → table" → count
   for (const f of files) {
     const src = stripComments(readFileSync(f, "utf8"))
     for (const stmt of splitStatements(src)) {
-      const table = isSilentWrite(stmt)
-      if (table) found.push(`${f} → ${table}`)
+      for (const table of silentWritesIn(stmt)) {
+        const key = `${f} → ${table}`
+        found.set(key, (found.get(key) ?? 0) + 1)
+      }
     }
   }
+  const total = [...found.values()].reduce((a, b) => a + b, 0)
   console.log(`  · ${files.length} server files scanned · ${CONSEQUENTIAL_TABLES.length} consequential tables`)
-  check(`no undeclared silent write on a consequential table (${found.length} found)`,
-    found.length === 0, found.slice(0, 8).join(" | "))
+
+  // ── RATCHET, NOT AN INVARIANT — and the reason is the whole point ───────────
+  //
+  // This assertion read `found.length === 0` and passed, for as long as it has
+  // existed, at ZERO. That zero was not a clean tree: `isSilentWrite` matched only
+  // the FIRST `.from(` in a chunk, and splitStatements makes a semicolon-free
+  // module ONE chunk, so in most files exactly one write was ever judged and every
+  // later one was skipped unexamined. Fixing the finder took the count 0 → the
+  // baseline below. NONE of these sites is new code and none is in proxy.ts — they
+  // are pre-existing writes that this guard has never once looked at.
+  //
+  // They are FROZEN rather than accepted. The list names every site, growth fails
+  // CI, and the number may only go down — the same shape tenant-scope-guard and
+  // data-guard-guard use for debt they can see but have not yet burned. Raising it
+  // to make a new violation pass is the one thing it must never be used for.
+  const baselinePath = join(process.cwd(), "scripts", "silent-write-baseline.json")
+  const baseline: Record<string, number> =
+    existsSync(baselinePath) ? JSON.parse(readFileSync(baselinePath, "utf8")) : {}
+
+  if (process.env.SILENT_WRITE_BASELINE === "1") {
+    const snap: Record<string, number> = {}
+    for (const k of [...found.keys()].sort()) snap[k] = found.get(k)!
+    writeFileSync(baselinePath, `${JSON.stringify(snap, null, 2)}\n`)
+    console.log(`Baseline written: ${found.size} site(s), ${total} silent write(s) frozen (may only shrink)`)
+    process.exit(0)
+  }
+
+  const grew: string[] = []
+  for (const [key, count] of found.entries()) {
+    const allowed = baseline[key] ?? 0
+    if (count > allowed) grew.push(`${key} — ${count} silent write(s) (baseline ${allowed})`)
+  }
+  const burned = Object.keys(baseline).filter((k) => (found.get(k) ?? 0) < baseline[k])
+  const baselineTotal = Object.values(baseline).reduce((a, b) => a + b, 0)
+  console.log(`  · ${total} silent write(s) across ${found.size} site(s) · frozen debt ${baselineTotal}`)
+  if (burned.length > 0) {
+    console.log(`  ↓ ${burned.length} site(s) improved — re-freeze with SILENT_WRITE_BASELINE=1 npm run test:silent-write`)
+  }
+  check(`no NEW undeclared silent write on a consequential table (${grew.length} new)`,
+    grew.length === 0, grew.slice(0, 8).join(" | "))
 
   // The helper must exist and actually surface the failure it tolerates —
   // otherwise "declaring" a write best-effort would just be a nicer way to hide.
@@ -239,4 +328,7 @@ console.log("\n─────────────────────�
 if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
 console.log(` RESULT: ${pass} passed, ${fail} failed`)
 if (fail > 0) { console.log(" ❌ SILENT_WRITE_FAIL"); process.exit(1) }
-console.log(" ✅ SILENT_WRITE_PASS — every consequential write checks its error or declares it may fail")
+// The old wording here was "every consequential write checks its error or declares
+// it may fail". That was the claim the broken finder licensed, and it was not true:
+// 177 writes do neither. The guard's honest promise is that no NEW one appears.
+console.log(" ✅ SILENT_WRITE_PASS — no NEW undeclared silent write; the frozen debt may only shrink")

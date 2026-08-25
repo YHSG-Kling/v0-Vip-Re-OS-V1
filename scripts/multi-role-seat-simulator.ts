@@ -49,7 +49,8 @@
  *         chooser answers the same thing on repeated reads — then cleans up and
  *         proves residue 0. Self-skips without SUPABASE creds.
  */
-import { readFileSync, readdirSync, statSync } from "node:fs"
+import { readFileSync } from "node:fs"
+import { walkTs } from "./runtime-roots"
 import { join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createClient } from "@supabase/supabase-js"
@@ -198,16 +199,15 @@ function pureLayer() {
 
 // ─── SOURCE ──────────────────────────────────────────────────────────────────
 
-function walk(dir: string, out: string[] = []): string[] {
-  for (const e of readdirSync(dir)) {
-    if (e === "node_modules" || e === ".next" || e === ".git") continue
-    const p = join(dir, e)
-    if (statSync(p).isDirectory()) walk(p, out)
-    // This guard QUOTES the forbidden shapes — in its own header and in its own
-    // regexes — so scanning itself would report prose as a live read.
-    else if ((p.endsWith(".ts") || p.endsWith(".tsx")) && p !== SELF) out.push(p)
-  }
-  return out
+// TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+// 82 copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above. This one already walked
+// ROOT, so it was not blind to `proxy.ts`; it is DEDUPLICATED only, and every
+// exclusion below is this file's own, preserved so the corpus does not move.
+function walk(dir: string): string[] {
+  // This guard QUOTES the forbidden shapes — in its own header and in its own
+  // regexes — so scanning itself would report prose as a live read.
+  return walkTs(dir).filter((p) => p !== SELF)
 }
 
 /**

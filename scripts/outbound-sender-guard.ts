@@ -21,7 +21,8 @@
  * Same shape as the render content contract in the same pass: the OS collected
  * the answer and then silently used something else.
  */
-import { readFileSync, readdirSync } from "node:fs"
+import { readFileSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import {
   isUnsendableAddress, isPlausibleAddress, isUsableSender,
   formatSender, bareAddress, NO_SENDER_ERROR,
@@ -120,18 +121,20 @@ console.log("\n═══ 6. No fabricated sender survives anywhere in the send p
   // Walk lib/ and app/ for an address literal on an unsendable domain. This is
   // the ratchet: the four that existed are gone, and a new one breaks the build.
   const files: string[] = []
-  const walk = (dir: string, depth = 0) => {
-    if (depth > 6) return
-    let entries: Array<{ name: string; isDirectory: () => boolean }>
-    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
-    for (const e of entries) {
-      if (e.name.startsWith(".") || e.name === "node_modules") continue
-      const full = `${dir}/${e.name}`
-      if (e.isDirectory()) walk(full, depth + 1)
-      else if (/\.(ts|tsx)$/.test(e.name)) files.push(full)
-    }
-  }
-  walk("lib"); walk("app")
+  // TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+  // 82 copies of the same readdirSync walker. The survivor is
+  // scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+  // It enumerated DIRECTORIES, and a root-level FILE is not a directory, so
+  // `proxy.ts` — the Next 16 edge middleware, which gates auth and queries four
+  // tables with a SERVICE client on EVERY request — was outside this guard's corpus.
+  // A file that is never opened reports green, which is the failure shape §2 of
+  // CLAUDE.md names. `rootRuntimeFiles()` from the same survivor supplies it.
+  //
+  // The copy also carried a `depth > 6` cutoff, which is a SECOND silent corpus
+  // truncation of the same kind: a sender buried seven directories down was not
+  // reported clean, it was never read. The survivor has no depth limit.
+  files.push(...walkTs("lib"), ...walkTs("app"), ...rootRuntimeFiles("."))
 
   // An address literal that is being SENT FROM. Placeholder addresses in
   // validation messages, help text, form placeholders and the demo tenant are

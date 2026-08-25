@@ -88,7 +88,8 @@
  *     are inverted — they must stay GREEN — so a guard that flags everything
  *     cannot pass itself off as a proof.
  */
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "node:fs"
+import { readFileSync, writeFileSync, existsSync } from "node:fs"
+import { walkTs } from "./runtime-roots"
 import { resolve, join, relative } from "node:path"
 import { createHash } from "node:crypto"
 import { execFileSync } from "node:child_process"
@@ -292,16 +293,17 @@ function topLevelEntries(src: string, open: number): Array<{ key: string; value:
 function routeFiles(): string[] {
   const dir = resolve(ROOT, PORTAL_DIR)
   if (!existsSync(dir)) return []
-  const out: string[] = []
-  const walk = (d: string) => {
-    for (const name of readdirSync(d)) {
-      const p = join(d, name)
-      if (statSync(p).isDirectory()) walk(p)
-      else if (name === "route.ts" || name === "route.tsx") out.push(relative(ROOT, p))
-    }
-  }
-  walk(dir)
-  return out.sort()
+  // TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+  // 82 copies of the same readdirSync walker. The survivor is
+  // scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+  //
+  // Not a blindness fix: this census is deliberately scoped to ONE subtree of
+  // route handlers, and the repository root holds no `route.ts`. It is
+  // deduplicated only, and the scope is left exactly where it was.
+  return walkTs(dir)
+    .filter((p) => /(^|\/)route\.tsx?$/.test(p))
+    .map((p) => relative(ROOT, p))
+    .sort()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

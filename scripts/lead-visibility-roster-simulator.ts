@@ -44,7 +44,8 @@
  *   · The ruling itself is proved BEHAVIOURALLY — the resolver is driven against
  *     a fake Supabase client through every branch, so this is not only a grep.
  */
-import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, rmSync, mkdirSync } from "node:fs"
+import { readFileSync, existsSync, readdirSync, writeFileSync, rmSync, mkdirSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { join, relative } from "node:path"
 import { stripComments, blankStrings } from "./strip-comments"
 import {
@@ -83,18 +84,17 @@ const SCAN_ROOTS = ["app", "lib"]
 /** Never walked. */
 const SKIP_DIRS = new Set(["node_modules", ".next", ".git", "dist", "build", "coverage", ".vercel"])
 
-function walk(dir: string, out: string[] = []): string[] {
-  let entries: string[]
-  try { entries = readdirSync(dir) } catch { return out }
-  for (const e of entries) {
-    if (SKIP_DIRS.has(e)) continue
-    const full = join(dir, e)
-    let st
-    try { st = statSync(full) } catch { continue }
-    if (st.isDirectory()) walk(full, out)
-    else if (/\.(ts|tsx)$/.test(e)) out.push(relative(ROOT, full))
-  }
-  return out
+// TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+// 82 copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.//
+// It enumerated DIRECTORIES, and a root-level FILE is not a directory, so
+// `proxy.ts` — the Next 16 edge middleware, which gates auth and queries four
+// tables with a SERVICE client on EVERY request — was outside this guard's corpus,
+// and a file that is never opened reports green. `rootRuntimeFiles()` supplies it.
+/** The declared reach PLUS the root runtime files, as repo-relative paths. */
+function scanCorpus(): string[] {
+  return [...SCAN_ROOTS.flatMap((r) => walkTs(join(ROOT, r))), ...rootRuntimeFiles(ROOT)]
+    .map((p) => relative(ROOT, p))
 }
 
 /**
@@ -109,7 +109,7 @@ function walk(dir: string, out: string[] = []): string[] {
  */
 const LEADS_TABLE = /\bfrom\s*\(\s*["'`]leads["'`]\s*\)/
 
-const allSourceFiles = SCAN_ROOTS.flatMap((r) => walk(join(ROOT, r)))
+const allSourceFiles = scanCorpus()
 const leadTouchingFiles = allSourceFiles.filter((f) => LEADS_TABLE.test(stripComments(src(f))))
 
 /** The one file allowed to DECLARE the roster. */
@@ -364,7 +364,10 @@ console.log("\n[positive control — a reintroduced roster is CAUGHT]")
       "",
     ].join("\n"), "utf8")
 
-    const population = SCAN_ROOTS.flatMap((r) => walk(join(ROOT, r)))
+    // The positive control MUST re-walk through the same corpus function the
+    // measurement uses — a control that walks differently from the thing it is
+    // controlling proves nothing about the thing it is controlling.
+    const population = scanCorpus()
       .filter((f) => LEADS_TABLE.test(stripComments(src(f))))
     check("the fixture joins the population (it reaches `leads`)", population.includes(rel))
     const caught = censusRosters(population)
@@ -375,7 +378,7 @@ console.log("\n[positive control — a reintroduced roster is CAUGHT]")
   } finally {
     rmSync(fixtureDir, { recursive: true, force: true })
   }
-  const after = SCAN_ROOTS.flatMap((r) => walk(join(ROOT, r)))
+  const after = scanCorpus()
     .filter((f) => LEADS_TABLE.test(stripComments(src(f))))
   check("with the fixture removed the census is quiet again", censusRosters(after).length === 0)
 }

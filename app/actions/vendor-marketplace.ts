@@ -6,6 +6,12 @@ import { dispatchEmail } from "@/lib/providers/dispatch"
 import { compareVendors, pickBestVendor } from "@/lib/vendors/rank"
 import { readRoleGrants, selectVendorId } from "@/lib/auth/role-grants"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+// §6 / m561 — ONE vendor-trade vocabulary. Every bench read in this file used to
+// filter with `category ILIKE '%serviceType%'` against a CLOSED CHECK'd
+// vocabulary; benchCategoryFilter normalizes the caller's spelling to a member
+// and REFUSES what it cannot place, so the query is an exact match or there is
+// no query. See lib/kernel/vendor-categories.ts :: benchCategoryFilter.
+import { benchCategoryFilter } from "@/lib/kernel/vendor-categories"
 
 // ============================================
 // VENDOR DIRECTORY & SEARCH
@@ -69,8 +75,18 @@ export async function searchVendors(filters: {
   }
 
   // Apply filters
+  //
+  // §6 / m561 — WAS `.ilike("category", '%serviceType%')`. The picker that feeds
+  // this offered "escrow" and "surveyor", neither of which is a member of the
+  // 39-value CHECK, so both returned an empty directory that read as "your
+  // brokerage has no vendors". And `%lender%` over-matched, silently folding
+  // every `refinance_lender` into a purchase-lender search. Normalize to a
+  // member, then match it exactly; an unplaceable trade is REFUSED and says so
+  // rather than rendering as an empty bench.
   if (filters.serviceType) {
-    query = query.ilike("category", `%${filters.serviceType}%`)
+    const filter = benchCategoryFilter(filters.serviceType)
+    if (!filter.ok) throw new Error(filter.error)
+    query = query.eq("category", filter.category)
   }
 
   if (filters.name) {
@@ -158,12 +174,17 @@ export async function checkVendorAvailability(input: {
   const supabase = await createClient()
   const brokerageId = await callerBrokerageId(supabase)
 
+  // §6 / m561 — exact membership, not a substring. An unplaceable trade refuses;
+  // it must not read as "everyone on the bench is busy".
+  const filter = benchCategoryFilter(input.serviceType)
+  if (!filter.ok) throw new Error(filter.error)
+
   const { data: vendors, error } = await supabase
     .from("vendors")
     .select("id, name, category, rating, preferred, display_priority, estimated_turnaround_days")
     .eq("brokerage_id", brokerageId)
     .eq("status", "active")
-    .ilike("category", `%${input.serviceType}%`)
+    .eq("category", filter.category)
 
   if (error) throw error
   const bench = vendors ?? []
@@ -216,12 +237,18 @@ export async function matchVendorToTransaction(input: {
   const supabase = await createClient()
   const brokerageId = await callerBrokerageId(supabase)
 
+  // §6 / m561 — exact membership, not a substring. Returning null because the
+  // spelling was wrong is indistinguishable from "nobody on your bench does
+  // this"; an unplaceable trade refuses in words instead.
+  const filter = benchCategoryFilter(input.serviceType)
+  if (!filter.ok) throw new Error(filter.error)
+
   const { data: vendors, error } = await supabase
     .from("vendors")
     .select("id, name, category, rating, preferred, display_priority, estimated_turnaround_days, phone, email")
     .eq("brokerage_id", brokerageId)
     .eq("status", "active")
-    .ilike("category", `%${input.serviceType}%`)
+    .eq("category", filter.category)
 
   if (error) throw error
   let bench = vendors ?? []
@@ -261,18 +288,33 @@ export async function getSuggestedVendorsByStage(stage: string) {
 
   const brokerageId = profile?.brokerage_id
 
-  // Map transaction stages to vendor service types
-  const stageToServiceType: Record<string, string[]> = {
-    INSPECTION: ["inspector", "home_inspector", "inspection"],
-    APPRAISAL: ["appraiser", "appraisal"],
-    FINANCING_PENDING: ["lender", "mortgage", "loan_officer", "financing"],
+  // Map transaction stages to the bench CATEGORY that serves them.
+  //
+  // §6 / m561 — WAS A FOURTH SPELLING OF THE TAXONOMY, expanded into an OR of
+  // substring matches:
+  //
+  //   INSPECTION:        ["inspector", "home_inspector", "inspection"]
+  //   APPRAISAL:         ["appraiser", "appraisal"]
+  //   FINANCING_PENDING: ["lender", "mortgage", "loan_officer", "financing"]
+  //
+  // Of those nine literals only three (`inspector`, `appraiser`, `lender`) are
+  // members of the live 39-value CHECK; the other six could never match a row
+  // and were carried as insurance against the vocabulary they were already
+  // guessing at. Worse, the OR made the over-match unavoidable:
+  // `category.ilike.%lender%` returns every `refinance_lender` too, so the
+  // FINANCING_PENDING panel offered refinance lenders on a purchase deal.
+  //
+  // One member per stage now, resolved through the ONE vocabulary — the retired
+  // spellings above still resolve there (VENDOR_CATEGORY_SYNONYMS), so nothing a
+  // caller could previously match is lost.
+  const stageToServiceType: Record<string, string> = {
+    INSPECTION: "inspector",
+    APPRAISAL: "appraiser",
+    FINANCING_PENDING: "lender",
   }
 
-  const serviceTypes = stageToServiceType[stage]
-  if (!serviceTypes) return []
-
-  // Build OR condition for matching any of the service types
-  const serviceTypeConditions = serviceTypes.map(st => `category.ilike.%${st}%`).join(",")
+  const filter = benchCategoryFilter(stageToServiceType[stage])
+  if (!filter.ok) return []
 
   let query = supabase
     .from("vendors")
@@ -285,7 +327,7 @@ export async function getSuggestedVendorsByStage(stage: string) {
       rating,
       brokerage_id
     `)
-    .or(serviceTypeConditions)
+    .eq("category", filter.category)
 
   // Filter: brokerage vendors OR global vendors
   if (brokerageId) {
@@ -1053,12 +1095,19 @@ export async function getVendorCostComparison(serviceType: string) {
 
   if (!profile?.brokerage_id) return []
 
+  // §6 / m561 — exact membership, not a substring. This one is a COST report
+  // (§5): `%lender%` folded refinance lenders into a purchase-lender comparison,
+  // so the per-trade averages it published were computed over a bench that was
+  // not the trade being asked about.
+  const filter = benchCategoryFilter(serviceType)
+  if (!filter.ok) return []
+
   // Get vendors matching the service type
   const { data: vendors } = await supabase
     .from("vendors")
     .select("id, name, category, rating")
     .or(`brokerage_id.eq.${profile.brokerage_id},brokerage_id.is.null`)
-    .ilike("category", `%${serviceType}%`)
+    .eq("category", filter.category)
 
   if (!vendors || vendors.length === 0) return []
 

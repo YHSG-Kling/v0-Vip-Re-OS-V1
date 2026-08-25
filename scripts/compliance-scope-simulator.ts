@@ -62,7 +62,8 @@
  * Run: npx tsx scripts/compliance-scope-simulator.ts
  * Wired: package.json "test:compliance-scope", chained into "guard".
  */
-import { readdirSync, readFileSync, statSync, existsSync } from "node:fs"
+import { readFileSync, statSync, existsSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { dirname, join, relative, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { blankComments } from "./strip-comments"
@@ -151,21 +152,31 @@ const CONTENT_PATHS: Array<[string, string]> = [
 const SCAN_ROOTS = ["lib", "app"]
 const EXTS = [".ts", ".tsx"]
 
-function walkFiles(dir: string, out: string[] = []): string[] {
-  let entries: string[]
-  try { entries = readdirSync(dir) } catch { return out }
-  for (const e of entries) {
-    if (e === "node_modules" || e === ".next" || e === "__tests__") continue
-    const full = join(dir, e)
-    let st
-    try { st = statSync(full) } catch { continue }
-    if (st.isDirectory()) walkFiles(full, out)
-    else if (EXTS.some((x) => e.endsWith(x)) && !e.endsWith(".d.ts")) out.push(full)
-  }
-  return out
+// TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+// 82 copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// It enumerated DIRECTORIES, and a root-level FILE is not a directory, so
+// `proxy.ts` — the Next 16 edge middleware, which gates auth and queries four
+// tables with a SERVICE client on EVERY request — was outside this guard's corpus.
+// A file that is never opened reports green, which is the failure shape §2 of
+// CLAUDE.md names. `rootRuntimeFiles()` from the same survivor supplies it.
+/**
+ * The declared reach PLUS the root-level runtime files.
+ *
+ * The `__tests__` exclusion is NOT part of the survivor and is re-applied here: it
+ * is a deliberate, PUBLISHED exclusion of this guard, and inheriting a wider walk
+ * would have widened what the guard measures as a side effect of deduplicating the
+ * walker. Widening silently is the same defect as narrowing silently — the printed
+ * blind-spot line below would simply have become untrue.
+ */
+function scanCorpus(): string[] {
+  const inTests = (p: string) => p.split("/").includes("__tests__")
+  return [...SCAN_ROOTS.flatMap((r) => walkTs(join(root, r))), ...rootRuntimeFiles(root)]
+    .filter((p) => EXTS.some((x) => p.endsWith(x)) && !p.endsWith(".d.ts") && !inTests(p))
 }
 
-const allFiles = SCAN_ROOTS.flatMap((r) => walkFiles(join(root, r)))
+const allFiles = scanCorpus()
 const rel = (abs: string) => relative(root, abs).split("\\").join("/")
 
 /** Resolve a specifier to a repo-relative module path, or null when it leaves
@@ -262,7 +273,7 @@ console.log("═".repeat(58))
 
 console.log(`\n[0 · the denominator]`)
 const exemptSeeds = EXEMPT_PATH_GLOBS.flatMap(([g]) => expandGlob(g))
-console.log(`  files scanned .............. ${allFiles.length} (lib/ + app/, .ts + .tsx, excluding *.d.ts and __tests__)`)
+console.log(`  files scanned .............. ${allFiles.length} (lib/ + app/ + the repository ROOT, .ts + .tsx, excluding *.d.ts and __tests__)`)
 console.log(`  import edges resolved ...... ${edgeCount} (static + export-from + dynamic import() + require())`)
 console.log(`  content entry points ....... ${CONTENT_ENTRY_POINTS.length}`)
 console.log(`  exempt data-lane seeds ..... ${exemptSeeds.length} from ${EXEMPT_PATH_GLOBS.length} globs`)

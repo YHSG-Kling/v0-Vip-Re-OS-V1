@@ -70,7 +70,8 @@
  *         policy that returns nothing to anybody is a different bug, not a fix.
  *         Self-skips without SUPABASE creds.
  */
-import { readFileSync, readdirSync, statSync } from "node:fs"
+import { readFileSync } from "node:fs"
+import { walkTs } from "./runtime-roots"
 import { join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createClient } from "@supabase/supabase-js"
@@ -269,14 +270,22 @@ function pureLayer() {
 
 // ─── SOURCE ──────────────────────────────────────────────────────────────────
 
-function walk(dir: string, out: string[] = []): string[] {
-  for (const e of readdirSync(dir)) {
-    if (e === "node_modules" || e === ".next" || e === ".git" || e === "supabase") continue
-    const p = join(dir, e)
-    if (statSync(p).isDirectory()) walk(p, out)
-    else if ((p.endsWith(".ts") || p.endsWith(".tsx")) && p !== SELF) out.push(p)
-  }
-  return out
+// TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+// 82 copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// This one was NOT blind to the repository root — it walked ROOT itself, so
+// `proxy.ts` and `types.ts` were already in its corpus. It is DEDUPLICATED here,
+// not corrected, and the corpus is preserved exactly: `runtimeFiles()` would have
+// been the wrong survivor to reach for, because NON_RUNTIME_ROOTS excludes
+// `scripts/` and `e2e/` and swapping it in would have SHRUNK this scan while
+// looking like a cleanup. Narrowing a corpus in order to deduplicate a walker is
+// the same defect as the blindness being fixed, pointed the other way — so the
+// recursion is the survivor's and every exclusion below is this file's own.
+function walk(dir: string): string[] {
+  // `supabase/` and `p !== SELF` stay: migrations and this file's own fixtures
+  // quote the cross-tenant shapes this simulator hunts.
+  return walkTs(dir).filter((p) => p !== SELF && !p.split("/").includes("supabase"))
 }
 
 /** Comments blanked, newlines preserved so reported line numbers survive. */

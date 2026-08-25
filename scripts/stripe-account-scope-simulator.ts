@@ -84,6 +84,7 @@
  *     RED, and the file is restored and re-verified by sha256.
  */
 import { readFileSync, writeFileSync } from "node:fs"
+import { walkTs } from "./runtime-roots"
 import { resolve, join } from "node:path"
 import { createHash } from "node:crypto"
 import { readdirSync, statSync } from "node:fs"
@@ -221,19 +222,15 @@ function platformFallbackBranch(): string {
 
 /** Every .ts/.tsx file under product source, with the exclusions published above. */
 function productSourceFiles(): string[] {
-  const out: string[] = []
-  const walk = (dir: string) => {
-    for (const entry of readdirSync(dir)) {
-      if (SCAN_EXCLUDED_DIRS.includes(entry)) continue
-      const full = join(dir, entry)
-      let st
-      try { st = statSync(full) } catch { continue }
-      if (st.isDirectory()) walk(full)
-      else if (/\.tsx?$/.test(entry)) out.push(full.slice(ROOT.length + 1))
-    }
-  }
-  walk(ROOT)
-  return out.sort()
+  // TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+  // 82 copies of the same readdirSync walker. The survivor is
+  // scripts/runtime-roots.ts:61 (`walkTs`), imported above. This one already walked
+  // ROOT, so it was not blind to `proxy.ts`; it is DEDUPLICATED only, and every
+  // exclusion below is this file's own, preserved so the corpus does not move.
+  return walkTs(ROOT)
+    .filter((p) => !p.slice(ROOT.length + 1).split("/").some((seg) => SCAN_EXCLUDED_DIRS.includes(seg)))
+    .map((p) => p.slice(ROOT.length + 1))
+    .sort()
 }
 
 /**

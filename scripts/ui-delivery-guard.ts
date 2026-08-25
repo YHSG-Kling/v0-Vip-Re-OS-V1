@@ -59,18 +59,21 @@
  * correct. Banning the shape would force pointless plumbing; the honest
  * invariant is "every LOCAL-ONLY field is a deliberate, named decision."
  */
-import { readFileSync, existsSync, readdirSync, writeFileSync, unlinkSync } from "node:fs"
+import { readFileSync, writeFileSync, unlinkSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { stripComments } from "./strip-comments"
 
 const read = (p: string) => { try { return readFileSync(p, "utf8") } catch { return "" } }
-function walk(dir: string, out: string[] = []): string[] {
-  if (!existsSync(dir)) return out
-  for (const e of readdirSync(dir, { withFileTypes: true })) {
-    const f = `${dir}/${e.name}`
-    if (e.isDirectory()) { if (["node_modules", ".next"].includes(e.name)) continue; walk(f, out) }
-    else if (/\.tsx$/.test(e.name)) out.push(f)
-  }
-  return out
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk(dir, out)` that stood here
+// was one of 82 copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// Not a blindness fix, and deliberately so: this guard judges RENDERED surfaces,
+// so its corpus is `.tsx` only, and both root-level runtime files are `.ts`. Adding
+// rootRuntimeFiles() here would widen what the guard measures without adding a
+// single file it should be judging. Deduplicated only.
+function walk(dir: string): string[] {
+  return walkTs(dir).filter((p) => p.endsWith(".tsx"))
 }
 const code = (s: string) =>
   stripComments(s)

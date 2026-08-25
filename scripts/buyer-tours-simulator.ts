@@ -43,7 +43,8 @@
  *
  * Run: npx tsx scripts/buyer-tours-simulator.ts
  */
-import { readFileSync, readdirSync, statSync } from "node:fs"
+import { readFileSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { join, relative, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { stripComments } from "./strip-comments"
@@ -240,20 +241,19 @@ async function main() {
   console.log("\n[6 · no code path touches the buyer_tours twin]")
   const roots = ["app", "lib", "components", "hooks", "services", "workflows"]
   const offenders: string[] = []
-  const walk = (dir: string) => {
-    let entries: string[]
-    try { entries = readdirSync(dir) } catch { return }
-    for (const n of entries) {
-      if (n === "node_modules" || n.startsWith(".")) continue
-      const p = join(dir, n)
-      if (statSync(p).isDirectory()) walk(p)
-      else if (/\.(ts|tsx)$/.test(n)) {
-        const src = stripComments(readFileSync(p, "utf8"))
-        if (buyerToursRead.test(src)) offenders.push(relative(root, p))
-      }
-    }
+  // TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+  // 82 copies of the same readdirSync walker. The survivor is
+  // scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+  //
+  // It enumerated DIRECTORIES, and a root-level FILE is not a directory, so
+  // `proxy.ts` — the Next 16 edge middleware, which gates auth and queries four
+  // tables with a SERVICE client on EVERY request — was outside this guard's corpus.
+  // A file that is never opened reports green, which is the failure shape §2 of
+  // CLAUDE.md names. `rootRuntimeFiles()` from the same survivor supplies it.
+  for (const p of [...roots.flatMap((r) => walkTs(join(root, r))), ...rootRuntimeFiles(root)]) {
+    const src = stripComments(readFileSync(p, "utf8"))
+    if (buyerToursRead.test(src)) offenders.push(relative(root, p))
   }
-  for (const r of roots) walk(join(root, r))
   check("zero .from(\"buyer_tours\") accesses across app/lib/components/hooks/services/workflows",
     offenders.length === 0, offenders.join(", "))
   check("m480 migration exists, is row-count-guarded, and refuses a populated table",

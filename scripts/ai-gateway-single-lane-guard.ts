@@ -74,7 +74,8 @@
  *
  * Run with --no-negative to skip the controls (assertions only).
  */
-import { readFileSync, writeFileSync, readdirSync, statSync } from "node:fs"
+import { readFileSync, writeFileSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { resolve, join, relative } from "node:path"
 import { createHash } from "node:crypto"
 import { pathToFileURL } from "node:url"
@@ -297,25 +298,21 @@ function assignedObjectLiteral(src: string, declaration: string): string {
   return src.slice(open, skipBalanced(src, open) + 1)
 }
 
-function walk(dir: string): string[] {
-  const out: string[] = []
-  let entries: string[]
-  try { entries = readdirSync(dir) } catch { return out }
-  for (const e of entries) {
-    if (e === "node_modules" || e === ".next" || e === ".git") continue
-    const p = join(dir, e)
-    let st
-    try { st = statSync(p) } catch { continue }
-    if (st.isDirectory()) out.push(...walk(p))
-    else if (/\.(ts|tsx|mts|cts)$/.test(e)) out.push(relative(ROOT, p))
-  }
-  return out
-}
+// TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+// 82 copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// It enumerated DIRECTORIES, and a root-level FILE is not a directory, so
+// `proxy.ts` — the Next 16 edge middleware, which gates auth and queries four
+// tables with a SERVICE client on EVERY request — was outside this guard's corpus.
+// A file that is never opened reports green, which is the failure shape §2 of
+// CLAUDE.md names. `rootRuntimeFiles()` from the same survivor supplies it.
 
 let PRODUCTION_FILES: string[] | null = null
 function productionFiles(): string[] {
   if (!PRODUCTION_FILES) {
-    PRODUCTION_FILES = PRODUCTION_DIRS.flatMap((d) => walk(join(ROOT, d))).sort()
+    PRODUCTION_FILES = [...PRODUCTION_DIRS.flatMap((d) => walkTs(join(ROOT, d))), ...rootRuntimeFiles(ROOT)]
+      .map((p) => relative(ROOT, p)).sort()
   }
   return PRODUCTION_FILES
 }

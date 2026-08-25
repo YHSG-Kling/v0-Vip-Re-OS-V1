@@ -47,7 +47,8 @@
  * same finder against a synthetic defect — eight of them, including both
  * directions of that string case.
  */
-import { readFileSync, readdirSync, statSync, writeFileSync, mkdtempSync, rmSync } from "node:fs"
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { tmpdir } from "node:os"
 import { join, relative } from "node:path"
 import { stripComments, blankComments, blankStrings } from "./strip-comments"
@@ -65,21 +66,17 @@ const src = (p: string) => readFileSync(join(ROOT, p), "utf8")
 const SCAN_DIRS = ["app", "lib", "components"]
 const EXT = /\.(ts|tsx)$/
 
-function walk(dir: string, out: string[] = []): string[] {
-  let entries: string[]
-  try { entries = readdirSync(dir) } catch { return out }
-  for (const e of entries) {
-    if (e === "node_modules" || e === ".next" || e.startsWith(".")) continue
-    const full = join(dir, e)
-    let st
-    try { st = statSync(full) } catch { continue }
-    if (st.isDirectory()) walk(full, out)
-    else if (EXT.test(e)) out.push(full)
-  }
-  return out
-}
+// TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+// 82 copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// It enumerated DIRECTORIES, and a root-level FILE is not a directory, so
+// `proxy.ts` — the Next 16 edge middleware, which gates auth and queries four
+// tables with a SERVICE client on EVERY request — was outside this guard's corpus.
+// A file that is never opened reports green, which is the failure shape §2 of
+// CLAUDE.md names. `rootRuntimeFiles()` from the same survivor supplies it.
 
-const FILES = SCAN_DIRS.flatMap((d) => walk(join(ROOT, d)))
+const FILES = [...SCAN_DIRS.flatMap((d) => walkTs(join(ROOT, d))), ...rootRuntimeFiles(ROOT)].filter((p) => EXT.test(p))
 
 // ─── THE FINDER ───────────────────────────────────────────────────────────────
 //

@@ -41,7 +41,8 @@
  * The baseline is per-file counts and may only go DOWN. Wiring one export lowers
  * its file's count; adding a new unwired export raises it and fails.
  */
-import { readdirSync, readFileSync, statSync, existsSync, writeFileSync } from "node:fs"
+import { readFileSync, existsSync, writeFileSync } from "node:fs"
+import { walkTs } from "./runtime-roots"
 import { join, relative } from "node:path"
 import { stripComments } from "./strip-comments"
 
@@ -175,21 +176,27 @@ function scannedRoots(all: string[]): string[] {
   return [...roots].sort()
 }
 
+// TOMBSTONE (orphan doctrine §1.1) — the private recursion inside `walk()` was one
+// of 82 copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), which now supplies it.
+//
+// The EXCLUSIONS are not the survivor's and stay here, because they are this
+// census's own and they are anchored rather than by bare name: SKIP_TOP_LEVEL
+// applies only to a first path segment, so `proofRoot` calling walk() from inside
+// scripts/ still sees the proof corpus, while a nested directory that merely
+// happens to be called `public` or `supabase` is still scanned. Handing that
+// decision to `runtimeFiles()` would have replaced it with a different one —
+// NON_RUNTIME_ROOTS drops scripts/ and e2e/ outright, which this census needs in
+// the REFERENCE corpus to know whether an export is used at all. Deduplicating a
+// walker must not quietly re-answer the question the walker was asked.
 function walk(dir: string, out: string[] = []): string[] {
-  let entries: string[]
-  try { entries = readdirSync(dir) } catch { return out }
-  // Anchored, not by bare name. proofRoot below calls walk() STARTING inside
-  // scripts/, where atRoot is false — so the top-level skip never hides the
-  // proof corpus from itself.
   const atRoot = dir === root
-  for (const e of entries) {
-    if (SKIP_ANY_DEPTH.has(e)) continue
-    if (atRoot && SKIP_TOP_LEVEL.has(e)) continue
-    const p = join(dir, e)
-    let st
-    try { st = statSync(p) } catch { continue }
-    if (st.isDirectory()) walk(p, out)
-    else if (/\.(ts|tsx)$/.test(e) && !/\.d\.ts$/.test(e)) out.push(p)
+  for (const p of walkTs(dir)) {
+    const segs = relative(dir, p).split("/")
+    if (segs.some((s) => SKIP_ANY_DEPTH.has(s))) continue
+    if (atRoot && SKIP_TOP_LEVEL.has(segs[0])) continue
+    if (/\.d\.ts$/.test(p)) continue
+    out.push(p)
   }
   return out
 }

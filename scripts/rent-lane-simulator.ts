@@ -75,7 +75,8 @@
  * (a find-string that silently stops matching is theatre), the child is required
  * to EXIT NON-ZERO, and the file is restored and re-verified by sha256.
  */
-import { readFileSync, writeFileSync, readdirSync, statSync } from "node:fs"
+import { readFileSync, writeFileSync } from "node:fs"
+import { walkTs } from "./runtime-roots"
 import { join } from "node:path"
 import { createHash } from "node:crypto"
 import { registerHooks } from "node:module"
@@ -887,22 +888,15 @@ async function main(): Promise<void> {
 // Source collection for the tree-wide scan
 // ─────────────────────────────────────────────────────────────────────────────
 function collectSources(): string[] {
-  const SKIP = new Set(["node_modules", ".next", ".git", "dist", "build", "coverage", ".vercel"])
-  const out: string[] = []
-  const walk = (rel: string) => {
-    let entries: string[]
-    try { entries = readdirSync(rel ? join(ROOT, rel) : ROOT) } catch { return }
-    for (const e of entries) {
-      if (SKIP.has(e)) continue
-      const r = rel ? `${rel}/${e}` : e
-      let st
-      try { st = statSync(join(ROOT, r)) } catch { continue }
-      if (st.isDirectory()) walk(r)
-      else if (/\.(ts|tsx)$/.test(e)) out.push(r)
-    }
-  }
-  walk("")
-  return out
+  // TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+  // 82 copies of the same readdirSync walker. The survivor is
+  // scripts/runtime-roots.ts:61 (`walkTs`), imported above. This one already walked
+  // ROOT, so it was not blind to `proxy.ts`; it is DEDUPLICATED only, and every
+  // exclusion below is this file's own, preserved so the corpus does not move.
+  const SKIP = new Set(["dist", "build", "coverage"])   // NEVER_WALK covers the rest
+  return walkTs(ROOT)
+    .map((p) => p.slice(ROOT.length + 1))
+    .filter((r) => !r.split("/").some((seg) => SKIP.has(seg)))
 }
 
 main().catch((e) => { console.error(e); process.exit(1) })

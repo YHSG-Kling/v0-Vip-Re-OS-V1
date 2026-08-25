@@ -55,6 +55,20 @@ export const NEVER_WALK = new Set(["node_modules", ".next", ".git", ".vercel"])
 export const NON_RUNTIME_ROOTS = new Set([
   "scripts",  // guards, migrations and codemods — they name dropped tables on purpose
   "e2e",      // test harness, not served
+  // Claude Code plugin/skill payloads. The three .tsx files under
+  // plugins/ecc/skills/remotion-video-creation/rules/assets/ are DOCUMENTATION —
+  // specimen components a skill shows an author — and nothing in the shipped tree
+  // imports them. The authority is not a judgement call: tsconfig.json carries
+  // `"exclude": ["node_modules", "plugins"]`, so the build never compiles them.
+  //
+  // This module is the answer to "what ships", so it disagreeing with the compiler
+  // about what ships is the same defect it exists to prevent, pointed inward: every
+  // consumer of runtimeFiles() was scanning skill documentation as if it were
+  // application runtime, and any orphan census run over it would report specimen
+  // exports as orphans that no one can ever wire. scripts/agent-orchestration-
+  // simulator.ts had already worked this out privately and skipped `plugins` in its
+  // own walker — one more thing the 82 copies each had to learn separately.
+  "plugins",
 ])
 
 /** Recursively collect .ts/.tsx under a directory. */

@@ -27,7 +27,8 @@
  *       ledger write inside onFinish, before the caller's own callback;
  *   (c) every former call site now imports and calls streamTextRouted.
  */
-import { readdirSync, readFileSync, statSync } from "node:fs"
+import { readFileSync } from "node:fs"
+import { walkTs as walkTsDir, rootRuntimeFiles } from "./runtime-roots"
 import { join } from "node:path"
 import { blankStrings } from "./strip-comments"
 
@@ -72,16 +73,17 @@ function firstCodeHit(src: string, needle: string): number {
   }
 }
 
-/** Every .ts/.tsx file under `dir` (relative to cwd), recursively. */
+// TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+// 82 copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above. It enumerated DIRECTORIES,
+// and a root-level FILE is not a directory, so `proxy.ts` — the Next 16 edge
+// middleware, which gates auth and queries four tables with a SERVICE client on
+// EVERY request — was outside this guard's corpus, and a file that is never opened
+// reports green. `rootRuntimeFiles()` from the same survivor supplies it.
+/** Every .ts/.tsx file under `dir` (relative to cwd), recursively — the survivor's
+ *  walk, keeping this file's cwd-relative return shape. */
 function tsFiles(dir: string): string[] {
-  const out: string[] = []
-  for (const name of readdirSync(join(process.cwd(), dir))) {
-    const rel = join(dir, name)
-    const st = statSync(join(process.cwd(), rel))
-    if (st.isDirectory()) out.push(...tsFiles(rel))
-    else if (/\.tsx?$/.test(name)) out.push(rel)
-  }
-  return out
+  return walkTsDir(dir)
 }
 
 // The one file allowed to call the raw SDK streamText — inside streamTextRouted.
@@ -109,14 +111,14 @@ console.log("\n[(a) the chokepoint — zero direct streamText( call sites in app
 {
   const offenders: string[] = []
   let chokepointHits = 0
-  for (const rel of [...tsFiles("app"), ...tsFiles("lib")]) {
+  for (const rel of [...tsFiles("app"), ...tsFiles("lib"), ...rootRuntimeFiles(".")]) {
     const src = readFileSync(join(process.cwd(), rel), "utf8")
     const hits = codeHits(src, "streamText(")
     if (rel === CHOKEPOINT) { chokepointHits = hits; continue }
     if (hits > 0) offenders.push(`${rel} (${hits})`)
     else if (RAW_IMPORT_RE.test(src)) offenders.push(`${rel} (imports streamText from "ai")`)
   }
-  check("no file in app/ or lib/ calls or imports the raw streamText except lib/ai/models.ts" +
+  check("no file in app/, lib/ or the repository ROOT calls or imports the raw streamText except lib/ai/models.ts" +
     (offenders.length ? ` — LEAKED: ${offenders.join(", ")}` : ""),
     offenders.length === 0)
   check("lib/ai/models.ts calls streamText exactly once — the call inside streamTextRouted",

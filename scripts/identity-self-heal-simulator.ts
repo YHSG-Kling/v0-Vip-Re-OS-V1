@@ -14,7 +14,8 @@
 //   2. ensureAgentBrokerage repairs an account that IS anchored to a brokerage but is MISSING its
 //      agents row. That state used to return early as "nothing to heal" and stayed broken forever.
 
-import { readFileSync, readdirSync, statSync } from "node:fs"
+import { readFileSync } from "node:fs"
+import { walkTs } from "./runtime-roots"
 import { join } from "node:path"
 
 const ROOT = process.cwd()
@@ -58,15 +59,13 @@ for (const p of SELF_HEALING_PAGES) {
 // is shape-based rather than a fixed list, so a new page written either way is caught.
 console.log("\n[no page bounces on a brokerage it could have provisioned]")
 {
-  const walk = (dir: string, out: string[] = []): string[] => {
-    for (const e of readdirSync(dir)) {
-      const p = join(dir, e)
-      if (statSync(p).isDirectory()) walk(p, out)
-      else if (e === "page.tsx") out.push(p)
-    }
-    return out
-  }
-  const pages = walk(join(ROOT, "app"))
+  // TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+  // 82 copies of the same readdirSync walker. The survivor is
+  // scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+  //
+  // Not a blindness fix: this census wants PAGES, and the repository root holds
+  // none. It is deduplicated only, and the scope is left exactly where it was.
+  const pages = walkTs(join(ROOT, "app")).filter((p) => p.endsWith("/page.tsx"))
   const offenders: string[] = []
   for (const p of pages) {
     const s = readFileSync(p, "utf8")

@@ -70,7 +70,8 @@ check("carries the earned reel props as inputProps (cards + one ask)",
   req.inputProps.cards.length === full.cards.length && req.inputProps.oneAsk === full.oneAsk)
 
 console.log("\n[5 · LIVE WIRING — the show actually runs (composition was orphaned before)]")
-import { readFileSync, existsSync, readdirSync, statSync } from "node:fs"
+import { readFileSync, existsSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { join } from "node:path"
 // Tolerate a missing file — every other simulator in this repo does. A file
 // that no longer EXISTS trivially satisfies an absence assertion, and throwing
@@ -80,25 +81,25 @@ const src = (p: string) =>
 /** Every file under app/ or lib/ that still mentions the dropped HeyGen column. */
 function heygenCloneColumnSites(): string[] {
   const hits: string[] = []
-  const walk = (dir: string) => {
-    for (const name of readdirSync(join(process.cwd(), dir))) {
-      if (name === "node_modules" || name.startsWith(".")) continue
-      const rel = `${dir}/${name}`
-      if (statSync(join(process.cwd(), rel)).isDirectory()) { walk(rel); continue }
-      if (!/\.(ts|tsx)$/.test(name)) continue
-      // USE, not mention. The manager-registry entry that DOCUMENTS the purge
-      // necessarily names the dropped column in its prose, and a doc string is
-      // not a read or a write. Match the column only where it is actually used:
-      // selected, filtered on, or assigned in an object literal.
-      const text = readFileSync(join(process.cwd(), rel), "utf8")
-      const used =
-        /heygen_voice_clone_id\s*:/.test(text) ||                    // object-literal write
-        /\.eq\(\s*["']heygen_voice_clone_id["']/.test(text) ||        // filter
-        /select\([^)]*heygen_voice_clone_id/.test(text)              // projection
-      if (used) hits.push(rel)
-    }
+  // TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+  // 82 copies of the same readdirSync walker. The survivor is
+  // scripts/runtime-roots.ts:61 (`walkTs`), imported above. It enumerated DIRECTORIES,
+  // and a root-level FILE is not a directory, so `proxy.ts` — the Next 16 edge
+  // middleware, which gates auth and queries four tables with a SERVICE client on
+  // EVERY request — was outside this guard's corpus, and a file that is never opened
+  // reports green. `rootRuntimeFiles()` from the same survivor supplies it.
+  for (const rel of [...walkTs("app"), ...walkTs("lib"), ...rootRuntimeFiles(".")]) {
+    // USE, not mention. The manager-registry entry that DOCUMENTS the purge
+    // necessarily names the dropped column in its prose, and a doc string is
+    // not a read or a write. Match the column only where it is actually used:
+    // selected, filtered on, or assigned in an object literal.
+    const text = readFileSync(join(process.cwd(), rel), "utf8")
+    const used =
+      /heygen_voice_clone_id\s*:/.test(text) ||                    // object-literal write
+      /\.eq\(\s*["']heygen_voice_clone_id["']/.test(text) ||        // filter
+      /select\([^)]*heygen_voice_clone_id/.test(text)              // projection
+    if (used) hits.push(rel)
   }
-  walk("app"); walk("lib")
   return hits
 }
 

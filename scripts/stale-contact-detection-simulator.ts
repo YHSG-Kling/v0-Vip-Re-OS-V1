@@ -46,7 +46,8 @@
  *           the canonical detector does NOT return them — the exact contact the
  *           two deleted queries would each have re-engaged. Cleans up, residue 0.
  */
-import { readFileSync, readdirSync, statSync } from "node:fs"
+import { readFileSync } from "node:fs"
+import { walkTs } from "./runtime-roots"
 import { join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createClient } from "@supabase/supabase-js"
@@ -168,16 +169,22 @@ function pureLayer() {
 
 // ─── SOURCE ──────────────────────────────────────────────────────────────────
 
-function walk(dir: string, out: string[] = []): string[] {
-  for (const e of readdirSync(dir)) {
-    if (e === "node_modules" || e === ".next" || e === ".git" || e === "scripts") continue
-    const p = join(dir, e)
-    let st
-    try { st = statSync(p) } catch { continue }
-    if (st.isDirectory()) walk(p, out)
-    else if ((p.endsWith(".ts") || p.endsWith(".tsx")) && p !== SELF) out.push(p)
-  }
-  return out
+// TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+// 82 copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above.
+//
+// This one was NOT blind to the repository root — it walked ROOT itself, so
+// `proxy.ts` and `types.ts` were already in its corpus. It is DEDUPLICATED here,
+// not corrected, and the corpus is preserved exactly: `runtimeFiles()` would have
+// been the wrong survivor to reach for, because NON_RUNTIME_ROOTS excludes
+// `scripts/` and `e2e/` and swapping it in would have SHRUNK this scan while
+// looking like a cleanup. Narrowing a corpus in order to deduplicate a walker is
+// the same defect as the blindness being fixed, pointed the other way — so the
+// recursion is the survivor's and every exclusion below is this file's own.
+function walk(dir: string): string[] {
+  // `scripts/` stays excluded: the guards and simulators there quote the stale
+  // shapes on purpose, and reading them back is how a tombstone becomes a finding.
+  return walkTs(dir).filter((p) => p !== SELF && !p.split("/").includes("scripts"))
 }
 
 /**

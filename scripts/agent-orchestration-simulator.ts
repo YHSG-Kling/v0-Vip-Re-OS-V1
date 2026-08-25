@@ -42,7 +42,8 @@
  *
  * Run:  npx tsx scripts/agent-orchestration-simulator.ts
  */
-import { readFileSync, existsSync, readdirSync, statSync } from "node:fs"
+import { readFileSync, existsSync } from "node:fs"
+import { walkTs } from "./runtime-roots"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { stripComments } from "./strip-comments"
@@ -401,17 +402,21 @@ function testSurvivorKeptItsCallers() {
 let _files: string[] | null = null
 function tsFiles(): string[] {
   if (_files) return _files
-  const skip = new Set(["node_modules", ".next", ".git", "dist", "build", ".vercel", "plugins"])
-  const out: string[] = []
-  const walk = (d: string) => {
-    for (const e of readdirSync(d)) {
-      if (skip.has(e)) continue
-      const p = join(d, e)
-      if (statSync(p).isDirectory()) walk(p)
-      else if (/\.tsx?$/.test(e)) out.push(p.replace(root + "/", ""))
-    }
-  }
-  walk(root)
+  // TOMBSTONE (orphan doctrine §1.1) — the private walker that stood here was one of
+  // 82 copies of the same readdirSync walker. The survivor is
+  // scripts/runtime-roots.ts:61 (`walkTs`), imported above. This one already walked
+  // ROOT, so it was not blind to `proxy.ts`; it is DEDUPLICATED only, and every
+  // exclusion below is this file's own, preserved so the corpus does not move.
+  //
+  // This file's private walker was the ONLY one of the 82 that had worked out that
+  // `plugins/` is not application source. That knowledge is now in the survivor's
+  // NON_RUNTIME_ROOTS with the tsconfig `exclude` that proves it, so it no longer
+  // has to be rediscovered one walker at a time — but walkTs() is the raw recursion
+  // and does not apply that list, so the skip is still spelled out here.
+  const skip = new Set(["dist", "build", "plugins"])   // NEVER_WALK covers the rest
+  const out = walkTs(root)
+    .map((p) => p.replace(root + "/", ""))
+    .filter((r) => !r.split("/").some((seg) => skip.has(seg)))
   _files = out
   return out
 }

@@ -71,7 +71,8 @@
  * DropdownMenuTrigger asChild, a multi-line <Link> wrapper, passed as a `trigger`
  * prop). Missing one real defect is recoverable. Crying wolf is not.
  */
-import { readFileSync, readdirSync, existsSync, writeFileSync } from "node:fs"
+import { readFileSync, existsSync, writeFileSync } from "node:fs"
+import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { join } from "node:path"
 import { stripComments as canonicalStripComments } from "./strip-comments"
 
@@ -173,17 +174,12 @@ export function isInertControl(src: string, i: number): boolean {
 // FILE WALK
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SKIP_DIRS = new Set(["node_modules", ".next", ".git", "dist", "build", "coverage"])
-
-function walk(dir: string, ext: string[], out: string[] = []): string[] {
-  if (!existsSync(dir)) return out
-  for (const e of readdirSync(dir, { withFileTypes: true })) {
-    if (SKIP_DIRS.has(e.name)) continue
-    const p = join(dir, e.name)
-    if (e.isDirectory()) walk(p, ext, out)
-    else if (ext.some((x) => e.name.endsWith(x))) out.push(p)
-  }
-  return out
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk(dir, ext, out)` that stood
+// here was one of 82 copies of the same readdirSync walker. The survivor is
+// scripts/runtime-roots.ts:61 (`walkTs`), imported above; the extension filter is
+// this guard's own and is kept, applied to the survivor's result.
+function walk(dir: string, ext: string[]): string[] {
+  return walkTs(dir).filter((p) => ext.some((x) => p.endsWith(x)))
 }
 
 const strip = (s: string) =>
@@ -271,7 +267,15 @@ const orphanFound: string[] = []
   const DOC_ONLY_FILES = new Set(["lib/kernel/manager-registry.ts"])
   const stripComments = canonicalStripComments
 
-  const callerFiles = [...walk("app", [".ts", ".tsx"]), ...walk("lib", [".ts", ".tsx"]), ...walk("hooks", [".ts", ".tsx"])]
+  // A SERVER ACTION WHOSE ONLY CALLER IS THE EDGE MIDDLEWARE IS NOT UNWIRED.
+  // The directory walk above cannot reach a root-level FILE, so `proxy.ts` was
+  // absent from the caller census that decides whether an action has any caller
+  // at all — the shape where an invisible file becomes a false ACCUSATION rather
+  // than a missed defect.
+  const callerFiles = [
+    ...walk("app", [".ts", ".tsx"]), ...walk("lib", [".ts", ".tsx"]), ...walk("hooks", [".ts", ".tsx"]),
+    ...rootRuntimeFiles("."),
+  ]
     .filter((f) => !DOC_ONLY_FILES.has(f.replace(/\\/g, "/")))
   const callerSrc = new Map(callerFiles.map((f) => [f, stripComments(readFileSync(f, "utf8"))]))
 

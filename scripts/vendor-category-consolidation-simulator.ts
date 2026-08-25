@@ -35,12 +35,15 @@ import { readFileSync } from "node:fs"
 import {
   VENDOR_CATEGORIES,
   VENDOR_CATEGORY_LABELS,
+  VENDOR_CATEGORY_SYNONYMS,
   BENCH_VENDOR_CATEGORIES,
   VENDOR_CATEGORY_LENDER,
   VENDOR_CATEGORY_TITLE,
+  benchCategoryFilter,
   isVendorCategory,
   toVendorCategory,
 } from "../lib/kernel/vendor-categories"
+import { VENDOR_CATEGORIES as RANKING_VENDOR_CATEGORIES } from "../lib/marketing/vendor-ranking"
 import { STAGE_VENDOR_NEEDS } from "../lib/kernel/vendor-coverage-forecast"
 import { classifyCardTarget } from "../lib/contacts/card-classifier"
 import { CHECK_VOCABULARIES } from "./check-vocabularies"
@@ -209,6 +212,270 @@ console.log("\n── downstream consumers still speak the same spelling ──"
   }
   check("a fellow agent's card is never filed as a vendor",
     classifyCardTarget({ title: "REALTOR®, Broker Associate", company: null }).category === null)
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// m561 — "consolodate service types" (owner ruling).
+//
+// A SECOND taxonomy called "service type" ran alongside vendors.category in four
+// places, and the join between them was a SUBSTRING MATCH. Both halves of that
+// were broken and both are proved below, two-sided:
+//
+//   MISSES     — `.ilike("category", '%${serviceType}%')` with serviceType from
+//                getVendorRecommendations' ten-value union matched NOTHING for
+//                eight of the ten. Measured live against vendors_category_check
+//                on project hrvaqgvukzxfskkcrwbt, 2026-08-25.
+//   OVER-MATCHES — `%lender%` also returns every `refinance_lender`. That is not
+//                a hypothetical about a future `title_agent`: it is true of the
+//                vocabulary as it stands today, and is DERIVED below rather than
+//                pinned to that pair.
+//
+// Every assertion here derives its number from the LIVE vocabulary cache or from
+// the module, never from a hardcoded count — the previous section's own comment
+// records what pinning `=== 38` cost when m554 legitimately grew the list.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** Postgres `category ILIKE '%needle%'`, modelled over a vocabulary. Every token
+ *  in this vocabulary is ASCII lowercase_snake, so `includes` is exact. */
+const ilikeMatches = (needle: string, vocab: readonly string[]) =>
+  vocab.filter((c) => c.toLowerCase().includes(needle.toLowerCase()))
+
+/** The ten values the AI action's `serviceType` union used to admit — quoted
+ *  from the deleted union so this stays a record of the defect, not a guess. */
+const RETIRED_AI_SERVICE_TYPES = [
+  "photography", "staging", "inspection", "appraisal", "cleaning",
+  "landscaping", "repairs", "moving", "title", "escrow",
+] as const
+
+console.log("\n── m561 · the eight service types that could never match ──")
+{
+  const live = CHECK_VOCABULARIES.vendors?.category ?? []
+  check("the live vocabulary cache is not empty (denominator for everything below)",
+    live.length > 0)
+
+  // POSITIVE CONTROL ON THE FINDER (CLAUDE.md §2). A broken `ilikeMatches` and a
+  // repaired vocabulary both report zero, so prove the model still SEES matches
+  // where matches exist — including the over-match that is the whole reason
+  // `.ilike` was wrong.
+  check("positive control · ilikeMatches still finds an exact member ('landscaping')",
+    ilikeMatches("landscaping", live).length === 1)
+  check("positive control · ilikeMatches still finds the OVER-match ('lender' also hits refinance_lender)",
+    ilikeMatches("lender", live).length === 2 &&
+    ilikeMatches("lender", live).includes("refinance_lender"))
+
+  const dead = RETIRED_AI_SERVICE_TYPES.filter((s) => ilikeMatches(s, live).length === 0)
+  const alive = RETIRED_AI_SERVICE_TYPES.filter((s) => ilikeMatches(s, live).length > 0)
+  check(`the old union was ${dead.length}/${RETIRED_AI_SERVICE_TYPES.length} dead under ILIKE — ${dead.join(", ")}`,
+    dead.length === 8 && alive.length === 2 &&
+    alive.includes("landscaping") && alive.includes("title"))
+
+  // …and every one of them now RESOLVES, which is the other side of the control:
+  // a consolidation that merely deleted the union would show the same zero.
+  for (const s of RETIRED_AI_SERVICE_TYPES) {
+    const c = toVendorCategory(s)
+    check(`'${s}' now resolves to a live member (${c})`,
+      c !== null && live.includes(c))
+  }
+  check("escrow resolves to title — the ruling, not a coincidence",
+    toVendorCategory("escrow") === VENDOR_CATEGORY_TITLE)
+}
+
+console.log("\n── m561 · the synonym table is a merge record, not a second vocabulary ──")
+{
+  const live = CHECK_VOCABULARIES.vendors?.category ?? []
+  const keys = Object.keys(VENDOR_CATEGORY_SYNONYMS)
+  check(`the synonym table is populated (${keys.length} retired spellings)`, keys.length > 0)
+  check("every synonym RESOLVES TO a value the live CHECK admits",
+    keys.every((k) => live.includes(VENDOR_CATEGORY_SYNONYMS[k])))
+  // The trap this stops: a "synonym" that is itself a member would shadow a real
+  // trade and silently re-file it as something else. Exact-match runs first in
+  // toVendorCategory, so this can only ever be dead weight — but dead weight
+  // that LOOKS like a redirect is how a taxonomy grows a second spelling again.
+  check("no synonym key is itself a member of the vocabulary",
+    keys.every((k) => !(live as readonly string[]).includes(k)))
+  check("every synonym key is already flattened (lowercase, alphanumeric only)",
+    keys.every((k) => k === k.toLowerCase().replace(/[^a-z0-9]/g, "")))
+  // §1.1 — the merge happened ONTO the survivor. If a retired picker's value
+  // does not resolve here, the delete happened before the merge.
+  check("the retired Title-Case picker values all survive the merge",
+    ["Photography", "Staging", "Inspection", "Appraisal", "Cleaning",
+     "Landscaping", "Repairs", "Moving", "Title", "Escrow", "Other"]
+      .every((s) => isVendorCategory(toVendorCategory(s) as string)))
+  // The honest loss, asserted so it cannot be quietly "fixed" by a fold.
+  check("'surveyor' is NOT folded into some other trade — it resolves to null",
+    toVendorCategory("surveyor") === null)
+}
+
+console.log("\n── m561 · benchCategoryFilter refuses; it never matches loosely ──")
+{
+  const live = CHECK_VOCABULARIES.vendors?.category ?? []
+  check("every live member passes the filter unchanged",
+    live.length > 0 && live.every((c) => {
+      const r = benchCategoryFilter(c)
+      return r.ok && r.category === c
+    }))
+  check("every retired spelling passes the filter, normalized",
+    Object.keys(VENDOR_CATEGORY_SYNONYMS).every((k) => {
+      const r = benchCategoryFilter(k)
+      return r.ok && r.category === VENDOR_CATEGORY_SYNONYMS[k]
+    }))
+  for (const bad of ["surveyor", "astrologer", "", "   ", "%", "titl"]) {
+    const r = benchCategoryFilter(bad)
+    check(`'${bad}' is REFUSED rather than turned into a query that cannot match`, !r.ok)
+  }
+  check("null / undefined are refused", !benchCategoryFilter(null).ok && !benchCategoryFilter(undefined).ok)
+  const refusal = benchCategoryFilter("surveyor")
+  check("the refusal names the trade the caller asked for",
+    !refusal.ok && refusal.error.includes("surveyor"))
+  // A LIKE would have matched 'titl' against 'title'. Exact equality does not —
+  // and this is the assertion that would go red if someone reverted to ilike.
+  check("a PREFIX of a real member does not resolve ('titl' ↛ 'title')",
+    !benchCategoryFilter("titl").ok)
+}
+
+console.log("\n── m561 · the substring join is gone from every bench read ──")
+{
+  // DENOMINATOR AND EXCLUSIONS, published beside the number (CLAUDE.md §2).
+  // A repo-wide sweep of stripped app/ and lib/ sources found SEVEN
+  // `category ILIKE '%…%'` bench filters. Six are asserted gone below. The
+  // seventh is DELIBERATELY EXCLUDED and is not a lapse:
+  //
+  //   app/dashboard/transactions/[id]/page.tsx — .ilike("category", "%lender%")
+  //
+  // That one is not the bench-trade join. It is the LENDER IDENTITY set, and it
+  // has to keep matching `refinance_lender`, because
+  // lib/kernel/lender-linkage.ts :: isLenderVendorCategory deliberately does
+  // (`c.includes("lender")`) — that is how a refinance lender reaches their own
+  // portal. Narrowing the picker to `.eq("category","lender")` would make a
+  // vendor the identity predicate RECOGNISES impossible to pick, which is a new
+  // §6 defect, not a fix. It belongs to lender-linkage's lane. UNRESOLVED, and
+  // named here so the six below are an honest six out of seven rather than an
+  // unqualified "none left".
+  // Stripped source (CLAUDE.md §2 — a tombstone is not a call site). Every file
+  // below carries a tombstone that QUOTES the old `.ilike("category", …)`, so a
+  // raw scan would accuse the fix of being the defect.
+  const readers: Array<[string, string]> = [
+    ["app/actions/vendor-marketplace.ts", src("app/actions/vendor-marketplace.ts")],
+    ["app/actions/ai-vendor-management.ts", src("app/actions/ai-vendor-management.ts")],
+  ]
+  const ILIKE_CATEGORY = /\.ilike\(\s*["']category["']/
+  const OR_ILIKE_CATEGORY = /category\.ilike\./
+
+  for (const [name, s] of readers) {
+    check(`${name} no longer filters the bench with .ilike("category", …)`,
+      !ILIKE_CATEGORY.test(s))
+    check(`${name} no longer builds an OR of category.ilike.% conditions`,
+      !OR_ILIKE_CATEGORY.test(s))
+    check(`${name} routes its service type through benchCategoryFilter`,
+      /benchCategoryFilter\(/.test(s))
+  }
+
+  // POSITIVE CONTROL — an absence assertion with no proof of sight is a clean
+  // bill of health from a blind guard. Both finders must still recognise the
+  // exact code they were written for.
+  check("positive control · the ILIKE finder still recognises the deleted call",
+    ILIKE_CATEGORY.test(`.ilike("category", \`%\${params.serviceType}%\`)`) &&
+    ILIKE_CATEGORY.test(`.ilike('category', '%x%')`))
+  check("positive control · the OR finder still recognises the deleted condition",
+    OR_ILIKE_CATEGORY.test("serviceTypes.map(st => `category.ilike.%${st}%`)"))
+  // …and the finders must not fire on an unrelated ilike, or they would force
+  // every future name search to be rewritten to satisfy a guard about categories.
+  check("negative control · the finders ignore .ilike(\"name\", …)",
+    !ILIKE_CATEGORY.test(`.ilike("name", \`%\${filters.name}%\`)`))
+}
+
+console.log("\n── m561 · a closed vocabulary cannot be searched with a substring ──")
+{
+  // DERIVED, NOT PINNED. The rule is "some member is a strict substring of
+  // another member, therefore %x% is unsafe over this vocabulary" — not "lender
+  // and refinance_lender". Adding or removing a trade cannot make this assertion
+  // wrong for the wrong reason; it names whichever pairs are live today.
+  const live = CHECK_VOCABULARIES.vendors?.category ?? []
+  const collisions = live.flatMap((a) =>
+    live.filter((b) => b !== a && b.includes(a)).map((b) => `${a}⊂${b}`))
+  check(`at least one member is a strict substring of another — ${collisions.join(", ") || "(none)"}`,
+    live.length > 0 && collisions.length > 0)
+  check("…and an exact match is immune to every one of them",
+    collisions.length > 0 && live.every((c) => {
+      const r = benchCategoryFilter(c)
+      return r.ok && r.category === c
+    }))
+}
+
+console.log("\n── m561 · no gpt-4o call against an empty bench (CLAUDE.md §5) ──")
+{
+  const s = src("app/actions/ai-vendor-management.ts")
+  const iFilter = s.indexOf("benchCategoryFilter(params.serviceType)")
+  // Anchored on the REFUSAL, not on the variable name. The error identifier of
+  // this read is deliberately `benchErr` and not `vendorsErr`, because
+  // scripts/appraiser-bench-simulator.ts's M4 control mutates the FIRST
+  // `const { data: vendors, error: vendorsErr }` in this file and means the one
+  // in coordinateVendors — a second copy of that name up here silently stole the
+  // mutation and made that control pass about a site it never touched. Anchoring
+  // here on a name is how that class of collision spreads.
+  const iRefusedRead = s.indexOf('"Could not read your vendor bench."')
+  const iEmptyBench = s.indexOf("vendors.length === 0")
+  const iModel = s.indexOf("generateObject({")
+  check("all four positions were found (a -1 would make the ordering vacuous)",
+    iFilter > 0 && iRefusedRead > 0 && iEmptyBench > 0 && iModel > 0)
+  check("an unplaceable service type refuses BEFORE the bench is even read",
+    iFilter < iRefusedRead)
+  check("a REFUSED bench read refuses before the model call (supabase-js resolves refusals)",
+    iRefusedRead < iModel)
+  check("an EMPTY bench refuses before the model call",
+    iEmptyBench < iModel)
+  // The two are distinguishable — a refusal and an empty bench are different
+  // situations and collapsing them is how "nobody checked" reads as "checked".
+  check("the refused read and the empty bench are separate branches",
+    iRefusedRead < iEmptyBench)
+}
+
+console.log("\n── m561 · the drifted second copy of the vocabulary is gone ──")
+{
+  const live = CHECK_VOCABULARIES.vendors?.category ?? []
+  const rank = src("lib/marketing/vendor-ranking.ts")
+  check("lib/marketing/vendor-ranking.ts no longer declares its own array",
+    !/export const VENDOR_CATEGORIES\s*=\s*\[/.test(rank))
+  check("…it re-exports the survivor instead",
+    /export \{[\s\S]*?VENDOR_CATEGORIES[\s\S]*?\} from "@\/lib\/kernel\/vendor-categories"/.test(rank))
+  // The real proof is at RUNTIME, not in the text: the two names must be the
+  // same list. This is the assertion that was FALSE before m561 — that copy held
+  // 38 values and had missed `appraiser` since m554.
+  check(`the re-export is the same list as the survivor (${RANKING_VENDOR_CATEGORIES.length})`,
+    RANKING_VENDOR_CATEGORIES.length === VENDOR_CATEGORIES.length &&
+    VENDOR_CATEGORIES.every((c, i) => RANKING_VENDOR_CATEGORIES[i] === c))
+  check("…and it matches the live CHECK, which is what the old copy stopped doing",
+    live.length > 0 && live.length === RANKING_VENDOR_CATEGORIES.length &&
+    (RANKING_VENDOR_CATEGORIES as readonly string[]).every((c) => live.includes(c)))
+  // POSITIVE CONTROL for the drift the old copy actually had.
+  check("positive control · 'appraiser' is in the live CHECK and in the re-export",
+    live.includes("appraiser") &&
+    (RANKING_VENDOR_CATEGORIES as readonly string[]).includes("appraiser"))
+  // The marketing service-type map is a DIFFERENT vocabulary and stays that way.
+  check("the package service types are still not vendor categories (two axes, one join)",
+    !/professional_photos/.test(String(VENDOR_CATEGORIES)))
+}
+
+console.log("\n── m561 · both booking pickers author the CHECK, not a list of their own ──")
+{
+  const pickers = [
+    "app/components/dashboard/listings/lifecycle/vendor-booking-button.tsx",
+    "app/components/transactions/VendorBookingSection.tsx",
+  ]
+  const OWN_LIST = /const SERVICE_TYPES\s*=\s*\[/
+  for (const p of pickers) {
+    const s = src(p)
+    check(`${p} carries no SERVICE_TYPES list of its own`, !OWN_LIST.test(s))
+    check(`${p} renders the one control`, /<VendorCategorySelect/.test(s))
+  }
+  check("positive control · the SERVICE_TYPES finder still recognises the deleted list",
+    OWN_LIST.test('const SERVICE_TYPES = [\n  "inspector", "appraiser",\n]'))
+  // The one control is built from the groups, and the palette guard already
+  // proves the groups partition VENDOR_CATEGORIES — so this only has to prove
+  // the picker did not go back to spelling values itself.
+  const one = src("app/components/vendors/vendor-category-select.tsx")
+  check("the one control still reads VENDOR_CATEGORY_GROUPS",
+    /VENDOR_CATEGORY_GROUPS/.test(one) && !OWN_LIST.test(one))
 }
 
 console.log("\n──────────────────────────────────────────────────")
