@@ -88,6 +88,8 @@ import {
   APPRAISER_REACH_ROUTES,
   MODEL_AUTHORED_VENDOR_FACING_ROUTES,
   modelAuthoredToVendorVerdict,
+  type AppraiserReachVerdict,
+  type AppraiserReachRefusal,
 } from "../lib/vendors/appraiser-independence"
 import {
   sqlLicensedTrades,
@@ -352,21 +354,29 @@ function layerSources() {
   // matcher, `appraiser_named` for the trade test — so these assertions still
   // distinguish the two, and they now prove the helpers as the product reaches
   // them rather than in isolation.
+  // `AppraiserReachVerdict` is a DISCRIMINATED UNION — the `ok: true` arm carries
+  // no `reason` at all, so reading `.reason` off the union is a type error rather
+  // than an undefined. That is the union doing its job: it makes "refused, and
+  // here is why" and "allowed" impossible to confuse. Narrow once here instead of
+  // widening the type to please the test.
+  const refusalOf = (v: AppraiserReachVerdict): AppraiserReachRefusal | null =>
+    v.ok ? null : v.reason
+
   const byLabel = (label: string) =>
-    modelAuthoredToVendorVerdict({ resolved: true, vendorCategories: [], serviceLabels: [label] })
+    refusalOf(modelAuthoredToVendorVerdict({ resolved: true, vendorCategories: [], serviceLabels: [label] }))
   const byTrade = (category: string | null) =>
-    modelAuthoredToVendorVerdict({ resolved: true, vendorCategories: [category], serviceLabels: [] })
+    refusalOf(modelAuthoredToVendorVerdict({ resolved: true, vendorCategories: [category], serviceLabels: [] }))
 
   check("C6c the label matcher is word-anchored, not a substring free-for-all",
-    byLabel("appraisal").reason === "appraisal_service_named"
-    && byLabel("Appraiser visit").reason === "appraisal_service_named"
-    && byLabel("praise").ok === true
-    && byLabel("appraisalsomething").ok === true)
+    byLabel("appraisal") === "appraisal_service_named"
+    && byLabel("Appraiser visit") === "appraisal_service_named"
+    && byLabel("praise") === null
+    && byLabel("appraisalsomething") === null)
   check("C7 the trade test tolerates the loose spellings the normaliser already accepts",
-    byTrade("appraiser").reason === "appraiser_named"
-    && byTrade("Appraiser").reason === "appraiser_named"
-    && byTrade("inspector").ok === true
-    && byTrade(null).ok === true)
+    byTrade("appraiser") === "appraiser_named"
+    && byTrade("Appraiser") === "appraiser_named"
+    && byTrade("inspector") === null
+    && byTrade(null) === null)
 
   // THE ROUTE INVENTORY IS A CURRENT AUDIT, NOT A STALE ONE.
   check("C8 the walk names at least one route in each direction (an inventory with no safe routes is a scan that found nothing)",
