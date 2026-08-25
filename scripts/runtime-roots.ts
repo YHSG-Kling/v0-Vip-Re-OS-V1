@@ -11,6 +11,35 @@
  * The reach is derived here instead, once: every top-level directory that contains
  * TypeScript and ships as runtime. A new directory is covered the moment it holds a
  * .ts file, without anyone remembering to add it to a list.
+ *
+ * THE SAME MISTAKE, ONE LEVEL UP — found 2026-08-25 by the opposite-missing census
+ * accusing `PUBLIC_ROUTES` and `PROTECTED_ROUTES` of having no importer.
+ *
+ * They have one. It is `proxy.ts:38`, at the REPOSITORY ROOT — and every guard built
+ * on this module was blind to it, because `runtimeFiles()` walked top-level
+ * DIRECTORIES and root-level FILES are not directories. Two runtime files sat outside
+ * the reach of all six consumers:
+ *
+ *   · proxy.ts   (296 lines) — the Next 16 edge middleware. The auth gate, the
+ *     white-label custom-domain rewrite and the embed CSP allowlist all live in it,
+ *     and it queries `tenant_custom_domains` with a SERVICE client. The single most
+ *     security-relevant runtime file in the tree was in no guard's corpus.
+ *   · types.ts   (1865 lines) — the root vocabulary module: `UserRole`,
+ *     `PersonaType` and the rest.
+ *
+ * The failure shape is the one §2 of CLAUDE.md is about: a scan that cannot see a
+ * file does not go quiet, it goes CONFIDENTLY WRONG in BOTH directions at once. It
+ * misses every defect inside the invisible file, and it ACCUSES every export the
+ * invisible file is the only consumer of. `PUBLIC_ROUTES` is both: an orphan finding
+ * that was never true, sitting on the list that decides which paths need no session.
+ *
+ * So the rule is derived rather than listed here too: a root-level .ts/.tsx file
+ * ships as runtime UNLESS it is a `*.config.ts` — toolchain configuration the build
+ * or the test runner executes and the application never imports (next.config.ts,
+ * playwright.config.ts, remotion.config.ts). A new root file is covered the moment
+ * it appears, exactly like a new directory. Consumers that want the old
+ * directories-only answer still have `runtimeRoots()`; `runtimeFiles()` is the
+ * corpus and now means what its name says.
  */
 import { readdirSync, statSync } from "node:fs"
 import { join } from "node:path"
@@ -57,7 +86,33 @@ export function runtimeRoots(cwd = "."): string[] {
     .sort()
 }
 
-/** Every runtime .ts/.tsx file in the repo. */
+/**
+ * Root-level .ts/.tsx files that are toolchain configuration rather than application
+ * runtime. Derived, not listed: `*.config.ts` is executed by the build or the test
+ * runner and imported by nothing the app serves. Everything else at the root ships.
+ */
+export function isRootConfigFile(name: string): boolean {
+  return /\.config\.[cm]?tsx?$/.test(name)
+}
+
+/** Every runtime .ts/.tsx FILE sitting at the repository root (not in any directory). */
+export function rootRuntimeFiles(cwd = "."): string[] {
+  let entries: string[] = []
+  try { entries = readdirSync(cwd) } catch { return [] }
+  return entries
+    .filter((name) => {
+      if (name.startsWith(".")) return false
+      if (!/\.(ts|tsx)$/.test(name)) return false
+      if (isRootConfigFile(name)) return false
+      let st
+      try { st = statSync(join(cwd, name)) } catch { return false }
+      return st.isFile()
+    })
+    .map((name) => join(cwd, name))
+    .sort()
+}
+
+/** Every runtime .ts/.tsx file in the repo — top-level directories AND root files. */
 export function runtimeFiles(cwd = "."): string[] {
-  return runtimeRoots(cwd).flatMap((r) => walkTs(join(cwd, r)))
+  return [...runtimeRoots(cwd).flatMap((r) => walkTs(join(cwd, r))), ...rootRuntimeFiles(cwd)]
 }

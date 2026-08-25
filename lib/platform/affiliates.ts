@@ -52,7 +52,14 @@ export function normalizeAffiliateCode(raw: string | null | undefined): string {
   return (raw ?? "").trim()
 }
 
-export interface AffiliateInput {
+// TOMBSTONE (orphan doctrine §1.3) — this name is no longer exported: AffiliateInput.
+// Nothing in the product imported it, and no simulator did either; the
+// value is live and unchanged, reached through this module's own exported
+// functions, which is where callers already get its effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
+interface AffiliateInput {
   name: string
   email: string
   code: string

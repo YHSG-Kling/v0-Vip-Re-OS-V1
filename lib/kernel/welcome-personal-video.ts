@@ -69,8 +69,15 @@ const PERSONAL_WELCOME_VIDEO_TYPES = [
   "avatar_explainer",
 ] as const
 
+// TOMBSTONE (orphan doctrine §1.3) — this name is no longer exported: WelcomeVideoScope.
+// Nothing in the product imported it, and no simulator did either; the
+// value is live and unchanged, reached through this module's own exported
+// functions, which is where callers already get its effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /** Where the clip came from — carried into the ledger so the claim is auditable. */
-export type WelcomeVideoScope =
+type WelcomeVideoScope =
   /** Rendered FOR THIS CONTACT by the assignment-intro reactor. The best case. */
   | "contact_personal"
   /** The agent's own standing personal video (intro / welcome / explainer). */

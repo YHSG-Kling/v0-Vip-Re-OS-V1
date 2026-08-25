@@ -16,9 +16,16 @@ import { notifyPlatformStaff } from "@/lib/notifications/platform-staff"
 export type SubscriptionState =
   | "trialing" | "trial_expiring" | "active" | "renewal_due" | "past_due" | "cancelled" | "no_subscription"
 
+// TOMBSTONE (orphan doctrine §1.3) — these names are no longer exported: RENEWAL_WARN_DAYS, TRIAL_WARN_DAYS.
+// Nothing in the product imported them, and no simulator did either; the
+// values are live and unchanged, reached through this module's own exported
+// functions, which is where callers already get their effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /** Days-out thresholds that flip a trial/renewal into the attention queue. */
-export const TRIAL_WARN_DAYS = 7
-export const RENEWAL_WARN_DAYS = 7
+const TRIAL_WARN_DAYS = 7
+const RENEWAL_WARN_DAYS = 7
 
 export interface ClassifyInput {
   /** subscriptions.status (active/trialing/past_due/cancelled/…) — null when there is no subscription row. */

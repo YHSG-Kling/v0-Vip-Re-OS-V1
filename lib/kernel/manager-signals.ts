@@ -1151,7 +1151,34 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
       subject, body, channel: "email",
       rationale: `Persona intro reel finished for ${firstName} — propose the gated 1:1 email embedding it (email only; never broadcast).`,
     }, ctx.supabase)
-    return res.ok ? `proposed the gated 1:1 reel email to the lead (approval ${res.id})` : null
+    if (!res.ok) return null
+
+    // ── THE BROKERAGE'S OWN ANSWER, ASKED AT THE MOMENT THE TOUCH IS DRAFTED ──
+    //
+    // OWNER RULING (2026-08-25): "which brokerage settings are use so the ai isa
+    // will automatically send". Until this hop existed the proposal above was the
+    // END of the lead's video email: nothing in the tree could release a
+    // LEAD-recipient proposal, so the reel the first-touch email PROMISES
+    // ("being prepared and will be sent shortly") shipped only if a human
+    // happened to approve it.
+    //
+    // The gate is `ai_isa_settings` through the ONE resolver (§6), and it is
+    // asked HERE as well as on the cron so an authorised brokerage's reel goes
+    // out at completion rather than up to a cron tick later. `releaseDueLeadTouches`
+    // re-runs consent, suppression, the touch cap and the compliance gate before
+    // anything is sent, and a brokerage that requires approval (the DEFAULT, and
+    // the live column default) leaves the row exactly where it is.
+    const { resolveLeadSettingsResolution, leadAutoSendVerdict, releaseDueLeadTouches } =
+      await import("@/lib/ai-isa/lead-action-plan")
+    const resolution = await resolveLeadSettingsResolution({ brokerageId: ctx.brokerageId })
+    const gate = leadAutoSendVerdict({ resolution, channel: "email" })
+    if (gate.mode !== "auto_send") {
+      return `proposed the gated 1:1 reel email to the lead (approval ${res.id}) — awaiting a human: ${gate.reason}`
+    }
+    const released = await releaseDueLeadTouches({ brokerageId: ctx.brokerageId, leadId, supabase: ctx.supabase })
+    return released.sent > 0
+      ? `sent the 1:1 reel email to the lead — this brokerage authorised AI ISA auto-send (approval ${res.id})`
+      : `proposed the gated 1:1 reel email to the lead (approval ${res.id}) — auto-send was authorised but the send did not complete: ${released.decisions.map((d) => d.reason).join("; ").slice(0, 200)}`
   },
   // Asset Manager → Campaign Orchestrator: a CONTACT's situational reel FINISHED. The
   // Orchestrator (the manager that SENDS it) proposes ONE gated, 1:1 email embedding the reel

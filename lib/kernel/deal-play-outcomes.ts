@@ -13,9 +13,16 @@
 // run the play on already-hot listings).
 
 export const MIN_COHORT = 10
+// TOMBSTONE (orphan doctrine §1.3) — these names are no longer exported: DAYS_MARGIN_FLOOR, DAYS_MARGIN_PCT.
+// Nothing in the product imported them, and no simulator did either; the
+// values are live and unchanged, reached through this module's own exported
+// functions, which is where callers already get their effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /** Played median must beat control by max(2 days, 10% of control) to claim lift. */
-export const DAYS_MARGIN_FLOOR = 2
-export const DAYS_MARGIN_PCT = 0.1
+const DAYS_MARGIN_FLOOR = 2
+const DAYS_MARGIN_PCT = 0.1
 
 export interface OutcomeRow {
   played: boolean

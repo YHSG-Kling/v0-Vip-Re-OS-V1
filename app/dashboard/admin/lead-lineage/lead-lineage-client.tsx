@@ -139,7 +139,15 @@ function daysSince(dateStr: string): number {
 
 // ── Summary card counts ───────────────────────────────────────────────────────
 
-function buildSummary(leads: Lead[], brokerageId: string) {
+// TOMBSTONE (orphan doctrine §1.3) — this took a second `brokerageId: string`
+// parameter and never read it. The tenant predicate it looked like it was applying
+// already ran on the SERVER, at app/dashboard/admin/lead-lineage/page.tsx:79
+// (`.eq('brokerage_id', brokerageId)` on a brokerage_id read from the session
+// profile), so every lead in this array is already this tenant's. Re-filtering here
+// would be worse than redundant: it would be tenancy decided from a PROP a client
+// component was handed, which CLAUDE.md §4 rules out — tenant comes from the
+// session, never from a parameter. There is no second reader to build for it.
+function buildSummary(leads: Lead[]) {
   const now = Date.now()
   const todayStart = new Date()
   todayStart.setHours(0, 0, 0, 0)
@@ -563,8 +571,10 @@ function FunnelStrip({
 
 // ── Summary cards ─────────────────────────────────────────────────────────────
 
-function SummaryCards({ leads, brokerageId }: { leads: Lead[]; brokerageId: string }) {
-  const s = buildSummary(leads, brokerageId)
+// `brokerageId` came off this signature with the same tombstone: it existed only to
+// be handed to buildSummary, which never read it. See the note above buildSummary.
+function SummaryCards({ leads }: { leads: Lead[] }) {
+  const s = buildSummary(leads)
   const cards = [
     { label: "Today's Raw Records", value: s.todayRaw, icon: Clock, color: 'text-slate-600' },
     { label: 'Ready for ISA', value: s.readyForISA, icon: CheckCircle, color: 'text-blue-600' },
@@ -607,7 +617,7 @@ export default function LeadLineageClient({
 
   return (
     <div className="space-y-6">
-      <SummaryCards leads={leads} brokerageId={brokerageId} />
+      <SummaryCards leads={leads} />
 
       <Card>
         <CardHeader className="pb-3">

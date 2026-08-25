@@ -31,8 +31,15 @@ import type { CopyGenerator } from "@/lib/kernel/ai-copy"
 
 type Svc = ReturnType<typeof createServiceClient>
 
+// TOMBSTONE (orphan doctrine §1.3) — these names are no longer exported: RADAR_DEDUPE_DAYS, REFERRAL_PRIMED_SCORE.
+// Nothing in the product imported them, and no simulator did either; the
+// values are live and unchanged, reached through this module's own exported
+// functions, which is where callers already get their effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /** One radar touch per (contact, event-type) per this window. */
-export const RADAR_DEDUPE_DAYS = 90
+const RADAR_DEDUPE_DAYS = 90
 
 /** A life event is "fresh" when detected within this window (Data Steward stamp). */
 export const LIFE_EVENT_FRESH_DAYS = 60
@@ -41,7 +48,7 @@ export const LIFE_EVENT_FRESH_DAYS = 60
 export const EQUITY_MILESTONE = 250_000
 
 /** referral_score at/above this marks a contact primed to refer. */
-export const REFERRAL_PRIMED_SCORE = 70
+const REFERRAL_PRIMED_SCORE = 70
 
 // TOMBSTONE (CLAUDE.md §1, §6). `PAST_CLIENT_TYPES` was this module's own spelling of
 // the post-close contact_type roster — a third copy alongside

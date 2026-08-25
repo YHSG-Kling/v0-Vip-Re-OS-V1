@@ -1233,12 +1233,22 @@ async function main() {
     const appr = { zip: "78701", oldYear: 2018, newYear: 2022, oldValue: 400_000, newValue: 520_000, totalPct: 30, annualPct: 6.8 }
     const lensHot = composeFutureLens({ zip: "78701", appreciation: appr, permitCount: 10 })
     const lensNone = composeFutureLens({ zip: "78701", appreciation: null, permitCount: 0 })
+    // THE PLACE NAME HAS A READER NOW. `loadFutureLensSignals` took `city` and
+    // `state` from the offers page and read neither — two inert parameters on a
+    // call that already had the values in hand (opposite-missing census cat. 4).
+    // The composer names the place instead of saying "nearby", so these three
+    // assert the wire in all three states rather than the happy one only.
+    const lensPlaced = composeFutureLens({ zip: "78701", appreciation: null, permitCount: 10, city: "Austin", state: "TX" })
+    const lensCityOnly = composeFutureLens({ zip: "78701", appreciation: null, permitCount: 10, city: "Austin", state: null })
     const { composeColdStartCareer } = await import("../lib/intelligence/career-architect")
     const coldCareer = composeColdStartCareer({ topTouchedZip: { zip: "78701", count: 6 }, contactCount: 6 })
     check("FUTURE LENS + NEW-AGENT COLD START (owner corrections: free public records + new solos hold no history) — Census two-vintage appreciation + OSINT permit density compose honest source-cited signals (30% up + 10 permits = 2 signals, each labeled forecast-not-fact; no data = no signal, never invented), the cold-start seller line fills the null band with clearly-labeled AREA data, and a new agent gets the touched-ZIP farm instead of silence; registered",
       lensHot.hasSignal === true && lensHot.signals.length === 2
       && Boolean(lensHot.signals[0].includes("U.S. Census")) && Boolean(lensHot.signals.some((s) => s.includes("building permits")))
       && lensNone.hasSignal === false && lensNone.signals.length === 0
+      && Boolean(lensPlaced.signals[0].includes("pulled in Austin, TX in the last year"))
+      && Boolean(lensCityOnly.signals[0].includes("pulled in Austin in the last year"))
+      && Boolean(lensHot.signals[1].includes("pulled nearby in the last year"))
       && PERMIT_HOT_COUNT === 8
       && Boolean(composeColdStartBandLine(appr as any)?.includes("area data, not a specific-home valuation"))
       && composeColdStartBandLine(null) === null

@@ -158,7 +158,13 @@ export async function draftProactiveReply(input: {
  * as the inbound-call lane). Returns the contact id, or null when capture is
  * impossible (no agent scope at all).
  */
-export async function captureTextingContact(svc: any, ctx: TenantNumberContext, fromPhone: string, channel: "sms" | "whatsapp"): Promise<string | null> {
+// TOMBSTONE (orphan doctrine §1.3) — this used to take a leading `svc: any` Supabase
+// client and never read it. The client it needed already lives inside the survivor,
+// lib/contact-pipeline/contact-capture.ts::captureContact, which opens its own and
+// applies the tenant predicate there; passing a second one in only meant a caller
+// could hand this function a client whose tenancy nobody here checked. The parameter
+// is gone rather than wired: there is no second reader to build for it.
+export async function captureTextingContact(ctx: TenantNumberContext, fromPhone: string, channel: "sms" | "whatsapp"): Promise<string | null> {
   try {
     const digits = fromPhone.replace(/\D/g, "")
     const { captureContact } = await import("@/lib/contact-pipeline/contact-capture")

@@ -3,7 +3,12 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { isValidUUID, validateEmail, validatePhone, validateContact } from "@/lib/validations"
-import { LEAD_SOURCES } from "@/lib/constants"
+// `LEAD_SOURCES` was imported here and NEVER USED — a dead import that made the
+// vocabulary look enforced at this write seam while `source: params.source ||
+// "manual"` below let any string through. It is now genuinely used, via
+// normalizeLeadSource: the same fold the other contacts.source writer uses
+// (app/actions/contacts.ts createContact), so the two writers cannot disagree.
+import { LEAD_SOURCES, normalizeLeadSource } from "@/lib/constants"
 import { handleError, ValidationError, NotFoundError, DatabaseError } from "@/lib/errors"
 import { calculateLeadScore } from "./lead-management.service"
 // NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
@@ -103,6 +108,17 @@ export async function createContact(params: CreateContactParams) {
       throw new ValidationError("Agent is not associated with a brokerage")
     }
 
+    // Lead-source vocabulary, enforced at the write rather than by the type.
+    // contacts.source carries NO CHECK constraint (measured live 2026-08-25), so
+    // an unrecognised value would otherwise persist verbatim and no scorer could
+    // match it (§6). "manual" is the canonical default and is IN the vocabulary.
+    const source = normalizeLeadSource(params.source ?? "manual")
+    if (!source) {
+      throw new ValidationError(
+        `Unknown lead source "${params.source}". Expected one of: ${LEAD_SOURCES.join(", ")}.`
+      )
+    }
+
     // Create contact. NOTE: contacts has no full_name/lead_score/
     // preferred_cities/tags columns — those are intentionally omitted.
     const { data: contact, error } = await supabase
@@ -114,7 +130,7 @@ export async function createContact(params: CreateContactParams) {
         last_name: params.lastName,
         email: params.email,
         phone: params.phone,
-        source: params.source || "manual",
+        source,   // canonical — see the vocabulary gate above
         status: params.status || "active",
         lead_temperature: "cold",
         budget_min: params.budgetMin,

@@ -52,10 +52,17 @@ type Svc = ReturnType<typeof createServiceClient>
 /** Anniversary window: the close-date month/day within ±this many days of now. */
 export const ANNIVERSARY_WINDOW_DAYS = 7
 
+// TOMBSTONE (orphan doctrine §1.3) — this name is no longer exported: ANNUAL_PAYDOWN_PCT.
+// Nothing in the product imported it, and no simulator did either; the
+// value is live and unchanged, reached through this module's own exported
+// functions, which is where callers already get its effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /** Conservative principal-paydown approximation (~1.5%/yr of the ORIGINAL loan) —
  *  the same documented assumption as lib/avm/provider-chain.ts computeEquityRatio.
  *  It deliberately UNDER-estimates paydown so the equity estimate stays honest. */
-export const ANNUAL_PAYDOWN_PCT = 0.015
+const ANNUAL_PAYDOWN_PCT = 0.015
 
 /** The rationale tag prefix that carries the per-(contact, year) idempotency key. */
 export const ANNIVERSARY_EQUITY_TAG = "ANNIVERSARY EQUITY"

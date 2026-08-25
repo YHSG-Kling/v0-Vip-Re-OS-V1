@@ -122,8 +122,15 @@ export interface TwilioFleetPosture {
   tenants: TwilioTenantPosture[]
 }
 
+// TOMBSTONE (orphan doctrine §1.3) — these names are no longer exported: A2P_BRAND_STALL_DAYS, A2P_CAMPAIGN_STALL_DAYS, A2P_IDLE_STALL_DAYS, TWILIO_PROBE_TENANT_CAP, UNHEALED_ATTENTION_THRESHOLD.
+// Nothing in the product imported them, and no simulator did either; the
+// values are live and unchanged, reached through this module's own exported
+// functions, which is where callers already get their effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /** Bound: how many tenants get LIVE Twilio probes per sweep (3 calls each). */
-export const TWILIO_PROBE_TENANT_CAP = 20
+const TWILIO_PROBE_TENANT_CAP = 20
 const TWILIO_API = "https://api.twilio.com"
 
 type Creds = { accountSid: string; authToken: string }
@@ -289,10 +296,10 @@ export async function getTwilioFleetPosture(svc: any): Promise<TwilioFleetPostur
 // #1 real-world SMS blocker — and someone must act (re-run the runner to
 // re-poll, fix the profile, or open a Twilio ticket).
 
-export const A2P_BRAND_STALL_DAYS = 3
-export const A2P_CAMPAIGN_STALL_DAYS = 7
+const A2P_BRAND_STALL_DAYS = 3
+const A2P_CAMPAIGN_STALL_DAYS = 7
 export const A2P_FAILED_STALL_DAYS = 2
-export const A2P_IDLE_STALL_DAYS = 14
+const A2P_IDLE_STALL_DAYS = 14
 
 export interface A2pStallAssessment {
   stalled: boolean
@@ -879,7 +886,7 @@ export function platformEnvConfigured(provider: string): boolean | null {
 
 export const POSTURE_WINDOW_DAYS = 14
 /** A provider with ≥ this many unhealed failures (failed/escalated) in the window needs attention. */
-export const UNHEALED_ATTENTION_THRESHOLD = 3
+const UNHEALED_ATTENTION_THRESHOLD = 3
 const LEDGER_FETCH_CAP = 8000
 const HEAL_FETCH_CAP = 8000
 const QUARANTINE_FETCH_CAP = 2000

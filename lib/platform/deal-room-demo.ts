@@ -70,8 +70,15 @@ type Svc = ReturnType<typeof createServiceClient>
 export const DEAL_ROOM_TAG = "deal-room-demo"
 /** Provenance label for staged analysis rows (call_analyses.analyzed_by). */
 export const DEAL_ROOM_PROVENANCE = "deal_room_demo"
+// TOMBSTONE (orphan doctrine §1.3) — these names are no longer exported: DEAL_ROOM_PROSPECT, DEAL_ROOM_TRANSCRIPT_HEADER.
+// Nothing in the product imported them, and no simulator did either; the
+// values are live and unchanged, reached through this module's own exported
+// functions, which is where callers already get their effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /** The header line every synthetic transcript opens with — provenance in the artifact itself. */
-export const DEAL_ROOM_TRANSCRIPT_HEADER =
+const DEAL_ROOM_TRANSCRIPT_HEADER =
   "[deal-room-demo] SYNTHETIC TRANSCRIPT — staged showcase meeting on the sanctioned demo tenant; no real client, no real call."
 
 /**
@@ -171,7 +178,7 @@ export interface DealRoomStoryPlan {
 
 /** The scraped prospect — fictional idiom matching the round-21 dataset
  *  (RFC-2606 reserved domain, 555 phone, obviously-fictional surname). */
-export const DEAL_ROOM_PROSPECT = {
+const DEAL_ROOM_PROSPECT = {
   firstName: "Jordan",
   lastName: "Demoprospect",
   email: "jordan.demoprospect@demo-showcase.example.com",

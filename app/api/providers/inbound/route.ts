@@ -117,7 +117,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     if (inbound.providerType === "twilio" && numberCtx && inbound.fromPhone && (inbound.text ?? "").trim()) {
       const { captureTextingContact } = await import("@/lib/voice/sms-inbound")
       const captured = await captureTextingContact(
-        supabase, numberCtx, inbound.fromPhone,
+        numberCtx, inbound.fromPhone,
         inbound.channel === "whatsapp" ? "whatsapp" : "sms",
       )
       if (captured) {

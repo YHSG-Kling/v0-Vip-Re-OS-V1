@@ -78,6 +78,7 @@ import { getAgentContext } from "@/lib/identity"
 // the written table carries an audit column. New tenant writers: adopt this seam.
 import { resolveWriteContext } from "@/lib/platform/acting-context"
 import { syncContactToCRM } from "@/lib/crm/sync"
+import { LEAD_SOURCES, normalizeLeadSource } from "@/lib/constants"
 import { revalidatePath } from "next/cache"
 import {
   createContactManually,
@@ -244,7 +245,29 @@ export async function createContact(contactData: {
     if (!agentId) {
       return { success: false, error: "No agent record found for this user" }
     }
-    
+
+    // ── LEAD SOURCE — THE VOCABULARY IS ENFORCED HERE, NOT IN TYPESCRIPT ──────
+    // contacts.source has NO CHECK CONSTRAINT (measured live 2026-08-25; neither
+    // does leads.source — its CHECKs cover source_family/source_origin only). A
+    // `readonly [...]` array is erased at build time, so on a `"use server"`
+    // export — a public HTTP endpoint (§4) — this is the LAST place a value can
+    // be constrained at all. Until now nothing constrained it: LEAD_SOURCES had
+    // two importers and zero uses, so any string in the body landed in the
+    // attribution column verbatim.
+    //
+    // Refuses rather than folding an unrecognised value to "other": silently
+    // rewriting an attribution is how a vocabulary drifts (§6). "manual" is the
+    // documented default and IS in the vocabulary, so the kernel's own default
+    // path passes — the trap that made wiring the old 10-value list impossible.
+    const rawSource = contactData.source ?? "manual"
+    const source = normalizeLeadSource(rawSource)
+    if (!source) {
+      return {
+        success: false,
+        error: `Unknown lead source "${rawSource}". Expected one of: ${LEAD_SOURCES.join(", ")}.`,
+      }
+    }
+
     // Delegate to kernel — handles dedup, enrichment queue, activity, notification
     const result = await createContactManually({
       first_name:      contactData.first_name,
@@ -262,7 +285,7 @@ export async function createContact(contactData: {
       tcpa_consent:    contactData.tcpa_consent ?? false,
       agent_id:        agentId,   // agents.id — FK-correct
       brokerage_id:    brokerageId,
-      source_label:    contactData.source ?? "manual",
+      source_label:    source,   // canonical — see the vocabulary gate above
     })
 
     if (!result.success || !result.contact) {

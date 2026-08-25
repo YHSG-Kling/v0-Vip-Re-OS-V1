@@ -242,7 +242,14 @@ export function verifyWebhookSignature(
 // default cap the waits actually used are 1m/5m/30m/2h; the 12h rung applies if
 // the cap is ever raised.
 
-export const WEBHOOK_BACKOFF_SCHEDULE_MS: readonly number[] = [
+// TOMBSTONE (orphan doctrine §1.3) — this name is no longer exported: WEBHOOK_BACKOFF_SCHEDULE_MS.
+// Nothing in the product imported it, and no simulator did either; the
+// value is live and unchanged, reached through this module's own exported
+// functions, which is where callers already get its effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
+const WEBHOOK_BACKOFF_SCHEDULE_MS: readonly number[] = [
   60_000,        // 1m
   300_000,       // 5m
   1_800_000,     // 30m

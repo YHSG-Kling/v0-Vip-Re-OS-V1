@@ -23,8 +23,8 @@
  * Run anywhere (no DB/creds). Regenerate the snapshot when a guarded table changes.
  * Run: npx tsx scripts/schema-drift-guard.ts  (npm run test:schema-drift)
  */
-import { readFileSync, readdirSync, statSync, writeFileSync, existsSync } from "node:fs"
-import { runtimeRoots } from "./runtime-roots"
+import { readFileSync, readdirSync, writeFileSync, existsSync } from "node:fs"
+import { runtimeFiles } from "./runtime-roots"
 import { join } from "node:path"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
 import { SCHEMA_FK_COLUMN_AMBIGUOUS, SCHEMA_FK_MAP, SCHEMA_FK_PAIR_CARDINALITY, fkColumnCandidates, fkPairCount } from "./schema-fk-map"
@@ -1412,14 +1412,21 @@ function testPure() {
 }
 
 // ── Layer 2: repo scan ───────────────────────────────────────────────────────
-function walk(dir: string, acc: string[]) {
-  for (const name of readdirSync(dir)) {
-    if (name === "node_modules" || name === ".next" || name === ".git") continue
-    const p = join(dir, name)
-    const st = statSync(p)
-    if (st.isDirectory()) walk(p, acc)
-    else if (/\.(ts|tsx)$/.test(name)) acc.push(p)
-  }
+//
+// TOMBSTONE (orphan doctrine §1.1) — the private `walk(dir, acc)` that used to sit
+// here, and the `runtimeRoots(root)` loop each of its two callers wrapped it in, are
+// gone. The survivor is scripts/runtime-roots.ts:96-115 (`runtimeFiles`), already
+// imported above for exactly this question.
+//
+// It was not merely a copy. `runtimeRoots()` answers with DIRECTORIES, so both
+// layers below walked directories and neither could ever reach a runtime file that
+// lives at the repository ROOT. `proxy.ts` — the Next 16 edge middleware — queries
+// blog_posts, brokerages, users and tenant_custom_domains with a SERVICE client on
+// every request, and not one of those four column sets had ever been drift-checked
+// or counted by the coverage ratchet. `runtimeFiles()` is directories PLUS root
+// files, so both layers now see the same corpus every other guard sees.
+function scanCorpus(root: string): string[] {
+  return runtimeFiles(root)
 }
 
 interface Violation { file: string; table: string; op: string; column: string }
@@ -1681,8 +1688,7 @@ function scanFile(file: string, rawSrc: string, stats: ScanStats = newStats()): 
 function testScan() {
   console.log("\n[Layer 2 · repo scan against the live-schema snapshot]")
   const root = process.cwd()
-  const files: string[] = []
-  for (const d of runtimeRoots(root)) { try { walk(join(root, d), files) } catch {} }
+  const files: string[] = scanCorpus(root)
   const all: Violation[] = []
   const stats = newStats()
   for (const f of files) {
@@ -1908,8 +1914,7 @@ function testScan() {
 function testCoverage() {
   console.log("\n[Layer 3 · table coverage ratchet]")
   const root = process.cwd()
-  const files: string[] = []
-  for (const d of runtimeRoots(root)) { try { walk(join(root, d), files) } catch {} }
+  const files: string[] = scanCorpus(root)
   const referenced = new Set<string>()
   const fromRe = /\.from\(\s*["'`]([a-z_][a-z0-9_]*)["'`]\s*\)/g
   // Only a SUPABASE query counts — `.from("x")` immediately chained to a PostgREST verb. This excludes

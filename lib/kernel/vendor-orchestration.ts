@@ -131,8 +131,15 @@ function stagerGap(coverage: DealCoverage): VendorGap | null {
   return null
 }
 
+// TOMBSTONE (orphan doctrine §1.3) — this name is no longer exported: SLA_MIN_SAMPLE.
+// Nothing in the product imported it, and no simulator did either; the
+// value is live and unchanged, reached through this module's own exported
+// functions, which is where callers already get its effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /** Below this many outcomes (completed + no-show), SLA is too thin to demote a vendor on — honest. */
-export const SLA_MIN_SAMPLE = 3
+const SLA_MIN_SAMPLE = 3
 /** On-time % below which a vendor with enough sample is an SLA breach (mirrors lib/kernel/vendor-sla). */
 export const SLA_BREACH_PCT = 75
 

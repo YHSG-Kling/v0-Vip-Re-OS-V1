@@ -123,6 +123,13 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/fire-drill"                          , schedule: "27,57 * * * *" }, // (staggered r43)
   { path: "/api/cron/manager-signals"                     , schedule: "23,53 * * * *" }, // (staggered r43)
   { path: "/api/cron/campaign-sequence-steps"             , schedule: "*/5 * * * *" },
+  // Lead action plan — touches 2..N for a pre-conversion lead, plus the settings-
+  // governed release of the LEAD-recipient proposals the creative producers stage.
+  // speed-to-lead only ever fires touch ONE (`first_touched_at IS NULL`), so this is
+  // what makes max_touches_lead / touch_interval_days mean anything. Every 15 minutes:
+  // the cadence it governs is measured in DAYS, so a tighter tick buys nothing and
+  // only re-reads the same rows.
+  { path: "/api/cron/lead-action-plan"                    , schedule: "*/15 * * * *" },
   // Unified queue drain — email_queue / push_notification_queue / orchestrator_tasks /
   // drip_campaigns (write-only-ledger burn-down: queues finally get a consumer).
   { path: "/api/cron/queue-drain"                         , schedule: "*/5 * * * *" },

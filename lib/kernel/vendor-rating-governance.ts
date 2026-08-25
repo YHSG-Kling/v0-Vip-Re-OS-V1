@@ -24,9 +24,16 @@ export const FLAG_BELOW = 3.5
 export const FLAG_MIN_SAMPLE = 5
 /** Repeated one-star ratings → flag for admin review regardless of average. */
 export const ONE_STAR_ALERT = 3
+// TOMBSTONE (orphan doctrine §1.3) — these names are no longer exported: TOP_RATED_MIN, TOP_RATED_SAMPLE.
+// Nothing in the product imported them, and no simulator did either; the
+// values are live and unchanged, reached through this module's own exported
+// functions, which is where callers already get their effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /** Badge thresholds. */
-export const TOP_RATED_MIN = 4.5
-export const TOP_RATED_SAMPLE = 10
+const TOP_RATED_MIN = 4.5
+const TOP_RATED_SAMPLE = 10
 export const HIGHLY_RECOMMENDED_MIN = 4.8
 export const HIGHLY_RECOMMENDED_SAMPLE = 20
 

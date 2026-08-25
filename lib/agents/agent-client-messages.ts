@@ -91,13 +91,23 @@ export interface ClientMessageResult { status: "sent" | "skipped" | "failed"; re
  * delivers it to the recipient's portal (best-effort), stamps sent. `editedBody`
  * lets the human revise before it goes out. Idempotent — only proposed/approved
  * rows send. Never throws.
+ *
+ * `approverUserId` MAY be null, and null means exactly one thing: NO HUMAN
+ * APPROVED THIS. It is the shape a settings-authorised auto-send takes
+ * (lib/ai-isa/lead-action-plan.ts — the brokerage's own `require_broker_approval
+ * = false` is the standing authorisation, and there is no person to name).
+ * Recording the machine's send under some human's user id would be a false audit
+ * trail, and `agent_client_messages.approved_by` is a NULLABLE FK to users(id)
+ * precisely so the honest answer fits. Every caller that HAS a human still passes
+ * one; the release path stamps its own rationale so a null approver is never
+ * ambiguous.
  */
 export async function approveClientMessage(
-  messageId: string, approverUserId: string, editedBody?: string,
+  messageId: string, approverUserId: string | null, editedBody?: string,
   client?: ReturnType<typeof createServiceClient>,
 ): Promise<ClientMessageResult> {
   const supabase = client ?? createServiceClient()
-  const patch: Record<string, unknown> = { status: "approved", approved_by: approverUserId, approved_at: new Date().toISOString() }
+  const patch: Record<string, unknown> = { status: "approved", approved_by: approverUserId ?? null, approved_at: new Date().toISOString() }
   if (editedBody?.trim()) patch.body = editedBody
   const { data: claimed } = await supabase.from("agent_client_messages")
     .update(patch).eq("id", messageId).in("status", ["proposed", "approved"])

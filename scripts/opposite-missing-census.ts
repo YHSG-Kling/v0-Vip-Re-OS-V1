@@ -229,6 +229,32 @@ const control = (name: string, ok: boolean, note?: string) => controls.push({ na
   })())
 }
 
+// ── CONTROL ZERO-B: THE CORPUS ──────────────────────────────────────────────
+// A control on the MASKER answers "can this scanner read a file correctly". It
+// does not answer "is the file in the pile at all", and that second question went
+// unasked until 2026-08-25, when this census accused `PUBLIC_ROUTES` and
+// `PROTECTED_ROUTES` of having no importer. Their importer is `proxy.ts:38` — the
+// edge middleware, at the repository ROOT. `runtimeFiles()` walked top-level
+// DIRECTORIES, and a root-level file is not a directory, so proxy.ts (the auth
+// gate) and types.ts (1865 lines of vocabulary) were in no guard's corpus at all.
+//
+// An unseen file is a false accusation generator in BOTH directions: every defect
+// inside it is missed, and every export it is the sole consumer of is reported
+// orphaned. So the corpus now asserts its own reach, on the two shapes that
+// decide it — a root file that ships must be IN, and a root file that is
+// toolchain configuration must be OUT. Pinned to the RULE (root .ts that is not
+// *.config.ts), not to a filename count that any new root file would move.
+{
+  const rootsSeen = productFiles.filter((f) => !f.includes("/"))
+  control("C0b the corpus reaches root-level runtime files (proxy.ts is the edge auth gate)",
+    rootsSeen.includes("proxy.ts"), rootsSeen.join(", ") || "none")
+  control("C0b the corpus excludes root-level *.config.ts (toolchain, not runtime)",
+    !rootsSeen.some((f) => /\.config\.[cm]?tsx?$/.test(f)),
+    rootsSeen.filter((f) => /\.config\./.test(f)).join(", ") || "none present")
+  control("C0b root files are actually READ, not just listed",
+    (rawOf.get("proxy.ts") ?? "").length > 0)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // CATEGORY 1 — COLUMN-LEVEL ONE-SIDED I/O
 // ═══════════════════════════════════════════════════════════════════════════

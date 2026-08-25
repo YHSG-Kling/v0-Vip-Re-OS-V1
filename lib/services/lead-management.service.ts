@@ -2,7 +2,14 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID, validateEmail, validatePhone } from "@/lib/validations"
-import { LEAD_SOURCES } from "@/lib/constants"
+// TOMBSTONE (§1.3): the `LEAD_SOURCES` import that stood here is DELETED. It was
+// never referenced anywhere in this file — a dead import that made the vocabulary
+// read as enforced by the scoring service, which writes no `source` at all (its
+// only contact with the column is the read filter in
+// bulkRecalculateScrapedLeadScores). The vocabulary now lives and is ENFORCED at
+// the two writers of contacts.source: app/actions/contacts.ts createContact and
+// lib/services/contact-management.service.ts createContact, both folding through
+// normalizeLeadSource in lib/constants/index.ts.
 import { scoreToLeadTemperature } from "@/lib/data-steward/value-normalizer"
 import { handleError, ValidationError, NotFoundError } from "@/lib/errors"
 import {

@@ -46,7 +46,14 @@ export const PRODUCT_ANGLES: Record<string, { hook: string; proof: string }> = {
   },
 }
 
-export const PRODUCT_HASHTAGS: Record<ProductChannel, string> = {
+// TOMBSTONE (orphan doctrine §1.3) — this name is no longer exported: PRODUCT_HASHTAGS.
+// Nothing in the product imported it, and no simulator did either; the
+// value is live and unchanged, reached through this module's own exported
+// functions, which is where callers already get its effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
+const PRODUCT_HASHTAGS: Record<ProductChannel, string> = {
   linkedin: "#RealEstate #AI #Proptech #BrokerageGrowth",
   instagram: "#realestate #realtor #ai #realestateagent #proptech",
   facebook: "#RealEstate #AI #Realtor",

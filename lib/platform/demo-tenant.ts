@@ -39,8 +39,15 @@ export const DEMO_TENANT_SLUG = "demo-showcase"
 export const DEMO_TENANT_NAME = "VIP Agents Showcase Realty"
 /** RFC-2606 reserved domain — the invite bounces harmlessly; nobody real. */
 export const DEMO_OWNER_EMAIL = "showcase.owner@demo-showcase.example.com"
+// TOMBSTONE (orphan doctrine §1.3) — this name is no longer exported: DEMO_TAG.
+// Nothing in the product imported it, and no simulator did either; the
+// value is live and unchanged, reached through this module's own exported
+// functions, which is where callers already get its effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
 /** Visible marker threaded through seeded rows (tags / notes). */
-export const DEMO_TAG = "demo-showcase"
+const DEMO_TAG = "demo-showcase"
 
 /** The tables seedDemoData owns, in FK-safe DELETE order (children first). */
 export const DEMO_SEEDED_TABLES = [

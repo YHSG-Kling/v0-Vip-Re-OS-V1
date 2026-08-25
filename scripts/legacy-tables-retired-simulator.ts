@@ -29,52 +29,31 @@
  * So a future drop is covered the moment its migration lands, and a future
  * directory is covered the moment it holds a .ts file.
  */
-import { readFileSync, readdirSync, statSync, existsSync } from "node:fs"
+import { readFileSync, readdirSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { stripComments } from "./strip-comments"
 import { LIVE_TABLES } from "./live-tables"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
+import { runtimeFiles, runtimeRoots } from "./runtime-roots"
 
 let pass = 0, fail = 0
 const fails: string[] = []
 const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; fails.push(n); console.log(`  ✗ ${n}`) } }
 
-// Directories that hold TypeScript but do not ship as application runtime. Every
-// entry names why, because this is the one list left and it is how the guard's reach
-// can still be narrowed by accident.
-const NON_RUNTIME_ROOTS = new Set([
-  "scripts",  // guards, migrations and codemods — they name dropped tables on purpose
-  "e2e",      // test harness, not served
-])
-const NEVER_WALK = new Set(["node_modules", ".next", ".git", ".vercel"])
 const SQL_KEYWORDS = new Set(["IF", "EXISTS", "TABLE", "CASCADE", "ONLY", "RESTRICT"])
 
-/** Every top-level dir that contains .ts/.tsx and ships as runtime. */
-function runtimeRoots(): string[] {
-  return readdirSync(".").filter((name) => {
-    if (name.startsWith(".")) return false   // .claude / .agents / .github — config, not runtime
-    if (NEVER_WALK.has(name) || NON_RUNTIME_ROOTS.has(name)) return false
-    let st
-    try { st = statSync(name) } catch { return false }
-    if (!st.isDirectory()) return false
-    return walk(name).length > 0
-  }).sort()
-}
-
-/** Recursively collect .ts/.tsx under a dir. */
-function walk(dir: string, out: string[] = []): string[] {
-  let entries: string[] = []
-  try { entries = readdirSync(dir) } catch { return out }
-  for (const e of entries) {
-    if (NEVER_WALK.has(e)) continue
-    const p = join(dir, e)
-    let st
-    try { st = statSync(p) } catch { continue }
-    if (st.isDirectory()) walk(p, out)
-    else if (/\.(ts|tsx)$/.test(e)) out.push(p)
-  }
-  return out
-}
+// TOMBSTONE (orphan doctrine §1.1) — this file used to carry its own private copies
+// of NON_RUNTIME_ROOTS, NEVER_WALK, runtimeRoots() and walk(). They were a
+// character-for-character duplicate of the survivor, scripts/runtime-roots.ts:26-95,
+// which is now imported above instead.
+//
+// The duplicate was not a style problem. `runtimeFiles()` was fixed on 2026-08-25 to
+// include ROOT-LEVEL runtime files (proxy.ts — the edge auth gate — and types.ts were
+// in no guard's corpus, because the walk enumerated directories and a root file is
+// not a directory). This guard would NOT have inherited that fix: it walked its own
+// copy, so a `.from("<dropped table>")` inside proxy.ts would have stayed invisible
+// here no matter how many times the shared module was corrected. Two walkers is two
+// answers to "what ships", and only one of them gets maintained.
 
 /** Table names from every `DROP TABLE [IF EXISTS] x [CASCADE]` in the SQL we ship. */
 function droppedTables(): string[] {
@@ -114,10 +93,15 @@ const live = new Set(LIVE_TABLES)
 const allDropped = droppedTables()
 const RETIRED = allDropped.filter((t) => !live.has(t))
 const ROOTS = runtimeRoots()
+// The FILE list, from the survivor. It is `ROOTS` walked PLUS the root-level runtime
+// files, which the private copy this guard used to carry could never see.
+const RUNTIME_FILES = runtimeFiles()
+const ROOT_LEVEL_FILES = RUNTIME_FILES.filter((f) => !f.includes("/"))
 
 console.log(`\n── derivation ──`)
 console.log(`  · ${allDropped.length} tables named in a DROP TABLE; ${RETIRED.length} of them are absent from the ${LIVE_TABLES.length} live relations (retired)`)
 console.log(`  · runtime roots walked: ${ROOTS.join(", ")}`)
+console.log(`  · plus ${ROOT_LEVEL_FILES.length} root-level runtime file(s): ${ROOT_LEVEL_FILES.join(", ") || "none"}`)
 
 // A DERIVED list can silently become an EMPTY list — a parser regression would make
 // every check below vacuously true. These two are canaries on the derivation, not the
@@ -130,6 +114,13 @@ console.log("\n── the derivation actually resolved (canary against a vacuous
   check("the legacy training spine is derived as retired",
     ["training_courses", "agent_courses", "training_course_steps"].every((t) => RETIRED.includes(t)))
   check("more than app/ and lib/ are walked", ROOTS.length > 2 && ROOTS.includes("services"))
+  // The reach now includes files that live at the repository root. Asserted as the
+  // RULE (a root-level runtime file is in the corpus, a *.config.ts is not) rather
+  // than as a count, so adding a root file cannot silently narrow this guard again.
+  check("the corpus reaches root-level runtime files (proxy.ts is the edge auth gate)",
+    RUNTIME_FILES.includes("proxy.ts"))
+  check("…and still excludes root-level *.config.ts (toolchain, not runtime)",
+    !ROOT_LEVEL_FILES.some((f) => /\.config\.[cm]?tsx?$/.test(f)))
 }
 
 console.log("\n── retired tables have ZERO runtime .from() references (no reader/writer) ──")
@@ -148,7 +139,7 @@ console.log("\n── retired tables have ZERO runtime .from() references (no re
   // Never hand-rolled — the recurring defect is stripping /* */ before //, where
   // one // containing an apostrophe or a URL makes the block regex swallow real
   // code and the scan then accuses live code of being absent.
-  const files = ROOTS.flatMap((r) => walk(r))
+  const files = RUNTIME_FILES
   const sources = files.map((f) => ({ f, src: stripComments(readFileSync(f, "utf8")) }))
   console.log(`  · ${sources.length} runtime files scanned (comments stripped)`)
   for (const t of RETIRED) {

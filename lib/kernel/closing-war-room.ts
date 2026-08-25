@@ -69,7 +69,14 @@ export const WAR_ROOM_CONDITION_KEYS = [
 
 export type WarRoomConditionKey = (typeof WAR_ROOM_CONDITION_KEYS)[number]
 
-export const CONDITION_LABELS: Record<WarRoomConditionKey, string> = {
+// TOMBSTONE (orphan doctrine §1.3) — these names are no longer exported: CONDITION_LABELS, CONDITION_OWNER.
+// Nothing in the product imported them, and no simulator did either; the
+// values are live and unchanged, reached through this module's own exported
+// functions, which is where callers already get their effect. Same ruling and same
+// reasoning as lib/vendors/appraiser-independence.ts (isAppraiserTrade,
+// labelNamesAppraisal): an export with no importer is a public surface nobody
+// asked for, and the wire to build is not a second copy of the module's door.
+const CONDITION_LABELS: Record<WarRoomConditionKey, string> = {
   inspection:             "Inspection cleared",
   appraisal:              "Appraisal cleared",
   financing:              "Financing cleared",
@@ -81,7 +88,7 @@ export const CONDITION_LABELS: Record<WarRoomConditionKey, string> = {
 }
 
 /** Who the Deal Coordinator drives this condition through when it is not done. */
-export const CONDITION_OWNER: Record<WarRoomConditionKey, string> = {
+const CONDITION_OWNER: Record<WarRoomConditionKey, string> = {
   inspection:             "buyer / inspector",
   appraisal:              "lender / appraiser",
   financing:              "lender",
