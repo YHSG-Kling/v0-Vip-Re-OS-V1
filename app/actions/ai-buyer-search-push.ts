@@ -16,7 +16,13 @@
  * Different from alerts (cron-driven): this is an on-demand agent action.
  */
 
-import { createClient } from "@/lib/supabase/server"
+// TOMBSTONE (§1.3) — the `createClient` import that stood here is removed. Its
+// capability is not lost: the act-as seam merge routed this file's writes through
+// `ctx.db` from resolveWriteContextForTenant (lib/platform/acting-context.ts:212),
+// which hands back a SERVICE client under an active full grant and the caller's own
+// RLS-scoped client otherwise. A self-made cookie client here was the shape that
+// silently refused every support write under act-as. The import outlived its last
+// call site by one commit.
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { searchPropertiesCore, type BuyerSearchResult } from "@/lib/buyer-search/search-engine"
