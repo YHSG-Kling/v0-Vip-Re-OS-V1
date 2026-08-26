@@ -8,13 +8,25 @@
 
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { stripComments } from "./strip-comments"
 
 let passed = 0, failed = 0
 function check(name: string, ok: boolean, detail?: string) {
   if (ok) { passed++; console.log(`  ✓ ${name}`) }
   else { failed++; console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ""}`) }
 }
-const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
+/**
+ * COMMENT-STRIPPED source. Every check below asks whether a file CONTAINS or
+ * DOES NOT CONTAIN a code token, and this guard is built almost entirely out of
+ * absence assertions ("does NOT use Vercel Blob"). Reading raw source makes a
+ * TOMBSTONE — which CLAUDE.md §1 requires to name the thing it replaced, and
+ * therefore to spell `@vercel/blob` — count as a live import, so the guard
+ * would report the migration it is checking for as un-done, forever, and go
+ * red precisely BECAUSE the orphan doctrine was followed. That is the exact
+ * failure §2 records five guards hitting in one wave. scripts/strip-comments.ts
+ * is the one correct scanner; nothing here hand-rolls one.
+ */
+const src = (p: string) => stripComments(readFileSync(join(process.cwd(), p), "utf8"))
 
 console.log("\n── the shared Supabase bucket helper ──")
 {

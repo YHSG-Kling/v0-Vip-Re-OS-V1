@@ -263,8 +263,6 @@ const PROJECT_SUPABASE_URL = "https://hrvaqgvukzxfskkcrwbt.supabase.co"
 const MUST_ALLOW: Array<[string, string]> = [
   ["https://hrvaqgvukzxfskkcrwbt.supabase.co/storage/v1/object/public/media/isa-videos/a/1.mp3",
    "Supabase Storage — lib/storage/buckets.ts + lib/providers/dispatch.ts media bucket"],
-  ["https://store123.public.blob.vercel-storage.com/letter-audio/b/c.mp3",
-   "Vercel Blob — lib/direct-mail/render-letter-audio.ts"],
   ["https://api.twilio.com/2010-04-01/Accounts/AC1/Recordings/RE1.mp3",
    "Twilio — the telephony provider voice_calls.recording_url points at"],
   ["https://us02web.zoom.us/rec/download/abc",
@@ -277,7 +275,14 @@ const MUST_REFUSE: Array<[string, string]> = [
   ["https://10.0.0.5/internal/secrets", "RFC1918 internal address"],
   ["https://localhost/admin", "loopback by name"],
   ["http://hrvaqgvukzxfskkcrwbt.supabase.co/storage/x.mp3", "http downgrade on an allowed name"],
-  ["https://evilpublic.blob.vercel-storage.com/x.mp3", "label-boundary collision with the blob suffix rule"],
+  // MOVED FROM must-allow 2026-08-26. The Vercel Blob rule is RETIRED — every
+  // audio producer now writes to a Supabase bucket (owner ruling), so a blob
+  // host is no longer a host this platform stores audio at and must be refused
+  // like any other stranger. This row is the assertion that the retirement is
+  // real: while the rule existed, this URL was REQUIRED to pass.
+  ["https://store123.public.blob.vercel-storage.com/letter-audio/b/c.mp3",
+   "Vercel Blob — RETIRED host; nothing writes there since the Supabase migration"],
+  ["https://evilpublic.blob.vercel-storage.com/x.mp3", "label-boundary collision — and no blob rule exists to collide with any more"],
   ["https://api.twilio.com.evil.test/x.mp3", "allowed host as a PREFIX of an attacker domain"],
   ["https://hrvaqgvukzxfskkcrwbt.supabase.co.evil.test/x.mp3", "project host as a PREFIX of an attacker domain"],
   ["https://notzoom.us/x.mp3", "suffix rule must not match a different registrable name"],
@@ -710,8 +715,12 @@ async function main() {
   if (RUN_NEGATIVE) {
     console.log("\nNEGATIVE CONTROLS (each must go RED)")
 
-    // C1: the suffix rule stops matching on a label boundary, so
-    //     `evilpublic.blob.vercel-storage.com` satisfies the Vercel Blob rule.
+    // C1: the suffix rule stops matching on a label boundary, so `notzoom.us`
+    //     satisfies the `zoom.us` rule. (This control used to be carried by
+    //     `evilpublic.blob.vercel-storage.com` against the Vercel Blob suffix
+    //     rule; that rule is retired, and the control moved to the remaining
+    //     suffix rule rather than being deleted with it — the DEFECT it detects
+    //     is a property of matchesSuffix, not of any one host.)
     await controlled(
       "the blob suffix rule matches on a bare endsWith (label boundary lost)",
       {

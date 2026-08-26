@@ -36,7 +36,10 @@
  */
 import "server-only"
 import { NextResponse, type NextRequest } from "next/server"
-import { put } from "@vercel/blob"
+// Was `import { put } from "@vercel/blob"`. Survivor:
+// lib/remotion/media-host.ts#hostRenderedMedia — Supabase `video-assets`, which
+// this route was already using for its thumbnail pass.
+import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { createServiceClient } from "@/lib/supabase/service"
 import { synthesizeSpeech, synthesizeSpeechWithTimestamps, type CharacterAlignment } from "@/lib/voice/elevenlabs-tts"
 import { buildCaptionPlan } from "@/lib/video/caption-plan"
@@ -484,12 +487,17 @@ async function renderVoiceover(args: {
     audioBuffer = tts.audioBuffer
   }
 
-  const blob = await put(
+  // Was @vercel/blob's put(). Survivor: lib/remotion/media-host.ts#hostRenderedMedia
+  // (owner ruling — all file storage lives in Supabase buckets). `video-assets`
+  // is its default and the right bucket: this MP3 is fetched by URL by the
+  // Remotion render worker, which holds no session.
+  const url = await hostRenderedMedia(
+    args.svc,
     `listing-promo/voiceover/${args.promoId}.mp3`,
     audioBuffer,
-    { access: "public", contentType: "audio/mpeg" },
+    "audio/mpeg",
   )
-  return { url: blob.url, alignment }
+  return { url, alignment }
 }
 
 /** Map a listing-promo event_type to a video-qr kind. just_sold maps to its
@@ -682,14 +690,16 @@ async function renderRemotionReel(args: {
   } catch (finishErr) {
     console.warn("[render-just-listed] coordinator finish failed; shipping raw cut:", (finishErr as Error).message)
   }
-  const blob = finishedUrl
-    ? { url: finishedUrl }
-    : await put(`listing-promo/reels/${args.promoId}.mp4`, bytes, { access: "public", contentType: "video/mp4" })
+  // Was @vercel/blob's put(). Survivor: lib/remotion/media-host.ts#hostRenderedMedia,
+  // which is already the host for the thumbnail a few lines above — this branch
+  // was the one asset in the function still going to a different store.
+  const reelUrlFinal = finishedUrl
+    ?? await hostRenderedMedia(svcFin, `listing-promo/reels/${args.promoId}.mp4`, bytes, "video/mp4")
   const durationSeconds = composition.fps > 0
     ? Math.round(composition.durationInFrames / composition.fps)
     : 25
   return {
-    url:            blob.url,
+    url:            reelUrlFinal,
     compositionId,
     durationSeconds,
     fellBack:       built.fellBack,

@@ -1,7 +1,11 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { put } from "@vercel/blob"
+import { createServiceClient } from "@/lib/supabase/service"
+// Was `import { put } from "@vercel/blob"`. Survivor:
+// lib/remotion/media-host.ts#hostRenderedMedia → Supabase `media` (published
+// audio and cover art are fetched unauthenticated by podcast clients).
+import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { gatewayChat } from "@/lib/ai/gateway-chat"
@@ -416,16 +420,20 @@ export async function generatePodcastAudio(episodeId: string) {
           provider.providerKey
         )
 
-        // Upload to Vercel Blob
-        const fileName = `podcast-${episodeId}-segment-${index}.mp3`
-        const blob = await put(fileName, audioBuffer, {
-          access: "public",
-          contentType: "audio/mpeg",
-        })
+        // The old key was a BARE `podcast-…-segment-N.mp3` at the store root,
+        // shared by every tenant. Now brokerage-prefixed like every other
+        // object we write.
+        const segUrl = await hostRenderedMedia(
+          createServiceClient(),
+          `${brokerageId}/podcast/segments/${episodeId}-${index}.mp3`,
+          audioBuffer,
+          "audio/mpeg",
+          "media",
+        )
 
         // No podcast_segments row: intermediate render artifacts retired —
         // episodes carry the consumable audio (open-loop sweep).
-        return { url: blob.url, duration: segment.estimatedDuration }
+        return { url: segUrl, duration: segment.estimatedDuration }
       })
     )
 
@@ -1237,12 +1245,28 @@ export async function uploadPodcastCoverArt(formData: FormData) {
   if (!file) return { success: false, error: "No file provided" }
   if (!file.type.startsWith("image/")) return { success: false, error: "File must be an image" }
   try {
-    const ext = file.name.split(".").pop() ?? "png"
-    const blob = await put(`podcast-cover-art/${agentId}-${Date.now()}.${ext}`, file, {
-      access: "public",
+    // THE SIZE GATE. This is a Server Action taking the File in the request
+    // body, so the bytes DO cross a Vercel Function and the 4.5 MB body cap
+    // applies — `server_action`, not `direct_to_storage`. Without this the
+    // upload 413s at the edge with no message this code chose.
+    const { checkUpload } = await import("@/lib/storage/file-limits")
+    const gate = checkUpload({
+      bucket: "media",
+      transport: "server_action",
+      bytes: file.size,
       contentType: file.type,
     })
-    return { success: true, url: blob.url }
+    if (!gate.ok) return { success: false, error: gate.reason }
+
+    const ext = file.name.split(".").pop() ?? "png"
+    const url = await hostRenderedMedia(
+      createServiceClient(),
+      `${brokerageId}/podcast/cover-art/${agentId}-${Date.now()}.${ext}`,
+      Buffer.from(await file.arrayBuffer()),
+      file.type,
+      "media",
+    )
+    return { success: true, url }
   } catch (error: any) {
     return { success: false, error: error.message }
   }

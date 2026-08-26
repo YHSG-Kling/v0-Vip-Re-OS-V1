@@ -28,7 +28,10 @@
  */
 
 import "server-only"
-import { put } from "@vercel/blob"
+// Was `import { put } from "@vercel/blob"`. Survivor:
+// lib/remotion/media-host.ts#hostRenderedMedia (owner ruling — all file storage
+// lives in Supabase buckets).
+import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { synthesizeSpeech } from "@/lib/voice/elevenlabs-tts"
 import { createServiceClient } from "@/lib/supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
@@ -265,16 +268,19 @@ async function generateAudioOnly(
     }
   }
 
-  // Upload to Vercel Blob
+  // `video-assets` (public): D-ID fetches this MP3 by URL with no session of
+  // ours, so a signed URL would expire mid-job.
   const slug = Math.random().toString(36).slice(2, 9)
-  const blob = await put(`workflow-audio/${slug}.mp3`, ttsResult.audioBuffer, {
-    access: "public",
-    contentType: "audio/mpeg",
-  })
+  const audioUrl = await hostRenderedMedia(
+    createServiceClient(),
+    `workflow-audio/${slug}.mp3`,
+    ttsResult.audioBuffer,
+    "audio/mpeg",
+  )
 
   return {
     videoId: `audio-${slug}`,
-    videoUrl: blob.url,
+    videoUrl: audioUrl,
     status: "done",
     note: "Voice-only mode — audio file (no avatar rendering)",
   }

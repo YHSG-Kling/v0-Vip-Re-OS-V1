@@ -106,16 +106,21 @@ export async function renderLetterAudio(
     return { ok: false, campaignId: args.campaignId, error: synth.error ?? `synth_${synth.errorCode ?? "unknown"}` }
   }
 
-  // Upload to Vercel Blob — public so the portal can stream without
-  // signed URLs. The file path is per-brokerage scoped + suffixed
-  // with the campaign id so re-renders overwrite the same key.
-  const { put } = await import("@vercel/blob")
-  const uploaded = await put(
+  // Public so the portal can stream without signed URLs. The path is
+  // per-brokerage scoped and suffixed with the campaign id so re-renders
+  // overwrite the same key.
+  //
+  // Was @vercel/blob's put(). Survivor: lib/remotion/media-host.ts#hostRenderedMedia
+  // into `media` — the bucket lib/storage/document-buckets.ts already designates
+  // for audio a player or carrier fetches unauthenticated.
+  const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
+  const audioUrl = await hostRenderedMedia(
+    svc,
     `letter-audio/${c.brokerage_id}/${c.id}.mp3`,
     synth.audioBuffer,
-    { access: "public", contentType: "audio/mpeg" },
+    "audio/mpeg",
+    "media",
   )
-  const audioUrl = uploaded.url
 
   // Stamp the campaign row.
   const { error: stampErr } = await svc.from("direct_mail_campaigns")

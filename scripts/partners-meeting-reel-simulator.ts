@@ -287,8 +287,26 @@ import { VIDEO_FINISH_SPEC, REEL_USE_FINISH, finishForVideo } from "../lib/video
 
 console.log("\n[13 · ONE FINISH LINE + SUPABASE-HOSTED DELIVERY]")
 {
-  check("finished media is hosted on SUPABASE STORAGE (video-assets bucket), Blob only as fallback — one helper, every upload site",
-    src("lib/remotion/media-host.ts").includes('storage.from("video-assets")')
+  // Pinned to the RULE, not to a call shape. This line used to require the
+  // literal `storage.from("video-assets")` in media-host.ts, which went red the
+  // moment the helper gained a bucket PARAMETER (defaulting to the same bucket)
+  // so the audio and print lanes migrating off Vercel Blob could name their own
+  // destination. The invariant is "the default host bucket is video-assets and
+  // the bytes go through the Supabase storage API", and that is what is checked
+  // now — a hardcoded call shape is a waypoint, and CLAUDE.md §2 says not to
+  // pin an assertion to one.
+  check("finished media is hosted on SUPABASE STORAGE (video-assets by default; the Blob fallback is retired) — one helper, every upload site",
+    // NOTE the absent clause: "and media-host.ts does not import @vercel/blob"
+    // belongs here by topic but CANNOT be asserted from this file, because src()
+    // reads RAW source and media-host.ts now carries a tombstone that names
+    // @vercel/blob exactly as CLAUDE.md §1 requires. Asserting it here would go
+    // red BECAUSE the orphan doctrine was followed — the §2 failure mode, hit
+    // and backed out during this very migration. It is asserted properly, on
+    // comment-stripped source with string literals masked, by
+    // scripts/vercel-blob-retired-guard.ts (npm run test:vercel-blob-retired),
+    // which owns that question repo-wide.
+    src("lib/remotion/media-host.ts").includes('RENDER_MEDIA_BUCKET = "video-assets"')
+    && src("lib/remotion/media-host.ts").includes(".storage")
     && src("lib/remotion/render-coordinator.ts").includes("hostRenderedMedia")
     && src("app/api/internal/remotion/render-composition/route.ts").includes("hostRenderedMedia")
     && src("lib/video/reel-voiceover.ts").includes("hostRenderedMedia"))
@@ -513,7 +531,7 @@ console.log("\n[21 · THE EXPRESSIVE LOOP, CLOSED — engine recorded, never gue
   check("the director render stamps provider_metadata.mode='expressive' from the RECORDED engine; the poll cron keys off the record (prefix survives only for legacy rows)",
     src("app/api/cron/director-reel-render/route.ts").includes('r.engine === "expressives" ? "expressive"')
     && src("app/api/cron/poll-did-videos/route.ts").includes("RECORDED provider_metadata.mode"))
-  check("the persisted D-ID copy rides the SUPABASE media host (storage-first, blob fallback) — no bare blob put",
+  check("the persisted D-ID copy rides the SUPABASE media host (Supabase only; the blob fallback is retired) — no bare blob put",
     did.includes("hostRenderedMedia") && !did.includes('await put(`workflow-video/'))
   check("an expressive render with no photo is a VIDEO, not mislabeled audio (the weekly show's kind check)",
     src("lib/intelligence/partners-meeting.ts").includes('identity.expressiveAvatarId || identity.avatarPhotoUrl ? "video" : "audio"'))

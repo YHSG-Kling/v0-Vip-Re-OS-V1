@@ -32,7 +32,11 @@
 import "server-only"
 import { resolveUserIdToAgentRecord } from "@/lib/kernel/agent-identity-resolver"
 import { createServiceClient } from "@/lib/supabase/service"
-import { put } from "@vercel/blob"
+// Was `import { put } from "@vercel/blob"`. Survivor:
+// lib/remotion/media-host.ts#hostRenderedMedia → Supabase `media`: a published
+// episode MP3 is fetched unauthenticated by every podcast client and RSS
+// aggregator, so it is public-media rather than document-class.
+import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { generateTextRouted } from "@/lib/ai/models"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { synthesizeSpeech } from "@/lib/voice/elevenlabs-tts"
@@ -138,13 +142,15 @@ export async function runAutoPodcast(input: RunInput): Promise<RunResult> {
       isoWeek: input.isoWeek,
     })
 
-    // 5. ElevenLabs TTS → Supabase blob.
+    // 5. ElevenLabs TTS → Supabase `media`.
     const tts = await synthesizeSpeech({ text: script, voiceId })
     if (!tts.success || !tts.audioBuffer) throw new Error(`ElevenLabs failed: ${tts.error}`)
-    const audioBlob = await put(
-      `podcast/episodes/${ledgerId}.mp3`,
+    const audioUrl = await hostRenderedMedia(
+      svc,
+      `${input.brokerageId}/podcast/episodes/${ledgerId}.mp3`,
       tts.audioBuffer,
-      { access: "public", contentType: "audio/mpeg" },
+      "audio/mpeg",
+      "media",
     )
 
     // Estimated duration — ~155 words/minute spoken in the agent's voice.
@@ -161,7 +167,7 @@ export async function runAutoPodcast(input: RunInput): Promise<RunResult> {
         title:             `${facts.brokerage_name} Weekly — ${input.isoWeek}`,
         description:       `Auto-generated weekly market commentary. Reviewed by the host before publication.`,
         script,
-        audio_url:         audioBlob.url,
+        audio_url:         audioUrl,
         duration_seconds:  durationSeconds,
         status:            "completed",
         is_ai_generated:   true,

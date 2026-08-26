@@ -51,7 +51,13 @@ import {
   X,
 } from "lucide-react"
 import { toast } from "sonner"
-import { upload } from "@vercel/blob/client"
+// Was @vercel/blob/client's `upload()`. Survivor:
+// lib/storage/browser-upload.ts#uploadViaSignedUrl (owner ruling — all file
+// storage lives in Supabase buckets). Still a direct browser→storage PUT, so
+// post video is not capped at Vercel's 4.5 MB function body limit. The old call
+// passed a BARE `file.name` as the key, putting every tenant's media in one
+// root namespace; the key is now built server-side under the session brokerage.
+import { uploadViaSignedUrl } from "@/lib/storage/browser-upload"
 import { scheduleSocialPost, updateSocialPost } from "@/app/actions/social-media-automation"
 import { generateSocialPostContent, suggestHashtags } from "@/app/actions/social/generate-social-post"
 import { GenerateImageButton } from "@/app/components/ai-image/generate-image-button"
@@ -260,15 +266,16 @@ export function PostComposerDialog({
           toast.error(`${file.name} is not an image or video`)
           continue
         }
-        if (file.size > 50 * 1024 * 1024) {
-          toast.error(`${file.name} exceeds 50MB limit`)
+        // The hardcoded 50 MB was a number this file invented; the real ceiling
+        // is the bucket's, which uploadViaSignedUrl gets from the server and
+        // reports in its refusal. Checking it here as well would be a second
+        // spelling of the same limit (CLAUDE.md §6) and would drift.
+        const stored = await uploadViaSignedUrl({ purpose: "social_composer", file })
+        if (!stored.ok) {
+          toast.error(`${file.name}: ${stored.error}`)
           continue
         }
-        const blob = await upload(file.name, file, {
-          access: "public",
-          handleUploadUrl: "/api/blob/upload",
-        })
-        uploaded.push(blob.url)
+        uploaded.push(stored.url)
       }
       if (uploaded.length > 0) {
         setMediaUrls(prev => [...prev, ...uploaded])

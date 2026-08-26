@@ -1,10 +1,14 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { parseStorageObjectUrl } from "@/lib/storage/parse-object-url"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { revalidatePath } from "next/cache"
-import { put, del } from "@vercel/blob"
+// Was `import { put, del } from "@vercel/blob"`. The upload half already moved
+// to lib/storage/put-and-sign.ts#putAndSign (see below); this removes the last
+// Vercel Blob call, the DELETE half, per the owner ruling that all file storage
+// lives in Supabase buckets.
 import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
@@ -74,11 +78,34 @@ export async function deleteDocument(documentId: string) {
       .eq("id", documentId)
       .single()
 
+    // DELETE THE OBJECT, NOT A BLOB. `del(url)` was a Vercel Blob call against a
+    // URL that is now a Supabase object URL — it could never have matched, so
+    // every deleted transaction document has been leaving its bytes behind.
+    //
+    // supabase-js RESOLVES a remove() that matched NOTHING with error=null and
+    // an empty array — byte-identical to a delete that worked (CLAUDE.md §3).
+    // So the result is `.select()`-equivalent here: the returned array is
+    // COUNTED, and a zero-length removal is reported rather than read as
+    // success. Best-effort by design (the row must still go), but never silent.
     if (doc?.storage_url) {
-      try {
-        await del(doc.storage_url)
-      } catch (blobError) {
-        console.error("Error deleting blob:", blobError)
+      const target = parseStorageObjectUrl(doc.storage_url)
+      if (!target) {
+        console.error(
+          `[documents] storage_url for ${documentId} is not a Supabase object URL; ` +
+          "leaving it alone rather than guessing a bucket:", doc.storage_url,
+        )
+      } else {
+        const { data: removed, error: rmErr } = await supabase.storage
+          .from(target.bucket)
+          .remove([target.objectPath])
+        if (rmErr) {
+          console.error(`[documents] ${target.bucket}/${target.objectPath} remove refused:`, rmErr.message)
+        } else if (!removed || removed.length === 0) {
+          console.error(
+            `[documents] ${target.bucket}/${target.objectPath} matched NOTHING — the row is being ` +
+            "deleted but the object is still in the bucket.",
+          )
+        }
       }
     }
 

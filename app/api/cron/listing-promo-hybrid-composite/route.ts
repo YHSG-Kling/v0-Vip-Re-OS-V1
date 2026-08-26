@@ -31,7 +31,9 @@
  * Auth: CRON_SECRET.
  */
 import { NextResponse, type NextRequest } from "next/server"
-import { put } from "@vercel/blob"
+// Was `import { put } from "@vercel/blob"`. Survivor:
+// lib/remotion/media-host.ts#hostRenderedMedia — Supabase `video-assets`.
+import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { createServiceClient } from "@/lib/supabase/service"
 import { concatIntroOutro } from "@/lib/video/composite-attribution"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -127,16 +129,17 @@ export async function GET(req: NextRequest) {
       }
 
       // Upload stitched mp4.
-      const blob = await put(
+      const hybridUrl = await hostRenderedMedia(
+        svc,
         `listing-promo/hybrid/${p.id}.mp4`,
         stitch.outputBuffer,
-        { access: "public", contentType: "video/mp4" },
+        "video/mp4",
       )
 
       await svc.from("ai_video_projects").update({
         status:    "completed",
-        video_url: blob.url,
-        video_metadata: { ...meta, hybrid_pending: false, hybrid_composited_at: new Date().toISOString(), hybrid_url: blob.url },
+        video_url: hybridUrl,
+        video_metadata: { ...meta, hybrid_pending: false, hybrid_composited_at: new Date().toISOString(), hybrid_url: hybridUrl },
       }).eq("id", p.id)
 
       // Move the listing_promo_videos ledger to 'rendering' so the
@@ -181,7 +184,7 @@ export async function GET(req: NextRequest) {
               logoUrl:       br?.logo_url            ?? undefined,
               brokerageName: br?.name                ?? "Your Brokerage",
             },
-            mainVideoUrl:    blob.url,
+            mainVideoUrl:    hybridUrl,
             subject,
             // bundleLoc omitted — composite cron has no Remotion bundle.
             // The post-pass module skips the still thumbnail and only runs

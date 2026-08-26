@@ -33,14 +33,22 @@
 //      lib/providers/tenancy-matrix.ts:122-126 states the rule this implements:
 //      "ALL tenant media lives on OUR Supabase buckets".
 //
-//   2. VERCEL BLOB (public) — `lib/direct-mail/render-letter-audio.ts:112-118`
-//      puts `letter-audio/<brokerage>/<campaign>.mp3` with `access: "public"`;
-//      `app/actions/podcast-generation.ts` and
-//      `lib/listing-presentation/section-narration-orchestrator.ts:115` do the
-//      same for podcast + narration audio. @vercel/blob public URLs are always
-//      served from `<store>.public.blob.vercel-storage.com`. The migration to
-//      Supabase buckets (rule 1) is in progress and NOT finished, so both are
-//      live producers today.
+//   2. VERCEL BLOB — RULE RETIRED 2026-08-26, and the retirement is the point.
+//      This rule existed because letter audio, podcast audio and narration
+//      audio were put to `<store>.public.blob.vercel-storage.com`, and its own
+//      text said the migration to rule 1 was "in progress and NOT finished".
+//      It is finished: the owner ruled that all file storage lives in Supabase
+//      buckets, and every one of those three producers now writes through
+//      lib/remotion/media-host.ts#hostRenderedMedia into a Supabase bucket, so
+//      rule 1 covers them. Verified before removal — 0 live rows in
+//      podcast_episodes, transaction_documents, client_documents or
+//      ai_video_projects carry a blob.vercel-storage.com URL, and
+//      storage.objects is empty, so no stored audio loses its host by this.
+//
+//      This is a rule that got NARROWER because work finished, which is the
+//      direction an allowlist should move. Do not re-add the suffix "to be
+//      safe": a host on this list is a host that may serve audio into a call,
+//      and one nothing writes to any more is pure attack surface.
 //
 //   3. TWILIO — `api.twilio.com`. Twilio is the telephony provider
 //      (lib/providers/tenancy-matrix.ts:38-42, `platform_subaccount`), the
@@ -121,11 +129,6 @@ export type AudioSourceVerdict =
 
 /** Static half of the allowlist — the hosts that do not depend on deployment env. */
 export const STATIC_AUDIO_HOST_RULES: readonly AudioHostRule[] = [
-  {
-    kind: "suffix",
-    suffix: "public.blob.vercel-storage.com",
-    why: "Vercel Blob public store — lib/direct-mail/render-letter-audio.ts puts letter audio there; podcast + narration audio follow the same path",
-  },
   {
     kind: "exact",
     host: "api.twilio.com",

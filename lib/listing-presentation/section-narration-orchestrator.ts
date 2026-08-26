@@ -171,9 +171,16 @@ export async function narratePresentationSections(
         const { synthesizeSpeech } = await import("@/lib/voice/elevenlabs-tts")
         const tts = await synthesizeSpeech({ text: script, voiceId, brokerageId: pres.brokerage_id })
         if (tts.success && tts.audioBuffer) {
-          const { put } = await import("@vercel/blob")
-          const up = await put(`narration/${pres.brokerage_id}/${r.id}.mp3`, tts.audioBuffer, { access: "public", contentType: "audio/mpeg" })
-          voiceoverUrl = up.url
+          // Was @vercel/blob's put(). Survivor:
+          // lib/remotion/media-host.ts#hostRenderedMedia → `video-assets`, the
+          // bucket the Remotion workers already fetch narration from by URL.
+          const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
+          voiceoverUrl = await hostRenderedMedia(
+            supabase,
+            `narration/${pres.brokerage_id}/${r.id}.mp3`,
+            tts.audioBuffer,
+            "audio/mpeg",
+          )
           // narrationScript is written back as the script that was ACTUALLY
           // spoken. Leaving the pre-trim text beside the trimmed audio would
           // make the row disagree with its own mp3, and this column is the only

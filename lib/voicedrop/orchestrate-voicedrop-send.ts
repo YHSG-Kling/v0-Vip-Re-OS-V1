@@ -159,7 +159,7 @@ async function synthVoicemail(args: {
   }
   if (!voiceId) return null
 
-  // Call ElevenLabs TTS → buffer → Vercel Blob → public URL.
+  // Call ElevenLabs TTS → buffer → Supabase `media` → public URL.
   try {
     const { synthesizeSpeech } = await import("@/lib/voice/elevenlabs-tts")
     const result = await synthesizeSpeech({
@@ -168,13 +168,19 @@ async function synthVoicemail(args: {
       brokerageId: args.brokerageId,
     })
     if (!result.success || !result.audioBuffer) return null
-    const { put } = await import("@vercel/blob")
-    const uploaded = await put(
+    // Was @vercel/blob's put(). Survivor:
+    // lib/remotion/media-host.ts#hostRenderedMedia into `media`, which
+    // lib/storage/document-buckets.ts names for exactly this: "Voice/MMS audio
+    // a telephony carrier fetches UNAUTHENTICATED at delivery time".
+    const { hostRenderedMedia } = await import("@/lib/remotion/media-host")
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    return await hostRenderedMedia(
+      createServiceClient(),
       `voicedrops/${args.brokerageId}/${Date.now()}.mp3`,
       result.audioBuffer,
-      { access: "public", contentType: "audio/mpeg" },
+      "audio/mpeg",
+      "media",
     )
-    return uploaded.url
   } catch (e) {
     console.error("[voicedrop] synth failed:", (e as Error).message)
     return null

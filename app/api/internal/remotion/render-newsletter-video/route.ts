@@ -27,7 +27,10 @@
  */
 import "server-only"
 import { NextResponse, type NextRequest } from "next/server"
-import { put } from "@vercel/blob"
+// Was `import { put } from "@vercel/blob"`. Survivor:
+// lib/remotion/media-host.ts#hostRenderedMedia — Supabase `video-assets`, the
+// bucket the Remotion workers and public players already fetch renders from.
+import { hostRenderedMedia } from "@/lib/remotion/media-host"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
 import { synthesizeSpeech } from "@/lib/voice/elevenlabs-tts"
@@ -259,10 +262,11 @@ Return ONLY the spoken text.${fix}`
 
     const tts = await synthesizeSpeech({ text: script, voiceId })
     if (!tts.success || !tts.audioBuffer) throw new Error(`ElevenLabs failed: ${tts.error}`)
-    const voiceBlob = await put(
+    const voiceoverUrlStored = await hostRenderedMedia(
+      svc,
       `newsletter-video/voiceover/${ledger.id}.mp3`,
       tts.audioBuffer,
-      { access: "public", contentType: "audio/mpeg" },
+      "audio/mpeg",
     )
 
     // 4c. Mint (or reuse) the tracked outro QR for this campaign. Newsletter
@@ -290,7 +294,7 @@ Return ONLY the spoken text.${fix}`
         logoUrl:       br?.logo_url            ?? undefined,
         brokerageName: br?.name                ?? "Your Brokerage",
       },
-      voiceoverUrl: voiceBlob.url,
+      voiceoverUrl: voiceoverUrlStored,
       qrCodeDataUrl: qr?.qrCodeDataUrl ?? null,
       qrCaption:     "Scan to read",
     }
@@ -350,9 +354,8 @@ Return ONLY the spoken text.${fix}`
     } catch (finishErr) {
       console.warn("[render-newsletter-video] coordinator finish failed; shipping raw cut:", (finishErr as Error).message)
     }
-    const blob = finishedUrl
-      ? { url: finishedUrl }
-      : await put(`newsletter-video/reels/${ledger.id}.mp4`, bytes, { access: "public", contentType: "video/mp4" })
+    const reelUrlStored = finishedUrl
+      ?? await hostRenderedMedia(svc, `newsletter-video/reels/${ledger.id}.mp4`, bytes, "video/mp4")
 
     // 6. ai_video_projects + ledger close.
     const { data: project } = await svc.from("ai_video_projects").insert({
@@ -365,21 +368,21 @@ Return ONLY the spoken text.${fix}`
       usage_intent:    "public_marketing",
       audience_type:   "customer_facing",
       duration_seconds: 20,
-      video_url:       blob.url,
+      video_url:       reelUrlStored,
       compliance_status: "passed",
       compliance_evaluated_at: new Date().toISOString(),
       video_metadata: {
         newsletter_campaign_id: camp.id,
         ledger_id:              ledger.id,
-        voiceover_url:          voiceBlob.url,
+        voiceover_url:          voiceoverUrlStored,
         kind:                   "newsletter_digest",
       },
     }).select("id").single()
 
     await svc.from("newsletter_video_renders").update({
       status:          "completed",
-      voiceover_url:   voiceBlob.url,
-      video_url:       blob.url,
+      voiceover_url:   voiceoverUrlStored,
+      video_url:       reelUrlStored,
       video_project_id: project!.id,
       completed_at:    new Date().toISOString(),
     }).eq("id", ledger.id)
@@ -418,7 +421,7 @@ Return ONLY the spoken text.${fix}`
         logoUrl:       br?.logo_url            ?? undefined,
         brokerageName: br?.name                ?? "Your Brokerage",
       },
-      mainVideoUrl:     blob.url,
+      mainVideoUrl:     reelUrlStored,
       subject:          camp.subject_line ?? camp.campaign_name ?? "This week",
       bundleLoc,
       executablePath,
@@ -428,8 +431,8 @@ Return ONLY the spoken text.${fix}`
     return NextResponse.json({
       ok: true,
       ledger_id: ledger.id,
-      video_url: blob.url,
-      voiceover_url: voiceBlob.url,
+      video_url: reelUrlStored,
+      voiceover_url: voiceoverUrlStored,
       ai_video_project_id: project!.id,
     })
   } catch (err) {

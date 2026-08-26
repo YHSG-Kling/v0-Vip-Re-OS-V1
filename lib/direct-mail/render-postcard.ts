@@ -20,7 +20,12 @@
  * pre-uploaded Lob template id.
  */
 import "server-only"
-import { put } from "@vercel/blob"
+// Was `import { put } from "@vercel/blob"`. Survivor:
+// lib/remotion/media-host.ts#hostRenderedMedia → Supabase `media`, the bucket
+// lib/storage/document-buckets.ts designates for assets a delivery vendor
+// fetches unauthenticated — Lob pulls these panel PNGs by URL at print time.
+import { hostRenderedMedia } from "@/lib/remotion/media-host"
+import { createServiceClient } from "@/lib/supabase/service"
 import QRCode from "qrcode"
 import { selectComposition, renderStill } from "@remotion/renderer"
 import { getBundle } from "@/lib/remotion/bundle-cache"
@@ -170,19 +175,16 @@ export async function renderPostcardBothSides4x6(args: {
   await Promise.all([fs.unlink(frontPath).catch(() => {}), fs.unlink(backPath).catch(() => {})])
 
   const stamp = Date.now()
+  const svc = createServiceClient()
   const [frontUp, backUp] = await Promise.all([
-    put(`direct-mail/postcard-4x6/${args.brokerageId}/${stamp}-front.png`, frontBuf, {
-      access: "public", contentType: "image/png",
-    }),
-    put(`direct-mail/postcard-4x6/${args.brokerageId}/${stamp}-back.png`, backBuf, {
-      access: "public", contentType: "image/png",
-    }),
+    hostRenderedMedia(svc, `direct-mail/postcard-4x6/${args.brokerageId}/${stamp}-front.png`, frontBuf, "image/png", "media"),
+    hostRenderedMedia(svc, `direct-mail/postcard-4x6/${args.brokerageId}/${stamp}-back.png`, backBuf, "image/png", "media"),
   ])
 
   return {
     ok:       true,
-    frontUrl: frontUp.url,
-    backUrl:  backUp.url,
+    frontUrl: frontUp,
+    backUrl:  backUp,
     copy:     copyResult.copy,
     complianceEventId: copyResult.complianceEventId,
   }
@@ -284,19 +286,16 @@ export async function renderPostcardBothSides6x9(args: {
   await Promise.all([fs.unlink(frontPath).catch(() => {}), fs.unlink(backPath).catch(() => {})])
 
   const stamp = Date.now()
+  const svc = createServiceClient()
   const [frontUp, backUp] = await Promise.all([
-    put(`direct-mail/postcard-6x9/${args.brokerageId}/${stamp}-front.png`, frontBuf, {
-      access: "public", contentType: "image/png",
-    }),
-    put(`direct-mail/postcard-6x9/${args.brokerageId}/${stamp}-back.png`, backBuf, {
-      access: "public", contentType: "image/png",
-    }),
+    hostRenderedMedia(svc, `direct-mail/postcard-6x9/${args.brokerageId}/${stamp}-front.png`, frontBuf, "image/png", "media"),
+    hostRenderedMedia(svc, `direct-mail/postcard-6x9/${args.brokerageId}/${stamp}-back.png`, backBuf, "image/png", "media"),
   ])
 
   return {
     ok:       true,
-    frontUrl: frontUp.url,
-    backUrl:  backUp.url,
+    frontUrl: frontUp,
+    backUrl:  backUp,
     copy:     copyResult.copy,
     complianceEventId: copyResult.complianceEventId,
   }
