@@ -165,13 +165,27 @@ export default async function proxy(request: NextRequest) {
     {
       cookies: {
         getAll() { return request.cookies.getAll() },
-        setAll(cookiesToSet) {
+        // `headers` is the SECOND argument @supabase/ssr passes from 0.10.0 on
+        // (types.d.ts `SetAllCookies`). It arrives ONLY on the call that writes
+        // auth cookies, and carries:
+        //   Cache-Control: private, no-cache, no-store, must-revalidate, max-age=0
+        //   Expires: 0
+        //   Pragma: no-cache
+        // Applying it here is the whole point of the bump: this callback is the
+        // one place that owns the response the refreshed JWT is written onto.
+        setAll(cookiesToSet, headers) {
           cookiesToSet.forEach(({ name, value }) =>
             request.cookies.set(name, value)
           )
+          // NOTE: this REPLACES `response`, discarding anything set on the old
+          // one — so the headers must be applied after the reassignment, not
+          // before it.
           response = NextResponse.next({ request })
           cookiesToSet.forEach(({ name, value, options }) =>
             response.cookies.set(name, value, options)
+          )
+          Object.entries(headers ?? {}).forEach(([key, value]) =>
+            response.headers.set(key, value)
           )
         },
       },
@@ -194,19 +208,41 @@ export default async function proxy(request: NextRequest) {
   //    browser will store the cached token and be signed in as the wrong person."
   //   — https://supabase.com/docs/guides/auth/server-side/advanced-guide
   //
-  // The library sends the needed Cache-Control/Expires/Pragma headers to setAll as a
-  // SECOND ARGUMENT only from v0.10.0. This app is pinned to @supabase/ssr 0.8.0, whose
-  // `SetAllCookies` type (node_modules/@supabase/ssr/dist/main/types.d.ts:16) takes ONE
-  // argument — so the automatic path does not exist here and the guide's manual
-  // fallback is the one that applies: "add Cache-Control: private, no-store to
-  // responses from any route that handles authentication".
-  //
   // This matters more here than in a normal app: a support seat acting-as a tenant is
   // the request most likely to be refreshed mid-investigation, and leaking THAT token
   // hands a tenant user platform-staff credentials.
-  // Re-check when @supabase/ssr is bumped past 0.10.0: apply the second-argument
-  // headers in setAll instead of hardcoding here, and delete this block.
-  response.headers.set("Cache-Control", "private, no-store")
+  //
+  // STATUS after the @supabase/ssr 0.8.0 → 0.10.2 bump: the automatic path now EXISTS
+  // and is wired — setAll above applies the library's second-argument headers. But it
+  // does NOT replace this line, and this block is deliberately KEPT. Two facts, both
+  // read off the installed 0.10.2 dist:
+  //
+  //   1. setAll fires ONLY when auth cookies are actually written. Every server-side
+  //      write routes through `applyServerStorage`, which passes the real headers
+  //      (dist/main/cookies.js:344-348); the empty-header call at cookies.js:190 is in
+  //      the `!isServerClient` browser branch, where there is no response to poison.
+  //      So on a NON-refresh request — the overwhelming majority — setAll never runs
+  //      and the library contributes no header at all.
+  //   2. The Set-Cookie leak is not the only leak. Every response here is an
+  //      AUTHENTICATED, TENANT-PRIVATE payload (dashboard, leads, CRM). A shared CDN
+  //      caching one brokerage's response and serving it to another is a cross-tenant
+  //      read that has nothing to do with token refresh, and the library never guards
+  //      it. CLAUDE.md §4: fail closed.
+  //
+  // The library agrees at 0.10.2 — its own `setAll` JSDoc still instructs:
+  //   "If your app is behind a CDN or reverse proxy (e.g. CloudFront, Vercel Edge,
+  //    Cloudflare), set `Cache-Control: private, no-store` on routes that handle
+  //    authentication (typically your middleware) to prevent these responses from
+  //    being cached."
+  //   — node_modules/@supabase/ssr/dist/main/types.d.ts, CookieMethodsServer.setAll
+  //
+  // So this is the unconditional FLOOR for every authenticated response. It must not
+  // clobber the library's header on a refresh response: that one is strictly stronger
+  // (adds no-cache/must-revalidate/max-age=0 plus Expires and Pragma), so set the
+  // fallback only when setAll did not already speak.
+  if (!response.headers.has("Cache-Control")) {
+    response.headers.set("Cache-Control", "private, no-store")
+  }
   return response
 }
 

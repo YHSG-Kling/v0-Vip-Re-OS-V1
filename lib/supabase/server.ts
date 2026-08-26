@@ -16,13 +16,29 @@ export async function createClient() {
       getAll() {
         return cookieStore.getAll()
       },
-      setAll(_cookiesToSet) {
+      // `_cacheHeaders` is the second argument @supabase/ssr passes from 0.10.0 on.
+      // It is accepted and NOT applied here, deliberately: this client is built on
+      // next/headers `cookies()`, which can write Set-Cookie but exposes no way to
+      // set arbitrary response headers — the response object does not exist at this
+      // layer. Naming the parameter keeps the gap visible instead of looking like an
+      // oversight for the next lane to "fix".
+      //
+      // That is safe because this client does not own refresh: `autoRefreshToken` is
+      // false below, and the auth gate in proxy.ts ("SESSION-LEAK GUARD" block) is
+      // what refreshes sessions and applies the cache headers — it holds the
+      // NextResponse, so it can.
+      //
+      // Note the library hardcodes `persistSession: true` AFTER spreading the caller's
+      // `auth` options (dist/main/createServerClient.js), so the `persistSession: false`
+      // below is overridden by the library — true in 0.8.0 and unchanged in 0.10.2, so
+      // the bump did not alter this behaviour.
+      setAll(_cookiesToSet, _cacheHeaders) {
         try {
           _cookiesToSet.forEach(({ name, value, options }) => cookieStore.set(name, value, options))
         } catch {
           // The `setAll` method was called from a Server Component.
-          // This can be ignored if you have middleware refreshing
-          // user sessions.
+          // Server Components cannot set cookies; this is the documented pattern
+          // and proxy.ts refreshes the session instead.
         }
       },
     },
