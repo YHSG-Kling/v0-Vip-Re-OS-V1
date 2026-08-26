@@ -1,7 +1,7 @@
 "use server"
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { bestEffort } from "@/lib/db/best-effort"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel"
 import type { OptOutChannel } from "@/lib/ai-isa/opt-out-utils"
@@ -166,7 +166,14 @@ export async function processOptOut(params: OptOutParams): Promise<{
   // request to be left alone — produced no error, no log, and no row. bestEffort
   // keeps it non-blocking AND makes the failure visible, which is what
   // "tolerated" is supposed to mean.
-  await bestEffort(
+  //
+  // sentinelWrite rather than bestEffort: `supabase` here is createServiceClient(),
+  // so the loss reaches self_heal_events and the weekly repair digest RANKS it,
+  // instead of a console.warn nobody greps. The split is a precondition, not a
+  // preference — on a user-scoped client the ledger insert is RLS-refused and the
+  // sentinel would be WEAKER (lib/kernel/write-sentinel.ts).
+  await sentinelWrite(
+    supabase,
     supabase
     .from("compliance_events")
     .insert({
@@ -180,7 +187,12 @@ export async function processOptOut(params: OptOutParams): Promise<{
       entity_id: entityId,
       message_type: channel,
     }),
-    "opt-out compliance audit row",
+    {
+      table: "compliance_events",
+      flow: "opt_out_audit",
+      brokerageId,
+      reason: "opt-out compliance audit row — the suppression itself is written above and error-checked; this is the proof-of-honouring echo, and it must never block a consumer's request to be left alone",
+    },
   )
 
   // Agent notification via activities (uses notes: text, not metadata)

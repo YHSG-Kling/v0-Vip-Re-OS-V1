@@ -102,10 +102,17 @@ export async function enforceContentPublishRules(
   if (!skip.has("them_first")) {
     try {
       const { validateThemFirstContent } = await import("@/lib/them-first/validator")
+      // The gate's own tenant pays for the two model calls the validator makes
+      // (§5 — ai_tool_usage is the cost ledger). input.brokerageId is resolved by
+      // the caller from the session, never from a request body (§4). No agentId:
+      // input.agentUserId is a USERS id and ai_tool_usage.agent_id FKs to
+      // agents(id), and those two id spaces are DISJOINT (§3) — passing the wrong
+      // class would raise 23503 and logAIUsage would swallow it, losing the row.
       const themFirstResult = await validateThemFirstContent(
         input.content.body,
         mapToThemFirstType(input.channel) as "email" | "sms" | "video_script" | "social_post",
-        input.audiencePersona ?? undefined
+        input.audiencePersona ?? undefined,
+        { brokerageId: input.brokerageId, userId: input.agentUserId ?? null },
       )
 
       if (themFirstResult && !themFirstResult.passed) {

@@ -677,7 +677,37 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
     // Channels: email if contact has email, SMS if contact has phone. Agent
     // reviews + acts on these drafts from their unified inbox.
     const personalVideoTypes = ["thank_you", "personal", "buyer_guide", "memory_video"]
-    if (personalVideoTypes.includes(video_type) && contact_id && agentId) {
+    // A VIDEO THAT ALREADY HAS A DELIVERY RAIL MUST NOT GET A SECOND ONE.
+    // lib/video/intro-video-reactor.ts files an `agent_intro_videos` row and
+    // stamps its id onto video_metadata.intro_video_id; that row is the ledger
+    // app/api/cron/intro-video-email-backfill drives — it sends the email half
+    // and stamps the portal card half. Drafting an email + SMS here as well
+    // would touch the same contact a third time about one clip.
+    //
+    // The read is scoped to the case that can actually be affected — a
+    // per-contact draft type WITH a contact and an agent — so a listing promo or
+    // a market update costs no extra query. The listing-attach and social
+    // branches below need no such guard: their types (listing_promo,
+    // neighborhood_tour, market_update, agent_introduction) are ones this rail
+    // never stamps, and the listing branch additionally needs a listing_id an
+    // intro/anniversary video has not got.
+    const couldDraft = personalVideoTypes.includes(video_type) && !!contact_id && !!agentId
+    let projectMeta: { intro_video_id?: string | null } | null = null
+    if (couldDraft && video_id) {
+      const { data: metaRow } = await svc
+        .from("ai_video_projects")
+        .select("video_metadata")
+        .eq("id", video_id)
+        .maybeSingle()
+      projectMeta = ((metaRow as { video_metadata?: unknown } | null)?.video_metadata ?? null) as
+        | { intro_video_id?: string | null }
+        | null
+    }
+    const hasOwnDeliveryRail = !!projectMeta?.intro_video_id
+    if (hasOwnDeliveryRail) {
+      summary.push("per-contact drafts skipped — agent_intro_videos owns this delivery")
+    }
+    if (couldDraft && !hasOwnDeliveryRail) {
       try {
         const { data: contact } = await svc
           .from("contacts")

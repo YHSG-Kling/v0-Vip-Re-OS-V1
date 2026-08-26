@@ -4,7 +4,7 @@
 // Every dispatch path (email, SMS, voice, DM, mail) gates through this
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { bestEffort } from "@/lib/db/best-effort"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { hasActiveRepresentation } from "@/lib/kernel/compliance/active-representation"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -217,8 +217,13 @@ export async function evaluateOutboundCompliance(
       try {
         // Declared non-blocking — but the try/catch around it could never see a
         // rejected write (supabase-js resolves), so a lost suppression-gate audit
-        // row was invisible. bestEffort keeps it tolerated and logs the loss.
-        await bestEffort(supabase.from("compliance_events").insert({
+        // row was invisible. The sentinel keeps it tolerated and LEDGERS the loss:
+        // `supabase` here is the service-role client created at the top of this
+        // function, which is the precondition that makes the sentinel stronger
+        // than a console.warn (self_heal_events has no INSERT policy for any
+        // non-service role, so a user-scoped client would be refused and the
+        // refusal swallowed — see lib/kernel/write-sentinel.ts).
+        await sentinelWrite(supabase, supabase.from("compliance_events").insert({
           brokerage_id: actorContext.brokerageId,
           actor_user_id: actorContext.userId ?? null,
           actor_role: actorContext.actorType,
@@ -229,7 +234,12 @@ export async function evaluateOutboundCompliance(
           allowed,
           violations,
           blocked_reason: allowed ? null : primaryReason,
-        }), "outbound suppression audit row")
+        }), {
+          table: "compliance_events",
+          flow: "outbound_suppression_audit",
+          brokerageId: actorContext.brokerageId ?? null,
+          reason: "outbound suppression audit row — the gate decision above has already been returned to the caller, so a lost audit echo must not turn a refusal into a throw",
+        })
       } catch (err) {
         console.error("[Compliance] Failed to write audit log:", err)
       }

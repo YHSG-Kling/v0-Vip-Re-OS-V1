@@ -381,7 +381,13 @@ async function checkCompliance(
     // 3. Them-First Check
     if (context.requiresThemFirstCheck) {
       try {
-        const themFirstResult = await validateThemFirstContent(content, "email")
+        // Booked to the SAME actor this function already books its own model call
+        // to, a few lines down — the Them-First check is two more model calls on
+        // the platform's credentials and they were reaching no ledger at all (§5).
+        const themFirstResult = await validateThemFirstContent(content, "email", undefined, {
+          brokerageId: context.brokerageId ?? null,
+          userId:      context.userId ?? null,
+        })
         
         if (!themFirstResult.passed || (themFirstResult as any).score < 0.6) {
           const score = (themFirstResult as any).score ?? 0

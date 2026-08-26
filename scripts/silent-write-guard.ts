@@ -397,6 +397,140 @@ console.log("\n[repo scan — server surface]")
   check("…and reports ok/error back to the caller", /ok: false/.test(be) && /ok: true/.test(be))
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// WHICH WRAPPER — a ratchet on the choice, not on the write
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * DECLARING A WRITE BEST-EFFORT IS THE RIGHT ANSWER TO THE WRONG HALF OF THE
+ * QUESTION WHEN YOU ARE HOLDING A SERVICE CLIENT.
+ *
+ * The section above asks whether a tolerated write is DECLARED. This asks which
+ * instrument the declaration used, and the answer is not a preference — it is a
+ * precondition, adjudicated against the live database and recorded in both
+ * wrappers' headers:
+ *
+ *   `self_heal_events` has RLS enabled and exactly ONE policy —
+ *   `tenant_read_self_heal_events`, SELECT, for `authenticated`. There is no
+ *   INSERT policy for any non-service role. (Re-verified live for this ratchet:
+ *   pg_class.relrowsecurity = true; one row in pg_policy; polcmd 'r'.)
+ *
+ * So `sentinelWrite` LEDGERS a loss only when it is handed a service-role client.
+ * Handed a cookie client, `recordSelfHeal`'s insert is refused and recordSelfHeal
+ * swallows that refusal — on that path the "stronger" wrapper is WEAKER than a
+ * console.warn a human can grep. Hence:
+ *
+ *   · service-role client (createServiceClient / supabaseAdmin) → sentinelWrite
+ *   · user-scoped client (createClient / createServerClient)    → bestEffort
+ *
+ * WHAT IS MEASURED, AND THE BLIND SPOT BESIDE IT (§2). This counts files that
+ * import a service-client factory and NO user-scoped factory, and still call
+ * bestEffort. It is FILE-GRAIN, not call-grain: a file holding both clients is
+ * excluded entirely, because deciding per call site needs binding analysis this
+ * scanner does not do and guessing would flag correct code. That exclusion is
+ * the blind spot and it is the larger half — 17 of the 40 remaining files hold
+ * both. Every scan reads STRIPPED source: a header naming the other wrapper is
+ * documentation, not a call site.
+ *
+ * FROZEN, NOT BANNED. Converting a call site needs a real business `flow` name
+ * (the repair digest groups by `${flow}:${table}`, so a mechanical name is noise
+ * that makes the digest less useful, not more), so this cannot be swept. The
+ * baseline names the files that still choose the weaker instrument; it may only
+ * shrink.
+ */
+console.log("\n[wrapper choice — a service client must not reach for the weaker instrument]")
+{
+  const SERVICE_FACTORY = /\b(createServiceClient|supabaseAdmin|createAdminClient)\b/
+  const USER_FACTORY = /\b(createServerClient|createRouteHandlerClient|createServerComponentClient)\b|\bcreateClient\s*\(/
+
+  // ── POSITIVE CONTROL — prove the finder recognises the defect before trusting
+  //    a number from it. A clean tree and a broken regex both report zero.
+  const svcOnlyDefect = `
+import { createServiceClient } from "@/lib/supabase/service"
+import { bestEffort } from "@/lib/db/best-effort"
+export async function f(id: string) {
+  const svc = createServiceClient()
+  await bestEffort(svc.from("compliance_events").insert({ id }), "audit echo")
+}`
+  const converted = `
+import { createServiceClient } from "@/lib/supabase/service"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
+export async function f(id: string) {
+  const svc = createServiceClient()
+  await sentinelWrite(svc, svc.from("compliance_events").insert({ id }), { table: "compliance_events", flow: "x" })
+}`
+  const userScoped = `
+import { createClient } from "@/lib/supabase/server"
+import { bestEffort } from "@/lib/db/best-effort"
+export async function f(id: string) {
+  const supabase = await createClient()
+  await bestEffort(supabase.from("compliance_events").insert({ id }), "audit echo")
+}`
+  const tombstone = `
+// TOMBSTONE — this used to call bestEffort on a createServiceClient(). Survivor:
+// sentinelWrite, lib/kernel/write-sentinel.ts.
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"`
+
+  const weakChoice = (raw: string) => {
+    const s = stripComments(raw)
+    return /\bbestEffort\s*\(/.test(s) && SERVICE_FACTORY.test(s) && !USER_FACTORY.test(s)
+  }
+  check("PC: flags a SERVICE-only file that reaches for bestEffort", weakChoice(svcOnlyDefect))
+  check("PC: does NOT flag the same file once it uses sentinelWrite", !weakChoice(converted))
+  check("PC: does NOT flag a USER-scoped file — there bestEffort is the correct\n    instrument, because the ledger insert would be RLS-refused",
+    !weakChoice(userScoped))
+  check("PC: a TOMBSTONE naming the weaker wrapper is not a call site (§2)", !weakChoice(tombstone))
+
+  const scanned = [
+    ...["app/actions", "app/api", "lib"].flatMap((d) => walkTs(d)),
+    ...rootRuntimeFiles("."),
+  ].filter((p) => p.endsWith(".ts") && p !== "lib/db/best-effort.ts")
+
+  const weak: string[] = []
+  let bothClients = 0
+  let anyBestEffort = 0
+  for (const f of scanned) {
+    const s = stripComments(readFileSync(f, "utf8"))
+    if (!/\bbestEffort\s*\(/.test(s)) continue
+    anyBestEffort++
+    if (USER_FACTORY.test(s)) { bothClients++; continue }
+    if (SERVICE_FACTORY.test(s)) weak.push(f)
+  }
+  weak.sort()
+
+  const wcPath = join(process.cwd(), "scripts", "wrapper-choice-baseline.json")
+  const wcBaseline: string[] = existsSync(wcPath)
+    ? (JSON.parse(readFileSync(wcPath, "utf8")) as string[])
+    : []
+
+  if (process.env.WRAPPER_CHOICE_BASELINE === "1") {
+    writeFileSync(wcPath, `${JSON.stringify(weak, null, 2)}\n`)
+    console.log(`Baseline written: ${weak.length} service-only file(s) still on bestEffort (may only shrink)`)
+    process.exit(0)
+  }
+
+  console.log(`  · ${scanned.length} server files scanned · ${anyBestEffort} call bestEffort`)
+  console.log(`  · service-only, still on bestEffort: ${weak.length} · frozen debt ${wcBaseline.length}`)
+  console.log(`  · blind spot — files holding BOTH client kinds, excluded as undecidable at file grain: ${bothClients}`)
+
+  const wcNew = weak.filter((f) => !wcBaseline.includes(f))
+  const wcBurned = wcBaseline.filter((f) => !weak.includes(f))
+  if (wcBurned.length > 0) {
+    console.log(`  ↓ ${wcBurned.length} file(s) moved to sentinelWrite — re-freeze with WRAPPER_CHOICE_BASELINE=1 npm run test:silent-write`)
+    for (const b of wcBurned) console.log(`     · ${b}`)
+  }
+  check(`no NEW service-only file reaches for bestEffort instead of sentinelWrite (${wcNew.length} new)`,
+    wcNew.length === 0, wcNew.slice(0, 8).join(" | "))
+
+  // The ruling is only enforceable while the sentinel actually ledgers.
+  const ws = existsSync("lib/kernel/write-sentinel.ts")
+    ? stripComments(readFileSync("lib/kernel/write-sentinel.ts", "utf8"))
+    : ""
+  check("sentinelWrite still ledgers the loss it swallows (recordSelfHeal on the failure path)",
+    /export async function sentinelWrite/.test(ws) && /recordSelfHeal\(/.test(ws))
+  check("…and still carries the `flow` the repair digest groups by — a loss with no\n    business name is a row nobody can act on",
+    /flow:\s*string/.test(ws) && /\$\{ctx\.flow\}:\$\{ctx\.table\}/.test(ws))
+}
+
 console.log("\n──────────────────────────────────────────────────")
 if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }
 console.log(` RESULT: ${pass} passed, ${fail} failed`)

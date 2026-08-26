@@ -663,9 +663,19 @@ async function main() {
   if (failed > 0) {
     console.log(" ✗ Failures:")
     for (const f of failures) console.log(`   - ${f}`)
+    console.log(" ❌ CONVERSION_WELCOME_FAIL")
     process.exit(1)
   }
-  console.log(" ✅ ONE welcome email: the portal grant is immediate, the email waits for")
-  console.log("    the personal video only while one is really coming, and never forever.")
+  // The NAMED verdict token, matching the convention its siblings follow
+  // (WELCOME_VIDEO_ASSEMBLY / ANNIVERSARY_VIDEO_DELIVERY / …). It is a GREP
+  // HANDLE FOR HUMANS, not a contract: scripts/simulator-sweep.ts judges every
+  // proof by EXIT CODE (`if (!err) return ok`) and `npm run guard` by GUARD_EXIT
+  // (CLAUDE.md §7) — nothing in the tree parses a _PASS line except
+  // doc-kernel-simulator, which asserts two specific ones by name and not this.
+  // So this line makes the failure and success verdicts findable in a 700-script
+  // sweep log; it does not make the proof any more or less enforced.
+  console.log(" ✅ CONVERSION_WELCOME_PASS — ONE welcome email: the portal grant is immediate,")
+  console.log("    the email waits for the personal video only while one is really coming,")
+  console.log("    and never forever.")
 }
 main().catch((e) => { console.error(e); process.exit(1) })

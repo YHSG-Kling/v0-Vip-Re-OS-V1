@@ -36,6 +36,7 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { guardedGenerateText } from "@/lib/data-guard/guarded-generate"
+import { logAIUsage } from "@/lib/ai/cost-tracking"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { shouldResurrectReengagement } from "./reengagement-policy"
 import {
@@ -65,6 +66,26 @@ export interface ClassifiedIntent {
 
 /** What the live router knows about the lead/contact when it classifies. */
 export interface InboundContext {
+  /**
+   * WHO PAYS FOR THE CLASSIFIER'S MODEL CALL (CLAUDE.md §5 + §4).
+   *
+   * `aiClassifier` below runs a real model on the platform's own credentials for
+   * every inbound reply and booked NOTHING. It sits on `guardedGenerateText`,
+   * which is a DATA-GUARD chokepoint — redact, then call the raw SDK — so being
+   * on it satisfies data-guard-guard and says nothing about `ai_tool_usage`, the
+   * ledger that feeds meter_readings.ai_tokens and the overage projection.
+   *
+   * Carried on the CONTEXT rather than added as a fourth argument because
+   * `InboundClassifier` is an INJECTABLE SEAM: every classifier gets the same
+   * context object, so a replacement classifier that also spends can book
+   * without the seam's shape changing.
+   *
+   * OPTIONAL, and unbooked when absent — the same rule lib/ai/models.ts applies
+   * with its `if (request.brokerageId)`. classifyAndRouteInbound always sets it
+   * from `params.brokerageId`, which is session-resolved (§4); the simulators
+   * that build a context by hand simply do not book, which is correct.
+   */
+  brokerageId?: string | null
   /** The lead's known side, derived from motivation_type/lead_type. null = unknown. */
   knownSide: IntentSide | null
   /** Already has a saved search / criteria captured? (buyer) */
@@ -283,6 +304,20 @@ Respond with ONLY the label, nothing else.`,
       messages: [{ role: "user", content: message }],
       maxOutputTokens: 12,
     })
+    // BOOK IT (§5). 'gpt-4o-mini' is the BILLING IDENTITY the live CHECK
+    // ai_tool_usage_model_is_priceable admits and calculateCost prices off — the
+    // gateway string this call site pins ("openai/gpt-4o-mini") is refused by
+    // that CHECK, and a refused insert loses the WHOLE row silently.
+    if (ctx.brokerageId) {
+      await logAIUsage({
+        userId:       null,
+        brokerageId:  ctx.brokerageId,
+        model:        "gpt-4o-mini",
+        inputTokens:  result.usage?.inputTokens ?? 0,
+        outputTokens: result.usage?.outputTokens ?? 0,
+        feature:      "inbound_intent_classification",
+      })
+    }
     const label = result.text.trim().toLowerCase().replace(/[^a-z_]/g, "")
     if ((INTENT_ENUM as readonly string[]).includes(label)) {
       return decodeIntentLabel(label)
@@ -390,7 +425,13 @@ export async function classifyAndRouteInbound(
     hasCma = (cmaC ?? 0) > 0
   }
 
-  const ctx: InboundContext = { knownSide, hasCriteria, hasPreapproval, hasCma }
+  // brokerageId rides the context so the classifier's model call is booked to the
+  // tenant this function was already scoped to — the same value every read above
+  // used as its tenant predicate, never a request body (§4).
+  const ctx: InboundContext = {
+    brokerageId: params.brokerageId,
+    knownSide, hasCriteria, hasPreapproval, hasCma,
+  }
 
   // ── Classify (AI by default; keyword fallback as the floor / injectable seam) ─
   const classified = await classifier(params.message, ctx)

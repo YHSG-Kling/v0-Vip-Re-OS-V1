@@ -291,10 +291,37 @@ export async function acceptVendorInviteAction(
     .maybeSingle()
 
   if (existingUser) {
-    // If user already belongs to a different brokerage, refuse — vendor
-    // cross-brokerage support is intentionally NOT implemented here.
+    // ── A SHARED VENDOR SHARES ITS BILLING IDENTITY, NOT YET ITS SEAT ────────
+    // §5 says a vendor already on the platform MAY be used by other brokerages,
+    // and may not be charged for platform use a second time. The BILLING half of
+    // that is built and enforced in the database (m549: vendors.platform_vendor_id
+    // + vendor_platform_use_already_paid + the enforce_..._single_charge triggers).
+    // The LOGIN half is not, and it is not a forgotten `if` — it is unrepresentable
+    // twice over, both verified against the live schema:
+    //
+    //   · `users.brokerage_id` is a single scalar, so a vendor user belongs to
+    //     exactly one tenant;
+    //   · `user_role_assignments` carries UNIQUE (user_id, role)
+    //     (user_role_assignments_user_role_unique), so ONE user can hold exactly
+    //     ONE row with role='vendor'. A second bench seat cannot be written even
+    //     if this refusal were removed.
+    //
+    // So this REFUSES rather than half-granting, which is §4's fail-closed rule:
+    // widening `users.brokerage_id` without a per-bench seat would give one login
+    // a tenant-shaped identity across two brokerages, and §5 also says a vendor
+    // sees a contact only where it is ASSIGNED to that contact and sees no
+    // financials but its own. A seat that cannot express WHICH bench it is acting
+    // as cannot honour either rule.
+    //
+    // What the message must not do is read as a dead end, because it is not one:
+    // the second brokerage adds the same COMPANY to its own bench today and is
+    // blocked from double-charging it. Only the shared login is pending.
     if (existingUser.brokerage_id && existingUser.brokerage_id !== invitation.brokerage_id) {
-      return { ok: false, error: "This email is already tied to a different brokerage" }
+      return {
+        ok: false,
+        error:
+          "This email already has a vendor login with another brokerage. A vendor can work with more than one brokerage — ask this brokerage to add your company to their vendor list, which costs you nothing — but a single login cannot yet be shared across brokerages. Accept this invitation from a different email address to hold a separate seat.",
+      }
     }
     await svc.from("users").update({
       user_type:    "vendor",

@@ -296,6 +296,38 @@ console.log("\n═══ 9. Narration is never cut off mid-sentence ═══")
     compositionSeconds({ duration_frames: 600, fps: 30 }) === 20
     && compositionSeconds({ duration_frames: 750, fps: 30 }) === 25
     && compositionSeconds({ duration_frames: 300, fps: 60 }) === 5)
+
+  // ── THE COMPOSITION IS NOT THE WHOLE VIDEO BY THE TIME THE MIXER SEES IT ──
+  // The comparison length was `compositionSeconds(composition)` and NOTHING ELSE,
+  // which describes the MAIN cut. But finalizeCoordinatedRender stitches intro and
+  // outro onto `working` BEFORE the narration mux, so the buffer handed to
+  // mixNarrationVoiceover is routinely longer than the number it was judged
+  // against. paddingSecondsFor then computed `narration - main` where the honest
+  // figure is `narration - (main + bookends)`, and froze the final frame for the
+  // difference.
+  //
+  // THE DIRECTION MATTERS AND IS WHY THIS WAS NEVER VISIBLE: bookend lengths are
+  // never negative, so the error could only ever OVER-pad. Nobody was cut off
+  // mid-sentence; the tail was just longer than it needed to be. Asserted as the
+  // RULE — the comparison is the composition PLUS whatever the bookend pass added
+  // — with the arithmetic exercised through the real predicate rather than matched
+  // as text.
+  ok("...plus the seconds the bookends added, so the mixer is told how long the\n    video it is HANDED is, not how long the composition is",
+    /const videoSeconds\s*=\s*compositionSeconds\(\s*composition\s*\)\s*\+\s*bookendSeconds/.test(coord))
+  ok("...and that addend is counted only when the concat APPLIED — a bookend whose\n    ffmpeg stitch failed did not lengthen the video",
+    /if\s*\(concat\.overlayApplied[\s\S]{0,600}?bookendSeconds\s*=/.test(coord))
+  ok("...and a stock clip with NO recorded duration contributes 0, which is exactly\n    the number this used to assume — the fix cannot regress an unmeasured library",
+    /introRow\?\.duration_seconds\s*\?\?\s*0/.test(coord)
+    && /outroRow\?\.duration_seconds\s*\?\?\s*0/.test(coord))
+  ok("...and the picker actually SELECTS that column, else the addend is always 0",
+    /duration_seconds/.test(code("lib/remotion/stock-pick.ts")))
+  // CONTROL: the padding predicate must still recognise the defect — with the
+  // bookends counted the overrun SHRINKS, and with them ignored it is larger.
+  ok("CONTROL: counting the bookends really does change the pad — 22s of narration\n    over a 14s composition pads 8s alone, and 2s once a 6s bookend is counted",
+    paddingSecondsFor(22, 14) === 8 && paddingSecondsFor(22, 14 + 6) === 2)
+  ok("CONTROL: and it never under-pads — a bookend can only shorten the frozen tail,\n    never extend the narration past the end of the audio",
+    paddingSecondsFor(22, 14 + 6) < paddingSecondsFor(22, 14)
+    && paddingSecondsFor(22, 14 + 20) === 0)
 }
 
 console.log("\n═══ 10. BUYER MATCH REEL — the second living kind ═══")

@@ -488,7 +488,44 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
   // 7. ai_video_projects + dispatchVideo. We only reach here when the script
   //    is compliance-clean — D-ID render dollars never wasted on a script
   //    that would fail the gate later.
-  const videoType = input.trigger === "contact_agent_assigned" ? "agent_intro" : "just_sold"
+  //
+  // ─── AN ANNIVERSARY IS NOT A SALE, AND THE WRONG WORD WAS SPENDING MONEY ───
+  // This stamped 'just_sold' on the home-anniversary video. Nobody sold anything:
+  // the trigger is `home_anniversary`, the title says "(Ny)", and the recipient is
+  // a PAST client being shown their equity. It read as a lie on every surface that
+  // renders video_type, and one surface acted on it:
+  //
+  //   lib/kernel/video-coordination.ts :: resolveVideoKind falls back to video_type
+  //   when video_metadata.promo_event_type is absent — and this row has never
+  //   carried promo_event_type. 'just_sold' is in PROMOTABLE_VIDEO_KINDS, so
+  //   publishVideoCoordinationSignals raised an `ads_manager:video_ready` signal
+  //   proposing PAID SPEND to promote a 1:1 anniversary video addressed to one
+  //   named past client. Paid promotion of a personal equity message is both a
+  //   wasted budget and a privacy problem, and it was caused by one wrong word.
+  //
+  // NO MIGRATION AND NO NEW VOCABULARY (CLAUDE.md §6). The live CHECK
+  // ai_video_projects_video_type_check admits 16 values and 'anniversary' is not
+  // one of them — but it does not need to be, because the taxonomy ALREADY has
+  // this situation. lib/video/video-director.ts :: videoTypeForSituation maps
+  // SituationKind 'anniversary' → 'memory_video', so the Director rail (the one
+  // lib/kernel/equity-trigger.ts commissions the data-driven equity reel on) has
+  // been spelling this correctly all along. Minting an 'anniversary' value beside
+  // it would be a SECOND spelling of one idea — the defect §6 forbids — so this
+  // merges onto the survivor instead.
+  //
+  // WHAT THE OLD VALUE WAS ACCIDENTALLY BUYING, AND HOW IT IS KEPT:
+  //   · lib/kernel/welcome-personal-video.ts PERSONAL_WELCOME_VIDEO_TYPES is
+  //     (agent_intro, welcome, avatar_explainer). 'memory_video' is no more a
+  //     member than 'just_sold' was, so an anniversary clip still cannot be
+  //     served as a new client's welcome video. Unchanged, deliberately.
+  //   · lib/orchestrator/internal.ts handleVideoGenerated DOES list
+  //     'memory_video' in its per-contact draft types — the one behaviour this
+  //     word change would newly switch on. The anniversary already owns two
+  //     delivery halves (the email sweep and the portal card, both in
+  //     app/api/cron/intro-video-email-backfill), so a third would be a
+  //     duplicate touch to the same person. That handler now skips rows already
+  //     on this rail; see the guard there, keyed on video_metadata.intro_video_id.
+  const videoType = input.trigger === "contact_agent_assigned" ? "agent_intro" : "memory_video"
   const { data: project, error: projErr } = await svc
     .from("ai_video_projects")
     .insert({

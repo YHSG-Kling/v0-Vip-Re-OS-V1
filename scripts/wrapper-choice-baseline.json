@@ -1,0 +1,22 @@
+[
+  "app/actions/ai-isa/engage-contact.ts",
+  "app/actions/auth/signup-brokerage.ts",
+  "app/actions/contact-intelligence.ts",
+  "app/actions/contact-quick-actions.ts",
+  "app/api/agent-assistant/tool-call/route.ts",
+  "app/api/cron/engagement-scores/route.ts",
+  "app/api/embed/capture/route.ts",
+  "app/api/providers/inbound/route.ts",
+  "app/api/widget/capture-lead/route.ts",
+  "lib/ai-isa/speed-to-lead.ts",
+  "lib/campaign-sequences/step-executor.ts",
+  "lib/contact-pipeline/contact-capture.ts",
+  "lib/kernel/jobs.ts",
+  "lib/kernel/transactions.ts",
+  "lib/lead-intelligence/signal-extensions.ts",
+  "lib/lead-intent/inbound-lead-intent.ts",
+  "lib/lead-pipeline/enrichment-orchestrator.ts",
+  "lib/platform/deal-room-demo.ts",
+  "lib/predictive-listing/run-scoring.ts",
+  "lib/wealth-advisor/scan-opportunities.ts"
+]

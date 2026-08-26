@@ -26,7 +26,16 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Content too short to validate (minimum 10 characters)" }, { status: 400 })
     }
 
-    const validation = await validateThemFirstContent(content, contentType, personaId)
+    // THE TENANT COMES FROM THE SESSION (§4). requireAuth resolved brokerageId
+    // off the users row, never off this request body — which matters twice here:
+    // it is what stops the route being an unmetered proxy onto the platform's AI
+    // credentials, and it is what makes the two model calls inside the validator
+    // land on ai_tool_usage under the tenant that actually spent them (§5).
+    const validation = await validateThemFirstContent(content, contentType, personaId, {
+      brokerageId: auth.brokerageId,
+      userId:      auth.userId,
+      agentId:     auth.agentId,
+    })
 
     return NextResponse.json(validation)
   } catch (error: any) {

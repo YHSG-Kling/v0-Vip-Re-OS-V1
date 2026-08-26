@@ -18,6 +18,7 @@ import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { KernelEvent } from "@/lib/kernel/events"
 import type { EntityType } from "@/lib/kernel/types"
 import { guardedGenerateText } from "@/lib/data-guard/guarded-generate"
+import { logAIUsage } from "@/lib/ai/cost-tracking"
 import { gateway } from "@ai-sdk/gateway"
 import { verifyRealEstateLicense } from "@/lib/onboarding/license-lookup"
 
@@ -243,10 +244,40 @@ Return your analysis as JSON in this exact format:
 
 Be conservative — if you cannot clearly read or verify information, mark it as null and explain in verification_notes.`
 
-    const { text } = await guardedGenerateText({
+    const { text, usage } = await guardedGenerateText({
       model: gateway("anthropic/claude-sonnet-4"),
       prompt,
       maxOutputTokens: 1000,
+    })
+
+    // ── THE LEDGER (CLAUDE.md §5) ────────────────────────────────────────────
+    // guardedGenerateText is a DATA-GUARD chokepoint, not a billing one: it
+    // redacts the prompt and then calls the raw SDK, so being on it satisfies
+    // data-guard-guard and says NOTHING about ai_tool_usage. This call ran a
+    // real model on the platform's own credentials and booked nothing, and
+    // ai_tool_usage feeds meter_readings.ai_tokens and the overage projection —
+    // a wrong number there is a wrong invoice.
+    //
+    // ROUTED WAS NOT AN OPTION HERE. generateTextRouted books, but it picks the
+    // model from AI_TASK_ROUTING and ignores the caller's, so converting would
+    // change WHICH MODEL READS A LICENCE DOCUMENT. Booking beside the existing
+    // call keeps the model this call site already pinned; the ledger changes and
+    // the spend does not. This is the same shape the ai-spend-booked guard's own
+    // positive control demonstrates as `booked`.
+    //
+    // 'claude-sonnet' is the BILLING IDENTITY, not the gateway string: the live
+    // CHECK ai_tool_usage_model_is_priceable refuses 'anthropic/claude-sonnet-4'
+    // and admits 'claude-sonnet', because calculateCost prices off that key.
+    // TENANT FROM THE CALLER'S ALREADY-RESOLVED PARAMS (§4) — params.brokerageId
+    // is the onboarding tenant, never a request body.
+    await logAIUsage({
+      userId:       null,
+      brokerageId:  params.brokerageId,
+      agentId:      params.agentId,
+      model:        "claude-sonnet",
+      inputTokens:  usage?.inputTokens ?? 0,
+      outputTokens: usage?.outputTokens ?? 0,
+      feature:      "license_document_analysis",
     })
 
     // Parse AI response

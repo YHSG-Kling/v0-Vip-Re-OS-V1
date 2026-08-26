@@ -71,7 +71,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { bestEffort } from "@/lib/db/best-effort"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 
 /** The channel a lead asked to be left alone on. `all` = a global DNC request. */
 export type LeadOptOutChannel = "email" | "sms" | "phone" | "direct_mail" | "all"
@@ -265,13 +265,24 @@ export async function applyLeadOptOut(
       (currentContact as { opt_out_channels?: string[] | null } | null)?.opt_out_channels ?? []
     contactUpdates.opt_out_channels = Array.from(new Set([...currentChannels, ...channels]))
 
-    await bestEffort(
+    // SERVICE-ROLE client (createServiceClient above) → sentinelWrite, per the
+    // ruling in lib/kernel/write-sentinel.ts. A dropped opt-out MIRROR is the
+    // loss most worth ranking in the repair digest: the person is suppressed on
+    // the lead row and not on the contact row, which is the shape a later send
+    // walks straight through.
+    await sentinelWrite(
+      supabase,
       supabase
         .from("contacts")
         .update(contactUpdates)
         .eq("id", linkedContactId)
         .eq("brokerage_id", params.brokerageId),
-      "propagating a lead's opt-out onto its converted contact — the lead row and the address-keyed suppression rows have already landed, so the request is binding even if this mirror fails",
+      {
+        table: "contacts",
+        flow: "lead_opt_out_contact_mirror",
+        brokerageId: params.brokerageId,
+        reason: "propagating a lead's opt-out onto its converted contact — the lead row and the address-keyed suppression rows have already landed, so the request is binding even if this mirror fails",
+      },
     )
   }
 
@@ -288,7 +299,8 @@ export async function applyLeadOptOut(
   })
 
   // ── 3. AUDIT ───────────────────────────────────────────────────────────────
-  await bestEffort(
+  await sentinelWrite(
+    supabase,
     supabase.from("lifecycle_events").insert({
       brokerage_id: params.brokerageId,
       entity_type: "lead",
@@ -303,7 +315,12 @@ export async function applyLeadOptOut(
       },
       created_at: now,
     }),
-    "lead opt-out lifecycle audit row — the flags and the suppression bridge are already written; losing the timeline entry must not unwind them",
+    {
+      table: "lifecycle_events",
+      flow: "lead_opt_out_audit",
+      brokerageId: params.brokerageId,
+      reason: "lead opt-out lifecycle audit row — the flags and the suppression bridge are already written; losing the timeline entry must not unwind them",
+    },
   )
 
   return {
@@ -603,13 +620,19 @@ export async function reopenLeadOnInboundConsent(
     }
     for (const ch of ALL_CHANNELS) contactUpdates[CHANNEL_FLAG_COLUMN[ch]] = false
 
-    await bestEffort(
+    await sentinelWrite(
+      supabase,
       supabase
         .from("contacts")
         .update(contactUpdates)
         .eq("id", linkedContactId)
         .eq("brokerage_id", params.brokerageId),
-      "mirroring a lead's reopen onto its converted contact — the lead row has already been cleared, so a failed mirror leaves the person MORE suppressed than intended, which is the safe direction",
+      {
+        table: "contacts",
+        flow: "lead_reopen_contact_mirror",
+        brokerageId: params.brokerageId,
+        reason: "mirroring a lead's reopen onto its converted contact — the lead row has already been cleared, so a failed mirror leaves the person MORE suppressed than intended, which is the safe direction",
+      },
     )
   }
 

@@ -138,6 +138,17 @@ export async function finalizeCoordinatedRender(
   // so it must not change the video's key either.
   let introClipUrl: string | null = null
   let outroClipUrl: string | null = null
+  /**
+   * SECONDS THE BOOKENDS ADDED TO `working` — counted only once the concat has
+   * actually LANDED, the same rule the identity fields above follow.
+   *
+   * The narration mixer needs the length of the video it is being HANDED. By the
+   * time it runs, `working` may be intro + main + outro while the composition's
+   * duration_frames still describes the main cut alone. A null recorded duration
+   * contributes 0, which is exactly the number this used to assume — so a stock
+   * library with no lengths on file behaves precisely as before.
+   */
+  let bookendSeconds = 0
   let musicTrackUrl: string | null = null
   let musicVolumePct: number | null = null
   let musicLoop: boolean | null = null
@@ -168,6 +179,11 @@ export async function finalizeCoordinatedRender(
           // The URL is what ffmpeg actually consumed — that is the cache identity.
           introClipUrl = introRow?.video_url ?? null
           outroClipUrl = outroRow?.video_url ?? null
+          // Only an APPLIED concat lengthens the video. A bookend whose ffmpeg
+          // stitch failed did not change `working`, so it must not change this
+          // number either — same reason the identity fields sit inside this block.
+          bookendSeconds =
+            (introRow?.duration_seconds ?? 0) + (outroRow?.duration_seconds ?? 0)
         }
       } catch (e) {
         console.warn("[render-coordinator] bookend stitch failed; continuing:", (e as Error).message)
@@ -196,7 +212,17 @@ export async function finalizeCoordinatedRender(
         .eq("audio_url", voUrl)
         .maybeSingle()
       const narrationSeconds = (narr as { duration_seconds: number | null } | null)?.duration_seconds ?? null
-      const videoSeconds = compositionSeconds(composition)
+      // THE LENGTH OF THE VIDEO IN HAND, NOT THE LENGTH OF THE COMPOSITION.
+      // compositionSeconds is duration_frames / fps — the MAIN cut alone — but the
+      // bookend pass above may already have prepended an intro and appended an
+      // outro to `working`. Measured against the shorter number, paddingSecondsFor
+      // believes the narration runs further past the end than it does and the
+      // mixer freezes the final frame for longer than needed.
+      //
+      // THE ERROR ONLY EVER OVER-PADS: bookendSeconds is never negative, so this
+      // has never cut anybody off mid-sentence — the frozen tail was simply too
+      // long. Correcting it shortens that tail; it cannot shorten the narration.
+      const videoSeconds = compositionSeconds(composition) + bookendSeconds
 
       const { mixNarrationVoiceover } = await import("./voiceover-mixer")
       const narrated = await mixNarrationVoiceover({

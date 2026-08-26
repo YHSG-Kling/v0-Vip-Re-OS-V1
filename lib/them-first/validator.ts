@@ -1,7 +1,61 @@
 import { guardedGenerateText } from "@/lib/data-guard/guarded-generate"
+import { logAIUsage } from "@/lib/ai/cost-tracking"
 import { resolveModel } from "@/lib/ai/resolve-model"
 
 export type ContentType = "email" | "sms" | "video_script" | "social_post"
+
+/**
+ * WHO PAYS FOR THE TWO MODEL CALLS BELOW (CLAUDE.md §5 + §4).
+ *
+ * This validator makes TWO real model calls per validation and, until now, booked
+ * neither. It sits on `guardedGenerateText`, which is a DATA-GUARD chokepoint —
+ * it redacts the prompt and then calls the raw AI SDK — so being on it satisfies
+ * data-guard-guard and says NOTHING about `ai_tool_usage`. That ledger feeds
+ * meter_readings.ai_tokens and the per-tier overage projection, so spend that
+ * never lands there is spend nobody is invoiced for and no fair-use cap counts.
+ *
+ * OPTIONAL AND ADDITIVE, on purpose. Omitting it reproduces today's behaviour
+ * exactly: the validation still runs, and the call simply is not booked — the
+ * same rule lib/ai/models.ts applies with its `if (request.brokerageId)`. That
+ * matters because this is also driven from simulators and from a public API
+ * route, and a validator that REFUSED without a tenant would turn a missing
+ * ledger row into a broken compliance gate, which is the wrong trade.
+ *
+ * `brokerageId` MUST come from the session or from a row already read under a
+ * tenant-scoped predicate — never from a request body (§4). All three live
+ * callers pass a value they resolved that way.
+ */
+export interface ThemFirstSpendActor {
+  brokerageId: string | null
+  userId?: string | null
+  /** agents.id — `ai_tool_usage.agent_id` FKs to agents(id), which is DISJOINT
+   *  from users(id) (§3). Pass an agents.id or nothing. */
+  agentId?: string | null
+}
+
+/**
+ * Book one of this file's model calls. `gpt-4o-mini` is the BILLING IDENTITY the
+ * live CHECK `ai_tool_usage_model_is_priceable` admits and `calculateCost` prices
+ * off — not the gateway string "openai/gpt-4o-mini" the call site pins, which
+ * that CHECK refuses outright. Never throws: logAIUsage already swallows its own
+ * failure, and a ledger outage must not fail a compliance validation.
+ */
+async function bookThemFirstSpend(
+  spend: ThemFirstSpendActor | undefined,
+  usage: { inputTokens?: number; outputTokens?: number } | undefined,
+  feature: string,
+): Promise<void> {
+  if (!spend?.brokerageId) return
+  await logAIUsage({
+    userId:       spend.userId ?? null,
+    brokerageId:  spend.brokerageId,
+    agentId:      spend.agentId ?? null,
+    model:        "gpt-4o-mini",
+    inputTokens:  usage?.inputTokens ?? 0,
+    outputTokens: usage?.outputTokens ?? 0,
+    feature,
+  })
+}
 
 export interface ValidationResult {
   passed: boolean
@@ -70,14 +124,17 @@ export async function validateThemFirstContent(
   content: string,
   contentType: ContentType,
   personaId?: string,
+  /** Who to book the two model calls to. Omitted → not booked (see
+   *  ThemFirstSpendActor); supplied → one ai_tool_usage row per call. */
+  spend?: ThemFirstSpendActor,
 ): Promise<ValidationResult> {
   const readAs = CONTENT_TYPE_UNIT[contentType] ?? CONTENT_TYPE_UNIT.email
 
   // 1. Analyze structure with AI
-  const structure = await analyzeContentStructure(content, readAs)
+  const structure = await analyzeContentStructure(content, readAs, spend)
 
   // 2. Analyze sentiment
-  const sentiment = await analyzeSentiment(content)
+  const sentiment = await analyzeSentiment(content, spend)
 
   // 3. Check prohibited phrases
   const prohibited = checkProhibitedPhrases(content, personaId)
@@ -107,9 +164,9 @@ export async function validateThemFirstContent(
   }
 }
 
-async function analyzeContentStructure(content: string, readAs: string) {
+async function analyzeContentStructure(content: string, readAs: string, spend?: ThemFirstSpendActor) {
   try {
-    const { text } = await guardedGenerateText({
+    const { text, usage } = await guardedGenerateText({
       model: resolveModel("openai/gpt-4o-mini"),
       prompt: `You are reading ${readAs}.
 
@@ -131,6 +188,7 @@ Return ONLY valid JSON with percentage breakdown (must sum to 100):
 }`,
       temperature: 0.3,
     })
+    await bookThemFirstSpend(spend, usage, "them_first_structure_analysis")
 
     const data = JSON.parse(text)
     return {
@@ -150,9 +208,9 @@ Return ONLY valid JSON with percentage breakdown (must sum to 100):
   }
 }
 
-async function analyzeSentiment(content: string) {
+async function analyzeSentiment(content: string, spend?: ThemFirstSpendActor) {
   try {
-    const { text } = await guardedGenerateText({
+    const { text, usage } = await guardedGenerateText({
       model: resolveModel("openai/gpt-4o-mini"),
       prompt: `Analyze the empathy and sentiment of this content:
 
@@ -170,6 +228,7 @@ tone should be one of: warm, neutral, transactional, pushy
 human_like should be true or false`,
       temperature: 0.3,
     })
+    await bookThemFirstSpend(spend, usage, "them_first_sentiment_analysis")
 
     const data = JSON.parse(text)
     return {

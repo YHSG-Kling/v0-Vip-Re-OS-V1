@@ -24,8 +24,9 @@
  *   2. NOBODY READ THE RESULT. `app/api/cron/intro-video-email-backfill` filters
  *      `trigger='contact_agent_assigned'`; handleVideoGenerated's per-contact
  *      drafts fire only for video_type ∈ (thank_you, personal, buyer_guide,
- *      memory_video) and the anniversary row is stamped 'just_sold' with no
- *      listing_id; lib/kernel/anniversary-equity.ts pushes its portal card
+ *      memory_video) and the anniversary row was stamped 'just_sold' with no
+ *      listing_id (that word is now 'memory_video' — Layer 6 owns the ruling and
+ *      the reasons); lib/kernel/anniversary-equity.ts pushes its portal card
  *      BEFORE commissioning the video and never returns to it. The ledger row
  *      sat at 'rendering' forever behind a paid D-ID render.
  *
@@ -42,6 +43,10 @@
  *   Layer 5  NO TRIGGER WITHOUT A READER — derived from the trigger union, not
  *            from a hardcoded list, so a third trigger cannot be added without
  *            a sweep that delivers it.
+ *   Layer 6  THE WORD ON THE ROW — an anniversary is not a sale. The stamped
+ *            video_type is checked against the LIVE CHECK cache, the Director's
+ *            own mapper (§6, one spelling), the paid-promotion predicate and the
+ *            welcome set — every one read off the module, none retyped here.
  *
  * PURE — no database, no provider. D-ID, ElevenLabs and Remotion/Lambda are
  * never called: the provider is represented by the metadata the reactor writes
@@ -58,6 +63,12 @@ import {
   describeIntroCompositionGap,
   classifyAnniversaryPortalDelivery,
 } from "../lib/video/avatar-render-orchestrator"
+import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import {
+  isPromotableVideoKind,
+  resolveVideoKind,
+  PROMOTABLE_VIDEO_KINDS,
+} from "../lib/kernel/video-coordination"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 /** Every source scan reads STRIPPED source. A tombstone is not a call site. */
@@ -344,6 +355,107 @@ function layer5_noOrphanTrigger() {
     rawReactor.includes("AnniversaryEquityReelInput") && !src(REACTOR).includes("AnniversaryEquityReelInput"))
 }
 
+// ── Layer 6 · the WORD on the row, and what it buys ──────────────────────────
+/**
+ * AN ANNIVERSARY IS NOT A SALE.
+ *
+ * The reactor stamped `video_type='just_sold'` on the home-anniversary project.
+ * That was not merely inaccurate: video_type is the FALLBACK the video-coordination
+ * publisher resolves a lifecycle kind from when video_metadata.promo_event_type is
+ * absent, and this row has never carried promo_event_type — so 'just_sold' put a
+ * 1:1 anniversary clip addressed to one named past client into
+ * PROMOTABLE_VIDEO_KINDS and raised an `ads_manager:video_ready` signal proposing
+ * PAID SPEND on it.
+ *
+ * EVERY ASSERTION HERE IS DERIVED, NEVER RETYPED (CLAUDE.md §2 — assert the rule
+ * and derive the number). The stamped value is read off the reactor, the
+ * promotable set off lib/kernel/video-coordination, the welcome set off
+ * lib/kernel/welcome-personal-video, and the admissible vocabulary off the
+ * GENERATED live-CHECK cache — so a future migration that widens or narrows any
+ * of them is judged against what the database actually accepts rather than
+ * against a list frozen in this file.
+ */
+function layer6_theWordOnTheRow() {
+  console.log("\n[6 · THE WORD ON THE ROW — an anniversary is not a sale, and the wrong word bought ads]")
+
+  const reactor = src(REACTOR)
+  // The stamp, read off the ternary rather than assumed.
+  const stampM = /const\s+videoType\s*=\s*input\.trigger\s*===\s*"contact_agent_assigned"\s*\?\s*"([a-z_]+)"\s*:\s*"([a-z_]+)"/.exec(reactor)
+  const introStamp = stampM?.[1] ?? ""
+  const anniversaryStamp = stampM?.[2] ?? ""
+  check("the reactor's per-trigger video_type stamp is readable",
+    !!stampM, stampM ? `${introStamp} / ${anniversaryStamp}` : "ternary not found")
+
+  check("the anniversary trigger no longer claims a SALE",
+    anniversaryStamp !== "just_sold", anniversaryStamp)
+
+  // ── The admissible vocabulary — from the generated live cache, not a guess.
+  // A value the CHECK rejects loses the whole row (PGRST204's sibling, 23514).
+  const liveVideoTypes = CHECK_VOCABULARIES.ai_video_projects?.video_type ?? []
+  check(`both stamps are values the LIVE video_type CHECK admits (${liveVideoTypes.length} in the cache) —\n    so no migration is pending behind this change`,
+    liveVideoTypes.includes(introStamp) && liveVideoTypes.includes(anniversaryStamp),
+    `${introStamp}=${liveVideoTypes.includes(introStamp)} ${anniversaryStamp}=${liveVideoTypes.includes(anniversaryStamp)}`)
+  check("CONTROL: the cache would have caught an invented value — 'anniversary' is NOT\n    admissible, which is why this merged onto the existing spelling instead",
+    !liveVideoTypes.includes("anniversary"))
+
+  // ── §6: the survivor already existed. The Director maps SituationKind
+  //    'anniversary' onto this same value, so there is ONE spelling, not two.
+  // Scoped to videoTypeForSituation ALONE. video-director.ts switches on
+  // SituationKind in half a dozen places (music mood, sentiment, CTA, QR kind),
+  // so an unanchored `case "anniversary":` finder reads whichever one comes
+  // first in the file — it read 'happy' out of sentimentForSituation.
+  const director = src("lib/video/video-director.ts")
+  const vtfsBody = /function\s+videoTypeForSituation\s*\([\s\S]*?\n\}/.exec(director)?.[0] ?? ""
+  check("videoTypeForSituation was located in the Director (the mapper this compares against)",
+    vtfsBody.length > 0)
+  const directorM = /case\s+"anniversary":\s*return\s+"([a-z_]+)"/.exec(vtfsBody)
+  check("the Director's SituationKind 'anniversary' maps to the SAME video_type (§6 —\n    one vocabulary per function, merged onto the survivor rather than a 17th value)",
+    !!directorM && directorM[1] === anniversaryStamp,
+    `director=${directorM?.[1] ?? "unreadable"} reactor=${anniversaryStamp}`)
+
+  // ── The money: paid promotion. Rule asserted through the real predicate.
+  check(`the anniversary stamp is NOT promotable, so no ads_manager signal proposes paid\n    spend on a 1:1 clip (promotable set: ${PROMOTABLE_VIDEO_KINDS.join("/")})`,
+    !isPromotableVideoKind(anniversaryStamp))
+  check("CONTROL: the promotable predicate still recognises the defect it was written\n    for — the OLD value 'just_sold' IS promotable",
+    isPromotableVideoKind("just_sold"))
+
+  // ── The fallback that made it reachable: this row carries no promo_event_type,
+  //    so resolveVideoKind has nothing to prefer over video_type.
+  check("resolveVideoKind falls back to video_type on a row with no promo_event_type —\n    which is why the WORD, not a metadata key, decided this",
+    resolveVideoKind({ video_metadata: { trigger: "home_anniversary" }, video_type: anniversaryStamp }) === anniversaryStamp)
+
+  // ── What the wrong word was accidentally buying, and that it is kept.
+  const welcome = src("lib/kernel/welcome-personal-video.ts")
+  const welcomeSetM = /PERSONAL_WELCOME_VIDEO_TYPES\s*=\s*\[([\s\S]*?)\]/.exec(welcome)
+  const welcomeSet = Array.from((welcomeSetM?.[1] ?? "").matchAll(/"([a-z_]+)"/g)).map((x) => x[1])
+  check(`the anniversary clip still cannot be served as a new client's WELCOME video\n    (welcome set: ${welcomeSet.join("/")}) — the accidental exclusion is now a deliberate one`,
+    welcomeSet.length > 0 && !welcomeSet.includes(anniversaryStamp))
+  check("CONTROL: that set-membership finder works — the intro stamp IS a welcome type",
+    welcomeSet.includes(introStamp))
+
+  // ── The one branch the correct word newly switches on, and its guard.
+  const orch = src("lib/orchestrator/internal.ts")
+  const personalM = /personalVideoTypes\s*=\s*\[([^\]]*)\]/.exec(orch)
+  const personalSet = Array.from((personalM?.[1] ?? "").matchAll(/"([a-z_]+)"/g)).map((x) => x[1])
+  check(`the orchestrator's per-contact draft types DO include the new stamp\n    (${personalSet.join("/")}) — the branch this change switches on`,
+    personalSet.includes(anniversaryStamp))
+  // Asserted as a RULE, not as one line of source (§2 — do not pin to a
+  // waypoint): the predicate must be DERIVED from intro_video_id, and the draft
+  // branch must be NEGATED by it. How the surrounding condition is spelled is
+  // the orchestrator's business and may be refactored without this going red.
+  check("...and it is GUARDED, so the anniversary is not touched a third time: the\n    predicate derives from video_metadata.intro_video_id",
+    /hasOwnDeliveryRail\s*=\s*[^\n]*intro_video_id/.test(orch))
+  check("...and the per-contact draft branch is NEGATED by that predicate",
+    /if\s*\([^)]*!hasOwnDeliveryRail[^)]*\)\s*\{/.test(orch))
+  check("CONTROL: that guard finder reads STRIPPED source, so a comment naming\n    intro_video_id could not satisfy it on its own",
+    !/hasOwnDeliveryRail/.test(raw(REACTOR)))
+
+  // ── The rail the guard defers to is real, and it is the one the cron drives.
+  check("the rail deferred to exists: the reactor stamps intro_video_id onto\n    video_metadata, and the backfill cron reads agent_intro_videos",
+    /intro_video_id:\s*introVideoId/.test(reactor)
+    && /\.from\("agent_intro_videos"\)/.test(src(CRON)))
+}
+
 function main() {
   console.log("══════════════════════════════════════════════════════════")
   console.log(" Anniversary avatar video — assembly + delivery simulator")
@@ -353,6 +465,7 @@ function main() {
   layer3_compliance()
   layer4_spend()
   layer5_noOrphanTrigger()
+  layer6_theWordOnTheRow()
   console.log("\n──────────────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) {

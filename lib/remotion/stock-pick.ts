@@ -30,6 +30,19 @@ export interface PickedStockAsset {
   video_url: string
   music_volume_pct: number | null
   music_loop: boolean | null
+  /**
+   * How long the clip runs, as the uploader recorded it (video_assets
+   * .duration_seconds — nullable; written by app/actions/stock-video-upload.ts and
+   * app/actions/stock-library.ts, and already read by lib/video/broll-picker.ts,
+   * so this is a live column with real writers, not a new one).
+   *
+   * Selected so the render coordinator can tell the narration mixer how long the
+   * video ACTUALLY is once bookends have been stitched on, rather than how long
+   * the composition's fixed duration_frames says the MAIN cut is. It takes no
+   * part in WHICH asset is picked, so the render-cache key this picker feeds
+   * (lib/remotion/render-cache.ts, keyed on id + url) is unchanged.
+   */
+  duration_seconds: number | null
 }
 
 export async function pickStockAsset(
@@ -43,7 +56,7 @@ export async function pickStockAsset(
 ): Promise<PickedStockAsset | null> {
   const tryScope = async (scopeType: string, scopeId: string, mood?: string | null) => {
     let q = svc.from("video_assets")
-      .select("id, video_url, music_volume_pct, music_loop")
+      .select("id, video_url, music_volume_pct, music_loop, duration_seconds")
       .eq("brokerage_id", scope.brokerageId)
       .eq("scope_type", scopeType)
       .eq("scope_id", scopeId)
