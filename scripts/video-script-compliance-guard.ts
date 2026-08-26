@@ -126,12 +126,80 @@ const GENERATORS: Array<{ id: string; file: string; needs: string[] }> = [
   },
 ]
 
+/**
+ * EVERY CALLER-AUTHORED PROSE FIELD IN A FILE, AND WHETHER ITS OWN GATE
+ * PRE-CHECKS IT.
+ *
+ * WHY THIS EXISTS, and it is CLAUDE.md §2 paying for itself in the most direct
+ * way available: the check below used to be `.test(src)` alone — a BOOLEAN. One
+ * surviving call site anywhere in the file kept it true. That was harmless while
+ * every generator had exactly one caller-prose field, and stopped being harmless
+ * the moment app/actions/video-generation.ts gained a second one
+ * (`params.keyPoints`) when a deleted route was merged into it. From then on the
+ * FIRST pre-check could be deleted and this guard stayed green, because the
+ * second one satisfied the boolean.
+ *
+ * Nobody noticed by reading it. The repo's own negative test noticed, and named
+ * it exactly:
+ *
+ *   MISSED  VIDEO-GENERATION-CALLS-precheckBriefForFairHousing
+ *           (guard stayed GREEN under mutation)
+ *
+ * An assertion that was TRUE and USELESS — the shape a positive control exists
+ * to find, and the reason "0 found" is never evidence on its own.
+ *
+ * THE RULE IS DERIVED, NOT COUNTED. "video-generation.ts must have 2
+ * pre-checks" would be a §2 waypoint: stale the moment a lane adds a third
+ * field, and green while the WRONG two are checked. Instead the files mark
+ * caller-authored prose themselves, with an `if (x?.trim())` gate —
+ * video-generation.ts says so in its own words, "the agent's free-text
+ * description and key points are the only caller-authored prose here; the
+ * purpose/persona/tone keys are ours" — so the rule is that every such block
+ * pre-checks INSIDE ITSELF. Add a fourth prose field and forget its gate and
+ * this goes red with nobody editing the guard.
+ */
+function unprecheckedProseGates(src: string): string[] {
+  const orphaned: string[] = []
+  for (const m of src.matchAll(/if\s*\(\s*([A-Za-z_$][\w$.]*)\?\.trim\(\)\s*\)\s*\{/g)) {
+    // Brace-MATCHED, not regex'd to the first `}`. A lazy `[\s\S]*?\}` stops at
+    // the first nested closing brace and reports a block as missing what the
+    // block plainly contains — a finder bug this repo has now paid for twice.
+    const open = src.indexOf("{", m.index! + m[0].length - 1)
+    let depth = 0
+    let end = open
+    for (let k = open; k < src.length; k++) {
+      if (src[k] === "{") depth++
+      else if (src[k] === "}") {
+        depth--
+        if (depth === 0) { end = k; break }
+      }
+    }
+    if (!/await\s+precheckBriefForFairHousing\s*\(/.test(src.slice(open, end))) orphaned.push(m[1])
+  }
+  return orphaned
+}
+
 for (const g of GENERATORS) {
   const src = stripComments(read(g.file))
   for (const fn of g.needs) {
     // `await fn(` — the CALL, not the import specifier and not a mention.
     const called = new RegExp(String.raw`await\s+${fn}\s*\(`).test(src)
-    check(`${g.id}-CALLS-${fn}`, called, `${g.file} must await ${fn}(...)`)
+    if (fn !== "precheckBriefForFairHousing") {
+      check(`${g.id}-CALLS-${fn}`, called, `${g.file} must await ${fn}(...)`)
+      continue
+    }
+    // The pre-check is the one gate a file can hold MORE THAN ONE of, so it is
+    // the one that cannot be asserted as a boolean. It must be called, AND every
+    // caller-prose gate must be covered — a file with two prose fields and one
+    // pre-check has half its input reaching the model ungated.
+    const orphaned = unprecheckedProseGates(src)
+    check(
+      `${g.id}-CALLS-${fn}`,
+      called && orphaned.length === 0,
+      !called
+        ? `${g.file} must await ${fn}(...)`
+        : `${g.file} has ${orphaned.length} caller-prose gate(s) that never pre-check: ${orphaned.join(", ")}`,
+    )
   }
 }
 
