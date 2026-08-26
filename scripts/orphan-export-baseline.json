@@ -248,7 +248,7 @@
     "lib/kernel/agent-identity.ts": 1,
     "lib/kernel/ai-search-citation-monitor.ts": 8,
     "lib/kernel/ai-sentinel.ts": 1,
-    "lib/kernel/anniversary-equity.ts": 4,
+    "lib/kernel/anniversary-equity.ts": 5,
     "lib/kernel/appointment-noshow-autopilot.ts": 3,
     "lib/kernel/appraisal-negotiation.ts": 5,
     "lib/kernel/appraiser-packet.ts": 2,
@@ -504,6 +504,7 @@
     "lib/social/token-refresh.ts": 1,
     "lib/sphere/next-best-actions.ts": 1,
     "lib/storage/file-limits.ts": 3,
+    "lib/storage/signed-upload-url.ts": 6,
     "lib/strategy-learning/close-strategy-loop.ts": 1,
     "lib/strategy-learning/strategy-insights.ts": 1,
     "lib/transactions/buyer-move.ts": 3,
@@ -571,7 +572,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9364,
+  "census": 9377,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -1171,9 +1172,7 @@
     "app/api/ai/content-suggestions/route.ts": 1,
     "app/api/ai/generate-content/route.ts": 1,
     "app/api/ai/generate-module-content/route.ts": 1,
-    "app/api/ai/generate-script/route.ts": 1,
     "app/api/ai/generate-sequence/route.ts": 1,
-    "app/api/ai/generate-video-script/route.ts": 1,
     "app/api/ai/insider-edit-generate/route.ts": 1,
     "app/api/ai/insider-edit-rewrite-section/route.ts": 1,
     "app/api/ai/insider-edit-save/route.ts": 1,
@@ -1185,7 +1184,6 @@
     "app/api/auth/reset-password/route.ts": 1,
     "app/api/behavior/signal/route.ts": 1,
     "app/api/billing/webhook/route.ts": 1,
-    "app/api/blob/upload/route.ts": 1,
     "app/api/blog/track-share/route.ts": 1,
     "app/api/blog/track-view/route.ts": 1,
     "app/api/calendar/ical/route.ts": 1,
@@ -1446,7 +1444,6 @@
     "app/api/listings/mls-check/route.ts": 1,
     "app/api/meetings/sdk-signature/route.ts": 1,
     "app/api/migrate/verify/route.ts": 1,
-    "app/api/notifications/unread-count/route.ts": 1,
     "app/api/objection-training/voice-session/route.ts": 1,
     "app/api/objection-training/voice-turn/route.ts": 1,
     "app/api/offers/[offerId]/packet-scan/route.ts": 1,
@@ -1491,6 +1488,7 @@
     "app/api/showings/showingtime-webhook/route.ts": 1,
     "app/api/sms/inbound-optout/route.ts": 1,
     "app/api/social/oauth/[platform]/route.ts": 1,
+    "app/api/storage/signed-upload/route.ts": 1,
     "app/api/storage/upload-temp/route.ts": 1,
     "app/api/superadmin/tenant-export/[brokerageId]/route.ts": 1,
     "app/api/system/schema-readiness/route.ts": 1,
@@ -3371,7 +3369,7 @@
     "lib/kernel/ai-sentinel.ts": 2,
     "lib/kernel/ai-teammates.ts": 7,
     "lib/kernel/ai-tools.ts": 4,
-    "lib/kernel/anniversary-equity.ts": 6,
+    "lib/kernel/anniversary-equity.ts": 7,
     "lib/kernel/api-auth.ts": 4,
     "lib/kernel/appointment-noshow-autopilot.ts": 4,
     "lib/kernel/appraisal-negotiation.ts": 6,
@@ -4037,12 +4035,15 @@
     "lib/sphere-resonance/run-resonance-scan.ts": 1,
     "lib/state-forms/field-defs.ts": 2,
     "lib/state-forms/registry.ts": 2,
+    "lib/storage/browser-upload.ts": 1,
     "lib/storage/buckets.ts": 2,
     "lib/storage/document-buckets.ts": 3,
     "lib/storage/file-limits.ts": 5,
     "lib/storage/orphan-sweeper.ts": 1,
+    "lib/storage/parse-object-url.ts": 1,
     "lib/storage/put-and-sign.ts": 2,
     "lib/storage/signed-doc-url.ts": 1,
+    "lib/storage/signed-upload-url.ts": 7,
     "lib/strategy-learning/close-strategy-loop.ts": 2,
     "lib/strategy-learning/strategy-insights.ts": 2,
     "lib/stripe.ts": 1,
@@ -4132,6 +4133,7 @@
     "lib/vendors/vendor-validators.ts": 1,
     "lib/vendors/w9-vocab.ts": 3,
     "lib/vendors/w9.ts": 3,
+    "lib/video/anniversary-script.ts": 5,
     "lib/video/assistant-faces.ts": 1,
     "lib/video/assistant-options.ts": 1,
     "lib/video/avatar-explainer.ts": 2,
@@ -4166,7 +4168,7 @@
     "lib/video/reel-voiceover.ts": 2,
     "lib/video/repurpose-planner.ts": 3,
     "lib/video/script-compliance.ts": 10,
-    "lib/video/script-structure.ts": 8,
+    "lib/video/script-structure.ts": 9,
     "lib/video/verbal-disclosure.ts": 1,
     "lib/video/video-director.ts": 11,
     "lib/video/video-identity.ts": 1,
@@ -8189,13 +8191,7 @@
     "app/api/ai/generate-module-content/route.ts": [
       "POST"
     ],
-    "app/api/ai/generate-script/route.ts": [
-      "POST"
-    ],
     "app/api/ai/generate-sequence/route.ts": [
-      "POST"
-    ],
-    "app/api/ai/generate-video-script/route.ts": [
       "POST"
     ],
     "app/api/ai/insider-edit-generate/route.ts": [
@@ -8229,9 +8225,6 @@
       "POST"
     ],
     "app/api/billing/webhook/route.ts": [
-      "POST"
-    ],
-    "app/api/blob/upload/route.ts": [
       "POST"
     ],
     "app/api/blog/track-share/route.ts": [
@@ -9035,9 +9028,6 @@
     "app/api/migrate/verify/route.ts": [
       "GET"
     ],
-    "app/api/notifications/unread-count/route.ts": [
-      "GET"
-    ],
     "app/api/objection-training/voice-session/route.ts": [
       "POST"
     ],
@@ -9173,6 +9163,9 @@
     ],
     "app/api/social/oauth/[platform]/route.ts": [
       "GET"
+    ],
+    "app/api/storage/signed-upload/route.ts": [
+      "POST"
     ],
     "app/api/storage/upload-temp/route.ts": [
       "POST"
@@ -16339,6 +16332,7 @@
       "computeEquityLine",
       "anniversaryWindow",
       "composeEquityNote",
+      "equityNarrationFacts",
       "composeAgentBrief",
       "composeEquityDecision",
       "runAnniversaryEquity"
@@ -19947,6 +19941,9 @@
       "getStateForms",
       "getBrokerageRepresentationForm"
     ],
+    "lib/storage/browser-upload.ts": [
+      "uploadViaSignedUrl"
+    ],
     "lib/storage/buckets.ts": [
       "ensureBucket",
       "uploadBufferToBucket"
@@ -19966,12 +19963,24 @@
     "lib/storage/orphan-sweeper.ts": [
       "sweepStorageOrphans"
     ],
+    "lib/storage/parse-object-url.ts": [
+      "parseStorageObjectUrl"
+    ],
     "lib/storage/put-and-sign.ts": [
       "putAndSign",
       "removeOrRecordOrphan"
     ],
     "lib/storage/signed-doc-url.ts": [
       "signedDocUrl"
+    ],
+    "lib/storage/signed-upload-url.ts": [
+      "sanitizeUploadFileName",
+      "isUploadPurpose",
+      "buildUploadObjectPath",
+      "purposesMissingTenantPrefix",
+      "purposesWithNoBucketCeiling",
+      "planSignedUpload",
+      "mintSignedUpload"
     ],
     "lib/strategy-learning/close-strategy-loop.ts": [
       "closeNegotiationStrategyForOffer",
@@ -20359,6 +20368,13 @@
       "readW9StatusMap",
       "maybeSendVendorW9Reminder"
     ],
+    "lib/video/anniversary-script.ts": [
+      "anniversaryGreeting",
+      "enforceAnniversaryGreeting",
+      "verifyEquityClaims",
+      "safeAnniversaryFallback",
+      "buildAnniversarySituation"
+    ],
     "lib/video/assistant-faces.ts": [
       "generateAssistantFaceOptions"
     ],
@@ -20542,6 +20558,7 @@
       "estimateDurationSeconds",
       "narrationBudget",
       "spokenWords",
+      "spokenSentences",
       "fitNarrationToBudget",
       "narrationMaxTokens",
       "narrationLengthDirective"

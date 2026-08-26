@@ -1,19 +1,3 @@
 [
-  "app/actions/podcast-generation.ts",
-  "app/api/cron/listing-promo-hybrid-composite/route.ts",
-  "app/api/internal/remotion/render-just-listed/route.ts",
-  "app/api/internal/remotion/render-newsletter-video/route.ts",
-  "app/components/portal/lifetime/TestimonialCard.tsx",
-  "app/dashboard/settings/stock-library/client.tsx",
-  "app/dashboard/social/components/post-composer-dialog.tsx",
-  "lib/ai/image-generation.ts",
-  "lib/did/index.ts",
-  "lib/direct-mail/orchestrate-preset-send.ts",
-  "lib/direct-mail/render-letter-audio.ts",
-  "lib/direct-mail/render-postcard.ts",
-  "lib/listing-presentation/section-narration-orchestrator.ts",
-  "lib/podcast/auto-producer.ts",
-  "lib/remotion/media-host.ts",
-  "lib/video/persona-variant-post-pass.ts",
-  "lib/voicedrop/orchestrate-voicedrop-send.ts"
+  "lib/video/persona-variant-post-pass.ts"
 ]

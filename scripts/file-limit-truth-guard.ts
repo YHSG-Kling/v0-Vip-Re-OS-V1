@@ -246,6 +246,12 @@ const BOUNDARIES: readonly { file: string; bucket: string }[] = [
   { file: "app/actions/vendor-w9.ts", bucket: "client-documents" },
   { file: "app/actions/onboarding/brand.ts", bucket: "brokerage-assets" },
   { file: "app/actions/twin-studio-upload.ts", bucket: "twin-avatars" },
+  // The browser-direct boundary. The gate lives in the LIBRARY rather than in
+  // app/api/storage/signed-upload/route.ts, because on this transport the route
+  // never sees the bytes — it decides whether a capability to write them may
+  // exist at all. planSignedUpload is where checkUpload runs, so that is the
+  // file whose gate a regression would remove.
+  { file: "lib/storage/signed-upload-url.ts", bucket: "media" },
 ]
 
 for (const b of BOUNDARIES) {
@@ -432,8 +438,13 @@ if (!creds) {
 console.log(
   `\n${failures === 0 ? "PASS" : "FAIL"} — ${checks - failures}/${checks} checks` +
     `\n  denominator: ${Object.keys(LIVE_BUCKET_CONFIG).length} live buckets, ${BOUNDARIES.length} server-side upload boundaries.` +
-    "\n  NOT covered: client-side courtesy checks (they are not gates); Vercel Blob uploads via" +
-    "\n  app/api/blob/upload/route.ts, which bypass both ceilings by going browser→blob and are" +
-    "\n  governed by the owner's own-storage rule rather than by a size limit.",
+    "\n  NOT covered: client-side courtesy checks (they are not gates)." +
+    "\n  BLIND SPOT CLOSED 2026-08-26: this line used to exclude the Vercel Blob uploads in" +
+    "\n  app/api/blob/upload/route.ts, which bypassed BOTH ceilings by going browser→blob." +
+    "\n  That route is deleted (owner ruling: all file storage lives in Supabase buckets) and its" +
+    "\n  survivor, lib/storage/signed-upload-url.ts, is now a gated boundary in the roster above —" +
+    "\n  so browser-direct uploads are measured rather than excused. They remain unbounded by the" +
+    "\n  TRANSPORT ceiling by design (that is the point of a direct PUT); the BUCKET ceiling applies," +
+    "\n  and for buckets that declare none the project floor is what checkUpload returns.",
 )
 if (failures > 0) process.exit(1)

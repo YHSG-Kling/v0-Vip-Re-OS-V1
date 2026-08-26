@@ -545,6 +545,55 @@ if (improved.length > 0) {
 // an unrelated `bar` to it, and the count is unchanged while a capability is gone.
 const lostCapability: string[] = []
 const movedCapability: string[] = []
+const tombstonedCapability: string[] = []
+
+/**
+ * A NAME THAT MANY FILES EXPORT IS A CONTRACT, NOT AN IDENTITY.
+ *
+ * The move detector below rejects a PRE-EXISTING same-named function as a
+ * destination — a coincidence is not a home. It did not reject a NEWLY CREATED
+ * one, and for route handlers that hole is total: `GET` is exported by 273
+ * files in this tree and `POST` by 195, because Next's route contract names
+ * them. Add any new route in the same wave you delete three old ones and all
+ * three read as "MOVED" to it.
+ *
+ * That is not hypothetical — it is what this guard reported on the wave that
+ * added this comment. Three deleted routes were cleared as moved to
+ * `app/api/storage/signed-upload/route.ts`, a signed-upload endpoint with no
+ * relationship to any of them. Two of the three had real survivors somewhere
+ * else entirely (server actions, whose exports are not even called POST); the
+ * third genuinely did land there. The guard could not tell those apart and
+ * cleared all three.
+ *
+ * DERIVED, NOT LISTED (§2 — assert the rule, derive the number). Hardcoding
+ * ["GET","POST",…] would go stale the moment a framework adds a verb or the
+ * repo grows another ubiquitous contract name. A name exported by at least
+ * this many DISTINCT files at baseline cannot identify a capability.
+ */
+const AMBIGUITY_FLOOR = 5
+
+/**
+ * §1 already requires the answer: "Every deletion names its survivor," in a
+ * tombstone. So for an ambiguous name we ask for that tombstone by the deleted
+ * FILE PATH rather than accepting a same-named export somewhere.
+ *
+ * Reads RAW source on purpose. A tombstone IS a comment, so this is the one
+ * scan in this file that must not strip — §2's rule bans raw source when
+ * hunting CODE TOKENS, and the path string in a tombstone is the opposite: the
+ * only place it can legitimately live.
+ */
+function tombstoneNaming(deletedFile: string): string | null {
+  const needle = deletedFile
+  for (const [f, rawSrc] of corpus) {
+    if (f === deletedFile) continue
+    const idx = rawSrc.indexOf(needle)
+    if (idx < 0) continue
+    const line = rawSrc.slice(0, idx).split("\n").length
+    return `${f}:${line}`
+  }
+  return null
+}
+
 if (baselineObj.census > 0) {
   const baseNames = baselineObj.fileExports
   if (baseNames) {
@@ -555,6 +604,9 @@ if (baselineObj.census > 0) {
     for (const [f, names] of Object.entries(baseNames)) {
       for (const n of names) (baselineHomes.get(n) ?? baselineHomes.set(n, new Set()).get(n)!).add(f)
     }
+    const ambiguous = new Set(
+      [...baselineHomes].filter(([, homes]) => homes.size >= AMBIGUITY_FLOOR).map(([n]) => n),
+    )
 
     for (const [file, had] of Object.entries(baseNames)) {
       const nowHere = new Set(fileExports[file] ?? [])
@@ -570,6 +622,15 @@ if (baselineObj.census > 0) {
         // names — formatPrice, getStats, handler — would mask each other's deletion
         // forever. A pre-existing same-named function in an unrelated module is a
         // COINCIDENCE, not a destination.
+        //
+        // And for an AMBIGUOUS name a new home is no evidence at all, so it is not
+        // consulted: the deletion must carry the tombstone §1 requires.
+        if (ambiguous.has(name)) {
+          const stone = tombstoneNaming(file)
+          if (stone) tombstonedCapability.push(`${file}:${name} — tombstoned at ${stone}`)
+          else lostCapability.push(`${file}:${name} (ambiguous name — no tombstone names this path)`)
+          continue
+        }
         const newHome = (liveHomes.get(name) ?? []).find(
           (f) => f !== file && !(baselineHomes.get(name)?.has(f)),
         )
@@ -585,6 +646,15 @@ if (baselineObj.census > 0) {
       if (now < had) lostCapability.push(`${file} — ${had} → ${now} exported function(s)`)
     }
   }
+}
+
+if (tombstonedCapability.length > 0) {
+  console.log(
+    `\n  ⌖ ${tombstonedCapability.length} deletion(s) of an AMBIGUOUS export name, each naming its survivor:`,
+  )
+  for (const t of tombstonedCapability.slice(0, 20)) console.log(`     ${t}`)
+  if (tombstonedCapability.length > 20) console.log(`     … and ${tombstonedCapability.length - 20} more`)
+  console.log("     (a same-named export elsewhere was NOT accepted as proof — see AMBIGUITY_FLOOR)")
 }
 
 if (movedCapability.length > 0) {

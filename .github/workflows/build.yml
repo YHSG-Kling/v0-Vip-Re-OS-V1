@@ -148,14 +148,157 @@ jobs:
       #         only lever that moves this in the right direction without buying
       #         a bigger runner, which is the owner's cost decision.
       #
+      #   10240, cpus:1, commit df5494e6 (2026-08-26) — run 33011780731
+      #       → compile aborted at 8m10s, exit 134, same message. Last GC line:
+      #         Mark-Compact 8750.4 (9472.0) -> 8740.4 (9456.5) MB.
+      #         THE THIRD STRIKE. §8 says re-run unchanged and escalate only after
+      #         three consecutive failures; b3235fd4 supplied two, this is a third
+      #         at a LATER commit, so the escalation condition this file has been
+      #         predicting is met. Demand moved again: 8.75 GB used / 9.47 GB
+      #         committed = 92.5% OF CAP, past the ~90% abort threshold, up from
+      #         8.72/9.40 (91.8%) at b3235fd4 and 8.46/9.19 (89.7%) at 5115d4e.
+      #         Three readings, one direction, no reversals.
+      #
+      # ── 2026-08-26: WHERE THE HEAP ACTUALLY GOES, AND THE ONE LEVER THAT MOVED IT
+      #
+      # METHOD (so the numbers below can be trusted or discarded on their merits):
+      # the whole job was reproduced LOCALLY on a 4-core / 16 GB Linux box — the
+      # same shape as ubuntu-latest for a PUBLIC repo — with this file's exact
+      # NODE_OPTIONS, the same placeholder env, `rm -rf .next` before each run,
+      # and the page cache dropped between runs. Heap was sampled every 5s from
+      # inside every process in the build (v8.getHeapStatistics via a
+      # NODE_OPTIONS --require preload, which children inherit), alongside the
+      # cgroup's own memory.max_usage_in_bytes.
+      #
+      # BLIND SPOTS OF THAT METHOD, stated beside the numbers as §2 requires:
+      #   · The local cgroup ceiling is 13.34 GiB, roughly 1.7 GB TIGHTER than a
+      #     GitHub runner, so locally the build dies of SIGKILL from the cgroup OOM
+      #     killer (137) where CI dies of V8's SIGABRT (134). The heap figures are
+      #     still comparable — local baseline 9356 MB committed vs CI's 9472 MB,
+      #     within 1.2% — but no local run REACHED THE END. Everything below is
+      #     measured during the SERVER compile; the edge-server compile, the client
+      #     compile and page-data collection are UNMEASURED under the new setting.
+      #   · The 5s sampler misses peaks inside long synchronous stretches (the
+      #     main thread went 95s without yielding during seal), so every "peak
+      #     heap" here is a LOWER BOUND.
+      #   · The local tree carried ~59 files of other lanes' uncommitted work; CI's
+      #     8750/9472 is the clean HEAD figure. They agree closely, but they are
+      #     not the same tree.
+      #
+      # WHAT THE COMPILE IS ACTUALLY CHEWING — a census of the graph, not a guess:
+      #   996 webpack entry points under app/ (532 page.tsx, 424 route.ts, plus
+      #   layouts/loading/error), and 4,333 first-party files totalling 45.01 MB of
+      #   TS/TSX REACHABLE from them (of 4,656 / 47.31 MB on disk; 323 files /
+      #   2.30 MB are reachable from no entry). node_modules is NOT the story:
+      #   every server-only heavyweight that is imported but not externalized
+      #   — pdf-lib (0.75 MB of JS), the ai + @ai-sdk packages (2.1 MB), zod
+      #   (1.51 MB), stripe (0.23 MB), cheerio (0.10 MB) — comes to under 5 MB of
+      #   ALREADY-BUILT JS against 45 MB of first-party TSX that SWC must parse and
+      #   transform. @zoom/meetingsdk looks alarming at 108 MB on disk but only its
+      #   3 MB embedded UMD bundle is reachable, behind a dynamic import.
+      #   optimizePackageImports is already doing its job: 1,161 files import
+      #   lucide-react but only 305 DISTINCT icons, and lucide-react/date-fns/
+      #   recharts are in Next's built-in default list anyway (see
+      #   next/dist/server/config.js), so the two names listed in next.config.ts
+      #   add only `zustand`.
+      #
+      # THE LEVER: experimental.webpackBuildWorker, now set true in next.config.ts.
+      # It had been OFF because next/dist/build/index.js:850 only defaults it on
+      # when there is NO custom webpack function, and withWorkflow() installs one
+      # unconditionally — so it could never have turned itself on here. The comment
+      # in next.config.ts that said it "spawns one worker PER CORE" was wrong; the
+      # per-core pool is page-data collection, which `cpus: 1` already bounds. The
+      # full argument, with the source it was read from, is in next.config.ts
+      # beside the flag.
+      #
+      #   10240, cpus:1, webpackBuildWorker OFF (the configuration CI has been
+      #   failing with), local:
+      #       → peak 8413 MB used / 9356 MB committed (91.4% of cap) / 13291 MB RSS
+      #         in ONE process holding all three compilers. Killed at 8m08s.
+      #   10240, cpus:1, webpackBuildWorker ON, local, TWO runs:
+      #       → parent process drops to 134-138 MB heap / ~448 MB RSS; the compile
+      #         moves into a jest-worker child that is torn down before the next
+      #         compiler starts.
+      #       → server compiler peak: 7968 MB used / 8921 MB committed (87.1%)
+      #                        run 2: 7972 MB used / 8933 MB committed (87.2%)
+      #         Two readings agreeing within 4 MB used and 12 MB committed, which
+      #         is the same standard the 2026-08-21 entry above used to promote a
+      #         single sample to a floor. So: −424 MB of committed heap against the
+      #         local baseline, moving the binding number from 91.4% of cap to
+      #         87.2% — from above V8's ~90% give-up threshold to below it.
+      #
+      # HONEST LIMIT OF THAT CLAIM: neither ON run finished. Both died on the local
+      # box's smaller ceiling during the server compile, so this predicts CI clears
+      # the ~90% abort threshold; it does not prove the build goes green. CI is the
+      # oracle and it is free on this repo — run it.
+      # AND ONE READING THAT DOES NOT SUPPORT THE LEVER, recorded because leaving
+      # it out would make this entry propaganda: with the local cgroup temporarily
+      # raised to 15.2 GB, the single ON-run worker reached 13870 MB RSS while its
+      # heap stayed pinned at 8933 MB committed. RSS is NOT clearly improved by
+      # this flag — only the heap is. ~5 GB of that worker is off-heap
+      # (webpack-sources buffers, SWC native, pack-file-cache serialization), and
+      # off-heap is what made 12288 fatal in the entry above. If CI now fails as a
+      # RUNNER SHUTDOWN rather than exit 134, that is this reading coming true and
+      # the answer is the runner, not another knob.
+      #
+      # MEASURED AND REJECTED — cache.maxMemoryGenerations = 0.
+      # Next hardcodes `maxMemoryGenerations: dev ? 0 : Infinity` for the
+      # production filesystem cache, so nothing is ever evicted from the heap; with
+      # per-compiler workers that memory cache can never be re-read, so dropping it
+      # looks free. It is the worst configuration tried: 9718 MB used / 10263 MB
+      # committed = 100.2% OF CAP, FATAL ERROR at 4m51s — nearly twice the heap in
+      # half the time — with `average mu = 0.072`, i.e. 93% of wall time in GC.
+      # Evicting a pack-file-cache entry forces immediate serialization; the
+      # serializer's buffers cost more than the records saved. Do not re-derive it;
+      # the tombstone is in next.config.ts beside the webpack cache block.
+      #
+      # WHAT DELETING DEAD ROUTES WOULD BUY (for the orphan lane to aim at).
+      # Measured on the closure above: 420 handlers under app/api, of which 91 have
+      # ZERO mention of their URL path anywhere in first-party source or
+      # vercel.json (finder positive-controlled: it flags a planted route nothing
+      # references and does NOT flag /api/cron/dispatch, /api/embed/script,
+      # /api/meetings/sdk-signature, /api/cron/poll-did-videos). Removing all 91
+      # takes out 109 files / 0.59 MB — 1.30% of the reachable first-party graph —
+      # but 91 of 996 = 9.1% of webpack ENTRY POINTS. The mean route handler owns
+      # 11.5 KB across 1.6 files exclusively (a page owns 34.2 KB across 3.6), so
+      # the widely-quoted 81 routes ≈ 0.91 MB of source and 8.1% of entries. Which
+      # of the two dimensions the heap tracks is UNMEASURED — worth one CI run to
+      # find out, and it is the only free lever left after the flag above.
+      #
+      # THE RUNNER OPTION, PRESENTED AND NOT TAKEN (it is the owner's money).
+      # This repo is PUBLIC and owned by a personal account, so `ubuntu-latest` is
+      # 4 vCPU / 16 GB / 14 GB SSD and free and unlimited. Larger runners are
+      # ORG-ONLY (GitHub Team or Enterprise Cloud) and are NOT free on public
+      # repos, so taking this option means moving the repo to an organization AND
+      # paying per minute. Sizes and prices, both from GitHub's docs on 2026-08-26:
+      #   linux_8_core   8 vCPU / 32 GB / 300 GB   $0.022/min
+      #   linux_16_core 16 vCPU / 64 GB / 600 GB   $0.042/min
+      #   (docs.github.com/en/actions/reference/runners/larger-runners and
+      #    docs.github.com/en/billing/reference/actions-runner-pricing)
+      # At the ~16 min this job takes when green, that is ~$0.35/build on 8-core
+      # and ~$0.67 on 16-core; this workflow is at run_number 673 since ~March, so
+      # roughly 100-140 builds/month → ~$35-50/month (8-core) or ~$70-95/month
+      # (16-core), plus GitHub Team at $4/user/month. What 32 GB actually buys is
+      # NOT more V8 old space by itself — the abort threshold is ~90% of
+      # max-old-space-size, which is a flag, not RAM. It buys the ability to RAISE
+      # that flag: on 32 GB, 16384 gives a ~14.7 GB effective compile ceiling
+      # against a measured 8.75 GB demand (~68% headroom versus today's ~5%) while
+      # leaving room for the ~5 GB of off-heap and for page-data's inherited cap —
+      # the exact constraint that made 12288 fatal on 16 GB.
+      #
       # So compile demonstrably needs >7.8 GB, and page-data demonstrably cannot
       # be given 12 GB on a 16 GB runner. 10240 is the value that clears compile's
-      # measured demand with ~2.4 GB of margin while staying meaningfully under the
-      # ceiling that made page-data's RSS fatal.
+      # measured demand while staying under the ceiling that made page-data's RSS
+      # fatal. It is UNCHANGED by the 2026-08-26 work: the fix attempted there is
+      # to lower demand (one compiler per process), not to re-tune this number,
+      # because there is no room left to re-tune it in either direction.
       #
       # If this is still killed, the phases genuinely do not fit one runner and the
       # answer is a larger runner — a cost decision for the repo owner, not
-      # something to keep bisecting here.
+      # something to keep bisecting here. (Kept verbatim from before 2026-08-26.
+      # It is now costed out in the runner section above rather than left as a
+      # gesture at "a bigger machine": what it takes on this repo is moving to an
+      # organization, GitHub Team, and ~$35-50/month at the 8-core size.)
       NODE_OPTIONS: "--max-old-space-size=10240"
       #
       # A COMMENT THAT SAID THE OPPOSITE OF THE LINE ABOVE IT USED TO LIVE HERE.

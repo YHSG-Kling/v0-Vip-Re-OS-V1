@@ -12,7 +12,6 @@
     "test:address-analysis",
     "test:ads-manager",
     "test:affordability",
-    "test:agent-governance",
     "test:agent-id-class",
     "test:agent-referral",
     "test:ai-authored-record",
