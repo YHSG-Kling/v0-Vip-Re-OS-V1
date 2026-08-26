@@ -205,6 +205,8 @@ export async function getReinvigorationSuggestions(
 
   try {
     const { text } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
       model: "anthropic/claude-opus-4.6" as any,
       messages: [
         {

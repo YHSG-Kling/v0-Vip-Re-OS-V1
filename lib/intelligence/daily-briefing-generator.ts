@@ -746,6 +746,8 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
     // cost accounting. AI_MODEL is left as a label for `ai_model_used` below; the actual model is
     // chosen by AI_TASK_ROUTING['coaching_insight'].
     const result = await generateTextRouted({
+      brokerageId,
+      userId: briefingUserId,
       feature:     "coaching_insight",
       system:      systemPrompt,
       prompt:      userPrompt,

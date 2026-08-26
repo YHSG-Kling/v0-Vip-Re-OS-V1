@@ -302,6 +302,8 @@ export async function generateCallSummaryEmail(params: {
   recipientType: "client" | "agent" | "both"
   agentId: string
 }) {
+  // Tenant for the AI cost ledger — SESSION, never `params.agentId` (§4).
+  const spendActor = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -316,6 +318,8 @@ export async function generateCallSummaryEmail(params: {
     }
 
     const { text: email } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o-mini",
       prompt: `Generate a professional follow-up email after a real estate phone call.
 

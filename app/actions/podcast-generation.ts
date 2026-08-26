@@ -1161,6 +1161,9 @@ export async function generatePodcastEpisodeDescription(params: {
     if (!ctx.isAuthenticated) return { success: false, error: "Unauthorized" }
 
     const { text } = await generateTextRouted({
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId,
+      agentId: ctx.agentId,
       feature: "podcast_description_generation",
       maxTokens: 200,
       temperature: 0.7,
@@ -1297,7 +1300,7 @@ export async function testDistributionChannelConnection(channelId: string): Prom
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function generatePodcastSnippetSuggestions(params: { episodeId: string }) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { userId, agentId, brokerageId } = await getAgentContext()
   if (!agentId || !brokerageId) return { success: false, error: "Missing agent context", snippets: [] }
   const supabase = await createClient()
   const { data: episode } = await supabase
@@ -1310,6 +1313,9 @@ export async function generatePodcastSnippetSuggestions(params: { episodeId: str
   if (!episode.script) return { success: false, error: "Episode has no script to extract from", snippets: [] }
   try {
     const { text } = await generateTextRouted({
+      brokerageId,
+      userId,
+      agentId,
       feature: "podcast_snippet_suggestions",
       maxTokens: 800,
       temperature: 0.7,
@@ -1350,6 +1356,9 @@ export async function generatePodcastBlogPost(params: { episodeId: string }) {
   if (!episode.script) return { success: false, error: "Episode has no script" }
   try {
     const { text } = await generateTextRouted({
+      brokerageId,
+      userId,
+      agentId,
       feature: "podcast_blog_post",
       maxTokens: 1500,
       temperature: 0.6,
@@ -1389,7 +1398,7 @@ ${episode.script.slice(0, 6000)}`,
 }
 
 export async function generatePodcastNewsletterTeaser(params: { episodeId: string }) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { userId, agentId, brokerageId } = await getAgentContext()
   if (!agentId || !brokerageId) return { success: false, error: "Missing agent context" }
   const supabase = await createClient()
   const { data: episode } = await supabase
@@ -1401,6 +1410,9 @@ export async function generatePodcastNewsletterTeaser(params: { episodeId: strin
   if (!episode) return { success: false, error: "Episode not found" }
   try {
     const { text } = await generateTextRouted({
+      brokerageId,
+      userId,
+      agentId,
       feature: "podcast_newsletter_teaser",
       maxTokens: 220,
       temperature: 0.65,

@@ -342,6 +342,7 @@ OUTPUT FORMAT (JSON):
 }`
 
     const { text } = await generateText({
+      brokerageId: (property as { brokerage_id?: string | null })?.brokerage_id ?? null,
       model: "openai/gpt-4o",
       prompt,
     })
@@ -494,6 +495,7 @@ OUTPUT FORMAT (JSON):
 }`
 
     const { text } = await generateText({
+      brokerageId: (event as { brokerage_id?: string | null } | null)?.brokerage_id ?? null,
       model: "openai/gpt-4o",
       prompt,
     })
@@ -882,6 +884,7 @@ OUTPUT FORMAT (JSON):
 }`
 
     const { text } = await generateText({
+      brokerageId: (event as { brokerage_id?: string | null })?.brokerage_id ?? null,
       model: "openai/gpt-4o",
       prompt,
     })
@@ -1321,6 +1324,7 @@ OUTPUT FORMAT (JSON):
 }`
 
     const { text } = await generateText({
+      brokerageId: (event as { brokerage_id?: string | null })?.brokerage_id ?? null,
       model: "openai/gpt-4o",
       prompt,
     })

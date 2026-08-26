@@ -376,7 +376,9 @@ export async function analyzeAddressForBuyer(input: {
     // RANGE, which is more honest than a single number). Fall back to the free cache/Perplexity
     // tier only when RentCast has no key or no hit. Specs come from the free OSINT lookup.
     const [lookup, rc] = await Promise.all([
-      lookupPropertyByAddress({ address, city: "", state: "" }).catch(() => null),
+      // §4 — `brokerageId` is the CONTACT row's tenant, resolved through
+      // requireContactAccess + resolveContactAgent above, not a body value.
+      lookupPropertyByAddress({ address, city: "", state: "", brokerageId }).catch(() => null),
       brokerageId ? getRentcastAVM({ brokerageId, address }).catch(() => null) : Promise.resolve(null),
     ])
     let avm: { value: number; confidence: number; source: string } | null = null

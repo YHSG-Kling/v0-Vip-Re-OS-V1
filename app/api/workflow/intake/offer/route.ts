@@ -70,6 +70,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const result = await extractOfferIntake({
       text:  body.text,
       prior: priorIntake,
+      // §4 — session user, and the brokerage read off THEIR users row.
+      brokerageId,
+      userId: user.id,
     })
 
     // Persist session

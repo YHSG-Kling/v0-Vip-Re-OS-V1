@@ -5,7 +5,14 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import Link from "next/link"
-import { Trophy, Medal, Award, ArrowRight, TrendingUp, Star } from "lucide-react"
+// TOMBSTONE (orphan doctrine §1.3): `TrendingUp` and `Star` were imported here and
+// rendered NOWHERE. Both questions they could have answered are already answered on
+// this panel by SURVIVORS: rank is carried by the medal set at leaderboard-panel.tsx:39-41
+// (Trophy / Medal / Award) and tier by the Badge at :101 — so a star or a trend arrow
+// would be a third and fourth spelling of "how is this agent doing" (§6). This panel
+// renders a RANKED SNAPSHOT and holds no previous-period value, so there is no trend
+// for TrendingUp to point up or down at.
+import { Trophy, Medal, Award, ArrowRight } from "lucide-react"
 import { METRIC_LABEL, type LeaderboardMetric } from "@/lib/gamification/leaderboard-vocabulary"
 
 interface LeaderboardEntry {

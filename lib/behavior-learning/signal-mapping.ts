@@ -67,3 +67,42 @@ export function portalInterestToShowingLevel(
     default:                return null
   }
 }
+
+/**
+ * tourInterestToRating — PURE. The canonical buyer verdict as the 1-5 number the
+ * story-draft brief speaks.
+ *
+ * WHY THIS EXISTS (orphan doctrine §1.1 — a DUPLICATE existed, so merge onto the
+ * survivor). tour_stops carries TWO spellings of one idea: `rating` (integer) +
+ * `feedback` (text), and `buyer_interest_level` (text) + `buyer_note` (text). Only
+ * the SECOND pair has writers — app/actions/tour-planner.ts:896 (rateTourStop) and
+ * :966 (completeTour) — verified live: no DB trigger, no routine and no column
+ * DEFAULT touches `rating`/`feedback` on that table (pg_trigger and pg_proc both
+ * empty for tour_stops, project hrvaqgvukzxfskkcrwbt). So the recap reader at
+ * lib/kernel/client-story-drafts.ts:335 was reading the dead half and got NULL for
+ * every stop, forever — tourRecapBrief's "never narrate a day the OS didn't see"
+ * guard then returned null and NO tour recap has ever been proposed.
+ *
+ * ONE VOCABULARY (CLAUDE.md §6): the ladder is the LIVE CHECK on
+ * tour_stops.buyer_interest_level — love_it / like_it / maybe / no — the same four
+ * values portalInterestToShowingLevel above already normalises onto, which is why
+ * this mapper belongs in this module rather than as a private map at the read site.
+ * 'not_for_us' is accepted as the learning-signal spelling of 'no'
+ * (app/actions/tour-planner.ts canonicalises 'no' → 'not_for_us' for
+ * buyer_behavior_log), so a caller holding either spelling lands on the same rung.
+ *
+ * An unrated stop returns null and NOT a number: a stop nobody reacted to is not a
+ * 1/5, and scoring it as the bottom rung would launder "we never asked" into "they
+ * disliked it" — the same trap lib/lead-governance/seller-signal-strength.ts's
+ * rank(-1) exists to avoid.
+ */
+export function tourInterestToRating(interestLevel: string | null | undefined): number | null {
+  switch (interestLevel) {
+    case "love_it":     return 5
+    case "like_it":     return 4
+    case "maybe":       return 3
+    case "no":
+    case "not_for_us":  return 1
+    default:            return null
+  }
+}

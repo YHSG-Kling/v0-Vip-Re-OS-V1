@@ -346,6 +346,8 @@ export async function uploadDocument(
  * wrong answer.
  */
 export async function processDocumentWithAI(documentId: string, fileUrl: string, fileType: string) {
+  // Tenant for the AI cost ledger — SESSION (§4). Three model calls below.
+  const spendActor = await getAgentContext()
   const supabase = await createClient()
   const startTime = Date.now()
 
@@ -375,6 +377,8 @@ export async function processDocumentWithAI(documentId: string, fileUrl: string,
 
     // Step 1: Extract text and classify document
     const classificationResult = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o",
       messages: [
         {
@@ -412,6 +416,8 @@ export async function processDocumentWithAI(documentId: string, fileUrl: string,
 
     // Step 2: Generate plain English explanation
     const explanationResult = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o-mini",
       prompt: `You are a helpful real estate assistant explaining documents to first-time homebuyers.
 
@@ -482,6 +488,8 @@ Use simple language, avoid jargon, and be reassuring.`,
           : "Standard state requirements apply."
 
         const scanResult = await generateText({
+          brokerageId: spendActor.brokerageId,
+          userId: spendActor.userId || null,
           model: "openai/gpt-4o",
           messages: [
             {
@@ -1174,6 +1182,8 @@ export async function getDocumentFolders(contactId: string) {
 }
 
 export async function askDocumentQuestion(documentId: string, question: string) {
+  // Tenant for the AI cost ledger — SESSION (§4).
+  const spendActor = await getAgentContext()
   // Get document
   const { document, extractionLog } = await getDocumentWithAnalysis(documentId)
 
@@ -1183,6 +1193,8 @@ export async function askDocumentQuestion(documentId: string, question: string) 
 
   // Generate answer using AI
   const result = await generateText({
+    brokerageId: spendActor.brokerageId,
+    userId: spendActor.userId || null,
     model: "openai/gpt-4o-mini",
     prompt: `You are a helpful real estate assistant. A client is asking about their ${document.doc_type ?? document.document_type ?? "document"}.
 

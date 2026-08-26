@@ -189,6 +189,8 @@ async function processBrokerageWealthScan(
           contact: c,
           opportunity: opp,
           marketRate,
+          // §4 — the brokerage this scan is running for, not a caller value.
+          brokerageId,
         })
         opp.aiNarrative = narrative
 
@@ -583,6 +585,9 @@ async function generateOpportunityNarrative(input: {
   contact: { age_range: string | null; contact_persona: string | null }
   opportunity: DetectedOpportunity
   marketRate: MarketRate
+  /** Tenant for the AI cost ledger — the brokerage this scan is running for,
+   *  threaded down from scanBrokerageOpportunities (§4). */
+  brokerageId: string | null
 }): Promise<string> {
   const { contact, opportunity, marketRate } = input
   const personaContext = [
@@ -617,6 +622,7 @@ Return the message text only, no preamble.`
 
   try {
     const { text } = await generateTextRouted({
+      brokerageId: input.brokerageId,
       feature: "smart_suggestions",
       prompt,
       temperature: 0.6,

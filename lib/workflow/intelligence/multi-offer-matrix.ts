@@ -174,6 +174,7 @@ In 3 short paragraphs, written directly to the seller, explain:
 Don't use jargon. Be direct and balanced.`
 
       const result = await generateTextRouted({
+        brokerageId: (listing as { brokerage_id?: string | null } | null)?.brokerage_id ?? null,
         feature: "multi_offer_summary",
         messages: [{ role: "user", content: prompt }],
       })
@@ -220,9 +221,14 @@ export async function buildCounterOfferDiff(input: {
 }): Promise<CounterOfferDiff> {
   const svc = createServiceClient()
 
+  // brokerage_id is selected because THIS FUNCTION SPENDS: the counter-offer
+  // take below is a model call, and lib/ai/models.ts books the ai_tool_usage
+  // row only under `if (request.brokerageId)`. The offer row is the tenant
+  // (offers.brokerage_id), which is what the matrix builder above already
+  // keys on — nothing here comes from a caller argument (§4).
   const { data: offer } = await svc
     .from("offers")
-    .select("id, offer_price, earnest_money, closing_date, contingencies, financing_type, down_payment_percent, closing_cost_contribution, escalation_cap")
+    .select("id, brokerage_id, offer_price, earnest_money, closing_date, contingencies, financing_type, down_payment_percent, closing_cost_contribution, escalation_cap")
     .eq("id", input.offerId)
     .maybeSingle()
 
@@ -272,6 +278,7 @@ ${changedRows.map(r => `- ${r.labelForSeller}: ${JSON.stringify(r.original)} →
 
 In 1-2 sentences, write the bottom-line take for the agent: should the buyer accept, counter back, or walk? Be specific about why.`
       const r = await generateTextRouted({
+        brokerageId: (offer as { brokerage_id?: string | null }).brokerage_id ?? null,
         feature: "counter_offer_take",
         messages: [{ role: "user", content: prompt }],
       })

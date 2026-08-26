@@ -434,6 +434,32 @@ export async function cancelSubscription(subscriptionId: string) {
 
   if (updateError) throw updateError
 
+  // BUILT (orphan doctrine §1.2 — no duplicate existed, the capability is wanted).
+  // `KernelEvent` was imported at the top of this file and read by NOTHING — a dead
+  // import that is the stub of exactly this wire. lib/kernel/events.ts:409
+  // SUBSCRIPTION_CANCELLED was declared and emitted by NOBODY, so the one lifecycle
+  // transition a tenant cares most about never reached the reactor, while
+  // events.ts:9 states the rule: "every lifecycle state transition maps to exactly
+  // one KernelEvent". The reader half already exists — lib/kernel/emit.ts:59
+  // emitKernelEvent writes lifecycle_events AND fans out to notifications, marketing
+  // triggers and sequences — so this closes the pair rather than adding a new one.
+  //
+  // Best-effort, matching app/actions/auth/signup-brokerage.ts:465 (SUBSCRIPTION_CREATED):
+  // the Stripe cancel and the local row already landed above; a fan-out failure must
+  // not turn a completed cancellation into a thrown error the caller retries.
+  try {
+    const { emitKernelEvent } = await import("@/lib/kernel/emit")
+    await emitKernelEvent({
+      event:       KernelEvent.SUBSCRIPTION_CANCELLED,
+      brokerageId: ctx.brokerageId,
+      entityType:  "subscription",
+      entityId:    subscriptionId,
+      metadata:    { cancel_at_period_end: true, cancelled_by: ctx.userId, stripe_subscription_id: subscription.stripe_subscription_id },
+    })
+  } catch (err) {
+    console.warn("[cancelSubscription] SUBSCRIPTION_CANCELLED emit failed:", (err as any)?.message)
+  }
+
   // Revalidate inside function to avoid module-level server dependency
   const { revalidatePath } = await import("next/cache")
   revalidatePath("/settings/billing")

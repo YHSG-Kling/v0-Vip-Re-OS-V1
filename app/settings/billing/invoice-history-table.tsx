@@ -19,7 +19,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { FileText, Download, ExternalLink } from "lucide-react"
+// TOMBSTONE (orphan doctrine §1.3): `ExternalLink` was imported here and rendered
+// NOWHERE. It had nothing to point at — `billing_invoices` carries exactly one URL
+// column, `pdf_url` (verified live against hrvaqgvukzxfskkcrwbt; there is no
+// hosted_invoice_url), and that link is already rendered by the SURVIVOR at
+// invoice-history-table.tsx:135, the `Download` anchor with target="_blank". A second
+// icon for the same single destination would be two spellings of one action (§6).
+import { FileText, Download } from "lucide-react"
 
 interface Invoice {
   id: string

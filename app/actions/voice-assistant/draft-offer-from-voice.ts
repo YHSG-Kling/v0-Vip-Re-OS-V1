@@ -91,6 +91,9 @@ export async function voiceDraftOffer(req: VoiceDraftOfferRequest): Promise<Voic
   const extracted = await extractOfferIntake({
     text:  req.voiceInput,
     prior: priorIntake,
+    // §4 — session user, and the brokerage read off THEIR users row.
+    brokerageId,
+    userId: user.id,
   })
 
   const newConversation = [

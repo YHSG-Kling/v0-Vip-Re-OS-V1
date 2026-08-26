@@ -926,6 +926,9 @@ export async function aiCheckDocumentStatus(params: { loopId: string; agentId?: 
 
     // AI recommendation
     const { text: recommendation } = await generateText({
+      brokerageId,
+      userId: ctx.userId,
+      agentId: ctx.agentId,
       model: resolveModel("openai/gpt-4o-mini"),
       prompt: `As a transaction coordinator, review these document statuses and provide a brief action recommendation:
 

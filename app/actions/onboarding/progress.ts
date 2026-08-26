@@ -597,6 +597,8 @@ export async function generatePerformanceReport(
 
   // Generate AI coaching report
   const { text } = await generateText({
+    brokerageId: targetBrokerageId,
+    userId: user.id,
     model: 'anthropic/claude-opus-4',
     system: `You are a real estate brokerage training coach. ${toneGuidance} Be concise and actionable.`,
     prompt: `Based on this new agent's onboarding metrics: ${JSON.stringify(metrics, null, 2)}

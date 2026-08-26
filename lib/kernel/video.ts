@@ -254,6 +254,8 @@ export async function generateVideoScript(
     tone: input.tone,
     durationSeconds: input.duration,
     complianceBlocks,
+    brokerageId,
+    userId: user?.id ?? null,
   })
 
   const complianceWarnings = actor
@@ -745,6 +747,12 @@ async function generateScriptViaAI(params: {
   durationSeconds: number
   /** Brand voice + ThemFirst + Fair Housing, prepended to the prompt. */
   complianceBlocks?: string[]
+  /** Tenant + actor for the AI cost ledger. The tenant is the PROJECT's own
+   *  brokerage (already verified against the caller by
+   *  generateVideoScriptAction's assertProjectInCallerBrokerage); the actor is
+   *  the signed-in user. Distinct id spaces, resolved separately (§4). */
+  brokerageId?: string | null
+  userId?: string | null
 }): Promise<string> {
   const durationLabel = params.durationSeconds >= 60
     ? `${Math.floor(params.durationSeconds / 60)}-minute`
@@ -772,6 +780,8 @@ Focus on viewer benefits — what the home means for their life — not feature 
 Keep narration natural and conversational.`
 
   const { text } = await generateTextRouted({
+    brokerageId: params.brokerageId ?? null,
+    userId: params.userId ?? null,
     prompt,
     feature: "video_script_generation",
     maxTokens: 1200,

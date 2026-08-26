@@ -7,7 +7,12 @@
  * editing" buyers ask for). A tour is the STRONGEST taste signal: very_interested → love_it (+10),
  * not_interested → not_for_us (-5). Pure: no I/O.
  */
-import { showingInterestToLearningSignal, interestLevelToLearningSignal, portalInterestToShowingLevel } from "../lib/behavior-learning/signal-mapping"
+import { showingInterestToLearningSignal, interestLevelToLearningSignal, portalInterestToShowingLevel, tourInterestToRating } from "../lib/behavior-learning/signal-mapping"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
+import { blankComments } from "./strip-comments"
+import { CHECK_VOCABULARIES } from "./check-vocabularies"
+import { tourRecapBrief, pickStandout } from "../lib/kernel/client-story-drafts"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -41,6 +46,59 @@ function main() {
   check("every mapped value is CHECK-legal", ["very_interested","interested","neutral","not_interested"].every(
     (v) => ["love_it","like_it","maybe","no"].includes(portalInterestToShowingLevel(v) as string)))
   check("unknown → null (caller falls back safely)", portalInterestToShowingLevel("???") === null)
+
+  // ── THE TOUR-RECAP HALF (orphan doctrine §1.1, merged onto the survivor) ──
+  //
+  // lib/kernel/client-story-drafts.ts:runTourRecaps read tour_stops.rating and
+  // tour_stops.feedback. NOTHING writes either — no code, and (verified live on
+  // hrvaqgvukzxfskkcrwbt) no trigger, no routine and no column DEFAULT. So every stop
+  // came back {rating: null, feedback: null}, tourRecapBrief returned null on its
+  // "never narrate a day the OS didn't see" guard, and not one tour recap — nor the
+  // offer-readiness bridge task behind it — had ever fired. The reader was repointed to
+  // the SURVIVORS, buyer_interest_level / buyer_note, which app/actions/tour-planner.ts
+  // actually writes, and translated through tourInterestToRating.
+  console.log("\n[Tour verdict → the 1-5 rating the recap brief speaks]")
+  check("love_it → 5 (top of the ladder)", tourInterestToRating("love_it") === 5)
+  check("like_it → 4 (still a standout under pickStandout's ≥4)", tourInterestToRating("like_it") === 4)
+  check("maybe → 3", tourInterestToRating("maybe") === 3)
+  check("no → 1 (the CHECK's negative term)", tourInterestToRating("no") === 1)
+  check("not_for_us → 1 (the learning-signal spelling of the same rung)", tourInterestToRating("not_for_us") === 1)
+
+  console.log("\n[Honest — an unrated stop is not a 1/5]")
+  check("null → null, never 0 and never 1", tourInterestToRating(null) === null)
+  check("unknown → null (a value we cannot read is not a bad reaction)", tourInterestToRating("scheduled") === null)
+
+  // THE RULE, NOT A WAYPOINT: the ladder is DERIVED from the live CHECK on
+  // tour_stops.buyer_interest_level via the generated vocabulary cache, so a widened
+  // CHECK makes this fail instead of silently leaving a new value unmapped.
+  const tourVocab = CHECK_VOCABULARIES["tour_stops"]?.buyer_interest_level ?? []
+  check("the vocabulary cache is NOT empty (a blind cache passes everything)", tourVocab.length > 0)
+  check("every live CHECK value maps to a rating — no value falls through to null",
+    tourVocab.every((v) => typeof tourInterestToRating(v) === "number"))
+
+  console.log("\n[End to end — a rated tour now PRODUCES a recap, which is the half that was dead]")
+  const facts = [
+    { address: "1 Oak Ct", rating: tourInterestToRating("love_it"), feedback: "the kitchen sold them" },
+    { address: "2 Elm St", rating: tourInterestToRating("maybe"), feedback: null },
+  ]
+  check("a tour of rated stops yields a brief (it used to yield null)", tourRecapBrief({ buyerFirstName: "Sam", stops: facts }) !== null)
+  check("the standout is the love_it stop", pickStandout(facts)?.address === "1 Oak Ct")
+  // NEGATIVE CONTROL, in the exact shape of the bug: the OLD columns are always NULL,
+  // so the old read path still produces nothing. If this ever goes green the mapper is
+  // fabricating a reaction out of an empty column.
+  const oldPath = [{ address: "1 Oak Ct", rating: null, feedback: null }, { address: "2 Elm St", rating: null, feedback: null }]
+  check("NEGATIVE CONTROL — the writerless columns still yield NO brief", tourRecapBrief({ buyerFirstName: "Sam", stops: oldPath }) === null)
+
+  // POSITIVE CONTROL ON THE ABSENCE CLAIM: the read site must name the SURVIVOR columns
+  // and must not have drifted back. Source is read comment-STRIPPED — the tombstone at
+  // that call site QUOTES the retired `.select("property_address, rating, feedback")`,
+  // and a raw-source scan would read the tombstone as the live defect and fail forever.
+  const draftsRaw = readFileSync(join(process.cwd(), "lib/kernel/client-story-drafts.ts"), "utf8")
+  const draftsCode = blankComments(draftsRaw)
+  check("the recap read names the WRITTEN columns", draftsCode.includes('"property_address, buyer_interest_level, buyer_note"'))
+  check("the recap read no longer names the writerless pair", !draftsCode.includes('"property_address, rating, feedback"'))
+  check("BLINDNESS CONTROL — the retired select IS still present in the RAW file (the tombstone), so the stripper is what makes the check above true",
+    draftsRaw.includes('"property_address, rating, feedback"'))
 
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }

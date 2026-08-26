@@ -74,7 +74,14 @@ export async function GET(req: NextRequest) {
           // Build the heat-map summary from the past week's showing feedback.
           // Surfaced via the activity description so the agent's CRM picks it
           // up without an extra side-table.
-          const sentiment = await buildShowingSentimentSummary(listing.id).catch((err) => {
+          const sentiment = await buildShowingSentimentSummary(listing.id, {
+            // The listing row this cron is iterating carries the tenant; the
+            // cron has no human actor, so the AI ledger row lands on the
+            // brokerage with a null user (allowed by
+            // ai_tool_usage_anon_rows_carry_tenant, verified live).
+            brokerageId: listing.brokerage_id ?? null,
+            userId: null,
+          }).catch((err) => {
             console.warn(`[seller-updates] sentiment failed for ${listing.id}:`, err)
             return null
           })

@@ -1,6 +1,10 @@
 "use server"
 
 import { generateTextRouted as generateText } from "@/lib/ai/models"
+// THE SPEND ACTOR. Every export in this "use server" file is a public HTTP
+// endpoint, so the AI cost ledger's tenant can only come from the SESSION
+// (CLAUDE.md §4) — never from an id the caller supplied.
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation"
 
 export async function generateComingSoonContent(params: {
@@ -11,11 +15,16 @@ export async function generateComingSoonContent(params: {
 }): Promise<{ success: boolean; socialPost?: string; emailBody?: string; error?: string }> {
   const { agentId, listingAddress, daysUntilLaunch, launchDateStr } = params
 
+  // Tenant for the AI cost ledger — SESSION, never `params.agentId` (§4).
+  const spendActor = await getAgentContext()
+
   const brandVoice = await getBrandVoiceProfile(agentId).catch(() => null)
   const tone = (brandVoice as any)?.tone ?? "exciting and professional"
 
   try {
     const { text } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o-mini",
       prompt: `Write a coming soon real estate listing announcement.
 Property: ${listingAddress}.

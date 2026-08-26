@@ -356,6 +356,9 @@ export async function compareContractVersions(params: {
     }
 
     const { text: comparison } = await generateText({
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId,
+      agentId: ctx.agentId,
       model: resolveModel("openai/gpt-4o"),
       prompt: `Compare these two versions of a real estate document and identify all changes:
 

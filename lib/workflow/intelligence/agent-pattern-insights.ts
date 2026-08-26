@@ -164,6 +164,8 @@ export async function getAgentPatternInsights(input: {
   try {
     const insightsTL = insights.slice(0, 3).map(i => `${i.title}: ${i.recommendation}`).join("\n")
     const { text } = await generateTextRouted({
+      brokerageId: input.brokerageId,
+      userId: input.agentUserId,
       feature: "agent_pattern_summary",
       messages: [{
         role: "user",

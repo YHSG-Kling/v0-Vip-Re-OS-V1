@@ -94,6 +94,9 @@ export async function generateAIForecast(params: {
         : "No historical data available"
 
     const { text } = await generateTextRouted({
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId,
+      agentId: ctx.agentId,
       feature: "unspecified",
       messages: [
         {
@@ -229,6 +232,9 @@ export async function generatePLReport(params: {
       grossCommission > 0 ? ((netProfit / grossCommission) * 100).toFixed(1) : "0"
 
     const { text } = await generateTextRouted({
+      brokerageId: effectiveBrokerageId,
+      userId: ctx.userId,
+      agentId: ctx.agentId,
       feature: "unspecified",
       messages: [
         {

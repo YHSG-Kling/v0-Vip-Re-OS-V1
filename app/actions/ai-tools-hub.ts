@@ -1414,6 +1414,27 @@ async function generateSmartReply(
     // rather than guessing SMS and getting SMS-length copy.
     channel: "in_app",
     contactType: field(params.relationshipType),
+    // DELIBERATELY NO TENANT, and this is the one place in this file where that
+    // is the RIGHT answer rather than the defect routedTokens describes.
+    //
+    // generateSmartReplies now ACCEPTS a tenant (lib/inbox/smart-replies.ts) so
+    // that /api/inbox/smart-replies — which keeps no ledger of its own — can
+    // have the routed lane book the spend. THIS caller already books it, on its
+    // own ai_tool_usage row, with the served model and the real counts
+    // (smartReplyTokens below). Passing the tenant here as well would put one
+    // call on two rows of the table usage-metering sums, and the brokerage's
+    // ai_tokens meter would read double — the exact hazard routedTokens exists
+    // to prevent. Exactly one row carries the spend; here it is this one.
+    //
+    // COST OF THAT CHOICE, STATED RATHER THAN HIDDEN: this lane therefore still
+    // misses the three rails logAIUsage owns and this hub's own row does not
+    // reach — the fair-use PRE-FLIGHT, usage_counters.ai_tokens_monthly and
+    // billing_usage.ai_calls. Closing that needs the hub's own booking to move
+    // to `booked_by_survivor` for this tool, which is a change to what
+    // scripts/ai-tools-hub-honesty-simulator.ts and
+    // scripts/ai-tools-hub-tenanted-spend-simulator.ts assert about smart_reply
+    // (both pin `measured: true` here today) — a decision for the lane that
+    // owns those proofs, not a side effect of threading a tenant.
   })
 
   const rendered = replies

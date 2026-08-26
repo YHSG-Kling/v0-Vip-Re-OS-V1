@@ -48,6 +48,8 @@ export async function generateContentIdeas(persona?: string, _userId?: string, _
   try {
     // Use AI to generate fresh content ideas
     const { text } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
       model: "openai/gpt-4o-mini",
       prompt: `Generate 5 fresh, engaging content ideas for a real estate agent targeting ${persona || "general audience"}. 
       Focus on educational, empathy-driven content that follows the "Them First" philosophy.
@@ -184,6 +186,8 @@ export async function getCompetitorContent(_userId?: string, _userRole?: string)
 
   try {
     const { text } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
       model: "openai/gpt-4o-mini",
       prompt: `Analyze the high-performing content strategy for these local real estate competitors: ${competitorList}.
 

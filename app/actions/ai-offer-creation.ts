@@ -84,6 +84,10 @@ export async function aiOfferStrategyAdvisor(params: {
       marketConditions: params.marketConditions,
       buyerMotivation: params.buyerMotivation,
       buyerMaxBudget: params.buyerMaxBudget,
+    }, {
+      // §4 — the session, resolved above; `params.agentId` is ignored here.
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId || null,
     })
     if (!strategy) return { success: false, error: "Strategy generation failed" }
     return { success: true, strategy }
@@ -104,7 +108,11 @@ export async function aiCalculateEscalation(params: {
   marketTrend: "appreciating" | "stable" | "declining"
 }) {
   try {
+    // Tenant for the AI cost ledger — SESSION (§4).
+    const spendActor = await getAgentContext()
     const { object: escalation } = await generateObjectRouted({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       feature: "offer_analysis",
       schema: z.object({
         recommended: z.boolean(),
@@ -151,7 +159,11 @@ export async function aiRecommendContingencies(params: {
   buyerRiskTolerance: "conservative" | "moderate" | "aggressive"
 }) {
   try {
+    // Tenant for the AI cost ledger — SESSION (§4).
+    const spendActor = await getAgentContext()
     const contingencyResult = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: resolveModel("openai/gpt-4o-mini"),
       prompt: `Recommend contingencies for this buyer:
 
@@ -220,6 +232,9 @@ export async function aiGenerateBuyerLetter(params: {
     }
 
     const { text: letter } = await generateText({
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId,
+      agentId: ctx.agentId,
       model: resolveModel("openai/gpt-4o"),
       prompt: `Write a heartfelt, Fair Housing compliant buyer letter.
 
@@ -256,6 +271,8 @@ export async function getOfferForms(params: {
   isNewConstruction: boolean
 }) {
   try {
+    // Tenant for the AI cost ledger — SESSION (§4).
+    const spendActor = await getAgentContext()
     const stateConfig = STATE_OFFER_FORMS[params.state] || STATE_OFFER_FORMS.DEFAULT
 
     const forms = [...stateConfig.required]
@@ -278,6 +295,8 @@ export async function getOfferForms(params: {
 
     // AI enhancement for special circumstances
     const { text: additionalForms } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: resolveModel("openai/gpt-4o-mini"),
       prompt: `As a real estate forms expert for ${params.state}, are there additional forms needed for:
 - Financing: ${params.financingType}
@@ -444,7 +463,11 @@ export async function aiCounterOfferStrategy(params: {
   negotiationRound: number
 }) {
   try {
+    // Tenant for the AI cost ledger — SESSION (§4).
+    const spendActor = await getAgentContext()
     const strategyResult = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: resolveModel("openai/gpt-4o"),
       prompt: `Help strategize response to seller's counter offer.
 

@@ -2,7 +2,16 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { bestEffort } from "@/lib/db/best-effort"
-import { isValidUUID, validateEmail, validatePhone } from "@/lib/validations"
+import { isValidUUID } from "@/lib/validations"
+// TOMBSTONE (orphan doctrine §1.3 — functionality already lives elsewhere).
+// `validateEmail` / `validatePhone` were imported here and read by NOTHING in this
+// file. They cannot have a job here: every export of this module is a SCORER
+// (calculateLeadScore, the three bulk recalculators, getTopLeads,
+// getLeadsNeedingAttention) — none of them accepts an email or a phone, so there is
+// no value to validate. The contact-shape validation lives, and is ENFORCED, at
+// lib/services/contact-management.service.ts:200 (email) and :205 (phone), which is
+// the writer that actually takes those fields; lib/validations/index.ts:106/:116
+// remain their only definitions. Nothing moved and nothing was lost.
 // TOMBSTONE (§1.3): the `LEAD_SOURCES` import that stood here is DELETED. It was
 // never referenced anywhere in this file — a dead import that made the vocabulary
 // read as enforced by the scoring service, which writes no `source` at all (its

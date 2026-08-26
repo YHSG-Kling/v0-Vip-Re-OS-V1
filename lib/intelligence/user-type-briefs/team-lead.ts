@@ -161,6 +161,8 @@ export async function generateTeamLeadBrief(params: {
   if (priorities.length > 0) {
     try {
       const { text } = await generateTextRouted({
+        brokerageId: params.brokerageId,
+        userId: params.userId,
         feature: "coaching_insight",
         prompt:
           `One-sentence morning brief for a real estate team lead. ` +

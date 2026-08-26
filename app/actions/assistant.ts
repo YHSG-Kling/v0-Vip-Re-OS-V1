@@ -2,6 +2,10 @@
 
 import { createServerClient } from "@/lib/supabase/server"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
+// THE SPEND ACTOR. Every export in this "use server" file is a public HTTP
+// endpoint, so the AI cost ledger's tenant can only come from the SESSION
+// (CLAUDE.md §4) — never from an id the caller supplied.
+import { getAgentContext, type AgentContext } from "@/lib/identity/get-agent-context"
 
 // =====================================================
 // EVENT HANDLERS — exposed as server actions but no UI currently invokes them.
@@ -294,6 +298,9 @@ export async function generateAssistantSuggestions(
     entity_type?: string
   },
 ) {
+  // Tenant for the AI cost ledger — SESSION, never `agentId` (§4). Threaded
+  // into the per-page suggestion helpers below, which reach a model.
+  const spendActor = await getAgentContext()
   const supabase = await createServerClient()
 
   const suggestions = []
@@ -301,7 +308,7 @@ export async function generateAssistantSuggestions(
   switch (context.page) {
     case "contact_detail":
       if (context.entity_id) {
-        suggestions.push(...(await getContactSuggestions(context.entity_id)))
+        suggestions.push(...(await getContactSuggestions(context.entity_id, spendActor)))
       }
       break
 
@@ -325,7 +332,9 @@ export async function generateAssistantSuggestions(
   return { suggestions }
 }
 
-async function getContactSuggestions(contactId: string) {
+/** `spendActor` is the SESSION context resolved by the caller — the AI ledger's
+ *  tenant, threaded rather than re-derived so its provenance stays visible. */
+async function getContactSuggestions(contactId: string, spendActor: AgentContext) {
   const supabase = await createServerClient()
 
   // Both embeds are single-FK pairs (communications_contact_id_fkey,
@@ -420,6 +429,8 @@ async function getContactSuggestions(contactId: string) {
   // AI-generated suggestion
   try {
     const { text } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o-mini",
       prompt: `Based on this contact data, suggest ONE specific action the agent should take:
 - Name: ${contact.first_name} ${contact.last_name}

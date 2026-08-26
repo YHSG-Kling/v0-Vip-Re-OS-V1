@@ -633,6 +633,8 @@ appraisal.`
 
   try {
     const { text } = await generateTextRouted({
+      brokerageId: input.brokerageId,
+      userId: input.agentUserId,
       feature: "pricing_research",  // routes to a fast/cheap model
       prompt,
       temperature: 0.3,

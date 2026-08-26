@@ -248,6 +248,9 @@ export async function analyzePropertyForBuyer(params: {
     const preferredFeatures = criteria?.mustHaveFeatures ?? []
 
     const { text: analysis } = await generateText({
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId,
+      agentId: ctx.agentId,
       model: resolveModel("openai/gpt-4o"),
       prompt: `Analyze this property for the buyer and provide a comprehensive assessment:
 
@@ -323,6 +326,9 @@ export async function notifyNewMatches(params: {
 
     // Generate personalized notification
     const { text: notification } = await generateText({
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId,
+      agentId: ctx.agentId,
       model: resolveModel("openai/gpt-4o-mini"),
       prompt: `Generate a brief, exciting notification message for a buyer about ${newMatches.length} new property matches with scores of ${threshold}%+. Keep it under 160 characters for SMS. Be warm and professional.`,
     })

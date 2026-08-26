@@ -46,7 +46,13 @@ const ThemeExtractionSchema = z.object({
   oneLineRecommendation: z.string().max(160),
 })
 
-async function extractThemes(feedbackTexts: string[]) {
+async function extractThemes(
+  feedbackTexts: string[],
+  /** Tenant for the AI cost ledger — the LISTING's own brokerage, resolved by
+   *  the caller from a listings row, never from a request body (§4). Null =
+   *  no tenant reached this lane and nothing books, which is honest. */
+  spendActor: { brokerageId: string | null; userId: string | null },
+) {
   // Routed via generateObjectRouted: gateway + AI_TASK_ROUTING + fallback model + fair-use + cost
   // accounting. Falls back to keyword bucketing when the gateway key is missing.
   if (!process.env.AI_GATEWAY_API_KEY || feedbackTexts.length === 0) {
@@ -54,6 +60,8 @@ async function extractThemes(feedbackTexts: string[]) {
   }
   try {
     const { object } = await generateObjectRouted({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId,
       feature: "sentiment_analysis",
       schema:  ThemeExtractionSchema,
       system:
@@ -99,6 +107,11 @@ function bucketKeywords(texts: string[]) {
 
 export async function buildShowingSentimentSummary(
   listingId: string,
+  /** The listing's tenant + the acting user, for the AI cost ledger. Both
+   *  callers already hold a listings row (the cron iterates them; the action
+   *  reads one and checks it against the caller's own brokerage), so this is
+   *  threaded rather than re-derived — and it is never a body value (§4). */
+  spendActor: { brokerageId: string | null; userId: string | null } = { brokerageId: null, userId: null },
 ): Promise<ShowingSentimentSummary | null> {
   const supabase = createServiceClient()
   const windowEnd = new Date()
@@ -159,7 +172,7 @@ export async function buildShowingSentimentSummary(
   let positiveThemes: string[] = []
   let objections: string[] = []
   let recommendedAction = ""
-  const themed = await extractThemes(texts)
+  const themed = await extractThemes(texts, spendActor)
   if (themed) {
     positiveThemes = themed.positiveThemes
     objections = themed.objections
@@ -227,6 +240,9 @@ export async function getShowingSentimentSummaryAction(listingId: string) {
     return { success: false, error: "forbidden" }
   }
 
-  const summary = await buildShowingSentimentSummary(listingId)
+  const summary = await buildShowingSentimentSummary(listingId, {
+    brokerageId: listing.brokerage_id ?? null,
+    userId: user.id,
+  })
   return { success: true, summary }
 }

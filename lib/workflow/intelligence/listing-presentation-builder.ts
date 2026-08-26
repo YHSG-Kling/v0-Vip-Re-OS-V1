@@ -162,6 +162,10 @@ async function buildMarketingPlan(input: {
   bedrooms?:       number | null
   bathrooms?:      number | null
   sqft?:           number | null
+  /** Tenant + actor for the AI cost ledger, from ListingPresentationInput —
+   *  resolved server-side by the cron and the workflow route (§4). */
+  brokerageId?:    string | null
+  agentUserId?:    string | null
 }): Promise<MarketingPlan> {
   // Recommend tier from value
   const tier: MarketingPlan["recommendedTier"] =
@@ -187,6 +191,8 @@ Return ONLY JSON matching this shape (no prose, no markdown):
   let parsed: Partial<Omit<MarketingPlan, "recommendedTier">> = {}
   try {
     const { text } = await generateTextRouted({
+      brokerageId: input.brokerageId ?? null,
+      userId: input.agentUserId ?? null,
       feature: "listing_marketing_plan",
       messages: [{ role: "user", content: prompt }],
     })
@@ -371,6 +377,10 @@ export async function buildListingPresentation(
       bedrooms:        input.bedrooms,
       bathrooms:       input.bathrooms,
       sqft:            input.sqft,
+      // §4 — resolved server-side by both callers (the prep cron and the
+      // workflow route), carried on ListingPresentationInput.
+      brokerageId:     input.brokerageId,
+      agentUserId:     input.agentUserId,
     })
 
     // 4. State forms (used in the deck + linked packet)

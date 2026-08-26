@@ -23,7 +23,7 @@ interface SendUpdateParams {
  */
 export async function generateSellerUpdateDraft({ listingId, agentId }: GenerateDraftParams) {
   const supabase = await createClient()
-  const { brokerageId } = await getAgentContext()
+  const { brokerageId, userId } = await getAgentContext()
 
   // Fetch listing data
   const { data: listing, error: listingError } = await supabase
@@ -156,6 +156,8 @@ ${milestones.map(m => `- ${m.milestone_name}: ${m.status} (${m.target_date})`).j
 
   // Call AI to generate draft
   const { text: draftText } = await generateText({
+    brokerageId,
+    userId,
     model: "openai/gpt-4o-mini",
     prompt: `You are a real estate agent writing a weekly update to your seller client.
 Be warm, professional, and specific. Max 200 words.

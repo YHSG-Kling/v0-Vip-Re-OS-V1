@@ -524,6 +524,9 @@ export async function calculateListingHealth(params: {
         overallScore,
         riskLevel,
         components,
+        // §4 — the listing row's own tenant, the same one every kernel event
+        // emitted below is stamped with.
+        brokerageId: listing.brokerage_id ?? null,
       })
       aiNarrative = r.narrative
       recommendedActions.push(...r.recommendedActions)
@@ -638,6 +641,10 @@ async function generateDealHealthNarrative(input: {
   overallScore:    number
   riskLevel:       ListingRiskLevel
   components:      ListingComponentScore[]
+  /** Tenant for the AI cost ledger — the LISTING row's own brokerage, which
+   *  this file already uses as the tenant for every kernel event it emits.
+   *  Never a caller argument (§4). */
+  brokerageId:     string | null
 }): Promise<{
   narrative: string
   recommendedActions: Array<{ action: string; reasoning: string; impactEstimate?: string }>
@@ -660,6 +667,7 @@ Then on a new line, output a JSON array of 2-3 recommended actions in this exact
 ACTIONS_JSON: [{"action": "...", "reasoning": "...", "impactEstimate": "..."}]`
 
   const result = await generateTextRouted({
+    brokerageId: input.brokerageId,
     feature: "listing_health_narrative",
     messages: [{ role: "user", content: prompt }],
   })

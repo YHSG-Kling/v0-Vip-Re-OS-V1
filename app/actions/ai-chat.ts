@@ -343,7 +343,10 @@ export async function sendChatMessage(data: {
   // Generate AI response if requested
   let assistantMessage: Record<string, unknown> | null = null
   if (data.requestAiResponse) {
-    const aiResponse = await generateAiResponse(data.sessionId, data.messageContent)
+    const aiResponse = await generateAiResponse(data.sessionId, data.messageContent, {
+      brokerageId: identity.brokerageId,
+      userId: identity.userId,
+    })
 
     const { data: aiRow, error: aiInsertError } = await supabase
       .from("messages")
@@ -550,7 +553,12 @@ async function checkMessageCompliance(message: string, sessionId: string): Promi
 // AI RESPONSE GENERATION
 // =====================================================
 
-async function generateAiResponse(sessionId: string, userMessage: string): Promise<any> {
+/** The AI cost ledger's tenant + actor, resolved from the SESSION by the
+ *  caller and threaded rather than re-derived, so its provenance stays
+ *  visible at the model call (CLAUDE.md §4). */
+type SpendActor = { brokerageId: string | null; userId: string | null }
+
+async function generateAiResponse(sessionId: string, userMessage: string, spendActor: SpendActor): Promise<any> {
   const supabase = await createClient()
 
   // Get session context.
@@ -695,6 +703,8 @@ Format as JSON:
 
   try {
     const result = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId,
       model: style.model,
       prompt: prompt,
     })

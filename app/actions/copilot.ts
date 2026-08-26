@@ -629,6 +629,7 @@ export async function generateDailyGameplan(userId: string) {
 
   // Generate AI-powered gameplan summary
   const { text: aiSummary } = await generateText({
+    brokerageId: profile.brokerage_id,
     model: "openai/gpt-4o-mini",
     prompt: `You are an AI real estate copilot helping agents prioritize their day.
 

@@ -92,6 +92,9 @@ export async function aiCategorizeExpense(params: {
     return { success: false, error: "Invalid agent ID" }
   }
 
+  // Tenant for the AI cost ledger — SESSION, never `params.agentId` (§4, and
+  // the resolveAgentTenant note above says the same thing about writes).
+  const spendActor = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -105,6 +108,8 @@ export async function aiCategorizeExpense(params: {
 
     // AI categorization
     const { text: categoryAnalysis } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: resolveModel("openai/gpt-4o-mini"),
       prompt: `You are a real estate expense categorization expert. Categorize this expense.
 
@@ -269,6 +274,8 @@ export async function aiCalculateCommission(params: CommissionEntry) {
     return { success: false, error: "Invalid agent or transaction ID" }
   }
 
+  // Tenant for the AI cost ledger — SESSION, never `params.agentId` (§4).
+  const spendActor = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -358,6 +365,8 @@ export async function aiCalculateCommission(params: CommissionEntry) {
 
     // AI Tax Estimation
     const { text: taxAnalysis } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: resolveModel("openai/gpt-4o-mini"),
       prompt: `Estimate tax liability for this real estate commission.
 
@@ -505,6 +514,7 @@ const transactionCount = summary.closedTransactions
     
     // AI Analysis and Projections
     const { text: financialAnalysis } = await generateText({
+      brokerageId: tenant.brokerageId,
       model: resolveModel("openai/gpt-4o"),
       prompt: `Analyze this real estate agent's financial performance and provide insights.
 
@@ -707,6 +717,7 @@ export async function aiCreateBudget(params: {
 
     // AI Budget Generation
     const { text: budgetPlan } = await generateText({
+      brokerageId: tenant.brokerageId,
       model: resolveModel("openai/gpt-4o"),
       prompt: `Create a smart budget plan for a real estate agent.
 

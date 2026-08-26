@@ -84,7 +84,7 @@ export async function generateComplianceBrief(params: {
     { label: "Flags 7d", value: violations.length },
   ]
 
-  const summary = await synthesize("compliance officer", priorities, metrics)
+  const summary = await synthesize("compliance officer", priorities, metrics, { brokerageId: params.brokerageId, userId: params.userId })
   await persistBrief(params.userId, params.brokerageId, today, summary, priorities, metrics)
 
   return {
@@ -186,7 +186,7 @@ export async function generateLenderBrief(params: {
     { label: "Stalled (5d+)", value: stuckLoans.length, href: "/lender/dashboard?filter=stuck" },
   ]
 
-  const summary = await synthesize("lender", priorities, metrics)
+  const summary = await synthesize("lender", priorities, metrics, { brokerageId: params.brokerageId, userId: params.userId })
   await persistBrief(params.userId, params.brokerageId, today, summary, priorities, metrics)
 
   return {
@@ -274,7 +274,7 @@ export async function generateVendorBrief(params: {
     { label: "Overdue", value: overdue.length, href: "/vendor/jobs?filter=overdue" },
   ]
 
-  const summary = await synthesize("vendor", priorities, metrics)
+  const summary = await synthesize("vendor", priorities, metrics, { brokerageId: params.brokerageId, userId: params.userId })
   await persistBrief(params.userId, params.brokerageId, today, summary, priorities, metrics)
 
   return {
@@ -381,7 +381,7 @@ async function generateTcLikeBrief(params: {
     { label: "Open interventions", value: interventions.length },
   ]
 
-  const summary = await synthesize("transaction coordinator", priorities, metrics)
+  const summary = await synthesize("transaction coordinator", priorities, metrics, { brokerageId: params.brokerageId, userId: params.userId })
   await persistBrief(params.userId, params.brokerageId, today, summary, priorities, metrics)
 
   return {
@@ -462,13 +462,18 @@ async function persistBrief(
 async function synthesize(
   userTypeLabel: string,
   priorities: BriefPriority[],
-  metrics: BriefMetric[]
+  metrics: BriefMetric[],
+  /** Tenant + actor for the AI cost ledger — the same `params.brokerageId` /
+   *  `params.userId` each brief already persists against (§4). */
+  spendActor: { brokerageId: string | null; userId: string | null } = { brokerageId: null, userId: null },
 ): Promise<string> {
   if (priorities.length === 0) {
     return `Quiet day for ${userTypeLabel}. Nothing critical on the radar — good time to focus on growth work.`
   }
   try {
     const { text } = await generateTextRouted({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId,
       feature: "daily_briefing",
       prompt:
         `Write a one-sentence morning summary for a real estate ${userTypeLabel}. ` +

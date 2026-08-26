@@ -1,6 +1,11 @@
 'use client'
 
-import React, { useState } from 'react'
+// TOMBSTONE (orphan doctrine §1.3): the default `React` binding stood here and was
+// read by NOTHING — no `React.` member access anywhere in this file. Under
+// tsconfig.json:18 `"jsx": "react-jsx"` the automatic runtime is the SURVIVOR: the
+// compiler injects `react/jsx-runtime` itself, so JSX in this file needs no in-scope
+// React and the binding only kept a name alive that nobody read.
+import { useState } from 'react'
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'

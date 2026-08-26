@@ -150,7 +150,8 @@ export async function generateListingVideo(params: {
     }
 
     // 3. AI selects best photos
-    const selectedPhotos = await selectPhotosForVideo(photos, videoType, property)
+    const videoSpendActor = { brokerageId: videoBrokerageId, userId: null as string | null }
+    const selectedPhotos = await selectPhotosForVideo(photos, videoType, property, videoSpendActor)
 
     // 4. Persist the AI-selected photo manifest on the project row.
     //    video_assets is the brokerage stock-clip library (a different feature),
@@ -177,7 +178,7 @@ export async function generateListingVideo(params: {
       .eq('id', project.id)
 
     // 5. Generate narration script
-    const script = await generateVideoNarration(property, videoType, selectedPhotos.photos)
+    const script = await generateVideoNarration(property, videoType, selectedPhotos.photos, videoSpendActor)
 
     // 6. Validate "Them First"
     const validation = evaluateThemFirstFocus(script)
@@ -217,7 +218,15 @@ export async function generateListingVideo(params: {
 // AI PHOTO SELECTION
 // ============================================
 
-async function selectPhotosForVideo(allPhotos: any[], videoType: string, property: any) {
+async function selectPhotosForVideo(
+  allPhotos: any[],
+  videoType: string,
+  property: any,
+  /** Tenant + actor for the AI cost ledger. `videoBrokerageId` is resolved by
+   *  the caller from the LISTING row (then the agents row) — a parent row, not
+   *  a caller-supplied id (§4). */
+  spendActor: { brokerageId: string | null; userId: string | null },
+) {
   const videoSpecs: Record<string, any> = {
     full_tour: {
       count: 12,
@@ -316,6 +325,8 @@ Return JSON:
 }`
 
   const { text } = await generateText({
+    brokerageId: spendActor.brokerageId,
+    userId: spendActor.userId,
     model: 'openai/gpt-4o',
     prompt,
   })
@@ -334,7 +345,13 @@ Return JSON:
 // GENERATE VIDEO NARRATION SCRIPT
 // ============================================
 
-async function generateVideoNarration(property: any, videoType: string, selectedPhotos: any[]) {
+async function generateVideoNarration(
+  property: any,
+  videoType: string,
+  selectedPhotos: any[],
+  /** Same provenance as selectPhotosForVideo above. */
+  spendActor: { brokerageId: string | null; userId: string | null },
+) {
   const scriptLengths: Record<string, string> = {
     full_tour: '150-180 words (2 min narration)',
     social_snippet: '40-60 words (30 sec)',
@@ -376,6 +393,8 @@ Scene 3 (Kitchen): "The heart of the home - where family dinners and celebration
 Generate narration script that flows naturally with the visual sequence:`
 
   const { text } = await generateText({
+    brokerageId: spendActor.brokerageId,
+    userId: spendActor.userId,
     model: 'openai/gpt-4o',
     prompt,
     temperature: 0.8,

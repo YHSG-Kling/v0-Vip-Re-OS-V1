@@ -195,6 +195,8 @@ phrases like "perfect for families"; rate / valuation / appreciation
 guarantees; exclamation marks.
 Return ONLY the spoken text.${fix}`
       const { text } = await generateTextRouted({
+        brokerageId: camp.brokerage_id,
+        userId: ledgerAgentUserId,
         feature:     "newsletter_video_narration",
         prompt,
         maxTokens:   150,

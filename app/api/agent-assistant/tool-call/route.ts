@@ -794,7 +794,13 @@ async function stageListingPacket(
     const { extractListingIntake } = await import("@/lib/workflow/intake/voice-to-listing")
     const { fillListingPacket }    = await import("@/lib/workflow/intake/form-fill-engine")
 
-    const extracted = await extractListingIntake({ text: voiceInput })
+    const extracted = await extractListingIntake({
+      text: voiceInput,
+      // §4 — the ElevenLabs webhook's own session row resolves the tenant
+      // (see :164); nothing here comes from the caller's payload.
+      brokerageId: session.brokerage_id,
+      userId: session.user_id,
+    })
     const state = extracted.intake.propertyState.value
 
     if (!state) {
@@ -966,7 +972,13 @@ async function stageOfferPacket(
     const { extractOfferIntake } = await import("@/lib/workflow/intake/voice-to-offer")
     const { fillOfferPacket } = await import("@/lib/workflow/intake/form-fill-engine")
 
-    const extracted = await extractOfferIntake({ text: voiceInput })
+    const extracted = await extractOfferIntake({
+      text: voiceInput,
+      // §4 — the ElevenLabs webhook's own session row resolves the tenant
+      // (see :164); nothing here comes from the caller's payload.
+      brokerageId: session.brokerage_id,
+      userId: session.user_id,
+    })
     const state = extracted.intake.propertyState.value
     if (!state) {
       return {
@@ -1167,7 +1179,13 @@ async function stageBBAPacket(
 
   try {
     const { extractBBAIntake } = await import("@/lib/workflow/intake/voice-to-bba")
-    const extracted = await extractBBAIntake({ text: voiceInput })
+    const extracted = await extractBBAIntake({
+      text: voiceInput,
+      // §4 — the ElevenLabs webhook's own session row resolves the tenant
+      // (see :164); nothing here comes from the caller's payload.
+      brokerageId: session.brokerage_id,
+      userId: session.user_id,
+    })
 
     if (!extracted.readyToDraft) {
       // AI must capture more before drafting — return the missing questions

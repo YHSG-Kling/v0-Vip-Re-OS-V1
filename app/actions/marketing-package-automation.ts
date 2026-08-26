@@ -680,6 +680,8 @@ OUTPUT FORMAT (JSON):
 }`
 
     const { text } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
       model: "openai/gpt-4o",
       prompt,
     })

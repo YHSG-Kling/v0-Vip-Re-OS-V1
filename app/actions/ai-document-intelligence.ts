@@ -462,6 +462,9 @@ export async function aiVerifySignatures(params: {
     }
 
     const { text } = await generateText({
+      brokerageId: scope.brokerageId ?? null,
+      userId: scope.userId ?? null,
+      agentId: scope.agentId ?? null,
       model: resolveModel("openai/gpt-4o-mini"),
       prompt: `Analyze signature requirements for this document:
       
@@ -648,6 +651,9 @@ Context: ${JSON.stringify(params.context)}`,
     }
 
     const { text } = await generateText({
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId,
+      agentId: ctx.agentId,
       model: resolveModel("openai/gpt-4o"),
       prompt: `${prompts[params.documentType]}
 
@@ -803,6 +809,9 @@ export async function aiGenerateDocumentReminders(params: {
     }
 
     const { text } = await generateText({
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId,
+      agentId: ctx.agentId,
       model: resolveModel("openai/gpt-4o-mini"),
       prompt: `Generate document deadline reminders for this transaction:
 

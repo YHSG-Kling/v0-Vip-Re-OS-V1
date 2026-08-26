@@ -49,6 +49,10 @@ export async function POST(req: NextRequest) {
     contactName,
     contactType,
     recentThread: Array.isArray(body?.recentThread) ? body.recentThread : undefined,
+    // §4 — from requireAuth, never from `body`. This route keeps no ledger of
+    // its own, so the routed lane is the single writer for this call.
+    brokerageId: auth.brokerageId,
+    userId: auth.userId,
   })
 
   return NextResponse.json({ replies })

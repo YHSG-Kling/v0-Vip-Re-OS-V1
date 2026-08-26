@@ -327,6 +327,8 @@ Subject context for this asset: "${args.subject}"${contextLine}
 Return ONLY the hook line text — no quotes, no labels.`
   try {
     const result = await generateTextRouted({
+      brokerageId: args.brokerageId,
+      userId: args.agentUserId,
       feature:     "persona_variant_hook",
       prompt,
       maxTokens:   60,

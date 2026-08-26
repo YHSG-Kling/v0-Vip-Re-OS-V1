@@ -45,6 +45,9 @@ export async function POST(
   const parsed = await parseVoiceNote(transcript, {
     contactName: `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim() || undefined,
     contactType: contact.contact_type ?? null,
+    // §4 — from requireAuth, and the contact above was checked against it.
+    brokerageId: auth.brokerageId,
+    userId: auth.userId,
   })
 
   const stamp = new Date().toISOString()

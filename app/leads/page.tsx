@@ -2,7 +2,12 @@
 
 import { useState, useEffect, Fragment, useCallback } from "react"
 import { useRouter } from "next/navigation"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+// TOMBSTONE (orphan doctrine §1.3): `CardHeader` and `CardTitle` were imported here
+// and rendered NOWHERE across this 2,300-line surface — every one of its 12 cards is a
+// bare <Card><CardContent> with its heading laid out inline. The SURVIVORS are the
+// CardHeader/CardTitle exports of components/ui/card.tsx, used by the surfaces that do
+// render a titled card. Nothing moved out of this file and no heading was lost.
+import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
@@ -456,14 +461,60 @@ export default function LeadsPage() {
     })
 
     if (result.success) {
-      setLeads(result.leads as Lead[])
+      const rows = result.leads as Lead[]
+      setLeads(rows)
       setTotal(result.total)
       setTotalPages(result.totalPages)
       setLeadsError(null)
+
+      // BUILT (orphan doctrine §1.2 — no duplicate existed, the capability is wanted).
+      // THE WRITER FOR `readiness` — the half this surface was missing. The state at
+      // page.tsx:280 and the Readiness column that renders it were already here, and
+      // `batchEvaluateLeadReadiness` was already IMPORTED at page.tsx:62 — but nothing
+      // ever called setReadiness, so the column could only ever print "—" and the
+      // import was dead. That is one orphan seen from both ends: an action with no
+      // caller and a rendered cell with no writer.
+      //
+      // It goes here rather than in its own effect so the evaluation is pinned to the
+      // page of rows that just arrived; a separate effect would race the list and
+      // could stamp the previous page's verdicts onto the new rows.
+      //
+      // SAFE BY THE ACTION'S OWN CONTRACT (see evaluate-readiness.ts:91-103): it is
+      // authenticated, it INTERSECTS the ids with the caller's brokerage server-side,
+      // and it caps the batch at 200 — this page asks for 10. Ids are never trusted
+      // from here, and none of that gate is duplicated client-side.
+      //
+      // BEST-EFFORT AND NON-BLOCKING. Readiness is an ADVISORY column; a refusal must
+      // not blank the lead list that already loaded. But it must not lie either — a
+      // failed evaluation clears the map to "—" (unknown) rather than leaving the
+      // previous page's verdicts on screen, which is the same mistake `setLeadsError`
+      // above exists to prevent.
+      try {
+        const ids = rows.map((l) => l.id).filter(Boolean)
+        if (ids.length === 0) {
+          setReadiness({})
+        } else {
+          const readinessRes = await batchEvaluateLeadReadiness(ids)
+          if (readinessRes.error) {
+            console.warn("[leads] readiness evaluation refused:", readinessRes.error)
+            setReadiness({})
+          } else {
+            const next: Record<string, string> = {}
+            for (const e of readinessRes.evaluations) {
+              if (e.evaluation?.state) next[e.leadId] = e.evaluation.state
+            }
+            setReadiness(next)
+          }
+        }
+      } catch (err) {
+        console.warn("[leads] readiness evaluation failed:", (err as any)?.message)
+        setReadiness({})
+      }
     } else {
       // READ THE OUTCOME. A refused list used to leave the previous page of rows
       // on screen with no indication that the refresh had failed.
       setLeads([])
+      setReadiness({})
       setLeadsError(result.error ?? "The lead list could not be loaded.")
     }
     setLoading(false)

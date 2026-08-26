@@ -2,7 +2,14 @@
 // Kernel OS: Canonical Billing Commands
 // No mocks, stubs, or placeholders. All operations read real data from Supabase.
 
-import { SupabaseClient } from "@supabase/supabase-js"
+// TOMBSTONE (orphan doctrine §1.3 — functionality already lives elsewhere).
+// `import { SupabaseClient } from "@supabase/supabase-js"` stood here and was read by
+// NOTHING in this file: no export takes a client parameter, every function builds its
+// own through createServiceClient() below. The typed-client vocabulary this repo does
+// use is `ReturnType<typeof createServiceClient>` — see lib/lead-assignment/routing-profiles.ts:20
+// for the pattern — so the raw class import was a second spelling of a type nobody
+// needed here (CLAUDE.md §6). Note it was a VALUE import of a type-only symbol, which
+// kept @supabase/supabase-js in this module's runtime graph for nothing.
 import { createServiceClient } from "@/lib/supabase/service"
 // ONE definition of the billing month, shared with usage_counters. Every
 // billing_usage writer AND reader in this file filters on it — see the note in

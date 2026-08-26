@@ -5,7 +5,13 @@ import { listLeadMagnetsAction, updateMagnetSettingsAction } from "@/app/actions
 import type { ListLeadMagnetsOutput } from "@/lib/kernel/lead-magnets"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+// TOMBSTONE (orphan doctrine §1.3): `CardHeader` and `CardTitle` were imported here
+// and rendered NOWHERE — this library lays each magnet out as a bare
+// <Card><CardContent> (MagnetLibrary.tsx:103/:111/:115/:165), with the heading text
+// carried inline. The SURVIVORS of the header vocabulary are the CardHeader/CardTitle
+// exports of components/ui/card.tsx themselves, used by the surfaces that render a
+// titled card; nothing was moved out of this file and nothing was lost.
+import { Card, CardContent } from "@/components/ui/card"
 import { Switch } from "@/components/ui/switch"
 import { FileText, QrCode, BarChart2, Link2, Users } from "lucide-react"
 

@@ -240,6 +240,8 @@ export async function generateReferralRequest(params: {
     const draftFormat = params.channel === "voice" ? "call script" : params.channel === "sms" ? "text message" : "email"
 
     const { text: referralRequest } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       prompt: `Generate a personalized referral request for:
 

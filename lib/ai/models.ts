@@ -657,10 +657,26 @@ export interface RoutedTextRequest {
    * @example "email_generation" | "social_post_generation" | "lead_analysis"
    */
   feature?: string
-  /** Optional — used only for usage logging, not routing */
-  userId?: string
+  /**
+   * Optional — used only for usage logging, not routing.
+   *
+   * NULL IS ACCEPTED, and that is not cosmetic. Both fields already reach
+   * logAIUsage as `request.userId ?? null` / `request.agentId ?? null`, and
+   * `ai_tool_usage.user_id` is nullable BY DESIGN (#187: anonymous tenant
+   * traffic). The narrower `string` forced every caller threading a session to
+   * write `?? undefined` on a value the ledger stores as NULL anyway — and a
+   * caller that would rather not add the noise drops `userId` entirely, which
+   * is how an attributable call loses its actor. RoutedStreamRequest below has
+   * always allowed null here; these three now agree (§6, one vocabulary).
+   *
+   * `brokerageId` is the field lib/ai/models.ts books under — see
+   * `if (request.brokerageId)` in each lane. It must come from the SESSION or
+   * from a row already read under a tenant-scoped predicate, never from a
+   * request body (CLAUDE.md §4).
+   */
+  userId?: string | null
   brokerageId?: string | null
-  agentId?: string
+  agentId?: string | null
   /** Tools the model can invoke — same shape as AI SDK's tool() helper.
    *  When omitted, behaves as a plain text-generation call (current default). */
   tools?: Record<string, unknown>

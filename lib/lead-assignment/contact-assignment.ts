@@ -30,14 +30,13 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { createServiceClient } from "@/lib/supabase/service"
-import {
-  teamScopeAllows,
-  pickAgentForRule,
-  toRoutingProfiles,
-  ROUTING_PROFILE_COLUMNS,
-  type AgentProfileForRouting,
-} from "./rule-matcher"
+import { teamScopeAllows, pickAgentForRule } from "./rule-matcher"
 import { selectAgentByCapacity, resolveBrokerageMaxLoad } from "./capacity-pick"
+// TOMBSTONE (orphan doctrine §1.3 — functionality already lives elsewhere).
+// `toRoutingProfiles`, `ROUTING_PROFILE_COLUMNS` and the type `AgentProfileForRouting`
+// were imported here and read by NOTHING in this file. The one shared profile loader,
+// lib/lead-assignment/routing-profiles.ts:19 (loadRoutingProfiles), owns all three and
+// is the survivor; this file calls it below. Deleting the leftover binding loses nothing.
 import { loadRoutingProfiles } from "./routing-profiles"
 import { assignByDefaultMethod } from "./default-assignment"
 import { resolveSoloAgentOwner } from "./solo-agent"

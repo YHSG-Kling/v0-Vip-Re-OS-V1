@@ -199,6 +199,7 @@ export async function scanUploadedDocument(params: {
   let result: any
   try {
     const { text } = await generateTextRouted({
+      brokerageId: (doc as { brokerage_id?: string | null }).brokerage_id ?? null,
       feature:    "document_classification",
       system:     "You are a strict JSON classifier for real estate documents. Output JSON only — no prose.",
       prompt:     SCAN_PROMPT + sourceText,

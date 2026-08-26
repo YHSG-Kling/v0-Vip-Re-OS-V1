@@ -34,6 +34,22 @@ interface BuildContextInput {
   contactName?: string | null
   contactType?: string | null
   recentThread?: Array<{ direction: "inbound" | "outbound"; body: string }>
+  /**
+   * THE TENANT THIS GENERATOR'S SPEND IS BILLED, CAPPED AND COUNTERED AGAINST.
+   *
+   * Resolved SERVER-SIDE from the caller's session — /api/inbox/smart-replies
+   * takes it from requireAuth, the AI Toolkit from its AgentContext. Never a
+   * request body (CLAUDE.md §4).
+   *
+   * With it, generateObjectRouted's logAIUsage writes the ai_tool_usage row for
+   * this call. WHICH MEANS A CALLER THAT ALSO BOOKS MUST BOOK ZERO — see
+   * app/actions/ai-tools-hub.ts:routedTokens, whose rule this follows exactly:
+   * "books 0 as `booked_by_survivor` whenever a tenant was passed, because that
+   * is exactly when logAIUsage wrote the row". Exactly one row carries the
+   * spend. Without it nothing is ledgered here and the caller is responsible.
+   */
+  brokerageId?: string | null
+  userId?: string | null
 }
 
 /**
@@ -100,6 +116,8 @@ export async function generateSmartReplies(
 
   try {
     const { object, usage } = await generateObjectRouted({
+      brokerageId: input.brokerageId ?? null,
+      userId: input.userId ?? null,
       feature: "smart_reply_generation",
       schema:  SmartReplySchema,
       system:

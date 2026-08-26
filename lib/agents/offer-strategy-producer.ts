@@ -291,6 +291,12 @@ export async function produceOfferStrategyBrief(
           marketConditions: marketConditionsFromDom(hotTarget.daysOnMarket),
           buyerMotivation: motivationFromBuyer((cfull as any) ?? {}),
           buyerMaxBudget: maxBudget,
+        }, {
+          // §4 — `brokerageId` is this producer run's own tenant (the contact
+          // was checked against it at :192, "wrong_tenant"); agentUserId is
+          // resolved from the agents row, not supplied.
+          brokerageId,
+          userId: agentUserId,
         })
         if (strategy) {
           // Provenance — downstream math names its source, the OS's own discipline.

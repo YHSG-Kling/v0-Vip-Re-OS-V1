@@ -30,6 +30,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { isoWeekOf } from "@/lib/kernel/week-in-review"
 import { TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-status"
+// The ONE owner of the buyer-verdict vocabulary (CLAUDE.md §6). Static and pure —
+// no I/O, no server-only dependency — so it costs the graph one small module rather
+// than a dynamic import re-resolved once per tour inside runTourRecaps' loop.
+import { tourInterestToRating } from "@/lib/behavior-learning/signal-mapping"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -330,13 +334,36 @@ export async function runTourRecaps(svc: Svc, brokerageId: string, now: Date = n
     out.scanned++
     const tag = tourRecapTag(t.id)
     if (await alreadyProposed(svc, brokerageId, tag)) continue
+    // TOMBSTONE (orphan doctrine §1.1 — a DUPLICATE existed; merged onto the survivor).
+    // This read was `.select("property_address, rating, feedback")`. tour_stops carries
+    // TWO spellings of the buyer's verdict and only ONE has writers:
+    //   · rating / feedback              — WRITERLESS. No code writes them (the whole
+    //     tree's tour_stops call chains were read comment-stripped), and no DB trigger,
+    //     routine or column DEFAULT does either — pg_trigger and pg_proc are both empty
+    //     for tour_stops on the live project, and both columns default NULL.
+    //   · buyer_interest_level / buyer_note — THE SURVIVORS, written by
+    //     app/actions/tour-planner.ts:896 (rateTourStop) and :966 (completeTour), and
+    //     already read by lib/kernel/tour-optimizer.ts:599.
+    // So every stop came back {rating: null, feedback: null}, tourRecapBrief's
+    // "never narrate a day the OS didn't see" guard (the `if (!brief) continue` below)
+    // returned null for every tour ever planned, and NOT ONE tour recap — nor the
+    // offer-readiness bridge task after it — has ever fired.
+    // The verdict is translated through the ONE owner of that vocabulary,
+    // lib/behavior-learning/signal-mapping.ts::tourInterestToRating, rather than a
+    // private map here (CLAUDE.md §6); the pure brief/standout functions keep their
+    // 1-5 contract untouched.
     const [{ data: buyer }, { data: stops }] = await Promise.all([
       svc.from("contacts").select("first_name").eq("id", t.contact_id).maybeSingle(),
-      svc.from("tour_stops").select("property_address, rating, feedback").eq("tour_id", t.id).limit(12),
+      svc.from("tour_stops").select("property_address, buyer_interest_level, buyer_note").eq("tour_id", t.id).limit(12),
     ])
+    const stopFacts = ((stops ?? []) as any[]).map((s) => ({
+      address: s.property_address ?? "one of the homes",
+      rating: tourInterestToRating(s.buyer_interest_level),
+      feedback: s.buyer_note ?? null,
+    }))
     const brief = tourRecapBrief({
       buyerFirstName: (buyer as any)?.first_name ?? null,
-      stops: ((stops ?? []) as any[]).map((s) => ({ address: s.property_address ?? "one of the homes", rating: s.rating ?? null, feedback: s.feedback ?? null })),
+      stops: stopFacts,
     })
     if (!brief) continue // no reactions recorded — never narrate a day the OS didn't see
     const draft = await authorStory(brief)
@@ -360,7 +387,9 @@ export async function runTourRecaps(svc: Svc, brokerageId: string, now: Date = n
     // RECAP → OFFER BRIDGE: a standout reaction is an offer-readiness SIGNAL —
     // the agent gets the prep task (comps + net sheet) the same evening, once
     // per tour, so the momentum the recap creates lands on someone's list.
-    const standoutStop = pickStandout(((stops ?? []) as any[]).map((s) => ({ address: s.property_address ?? "the standout home", rating: s.rating ?? null, feedback: s.feedback ?? null })))
+    // Same facts the brief was built from — re-deriving them from the raw rows here
+    // is how the two halves drifted apart in the first place.
+    const standoutStop = pickStandout(stopFacts)
     if (r.ok && standoutStop && t.agent_id) {
       const bridgeTag = `[TOUR_STANDOUT] [${t.id}]`
       const { data: priorTask } = await svc.from("tasks").select("id")

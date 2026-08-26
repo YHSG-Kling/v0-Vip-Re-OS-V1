@@ -325,6 +325,8 @@ STYLE:
 Return ONLY the spoken script — no scene directions, no headers, no
 segment labels read aloud.${fix}`
     const { text } = await generateTextRouted({
+      brokerageId: args.brokerageId,
+      userId: args.hostUserId,
       feature:     "podcast_weekly_auto_script",
       prompt,
       maxTokens:   1800,

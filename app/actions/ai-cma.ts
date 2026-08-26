@@ -284,10 +284,11 @@ export async function generateAICMA(params: CMAParams) {
     const marketTrends = await analyzeMarketTrends(params, supabase)
 
     // ── 4. Pricing strategy, BOUNDED BY THE COMPS ────────────────────────────
-    const pricingStrategy = await generatePricingStrategy(params, cma, marketTrends)
+    const cmaSpendActor = { brokerageId: cmaBrokerageId, userId: user.id }
+    const pricingStrategy = await generatePricingStrategy(params, cma, marketTrends, cmaSpendActor)
 
     // ── 5. Presentation script ───────────────────────────────────────────────
-    const presentation = await generateCMAPresentation(params, cma, marketTrends, pricingStrategy)
+    const presentation = await generateCMAPresentation(params, cma, marketTrends, pricingStrategy, cmaSpendActor)
 
     // ── 6. Save CMA report — columns verified against scripts/schema-snapshot.ts
     // contact_id is NOT NULL on cma_reports; a CMA must be tied to a contact.
@@ -731,7 +732,11 @@ async function analyzeMarketTrends(
 async function generatePricingStrategy(
   params: CMAParams,
   cma: AiCmaResultShape,
-  marketTrends: MarketTrends
+  marketTrends: MarketTrends,
+  /** Tenant + actor for the AI cost ledger. `cmaBrokerageId` came off the
+   *  CONTACT row (falling back to the agents row this function already proved
+   *  belongs to the authenticated user) — a row, never a caller argument. */
+  spendActor: { brokerageId: string | null; userId: string | null },
 ): Promise<PricingStrategy> {
   // ── THE RANGE IS THE COMPS' RANGE ────────────────────────────────────────
   // It used to be `estimatedValue × (1 ∓ rangeMultiplier)` where estimatedValue
@@ -794,6 +799,8 @@ Provide strategic pricing recommendations in JSON:
 
   try {
     const { text } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId,
       model: "openai/gpt-4o-mini",
       prompt,
     })
@@ -848,7 +855,9 @@ async function generateCMAPresentation(
   params: CMAParams,
   cma: AiCmaResultShape,
   marketTrends: MarketTrends,
-  pricingStrategy: PricingStrategy
+  pricingStrategy: PricingStrategy,
+  /** Same provenance as generatePricingStrategy above. */
+  spendActor: { brokerageId: string | null; userId: string | null },
 ) {
   // Every comp named to the script writer carries its own source, so the script
   // cannot describe an AI-web-search row as a provider-reported sale — and the
@@ -921,6 +930,8 @@ Keep it conversational and client-focused. Format as JSON:
 
   try {
     const { text } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId,
       model: "openai/gpt-4o",
       prompt,
     })
@@ -1143,6 +1154,9 @@ Provide adjustment recommendation in JSON:
 }`
 
     const { text } = await generateText({
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId,
+      agentId: ctx.agentId,
       model: "openai/gpt-4o",
       prompt,
     })

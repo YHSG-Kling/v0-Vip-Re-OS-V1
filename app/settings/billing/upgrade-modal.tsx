@@ -11,7 +11,15 @@ import {
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Check, AlertTriangle, Loader2 } from "lucide-react"
+// TOMBSTONE (orphan doctrine §1.3): `Loader2` was imported here and rendered NOWHERE.
+// This modal holds no pending state to spin on — the one async step,
+// fetchClientSecret() at upgrade-modal.tsx:56, is handed to Stripe's
+// <EmbeddedCheckoutProvider>, and the SURVIVOR of the "checkout is loading"
+// affordance is <EmbeddedCheckout /> at upgrade-modal.tsx:105, which renders its own
+// loading state while that promise is in flight. A second spinner here would be a
+// second answer to one question (§6), and it would have to invent the state to know when
+// to stop.
+import { Check, AlertTriangle } from "lucide-react"
 import {
   EmbeddedCheckout,
   EmbeddedCheckoutProvider,

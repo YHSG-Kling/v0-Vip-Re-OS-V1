@@ -2,6 +2,10 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
+// THE SPEND ACTOR. Every export in this "use server" file is a public HTTP
+// endpoint, so the AI cost ledger's tenant can only come from the SESSION
+// (CLAUDE.md §4) — never from an id the caller supplied.
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { revalidatePath } from "next/cache"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 
@@ -57,6 +61,8 @@ export async function smartSearch(data: {
   contactId: string
 }) {
   try {
+    // Tenant for the AI cost ledger — SESSION (§4).
+    const spendActor = await getAgentContext()
     const supabase = await createClient()
 
     // Get contact details
@@ -109,6 +115,8 @@ Output ONLY valid JSON with this exact structure:
 }`
 
     const interpretation = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o-mini",
       prompt: interpretPrompt,
     })

@@ -793,6 +793,8 @@ export async function analyzeOffer(offerId: string, _userId?: string) {
   const listPrice = Number((offer.listing as any)?.list_price ?? 0)
 
   const { text: analysis } = await generateText({
+    brokerageId: auth.brokerageId,
+    userId: auth.userId,
     model: "openai/gpt-4o-mini",
     prompt: `You are a real estate offer analysis expert. Analyze this offer and provide structured feedback.
 

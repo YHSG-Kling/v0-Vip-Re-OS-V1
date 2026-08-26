@@ -70,6 +70,8 @@ export async function generateContactInsights(_userId?: string, _userRole?: stri
     if (!contacts || contacts.length === 0) return []
 
     const { text } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
       model: "openai/gpt-4o-mini",
       prompt: `You are an AI assistant for a real estate agent. Analyze these contacts and suggest the top 3 most important actions to take today.
 
@@ -117,6 +119,8 @@ export async function draftSmartEmail(contactId: string, context: string): Promi
   if (contact.brokerage_id !== auth.brokerageId) return ""
 
   const { text } = await generateText({
+    brokerageId: auth.brokerageId,
+    userId: auth.userId,
     model: "openai/gpt-4o-mini",
     prompt: `Draft a professional yet friendly email for a real estate agent to send to ${contact.first_name} ${contact.last_name}.
 

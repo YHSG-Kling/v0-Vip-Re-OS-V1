@@ -634,6 +634,8 @@ export async function generateOpenHouseFollowupNextAction(input: {
     let aiMessage = ""
     try {
       const { text } = await generateTextRouted({
+        brokerageId: brokerage_id,
+        agentId: agent_id,
         model: "openai/gpt-4o-mini",
         prompt: `Generate a brief, personalized follow-up message to ${first_name} after they attended our open house (interest level: ${interest_level}/5). Keep it under 100 words, warm and conversational.`,
       })

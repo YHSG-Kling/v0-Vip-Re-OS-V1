@@ -232,6 +232,9 @@ Generate insights that help this agent take action today.`
     let text: string
     try {
       const result = await generateTextRouted({
+        brokerageId: context.brokerageId,
+        userId: context.userId,
+        agentId: context.agentId,
         feature: "market_insight_generation",
         system: systemPrompt,
         prompt: userPrompt,

@@ -5,6 +5,10 @@ import { generateObject } from "@/lib/ai/generate"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+// THE SPEND ACTOR. This is a "use server" file, so `params.agentId` is whatever
+// the caller typed and can never be the tenant the AI ledger bills (§4). The
+// brokerage comes from the SESSION and nowhere else.
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { z } from "zod"
 
 // ============================================================================
@@ -24,6 +28,8 @@ export async function analyzeAgentPerformance(params: {
     return { success: false, error: "Invalid agent ID" }
   }
 
+  // Tenant for the AI cost ledger — SESSION, never `params.agentId` (§4).
+  const spendActor = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -67,6 +73,8 @@ export async function analyzeAgentPerformance(params: {
       .limit(200)
 
     const { text: analysis } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       prompt: `Analyze this agent's performance and provide coaching insights:
 
 Transactions: ${transactions?.length || 0}

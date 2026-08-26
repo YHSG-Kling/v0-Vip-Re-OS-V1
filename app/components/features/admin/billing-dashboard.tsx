@@ -6,7 +6,14 @@
 import { useEffect, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
 import { Badge } from "@/app/components/ui/badge"
-import { Button } from "@/app/components/ui/button"
+// TOMBSTONE (orphan doctrine §1.3): `Button` was imported here and rendered NOWHERE.
+// This workspace is READ-ONLY by construction — its whole body is one GET
+// (billing-dashboard.tsx:47) rendered into Cards and Badges; it holds no handler and
+// mutates nothing, so there is no action for a button to fire. Every billing MUTATION
+// a superadmin can make already lives on the SURVIVORS with their own buttons:
+// app/actions/superadmin/brokerage-management.ts::changeBrokerageTierAction (tier),
+// ::suspendBrokerageAction / ::cancelBrokerageAction (state), surfaced by
+// app/dashboard/superadmin/brokerages/[id]/brokerage-actions.tsx:95.
 import { AlertCircle, CheckCircle2, AlertTriangle } from "lucide-react"
 
 interface BillingDashboardProps {

@@ -125,6 +125,12 @@ const FIELD_QUESTIONS: Partial<Record<keyof ListingIntake, string>> = {
 export async function extractListingIntake(input: {
   text:  string
   prior?: ListingIntake
+  /** Tenant + actor for the AI cost ledger. Every caller resolves both
+   *  server-side — the assistant tool-call route from its session row, the
+   *  voice-assistant actions and the workflow route from `users.brokerage_id`
+   *  for the authenticated user. Never a request body (CLAUDE.md §4). */
+  brokerageId?: string | null
+  userId?: string | null
 }): Promise<VoiceToListingResult> {
   const intake = input.prior ? structuredClone(input.prior) : emptyIntake()
 
@@ -151,6 +157,8 @@ JSON ONLY:`
   let extracted: Partial<ListingIntake> = {}
   try {
     const { text } = await generateTextRouted({
+      brokerageId: input.brokerageId ?? null,
+      userId: input.userId ?? null,
       feature: "listing_intake_extraction",
       messages: [{ role: "user", content: prompt }],
     })

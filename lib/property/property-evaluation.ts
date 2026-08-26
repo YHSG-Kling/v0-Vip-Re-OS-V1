@@ -254,6 +254,8 @@ export async function evaluatePropertyValue(params: {
   let parsed: any = null
   try {
     const { text } = await generateTextRouted({
+      brokerageId: params.brokerageId ?? null,
+      userId: params.agentUserId ?? null,
       feature: "home_value_estimate",
       prompt,
       maxTokens: 3000,

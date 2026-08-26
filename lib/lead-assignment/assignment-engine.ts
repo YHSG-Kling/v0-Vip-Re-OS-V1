@@ -36,14 +36,16 @@ interface LeadRow {
 // Consolidated into lib/lead-assignment/rule-matcher.ts (pure) — the SAME matcher
 // powers this engine, the settings UI's routing preview, and the simulator, so
 // what the broker previews is exactly what the engine does.
-import {
-  evaluateRuleConditions,
-  pickAgentForRule,
-  toRoutingProfiles,
-  ROUTING_PROFILE_COLUMNS,
-  type AgentProfileForRouting,
-} from "./rule-matcher"
+import { evaluateRuleConditions, pickAgentForRule } from "./rule-matcher"
 import { selectAgentByCapacity, resolveBrokerageMaxLoad } from "./capacity-pick"
+// TOMBSTONE (orphan doctrine §1.3 — functionality already lives elsewhere).
+// `toRoutingProfiles`, `ROUTING_PROFILE_COLUMNS` and the type `AgentProfileForRouting`
+// were imported here and read by NOTHING in this file: the profile load they served
+// moved into the one shared loader at lib/lead-assignment/routing-profiles.ts:19
+// (loadRoutingProfiles), which this file calls at assignment-engine.ts:118. That loader is the
+// survivor and still names all three — routing-profiles.ts:17 imports them, :29 uses
+// ROUTING_PROFILE_COLUMNS, :65 calls toRoutingProfiles, :23 returns
+// Record<string, AgentProfileForRouting>. Nothing was lost; only the leftover binding went.
 import { loadRoutingProfiles } from "./routing-profiles"
 // The SOLO shortcut and the brokerage-DEFAULT fallback are no longer imported
 // here: they are steps of the tier-aware policy and moved with it into

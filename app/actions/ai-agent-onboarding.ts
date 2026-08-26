@@ -66,6 +66,12 @@ import { handleError } from "@/lib/errors"
 import { resolveAgentRecipient } from "@/lib/notifications/recipient-tenant"
 // A new `agents` row invalidates any memoized "this user has no agent record" answer.
 import { invalidateAgentIdentity } from "@/lib/kernel/agent-identity-resolver"
+// THE SPEND ACTOR. Every export in this "use server" file is a public HTTP
+// endpoint and `agentId` is whatever the caller typed, so it can never be the
+// tenant the AI ledger bills (CLAUDE.md §4). getAgentContext resolves the
+// brokerage from the SESSION; the routed calls below carry that and nothing
+// else, which is what makes lib/ai/models.ts's `if (request.brokerageId)` fire.
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { z } from "zod"
 
 // ==================== TYPES ====================
@@ -301,6 +307,8 @@ export async function getOnboardingStatus(agentId: string) {
     return { success: false, error: "Invalid agent ID" }
   }
 
+  // Tenant for the AI cost ledger — SESSION, never `agentId` (§4).
+  const spendActor = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -324,6 +332,8 @@ export async function getOnboardingStatus(agentId: string) {
 
     // Generate AI status summary
     const { text: aiSummary } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o-mini",
       prompt: `Summarize onboarding progress for agent:
         
@@ -541,6 +551,8 @@ export async function generateWelcomeMessage(agentId: string) {
     return { success: false, error: "Invalid agent ID" }
   }
 
+  // Tenant for the AI cost ledger — SESSION, never `agentId` (§4).
+  const spendActor = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -591,6 +603,8 @@ export async function generateWelcomeMessage(agentId: string) {
       [agentUser?.first_name, agentUser?.last_name].filter(Boolean).join(" ").trim() || "New Agent"
 
     const { text: welcomeMessage } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o-mini",
       prompt: `Generate a warm, professional welcome message for a new real estate agent joining a brokerage:
 
@@ -627,6 +641,8 @@ export async function askOnboardingBuddy(params: {
     return { success: false, error: "Invalid agent ID" }
   }
 
+  // Tenant for the AI cost ledger — SESSION, never `params.agentId` (§4).
+  const spendActor = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -639,6 +655,8 @@ export async function askOnboardingBuddy(params: {
 
     // Generate AI response
     const { text: answer } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o-mini",
       prompt: `You are the AI Onboarding Buddy for new real estate agents on this platform.
 

@@ -228,7 +228,13 @@ export async function dispatchListingPromoVideo(
   let script: string
   try {
     const result = await runWithComplianceRedraft({
-      draft: ({ violations }) => draftScript({ facts, eventType: input.eventType, eventContext: input.eventContext, violations }),
+      draft: ({ violations }) => draftScript({
+        facts, eventType: input.eventType, eventContext: input.eventContext, violations,
+        // §4 — `input.brokerageId` is this reactor run's tenant and the listing
+        // was checked against it at :141; agentUserId is resolved, not supplied.
+        brokerageId: input.brokerageId,
+        userId: agentUserId,
+      }),
       gate: async (s) => {
         const r = await evaluateOutbound({
           actorContext: { brokerageId: input.brokerageId, userId: agentUserId, role: "system" },
@@ -313,6 +319,10 @@ async function draftScript(args: {
   eventType:    ListingPromoEventType
   eventContext?: Record<string, unknown>
   violations:   string[]
+  /** Tenant + actor for the AI cost ledger — the reactor run's own brokerage
+   *  and the resolved agent user, never a caller-supplied value (§4). */
+  brokerageId?: string | null
+  userId?:      string | null
 }): Promise<string> {
   // Wave 27 — per-event hook + close. Each lifecycle moment carries
   // distinct intent: announcement vs. invitation vs. social-proof vs.
@@ -349,6 +359,8 @@ ${tmpl.extraConstraints ? `- ${tmpl.extraConstraints}\n` : ""}
 Return ONLY the script text the agent will speak on camera.${violationLine}`
 
   const { text } = await generateTextRouted({
+    brokerageId: args.brokerageId ?? null,
+    userId: args.userId ?? null,
     feature:     "listing_promo_script",
     prompt,
     maxTokens:   220,

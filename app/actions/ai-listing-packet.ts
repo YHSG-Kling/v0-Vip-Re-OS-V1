@@ -265,6 +265,8 @@ async function generateListingFlyer(listing: any) {
 
   try {
     const { text: flyerContent } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
       model: "openai/gpt-4o",
       prompt: `Generate a professional real estate listing flyer for this property:
 
@@ -361,6 +363,8 @@ async function compileSellerDisclosure(listing: any) {
 
     // Use AI to compile and verify completeness
     const { text: analysisResult } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
       model: "openai/gpt-4o",
       prompt: `Analyze seller disclosure completeness for ${listing.state}:
 
@@ -415,6 +419,8 @@ async function generateUtilitiesForm(listing: any) {
 
   try {
     const { text: utilitiesContent } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
       model: "openai/gpt-4o-mini",
       prompt: `Generate a seller utilities form for property at ${listing.address}, ${listing.city}, ${listing.state}.
 
@@ -462,6 +468,8 @@ async function fetchGISPropertyReport(listing: any) {
     // In production, this would call actual GIS APIs
     // For now, generate AI-enhanced property report
     const { text: gisContent } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
       model: "openai/gpt-4o",
       prompt: `Generate a GIS property report summary for:
 Address: ${listing.address}, ${listing.city}, ${listing.state} ${listing.zip}
@@ -514,6 +522,8 @@ async function fetchTaxRecordReport(listing: any) {
   try {
     // In production, integrate with county assessor APIs
     const { text: taxContent } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
       model: "openai/gpt-4o-mini",
       prompt: `Generate a property tax record summary for:
 Address: ${listing.address}, ${listing.city}, ${listing.state} ${listing.zip}
@@ -565,6 +575,8 @@ async function fetchAppraiserSiteReport(listing: any) {
 
   try {
     const { text: appraiserContent } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
       model: "openai/gpt-4o",
       prompt: `Generate an appraiser-style property report for:
 Address: ${listing.address}, ${listing.city}, ${listing.state} ${listing.zip}
@@ -683,6 +695,8 @@ export async function aiPacketQualityCheck(packetId: string) {
     const documents = packet.config?.content || []
 
     const { text: qualityResult } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
       model: "openai/gpt-4o",
       prompt: `Review this listing packet for quality and completeness:
 

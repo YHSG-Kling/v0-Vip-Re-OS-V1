@@ -4,6 +4,18 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+// THE SPEND ACTOR, AND WHY IT IS NOT `params.brokerageId`.
+//
+// Every export here is a "use server" endpoint and every one of them takes a
+// `brokerageId` straight off the caller — the only callers in the tree are the
+// CLIENT component app/dashboard/transactions/[id]/transaction-detail-client.tsx,
+// which passes whatever the browser holds. CLAUDE.md §4: "Tenant comes from the
+// SESSION. Never from a request body, never from a parameter." Billing AI spend
+// against a body-supplied tenant is worse than not billing it: it is an invoice
+// written on another brokerage. So the ledger's tenant is resolved here, from
+// the session, and `params.brokerageId` is left to the row writes it already
+// governs (a pre-existing tenancy defect, reported, not silently widened).
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import {
   TRANSACTION_TASK_PRIORITY_PROMPT_UNION,
   coerceTaskPriority,
@@ -49,6 +61,8 @@ export async function analyzeTransactionDocument(params: {
     return { success: false, error: "Invalid document or transaction ID" }
   }
 
+  // Tenant for the AI cost ledger — SESSION, never params.brokerageId (§4).
+  const spendActor = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -136,6 +150,8 @@ Return a JSON object:
     }
 
     const { text } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o-mini",
       system: systemPrompt,
       messages: [{ role: "user", content: userPrompt }],
@@ -203,6 +219,8 @@ export async function generateTransactionDocumentReminders(params: {
     return { success: false, error: "Invalid transaction ID" }
   }
 
+  // Tenant for the AI cost ledger — SESSION, never params.brokerageId (§4).
+  const spendActor = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -229,6 +247,8 @@ export async function generateTransactionDocumentReminders(params: {
     }
 
     const { text } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o-mini",
       system:
         "You are a real estate transaction coordinator. Generate actionable document deadline reminders. Always respond with valid JSON only.",
@@ -349,6 +369,8 @@ export async function checkTransactionDisclosures(params: {
     return { success: false, error: "Invalid brokerage ID" }
   }
 
+  // Tenant for the AI cost ledger — SESSION, never params.brokerageId (§4).
+  const spendActor = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -365,6 +387,8 @@ export async function checkTransactionDisclosures(params: {
     }
 
     const { text } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o-mini",
       system:
         "You are a real estate compliance officer specializing in state disclosure requirements. Always respond with valid JSON only.",

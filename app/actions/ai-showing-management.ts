@@ -258,6 +258,8 @@ export async function aiScheduleShowing(params: ShowingRequest) {
   // Rebuild params with resolved values so the rest of the function uses consistent fields
   params = { ...params, requestedDate: resolvedDate, requestedTime: resolvedTime }
 
+  // Tenant for the AI cost ledger — SESSION, never `params.agentId` (§4).
+  const spendActor = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -292,6 +294,8 @@ export async function aiScheduleShowing(params: ShowingRequest) {
 
     // AI Analysis for optimal scheduling
     const { text: aiAnalysis } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o-mini",
       prompt: `You are a real estate showing scheduling assistant. Analyze and recommend.
 
@@ -417,6 +421,8 @@ export async function aiOptimizeShowingRoute(params: {
     return { success: false, error: "Invalid agent ID" }
   }
 
+  // Tenant for the AI cost ledger — SESSION, never `params.agentId` (§4).
+  const spendActor = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -458,6 +464,8 @@ export async function aiOptimizeShowingRoute(params: {
 
     // AI Route Optimization
     const { text: routeAnalysis } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o",
       prompt: `You are a real estate showing route optimizer. Create an optimal route.
 
@@ -565,6 +573,8 @@ export async function aiSendShowingConfirmation(showingId: string) {
     return { success: false, error: "Invalid showing ID" }
   }
 
+  // Tenant for the AI cost ledger — SESSION (§4).
+  const spendActor = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -585,6 +595,8 @@ export async function aiSendShowingConfirmation(showingId: string) {
 
     // Generate personalized confirmation message
     const { text: confirmationContent } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o-mini",
       prompt: `Create a friendly, professional showing confirmation message.
 
@@ -651,6 +663,8 @@ export async function aiCollectShowingFeedback(showingId: string) {
     return { success: false, error: "Invalid showing ID" }
   }
 
+  // Tenant for the AI cost ledger — SESSION (§4).
+  const spendActor = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -670,6 +684,8 @@ export async function aiCollectShowingFeedback(showingId: string) {
 
     // Generate personalized feedback request
     const { text: feedbackRequest } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o-mini",
       prompt: `Create a personalized showing feedback request.
 
@@ -744,6 +760,8 @@ export async function aiAnalyzeShowingFeedback(feedbackId: string) {
     return { success: false, error: "Invalid feedback ID" }
   }
 
+  // Tenant for the AI cost ledger — SESSION (§4).
+  const spendActor = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -764,6 +782,8 @@ export async function aiAnalyzeShowingFeedback(feedbackId: string) {
 
     // AI Analysis of feedback
     const { text: analysis } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o",
       prompt: `Analyze this showing feedback and recommend next steps.
 
@@ -837,6 +857,8 @@ export async function getAIShowingInsights(agentId: string, dateRange?: { start:
     return { success: false, error: "Invalid agent ID" }
   }
 
+  // Tenant for the AI cost ledger — SESSION, never `agentId` (§4).
+  const spendActor = await getAgentContext()
   const supabase = await createClient()
 
   try {
@@ -872,6 +894,8 @@ export async function getAIShowingInsights(agentId: string, dateRange?: { start:
 
     // AI Generate insights
     const { text: aiInsights } = await generateText({
+      brokerageId: spendActor.brokerageId,
+      userId: spendActor.userId || null,
       model: "openai/gpt-4o-mini",
       prompt: `Analyze showing performance and provide insights.
 

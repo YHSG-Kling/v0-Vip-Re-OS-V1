@@ -186,6 +186,9 @@ Return JSON:
 }`
 
     const { text } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
+      agentId: params.agentId,
       model: "openai/gpt-4o",
       prompt,
     })
@@ -279,6 +282,9 @@ export async function generateNewsletterSubjectVariants(
     if (!auth.ok) return { success: false, error: auth.error }
 
     const { text } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
+      agentId,
       model: "openai/gpt-4o-mini",
       prompt: `Generate 5 A/B test subject line variants for a real estate newsletter.
 
@@ -475,6 +481,8 @@ Return JSON:
 }`
 
     const { text } = await generateText({
+      brokerageId: mailBrokerageId,
+      agentId: params.agentId,
       model: "openai/gpt-4o",
       prompt,
     })
@@ -687,6 +695,9 @@ Return JSON:
 }`
 
     const { text } = await generateText({
+      brokerageId,
+      userId: auth.userId,
+      agentId: params.agentId,
       model: "openai/gpt-4o",
       prompt,
     })
@@ -809,6 +820,9 @@ export async function enhanceListingDescription(
     }
 
     const { text } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
+      agentId,
       model: "openai/gpt-4o-mini",
       prompt: `Rewrite this listing description for a ${style} buyer:
 
@@ -984,6 +998,9 @@ Return JSON:
 }`
 
     const { text } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
+      agentId: params.agentId,
       model: "openai/gpt-4o",
       prompt,
     })
@@ -1082,6 +1099,9 @@ export async function generateCounterOfferStrategy(
     if (!offer) return { success: false, error: "Offer not found in your brokerage" }
 
     const { text } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
+      agentId,
       model: "openai/gpt-4o",
       prompt: `You are a real estate negotiation expert. Create a counter-offer strategy.
 
@@ -1167,6 +1187,9 @@ export async function compareOffers(
     if (listingError) throw listingError
 
     const { text } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
+      agentId,
       model: "openai/gpt-4o",
       prompt: `You are a seller's agent analyzing multiple offers.
 

@@ -403,6 +403,8 @@ Style: first-person, energetic but professional. Lead with the hook, hit 2-3 fac
 Banned: protected-class refs (race, religion, family status, national origin, gender, sexual orientation, disability, source of income); phrases like "perfect for families" or "ideal starter home"; rate/valuation/appreciation guarantees; exclamation marks.
 Return ONLY the script text the avatar will speak — no scene directions.${violationLine}`
     const { text } = await generateTextRouted({
+      brokerageId: args.brokerageId,
+      userId: args.agentUserId,
       feature:     "listing_promo_voiceover_script",
       prompt,
       maxTokens:   220,

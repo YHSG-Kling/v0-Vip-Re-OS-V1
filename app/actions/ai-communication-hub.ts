@@ -522,6 +522,9 @@ export async function generateSmartResponse(params: {
     const charLimit = params.channel === "sms" ? 160 : params.channel === "chat" ? 500 : 2000
 
     const { text: response } = await generateText({
+      brokerageId: effBrokerageId,
+      userId: auth.userId,
+      agentId: effAgentId,
       feature: "smart_reply_generation",
       prompt: `Generate a ${params.tone || "professional"} response for this ${params.channel} message.
 
@@ -796,6 +799,9 @@ export async function generateCommunicationSummary(params: {
     }
 
     const { text: summary } = await generateText({
+      brokerageId: auth.brokerageId,
+      userId: auth.userId,
+      agentId: auth.agentId,
       feature: "communication_summary_generation",
       prompt: `Summarize this client communication history for an agent's quick reference:
 

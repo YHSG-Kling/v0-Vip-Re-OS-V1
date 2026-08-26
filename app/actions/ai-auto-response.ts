@@ -118,7 +118,7 @@ export async function generateAIResponse(params: {
   // the last 10 messages of one thread. buildContextWindow was written for
   // exactly this injection point and had no caller. Best-effort: no insights
   // (or a read failure) yields an empty string and the prompt simply omits it.
-  const { agentId: memoryAgentId, brokerageId: memoryBrokerageId } = await getAgentContext()
+  const { userId: memoryUserId, agentId: memoryAgentId, brokerageId: memoryBrokerageId } = await getAgentContext()
   let contactMemory = ""
   if (memoryAgentId && memoryBrokerageId) {
     try {
@@ -138,6 +138,10 @@ export async function generateAIResponse(params: {
     tone: settings?.tone || "professional",
     agentName: user.user_metadata?.full_name || "our team",
     contactMemory,
+    // §4 — the ledger's tenant rides in from getAgentContext above, not from
+    // params. lib/ai/models.ts books under `if (request.brokerageId)`.
+    brokerageId: memoryBrokerageId,
+    userId: memoryUserId || null,
   }
 
   // Generate AI response — real call: generateSmartReply rides generateTextRouted
@@ -187,6 +191,11 @@ async function generateSmartReply(context: {
   agentName: string
   /** Distilled conversation-insights memory (buildContextWindow) — may be "". */
   contactMemory?: string
+  /** The AI cost ledger's tenant + actor, resolved from the SESSION by the
+   *  caller (§4). Null tenant = nothing books, which is the honest outcome
+   *  for an unauthenticated call, not a silent free ride. */
+  brokerageId?: string | null
+  userId?: string | null
 }): Promise<string> {
   const recentHistory = context.conversationHistory
     .slice(0, 5)
@@ -197,6 +206,8 @@ async function generateSmartReply(context: {
     .join("\n")
 
   const { text } = await generateText({
+    brokerageId: context.brokerageId ?? null,
+    userId: context.userId ?? null,
     model: resolveModel("openai/gpt-4o-mini"),
     prompt: `You are ${context.agentName}, a professional real estate agent. Write a ${context.tone} reply.
 

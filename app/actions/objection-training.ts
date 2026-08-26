@@ -207,7 +207,11 @@ export async function submitPracticeTurn(params: {
   ].join("\n")
 
   // Score the agent's response + generate prospect's next line
-  const aiResult = await scoreAndContinue({ scenario, transcript })
+  const aiResult = await scoreAndContinue({
+    scenario,
+    transcript,
+    spendActor: { brokerageId: ctx.brokerageId ?? null, userId: ctx.userId ?? null },
+  })
 
   // Persist the score on the agent turn we just inserted
   await svc
@@ -280,7 +284,12 @@ export async function endPracticeSession(params: {
     ? scoredTurns.reduce((s, t) => s + Number(t.turn_score), 0) / scoredTurns.length
     : 0
 
-  const finalEval = await finalizeSession({ scenario, turns: allTurns, averageScore: avgScore })
+  const finalEval = await finalizeSession({
+    scenario,
+    turns: allTurns,
+    averageScore: avgScore,
+    spendActor: { brokerageId: ctx.brokerageId ?? null, userId: ctx.userId ?? null },
+  })
 
   await svc
     .from("objection_training_sessions")
@@ -477,6 +486,9 @@ interface ScoreAndContinueResult {
 async function scoreAndContinue(params: {
   scenario: ObjectionScenario
   transcript: string
+  /** Tenant + actor for the AI cost ledger, from resolveWriteContext in the
+   *  caller — the SESSION, never a parameter (§4). */
+  spendActor: { brokerageId: string | null; userId: string | null }
 }): Promise<ScoreAndContinueResult> {
   const systemPrompt = `You are scoring a real estate agent's objection-handling practice AND continuing the role-play as the prospect.
 
@@ -503,6 +515,8 @@ Stay in character as the prospect. Don't break role in the prospectReply. Don't 
     // generateTextRouted: gateway + AI_TASK_ROUTING + auto-fallback + fair-use + cost log.
     // The constant `MODEL` is kept only for db logging — actual model is chosen by the routing table.
     const result = await generateTextRouted({
+      brokerageId: params.spendActor.brokerageId,
+      userId: params.spendActor.userId,
       feature:     "playbook_response",
       system:      systemPrompt,
       prompt:      userPrompt,
@@ -531,6 +545,8 @@ async function finalizeSession(params: {
   scenario: ObjectionScenario
   turns: Array<{ speaker: string; text: string; turn_score: number | null; feedback: string | null }>
   averageScore: number
+  /** Same provenance as scoreAndContinue above. */
+  spendActor: { brokerageId: string | null; userId: string | null }
 }): Promise<{ summary: string; strengths: string[]; improvements: string[] }> {
   const transcript = params.turns
     .map((t) => `${t.speaker === "prospect" ? "PROSPECT" : "AGENT"}: ${t.text}${t.turn_score != null ? ` [score: ${t.turn_score}]` : ""}`)
@@ -555,6 +571,8 @@ Return ONLY a JSON object with:
   try {
     // generateTextRouted: gateway + AI_TASK_ROUTING + auto-fallback + fair-use + cost log.
     const result = await generateTextRouted({
+      brokerageId: params.spendActor.brokerageId,
+      userId: params.spendActor.userId,
       feature:     "playbook_response",
       prompt,
       maxTokens:   600,

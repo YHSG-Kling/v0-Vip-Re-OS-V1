@@ -687,6 +687,9 @@ export async function draftTransactionCommunication(params: {
     )
 
     const { text: communication } = await generateText({
+      brokerageId: scope.brokerageId ?? null,
+      userId: scope.userId ?? null,
+      agentId: scope.agentId ?? null,
       model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       prompt: `Draft a professional ${params.communicationType} communication for a real estate transaction:
 

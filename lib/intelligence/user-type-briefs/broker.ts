@@ -244,6 +244,8 @@ export async function generateBrokerBrief(params: {
   if (priorities.length > 0) {
     try {
       const { text } = await generateTextRouted({
+        brokerageId: params.brokerageId,
+        userId: params.userId,
         feature: "daily_briefing",
         prompt:
           `Write a one-sentence morning summary for a real estate broker. ` +
