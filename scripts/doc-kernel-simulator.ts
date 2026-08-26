@@ -28,6 +28,7 @@ import { fileURLToPath } from "url"
 // file's own explanatory comment necessarily QUOTES; scanning raw source would
 // match the prose describing the defect and report the defect as still present.
 import { stripComments } from "./strip-comments"
+import { CHECK_VOCABULARIES } from "./check-vocabularies"
 import { decideDeadlinePolicy } from "../lib/documents/policy-decisions"
 import { deriveDeadlineCandidates, parseDocDate } from "../lib/documents/deadline-derivation"
 import { decideStageCandidate } from "../lib/documents/stage-candidates"
@@ -3004,7 +3005,14 @@ async function main() {
         "notifications.priority": ["low","medium","high","critical"],
         "smart_assistant_suggestions.priority": ["low","medium","high"],
         "vendor_messages.sender_type": ["vendor","contact","agent"],
-        "contacts.contact_type": ["lead","prospect","client","lifetime_customer","sphere","vendor","referral_partner","investor","buyer","seller","both","other"],
+        // DERIVED, NOT TYPED (CLAUDE.md §2 — do not pin an assertion to a waypoint).
+        // This entry was a hand-kept 12-value copy and m563 made it a 11-value one
+        // by removing 'client'; a stale copy here would have gone on ADMITTING a
+        // literal the database now refuses, which is a sweep reporting "none" while
+        // blind to the exact defect it exists to catch. scripts/check-vocabularies.ts
+        // is GENERATED from pg_get_constraintdef, so reading it makes this arm move
+        // with the CHECK instead of with an editor.
+        "contacts.contact_type": CHECK_VOCABULARIES.contacts?.contact_type ?? [],
       }
       const nsOffenders: string[] = []
       const scanNs = (rel: string) => {

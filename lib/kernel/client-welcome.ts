@@ -145,6 +145,50 @@
  *     notification: the only mail they ever got was the invite core's bare Supabase
  *     OTP magic link, which carries no agent voice, no situation and no video.
  *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * 2026-08-26 — THE OWNER REVERSED THE LIFETIME HALF OF THAT RULING.
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * OWNER RULING, verbatim: "lifetime should not get the welcome and client isn't a
+ * type."
+ *
+ * The lane immediately above built the OPPOSITE of the first clause: it read the
+ * lifetime customer's silence as the defect and routed them to the Sphere Manager,
+ * with a bespoke LIFETIME_JOURNEY map, subject line, goal, situation and audience
+ * hint written to make that welcome good. The owner has now ruled that a lifetime
+ * customer gets NO agent-signed welcome at all. That is a product call reversing
+ * recent work, and it is recorded as a reversal rather than quietly absorbed — the
+ * three OTHER routings (seller → listing_concierge, buyer → shopping_agent, both →
+ * BOTH) were REAFFIRMED and are untouched.
+ *
+ * ── THE CONSEQUENCE, STATED PLAINLY, BECAUSE IT IS NOT A NO-OP ──────────────
+ *
+ * `resolveWelcomeManagers` is the exact complement of the magic link: the invite
+ * core sends its own Supabase OTP mail if and only if the manager set is EMPTY
+ * (deliverConversionWelcome, `sendMagicLink: welcomeManagers.length === 0`; the
+ * warm-capture path in lib/contact-pipeline/contact-capture.ts arms it the same
+ * way). So returning [] for lifetime does not make a converting lifetime customer
+ * silent — IT ARMS THE MAGIC LINK FOR THEM. What they now receive is:
+ *
+ *   · the portal_contact_invites row (unchanged — the grant never depended on any
+ *     of this, and lifetime_customer is not in PORTAL_EXCLUDED_CONTACT_TYPES);
+ *   · the portal invite's OWN magic-link mail, and nothing else;
+ *   · NO agent-signed welcome, NO journey map, NO embedded personal video, NO
+ *     `transparency_updates` portal welcome card, and NO
+ *     `new_contact_assigned` / `welcome_package_sent` notification, because
+ *     ensureClientWelcome returns SKIPPED before it writes anything.
+ *
+ * The count stays exactly ONE email per converted contact. It is a different email.
+ *
+ * ── WHAT IS *NOT* GOVERNED BY THIS RULING ──────────────────────────────────
+ *
+ * The VIDEO side. `lib/ai-isa/contact-reel-situation.ts::contactReelPersona` still
+ * routes the welcome REEL by four values including `lifetime`, and the lifetime arm
+ * of lib/contact-promotion/welcome-situation.ts::buildWelcomeSituation still exists
+ * because that resolver is shared with lib/contact-promotion/welcome-avatar-video.ts.
+ * The owner ruled on the WELCOME EMAIL. Deleting the reel's lifetime lane on the
+ * strength of an email ruling would be exactly the guess §1 forbids.
+ *
  * THE VOCABULARY IS NOT NEW (§6). `lib/ai-isa/contact-reel-situation.ts`
  * ::contactReelPersona already routes the WELCOME REEL by exactly the owner's four
  * values — buyer / seller / both / lifetime — so the video side had been honouring
@@ -222,42 +266,48 @@ const BOTH_JOURNEY = [
   "We line the two closings up so you move once — and I keep watching your equity after",
 ]
 
-/**
- * The LIFETIME map. A past client is not mid-transaction and promising them a
- * transaction journey would be the brokerage-first framing the them-first ruling
- * forbids. What the Sphere Manager actually owns is the relationship AFTER the
- * deal — so the map is what keeps arriving, not what they are about to do.
- */
-const LIFETIME_JOURNEY = [
-  "Nothing is expected of you here — this is simply where I keep showing up",
-  "What your home is worth comes to you on a schedule, not when I need something",
-  "Vetted people for whatever the house needs, whenever it needs them",
-  "Anyone you send me is treated exactly the way you were",
-  "And whenever your next move starts, we pick up where we left off",
-]
+// TOMBSTONE (§1, owner ruling 2026-08-26 "lifetime should not get the welcome").
+// `LIFETIME_JOURNEY` — a five-step relationship map written for the Sphere
+// Manager's welcome — stood here and is DELETED, together with its subject line,
+// goal, situation phrase and persona-audience hint below. It had exactly ONE
+// reader, `JOURNEY_STEPS.lifetime`, reachable only when `resolveWelcomeManagers`
+// returned ["sphere_of_influence"], which it no longer ever does. Nothing else in
+// the tree read it (verified by grep over stripped source).
+//
+// THE CAPABILITY DID NOT MOVE ELSEWHERE AND IS NOT MISSING: the owner ruled that a
+// lifetime customer gets no agent-signed welcome, so there is no surviving copy to
+// name. What a converting lifetime customer receives instead is the portal invite's
+// own magic-link mail — see the header. The relationship-after-the-deal content
+// this map expressed continues to exist on its own rails (the Sphere Manager's
+// anniversary / equity / referral lanes and the welcome REEL's `lifetime` persona
+// in lib/ai-isa/contact-reel-situation.ts), which this ruling does not touch.
 
 /**
  * WHICH JOURNEY MAP THE COPY IS BUILT FROM.
  *
- * This is `ContactReelPersona` — the SAME four values lib/ai-isa/contact-reel-
- * situation.ts already routes the welcome REEL by (buyer / seller / both /
- * lifetime). §6: the email and the video answer "which lane is this person on"
- * with one vocabulary, not two.
+ * Derived from `ContactReelPersona` — the four values lib/ai-isa/contact-reel-
+ * situation.ts routes the welcome REEL by (buyer / seller / both / lifetime) —
+ * MINUS `lifetime`, which the owner struck from the email side on 2026-08-26.
+ *
+ * IT IS AN `Exclude<>` AND NOT THREE STRING LITERALS ON PURPOSE, for the same
+ * reason `WelcomeManagerKey` is an `Extract<ManagerKey, …>`: it is a COMPILE-TIME
+ * proof that the email's journeys remain a SUBSET of the reel's persona vocabulary,
+ * so the two can still never drift into two spellings of "which lane is this person
+ * on" (§6). The email answers a narrower question than the video; it must not
+ * answer it in a different alphabet.
  */
-export type WelcomeJourney = ContactReelPersona
+export type WelcomeJourney = Exclude<ContactReelPersona, "lifetime">
 
 const JOURNEY_STEPS: Readonly<Record<WelcomeJourney, readonly string[]>> = Object.freeze({
   buyer:    BUYER_JOURNEY,
   seller:   SELLER_JOURNEY,
   both:     BOTH_JOURNEY,
-  lifetime: LIFETIME_JOURNEY,
 })
 
 const JOURNEY_SUBJECT: Readonly<Record<WelcomeJourney, string>> = Object.freeze({
   buyer:    "Welcome — here's how we'll find your home",
   seller:   "Welcome — here's how we'll sell your home",
   both:     "Welcome — here's how we'll sell yours and find the next one",
-  lifetime: "Welcome — here's how I stay in your corner",
 })
 
 /**
@@ -270,7 +320,6 @@ const JOURNEY_PERSONA_AUDIENCE: Readonly<Record<WelcomeJourney, string>> = Objec
   buyer:    "buyer",
   seller:   "seller",
   both:     "buyer and seller",
-  lifetime: "past_client",
 })
 
 /**
@@ -285,21 +334,24 @@ const JOURNEY_GOAL: Readonly<Record<WelcomeJourney, string>> = Object.freeze({
   buyer:    "a warm welcome for a brand-new buyer client",
   seller:   "a warm welcome for a brand-new seller client",
   both:     "a warm welcome for a brand-new client who is selling their current home AND buying the next one — one move, two transactions that have to line up",
-  lifetime: "a warm welcome for a past client crossing into the lifetime relationship — nothing is being sold and nothing is expected of them",
 })
 
 const JOURNEY_SITUATION: Readonly<Record<WelcomeJourney, string>> = Object.freeze({
   buyer:    "just became a buyer client",
   seller:   "just became a seller client",
   both:     "is selling their current home and buying the next one",
-  lifetime: "is a past client we have already closed with",
 })
 
-/** The ledger's one-line description of WHAT this welcome is. */
+/**
+ * The ledger's one-line description of WHAT this welcome is.
+ *
+ * The `journey === "lifetime"` branch that stood here — "warm lifetime-relationship
+ * welcome + what-to-expect map for a past client" — is DELETED with the rest of the
+ * lifetime arm (owner ruling 2026-08-26). Every remaining journey is a transaction
+ * side, so the sentence is uniform again and needs no special case.
+ */
 function welcomeRationaleSubject(journey: WelcomeJourney): string {
-  return journey === "lifetime"
-    ? "warm lifetime-relationship welcome + what-to-expect map for a past client"
-    : `warm onboarding welcome + journey map for a new ${JOURNEY_PERSONA_AUDIENCE[journey]} client`
+  return `warm onboarding welcome + journey map for a new ${JOURNEY_PERSONA_AUDIENCE[journey]} client`
 }
 
 /** PURE deterministic FALLBACK (owner rule: content is never hardcoded —
@@ -313,9 +365,10 @@ export function composeClientWelcome(input: {
 }): { subject: string; body: string } {
   const steps = JOURNEY_STEPS[input.journey] ?? BUYER_JOURNEY
   const who = input.agentName ? `I'm ${input.agentName}, and my` : `My`
-  const opening = input.journey === "lifetime"
-    ? `${input.addressAs}, welcome. ${who} whole team stays yours long after the closing — here's the map so you always know what to expect from me:`
-    : `${input.addressAs}, welcome. ${who} whole team is now working for you — here's the map so you always know where we are:`
+  // The `journey === "lifetime"` opening ("…stays yours long after the closing…")
+  // is DELETED with the rest of the lifetime arm (owner ruling 2026-08-26). Every
+  // remaining journey is a live transaction, so there is one opening again.
+  const opening = `${input.addressAs}, welcome. ${who} whole team is now working for you — here's the map so you always know where we are:`
   return {
     subject: JOURNEY_SUBJECT[input.journey] ?? JOURNEY_SUBJECT.buyer,
     body: [
@@ -434,21 +487,29 @@ const SKIPPED: WelcomeOutcome = {
 
 /**
  * The managers a welcome can be picked up by. `Extract<ManagerKey, …>` rather than
- * three string literals ON PURPOSE: it is a COMPILE-TIME proof that every name here
- * is a real key of `MANAGERS` in lib/kernel/manager-registry.ts, so a fourth
+ * bare string literals ON PURPOSE: it is a COMPILE-TIME proof that every name here
+ * is a real key of `MANAGERS` in lib/kernel/manager-registry.ts, so another
  * spelling of a manager cannot be introduced here without the registry gaining it
  * first (§6).
+ *
+ * TOMBSTONE (§1): `sphere_of_influence` was the third member and is REMOVED — the
+ * owner ruled on 2026-08-26 that a lifetime customer gets no welcome, so no input
+ * can produce it and a union member nothing returns is a promise the code does not
+ * keep. THE MANAGER ITSELF IS UNTOUCHED and is still a first-class key of MANAGERS:
+ * the Sphere Manager keeps every other thing it owns (the anniversary, equity,
+ * referral and win-back lanes). What went is only its arm of THIS resolver.
  */
 export type WelcomeManagerKey = Extract<
   ManagerKey,
-  "listing_concierge" | "shopping_agent" | "sphere_of_influence"
+  "listing_concierge" | "shopping_agent"
 >
 
 /**
  * WHICH MANAGER(S) PICK UP THIS WELCOME?
  *
  * OWNER RULING: seller → listing_concierge, buyer → shopping_agent, both → BOTH of
- * those, lifetime customer → sphere_of_influence.
+ * those. A LIFETIME CUSTOMER IS PICKED UP BY NOBODY — see the reversal note below;
+ * the owner reaffirmed the first three and struck the fourth.
  *
  * ORDER IS MEANINGFUL. The FIRST entry is the OWNER: it becomes
  * `agent_client_messages.agent_kind` (which is what `resolveActionManager` renders
@@ -472,18 +533,28 @@ export type WelcomeManagerKey = Extract<
  * because two hand-kept copies of "who is not a client" is the same §6 defect one
  * layer down.
  *
- * `lifetime_customer` is matched through `isLifetimeCustomerType`, the canonical
- * test (lib/contact-types) that is deliberately tolerant of the spellings m539
- * retired — a `past_client` row imported from a legacy CRM is the SAME person and
- * must not be dropped on the floor. `client` and `sphere` are NOT routed here: the
- * ruling enumerates four types and does not name them, and guessing a welcome for a
- * type the owner did not rule on is the kind of invention §1 forbids.
+ * `lifetime_customer` is STILL matched through `isLifetimeCustomerType`, the
+ * canonical test (lib/contact-types) that is deliberately tolerant of the spellings
+ * m539 retired — a `past_client` row imported from a legacy CRM is the SAME person,
+ * and the point of matching it is that it must reach the SAME (empty) answer rather
+ * than falling through the `type.includes("seller")` / `includes("buyer")` arms
+ * below and being handed a transaction welcome. The tolerant test is load-bearing in
+ * the NEGATIVE direction now; deleting it would silently re-welcome legacy rows.
+ *
+ * `sphere` is NOT routed here: the ruling enumerates transaction sides and does not
+ * name it, and guessing a welcome for a type the owner did not rule on is the kind
+ * of invention §1 forbids. (`client` is no longer a contact_type at all — m563.)
  */
 export function resolveWelcomeManagers(contactType: string | null | undefined): WelcomeManagerKey[] {
   const type = (contactType ?? "").trim().toLowerCase()
   if (!type) return []
   if (PORTAL_EXCLUDED_CONTACT_TYPES.includes(type)) return []
-  if (isLifetimeCustomerType(type)) return ["sphere_of_influence"]
+  // OWNER RULING (2026-08-26): "lifetime should not get the welcome". This arm
+  // returned ["sphere_of_influence"] one wave ago; it now returns the EMPTY set,
+  // which ARMS the portal invite's own magic-link mail (deliverConversionWelcome
+  // passes `sendMagicLink: welcomeManagers.length === 0`). See the reversal note
+  // in this file's header for the full consequence.
+  if (isLifetimeCustomerType(type)) return []
   if (type === "both") return ["listing_concierge", "shopping_agent"]
   if (type === "investor") return ["shopping_agent"]
   if (type.includes("seller")) return ["listing_concierge"]
@@ -500,7 +571,10 @@ export function resolveWelcomeManagers(contactType: string | null | undefined): 
  * NULL for an empty set: no manager, no welcome, no journey.
  */
 export function welcomeJourneyFor(managers: readonly WelcomeManagerKey[]): WelcomeJourney | null {
-  if (managers.includes("sphere_of_influence")) return "lifetime"
+  // `if (managers.includes("sphere_of_influence")) return "lifetime"` stood here and
+  // is DELETED with the rest of the lifetime arm (owner ruling 2026-08-26). It is
+  // now unreachable BY TYPE, not merely by data: sphere_of_influence is no longer a
+  // member of WelcomeManagerKey, so the compiler refuses the test outright.
   const seller = managers.includes("listing_concierge")
   const buyer = managers.includes("shopping_agent")
   if (seller && buyer) return "both"
@@ -699,11 +773,12 @@ export async function ensureClientWelcome(svc: Svc, contact: {
     entityId: contact.id,
     recipientContactId: contact.id,
     // agent_client_messages_audience_check admits ONLY seller|buyer|lead|agent
-    // (verified live). A `both` welcome rides its OWNER's side, and a lifetime
-    // client rides 'buyer' — the same spelling lib/kernel/referral-radar.ts already
-    // uses for every past-client message it proposes, rather than a fifth value the
-    // CHECK would refuse (23514). The real persona travels on `persona.audience`
-    // above, which is free text on the prompt.
+    // (verified live). A `both` welcome rides its OWNER's side (seller); every other
+    // journey is a buyer-side one. The lifetime case this expression also used to
+    // carry is gone — that journey no longer exists (owner ruling 2026-08-26) — but
+    // the expression is UNCHANGED, because it was already correct for the three
+    // survivors and rewriting it would be churn. The real persona travels on
+    // `persona.audience` above, which is free text on the prompt.
     audience: journey === "seller" || journey === "both" ? "seller" : "buyer",
     subject: copy.subject,
     body: copy.body,

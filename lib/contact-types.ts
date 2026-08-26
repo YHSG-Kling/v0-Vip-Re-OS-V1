@@ -8,13 +8,28 @@
 // PURE — no I/O, no `server-only` — so scripts/contact-vocabulary-guard.ts can
 // import it directly and hold it against the live database.
 //
-// ── WHAT THE DATABASE ADMITS (project hrvaqgvukzxfskkcrwbt, after m539) ──────
+// ── WHAT THE DATABASE ADMITS (project hrvaqgvukzxfskkcrwbt, after m563) ──────
 //
 //   contacts_contact_type_check CHECK (contact_type = ANY (ARRAY[
-//     'lead','prospect','client','lifetime_customer','sphere','vendor',
+//     'lead','prospect','lifetime_customer','sphere','vendor',
 //     'referral_partner','investor','buyer','seller','both','other']))
 //
-// Before m539 it also admitted 'lifetime' and 'past_client' — THREE spellings of
+// ELEVEN values. m563 removed the twelfth, 'client', on the OWNER RULING:
+// "client isn't a type". That ruling REVERSES what m539 and this file built two
+// waves earlier — m539 deliberately KEPT 'client' while collapsing the lifetime
+// spellings, and 'client' was the first member of both rosters below. It is
+// recorded as a reversal, not quietly absorbed.
+//
+// WHY IT WENT (§6). `contact_type` answers ONE question — which side of a
+// transaction is this person on — and every other value answers it. 'client'
+// answered a DIFFERENT one ("are they represented?"), which every row can already
+// answer more precisely as buyer / seller / both / investor. So it was a second
+// spelling with the side thrown away. THE REPRESENTATION FACT IS NOT LOST: it
+// lives on contacts.STATUS ('representation' / 'active_transaction' /
+// 'under_contract' — the vocabulary lib/kernel/compliance.ts::RESTRICTED_STATES
+// gates outbound messaging on) and on contacts.LIFECYCLE_STATE. Neither moved.
+//
+// Before m539 the CHECK also admitted 'lifetime' and 'past_client' — THREE spellings of
 // "a person we have already closed with". CLAUDE.md §6: two spellings of one idea
 // are a defect, because a scorer cannot match a writer across them. It had already
 // cost behaviour here — migration 433 renamed past_client → lifetime_customer and
@@ -34,11 +49,14 @@
 // TOMBSTONE: app/lib/contact-types.ts was a byte-identical copy of this file's
 // first eight lines with no importer anywhere. Deleted; this file is the survivor.
 
-/** Every contact_type the live `contacts_contact_type_check` admits (m539). */
+/** Every contact_type the live `contacts_contact_type_check` admits (m563). */
 export const CONTACT_TYPES = [
   "lead",
   "prospect",
-  "client",
+  // TOMBSTONE (§1): 'client' stood here and was REMOVED by m563 on the owner
+  // ruling "client isn't a type". It has NO single survivor value — see the
+  // header — so it is not re-pointed anywhere; the representation fact it
+  // half-carried survives on contacts.status / contacts.lifecycle_state.
   "lifetime_customer",
   "sphere",
   "vendor",
@@ -75,6 +93,16 @@ export const LIFETIME_CUSTOMER_SEGMENT = "lifetime_customers" as const
  * A guard asserts that NO key here is a value the live CHECK still admits, and
  * that EVERY value here is one it does — so this table can never quietly become a
  * map onto something the database also refuses.
+ *
+ * `client` (removed from the CHECK by m563) IS DELIBERATELY NOT A KEY HERE, and
+ * that is the whole difference between a COLLAPSE and a REMOVAL. m539 collapsed
+ * three spellings onto a survivor every row could be mapped to. m563 removed a
+ * value whose correct replacement DEPENDS ON THE ROW — a represented buyer is
+ * 'buyer', a seller 'seller', a dual-sided move 'both', a closed deal
+ * 'lifetime_customer' — so there is nothing honest to put on the right-hand side.
+ * `canonicalContactType('client')` therefore returns NULL, which is exactly what
+ * the doc below says null means: "we could not read this", a fact worth finding,
+ * rather than a silent mislabelling of a represented client as a past one.
  */
 export const RETIRED_CONTACT_TYPES: Readonly<Record<string, ContactType>> = Object.freeze({
   lifetime: LIFETIME_CUSTOMER_TYPE,
@@ -134,9 +162,22 @@ export function isLifetimeCustomerType(contactType: string | null | undefined): 
  *
  * All four now import THIS. Every member is admitted by the live CHECK, and the
  * guard proves it.
+ *
+ * ── m563 SHRANK THIS ROSTER FROM THREE TO TWO, AND THAT IS A BEHAVIOUR CHANGE ──
+ * 'client' was the first member and the owner ruled it out of the vocabulary
+ * entirely. It is REMOVED here rather than left to rot, because the database now
+ * refuses it on write and matches nothing on read — and supabase-js RESOLVES both
+ * (CLAUDE.md §3), so a filter naming it would narrow silently, not loudly.
+ *
+ * WHAT THAT ACTUALLY CHANGES: every `.in("contact_type", LIFETIME_CONTACT_TYPES)`
+ * reader below now selects {lifetime_customer, sphere} instead of
+ * {client, lifetime_customer, sphere}. On hrvaqgvukzxfskkcrwbt the selected
+ * population is UNCHANGED — the live census is buyer 2, lifetime_customer 1,
+ * seller 1, with ZERO rows on 'client' and zero on 'sphere' — so the roster
+ * resolves to the same one row it did before. The change is real in code and
+ * nil in data today; it will not stay nil once tenants have volume.
  */
 export const LIFETIME_CONTACT_TYPES = [
-  "client",
   "lifetime_customer",
   "sphere",
 ] as const
@@ -145,9 +186,10 @@ export const LIFETIME_CONTACT_TYPES = [
  * The post-close roster PLUS the referral partners who sit beside it. Used by the
  * sphere/gifting/referral surfaces, which address the whole relationship book
  * rather than only people who closed a deal with us.
+ *
+ * Four members → three, for the same m563 reason as the roster above.
  */
 export const SPHERE_CONTACT_TYPES = [
-  "client",
   "lifetime_customer",
   "sphere",
   "referral_partner",

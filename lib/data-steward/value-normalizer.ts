@@ -39,6 +39,7 @@ export const ENUM_VOCABULARIES: Record<string, EnumVocabulary> = {
   contact_type: {
     canonical: [
       // m539 collapsed lifetime / lifetime_customer / past_client onto one survivor.
+      // m563 REMOVED 'client' entirely (owner: "client isn't a type").
       // This list is the WRITE side: a value outside the live CHECK is refused (23514)
       // and supabase-js resolves the refusal, so the whole imported row is lost silently.
       ...CONTACT_TYPES,
@@ -46,7 +47,21 @@ export const ENUM_VOCABULARIES: Record<string, EnumVocabulary> = {
     synonyms: {
       'new lead': 'lead', 'cold lead': 'lead', 'web lead': 'lead', 'internet lead': 'lead',
       'potential client': 'prospect', 'potential': 'prospect', 'possible client': 'prospect',
-      'active client': 'client', 'current client': 'client', 'customer': 'client',
+      // TOMBSTONE (§1). `'active client' | 'current client' | 'customer' → 'client'`
+      // stood here. m563 removed 'client' from contacts_contact_type_check, so all
+      // three had become synonyms pointing at a value the DATABASE REFUSES (23514) —
+      // and PGRST/postgres refuses the ENTIRE row, so an import row carrying
+      // "Active Client" would have been dropped wholesale, silently.
+      //
+      // THEY ARE NOT RE-POINTED, and that is the same measured decision m563 itself
+      // made about the backfill: the correct target depends on the row (a represented
+      // buyer is 'buyer', a seller 'seller', a dual-sided move 'both', a closed deal
+      // 'lifetime_customer') and this table cannot see the row. Deleting them makes
+      // normalizeEnumValue return { value: null, method: null }, which puts the raw
+      // string on `unresolved` for the tier-2 matcher and the operator — the vocabulary
+      // "we could not read this", which is the fact worth surfacing. Guessing 'buyer'
+      // would file a seller under the wrong desk and never be noticed.
+      // SURVIVOR of the representation fact: contacts.status / contacts.lifecycle_state.
       'past customer': LIFETIME_CUSTOMER_TYPE, 'previous client': LIFETIME_CUSTOMER_TYPE,
       'closed client': LIFETIME_CUSTOMER_TYPE, 'past client': LIFETIME_CUSTOMER_TYPE,
       'sold': LIFETIME_CUSTOMER_TYPE, 'lifetime': LIFETIME_CUSTOMER_TYPE,

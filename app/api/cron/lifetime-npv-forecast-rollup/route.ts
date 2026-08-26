@@ -34,9 +34,16 @@ export const dynamic = "force-dynamic"
 // book" meant one population to the NPV forecast and another to the ads, sphere and
 // win-back lanes. It also named `past_client`, which m539 retired: that member matched
 // zero rows from the moment the migration landed. Survivor:
-// lib/contact-types.ts:LIFETIME_CONTACT_TYPES (client / lifetime_customer / sphere).
-// COUNT MOVES: this forecast's population loses `past_client` (0 live rows) and gains
-// `client`, bringing it into line with the other three lanes.
+// lib/contact-types.ts:LIFETIME_CONTACT_TYPES (lifetime_customer / sphere).
+// COUNT MOVES, twice, and the second one REVERSES part of the first:
+//   · at consolidation, this forecast's population lost `past_client` (0 live rows)
+//     and gained `client`, bringing it into line with the other three lanes;
+//   · at m563 the owner ruled "client isn't a type" and it was removed from the
+//     column and from the roster, so the population loses `client` again. Live
+//     effect today: NONE — the contact_type census is buyer 2, lifetime_customer 1,
+//     seller 1, with zero rows on `client` and zero on `sphere`, so this cron
+//     forecasts over the same single row it did before. The narrowing is real in
+//     code and will bite only once a tenant has volume.
 
 export async function GET(request: NextRequest) {
   // Cron auth — see lib/cron-auth.ts

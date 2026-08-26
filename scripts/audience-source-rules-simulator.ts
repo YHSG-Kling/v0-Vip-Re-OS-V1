@@ -49,6 +49,7 @@ import {
 } from "../lib/ads/audience-source-rules"
 import { rawSpellingsForPersona } from "../lib/campaigns/contact-sources"
 import { LIFETIME_CONTACT_TYPES } from "../lib/contact-types"
+import { CHECK_VOCABULARIES } from "./check-vocabularies"
 import { FB_AUDIENCE_TEMPLATES } from "../lib/ads/fb-audience-templates"
 import { blankComments } from "./strip-comments"
 
@@ -148,8 +149,10 @@ const ADMITTED: AdmittedCase[] = [
   { type: "contact_list", filters: { contact_tags: ["hot-lead"] }, expect: ["c1", "c3", "c9"] },
   { type: "contact_list", filters: { contact_tags: ["hot-lead", "luxury"] }, expect: ["c3"] },
   { type: "investor_contacts", filters: {}, expect: ["c5"] },
-  // LIFETIME_CONTACT_TYPES = client, lifetime_customer, sphere (m539 collapsed the three
-  // lifetime spellings; the survivor set is lib/contact-types.ts)
+  // LIFETIME_CONTACT_TYPES = lifetime_customer, sphere (m539 collapsed the three
+  // lifetime spellings; m563 removed 'client' — the survivor set is lib/contact-types.ts).
+  // No fixture row carries a retired spelling, so these expectations are unchanged
+  // by either migration; c6/c7 are both 'lifetime_customer'.
   { type: "lifetime_customers", filters: {}, expect: ["c6", "c7"] },
   { type: "lifetime_customers", filters: { min_tenure_months: 0 }, expect: ["c6", "c7"] },
   // Tenure ≥ 12 months → transactions closed on/before 2025-08-22. c6 closed 2020;
@@ -465,9 +468,23 @@ function main() {
   // ───────────────────────────────────────────────────────────────────────────
   console.log("\n[9 · ONE VOCABULARY — the lifetime set is shared, not re-typed (CLAUDE.md §6)]")
 
-  check("LIFETIME_CONTACT_TYPES is the ONE canonical roster and the ads rule uses it",
-    LIFETIME_CONTACT_TYPES.length === 3
-    && /LIFETIME_CONTACT_TYPES/.test(code("lib/ads/audience-source-rules.ts")))
+  // THE RULE, NOT THE NUMBER (CLAUDE.md §2 — do not pin an assertion to a waypoint).
+  // This read `LIFETIME_CONTACT_TYPES.length === 3`, which was true only between
+  // m539 (which made the roster client / lifetime_customer / sphere) and m563
+  // (which removed 'client' on the owner ruling, leaving two). The cardinality was
+  // never the property worth asserting; the property is that the roster is
+  // non-empty and every member is a value the LIVE CHECK still admits — a member
+  // the column cannot hold makes the ads audience narrow silently, which is the
+  // defect this section exists for.
+  check("LIFETIME_CONTACT_TYPES is the ONE canonical roster, every member is admitted\n     by the live contacts_contact_type_check, and the ads rule uses it",
+    LIFETIME_CONTACT_TYPES.length > 0
+    && LIFETIME_CONTACT_TYPES.every((t) => (CHECK_VOCABULARIES.contacts?.contact_type ?? []).includes(t))
+    && /LIFETIME_CONTACT_TYPES/.test(code("lib/ads/audience-source-rules.ts")),
+    `roster: ${LIFETIME_CONTACT_TYPES.join("/")}`)
+  check("POSITIVE CONTROL — that membership test really rejects a retired spelling\n     ('client', removed by m563, and 'past_client', removed by m539)",
+    !(CHECK_VOCABULARIES.contacts?.contact_type ?? []).includes("client")
+    && !(CHECK_VOCABULARIES.contacts?.contact_type ?? []).includes("past_client")
+    && (CHECK_VOCABULARIES.contacts?.contact_type ?? []).includes("lifetime_customer"))
   check("…and the source-rule module hard-codes NO lifetime list of its own",
     !/\[\s*"lifetime",\s*"lifetime_customer"/.test(code("lib/ads/audience-source-rules.ts")))
   check("POSITIVE CONTROL — that scanner recognises a hard-coded list when one exists",

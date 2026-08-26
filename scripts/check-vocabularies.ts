@@ -18,9 +18,9 @@
  * MEASURED AT GENERATION: 436 tables, 760 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-08-25
+ * generated: 2026-08-26
  * source: public.live_check_constraints_json()
- * body-sha256: 6aa1d0eca1fb76a2ff2899b9465c9170c60364c1d7583d06a02c438e6a535266
+ * body-sha256: 0637280cbafe53d2d486e730737ab7540f943e546843dc24f8ba3ac52f374405
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -526,7 +526,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     ai_autopilot_level: ["aggressive", "conservative", "moderate", "off"],
     buyer_stage: ["BUYER_CLOSED", "BUYER_CONTACT_CREATED", "BUYER_DISENGAGED", "BUYER_FINANCIALLY_VERIFIED", "BUYER_LIFETIME", "BUYER_OFFER_ELIGIBLE", "BUYER_OFFER_SUBMITTED", "BUYER_ON_HOLD", "BUYER_SEARCHING", "BUYER_SEARCH_CONFIGURED", "BUYER_TOURING", "BUYER_TOUR_ELIGIBLE", "BUYER_UNDER_CONTRACT"],
     contact_persona: ["divorce", "downsize", "expired", "first_time", "foreclosure", "fsbo", "luxury", "military", "other", "probate", "relocated", "senior", "upsize"],
-    contact_type: ["both", "buyer", "client", "investor", "lead", "lifetime_customer", "other", "prospect", "referral_partner", "seller", "sphere", "vendor"],
+    contact_type: ["both", "buyer", "investor", "lead", "lifetime_customer", "other", "prospect", "referral_partner", "seller", "sphere", "vendor"],
     lead_temperature: ["cold", "hot", "warm"],
     lender_status: ["cash", "needs_pre_approval", "pre_approved", "unknown"],
     lifetime_segment: ["local_owner", "relocated"],

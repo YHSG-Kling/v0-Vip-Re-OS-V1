@@ -28,10 +28,18 @@ import { LEAD_SOURCES, LEAD_SOURCE_LABELS } from "@/lib/constants"
 // every agent filing a past client. The OFFERED SET IS NOW DERIVED from
 // lib/contact-types.ts:CONTACT_TYPES rather than retyped, so the menu cannot
 // offer a value the column refuses; only the LABELS live here.
+//
+// AND THE DERIVATION EARNED ITS KEEP AGAIN AT m563, which removed 'client' from
+// the CHECK (owner: "client isn't a type"). Because both structures below are
+// keyed/typed by `ContactType`, dropping the member made the stale entries a
+// COMPILE ERROR rather than a menu item that fails on submit — which is the whole
+// point of typing them off the vocabulary instead of retyping it.
 const CONTACT_TYPE_LABELS: Record<ContactType, string> = {
   lead:              "Lead",
   prospect:          "Prospect",
-  client:            "Client",
+  // TOMBSTONE (§1): `client: "Client"` stood here. Removed by m563 — a represented
+  // client picks the side they are on (Buyer / Seller / Buyer & Seller / Investor);
+  // the representation itself is contacts.status, not a contact_type.
   lifetime_customer: "Lifetime Customer (past client)",
   sphere:            "Sphere",
   vendor:            "Vendor",
@@ -45,7 +53,7 @@ const CONTACT_TYPE_LABELS: Record<ContactType, string> = {
 
 // The order agents actually pick in, filtered to what the column admits.
 const CONTACT_TYPE_ORDER: readonly ContactType[] = [
-  "buyer", "seller", "both", "lead", "prospect", "client",
+  "buyer", "seller", "both", "lead", "prospect",
   "investor", "referral_partner", "vendor", "sphere", "lifetime_customer", "other",
 ]
 

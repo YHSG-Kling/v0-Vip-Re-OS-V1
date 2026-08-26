@@ -30,9 +30,20 @@
  *            statuses derived from the LIVE CHECK vocabulary rather than hardcoded.
  *   Layer 3  ONE EMAIL, NEVER TWO AND NEVER ZERO, AND IT IS PICKED UP BY A NAMED
  *            MANAGER: resolveWelcomeManagers decides WHO owns it (seller →
- *            listing_concierge, buyer → shopping_agent, both → BOTH, lifetime
- *            customer → sphere_of_influence), and the magic-link fallback is armed
- *            by exactly the complement — the EMPTY manager set.
+ *            listing_concierge, buyer → shopping_agent, both → BOTH), and the
+ *            magic-link fallback is armed by exactly the complement — the EMPTY
+ *            manager set.
+ *
+ *            OWNER RULING 2026-08-26, REVERSING THE WAVE BEFORE IT: "lifetime
+ *            should not get the welcome and client isn't a type." The lifetime
+ *            arm previously returned ["sphere_of_influence"] and this harness
+ *            asserted that; it now returns the EMPTY set, which ARMS the magic
+ *            link for a converting lifetime customer. The other three routings
+ *            were REAFFIRMED and are unchanged. Both directions of the complement
+ *            are asserted over the LIVE contact_type vocabulary, with mutation
+ *            controls that fail on the routing the owner struck AND on each of
+ *            the three he kept. `client` is no longer in that vocabulary at all
+ *            (m563), so it cannot appear on either side.
  *   Layer 4  THEM-FIRST AND COMPLIANCE-FIRST: the situation resolver is the one
  *            personalizer, a HIGH-severity fair-housing phrase in the CRM never
  *            reaches the writing prompt, medium/low rides through as a warning.
@@ -64,6 +75,7 @@ import {
   WELCOME_CO_OWNERSHIP_SIGNAL,
   type WelcomeManagerKey,
 } from "../lib/kernel/client-welcome"
+import { PORTAL_EXCLUDED_CONTACT_TYPES } from "../lib/contact-promotion/portal-access"
 import { MANAGERS, MANAGER_COLLABORATIONS } from "../lib/kernel/manager-registry"
 import { SIGNAL_REGISTRY } from "../lib/kernel/signal-registry"
 import { classifyCoordination } from "../lib/kernel/coordination-kind"
@@ -247,22 +259,39 @@ function layer3_oneEmail() {
   check("'both' is picked up by BOTH the listing concierge AND the shopping agent —\n    two managers, not one; the old resolver collapsed this to seller-only",
     eq(resolveWelcomeManagers("both"), ["listing_concierge", "shopping_agent"]),
     resolveWelcomeManagers("both").join(",") || "none")
-  check("a LIFETIME CUSTOMER is picked up by the Sphere Manager — this contact\n    previously matched NO branch and got no agent-signed welcome at all",
-    eq(resolveWelcomeManagers("lifetime_customer"), ["sphere_of_influence"]),
+  // ── THE LIFETIME REVERSAL (owner, 2026-08-26) ─────────────────────────────
+  // "lifetime should not get the welcome and client isn't a type."
+  // The previous wave routed lifetime_customer → sphere_of_influence and this
+  // harness asserted exactly that. The owner reversed it; the OTHER THREE routings
+  // above were reaffirmed and are unchanged.
+  check("a LIFETIME CUSTOMER is picked up by NOBODY — owner ruling 2026-08-26,\n    reversing the sphere_of_influence routing built one wave earlier",
+    resolveWelcomeManagers("lifetime_customer").length === 0,
     resolveWelcomeManagers("lifetime_customer").join(",") || "none")
 
-  // MUTATION CONTROLS — the assertions above must FAIL on the old behaviour.
-  // (§2: an assertion that passes on the broken code is worthless.)
+  // MUTATION CONTROLS — every assertion above must FAIL on the behaviour it replaced.
+  // (§2: an assertion that passes on the code it was written to rule out is worthless.)
   const collapsedBoth = ["listing_concierge"]                      // the OLD `both` → "seller"
-  const unroutedLifetime: string[] = []                            // the OLD lifetime → null
+  const spheredLifetime = ["sphere_of_influence"]                  // the REVERSED lifetime routing
   check("CONTROL: a 'both' contact routed to only ONE manager FAILS the assertion\n    above — the finder can still see the exact defect it was written for",
     !eq(collapsedBoth, resolveWelcomeManagers("both")))
-  check("CONTROL: a 'lifetime_customer' routed to NOTHING FAILS the assertion above",
-    !eq(unroutedLifetime, resolveWelcomeManagers("lifetime_customer")))
+  check("CONTROL: routing a 'lifetime_customer' back to sphere_of_influence FAILS the\n    assertion above — the finder can see the routing the owner struck",
+    !eq(spheredLifetime, resolveWelcomeManagers("lifetime_customer")))
+  check("CONTROL: the three REAFFIRMED routings each fail if broken — seller must not\n    reach shopping_agent, buyer must not reach listing_concierge, and 'both' must\n    not collapse to either one alone",
+    !eq(resolveWelcomeManagers("seller"), ["shopping_agent"])
+    && !eq(resolveWelcomeManagers("buyer"), ["listing_concierge"])
+    && !eq(resolveWelcomeManagers("both"), ["shopping_agent"])
+    && !eq(resolveWelcomeManagers("both"), ["listing_concierge"]))
 
-  // A RETIRED SPELLING IS THE SAME PERSON (m539 retired 'lifetime'/'past_client').
-  check("a legacy 'past_client' row reaches the Sphere Manager too — the canonical\n    isLifetimeCustomerType is tolerant of the spellings m539 retired, so an\n    imported row is not dropped on the floor",
-    eq(resolveWelcomeManagers("past_client"), ["sphere_of_influence"]))
+  // A RETIRED SPELLING IS THE SAME PERSON (m539 retired 'lifetime'/'past_client'),
+  // and the tolerant test is now load-bearing in the NEGATIVE direction: without it
+  // a legacy `past_client` row would fall through to the substring arms and be
+  // handed a transaction welcome.
+  check("a legacy 'past_client' or 'lifetime' row is ALSO picked up by nobody — the\n    canonical isLifetimeCustomerType is tolerant of the spellings m539 retired, so\n    an imported row reaches the same answer instead of falling through",
+    resolveWelcomeManagers("past_client").length === 0
+    && resolveWelcomeManagers("lifetime").length === 0
+    && resolveWelcomeManagers("past_seller").length === 0)
+  check("CONTROL: that tolerance is real and not an accident of the empty default —\n    'past_seller' contains the substring 'seller' and would reach\n    listing_concierge if the lifetime test were removed",
+    "past_seller".includes("seller") && resolveWelcomeManagers("seller").length === 1)
 
   check("an INVESTOR is picked up by the shopping agent — the conversion lanes\n    produce this type and it used to fall through to no welcome at all",
     eq(resolveWelcomeManagers("investor"), ["shopping_agent"]))
@@ -284,13 +313,14 @@ function layer3_oneEmail() {
     !("listing_conceirge" in MANAGERS))
 
   // ── THE JOURNEY VOCABULARY IS THE ONE THE REEL ALREADY USES (§6) ──────────
-  check("the journey is derived from the MANAGER SET, not from contact_type a\n    second time: seller→seller, buyer→buyer, both→both, lifetime→lifetime",
+  check("the journey is derived from the MANAGER SET, not from contact_type a\n    second time: seller→seller, buyer→buyer, both→both",
     welcomeJourneyFor(resolveWelcomeManagers("seller")) === "seller"
     && welcomeJourneyFor(resolveWelcomeManagers("buyer")) === "buyer"
-    && welcomeJourneyFor(resolveWelcomeManagers("both")) === "both"
-    && welcomeJourneyFor(resolveWelcomeManagers("lifetime_customer")) === "lifetime")
-  check("...and an empty manager set has NO journey",
-    welcomeJourneyFor([]) === null && welcomeJourneyFor(resolveWelcomeManagers("vendor")) === null)
+    && welcomeJourneyFor(resolveWelcomeManagers("both")) === "both")
+  check("...and an empty manager set has NO journey — which is now the LIFETIME case\n    too, so a lifetime customer reaches no journey map at all",
+    welcomeJourneyFor([]) === null
+    && welcomeJourneyFor(resolveWelcomeManagers("vendor")) === null
+    && welcomeJourneyFor(resolveWelcomeManagers("lifetime_customer")) === null)
   check("the EMAIL's journey and the welcome REEL's persona agree on every type the\n    email is sent for — one vocabulary for 'which lane is this person on', not\n    two (the reel side already honoured the ruling while the email collapsed it)",
     liveTypes
       .filter((t) => resolveWelcomeManagers(t).length > 0)
@@ -302,15 +332,30 @@ function layer3_oneEmail() {
 
   // EVERY JOURNEY HAS ITS OWN COPY — a 'both' or a lifetime client must not be
   // handed the seller map with a different subject line.
-  const bodies = (["buyer", "seller", "both", "lifetime"] as const)
+  // EVERY JOURNEY THE RESOLVER CAN PRODUCE, DERIVED — not a typed list (§2: do not
+  // pin an assertion to a waypoint). This read `["buyer","seller","both","lifetime"]`
+  // with `.size === 4`, which was true only while the lifetime journey existed; the
+  // property worth asserting is that each REACHABLE journey has its own copy.
+  const reachableJourneys = [...new Set(
+    liveTypes.map((t) => welcomeJourneyFor(resolveWelcomeManagers(t))).filter((j): j is NonNullable<typeof j> => j !== null),
+  )]
+  const bodies = reachableJourneys
     .map((j) => composeClientWelcome({ journey: j, addressAs: "Sam", agentName: "Dana Reed" }))
-  check("all FOUR journeys compose a distinct subject AND a distinct body — the two\n    new journeys are real copy, not a relabelled seller map",
-    new Set(bodies.map((b) => b.subject)).size === 4
-    && new Set(bodies.map((b) => b.body)).size === 4)
-  check("the LIFETIME welcome sells nothing — no journey step promises a transaction\n    the past client did not ask for",
-    !/we'll (sell|find)/i.test(bodies[3].subject) && /lifetime|stay in your corner|next move/i.test(bodies[3].subject + bodies[3].body))
+  check("every REACHABLE journey composes a distinct subject AND a distinct body —\n    no journey is a relabelled copy of another",
+    reachableJourneys.length > 1
+    && new Set(bodies.map((b) => b.subject)).size === reachableJourneys.length
+    && new Set(bodies.map((b) => b.body)).size === reachableJourneys.length,
+    `reachable: ${reachableJourneys.join(",")}`)
+  check("CONTROL: the reachable set is exactly the three transaction sides — 'lifetime'\n    is NOT among them (owner ruling 2026-08-26), and the set is derived from the\n    LIVE contact_type vocabulary rather than typed here",
+    [...reachableJourneys].sort().join(",") === "both,buyer,seller",
+    reachableJourneys.join(","))
+  const bothBody = bodies[reachableJourneys.indexOf("both")]
   check("the BOTH welcome names BOTH halves of the move",
-    /sell/i.test(bodies[2].body) && /search|next one|buy/i.test(bodies[2].body))
+    /sell/i.test(bothBody.body) && /search|next one|buy/i.test(bothBody.body))
+  check("no reachable welcome carries the retired LIFETIME copy — the journey map,\n    the subject line and the opening all went with the ruling (§1)",
+    bodies.every((b) => !/stay in your corner|stays yours long after the closing|keep showing up/i.test(b.subject + b.body)))
+  check("CONTROL: that finder really recognises the deleted lifetime copy",
+    /stay in your corner/i.test("Welcome — here's how I stay in your corner"))
 
   // ── HOW THE SECOND MANAGER ACTUALLY PICKS IT UP ───────────────────────────
   const welcome = src("lib/kernel/client-welcome.ts")
@@ -362,6 +407,22 @@ function layer3_oneEmail() {
     /sendMagicLink:\s*resolveWelcomeManagers\([\s\S]{0,60}?\)\.length === 0/.test(capture))
   check("CONTROL: capture still issues the invite ROW unconditionally — the grant\n    and the email are different things",
     /createSystemPortalInvite\(\{/.test(capture))
+
+  // THE COMPLEMENT, ASSERTED IN BOTH DIRECTIONS ON THE LIVE VOCABULARY — not just
+  // as a source regex. Every contact_type must land on exactly one delivery.
+  const magicLinkArmed = (t: string) => resolveWelcomeManagers(t).length === 0
+  check("EVERY live contact_type gets EXACTLY ONE delivery: either an agent-signed\n    welcome (non-empty manager set, magic link suppressed) or the invite core's\n    magic link (empty set) — never both and never neither",
+    liveTypes.every((t) => magicLinkArmed(t) !== (resolveWelcomeManagers(t).length > 0)))
+  check("THE LIFETIME CONSEQUENCE, stated as an assertion: a converting lifetime\n    customer now gets the portal invite's OWN magic-link mail and NO agent-signed\n    welcome — the direct result of the empty manager set",
+    magicLinkArmed("lifetime_customer")
+    && magicLinkArmed("past_client")
+    && !PORTAL_EXCLUDED_CONTACT_TYPES.includes("lifetime_customer"),
+    `lifetime magic link armed: ${magicLinkArmed("lifetime_customer")}`)
+  check("CONTROL: the OTHER direction still holds — a buyer, a seller and a 'both'\n    each SUPPRESS the magic link, so the complement is a real split and not a\n    resolver that answers 'empty' for everything",
+    !magicLinkArmed("buyer") && !magicLinkArmed("seller") && !magicLinkArmed("both")
+    && !magicLinkArmed("investor"))
+  check("CONTROL: a PORTAL-EXCLUDED type gets neither — it has no portal to be told\n    about, which is why the exclusion list is imported rather than re-typed",
+    PORTAL_EXCLUDED_CONTACT_TYPES.every((t) => resolveWelcomeManagers(t).length === 0))
 
   // POSITIVE CONTROL for the whole layer: at least one live type on each side.
   const welcomed = liveTypes.filter((t) => resolveWelcomeManagers(t).length > 0)
@@ -441,13 +502,22 @@ function layer4_situation() {
     !/just became a \$\{side\}/.test(welcomeSrc))
 
   // A LIFETIME CUSTOMER REACHES THE WRITER WITH A REAL SITUATION FACT.
+  //
+  // THIS SURVIVES THE 2026-08-26 RULING, AND THE REASON IS THE POINT. The owner
+  // struck the lifetime WELCOME EMAIL, not the lifetime lane. buildWelcomeSituation
+  // has a SECOND reader — lib/contact-promotion/welcome-avatar-video.ts, the video
+  // side, which the ruling does not govern and which routes on
+  // contactReelPersona's four values including `lifetime`. §1 permits deleting an
+  // orphan; this arm is not one, so it stays and is still proved.
   const lifetime = buildWelcomeSituation({ contact_type: "lifetime_customer", city: "Austin", state: "TX" })
-  check("a LIFETIME customer now produces a situational side fact — before the\n    ruling they reached the writer with none, so the copy could only be generic",
+  check("a LIFETIME customer still produces a situational side fact for the VIDEO\n    path — the shared situation resolver keeps its lifetime arm because the reel\n    reads it, even though no lifetime welcome EMAIL is composed any more",
     lifetime.isSituational && lifetime.facts.some((f) => /already closed with us/i.test(f)))
   check("...and it says nothing is being sold to them",
     lifetime.facts.some((f) => /nothing is being sold/i.test(f)))
   check("CONTROL: the lifetime arm is reached through the CANONICAL tolerant test —\n    a legacy 'past_client' row gets the same fact, not a generic hello",
     buildWelcomeSituation({ contact_type: "past_client" }).facts.some((f) => /already closed with us/i.test(f)))
+  check("CONTROL: that arm really has a second reader, so keeping it is not a\n    courtesy — welcome-avatar-video.ts calls buildWelcomeSituation itself",
+    /buildWelcomeSituation\(/.test(src("lib/contact-promotion/welcome-avatar-video.ts")))
 }
 
 // ─── LAYER 5 — THE DIRECTIVES SEAM ───────────────────────────────────────────
