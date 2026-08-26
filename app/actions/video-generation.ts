@@ -1144,6 +1144,28 @@ export async function getAgentVideoProfile(agentId: string) {
  * none of those five params was ever read in this body. It was dead surface area
  * that made two distinct functions look like duplicates of each other. Removed.
  * videoType and description stay: both are read below as fallbacks.
+ *
+ * ─── TOMBSTONE ───────────────────────────────────────────────────────────────
+ *
+ * `app/api/ai/generate-script/route.ts` (46 lines, POST only) was DELETED into
+ * this function. It took `{ purpose, persona, contactName, keyPoints }` — the
+ * same product this function makes from `{ purpose, persona, contactName }` —
+ * and nothing in the tree addressed it: no fetch, no template literal, no
+ * config entry, no cron registry line, and no database caller (checked live on
+ * `hrvaqgvukzxfskkcrwbt`: zero edge functions, zero pg_proc bodies naming an
+ * `/api/` path).
+ *
+ * It was a strictly WEAKER twin, not a variant. It had an auth gate and nothing
+ * else: no entitlement check (this one gates on `video_generation`), no
+ * compliance gate at all — its Fair Housing wording lived only as free text
+ * inside its own prompt string, so it was a seventh generator outside
+ * `lib/video/script-compliance.ts` in a repo whose §5 ruling is that video
+ * scripts are written compliance-first — no post-check, no persistence, and no
+ * `complianceWarnings` for a surface to render.
+ *
+ * MERGED ONTO THIS SURVIVOR BEFORE THE DELETE, per §1: `keyPoints`, the one
+ * input the duplicate accepted that this function did not — now Fair-Housing
+ * prechecked like `description` and injected into the prompt below.
  */
 export async function generateVideoScript(params: {
   purpose?: string
@@ -1156,6 +1178,21 @@ export async function generateVideoScript(params: {
   videoType?: string
   /** Free-text fallback when the purpose key is unrecognised. */
   description?: string
+  /**
+   * Agent-supplied points the script must cover.
+   *
+   * MERGED IN from the deleted `app/api/ai/generate-script/route.ts` — see the
+   * TOMBSTONE above. That route took the identical `{ purpose, persona,
+   * contactName }` shape and added exactly one thing this survivor lacked:
+   * `keyPoints`. §1 says the survivor gets it before the duplicate goes, so it
+   * is here rather than lost.
+   *
+   * This is caller-authored prose reaching a model on the platform's own
+   * credentials, so it goes through `precheckBriefForFairHousing` on the same
+   * terms as `description` — §5's compliance-first ruling is about what enters
+   * the WRITING prompt, not only what leaves it.
+   */
+  keyPoints?: string
 }) {
   // Auth gate — this function burns paid Claude inference under our API
   // key. Previously open: any caller could trigger script generation.
@@ -1184,8 +1221,8 @@ export async function generateVideoScript(params: {
       ? "seller"
       : "buyer"
 
-  // The agent's free-text description is the only caller-authored prose here —
-  // the purpose/persona/tone keys are ours. Gate it when present.
+  // The agent's free-text description and key points are the only caller-authored
+  // prose here — the purpose/persona/tone keys are ours. Gate them when present.
   if (params.description?.trim()) {
     const preCheck = await precheckBriefForFairHousing(actor, params.description, journeyType)
     if (preCheck.blocked) {
@@ -1193,6 +1230,16 @@ export async function generateVideoScript(params: {
         success: false,
         complianceBlocked: true,
         error: `Description contains a Fair Housing violation: ${preCheck.reason}`,
+      }
+    }
+  }
+  if (params.keyPoints?.trim()) {
+    const keyPointCheck = await precheckBriefForFairHousing(actor, params.keyPoints, journeyType)
+    if (keyPointCheck.blocked) {
+      return {
+        success: false,
+        complianceBlocked: true,
+        error: `Key points contain a Fair Housing violation: ${keyPointCheck.reason}`,
       }
     }
   }
@@ -1241,7 +1288,7 @@ export async function generateVideoScript(params: {
 Tone: ${toneMap[params.tone || "friendly"] || "warm and professional"}
 Length: ${lengthMap[params.length || "medium"] || "60-90 seconds"}
 Contact Name: ${params.contactName}
-
+${params.keyPoints?.trim() ? `\nKey points this script must cover:\n${params.keyPoints.trim()}\n` : ""}
 Requirements:
 - Start with a strong hook in the first 5 seconds
 - Be authentic and conversational

@@ -47,6 +47,33 @@ export const PUBLIC_ROUTES = [
   '/api/showings/feedback',
   '/api/providers/inbound',
   '/api/billing/webhook',
+  // ── The visitor-tracking pair, moved OUT of PROTECTED_ROUTES ─────
+  //
+  // `/api/track` holds exactly two routes — `pixel` and `identify` — and BOTH
+  // are fired by an anonymous stranger on a BROKERAGE'S OWN WEBSITE, from a
+  // snippet the brokerage pastes there. Neither reads a session; both use the
+  // service client, and the pixel route's own first line states the rule:
+  // "Pixel fire = anonymous visit record only. NOT consent. NOT lead creation."
+  //
+  // It sat in PROTECTED_ROUTES under the heading "API routes requiring session
+  // auth", so proxy.ts:158 matched the `/api/track` prefix and redirected every
+  // anonymous hit to /login. A 307 to a login page is not an error anyone sees:
+  // the <img> just never loads and the beacon is discarded, so the failure was
+  // completely silent at both ends.
+  //
+  // THAT IS WHY THE EARLIER FIX DID NOT WORK. A previous wave found the snippet
+  // pointing at a RELATIVE `/api/track/pixel` — resolving against the
+  // installer's own domain — and made it absolute. Correct, and still dead,
+  // because the absolute URL then landed on this gate. `website_visitors` holds
+  // 0 rows to this day (live count on hrvaqgvukzxfskkcrwbt, 2026-08-26), which
+  // is consistent with a pixel that has never once been allowed to fire.
+  //
+  // Publishing the prefix is what the two routes were written for, and it is
+  // not a widening of anything real: an authenticated caller was never possible
+  // here. Both are hardened for the traffic they now actually receive — see the
+  // header of app/api/track/identify/route.ts for the tenant, filter-grammar
+  // and enumeration-oracle findings that came with wiring its caller.
+  '/api/track',
   // ── Public page routes (no auth required) ────────────────────────
   '/portal/login',
   '/portal/lender',
@@ -117,7 +144,9 @@ export const PROTECTED_ROUTES = [
   '/api/intelligence',
   '/api/offers',
   '/api/onboarding',
-  '/api/track',
+  // '/api/track' MOVED to PUBLIC_ROUTES — see the note there. It holds only the
+  // anonymous visitor pixel and the identify beacon, neither of which a session
+  // can ever accompany; gating it here redirected every hit to /login.
   '/api/video-scripts',
   '/api/video',
   '/api/videos',

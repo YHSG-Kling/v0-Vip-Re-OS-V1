@@ -7,6 +7,35 @@ import { createClient } from "@/lib/supabase/server"
  * Returns real counts for every badgeKey used in navigation-config.ts.
  * Called once per session from AppShell and refreshed on navigation.
  * All queries are scoped to the authenticated user's brokerage.
+ *
+ * ─── TOMBSTONE ───────────────────────────────────────────────────────────────
+ *
+ * `app/api/notifications/unread-count/route.ts` was DELETED into this route. It
+ * was a GET returning `{ unread }` and nothing else — a third door onto the one
+ * number `unread_notifications` below already serves, and nothing in the tree
+ * addressed it (no fetch, no SWR key, no config entry, no cron, and no database
+ * caller — checked live on `hrvaqgvukzxfskkcrwbt`: zero edge functions, zero
+ * pg_proc bodies naming an `/api/` path). Deleting it removed the whole
+ * `app/api/notifications/` directory.
+ *
+ * Nothing needed merging: it was a two-line wrapper over
+ * `countUnreadNotifications`, strictly less than either survivor.
+ *
+ * WHERE THE CAPABILITY LIVES:
+ *   · the HTTP surface, i.e. the unread badge → this route, read by
+ *     app/components/layout/app-shell.tsx:62 through SWR.
+ *   · the in-process count → lib/kernel/notification-center.ts:60
+ *     `countUnreadNotifications`, read by app/notifications/page.tsx:34.
+ *
+ * ONE HONEST DIVERGENCE, LEFT STANDING AND WRITTEN DOWN RATHER THAN GUESSED AT
+ * (§6): the two survivors spell "unread" differently. This route filters
+ * `brokerage_id` AND `user_id`; `countUnreadNotifications` filters `user_id`
+ * only. For a single-brokerage user they agree; for anyone whose notifications
+ * span tenants the bell and the /notifications page would show different
+ * numbers. It is NOT collapsed here because `public.notifications` currently
+ * holds 0 rows (live count, 2026-08-26), so there is no evidence which way the
+ * live data would break, and tightening the page's count on a guess could take
+ * a working list to zero. Whoever gets rows into that table owns the merge.
  */
 export async function GET() {
   try {

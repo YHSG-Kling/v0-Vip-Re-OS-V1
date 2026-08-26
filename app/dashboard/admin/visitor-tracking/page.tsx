@@ -103,15 +103,64 @@ export default function VisitorTrackingPage() {
   // the canonical origin used elsewhere in the codebase for exactly this.
   const trackingOrigin = (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "")
 
+  // ── THE IDENTIFY HALF, BUILT ────────────────────────────────────────────────
+  //
+  // The three `identified_at` readings on this page — the Identified tile, the
+  // per-row badge, the Identified-at column — were structurally zero for every
+  // brokerage, because `app/api/track/identify/route.ts` is the ONLY writer of
+  // that column and NOTHING in the tree called it. The pixel half shipped; the
+  // identify half never got its caller. §1 case 2 — no duplicate identifier
+  // exists anywhere, so the missing half is BUILT rather than the endpoint
+  // deleted. See the header of app/api/track/identify/route.ts.
+  //
+  // The call is a BEACON, deliberately, and both fallbacks stay "simple"
+  // requests: `sendBeacon` with a text/plain Blob, then `fetch` with mode
+  // 'no-cors' and a bare string body. Neither triggers a CORS preflight, so
+  // this works from the installer's own domain with no OPTIONS handler and no
+  // `Access-Control-Allow-Origin: *` on an unauthenticated endpoint. A beacon
+  // also survives the navigation a form submit causes, which a plain fetch does
+  // not.
+  //
+  // WHAT LEAVES THE INSTALLER'S PAGE: an email and/or phone the visitor just
+  // typed into that site's own form, and the session id. Nothing else, and only
+  // once per session (`_vipid`). The endpoint creates nothing — it can only
+  // link the session to a lead or contact this brokerage ALREADY holds.
+  //
+  // Note the doubled backslashes: this is a TS template literal, so `\\D` here
+  // is the single `\D` the pasted script needs. A bare `\D` would collapse to a
+  // literal "D" and the phone test would silently match nothing.
   const snippet = profile && trackingOrigin
     ? `<script>
-(function(b,a){
+(function(b,a,o){
   var s=localStorage.getItem('_vip')||Math.random().toString(36).slice(2);
   localStorage.setItem('_vip',s);
-  new Image().src='${trackingOrigin}/api/track/pixel?b='+b+'&a='+a+'&s='+s
+  new Image().src=o+'/api/track/pixel?b='+b+'&a='+a+'&s='+s
     +'&p='+encodeURIComponent(location.href)
     +'&'+location.search.replace(/^\\?/,'');
-})('${profile.brokerage_id}','${profile.agent_id}');
+  function send(e,p){
+    if(!e&&!p)return;
+    if(localStorage.getItem('_vipid')===s)return;
+    localStorage.setItem('_vipid',s);
+    var d=JSON.stringify({sessionId:s,email:e,phone:p});
+    try{
+      if(navigator.sendBeacon&&navigator.sendBeacon(o+'/api/track/identify',new Blob([d],{type:'text/plain'})))return;
+    }catch(x){}
+    try{fetch(o+'/api/track/identify',{method:'POST',mode:'no-cors',keepalive:true,body:d});}catch(x){}
+  }
+  document.addEventListener('submit',function(ev){
+    var f=ev.target;
+    if(!f||!f.querySelectorAll)return;
+    var n=f.querySelectorAll('input,textarea'),e=null,p=null;
+    for(var i=0;i<n.length;i++){
+      var v=(n[i].value||'').trim();
+      if(!v)continue;
+      var k=((n[i].type||'')+' '+(n[i].name||'')+' '+(n[i].id||'')).toLowerCase();
+      if(!e&&(k.indexOf('email')>-1||v.indexOf('@')>0))e=v;
+      else if(!p&&(k.indexOf('phone')>-1||k.indexOf('tel')>-1)&&v.replace(/\\D/g,'').length>9)p=v;
+    }
+    send(e,p);
+  },true);
+})('${profile.brokerage_id}','${profile.agent_id}','${trackingOrigin}');
 </script>`
     : ''
 
@@ -160,6 +209,16 @@ export default function VisitorTrackingPage() {
         <p className="text-sm text-muted-foreground mt-1">
           Anonymous pixel tracking. No contact is created on pixel fire — identification
           only occurs when a visitor is matched to an existing lead or contact.
+        </p>
+        {/* The Identified tile was previously unreachable: nothing in the product
+            ever called the one endpoint that stamps identified_at, so this number
+            could only ever be 0. The snippet now carries that call — this line
+            says what makes it move, so a zero reads as "nobody matched yet"
+            rather than as a working feature. */}
+        <p className="text-sm text-muted-foreground mt-1">
+          A session becomes <span className="font-medium text-foreground">Identified</span> when
+          someone submits a form on your site using an email or phone number this brokerage
+          already has on file. Only that email or phone is sent back, once per session.
         </p>
       </div>
 
@@ -221,6 +280,12 @@ export default function VisitorTrackingPage() {
               Nothing appearing? The three usual causes are the snippet landing in the body
               instead of the {'<head>'}, the page being cached and serving the old markup, or an
               ad-blocker on the browser you tested with.
+            </p>
+            <p>
+              The same snippet also handles identification: when a visitor submits any form on
+              your site, it sends just the email or phone from that form so the session can be
+              matched to a lead or contact you already have. It never creates anyone new, and it
+              sends nothing else from the form.
             </p>
           </div>
         )}

@@ -1,8 +1,55 @@
 "use server"
 
+/**
+ * ─── TOMBSTONE ───────────────────────────────────────────────────────────────
+ *
+ * `app/api/ai/generate-video-script/route.ts` (603 lines, POST only) was DELETED
+ * into this file. It was a marketing-video script generator that wrote
+ * `video_scripts_library`, and NOTHING in the tree addressed it — not a fetch,
+ * not a template literal, not a config entry, not a cron, not a DB function
+ * (checked live: zero Supabase edge functions, zero pg_proc bodies containing an
+ * `/api/` path).
+ *
+ * It was not merely unreached. It was the SIXTH video-script generator and the
+ * only one outside the shared gate: `scripts/video-script-compliance-guard.ts`
+ * enumerates five generators that must call `lib/video/script-compliance.ts`
+ * (WIZARD = this file, VIDEO-GENERATION, LINK-TO-VIDEO, KERNEL-VIDEO,
+ * CONTENT-ENGINE) and that route was in none of them — it carried its own inline
+ * copy of the Fair Housing wording instead, which is exactly the divergence §6
+ * forbids and the hole §5's "compliance-first" ruling exists to close.
+ *
+ * And it could never have worked at full size anyway. It declared ELEVEN script
+ * types and wrote `script_type` through raw, while the live CHECK
+ * `video_scripts_library_script_type_check` admits exactly five
+ * (property_tour, buyer_education, market_update, agent_intro,
+ * listing_presentation — read from `hrvaqgvukzxfskkcrwbt`, not inferred). Six of
+ * its own eleven — seller_education, quick_tip, market_fact, personal_story,
+ * listing_spotlight, education_bite — would have been refused 23514 on every
+ * insert. This file routes every videoType through `toLibraryScriptType` for
+ * precisely that reason.
+ *
+ * WHERE THE CAPABILITY LIVES NOW:
+ *   · generation + compliance gate + saveToLibrary → `generateVideoScript`
+ *     below (app/actions/video/generate-script.ts:118), behind
+ *     /dashboard/videos/create.
+ *   · save + tenant verification of agent/listing/contact + lifecycle row +
+ *     kernel event → app/actions/video-generation.ts:174 `saveVideoScript`.
+ *   · template-backed scripts and script_variations →
+ *     app/actions/video-generation.ts:417 `getVideoTemplates` /
+ *     app/actions/video-generation.ts:509 `createScriptVariation`.
+ *   · the library CRUD HTTP surface → app/api/video-scripts/route.ts, which is
+ *     live (app/dashboard/videos/library/page.tsx:436).
+ *
+ * MERGED ONTO THIS SURVIVOR BEFORE THE DELETE, per §1: the SCRIPT_GENERATED
+ * `lifecycle_events` row and `processKernelEvent` emission — the one thing the
+ * route did that this path did not. See the ordinary-save branch below.
+ */
+
 import { toLibraryScriptType } from "@/app/types/video-generation"
 import { createClient } from "@/lib/supabase/server"
 import { generateAIResponse } from "@/lib/ai/models"
+import { KernelEvent } from "@/lib/kernel/events"
+import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import {
   buildComplianceSystemBlocks,
   precheckBriefForFairHousing,
@@ -389,6 +436,46 @@ ${l.features?.length ? `- Key features: ${l.features.join(", ")}` : ""}
       escalationNotes.push(`The script could not be saved to your library: ${saveError.message}`)
     } else {
       savedScriptId = saved?.id
+
+      // ── THE KERNEL LEDGER ROW THIS PATH NEVER WROTE ────────────────────────
+      //
+      // MERGED IN from the deleted `app/api/ai/generate-video-script/route.ts`
+      // (see the TOMBSTONE at the head of this file). That route was the only
+      // generator that recorded SCRIPT_GENERATED, and it recorded it for
+      // scripts nobody could reach. Every other library writer already emits
+      // this pair — app/actions/video-generation.ts:250 `saveVideoScript` —
+      // so the wizard, the one surface an agent actually uses, was the single
+      // save path leaving no lifecycle row behind. §1: the survivor gets what
+      // the duplicate had BEFORE the duplicate goes.
+      //
+      // Not fatal, and deliberately after `savedScriptId`: the script is
+      // saved, and a ledger write that fails must not un-save it.
+      if (savedScriptId) {
+        const { error: ledgerError } = await supabase.from("lifecycle_events").insert({
+          entity_type: "video_script",
+          entity_id: savedScriptId,
+          brokerage_id: brokerageId,
+          event_type: KernelEvent.SCRIPT_GENERATED,
+          actor_user_id: userId,
+          metadata: {
+            script_type: toLibraryScriptType(params.videoType),
+            ai_generated: true,
+            approval_status: "draft",
+          },
+        })
+        // supabase-js RESOLVES a refused insert. Without this the ledger could
+        // be empty forever and every surface would read that as "no scripts".
+        if (ledgerError) {
+          console.error("[generate-script] lifecycle_events insert refused:", ledgerError.message)
+        }
+
+        await processKernelEvent({
+          event: KernelEvent.SCRIPT_GENERATED,
+          brokerageId,
+          entityType: "video_script",
+          entityId: savedScriptId,
+        }).catch((err) => console.error("[generate-script] Kernel event failed:", err))
+      }
     }
   }
 
