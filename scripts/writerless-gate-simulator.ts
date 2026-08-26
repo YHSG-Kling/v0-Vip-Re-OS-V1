@@ -240,7 +240,32 @@ function censusLayer() {
     !!controls && controls[1] === controls[2], controls ? `${controls[1]}/${controls[2]}` : "—")
 
   const oneB = out.split("── 1b.")[1]?.split("── 2.")[0] ?? ""
-  check("the 1b section was printed", oneB.length > 0)
+  // WHY THIS CHECK CARRIES A DIAGNOSIS NOW.
+  //
+  // An EMPTY oneB makes every `!oneB.includes(col)` assertion below pass
+  // VACUOUSLY — an empty string contains nothing, so "1b no longer accuses X"
+  // reads green for all four columns while the section was never examined. That
+  // is the false-green this trio of controls exists to catch, and it works.
+  //
+  // What it did NOT do is say WHICH failure happened. Running inside the full
+  // guard chain the census subprocess emitted its `[positive controls]` line and
+  // then stopped before the section listings — so the controls above passed, the
+  // section was missing, and the reported diagnosis was "the scanner did not go
+  // blind", which is the opposite of the truth: the scanner was fine (171 entries
+  // standalone, and this file passes 86/0 both plain and with the chain's
+  // NODE_OPTIONS), the subprocess output was truncated. Someone reading that
+  // message would go looking for a blinded parser that does not exist.
+  //
+  // So distinguish the two. A truncated run is an infrastructure problem to
+  // re-run (§8's shape); an empty section from a complete run is a real finding.
+  const censusLooksComplete = out.includes("TOTAL") && out.includes("── 2.")
+  check("the 1b section was printed", oneB.length > 0,
+    oneB.length > 0 ? undefined
+      : censusLooksComplete
+        ? "census output is COMPLETE and 1b is genuinely empty — investigate the scanner"
+        : "census output is TRUNCATED (no TOTAL / no section 2 header) — the subprocess did not "
+          + "finish, so this is not evidence about the scanner. Re-run; if it repeats at the same "
+          + "commit, the census is dying under chain memory pressure and that is the finding.")
 
   // The four that were really writerless — the value now arrives.
   for (const col of [
