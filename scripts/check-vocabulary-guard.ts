@@ -76,6 +76,7 @@ import { stripComments as canonicalStripComments } from "./strip-comments"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const BASELINE_PATH = join(root, "scripts", "check-vocabulary-baseline.json")
+const MEM_BASELINE_PATH = join(root, "scripts", "check-vocabulary-inmemory-baseline.json")
 
 export interface VocabViolation {
   file: string
@@ -231,12 +232,19 @@ export function variableContinuations(tail: string, varName: string): string {
   return out.join("\n")
 }
 
-/** PURE — exported so the checks below can exercise it directly. */
-export function scanCheckVocabulary(rawSrc: string, file: string): VocabViolation[] {
-  const src = stripComments(rawSrc)
-  const out: VocabViolation[] = []
-
-  for (const [table, columns] of Object.entries(CHECK_VOCABULARIES)) {
+/**
+ * PURE — every `.from("<enum table>")` chain in `src` (already comment-stripped),
+ * paired with the window of text that belongs to THAT chain.
+ *
+ * Extracted so the two detectors below share ONE definition of "this query's own
+ * text" (CLAUDE.md §6). Two hand-maintained copies of this windowing is how the
+ * in-memory scan would drift from the filter scan and start attributing one
+ * query's columns to another's payload — the precise mis-attribution the
+ * statement-boundary comment above records having already cost this guard once.
+ */
+export function chainWindows(src: string): Array<{ table: string; win: string; index: number }> {
+  const out: Array<{ table: string; win: string; index: number }> = []
+  for (const table of Object.keys(CHECK_VOCABULARIES)) {
     for (const quote of ['"', "'"]) {
       const needle = `.from(${quote}${table}${quote})`
       let i = src.indexOf(needle)
@@ -249,8 +257,23 @@ export function scanCheckVocabulary(rawSrc: string, file: string): VocabViolatio
         const win = varName
           ? byFrom.slice(0, end) + "\n" + variableContinuations(byFrom.slice(end), varName)
           : byFrom.slice(0, end)
+        out.push({ table, win, index: i })
+        i = src.indexOf(needle, i + 1)
+      }
+    }
+  }
+  return out
+}
 
-        for (const [column, allowed] of Object.entries(columns)) {
+/** PURE — exported so the checks below can exercise it directly. */
+export function scanCheckVocabulary(rawSrc: string, file: string): VocabViolation[] {
+  const src = stripComments(rawSrc)
+  const out: VocabViolation[] = []
+
+  for (const { table, win } of chainWindows(src)) {
+    const columns = CHECK_VOCABULARIES[table as keyof typeof CHECK_VOCABULARIES] as Record<string, readonly string[]>
+
+    for (const [column, allowed] of Object.entries(columns)) {
           const ok = new Set(allowed)
           const flag = (value: string, kind: "write" | "filter") => {
             // A `${...}` interpolation is a VARIABLE, not a literal — the guard's
@@ -295,15 +318,344 @@ export function scanCheckVocabulary(rawSrc: string, file: string): VocabViolatio
               }
             }
           }
-        }
-        i = src.indexOf(needle, i + 1)
+    }
+  }
+  return out
+}
+
+// ── DETECTOR 2: the comparison the ROW will never satisfy ───────────────────
+/**
+ * THE HALF THIS GUARD COULD NOT SEE, and the defect that proved it.
+ *
+ * Everything above scans the QUERY BUILDER: `.eq("col","lit")`, an insert payload,
+ * a PostgREST `.or()` clause. All of those hand the literal to Postgres, so the
+ * database gets a chance to refuse. The other way to compare a CHECK column
+ * against a literal is to SELECT it and compare in JavaScript after the rows come
+ * back — and there Postgres never sees the literal at all, so nothing refuses and
+ * nothing logs. The filter simply matches nothing, forever.
+ *
+ * lib/listing-health/health-scorer.ts scored the FEEDBACK category — 15% of every
+ * active listing's health — with
+ *
+ *     r.buyer_interest_level === "interested" || r.buyer_interest_level === "very_interested"
+ *
+ * against `showings.buyer_interest_level`, whose live CHECK admits exactly
+ * love_it | like_it | maybe | no. Not one of those three literals is a member, so
+ * `interested` was structurally 0, `interestRatio` structurally 0, and the branch
+ * `score = Math.round(interestRatio * 100)` returned 0 for every listing that HAD
+ * feedback — while a listing with NO feedback returned early on the neutral 80.
+ * Collecting buyer feedback made the listing's health score twelve points WORSE.
+ * lib/agents/seller-update-reel-producer.ts carried a byte-identical copy, so the
+ * weekly seller video told every seller their listing drew "light" interest.
+ *
+ * The literals are not invented: they are the vocabulary of a DIFFERENT column
+ * (property_alert_results.buyer_reaction admits interested | very_interested |
+ * not_interested | scheduled_showing). That is §6 exactly — two spellings of one
+ * idea, and the scorer could not match the writer across them.
+ *
+ * THE RULE ASSERTED, derived and not pinned: for every enum-CHECK column this file
+ * SELECTS, any string literal the file compares that column against must be a
+ * member of the union of admitted sets for that column name across the tables the
+ * file actually reads. The union is deliberate — a file that reads BOTH
+ * showings.buyer_interest_level (love_it…) and showing_feedback.buyer_interest_level
+ * (hot…) may legitimately hold either spelling, and a false entry in a shrink-only
+ * ratchet can never be burned down.
+ *
+ * Also flagged: an ORDER comparison (>=, <=, >, <) or arithmetic against a column
+ * whose admitted set is entirely non-numeric. `(f.buyer_interest_level ?? 0) >= 4`
+ * on hot|warm|cool|cold is NaN on every row — the same always-false shape wearing
+ * a numeric hat, and it silently pinned two seller-sentiment counters to zero.
+ *
+ * BLIND SPOTS, published beside the number (§2):
+ *   · Only files that both `.from()` the table AND compare in the SAME file. A
+ *     column selected in one module and compared in another is invisible here.
+ *   · Only STRING LITERALS. A literal held in a const, an enum member, or an
+ *     interpolation is not checkable — the same contract detector 1 states.
+ *   · A RECORD LOOKUP keyed by the value (`INTEREST_LEVEL_CONFIG[row.col]`) is not
+ *     a comparison and is not scanned; those degrade to "no badge", not to a
+ *     wrong number.
+ *   · A column name shared by two tables the file reads takes the UNION, so a
+ *     value admitted by one passes for the other.
+ *   · `select("*")` registers every enum column of that table, which is the
+ *     honest reading of what the row carries.
+ */
+export interface MemVocabViolation {
+  file: string
+  column: string
+  value: string
+  /** which tables in this file supply that column's admitted set */
+  tables: string
+  /** "compare" (=== / !== / case) or "numeric" (an order comparison on a text enum) */
+  kind: "compare" | "numeric"
+}
+
+/** PURE — the balanced argument text of every `.select(` in a window. */
+export function selectArgs(win: string): string[] {
+  const out: string[] = []
+  const re = /\.select\s*\(/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(win))) {
+    let depth = 0
+    for (let i = m.index + m[0].length - 1; i < win.length; i++) {
+      const c = win[i]
+      if (c === "(") depth++
+      else if (c === ")") {
+        depth--
+        if (depth === 0) { out.push(win.slice(m.index + m[0].length, i)); break }
       }
     }
   }
   return out
 }
 
+/**
+ * PURE — enum-CHECK columns this file SELECTS, mapped to the union of admitted
+ * values and the tables that supplied them.
+ *
+ * Embedded selects count: `feedback:showing_feedback(overall_impression,
+ * buyer_interest_level)` is how app/actions/seller-showing-sentiment.ts obtains the
+ * column it then compares, and a scan that only looked at `.from()`'s own table
+ * would report zero there and read as a clean bill of health (§2).
+ */
+export function selectedEnumColumns(src: string): Map<string, Set<string>> {
+  const reg = new Map<string, Set<string>>()
+  const add = (table: string, column: string, _allowed: readonly string[]) => {
+    let e = reg.get(table)
+    if (!e) { e = new Set(); reg.set(table, e) }
+    e.add(column)
+  }
+
+  for (const { table, win } of chainWindows(src)) {
+    const columns = CHECK_VOCABULARIES[table as keyof typeof CHECK_VOCABULARIES] as Record<string, readonly string[]>
+    for (const sel of selectArgs(win)) {
+      const star = /["'`]\s*\*\s*["'`]/.test(sel)
+      // A column named ONLY inside an embed's parens belongs to the EMBEDDED
+      // table, not to this one — `showings.select("id, feedback:showing_feedback(
+      // buyer_interest_level)")` does not mean `showings` selected that column.
+      // Testing the raw select text made the outer table claim it and judge the
+      // embed's own admitted values as violations.
+      const outer = sel.replace(/\(([^()]*)\)/g, "()")
+      for (const [column, allowed] of Object.entries(columns)) {
+        if (star || new RegExp(`\\b${column}\\b`).test(outer)) add(table, column, allowed)
+      }
+      // Embeds: `alias:embedded(col, col)` or `embedded(col, col)`.
+      const embedRe = /(?:[A-Za-z_$][\w$]*\s*:\s*)?([a-z_][a-z0-9_]*)\s*\(([^()]*)\)/g
+      let em: RegExpExecArray | null
+      while ((em = embedRe.exec(sel))) {
+        const et = em[1]
+        const ecols = CHECK_VOCABULARIES[et as keyof typeof CHECK_VOCABULARIES] as Record<string, readonly string[]> | undefined
+        if (!ecols) continue
+        const inner = em[2]
+        const estar = /\*/.test(inner)
+        for (const [column, allowed] of Object.entries(ecols)) {
+          if (estar || new RegExp(`\\b${column}\\b`).test(inner)) add(et, column, allowed)
+        }
+      }
+    }
+  }
+  return reg
+}
+
+/**
+ * PURE — the identifiers in this file that actually hold a DATABASE ROW.
+ *
+ * WHY THIS IS NOT OPTIONAL, measured rather than argued. The first cut of this
+ * detector judged every `X.<column>` in a file that selected `<column>`, and
+ * reported 331 findings — 281 of them on `status`, and almost all of those were
+ * `r.status === "fulfilled"` on a Promise.allSettled result, an HTTP response's
+ * `.status`, or a local `{ status: "ok" | "fail" }` return shape. `status` is the
+ * most overloaded property name in JavaScript, and a shrink-only ratchet seeded
+ * with 281 entries nobody can act on is worse than no ratchet at all — this
+ * guard's own baseline comment says exactly that, in its own words, about a
+ * finding it once mis-attributed.
+ *
+ * So the receiver is TRACKED, shallowly but honestly:
+ *   · seeded from the assignment holding a `.from("…")` chain — `const { data: rows }`,
+ *     `const { data }`, `const x = await supabase.from(…)`;
+ *   · propagated through the aliases a row list actually survives —
+ *     `(rows ?? []) as Row[]`, `.filter()`, `.slice()`, `.sort()`, `.reverse()`,
+ *     `.concat()` — and NOT through `.map()`/`.flatMap()`/`.reduce()`, whose result
+ *     is a different type entirely;
+ *   · extended to the ELEMENT parameter of any array method called on a tracked
+ *     list, which is where nearly every real comparison lives
+ *     (`list.filter((r) => r.buyer_interest_level === "…")`).
+ *
+ * Anything else is left alone. The cost is stated in the blind-spot list on
+ * MemVocabViolation: a row handed to another function, and a value pulled out
+ * with `.map()` before it is compared, both fall outside. That is the honest
+ * trade — this reports fewer things and every one of them is real.
+ */
+export function rowVariables(code: string): { rows: Map<string, Set<string>>; lists: Map<string, Set<string>> } {
+  const rows = new Map<string, Set<string>>()
+  const lists = new Map<string, Set<string>>()
+  const put = (into: Map<string, Set<string>>, name: string, tables: Iterable<string>) => {
+    let s = into.get(name)
+    if (!s) { s = new Set(); into.set(name, s) }
+    for (const t of tables) s.add(t)
+  }
+
+  // Seed: whatever a `.from("table")` chain was assigned to, TAGGED WITH THAT TABLE.
+  //
+  // The table has to travel with the variable. Without it, judging is forced to
+  // take the union of every table in the file that has a CHECK on that column
+  // name, and lib/portal/resolve-seller-context.ts is the case that proved it
+  // wrong: `offers.find((o) => o.status === "accepted")` was reported as a value
+  // `status` cannot hold, because the file elsewhere reads `listings.status` and
+  // `offers.status` carries no CHECK at all. `o` is an OFFERS row; the listings
+  // vocabulary has no authority over it. A false entry in a shrink-only ratchet
+  // can never be burned down.
+  //
+  // The quoted snake_case argument is what keeps `Array.from(x)` out.
+  const fromRe = /\.from\(\s*["']([a-z_][a-z0-9_]*)["']\s*\)/g
+  let m: RegExpExecArray | null
+  while ((m = fromRe.exec(code))) {
+    // An EMBEDDED table's rows arrive nested inside this chain's rows, so the
+    // variable legitimately carries both shapes. Attaching the embed here is what
+    // lets a comparison on an embedded column be judged at all — the receiver
+    // tracking cannot follow `s.feedback` into a nested property.
+    const tables = [m[1]]
+    for (const sel of selectArgs(code.slice(m.index, m.index + 1500))) {
+      for (const em of sel.matchAll(/(?:[A-Za-z_$][\w$]*\s*:\s*)?([a-z_][a-z0-9_]*)\s*\(/g)) tables.push(em[1])
+      break
+    }
+    const back = code.slice(Math.max(0, m.index - 300), m.index)
+    const named = /(?:const|let|var)\s*\{\s*data\s*:\s*([A-Za-z_$][\w$]*)[^}]*\}\s*=\s*[^=;]*$/.exec(back)
+    if (named) { put(lists, named[1], tables); put(rows, named[1], tables); continue }
+    if (/(?:const|let|var)\s*\{\s*data\b[^}]*\}\s*=\s*[^=;]*$/.test(back)) { put(lists, "data", tables); put(rows, "data", tables); continue }
+    const plain = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*[^=;]*$/.exec(back)
+    if (plain) { put(lists, plain[1], tables); put(rows, plain[1], tables) }
+  }
+
+  // Fixpoint — aliases and callback parameters, until nothing new appears.
+  const idsIn = (s: string) => [...s.matchAll(/[A-Za-z_$][\w$]*/g)].map((x) => x[0])
+  const size = () => [...rows.values()].reduce((n, s) => n + s.size, rows.size)
+    + [...lists.values()].reduce((n, s) => n + s.size, lists.size)
+  for (let pass = 0; pass < 5; pass++) {
+    const before = size()
+
+    for (const line of code.split("\n")) {
+      const decl = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]*)?=\s*(.+)$/.exec(line)
+      if (decl) {
+        const [, name, rhsRaw] = decl
+        const rhs = rhsRaw.trim()
+        const head = idsIn(rhs)[0]
+        const src = head ? lists.get(head) : undefined
+        if (src) {
+          // `.map()`/`.flatMap()`/`.reduce()` change the element type — their
+          // RESULT is deliberately not propagated.
+          if (/^\(*\s*[A-Za-z_$][\w$]*\s*(?:\?\?\s*\[\s*\]\s*)?\)*(?:\s+as\s+.+)?$/.test(rhs)) { put(lists, name, src); put(rows, name, src) }
+          else if (new RegExp(`^\\(*\\s*${head}\\b[\\s\\S]*\\.(?:filter|slice|sort|reverse|concat)\\(`).test(rhs)) { put(lists, name, src) }
+          else if (new RegExp(`^\\(*\\s*${head}\\s*(?:\\?\\?\\s*\\[\\s*\\]\\s*)?\\)*\\s*(?:as\\s+[^\\n]*?)?\\.(?:find|at)\\(`).test(rhs)
+                || new RegExp(`^\\(*\\s*${head}\\s*(?:\\?\\?\\s*\\[\\s*\\]\\s*)?\\)*\\s*\\[\\s*0\\s*\\]`).test(rhs)) { put(rows, name, src) }
+        }
+      }
+    }
+
+    // `tracked.filter((r) => …)` / `.map((r) => …)` — `r` IS a row even when the
+    // method's RESULT is not a list of rows.
+    const cbRe = /\b([A-Za-z_$][\w$]*)\s*(?:\?\.)?\.(?:filter|map|flatMap|some|every|find|findIndex|findLast|forEach|sort)\s*\(\s*(?:async\s*)?\(?\s*([A-Za-z_$][\w$]*)\s*(?::[^,)]*)?\)?\s*=>/g
+    while ((m = cbRe.exec(code))) {
+      const src = lists.get(m[1])
+      if (src) put(rows, m[2], src)
+    }
+
+    if (size() === before) break
+  }
+  return { rows, lists }
+}
+
+/** PURE — exported so the checks below can exercise it directly. */
+export function scanInMemoryVocabulary(rawSrc: string, file: string): MemVocabViolation[] {
+  const src = stripComments(rawSrc)
+  const selected = selectedEnumColumns(src)
+  if (selected.size === 0) return []
+  const { rows } = rowVariables(src)
+  if (rows.size === 0) return []
+  const out: MemVocabViolation[] = []
+
+  // Every enum column any table in this file SELECTS is a candidate; authority
+  // over a given comparison comes from the RECEIVER's own table(s), resolved per
+  // hit below.
+  const candidates = new Set<string>()
+  for (const cols of selected.values()) for (const c of cols) candidates.add(c)
+
+  /**
+   * The receiver's table(s) that (a) this file actually selected `column` from and
+   * (b) carry a CHECK on it. Empty ⇒ no authority ⇒ not our business.
+   */
+  const authority = (recv: string | undefined, column: string) => {
+    if (!recv) return null
+    const tabs = rows.get(recv)
+    if (!tabs) return null
+    const allowed = new Set<string>()
+    const tables: string[] = []
+    for (const t of tabs) {
+      if (!selected.get(t)?.has(column)) continue
+      const cols = CHECK_VOCABULARIES[t as keyof typeof CHECK_VOCABULARIES] as Record<string, readonly string[]> | undefined
+      const vals = cols?.[column]
+      if (!vals) continue
+      tables.push(t)
+      for (const v of vals) allowed.add(v)
+    }
+    return tables.length ? { allowed, tables: tables.sort().join("+") } : null
+  }
+
+  for (const column of candidates) {
+    const flag = (recv: string | undefined, value: string, kind: "compare" | "numeric") => {
+      const auth = authority(recv, column)
+      if (!auth) return
+      if (value.includes("${")) return
+      if (kind === "compare" && auth.allowed.has(value)) return
+      out.push({ file, column, value, tables: auth.tables, kind })
+    }
+    const isRow = (recv: string | undefined) => !!authority(recv, column)
+    const R = `([A-Za-z_$][\\w$]*)\\s*\\??\\.${column}\\b`
+
+    // `row.column === "lit"` / `!==` / `==` / `!=`, and the mirrored literal-first form.
+    const cmp = new RegExp(`${R}\\s*(?:\\?\\?\\s*[^\\s)]+\\s*)?\\)?\\s*(?:===|!==|==|!=)\\s*["']([^"'\\n]*)["']`, "g")
+    let m: RegExpExecArray | null
+    while ((m = cmp.exec(src))) flag(m[1], m[2], "compare")
+    const cmpRev = new RegExp(`["']([^"'\\n]*)["']\\s*(?:===|!==|==|!=)\\s*${R}`, "g")
+    while ((m = cmpRev.exec(src))) flag(m[2], m[1], "compare")
+
+    // `["a","b"].includes(row.column)` — a set membership test, same shape.
+    const inc = new RegExp(`\\[([^\\]]*)\\]\\s*(?:as\\s+[\\w<>\\[\\]]+\\s*)?\\.includes\\(\\s*${R}`, "g")
+    while ((m = inc.exec(src))) {
+      if (!isRow(m[2])) continue
+      for (const lit of m[1].matchAll(/["']([^"'\n]*)["']/g)) flag(m[2], lit[1], "compare")
+    }
+
+    // `switch (row.column) { case "lit": … }` — the balanced block only.
+    const sw = new RegExp(`switch\\s*\\(\\s*${R}\\s*(?:\\?\\?\\s*[^)\\n]+)?\\)\\s*\\{`, "g")
+    while ((m = sw.exec(src))) {
+      const recv = m[1]
+      if (!isRow(recv)) continue
+      let depth = 0
+      let end = src.length
+      for (let i = m.index + m[0].length - 1; i < src.length; i++) {
+        const c = src[i]
+        if (c === "{") depth++
+        else if (c === "}") { depth--; if (depth === 0) { end = i; break } }
+      }
+      const body = src.slice(m.index + m[0].length, end)
+      for (const cs of body.matchAll(/\bcase\s+["']([^"'\n]*)["']\s*:/g)) flag(recv, cs[1], "compare")
+    }
+
+    // An ORDER comparison against a column whose admitted set is entirely NON-numeric
+    // is NaN on every row — always false, and it reads as "nobody qualified".
+    const ord = new RegExp(`${R}\\s*(?:\\?\\?\\s*[^\\s)]+\\s*)?\\)?\\s*(>=|<=|>|<)\\s*(-?\\d+(?:\\.\\d+)?)`, "g")
+    while ((m = ord.exec(src))) {
+      const auth = authority(m[1], column)
+      if (!auth) continue
+      if ([...auth.allowed].every((v) => /^-?\d+(\.\d+)?$/.test(v))) continue
+      flag(m[1], `${m[2]} ${m[3]}`, "numeric")
+    }
+  }
+  return out
+}
+
 const key = (v: VocabViolation) => `${v.file}::${v.table}.${v.column}=${v.value}`
+const memKey = (v: MemVocabViolation) => `${v.file}::${v.column}[${v.tables}]${v.kind === "numeric" ? " " : "="}${v.value}`
 
 // ── Run ─────────────────────────────────────────────────────────────────────
 let passed = 0, failed = 0
@@ -363,6 +715,98 @@ check("mutationArgs keeps a nested object inside its own payload",
 check("leaves a column with no CHECK alone",
   scanCheckVocabulary(`svc.from("agent_onboarding").update({ current_day: "12" })`, "t").length === 0)
 
+console.log("\n[pure — the IN-MEMORY detector (the comparison the row will never satisfy)]")
+// THE POSITIVE CONTROL for the shipped defect this detector was written for. The
+// fixture is the health-scorer line verbatim; if it ever stops being flagged, the
+// finder has gone blind and a zero elsewhere means nothing (§2).
+const HEALTH_SCORER_DEFECT =
+  `const { data: rows } = await supabase\n` +
+  `  .from("showings")\n` +
+  `  .select("buyer_interest_level, rating")\n` +
+  `  .eq("listing_id", listingId)\n` +
+  `const list = (rows ?? []) as Array<{ buyer_interest_level: string | null }>\n` +
+  `const interested = list.filter((r) => r.buyer_interest_level === "interested" || r.buyer_interest_level === "very_interested").length\n` +
+  `const notInterested = list.filter((r) => r.buyer_interest_level === "not_interested").length\n`
+check("POSITIVE CONTROL — flags the three literals showings.buyer_interest_level can never hold",
+  scanInMemoryVocabulary(HEALTH_SCORER_DEFECT, "t").map((v) => v.value).sort().join(",")
+    === "interested,not_interested,very_interested",
+  scanInMemoryVocabulary(HEALTH_SCORER_DEFECT, "t").map((v) => v.value).join(","))
+check("accepts the CORRECTED comparison (the live CHECK's own values)",
+  scanInMemoryVocabulary(
+    HEALTH_SCORER_DEFECT.replace(/"interested"/g, '"like_it"')
+      .replace(/"very_interested"/g, '"love_it"').replace(/"not_interested"/g, '"no"'), "t").length === 0)
+/** A minimal but REALISTIC read: the row variable has to actually come from the query. */
+const readOf = (table: string, cols: string, body: string) =>
+  `const { data: rows } = await svc.from("${table}").select(${cols})\n` +
+  `const list = (rows ?? []) as Row[]\n` + body
+check("a column the file never SELECTS is not judged",
+  scanInMemoryVocabulary(readOf("showings", `"id, scheduled_date"`,
+    `const n = list.filter((r) => r.buyer_interest_level === "interested").length`), "t").length === 0)
+check("select(\"*\") registers every enum column of that table",
+  scanInMemoryVocabulary(readOf("showings", `"*"`,
+    `const n = list.filter((r) => r.buyer_interest_level === "interested").length`), "t").length === 1)
+check("an EMBEDDED select registers the embedded table's vocabulary",
+  scanInMemoryVocabulary(readOf("showings", "`id, feedback:showing_feedback(buyer_interest_level)`",
+    `const n = list.filter((f) => f.buyer_interest_level === "interested").length`), "t").length === 1)
+check("the embed's OWN vocabulary is accepted",
+  scanInMemoryVocabulary(readOf("showings", "`id, feedback:showing_feedback(buyer_interest_level)`",
+    `const n = list.filter((f) => f.buyer_interest_level === "hot").length`), "t").length === 0)
+check("a file reading BOTH spellings takes the UNION (never a false entry)",
+  scanInMemoryVocabulary(
+    readOf("showings", `"buyer_interest_level"`, "") +
+    readOf("showing_feedback", `"buyer_interest_level"`,
+      `const n = list.filter((r) => r.buyer_interest_level === "hot" || r.buyer_interest_level === "love_it").length`),
+    "t").length === 0)
+check("flags a switch/case on a value the column can never hold",
+  scanInMemoryVocabulary(readOf("showings", `"buyer_interest_level"`,
+    `const n = list.map((r) => { switch (r.buyer_interest_level) { case "love_it": return 5; case "very_interested": return 5 } })`),
+    "t").length === 1)
+check("flags every bad element of an array .includes() membership test",
+  scanInMemoryVocabulary(readOf("showings", `"buyer_interest_level"`,
+    `const n = list.filter((r) => ["love_it", "very_interested"].includes(r.buyer_interest_level)).length`), "t").length === 1)
+check("flags an ORDER comparison against a text enum (NaN on every row)",
+  scanInMemoryVocabulary(readOf("showing_feedback", `"buyer_interest_level"`,
+    `const hi = list.filter((f) => (f.buyer_interest_level ?? 0) >= 4).length`), "t").length === 1)
+check("leaves an ORDER comparison on a NUMERIC-valued CHECK alone",
+  scanInMemoryVocabulary(readOf("property_feedback", `"interest_level"`,
+    `const hi = list.filter((f) => (f.interest_level ?? 0) >= 4).length`), "t").length === 0)
+// THE RECEIVER CONTROL — 281 of the first cut's 331 findings were this shape:
+// a `.status` that belongs to a Promise result, an HTTP response or a local
+// return bag, in a file that merely happens to read a table with a status CHECK.
+check("a `.status` that is NOT a tracked row is left alone",
+  scanInMemoryVocabulary(readOf("listings", `"status"`,
+    `const settled = await Promise.allSettled(jobs)\n` +
+    `const okCount = settled.filter((r) => r.status === "fulfilled").length\n` +
+    `if (res.status === "fail") return`), "t").length === 0)
+check("…but the same literal ON A ROW is still flagged",
+  scanInMemoryVocabulary(readOf("listings", `"status"`,
+    `const okCount = list.filter((r) => r.status === "fulfilled").length`), "t").length === 1)
+check("a row list survives .filter()/.slice() aliasing",
+  scanInMemoryVocabulary(readOf("listings", `"status"`,
+    `const recent = list.filter((r) => r.id)\n` +
+    `const n = recent.filter((r) => r.status === "fulfilled").length`), "t").length === 1)
+check("never reads its own documentation",
+  scanInMemoryVocabulary(readOf("showings", `"buyer_interest_level"`,
+    `const n = list.filter((r) => true).length\n// WAS: r.buyer_interest_level === "interested"`), "t").length === 0)
+check("ignores an interpolation (only literals are checkable)",
+  scanInMemoryVocabulary(readOf("showings", `"buyer_interest_level"`,
+    "const n = list.filter((r) => r.buyer_interest_level === `${wanted}`).length"), "t").length === 0)
+check("selectArgs keeps a nested embed inside its own select",
+  selectArgs(`.select("id, feedback:showing_feedback(a, b)").eq("x", "y")`).length === 1)
+check("rowVariables seeds from the destructured query result and follows the alias",
+  (() => { const { rows } = rowVariables(readOf("listings", `"status"`, `const n = list.filter((r) => r.id).length`))
+    return rows.has("rows") && rows.has("list") && rows.has("r") && !rows.has("settled")
+      && [...(rows.get("r") ?? [])].join() === "listings" })())
+// THE TABLE TRAVELS WITH THE VARIABLE. lib/portal/resolve-seller-context.ts is the
+// case: it reads listings.status AND offers.status, and `offers.status` carries no
+// CHECK at all — so `o.status === "accepted"` is nobody's violation. Judging on the
+// file-wide union of the column NAME reported it as one.
+check("a row from a table with NO CHECK on that column is not judged by another table's",
+  scanInMemoryVocabulary(
+    readOf("listings", `"status"`, "") +
+    `const { data: offers } = await svc.from("offers").select("id, status")\n` +
+    `const accepted = offers.find((o) => o.status === "accepted")`, "t").length === 0)
+
 console.log("\n[repo scan]")
 const files: string[] = []
 for (const d of ["app", "lib", "services"]) for (const f of walkTs(join(root, d))) files.push(f)
@@ -370,13 +814,19 @@ for (const d of ["app", "lib", "services"]) for (const f of walkTs(join(root, d)
 for (const f of rootRuntimeFiles(root)) files.push(f)
 
 const found: VocabViolation[] = []
+const memFound: MemVocabViolation[] = []
+let memCorpus = 0
 for (const f of files) {
   let src = ""
   try { src = readFileSync(f, "utf8") } catch { continue }
   if (!src.includes(".from(")) continue
-  found.push(...scanCheckVocabulary(src, relative(root, f).replace(/\\/g, "/")))
+  const rel = relative(root, f).replace(/\\/g, "/")
+  found.push(...scanCheckVocabulary(src, rel))
+  memCorpus++
+  memFound.push(...scanInMemoryVocabulary(src, rel))
 }
 console.log(`  · ${files.length} files scanned · ${columnCount} enum columns across ${tableCount} tables`)
+console.log(`  · in-memory detector denominator: ${memCorpus} files that both .from() an enum table and could compare in the same file`)
 
 const baseline: string[] = existsSync(BASELINE_PATH)
   ? JSON.parse(readFileSync(BASELINE_PATH, "utf8"))
@@ -386,6 +836,13 @@ if (process.env.UPDATE_CHECK_VOCAB_BASELINE === "1") {
   const next = [...new Set(found.map(key))].sort()
   writeFileSync(BASELINE_PATH, JSON.stringify(next, null, 2) + "\n")
   console.log(`  · baseline rewritten with ${next.length} entries`)
+  // BOTH baselines, in the one block. The exit used to sit here, so an update run
+  // rewrote the filter baseline and never reached the in-memory one — the second
+  // ratchet would have been silently un-updatable, which is the same shape of
+  // "reports fine, did nothing" this whole guard exists to catch.
+  const memNext = [...new Set(memFound.map(memKey))].sort()
+  writeFileSync(MEM_BASELINE_PATH, JSON.stringify(memNext, null, 2) + "\n")
+  console.log(`  · in-memory baseline rewritten with ${memNext.length} entries`)
   process.exit(0)
 }
 
@@ -398,6 +855,35 @@ check(`no NEW literal outside a live CHECK vocabulary (${found.length} total, ${
   fresh.length === 0,
   fresh.slice(0, 8).map((v) => `${v.file}: ${v.table}.${v.column} ${v.kind} "${v.value}"`).join("; "))
 check(`the baseline only shrinks (${fixed.length} retired this run)`, true)
+
+// ── Detector 2's own ratchet ────────────────────────────────────────────────
+// A SEPARATE baseline file, because the two detectors' keys are different shapes
+// and mixing them would let a burned-down in-memory finding be mistaken for a
+// retired filter finding. Same guard, same proof, one owner (§6/§1: this claim —
+// "a literal the column cannot hold" — already belongs here; a second guard on the
+// same subject is the duplicate the orphan doctrine forbids).
+const memBaseline: string[] = existsSync(MEM_BASELINE_PATH)
+  ? JSON.parse(readFileSync(MEM_BASELINE_PATH, "utf8"))
+  : []
+
+const memBaselineSet = new Set(memBaseline)
+const memFresh = memFound.filter((v) => !memBaselineSet.has(memKey(v)))
+const memStill = new Set(memFound.map(memKey))
+const memFixed = memBaseline.filter((b) => !memStill.has(b))
+
+check(`no NEW in-memory comparison against a value the column can never hold (${memFound.length} total, ${memBaseline.length} baselined)`,
+  memFresh.length === 0,
+  memFresh.slice(0, 8).map((v) => `${v.file}: ${v.column} [${v.tables}] ${v.kind} "${v.value}"`).join("; "))
+check(`the in-memory baseline only shrinks (${memFixed.length} retired this run)`, memFixed.length >= 0)
+
+// The census is a DELIVERABLE, not just a pass/fail: a count with no way to read
+// what it counted cannot be burned down. CHECK_VOCAB_DUMP=1 prints every finding.
+if (process.env.CHECK_VOCAB_DUMP === "1") {
+  console.log("\n[in-memory census — every finding]")
+  for (const v of [...memFound].sort((a, b) => memKey(a).localeCompare(memKey(b)))) {
+    console.log(`  ${v.file}\t${v.column}[${v.tables}]\t${v.kind}\t${v.value}`)
+  }
+}
 
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)

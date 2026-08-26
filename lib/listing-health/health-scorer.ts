@@ -30,6 +30,7 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
 import { generateTextRouted } from "@/lib/ai/models"
 import { computeDaysOnMarket } from "@/lib/listings/compute-dom"
+import { isPositiveShowingInterest, isNegativeShowingInterest } from "@/lib/behavior-learning/signal-mapping"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -179,8 +180,24 @@ async function scoreFeedback(supabase: Supa, listingId: string): Promise<Listing
     }
   }
 
-  const interested  = list.filter((r) => r.buyer_interest_level === "interested" || r.buyer_interest_level === "very_interested").length
-  const notInterested = list.filter((r) => r.buyer_interest_level === "not_interested").length
+  // ONE VOCABULARY (CLAUDE.md §6). WAS:
+  //   r.buyer_interest_level === "interested" || === "very_interested"   → interested
+  //   r.buyer_interest_level === "not_interested"                        → notInterested
+  // and `showings.buyer_interest_level` carries the live CHECK
+  // love_it | like_it | maybe | no, so not one of those three literals is a value
+  // the column can ever hold. Nothing threw — the rows come back, the strings
+  // simply never match — so `interested` was structurally 0 on every listing,
+  // `interestRatio` structurally 0, and THIS category returned 0/100 for every
+  // listing that had feedback while a listing with NONE returned early on the
+  // neutral 80 above. Collecting buyer feedback made the health score 12 points
+  // worse (0.15 weight × 80). The three dead literals belong to a different column
+  // entirely: property_alert_results.buyer_reaction.
+  // SURVIVOR: lib/behavior-learning/signal-mapping.ts — the declared single owner
+  // of this vocabulary (MAINTENANCE_DOMAINS.client_story_drafts) — whose ladder is
+  // derived from the live CHECK, so a widened CHECK fails a proof instead of
+  // silently leaving a rung unmapped.
+  const interested    = list.filter((r) => isPositiveShowingInterest(r.buyer_interest_level)).length
+  const notInterested = list.filter((r) => isNegativeShowingInterest(r.buyer_interest_level)).length
 
   // Interest ratio (interested / total)
   const interestRatio = interested / list.length

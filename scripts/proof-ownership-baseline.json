@@ -51,7 +51,6 @@
     "test:certification-issued",
     "test:channel-preference",
     "test:charts",
-    "test:check-vocabulary",
     "test:child-tenant-scope",
     "test:client-framing",
     "test:client-message",

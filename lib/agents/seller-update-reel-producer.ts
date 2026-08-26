@@ -23,6 +23,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { sanitizeProperNoun } from "@/lib/compliance/client-text-guard"
+import { isPositiveShowingInterest } from "@/lib/behavior-learning/signal-mapping"
 
 export const SELLER_UPDATE_COMPOSITION = "AgentTalkingHeadReel"
 /** Tags the render's input_props so delivery can distinguish seller updates from
@@ -46,9 +47,27 @@ export interface SellerUpdateStats {
   videoScans?: number
 }
 
-/** Pure: coarse interest label from completed-showing interest levels. */
+/**
+ * Pure: coarse interest label from completed-showing interest levels.
+ *
+ * ONE VOCABULARY (CLAUDE.md §6). WAS:
+ *   levels.filter((l) => l === "interested" || l === "very_interested")
+ * — a byte-identical copy of the dead comparison in
+ * lib/listing-health/health-scorer.ts:182, against the SAME column. Its caller
+ * reads `showings.buyer_interest_level`, whose live CHECK admits love_it |
+ * like_it | maybe | no, so `interested` was structurally 0 and the ratio
+ * structurally 0. This function therefore returned "light" for every listing that
+ * had ANY showing feedback and "none" for one that had none — meaning the weekly
+ * seller VIDEO has told every seller their listing drew light buyer interest, no
+ * matter what the buyers actually said. That is a customer-facing untruth, not a
+ * dashboard rounding error.
+ *
+ * SURVIVOR: lib/behavior-learning/signal-mapping.ts::isPositiveShowingInterest —
+ * the declared owner of this vocabulary, deriving the positive set from the ladder
+ * rather than restating four literals.
+ */
 export function interestLabelFor(levels: Array<string | null>): SellerUpdateStats["interestLabel"] {
-  const interested = levels.filter((l) => l === "interested" || l === "very_interested").length
+  const interested = levels.filter((l) => isPositiveShowingInterest(l)).length
   if (levels.length === 0) return "none"
   const ratio = interested / levels.length
   if (ratio >= 0.5) return "strong"
