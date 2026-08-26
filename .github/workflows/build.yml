@@ -110,6 +110,33 @@ jobs:
       #         `tsc --noEmit --listFilesOnly | grep -c '\.claude/skills'` → 0.
       #         Do not "fix" a future OOM by excluding those; they were never in.
       #
+      #         ATTEMPT 2 OF THE SAME COMMIT, UNCHANGED: aborted again at 7m08s,
+      #         exit 134, heap at 8730.5 MB used / 9459.2 MB committed — 7 MB from
+      #         attempt 1's used figure. THIS IS THE READING THAT CHANGES THE
+      #         DIAGNOSIS, and it is why it is recorded rather than just re-run.
+      #         Every prior abort in this bracket recovered on an unchanged re-run;
+      #         that is the entire basis for calling it intermittent. This one did
+      #         not. Two aborts at ONE commit landing within 7 MB of each other is
+      #         a REPRODUCIBLE ceiling, not a flake — the same reasoning the
+      #         2026-08-21 entry used in the other direction, where two readings
+      #         agreeing was what made 8.46 GB trustworthy as a floor.
+      #         Committed is now 92.4% of cap, and compile's demand has settled at
+      #         8.73 GB against a ~9.2 GB effective ceiling.
+      #
+      #         So the condition this file already names has arrived: "when a
+      #         compile abort STOPS being recoverable by re-running, that headroom
+      #         is gone and the answer is the runner, not the number." A third
+      #         unchanged attempt was queued to meet §8's three-strike threshold
+      #         before escalating, because the rule is the rule — but the two
+      #         readings above are already the evidence, and raising the cap is
+      #         NOT the fix available here: 12288 was measured to make page-data's
+      #         RSS fatal on a 16 GB runner, so there is no room to buy compile
+      #         more old space without re-breaking the phase after it. The levers
+      #         are a larger runner (the owner's cost decision) or a smaller
+      #         module graph.
+      #
+      #         Original attempt-1 note kept below, since it records the remedy
+      #         that was correct to try first:
       #         Re-run of the same commit, unchanged, was queued per §8 rather
       #         than tuning the number — the remedy this bracket documents. But
       #         note what the margin now is: ~2.4 GB of headroom in the prose
