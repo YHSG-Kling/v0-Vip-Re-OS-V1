@@ -8,6 +8,7 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isDocumentClassBucket, issueBucketObjectUrl } from "./document-buckets"
+import { BUCKET_CREATION_DEFAULT_LIMIT_BYTES } from "./file-limits"
 
 /**
  * Create the bucket if it doesn't exist yet (idempotent).
@@ -33,7 +34,13 @@ export async function ensureBucket(
   if (list?.some((b) => b.name === name)) return
   await svc.storage.createBucket(name, {
     public: opts?.public ?? !isDocumentClassBucket(name),
-    fileSizeLimit: opts?.fileSizeLimit ?? 50 * 1024 * 1024, // 50 MB
+    // ONE spelling of this default (§6). It was a bare `50 * 1024 * 1024` here
+    // and again in app/actions/twin-studio-upload.ts's own ensureBucket, and it
+    // is not cosmetic: for the buckets that do not exist live yet — receipts,
+    // cda-templates, cda-filled, commission-agreements, twin-avatars,
+    // twin-voice-samples — this line IS their file size limit, so it is the
+    // number lib/storage/file-limits.ts answers with for them.
+    fileSizeLimit: opts?.fileSizeLimit ?? BUCKET_CREATION_DEFAULT_LIMIT_BYTES,
   })
 }
 

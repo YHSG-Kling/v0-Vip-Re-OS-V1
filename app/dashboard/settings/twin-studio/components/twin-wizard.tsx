@@ -11,6 +11,7 @@ import { Input } from "@/app/components/ui/input"
 import { Textarea } from "@/app/components/ui/textarea"
 import { Label } from "@/app/components/ui/label"
 import { toast } from "sonner"
+import { checkUpload } from "@/lib/storage/file-limits"
 import { createTwinDraft, finalizeTwin } from "@/app/actions/twin-studio"
 import { uploadTwinAvatar } from "@/app/actions/twin-studio-upload"
 import { TwinVoiceStep } from "./twin-voice-step"
@@ -219,12 +220,20 @@ function LookStep({
   const fileRef = useRef<HTMLInputElement>(null)
 
   async function handleFile(file: File) {
-    if (kind === "photo" && file.size > 10 * 1024 * 1024) {
-      toast.error("Photo must be under 10 MB")
-      return
-    }
-    if (kind === "video" && file.size > 50 * 1024 * 1024) {
-      toast.error("Video must be under 50 MB")
+    // COURTESY ONLY, and both numbers it replaces were fiction. uploadTwinAvatar
+    // is a Server Action that takes the file as a base64 STRING: Vercel caps a
+    // function request body at 4.5 MB ahead of Next.js, and base64 is a third
+    // larger than the bytes it carries, so the real ceiling is ~3.4 MB of file
+    // for BOTH kinds. A 40 MB "under 50 MB" video was encoded to 53 MB in the
+    // browser and then thrown away at the edge.
+    const twinGate = checkUpload({
+      bucket: "twin-avatars",
+      transport: "server_action_base64",
+      bytes: file.size,
+      contentType: file.type,
+    })
+    if (!twinGate.ok) {
+      toast.error(twinGate.reason)
       return
     }
 

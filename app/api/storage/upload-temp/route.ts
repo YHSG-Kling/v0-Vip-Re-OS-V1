@@ -13,9 +13,7 @@ import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { isDocumentClassBucket, bucketClassReason, issueBucketObjectUrl } from "@/lib/storage/document-buckets"
-
-const MAX_SIZE_MB = 50
-const MAX_SIZE_BYTES = MAX_SIZE_MB * 1024 * 1024
+import { checkUpload } from "@/lib/storage/file-limits"
 
 const ALLOWED_MIME_TYPES = new Set([
   "image/jpeg",
@@ -96,11 +94,22 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    if (file.size > MAX_SIZE_BYTES) {
-      return NextResponse.json(
-        { error: `File exceeds ${MAX_SIZE_MB}MB limit` },
-        { status: 400 }
-      )
+    // THE SIZE GATE. This route used to advertise a 50MB limit of its own
+    // invention, which was a promise nothing could keep: the bytes arrive in a
+    // Vercel Function request body, and that is capped at 4.5 MB by
+    // infrastructure ahead of this handler. A 30 MB file never reached the line
+    // that told the user 30 MB was fine — it 413'd at the edge with no message
+    // this code chose. The ceiling is now the real one (transport ∧ bucket) and
+    // it is answered from one place; 413 rather than 400, because that is what
+    // the platform returns for the same condition.
+    const gate = checkUpload({
+      bucket,
+      transport: "route_handler",
+      bytes: file.size,
+      contentType: file.type,
+    })
+    if (!gate.ok) {
+      return NextResponse.json({ error: gate.reason }, { status: 413 })
     }
 
     if (!ALLOWED_MIME_TYPES.has(file.type)) {

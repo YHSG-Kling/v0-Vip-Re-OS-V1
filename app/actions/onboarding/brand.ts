@@ -20,6 +20,7 @@ import { resolveActingContext, READ_ONLY_ACTING_ERROR } from "@/lib/platform/act
 // tenant roster (isAdminOrBroker below). 'superadmin'/'super_admin' were dead:
 // 0 live rows store either users.user_type spelling.
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { checkUpload } from "@/lib/storage/file-limits"
 
 /**
  * Brand config is brokerage-wide + admin-gated. Now IMPERSONATION-AWARE: when a platform
@@ -554,15 +555,22 @@ export async function uploadLogo(
       return { success: false, error: "No file provided" }
     }
 
-    // Validate file type
-    const allowedTypes = ["image/png", "image/svg+xml", "image/jpeg"]
-    if (!allowedTypes.includes(file.type)) {
-      return { success: false, error: "File must be PNG, SVG, or JPEG" }
-    }
-
-    // Validate file size (5MB)
-    if (file.size > 5 * 1024 * 1024) {
-      return { success: false, error: "File size must be less than 5MB" }
+    // TYPE AND SIZE, from the bucket's own live configuration rather than from
+    // two literals kept here. `brokerage-assets` declares
+    // allowed_mime_types = [image/png, image/svg+xml, image/jpeg] and
+    // file_size_limit = 5,242,880 — the hand-kept pair below happened to agree
+    // with it today, which is precisely why they were worth removing: nothing
+    // would have said so if the bucket changed. The transport ceiling is folded
+    // in too (this is a Server Action, so 4.5 MB is the real cap and 5 MB was
+    // already unreachable).
+    const gate = checkUpload({
+      bucket: "brokerage-assets",
+      transport: "server_action",
+      bytes: file.size,
+      contentType: file.type,
+    })
+    if (!gate.ok) {
+      return { success: false, error: gate.reason }
     }
 
     const fileExt = file.name.split(".").pop()

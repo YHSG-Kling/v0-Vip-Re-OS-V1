@@ -26,12 +26,12 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { issueBucketObjectUrl } from "@/lib/storage/document-buckets"
 import { removeOrRecordOrphan } from "@/lib/storage/put-and-sign"
 import { DOCUMENT_BUCKET } from "@/lib/kernel/document-autofile"
+import { checkUpload } from "@/lib/storage/file-limits"
 
 const ALLOWED_TYPES = new Set([
   "image/jpeg", "image/png", "image/webp", "image/heic",
   "application/pdf",
 ])
-const MAX_BYTES = 8 * 1024 * 1024  // 8 MB
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
   let formData: FormData
@@ -54,8 +54,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   if (!ALLOWED_TYPES.has(file.type)) {
     return NextResponse.json({ error: `Unsupported file type: ${file.type}` }, { status: 415 })
   }
-  if (file.size > MAX_BYTES) {
-    return NextResponse.json({ error: "File exceeds 8MB limit" }, { status: 413 })
+  // "8 MB" was picked to match next.config.ts's serverActions.bodySizeLimit —
+  // but this is a ROUTE HANDLER, not a Server Action, and neither number is what
+  // a user meets: Vercel caps a function request body at 4.5 MB in front of both.
+  // One ceiling, derived from the transport and the destination bucket.
+  const gate = checkUpload({
+    bucket: DOCUMENT_BUCKET,
+    transport: "route_handler",
+    bytes: file.size,
+    contentType: file.type,
+  })
+  if (!gate.ok) {
+    return NextResponse.json({ error: gate.reason }, { status: 413 })
   }
 
   // Validate token

@@ -634,7 +634,20 @@ export async function attachExpenseReceipt(input: {
     return { success: false, error: "The file could not be decoded" }
   }
   if (buffer.length === 0) return { success: false, error: "The file was empty" }
-  if (buffer.length > 15 * 1024 * 1024) return { success: false, error: "A receipt must be under 15 MB" }
+
+  // "15 MB" was a number this file invented; the receipt arrives as base64 in a
+  // Server Action body, so the real ceiling is ~3.4 MB of file and the bucket's
+  // own limit, whichever is smaller. `receipts` does not exist live yet, so its
+  // ceiling is the one ensureBucket will stamp on it at first write — answered
+  // from the same place rather than assumed to be unlimited.
+  const { checkUpload } = await import("@/lib/storage/file-limits")
+  const receiptGate = checkUpload({
+    bucket: "receipts",
+    transport: "server_action_base64",
+    bytes: buffer.length,
+    contentType: mimeType,
+  })
+  if (!receiptGate.ok) return { success: false, error: receiptGate.reason }
 
   // AUTHORIZE FIRST, through the caller's own RLS-scoped client.
   const supabase = await createClient()

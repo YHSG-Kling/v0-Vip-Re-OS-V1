@@ -22,6 +22,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { issueBucketObjectUrl } from "@/lib/storage/document-buckets"
+import { checkUpload } from "@/lib/storage/file-limits"
 import { removeOrRecordOrphan } from "@/lib/storage/put-and-sign"
 import { isTenantAdminOrPlatformStaff } from "@/lib/auth/resolve-user-role"
 
@@ -98,8 +99,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     if (file.type !== "application/pdf") {
       return NextResponse.json({ error: "Only PDF uploads supported" }, { status: 415 })
     }
-    if (file.size > 10 * 1024 * 1024) {
-      return NextResponse.json({ error: "PDF exceeds 10MB limit" }, { status: 413 })
+    // The 10 MB here was a fifth hand-kept number. The bytes ride a Vercel
+    // Function request body, so 4.5 MB is the real ceiling — a broker uploading
+    // a scanned 8 MB form packet was told 10 MB was fine and then 413'd at the
+    // edge with no message this code wrote.
+    const gate = checkUpload({
+      bucket: "brokerage-forms",
+      transport: "route_handler",
+      bytes: file.size,
+      contentType: file.type,
+    })
+    if (!gate.ok) {
+      return NextResponse.json({ error: gate.reason }, { status: 413 })
     }
     // WAS: put(…, { access: "public" }) to Vercel Blob — a brokerage's
     // transaction-form library at permanent unauthenticated URLs, in a

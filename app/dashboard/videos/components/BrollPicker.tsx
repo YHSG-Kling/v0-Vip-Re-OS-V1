@@ -27,6 +27,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Check, Sparkles, X, Play, Film, ArrowRight, Loader2, Upload, User as UserIcon, Users, Building2, Trash2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { uploadStockClip, deleteStockClip } from "@/app/actions/stock-video-upload"
+import { checkUpload } from "@/lib/storage/file-limits"
 import { toast } from "sonner"
 
 export interface BrollSelection {
@@ -354,7 +355,18 @@ function UploadStockClipDialog({ open, onOpenChange, defaultCategory, onUploaded
     if (!file) { setErrorMessage("Pick a video file first"); return }
     if (!title.trim()) { setErrorMessage("Give your clip a title so you can find it later"); return }
     if (!file.type.startsWith("video/")) { setErrorMessage("File must be a video (mp4, mov, webm)"); return }
-    if (file.size > 100 * 1024 * 1024) { setErrorMessage("Keep clips under 100 MB so renders stay fast"); return }
+    // COURTESY ONLY — the gate is the bucket. This said "under 100 MB", and
+    // listing-media enforces 52,428,800: every clip between 50 and 100 MB was
+    // waved past this line and refused by Storage after the whole upload. The
+    // browser PUTs straight to Supabase here, so no Vercel function cap applies
+    // and the bucket limit is the whole ceiling.
+    const brollGate = checkUpload({
+      bucket: "listing-media",
+      transport: "direct_to_storage",
+      bytes: file.size,
+      contentType: file.type || "video/mp4",
+    })
+    if (!brollGate.ok) { setErrorMessage(brollGate.reason); return }
 
     setBusy(true)
     try {

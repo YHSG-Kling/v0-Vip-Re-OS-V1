@@ -538,11 +538,31 @@ export const CONTENT_LIMITS = {
   HASHTAG_LENGTH_MAX: 50,
 } as const
 
-export const FILE_LIMITS = {
-  IMAGE_MAX_SIZE: 10 * 1024 * 1024, // 10MB
-  VIDEO_MAX_SIZE: 500 * 1024 * 1024, // 500MB
-  DOCUMENT_MAX_SIZE: 50 * 1024 * 1024, // 50MB
-} as const
+// TOMBSTONE (lane BI, 2026-08-26): the hand-kept FILE_LIMITS literal that stood
+// here is DELETED. The name survives — it is RE-EXPORTED from its survivor below
+// — because §1 forbids deleting to move a number, and because the capability was
+// wanted; what is deleted is the three invented numbers.
+//
+// SURVIVOR: lib/storage/file-limits.ts, where FILE_LIMITS is DERIVED from the
+// live bucket configuration cached in lib/storage/bucket-limits.ts, so it cannot
+// silently disagree with the platform again.
+//
+// WHAT IT SAID AND WHY EACH LINE WAS WRONG (all three now move DOWN):
+//   IMAGE_MAX_SIZE    10 MB → 5 MB   the brokerage-assets bucket enforces
+//                                     5,242,880 bytes and image types only.
+//   VIDEO_MAX_SIZE   500 MB → 50 MB  listing-media enforces 52,428,800. 500 MB
+//                                     was reachable by no path at all: Supabase
+//                                     refuses it at the bucket, and anything
+//                                     routed through a Next.js route handler or
+//                                     Server Action is refused 110× sooner by
+//                                     Vercel's 4.5 MB function body cap.
+//   DOCUMENT_MAX_SIZE 50 MB → 10 MB  agent-documents enforces 10,485,760.
+//
+// A class-keyed constant is the WEAKER question, which is why it is no longer
+// the only one on offer: the number that decides a real upload is
+// checkUpload({ bucket, transport, bytes, contentType }) in the survivor, which
+// takes the smaller of the bucket's limit and what the transport can carry.
+export { FILE_LIMITS } from "@/lib/storage/file-limits"
 
 // ============================================
 // TIME CONSTANTS

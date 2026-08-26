@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { cn } from "@/lib/utils"
+import { checkUpload } from "@/lib/storage/file-limits"
 import { Upload, Loader2, Check } from "lucide-react"
 import { listImageLibraryAction, type LibraryAssetRow } from "@/app/actions/marketing/image-library"
 
@@ -130,8 +131,18 @@ export function BackgroundPicker({ value, onChange, brokerageId }: Props) {
       setUploadError("Only image files are supported")
       return
     }
-    if (file.size > 10 * 1024 * 1024) {
-      setUploadError("Image must be under 10 MB")
+    // COURTESY ONLY. "Under 10 MB" was unreachable: this posts multipart to
+    // /api/storage/upload-temp, a Vercel Function, whose request body is capped
+    // at 4.5 MB by infrastructure. Anything between 4.5 and 10 MB failed with a
+    // platform 413 that this handler surfaced as a bare "Upload failed".
+    const bgGate = checkUpload({
+      bucket: "video-assets",
+      transport: "route_handler",
+      bytes: file.size,
+      contentType: file.type,
+    })
+    if (!bgGate.ok) {
+      setUploadError(bgGate.reason)
       return
     }
     setUploadError(null)

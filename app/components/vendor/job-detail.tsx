@@ -24,6 +24,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { FileText, MessageSquare, DollarSign, CheckCircle2, Upload } from "lucide-react"
+import { checkUpload, uploadCeilingBytes } from "@/lib/storage/file-limits"
 import {
   updateVendorJobStatus,
   addVendorJobNote,
@@ -59,12 +60,20 @@ const VENDOR_DOC_TYPES: Array<{ value: string; label: string }> = [
  * serializable across it — so the bytes travel as a `data:` URL, which
  * `uploadVendorJobDocument` already decodes.
  *
- * Size: `next.config.ts` sets `serverActions.bodySizeLimit: '8mb'` and base64
- * inflates by ~33%, so the browser can never reach the action's own 25MB cap
- * (that cap exists for server-to-server callers). Cap the browser at 5MB here so
- * an oversized file gets a real message instead of an opaque body-limit failure.
+ * Size: the reasoning that produced the 5 MB constant here was right in shape
+ * and wrong in its inputs — it read next.config.ts's `serverActions.bodySizeLimit:
+ * '8mb'` as the ceiling. Vercel caps a function request body at 4.5 MB IN FRONT
+ * of the framework, so the true budget is 4.5 MB of base64 = ~3.4 MB of file,
+ * and the action's own 25 MB cap it mentions has been deleted for the same
+ * reason. The number now comes from lib/storage/file-limits.ts, which folds the
+ * transport and the destination bucket together; BROWSER_UPLOAD_MAX_BYTES is its
+ * survivor, derived rather than hand-kept, so the copy below the dropzone and
+ * the check in the loop can never disagree.
  */
-const BROWSER_UPLOAD_MAX_BYTES = 5 * 1024 * 1024
+const BROWSER_UPLOAD_MAX_BYTES = uploadCeilingBytes({
+  bucket: "transaction-documents",
+  transport: "server_action_base64",
+})
 
 function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -168,10 +177,15 @@ export function VendorJobDetail({ job, vendorId }: VendorJobDetailProps) {
         failures.push(`${file.name} is empty`)
         continue
       }
-      if (file.size > BROWSER_UPLOAD_MAX_BYTES) {
-        failures.push(
-          `${file.name} is larger than the ${Math.floor(BROWSER_UPLOAD_MAX_BYTES / (1024 * 1024))}MB upload limit`,
-        )
+      // COURTESY ONLY — attachVendorJobDocument holds the real gate.
+      const gate = checkUpload({
+        bucket: "transaction-documents",
+        transport: "server_action_base64",
+        bytes: file.size,
+        contentType: file.type,
+      })
+      if (!gate.ok) {
+        failures.push(`${file.name}: ${gate.reason}`)
         continue
       }
       try {

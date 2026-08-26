@@ -231,6 +231,22 @@ export async function uploadDocument(
   // Decode base64 and upload to storage
   const fileBuffer = Buffer.from(file.base64, "base64")
 
+  // THE SIZE GATE, which this action — the universal document lane every portal
+  // and contact upload rides — did not have. Unbounded here is not "no limit":
+  // the base64 payload rides a Server Action body behind Vercel's 4.5 MB
+  // function cap, so the real ceiling is ~3.4 MB of file. Worse, the failure
+  // path below FALLS BACK to writing a truncated base64 data: URL into the row,
+  // so an oversized upload would not have failed loudly — it would have written
+  // a document record pointing at 100 characters of the file.
+  const { checkUpload } = await import("@/lib/storage/file-limits")
+  const sizeGate = checkUpload({
+    bucket: "client-documents",
+    transport: "server_action_base64",
+    bytes: fileBuffer.length,
+    contentType: file.type,
+  })
+  if (!sizeGate.ok) return { success: false, error: sizeGate.reason }
+
   let publicUrl: string
   // Non-null once the bytes are really in the bucket — the compensating handle
   // for the failure paths BELOW this point, which used to leave the file behind.
@@ -253,11 +269,32 @@ export async function uploadDocument(
   })
 
   if (!stored.ok) {
+    // 🐛 THE FALLBACK HERE FABRICATED A DOCUMENT THAT DOES NOT EXIST.
+    //
+    // It wrote `data:<type>;base64,<first 100 chars>...` into document_url and
+    // carried on to insert the client_documents row — so a storage failure
+    // rendered, to the client and to the agent, as a successfully uploaded
+    // document. Opening it yields a hundred characters of base64 and an ellipsis.
+    // Its own comment ("recommend setting up storage bucket properly") says it was
+    // a development stopgap; it reached production and stayed.
+    //
+    // It cannot be salvaged by widening the truncation either — client-documents
+    // is PRIVATE (m278), the bytes are gone by this point because putAndSign
+    // already undid the upload, and a base64 blob in a text column is not a
+    // document. §4: fail closed. A storage failure must not render as a stored file.
+    //
+    // This mirrors the row-refused path forty lines below, which already throws
+    // after compensating — same contract, same shape, for the same reason: the
+    // bytes are not there, so no row may claim they are.
+    //
+    // The size half of this defect was closed upstream by the upload ceiling
+    // (lib/storage/file-limits.ts), but the ceiling only stops files that are too
+    // BIG. This branch still fires on a missing bucket, an RLS refusal, or a
+    // network fault, so gating the size did not make it unreachable.
     console.error(`[v0] Storage ${stored.stage} error:`, stored.error)
-    // If bucket doesn't exist or upload fails, store base64 directly in database
-    // This is a fallback - recommend setting up storage bucket properly
-    publicUrl = `data:${file.type};base64,${file.base64.substring(0, 100)}...` // Truncated for DB
-    console.log("[v0] Using database fallback for document storage")
+    throw new Error(
+      `Failed to store document: ${stored.error ?? stored.stage}. The file was not saved — please try again.`,
+    )
   } else {
     publicUrl = stored.signedUrl
     storedObjectPath = stored.path

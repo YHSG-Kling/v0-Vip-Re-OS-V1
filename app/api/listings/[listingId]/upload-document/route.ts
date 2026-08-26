@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { issueBucketObjectUrl } from "@/lib/storage/document-buckets"
 import { removeOrRecordOrphan } from "@/lib/storage/put-and-sign"
+import { checkUpload } from "@/lib/storage/file-limits"
 
 /**
  * POST /api/listings/[listingId]/upload-document
@@ -64,6 +65,17 @@ export async function POST(
   const file = formData.get("file") as File | null
   const docTypeHint = (formData.get("docType") as string | null) ?? "uploaded_document"
   if (!file) return NextResponse.json({ error: "file is required" }, { status: 400 })
+
+  // Same missing gate as the offer door this route deliberately mirrors: it
+  // buffered the whole body and never checked a size. The real ceiling is the
+  // smaller of Vercel's 4.5 MB function body cap and the bucket's own limit.
+  const gate = checkUpload({
+    bucket: "documents",
+    transport: "route_handler",
+    bytes: file.size,
+    contentType: file.type || "application/octet-stream",
+  })
+  if (!gate.ok) return NextResponse.json({ error: gate.reason }, { status: 413 })
 
   const buf = Buffer.from(await file.arrayBuffer())
   const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, "_")

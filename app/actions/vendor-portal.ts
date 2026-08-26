@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
 import { requireVendorActor, PortalAuthError } from "@/lib/kernel/portal-auth"
 import { putAndSign, removeOrRecordOrphan } from "@/lib/storage/put-and-sign"
+import { checkUpload } from "@/lib/storage/file-limits"
 
 // ─── Upload helpers (module-private — a "use server" file may only EXPORT
 //     async functions, and these are deliberately not endpoints) ─────────────
@@ -380,8 +381,6 @@ export async function updateVendorJobCost(data: {
   return job
 }
 
-/** 25 MB — a vendor uploads inspection reports and invoices, not video. */
-const VENDOR_DOC_MAX_BYTES = 25 * 1024 * 1024
 
 /**
  * Vendor attaches a document to a transaction job.
@@ -444,13 +443,22 @@ export async function uploadVendorJobDocument(data: {
   if (!bytes || bytes.length === 0) {
     throw new Error("No file content was received")
   }
-  if (bytes.length > VENDOR_DOC_MAX_BYTES) {
-    throw new Error(`That file is larger than the ${Math.floor(VENDOR_DOC_MAX_BYTES / (1024 * 1024))}MB limit`)
-  }
-
   // `fileName` is caller-supplied and goes into a storage KEY, so strip any
   // path structure — "../../other-tenant/x.pdf" must not escape the prefix.
   const safeName = sanitizeStoredFileName(data.fileName)
+
+  // WAS a locally-invented 25 MB ("a vendor uploads inspection reports and
+  // invoices, not video"). The reasoning was sound and the number was
+  // unreachable: the payload rides a Server Action body behind Vercel's 4.5 MB
+  // function cap, so an inspection report above ~3.4 MB was refused by
+  // infrastructure with no message this file wrote.
+  const sizeGate = checkUpload({
+    bucket: "transaction-documents",
+    transport: "server_action_base64",
+    bytes: bytes.length,
+    contentType: guessContentType(safeName),
+  })
+  if (!sizeGate.ok) throw new Error(sizeGate.reason)
 
   // Tenant + transaction are baked into the prefix so an object can never be
   // written outside the caller's brokerage even if a key were guessed.

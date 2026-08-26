@@ -8,6 +8,7 @@ import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { uploadDocument } from "@/lib/documents/upload-document"
 import { INBOUND_CONTRACT_DOCUMENT_TYPE } from "@/lib/inbound-mail/offer-detect"
 import { linkInboundDocumentsToOffer } from "@/lib/inbound-mail/offer-intake"
+import { checkUpload } from "@/lib/storage/file-limits"
 
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
@@ -52,8 +53,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Only PDF files are accepted" }, { status: 415 })
   }
 
-  if (file.size > 20 * 1024 * 1024) {
-    return NextResponse.json({ error: "File exceeds 20 MB limit" }, { status: 413 })
+  // The "20 MB" this used to advertise was a fourth invented number and could
+  // never have been reached: the PDF arrives in a Vercel Function request body,
+  // capped at 4.5 MB ahead of this handler. One ceiling, from one place.
+  const gate = checkUpload({
+    bucket: "offer-documents",
+    transport: "route_handler",
+    bytes: file.size,
+    contentType: file.type,
+  })
+  if (!gate.ok) {
+    return NextResponse.json({ error: gate.reason }, { status: 413 })
   }
 
   // ── 1. Upload to Supabase Storage ─────────────────────────────────────────

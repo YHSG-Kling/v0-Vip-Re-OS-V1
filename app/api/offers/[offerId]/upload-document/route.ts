@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { issueBucketObjectUrl } from "@/lib/storage/document-buckets"
 import { removeOrRecordOrphan } from "@/lib/storage/put-and-sign"
+import { checkUpload } from "@/lib/storage/file-limits"
 
 /**
  * POST /api/offers/[offerId]/upload-document
@@ -47,6 +48,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ off
   const file = formData.get("file") as File | null
   const docTypeHint = (formData.get("docType") as string | null) ?? "uploaded_document"
   if (!file) return NextResponse.json({ error: "file is required" }, { status: 400 })
+
+  // THE SIZE GATE, which this route had none of at all — it read the whole body
+  // into a Buffer and handed it to Storage. Unbounded is not "no limit": the
+  // bytes come through a Vercel Function, capped at 4.5 MB ahead of this
+  // handler, so an oversized upload failed at the edge with no message anyone
+  // here chose and no record of what happened. Refuse it here, with a reason.
+  const gate = checkUpload({
+    bucket: "documents",
+    transport: "route_handler",
+    bytes: file.size,
+    contentType: file.type || "application/octet-stream",
+  })
+  if (!gate.ok) return NextResponse.json({ error: gate.reason }, { status: 413 })
 
   // Stream the file into Supabase Storage
   const buf = Buffer.from(await file.arrayBuffer())

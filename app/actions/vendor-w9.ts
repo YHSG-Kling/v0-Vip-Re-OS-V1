@@ -19,6 +19,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { requireVendorActor } from "@/lib/kernel/portal-auth"
+import { checkUpload } from "@/lib/storage/file-limits"
 import {
   readVendorW9,
   W9_BUSINESS_TYPES,
@@ -28,7 +29,13 @@ import {
   type W9TinType,
 } from "@/lib/vendors/w9"
 
-const MAX_W9_BYTES = 10 * 1024 * 1024 // matches the client-documents bucket limit
+/**
+ * SURVIVOR for `MAX_W9_BYTES` (deleted, 2026-08-26): the size ceiling now comes
+ * from lib/storage/file-limits.ts#checkUpload, which reads the bucket's real
+ * configuration and folds in the transport cap. What remains here is the bucket
+ * NAME, which was spelled as a literal at both call sites below.
+ */
+const W9_BUCKET = "client-documents"
 const ALLOWED_MIME = new Set(["application/pdf", "image/jpeg", "image/png", "image/jpg"])
 
 export interface UploadVendorW9Input {
@@ -74,7 +81,18 @@ export async function uploadVendorW9Action(input: UploadVendorW9Input): Promise<
   }
   const fileBuffer = Buffer.from(input.file.base64, "base64")
   if (fileBuffer.length === 0) return { success: false, error: "The uploaded file is empty" }
-  if (fileBuffer.length > MAX_W9_BYTES) return { success: false, error: "File too large (10MB max)" }
+  // WAS `MAX_W9_BYTES` (10 MB), with a comment claiming it "matches the
+  // client-documents bucket limit" — client-documents carries NO bucket limit
+  // live (file_size_limit is null), so the comment described a limit that did
+  // not exist and the number matched nothing. The real ceiling is the transport:
+  // a base64 W-9 in a Server Action body behind Vercel's 4.5 MB function cap.
+  const sizeGate = checkUpload({
+    bucket: W9_BUCKET,
+    transport: "server_action_base64",
+    bytes: fileBuffer.length,
+    contentType: input.file.type,
+  })
+  if (!sizeGate.ok) return { success: false, error: sizeGate.reason }
 
   const supabase = await createClient()
   const svc = createServiceClient()
@@ -89,7 +107,7 @@ export async function uploadVendorW9Action(input: UploadVendorW9Input): Promise<
   const filePath = `vendors/${actor.vendorId}/w9/${Date.now()}_${safeName}`
   const { putAndSign, removeOrRecordOrphan } = await import("@/lib/storage/put-and-sign")
   const stored = await putAndSign(supabase, {
-    bucket:      "client-documents",
+    bucket:      W9_BUCKET,
     path:        filePath,
     body:        fileBuffer,
     contentType: input.file.type,
@@ -120,7 +138,7 @@ export async function uploadVendorW9Action(input: UploadVendorW9Input): Promise<
     // Service client: this ledger is service-role only, and the vendor's own
     // credential could not write a worklist row if the delete were refused.
     await removeOrRecordOrphan(svc, {
-      bucket:      "client-documents",
+      bucket:      W9_BUCKET,
       objectPath:  stored.path,
       reason:      "vendor_w9_document_row_refused",
       detail:      docErr.message,
