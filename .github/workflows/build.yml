@@ -87,6 +87,40 @@ jobs:
       #         Failure rate at this commit: 1 abort, then green. Consistent
       #         with the intermittent flake, NOT with a hard ceiling.
       #
+      #   10240, cpus:1, commit b3235fd4 (2026-08-25)
+      #       → compile aborted at 7m19s, exit 134, same message, heap at
+      #         8723.5 MB used / 9402.5 MB committed.
+      #         THIS IS THE FIRST READING THAT MOVED, and the direction is the
+      #         finding. The two measurements above agreed within 1 MB used and
+      #         64 MB committed across a day and a whole wave's diff, which is
+      #         what made 8.5 GB trustworthy as a floor rather than a spike.
+      #         This one is +263 MB used and +152 MB committed against both, and
+      #         committed is now 91.8% of the cap — past the ~90% abort threshold
+      #         the two earlier aborts established, which is precisely why it
+      #         aborted. Compile demand has grown from 8.46 GB to 8.72 GB.
+      #
+      #         WHAT THE WAVE ACTUALLY ADDED, so the next reader can attribute it:
+      #         117 application files gained error-checking on previously-silent
+      #         database writes (177 of them), which is real code in the graph.
+      #         A remotion skill re-vendor added ~7 MB across .claude/ and
+      #         .agents/ — DISCOUNTED AS A CAUSE, and the check is worth keeping
+      #         because it is counter-intuitive: tsconfig `include` uses wildcard
+      #         globs, which do NOT match dot-directories, so nothing under
+      #         .claude/ or .agents/ enters the program. Verified with
+      #         `tsc --noEmit --listFilesOnly | grep -c '\.claude/skills'` → 0.
+      #         Do not "fix" a future OOM by excluding those; they were never in.
+      #
+      #         Re-run of the same commit, unchanged, was queued per §8 rather
+      #         than tuning the number — the remedy this bracket documents. But
+      #         note what the margin now is: ~2.4 GB of headroom in the prose
+      #         above was measured against 8.46 GB, and at 8.72 GB against a
+      #         ~9.2 GB effective ceiling the real headroom is under 500 MB. The
+      #         line above about "when a compile abort STOPS being recoverable by
+      #         re-running, the answer is the runner" is no longer hypothetical;
+      #         it is one or two waves away. Deleting genuinely dead code is the
+      #         only lever that moves this in the right direction without buying
+      #         a bigger runner, which is the owner's cost decision.
+      #
       # So compile demonstrably needs >7.8 GB, and page-data demonstrably cannot
       # be given 12 GB on a 16 GB runner. 10240 is the value that clears compile's
       # measured demand with ~2.4 GB of margin while staying meaningfully under the
