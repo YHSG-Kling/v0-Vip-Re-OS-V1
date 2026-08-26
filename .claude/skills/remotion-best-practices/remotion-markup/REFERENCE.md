@@ -269,6 +269,13 @@ When needing to use sound effects, load the [./sfx.md](./sfx.md) file for more i
 
 When needing to visualize audio (spectrum bars, waveforms, bass-reactive effects), load the [./audio-visualization.md](./audio-visualization.md) file for more information.
 
+<!-- LOCAL ADDITION, not upstream 4.0.517. Restored by owner ruling 2026-08-26;
+     see the tombstone in scripts/remotion-setup-guard.ts. Keep on re-vendor. -->
+
+## Charts and data visualization
+
+When building bar charts, pie charts, histograms or progress bars, load the [./charts.md](./charts.md) file for more information.
+
 ## Maps
 
 For static maps, animated routes and markers, geographic explainers, Mapbox, MapLibre, MapTiler, GeoJSON, or 3D geographic flyovers, load [Remotion Maps](./remotion-maps/REFERENCE.md).

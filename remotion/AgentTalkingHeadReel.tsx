@@ -43,6 +43,7 @@
 import React from "react"
 import {
   AbsoluteFill,
+  Audio,
   Img,
   Sequence,
   Video,
@@ -104,7 +105,7 @@ const OUTRO  = 2  * FPS
 
 export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
   hook, agentName, caption, ctaLabel, avatarVideoUrl, agentPhotoUrl,
-  qrCodeDataUrl, qrCaption, brand, brollClips,
+  voiceoverUrl, qrCodeDataUrl, qrCaption, brand, brollClips,
 }) => {
   const frame   = useCurrentFrame()
   const showEho = brand.showEhoMark ?? true
@@ -117,6 +118,20 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
 
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, fontFamily: "system-ui, -apple-system, sans-serif" }}>
+      {/* THE SEPARATE NARRATION TRACK the `voiceoverUrl` prop has always
+          promised. It was DECLARED and documented above and read by nothing:
+          buildAvatarRenderRow (lib/video/avatar-render-orchestrator.ts) writes
+          input_props.voiceoverUrl on every avatar render and stamps
+          used_voiceover, and the coordinator only muxes the DIFFERENT key
+          input_props.voiceover_url (lib/remotion/render-coordinator.ts) — so a
+          brokerage on the separate-TTS path (multi-language) got a ledger row
+          saying "narrated" over a video with no narration. §1: the capability
+          is wanted and documented, so the missing half is BUILT rather than the
+          prop deleted. Guarded, and null on the normal D-ID path, so the
+          avatar's own lip-synced audio is never doubled — exactly as the prop
+          doc says. Same shape as the 13 sibling compositions that already do
+          this (TestimonialReel, ComingSoonReel, NeighborhoodSpotlightReel, …). */}
+      {voiceoverUrl && <Audio src={voiceoverUrl} />}
       {/* COVER — 0-2s. Brand badge + hook + agent name. */}
       <Sequence from={0} durationInFrames={COVER}>
         <AbsoluteFill style={{
@@ -162,8 +177,8 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
           {avatarVideoUrl ? (
             <Video
               src={avatarVideoUrl}
-              startFrom={0}
-              endAt={BODY}
+              trimBefore={0}
+              trimAfter={BODY}
               style={{
                 ...avatarBox,
                 objectFit: "cover",

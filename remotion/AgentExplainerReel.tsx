@@ -118,8 +118,8 @@ const AvatarPIP: React.FC<{
       <div style={ringStyle}>
         <Video
           src={avatarVideoUrl}
-          startFrom={startFrame}
-          endAt={endFrame}
+          trimBefore={startFrame}
+          trimAfter={endFrame}
           style={{ width: "100%", height: "100%", objectFit: "cover" }}
         />
       </div>

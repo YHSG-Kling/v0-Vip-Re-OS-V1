@@ -18,3 +18,14 @@ See [get-video-dimensions.md](get-video-dimensions.md) for getting the width and
 ## Getting video duration
 
 See [get-video-duration.md](get-video-duration.md) for getting the duration of a video file in seconds with Mediabunny.
+
+<!-- LOCAL ADDITIONS, not upstream 4.0.517. Restored by owner ruling 2026-08-26;
+     see the tombstone in scripts/remotion-setup-guard.ts. Keep on re-vendor. -->
+
+## Checking whether a video can be decoded
+
+See [can-decode.md](can-decode.md) for checking with Mediabunny whether the browser can decode a video before attempting to play it.
+
+## Extracting frames from a video
+
+See [extract-frames.md](extract-frames.md) for extracting frames at given timestamps with Mediabunny — thumbnails, filmstrips, per-frame processing.

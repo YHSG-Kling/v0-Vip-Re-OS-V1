@@ -107,7 +107,7 @@ const ClipFrame: React.FC<{
       {isVideo ? (
         <Video
           src={clip.url}
-          startFrom={0}
+          trimBefore={0}
           style={{ width: "100%", height: "100%", objectFit: "cover" }}
         />
       ) : (

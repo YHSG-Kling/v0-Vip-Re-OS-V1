@@ -178,7 +178,7 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
               overflow: "hidden", backgroundColor: brand.primaryColor,
             }}>
               {avatarVideoUrl ? (
-                <Video src={avatarVideoUrl} startFrom={COVER} endAt={COVER + BODY}
+                <Video src={avatarVideoUrl} trimBefore={COVER} trimAfter={COVER + BODY}
                   style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               ) : (
                 <Img src={agentPhotoUrl as string} style={{ width: "100%", height: "100%", objectFit: "cover" }} />

@@ -121,9 +121,21 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({ hook, proofs
   const frame = useCurrentFrame()
   const { width, height } = useVideoConfig()
   const pad = Math.round(width * 0.09)
+  // FONT: the stack every other composition in remotion/ uses (§6, one
+  // vocabulary). This used to lead with "Inter", which NOTHING in this repo
+  // loads — no @remotion/google-fonts, no @font-face, no <link> in the bundle —
+  // so the renderer silently fell through to the next entry and this reel was
+  // the one composition rendering in a different typeface from the other 32
+  // while the code claimed otherwise. The canonical fix is
+  // `loadFont()` from @remotion/google-fonts/Inter (see the skill at
+  // .claude/skills/remotion-best-practices/remotion-markup/google-fonts.md);
+  // that package is NOT installed and adding a dependency is not this change's
+  // call, so the declaration is made TRUTHFUL instead of left lying. To adopt
+  // Inter for real, install @remotion/google-fonts and set the stack from
+  // loadFont().fontFamily here — do not re-add the bare name.
   const base: React.CSSProperties = {
     backgroundColor: primary, color: "white",
-    fontFamily: "Inter, Helvetica, Arial, sans-serif", padding: pad, justifyContent: "center",
+    fontFamily: "system-ui, -apple-system, sans-serif", padding: pad, justifyContent: "center",
   }
   const beats = (proofs ?? []).slice(0, 3)
   const grid = Math.round(width / 14)

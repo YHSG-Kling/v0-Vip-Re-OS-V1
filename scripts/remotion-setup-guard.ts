@@ -55,21 +55,61 @@
  * harness loads it is UNRESOLVED. The defect that was real — the two copies
  * drifting apart in silence — is closed by section 6 below instead.
  *
- * plugins/ecc/skills/remotion-video-creation/ (32 files) is DELETED. Three of its
- * rules have no successor upstream at all — charts.md, can-decode.md and
- * extract-frames.md, which upstream retired in the restructure. They are not lost:
- * they remain retrievable at remotion-dev/skills before that commit. Upstream is
- * the authority on Remotion content, and upstream retiring a rule is upstream
- * disagreeing with our copy about whether it should exist.
+ * plugins/ecc/skills/remotion-video-creation/ (32 files) is DELETED.
  *
- * Everything else the fork carried WAS already on the survivor under a different
+ * Everything the fork carried WAS already on the survivor under a different
  * spelling, so those gaps were renames rather than gaps: fonts.md is upstream's
  * google-fonts.md + local-fonts.md, assets.md is images.md + embedding-videos.md
- * + audio.md, animations.md is timing.md + effects.md.
+ * + audio.md, animations.md is timing.md + effects.md — EXCEPT the three below.
+ *
+ * ── THREE RULES RESTORED BY OWNER RULING (2026-08-26) ───────────────────────
+ *
+ * charts.md, can-decode.md and extract-frames.md have no successor upstream:
+ * upstream retired them in the 4.0.517 restructure, and the pass above dropped
+ * them on the reasoning that "upstream retiring a rule is upstream disagreeing
+ * that it should exist". THE OWNER OVERRULED THAT. Upstream is the authority on
+ * what Remotion DOES; it is not the authority on what THIS repo builds, and all
+ * three capabilities are live here:
+ *
+ *   · remotion/charts/ holds four chart components (PriceTrendLine, CompsBar,
+ *     DaysOnMarketBars, AffordabilityDonut) that CMAReel imports, and
+ *     EquityReportReel / ExplainerAnimReel draw over lib/charts/geometry —
+ *     charts.md is the rule those components are judged against, and its
+ *     "no animation not powered by useCurrentFrame()" is the same rule
+ *     section 5 below already enforces on the tree;
+ *   · lib/video/broll-picker.ts:306 constructs a Mediabunny
+ *     Input/ALL_FORMATS/UrlSource to probe a b-roll clip — the exact shape
+ *     can-decode.md documents;
+ *   · mediabunny resolves in node_modules (transitively, via the Remotion
+ *     encoder packages — broll-picker.ts says so at :295 and imports it through
+ *     a variable specifier for that reason), so extract-frames.md describes an
+ *     API this repo can call today without adding a dependency.
+ *
+ * They were recovered with `git show 3867e7fc^:plugins/ecc/skills/
+ * remotion-video-creation/rules/<name>.md` and placed where upstream's own
+ * structure puts that subject, NOT back into a resurrected flat rules/ dir:
+ *
+ *   remotion-markup/charts.md               (React markup — charts are markup)
+ *   remotion-markup/assets/charts/bar-chart.tsx
+ *       the specimen charts.md links to as `assets/charts/bar-chart.tsx`. The
+ *       fork had FLATTENED it to rules/assets/charts-bar-chart.tsx, so the link
+ *       was already dangling there; §1 says build the missing half, not restore
+ *       a rule that points at nothing.
+ *   remotion-multimedia/can-decode.md       (the sub-skill IS "Interacting with
+ *   remotion-multimedia/extract-frames.md    Mediabunny" — both are Mediabunny)
+ *
+ * Each is linked from its sub-skill's REFERENCE.md router, marked with an HTML
+ * comment naming this tombstone, because a rule no router points at is an orphan
+ * that no agent will ever load. THOSE ROUTER EDITS AND THESE FOUR FILES ARE THE
+ * ONLY PLACES THE SURVIVOR DIVERGES FROM UPSTREAM 4.0.517 — a future re-vendor
+ * must carry them forward rather than silently drop them again.
+ *
+ * Both sanctioned copies carry them: section 6 below enforces the byte-identical
+ * mirror across ALL files, so a restore into one copy alone goes red.
  */
 import { readFileSync, readdirSync, existsSync, statSync } from "node:fs"
 import { join, relative } from "node:path"
-import { stripComments } from "./strip-comments"
+import { stripComments, blankStrings } from "./strip-comments"
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -241,6 +281,76 @@ console.log("\n═══ 5. The rules that silently do not render ═══")
   ok(`scanned ${files.length} composition files`, files.length >= 33)
   ok("no CSS transition/animation or Tailwind animate- class — these render as a\n    STATIC frame and the render still reports success",
     offenders.length === 0, offenders.slice(0, 5).join(" | "))
+
+  // ── ONE SPELLING FOR TRIMMING A MEDIA CLIP (§6) ────────────────────────────
+  // Remotion renamed `startFrom`→`trimBefore` and `endAt`→`trimAfter`. Both
+  // spellings still WORK in the installed 4.0.473 — validate-start-from-props.js
+  // exports resolveTrimProps, which reads `trimBefore ?? startFrom` — so this is
+  // not a rendering bug and never was. It is a §6 defect and a scheduled break:
+  // node_modules/remotion/dist/cjs/video/props.d.ts marks both old names
+  // @deprecated, and the vendored skill
+  // (.claude/skills/remotion-best-practices/remotion-markup/REFERENCE.md,
+  // "Delaying, trimming") documents ONLY the new names, so an agent following
+  // the skill and a file using the old names disagree about what to write.
+  //
+  // The two are also NOT interchangeable at the boundary: validateStartFromProps
+  // refuses only `endAt < startFrom`, while validateTrimProps refuses
+  // `trimAfter <= trimBefore`. A zero-length window used to pass silently and
+  // now THROWS — which is the correct behaviour, and one more reason not to keep
+  // a second spelling alive with weaker validation.
+  const trimProp = /\b(startFrom|endAt)\s*=\s*\{/
+  const deprecatedTrim: string[] = []
+  for (const f of files) {
+    // Strip comments AND string bodies first: this tombstone-shaped comment and
+    // any prose specimen must not read as a live prop (§2).
+    const src = blankStrings(stripComments(readFileSync(f, "utf8")))
+    if (trimProp.test(src)) deprecatedTrim.push(f)
+  }
+  // POSITIVE CONTROL (§2): a broken regex and a clean tree both report zero.
+  ok("the deprecated-trim finder still recognises the defect it was written for",
+    trimProp.test(`<Video src={u} startFrom={2 * fps} />`)
+    && trimProp.test(`<Video src={u} endAt={10} />`))
+  ok("...and does NOT fire on the spelling we converted TO, nor on a longer name",
+    !trimProp.test(`<Video src={u} trimBefore={2} trimAfter={10} />`)
+    && !trimProp.test(`<X myStartFrom={1} />`))
+  ok("...and it read stripped source, so a comment naming startFrom is not a call site",
+    !trimProp.test(blankStrings(stripComments(`// use startFrom={0} — no\nconst x = "endAt={1}"`))))
+  ok(`no <Video>/<Audio> in remotion/ still uses startFrom/endAt — one spelling,\n    and the new one is the only one the skill documents`,
+    deprecatedTrim.length === 0, deprecatedTrim.slice(0, 6).join(", "))
+
+  // ── A DECLARED NARRATION PROP MUST HAVE A READER (§1) ──────────────────────
+  // buildAvatarRenderRow (lib/video/avatar-render-orchestrator.ts) writes
+  // input_props.voiceoverUrl on EVERY avatar render and stamps used_voiceover,
+  // and the render coordinator muxes only the different key voiceover_url. So a
+  // composition that DECLARES voiceoverUrl but never renders it turns a
+  // separate-TTS narration into silence under a ledger row that says "narrated".
+  // AgentTalkingHeadReel was exactly that. The RULE is derived, not a list: any
+  // composition declaring the prop must also use it.
+  // A DECLARATION, not a defaultProps VALUE: Root.tsx is the registry and
+  // carries `voiceoverUrl: null` inside defaultProps, which is a value being
+  // passed, not a prop a component promises to honour. Anchoring on the TYPE
+  // (`?:` or `: string`) separates them by rule rather than by naming Root.tsx
+  // in an exclusion list.
+  const voDecl = /\bvoiceoverUrl(\?\s*:|\s*:\s*string)/
+  const voRead = /<Audio\b[^>]*\bsrc=\{[^}]*voiceoverUrl/
+  const declaresVo: string[] = []
+  const rendersVo: string[] = []
+  for (const f of files) {
+    const src = stripComments(readFileSync(f, "utf8"))
+    if (voDecl.test(src)) declaresVo.push(f)
+    if (voRead.test(src)) rendersVo.push(f)
+  }
+  const declaredNeverRead = declaresVo.filter((f) => !rendersVo.includes(f))
+  ok("the voiceover-reader finder recognises the shape it looks for",
+    voRead.test(`{voiceoverUrl && <Audio src={voiceoverUrl} />}`)
+    && voRead.test(`{props.voiceoverUrl ? <Audio src={props.voiceoverUrl} /> : null}`))
+  ok("...and does NOT count a bare declaration as a reader",
+    !voRead.test(`voiceoverUrl?: string`))
+  ok("the declaration finder sees both prop spellings, and NOT a defaultProps value",
+    voDecl.test(`voiceoverUrl?:  string | null`) && voDecl.test(`voiceoverUrl: string`)
+    && !voDecl.test(`defaultProps={{ voiceoverUrl: null }}`))
+  ok(`every composition that DECLARES voiceoverUrl also renders it (${rendersVo.length} of\n    ${declaresVo.length}) — a declared-only prop is silence under a "narrated" ledger row`,
+    declaredNeverRead.length === 0, declaredNeverRead.join(", "))
 }
 
 console.log("\n═══ 6. ONE vendored Remotion skill, and it matches upstream ═══")

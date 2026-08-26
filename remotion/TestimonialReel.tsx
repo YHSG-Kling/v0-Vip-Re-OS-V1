@@ -196,8 +196,8 @@ export const TestimonialReel: React.FC<TestimonialReelProps> = ({
               {avatarVideoUrl ? (
                 <Video
                   src={avatarVideoUrl}
-                  startFrom={COVER + QUOTE}
-                  endAt={COVER + QUOTE + REACT}
+                  trimBefore={COVER + QUOTE}
+                  trimAfter={COVER + QUOTE + REACT}
                   style={{ width: "100%", height: "100%", objectFit: "cover" }}
                 />
               ) : (

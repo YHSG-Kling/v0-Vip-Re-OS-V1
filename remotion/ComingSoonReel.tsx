@@ -215,7 +215,7 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
             }}>
               {avatarVideoUrl ? (
                 <Video src={avatarVideoUrl}
-                  startFrom={COVER + BODY} endAt={COVER + BODY + CTA}
+                  trimBefore={COVER + BODY} trimAfter={COVER + BODY + CTA}
                   style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               ) : (
                 <Img src={agentPhotoUrl as string} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
