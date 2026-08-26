@@ -86,7 +86,17 @@ export function sellerWeeklyTag(listingId: string, isoWeek: string): string {
 
 // ── 2. Tour-evening recap ───────────────────────────────────────────────────
 
-export interface TourStopFact { address: string; rating: number | null; feedback: string | null }
+export interface TourStopFact {
+  address: string
+  rating: number | null
+  feedback: string | null
+  /** Minutes the buyer actually spent in the house — tour_stops.time_spent_minutes,
+   *  DERIVED by the database (m564) from the day-of check-in/check-out stamps that
+   *  app/actions/tour-planner.ts::stampTourStopPresence writes. Optional: a stop
+   *  nobody checked into carries null, and null must stay SILENT rather than
+   *  become "0 minutes". */
+  minutesOnSite?: number | null
+}
 
 export interface TourRecapFacts {
   buyerFirstName: string | null
@@ -110,6 +120,16 @@ export function tourRecapBrief(f: TourRecapFacts): StoryBrief | null {
     const bits: string[] = [s.address]
     if (s.rating != null) bits.push(`buyer's rating ${s.rating}/5`)
     if ((s.feedback ?? "").trim()) bits.push(`buyer's own note: "${(s.feedback ?? "").trim().slice(0, 120)}"`)
+    // TIME ON SITE — the day-of check-in/check-out record (m564), added to the
+    // brief because how long someone lingered is a real, grounded fact about the
+    // day and it is the one the buyer themselves will remember. It ENRICHES a stop
+    // that already carries a reaction; it never qualifies a stop on its own — the
+    // `known` filter above is untouched, so a tour with stamps and no reactions
+    // still yields NO brief. Minutes are only spoken when the OS actually watched
+    // the clock: null stays silent rather than rendering as "0 minutes".
+    if (s.minutesOnSite != null && s.minutesOnSite > 0) {
+      bits.push(`they spent ${s.minutesOnSite} ${s.minutesOnSite === 1 ? "minute" : "minutes"} in the house`)
+    }
     facts.push(`Stop: ${bits.join(" — ")}.`)
   }
   const standout = pickStandout(f.stops)
@@ -354,12 +374,21 @@ export async function runTourRecaps(svc: Svc, brokerageId: string, now: Date = n
     // 1-5 contract untouched.
     const [{ data: buyer }, { data: stops }] = await Promise.all([
       svc.from("contacts").select("first_name").eq("id", t.contact_id).maybeSingle(),
-      svc.from("tour_stops").select("property_address, buyer_interest_level, buyer_note").eq("tour_id", t.id).limit(12),
+      // time_spent_minutes joins the read (orphan doctrine §1.2, wave BA): it was
+      // WRITERLESS — no code writer, no trigger, no routine, no default, verified
+      // live — and its only appearance in the tree was a SELECT list nothing read.
+      // The owner ruled showings.completed_at/duration_minutes is NOT its
+      // duplicate ("tours and showings are 2 different"), so the missing half was
+      // BUILT rather than deleted: app/actions/tour-planner.ts::stampTourStopPresence
+      // stamps the day-of arrival/departure and m564 derives this column from them.
+      // This read is one of its two real consumers; the other is the CRM day-of tab.
+      svc.from("tour_stops").select("property_address, buyer_interest_level, buyer_note, time_spent_minutes").eq("tour_id", t.id).limit(12),
     ])
     const stopFacts = ((stops ?? []) as any[]).map((s) => ({
       address: s.property_address ?? "one of the homes",
       rating: tourInterestToRating(s.buyer_interest_level),
       feedback: s.buyer_note ?? null,
+      minutesOnSite: s.time_spent_minutes ?? null,
     }))
     const brief = tourRecapBrief({
       buyerFirstName: (buyer as any)?.first_name ?? null,

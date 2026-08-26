@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { toast } from '@/hooks/use-toast'
-import { rateTourStop, completeTour } from '@/app/actions/tour-planner'
+import { rateTourStop, completeTour, stampTourStopPresence } from '@/app/actions/tour-planner'
 import { aiOptimizeShowingRoute } from '@/app/actions/ai-showing-management'
 
 interface TourStop {
@@ -30,6 +30,13 @@ interface TourStop {
   buyer_interest_level: string | null
   buyer_note: string | null
   showing_id: string | null
+  // Day-of check-in/check-out. getBuyerTours has always selected these three
+  // (app/actions/tour-planner.ts:236) and this tab has always ignored them —
+  // the stopwatch below ran on a local counter that reset on every remount.
+  // time_spent_minutes is DERIVED by the database (m564), never sent up.
+  time_arrived_at: string | null
+  time_left_at: string | null
+  time_spent_minutes: number | null
 }
 
 interface Tour {
@@ -70,8 +77,19 @@ function formatPrice(p: number | null): string {
 
 export function TourDayOfTab({ tours, contactId, brokerageId, agentUserId, buyerName, buyerPhone, onRefresh }: TourDayOfTabProps) {
   const today = new Date().toISOString().slice(0, 10)
-  const todayTour = tours.find(t => t.tour_date === today && ['planned','confirmed','active'].includes(t.status))
-  const upcomingTour = todayTour ?? tours.find(t => ['planned','confirmed'].includes(t.status))
+  // ONE VOCABULARY (§6). This filter used to read ['planned','confirmed','active'].
+  // `active` is a spelling NOTHING writes — a stripped-source sweep of every
+  // `.from('tours')…status:` write in the tree yields only planned / scheduling /
+  // confirmed / completed, plus in_progress via updateTour, and the live table has
+  // no `active` row. Meanwhile `in_progress` — the state this file's own state
+  // machine names as the one where "per-stop arrived/left timestamps + ratings
+  // flow in", and the state the mobile Start Tour button
+  // (app/mobile/components/os/tour-day-panel.tsx) actually writes — was MISSING,
+  // so a tour started on mobile vanished from this tab for the rest of the day.
+  // That is the same defect MAINTENANCE_DOMAINS records as "Schedule Showings
+  // flipped the tour to a status the confirm tab filtered OUT".
+  const todayTour = tours.find(t => t.tour_date === today && ['planned','confirmed','in_progress'].includes(t.status))
+  const upcomingTour = todayTour ?? tours.find(t => ['planned','confirmed','in_progress'].includes(t.status))
 
   const [isOffline, setIsOffline]           = useState(false)
   const [currentIdx, setCurrentIdx]         = useState(0)
@@ -86,9 +104,13 @@ export function TourDayOfTab({ tours, contactId, brokerageId, agentUserId, buyer
   const [agentNote, setAgentNote]           = useState('')
   const [isPending, startTransition]        = useTransition()
 
-  // Stopwatch per stop
+  // Stopwatch per stop — now ANCHORED to a server-stamped arrival (see below)
   const [elapsed, setElapsed]   = useState(0)          // seconds
   const timerRef                = useRef<ReturnType<typeof setInterval> | null>(null)
+  // Day-of check-in/out, stamped server-side by stampTourStopPresence.
+  // `arrivals` holds the SERVER's timestamp, never the browser's clock.
+  const [arrivals, setArrivals]           = useState<Record<string, string>>({})
+  const [minutesOnSite, setMinutesOnSite] = useState<Record<string, number>>({})
 
   // navigator.onLine tracking — flush queued signals on reconnect
   useEffect(() => {
@@ -125,14 +147,6 @@ export function TourDayOfTab({ tours, contactId, brokerageId, agentUserId, buyer
   useEffect(() => { pendingSignalsRef.current = pendingSignals }, [pendingSignals])
   useEffect(() => { notesRef.current = notes }, [notes])
 
-  // Restart stopwatch when stop changes
-  useEffect(() => {
-    setElapsed(0)
-    if (timerRef.current) clearInterval(timerRef.current)
-    timerRef.current = setInterval(() => setElapsed(s => s + 1), 1000)
-    return () => { if (timerRef.current) clearInterval(timerRef.current) }
-  }, [currentIdx])
-
   function formatElapsed(secs: number): string {
     const m = Math.floor(secs / 60).toString().padStart(2, '0')
     const s = (secs % 60).toString().padStart(2, '0')
@@ -145,6 +159,56 @@ export function TourDayOfTab({ tours, contactId, brokerageId, agentUserId, buyer
     : []
   const stop = sortedStops[currentIdx]
   const nextStop = sortedStops[currentIdx + 1] ?? null
+
+  const stopId        = stop?.id ?? null
+  // The anchor is whatever the SERVER already recorded: this session's stamp
+  // first, otherwise the arrival that came down with the tour row.
+  const arrivalAnchor = stopId ? (arrivals[stopId] ?? stop?.time_arrived_at ?? null) : null
+  const recordedMinutes = stopId
+    ? (minutesOnSite[stopId] ?? stop?.time_spent_minutes ?? null)
+    : null
+
+  // ── CHECK IN ────────────────────────────────────────────────────────────────
+  // Opening a stop IS arriving at it. The action stamps server time and returns
+  // the FIRST arrival, so a refresh, a back-navigation or a re-run effect is a
+  // no-op that hands back the original rather than restarting the clock.
+  //
+  // Offline: deliberately no stamp. The queue below flushes on reconnect, which
+  // could be hours later — stamping then would record a time the agent was not
+  // there. An honest gap beats a fabricated timestamp.
+  useEffect(() => {
+    if (!stopId || isOffline) return
+    if (arrivals[stopId] || stop?.time_arrived_at) return
+    let cancelled = false
+    stampTourStopPresence({ tourStopId: stopId, phase: 'arrived' })
+      .then(res => {
+        if (cancelled || !res.success || !res.arrivedAt) return
+        setArrivals(a => ({ ...a, [stopId]: res.arrivedAt as string }))
+      })
+      .catch(() => { /* the tour goes on; the stamp is not worth a blocked screen */ })
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stopId, isOffline])
+
+  // ── THE STOPWATCH, ANCHORED ─────────────────────────────────────────────────
+  // This used to `setElapsed(0)` and count up from whenever the component
+  // happened to mount, so a refresh mid-visit silently rewound a 40-minute stop
+  // to 00:00 and the number the agent was reading was fiction. It now counts from
+  // the recorded arrival, and falls back to the old local count only when there
+  // is no stamp to anchor to (offline, or a stamp that refused).
+  useEffect(() => {
+    if (timerRef.current) clearInterval(timerRef.current)
+    if (arrivalAnchor) {
+      const from = new Date(arrivalAnchor).getTime()
+      const sync = () => setElapsed(Math.max(0, Math.floor((Date.now() - from) / 1000)))
+      sync()
+      timerRef.current = setInterval(sync, 1000)
+    } else {
+      setElapsed(0)
+      timerRef.current = setInterval(() => setElapsed(s => s + 1), 1000)
+    }
+    return () => { if (timerRef.current) clearInterval(timerRef.current) }
+  }, [stopId, arrivalAnchor])
 
   function handleRating(level: InterestLevel) {
     if (!stop) return
@@ -175,9 +239,23 @@ export function TourDayOfTab({ tours, contactId, brokerageId, agentUserId, buyer
       }
 
       if (!isOffline) {
+        // ── CHECK OUT ─────────────────────────────────────────────────────────
+        // Saving the verdict and walking out are the same moment. The stamp goes
+        // FIRST so the recorded departure is when they actually left, not when
+        // the rating round-trip happened to finish. time_spent_minutes comes back
+        // DERIVED by the database (m564) — this component never computes, sends
+        // or is trusted with a duration.
+        const departed = await stampTourStopPresence({ tourStopId: stop.id, phase: 'departed' })
+          .catch(() => ({ success: false } as { success: boolean; minutesOnSite?: number | null }))
+        if (departed.success && departed.minutesOnSite != null) {
+          const mins = departed.minutesOnSite
+          setMinutesOnSite(m => ({ ...m, [stop.id]: mins }))
+        }
         await saveStop()
       } else {
-        // Queue signal to flush when online
+        // Queue signal to flush when online. NO departure stamp here on purpose —
+        // see the check-in effect above: a stamp written at flush time would name
+        // an hour the agent was somewhere else.
         setPendingSignals(q => [...q, { stopId: stop.id, level }])
       }
 
@@ -374,9 +452,18 @@ export function TourDayOfTab({ tours, contactId, brokerageId, agentUserId, buyer
           <div className="flex items-center justify-between px-4 py-2 bg-muted/60 border-b">
             <span className="text-sm font-mono font-semibold">{formatTime(stop.confirmed_time)}</span>
             <div className="flex items-center gap-3">
-              <span className="text-xs text-muted-foreground font-mono">
-                Time at this stop: {formatElapsed(elapsed)}
-              </span>
+              {/* Once the stop is checked OUT, the derived minutes are the record —
+                  a still-running counter beside a closed visit would contradict it. */}
+              {recordedMinutes != null ? (
+                <span className="text-xs font-mono font-medium text-foreground">
+                  Recorded: {recordedMinutes} min on site
+                </span>
+              ) : (
+                <span className="text-xs text-muted-foreground font-mono">
+                  Time at this stop: {formatElapsed(elapsed)}
+                  {arrivalAnchor ? '' : ' (not recorded)'}
+                </span>
+              )}
               <span className="text-xs text-muted-foreground">STOP {currentIdx + 1} of {sortedStops.length}</span>
             </div>
           </div>

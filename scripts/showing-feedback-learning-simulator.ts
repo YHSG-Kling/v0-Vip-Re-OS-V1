@@ -95,8 +95,24 @@ function main() {
   // and a raw-source scan would read the tombstone as the live defect and fail forever.
   const draftsRaw = readFileSync(join(process.cwd(), "lib/kernel/client-story-drafts.ts"), "utf8")
   const draftsCode = blankComments(draftsRaw)
-  check("the recap read names the WRITTEN columns", draftsCode.includes('"property_address, buyer_interest_level, buyer_note"'))
-  check("the recap read no longer names the writerless pair", !draftsCode.includes('"property_address, rating, feedback"'))
+  // ASSERT THE RULE, DERIVE THE LIST (CLAUDE.md §2 — "do not pin an assertion to a
+  // WAYPOINT"). This pair used to compare the select against the FROZEN LITERAL
+  // '"property_address, buyer_interest_level, buyer_note"', which made the
+  // assertion true of one exact moment rather than of the invariant. It went red
+  // the first time the read legitimately GREW — wave BA added time_spent_minutes,
+  // the day-of check-in column whose writer it had just built — i.e. it failed
+  // because the work finished, which is precisely the failure mode §2 names. The
+  // rule is: the survivor columns are all present and the writerless pair is
+  // absent. The column list is now PARSED out of the call, so the read may gain
+  // columns without breaking, and may not quietly lose one.
+  const tourStopSelect = /from\("tour_stops"\)\.select\("([^"]*)"\)/.exec(draftsCode)?.[1] ?? ""
+  const selectedCols = tourStopSelect.split(",").map((s) => s.trim()).filter(Boolean)
+  check("the recap read names the WRITTEN columns",
+    ["property_address", "buyer_interest_level", "buyer_note"].every((c) => selectedCols.includes(c)),
+    tourStopSelect || "NO tour_stops select found")
+  check("the recap read no longer names the writerless pair",
+    selectedCols.length > 0 && !selectedCols.includes("rating") && !selectedCols.includes("feedback"),
+    tourStopSelect)
   check("BLINDNESS CONTROL — the retired select IS still present in the RAW file (the tombstone), so the stripper is what makes the check above true",
     draftsRaw.includes('"property_address, rating, feedback"'))
 

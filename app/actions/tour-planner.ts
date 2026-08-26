@@ -865,6 +865,195 @@ export async function confirmTourStop(params: ConfirmStopParams) {
 // calls it directly, which is what the `approveTourPlan`/`sendTourReport`
 // tombstone above already claimed was true.
 
+// ─── 4d. Day-of check-in / check-out on a stop ───────────────────────────────
+//
+// ORPHAN DOCTRINE §1.2 — no duplicate existed, the capability was wanted, so this
+// is the BUILT missing half.
+//
+// tour_stops.time_arrived_at / time_left_at / time_spent_minutes were WRITERLESS.
+// Verified live on hrvaqgvukzxfskkcrwbt before this was written: all three column
+// DEFAULTs NULL and is_generated 'NEVER'; pg_trigger empty for tour_stops; pg_proc
+// holds no routine naming the table or any of the three columns; and every row
+// count was 0. Their ONE appearance in the whole tree was the SELECT list at
+// getBuyerTours above (:236) — read by nobody, written by nothing.
+//
+// THE OWNER'S RULING closed the question a prior lane left unresolved:
+// showings.completed_at / duration_minutes are NOT the survivor —
+// "tours and showings are 2 different as showings are for showing requests or
+// showings on the tenants listings". A showing is a request against a tenant's
+// OWN listing; a tour stop is our buyer standing in someone else's house. There
+// is no duplicate to merge onto, so the half that was missing gets BUILT.
+//
+// THE READER THAT WAS ALREADY THERE, THROWING THE NUMBER AWAY:
+// app/crm/contacts/[contactId]/tours/components/tour-day-of-tab.tsx has run a
+// per-stop STOPWATCH since it was written — "Time at this stop: 07:42", ticking
+// once a second, reset on every stop change and lost on every refresh. The agent
+// has always been shown this number. Nothing ever persisted it. That is the exact
+// shape §1.2 describes: the capability is wanted, half of it already shipped, and
+// the other half is a writer.
+//
+// WHY THE DURATION IS NOT A PARAMETER: m564 makes time_spent_minutes a GENERATED
+// ALWAYS column derived from the two timestamps, so a caller-supplied minute count
+// is not merely ignored here — Postgres refuses it outright. This action stamps
+// SERVER time for both ends; the browser's clock never reaches the row. A stop
+// with an arrival and no departure derives NULL, never 0: "we never recorded the
+// leave" must not launder itself into "they spent no time there", the same rule
+// signal-mapping.ts::tourInterestToRating holds for an unrated stop.
+export async function stampTourStopPresence(params: {
+  tourStopId: string
+  phase: 'arrived' | 'departed'
+}): Promise<{
+  success: boolean
+  error?: string
+  arrivedAt?: string | null
+  leftAt?: string | null
+  minutesOnSite?: number | null
+  tourStatus?: string | null
+}> {
+  const { tourStopId, phase } = params
+
+  if (!isValidUUID(tourStopId)) return { success: false, error: 'Invalid tour stop ID' }
+  if (phase !== 'arrived' && phase !== 'departed') return { success: false, error: 'Invalid phase' }
+
+  // Tenant from the SESSION (§4) — this action takes no brokerageId, no
+  // contactId and no agentUserId, so there is no body-supplied tenant to trust.
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+  const brokerageId = auth.brokerageId
+
+  const supabase = createServiceClient()
+
+  // ── THE PREDICATE CHAIN: a stop belongs to a tour belongs to a tenant ───────
+  // BOTH links are proven, not just the stop's own denormalized brokerage_id.
+  // tour_stops.brokerage_id is a copy; tours.brokerage_id is where the tour
+  // actually lives. If a stop row's copy ever disagreed with its parent, trusting
+  // the copy alone would let a stop be stamped under the wrong tenant — so link 1
+  // checks the copy, link 2 re-derives the truth through the parent, and a
+  // disagreement refuses instead of picking a winner.
+  const { data: stopRow, error: stopReadError } = await supabase
+    .from('tour_stops')
+    .select('id, tour_id, brokerage_id, time_arrived_at, time_left_at, time_spent_minutes')
+    .eq('id', tourStopId)
+    .maybeSingle()
+  if (stopReadError) return { success: false, error: stopReadError.message }
+  if (!stopRow) return { success: false, error: 'Tour stop not found' }
+  if (stopRow.brokerage_id !== brokerageId) return { success: false, error: 'Forbidden' }
+  if (!stopRow.tour_id) return { success: false, error: 'Tour stop has no parent tour' }
+
+  const { data: tourRow, error: tourReadError } = await supabase
+    .from('tours')
+    .select('id, status')
+    .eq('id', stopRow.tour_id)
+    .eq('brokerage_id', brokerageId)   // link 2 — the parent, under the session's tenant
+    .maybeSingle()
+  if (tourReadError) return { success: false, error: tourReadError.message }
+  // Deliberately the same message as a missing stop: distinguishing "not yours"
+  // from "does not exist" is an id-enumeration oracle across tenants
+  // (the rule lib/kernel/crm.ts::archiveContactRecord states).
+  if (!tourRow) return { success: false, error: 'Tour stop not found' }
+
+  // A closed day takes no more stamps. Statuses that ACCEPT a stamp are the live
+  // ones the tree actually writes — planned / scheduling / confirmed / in_progress
+  // — so this is a refusal list, not an allow-list that a new state silently fails.
+  if (tourRow.status === 'cancelled' || tourRow.status === 'completed') {
+    return {
+      success: false,
+      error: `Tour is ${tourRow.status} — the day is closed; stops can no longer be checked in or out.`,
+    }
+  }
+
+  const nowIso = new Date().toISOString()
+  const patch: Record<string, string> = {}
+
+  if (phase === 'arrived') {
+    // FIRST ARRIVAL WINS. The day-of tab stamps on mount, and a remount — a
+    // refresh, a back-navigation, React re-running an effect — must not restart
+    // the clock and shrink a 40-minute visit to 2. Re-stamping is reported as the
+    // no-op it is, carrying the ORIGINAL arrival back so the caller renders the
+    // real one.
+    if (stopRow.time_arrived_at) {
+      return {
+        success:       true,
+        arrivedAt:     stopRow.time_arrived_at,
+        leftAt:        stopRow.time_left_at ?? null,
+        minutesOnSite: stopRow.time_spent_minutes ?? null,
+        tourStatus:    tourRow.status ?? null,
+      }
+    }
+    patch.time_arrived_at = nowIso
+  } else {
+    // You cannot leave a house you never entered. Stamping a lone departure would
+    // leave time_spent_minutes NULL forever while the row LOOKED recorded — an
+    // absence dressed as a fact. Refuse and say why.
+    if (!stopRow.time_arrived_at) {
+      return { success: false, error: 'No arrival recorded for this stop — check in before checking out.' }
+    }
+    // m564's tour_stops_visit_window_check would refuse this at the database, but
+    // a caught constraint violation reads as an outage; naming the real cause is
+    // the honest failure.
+    if (new Date(nowIso).getTime() < new Date(stopRow.time_arrived_at).getTime()) {
+      return { success: false, error: 'Departure precedes the recorded arrival — refusing to store a negative visit.' }
+    }
+    // LATEST DEPARTURE WINS — an agent who steps out and comes back leaves for
+    // real the last time, and the second stamp is the truer one.
+    patch.time_left_at = nowIso
+  }
+
+  // §3: an UPDATE matching NOTHING resolves clean — `error` null, and byte-identical
+  // to one that worked. `.select()` the update and COUNT what came back, or a stop
+  // deleted or re-parented between the read above and this write reports SUCCESS to
+  // an agent standing in the driveway. The survivor pattern is
+  // lib/kernel/crm.ts::archiveContactRecord (~:981).
+  const { data: stamped, error: stampError } = await supabase
+    .from('tour_stops')
+    .update(patch)
+    .eq('id', tourStopId)
+    .eq('tour_id', stopRow.tour_id)
+    .eq('brokerage_id', brokerageId)
+    .select('id, time_arrived_at, time_left_at, time_spent_minutes')
+
+  if (stampError) return { success: false, error: stampError.message }
+  if (!stamped?.length) {
+    return { success: false, error: 'Tour stop not found, moved, or not yours to stamp' }
+  }
+  const row = stamped[0] as {
+    time_arrived_at: string | null
+    time_left_at: string | null
+    time_spent_minutes: number | null
+  }
+
+  // ── THE STATE-MACHINE TRANSITION NOTHING ON THIS SURFACE PERFORMED ─────────
+  // The canonical machine at the top of this file says in_progress is "Tour day —
+  // buyer is touring. Per-stop arrived/left timestamps + ratings flow in." The
+  // first arrival IS that moment. Until now only the mobile Start Tour button
+  // (app/mobile/components/os/tour-day-panel.tsx) ever wrote in_progress, so an
+  // agent working the CRM day-of tab left the tour sitting in `confirmed` through
+  // the entire day it was being toured.
+  //
+  // Best-effort and zero-row-tolerant on purpose: this is a status the tour may
+  // already hold, and a concurrent completeTour is a legitimate race. The stamp is
+  // the thing that must not lie; the status is a consequence of it.
+  let tourStatus: string | null = tourRow.status ?? null
+  if (phase === 'arrived' && tourRow.status !== 'in_progress') {
+    const { data: advanced } = await supabase
+      .from('tours')
+      .update({ status: 'in_progress' })
+      .eq('id', stopRow.tour_id)
+      .eq('brokerage_id', brokerageId)
+      .in('status', ['planned', 'scheduling', 'confirmed'])
+      .select('id, status')
+    if (advanced?.length) tourStatus = (advanced[0] as { status: string }).status
+  }
+
+  return {
+    success:       true,
+    arrivedAt:     row.time_arrived_at,
+    leftAt:        row.time_left_at,
+    minutesOnSite: row.time_spent_minutes,
+    tourStatus,
+  }
+}
+
 // ─── 5. Rate a stop (day-of) ──────────────────────────────────────────────────
 
 export async function rateTourStop(params: RateStopParams) {
