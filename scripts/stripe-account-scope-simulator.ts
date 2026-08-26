@@ -153,9 +153,22 @@ const SCAN_EXCLUDED_DIRS = ["node_modules", ".next", ".git", "scripts", "supabas
 let pass = 0
 let fail = 0
 const failures: string[] = []
-function check(label: string, ok: boolean) {
+// The optional `detail` matches the convention at scripts/silent-write-guard.ts:49
+// and exists for the same reason: the counted assertions below report a PAIRING
+// (six refusals for six resolves), and without the numbers a failure says only
+// that the pairing broke, not which side moved or by how much.
+//
+// Widened rather than dropping the argument, and worth recording WHY this was
+// caught late: a guard run under tsx is EXECUTED, never type-checked, so passing
+// a third argument to a two-parameter function ran green here at 116/0 and failed
+// only at `tsc --noEmit` — the chain's first step, which then blocks all 12,000
+// assertions. That is the second time this exact shape has stopped the chain this
+// wave; the first was showing-feedback-learning-simulator, same TS2554, same
+// cause. A scoped tsc over every touched scripts/*.ts is what catches it.
+function check(label: string, ok: boolean, detail?: string) {
+  const line = label + (detail ? ` — ${detail}` : "")
   if (ok) { pass++; console.log(`  ✓ ${label}`) }
-  else { fail++; failures.push(label); console.log(`  ✗ ${label}`) }
+  else { fail++; failures.push(line); console.log(`  ✗ ${line}`) }
 }
 
 function raw(rel: string): string {
