@@ -154,7 +154,6 @@
     "lib/connections/zoom-transcripts.ts": 1,
     "lib/connections/zoom.ts": 12,
     "lib/contact-promotion/conversion-welcome.ts": 1,
-    "lib/contacts/buyer-stage.ts": 1,
     "lib/contacts/contact-brief.ts": 1,
     "lib/contacts/persona-builder.ts": 5,
     "lib/crm/import-pull.ts": 8,
@@ -469,6 +468,7 @@
     "lib/portal/home-assistant.ts": 1,
     "lib/portal/home-maintenance.ts": 1,
     "lib/portal/lifetime-segment.ts": 1,
+    "lib/portal/portal-showing-feed.ts": 2,
     "lib/privacy/contact-pii-redaction.ts": 1,
     "lib/property-risk/deal-killer-runner.ts": 1,
     "lib/providers/email/personal-email-adapter.ts": 1,
@@ -503,6 +503,7 @@
     "lib/social/publisher.ts": 1,
     "lib/social/token-refresh.ts": 1,
     "lib/sphere/next-best-actions.ts": 1,
+    "lib/storage/file-limits.ts": 3,
     "lib/strategy-learning/close-strategy-loop.ts": 1,
     "lib/strategy-learning/strategy-insights.ts": 1,
     "lib/transactions/buyer-move.ts": 3,
@@ -538,6 +539,7 @@
     "lib/video/finish-spec.ts": 1,
     "lib/video/format-learning.ts": 3,
     "lib/video/listing-pitch-reel.ts": 1,
+    "lib/video/memory-video-gate.ts": 1,
     "lib/video/multilingual-reel.ts": 4,
     "lib/video/promo-composition.ts": 1,
     "lib/video/reel-voiceover.ts": 1,
@@ -569,7 +571,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9323,
+  "census": 9364,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -634,7 +636,7 @@
     "app/actions/ai-contract-review.ts": 6,
     "app/actions/ai-direct-mail.ts": 11,
     "app/actions/ai-document-intelligence.ts": 7,
-    "app/actions/ai-financial-management.ts": 9,
+    "app/actions/ai-financial-management.ts": 8,
     "app/actions/ai-generate.ts": 4,
     "app/actions/ai-identity.ts": 6,
     "app/actions/ai-insights.ts": 2,
@@ -1073,7 +1075,7 @@
     "app/actions/tenant-webhooks.ts": 10,
     "app/actions/time-to-value.ts": 1,
     "app/actions/title-portal.ts": 6,
-    "app/actions/tour-planner.ts": 10,
+    "app/actions/tour-planner.ts": 11,
     "app/actions/transaction-compliance.ts": 6,
     "app/actions/transaction-document-signatures.ts": 4,
     "app/actions/transaction-hazard-insurance.ts": 2,
@@ -1108,6 +1110,7 @@
     "app/actions/video/create-video-project.ts": 10,
     "app/actions/video/distribute-video.ts": 1,
     "app/actions/video/generate-script.ts": 1,
+    "app/actions/video/memory-video.ts": 2,
     "app/actions/video-content.ts": 5,
     "app/actions/video-generation.ts": 17,
     "app/actions/video-landing.ts": 3,
@@ -1851,6 +1854,7 @@
     "app/crm/contacts/[contactId]/components/financial-verification-panel.tsx": 1,
     "app/crm/contacts/[contactId]/components/followup-card.tsx": 1,
     "app/crm/contacts/[contactId]/components/lifetime-segment-selector.tsx": 1,
+    "app/crm/contacts/[contactId]/components/memory-video-card.tsx": 1,
     "app/crm/contacts/[contactId]/components/workflow-runs-panel.tsx": 1,
     "app/crm/contacts/[contactId]/listings/new/new-listing-page-client.tsx": 1,
     "app/crm/contacts/[contactId]/offers/[offerId]/offer-actions-bar.tsx": 1,
@@ -2697,7 +2701,7 @@
     "lib/agentic-os/connector-shape.ts": 4,
     "lib/agentic-os/deal-investigator.ts": 1,
     "lib/agentic-os/escalate-dark-capabilities.ts": 1,
-    "lib/agentic-os/invocation-log.ts": 2,
+    "lib/agentic-os/invocation-log.ts": 3,
     "lib/agentic-os/invoke-planner.ts": 3,
     "lib/agentic-os/mcp-tools.ts": 3,
     "lib/agentic-os/resolve-app-capability.ts": 4,
@@ -2846,8 +2850,8 @@
     "lib/avm/provider-chain.ts": 3,
     "lib/behavior-learning/prediction-engine.ts": 2,
     "lib/behavior-learning/preference-updater.ts": 2,
-    "lib/behavior-learning/signal-mapping.ts": 3,
-    "lib/billing/ai-overage.ts": 3,
+    "lib/behavior-learning/signal-mapping.ts": 8,
+    "lib/billing/ai-overage.ts": 4,
     "lib/billing/billing-access.ts": 2,
     "lib/billing/dunning.ts": 5,
     "lib/billing/phone-plan-resolve.ts": 3,
@@ -3145,6 +3149,7 @@
     "lib/enrichment/lead-enrichment-core.ts": 3,
     "lib/enrichment/lead-freshness.ts": 2,
     "lib/entitlements/resolve.ts": 2,
+    "lib/entitlements/tenant-capabilities.ts": 1,
     "lib/errors/auto-retry.ts": 3,
     "lib/errors/collect-error.ts": 1,
     "lib/errors/error-classifier.ts": 4,
@@ -3192,6 +3197,7 @@
     "lib/finance/commission-leak-reaper.ts": 1,
     "lib/finance/commission-tracking-reaper.ts": 1,
     "lib/finance/expense-csv.ts": 2,
+    "lib/finance/invoice-draft.ts": 1,
     "lib/finance/qb-reconciliation.ts": 10,
     "lib/finance/quarterly-tax-concierge.ts": 2,
     "lib/finance/scoped-accounting-export.ts": 2,
@@ -3454,7 +3460,6 @@
     "lib/kernel/forms.ts": 10,
     "lib/kernel/global-settings.ts": 2,
     "lib/kernel/helpers.ts": 6,
-    "lib/kernel/identity.ts": 2,
     "lib/kernel/idle-hands.ts": 3,
     "lib/kernel/ingress-continuity.ts": 8,
     "lib/kernel/intelligence-report.ts": 8,
@@ -3689,10 +3694,12 @@
     "lib/listing-lifecycle/stage-automations.ts": 1,
     "lib/listing-lifecycle/transition-validator.ts": 5,
     "lib/listing-presentation/generate-ai-presentation.ts": 1,
+    "lib/listing-presentation/marketing-system-resolver.ts": 1,
+    "lib/listing-presentation/marketing-system.ts": 2,
     "lib/listing-presentation/prelisting-delivery.ts": 5,
     "lib/listing-presentation/section-drip.ts": 7,
-    "lib/listing-presentation/section-narration-orchestrator.ts": 2,
-    "lib/listing-presentation/section-narration.ts": 2,
+    "lib/listing-presentation/section-narration-orchestrator.ts": 3,
+    "lib/listing-presentation/section-narration.ts": 3,
     "lib/listing-presentation/section-render.ts": 2,
     "lib/listings/back-on-market.ts": 1,
     "lib/listings/compute-dom.ts": 2,
@@ -3814,7 +3821,7 @@
     "lib/outcomes/reconciliation-ledger.ts": 3,
     "lib/outcomes/reconciliation.ts": 4,
     "lib/permissions/offer-permissions.ts": 5,
-    "lib/platform/acting-context.ts": 3,
+    "lib/platform/acting-context.ts": 5,
     "lib/platform/affiliate-ref-capture.ts": 2,
     "lib/platform/affiliates.ts": 9,
     "lib/platform/ai-ops.ts": 3,
@@ -3883,6 +3890,7 @@
     "lib/portal/persona-config.ts": 4,
     "lib/portal/portal-clients-read.ts": 1,
     "lib/portal/portal-invite-core.ts": 3,
+    "lib/portal/portal-showing-feed.ts": 5,
     "lib/portal/require-contact-access.ts": 1,
     "lib/portal/resolve-education-context.ts": 1,
     "lib/portal/resolve-seller-context.ts": 4,
@@ -3966,6 +3974,7 @@
     "lib/remotion/bundle-cache.ts": 1,
     "lib/remotion/code-revision.ts": 2,
     "lib/remotion/composition-cache.ts": 9,
+    "lib/remotion/composition-geometry.ts": 2,
     "lib/remotion/content-contract.ts": 4,
     "lib/remotion/media-host.ts": 1,
     "lib/remotion/music-mixer.ts": 1,
@@ -4030,6 +4039,7 @@
     "lib/state-forms/registry.ts": 2,
     "lib/storage/buckets.ts": 2,
     "lib/storage/document-buckets.ts": 3,
+    "lib/storage/file-limits.ts": 5,
     "lib/storage/orphan-sweeper.ts": 1,
     "lib/storage/put-and-sign.ts": 2,
     "lib/storage/signed-doc-url.ts": 1,
@@ -4090,7 +4100,7 @@
     "lib/transactions/sync-from-provider.ts": 2,
     "lib/transactions/task-vocabulary.ts": 1,
     "lib/transactions/transaction-creation-gate.ts": 2,
-    "lib/transactions/transaction-status.ts": 4,
+    "lib/transactions/transaction-status.ts": 5,
     "lib/transactions/vendor-quote-workflow.ts": 3,
     "lib/transactions/walkthrough-outcome.ts": 2,
     "lib/usage/check-cap.ts": 1,
@@ -4143,19 +4153,20 @@
     "lib/video/listing-promo-reactor.ts": 1,
     "lib/video/living-video-sweep.ts": 2,
     "lib/video/living-video.ts": 6,
-    "lib/video/memory-video-gate.ts": 1,
+    "lib/video/memory-video-gate.ts": 4,
+    "lib/video/memory-video.ts": 2,
     "lib/video/module-voice.ts": 2,
     "lib/video/multilingual-reel.ts": 4,
     "lib/video/persona-overlay.ts": 1,
     "lib/video/persona-variant-post-pass.ts": 1,
     "lib/video/playable-video.ts": 1,
     "lib/video/presenter-media.ts": 1,
-    "lib/video/promo-composition.ts": 4,
+    "lib/video/promo-composition.ts": 5,
     "lib/video/reel-brand.ts": 2,
     "lib/video/reel-voiceover.ts": 2,
     "lib/video/repurpose-planner.ts": 3,
     "lib/video/script-compliance.ts": 10,
-    "lib/video/script-structure.ts": 3,
+    "lib/video/script-structure.ts": 8,
     "lib/video/verbal-disclosure.ts": 1,
     "lib/video/video-director.ts": 11,
     "lib/video/video-identity.ts": 1,
@@ -4702,8 +4713,7 @@
       "aiGenerateProfitLossReport",
       "aiCreateBudget",
       "getCommissionRecords",
-      "trackDeposit",
-      "generateInvoice"
+      "trackDeposit"
     ],
     "app/actions/ai-generate.ts": [
       "generateAIText",
@@ -7605,6 +7615,7 @@
       "scheduleTourStops",
       "finalizeTour",
       "confirmTourStop",
+      "stampTourStopPresence",
       "rateTourStop",
       "completeTour",
       "generateTourNarrative",
@@ -7900,6 +7911,10 @@
     ],
     "app/actions/video/generate-script.ts": [
       "generateVideoScript"
+    ],
+    "app/actions/video/memory-video.ts": [
+      "offerMemoryVideoAction",
+      "saveMemoryVideoDictationAction"
     ],
     "app/actions/video-content.ts": [
       "generateVideoScript",
@@ -10273,6 +10288,9 @@
     ],
     "app/crm/contacts/[contactId]/components/lifetime-segment-selector.tsx": [
       "LifetimeSegmentSelector"
+    ],
+    "app/crm/contacts/[contactId]/components/memory-video-card.tsx": [
+      "MemoryVideoCard"
     ],
     "app/crm/contacts/[contactId]/components/workflow-runs-panel.tsx": [
       "WorkflowRunsPanel"
@@ -12971,7 +12989,8 @@
     ],
     "lib/agentic-os/invocation-log.ts": [
       "outcomeForDecision",
-      "recordInvocation"
+      "recordInvocation",
+      "summarizeInvocations"
     ],
     "lib/agentic-os/invoke-planner.ts": [
       "parseInputSpec",
@@ -13766,12 +13785,18 @@
     "lib/behavior-learning/signal-mapping.ts": [
       "interestLevelToLearningSignal",
       "showingInterestToLearningSignal",
-      "portalInterestToShowingLevel"
+      "portalInterestToShowingLevel",
+      "tourInterestToRating",
+      "isPositiveShowingInterest",
+      "isNegativeShowingInterest",
+      "feedbackTemperatureToRating",
+      "impressionToRating"
     ],
     "lib/billing/ai-overage.ts": [
       "deriveAIOverage",
       "getAIOverageStatus",
-      "runAIOverageBilling"
+      "runAIOverageBilling",
+      "getAIOverageBillingHistory"
     ],
     "lib/billing/billing-access.ts": [
       "resolveBillingAccess",
@@ -15278,6 +15303,9 @@
       "rolloutBucket",
       "resolveEntitlement"
     ],
+    "lib/entitlements/tenant-capabilities.ts": [
+      "resolveTenantCapabilities"
+    ],
     "lib/errors/auto-retry.ts": [
       "scheduleRetry",
       "getErrorsDueForRetry",
@@ -15529,6 +15557,9 @@
     "lib/finance/expense-csv.ts": [
       "hasReceipt",
       "buildExpenseCsv"
+    ],
+    "lib/finance/invoice-draft.ts": [
+      "generateInvoice"
     ],
     "lib/finance/qb-reconciliation.ts": [
       "emptyQbReconTotals",
@@ -16851,10 +16882,6 @@
       "emitLifecycleEvent",
       "resolvePageCapability"
     ],
-    "lib/kernel/identity.ts": [
-      "resolveWriteContext",
-      "requireWriteContext"
-    ],
     "lib/kernel/idle-hands.ts": [
       "isManagerIdle",
       "seasonalPlayFor",
@@ -18164,6 +18191,13 @@
     "lib/listing-presentation/generate-ai-presentation.ts": [
       "generateAiListingPresentation"
     ],
+    "lib/listing-presentation/marketing-system-resolver.ts": [
+      "resolveMarketingSystem"
+    ],
+    "lib/listing-presentation/marketing-system.ts": [
+      "composeMarketingSystem",
+      "marketingSystemFeatureKeys"
+    ],
     "lib/listing-presentation/prelisting-delivery.ts": [
       "evaluateRenderReadiness",
       "composePrelistingEmail",
@@ -18181,10 +18215,12 @@
       "deliverDueSections"
     ],
     "lib/listing-presentation/section-narration-orchestrator.ts": [
+      "resolveAgentNarrationAssets",
       "planSectionNarrationJob",
       "narratePresentationSections"
     ],
     "lib/listing-presentation/section-narration.ts": [
+      "sectionNarrationBudget",
       "buildSectionNarrationScript",
       "generateSectionNarration"
     ],
@@ -18794,7 +18830,9 @@
     "lib/platform/acting-context.ts": [
       "decideWriteChannel",
       "resolveActingContext",
-      "resolveWriteContext"
+      "resolveWriteContext",
+      "decideClaimedTenant",
+      "resolveWriteContextForTenant"
     ],
     "lib/platform/affiliate-ref-capture.ts": [
       "isSafeRefReturn",
@@ -19206,6 +19244,13 @@
       "ensureContactPortalUser",
       "createSystemPortalInvite"
     ],
+    "lib/portal/portal-showing-feed.ts": [
+      "showingInterestBand",
+      "interestBandLabel",
+      "foldShowingStatus",
+      "buildPortalShowingFeed",
+      "withFeedback"
+    ],
     "lib/portal/require-contact-access.ts": [
       "requireContactAccess"
     ],
@@ -19591,6 +19636,10 @@
       "summarizeCacheEconomics",
       "leakBrief"
     ],
+    "lib/remotion/composition-geometry.ts": [
+      "compositionSeconds",
+      "geometryFor"
+    ],
     "lib/remotion/content-contract.ts": [
       "isSupplied",
       "missingContentProps",
@@ -19907,6 +19956,13 @@
       "bucketClassReason",
       "issueBucketObjectUrl"
     ],
+    "lib/storage/file-limits.ts": [
+      "transportCeilingBytes",
+      "bucketCeilingBytes",
+      "uploadCeilingBytes",
+      "checkUpload",
+      "classCeilingBytes"
+    ],
     "lib/storage/orphan-sweeper.ts": [
       "sweepStorageOrphans"
     ],
@@ -20154,6 +20210,7 @@
     ],
     "lib/transactions/transaction-status.ts": [
       "isTransactionStatus",
+      "inPipelineColumn",
       "isInEscrow",
       "isOpenDeal",
       "closeConfidence"
@@ -20416,7 +20473,14 @@
       "summarizeRefresh"
     ],
     "lib/video/memory-video-gate.ts": [
-      "qualifiesForMemoryVideo"
+      "qualifiesForMemoryVideo",
+      "assessMemoryVideoTenure",
+      "assembleSellerDictatedScript",
+      "isSellerAuthored"
+    ],
+    "lib/video/memory-video.ts": [
+      "offerMemoryVideo",
+      "recordMemoryVideoDictation"
     ],
     "lib/video/module-voice.ts": [
       "resolveAssistantVoiceId",
@@ -20442,6 +20506,7 @@
     ],
     "lib/video/promo-composition.ts": [
       "compositionForPromoEvent",
+      "promoNarrationBudget",
       "buildPromoProps",
       "buildComingSoonTeaser",
       "computeDaysOnMarket"
@@ -20474,7 +20539,12 @@
     "lib/video/script-structure.ts": [
       "videoTypeToContactType",
       "targetWordCount",
-      "estimateDurationSeconds"
+      "estimateDurationSeconds",
+      "narrationBudget",
+      "spokenWords",
+      "fitNarrationToBudget",
+      "narrationMaxTokens",
+      "narrationLengthDirective"
     ],
     "lib/video/verbal-disclosure.ts": [
       "applyBrokerageVerbalDisclosure"
