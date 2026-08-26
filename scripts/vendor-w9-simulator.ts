@@ -140,7 +140,27 @@ console.log("\n[4 · capture — existing client-documents rail, portal-gated]")
   // the upload itself could be repointed at another bucket with the check still
   // green — verified by reintroducing exactly that bug. The property is "this
   // action touches one bucket and it is the tenant's private one".
-  const bucketsNamed = [...action.matchAll(/bucket:\s*"([^"]+)"/g)].map(m => m[1])
+  // RESOLVED THROUGH THE FILE'S OWN CONSTANTS, because pinning to the literal
+  // spelling made this fail for an improvement. The action used to write
+  // `bucket: "client-documents"` at three call sites; the upload-ceiling work
+  // hoisted it to `const W9_BUCKET = "client-documents"` and passes the constant
+  // — one name for one idea (§6) — and this matcher, looking only for a quoted
+  // string after `bucket:`, then found NOTHING and reported "no bucket is named
+  // at all" about a file that names it three times.
+  //
+  // The property above is unchanged and still strict: every bucket this action
+  // touches must be the tenant's private one. Only the resolution step is new —
+  // a `bucket:` value that is an identifier is looked up among the file's own
+  // top-level string constants. An identifier that does NOT resolve is kept as
+  // its raw text so it can never silently vanish from the list the way the
+  // hoisted constant just did; an unresolvable name fails the every() below
+  // rather than being skipped.
+  const constBindings = new Map<string, string>()
+  for (const m of action.matchAll(/(?:^|\n)\s*const\s+([A-Za-z_$][\w$]*)\s*=\s*"([^"]+)"/g)) {
+    constBindings.set(m[1], m[2])
+  }
+  const bucketsNamed = [...action.matchAll(/bucket:\s*(?:"([^"]+)"|([A-Za-z_$][\w$]*))/g)]
+    .map(m => m[1] ?? constBindings.get(m[2]!) ?? `UNRESOLVED:${m[2]}`)
   check("PDF lands in the EXISTING 'client-documents' storage bucket (no new storage path)",
     bucketsNamed.length >= 1
     && bucketsNamed.every(b => b === "client-documents")

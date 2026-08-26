@@ -60,8 +60,28 @@ function sourceLayer() {
     /ux_impersonation_active_actor/.test(mig) && /where ended_at is null/.test(mig) && /actor_user_id = auth\.uid\(\)/.test(mig))
   console.log("\n[act-as WRITES — operate tenant screens as-tenant]")
   const acting = src("lib/platform/acting-context.ts")
+  // WAS PINNED TO ONE EXPRESSION: `isImpersonating ? createServiceClient() :
+  // await createClient()`. The act-as merge — which deleted a SECOND, differently
+  // shaped declaration of this seam from lib/kernel/identity.ts — lifted the
+  // client construction into a shared resolver and keyed it on an explicit
+  // CHANNEL instead of re-testing the flag inline. The ternary still exists; it
+  // now reads `channel === "service" ? …`, so this assertion went red for a
+  // refactor that made the seam more correct, which is §2's waypoint trap.
+  //
+  // The claim is unchanged and is now checked in three parts, none of them a
+  // spelling: the decision function exists and RESOLVES to a channel, the
+  // service client is reached on the service channel and nowhere else, and the
+  // read-only flag is still derived from the grant mode rather than assumed.
   check("acting context hands writers a service client when acting-as (bypasses target RLS) + a read-only flag",
-    /isImpersonating \? createServiceClient\(\) : await createClient\(\)/.test(acting) && /readOnly:\s*ctx\.impersonationMode === "read_only"/.test(acting))
+    /export function decideWriteChannel/.test(acting)
+    && /channel === "service" \? createServiceClient\(\) : await createClient\(\)/.test(acting)
+    && /readOnly:\s*ctx\.impersonationMode === "read_only"/.test(acting))
+  // And the half the old pin could not express at all: a read_only grant is
+  // REFUSED at the decision, so it never reaches a client. That is the direction
+  // the merge found broken across 112 call sites — a read_only grant that could
+  // write — so it is asserted here rather than left to the seam's own proof.
+  check("…and a read_only grant is REFUSED before any client is constructed",
+    /if \(ctx\.impersonationMode !== "full"\) return \{ channel: "refused", reason: "read_only" \}/.test(acting))
   const brand = src("app/actions/onboarding/brand.ts")
   check("tenant brand writers are impersonation-aware: acting context + read-only refusal + write THROUGH db",
     /resolveActingContext/.test(brand) && /READ_ONLY_ACTING_ERROR/.test(brand) && /const supabase = auth\.db|const supabase = adminAuth\.db/.test(brand))
