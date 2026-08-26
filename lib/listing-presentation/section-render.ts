@@ -13,7 +13,12 @@
  */
 import { createServiceClient } from "@/lib/supabase/service"
 import { enqueueCmaReelRender } from "@/lib/video/cma-reel-orchestrator"
-import { generateSectionNarration } from "@/lib/listing-presentation/section-narration"
+import {
+  generateSectionNarration,
+  sectionNarrationBudget,
+  SECTION_NARRATION_COMPOSITION,
+} from "@/lib/listing-presentation/section-narration"
+import { resolveMarketingSystem } from "@/lib/listing-presentation/marketing-system-resolver"
 import type { CmaComp } from "@/lib/charts/cma-reel-data"
 
 export type SectionRenderResult =
@@ -147,6 +152,29 @@ export async function renderSectionsForPresentation(
     showEhoMark:   true,
   }
 
+  // WHAT THIS BROKERAGE CAN ACTUALLY CLAIM, resolved ONCE for the whole
+  // presentation (it is a property of the tenant + agent, not of the section).
+  //
+  // This is the writer that never existed. `AINarrationInput.marketingSystem`
+  // has been an input nothing set since it was declared, so its hardcoded
+  // fallback — six capability claims — was spoken to every seller of every
+  // tenant regardless of plan or account state. The owner ruled the marketing
+  // system is part of the listing presentation and part of ADVERTISEMENT and so
+  // must be an active function; this call is that function reaching the prompt.
+  // See lib/listing-presentation/marketing-system.ts for the claim catalogue and
+  // the tombstone in section-narration.ts for what was retired.
+  //
+  // The budget is derived from the composition these sections actually render on
+  // (ListingSectionReel), so the claim list is packed to what the video can
+  // speak — a claim that would be trimmed mid-sentence is withheld from the
+  // prompt instead.
+  const narrationBudgetForSections = sectionNarrationBudget(SECTION_NARRATION_COMPOSITION)
+  const marketing = await resolveMarketingSystem(supabase, {
+    brokerageId: pres.brokerage_id,
+    agentUserId: pres.agent_user_id ?? null,
+    budget:      narrationBudgetForSections,
+  })
+
   const { data: sections } = await supabase
     .from("presentation_sections")
     .select("section_key, title, render_id")
@@ -168,6 +196,7 @@ export async function renderSectionsForPresentation(
       agentName,
       areaName,
       agentTake,
+      marketingSystem: marketing.text,
     })
     const inputProps: Record<string, unknown> = {
       sectionKey:      s.section_key,

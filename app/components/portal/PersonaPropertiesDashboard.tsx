@@ -26,6 +26,12 @@ import { updatePropertyAlert } from "@/app/actions/property-alerts/alert-actions
 import { submitPropertyFeedback } from "@/app/actions/portal-lifetime"
 import { analyzeInvestmentProperty, compareMortgageScenarios } from "@/app/actions/calculators"
 import Link from "next/link"
+import {
+  interestBandLabel,
+  withFeedback,
+  type PortalInterestBand,
+  type PortalShowingRow,
+} from "@/lib/portal/portal-showing-feed"
 
 interface PersonaPropertiesDashboardProps {
   contact: any
@@ -33,7 +39,10 @@ interface PersonaPropertiesDashboardProps {
   persona: string
   personaConfig: any
   savedProperties: any[]
-  showings: any[]
+  /** THE ONE portal showing shape — lib/portal/portal-showing-feed.ts:88. Typed
+   *  (not `any[]`) precisely because `any[]` is what let three tabs read five
+   *  fields that no row has ever carried. */
+  showings: PortalShowingRow[]
   offers: any[]
   propertyAlerts: any[]
   propertyInterests: any[]
@@ -290,7 +299,19 @@ export default function PersonaPropertiesDashboard({
 }: PersonaPropertiesDashboardProps) {
   const { toast } = useToast()
   const [isPending, startTransition] = useTransition()
-  
+
+  // The showings a seller's feedback surfaces are about: somebody left prose OR a
+  // verdict rung. Computed once — three tabs used to recompute
+  // `showings.filter((s) => s.buyer_feedback)`, on a field no row carried.
+  const showingsWithFeedback = withFeedback(showings ?? [])
+  /** Share of rated showings in one band, as a whole percent. 0 when none are rated. */
+  const feedbackShare = (band: PortalInterestBand) => {
+    const rated = showingsWithFeedback.filter((s) => s.interestBand !== null)
+    if (rated.length === 0) return 0
+    return Math.round((rated.filter((s) => s.interestBand === band).length / rated.length) * 100)
+  }
+
+
   // ── REMOVE-FROM-SAVED (merged from the deleted /properties/saved) ──────────
   // The server hands `savedProperties` down as a prop, so a removal is reflected
   // by hiding the row locally until the server component re-renders. A SET of
@@ -2083,15 +2104,15 @@ export default function PersonaPropertiesDashboard({
           <TabsContent value="showings" className="space-y-6">
             {showings.length > 0 ? (
               <div className="space-y-4">
-                {showings.map((showing: any) => (
+                {showings.map((showing) => (
                   <Card key={showing.id}>
                     <CardContent className="p-4">
                       <div className="flex items-center justify-between">
                         <div>
-                          <p className="font-semibold">{showing.property_address}</p>
+                          <p className="font-semibold">{showing.propertyAddress ?? "Address on file with your agent"}</p>
                           <p className="text-sm text-muted-foreground">
-                            {showing.confirmed_date 
-                              ? new Date(showing.confirmed_date).toLocaleDateString()
+                            {showing.showingAt
+                              ? new Date(showing.showingAt).toLocaleDateString()
                               : "Pending confirmation"}
                           </p>
                         </div>
@@ -2129,7 +2150,7 @@ export default function PersonaPropertiesDashboard({
               <Card>
                 <CardContent className="p-4 text-center">
                   <p className="text-3xl font-bold text-green-600">
-                    {showings.filter((s: any) => s.status === "completed").length}
+                    {showings.filter((s) => s.status === "completed").length}
                   </p>
                   <p className="text-sm text-muted-foreground">Completed</p>
                 </CardContent>
@@ -2137,16 +2158,14 @@ export default function PersonaPropertiesDashboard({
               <Card>
                 <CardContent className="p-4 text-center">
                   <p className="text-3xl font-bold text-blue-600">
-                    {showings.filter((s: any) => s.status === "scheduled" || s.status === "confirmed").length}
+                    {showings.filter((s) => s.status === "scheduled" || s.status === "confirmed").length}
                   </p>
                   <p className="text-sm text-muted-foreground">Upcoming</p>
                 </CardContent>
               </Card>
               <Card>
                 <CardContent className="p-4 text-center">
-                  <p className="text-3xl font-bold text-amber-600">
-                    {showings.filter((s: any) => s.buyer_feedback).length}
-                  </p>
+                  <p className="text-3xl font-bold text-amber-600">{showingsWithFeedback.length}</p>
                   <p className="text-sm text-muted-foreground">With Feedback</p>
                 </CardContent>
               </Card>
@@ -2161,21 +2180,21 @@ export default function PersonaPropertiesDashboard({
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                {showings.filter((s: any) => s.status === "scheduled" || s.status === "confirmed").length > 0 ? (
+                {showings.filter((s) => s.status === "scheduled" || s.status === "confirmed").length > 0 ? (
                   <div className="space-y-3">
                     {showings
-                      .filter((s: any) => s.status === "scheduled" || s.status === "confirmed")
-                      .map((showing: any) => (
+                      .filter((s) => s.status === "scheduled" || s.status === "confirmed")
+                      .map((showing) => (
                         <div key={showing.id} className="flex items-center justify-between p-4 bg-slate-50 rounded-lg">
                           <div className="flex items-center gap-4">
                             <div className="w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center">
                               <Users className="w-6 h-6 text-primary" />
                             </div>
                             <div>
-                              <p className="font-medium">{showing.buyer_name || "Prospective Buyer"}</p>
+                              <p className="font-medium">{showing.buyerName || "Prospective Buyer"}</p>
                               <p className="text-sm text-muted-foreground">
-                                {showing.confirmed_date 
-                                  ? new Date(showing.confirmed_date).toLocaleDateString("en-US", {
+                                {showing.showingAt
+                                  ? new Date(showing.showingAt).toLocaleDateString("en-US", {
                                       weekday: "long",
                                       month: "short",
                                       day: "numeric",
@@ -2207,30 +2226,30 @@ export default function PersonaPropertiesDashboard({
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                {showings.filter((s: any) => s.status === "completed").length > 0 ? (
+                {showings.filter((s) => s.status === "completed").length > 0 ? (
                   <div className="space-y-3">
                     {showings
-                      .filter((s: any) => s.status === "completed")
-                      .map((showing: any) => (
+                      .filter((s) => s.status === "completed")
+                      .map((showing) => (
                         <div key={showing.id} className="p-4 bg-slate-50 rounded-lg">
                           <div className="flex items-center justify-between mb-2">
                             <div>
-                              <p className="font-medium">{showing.buyer_name || "Buyer"}</p>
+                              <p className="font-medium">{showing.buyerName || "Buyer"}</p>
                               <p className="text-sm text-muted-foreground">
-                                {showing.confirmed_date 
-                                  ? new Date(showing.confirmed_date).toLocaleDateString()
+                                {showing.showingAt
+                                  ? new Date(showing.showingAt).toLocaleDateString()
                                   : "Date not recorded"}
                               </p>
                             </div>
-                            {showing.buyer_feedback && (
+                            {showing.buyerFeedback && (
                               <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
                                 Feedback Received
                               </Badge>
                             )}
                           </div>
-                          {showing.buyer_feedback && (
+                          {showing.buyerFeedback && (
                             <div className="mt-3 p-3 bg-white rounded border">
-                              <p className="text-sm italic">"{showing.buyer_feedback}"</p>
+                              <p className="text-sm italic">"{showing.buyerFeedback}"</p>
                             </div>
                           )}
                         </div>
@@ -2259,79 +2278,77 @@ export default function PersonaPropertiesDashboard({
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                {showings.filter((s: any) => s.buyer_feedback).length > 0 ? (
+                {showingsWithFeedback.length > 0 ? (
                   <>
-                    {/* Sentiment Summary */}
+                    {/* Sentiment Summary — REAL verdicts, on the one ladder.
+                        Was `s.feedback_sentiment`, a column no table has, so all
+                        three figures were 0% whenever the card managed to render at
+                        all. The verdict the OS actually records is
+                        showings.buyer_interest_level (love_it|like_it|maybe|no),
+                        banded by lib/portal/portal-showing-feed.ts:112. A showing
+                        with prose but no rung is counted in the denominator and in
+                        none of the three bands — a comment is not a verdict. */}
                     <div className="grid md:grid-cols-3 gap-4">
                       <div className="p-4 bg-white rounded-lg border">
                         <div className="flex items-center gap-2 mb-2">
                           <ThumbsUp className="w-4 h-4 text-green-600" />
                           <span className="font-medium text-green-700">Positive</span>
                         </div>
-                        <p className="text-2xl font-bold">
-                          {Math.round(showings.filter((s: any) => s.buyer_feedback && s.feedback_sentiment === "positive").length / Math.max(showings.filter((s: any) => s.buyer_feedback).length, 1) * 100)}%
-                        </p>
+                        <p className="text-2xl font-bold">{feedbackShare("high")}%</p>
                       </div>
                       <div className="p-4 bg-white rounded-lg border">
                         <div className="flex items-center gap-2 mb-2">
                           <Minus className="w-4 h-4 text-amber-600" />
                           <span className="font-medium text-amber-700">Neutral</span>
                         </div>
-                        <p className="text-2xl font-bold">
-                          {Math.round(showings.filter((s: any) => s.buyer_feedback && s.feedback_sentiment === "neutral").length / Math.max(showings.filter((s: any) => s.buyer_feedback).length, 1) * 100)}%
-                        </p>
+                        <p className="text-2xl font-bold">{feedbackShare("medium")}%</p>
                       </div>
                       <div className="p-4 bg-white rounded-lg border">
                         <div className="flex items-center gap-2 mb-2">
                           <ThumbsDown className="w-4 h-4 text-red-600" />
                           <span className="font-medium text-red-700">Concerns</span>
                         </div>
-                        <p className="text-2xl font-bold">
-                          {Math.round(showings.filter((s: any) => s.buyer_feedback && s.feedback_sentiment === "negative").length / Math.max(showings.filter((s: any) => s.buyer_feedback).length, 1) * 100)}%
-                        </p>
+                        <p className="text-2xl font-bold">{feedbackShare("low")}%</p>
                       </div>
                     </div>
 
-                    {/* Common Themes */}
-                    <div className="p-4 bg-white rounded-lg border">
-                      <h4 className="font-medium mb-3">Common Buyer Feedback Themes</h4>
-                      <div className="flex flex-wrap gap-2">
-                        <Badge variant="outline" className="bg-green-50 border-green-200 text-green-700">
-                          Great location
-                        </Badge>
-                        <Badge variant="outline" className="bg-green-50 border-green-200 text-green-700">
-                          Well-maintained
-                        </Badge>
-                        <Badge variant="outline" className="bg-amber-50 border-amber-200 text-amber-700">
-                          Price consideration
-                        </Badge>
-                        <Badge variant="outline" className="bg-blue-50 border-blue-200 text-blue-700">
-                          Good natural light
-                        </Badge>
+                    {/* WHAT BUYERS ACTUALLY SAID.
+                        TOMBSTONE — two blocks were deleted here, not moved:
+                        · "Common Buyer Feedback Themes" rendered four hardcoded
+                          badges (Great location / Well-maintained / Price
+                          consideration / Good natural light) to EVERY seller on
+                          EVERY listing, regardless of what any buyer said.
+                        · "AI Recommendations" rendered three hardcoded sentences
+                          ("Buyers consistently praise the natural lighting…") the
+                          same way.
+                        Neither read a single row. Both were seller-facing claims
+                        about buyers that the OS had not observed, which this repo
+                        refuses on principle ("never narrate a day the OS didn't
+                        see" — MAINTENANCE_DOMAINS.client_story_drafts). The REAL
+                        versions of both already exist and are owned elsewhere:
+                        listing feedback analysis in lib/listing-health/health-scorer.ts
+                        (the FEEDBACK category + listing_health_interventions), and the
+                        seller-facing narrative in app/actions/seller-updates.ts.
+                        What stays here is only what a buyer actually left. */}
+                    {showingsWithFeedback.some((s) => s.buyerConcerns) && (
+                      <div className="p-4 bg-white rounded-lg border">
+                        <h4 className="font-medium mb-3 flex items-center gap-2">
+                          <Lightbulb className="w-4 h-4 text-amber-500" />
+                          Concerns Buyers Raised
+                        </h4>
+                        <ul className="space-y-2 text-sm">
+                          {showingsWithFeedback
+                            .filter((s) => s.buyerConcerns)
+                            .slice(0, 5)
+                            .map((s) => (
+                              <li key={s.id} className="flex items-start gap-2">
+                                <AlertCircle className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" />
+                                <span>{s.buyerConcerns}</span>
+                              </li>
+                            ))}
+                        </ul>
                       </div>
-                    </div>
-
-                    {/* AI Recommendations */}
-                    <div className="p-4 bg-white rounded-lg border">
-                      <h4 className="font-medium mb-3 flex items-center gap-2">
-                        <Lightbulb className="w-4 h-4 text-amber-500" />
-                        AI Recommendations
-                      </h4>
-                      <ul className="space-y-2 text-sm">
-                        <li className="flex items-start gap-2">
-                          <CheckCircle className="w-4 h-4 text-green-500 mt-0.5 shrink-0" />
-                          <span>Buyers consistently praise the natural lighting - highlight this in your listing photos</span>
-                        </li>
-                        <li className="flex items-start gap-2">
-                          <AlertCircle className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" />
-                          <span>Consider addressing price concerns by highlighting recent comparable sales</span>
-                        </li>
-                        <li className="flex items-start gap-2">
-                          <CheckCircle className="w-4 h-4 text-green-500 mt-0.5 shrink-0" />
-                          <span>Location is a top selling point - emphasize proximity to amenities</span>
-                        </li>
-                      </ul>
-                    </div>
+                    )}
                   </>
                 ) : (
                   <div className="text-center py-8">
@@ -2351,11 +2368,10 @@ export default function PersonaPropertiesDashboard({
                 <CardTitle>All Buyer Feedback</CardTitle>
               </CardHeader>
               <CardContent>
-                {showings.filter((s: any) => s.buyer_feedback).length > 0 ? (
+                {showingsWithFeedback.length > 0 ? (
                   <div className="space-y-4">
-                    {showings
-                      .filter((s: any) => s.buyer_feedback)
-                      .map((showing: any) => (
+                    {showingsWithFeedback
+                      .map((showing) => (
                         <div key={showing.id} className="p-4 border rounded-lg">
                           <div className="flex items-center justify-between mb-3">
                             <div className="flex items-center gap-3">
@@ -2363,38 +2379,46 @@ export default function PersonaPropertiesDashboard({
                                 <User className="w-5 h-5 text-slate-600" />
                               </div>
                               <div>
-                                <p className="font-medium">{showing.buyer_name || "Anonymous Buyer"}</p>
+                                <p className="font-medium">{showing.buyerName || "Anonymous Buyer"}</p>
                                 <p className="text-xs text-muted-foreground">
-                                  {showing.confirmed_date 
-                                    ? new Date(showing.confirmed_date).toLocaleDateString()
+                                  {showing.showingAt
+                                    ? new Date(showing.showingAt).toLocaleDateString()
                                     : ""}
                                 </p>
                               </div>
                             </div>
-                            {showing.buyer_interest_level && (
-                              <Badge 
+                            {/* THE NAMED FINDING. This badge compared
+                                showing.buyer_interest_level against "high"/"medium"
+                                on a row sourced from `showing_requests`, which has no
+                                such column — so it never rendered once. The value now
+                                comes from showings.buyer_interest_level and is banded
+                                by the ONE ladder (lib/portal/portal-showing-feed.ts:112);
+                                `maybe` bands to medium and an unrated showing gets no
+                                badge rather than a fabricated one. */}
+                            {showing.interestBand && (
+                              <Badge
                                 variant="outline"
                                 className={
-                                  showing.buyer_interest_level === "high" 
+                                  showing.interestBand === "high"
                                     ? "bg-green-50 text-green-700 border-green-200"
-                                    : showing.buyer_interest_level === "medium"
+                                    : showing.interestBand === "medium"
                                     ? "bg-amber-50 text-amber-700 border-amber-200"
                                     : "bg-slate-50 text-slate-700 border-slate-200"
                                 }
                               >
-                                {showing.buyer_interest_level === "high" ? "Very Interested" 
-                                  : showing.buyer_interest_level === "medium" ? "Interested" 
-                                  : "Exploring"}
+                                {interestBandLabel(showing.interestBand)}
                               </Badge>
                             )}
                           </div>
-                          <p className="text-sm bg-slate-50 p-3 rounded italic">
-                            "{showing.buyer_feedback}"
-                          </p>
-                          {showing.buyer_concerns && (
+                          {showing.buyerFeedback && (
+                            <p className="text-sm bg-slate-50 p-3 rounded italic">
+                              "{showing.buyerFeedback}"
+                            </p>
+                          )}
+                          {showing.buyerConcerns && (
                             <div className="mt-3 flex items-start gap-2 text-sm text-amber-700">
                               <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-                              <span>Concerns: {showing.buyer_concerns}</span>
+                              <span>Concerns: {showing.buyerConcerns}</span>
                             </div>
                           )}
                         </div>

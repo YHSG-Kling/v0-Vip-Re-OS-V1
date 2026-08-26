@@ -13,6 +13,8 @@
  * also drives the on-screen bullets so copy + voiceover stay in sync.
  */
 import { findSuggestedPriceLeaks } from "@/lib/cma/customer-facing-guard"
+import { detectFairHousingViolations } from "@/lib/compliance-rules/fair-housing-patterns"
+import { MARKETING_SYSTEM_FLOOR } from "@/lib/listing-presentation/marketing-system"
 import { compositionSeconds, geometryFor } from "@/lib/remotion/composition-geometry"
 import {
   narrationBudget,
@@ -136,21 +138,40 @@ const SECTION_BRIEF: Record<string, string> = {
   cma:         "Frame the analysis as proof of your data-driven approach and show the market context, while explicitly deferring the home's specific number to the in-person meeting.",
 }
 
-/** A concise description of THIS platform's marketing system, woven into the
- *  narration so the seller hears exactly what they're getting.
- *
- *  NOT EXPORTED, and the distinction is the §1 verdict rather than a style call.
- *  The VALUE is live — it is the default for `input.marketingSystem` at the
- *  prompt below — but the EXPORT had zero importers in lib, app or scripts,
- *  measured on comment-stripped source. So the export was the orphan and the
- *  value was not, which is the same verdict PROPERTY_TYPE_LABELS got in
- *  lib/constants/index.ts this wave. Deleting the const to clear the census
- *  would have removed working narration copy; deleting only the keyword removes
- *  exactly what nothing consumes. Re-export it the moment a second file needs
- *  the same sentence — a duplicated string literal would be the §6 defect this
- *  is avoiding. */
-const DEFAULT_MARKETING_SYSTEM =
-  "Cinematic listing video, animated market-data reels, a personal AI-avatar video series, omnipresent reach across every social and portal channel buyers use, AI-search-optimized property pages, and a coordinated direct-mail + email campaign — all produced and orchestrated for you, not bolted on."
+// ── TOMBSTONE — `DEFAULT_MARKETING_SYSTEM` (the const that used to be here) ──
+//
+// SURVIVOR: lib/listing-presentation/marketing-system.ts
+//   · MARKETING_SYSTEM_CLAIMS — the six claims, each re-attached to the
+//     entitlement that makes it true
+//   · composeMarketingSystem() — the pure selector
+//   · MARKETING_SYSTEM_FLOOR — the claim-free sentence used when nothing
+//     resolves
+// The I/O half is lib/listing-presentation/marketing-system-resolver.ts
+// resolveMarketingSystem(), called by lib/listing-presentation/section-render.ts.
+//
+// WHAT IT WAS: one frozen English sentence naming six capabilities, used as the
+// fallback for `input.marketingSystem` — which NOTHING in the tree ever set. So
+// every seller of every tenant on every plan heard the same six claims, in their
+// agent's cloned voice, whether or not that brokerage could deliver them.
+//
+// WHY IT MOVED (owner ruling, reversing the previous wave's §1 verdict): the
+// default marketing system is part of the listing presentation and part of
+// ADVERTISEMENT, so it is an active function, not a constant. The previous wave
+// un-exported the const because the export had no importers; the export was
+// indeed orphaned, but the WRITER was the missing half, and §1.2 says build it.
+//
+// The measured finding that made this more than tidying: on the live database
+// `agent_voice_profiles` and `agent_avatar_assets` both hold ZERO rows, so the
+// third claim — a personal AI-avatar video series — was being promised to
+// sellers by a platform on which no agent has a voice clone or an avatar, while
+// the orchestrator quietly degraded those very sections to on_screen_only. And
+// `brokerages.farm_mail_enabled` is false for both live tenants, so the
+// direct-mail half of the sixth claim was equally unbacked. The catalogue gates
+// both on real facts rather than on the plan alone.
+//
+// Deliberately NOT re-declared here as a string: a second copy of this prose is
+// exactly the §6 defect, and the whole point is that there is no longer a single
+// sentence that is true for every tenant.
 
 export interface AINarrationInput extends NarrationInput {
   /** The composition this narration will be spoken over. Defaults to
@@ -159,7 +180,18 @@ export interface AINarrationInput extends NarrationInput {
   compositionId?:   string
   /** The agent's own angle / proof points (users.presentation_take). */
   agentTake?:       string | null
-  /** Description of the brokerage marketing system to sell. */
+  /**
+   * What THIS brokerage can actually claim to deliver, composed by
+   * lib/listing-presentation/marketing-system-resolver.ts resolveMarketingSystem()
+   * from the tenant's real entitlements and account state.
+   *
+   * NO LONGER OPTIONAL IN PRACTICE — section-render.ts sets it on every call.
+   * It stays optional in the TYPE because the deterministic path and the
+   * simulators construct inputs without a database, and because the fallback
+   * below is the safe one: an absent value composes the CLAIM-FREE floor
+   * sentence, never the six-capability boast the retired constant made. See the
+   * tombstone above.
+   */
   marketingSystem?: string | null
   /** Background market context (never a price): e.g. "rising", "balanced". */
   marketTrend?:     string | null
@@ -177,12 +209,20 @@ export interface AINarrationInput extends NarrationInput {
  * ── LENGTH IS NOW A CONSTRAINT, NOT A HOPE ──────────────────────────────────
  * The prompt asked for "3 to 5 sentences" and the gateway was given 320 tokens,
  * so a typical draft ran 60–80 words ≈ 24–32 spoken seconds against a
- * TEN-SECOND composition. Two thirds of every section narration was cut off
- * mid-word and nothing anywhere noticed. Both halves are fixed here: the prompt
- * now carries the budget DERIVED from the composition's geometry, and the
- * returned text is measured and trimmed at a sentence boundary if the model
+ * composition that then ran TEN SECONDS. Two thirds of every section narration
+ * was cut off mid-word and nothing anywhere noticed. Both halves are fixed here:
+ * the prompt now carries the budget DERIVED from the composition's geometry, and
+ * the returned text is measured and trimmed at a sentence boundary if the model
  * ignored it. The deterministic fallback goes through the same trim — it was
  * ~45 words, and it ships exactly when the AI is unavailable.
+ *
+ * AND THEN THE OTHER HALF: capping a 60–80 word script to 20 words left these
+ * sections saying one sentence. m566 widened ListingSectionReel from 300 to 900
+ * frames (10s → 30s), which is why the budget now reads 60 words — enough for
+ * the 4–5 sentence paragraph the brief below actually asks for, and comfortably
+ * over the 33–46 words the deterministic fallbacks run. NOTHING here was
+ * retyped to make that happen: the number below is still geometryFor() ×
+ * compositionSeconds() and it moved on its own.
  *
  * BOTH the AI path and the fallback can come back flagged `stillOverBudget`
  * when even one sentence does not fit; that is logged loudly rather than
@@ -212,11 +252,22 @@ export async function generateSectionNarration(input: AINarrationInput): Promise
     `SECTION GOAL: ${brief}`,
     `OVERALL GOAL: Wow the seller and prove why they should list with ${us} over any other local agent — sell the marketing system and the relationship.`,
     input.agentTake?.trim() ? `\nTHE AGENT'S OWN ANGLE (weave in naturally, first person):\n${input.agentTake.trim()}` : ``,
-    `\nTHE MARKETING SYSTEM TO SELL:\n${(input.marketingSystem ?? DEFAULT_MARKETING_SYSTEM)}`,
+    // ADVERTISING, SPOKEN TO A CONSUMER. Every capability named here is one the
+    // resolver proved this tenant is entitled to and has the account state for;
+    // an absent value falls to the CLAIM-FREE floor rather than to a boast.
+    // The model is told it may not add to the list — the catalogue is authored
+    // and reviewed prose, and a model-invented seventh capability would be an
+    // unbacked claim in the agent's own cloned voice.
+    `\nTHE MARKETING SYSTEM TO SELL — these are the ONLY capabilities you may claim, and you may claim ALL of them:\n${(input.marketingSystem?.trim() || MARKETING_SYSTEM_FLOOR)}`,
     input.marketTrend?.trim() ? `\nMARKET BACKGROUND (context only — never quote a price): the market is ${input.marketTrend.trim()}${input.avgDaysOnMarket ? `, homes averaging about ${input.avgDaysOnMarket} days on market` : ``}.` : ``,
     ``,
     `HARD RULES:`,
     `- NEVER state the seller's home value, a suggested list price, or ANY dollar figure. Defer all pricing to the in-person meeting.`,
+    // COMPLIANCE-FIRST (§5): the advertising bound is an INPUT to the writing
+    // prompt, not a grade applied afterwards. The claim list was already
+    // capability-gated and fair-housing screened before it got here.
+    `- NEVER invent a marketing capability. Claim ONLY what THE MARKETING SYSTEM TO SELL lists above — no extra channels, no guarantees, no results promises, no timelines, and no claim about what other agents do or do not do.`,
+    `- Fair housing is absolute: describe the HOME and the MARKETING, never the people who live in the area. No reference to who a neighborhood is for, no schools, no "safe", no "family" framing.`,
     `- First person ("I", "my team", "we"), warm, confident, specific to ${where} — not generic.`,
     // WAS "3 to 5 sentences" — a fixed count that no composition duration ever
     // agreed with. The ceiling now comes from ListingSectionReel's own geometry.
@@ -240,6 +291,36 @@ export async function generateSectionNarration(input: AINarrationInput): Promise
     // Absolute no-price rule — scrub any dollar figure or leaked valuation.
     if (/\$\s?\d/.test(script) || findSuggestedPriceLeaks({ script }).length > 0) {
       script = script.replace(/\$\s?[\d,]+(?:\.\d+)?/g, "the right price")
+    }
+    // ── FAIR-HOUSING BELT, AND THIS PATH HAD NONE ──────────────────────────
+    // Measured while wiring the marketing-system function: the price scrub above
+    // was the ONLY compliance check on this producer. Every other AI video-script
+    // path in the repo goes through runWithComplianceRedraft (listing-promo,
+    // intro-video, avatar-explainer, podcast, direct-mail, generate-client-message)
+    // — this one goes through neither that nor buildComplianceSystemBlocks, while
+    // producing a script SPOKEN IN THE AGENT'S CLONED VOICE to a home seller.
+    // The frozen marketing string satisfied nothing by being static; it simply
+    // was not model-authored. Now that the prompt composes per-tenant claims, the
+    // model's output needs the belt the prompt's braces already assume.
+    //
+    // §5's disposition exactly: a HARD (high-severity) fair-housing hit does not
+    // ship — it falls back to the deterministic script, which is authored copy
+    // that cannot carry a protected-class reference — and medium/low ride through
+    // as warnings, because escalating those would hold up every presentation.
+    // Deliberately the DETERMINISTIC detector rather than a second model call:
+    // it is pure, it cannot itself fail open, and a fallback is always available
+    // here, so refusing costs the seller nothing.
+    const fhHits = detectFairHousingViolations(script)
+    if (fhHits.some((v) => v.severity === "high")) {
+      console.warn(
+        `[section-narration] ${input.sectionKey} — HARD fair-housing flag in the generated script `
+        + `(${fhHits.filter((v) => v.severity === "high").map((v) => v.phrase).join(", ")}); `
+        + `falling back to the deterministic script rather than speaking it to a seller.`,
+      )
+      return fallback
+    }
+    if (fhHits.length > 0) {
+      console.warn(`[section-narration] ${input.sectionKey} — advisory fair-housing finding(s), passing through per §5: ${fhHits.map((v) => v.severity).join(", ")}`)
     }
     // VERIFY, don't trust. "At most N words" in a prompt is a request; this is
     // the enforcement. An overrun is trimmed at a sentence boundary and SAID SO

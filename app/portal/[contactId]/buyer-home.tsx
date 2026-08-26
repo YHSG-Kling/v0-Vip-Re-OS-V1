@@ -37,6 +37,7 @@ import {
   Clock,
 } from "lucide-react"
 import { RecentUpdatesFeed } from "./components/RecentUpdatesFeed"
+import { isBuyerStage, type BuyerStage } from "@/lib/contacts/buyer-stage"
 
 interface BuyerHomeProps {
   contactId: string
@@ -282,8 +283,14 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
     daysUnderContract = Math.floor((today.getTime() - contractDate.getTime()) / (1000 * 60 * 60 * 24))
   }
 
-  // Stage meaning map for buyer journey
-  const STAGE_MEANING: Record<string, { headline: string; whatMeans: string; whatNext: string; responsible: string }> = {
+  // Stage meaning map for buyer journey.
+  //
+  // TOTAL over the ladder (lib/contacts/buyer-stage.ts:32 — the canonical
+  // contacts.buyer_stage vocabulary), so `tsc` refuses a stage with no copy. It
+  // used to be `Record<string, …>` with eight of the thirteen states filled in,
+  // and the five it omitted — SEARCH_CONFIGURED, SEARCHING, ON_HOLD, DISENGAGED,
+  // LIFETIME — silently fell through to the generic "Your Journey" placeholder.
+  const STAGE_MEANING: Record<BuyerStage, { headline: string; whatMeans: string; whatNext: string; responsible: string }> = {
     BUYER_CONTACT_CREATED: {
       headline: 'Getting Started',
       whatMeans: "You've been connected with your agent. They're ready to help you find your perfect home.",
@@ -294,6 +301,18 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
       headline: 'Financially Ready',
       whatMeans: "Your purchasing power is confirmed. This gives you a real competitive advantage when you find the right home.",
       whatNext: "Now it's time to search — you can make offers immediately when you find the one.",
+      responsible: 'You + Your Agent',
+    },
+    BUYER_SEARCH_CONFIGURED: {
+      headline: 'Your Search Is Set',
+      whatMeans: "Your criteria are saved, so new listings that match get to you first instead of after everyone else has seen them.",
+      whatNext: "Browse your AI picks and save the ones worth a closer look — your agent works from what you save.",
+      responsible: 'You + Your Agent',
+    },
+    BUYER_SEARCHING: {
+      headline: 'Actively Searching',
+      whatMeans: "You're reviewing homes as they come on. This is where a clear yes-or-no on each one moves things fastest.",
+      whatNext: "Tell your agent which homes you want to see and they'll get showings on the calendar.",
       responsible: 'You + Your Agent',
     },
     BUYER_TOUR_ELIGIBLE: {
@@ -326,15 +345,36 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
       whatNext: "Inspection, appraisal, and financing are the key milestones ahead. Your team is on it.",
       responsible: 'Your Agent + Team',
     },
+    BUYER_ON_HOLD: {
+      headline: 'On Hold',
+      whatMeans: "Your search is paused. Nothing is lost — your saved homes, criteria and history are all still here.",
+      whatNext: "Message your agent whenever you're ready to pick it back up.",
+      responsible: 'You',
+    },
+    BUYER_DISENGAGED: {
+      headline: 'Search Paused',
+      whatMeans: "We haven't heard from you in a while, so your agent has stopped sending new homes rather than filling your inbox.",
+      whatNext: "One message restarts everything exactly where you left off.",
+      responsible: 'You',
+    },
     BUYER_CLOSED: {
       headline: "You're a Homeowner!",
       whatMeans: "Congratulations — the home is yours. Your agent stays in your corner as a trusted resource for years ahead.",
       whatNext: "Move in, get settled, and know your agent is always here if you need anything.",
       responsible: 'You',
     },
+    BUYER_LIFETIME: {
+      headline: 'Your Agent, For Life',
+      whatMeans: "You're settled in. Your agent keeps an eye on your home's value and the market around it so you're never guessing.",
+      whatNext: "Ask anything — a value check, a vendor recommendation, or when it makes sense to move again.",
+      responsible: 'Your Agent',
+    },
   }
 
-  const stageCtx = STAGE_MEANING[contact.buyer_stage || ''] || {
+  // isBuyerStage narrows before the lookup, so a row carrying a stage the ladder
+  // does not know (a widened CHECK the cache has not absorbed) falls through to
+  // the generic copy instead of indexing the map with an unknown key.
+  const stageCtx = (isBuyerStage(contact.buyer_stage) ? STAGE_MEANING[contact.buyer_stage] : undefined) || {
     headline: 'Your Journey',
     whatMeans: "Your agent is working to make this process smooth and successful for you.",
     whatNext: "Check in with your agent to understand the current status.",
@@ -363,29 +403,48 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
           <h2 className="font-semibold text-base mb-1 text-foreground">{"What's Next For You"}</h2>
           <p className="text-sm text-muted-foreground mb-4 leading-relaxed">{stageCtx.whatNext}</p>
           <div className="flex flex-wrap gap-2">
-            {contact.buyer_stage === 'BUYER_RESEARCHING' && (
+            {/* THREE PHANTOM STAGES. These branches used to compare buyer_stage against
+                BUYER_RESEARCHING, BUYER_ACTIVELY_SEARCHING and BUYER_PREPARING_TO_CLOSE —
+                none of which contacts_buyer_stage_check admits, so no buyer has ever seen
+                one of these buttons and the panel showed only "Message My Agent". Repointed
+                to the canonical ladder (lib/contacts/buyer-stage.ts:32):
+                  BUYER_RESEARCHING        → BUYER_SEARCH_CONFIGURED  (criteria saved, browsing)
+                  BUYER_ACTIVELY_SEARCHING → BUYER_SEARCHING          (same state, real spelling)
+                  BUYER_PREPARING_TO_CLOSE → folded into BUYER_UNDER_CONTRACT; the ladder has
+                                             no separate closing-prep state for a buyer, and
+                                             documents + closing checklist are exactly what
+                                             an under-contract buyer needs. */}
+            {contact.buyer_stage === 'BUYER_SEARCH_CONFIGURED' && (
               <Button size="sm" asChild>
                 <Link href={`/portal/${contactId}/properties`}>Browse AI Picks</Link>
               </Button>
             )}
-            {contact.buyer_stage === 'BUYER_ACTIVELY_SEARCHING' && activeTransaction && (
+            {contact.buyer_stage === 'BUYER_SEARCHING' && (
               <>
                 <Button size="sm" asChild>
-                  <Link href={`/portal/${contactId}/showings`}>View My Showings</Link>
+                  <Link href={`/portal/${contactId}/properties`}>Browse AI Picks</Link>
                 </Button>
                 <Button size="sm" variant="outline" asChild>
-                  <Link href={`/portal/${contactId}/my-offer`}>My Offers</Link>
+                  <Link href={`/portal/${contactId}/showings`}>View My Showings</Link>
                 </Button>
               </>
             )}
-            {contact.buyer_stage === 'BUYER_UNDER_CONTRACT' && (
+            {(contact.buyer_stage === 'BUYER_TOURING' || contact.buyer_stage === 'BUYER_TOUR_ELIGIBLE') && (
               <Button size="sm" asChild>
-                <Link href={`/portal/${contactId}/journey`}>Track My Journey</Link>
+                <Link href={`/portal/${contactId}/showings`}>View My Showings</Link>
               </Button>
             )}
-            {contact.buyer_stage === 'BUYER_PREPARING_TO_CLOSE' && (
+            {(contact.buyer_stage === 'BUYER_OFFER_ELIGIBLE' || contact.buyer_stage === 'BUYER_OFFER_SUBMITTED') && (
+              <Button size="sm" asChild>
+                <Link href={`/portal/${contactId}/my-offer`}>My Offers</Link>
+              </Button>
+            )}
+            {contact.buyer_stage === 'BUYER_UNDER_CONTRACT' && (
               <>
                 <Button size="sm" asChild>
+                  <Link href={`/portal/${contactId}/journey`}>Track My Journey</Link>
+                </Button>
+                <Button size="sm" variant="outline" asChild>
                   <Link href={`/portal/${contactId}/documents`}>My Documents</Link>
                 </Button>
                 <Button size="sm" variant="outline" asChild>

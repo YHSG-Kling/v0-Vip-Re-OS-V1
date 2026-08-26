@@ -25,6 +25,64 @@ import { fitNarrationToBudget } from "@/lib/video/script-structure"
 export type NarrationMode = "avatar_narrated" | "voice_only" | "on_screen_only"
 export interface NarrationPlan { voiceover: boolean; avatar: boolean; mode: NarrationMode }
 
+/** What an agent actually has to narrate with. Both halves are optional and
+ *  independently absent — see the graceful-degradation table in the header. */
+export interface AgentNarrationAssets {
+  /** ElevenLabs voice id from agent_voice_profiles, or null. */
+  voiceId: string | null
+  /** D-ID avatar id from the agent's DEFAULT, READY avatar asset, or null. */
+  avatarSource: string | null
+}
+
+/**
+ * Resolve the agent's voice clone + avatar source. ONE spelling (§6).
+ *
+ * ── THE IDENTITY-CLASS TRAP THIS FUNCTION EXISTS TO CONTAIN ────────────────
+ * pass 12: `agent_voice_profiles.agent_id` and `agent_avatar_assets.agent_id`
+ * both FK `agents(id)`, but every listing-presentation row carries
+ * `agent_user_id`, which is the USERS class — and CLAUDE.md §3 records that
+ * `agents.id` and `users.id` are DISJOINT. Filtering the asset tables by a user
+ * id therefore matches NOTHING and reports it as "this agent has no clone",
+ * which is byte-identical to the truth and silently degraded every section to
+ * on-screen. The cross through `agents.user_id` is the fix, and it is written
+ * ONCE here because the marketing-system resolver now needs the same answer for
+ * a different reason: it must not promise a seller a video series in an agent's
+ * cloned voice when that agent has no clone. Two callers deriving "does this
+ * agent have a voice" from two hand-rolled queries is exactly the §6 defect —
+ * one of them would eventually be written against `agent_user_id` again.
+ */
+export async function resolveAgentNarrationAssets(
+  supabase: ReturnType<typeof createServiceClient>,
+  agentUserId: string | null | undefined,
+): Promise<AgentNarrationAssets> {
+  const none: AgentNarrationAssets = { voiceId: null, avatarSource: null }
+  if (!agentUserId) return none
+
+  const { data: agentRow, error: agentError } = await supabase
+    .from("agents").select("id").eq("user_id", agentUserId).maybeSingle()
+  // §3 — supabase-js RESOLVES refusals. A refused read is NOT "no such agent";
+  // reporting it as absent assets is the honest degrade, but it must be visible.
+  if (agentError) {
+    console.warn(`[section-narration-orchestrator] could not resolve agent for user ${agentUserId}: ${agentError.message}`)
+    return none
+  }
+  const agentId = (agentRow as { id?: string } | null)?.id ?? null
+  if (!agentId) return none
+
+  const [vp, av] = await Promise.all([
+    supabase.from("agent_voice_profiles").select("elevenlabs_voice_id").eq("agent_id", agentId).maybeSingle(),
+    supabase.from("agent_avatar_assets").select("did_avatar_id")
+      .eq("agent_id", agentId).eq("status", "ready").eq("is_default", true).maybeSingle(),
+  ])
+  if (vp.error) console.warn(`[section-narration-orchestrator] voice profile read refused: ${vp.error.message}`)
+  if (av.error) console.warn(`[section-narration-orchestrator] avatar asset read refused: ${av.error.message}`)
+
+  return {
+    voiceId:      (vp.data as { elevenlabs_voice_id?: string | null } | null)?.elevenlabs_voice_id ?? null,
+    avatarSource: (av.data as { did_avatar_id?: string | null } | null)?.did_avatar_id ?? null,
+  }
+}
+
 /**
  * Pure: decide what a section's narration job should produce given what the
  * agent actually has. No script → nothing to say (on-screen only); no clone →
@@ -71,26 +129,11 @@ export async function narratePresentationSections(
     .maybeSingle()
   if (!pres?.brokerage_id) return empty
 
-  // Resolve the agent's voice clone + avatar source (both optional).
-  // pass 12: agent_voice_profiles.agent_id and agent_avatar_assets.agent_id FK
-  // agents(id), but listing_presentations.agent_user_id is the USERS class —
-  // resolve to agents.id first (as intro-video-reactor / did/index already do);
-  // the raw filter matched nothing, silently degrading every section to on-screen.
-  let voiceId: string | null = null
-  let avatarSource: string | null = null
-  if (pres.agent_user_id) {
-    const { data: agentRow } = await supabase.from("agents")
-      .select("id").eq("user_id", pres.agent_user_id).maybeSingle()
-    const voiceAgentId = (agentRow as { id?: string } | null)?.id ?? null
-    if (voiceAgentId) {
-      const { data: vp } = await supabase.from("agent_voice_profiles")
-        .select("elevenlabs_voice_id").eq("agent_id", voiceAgentId).maybeSingle()
-      voiceId = (vp as { elevenlabs_voice_id?: string | null } | null)?.elevenlabs_voice_id ?? null
-      const { data: av } = await supabase.from("agent_avatar_assets")
-        .select("did_avatar_id").eq("agent_id", voiceAgentId).eq("status", "ready").eq("is_default", true).maybeSingle()
-      avatarSource = (av as { did_avatar_id?: string | null } | null)?.did_avatar_id ?? null
-    }
-  }
+  // Resolve the agent's voice clone + avatar source (both optional). The cross
+  // from the USERS class to agents.id, and the reason it is mandatory, live in
+  // resolveAgentNarrationAssets above — ONE spelling, shared with the
+  // marketing-system resolver (§6).
+  const { voiceId, avatarSource } = await resolveAgentNarrationAssets(supabase, pres.agent_user_id)
 
   // Queued section renders carry the narration script in input_props.
   const { data: renders } = await supabase

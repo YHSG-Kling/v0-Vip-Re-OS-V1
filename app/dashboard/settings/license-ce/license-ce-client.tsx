@@ -37,6 +37,10 @@ interface Completion {
   hours: number
   completedOn: string
   certificateUrl: string | null
+  /** The broker's own record of WHY a credit was entered by hand. Written by
+   *  logCeCompletion since it shipped, offered by no form and read by nobody —
+   *  see the docblock on listCeCompletions (app/actions/admin/license-tracking.ts:367). */
+  notes: string | null
 }
 
 interface Props {
@@ -78,6 +82,7 @@ export function LicenseCEClient({ agentId, profile, initialCompletions }: Props)
   const [hours, setHours] = useState("")
   const [completedOn, setCompletedOn] = useState(new Date().toISOString().slice(0, 10))
   const [certificateUrl, setCertificateUrl] = useState("")
+  const [notes, setNotes] = useState("")
 
   const licDays = daysUntil(profile.licenseExpiry)
   const ethicsDays = daysUntil(profile.ethicsDueDate)
@@ -89,7 +94,7 @@ export function LicenseCEClient({ agentId, profile, initialCompletions }: Props)
   function reset() {
     setCourseName(""); setProvider(""); setCategory("core")
     setHours(""); setCompletedOn(new Date().toISOString().slice(0, 10))
-    setCertificateUrl(""); setError(null)
+    setCertificateUrl(""); setNotes(""); setError(null)
   }
 
   function handleLog() {
@@ -107,6 +112,7 @@ export function LicenseCEClient({ agentId, profile, initialCompletions }: Props)
         hours: parseFloat(hours),
         completedOn,
         certificateUrl: certificateUrl.trim() || undefined,
+        notes: notes.trim() || undefined,
       })
       if (result.success) {
         // Optimistically add to list (full refresh would re-fetch profile too)
@@ -225,6 +231,15 @@ export function LicenseCEClient({ agentId, profile, initialCompletions }: Props)
                     <p className="text-xs text-muted-foreground">
                       {c.provider ?? "—"} · {new Date(c.completedOn).toLocaleDateString()}
                     </p>
+                    {/* Both of these were recorded and unshowable: `notes` was never
+                        selected, and `certificate_url` was selected and never rendered. */}
+                    {c.notes && <p className="text-xs text-muted-foreground mt-0.5 truncate">{c.notes}</p>}
+                    {c.certificateUrl && (
+                      <a href={c.certificateUrl} target="_blank" rel="noopener noreferrer"
+                        className="text-xs text-primary underline mt-0.5 inline-block">
+                        Certificate
+                      </a>
+                    )}
                   </div>
                   <Badge variant="outline" className="text-xs capitalize">
                     {CATEGORY_LABELS[c.category] ?? c.category}
@@ -285,6 +300,17 @@ export function LicenseCEClient({ agentId, profile, initialCompletions }: Props)
               <Label className="text-xs">Certificate URL (optional)</Label>
               <Input value={certificateUrl} onChange={(e) => setCertificateUrl(e.target.value)}
                 placeholder="https://..." className="mt-1 h-9" />
+            </div>
+            {/* THE WRITER'S MISSING HALF. logCeCompletion has accepted `notes` and
+                written it to agent_ce_completions.notes since it shipped; this form
+                never offered anywhere to type one, so the column was NULL on every
+                hand-logged credit. It is the audit line on a license record — why a
+                credit was entered by hand rather than reported by an accredited
+                provider — so it is collected here and rendered on the row below. */}
+            <div>
+              <Label className="text-xs">Notes (optional)</Label>
+              <Input value={notes} onChange={(e) => setNotes(e.target.value)}
+                placeholder="e.g. paper certificate on file, reciprocity credit" className="mt-1 h-9" />
             </div>
             {error && <p className="text-xs text-red-600">{error}</p>}
           </div>
