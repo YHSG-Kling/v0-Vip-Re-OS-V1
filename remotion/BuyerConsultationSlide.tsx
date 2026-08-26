@@ -28,10 +28,10 @@
  * composition registry (m168 + lib/remotion/registry.ts).
  */
 import React from "react"
+import { Video } from "@remotion/media"
 import {
   AbsoluteFill,
   Img,
-  Video,
   interpolate,
   useCurrentFrame,
 } from "remotion"
@@ -432,8 +432,8 @@ const AvatarPIP: React.FC<{
   if (avatarVideoUrl) {
     return (
       <div style={ring}>
-        <Video src={avatarVideoUrl} trimBefore={startFrame} trimAfter={endFrame}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        <Video src={avatarVideoUrl} objectFit="cover" trimBefore={startFrame} trimAfter={endFrame}
+          style={{ width: "100%", height: "100%" }} />
       </div>
     )
   }

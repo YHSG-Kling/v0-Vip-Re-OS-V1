@@ -21,9 +21,9 @@
  * passes it in via inputProps.
  */
 import React from "react"
+import { Audio } from "@remotion/media"
 import {
   AbsoluteFill,
-  Audio,
   Img,
   interpolate,
   Sequence,

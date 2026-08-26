@@ -41,12 +41,11 @@
  * trusts what it's handed and DOES NOT redraft on its own.
  */
 import React from "react"
+import { Audio, Video } from "@remotion/media"
 import {
   AbsoluteFill,
-  Audio,
   Img,
   Sequence,
-  Video,
   interpolate,
   useCurrentFrame,
 } from "remotion"
@@ -176,12 +175,12 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
           )}
           {avatarVideoUrl ? (
             <Video
+              objectFit="cover"
               src={avatarVideoUrl}
               trimBefore={0}
               trimAfter={BODY}
               style={{
                 ...avatarBox,
-                objectFit: "cover",
                 borderRadius: 12,
                 boxShadow: `0 0 0 6px ${brand.accentColor}, 0 18px 44px rgba(0,0,0,0.4)`,
               }}

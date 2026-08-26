@@ -18,9 +18,9 @@
  *     before the 4th frame.
  */
 import React from "react"
+import { Audio } from "@remotion/media"
 import {
   AbsoluteFill,
-  Audio,
   Img,
   Sequence,
   interpolate,

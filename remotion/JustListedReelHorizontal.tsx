@@ -26,9 +26,9 @@
  *   17–20s OUTRO CTA     — full-width CTA + agent contact + EHO
  */
 import React from "react"
+import { Audio } from "@remotion/media"
 import {
   AbsoluteFill,
-  Audio,
   Img,
   Sequence,
   interpolate,

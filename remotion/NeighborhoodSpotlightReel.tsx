@@ -26,12 +26,11 @@
  * cleanly with 1-3.
  */
 import React from "react"
+import { Audio, Video } from "@remotion/media"
 import {
   AbsoluteFill,
-  Audio,
   Img,
   Sequence,
-  Video,
   interpolate,
   useCurrentFrame,
 } from "remotion"
@@ -178,8 +177,8 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
               overflow: "hidden", backgroundColor: brand.primaryColor,
             }}>
               {avatarVideoUrl ? (
-                <Video src={avatarVideoUrl} trimBefore={COVER} trimAfter={COVER + BODY}
-                  style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                <Video src={avatarVideoUrl} objectFit="cover" trimBefore={COVER} trimAfter={COVER + BODY}
+                  style={{ width: "100%", height: "100%" }} />
               ) : (
                 <Img src={agentPhotoUrl as string} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               )}

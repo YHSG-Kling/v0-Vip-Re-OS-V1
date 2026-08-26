@@ -25,7 +25,8 @@
  * formats run silent + caption (which is fine for muted feed).
  */
 import React from "react"
-import { AbsoluteFill, Img, Video, interpolate, useCurrentFrame } from "remotion"
+import { Video } from "@remotion/media"
+import { AbsoluteFill, Img, interpolate, useCurrentFrame } from "remotion"
 
 export interface BrollClip {
   /** Either an image URL OR a video URL. The helper detects by
@@ -106,9 +107,10 @@ const ClipFrame: React.FC<{
     <AbsoluteFill style={{ opacity }}>
       {isVideo ? (
         <Video
+          objectFit="cover"
           src={clip.url}
           trimBefore={0}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+          style={{ width: "100%", height: "100%" }}
         />
       ) : (
         <Img

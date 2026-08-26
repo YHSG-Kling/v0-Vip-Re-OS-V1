@@ -25,12 +25,11 @@
  * composition trusts that consent.
  */
 import React from "react"
+import { Audio, Video } from "@remotion/media"
 import {
   AbsoluteFill,
-  Audio,
   Img,
   Sequence,
-  Video,
   interpolate,
   useCurrentFrame,
 } from "remotion"
@@ -195,10 +194,11 @@ export const TestimonialReel: React.FC<TestimonialReelProps> = ({
             }}>
               {avatarVideoUrl ? (
                 <Video
+                  objectFit="cover"
                   src={avatarVideoUrl}
                   trimBefore={COVER + QUOTE}
                   trimAfter={COVER + QUOTE + REACT}
-                  style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                  style={{ width: "100%", height: "100%" }}
                 />
               ) : (
                 <Img

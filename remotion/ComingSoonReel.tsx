@@ -28,12 +28,11 @@
  * Cooperation status before queuing the render.
  */
 import React from "react"
+import { Audio, Video } from "@remotion/media"
 import {
   AbsoluteFill,
-  Audio,
   Img,
   Sequence,
-  Video,
   interpolate,
   useCurrentFrame,
 } from "remotion"
@@ -214,9 +213,9 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
               overflow: "hidden", backgroundColor: brand.primaryColor,
             }}>
               {avatarVideoUrl ? (
-                <Video src={avatarVideoUrl}
+                <Video src={avatarVideoUrl} objectFit="cover"
                   trimBefore={COVER + BODY} trimAfter={COVER + BODY + CTA}
-                  style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  style={{ width: "100%", height: "100%" }} />
               ) : (
                 <Img src={agentPhotoUrl as string} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               )}

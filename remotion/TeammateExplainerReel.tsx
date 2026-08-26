@@ -26,11 +26,11 @@
  * what it is handed and never redrafts.
  */
 import React from "react"
+import { Video } from "@remotion/media"
 import {
   AbsoluteFill,
   Img,
   Sequence,
-  Video,
   interpolate,
   useCurrentFrame,
 } from "remotion"
@@ -168,8 +168,9 @@ const AvatarBody: React.FC<{
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor }}>
       {avatarVideoUrl ? (
         <Video
+          objectFit="cover"
           src={avatarVideoUrl}
-          style={{ width: "100%", height: "100%", objectFit: "cover", opacity: fadeIn }}
+          style={{ width: "100%", height: "100%", opacity: fadeIn }}
         />
       ) : agentPhotoUrl ? (
         // Honest fallback frame — the avatar clip has not been wired in.

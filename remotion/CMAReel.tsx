@@ -13,7 +13,8 @@
  * producer supply it). Charts are deterministic SVG (lib/charts/geometry).
  */
 import React from "react"
-import { AbsoluteFill, Sequence, useCurrentFrame, interpolate, Audio } from "remotion"
+import { Audio } from "@remotion/media"
+import { AbsoluteFill, Sequence, useCurrentFrame, interpolate } from "remotion"
 import { PriceTrendLine } from "./charts/PriceTrendLine"
 import { CompsBar, type CompRow } from "./charts/CompsBar"
 import { DaysOnMarketBars } from "./charts/DaysOnMarketBars"

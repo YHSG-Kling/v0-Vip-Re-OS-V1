@@ -24,9 +24,9 @@
  * issue in some states.
  */
 import React from "react"
+import { Audio } from "@remotion/media"
 import {
   AbsoluteFill,
-  Audio,
   Img,
   interpolate,
   Sequence,

@@ -17,7 +17,8 @@
  * declared INLINE so this composition never drags server deps into the bundle.
  */
 import React from "react"
-import { AbsoluteFill, Img, Sequence, Video, Easing, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
+import { Video } from "@remotion/media"
+import { AbsoluteFill, Img, Sequence, Easing, interpolate, useCurrentFrame, useVideoConfig } from "remotion"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 import { CaptionLayer } from "./components/CaptionLayer"
 
@@ -98,7 +99,7 @@ const AvatarPIP: React.FC<{ avatarVideoUrl: string | null; agentPhotoUrl: string
   return (
     <div style={{ position: "absolute", bottom: 44, right: 56, display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
       {avatarVideoUrl ? (
-        <div style={ring}><Video src={avatarVideoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} /></div>
+        <div style={ring}><Video src={avatarVideoUrl} objectFit="cover" style={{ width: "100%", height: "100%" }} /></div>
       ) : agentPhotoUrl ? (
         <div style={ring}><Img src={agentPhotoUrl} style={{ width: "100%", height: "100%", objectFit: "cover" }} /></div>
       ) : (

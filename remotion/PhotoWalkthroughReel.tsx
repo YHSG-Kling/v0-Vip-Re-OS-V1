@@ -34,9 +34,9 @@
  * so it slots into the same render pipeline + bookends + music-mood.
  */
 import React from "react"
+import { Audio } from "@remotion/media"
 import {
   AbsoluteFill,
-  Audio,
   Easing,
   Img,
   interpolate,

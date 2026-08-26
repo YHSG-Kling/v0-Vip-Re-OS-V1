@@ -32,9 +32,9 @@
  * competitor codifies into their content engine.
  */
 import React from "react"
+import { Audio } from "@remotion/media"
 import {
   AbsoluteFill,
-  Audio,
   Img,
   Sequence,
   interpolate,

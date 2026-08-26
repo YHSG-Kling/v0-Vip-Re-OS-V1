@@ -57,10 +57,10 @@
  * inject whatever it needs without forking compositions.
  */
 import React from "react"
+import { Video } from "@remotion/media"
 import {
   AbsoluteFill,
   Img,
-  Video,
   interpolate,
   useCurrentFrame,
 } from "remotion"
@@ -322,10 +322,11 @@ const AvatarPIP: React.FC<{
     return (
       <div style={ring}>
         <Video
+          objectFit="cover"
           src={avatarVideoUrl}
           trimBefore={startFrame}
           trimAfter={endFrame}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+          style={{ width: "100%", height: "100%" }}
         />
       </div>
     )

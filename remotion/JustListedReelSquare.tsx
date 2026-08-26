@@ -26,9 +26,9 @@
  * reuse the same data payload across organic and paid renders.
  */
 import React from "react"
+import { Audio } from "@remotion/media"
 import {
   AbsoluteFill,
-  Audio,
   Img,
   interpolate,
   Sequence,
