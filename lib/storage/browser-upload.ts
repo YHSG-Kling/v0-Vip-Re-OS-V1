@@ -25,31 +25,41 @@
 // prefix because there is no parameter in which to ask.
 
 import { createClient } from "@/lib/supabase/client"
-import type { UploadPurpose } from "./signed-upload-url"
+import type { SignedUploadWireResponse, UploadPurpose } from "./signed-upload-url"
 
 export type BrowserUploadResult =
   | { ok: true; bucket: string; path: string; url: string }
   | { ok: false; error: string }
 
-type TicketResponse = {
-  bucket?: string
-  path?: string
-  token?: string
-  /**
-   * The URL to persist once the bytes land, computed SERVER-SIDE by the one
-   * issuer (lib/storage/document-buckets.ts#issueBucketObjectUrl).
-   *
-   * The browser deliberately does not build this itself. An earlier cut called
-   * `getPublicUrl(ticket.bucket)` here, and scripts/public-bucket-egress-guard.ts
-   * flagged it correctly: the bucket arrives at runtime, so no reader — human or
-   * static — can prove it is a public-media bucket rather than a document-class
-   * one, and a permanent unauthenticated URL for a document is the exact defect
-   * document-buckets.ts exists to prevent. Failing closed on an unresolvable
-   * bucket is the right call, so the decision moved to where the bucket IS a
-   * known literal: the server.
-   */
-  url?: string
-  ceilingBytes?: number
+/**
+ * WHAT CAME BACK FROM THE ROUTE, BEFORE IT HAS BEEN CHECKED.
+ *
+ * Every field is optional because this is the parse of an untrusted `res.json()`
+ * — the server may answer with the refusal shape instead, and a non-2xx body
+ * carries `error` and nothing else. The optionality is the point; what is NOT
+ * negotiable is the field NAMES, so they are derived from the one wire contract
+ * in ./signed-upload-url rather than retyped here.
+ *
+ * TOMBSTONE (§1.1, §6): this used to be a hand-written `TicketResponse`
+ * declaring bucket/path/token/url/ceilingBytes itself. It was the second
+ * spelling of a shape the server also spelled inline in its
+ * NextResponse.json(...), with nothing tying the two together — rename a field
+ * on the mint and this file kept compiling and read `undefined` at runtime. The
+ * survivor is SignedUploadWireResponse at lib/storage/signed-upload-url.ts. The
+ * `url` note below is preserved because it records WHY the browser must not
+ * compute that field itself.
+ */
+// ON `url`, which the wire contract carries and the browser must NOT compute:
+// it is the address to persist once the bytes land, produced SERVER-SIDE by the
+// one issuer (lib/storage/document-buckets.ts#issueBucketObjectUrl). An earlier
+// cut called `getPublicUrl(ticket.bucket)` right here, and
+// scripts/public-bucket-egress-guard.ts flagged it correctly: the bucket arrives
+// at runtime, so no reader — human or static — can prove it is a public-media
+// bucket rather than a document-class one, and a permanent unauthenticated URL
+// for a document is the exact defect document-buckets.ts exists to prevent.
+// Failing closed on an unresolvable bucket is the right call, so the decision
+// moved to where the bucket IS a known literal: the server.
+type TicketResponse = Partial<SignedUploadWireResponse> & {
   error?: string
 }
 

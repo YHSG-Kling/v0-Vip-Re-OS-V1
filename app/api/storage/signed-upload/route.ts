@@ -34,7 +34,12 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { createServiceClient } from "@/lib/supabase/service"
-import { mintSignedUpload } from "@/lib/storage/signed-upload-url"
+import {
+  mintSignedUpload,
+  type SignedUploadRefusal,
+  type SignedUploadTicket,
+  type SignedUploadWireResponse,
+} from "@/lib/storage/signed-upload-url"
 import { issueBucketObjectUrl } from "@/lib/storage/document-buckets"
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
@@ -61,7 +66,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   // ── THEN THE SERVICE CLIENT ───────────────────────────────────────────────
-  const ticket = await mintSignedUpload(createServiceClient() as never, {
+  // ANNOTATED, not inferred. This route is the only consumer of the mint's
+  // return union, and it BRANCHES on it — `ticket.ok` picks between issuing a
+  // capability and refusing with a status code. Naming the union here pins that
+  // contract at the call site: widen or re-shape mintSignedUpload's return and
+  // the break lands in the file that branches on it, rather than being absorbed
+  // by inference and changing which arm runs.
+  const ticket: SignedUploadTicket | SignedUploadRefusal = await mintSignedUpload(createServiceClient() as never, {
     purpose: body.purpose,
     identity: { brokerageId: ctx.brokerageId, userId: ctx.userId },
     fileName: typeof body.fileName === "string" ? body.fileName : "",
@@ -97,11 +108,16 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: issued.reason }, { status: 502 })
   }
 
-  return NextResponse.json({
+  // TYPED, not an anonymous literal. SignedUploadWireResponse is the ONE
+  // declaration of this shape and lib/storage/browser-upload.ts parses against
+  // the same type, so dropping or renaming a field here fails the build on both
+  // halves instead of leaving the browser reading `undefined` at runtime.
+  const wire: SignedUploadWireResponse = {
     bucket: ticket.bucket,
     path: ticket.path,
     token: ticket.token,
     url: issued.url,
     ceilingBytes: ticket.ceilingBytes,
-  })
+  }
+  return NextResponse.json(wire)
 }

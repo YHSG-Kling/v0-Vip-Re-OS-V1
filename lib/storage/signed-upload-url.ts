@@ -386,6 +386,30 @@ export type SignedUploadTicket = {
 }
 
 /**
+ * THE WIRE CONTRACT BETWEEN THE ROUTE AND THE BROWSER — declared ONCE.
+ *
+ * This is not the ticket. `signedUrl` is the storage-api upload target and stays
+ * SERVER-SIDE; `url` is the address to persist once the bytes land, and only the
+ * server can compute it, because issueBucketObjectUrl can only tell a public-media
+ * bucket from a document-class one where the bucket is a known literal. So the
+ * response is the ticket minus the mint's own plumbing, plus the issued URL.
+ *
+ * WHY IT IS DERIVED RATHER THAN TYPED OUT. Before this existed the shape was
+ * spelled twice and declared nowhere: once as an object literal inside the
+ * route's NextResponse.json(...), and once as a private, all-optional
+ * `TicketResponse` in lib/storage/browser-upload.ts. Nothing tied them together,
+ * so renaming a field on the server left the client silently reading undefined —
+ * §6's defect exactly, and the reason test:opposite-missing reported
+ * SignedUploadTicket as a type with no reader outside its own file. Picking the
+ * fields off the ticket means a rename on the mint is a COMPILE ERROR on both
+ * halves instead of a runtime blank.
+ */
+export type SignedUploadWireResponse =
+  Pick<SignedUploadTicket, "bucket" | "path" | "token" | "ceilingBytes"> & {
+    url: string
+  }
+
+/**
  * Mint the capability. Call ONLY after the caller's session has been resolved
  * server-side — `identity` must carry the session's brokerage, never a value
  * that arrived in the request.
