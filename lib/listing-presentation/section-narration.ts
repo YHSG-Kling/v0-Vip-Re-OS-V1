@@ -137,8 +137,19 @@ const SECTION_BRIEF: Record<string, string> = {
 }
 
 /** A concise description of THIS platform's marketing system, woven into the
- *  narration so the seller hears exactly what they're getting. */
-export const DEFAULT_MARKETING_SYSTEM =
+ *  narration so the seller hears exactly what they're getting.
+ *
+ *  NOT EXPORTED, and the distinction is the §1 verdict rather than a style call.
+ *  The VALUE is live — it is the default for `input.marketingSystem` at the
+ *  prompt below — but the EXPORT had zero importers in lib, app or scripts,
+ *  measured on comment-stripped source. So the export was the orphan and the
+ *  value was not, which is the same verdict PROPERTY_TYPE_LABELS got in
+ *  lib/constants/index.ts this wave. Deleting the const to clear the census
+ *  would have removed working narration copy; deleting only the keyword removes
+ *  exactly what nothing consumes. Re-export it the moment a second file needs
+ *  the same sentence — a duplicated string literal would be the §6 defect this
+ *  is avoiding. */
+const DEFAULT_MARKETING_SYSTEM =
   "Cinematic listing video, animated market-data reels, a personal AI-avatar video series, omnipresent reach across every social and portal channel buyers use, AI-search-optimized property pages, and a coordinated direct-mail + email campaign — all produced and orchestrated for you, not bolted on."
 
 export interface AINarrationInput extends NarrationInput {
