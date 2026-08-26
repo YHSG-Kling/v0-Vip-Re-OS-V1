@@ -588,7 +588,16 @@ console.log("\n═══ 7. NARRATION IS CAPPED AT GENERATION, per composition �
   // Nothing anywhere compared a script's length to the composition that would
   // speak it: the listing-promo prompt asked for 60-80 words (~32s) for events
   // rendering on 12-second cuts, and the presentation-section prompt asked for
-  // "3 to 5 sentences" on a TEN-second composition.
+  // "3 to 5 sentences" on a composition that then ran TEN seconds.
+  //
+  // CAPPING WAS ONLY HALF OF IT. A cap sized to a wrong geometry buys silence
+  // instead of a cut: ListingSectionReel's 10s bought 20 words — ONE sentence —
+  // for the section that has to sell the seller. m566 widened it to 900 frames
+  // (30s → 60 words) on both sides, Root.tsx and remotion_compositions, and
+  // every number in this section re-derived itself. It is the only producer-fed
+  // composition whose geometry can move alone: the other five carry internal
+  // storyboards whose frame literals sum to their registered duration, so a
+  // longer runtime would freeze their last frame rather than say more.
   //
   // Section 5 above already proves every composition that DECLARES voiceoverUrl
   // RENDERS it. This section proves the other half: every PRODUCER that writes
@@ -710,22 +719,44 @@ console.log("\n═══ 7. NARRATION IS CAPPED AT GENERATION, per composition �
 
   // ── POSITIVE CONTROL (§2) — the OLD budgets must FAIL this same check ─────
   // A broken rule and a clean tree both report zero. These are the effective
-  // word budgets each producer actually shipped before this pass, measured
-  // against the compositions they render on. If the check cannot see THESE, it
-  // is not seeing anything.
-  const RETIRED: Array<{ what: string; words: number; composition: string }> = [
-    { what: "render-just-listed prompt asked for 60-80 words", words: 80, composition: "JustSoldReelSquare" },
-    { what: "render-just-listed prompt asked for 60-80 words", words: 80, composition: "OpenHouseAnnounceReel" },
-    { what: "render-just-listed prompt asked for 60-80 words", words: 80, composition: "ComingSoonReel" },
-    { what: "render-just-listed maxTokens 220 permitted ~165 words", words: 165, composition: "JustListedReel" },
-    { what: "render-newsletter-video maxTokens 150 permitted ~110 words", words: 110, composition: "NewsletterDigestVideo" },
-    { what: "section-narration maxTokens 320 permitted ~240 words", words: 240, composition: "ListingSectionReel" },
-    { what: "section-narration deterministic fallback ran ~45 words", words: 45, composition: "ListingSectionReel" },
+  // word budgets each producer actually shipped before this pass. If the check
+  // cannot see THESE, it is not seeing anything.
+  //
+  // EACH SPECIMEN CARRIES THE RUNTIME IT SHIPPED AGAINST (`secondsThen`), and
+  // that is not decoration — it is §2's "do not pin an assertion to a WAYPOINT"
+  // paid for in this very section. These rows used to be measured against the
+  // LIVE registry, so m566 widening ListingSectionReel from 10s to 30s turned
+  // the 45-word fallback specimen into a passing budget and took the whole
+  // positive control red — the control would have failed BECAUSE the defect was
+  // fixed. A historical specimen must be judged against the geometry of its own
+  // moment; that fact never changes again.
+  const RETIRED: Array<{ what: string; words: number; composition: string; secondsThen: number }> = [
+    { what: "render-just-listed prompt asked for 60-80 words", words: 80, composition: "JustSoldReelSquare", secondsThen: 12 },
+    { what: "render-just-listed prompt asked for 60-80 words", words: 80, composition: "OpenHouseAnnounceReel", secondsThen: 12 },
+    { what: "render-just-listed prompt asked for 60-80 words", words: 80, composition: "ComingSoonReel", secondsThen: 12 },
+    { what: "render-just-listed maxTokens 220 permitted ~165 words", words: 165, composition: "JustListedReel", secondsThen: 25 },
+    { what: "render-newsletter-video maxTokens 150 permitted ~110 words", words: 110, composition: "NewsletterDigestVideo", secondsThen: 20 },
+    { what: "section-narration maxTokens 320 permitted ~240 words", words: 240, composition: "ListingSectionReel", secondsThen: 10 },
+    { what: "section-narration deterministic fallback ran ~45 words", words: 45, composition: "ListingSectionReel", secondsThen: 10 },
   ]
-  const stillPassing = RETIRED.filter((r) => fitsComposition(r.words, r.composition))
-  ok(`POSITIVE CONTROL: all ${RETIRED.length} pre-cap budgets FAIL the fit rule — a budget\n    that exceeds its composition's runtime is caught, so a zero above means clean`,
+  const stillPassing = RETIRED.filter((r) => estimateDurationSecondsLocal(r.words) <= r.secondsThen)
+  ok(`POSITIVE CONTROL: all ${RETIRED.length} pre-cap budgets FAIL the fit rule against the\n    geometry they shipped on — a budget that exceeds its composition's runtime is\n    caught, so a zero above means clean`,
     stillPassing.length === 0,
-    stillPassing.map((r) => `${r.what} still reads as fitting ${r.composition}`).join(" | "))
+    stillPassing.map((r) => `${r.what} still reads as fitting ${r.secondsThen}s`).join(" | "))
+
+  // ...and the LIVE-registry path of the same finder still works. A specimen is
+  // allowed to read as fitting ONLY because its composition was deliberately
+  // WIDENED since — never because fitsComposition went blind.
+  const cured = RETIRED.filter((r) => fitsComposition(r.words, r.composition))
+  const liveSeconds = (id: string) => compositionSeconds(REGISTRY[id] ?? { duration_frames: 0, fps: 30 })
+  const wronglyCured = cured.filter((r) => liveSeconds(r.composition) <= r.secondsThen)
+  ok(`...and the live-registry path agrees: ${RETIRED.length - cured.length}/${RETIRED.length} specimens still overrun their\n    composition TODAY, and every one that no longer does is explained by a real\n    widening — not by the finder going blind`,
+    wronglyCured.length === 0,
+    wronglyCured.map((r) => `${r.what} reads as fitting ${r.composition} at an unchanged ${r.secondsThen}s`).join(" | "))
+  for (const r of cured) {
+    console.log(`    · CURED BY GEOMETRY: ${r.what} — ${r.composition} ran ${r.secondsThen}s then, `
+      + `${liveSeconds(r.composition)}s now`)
+  }
   ok("...and the rule is not simply always-false: a budget that DOES fit passes",
     fitsComposition(20, "ListingSectionReel") && fitsComposition(50, "JustListedReel"))
   ok("...and an unregistered composition never reads as fitting (fail closed)",
@@ -735,24 +766,36 @@ console.log("\n═══ 7. NARRATION IS CAPPED AT GENERATION, per composition �
   // Change the geometry and the budget must move with it. Proven two ways: over
   // the arithmetic, and over a SCRATCH copy of Root.tsx text (never the file).
   {
+    // EVERY NUMBER BELOW IS DERIVED FROM THE COMPOSITION AS IT IS TODAY. The
+    // frame counts used to be typed in (300 → 900), which meant this block
+    // asserted a waypoint: the moment m566 widened ListingSectionReel the
+    // scratch regex matched nothing, the edit silently became a no-op and the
+    // assertion went red for the one reason that must never take a guard red —
+    // the work landing. §2.
+    const liveFrames = REGISTRY.ListingSectionReel.duration_frames
     const asIs = narrationBudget("X", compositionSeconds(REGISTRY.ListingSectionReel))
-    const doubled = narrationBudget("X", compositionSeconds({ duration_frames: 600, fps: 30 }))
-    const halved = narrationBudget("X", compositionSeconds({ duration_frames: 150, fps: 30 }))
-    ok(`the budget moves with duration_frames (300f→${asIs.maxWords}w, 600f→${doubled.maxWords}w, 150f→${halved.maxWords}w)`,
-      doubled.maxWords === asIs.maxWords * 2 && halved.maxWords * 2 === asIs.maxWords)
+    const doubled = narrationBudget("X", compositionSeconds({ duration_frames: liveFrames * 2, fps: 30 }))
+    const halfFrames = Math.round(liveFrames / 2)
+    const halved = narrationBudget("X", compositionSeconds({ duration_frames: halfFrames, fps: 30 }))
+    ok(`the budget moves with duration_frames (${liveFrames}f→${asIs.maxWords}w, ${liveFrames * 2}f→${doubled.maxWords}w, ${halfFrames}f→${halved.maxWords}w)`,
+      doubled.maxWords === asIs.maxWords * 2 && halved.maxWords === Math.round(asIs.maxWords / 2))
     ok("...and with fps, because seconds is frames/fps and not frames",
-      narrationBudget("X", compositionSeconds({ duration_frames: 300, fps: 60 })).maxWords === Math.round(asIs.maxWords / 2))
+      narrationBudget("X", compositionSeconds({ duration_frames: liveFrames, fps: 60 })).maxWords === Math.round(asIs.maxWords / 2))
     ok("a still card (duration_frames<=1) yields NO narration budget rather than an\n    unlimited one — 'no budget' must never read as 'no limit'",
       narrationBudget("X", compositionSeconds(REGISTRY.PostcardFront4x6)).maxWords <= 0)
 
     // Scratch Root.tsx: the SAME parser the guard uses above, over edited text.
+    // The frame count it substitutes is 3× whatever Root.tsx says TODAY, so this
+    // proves the derivation at any geometry rather than at one remembered one.
+    const rootFrames = root.ListingSectionReel.duration_frames
+    const scratchFrames = rootFrames * 3
     const scratch = rootSrc.replace(
-      /(<Composition\s+id="ListingSectionReel"[\s\S]*?durationInFrames=\{)300(\})/,
-      "$1900$2")
+      new RegExp(`(<Composition\\s+id="ListingSectionReel"[\\s\\S]*?durationInFrames=\\{)${rootFrames}(\\})`),
+      `$1${scratchFrames}$2`)
     const scratchGeo = parseRootCompositions(scratch).ListingSectionReel
     const scratchBudget = narrationBudget("ListingSectionReel", compositionSeconds(scratchGeo))
-    ok(`a scratch Root.tsx with ListingSectionReel at 900 frames yields ${scratchBudget.maxWords} words,\n    not the ${sectionBudget.maxWords} the real 300-frame geometry yields — the cap reads the GEOMETRY`,
-      scratch !== rootSrc && scratchGeo.duration_frames === 900
+    ok(`a scratch Root.tsx with ListingSectionReel at ${scratchFrames} frames yields ${scratchBudget.maxWords} words,\n    not the ${sectionBudget.maxWords} the real ${rootFrames}-frame geometry yields — the cap reads the GEOMETRY`,
+      scratch !== rootSrc && scratchGeo.duration_frames === scratchFrames
       && scratchBudget.maxWords === sectionBudget.maxWords * 3)
   }
 

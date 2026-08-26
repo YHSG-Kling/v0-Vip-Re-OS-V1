@@ -81,7 +81,7 @@ export const COMPOSITION_GEOMETRY: Record<string, RegisteredGeometry> = {
   LeadMagnetCard: { width: 1200, height: 630, fps: 30, duration_frames: 1 },
   ListingFlyer: { width: 2625, height: 3375, fps: 30, duration_frames: 1 },
   ListingPresentationSlide: { width: 1920, height: 1080, fps: 30, duration_frames: 180 },
-  ListingSectionReel: { width: 1920, height: 1080, fps: 30, duration_frames: 300 },
+  ListingSectionReel: { width: 1920, height: 1080, fps: 30, duration_frames: 900 },
   MarketUpdateReel: { width: 1080, height: 1080, fps: 30, duration_frames: 480 },
   NeighborhoodSpotlightReel: { width: 1080, height: 1080, fps: 30, duration_frames: 480 },
   NewsletterDigestThumb: { width: 1200, height: 630, fps: 30, duration_frames: 1 },

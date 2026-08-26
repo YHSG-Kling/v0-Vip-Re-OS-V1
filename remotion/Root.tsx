@@ -693,11 +693,21 @@ export const RemotionRoot: React.FC = () => {
       {/* Wave 39 — one pre-listing presentation SECTION as a branded,
           narratable animated slide (intro / credibility / marketing / process /
           closing). The CMA/market section uses CMAReel; every other dripped
-          section uses this. Avatar PIP + ElevenLabs narration optional. */}
+          section uses this. Avatar PIP + ElevenLabs narration optional.
+
+          DURATION IS THE SCRIPT LENGTH. The narration is an <Audio> INSIDE this
+          composition, so lib/video/script-structure.ts sizes the script to
+          durationInFrames/fps (× 0.8 headroom at 150 wpm ⇒ 2 words per second).
+          At 300 frames that bought TWENTY words — one sentence — for the section
+          that has to sell the seller. m566 widened it to 900 (30s ⇒ 60 words):
+          over the 33–46 words the deterministic fallbacks run, and enough for the
+          4–5 sentence paragraph the AI brief asks for. Change this and
+          remotion_compositions.duration_frames together — test:remotion-setup §3
+          compares them field-for-field. */}
       <Composition
         id="ListingSectionReel"
         component={ListingSectionReel as unknown as React.FC<Record<string, unknown>>}
-        durationInFrames={300}
+        durationInFrames={900}
         fps={30}
         width={1920}
         height={1080}
