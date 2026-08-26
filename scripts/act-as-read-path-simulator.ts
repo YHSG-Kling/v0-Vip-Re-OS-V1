@@ -294,9 +294,54 @@ function refusedReadOnly(r: any): boolean {
   return text.includes(REFUSAL)
 }
 
-/** The exact pre-fix source of a file, from git HEAD. */
-function atHead(relPath: string): string {
-  return execFileSync("git", ["show", `HEAD:${relPath}`], { cwd: ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
+/**
+ * THE LAST VERSION OF THIS FILE THAT STILL HAD THE DEFECT.
+ *
+ * WAS `git show HEAD:<path>`, AND THAT WAS A §2 WAYPOINT — one that could only
+ * be discovered by finishing. While this lane's work sat uncommitted, HEAD was
+ * genuinely the pre-fix tree and every BEFORE assertion reproduced the finding.
+ * The instant the fix was COMMITTED, HEAD became the fixed tree, "before" and
+ * "after" compiled to the same module, and all 21 BEFORE assertions went red —
+ * not because anything regressed, but because the work was done. That is
+ * CLAUDE.md §2's "do not pin an assertion to a WAYPOINT" exactly: during a
+ * multi-step change every intermediate state is briefly true and then
+ * permanently false.
+ *
+ * DERIVED INSTEAD OF PINNED. A hardcoded base SHA would be the same mistake in
+ * slower motion — correct until the branch is rebased or squash-merged. So the
+ * rule is stated and the commit derived from it: walk this file's history
+ * newest-first and take the first blob that does NOT yet contain the fix
+ * marker. Whatever the history looks like later, "the last version without the
+ * fix" still means the same thing.
+ *
+ * FAILS CLOSED (§4). If no such version exists — a squashed history, a fresh
+ * clone with no ancestry, a marker that stopped matching — this THROWS rather
+ * than falling back to HEAD. Falling back would silently compare the fixed file
+ * against itself, which is precisely how these assertions would go green while
+ * proving nothing: the failure mode this function was rewritten to remove.
+ */
+function beforeFix(relPath: string, marker: RegExp = /resolveActingContext|actingWriteContext/): string {
+  const log = execFileSync("git", ["log", "--format=%H", "--", relPath], {
+    cwd: ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
+  }).split("\n").filter(Boolean)
+
+  for (const sha of log) {
+    let blob: string
+    try {
+      blob = execFileSync("git", ["show", `${sha}:${relPath}`], {
+        cwd: ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
+      })
+    } catch {
+      continue // the file did not exist at that commit
+    }
+    if (!marker.test(blob)) return blob
+  }
+
+  throw new Error(
+    `act-as-read-path: no pre-fix version of ${relPath} is reachable in this history ` +
+      `(searched ${log.length} commit(s) for a blob without ${marker}). The BEFORE half of ` +
+      `this proof cannot run, so it refuses rather than comparing the fixed file to itself.`,
+  )
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -367,7 +412,7 @@ async function main() {
 
   for (const s of READ_SUBJECTS) {
     const label = s.file.split("/").pop()
-    const before = await loadModule(s.file, atHead(s.file), s.extraStubs, "before")
+    const before = await loadModule(s.file, beforeFix(s.file), s.extraStubs, "before")
     const after = await loadModule(s.file, read(s.file), s.extraStubs, "after")
     const rArgs = s.readerArgs ?? []
     const wArgs = s.writerArgs ?? []
@@ -413,7 +458,7 @@ async function main() {
         exports.describeDirection = () => ""
       `,
     }
-    const before = await loadModule(file, atHead(file), extraStubs, "before")
+    const before = await loadModule(file, beforeFix(file), extraStubs, "before")
     const after = await loadModule(file, read(file), extraStubs, "after")
     const bFull = await underSession(FULL_GRANT, () => before.listVendorPackageEnrolmentsAction())
     const bRo = await underSession(READ_ONLY_GRANT, () => before.listVendorPackageEnrolmentsAction())
@@ -445,7 +490,7 @@ async function main() {
       `,
       "@/lib/enrichment/deal-vocabulary": `exports.TXN_STATUSES_AFTER = []; exports.TXN_STAGES_AFTER = []`,
     }
-    const before = await loadModule(file, atHead(file), extraStubs, "before")
+    const before = await loadModule(file, beforeFix(file), extraStubs, "before")
     const after = await loadModule(file, read(file), extraStubs, "after")
 
     // WRITERS, one from each family the file owns. Chosen because each is a
@@ -547,7 +592,7 @@ async function main() {
       cookieLeft.length > 0)
     // POSITIVE CONTROL — the census finder must recognise the pre-fix shape.
     const headSpans = (() => {
-      const h = stripComments(atHead("lib/application/transactions.ts")).split("\n")
+      const h = stripComments(beforeFix("lib/application/transactions.ts")).split("\n")
       const out: string[] = []
       for (let i = 0; i < h.length; i++) {
         const m = h[i].match(FN)
