@@ -32,6 +32,20 @@ import {
   type PortalInterestBand,
   type PortalShowingRow,
 } from "@/lib/portal/portal-showing-feed"
+// ── §1.2 — THE MISSING HALF OF THE `dataKey` MECHANISM ───────────────────────
+// getPersonaWidgets resolves every persona widget's `dataKey` against the
+// contact's metadata and formatWidgetValue renders it. Both have existed since
+// the persona config was written, both are exported from lib/portal/index.ts —
+// and until this import NOTHING IN THE TREE CALLED EITHER. The consequence was
+// not "two keys look writerless": it was that not one of the 48 widgets across
+// all 16 personas had ever rendered, on any portal, for any client. The two keys
+// a census flagged (`memory_video_requested`, `years_in_home`) are both the
+// `senior` persona's; they were not special, they were two of forty-eight.
+// (Counts are DERIVED and printed by test:persona-widget-render, not pinned.)
+// The inputs were already here — app/portal/[contactId]/properties/page.tsx has
+// been computing `customFields` off contacts.metadata and passing it in beside
+// `personaConfig` for exactly this. Only the render site was missing.
+import { getPersonaWidgets, formatWidgetValue } from "@/lib/portal/persona-config"
 
 interface PersonaPropertiesDashboardProps {
   contact: any
@@ -1255,6 +1269,60 @@ export default function PersonaPropertiesDashboard({
           )}
         </div>
       </div>
+
+      {/* ── AT A GLANCE — the persona's own widgets ───────────────────────────
+          The render site the dataKey mechanism never had. Driven entirely by
+          PERSONA_CONFIGS[persona].widgets, so a first-time buyer sees their
+          pre-approval and down payment, a VA buyer their entitlement and BAH, a
+          downsizing seller their years in the home — with no per-persona branch
+          in this component.
+
+          WHAT IT WILL NOT DO: invent a value. A widget whose dataKey is absent
+          from contacts.metadata renders its own authored `emptyMessage`, and a
+          widget with neither a value nor an emptyMessage is DROPPED rather than
+          rendered blank — "never narrate a day the OS didn't see". If a persona
+          has nothing to show at all, the whole strip disappears instead of
+          leaving an empty card. */}
+      {(() => {
+        const widgets = getPersonaWidgets(persona, customFields).filter(
+          (w) => w.value !== undefined && w.value !== null && w.value !== "" ? true : !!w.emptyMessage,
+        )
+        if (widgets.length === 0) return null
+        return (
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {widgets.map((w) => {
+              const has = w.value !== undefined && w.value !== null && w.value !== ""
+              const WidgetIcon = w.icon
+              return (
+                <Card key={w.id} className="border-muted">
+                  <CardContent className="pt-5 pb-4 space-y-1">
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <WidgetIcon className="w-4 h-4" />
+                      <span className="text-xs font-medium uppercase tracking-wide">{w.title}</span>
+                    </div>
+                    {has ? (
+                      <>
+                        <p className="text-xl font-semibold">{formatWidgetValue(w.value, w.format)}</p>
+                        <p className="text-xs text-muted-foreground">{w.description}</p>
+                      </>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">{w.emptyMessage}</p>
+                    )}
+                    {w.action && (
+                      <Link
+                        href={w.action.href.replace("{contactId}", contactId)}
+                        className="inline-block text-xs font-medium text-primary hover:underline pt-1"
+                      >
+                        {w.action.label}
+                      </Link>
+                    )}
+                  </CardContent>
+                </Card>
+              )
+            })}
+          </div>
+        )
+      })()}
 
       {/* AI Smart Search - RealScout Style */}
       <Card className="border-2 border-primary/20 bg-gradient-to-r from-blue-50/50 to-purple-50/50">

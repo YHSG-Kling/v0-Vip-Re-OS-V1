@@ -62,7 +62,9 @@
  */
 
 import { revalidatePath } from "next/cache"
-import { resolveWriteContext } from "@/lib/platform/acting-context"
+// ★ ACT-AS SEAM — TWO ENTRY POINTS ★ resolveActingContext for the seller's
+// read, resolveWriteContext for the two enrolment writes.
+import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting-context"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { assertVendorChargeableForPlatformUse } from "@/lib/vendors/vendor-platform-identity"
@@ -161,8 +163,12 @@ const PERIOD_DAYS: Record<string, number> = { monthly: 30, annual: 365 }
  * packages, plus the bench vendors still available to enrol.
  */
 export async function listVendorPackageEnrolmentsAction(): Promise<VendorPackageEnrolmentListResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.ok) return { ok: false, error: ctx.error }
+  // READ — three tenant-scoped selects, no write. The READER entry point, so a
+  // read_only act-as grant can SEE the enrolments it is investigating (§5). It
+  // yields the same service client under an active grant that the writer does;
+  // every query below still pins .eq("brokerage_id", ctx.brokerageId).
+  const ctx = await resolveActingContext()
+  if (!ctx.ok) return { ok: false, error: ctx.error ?? "Unauthorized" }
   if (!ctx.brokerageId) return { ok: false, error: "Your account is not attached to a brokerage yet." }
 
   const { data: subs, error: subsError } = await ctx.db

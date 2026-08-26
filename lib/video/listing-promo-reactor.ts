@@ -55,6 +55,17 @@ import { generateTextRouted } from "@/lib/ai/models"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { runWithComplianceRedraft } from "@/lib/kernel/compliance-redraft"
 import { resolveLifecycleAutoSpawn, isWithinCooldown, type LifecycleEventType } from "@/lib/kernel/lifecycle-promo-policy"
+// ── SCRIPT LENGTH IS DERIVED, NEVER TYPED (§6) ───────────────────────────────
+// promoNarrationBudget is the ONE answer to "how long may this event's script
+// be", and it derives from the composition the event actually renders on
+// (lib/video/promo-composition.ts:136 → composition-geometry → script-structure
+// WORDS_PER_MINUTE / NARRATION_HEADROOM). See the TOMBSTONE on EventTemplate.
+import { promoNarrationBudget } from "@/lib/video/promo-composition"
+import {
+  fitNarrationToBudget,
+  narrationLengthDirective,
+  narrationMaxTokens,
+} from "@/lib/video/script-structure"
 
 // Wave 27 — extended from 3 event types to the full 7-moment listing
 // lifecycle. The reactor remains the single dispatcher; per-event branches
@@ -328,11 +339,17 @@ async function draftScript(args: {
   // distinct intent: announcement vs. invitation vs. social-proof vs.
   // pricing signal. The shared Fair-Housing fence stays universal.
   const tmpl = TEMPLATES[args.eventType]
+  // THE BUDGET, DERIVED FROM THE COMPOSITION THIS EVENT WILL RENDER ON.
+  // Not a literal: compositionForPromoEvent routes the event, geometryFor reads
+  // its frames/fps, and narrationBudget applies the ONE words-per-minute pace and
+  // headroom. The four promo compositions are 25s (JustListedReel) and 12s (the
+  // three square event cuts), so ONE typed length was wrong for three of them.
+  const budget = promoNarrationBudget(args.eventType)
   const ctxLine = renderEventContext(args.eventType, args.eventContext)
   const violationLine = args.violations.length > 0
     ? `\n\nYour previous draft failed the compliance gate with these violations:\n- ${args.violations.join("\n- ")}\n\nRewrite so EVERY violation is resolved. Same length + same intent, just compliance-clean.`
     : ""
-  const prompt = `Write a ${tmpl.durationSeconds}-second social-media video script for a real estate agent. ${tmpl.intent}
+  const prompt = `Write a ${budget.compositionSeconds}-second social-media video script for a real estate agent. ${tmpl.intent}
 
 Use ONLY these property facts — do not invent any number, feature, or claim:
 - Address: ${args.facts.address || "(omitted)"}
@@ -349,7 +366,7 @@ Style:
 - Lead with: "${tmpl.hook}"
 - ${tmpl.bodyGuidance}
 - Close with: ${tmpl.closingCta}
-- ${tmpl.wordCount} words total
+- ${narrationLengthDirective(budget)}
 - No exclamation marks
 - AVOID any reference to protected characteristics (race, religion, family status, national origin, gender, sexual orientation, disability, source of income)
 - AVOID phrases like "perfect for families", "great for empty-nesters", "ideal starter home for newlyweds" — these imply preference
@@ -363,20 +380,60 @@ Return ONLY the script text the agent will speak on camera.${violationLine}`
     userId: args.userId ?? null,
     feature:     "listing_promo_script",
     prompt,
-    maxTokens:   220,
+    // SIZED FROM THE SAME NUMBER. The flat 220 that stood here bought ~3× the
+    // text a 12-second square cut can carry, and the overflow was paid for and
+    // thrown away — ai_tool_usage is the cost ledger (§5), so an over-large
+    // token budget is a real invoice, not a rounding error.
+    maxTokens:   narrationMaxTokens(budget),
     temperature: 0.55,
   })
-  return text.trim()
+  // VERIFY, DON'T TRUST — a word ceiling in a prompt is a request. Same policy
+  // and the same function the render endpoint uses (trim at a sentence boundary
+  // and SAY SO), so the pre-flight gate below clears a script of the length the
+  // render path can actually speak, not one 2× longer.
+  const fit = fitNarrationToBudget(text.trim(), budget)
+  if (fit.note) console.warn(`[listing-promo-reactor] ${args.eventType} — ${fit.note}`)
+  return fit.script
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// TOMBSTONE (§1.1 / §6) — `EventTemplate.durationSeconds` and
+// `EventTemplate.wordCount` are GONE, along with their 14 hand-tuned literals
+// ("35-50", "15-20", …). SURVIVOR: lib/video/promo-composition.ts:136
+// promoNarrationBudget, which derives both from the composition the event
+// actually renders on (lib/remotion/composition-geometry.ts COMPOSITION_GEOMETRY
+// → lib/video/script-structure.ts narrationBudget / WORDS_PER_MINUTE).
+//
+// WHY THEY WERE A DEFECT AND NOT A STYLE CHOICE. Measured against the live
+// geometry table by test:promo-narration-budget, FIVE of the seven typed
+// ceilings were over the budget of the composition their event renders on, and
+// THREE were over 2× — every one of those three a 12-second square cut:
+//   event                composition            budget  typed ceiling
+//   coming_soon          ComingSoonReel (12s)     24 w   50 w  (2.08×)
+//   open_house_announce  OpenHouseAnnounceReel    24 w   55 w  (2.29×)
+//   open_house_reminder  OpenHouseAnnounceReel    24 w   40 w  (1.67×)
+//   just_sold            JustSoldReelSquare       24 w   55 w  (2.29×)
+//   just_listed          JustListedReel (25s)     50 w   60 w  (1.20×)
+//   price_reduction      JustListedReel           50 w   50 w  (1.00×)
+//   under_contract       JustListedReel           50 w   40 w  (0.80×)
+// The numbers are DERIVED and printed by test:promo-narration-budget rather
+// than pinned here — the table above is the finding, not the assertion (§2).
+//
+// WHAT THIS FILE'S DRAFT IS FOR, so the next reader does not mistake it. The
+// script drafted here is a PRE-FLIGHT COMPLIANCE PROBE: it is gated by
+// evaluateOutbound and then DISCARDED (step 5 stages the row at
+// remotion_pending; the spoken narration is drafted again, from the composition
+// budget, by app/api/internal/remotion/render-just-listed/route.ts
+// draftAndClearScript). A probe of a 55-word script for a path that can only
+// speak 24 words is not a probe of the same artefact — which is the second
+// reason the lengths had to agree, beyond the token spend.
+// ─────────────────────────────────────────────────────────────────────────────
 interface EventTemplate {
   hook:             string
   intent:           string
   tone:             string
   bodyGuidance:     string
   closingCta:       string
-  durationSeconds:  string
-  wordCount:        string
   extraConstraints?: string
 }
 
@@ -387,8 +444,6 @@ const TEMPLATES: Record<ListingPromoEventType, EventTemplate> = {
     tone:            "anticipatory, exclusive",
     bodyGuidance:    "Hint at 2 standout features (without disclosing every detail — the goal is to drive registration)",
     closingCta:      `"DM me to be first on the list when this hits MLS"`,
-    durationSeconds: "15-20",
-    wordCount:       "35-50",
     extraConstraints: "Do NOT state an exact MLS go-live date unless eventContext.go_live_date was provided",
   },
   just_listed: {
@@ -397,8 +452,6 @@ const TEMPLATES: Record<ListingPromoEventType, EventTemplate> = {
     tone:            "energetic but professional",
     bodyGuidance:    "2-3 quick facts about the property",
     closingCta:      `"DM me to schedule a tour" or equivalent`,
-    durationSeconds: "15-25",
-    wordCount:       "40-60",
   },
   open_house_announce: {
     hook:            "Open house this weekend",
@@ -406,8 +459,6 @@ const TEMPLATES: Record<ListingPromoEventType, EventTemplate> = {
     tone:            "warm, welcoming, low-pressure",
     bodyGuidance:    "Name the day + time window + 1-2 reasons it's worth a stop",
     closingCta:      `"Come by — no appointment needed"`,
-    durationSeconds: "15-20",
-    wordCount:       "35-55",
     extraConstraints: "Lead with the date+time from eventContext if provided",
   },
   open_house_reminder: {
@@ -416,8 +467,6 @@ const TEMPLATES: Record<ListingPromoEventType, EventTemplate> = {
     tone:            "friendly, brief, urgent without pushy",
     bodyGuidance:    "Restate day + time + address line",
     closingCta:      `"See you there"`,
-    durationSeconds: "10-15",
-    wordCount:       "25-40",
     extraConstraints: "Keep it short — this is a reminder, not the original announcement",
   },
   price_reduction: {
@@ -426,8 +475,6 @@ const TEMPLATES: Record<ListingPromoEventType, EventTemplate> = {
     tone:            "neutral, factual",
     bodyGuidance:    "State the new price + 1 line on what hasn't changed about the property",
     closingCta:      `"Same property, new positioning — DM if it fits your search"`,
-    durationSeconds: "15-20",
-    wordCount:       "35-50",
     extraConstraints: "Do NOT say 'priced to sell', 'motivated seller', 'great deal', 'won't last', or any phrase implying urgency, distress, or guaranteed appreciation",
   },
   under_contract: {
@@ -436,8 +483,6 @@ const TEMPLATES: Record<ListingPromoEventType, EventTemplate> = {
     tone:            "celebratory but understated",
     bodyGuidance:    "Brief acknowledgement of the milestone + 1 line about buyer demand in the area (if eventContext provides supportable stats)",
     closingCta:      `"If you missed this one, DM me — I track similar listings"`,
-    durationSeconds: "10-15",
-    wordCount:       "25-40",
     extraConstraints: "Do NOT disclose sale price, contingencies, or any deal terms",
   },
   back_on_market: {
@@ -446,8 +491,6 @@ const TEMPLATES: Record<ListingPromoEventType, EventTemplate> = {
     tone:            "positive, matter-of-fact — a fresh opportunity",
     bodyGuidance:    "One line that it's available again + 2 quick property facts",
     closingCta:      `"It's available again — DM me to see it before it's gone"`,
-    durationSeconds: "15-20",
-    wordCount:       "35-50",
     extraConstraints: "Do NOT speculate on WHY the prior deal fell through, imply seller distress, or use 'motivated seller' / 'priced to sell' / any urgency-or-distress phrasing",
   },
   just_sold: {
@@ -456,8 +499,6 @@ const TEMPLATES: Record<ListingPromoEventType, EventTemplate> = {
     tone:            "professional, confident, not boastful",
     bodyGuidance:    "Brief mention of the journey + 1 line about your process (NOT about price or value)",
     closingCta:      `"If you're thinking of selling, let's talk about your timeline"`,
-    durationSeconds: "15-20",
-    wordCount:       "35-55",
     extraConstraints: "Do NOT disclose final sale price unless eventContext.disclose_sale_price=true AND the disclosed_sale_price field is supplied. Do NOT make market-direction claims",
   },
 }

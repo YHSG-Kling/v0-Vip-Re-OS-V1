@@ -15,6 +15,70 @@ import { rosterForPrincipal } from "@/lib/notifications/transaction-parties-pack
 // HELPERS
 // ============================================
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ★ ACT-AS WRITE SEAM — THE TRANSACTIONS KERNEL ★
+//
+// WHAT WAS WRONG. Every function in this file opened its own cookie
+// (RLS-scoped) client with `await createClient()` — 59 sites. That is correct
+// for a tenant user and BROKEN for platform staff operating a tenant under an
+// impersonation grant: the staff user is not a member of the target brokerage,
+// so tenant RLS refuses their write, and supabase-js RESOLVES a refusal
+// (CLAUDE.md §3). An UPDATE that matched nothing comes back `{ data: [], error:
+// null }` — byte-identical to an update that worked — so support "fixed" a deal
+// and nothing changed, with no error anywhere. On a money file that is the worst
+// available failure mode: a commission marked paid that was not marked paid.
+//
+// It also ran the other way. A **read_only** grant had nothing standing between
+// it and a write, because a cookie client carries no concept of a grant mode.
+// §5 says a grant "walks the account and never exceeds it"; a read-only support
+// session that could re-stage a transaction exceeds it.
+//
+// WHAT THIS IS. The ONE gate the WRITERS in this file resolve their client
+// through (§6). It returns:
+//   · the caller's own RLS client for a normal tenant user — byte-identical
+//     behaviour to the `createClient()` it replaces, so no tenant seat changes;
+//   · the SERVICE client under an ACTIVE FULL grant, re-validated on this very
+//     call, so the support write actually lands;
+//   · a REFUSAL under a read_only grant or no session at all.
+// Readers are deliberately NOT converted: `getTransactions`, `loadClientDashboard`
+// and the rest keep the caller's RLS client, which is what lets a read_only grant
+// still SEE the tenant (see the reader/writer split in
+// lib/platform/acting-context.ts).
+//
+// WHY A DYNAMIC IMPORT. Same reason `updateTransactionStage` (below) already
+// uses one: this module is imported by "use server" actions AND by library code,
+// and the seam pulls in `next/headers` through `@/lib/supabase/server`. Keeping
+// it behind one lazy import in one place means a caller that never writes never
+// drags the request-scoped cookie store in. One import site, not forty.
+//
+// AUDIT. `actorUserId` is the REAL human — the staff member when impersonating,
+// the user otherwise. Stamp it wherever the written table carries an actor
+// column; `userId` remains the EFFECTIVE (impersonated) identity.
+// ─────────────────────────────────────────────────────────────────────────────
+type TxnWriteGate =
+  | { ok: true; db: any; userId: string; brokerageId: string | null; userType: string; actorUserId: string }
+  | { ok: false; error: string }
+
+async function actingWriteContext(): Promise<TxnWriteGate> {
+  try {
+    const { resolveWriteContext } = await import("@/lib/platform/acting-context")
+    const ctx = await resolveWriteContext()
+    if (!ctx.ok) return { ok: false, error: ctx.error }
+    return {
+      ok: true,
+      db: ctx.db,
+      userId: ctx.userId,
+      brokerageId: ctx.brokerageId,
+      userType: ctx.userType,
+      actorUserId: ctx.actorUserId,
+    }
+  } catch {
+    // FAIL CLOSED (§4). A gate that cannot run must refuse, not pass. The seam
+    // itself already catches, but a failed dynamic import throws before it does.
+    return { ok: false, error: "Unauthorized" }
+  }
+}
+
 /**
  * Normalize ZIP codes to standard formats:
  * - "12345" → "12345" (5-digit unchanged)
@@ -111,7 +175,9 @@ export async function createTransaction(transactionData: {
   notes?: string
   commissionPercentage?: number
 }) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
 
   // Map the UI/legacy input contract onto live schema columns. The old code
   // spread the input directly, which wrote columns that don't exist
@@ -192,21 +258,22 @@ export async function createTransaction(transactionData: {
     }
 
     if (transactionData.commissionPercentage != null) {
-      const { data: userData } = await supabase.auth.getUser()
-      const { data: profile } = await supabase
-        .from("users")
-        .select("brokerage_id")
-        .eq("id", userData.user?.id)
-        .single()
-
-      if (profile?.brokerage_id) {
+      // TENANT + ACTOR FROM THE SEAM, NOT FROM `supabase.auth`. This used to call
+      // `supabase.auth.getUser()` and then re-read that user's `users.brokerage_id`.
+      // Under act-as `supabase` is now the SERVICE client, which carries no session
+      // at all — `auth.getUser()` returns null and the whole branch would have gone
+      // silent, dropping the commission-override lifecycle event on exactly the
+      // support path this conversion exists to make work. The seam already resolved
+      // both values, and it resolved the right ones: `brokerageId` is the TARGET
+      // tenant while acting-as, and `actorUserId` is the REAL human (§ audit).
+      if (gate.brokerageId) {
         await transitionLifecycle({
-          brokerageId: profile.brokerage_id,
+          brokerageId: gate.brokerageId,
           entityType:  "transaction",
           entityId:    data.id,
           fromState:   "active",
           toState:     "commission_overridden",
-          actorUserId: userData.user?.id ?? '',
+          actorUserId: gate.actorUserId,
           actorRole:   "broker",
           eventType:   "commission.overridden",
           metadata:    { commission_percentage: transactionData.commissionPercentage, resolved_from: "deal_override" },
@@ -240,7 +307,9 @@ export async function updateTransaction(
     commissionPercentage: number
   }>,
 ) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
 
   const updatePayload: any = { ...updates, updated_at: new Date().toISOString() }
   if (updates.commissionPercentage !== undefined) {
@@ -278,7 +347,9 @@ export async function generateMilestones(
   transactionType: string,
   brokerageId?: string | null,
 ) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
 
   // THE TENANT IS STAMPED, AND WITHOUT IT THIS DOES NOTHING VISIBLE.
   //
@@ -336,7 +407,9 @@ export async function generateMilestones(
 }
 
 export async function completeMilestone(milestoneId: string, completedBy?: string, notes?: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
 
   const { data, error } = await supabase
     .from("transaction_milestones")
@@ -378,7 +451,9 @@ export async function updateMilestone(
   milestoneId: string,
   updates: Partial<{ status: string; target_date: string; notes: string; assigned_to: string }>,
 ) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_milestones")
     .update(updates)
@@ -410,7 +485,9 @@ export async function getClosingChecklist(transactionId: string) {
 }
 
 export async function updateChecklistItem(itemId: string, completed: boolean) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("closing_checklist_items")
     .update({ completed, completed_at: completed ? new Date().toISOString() : null })
@@ -440,7 +517,9 @@ export async function addParticipant(participantData: {
   license_number?: string
   notes?: string
 }) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase.from("transaction_participants").insert(participantData).select().single()
 
   if (error) {
@@ -465,7 +544,9 @@ export async function updateParticipant(
     phone: string; license_number: string; notes: string
   }>,
 ) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_participants")
     .update(updates)
@@ -482,7 +563,9 @@ export async function updateParticipant(
 }
 
 export async function removeParticipant(participantId: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { error } = await supabase.from("transaction_participants").delete().eq("id", participantId)
 
   if (error) {
@@ -516,7 +599,9 @@ export async function addLender(lenderData: {
   clear_to_close_date?: string
   notes?: string
 }) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase.from("transaction_lenders").insert(lenderData).select().single()
 
   if (error) {
@@ -540,7 +625,9 @@ export async function updateLender(
     underwriting_status: string; clear_to_close_date: string; notes: string
   }>,
 ) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_lenders")
     .update(updates)
@@ -582,7 +669,9 @@ export async function addTitleEscrow(data: {
   closing_location?: string
   notes?: string
 }) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data: result, error } = await supabase.from("transaction_title_escrow").insert(data).select().single()
 
   if (error) {
@@ -596,7 +685,9 @@ export async function addTitleEscrow(data: {
 }
 
 export async function updateTitleEscrow(titleEscrowId: string, updates: Record<string, unknown>) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_title_escrow")
     .update(updates)
@@ -627,7 +718,9 @@ export async function scheduleInspection(inspectionData: {
   cost?: number
   notes?: string
 }) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_inspections")
     .insert({ ...inspectionData, status: "scheduled" })
@@ -657,7 +750,9 @@ export async function updateInspection(
     report_url: string; issues_found: string; notes: string
   }>,
 ) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_inspections")
     .update(updates)
@@ -674,7 +769,9 @@ export async function updateInspection(
 }
 
 export async function completeInspection(inspectionId: string, reportUrl?: string, issuesFound?: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_inspections")
     .update({
@@ -701,21 +798,28 @@ export async function completeInspection(inspectionId: string, reportUrl?: strin
     // milestone_name='inspection_completed' since the enum doesn't have a
     // dedicated INSPECTION_COMPLETED event yet.
     try {
-      const supabaseSvc = await createClient()
-      const { data: { user } } = await supabaseSvc.auth.getUser()
-      const { data: tx } = await supabaseSvc
+      // TOMBSTONE (§1.3) — the SECOND `await createClient()` that stood here is
+      // gone. It was named `supabaseSvc` but was never a service client; it was a
+      // duplicate of the very cookie client this function already held, opened
+      // only to reach `auth.getUser()`. Under act-as `gate.db` IS the service
+      // client and carries no session, so that call would have returned null and
+      // silently skipped the whole portal fan-out. Both values now come from the
+      // seam that already resolved them: `gate.actorUserId` is the REAL human
+      // behind the request (the staff member when impersonating), which is what
+      // an audit column must carry.
+      const { data: tx } = await supabase
         .from("transactions")
         .select("brokerage_id")
         .eq("id", data.transactions.id)
         .maybeSingle()
-      if (tx?.brokerage_id && user?.id) {
+      if (tx?.brokerage_id && gate.actorUserId) {
         const { emitTransactionEvent } = await import("@/lib/kernel/transactions")
         const { KernelEvent } = await import("@/lib/kernel/events")
         await emitTransactionEvent({
           event:        KernelEvent.MILESTONE_COMPLETED,
           brokerageId:  tx.brokerage_id,
           entityId:     data.transactions.id,
-          actorUserId:  user.id,
+          actorUserId:  gate.actorUserId,
           metadata: {
             milestone_name:    "inspection_completed",
             inspection_type:   data.inspection_type,
@@ -746,7 +850,9 @@ export async function orderVendorService(serviceData: {
   scheduled_date?: string
   notes?: string
 }) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_vendor_services")
     .insert({ ...serviceData, status: "ordered" })
@@ -771,7 +877,9 @@ export async function updateVendorService(
   serviceId: string,
   updates: Partial<{ status: string; scheduled_date: string; completed_date: string; cost: number; paid: boolean; notes: string }>,
 ) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_vendor_services")
     .update(updates)
@@ -801,7 +909,9 @@ export async function addTransactionDocument(docData: {
   requires_signature?: boolean
   notes?: string
 }) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_documents")
     .insert({ ...docData, status: "requested" })
@@ -819,7 +929,9 @@ export async function addTransactionDocument(docData: {
 }
 
 export async function updateDocumentStatus(documentId: string, status: string, signedAt?: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const updates: Record<string, unknown> = { status }
   if (signedAt) updates.signed_at = signedAt
 
@@ -849,7 +961,16 @@ export async function addTimelineEntry(
   performedBy?: string,
   metadata?: Record<string, unknown>,
 ) {
-  const supabase = await createClient()
+  // This one returns void, so its only refusal channel is the log — same shape
+  // its existing insert-error branch already uses. BRACED deliberately: the
+  // unbraced form makes the `return` unconditional and silently turns the whole
+  // function into a no-op for every caller, tenant seats included.
+  const gate = await actingWriteContext()
+  if (!gate.ok) {
+    console.error("[addTimelineEntry] refused:", gate.error)
+    return
+  }
+  const supabase = gate.db
   const { error } = await supabase.from("transaction_timeline").insert({
     transaction_id: transactionId,
     activity_type: activityType,
@@ -885,7 +1006,9 @@ export async function addDeadline(deadlineData: {
   notes: string
   deadline_date: string
 }) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_deadlines")
     .insert({
@@ -916,7 +1039,9 @@ export async function updateDeadline(
   deadlineId: string,
   updates: Partial<{ status: string; deadline_date: string; notes: string; completed_at: string }>,
 ) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_deadlines")
     .update(updates)
@@ -933,7 +1058,9 @@ export async function updateDeadline(
 }
 
 export async function completeDeadline(deadlineId: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_deadlines")
     .update({ status: "completed", completed_at: new Date().toISOString() })
@@ -991,7 +1118,9 @@ export async function addCommission(commissionData: {
   split_percentage?: number
   notes?: string
 }) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_commissions")
     .insert({ ...commissionData, status: "pending" })
@@ -1007,7 +1136,9 @@ export async function addCommission(commissionData: {
 }
 
 export async function calculateCommissions(transactionId: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data: transaction } = await supabase
     .from("transactions")
     .select("*, transaction_commissions(*)")
@@ -1174,7 +1305,9 @@ export async function calculateCommissions(transactionId: string) {
 }
 
 export async function markCommissionPaid(commissionId: string, paidDate: string, checkNumber?: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_commissions")
     .update({ status: "paid", paid_date: paidDate, check_number: checkNumber })
@@ -1215,7 +1348,9 @@ export async function submitRepairRequest(requestData: {
   priority?: string
   notes?: string
 }) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data, error } = await supabase
     .from("transaction_repair_negotiations")
     .insert({ ...requestData, status: "requested" })
@@ -1242,7 +1377,9 @@ export async function respondToRepairRequest(
   counterOffer?: number,
   notes?: string,
 ) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   // Map response → status CHECK (requested|countered|approved|rejected|withdrawn|completed).
   const RESPONSE_STATUS: Record<"accepted" | "rejected" | "counter", string> = {
     accepted: "approved",
@@ -1281,7 +1418,9 @@ export async function finalizeRepairNegotiation(
   resolution: "repair" | "credit" | "as_is",
   finalAmount?: number,
 ) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   // Map resolution → status CHECK; finalAmount→actual_cost; persist the
   // resolution detail in notes (no resolution/final_amount/resolved_at columns).
   const RESOLUTION_STATUS: Record<"repair" | "credit" | "as_is", string> = {
@@ -1412,7 +1551,9 @@ export async function getPendingDocuments(transactionId?: string, limit = 20) {
 }
 
 export async function generateClientTimeline(transactionId: string, transactionType: string, financingType: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data: transaction, error: transactionError } = await supabase
     .from("transactions")
     .select("*")
@@ -1480,7 +1621,9 @@ Return JSON array of milestones.`
 }
 
 export async function generateCostBreakdown(transactionId: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data: transaction } = await supabase.from("transactions").select("*").eq("id", transactionId).single()
   if (!transaction) return { success: false }
 
@@ -1545,7 +1688,9 @@ Return JSON with detailed breakdown.`
 }
 
 export async function generateStatusUpdate(transactionId: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data: transaction } = await supabase
     .from("transactions")
     .select(`*, transaction_milestones(*), transaction_lenders(*)`)
@@ -1614,7 +1759,9 @@ Tone: Honest, reassuring, specific (no vague language)`
 }
 
 export async function generateSmartChecklist(transactionId: string, stage: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
 
   const checklistPrompt = `Generate smart checklist for transaction stage: ${stage}
 
@@ -1673,7 +1820,9 @@ Return JSON array of tasks.`
 }
 
 export async function detectTransactionIssues(transactionId: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data: transaction } = await supabase
     .from("transactions")
     .select(`*, transaction_milestones(*), transaction_lenders(*)`)
@@ -1776,7 +1925,9 @@ Return:
  * contact. The customer portal feed surfaces it from there.
  */
 export async function deliverEducationalContent(transactionId: string, stage: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, message: gate.error }
+  const supabase = gate.db
 
   const { data: transaction } = await supabase
     .from("transactions")
@@ -1839,7 +1990,9 @@ export async function deliverEducationalContent(transactionId: string, stage: st
 // ============================================
 
 export async function monitorTransactionHealth(transactionId: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data: transaction } = await supabase
     .from("transactions")
     // communications was a writer-less legacy table (burn-down round 6 repoint) — transaction_communications is the WRITTEN per-deal comms log
@@ -1929,7 +2082,9 @@ Calculate health scores (0-100):
 // ============================================
 
 export async function detectTransactionDelays(transactionId: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   const { data: transaction } = await supabase
     .from("transactions")
     .select(`*, transaction_milestones(*), tasks(*)`)
@@ -1998,7 +2153,9 @@ Current Delays: ${JSON.stringify(delays)}
 // ============================================
 
 export async function celebrateMilestone(transactionId: string, milestone: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, message: gate.error }
+  const supabase = gate.db
 
   const celebrations: Record<string, any> = {
     offer_accepted: { message: "Your offer was accepted! This is a huge step. Here's what happens next...", tone: "excited" },
@@ -2490,7 +2647,9 @@ export async function getClientTasks(transactionId: string) {
 }
 
 export async function autoProgressMilestone(transactionId: string, completedMilestone: string) {
-  const supabase = await createClient()
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
   // transactions → contacts carries THREE FKs (transactions_contact_id_fkey,
   // transactions_buyer_contact_id_fkey, transactions_seller_contact_id_fkey), so the
   // bare `contacts(*)` was ambiguous: PostgREST refused the WHOLE request (PGRST201)

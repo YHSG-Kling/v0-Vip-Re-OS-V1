@@ -19,6 +19,22 @@ export interface PersonaWidget {
   format?: "currency" | "percent" | "number" | "text" | "date" | "boolean"
   emptyMessage?: string
   action?: { label: string; href: string }
+  /**
+   * THE RESOLVED VALUE — filled in by getPersonaWidgets from the contact's
+   * metadata, undefined when that key is absent.
+   *
+   * §1.2 — THIS FIELD WAS THE MISSING HALF. getPersonaWidgets has always
+   * produced it (`value: customFields?.[widget.dataKey]`) and the interface has
+   * never declared it, so a renderer could not read the one thing the reader
+   * exists to compute without casting the type away. That is why every
+   * `dataKey` in this file read as writerless: the mechanism was complete
+   * except for the two ends — a declared value and a render site — and the
+   * render site is now app/components/portal/PersonaPropertiesDashboard.tsx
+   * ("At a glance"). Absent stays UNDEFINED rather than defaulting to 0 or "":
+   * the strip must be able to tell "not set" from "set to nothing", because it
+   * shows `emptyMessage` for the first and the value for the second.
+   */
+  value?: unknown
 }
 
 export interface JourneyStage {

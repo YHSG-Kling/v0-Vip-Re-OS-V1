@@ -459,7 +459,12 @@ export async function searchBrokerageNumbersAction(params: {
   areaCode?: string
   locality?: string
 }): Promise<{ success: true; candidates: NumberCandidateView[] } | { success: false; error: string; notConfigured?: boolean }> {
-  const ctx = await resolveWriteContextForTenant()
+  // READ — this only ASKS the carrier what is purchasable; nothing is bought and
+  // no row is written (that is purchaseBrokerageNumberAction, below, which stays
+  // on the writer entry point). The READER seam, so a read_only act-as grant can
+  // see the same inventory a full grant sees (§5). Same tenant, same broker-role
+  // predicate, same service client — nothing is widened but the grant mode.
+  const ctx = await resolveActingContext()
   if (!ctx.ok || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
   if (!isBrokerRole(ctx.userType)) return { success: false, error: "Only broker / admin can search numbers" }
 

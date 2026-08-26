@@ -39,7 +39,9 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { linkQrToAsset, unlinkQrFromAsset, getAssetQrLinks, getQrCodePerformance } from "@/lib/marketing/qr-asset-linker"
 import { getCampaignRegistry, registerCampaignSource } from "@/lib/marketing/campaign-registry"
-import { resolveWriteContext } from "@/lib/platform/acting-context"
+// ★ ACT-AS SEAM — TWO ENTRY POINTS ★ resolveWriteContext mints QR rows;
+// resolveActingContext renders a preview image (renderQrImageAction).
+import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting-context"
 import {
   mintTrackedQr,
   renderQrPng,
@@ -1155,7 +1157,12 @@ export async function renderQrImageAction(url: string, size = 300) {
   try {
     const trimmed = (url ?? "").trim()
     if (!trimmed) return { success: false as const, error: "A URL is required." }
-    const ctx = await resolveWriteContext()
+    // READ — renders a PNG in-process. No table, no row, no tenant column: the
+    // gate exists only so an unauthenticated caller cannot use the endpoint as a
+    // free QR renderer. On the WRITER seam a read_only act-as grant was refused a
+    // preview image, which is not a write and not something a grant may exceed
+    // (§5), so this rides the READER seam.
+    const ctx = await resolveActingContext()
     if (!ctx.ok) return { success: false as const, error: ctx.error }
     return { success: true as const, dataUrl: await renderQrPng(trimmed, size) }
   } catch (err) {

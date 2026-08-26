@@ -65,7 +65,7 @@
  */
 
 import { revalidatePath } from "next/cache"
-import { resolveWriteContext } from "@/lib/platform/acting-context"
+import { resolveActingContext, resolveWriteContext } from "@/lib/platform/acting-context"
 import { VENDOR_PACKAGE, describeDirection } from "@/lib/vendors/vendor-money-directions"
 import {
   validateVendorPlan,
@@ -126,11 +126,17 @@ const PLAN_COLUMNS =
  * NOT EXPORTED — a "use server" module's exports are all public endpoints, and
  * this one hands back a live database client.
  */
-async function actingSeller(): Promise<
+async function actingSeller(
+  mode: "read" | "write",
+): Promise<
   { ok: true; db: any; brokerageId: string; userId: string } | { ok: false; error: string }
 > {
-  const ctx = await resolveWriteContext()
-  if (!ctx.ok) return { ok: false, error: ctx.error }
+  // ONE gate, TWO channels (§6). `write` refuses a read_only act-as grant before
+  // any catalogue row is touched; `read` admits it so a support seat can SEE the
+  // packages it is investigating (§5 — a grant walks the account). The service
+  // client, the tenant and the seller predicate are identical on both channels.
+  const ctx = mode === "write" ? await resolveWriteContext() : await resolveActingContext()
+  if (!ctx.ok) return { ok: false, error: ctx.error ?? "Unauthorized" }
   if (!ctx.brokerageId) {
     return {
       ok: false,
@@ -170,7 +176,7 @@ function planPayload(input: VendorPlanInput) {
  * its live enrolled-vendor count so the UI can say why a delete is unavailable.
  */
 export async function listVendorPlansAction(): Promise<VendorPlanListResult> {
-  const actor = await actingSeller()
+  const actor = await actingSeller("read")
   if (!actor.ok) return { ok: false, error: actor.error }
 
   const { data, error } = await actor.db
@@ -211,7 +217,7 @@ export async function listVendorPlansAction(): Promise<VendorPlanListResult> {
 
 /** Publish a new package on the acting brokerage's catalogue. */
 export async function createVendorPlanAction(input: VendorPlanInput): Promise<VendorPlanResult> {
-  const actor = await actingSeller()
+  const actor = await actingSeller("write")
   if (!actor.ok) return { ok: false, error: actor.error }
 
   const fieldErrors = validateVendorPlan(input)
@@ -236,7 +242,7 @@ export async function updateVendorPlanAction(params: {
   planId: string
   input: VendorPlanInput
 }): Promise<VendorPlanResult> {
-  const actor = await actingSeller()
+  const actor = await actingSeller("write")
   if (!actor.ok) return { ok: false, error: actor.error }
   if (!params?.planId) return { ok: false, error: "A package id is required." }
 
@@ -276,7 +282,7 @@ export async function setVendorPlanStatusAction(params: {
   planId: string
   status: VendorPlanStatus
 }): Promise<VendorPlanResult> {
-  const actor = await actingSeller()
+  const actor = await actingSeller("write")
   if (!actor.ok) return { ok: false, error: actor.error }
   if (!params?.planId) return { ok: false, error: "A package id is required." }
   if (!VENDOR_PLAN_STATUSES.includes(params.status)) {
@@ -311,7 +317,7 @@ export async function setVendorPlanStatusAction(params: {
  * direction, and it is reported rather than hidden.
  */
 export async function setDefaultVendorPlanAction(params: { planId: string }): Promise<VendorPlanResult> {
-  const actor = await actingSeller()
+  const actor = await actingSeller("write")
   if (!actor.ok) return { ok: false, error: actor.error }
   if (!params?.planId) return { ok: false, error: "A package id is required." }
 
@@ -364,7 +370,7 @@ export async function setDefaultVendorPlanAction(params: { planId: string }): Pr
 export async function deleteVendorPlanAction(params: { planId: string }): Promise<
   { ok: true; deletedId: string } | { ok: false; error: string }
 > {
-  const actor = await actingSeller()
+  const actor = await actingSeller("write")
   if (!actor.ok) return { ok: false, error: actor.error }
   if (!params?.planId) return { ok: false, error: "A package id is required." }
 
