@@ -647,8 +647,45 @@ console.log("\n═══ C9 · the two repointed sites resolve the TENANT from t
   // THE TENANT COMES FROM THE SESSION (CLAUDE.md §4). On the staff side that is
   // resolveWriteContext(); on the portal side it is the contact row
   // verifyContactCaller matched against the signed-in user. Neither is a parameter.
-  check("the payout's brokerage is the session's (ctx.brokerageId from resolveWriteContext), never a parameter",
-    /const ctx = await resolveWriteContext\(\)/.test(pay) && !/brokerageId:\s*params\./.test(pay))
+  // PINNED TO ONE RESOLVER NAME, AND THE MONEY PATH MOVED TO A STRICTER ONE.
+  // The act-as merge converted this file from resolveWriteContext() to
+  // resolveWriteContextForTenant(), which is a NARROWING: it refuses a tenantless
+  // session and refuses a read_only impersonation grant before any client is
+  // built, where the older function returned a nullable brokerageId the caller
+  // had to remember to check. The old regex demanded the exact shorter name and
+  // could not match the longer one, so a §4 money assertion went red for a change
+  // that tightened it.
+  //
+  // The property is the one that matters and it is unchanged: THE TENANT COMES
+  // FROM THE SESSION, NEVER FROM A PARAMETER. Both sanctioned session resolvers
+  // are accepted; anything else — including a caller-supplied id — still fails.
+  // The negative half is widened rather than relaxed: not just `brokerageId:
+  // params.x` as an object key, but any read of a brokerage id off the params
+  // object at all, which is the shape §4 names as the IDOR found repeatedly here.
+  const sessionResolved =
+    /const ctx = await resolveWriteContextForTenant\(\)/.test(pay)
+    || /const ctx = await resolveWriteContext\(\)/.test(pay)
+  check("the payout's brokerage is the session's (ctx.brokerageId from a session resolver), never a parameter",
+    sessionResolved
+    && !/brokerageId:\s*params\./.test(pay)
+    && !/params\.brokerageId/.test(pay))
+  // The narrowing is worth asserting in its own right: this file handles MONEY,
+  // and a tenantless session reaching a payout is the failure §4 calls fail-open.
+  // COUNTED, NOT SPOTTED — and my first attempt at this check was the weakness
+  // vendor-w9's comment warns about, caught by its own control. It asserted that
+  // `if (!ctx.ok || !ctx.brokerageId)` appears in this file. It does, SIX times,
+  // so deleting the refusal from the payout entry point left the assertion green:
+  // the mutation applied, five siblings still matched, 116/0. An assertion
+  // satisfied by a sibling call site cannot protect the one that matters.
+  //
+  // Every session resolve in this money file must be followed by the refusal, so
+  // assert the PAIRING rather than the presence: as many fail-closed refusals as
+  // resolver calls. Removing one from any entry point now breaks the equality.
+  const tenantResolves = (pay.match(/await resolveWriteContextForTenant\(\)/g) ?? []).length
+  const failClosed     = (pay.match(/if \(!ctx\.ok \|\| !ctx\.brokerageId\)/g) ?? []).length
+  check("…and EVERY session resolve in this money file refuses when the session names no tenant",
+    tenantResolves > 0 && failClosed === tenantResolves,
+    `${failClosed} refusal(s) for ${tenantResolves} resolve(s)`)
   check("the portal's brokerage is the SESSION-VERIFIED contact's, not the invoice's own claim",
     /const sessionBrokerageId = gate\.contact\.brokerage_id/.test(pay))
   check("…and the invoice's brokerage is CHECKED against it rather than trusted (an invoice id must not select a bank account)",
