@@ -112,6 +112,17 @@ export const RETIRED_VIDEO_STATUS: Record<string, CanonicalVideoStatus> = {
   rendering:         "generating",
   submitting:        "generating",
   awaiting_provider: "generating",
+  // MERGED 2026-08-26 from the duplicate vocabulary that used to live at
+  // lib/constants/index.ts (VIDEO_STATUSES / VideoStatus, now deleted — see the
+  // tombstone there). That list spelled five values: queued, processing, ready,
+  // failed, published. Four of them this module already had (`ready` via the
+  // "finished" block below); `processing` was the ONE spelling the survivor was
+  // missing, so it is merged here BEFORE the duplicate was removed (§1.1).
+  // Like preview_ready it gets no m374 SQL backfill entry: ai_video_projects
+  // held ZERO rows when this was checked against the live database
+  // (hrvaqgvukzxfskkcrwbt, 2026-08-26), and no writer in the tree ever
+  // persisted it — the constants barrel exported the word and nothing used it.
+  processing:        "generating",
   // audio_ready was a slideshow MID-phase: the voiceover exists, the video does
   // not. It was excluded from the finished set for exactly that reason, and it
   // had no stale threshold at all, so a slideshow stuck here was never reaped.

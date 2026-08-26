@@ -30,10 +30,36 @@
 // ============================================
 
 export const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-export const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-export const PHONE_REGEX = /^\+?1?\d{10,14}$/
-export const ZIPCODE_REGEX = /^\d{5}(-\d{4})?$/
-export const URL_REGEX = /^https?:\/\/.+/
+
+// TOMBSTONE (orphan burn-down, lane BC, 2026-08-26): EMAIL_REGEX, PHONE_REGEX,
+// ZIPCODE_REGEX and URL_REGEX are DELETED. All four were exported by this
+// barrel and imported by NOTHING (verified comment-stripped across app/ lib/
+// hooks/ types/ constants/ — the only occurrences were these definitions).
+//
+// SURVIVORS — the same patterns, already live, already called:
+//   · EMAIL_REGEX   → lib/validations/index.ts:99  isValidEmail, holding the
+//                     BYTE-IDENTICAL /^[^\s@]+@[^\s@]+\.[^\s@]+$/ (re-exported
+//                     as validateEmail at :106; called from app/actions/
+//                     ai-newsletter.ts:1326 and :1659 among others).
+//   · PHONE_REGEX   → lib/validations/index.ts:109 isValidPhone, holding the
+//                     byte-identical /^\+?1?\d{10,14}$/ AND stripping spaces,
+//                     dashes and parens before testing — strictly more correct
+//                     than the bare pattern deleted here. E.164 normalisation
+//                     for the ads/PII lane lives at
+//                     lib/ads/connectors/pii.ts:32 normalizePhoneE164.
+//   · ZIPCODE_REGEX → lib/validations/index.ts:131 isValidZipcode, byte-identical
+//                     /^\d{5}(-\d{4})?$/ (also app/actions/settings/
+//                     brokerage-identity.ts:196 ZIP_PATTERN).
+//   · URL_REGEX     → the shape is applied at the seams that actually validate a
+//                     URL, e.g. lib/marketing/image-library.ts:72 and
+//                     app/actions/superadmin/platform-social.ts:167 (both the
+//                     byte-identical /^https?:\/\/.+/), app/actions/
+//                     content-intel/sources.ts:153, app/actions/user-profile.ts:72.
+//
+// Nothing merged: each survivor already carried the whole pattern. UUID_REGEX
+// stays because it HAS importers — note it is itself duplicated at
+// lib/validations/index.ts:83, which is a §6 defect left for a lane that can
+// repoint the importers.
 
 // ============================================
 // FEATURE FLAGS
@@ -214,8 +240,20 @@ export const PROPERTY_TYPES = [
 ] as const
 export type PropertyType = (typeof PROPERTY_TYPES)[number]
 
-/** Human labels for the canonical values — the ONE place a property type is named. */
-export const PROPERTY_TYPE_LABELS: Record<PropertyType, string> = {
+/** Human labels for the canonical values — the ONE place a property type is named.
+ *
+ *  UN-EXPORTED 2026-08-26 (orphan burn-down, lane BC). The VALUE is live — it is
+ *  what PROPERTY_TYPE_OPTIONS below is built from, and that IS imported (three
+ *  surfaces: app/components/form-wizard/FormWizard.tsx:52,
+ *  app/components/home-value/AddressSearchForm.tsx:21,
+ *  app/crm/contacts/[contactId]/alerts/page.tsx:69). What was orphaned was the
+ *  EXPORT: no file anywhere imported this name (verified comment-stripped across
+ *  app/ lib/ hooks/ types/ constants/ — the only two occurrences were this
+ *  declaration and the .map() below it). So the half deleted is the public
+ *  binding, not the map; nothing moved and no survivor is owed, because the one
+ *  consumer is eight lines down in this file. A selector that wants a label
+ *  takes PROPERTY_TYPE_OPTIONS, which carries it. */
+const PROPERTY_TYPE_LABELS: Record<PropertyType, string> = {
   single_family: "Single Family",
   condo:         "Condo",
   townhouse:     "Townhouse",
@@ -367,15 +405,45 @@ export const VIDEO_TYPES = [
 ] as const
 export type VideoType = (typeof VIDEO_TYPES)[number]
 
-export const VIDEO_STATUSES = ["queued", "processing", "ready", "failed", "published"] as const
-export type VideoStatus = (typeof VIDEO_STATUSES)[number]
+// TOMBSTONE (orphan burn-down, lane BC, 2026-08-26): VIDEO_STATUSES and
+// VideoStatus are DELETED — a SECOND video-status vocabulary, which §6 names as
+// the exact defect that has already bitten this lane ("video status (22
+// spellings)"). Neither the const nor the type was imported by any file.
+//
+// SURVIVOR: lib/video/video-status.ts:72 CANONICAL_VIDEO_STATUSES /
+// :84 CanonicalVideoStatus — the nine values mirrored by the m374 CHECK on
+// ai_video_projects.status, with isCanonicalVideoStatus (:86) and
+// normalizeVideoStatus (:141) as the gate and the migrator.
+//
+// MERGED FIRST, then deleted (§1.1): of the five words this list spelled,
+// `queued`, `failed` and `published` are canonical there already and `ready`
+// was already mapped (→ "completed"). The ONE spelling the survivor was missing
+// was `processing`; it is now an entry in RETIRED_VIDEO_STATUS → "generating"
+// (lib/video/video-status.ts, "in flight at a provider" block). Checked against
+// the live database (hrvaqgvukzxfskkcrwbt, 2026-08-26): ai_video_projects holds
+// ZERO rows, so no backfill was owed and the entry is a mapping record only.
 
 // ============================================
 // OPEN HOUSE TYPES
 // ============================================
 
-export const OPEN_HOUSE_STATUSES = ["scheduled", "in_progress", "completed", "cancelled"] as const
-export type OpenHouseStatus = (typeof OPEN_HOUSE_STATUSES)[number]
+// TOMBSTONE (orphan burn-down, lane BC, 2026-08-26): OPEN_HOUSE_STATUSES and
+// OpenHouseStatus are DELETED. Neither was imported by any file, and the list
+// was a SECOND open-house status vocabulary that the database would have
+// refused: it spelled "in_progress", which is not in the live CHECK — a write
+// through this list would have been rejected outright.
+//
+// SURVIVOR: open_house_events.status, whose CHECK is the vocabulary
+//   ['draft','scheduled','marketing','active','completed','cancelled']
+// (measured live, hrvaqgvukzxfskkcrwbt 2026-08-26:
+// open_house_events_status_check), mirrored in the GENERATED cache at
+// scripts/check-vocabularies.ts:1062 and enforced by test:check-vocabulary.
+// open_house_events is the consolidation survivor named in
+// lib/kernel/manager-registry.ts:482 (open_house_single_event_table).
+//
+// NOTHING MERGED, deliberately: the survivor's word for the state this list
+// called "in_progress" is "active", and adding a fourth spelling to a
+// CHECK-backed vocabulary is the §6 defect, not the fix.
 
 // ============================================
 // CAMPAIGN TYPES
@@ -495,21 +563,41 @@ export const CACHE_TTL = {
   VERY_LONG: 24 * TIME.HOUR,
 } as const
 
-export const AI_LIMITS = {
-  MAX_TOKENS: 4096,
-  TEMPERATURE: 0.7,
-  MAX_RETRIES: 3,
-} as const
-
-export const AI_CONFIG = {
-  defaultModel: 'claude-sonnet-4-20250514',
-  maxTokensDefault: 1000,
-  temperatureDefault: 0.7,
-  features: {
-    videoScriptGeneration: true,
-    brandVoiceApplication: true,
-    complianceCheck: true,
-  }
-} as const
+// TOMBSTONE (orphan burn-down, lane BC, 2026-08-26): AI_LIMITS and AI_CONFIG are
+// DELETED. Neither was imported by any file — the only occurrences of either name
+// anywhere under app/ lib/ hooks/ types/ constants/ were these two declarations,
+// verified comment-stripped. Both were second hand-kept copies of settings the AI
+// lane already owns, and AI_CONFIG in particular is the exact shape §2 warns about:
+// a client-importable barrel PINNING a model id ('claude-sonnet-4-20250514') beside
+// the real registry, where it can drift without anything noticing because nothing
+// reads it.
+//
+// SURVIVORS — each field named, so nothing is "deleted to move a number":
+//   · defaultModel / model choice     → lib/ai/models.ts:26 MODEL_CONFIG (the one
+//     alias→provider/model table) resolved through lib/ai/resolve-model.ts:85
+//     resolveModel(), which every call site already goes through; and
+//     process.env.AI_GATEWAY_DEFAULT_MODEL for the ISA outreach lane
+//     (lib/ai-isa/personalize-outreach.ts:214). Pricing and the served-model
+//     identity read MODEL_CONFIG too (lib/ai/models.ts:209 modelIdentityFor) —
+//     §5 makes that ledger an invoice input, so a second model table is a wrong
+//     invoice waiting to happen.
+//   · MAX_TOKENS / maxTokensDefault   → per-call `maxTokens` on the generate
+//     options (lib/ai/generate.ts and its callers, e.g. app/actions/
+//     ai-generate.ts:30). There is no one right ceiling: a 400-token reply and a
+//     4096-token script are both correct, which is why the value belongs at the
+//     call and not in a barrel.
+//   · TEMPERATURE / temperatureDefault→ same: the per-call `temperature` option.
+//   · MAX_RETRIES                     → lib/errors/auto-retry.ts owns retry policy.
+//   · features.{videoScriptGeneration,brandVoiceApplication,complianceCheck}
+//     → kill switches that switched nothing, the same defect the STRIPE_PAYMENTS
+//     tombstone above records. All three capabilities are unconditionally live
+//     and gated by real state, not by this object: video scripting runs through
+//     lib/kernel/video.ts, brand voice through the brand-voice cascade
+//     (test:brand-voice-cascade), and the compliance check through the
+//     compliance-first script gate (test:script-compliance-first). Nothing read
+//     these booleans, so setting one false would have disabled nothing while
+//     telling a reader it had.
+//
+// Nothing merged: every survivor already carries the whole setting.
 
 

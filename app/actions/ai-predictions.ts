@@ -316,7 +316,7 @@ Respond with JSON only:
       entity_id: leadId,
       prediction_value: prediction,
       confidence_score: (prediction as any).confidence,
-      prediction_factors: extractFactors(lead as any, leadIntelligence, engagementScores) as any,
+      prediction_factors: extractFactors(leadIntelligence, engagementScores) as any,
       model_version: "v1.0",
     })
     if (predictionInsertError) {
@@ -367,8 +367,25 @@ Respond with JSON only:
  * A factor that can never fire is not a conservative default, it is a silently
  * missing input to a score somebody reads as complete.
  */
+/**
+ * PARAMETER REMOVED (orphan burn-down, lane BC, 2026-08-26): `lead` was accepted
+ * and never read — an INERT PARAMETER, the census's category 4. It is the
+ * leftover of the wave-18 removal recorded in the note directly above: the
+ * `interactions` argument and its `active_property_viewing` factor were the only
+ * things on this function that consulted the pre-conversion record, and when
+ * they went the record kept being handed in with nothing left to read it.
+ *
+ * DELETED RATHER THAN WIRED, deliberately. §1.2 says build the missing half when
+ * the capability is wanted — but the missing half here would be a NEW scoring
+ * factor, and what weight a lead-side signal carries in prediction_factors is a
+ * product ruling nobody has made. Inventing one to retire a census line would
+ * change a score somebody reads as complete, which is the very defect the note
+ * above records. So the signature now says what the body does: this reads the
+ * intelligence and engagement records and nothing else. The caller at :319 drops
+ * the argument; `lead` is still in scope there and is used for everything else
+ * that row feeds — daysSinceFirstContact still reads lead.created_at at :222.
+ */
 function extractFactors(
-  lead: Record<string, unknown>,
   intelligence: unknown,
   engagement: unknown,
 ): Record<string, unknown>[] {

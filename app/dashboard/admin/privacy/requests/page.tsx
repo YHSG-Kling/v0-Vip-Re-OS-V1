@@ -1,3 +1,4 @@
+import { Fragment } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { ShieldCheck, AlertTriangle, Clock, Inbox } from "lucide-react"
@@ -94,7 +95,8 @@ export default async function DSARQueuePage() {
                 </thead>
                 <tbody>
                   {r.rows.map(row => (
-                    <tr key={row.id} className={`border-b last:border-0 hover:bg-muted/10 ${row.is_overdue ? "bg-red-50/50" : ""}`}>
+                    <Fragment key={row.id}>
+                    <tr className={`hover:bg-muted/10 ${row.is_overdue ? "bg-red-50/50" : ""}`}>
                       <td className="px-4 py-2.5">
                         <div className="font-medium text-xs">{row.subject_name ?? "—"}</div>
                         <div className="text-xs text-muted-foreground">{row.subject_email}</div>
@@ -127,6 +129,51 @@ export default async function DSARQueuePage() {
                         />
                       </td>
                     </tr>
+                    {/* THE AUDIT RECORD — the reader half of the eleven columns
+                        data_subject_requests carried with nothing reading them
+                        (see the note on DSARQueueRow). This is the evidence a
+                        regulator asks for: how identity was proved and by whom,
+                        what was delivered, why it was refused, and where the
+                        request came in from. Rendered only when the row actually
+                        holds something — an empty audit strip on a brand-new
+                        request would read as "nothing was recorded". */}
+                    <tr className={`border-b last:border-0 ${row.is_overdue ? "bg-red-50/50" : ""}`}>
+                      <td colSpan={8} className="px-4 pb-2.5 pt-0">
+                        <div className="flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-muted-foreground">
+                          {row.source && <span>Intake: <span className="text-foreground">{row.source.replace(/_/g, " ")}</span></span>}
+                          {row.subject_phone && <span>Phone: <span className="text-foreground">{row.subject_phone}</span></span>}
+                          {row.identity_method && (
+                            <span>
+                              ID proof: <span className="text-foreground">{row.identity_method.replace(/_/g, " ")}</span>
+                              {row.identity_verified_at && ` on ${new Date(row.identity_verified_at).toLocaleDateString()}`}
+                              {(row.identity_verified_by_name || row.identity_verified_by) &&
+                                ` by ${row.identity_verified_by_name ?? row.identity_verified_by}`}
+                            </span>
+                          )}
+                          {(row.fulfilled_by_name || row.fulfilled_by) && (
+                            <span>Fulfilled by: <span className="text-foreground">{row.fulfilled_by_name ?? row.fulfilled_by}</span></span>
+                          )}
+                          {row.ip_address && <span>IP: <span className="font-mono">{row.ip_address}</span></span>}
+                          {row.user_agent && (
+                            <span className="max-w-md truncate" title={row.user_agent}>Agent: {row.user_agent}</span>
+                          )}
+                        </div>
+                        {row.response_summary && (
+                          <p className="text-[11px] mt-1">
+                            <span className="text-muted-foreground">Delivered: </span>{row.response_summary}
+                          </p>
+                        )}
+                        {row.denied_reason && (
+                          <p className="text-[11px] mt-1 text-red-700">
+                            <span className="text-muted-foreground">Denied because: </span>{row.denied_reason}
+                          </p>
+                        )}
+                        {row.notes && (
+                          <p className="text-[11px] mt-1 text-muted-foreground italic">{row.notes}</p>
+                        )}
+                      </td>
+                    </tr>
+                    </Fragment>
                   ))}
                 </tbody>
               </table>

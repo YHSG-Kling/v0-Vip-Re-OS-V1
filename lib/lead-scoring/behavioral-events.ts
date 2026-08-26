@@ -37,6 +37,10 @@
 //
 // PURE — no I/O — so every branch is unit-tested without a database.
 
+// Type-only import: erased at compile time, so this module stays pure and adds
+// nothing to the runtime graph.
+import type { LeadTemperature } from "@/lib/constants"
+
 /** One row of the event log. Only the fields that actually exist. */
 export interface BehavioralEvent {
   event_type: string
@@ -188,8 +192,20 @@ export function summarizeBehavioralEvents(
 }
 
 /** Priority tier, ported from the deprecated scorer so the hot/warm/cold language
- *  the UI already uses keeps its meaning — now over an authoritative score. */
-export function priorityTier(score: number, intent: number, engagement: number): "hot" | "warm" | "cold" {
+ *  the UI already uses keeps its meaning — now over an authoritative score.
+ *
+ *  WIRED 2026-08-26 (orphan burn-down, lane BC, §1.2): the return type was
+ *  hand-spelled `"hot" | "warm" | "cold"` here, and in twelve other places, while
+ *  the declared 3-band vocabulary — LEAD_TEMPERATURES / LeadTemperature at
+ *  lib/constants/index.ts:124 — sat exported with no importer at all. That is
+ *  the §6 defect from the writer's side: the canon existed and every reader
+ *  re-typed it, so the canon could never bind anything. The scorer now names it.
+ *  LEAD_TEMPERATURES mirrors the lead_temperature CHECK on contacts / leads /
+ *  communication_audit_log (hot/warm/cold — "cool" belongs to the 4-band
+ *  urgency_level scale and would be refused), so this tier can no longer drift
+ *  out of what the column accepts. The remaining inline spellings are UI props
+ *  owned by other lanes and are reported, not touched. */
+export function priorityTier(score: number, intent: number, engagement: number): LeadTemperature {
   if (score >= 70 || intent >= 60) return "hot"
   if (score >= 40 || engagement >= 50) return "warm"
   return "cold"

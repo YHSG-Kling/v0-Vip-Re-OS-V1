@@ -353,3 +353,116 @@ export async function runAIOverageBilling(opts?: { now?: Date }): Promise<Overag
     needsReconciliation: outcomes.filter(o => o.status === "needs_reconciliation").length,
   }
 }
+
+// ── READER: the BILLED ledger (the other half of the writethrough) ───────────
+//
+// BUILT 2026-08-26 (orphan doctrine §1.2). runAIOverageBilling() above wrote
+// eleven columns into ai_overage_invoices that NOTHING read: included_tokens,
+// used_tokens, overage_tokens, overage_rate_cents_per_1k, amount_cents,
+// period_end, stripe_customer_id, stripe_invoice_item_id and billed_at. The
+// only read on the table was the `select("id, status")` idempotency probe at
+// line 251 — so the ledger recorded what each tenant was CHARGED and no
+// surface, tenant or platform, could ever show it back. There was no duplicate
+// reader anywhere in the tree, and §5 makes this ledger load-bearing ("a wrong
+// number there is a wrong invoice"), so the missing half is BUILT rather than
+// deleted. Reader for app/dashboard/admin/ai-usage/page.tsx.
+//
+// getAIOverageStatus() above is the PROJECTION for the period still open;
+// this is the RECORD of periods already closed and charged. Different halves
+// of one story — not a duplicate of each other.
+
+export interface AIOverageInvoiceRow {
+  id: string
+  /** UTC month the charge covers. */
+  periodStartIso: string
+  periodEndIso: string
+  /** Quota that was included in the tier for that period (−1 = unlimited). */
+  includedTokens: number
+  usedTokens: number
+  overageTokens: number
+  overageRateCentsPer1k: number
+  amountCents: number
+  /** "pending" = claimed, provider outcome unknown; "billed" = provider item in hand. */
+  status: string
+  stripeCustomerId: string | null
+  stripeInvoiceItemId: string | null
+  /** Set only when the provider accepted the invoice item. */
+  billedAtIso: string | null
+  createdAtIso: string
+}
+
+export type AIOverageBillingHistory =
+  | {
+      ok: true
+      brokerageId: string
+      rows: AIOverageInvoiceRow[]
+      /** Sum of amount_cents over rows actually BILLED — pending claims are not money charged. */
+      billedTotalCents: number
+      billedTokensTotal: number
+      /** Claims with no provider result: a human reconciles these, they are not revenue. */
+      pendingCount: number
+    }
+  | { ok: false; error: string }
+
+/**
+ * What this brokerage has actually been CHARGED for AI overage, newest period
+ * first. Reads the ledger runAIOverageBilling() writes.
+ *
+ * Money, so it is finance-gated at the call site exactly like the projection
+ * (app/dashboard/admin/ai-usage/page.tsx) — this function takes the brokerage
+ * id it is told to read and does not resolve the tenant itself; the caller
+ * takes the tenant from the SESSION (§4).
+ *
+ * Every read destructures error: a refusal is reported as a refusal, never as
+ * an empty history that reads like "you were never billed".
+ */
+export async function getAIOverageBillingHistory(
+  brokerageId: string,
+  opts?: { limit?: number },
+): Promise<AIOverageBillingHistory> {
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  let svc: ReturnType<typeof createServiceClient>
+  try {
+    svc = createServiceClient()
+  } catch (e: any) {
+    return { ok: false, error: `service client unavailable: ${e?.message ?? String(e)}` }
+  }
+
+  const limit = Math.max(1, Math.min(60, Math.floor(opts?.limit ?? 12)))
+  const { data, error } = await svc
+    .from("ai_overage_invoices")
+    .select(
+      "id, period_start, period_end, included_tokens, used_tokens, overage_tokens, overage_rate_cents_per_1k, amount_cents, status, stripe_customer_id, stripe_invoice_item_id, billed_at, created_at",
+    )
+    .eq("brokerage_id", brokerageId)
+    .eq("metric", AI_OVERAGE_METRIC)
+    .order("period_start", { ascending: false })
+    .limit(limit)
+  if (error) return { ok: false, error: `ai_overage_invoices read refused: ${error.message}` }
+
+  const rows: AIOverageInvoiceRow[] = (data ?? []).map(r => ({
+    id: r.id as string,
+    periodStartIso: r.period_start as string,
+    periodEndIso: r.period_end as string,
+    includedTokens: Number(r.included_tokens ?? 0),
+    usedTokens: Number(r.used_tokens ?? 0),
+    overageTokens: Number(r.overage_tokens ?? 0),
+    overageRateCentsPer1k: Number(r.overage_rate_cents_per_1k ?? 0),
+    amountCents: Number(r.amount_cents ?? 0),
+    status: (r.status as string | null) ?? "pending",
+    stripeCustomerId: (r.stripe_customer_id as string | null) ?? null,
+    stripeInvoiceItemId: (r.stripe_invoice_item_id as string | null) ?? null,
+    billedAtIso: (r.billed_at as string | null) ?? null,
+    createdAtIso: r.created_at as string,
+  }))
+
+  const billed = rows.filter(r => r.status === "billed")
+  return {
+    ok: true,
+    brokerageId,
+    rows,
+    billedTotalCents: billed.reduce((s, r) => s + r.amountCents, 0),
+    billedTokensTotal: billed.reduce((s, r) => s + r.overageTokens, 0),
+    pendingCount: rows.filter(r => r.status === "pending").length,
+  }
+}

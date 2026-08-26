@@ -5,7 +5,7 @@ import { Brain, Zap, TrendingUp, Users, AlertTriangle, Gauge, DollarSign } from 
 import { getCurrentMonthUsage } from "@/lib/ai/cost-tracking"
 import { getAgentAICostRanking } from "@/app/actions/pl-truth-engine"
 import { getBrokerageAIQuotaStatus } from "@/lib/ai/fair-use"
-import { getAIOverageStatus } from "@/lib/billing/ai-overage"
+import { getAIOverageStatus, getAIOverageBillingHistory } from "@/lib/billing/ai-overage"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
@@ -69,11 +69,14 @@ export default async function AIUsagePage() {
   // not. Superadmin keeps its platform-wide dollar view.
   const isFinanceAdmin = isSuperadmin || isBrokerageFinanceAdmin({ user_type: profile?.user_type })
 
-  const [usage, agentRankingResult, quota, overage] = await Promise.all([
+  const [usage, agentRankingResult, quota, overage, overageHistory] = await Promise.all([
     getCurrentMonthUsage({ brokerageId: brokerageId ?? undefined }),
     getAgentAICostRanking(),
     brokerageId ? getBrokerageAIQuotaStatus(brokerageId) : Promise.resolve(null),
     brokerageId ? getAIOverageStatus(brokerageId) : Promise.resolve(null),
+    // The BILLED ledger for periods already closed. Only fetched for the people
+    // allowed to see money — the projection card above draws the same line.
+    brokerageId && isFinanceAdmin ? getAIOverageBillingHistory(brokerageId) : Promise.resolve(null),
   ])
 
   if (!usage) {
@@ -104,6 +107,12 @@ export default async function AIUsagePage() {
   // usage_counters; nothing here accrues.
   const overageOk = overage && overage.ok ? overage : null
   const overageActive = !!(overageOk && overageOk.overageAllowed && overageOk.overageTokens > 0)
+
+  // BILLED history (the ledger runAIOverageBilling writes). A refusal renders
+  // as a refusal — an empty table would read as "you were never charged",
+  // which is exactly the silent-zero this page must not tell a finance admin.
+  const historyOk = overageHistory && overageHistory.ok ? overageHistory : null
+  const historyError = overageHistory && !overageHistory.ok ? overageHistory.error : null
 
   // ROI is still meaningful even though brokers don't see dollar cost — it's
   // token efficiency: agent X's GCI ÷ tokens consumed. We render it as the
@@ -234,6 +243,105 @@ export default async function AIUsagePage() {
                 ? "; usage past it keeps working and is invoiced as overage when the billing period closes."
                 : ". Your plan does not include overage billing — AI pauses at the quota until next period or an approved quota increase."}
             </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* BILLED overage history — the reader half of the ai_overage_invoices
+          writethrough (lib/billing/ai-overage.ts:getAIOverageBillingHistory).
+          Finance-gated, same line the projected-cost figure above draws. */}
+      {isFinanceAdmin && (historyOk || historyError) && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <DollarSign className="h-4 w-4 text-primary" />
+              Overage billed — closed periods
+              {historyOk && historyOk.pendingCount > 0 && (
+                <Badge className="ml-2 bg-amber-100 text-amber-800">
+                  {historyOk.pendingCount} awaiting reconciliation
+                </Badge>
+              )}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {historyError && (
+              <p className="text-sm text-red-700">
+                Billing history could not be read: {historyError}. This is a refusal, not a zero —
+                do not read it as &ldquo;never billed&rdquo;.
+              </p>
+            )}
+            {historyOk && historyOk.rows.length === 0 && (
+              <p className="text-sm text-muted-foreground">
+                No AI overage has been billed to this brokerage yet.
+              </p>
+            )}
+            {historyOk && historyOk.rows.length > 0 && (
+              <>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-4">
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-1">Billed to date</p>
+                    <p className="text-xl font-bold">{formatCost(historyOk.billedTotalCents)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-1">Overage tokens billed</p>
+                    <p className="text-xl font-bold">{formatTokens(historyOk.billedTokensTotal)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-1">Periods on record</p>
+                    <p className="text-xl font-bold">{historyOk.rows.length}</p>
+                  </div>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-xs text-muted-foreground border-b">
+                        <th className="py-2 pr-3 font-medium">Period</th>
+                        <th className="py-2 pr-3 font-medium">Included</th>
+                        <th className="py-2 pr-3 font-medium">Used</th>
+                        <th className="py-2 pr-3 font-medium">Over</th>
+                        <th className="py-2 pr-3 font-medium">Rate /1K</th>
+                        <th className="py-2 pr-3 font-medium">Amount</th>
+                        <th className="py-2 pr-3 font-medium">Status</th>
+                        <th className="py-2 font-medium">Invoice item</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {historyOk.rows.map(r => (
+                        <tr key={r.id} className="border-b last:border-0">
+                          <td className="py-2 pr-3 whitespace-nowrap">
+                            {r.periodStartIso.slice(0, 10)} → {r.periodEndIso.slice(0, 10)}
+                          </td>
+                          <td className="py-2 pr-3">
+                            {r.includedTokens < 0 ? "Unlimited" : formatTokens(r.includedTokens)}
+                          </td>
+                          <td className="py-2 pr-3">{formatTokens(r.usedTokens)}</td>
+                          <td className="py-2 pr-3">{formatTokens(r.overageTokens)}</td>
+                          <td className="py-2 pr-3">{formatCost(r.overageRateCentsPer1k)}</td>
+                          <td className="py-2 pr-3 font-medium">{formatCost(r.amountCents)}</td>
+                          <td className="py-2 pr-3">
+                            {r.status === "billed" ? (
+                              <Badge className="bg-emerald-100 text-emerald-800">
+                                Billed {r.billedAtIso ? r.billedAtIso.slice(0, 10) : ""}
+                              </Badge>
+                            ) : (
+                              <Badge className="bg-amber-100 text-amber-800">Pending claim</Badge>
+                            )}
+                          </td>
+                          <td className="py-2 text-xs text-muted-foreground font-mono">
+                            {r.stripeInvoiceItemId ?? (r.stripeCustomerId ? `cust ${r.stripeCustomerId}` : "—")}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-xs text-muted-foreground mt-3">
+                  A &ldquo;pending claim&rdquo; is a period the biller reserved but for which no
+                  provider result came back. It is <strong>not</strong> money charged and is excluded
+                  from the totals above — a human reconciles it against Stripe.
+                </p>
+              </>
+            )}
           </CardContent>
         </Card>
       )}

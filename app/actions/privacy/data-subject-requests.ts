@@ -156,6 +156,53 @@ export interface DSARQueueRow {
   is_overdue:          boolean
   identity_verified:   boolean
   fulfilled_at:        string | null
+
+  // ── THE AUDIT RECORD (built 2026-08-26, orphan doctrine §1.2) ─────────────
+  //
+  // Eleven columns on data_subject_requests were WRITTEN and read by NOBODY:
+  // identity_method, identity_verified_at, identity_verified_by, fulfilled_by,
+  // response_summary, denied_reason, source, ip_address, user_agent,
+  // subject_phone and notes. The queue reader below selected nine summary
+  // fields and stopped, so the record of HOW a statutory request was handled —
+  // who checked identity and by what method, what was actually delivered, who
+  // signed it off, why it was refused — could be written and never read back.
+  //
+  // That is not a tidiness problem. The comment at DSAR_IDENTITY_METHODS below
+  // already says the vocabulary is enforced in code because otherwise a typo
+  // becomes "a permanent, unreviewable audit record of how a legal identity
+  // check was performed" — and unreviewable is exactly what it was, because
+  // nothing reviewed it. A brokerage answering a regulator about a CCPA/GDPR
+  // response had the facts in the table and no way to show them.
+  //
+  // No duplicate reader exists anywhere in the tree, so §1.2 applies: BUILD the
+  // missing half. It is added to the EXISTING queue reader rather than a new
+  // detail action — one query, one round trip, no new module in the compile
+  // graph (§8), and the audit line renders under the row it belongs to.
+  //
+  // ip_address / user_agent are the requester's own intake provenance and are
+  // shown only to the fulfilment roles that already see their email and phone
+  // on this same row, inside the same tenant predicate. They are the evidence
+  // that the request came from where it claims to have come from.
+
+  /** How identity was proved: magic_link | matching_user | manual_review | driver_license. */
+  identity_method:      string | null
+  identity_verified_at: string | null
+  /** users.id of the staff member who accepted the identity proof. */
+  identity_verified_by: string | null
+  identity_verified_by_name: string | null
+  /** users.id of whoever fulfilled it. */
+  fulfilled_by:         string | null
+  fulfilled_by_name:    string | null
+  /** What was actually delivered to the subject. */
+  response_summary:     string | null
+  /** Why it was refused — the half a denial is meaningless without. */
+  denied_reason:        string | null
+  /** Intake channel: web_form | email | phone | postal | api (live CHECK). */
+  source:               string | null
+  subject_phone:        string | null
+  ip_address:           string | null
+  user_agent:           string | null
+  notes:                string | null
 }
 
 export async function listDSARQueueAction(): Promise<
@@ -168,11 +215,39 @@ export async function listDSARQueueAction(): Promise<
   const svc = createServiceClient()
   const { data, error } = await svc
     .from("data_subject_requests")
-    .select("id, request_type, subject_email, subject_name, status, received_at, due_at, identity_verified, fulfilled_at")
+    .select(
+      "id, request_type, subject_email, subject_name, status, received_at, due_at, identity_verified, fulfilled_at, " +
+      // The audit half — see the note on DSARQueueRow above.
+      "identity_method, identity_verified_at, identity_verified_by, fulfilled_by, response_summary, denied_reason, " +
+      "source, subject_phone, ip_address, user_agent, notes",
+    )
     .eq("brokerage_id", auth.brokerageId)
     .order("due_at", { ascending: true })
     .limit(200)
   if (error) return { ok: false, error: error.message }
+
+  // Resolve the two staff ids to names in ONE bounded lookup. A failure here
+  // leaves the NAME null and keeps the ID — the audit record must still show
+  // who acted even when we cannot pretty-print them, so a refused name lookup
+  // degrades the display and never the evidence.
+  const staffIds = [...new Set(
+    (data ?? []).flatMap((r: any) => [r.identity_verified_by, r.fulfilled_by]).filter(Boolean) as string[],
+  )]
+  const staffName = new Map<string, string>()
+  if (staffIds.length > 0) {
+    const { data: staff, error: staffError } = await svc
+      .from("users")
+      .select("id, first_name, last_name, email")
+      .in("id", staffIds)
+    if (staffError) {
+      console.error("[dsar-queue] staff name lookup refused:", staffError.message)
+    } else {
+      for (const u of staff ?? []) {
+        const name = [u.first_name, u.last_name].filter(Boolean).join(" ").trim()
+        staffName.set(u.id as string, name || (u.email as string | null) || (u.id as string))
+      }
+    }
+  }
 
   const now = Date.now()
   const rows: DSARQueueRow[] = (data ?? []).map((r: any) => {
@@ -190,6 +265,20 @@ export async function listDSARQueueAction(): Promise<
       is_overdue:        days < 0 && (r.status === "received" || r.status === "in_progress"),
       identity_verified: r.identity_verified,
       fulfilled_at:      r.fulfilled_at,
+
+      identity_method:           r.identity_method ?? null,
+      identity_verified_at:      r.identity_verified_at ?? null,
+      identity_verified_by:      r.identity_verified_by ?? null,
+      identity_verified_by_name: r.identity_verified_by ? (staffName.get(r.identity_verified_by) ?? null) : null,
+      fulfilled_by:              r.fulfilled_by ?? null,
+      fulfilled_by_name:         r.fulfilled_by ? (staffName.get(r.fulfilled_by) ?? null) : null,
+      response_summary:          r.response_summary ?? null,
+      denied_reason:             r.denied_reason ?? null,
+      source:                    r.source ?? null,
+      subject_phone:             r.subject_phone ?? null,
+      ip_address:                r.ip_address == null ? null : String(r.ip_address),
+      user_agent:                r.user_agent ?? null,
+      notes:                     r.notes ?? null,
     }
   })
 

@@ -2121,14 +2121,46 @@ function collectFetchRefs(file: string, src: string) {
     re.lastIndex = 0
     let m: RegExpExecArray | null
     while ((m = re.exec(src))) {
-      const text = m[1]
+      let text = m[1]
       // Must START with /api/ — that rules out `https://other.host/api/x`, which
       // is somebody else's server and not a route this repo is expected to own.
-      // (An external base URL spelled `${API_BASE}/api/v1/…` starts with the
-      // interpolation, so it is excluded by the same rule.)
-      if (!text.startsWith("/api/")) continue
+      //
+      // …EXCEPT FOR THE ONE SHAPE CLAUDE.md §1 NAMES AS REACHABILITY EVIDENCE.
+      // The rule above also threw away every SAME-ORIGIN SELF-CALL, because those
+      // are written `${baseUrl}/api/…` and so start with the interpolation. §1 is
+      // explicit that a same-origin self-call spelled that way is proof a route is
+      // live — and this scan was discarding all 33 of them in the tree, so
+      // category 6b accused routes that a cron calls on every run. Three were
+      // provably live and carried their own vercel.json function config:
+      //   app/api/cron/composition-render-queue/route.ts:77 →
+      //     `${baseUrl}/api/internal/remotion/render-composition`
+      //   app/api/cron/listing-promo-render/route.ts:57     → …/render-just-listed
+      //   app/api/cron/newsletter-video-render/route.ts:88  → …/render-newsletter-video
+      // all three named under vercel.json "functions" with a 3008 MB / 300 s
+      // budget, which is not something a dead endpoint carries. §2: this is the
+      // accusing direction of "a guard that cannot see the code it judges".
+      //
+      // THE ASYMMETRY IS PRESERVED, and it is the whole reason this is safe. A
+      // self-origin-prefixed literal is admitted as EVIDENCE (direction 6b, where
+      // being generous suppresses findings) and is FORCED to isRequest:false, so
+      // it can never become a 6a accusation. That keeps the protection the old
+      // comment was really about: `${API_BASE}/api/v1/…` pointing at somebody
+      // else's host still cannot be reported as a runtime 404 here — it lands in
+      // unroutedNonRequestLiterals, counted and never accused.
+      let selfOriginPrefixed = false
+      if (!text.startsWith("/api/")) {
+        // Exactly ONE leading interpolation, immediately followed by /api/.
+        // `${a}${b}/api/x` and `https://h.example/api/x` do not match.
+        const selfOrigin = /^\$\{[^}]*\}(\/api\/[^\s]*)$/.exec(text)
+        if (!selfOrigin) continue
+        text = selfOrigin[1]
+        selfOriginPrefixed = true
+      }
       const path = text.split("?")[0].split("#")[0].replace(/\$\{[^}]*\}/g, "*").replace(/\/+$/, "")
-      fetchRefs.push({ path, file, line: lineOf(src, m.index!), isRequest: isRequestArgument(src, m.index!) })
+      fetchRefs.push({
+        path, file, line: lineOf(src, m.index!),
+        isRequest: selfOriginPrefixed ? false : isRequestArgument(src, m.index!),
+      })
     }
   }
 }
@@ -2198,6 +2230,35 @@ for (const f of fetchesWithNoRoute) add("fetch-no-route", f.path, `${f.file}:${f
     fetchRefs.length = before
     return grew === 1 && wasRequest
   })())
+  // ── SAME-ORIGIN SELF-CALL: the §1 reachability shape, both arms ────────────
+  control("C6 SEES a same-origin self-call written `${base}/api/…` (§1's own evidence shape)", (() => {
+    const before = fetchRefs.length
+    collectFetchRefs("<control>", "await fetch(`${baseUrl}/api/control/self-called`, { method: \"POST\" })")
+    const probe = fetchRefs[fetchRefs.length - 1]
+    const seen = fetchRefs.length - before === 1 && probe?.path === "/api/control/self-called"
+    fetchRefs.length = before
+    return seen
+  })())
+  control("C6 NEGATIVE — that self-call can never become a 6a 404 accusation (isRequest forced false)", (() => {
+    const before = fetchRefs.length
+    collectFetchRefs("<control>", "await fetch(`${API_BASE}/api/v1/somebody-elses-host`)")
+    const probe = fetchRefs[fetchRefs.length - 1]
+    const safe = !!probe && probe.isRequest === false
+    fetchRefs.length = before
+    return safe
+  })())
+  control("C6 NEGATIVE — a base with TWO interpolations before /api/ is still refused", (() => {
+    const before = fetchRefs.length
+    collectFetchRefs("<control>", "const u = `${proto}${host}/api/control/two-interps`")
+    const grew = fetchRefs.length - before
+    fetchRefs.length = before
+    return grew === 0
+  })())
+  control("C6 END-TO-END: the three remotion render routes ARE addressed (vercel.json budgets them)", (() =>
+    ["/api/internal/remotion/render-composition",
+     "/api/internal/remotion/render-just-listed",
+     "/api/internal/remotion/render-newsletter-video",
+    ].every((p) => fetchRefs.some((f) => f.path === p)))())
   control("C6 sees an SWR key as a request (the coordination-dashboard shape)", (() => {
     const before = fetchRefs.length
     collectFetchRefs("<control>", "const { data } = useSWR(`/api/control/sessions?x=${id}`, fetcher)")
