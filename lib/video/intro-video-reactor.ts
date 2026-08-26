@@ -83,9 +83,48 @@ import { resolveDirectorIdentity, brandBlock } from "@/lib/video/director-conten
 import {
   buildIntroCompositionRequest,
   describeIntroCompositionGap,
+  INTRO_VIDEO_COMPOSITION,
   type IntroCompositionRequest,
 } from "@/lib/video/avatar-render-orchestrator"
+import {
+  narrationBudget,
+  narrationLengthDirective,
+  narrationMaxTokens,
+  fitNarrationToBudget,
+  type NarrationBudget,
+} from "@/lib/video/script-structure"
+import { compositionSeconds, geometryFor } from "@/lib/remotion/composition-geometry"
+import {
+  anniversaryGreeting,
+  buildAnniversarySituation,
+  enforceAnniversaryGreeting,
+  safeAnniversaryFallback,
+  verifyEquityClaims,
+} from "@/lib/video/anniversary-script"
 import type { Persona, JourneyType } from "@/lib/kernel/types"
+
+/**
+ * THE WORD BUDGET THE SPOKEN SCRIPT HAS, DERIVED FROM THE COMPOSITION THAT
+ * SPEAKS IT — never a literal (§2, "assert the RULE and derive the number").
+ *
+ * `AgentTalkingHeadReel` is 420 frames at 30fps = 14s, which
+ * `narrationBudget` turns into 11.2 claimable seconds and 28 words at the one
+ * WORDS_PER_MINUTE constant. Move the composition's geometry and this moves with
+ * it; nothing here needs retyping.
+ *
+ * WHAT THIS REPLACED, AND WHY IT MATTERS ON THE ANNIVERSARY LANE. The
+ * anniversary prompt asked for "80-110 words" — three to four times the budget —
+ * and nothing on this path ever measured it. The overrun did not fail loudly: the
+ * composition frames the D-ID track as `<Video trimBefore={0} trimAfter={BODY}>`
+ * with BODY = 10s, so the agent was simply cut off mid-sentence in a video
+ * already delivered to a past client. Asking for a script that fits is cheaper
+ * than trimming one, and `fitNarrationToBudget` below is the backstop for a model
+ * that ignores the ceiling anyway.
+ */
+function introNarrationBudget(): NarrationBudget {
+  const geo = geometryFor(INTRO_VIDEO_COMPOSITION)
+  return narrationBudget(INTRO_VIDEO_COMPOSITION, geo ? compositionSeconds(geo) : 0)
+}
 
 type IntroTrigger = "contact_agent_assigned" | "home_anniversary"
 
@@ -168,6 +207,32 @@ export interface AssignmentIntroInput extends BaseInput {
 // duplicate of the data reel.
 export interface AnniversaryVideoInput extends BaseInput {
   yearsAgo: number
+  /**
+   * THE EQUITY REPORT, as the fact lines the script may state.
+   *
+   * OWNER RULING: "anniversary video is a happy anniversary with an equity
+   * report." The greeting half is enforced unconditionally
+   * (lib/video/anniversary-script.ts); THIS is the second half, and it is
+   * optional for one honest reason — the equity numbers exist only where a REAL
+   * valuation was fetched. `lib/kernel/anniversary-equity.ts` skips a contact
+   * outright when no valuation is available (skippedNoValuation) rather than
+   * inventing one, so a caller with no facts must be able to ask for the
+   * greeting alone instead of the platform making a figure up.
+   *
+   * NOT DERIVED HERE. The producer already builds this exact list for the portal
+   * note out of the computed `EquityLine`; passing it is what gave that list a
+   * second reader instead of this file growing a second copy of the equity
+   * narrative (§6).
+   *
+   * `hasLoanData` rides along because it decides what may be SAID, not just what
+   * the numbers are: false means `computeEquityLine` returned estimatedEquity
+   * null, every text surface degrades to appreciation-only, and
+   * `verifyEquityClaims` refuses a script that claims equity anyway.
+   */
+  equity?: {
+    facts: readonly string[]
+    hasLoanData: boolean
+  }
 }
 
 export interface ReactorResult {
@@ -207,6 +272,13 @@ export async function dispatchAnniversaryVideo(
     trigger:     "home_anniversary",
     triggerYear,
     yearsAgo:    input.yearsAgo,
+    // §5 — THE ANNIVERSARY LANE GETS A SITUATION TOO. It never had one: the
+    // `situation` field existed on AssignmentIntroInput alone, so the whole
+    // compliance-first apparatus (the facts block AND the directives block) was
+    // wired for one of the two triggers and the anniversary prompt carried a
+    // single hardcoded sentence about protected characteristics instead.
+    situation:   buildAnniversarySituation(input.equity?.facts ?? []),
+    hasLoanData: input.equity?.hasLoanData ?? false,
   })
 }
 
@@ -217,6 +289,9 @@ interface ReactorInput extends BaseInput {
   triggerYear: number | null
   yearsAgo?:   number
   situation?:  ScriptSituation
+  /** Anniversary only — false means estimatedEquity was null, so the script may
+   *  report value growth but must not claim equity. See verifyEquityClaims. */
+  hasLoanData?: boolean
 }
 
 /**
@@ -472,6 +547,42 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
   }
   if (complianceResult.ok) {
     script = complianceResult.script
+
+    // ─── 6b. HOLD THE SPOKEN SCRIPT TO WHAT THE COMPOSITION CAN SPEAK, AND TO
+    //     WHAT MAY BE SAID ABOUT ONE NAMED PERSON'S MONEY ─────────────────────
+    //
+    // ORDER IS THE WHOLE POINT. Both steps run AFTER the gate and neither
+    // AUTHORS anything: the trim only removes trailing sentences, and the
+    // refusal path swaps in deterministic template chrome. So no sentence
+    // reaches the client that evaluateOutbound did not clear, and no sentence
+    // reaches the client that the trim silently stripped the disclaimer off.
+    if (input.trigger === "home_anniversary") {
+      const budget = introNarrationBudget()
+      const fit = fitNarrationToBudget(script, budget)
+      if (fit.note) {
+        // A COUNT THAT MOVES IS THE FINDING (§2). Trimming is not free — it costs
+        // the closing invitation — so it is reported, never silent.
+        console.warn(`[intro-video-reactor] project script trimmed: ${fit.note}`)
+      }
+      script = fit.script
+
+      // FAIL CLOSED (§4). The trim is exactly what can turn a compliant draft
+      // into a non-compliant one: it cuts from the END, so a "these are
+      // estimates, not an appraisal" parked in the final sentence is the first
+      // thing to go, leaving a bare dollar figure about a named client. If the
+      // surviving text cannot carry its own qualifiers, the figures are not
+      // spoken at all — the greeting still is, and the equity report still
+      // reaches them on the portal card this clip is stamped onto.
+      const verdict = verifyEquityClaims(script, { hasLoanData: input.hasLoanData ?? false })
+      if (!verdict.ok) {
+        console.warn(
+          `[intro-video-reactor] anniversary script degraded to greeting-only — ${verdict.reason}`,
+        )
+        script = safeAnniversaryFallback(
+          anniversaryGreeting({ firstName: contact.first_name ?? "", yearsHeld: input.yearsAgo ?? null }),
+        )
+      }
+    }
   } else {
     const reason = complianceResult.violations.join("; ").slice(0, 800)
     await svc.from("agent_intro_videos")
@@ -824,18 +935,68 @@ async function draftScript(args: {
   const violationLine = args.violations.length > 0
     ? `\n\nYour previous draft failed the brokerage's compliance gate with these violations:\n- ${args.violations.join("\n- ")}\n\nRewrite the script so EVERY one of these violations is resolved. Same length + same intent, just compliance-clean.`
     : ""
+  // THE ANNIVERSARY GREETING, composed before the prompt so the SAME string is
+  // both what the writer is asked for and what the enforcement falls back to.
+  const greeting = anniversaryGreeting({ firstName: args.firstName, yearsHeld: args.yearsAgo ?? null })
+  const budget = introNarrationBudget()
+
   const basePrompt = args.trigger === "contact_agent_assigned"
     ? `Write a 30-45 second video script for a real estate agent introducing themselves to a new contact named ${args.firstName}.
 Voice: first-person, warm, professional. ${personaLine} ${newsletterLine}${situationBlock}${complianceBlock}
 Open with a hook tied to their journey, not a sales pitch. State your role in one line. Close with a single, specific next step (text/email back to schedule a call). 90-130 words. No jargon left unexplained. No commitments on specific rates or valuations. No exclamation marks. Avoid any reference to protected characteristics (race, religion, family status, national origin, gender, sexual orientation, disability, source of income). Avoid words like "perfect for families" or any phrasing that implies preference. Return ONLY the script text the agent will speak on camera.`
-    : `Write a 30-40 second home-anniversary video script. The recipient ${args.firstName} closed on their home ${args.yearsAgo} year${(args.yearsAgo ?? 0) > 1 ? "s" : ""} ago.
-Voice: first-person, warm, professional. ${personaLine}
-Acknowledge the anniversary without being saccharine. Mention you've been thinking about them. End with a low-pressure invitation (catch up coffee, market update on their neighborhood, no pitch). 80-110 words. No specific home-value claims. No guaranteed returns or appreciation language. Avoid any reference to protected characteristics. Return ONLY the script text the agent will speak on camera.`
+    // ── THE HAPPY ANNIVERSARY WITH AN EQUITY REPORT ─────────────────────────
+    // OWNER RULING: "anniversary video is a happy anniversary with an equity
+    // report." The order of the two halves is the framing, so it is the order
+    // of the instructions.
+    //
+    // WHAT THIS PROMPT USED TO BE, and why each part of it was wrong:
+    //
+    //   "Acknowledge the anniversary without being saccharine. Mention you've been thinking about them.
+    //    End with a low-pressure invitation (catch up coffee, market update on their neighborhood, no pitch).
+    //    80-110 words. No specific home-value claims. No guaranteed returns or appreciation language.
+    //    Avoid any reference to protected characteristics."
+    //
+    // Those three retired sentences are reproduced UNBROKEN above on purpose:
+    // scripts/anniversary-video-delivery-simulator.ts asserts both that they are
+    // gone from live code (stripped source) and that they are still findable in
+    // RAW source — the second half is the control proving the first half's
+    // finder works at all. A tombstone is not a call site (§2), and this one has
+    // to stay legible to the finder that depends on it.
+    //
+    //   · "Acknowledge the anniversary" IS NOT A GREETING. The composition's
+    //     eyebrow said HAPPY HOME ANNIVERSARY over an agent who never said it,
+    //     and the caption strip burned into the video is cut verbatim from
+    //     whatever sentence the model happened to open with.
+    //   · "No specific home-value claims. No guaranteed returns or appreciation
+    //     language." FORBADE THE SECOND HALF OUTRIGHT. The client watched an
+    //     equity report they were never told about, on a portal card whose body
+    //     was the whole equity story, while the agent on screen was under
+    //     instructions not to mention it.
+    //   · "80-110 words" was 3-4x the budget the composition can speak, and
+    //     nothing measured it — see introNarrationBudget above.
+    //   · The lone protected-characteristics sentence was the ENTIRE
+    //     compliance-first apparatus on this trigger: `situationBlock` and
+    //     `complianceBlock` were interpolated into the assignment branch only,
+    //     so the brokerage's own directives reached one of the two writers.
+    //     Both blocks are rendered here now, from
+    //     ANNIVERSARY_WRITING_DIRECTIVES, and the hardcoded sentence is KEPT
+    //     verbatim as the floor that survives an empty situation.
+    : `Write a home-anniversary video script for ${args.firstName}, who closed on their home ${args.yearsAgo} year${(args.yearsAgo ?? 0) > 1 ? "s" : ""} ago.
+
+THIS IS A HAPPY ANNIVERSARY THAT CARRIES THEIR EQUITY REPORT, in that order. It is a celebration of their homeownership milestone first; the value update is the good news you bring to it, not the subject of the video.
+Open with exactly this greeting, word for word: "${greeting}"
+Voice: first-person, warm, professional. ${personaLine}${situationBlock}${complianceBlock}
+Then, in one or two sentences, give them the value update using ONLY the figures above, calling each one an estimate in the same sentence you say it. Close with a warm, no-pressure invitation to catch up — no pitch, nothing to sign up for.
+${narrationLengthDirective(budget)}
+Avoid any reference to protected characteristics. Return ONLY the script text the agent will speak on camera.`
 
   const { text } = await generateTextRouted({
     feature:     "intro_video_script",
     prompt:      basePrompt + violationLine,
-    maxTokens:   300,
+    // The anniversary lane pays for the words it can actually speak. The
+    // assignment lane keeps its prior ceiling — its own 90-130 word ask is a
+    // separate overrun on the same composition and belongs to the welcome lane.
+    maxTokens:   args.trigger === "home_anniversary" ? narrationMaxTokens(budget) : 300,
     temperature: 0.6,
     // BOOK THE SPEND. `?? null` and not `?? ""` — these land in uuid columns and
     // Postgres refuses '' with 22P02, which logAIUsage swallows into a console
@@ -845,5 +1006,22 @@ Acknowledge the anniversary without being saccharine. Mention you've been thinki
     ...(args.agentUserId   ? { userId:  args.agentUserId }   : {}),
     ...(args.agentRecordId ? { agentId: args.agentRecordId } : {}),
   })
+
+  // ── THE GREETING IS ENFORCED HERE, INSIDE THE DRAFT — §5 ────────────────────
+  // A prompt instruction is a request; this is the guarantee. It runs BEFORE the
+  // function returns, which means the greeting is part of the text
+  // `evaluateOutbound` grades and part of the text a redraft is asked to fix. Add
+  // it after the gate instead and it becomes a line of client-facing copy no
+  // compliance gate ever saw — the exact hole avatar-render-orchestrator names
+  // about the caption strip, one step earlier in the pipeline.
+  //
+  // NEVER REWRITES: a draft that already opens with a happy anniversary keeps its
+  // own words. See lib/video/anniversary-script.ts.
+  if (args.trigger === "home_anniversary") {
+    return enforceAnniversaryGreeting(
+      text.trim(),
+      anniversaryGreeting({ firstName: args.firstName, yearsHeld: args.yearsAgo ?? null }),
+    )
+  }
   return text.trim()
 }

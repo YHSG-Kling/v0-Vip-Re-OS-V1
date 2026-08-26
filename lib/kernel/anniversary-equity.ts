@@ -231,6 +231,45 @@ export function composeEquityNote(args: EquityNoteArgs): { subject: string; body
 }
 
 /**
+ * PURE: THE EQUITY REPORT AS FACT LINES A WRITER MAY USE.
+ *
+ * Extracted from `runAnniversaryEquity`'s body, where it was an inline array with
+ * exactly ONE reader — the portal note's persona copy generator. The
+ * ANNIVERSARY VIDEO, which the owner's ruling says IS "a happy anniversary with
+ * an equity report", could not see it: `dispatchAnniversaryVideo` took only
+ * `yearsAgo`, and its writing prompt then forbade "specific home-value claims"
+ * outright. Two writers, one set of facts, one place they are spelled (§6) —
+ * rather than the video growing a second rendering of the same numbers that
+ * could round or hedge them differently from the card sitting underneath it.
+ *
+ * EVERY LINE IS ALREADY HONEST, because the honesty is not the writer's job to
+ * remember: each figure is labeled an estimate here, the appreciation-only case
+ * SAYS it is appreciation-only and instructs the writer to say so too, and the
+ * closing line carries "not an appraisal" and "not financial advice". A writer
+ * that repeats these verbatim cannot produce an unqualified claim.
+ *
+ * NOTHING IS INVENTED: every value comes from `computeEquityLine` over a REAL
+ * valuation. A contact with no valuation is skipped upstream, never given a
+ * guessed one.
+ */
+export function equityNarrationFacts(args: {
+  anniversaryNumber: number
+  estimatedValue: number
+  line: EquityLine
+}): string[] {
+  const { line } = args
+  return [
+    `It is the ${ordinal(args.anniversaryNumber)} anniversary of their home closing`,
+    `Estimated current value: ${fmtUsd(args.estimatedValue)} (an estimate, not an appraisal)`,
+    `They paid ${fmtUsd(line.basisPrice)}; estimated change since purchase: ${fmtUsd(line.appreciation)} (${line.appreciationPct}%)`,
+    line.hasLoanData && line.estimatedEquity != null
+      ? `Estimated equity: ${fmtUsd(line.estimatedEquity)} (estimated remaining balance ${fmtUsd(line.estimatedRemainingBalance ?? 0)})`
+      : `No loan details on file — the update reports estimated value growth only, not loan balance or true equity, and must say so`,
+    `These figures are estimates, not an appraisal, and not financial advice`,
+  ]
+}
+
+/**
  * Pure: the agent brief that rides the proposal's rationale — who, which
  * anniversary, the honest numbers, and what the agent gets by approving.
  */
@@ -323,6 +362,21 @@ export type AnniversaryVideoDispatcher = (args: {
   /** agents.id (transactions.agent_id) — the reactor resolves users.id itself. */
   agentId: string
   yearsAgo: number
+  /**
+   * THE EQUITY REPORT THE VIDEO SPEAKS — owner ruling, "anniversary video is a
+   * happy anniversary with an equity report".
+   *
+   * These are the SAME fact lines the portal note is written from
+   * (`equityNarrationFacts` below), not a second rendering of the numbers. Until
+   * this existed the list had exactly one reader and the video was written blind
+   * to the report it was supposed to be delivering — its prompt forbade
+   * "specific home-value claims" outright, so the agent on screen could not
+   * mention the equity story the card underneath the clip was telling.
+   */
+  equity?: {
+    facts: readonly string[]
+    hasLoanData: boolean
+  }
 }) => Promise<{ ok: boolean; status: string }>
 
 // ─── Live runner ────────────────────────────────────────────────────────────────
@@ -411,6 +465,10 @@ export async function runAnniversaryEquity(
     const r = await dispatchAnniversaryVideo({
       brokerageId: d.brokerageId, contactId: d.contactId, agentId: d.agentId,
       yearsAgo: d.yearsAgo, delivery: "portal",
+      // Forwarded, not re-derived. A default dispatcher that dropped the equity
+      // half would leave the seam's callers looking wired while the video went
+      // out as a bare greeting.
+      ...(d.equity ? { equity: d.equity } : {}),
     })
     return { ok: r.ok, status: r.status }
   })
@@ -517,15 +575,14 @@ export async function runAnniversaryEquity(
       firstName, address, anniversaryNumber: hit.anniversaryNumber,
       estimatedValue: valuation.value, line,
     })
-    const facts = [
-      `It is the ${ordinal(hit.anniversaryNumber)} anniversary of their home closing`,
-      `Estimated current value: ${fmtUsd(valuation.value)} (an estimate, not an appraisal)`,
-      `They paid ${fmtUsd(line.basisPrice)}; estimated change since purchase: ${fmtUsd(line.appreciation)} (${line.appreciationPct}%)`,
-      line.hasLoanData && line.estimatedEquity != null
-        ? `Estimated equity: ${fmtUsd(line.estimatedEquity)} (estimated remaining balance ${fmtUsd(line.estimatedRemainingBalance ?? 0)})`
-        : `No loan details on file — the update reports estimated value growth only, not loan balance or true equity, and must say so`,
-      `These figures are estimates, not an appraisal, and not financial advice`,
-    ]
+    // ONE fact set, TWO writers: the portal note below and the anniversary
+    // VIDEO's script (dispatchVideo, further down). Same numbers, same
+    // qualifiers, one place they are spelled.
+    const facts = equityNarrationFacts({
+      anniversaryNumber: hit.anniversaryNumber,
+      estimatedValue: valuation.value,
+      line,
+    })
     const draft = await generatePersonaCopy(
       {
         goal: "a warm yearly home-anniversary equity update for a past client (estimates clearly labeled; explicitly 'not an appraisal'; no financial advice; no pressure)",
@@ -613,6 +670,11 @@ export async function runAnniversaryEquity(
         try {
           const v = await dispatchVideo({
             brokerageId, contactId, agentId: t.agent_id, yearsAgo: hit.anniversaryNumber,
+            // The second half of the owner's ruling. `hasLoanData` is carried
+            // separately from the facts because it governs what may be SAID:
+            // false means estimatedEquity is null, so the script may report
+            // value growth and must not claim equity.
+            equity: { facts, hasLoanData: line.hasLoanData },
           })
           if (v.ok && v.status !== "skipped" && v.status !== "suppressed") result.videosDispatched += 1
           else result.skippedNoAvatar += v.ok ? 0 : 1

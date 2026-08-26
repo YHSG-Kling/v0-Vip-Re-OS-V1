@@ -70,6 +70,39 @@ import {
   resolveVideoKind,
   PROMOTABLE_VIDEO_KINDS,
 } from "../lib/kernel/video-coordination"
+// ── Layer 7's subjects, all imported and RUN rather than grepped for ─────────
+//
+// ONLY THE PRODUCTION SURFACE IS IMPORTED. lib/video/anniversary-script.ts
+// exports exactly the five functions the reactor calls and nothing else — the
+// greeting shape test, the ordinal speller, the figure/qualifier scanners and
+// the directive array are all module-private. That is this repo's own standing
+// ruling (lib/contact-promotion/welcome-situation.ts:180 — "an export whose only
+// caller is a proof is a surface nobody asked for"), and honouring it makes the
+// assertions BETTER rather than weaker: every check below now exercises the path
+// production actually takes.
+//
+// So "does this script greet?" is asked as `enforceAnniversaryGreeting(s, g) === s`
+// — a script the enforcement leaves untouched is, by definition, one that already
+// greets — and "is this figure qualified?" is asked through `verifyEquityClaims`,
+// the function the reactor itself calls.
+import {
+  anniversaryGreeting,
+  buildAnniversarySituation,
+  enforceAnniversaryGreeting,
+  safeAnniversaryFallback,
+  verifyEquityClaims,
+} from "../lib/video/anniversary-script"
+import {
+  FAIR_HOUSING_WRITING_FLOOR,
+  WELCOME_FAIR_HOUSING_DIRECTIVES,
+} from "../lib/contact-promotion/welcome-situation"
+import {
+  fitNarrationToBudget,
+  narrationBudget,
+  spokenWords,
+} from "../lib/video/script-structure"
+import { compositionSeconds, geometryFor } from "../lib/remotion/composition-geometry"
+import { computeEquityLine, equityNarrationFacts } from "../lib/kernel/anniversary-equity"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 /** Every source scan reads STRIPPED source. A tombstone is not a call site. */
@@ -101,6 +134,56 @@ function introTriggers(source: string): string[] {
   const m = /type\s+IntroTrigger\s*=\s*([^\n]+)/.exec(source)
   if (!m) return []
   return Array.from(m[1].matchAll(/"([a-z_]+)"/g)).map((x) => x[1])
+}
+
+/**
+ * The BODY of a function, by brace matching from its declaration.
+ *
+ * A lazy `[\s\S]*?\n\}` cannot do this job in this file: several of these
+ * functions take a multi-line object type whose closing brace sits in column
+ * zero (`}): Promise<string> {`), so the lazy form returns the SIGNATURE and the
+ * caller then asserts things about an empty body. Skips forward to the first `{`
+ * that opens the body and counts braces to its match.
+ *
+ * Returns "" when the declaration is not found, so a rename fails the check that
+ * uses it rather than silently passing on an empty string.
+ */
+function functionBody(source: string, declaration: string): string {
+  const at = source.indexOf(declaration)
+  if (at < 0) return ""
+  // Walk the signature: the body opens at the first `{` that is not inside the
+  // parameter list, i.e. once the paren depth returns to zero.
+  let i = at + declaration.length - 1 // sits on the opening "("
+  let paren = 0
+  for (; i < source.length; i++) {
+    if (source[i] === "(") paren++
+    else if (source[i] === ")") { paren--; if (paren === 0) { i++; break } }
+  }
+  const open = source.indexOf("{", i)
+  if (open < 0) return ""
+  let depth = 0
+  for (let j = open; j < source.length; j++) {
+    if (source[j] === "{") depth++
+    else if (source[j] === "}") { depth--; if (depth === 0) return source.slice(open, j + 1) }
+  }
+  return ""
+}
+
+/**
+ * DOES THIS SCRIPT OPEN BY WISHING THEM A HAPPY ANNIVERSARY?
+ *
+ * Asked through the PRODUCTION enforcement rather than through a private shape
+ * test: `enforceAnniversaryGreeting` returns its input untouched exactly when the
+ * script already greets, and prepends otherwise. So byte-identity IS the answer,
+ * and asking it this way means the thing under test is the thing that ships.
+ */
+function greets(script: string): boolean {
+  return enforceAnniversaryGreeting(script, "__SENTINEL__") === script.trim()
+}
+
+/** Does this script state a money/percentage figure at all? */
+function statesFigure(script: string): boolean {
+  return /(\$\s?[\d,]+)|(\d+(?:\.\d+)?\s?%)/.test(script)
 }
 
 const GATED_SCRIPT =
@@ -489,6 +572,344 @@ function layer6_theWordOnTheRow() {
     && /\.from\("agent_intro_videos"\)/.test(src(CRON)))
 }
 
+// ── Layer 7 · a happy anniversary WITH an equity report ──────────────────────
+/**
+ * OWNER RULING, verbatim: "anniversary video is a happy anniversary with an
+ * equity report."
+ *
+ * TWO HALVES, AND THE SPOKEN SCRIPT HAD NEITHER.
+ *
+ * THE GAP WAS MIS-STATED FIRST, AND THE MIS-STATEMENT IS INSTRUCTIVE. A
+ * repo-wide search for the literal "happy anniversary" finds two files, neither
+ * of them the video — which reads as "the greeting exists nowhere". It is wrong
+ * in both directions:
+ *
+ *   · THE PICTURES ALREADY GREETED. remotion/EquityReportReel.tsx renders
+ *     `Happy {ordinal(yearsHeld)} home anniversary` in 64px type, and
+ *     AVATAR_VIDEO_CHROME's anniversary eyebrow is the literal "HAPPY HOME
+ *     ANNIVERSARY". A substring finder cannot see the first one because an
+ *     interpolation sits between the two words. This is the §2 lesson in a new
+ *     costume: a finder that reports zero and a clean tree look identical, so
+ *     every assertion below runs the REAL function instead of grepping for a
+ *     phrase.
+ *   · THE MOUTH DID NOT. The one surface with no greeting was the spoken script,
+ *     whose prompt said "Acknowledge the anniversary without being saccharine"
+ *     — and the caption strip burned into the video is cut VERBATIM from that
+ *     script's first sentence, so whatever the model opened with became the
+ *     on-screen line a muted viewer read as the message.
+ *
+ * AND THE SECOND HALF WAS FORBIDDEN OUTRIGHT. The same prompt ended "No specific
+ * home-value claims. No guaranteed returns or appreciation language." The client
+ * was watching an equity report — the portal card the clip is stamped onto
+ * carries the whole thing — while the agent on screen was under instructions not
+ * to mention it.
+ *
+ * WHAT IS PROVEN HERE: the greeting is a property of the TEXT and not a line in
+ * a prompt (7A); the equity half reaches the writer and the two are not traded
+ * off (7B); a spoken figure about a named person's money keeps its qualifiers
+ * even after the budget trim, and fails closed when it cannot (7C); the richer
+ * script still fits the composition that speaks it (7D); and the three
+ * behaviours the last wave established still hold under mutation (7E).
+ */
+function layer7_happyAnniversaryWithEquityReport() {
+  console.log("\n[7 · A HAPPY ANNIVERSARY WITH AN EQUITY REPORT — the owner's ruling, both halves]")
+
+  const reactor = src(REACTOR)
+  const producer = src("lib/kernel/anniversary-equity.ts")
+  const greeting = anniversaryGreeting({ firstName: "Dana", yearsHeld: 5 })
+
+  // ── 7A · THE GREETING IS SAID, NOT ONLY FRAMED ────────────────────────────
+  console.log("\n  7A · the greeting")
+
+  check(`the composed greeting greets: "${greeting}"`,
+    greets(greeting))
+  // The ordinal is asserted through the greeting the reactor actually composes,
+  // because the speller itself is module-private (see the import note above).
+  const nth = (y: number) => anniversaryGreeting({ firstName: null, yearsHeld: y })
+  check("...and it uses the anniversary NUMBER the caller already derived — the same\n    N the project title stamps as '(Ny)', not a second computation",
+    nth(1).includes("1st") && nth(2).includes("2nd") && nth(3).includes("3rd")
+    && nth(5).includes("5th") && nth(11).includes("11th") && nth(22).includes("22nd"))
+  check("...and a missing or nonsensical year degrades to the plain wish rather than\n    a happy 0th anniversary",
+    greets(nth(0)) && !nth(0).includes("0") && greets(anniversaryGreeting({})))
+
+  // THE MANDATORY POSITIVE CONTROL. The old behaviour is not hypothetical — this
+  // is the shape the retired prompt ("Acknowledge the anniversary without being
+  // saccharine") actually produces. The finder must FAIL on it, or "the greeting
+  // is present" is a sentence that can never go red.
+  const UNGREETED = "It is hard to believe three years have gone by since you closed on the house. I still think about that day."
+  check("POSITIVE CONTROL: a script that merely ACKNOWLEDGES the anniversary — what the\n    retired prompt asked for — is detected as NOT greeting",
+    !greets(UNGREETED))
+  check("...and the very same script, run through the enforcement, DOES greet",
+    greets(enforceAnniversaryGreeting(UNGREETED, greeting)))
+  check("...with the model's own words kept, not replaced",
+    enforceAnniversaryGreeting(UNGREETED, greeting).includes(UNGREETED))
+
+  // A greeting buried mid-script is NOT enough: the caption is cut from sentence
+  // one and the trim keeps from the front.
+  check("a greeting buried in a later sentence does not count — the caption strip is\n    cut from the FIRST sentence and a muted viewer never reaches sentence three",
+    !greets("Thanks for being a client. Happy anniversary, Dana!"))
+  check("...and the enforcement fixes exactly that case by prepending",
+    greets(
+      enforceAnniversaryGreeting("Thanks for being a client. Happy anniversary, Dana!", greeting)))
+
+  // NEVER REWRITES a draft that already greets — including one that spells the
+  // number in words, which the model is allowed to do.
+  const ALREADY = "Happy fifth home anniversary, Dana! Five years in that house already."
+  check("a draft that already greets is returned BYTE-IDENTICAL — the model keeps its\n    own words, the enforcement is a floor and not a rewrite",
+    enforceAnniversaryGreeting(ALREADY, greeting) === ALREADY)
+  check("CONTROL: that byte-identity check would notice a prepend",
+    enforceAnniversaryGreeting(UNGREETED, greeting) !== UNGREETED)
+
+  // WHERE IT RUNS. §5: the greeting must be inside the text the gate grades, not
+  // added to it afterwards. Asserted structurally, because behaviour cannot see
+  // the ORDER of two steps.
+  // Brace-matched, not lazily regexed. `draftScript`'s parameter object is a
+  // multi-line type literal that closes with `}): Promise<string> {` in COLUMN
+  // ZERO, so the obvious `/async function draftScript\([\s\S]*?\n\}/` stops
+  // there — at the end of the SIGNATURE, before a single line of the body — and
+  // then reports that the body does not contain what the body plainly contains.
+  // That is the §2 failure shape exactly: a finder that cannot see the code it
+  // judges reports absence and reads as a clean bill of health.
+  const draftBody = functionBody(reactor, "async function draftScript(")
+  check("the draftScript body was located (the function the compliance loop calls)",
+    draftBody.length > 0 && draftBody.includes("generateTextRouted"))
+  check("CONTROL: the extractor really reads a BODY, not just a signature — it must\n    contain the model call, which lives past the parameter type literal",
+    /generateTextRouted\(\{/.test(draftBody) && !/violations:\s*string\[\]/.test(draftBody))
+  check("the greeting is enforced INSIDE draftScript, so evaluateOutbound grades the\n    greeting too — copy prepended after the gate is copy no gate ever saw (§5)",
+    /enforceAnniversaryGreeting\s*\(/.test(draftBody))
+  check("...and the reactor hands THAT function to the compliance loop as its drafter",
+    /draft:\s*\(\{\s*violations\s*\}\)\s*=>\s*draftScript\(\{/.test(reactor))
+  check("CONTROL: the enforcement finder reads STRIPPED source, so this file's own\n    prose naming enforceAnniversaryGreeting could not satisfy it",
+    !/enforceAnniversaryGreeting\s*\(/.test(stripComments("// calls enforceAnniversaryGreeting(x, y)")))
+
+  // ── 7B · THE EQUITY HALF, AND THAT THE TWO ARE NOT TRADED OFF ─────────────
+  console.log("\n  7B · the equity report reaches the writer")
+
+  // The prohibition is GONE from live code. Read on comment-stripped source: the
+  // reactor's own tombstone quotes both retired sentences verbatim, which is
+  // precisely the §2 trap — a tombstone is not a call site.
+  const RETIRED = [
+    /No specific home-value claims/,
+    /No guaranteed returns or appreciation language/,
+  ]
+  const stillLive = RETIRED.filter((re) => re.test(reactor))
+  check("the prompt no longer FORBIDS the equity half — both retired prohibitions are\n    gone from live code",
+    stillLive.length === 0, stillLive.map(String).join(" "))
+  check("POSITIVE CONTROL: the retired-prohibition finder still matches what it hunts",
+    RETIRED.every((re) => re.test("80-110 words. No specific home-value claims. No guaranteed returns or appreciation language.")))
+  check("CONTROL: and it DOES still find them in RAW source — the tombstone that\n    records them stands, which is why every scan here strips first (§2)",
+    RETIRED.every((re) => re.test(raw(REACTOR))))
+
+  // The facts themselves — the REAL computed line, one spelling, two writers.
+  const line = computeEquityLine({
+    purchasePrice: 500_000, estimatedValue: 612_000, originalLoanAmount: 400_000, yearsHeld: 5,
+  })
+  const facts = equityNarrationFacts({ anniversaryNumber: 5, estimatedValue: 612_000, line })
+  check(`the equity report exists as fact lines the writer may use (${facts.length} of them)`,
+    facts.length >= 4 && facts.some((f) => f.includes("$612,000")) && facts.some((f) => /equity/i.test(f)))
+  check("...every figure in them is already labeled an estimate, so a writer that\n    repeats them verbatim cannot produce an unqualified claim",
+    verifyEquityClaims(`${greeting} ${facts.join(" ")}`, { hasLoanData: true }).ok)
+  check("POSITIVE CONTROL: that qualifier finder still catches a bare figure",
+    !verifyEquityClaims(`${greeting} Your equity is $242,000 today. Estimates only, not an appraisal.`, { hasLoanData: true }).ok)
+
+  // NO LOAN DATA → the facts refuse to claim equity and SAY so.
+  const bare = computeEquityLine({ purchasePrice: 500_000, estimatedValue: 612_000, yearsHeld: 5 })
+  const bareFacts = equityNarrationFacts({ anniversaryNumber: 5, estimatedValue: 612_000, line: bare })
+  check("with no loan on file the facts report value growth only AND instruct the\n    writer to say so — no equity number is invented",
+    bare.estimatedEquity === null
+    && bareFacts.some((f) => /No loan details on file/.test(f) && /must say so/.test(f))
+    && !bareFacts.some((f) => /^Estimated equity/.test(f)))
+
+  // THE WIRE. The facts had exactly one reader (the portal note) before this.
+  check("the producer passes the SAME fact set to the video, not a second rendering\n    of the numbers (§6)",
+    /equity:\s*\{\s*facts,\s*hasLoanData:\s*line\.hasLoanData\s*\}/.test(producer))
+  check("...and it builds that set through the ONE exported builder both writers use",
+    /const facts = equityNarrationFacts\(\{/.test(producer))
+  check("...and the default dispatcher FORWARDS it — a seam that dropped the equity\n    half would look wired while the video went out as a bare greeting",
+    /dispatchAnniversaryVideo\(\{[\s\S]{0,400}equity:\s*d\.equity/.test(producer))
+  check("the reactor turns them into the SAME ScriptSituation shape the welcome lane\n    already uses — one prompt slot, not a second mechanism (§6)",
+    /situation:\s*buildAnniversarySituation\(input\.equity\?\.facts \?\? \[\]\)/.test(reactor))
+  const situation = buildAnniversarySituation(facts)
+  check("...and that situation really carries the facts through to the prompt",
+    situation.facts.length === facts.length && situation.facts[1].includes("$612,000"))
+
+  // BOTH BLOCKS NOW REACH THE ANNIVERSARY BRANCH. They were interpolated into
+  // the assignment branch only — the §5 apparatus was wired for one of two
+  // writers. Scoped to the anniversary template literal, or the assignment
+  // branch's own copy would satisfy the finder.
+  const annivPrompt = /: `Write a home-anniversary video script[\s\S]*?`\n/.exec(reactor)?.[0] ?? ""
+  check("the anniversary prompt template was located", annivPrompt.length > 0)
+  check("the anniversary branch renders the FACTS block — it never did before",
+    annivPrompt.includes("${situationBlock}"))
+  check("...and the DIRECTIVES block, so the brokerage's own rules reach the writer\n    that composes the script and not only the scan that grades it (§5)",
+    annivPrompt.includes("${complianceBlock}"))
+  check("...and the greeting is asked for in the prompt as well as enforced after it",
+    annivPrompt.includes("${greeting}"))
+  check("CONTROL: the block finder would notice their removal",
+    !annivPrompt.replace(/\$\{situationBlock\}\$\{complianceBlock\}/, "").includes("${complianceBlock}"))
+  check("the hardcoded fair-housing floor sentence is KEPT — an empty situation must\n    not leave the anniversary writer with no rule at all",
+    /Avoid any reference to protected characteristics/.test(annivPrompt))
+
+  // ── 7C · SPEAKING A NAMED PERSON'S EQUITY ─────────────────────────────────
+  console.log("\n  7C · compliance-first for a financial claim about one identified client")
+
+  // The directive set is COMPOSED from the shared floor, never retyped.
+  // Read off the PRODUCTION builder — the same array the reactor renders into the
+  // prompt's compliance block — rather than off an export kept alive for a proof.
+  const ANNIVERSARY_WRITING_DIRECTIVES = buildAnniversarySituation([]).complianceDirectives
+  const missingFloor = FAIR_HOUSING_WRITING_FLOOR.filter((d) => !ANNIVERSARY_WRITING_DIRECTIVES.includes(d))
+  check(`the anniversary directives contain the shared fair-housing floor verbatim\n    (${FAIR_HOUSING_WRITING_FLOOR.length} lines) — composed from the survivor, not a second copy (§6)`,
+    missingFloor.length === 0, missingFloor.join(" | "))
+  check("...and the WELCOME set still contains the identical floor, so splitting it out\n    weakened nothing on the lane it came from",
+    FAIR_HOUSING_WRITING_FLOOR.every((d) => WELCOME_FAIR_HOUSING_DIRECTIVES.includes(d)))
+  check("CONTROL: the floor-membership finder is not vacuously true",
+    !FAIR_HOUSING_WRITING_FLOOR.includes("Make no promise about price, value, appreciation, rates, or timing. You are introducing yourself, not forecasting."))
+  check("the two sets DIFFER where they must: the welcome floor forbids stating a\n    value, and an annual equity update exists to state one",
+    WELCOME_FAIR_HOUSING_DIRECTIVES.some((d) => /Make no promise about price, value/.test(d))
+    && !ANNIVERSARY_WRITING_DIRECTIVES.some((d) => /Make no promise about price, value/.test(d)))
+  check("...and the anniversary set replaces it with rules that permit the estimate\n    and bind it: same-sentence qualifier, 'not an appraisal', no forecast, no advice",
+    ANNIVERSARY_WRITING_DIRECTIVES.some((d) => /SAME SENTENCE/i.test(d))
+    && ANNIVERSARY_WRITING_DIRECTIVES.some((d) => /not an appraisal/i.test(d))
+    && ANNIVERSARY_WRITING_DIRECTIVES.some((d) => /no financial advice|give no financial advice/i.test(d))
+    && ANNIVERSARY_WRITING_DIRECTIVES.some((d) => /Never compute, round differently, project, or invent/.test(d)))
+
+  // THE VERIFIER — three refusals and one acceptance.
+  const GOOD = `${greeting} Your home's estimated value is now about $612,000, an estimate and not an appraisal, and about $112,000 above what you paid.`
+  check("CONTROL: a properly qualified equity script is ACCEPTED — the verifier is not\n    simply refusing everything",
+    verifyEquityClaims(GOOD, { hasLoanData: true }).ok)
+  check("a figure whose sentence never calls it an estimate is REFUSED",
+    !verifyEquityClaims(`${greeting} Your equity is $242,000. These are estimates, not an appraisal.`, { hasLoanData: true }).ok)
+  check("figures with 'not an appraisal' nowhere are REFUSED — the one disclaimer every\n    other equity surface carries",
+    !verifyEquityClaims(`${greeting} Your estimated equity is about $242,000 today.`, { hasLoanData: true }).ok)
+  check("claiming EQUITY with no loan on file is REFUSED — computeEquityLine returned\n    null there and every text surface degrades to value growth only",
+    !verifyEquityClaims(GOOD.replace("estimated value", "estimated equity"), { hasLoanData: false }).ok)
+  check("...while the SAME script is fine once the loan data exists — the refusal is\n    about the missing number, not about the word",
+    verifyEquityClaims(GOOD.replace("estimated value", "estimated equity"), { hasLoanData: true }).ok)
+  check("a greeting-only script states no figure, so it needs no disclaimer and passes\n    on either loan state",
+    verifyEquityClaims(greeting, { hasLoanData: false }).ok
+    && verifyEquityClaims(safeAnniversaryFallback(greeting), { hasLoanData: false }).ok)
+  check("every refusal carries a reason a human can act on",
+    verifyEquityClaims(`${greeting} Your equity is $242,000.`, { hasLoanData: true }).reason.length > 0)
+
+  // AND IT RUNS, AFTER THE TRIM, IN THE REACTOR.
+  check("the reactor verifies the claims AFTER the budget trim — the trim is exactly\n    what can turn a cleared draft into an unqualified one",
+    reactor.indexOf("fitNarrationToBudget(") < reactor.indexOf("verifyEquityClaims("))
+  check("...and both run AFTER the compliance gate, so neither can smuggle copy past it",
+    reactor.indexOf("runWithComplianceRedraft(") < reactor.indexOf("fitNarrationToBudget("))
+  check("...and a refusal FAILS CLOSED to the greeting-only form rather than speaking\n    the figures anyway (§4)",
+    /if \(!verdict\.ok\) \{[\s\S]{0,400}script = safeAnniversaryFallback\(/.test(reactor))
+
+  // ── 7D · THE NARRATION FITS THE COMPOSITION THAT SPEAKS IT ────────────────
+  console.log("\n  7D · the budget, derived from the geometry")
+
+  const equityGeo = geometryFor("EquityReportReel")
+  const talkGeo = geometryFor(INTRO_VIDEO_COMPOSITION)
+  check("both compositions' geometry is registered and readable",
+    !!equityGeo && !!talkGeo)
+  const equityBudget = narrationBudget("EquityReportReel", compositionSeconds(equityGeo!))
+  const budget = narrationBudget(INTRO_VIDEO_COMPOSITION, compositionSeconds(talkGeo!))
+  console.log(`      EquityReportReel        ${equityGeo!.duration_frames}f @ ${equityGeo!.fps}fps = ${equityBudget.compositionSeconds}s → ${equityBudget.budgetSeconds}s claimable → ${equityBudget.maxWords} words`)
+  console.log(`      ${INTRO_VIDEO_COMPOSITION}    ${talkGeo!.duration_frames}f @ ${talkGeo!.fps}fps = ${budget.compositionSeconds}s → ${budget.budgetSeconds}s claimable → ${budget.maxWords} words`)
+
+  // WHICH COMPOSITION SPEAKS THIS SCRIPT. The data reel is a different rail; the
+  // reactor's own clip is the avatar-led personal piece, and its budget is the
+  // one that binds. Derived from the orchestrator, not retyped.
+  check("the script this lane writes is spoken through the composition the assembly\n    request actually targets — not the data reel on the Director rail",
+    buildIntroCompositionRequest({
+      projectId: "p", script: GATED_SCRIPT, agentName: "Dana Reyes", trigger: "home_anniversary",
+    })!.target_composition_id === budget.compositionId)
+  check("both budgets are DERIVED — halving the frames halves the words, so nothing\n    here is a literal anyone has to remember to update (§2)",
+    narrationBudget("X", compositionSeconds({ duration_frames: talkGeo!.duration_frames / 2, fps: talkGeo!.fps })).maxWords
+      === Math.round(budget.maxWords / 2))
+
+  // THE RETIRED LITERAL. "80-110 words" was 3-4x what the composition can speak.
+  check(`the hand-written '80-110 words' ceiling is gone from live code (the real\n    ceiling is ${budget.maxWords} words, derived)`,
+    !/80-110 words/.test(reactor))
+  check("POSITIVE CONTROL: that finder still matches the literal it retired",
+    /80-110 words/.test("End with a low-pressure invitation. 80-110 words. No specific home-value claims."))
+  check("...and the prompt now carries the DERIVED directive instead",
+    /narrationLengthDirective\(budget\)/.test(annivPrompt))
+  check("...and the model's token budget is sized from the same number, so the lane\n    does not pay for text it is about to throw away",
+    /narrationMaxTokens\(budget\)/.test(reactor))
+
+  // THE RICHER SCRIPT STILL FITS — and what happens when it would not.
+  const richFit = fitNarrationToBudget(
+    `${GOOD} Let's catch up soon — I would love to hear how the house is treating you.`, budget)
+  check(`a warm greeting + the equity news fits: the trim keeps ${richFit.wordCount} of ${budget.maxWords} words`,
+    richFit.wordCount <= budget.maxWords && richFit.wordCount > 0)
+  check("...and the SURVIVING text still greets AND still states the qualified figure —\n    the two halves are not traded off against each other",
+    greets(richFit.script)
+    && statesFigure(richFit.script)
+    && verifyEquityClaims(richFit.script, { hasLoanData: true }).ok)
+  check("the greeting is the one thing a trim can never take: it opens the script and\n    the trim cuts from the END",
+    greets(
+      fitNarrationToBudget(`${GOOD} ${"filler word ".repeat(60)}`, budget).script))
+
+  // WHAT HAPPENS WHEN IT WOULD NOT FIT — the hazard, demonstrated end to end.
+  const DISCLAIMER_LAST =
+    `${greeting} Your home is worth about $612,000 today, roughly $112,000 more than the $500,000 you paid five years ago. `
+    + `All of these figures are estimates and not an appraisal.`
+  const trimmed = fitNarrationToBudget(DISCLAIMER_LAST, budget)
+  check("HAZARD: a script that parks its disclaimer in the LAST sentence loses it to\n    the trim — the qualifier is the first thing cut",
+    trimmed.overran && !/not an appraisal/i.test(trimmed.script))
+  check("...and the verifier CATCHES that, which is why it runs after the trim and not\n    before it",
+    !verifyEquityClaims(trimmed.script, { hasLoanData: true }).ok)
+  check("...and the same content written with the qualifier IN the figure's sentence\n    survives the same trim",
+    verifyEquityClaims(fitNarrationToBudget(GOOD, budget).script, { hasLoanData: true }).ok)
+  check("...which is exactly what the writer is told to do, in the prompt",
+    ANNIVERSARY_WRITING_DIRECTIVES.some((d) => /cut from the end/i.test(d)))
+
+  // THE DEGRADED FORM FITS TOO — it is substituted AFTER the trim, so nothing
+  // downstream will shorten it.
+  const worstFallback = safeAnniversaryFallback(
+    anniversaryGreeting({ firstName: "Bartholomew-Fitzgerald", yearsHeld: 22 }))
+  check(`the greeting-only fallback fits the budget unaided (${spokenWords(worstFallback).length} ≤ ${budget.maxWords} words,\n    measured with a long name) — it is swapped in after the trim, so nothing trims it`,
+    spokenWords(worstFallback).length <= budget.maxWords)
+  check("...and it still routes the client to the equity report, which lives on the\n    portal card this very clip is stamped onto",
+    /portal/i.test(worstFallback))
+  check("CONTROL: a composition with no runtime yields NO narration budget rather than\n    'no limit', and the fit says so out loud",
+    narrationBudget("X", 0).maxWords === 0
+    && fitNarrationToBudget(GOOD, narrationBudget("X", 0)).note.length > 0)
+
+  // ── 7E · THE THREE PRESERVED BEHAVIOURS, EACH BY MUTATION ─────────────────
+  console.log("\n  7E · what the last wave fixed is still fixed — proven by mutation")
+
+  const stampM = /const\s+videoType\s*=\s*input\.trigger\s*===\s*"contact_agent_assigned"\s*\?\s*"([a-z_]+)"\s*:\s*"([a-z_]+)"/.exec(reactor)
+  const stamp = stampM?.[2] ?? ""
+  check("the anniversary stamp is still readable off the reactor", !!stampM, stamp)
+
+  const welcomeSet = Array.from(
+    (/PERSONAL_WELCOME_VIDEO_TYPES\s*=\s*\[([\s\S]*?)\]/.exec(src("lib/kernel/welcome-personal-video.ts"))?.[1] ?? "")
+      .matchAll(/"([a-z_]+)"/g)).map((x) => x[1])
+  const personalSet = Array.from(
+    (/personalVideoTypes\s*=\s*\[([^\]]*)\]/.exec(src("lib/orchestrator/internal.ts"))?.[1] ?? "")
+      .matchAll(/"([a-z_]+)"/g)).map((x) => x[1])
+
+  // MUTATION 1 — paid spend on a 1:1 clip.
+  check("home_anniversary is NOT promotable, so nothing proposes ad spend on a video\n    addressed to one named past client",
+    !isPromotableVideoKind(stamp))
+  check("MUTATION: had this wave's copy re-stamped it 'just_sold', the predicate WOULD\n    have flipped — the rule is live, not vacuous",
+    isPromotableVideoKind("just_sold") && !isPromotableVideoKind(stamp))
+
+  // MUTATION 2 — an anniversary clip served as a new client's welcome.
+  check("home_anniversary is NOT a welcome video type",
+    welcomeSet.length > 0 && !welcomeSet.includes(stamp))
+  check("MUTATION: the welcome set WOULD have accepted the assignment stamp, so the\n    exclusion is a fact about this value and not an empty set",
+    welcomeSet.includes(stampM?.[1] ?? "__none__"))
+
+  // MUTATION 3 — a third touch to the same person about one clip.
+  check("home_anniversary is NOT a per-contact draft type — it already owns the portal\n    card and the email sweep, so a third touch cannot be switched on",
+    personalSet.length > 0 && !personalSet.includes(stamp))
+  check("MUTATION: the same list DOES contain 'memory_video', whose only delivery those\n    drafts are — so membership is a real switch, not a list nothing is on",
+    personalSet.includes("memory_video"))
+
+  // AND THE TWO DELIVERY HALVES IT DOES OWN ARE BOTH STILL THERE.
+  const cron = src(CRON)
+  check("the two delivery halves survive this change: the portal card stamp and the\n    email backfill sweep both still select this trigger",
+    /\.eq\("trigger", "home_anniversary"\)/.test(cron)
+    && /anniversary_video_url/.test(cron))
+}
+
 function main() {
   console.log("══════════════════════════════════════════════════════════")
   console.log(" Anniversary avatar video — assembly + delivery simulator")
@@ -499,6 +920,7 @@ function main() {
   layer4_spend()
   layer5_noOrphanTrigger()
   layer6_theWordOnTheRow()
+  layer7_happyAnniversaryWithEquityReport()
   console.log("\n──────────────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) {

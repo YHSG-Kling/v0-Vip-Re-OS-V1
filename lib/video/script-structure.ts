@@ -218,8 +218,20 @@ export interface NarrationFit {
   note: string
 }
 
-/** Split a script into sentences, keeping terminal punctuation with its sentence. */
-function splitSentences(script: string): string[] {
+/**
+ * Split a script into sentences, keeping terminal punctuation with its sentence.
+ *
+ * EXPORTED, and the export is load-bearing rather than convenience (§6). This is
+ * the boundary `fitNarrationToBudget` cuts on, so anything that reasons about
+ * what SURVIVES a trim must agree with it exactly — a second splitter would
+ * inspect different sentences than the trim actually produced and could clear a
+ * script whose qualifier the trim then dropped. `lib/video/anniversary-script.ts`
+ * (`unqualifiedFinancialSentences`) is the caller that needs that agreement: it
+ * checks that every spoken dollar figure carries its "estimate, not an
+ * appraisal" qualifier IN THE SAME SENTENCE, which is only a meaningful
+ * statement if "sentence" means the same thing to both functions.
+ */
+export function spokenSentences(script: string | null | undefined): string[] {
   const flat = (script ?? "").trim().replace(/\s+/g, " ")
   if (!flat) return []
   return flat.split(/(?<=[.!?]["'”’)\]]?)\s+/).filter((s) => s.trim().length > 0)
@@ -280,7 +292,7 @@ export function fitNarrationToBudget(
 
   if (draftCount <= budget.maxWords) return fitted((script ?? "").trim(), 0, false, "")
 
-  const sentences = splitSentences(script ?? "")
+  const sentences = spokenSentences(script ?? "")
   const kept: string[] = []
   let keptWords = 0
   for (const s of sentences) {

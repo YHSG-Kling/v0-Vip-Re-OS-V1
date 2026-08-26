@@ -157,17 +157,43 @@ export interface WelcomeSituationResult {
 }
 
 /**
+ * THE FAIR-HOUSING WRITING FLOOR — the survivor (§6, one vocabulary per
+ * function).
+ *
+ * These three lines say nothing about which video is being written. They are
+ * the constraint on what a MODEL may put in any client-facing script, and they
+ * are written as WRITING instructions rather than as a grading rubric — that is
+ * the whole point of §5's "in the writing prompt, not only in the post-hoc scan".
+ *
+ * SPLIT OUT so a second personal-video lane cannot end up with a second,
+ * drifting copy of the same three sentences. `lib/video/anniversary-script.ts`
+ * builds the home-anniversary directive set on top of this exact array: the
+ * anniversary video's fourth rule is NOT the welcome video's (an annual equity
+ * update states an estimated value on purpose, which the welcome floor
+ * forbids), but its fair-housing floor must be the identical text or the two
+ * lanes drift.
+ *
+ * A directive set is one of these plus the lane's own content rules. Nothing
+ * may subtract from this array.
+ */
+export const FAIR_HOUSING_WRITING_FLOOR: readonly string[] = Object.freeze([
+  "Fair Housing is a constraint on what you WRITE, not a review afterwards. Never reference or imply race, colour, religion, national origin, sex, gender, sexual orientation, familial status, children, age, disability, or source of income — not about the recipient, not about anyone else, not about an area.",
+  "Never describe who a place is 'for', 'perfect for', 'ideal for', or 'great for'. Describe the SERVICE you provide, never the kind of person who belongs somewhere.",
+  "Do not use safety, crime, 'good'/'bad' area, church proximity, or school quality as a description of a place — those are the standard steering proxies and they are prohibited here even when the recipient raised them.",
+])
+
+/**
  * The floor. Applies to every welcome video regardless of what the contact row
  * holds, because the model can introduce a protected-class reference the facts
  * never contained.
  *
- * These are written as WRITING instructions, not as a grading rubric — that is
- * the whole point of §5's "in the writing prompt, not only in the post-hoc scan".
+ * The fair-housing half is FAIR_HOUSING_WRITING_FLOOR above, unchanged; the
+ * fourth line is the WELCOME lane's own rule — an introduction forecasts
+ * nothing, so it may promise nothing about value. Composed rather than retyped,
+ * so this array is byte-identical to the one it replaced.
  */
 export const WELCOME_FAIR_HOUSING_DIRECTIVES: readonly string[] = Object.freeze([
-  "Fair Housing is a constraint on what you WRITE, not a review afterwards. Never reference or imply race, colour, religion, national origin, sex, gender, sexual orientation, familial status, children, age, disability, or source of income — not about the recipient, not about anyone else, not about an area.",
-  "Never describe who a place is 'for', 'perfect for', 'ideal for', or 'great for'. Describe the SERVICE you provide, never the kind of person who belongs somewhere.",
-  "Do not use safety, crime, 'good'/'bad' area, church proximity, or school quality as a description of a place — those are the standard steering proxies and they are prohibited here even when the recipient raised them.",
+  ...FAIR_HOUSING_WRITING_FLOOR,
   "Make no promise about price, value, appreciation, rates, or timing. You are introducing yourself, not forecasting.",
 ])
 
