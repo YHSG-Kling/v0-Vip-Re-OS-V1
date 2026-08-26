@@ -109,7 +109,35 @@
  */
 import { readFileSync, readdirSync, existsSync, statSync } from "node:fs"
 import { join, relative } from "node:path"
-import { stripComments, blankStrings } from "./strip-comments"
+import { stripComments, blankComments, blankStrings } from "./strip-comments"
+// TOMBSTONE (2026-08-26): the `REGISTRY` geometry snapshot used to be DECLARED
+// in this file. Survivor: lib/remotion/composition-geometry.ts
+// (COMPOSITION_GEOMETRY, compositionSeconds, geometryFor). It moved because the
+// narration cap needs the same frame counts at RUNTIME and lib/** cannot import
+// scripts/** — this file runs its whole check suite at module load. Nothing about
+// what this guard proves changed: the snapshot is still compared field-for-field
+// against remotion/Root.tsx below, and the SQL that regenerates it now lives in
+// the survivor's header. parseRootCompositions STAYED here: reading Root.tsx as
+// text is something only this guard needs, and a lib/** export whose only caller
+// is a proof is an orphan (§1).
+import {
+  COMPOSITION_GEOMETRY as REGISTRY,
+  compositionSeconds,
+  type RegisteredGeometry as Geo,
+} from "../lib/remotion/composition-geometry"
+import {
+  narrationBudget,
+  fitNarrationToBudget,
+  narrationLengthDirective,
+  spokenWords,
+  NARRATION_HEADROOM,
+  WORDS_PER_MINUTE,
+  type NarrationFit,
+} from "../lib/video/script-structure"
+import { promoNarrationBudget } from "../lib/video/promo-composition"
+import { sectionNarrationBudget, SECTION_NARRATION_COMPOSITION } from "../lib/listing-presentation/section-narration"
+import { FINISH_PROP_KEYS } from "../lib/remotion/composition-cache"
+import { paddingSecondsFor } from "../lib/remotion/voiceover-mixer"
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -118,9 +146,8 @@ function ok(label: string, cond: boolean, detail?: string) {
   else { fail++; failures.push(label); console.log(`  ✗ ${label}${detail ? ` — ${detail}` : ""}`) }
 }
 
-interface Geo { width: number; height: number; fps: number; duration_frames: number }
-
-/** Parse every <Composition …> out of Root.tsx. */
+/** Parse every `<Composition …>` out of Root.tsx. Text, not a Remotion import,
+ *  so this runs in a plain node process in milliseconds with no bundling. */
 export function parseRootCompositions(src: string): Record<string, Geo> {
   const out: Record<string, Geo> = {}
   for (const block of src.split(/<Composition/).slice(1)) {
@@ -136,48 +163,6 @@ export function parseRootCompositions(src: string): Record<string, Geo> {
     }
   }
   return out
-}
-
-/**
- * The live registry, snapshotted. Regenerate with:
- *   select json_object_agg(composition_id, json_build_object(
- *     'width',width,'height',height,'fps',fps,'duration_frames',duration_frames))
- *   from remotion_compositions;
- */
-const REGISTRY: Record<string, Geo> = {
-  AffordabilitySnapshotReel: { width: 1080, height: 1080, fps: 30, duration_frames: 450 },
-  AgentExplainerReel: { width: 1080, height: 1080, fps: 30, duration_frames: 540 },
-  AgentTalkingHeadReel: { width: 1080, height: 1080, fps: 30, duration_frames: 420 },
-  BuyerConsultationSlide: { width: 1920, height: 1080, fps: 30, duration_frames: 180 },
-  CMAReel: { width: 1080, height: 1080, fps: 30, duration_frames: 720 },
-  CarouselSlide: { width: 1080, height: 1350, fps: 30, duration_frames: 1 },
-  ComingSoonReel: { width: 1080, height: 1080, fps: 30, duration_frames: 360 },
-  DoorHanger: { width: 1350, height: 3375, fps: 30, duration_frames: 1 },
-  EquityReportReel: { width: 1080, height: 1080, fps: 30, duration_frames: 540 },
-  ExplainerAnimReel: { width: 1080, height: 1080, fps: 30, duration_frames: 540 },
-  JustListedReel: { width: 1080, height: 1920, fps: 30, duration_frames: 750 },
-  JustListedReelHorizontal: { width: 1920, height: 1080, fps: 30, duration_frames: 600 },
-  JustListedReelSquare: { width: 1080, height: 1080, fps: 30, duration_frames: 360 },
-  JustSoldReelSquare: { width: 1080, height: 1080, fps: 30, duration_frames: 360 },
-  LeadMagnetCard: { width: 1200, height: 630, fps: 30, duration_frames: 1 },
-  ListingFlyer: { width: 2625, height: 3375, fps: 30, duration_frames: 1 },
-  ListingPresentationSlide: { width: 1920, height: 1080, fps: 30, duration_frames: 180 },
-  ListingSectionReel: { width: 1920, height: 1080, fps: 30, duration_frames: 300 },
-  MarketUpdateReel: { width: 1080, height: 1080, fps: 30, duration_frames: 480 },
-  NeighborhoodSpotlightReel: { width: 1080, height: 1080, fps: 30, duration_frames: 480 },
-  NewsletterDigestThumb: { width: 1200, height: 630, fps: 30, duration_frames: 1 },
-  NewsletterDigestVideo: { width: 1080, height: 1920, fps: 30, duration_frames: 600 },
-  OpenHouseAnnounceReel: { width: 1080, height: 1080, fps: 30, duration_frames: 360 },
-  PartnersMeetingReel: { width: 1920, height: 1080, fps: 30, duration_frames: 900 },
-  PhotoWalkthroughReel: { width: 1080, height: 1080, fps: 30, duration_frames: 600 },
-  PostcardBack4x6: { width: 1275, height: 1875, fps: 30, duration_frames: 1 },
-  PostcardBack6x9: { width: 1875, height: 2775, fps: 30, duration_frames: 1 },
-  PostcardFront4x6: { width: 1275, height: 1875, fps: 30, duration_frames: 1 },
-  PostcardFront6x9: { width: 1875, height: 2775, fps: 30, duration_frames: 1 },
-  ProductPromoReel: { width: 1080, height: 1920, fps: 30, duration_frames: 450 },
-  TeammateExplainerReel: { width: 1080, height: 1080, fps: 30, duration_frames: 900 },
-  TestimonialReel: { width: 1080, height: 1080, fps: 30, duration_frames: 420 },
-  VideoCoverThumb: { width: 1200, height: 630, fps: 30, duration_frames: 1 },
 }
 
 const rootSrc = readFileSync("remotion/Root.tsx", "utf8")
@@ -318,6 +303,144 @@ console.log("\n═══ 5. The rules that silently do not render ═══")
   ok(`no <Video>/<Audio> in remotion/ still uses startFrom/endAt — one spelling,\n    and the new one is the only one the skill documents`,
     deprecatedTrim.length === 0, deprecatedTrim.slice(0, 6).join(", "))
 
+  // ── MEDIA COMPONENTS COME FROM @remotion/media, NOT FROM "remotion" (§6) ───
+  //
+  // The installed remotion (4.0.473) still EXPORTS `Video` and `Audio`, so an
+  // import from "remotion" compiles and renders — which is exactly why this
+  // needs a guard rather than a compiler error. Both are marked @deprecated in
+  // the installed types (node_modules/remotion/dist/cjs/video/html5-video.d.ts:
+  // "This component has been renamed to `Html5Video`";
+  // .../audio/html5-audio.d.ts: "…renamed to `Html5Audio`"), and the vendored
+  // skill documents ONE source for them —
+  // .claude/skills/remotion-best-practices/remotion-markup/REFERENCE.md,
+  // "Media components": «Add video and audio using `<Video>` and `<Audio>` from
+  // `@remotion/media`». So "remotion" and "@remotion/media" were two spellings
+  // of the same component, and an agent following the skill and a file using the
+  // old source disagreed about which one to write.
+  //
+  // THE DEPRECATED SET IS DERIVED FROM THE INSTALLED PACKAGE, not listed here
+  // (§2: assert the RULE, don't pin a hardcoded name that a version bump makes
+  // a lie). A name only counts if installed `remotion` marks it renamed AND
+  // installed `@remotion/media` actually exports a replacement — so this can
+  // never demand an import that does not resolve.
+  const RM = "node_modules/remotion/dist/cjs"
+  const MEDIA_DTS = "node_modules/@remotion/media/dist/index.d.ts"
+  const RENAMED = /@deprecated This component has been renamed to `(\w+)`[\s\S]{0,400}?export declare const (\w+)/g
+  function deprecatedRenamedExports(root: string): string[] {
+    const names = new Set<string>()
+    const walk = (dir: string, depth = 0) => {
+      if (depth > 3) return
+      let entries
+      try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+      for (const e of entries) {
+        const full = join(dir, e.name)
+        if (e.isDirectory()) { walk(full, depth + 1); continue }
+        if (!e.name.endsWith(".d.ts")) continue
+        const src = readFileSync(full, "utf8")
+        for (const m of src.matchAll(RENAMED)) names.add(m[2])
+      }
+    }
+    walk(root)
+    return [...names].sort()
+  }
+  const mediaExports = existsSync(MEDIA_DTS)
+    ? new Set(
+        (readFileSync(MEDIA_DTS, "utf8").match(/export\s*\{([^}]*)\}/g) ?? [])
+          .flatMap((s) => s.replace(/export\s*\{|\}/g, "").split(","))
+          .map((s) => s.trim().split(/\s+as\s+/).pop()!.trim())
+          .filter(Boolean),
+      )
+    : new Set<string>()
+  // Fail closed (§4): a gate that cannot read the packages it judges must refuse,
+  // not report a clean tree. `npm ci` runs before every guard job.
+  ok("the installed remotion + @remotion/media packages are readable — a guard that\n    cannot see them would report zero and read as a clean bill of health",
+    existsSync(RM) && existsSync(MEDIA_DTS),
+    `remotion dts=${existsSync(RM)} media dts=${existsSync(MEDIA_DTS)}`)
+  const movedNames = deprecatedRenamedExports(RM).filter((n) => mediaExports.has(n))
+  ok(`the derivation found the renamed components @remotion/media replaces (${movedNames.join(", ") || "none"})`,
+    movedNames.length > 0)
+  ok("...and it read the deprecation marker, not a guess",
+    [...(`/**\n * @deprecated This component has been renamed to \`Html5X\`.\n */\nexport declare const X: unknown`)
+      .matchAll(RENAMED)].map((m) => m[2]).join() === "X")
+
+  const BARE_REMOTION_IMPORT = /import\s*\{([^}]*)\}\s*from\s*["']remotion["']/g
+  /**
+   * Which of the moved names this source still pulls from "remotion".
+   *
+   * A TOMBSTONE IS NOT A CALL SITE (§2) — this very comment block names `Video`
+   * and "remotion" in prose, and the block above quotes the skill verbatim, so
+   * the scan must read comment-free source.
+   *
+   * But blankStrings alone CANNOT be that source, and the positive control below
+   * is what proved it: blankStrings blanks string CONTENTS, and the module
+   * specifier "remotion" IS string content — so `from "remotion"` became
+   * `from "        "` and the pattern matched nothing. A clean tree and a finder
+   * that can no longer see the defect report the same zero.
+   *
+   * So the two offset-preserving views are used TOGETHER: match on the
+   * comments-blanked text (where the specifier survives), then require that the
+   * `import` keyword is still `import` in the strings-blanked text at the SAME
+   * offset — which is only true when the statement is code rather than a
+   * specimen inside a string literal. blankComments and blankStrings both keep
+   * length and offsets, which is exactly what makes the two comparable.
+   */
+  const legacyMediaNames = (rawSrc: string): string[] => {
+    const code = blankComments(rawSrc)
+    const masked = blankStrings(rawSrc)
+    const out: string[] = []
+    for (const m of code.matchAll(BARE_REMOTION_IMPORT)) {
+      if (masked.slice(m.index, m.index + "import".length) !== "import") continue
+      out.push(...m[1].split(",").map((s) => s.trim().split(/\s+as\s+/)[0].trim())
+        .filter((s) => movedNames.includes(s)))
+    }
+    return out
+  }
+  const wrongSource: string[] = []
+  for (const f of files) {
+    const hit = legacyMediaNames(readFileSync(f, "utf8"))
+    if (hit.length) wrongSource.push(`${f}: ${hit.join("+")}`)
+  }
+  // POSITIVE CONTROL (§2): a broken regex and a clean tree both report zero.
+  ok("the wrong-source finder still recognises the defect it was written for",
+    legacyMediaNames(`import { AbsoluteFill, Video, Audio } from "remotion"`).length === movedNames.length)
+  ok("...and does NOT fire on the source we converted TO",
+    legacyMediaNames(`import { Audio, Video } from "@remotion/media"\nimport { AbsoluteFill } from "remotion"`).length === 0)
+  ok("...nor on a comment or a string that merely names the old import",
+    legacyMediaNames(`// import { Video } from "remotion"\nconst s = 'import { Audio } from "remotion"'`).length === 0)
+  ok(`no composition imports ${movedNames.join("/")} from "remotion" — one source per\n    component (${files.length} files scanned under remotion/)`,
+    wrongSource.length === 0, wrongSource.slice(0, 6).join(" | "))
+
+  // ── objectFit ON <Video> IS A PROP, NEVER A STYLE ──────────────────────────
+  // @remotion/media's <Video> paints into a <canvas> and builds the canvas style
+  // as `{...style, objectFit: objectFitProp}` with `objectFit ?? "contain"`
+  // (node_modules/@remotion/media/dist/esm/index.mjs) — so a style-level
+  // objectFit is OVERWRITTEN by the default and a clip that used to fill its
+  // frame silently letterboxes. The package says so itself:
+  // warn-object-fit-css.ts logs "Use the `objectFit` prop instead of the `style`
+  // prop." A render-time console warning is not a gate; this is.
+  // Scoped to <Video>: <Img> is still remotion's real <img>, where style
+  // objectFit is the correct and only way to say it.
+  const videoTag = /<Video\b[\s\S]*?\/>/g
+  const fitInStyle = /objectFit\s*:/
+  const styledFit: string[] = []
+  let videoTags = 0
+  for (const f of files) {
+    const src = stripComments(readFileSync(f, "utf8"))
+    for (const m of src.matchAll(videoTag)) {
+      videoTags++
+      if (fitInStyle.test(m[0])) styledFit.push(f)
+    }
+  }
+  ok("the style-objectFit finder recognises the shape it looks for",
+    [...`<Video src={u} style={{ objectFit: "cover" }} />`.matchAll(videoTag)]
+      .some((m) => fitInStyle.test(m[0])))
+  ok("...and does NOT fire on the prop form, nor on a sibling <Img>",
+    ![...`<Video src={u} objectFit="cover" style={{ width: "100%" }} />`.matchAll(videoTag)]
+      .some((m) => fitInStyle.test(m[0]))
+    && [...`<Img src={u} style={{ objectFit: "cover" }} />`.matchAll(videoTag)].length === 0)
+  ok(`no <Video> hides objectFit in style — it is overwritten by the prop's\n    "contain" default (${videoTags} <Video> elements across remotion/)`,
+    styledFit.length === 0, [...new Set(styledFit)].slice(0, 6).join(", "))
+
   // ── A DECLARED NARRATION PROP MUST HAVE A READER (§1) ──────────────────────
   // buildAvatarRenderRow (lib/video/avatar-render-orchestrator.ts) writes
   // input_props.voiceoverUrl on EVERY avatar render and stamps used_voiceover,
@@ -454,13 +577,284 @@ console.log("\n═══ 6. ONE vendored Remotion skill, and it matches upstream
     /^name:\s*remotion-best-practices\s*$/m.test(skillMd.split(/^---\s*$/m)[1] ?? ""))
 }
 
+console.log("\n═══ 7. NARRATION IS CAPPED AT GENERATION, per composition ═══")
+{
+  // ── THE DEFECT ────────────────────────────────────────────────────────────
+  // There are TWO narration keys in a render's input_props and only ONE is
+  // protected. `voiceover_url` (snake) is muxed by ffmpeg AFTER the render and
+  // m313's tpad HOLDS THE FINAL FRAME for any overrun. `voiceoverUrl` (camel) is
+  // an <Audio> INSIDE the composition, against a FIXED durationInFrames —
+  // nothing pads it, THE OVERRUN IS CUT, and 14 compositions render that key.
+  // Nothing anywhere compared a script's length to the composition that would
+  // speak it: the listing-promo prompt asked for 60-80 words (~32s) for events
+  // rendering on 12-second cuts, and the presentation-section prompt asked for
+  // "3 to 5 sentences" on a TEN-second composition.
+  //
+  // Section 5 above already proves every composition that DECLARES voiceoverUrl
+  // RENDERS it. This section proves the other half: every PRODUCER that writes
+  // that key sizes its script to the composition's real geometry, and an
+  // overrun is trimmed and REPORTED rather than silently cut.
+
+  /** Does a script of this many words fit inside this composition? THE RULE. */
+  const fitsComposition = (words: number, compositionId: string): boolean => {
+    const geo = REGISTRY[compositionId]
+    if (!geo) return false
+    return estimateDurationSecondsLocal(words) <= compositionSeconds(geo)
+  }
+  // estimateDurationSeconds lives in script-structure; aliased so the rule above
+  // reads as one line. Same function, no second pace constant (§6).
+  function estimateDurationSecondsLocal(words: number): number {
+    return Math.round((words / WORDS_PER_MINUTE) * 60)
+  }
+
+  // ── THE CENSUS, as a checked fact ─────────────────────────────────────────
+  // Every composition rendering the camel key, and what produces its script.
+  // A composition that appears in Root.tsx and in neither list fails below —
+  // "nobody classified this one" must not read as "this one is fine".
+  const PRODUCED: Record<string, string> = {
+    // composition            → the producer that writes its narration
+    JustListedReel:           "app/api/internal/remotion/render-just-listed/route.ts draftAndClearScript",
+    JustSoldReelSquare:       "app/api/internal/remotion/render-just-listed/route.ts draftAndClearScript",
+    OpenHouseAnnounceReel:    "app/api/internal/remotion/render-just-listed/route.ts draftAndClearScript",
+    ComingSoonReel:           "app/api/internal/remotion/render-just-listed/route.ts draftAndClearScript",
+    NewsletterDigestVideo:    "app/api/internal/remotion/render-newsletter-video/route.ts draft()",
+    ListingSectionReel:       "lib/listing-presentation/section-narration.ts generateSectionNarration",
+  }
+  /** Declares + renders voiceoverUrl, but NOTHING in this repo generates a
+   *  script for it — the prop is only ever null or supplied from outside.
+   *  Listed, not ignored: each is a capability with no producer (§1), and if one
+   *  gains a producer it must be capped and moved into PRODUCED above. */
+  const NO_LIVE_PRODUCER: Record<string, string> = {
+    CMAReel:                   "enqueueCmaReelRender takes voiceoverUrl; its only live caller (section-render.ts:179) passes null",
+    AgentTalkingHeadReel:      "buildIntroCompositionRequest sets no voiceover_url — the D-ID avatar track carries its own audio",
+    PhotoWalkthroughReel:      "no producer writes input_props for this composition",
+    AffordabilitySnapshotReel: "no producer writes input_props for this composition",
+    NeighborhoodSpotlightReel: "no producer writes input_props for this composition",
+    TestimonialReel:           "no producer writes input_props for this composition",
+    JustListedReelSquare:      "the Director's PAID cut; the organic render path routes just_listed to JustListedReel",
+    JustListedReelHorizontal:  "no producer writes input_props for this composition",
+  }
+
+  const compFiles: string[] = []
+  {
+    const walk = (dir: string, depth = 0) => {
+      if (depth > 3) return
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        if (e.name.startsWith(".")) continue
+        const full = `${dir}/${e.name}`
+        if (e.isDirectory()) walk(full, depth + 1)
+        else if (/\.tsx?$/.test(e.name)) compFiles.push(full)
+      }
+    }
+    walk("remotion")
+  }
+  // §2: a tombstone is not a call site. Read STRIPPED source, and blank string
+  // bodies too — several of these files quote the prop name in prose.
+  const voDeclRe = /\bvoiceoverUrl(\?\s*:|\s*:\s*string)/
+  const declaring = compFiles
+    .filter((f) => voDeclRe.test(blankStrings(stripComments(readFileSync(f, "utf8")))))
+    .map((f) => f.replace(/^remotion\//, "").replace(/\.tsx?$/, ""))
+    .filter((id) => !!REGISTRY[id])
+    .sort()
+  const classified = [...Object.keys(PRODUCED), ...Object.keys(NO_LIVE_PRODUCER)].sort()
+  ok(`the camel-key census covers every composition that renders voiceoverUrl (${declaring.length})`,
+    JSON.stringify(declaring) === JSON.stringify(classified),
+    `unclassified: ${declaring.filter((d) => !classified.includes(d)).join(", ") || "none"} | `
+    + `stale: ${classified.filter((c) => !declaring.includes(c)).join(", ") || "none"}`)
+  ok("...and the census finder really read the tree (not zero files)",
+    compFiles.length >= 33 && declaring.length >= 10)
+
+  // ── EVERY PRODUCED COMPOSITION'S BUDGET FITS IT ───────────────────────────
+  const promoBudgets = ["just_listed", "just_sold", "open_house_announce", "coming_soon", "price_reduction", "under_contract"]
+    .map((e) => ({ eventType: e, budget: promoNarrationBudget(e) }))
+  const newsletterBudget = narrationBudget("NewsletterDigestVideo", compositionSeconds(REGISTRY.NewsletterDigestVideo))
+  const sectionBudget = sectionNarrationBudget()
+  // The producer and the queue must name the SAME composition (§6): section-render
+  // inserts a composition_id, and the cap is derived from whatever
+  // SECTION_NARRATION_COMPOSITION says. If those two drift, the script is sized
+  // for one composition and spoken over another — silently, since both render.
+  // Comment-stripped but NOT string-masked: the composition id being looked for
+  // IS a string literal, and masking would blank exactly the text in question.
+  {
+    const sectionRenderSrc = stripComments(readFileSync("lib/listing-presentation/section-render.ts", "utf8"))
+    ok("the section producer caps against the composition section-render actually queues",
+      sectionBudget.compositionId === SECTION_NARRATION_COMPOSITION
+      && new RegExp(`composition_id:\\s*"${SECTION_NARRATION_COMPOSITION}"`).test(sectionRenderSrc))
+    ok("...and that finder would notice a drift (control: a different id does not match)",
+      !new RegExp(`composition_id:\\s*"SomeOtherReel"`).test(sectionRenderSrc))
+  }
+
+  const liveBudgets = [
+    ...promoBudgets.map((p) => p.budget),
+    newsletterBudget,
+    sectionBudget,
+  ]
+  console.log("    composition            secs   budget  words   producer")
+  for (const b of [...new Map(liveBudgets.map((b) => [b.compositionId, b])).values()]) {
+    console.log(`    ${b.compositionId.padEnd(22)} ${String(b.compositionSeconds).padStart(4)}s `
+      + `${String(b.budgetSeconds).padStart(6)}s ${String(b.maxWords).padStart(5)}   ${PRODUCED[b.compositionId] ?? "?"}`)
+  }
+  const overrunning = liveBudgets.filter((b) => !fitsComposition(b.maxWords, b.compositionId))
+  ok(`every produced composition's word budget fits its own runtime (${liveBudgets.length} checked)`,
+    overrunning.length === 0,
+    // The REAL runtime from the registry, not the seconds the producer claimed —
+    // a producer that derived its budget from the wrong number must not get to
+    // print that wrong number as its own defence.
+    overrunning.map((b) => `${b.compositionId}: budget ${b.maxWords}w ≈ `
+      + `${estimateDurationSecondsLocal(b.maxWords)}s, composition really runs `
+      + `${compositionSeconds(REGISTRY[b.compositionId] ?? { duration_frames: 0, fps: 30 })}s`).join(" | "))
+  ok("...and every one of them leaves real headroom — 150 wpm is an AVERAGE, not\n    a bound, so a budget that exactly filled the runtime would overrun on any\n    faster-than-average read",
+    liveBudgets.every((b) => b.headroom === NARRATION_HEADROOM && b.budgetSeconds < b.compositionSeconds))
+  ok("...and each budget is DERIVED, not a literal: every composition gets its own\n    number, so the 12s square cuts are not handed the 25s reel's script length",
+    new Set(liveBudgets.map((b) => b.maxWords)).size >= 3)
+
+  // ── POSITIVE CONTROL (§2) — the OLD budgets must FAIL this same check ─────
+  // A broken rule and a clean tree both report zero. These are the effective
+  // word budgets each producer actually shipped before this pass, measured
+  // against the compositions they render on. If the check cannot see THESE, it
+  // is not seeing anything.
+  const RETIRED: Array<{ what: string; words: number; composition: string }> = [
+    { what: "render-just-listed prompt asked for 60-80 words", words: 80, composition: "JustSoldReelSquare" },
+    { what: "render-just-listed prompt asked for 60-80 words", words: 80, composition: "OpenHouseAnnounceReel" },
+    { what: "render-just-listed prompt asked for 60-80 words", words: 80, composition: "ComingSoonReel" },
+    { what: "render-just-listed maxTokens 220 permitted ~165 words", words: 165, composition: "JustListedReel" },
+    { what: "render-newsletter-video maxTokens 150 permitted ~110 words", words: 110, composition: "NewsletterDigestVideo" },
+    { what: "section-narration maxTokens 320 permitted ~240 words", words: 240, composition: "ListingSectionReel" },
+    { what: "section-narration deterministic fallback ran ~45 words", words: 45, composition: "ListingSectionReel" },
+  ]
+  const stillPassing = RETIRED.filter((r) => fitsComposition(r.words, r.composition))
+  ok(`POSITIVE CONTROL: all ${RETIRED.length} pre-cap budgets FAIL the fit rule — a budget\n    that exceeds its composition's runtime is caught, so a zero above means clean`,
+    stillPassing.length === 0,
+    stillPassing.map((r) => `${r.what} still reads as fitting ${r.composition}`).join(" | "))
+  ok("...and the rule is not simply always-false: a budget that DOES fit passes",
+    fitsComposition(20, "ListingSectionReel") && fitsComposition(50, "JustListedReel"))
+  ok("...and an unregistered composition never reads as fitting (fail closed)",
+    !fitsComposition(1, "NoSuchComposition"))
+
+  // ── THE DERIVATION IS LIVE, not a snapshot of today's numbers ─────────────
+  // Change the geometry and the budget must move with it. Proven two ways: over
+  // the arithmetic, and over a SCRATCH copy of Root.tsx text (never the file).
+  {
+    const asIs = narrationBudget("X", compositionSeconds(REGISTRY.ListingSectionReel))
+    const doubled = narrationBudget("X", compositionSeconds({ duration_frames: 600, fps: 30 }))
+    const halved = narrationBudget("X", compositionSeconds({ duration_frames: 150, fps: 30 }))
+    ok(`the budget moves with duration_frames (300f→${asIs.maxWords}w, 600f→${doubled.maxWords}w, 150f→${halved.maxWords}w)`,
+      doubled.maxWords === asIs.maxWords * 2 && halved.maxWords * 2 === asIs.maxWords)
+    ok("...and with fps, because seconds is frames/fps and not frames",
+      narrationBudget("X", compositionSeconds({ duration_frames: 300, fps: 60 })).maxWords === Math.round(asIs.maxWords / 2))
+    ok("a still card (duration_frames<=1) yields NO narration budget rather than an\n    unlimited one — 'no budget' must never read as 'no limit'",
+      narrationBudget("X", compositionSeconds(REGISTRY.PostcardFront4x6)).maxWords <= 0)
+
+    // Scratch Root.tsx: the SAME parser the guard uses above, over edited text.
+    const scratch = rootSrc.replace(
+      /(<Composition\s+id="ListingSectionReel"[\s\S]*?durationInFrames=\{)300(\})/,
+      "$1900$2")
+    const scratchGeo = parseRootCompositions(scratch).ListingSectionReel
+    const scratchBudget = narrationBudget("ListingSectionReel", compositionSeconds(scratchGeo))
+    ok(`a scratch Root.tsx with ListingSectionReel at 900 frames yields ${scratchBudget.maxWords} words,\n    not the ${sectionBudget.maxWords} the real 300-frame geometry yields — the cap reads the GEOMETRY`,
+      scratch !== rootSrc && scratchGeo.duration_frames === 900
+      && scratchBudget.maxWords === sectionBudget.maxWords * 3)
+  }
+
+  // ── AN OVERRUN IS TRIMMED AT A SENTENCE BOUNDARY, AND NEVER SILENT ────────
+  {
+    const b = narrationBudget("T", 10)                    // 8s → 20 words
+    const long = "One two three four five six seven eight nine ten. "
+      + "Eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty. "
+      + "Twenty-one twenty-two twenty-three twenty-four twenty-five."
+    const fit: NarrationFit = fitNarrationToBudget(long, b)
+    ok(`an over-budget script is trimmed to fit (${spokenWords(long).length}w → ${fit.wordCount}w, budget ${b.maxWords}w)`,
+      fit.wordCount <= b.maxWords && fit.wordCount > 0)
+    ok("...at a SENTENCE boundary — never mid-word, never mid-clause",
+      /[.!?]["'”’)\]]?$/.test(fit.script) && long.startsWith(fit.script))
+    ok("...and it SAYS SO: overran, droppedWords and a quotable note. An overrun\n    passing silently is the entire defect being fixed here",
+      fit.overran && fit.droppedWords > 0 && fit.note.length > 0 && fit.note.includes("trimmed"))
+
+    const shortEnough = "One two three four five. Six seven eight nine ten."
+    const clean = fitNarrationToBudget(shortEnough, b)
+    ok("CONTROL: a script that already fits is returned untouched, with no note —\n    the trim does not fire on healthy output",
+      clean.script === shortEnough && !clean.overran && clean.droppedWords === 0 && clean.note === "")
+
+    const oneHugeSentence = Array.from({ length: 40 }, (_, i) => `word${i}`).join(" ") + "."
+    const stuck = fitNarrationToBudget(oneHugeSentence, b)
+    ok("a single sentence longer than the whole composition is KEPT (an empty track\n    is worse) but flagged stillOverBudget with a note naming the geometry",
+      stuck.stillOverBudget && stuck.overran && stuck.note.includes("too short"))
+    ok("...and a composition with NO runtime drops the narration outright rather\n    than baking a track nothing can play",
+      fitNarrationToBudget("Anything at all.", narrationBudget("T", 0)).script === ""
+      && fitNarrationToBudget("Anything at all.", narrationBudget("T", 0)).note.length > 0)
+    ok("empty in, empty out, no note", fitNarrationToBudget("", b).note === "" && fitNarrationToBudget("", b).script === "")
+  }
+
+  // ── THE PRODUCERS ACTUALLY DO IT ──────────────────────────────────────────
+  // Read STRIPPED, string-masked source: every one of these files now EXPLAINS
+  // the cap in a comment, and a comment naming fitNarrationToBudget is not a
+  // call to it (§2). `${…}` interpolations survive blankStrings, which is where
+  // narrationLengthDirective sits inside each prompt.
+  {
+    const PRODUCER_FILES = [
+      "app/api/internal/remotion/render-just-listed/route.ts",
+      "app/api/internal/remotion/render-newsletter-video/route.ts",
+      "lib/listing-presentation/section-narration.ts",
+    ]
+    const srcOf = (f: string) => blankStrings(stripComments(readFileSync(f, "utf8")))
+    const constrains = /narrationLengthDirective\s*\(/
+    const verifies = /fitNarrationToBudget\s*\(/
+    const budgets = /narrationMaxTokens\s*\(/
+    const missingConstraint = PRODUCER_FILES.filter((f) => !constrains.test(srcOf(f)))
+    const missingVerify = PRODUCER_FILES.filter((f) => !verifies.test(srcOf(f)))
+    const missingTokens = PRODUCER_FILES.filter((f) => !budgets.test(srcOf(f)))
+    ok("the producer finders recognise the shapes they look for",
+      constrains.test("x(`${narrationLengthDirective(b)}`)") && verifies.test("const f = fitNarrationToBudget(t, b)"))
+    ok("...and a COMMENT naming them is not a call site (stripped source)",
+      !verifies.test(srcOf("scripts/strip-comments.ts"))
+      && !constrains.test(blankStrings(stripComments("// calls narrationLengthDirective(b) somewhere"))))
+    ok(`all ${PRODUCER_FILES.length} camel-key producers CONSTRAIN the prompt with the derived budget`,
+      missingConstraint.length === 0, missingConstraint.join(", "))
+    ok(`...and all ${PRODUCER_FILES.length} VERIFY the returned script — telling a model "at most N words"\n    is a request, not a guarantee`,
+      missingVerify.length === 0, missingVerify.join(", "))
+    ok(`...and all ${PRODUCER_FILES.length} size the model's token budget from the same number, so\n    nobody pays for three times the text they throw away`,
+      missingTokens.length === 0, missingTokens.join(", "))
+
+    // The retired literals must be GONE from live code, not merely outnumbered.
+    const retiredLiterals: Array<[string, RegExp]> = [
+      ["lib/listing-presentation/section-narration.ts", /maxTokens:\s*320/],
+      ["app/api/internal/remotion/render-just-listed/route.ts", /maxTokens:\s*220/],
+      ["app/api/internal/remotion/render-newsletter-video/route.ts", /maxTokens:\s*150/],
+      ["app/api/internal/remotion/render-just-listed/route.ts", /60-80 word/],
+      ["lib/listing-presentation/section-narration.ts", /3 to 5 sentences/],
+    ]
+    // The last two live inside prompt template literals, so they are matched on
+    // comment-stripped (NOT string-masked) source — masking would blank exactly
+    // the text being looked for.
+    const survivors = retiredLiterals.filter(([f, re]) => re.test(stripComments(readFileSync(f, "utf8"))))
+    ok("POSITIVE CONTROL: the retired-literal finder still matches what it hunts",
+      /maxTokens:\s*320/.test("  maxTokens: 320, temperature: 0.8")
+      && /60-80 word/.test("Write a 60-80 word voiceover script"))
+    ok(`no producer still carries a hand-written length ceiling (${retiredLiterals.length} retired literals)`,
+      survivors.length === 0, survivors.map(([f, re]) => `${f} ${re}`).join(" | "))
+  }
+
+  // ── THE TWO KEYS MUST STAY DISTINCT ──────────────────────────────────────
+  // The whole design rests on it: snake voiceover_url is a FINISH input the
+  // coordinator pads (m313 tpad); camel voiceoverUrl is IN the frames and
+  // cannot be padded, which is why its script is capped instead. Collapsing
+  // them would silently un-pad the padded half or double the voice on the other.
+  ok("input_props.voiceover_url is still a FINISH key (padded by the mux) and\n    voiceoverUrl still is not — the cap exists because only one can be padded",
+    (FINISH_PROP_KEYS as readonly string[]).includes("voiceover_url")
+    && !(FINISH_PROP_KEYS as readonly string[]).includes("voiceoverUrl"))
+  ok("...and the pad still fires for the snake key, so the OUT-OF-SCOPE producers\n    (partners-meeting, deal-room, board-packet, listing-pitch, go-live probe)\n    remain rescued rather than capped",
+    paddingSecondsFor(30, 20) > 9 && paddingSecondsFor(10, 20) === 0)
+}
+
+
 console.log(`\n${"═".repeat(70)}`)
 console.log(`REMOTION SETUP — ${pass} passed, ${fail} failed`)
 if (fail > 0) {
   console.log("\nFailures:")
   for (const f of failures) console.log(`  · ${f}`)
   console.log("\nIf a composition legitimately changed, update BOTH Root.tsx and")
-  console.log("remotion_compositions, then refresh the REGISTRY snapshot in this file.")
+  console.log("remotion_compositions, then refresh COMPOSITION_GEOMETRY in")
+  console.log("lib/remotion/composition-geometry.ts (the SQL is in its header).")
   process.exit(1)
 }
 console.log("What Remotion renders and what the OS believes are the same 33 compositions.")

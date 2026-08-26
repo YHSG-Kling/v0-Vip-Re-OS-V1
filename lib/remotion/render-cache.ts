@@ -43,6 +43,7 @@ import {
   type CachePoisoningFinding,
 } from "./composition-cache"
 import { resolveCodeRevision } from "./code-revision"
+import { compositionSeconds } from "./composition-geometry"
 
 export { RENDER_CACHE_LEAK_SIGNAL }
 
@@ -276,7 +277,7 @@ export async function loadCacheBoard(
 
     const econRows = rows.map((r) => {
       const c = comps.get(r.composition_id)
-      const outputSeconds = c ? c.duration_frames / Math.max(1, c.fps) : 0
+      const outputSeconds = c ? compositionSeconds(c) : 0
       const estimatedUsd = c
         ? estimateCompositionCost({
             duration_frames: c.duration_frames, fps: c.fps,

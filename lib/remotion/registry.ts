@@ -25,6 +25,7 @@
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { compositionSeconds } from "@/lib/remotion/composition-geometry"
 
 export type CompositionTier =
   | "solo_agent"
@@ -171,14 +172,18 @@ export function estimateCompositionCost(
   composition: RemotionCompositionRow,
 ): CompositionCostEstimate {
   // D-ID Talks API charges ~$0.30 per minute of avatar video.
-  // We compute from duration_frames + fps.
-  const minutes = composition.duration_frames / composition.fps / 60
+  // We compute from duration_frames + fps — through the ONE duration
+  // computation (lib/remotion/composition-geometry.ts compositionSeconds), which
+  // the render coordinator's narration pad and the render cache's
+  // secondsAvoided also use. Three private copies of `duration_frames / fps`
+  // were three chances to disagree (§6).
+  const seconds = compositionSeconds(composition)
+  const minutes = seconds / 60
   const did = composition.requires_did_avatar ? Math.max(0.10, minutes * 0.30) : 0
 
   // ElevenLabs TTS at ~$0.18 per 1K characters; a typical narration
   // runs ~120 characters per second. Conservative cap at $0.10 even
   // for short clips because the API has a minimum charge.
-  const seconds = composition.duration_frames / composition.fps
   const voice = composition.requires_voiceover
     ? Math.max(0.05, (seconds * 120 / 1000) * 0.18)
     : 0

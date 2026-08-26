@@ -30,6 +30,7 @@
  * No DB, no React, no Remotion imports — unit-testable in isolation
  * (scripts/captions-simulator.ts).
  */
+import { spokenWords } from "./script-structure"
 
 // ── Alignment shape (mirrors ElevenLabs CharacterAlignmentResponseModel) ──────
 /**
@@ -83,10 +84,12 @@ function isAlignment(x: CaptionSource): x is CharacterAlignment {
   )
 }
 
-/** Split a script into words, stripping surrounding whitespace. Empty → []. */
-function splitWords(text: string): string[] {
-  return text.trim().split(/\s+/).filter(Boolean)
-}
+/** Split a script into words, stripping surrounding whitespace. Empty → [].
+ *  TOMBSTONE: the body moved to `spokenWords` in lib/video/script-structure.ts,
+ *  which the narration cap also counts with — one spelling of "how many words is
+ *  this script" across the video lane (§6). The local name is kept because it is
+ *  used a dozen times below and reads better inside the caption arithmetic. */
+const splitWords = spokenWords
 
 /** Group an ordered word list into ≤maxWords-per-phrase chunks, breaking
  *  PREFERENTIALLY at sentence punctuation so a cue never straddles a sentence. */

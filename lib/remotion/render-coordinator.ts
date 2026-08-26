@@ -35,6 +35,7 @@
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { compositionSeconds } from "./composition-geometry"
 import {
   getComposition,
   recordRenderCompleted,
@@ -195,7 +196,7 @@ export async function finalizeCoordinatedRender(
         .eq("audio_url", voUrl)
         .maybeSingle()
       const narrationSeconds = (narr as { duration_seconds: number | null } | null)?.duration_seconds ?? null
-      const videoSeconds = composition.duration_frames / Math.max(1, composition.fps)
+      const videoSeconds = compositionSeconds(composition)
 
       const { mixNarrationVoiceover } = await import("./voiceover-mixer")
       const narrated = await mixNarrationVoiceover({

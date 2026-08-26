@@ -52,7 +52,13 @@ import {
   compositionForPromoEvent,
   buildPromoProps,
   computeDaysOnMarket,
+  promoNarrationBudget,
 } from "@/lib/video/promo-composition"
+import {
+  narrationLengthDirective,
+  narrationMaxTokens,
+  fitNarrationToBudget,
+} from "@/lib/video/script-structure"
 import path from "node:path"
 import fs from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -385,11 +391,22 @@ async function draftAndClearScript(args: {
   facts: ListingFacts
   eventType: string
 }): Promise<string> {
+  // THE CAP, DERIVED FROM THE COMPOSITION THIS EVENT WILL RENDER ON.
+  // renderRemotionReel routes the event through compositionForPromoEvent and
+  // buildPromoProps, which hand the mp3 to input_props.voiceoverUrl — an <Audio>
+  // INSIDE the composition, against a FIXED durationInFrames. The m313 tpad
+  // rescues only the other key (input_props.voiceover_url), which this path
+  // never writes, so an overrun here is simply CUT. The prompt used to ask for
+  // "60-80 words" ≈ 24-32 spoken seconds for EVERY event, against compositions
+  // running 25s (JustListedReel) and 12s (the three square event cuts) — so the
+  // square cuts lost more than half of every script, silently.
+  const budget = promoNarrationBudget(args.eventType)
+
   const draft = async (violations: string[]) => {
     const violationLine = violations.length > 0
       ? `\n\nYour previous draft failed compliance. Resolve these violations:\n- ${violations.join("\n- ")}\n`
       : ""
-    const prompt = `Write a 60-80 word voiceover script for a real-estate ${eventLabel(args.eventType)} reel.
+    const prompt = `Write a voiceover script for a real-estate ${eventLabel(args.eventType)} reel.
 Use ONLY these facts — do not invent:
 - Address: ${args.facts.address || "(omitted)"}
 - Location: ${args.facts.city_state || "(omitted)"}
@@ -399,18 +416,24 @@ Use ONLY these facts — do not invent:
 - Sq ft: ${args.facts.sqft || "(omitted)"}
 - Property type: ${args.facts.property_type || "(omitted)"}
 
-Style: first-person, energetic but professional. Lead with the hook, hit 2-3 facts, close with "DM me to tour."
+Style: first-person, energetic but professional. Lead with the hook, hit the strongest 1-2 facts, close with "DM me to tour."
 Banned: protected-class refs (race, religion, family status, national origin, gender, sexual orientation, disability, source of income); phrases like "perfect for families" or "ideal starter home"; rate/valuation/appreciation guarantees; exclamation marks.
+${narrationLengthDirective(budget)}
 Return ONLY the script text the avatar will speak — no scene directions.${violationLine}`
     const { text } = await generateTextRouted({
       brokerageId: args.brokerageId,
       userId: args.agentUserId,
       feature:     "listing_promo_voiceover_script",
       prompt,
-      maxTokens:   220,
+      maxTokens:   narrationMaxTokens(budget),
       temperature: 0.5,
     })
-    return text.trim()
+    // VERIFY, don't trust — a word ceiling in a prompt is a request, not a
+    // guarantee. Trim at a sentence boundary and SAY SO; the defect being fixed
+    // is not that scripts are long, it is that nothing ever looked.
+    const fit = fitNarrationToBudget(text.trim(), budget)
+    if (fit.note) console.warn(`[render-just-listed] ${args.eventType} — ${fit.note}`)
+    return fit.script
   }
   const result = await runWithComplianceRedraft({
     draft: ({ violations }) => draft(violations),

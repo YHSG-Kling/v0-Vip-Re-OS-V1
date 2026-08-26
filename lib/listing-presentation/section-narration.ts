@@ -13,6 +13,38 @@
  * also drives the on-screen bullets so copy + voiceover stay in sync.
  */
 import { findSuggestedPriceLeaks } from "@/lib/cma/customer-facing-guard"
+import { compositionSeconds, geometryFor } from "@/lib/remotion/composition-geometry"
+import {
+  narrationBudget,
+  narrationLengthDirective,
+  narrationMaxTokens,
+  fitNarrationToBudget,
+  spokenWords,
+  type NarrationBudget,
+} from "@/lib/video/script-structure"
+
+/**
+ * The composition these scripts are SPOKEN OVER.
+ *
+ * section-render.ts queues every non-CMA section as a `ListingSectionReel`, and
+ * that composition carries the narration as an <Audio> INSIDE the composition
+ * (remotion/ListingSectionReel.tsx:63) against a FIXED durationInFrames. Nothing
+ * pads it — an overrun is CUT, mid-word, in a video already sent to a seller. So
+ * the script has to be sized to the composition before it is written.
+ */
+export const SECTION_NARRATION_COMPOSITION = "ListingSectionReel"
+
+/**
+ * What a section script is allowed to be, DERIVED from the composition's real
+ * geometry. Change ListingSectionReel's durationInFrames and this moves with it;
+ * there is no 20 written down anywhere.
+ */
+export function sectionNarrationBudget(
+  compositionId: string = SECTION_NARRATION_COMPOSITION,
+): NarrationBudget {
+  const geo = geometryFor(compositionId)
+  return narrationBudget(compositionId, geo ? compositionSeconds(geo) : 0)
+}
 
 export interface NarrationInput {
   sectionKey:    string
@@ -110,6 +142,10 @@ export const DEFAULT_MARKETING_SYSTEM =
   "Cinematic listing video, animated market-data reels, a personal AI-avatar video series, omnipresent reach across every social and portal channel buyers use, AI-search-optimized property pages, and a coordinated direct-mail + email campaign — all produced and orchestrated for you, not bolted on."
 
 export interface AINarrationInput extends NarrationInput {
+  /** The composition this narration will be spoken over. Defaults to
+   *  SECTION_NARRATION_COMPOSITION; pass another id and the word budget
+   *  re-derives from THAT composition's geometry. */
+  compositionId?:   string
   /** The agent's own angle / proof points (users.presentation_take). */
   agentTake?:       string | null
   /** Description of the brokerage marketing system to sell. */
@@ -122,12 +158,35 @@ export interface AINarrationInput extends NarrationInput {
 /**
  * Generate a compelling, personalized, SELLER-SAFE narration script for one
  * section using the platform's metered AI gateway. Weaves the brokerage
- * marketing system, the agent's own take, and market context into 3–5 spoken
- * sentences. Falls back to the deterministic builder on any AI failure, and
- * scrubs any dollar figure the model emits (the no-price rule is absolute).
+ * marketing system, the agent's own take, and market context into as much
+ * spoken text as the composition can actually play. Falls back to the
+ * deterministic builder on any AI failure, and scrubs any dollar figure the
+ * model emits (the no-price rule is absolute).
+ *
+ * ── LENGTH IS NOW A CONSTRAINT, NOT A HOPE ──────────────────────────────────
+ * The prompt asked for "3 to 5 sentences" and the gateway was given 320 tokens,
+ * so a typical draft ran 60–80 words ≈ 24–32 spoken seconds against a
+ * TEN-SECOND composition. Two thirds of every section narration was cut off
+ * mid-word and nothing anywhere noticed. Both halves are fixed here: the prompt
+ * now carries the budget DERIVED from the composition's geometry, and the
+ * returned text is measured and trimmed at a sentence boundary if the model
+ * ignored it. The deterministic fallback goes through the same trim — it was
+ * ~45 words, and it ships exactly when the AI is unavailable.
+ *
+ * BOTH the AI path and the fallback can come back flagged `stillOverBudget`
+ * when even one sentence does not fit; that is logged loudly rather than
+ * swallowed, because it means the COMPOSITION is too short for what this
+ * section has to say and only a geometry change can fix it.
  */
 export async function generateSectionNarration(input: AINarrationInput): Promise<SectionNarration> {
-  const fallback = buildSectionNarrationScript(input)
+  const budget = sectionNarrationBudget(input.compositionId ?? SECTION_NARRATION_COMPOSITION)
+  const rawFallback = buildSectionNarrationScript(input)
+  /** The deterministic script, held to the same budget as the AI's. */
+  const fallback = ((): SectionNarration => {
+    const fit = fitNarrationToBudget(rawFallback.script, budget)
+    if (fit.note) console.warn(`[section-narration] deterministic fallback — ${fit.note}`)
+    return { ...rawFallback, script: fit.script }
+  })()
   const brief = SECTION_BRIEF[input.sectionKey]
   if (!brief) return fallback
 
@@ -148,7 +207,9 @@ export async function generateSectionNarration(input: AINarrationInput): Promise
     `HARD RULES:`,
     `- NEVER state the seller's home value, a suggested list price, or ANY dollar figure. Defer all pricing to the in-person meeting.`,
     `- First person ("I", "my team", "we"), warm, confident, specific to ${where} — not generic.`,
-    `- 3 to 5 sentences. Conversational, meant to be spoken aloud. No bullet points, no markdown, no stage directions, no salutations.`,
+    // WAS "3 to 5 sentences" — a fixed count that no composition duration ever
+    // agreed with. The ceiling now comes from ListingSectionReel's own geometry.
+    `- ${narrationLengthDirective(budget)} Conversational, meant to be spoken aloud. No bullet points, no markdown, no stage directions, no salutations.`,
     `- This is ${agent} speaking directly to the homeowner.`,
     ``,
     `Write only the narration text.`,
@@ -156,15 +217,27 @@ export async function generateSectionNarration(input: AINarrationInput): Promise
 
   try {
     const { generateAIText } = await import("@/lib/ai/generate")
-    const { text } = await generateAIText(prompt, { maxTokens: 320, temperature: 0.8, feature: "listing_presentation_narration" })
+    const { text } = await generateAIText(prompt, {
+      maxTokens: narrationMaxTokens(budget), temperature: 0.8, feature: "listing_presentation_narration",
+    })
     let script = (text ?? "").trim().replace(/^["“]|["”]$/g, "")
-    if (!script || script.length < 40) return fallback
+    // "The model returned junk" floor. WAS `script.length < 40` — a character
+    // literal that would start rejecting VALID output the moment the derived
+    // budget dropped below ~7 words, i.e. it fought the cap. Counted in words
+    // instead, well under any real budget.
+    if (spokenWords(script).length < 3) return fallback
     // Absolute no-price rule — scrub any dollar figure or leaked valuation.
     if (/\$\s?\d/.test(script) || findSuggestedPriceLeaks({ script }).length > 0) {
       script = script.replace(/\$\s?[\d,]+(?:\.\d+)?/g, "the right price")
     }
+    // VERIFY, don't trust. "At most N words" in a prompt is a request; this is
+    // the enforcement. An overrun is trimmed at a sentence boundary and SAID SO
+    // — it must never pass silently, which is the whole defect.
+    const fit = fitNarrationToBudget(script, budget)
+    if (fit.note) console.warn(`[section-narration] ${input.sectionKey} — ${fit.note}`)
+    if (!fit.script) return fallback
     // Bullets stay deterministic (concise, seller-safe on-screen text).
-    return { sectionKey: input.sectionKey, script, bullets: fallback.bullets }
+    return { sectionKey: input.sectionKey, script: fit.script, bullets: fallback.bullets }
   } catch {
     return fallback
   }

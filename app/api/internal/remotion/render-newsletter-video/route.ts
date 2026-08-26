@@ -40,6 +40,13 @@ import { getBundle } from "@/lib/remotion/bundle-cache"
 import { selectComposition, renderMedia } from "@remotion/renderer"
 import { runPersonaVariantPostPass } from "@/lib/video/persona-variant-post-pass"
 import { mintVideoQr } from "@/lib/video/video-qr"
+import { compositionSeconds, geometryFor } from "@/lib/remotion/composition-geometry"
+import {
+  narrationBudget,
+  narrationLengthDirective,
+  narrationMaxTokens,
+  fitNarrationToBudget,
+} from "@/lib/video/script-structure"
 import path from "node:path"
 import fs from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -49,6 +56,10 @@ export const maxDuration = 300
 export const runtime = "nodejs"
 
 interface ReqBody { newsletter_campaign_id: string }
+
+/** The composition this route renders. One spelling (§6) — it was written out
+ *  four times, and the narration cap has to name the SAME one the render does. */
+const NEWSLETTER_VIDEO_COMPOSITION = "NewsletterDigestVideo"
 
 export async function POST(req: NextRequest) {
   const auth = req.headers.get("authorization")?.replace("Bearer ", "")
@@ -170,6 +181,20 @@ export async function POST(req: NextRequest) {
       : "A quick recap of what moved in your local market this week"
 
     // 4. Draft narration — value-first, 25-35 spoken words.
+    //
+    // THE CAP IS DERIVED FROM THE COMPOSITION, not from the 25-35 above.
+    // NewsletterDigestVideo carries this narration as an <Audio> INSIDE the
+    // composition (remotion/NewsletterDigestVideo.tsx:66) against a fixed
+    // durationInFrames, and step 5 below deliberately does NOT put the mp3 in
+    // input_props.voiceover_url ("the narration is already the composition's
+    // audio track") — so the m313 tpad that rescues every OTHER narration is
+    // switched off here BY DESIGN and an overrun is simply cut. The 25-35 is an
+    // editorial target and it happens to sit under the budget; the budget is the
+    // enforceable ceiling, and it moves if the composition's geometry moves.
+    const narrationCap = narrationBudget(
+      NEWSLETTER_VIDEO_COMPOSITION,
+      compositionSeconds(geometryFor(NEWSLETTER_VIDEO_COMPOSITION) ?? { duration_frames: 0, fps: 30 }),
+    )
     const draft = async (violations: string[]): Promise<string> => {
       const fix = violations.length > 0
         ? `\n\nResolve these violations from prior draft:\n- ${violations.join("\n- ")}`
@@ -193,16 +218,21 @@ with "Open the email for the full breakdown." or equivalent.
 Banned: protected-class refs (race, religion, family status, etc.);
 phrases like "perfect for families"; rate / valuation / appreciation
 guarantees; exclamation marks.
+${narrationLengthDirective(narrationCap)}
 Return ONLY the spoken text.${fix}`
       const { text } = await generateTextRouted({
         brokerageId: camp.brokerage_id,
         userId: ledgerAgentUserId,
         feature:     "newsletter_video_narration",
         prompt,
-        maxTokens:   150,
+        maxTokens:   narrationMaxTokens(narrationCap),
         temperature: 0.55,
       })
-      return text.trim()
+      // VERIFY, don't trust: a word ceiling in a prompt is a request. Trimmed at
+      // a sentence boundary and logged when the model overshoots — never silent.
+      const fit = fitNarrationToBudget(text.trim(), narrationCap)
+      if (fit.note) console.warn(`[render-newsletter-video] ${fit.note}`)
+      return fit.script
     }
     const complianceResult = await runWithComplianceRedraft({
       draft: ({ violations }) => draft(violations),
@@ -264,7 +294,7 @@ Return ONLY the spoken text.${fix}`
       qrCodeDataUrl: qr?.qrCodeDataUrl ?? null,
       qrCaption:     "Scan to read",
     }
-    const composition = await selectComposition({ serveUrl: bundleLoc, id: "NewsletterDigestVideo", inputProps })
+    const composition = await selectComposition({ serveUrl: bundleLoc, id: NEWSLETTER_VIDEO_COMPOSITION, inputProps })
 
     let executablePath: string | undefined
     if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
@@ -298,7 +328,7 @@ Return ONLY the spoken text.${fix}`
       const { buildRenderIntent } = await import("@/lib/remotion/render-decision")
       const { finalizeCoordinatedRender } = await import("@/lib/remotion/render-coordinator")
       const rq = await recordRenderQueued({
-        brokerageId: camp.brokerage_id, compositionId: "NewsletterDigestVideo",
+        brokerageId: camp.brokerage_id, compositionId: NEWSLETTER_VIDEO_COMPOSITION,
         agentUserId: ledgerAgentUserId,
         entityType: "newsletter_video", entityId: ledger.id,
         usedVoiceover: true,
@@ -309,7 +339,7 @@ Return ONLY the spoken text.${fix}`
       })
       if (rq.ok && rq.renderId) {
         const intent = buildRenderIntent({
-          brokerage_id: camp.brokerage_id, composition_id: "NewsletterDigestVideo",
+          brokerage_id: camp.brokerage_id, composition_id: NEWSLETTER_VIDEO_COMPOSITION,
           agent_user_id: ledgerAgentUserId, entity_type: "newsletter_video", entity_id: ledger.id,
           scope_type: "brokerage", scope_id: camp.brokerage_id,
           input_props: { music_mood: "calm" },

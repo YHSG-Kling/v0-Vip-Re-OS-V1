@@ -19,6 +19,8 @@
  * Remotion handoff (target_composition_id). Never throws.
  */
 import { createServiceClient } from "@/lib/supabase/service"
+import { sectionNarrationBudget } from "@/lib/listing-presentation/section-narration"
+import { fitNarrationToBudget } from "@/lib/video/script-structure"
 
 export type NarrationMode = "avatar_narrated" | "voice_only" | "on_screen_only"
 export interface NarrationPlan { voiceover: boolean; avatar: boolean; mode: NarrationMode }
@@ -103,7 +105,21 @@ export async function narratePresentationSections(
 
   for (const r of list) {
     const props = (r.input_props ?? {}) as Record<string, unknown>
-    const script = (props.narrationScript as string | undefined)?.trim() ?? ""
+    // THE LAST POINT BEFORE THE VOICE IS PAID FOR AND BAKED IN.
+    // The script was written by section-render against THIS composition's word
+    // budget — but these rows are read from the QUEUE, so a row enqueued before
+    // that cap existed still carries an uncapped script, and the synthesized mp3
+    // lands in input_props.voiceoverUrl: an <Audio> INSIDE the composition,
+    // against a FIXED durationInFrames, which the m313 tpad does NOT rescue
+    // (it pads only the different key, input_props.voiceover_url). So the budget
+    // is re-derived from the composition THIS row actually renders on, and an
+    // overrun is trimmed at a sentence boundary and logged rather than cut
+    // mid-word. Idempotent: a script already within budget passes through
+    // untouched, so this is a no-op for every row written after the cap.
+    const rawScript = (props.narrationScript as string | undefined)?.trim() ?? ""
+    const fit = fitNarrationToBudget(rawScript, sectionNarrationBudget(r.composition_id))
+    if (fit.note) console.warn(`[section-narration-orchestrator] render ${r.id} — ${fit.note}`)
+    const script = fit.script
     const plan = planSectionNarrationJob({ hasScript: !!script, hasVoiceClone: !!voiceId, hasAvatarSource: !!avatarSource })
 
     let voiceoverUrl: string | null = null
@@ -115,8 +131,12 @@ export async function narratePresentationSections(
           const { put } = await import("@vercel/blob")
           const up = await put(`narration/${pres.brokerage_id}/${r.id}.mp3`, tts.audioBuffer, { access: "public", contentType: "audio/mpeg" })
           voiceoverUrl = up.url
+          // narrationScript is written back as the script that was ACTUALLY
+          // spoken. Leaving the pre-trim text beside the trimmed audio would
+          // make the row disagree with its own mp3, and this column is the only
+          // record of what the voice said.
           await supabase.from("remotion_composition_renders")
-            .update({ input_props: { ...props, voiceoverUrl }, used_voiceover: true })
+            .update({ input_props: { ...props, narrationScript: script, voiceoverUrl }, used_voiceover: true })
             .eq("id", r.id)
         }
       } catch { /* voice synth is best-effort → falls back to on-screen */ }

@@ -22,6 +22,7 @@ import {
   type LivingFacts,
 } from "../lib/video/living-video"
 import { paddingSecondsFor } from "../lib/remotion/voiceover-mixer"
+import { compositionSeconds } from "../lib/remotion/composition-geometry"
 import { isUnavailableStatus, normalizeVendorStatus } from "../lib/property/resolve-property-facts"
 import { SIGNAL_REGISTRY } from "../lib/kernel/signal-registry"
 import { MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
@@ -279,8 +280,22 @@ console.log("\n═══ 9. Narration is never cut off mid-sentence ═══")
   const coord = code("lib/remotion/render-coordinator.ts")
   ok("the coordinator looks the narration length up by url, tenant-scoped",
     coord.includes('.eq("audio_url", voUrl)') && coord.includes('.eq("brokerage_id", intent.brokerageId)'))
+  // WAS pinned to the literal expression `composition.duration_frames /
+  // Math.max(1, composition.fps)`. That is a WAYPOINT, not the rule (CLAUDE.md
+  // §2): the arithmetic moved into the ONE shared compositionSeconds helper
+  // (lib/remotion/composition-geometry.ts) when the narration cap needed the
+  // same computation at generation time, and this assertion went red while the
+  // behaviour it guards was unchanged. Assert the RULE in two halves instead —
+  // the comparison length is derived FROM THE COMPOSITION being rendered, and
+  // that derivation really is frames/fps, the second half checked by RUNNING it
+  // rather than by matching its text.
   ok("...and passes the composition's own length as the comparison",
-    coord.includes("composition.duration_frames / Math.max(1, composition.fps)"))
+    /const videoSeconds\s*=\s*compositionSeconds\(\s*composition\s*\)/.test(coord)
+    && /videoSeconds\s*[,}]/.test(coord.slice(coord.indexOf("mixNarrationVoiceover"))))
+  ok("...and that length really is duration_frames / fps (run, not matched)",
+    compositionSeconds({ duration_frames: 600, fps: 30 }) === 20
+    && compositionSeconds({ duration_frames: 750, fps: 30 }) === 25
+    && compositionSeconds({ duration_frames: 300, fps: 60 }) === 5)
 }
 
 console.log("\n═══ 10. BUYER MATCH REEL — the second living kind ═══")
