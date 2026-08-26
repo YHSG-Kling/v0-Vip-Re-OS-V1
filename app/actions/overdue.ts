@@ -19,7 +19,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext } from "@/lib/platform/acting-context"
 
 export type OverdueSeverity = "critical" | "high" | "medium" | "low"
 export type OverdueCategory =
@@ -53,8 +53,8 @@ export interface OverdueSummary {
 }
 
 export async function getOverdueSummary(): Promise<OverdueSummary> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.brokerageId) {
     return EMPTY
   }
 

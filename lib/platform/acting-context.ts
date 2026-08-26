@@ -33,8 +33,45 @@
 // `actorUserId` is the REAL human behind the request (the staff member when
 // impersonating, the user themselves otherwise) — stamp it into any audit column the
 // written table carries (author_user_id, actor_user_id, lifecycle_events.actor_user_id…).
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// TOMBSTONE (§1.1) — lib/kernel/identity.ts is GONE. Its resolveWriteContext() and
+// requireWriteContext() were a SECOND, DIFFERENT declaration of this seam's name, and
+// this file is the survivor: resolveWriteContext at lib/platform/acting-context.ts:143,
+// requireWriteContext's 4 call sites converted to resolveWriteContextForTenant().
+//
+// WHY THE DUPLICATE WAS A SECURITY DEFECT, not a style problem. Measured 2026-08-26:
+// 38 files / 85 call sites gated on the kernel copy, which returned NO `db` and had NO
+// concept of an impersonation grant. Two consequences, in opposite directions:
+//   · the 18 kernel-gated sites that then built their own `createClient()` wrote on an
+//     RLS-scoped client. Acting-as, the staff user is not a member of the target tenant,
+//     so those writes were REFUSED — and supabase-js resolves a refusal as zero rows
+//     with `error: null`, byte-identical to success. Support "fixed" nothing, silently.
+//   · the 112 kernel-gated sites that built their own `createServiceClient()` wrote
+//     through RLS regardless — including under a **read_only** grant, because the kernel
+//     copy had no readOnly to check. A read_only grant could write. That is the exact
+//     inverse of §5, "a grant walks the account and never exceeds it".
+// One seam answers both: read_only is refused HERE, and a full grant gets the service
+// client HERE, so neither answer depends on what a caller built for itself.
+//
+// WHAT WAS MERGED ONTO THIS SURVIVOR FIRST, from the deleted file:
+//   · the FK-safe agentId fallback (resolveAgentId) — see resolveWriteContext below;
+//   · the fail-closed try/catch around the whole resolution (§4).
+// WHAT WAS DELIBERATELY NOT MERGED, and why (both would have imported a defect):
+//   · `brokerageId` falling back to "the first brokerage ordered by created_at" when the
+//     session had none. That is a tenant invented from nowhere — the §4 shape this repo
+//     keeps finding — and it cannot be right for platform staff, who are precisely the
+//     seats with a null brokerage_id. Measured on the live database 2026-08-26: 0 of 23
+//     users have a null brokerage_id, so the fallback fired for NOBODY and deleting it
+//     changes no live seat's behaviour. resolveWriteContextForTenant() refuses instead.
+//   · `actorContext: ActorContext`. It was an ORPHAN FIELD — built on every call and read
+//     by nothing: all 20 `actorContext:` sites in app/ construct their own literal for
+//     evaluateOutbound()/transitionLifecycle(). Callers that want one build it from
+//     { userId, userType, brokerageId }, which this seam still returns.
+// ─────────────────────────────────────────────────────────────────────────────
 
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 
@@ -43,6 +80,8 @@ export interface ActingContext {
   /** Set when ok is false — the seam's own refusal message, for callers to relay. */
   error?: string
   userId: string
+  /** agents.id of the effective identity, or null. FK-safe — never users.id (23503). */
+  agentId: string | null
   brokerageId: string | null
   userType: string
   isImpersonating: boolean
@@ -52,6 +91,33 @@ export interface ActingContext {
   readOnly: boolean
   /** Write/read THROUGH this client: service client when acting-as, else the caller's RLS client. */
   db: any
+}
+
+/**
+ * The ONE resolution both entry points share — §6, one vocabulary per function.
+ * Splitting it would let the reader and the writer disagree about who the caller IS,
+ * which is exactly how the retired lib/kernel/identity.ts came to answer `agentId`
+ * differently from this file for the same session.
+ *
+ * `channel` decides only WHICH CLIENT; the read_only REFUSAL is the writer's alone.
+ *
+ * FK-SAFE agentId, merged from the retired kernel copy. getAgentContext resolves
+ * agentId with `.maybeSingle()` on an UNSCOPED user_id match, which returns NOTHING
+ * (PGRST116) for a user carrying agents rows in two brokerages — so that seat silently
+ * loses its agent linkage and every `!ctx.agentId` gate downstream refuses a real agent.
+ * resolveAgentId is the ordered `limit(1)` that answers instead. Never `?? userId`:
+ * agents.id and users.id are DISJOINT id spaces (23503).
+ */
+async function resolveClientAndAgent(
+  ctx: { userId: string; agentId: string | null; userType: string },
+  channel: "cookie" | "service",
+): Promise<{ db: any; agentId: string | null }> {
+  const db = channel === "service" ? createServiceClient() : await createClient()
+  let agentId = ctx.agentId
+  if (!agentId && ctx.userType === "agent") {
+    agentId = await resolveAgentId(db, ctx.userId)
+  }
+  return { db, agentId }
 }
 
 /**
@@ -73,19 +139,40 @@ export function decideWriteChannel(ctx: {
 }
 
 export async function resolveActingContext(): Promise<ActingContext> {
-  const ctx = await getAgentContext()
-  const isImpersonating = !!ctx.isImpersonating
-  return {
-    ok: ctx.isAuthenticated,
-    error: ctx.isAuthenticated ? undefined : "Not authenticated",
-    userId: ctx.userId,
-    brokerageId: ctx.brokerageId,
-    userType: ctx.userType,
-    isImpersonating,
-    impersonatorUserId: ctx.impersonatorUserId ?? null,
-    actorUserId: ctx.impersonatorUserId ?? ctx.userId,
-    readOnly: ctx.impersonationMode === "read_only",
-    db: isImpersonating ? createServiceClient() : await createClient(),
+  try {
+    const ctx = await getAgentContext()
+    const isImpersonating = !!ctx.isImpersonating
+    const { db, agentId } = await resolveClientAndAgent(ctx, isImpersonating ? "service" : "cookie")
+    return {
+      ok: ctx.isAuthenticated,
+      error: ctx.isAuthenticated ? undefined : "Not authenticated",
+      userId: ctx.userId,
+      agentId,
+      brokerageId: ctx.brokerageId,
+      userType: ctx.userType,
+      isImpersonating,
+      impersonatorUserId: ctx.impersonatorUserId ?? null,
+      actorUserId: ctx.impersonatorUserId ?? ctx.userId,
+      readOnly: ctx.impersonationMode === "read_only",
+      db,
+    }
+  } catch {
+    // FAIL CLOSED (§4) — same reason as resolveWriteContext's catch. getAgentContext
+    // never throws, but BOTH client constructors do when their env is missing, and an
+    // exception escaping a reader gate is a gate that did not run.
+    return {
+      ok: false,
+      error: "Not authenticated",
+      userId: "",
+      agentId: null,
+      brokerageId: null,
+      userType: "agent",
+      isImpersonating: false,
+      impersonatorUserId: null,
+      actorUserId: "",
+      readOnly: true,
+      db: null,
+    }
   }
 }
 
@@ -123,24 +210,33 @@ export type WriteContext =
  * table carries an audit column.
  */
 export async function resolveWriteContext(): Promise<WriteContext> {
-  const ctx = await getAgentContext() // fresh resolution — re-validates the grant at call time
-  const decision = decideWriteChannel(ctx)
-  if (decision.channel === "refused") {
-    return {
-      ok: false,
-      error: decision.reason === "read_only" ? READ_ONLY_ACTING_ERROR : "Unauthorized",
+  try {
+    const ctx = await getAgentContext() // fresh resolution — re-validates the grant at call time
+    const decision = decideWriteChannel(ctx)
+    if (decision.channel === "refused") {
+      return {
+        ok: false,
+        error: decision.reason === "read_only" ? READ_ONLY_ACTING_ERROR : "Unauthorized",
+      }
     }
-  }
-  return {
-    ok: true,
-    userId: ctx.userId,
-    agentId: ctx.agentId,
-    brokerageId: ctx.brokerageId,
-    userType: ctx.userType,
-    isImpersonating: !!ctx.isImpersonating,
-    impersonatorUserId: ctx.impersonatorUserId ?? null,
-    actorUserId: ctx.impersonatorUserId ?? ctx.userId,
-    db: decision.channel === "service" ? createServiceClient() : await createClient(),
+    const { db, agentId } = await resolveClientAndAgent(ctx, decision.channel)
+    return {
+      ok: true,
+      userId: ctx.userId,
+      agentId,
+      brokerageId: ctx.brokerageId,
+      userType: ctx.userType,
+      isImpersonating: !!ctx.isImpersonating,
+      impersonatorUserId: ctx.impersonatorUserId ?? null,
+      actorUserId: ctx.impersonatorUserId ?? ctx.userId,
+      db,
+    }
+  } catch {
+    // FAIL CLOSED (§4). A gate that cannot run must refuse. Missing env, a
+    // throwing client constructor, a network fault — none of them may render as
+    // "checked and fine". Merged from lib/kernel/identity.ts, whose try/catch
+    // returned `{ isAuthenticated: false }` for exactly this reason.
+    return { ok: false, error: "Unauthorized" }
   }
 }
 

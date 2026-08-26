@@ -22,12 +22,12 @@
  * NOT REGISTERED in package.json (per task rules).
  * Run: npx tsx scripts/act-as-write-seam-simulator.ts
  */
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { decideWriteChannel, decideClaimedTenant } from "../lib/platform/acting-context"
 import { isSessionActive } from "../lib/platform/impersonation"
-import { stripComments } from "./strip-comments"
+import { blankStrings, stripComments } from "./strip-comments"
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..")
 const read = (p: string) => readFileSync(join(ROOT, p), "utf8")
@@ -87,11 +87,35 @@ function main() {
     /await getAgentContext\(\)/.test(body))
   check("routes through the pure decision table (one vocabulary)",
     /decideWriteChannel\(ctx\)/.test(body))
+  // ── the RULE, not the expression (§2: "do not pin an assertion to a WAYPOINT") ──
+  // These two checks used to match the literal
+  //     /decision\.channel === "service" \? createServiceClient\(\)/
+  // inside resolveWriteContext's own body. That is a waypoint: it could only pass while
+  // the ternary lived at that exact spot, and it went red the moment the client
+  // construction was lifted into the ONE resolver both entry points share (§6) — a
+  // refactor that made the seam MORE correct, not less. The rule is: the service client
+  // is constructed on the "service" channel and nowhere else, and the refusal returns
+  // before any client is built. Both are asserted wherever the construction actually is.
+  const CHANNEL_RESOLVER = "resolveClientAndAgent"
+  const resolverStart = acting.indexOf(`async function ${CHANNEL_RESOLVER}`)
+  const resolverBody = resolverStart === -1 ? "" : acting.slice(resolverStart, acting.indexOf("\n}\n", resolverStart))
+  check("the channel→client mapping exists in exactly one place",
+    resolverStart !== -1 &&
+    // …and resolveWriteContext does not build a second one behind its back.
+    !/createServiceClient\(\)/.test(body.slice(0, body.indexOf("\n}\n"))))
   check("service client only on the 'service' channel",
-    /decision\.channel === "service" \? createServiceClient\(\)/.test(body))
-  check("refusal branch precedes any service-client construction",
+    /channel === "service" \? createServiceClient\(\)/.test(resolverBody) &&
+    // exactly one construction of each — no second, unguarded path
+    (resolverBody.match(/createServiceClient\(\)/g) ?? []).length === 1 &&
+    (resolverBody.match(/createClient\(\)/g) ?? []).length === 1)
+  check("refusal branch precedes any client construction",
     body.indexOf(`decision.channel === "refused"`) !== -1 &&
-    body.indexOf(`decision.channel === "refused"`) < body.indexOf("createServiceClient()"))
+    body.indexOf(`decision.channel === "refused"`) < body.indexOf(`${CHANNEL_RESOLVER}(ctx, decision.channel)`))
+  check("the writer hands the resolver the DECIDED channel, never a hardcoded one",
+    new RegExp(`${CHANNEL_RESOLVER}\\(ctx, decision\\.channel\\)`).test(body))
+  check("FAIL CLOSED — the resolution is wrapped so a throwing client constructor refuses, not passes",
+    /^\s*try \{/m.test(body.slice(0, body.indexOf("getAgentContext"))) &&
+    /\} catch \{[\s\S]{0,400}?ok: false/.test(body))
   check("read_only refusal uses the standard error string",
     /READ_ONLY_ACTING_ERROR/.test(body))
   check("actorUserId = impersonatorUserId ?? userId (real actor for audit)",
@@ -509,6 +533,108 @@ function main() {
       const naive = (acting: string | null, claimed?: string | null) =>
         acting ? { ok: true, brokerageId: claimed ?? acting } : { ok: false }
       return JSON.stringify(naive(OWN, FOREIGN)) !== JSON.stringify(decideClaimedTenant({ actingBrokerageId: OWN, claimedBrokerageId: FOREIGN }))
+    })())
+
+  // ── 6. ONE SEAM, ONE DECLARATION (§1.1 / §6) ──────────────────────────────
+  //
+  // lib/kernel/identity.ts declared a SECOND `resolveWriteContext` with a different
+  // shape and no impersonation awareness. Measured before the merge (2026-08-26):
+  // 38 files / 85 call sites gated on the kernel copy, 33 files / 75 on this one.
+  // The kernel copy returned NO client, so 18 of its gates then built their own
+  // RLS-scoped client — writes REFUSED under act-as, and supabase-js resolves a
+  // refusal as zero rows with `error: null`, which is byte-identical to success —
+  // while 112 built a service client and so wrote through RLS even under a
+  // **read_only** grant, the exact inverse of §5's "never exceeds it".
+  //
+  // The assertion is the RULE (§2): the name is declared ONCE, and nothing imports it
+  // from the retired module. Numbers are DERIVED and printed, never pinned.
+  console.log("\n[one seam, one declaration — the §1.1 merge]")
+  const KERNEL_IMPORT_RE = /^[ \t]*(?:import|export)\b[^\n]*from\s*["']@\/lib\/kernel\/identity["']/m
+  const KERNEL_IMPORT_SPECIMEN = '\nimport { resolveWriteContext } from "@/lib/kernel/identity"\n'
+  const SEAM_NAMES = ["resolveWriteContext", "resolveWriteContextForTenant", "resolveActingContext", "requireWriteContext"]
+  const srcFiles: string[] = []
+  ;(function walk(dir: string) {
+    for (const e of readdirSync(join(ROOT, dir), { withFileTypes: true })) {
+      if (e.name === "node_modules" || e.name.startsWith(".")) continue
+      const rel = `${dir}/${e.name}`
+      if (e.isDirectory()) walk(rel)
+      else if (/\.tsx?$/.test(e.name)) srcFiles.push(rel.replace(/^\.\//, ""))
+    }
+  })(".")
+
+  // Comment-stripped AND string-blanked: a tombstone naming the survivor, and a guard
+  // regex that quotes the declaration, are BOTH text — neither is a declaration (§2).
+  const decls: string[] = []
+  const kernelImporters: string[] = []
+  const seamImporters = new Set<string>()
+  for (const f of srcFiles) {
+    const raw = read(f)
+    const code = blankStrings(raw)
+    if (/^\s*export\s+async\s+function\s+resolveWriteContext\s*\(/m.test(code)) decls.push(f)
+    // LINE-ANCHORED on `import`/`export … from "…"`. The unanchored form accused THIS
+    // file: the positive control below carries the retired import path as a SPECIMEN
+    // inside a string literal, and stripComments deliberately preserves string
+    // contents. That is the §2 "a specimen is not a call site" trap, caught live.
+    // blankStrings is not the answer either — it would blank the module path out of a
+    // REAL import too — so the discriminator is statement position, not quoting.
+    if (KERNEL_IMPORT_RE.test(stripComments(raw))) kernelImporters.push(f)
+    if (/from\s+"@\/lib\/platform\/acting-context"/.test(stripComments(raw)) &&
+        SEAM_NAMES.some((n) => new RegExp(`\\b${n}\\b`).test(code))) seamImporters.add(f)
+  }
+  console.log(`   scanned ${srcFiles.length} .ts/.tsx files (node_modules and dot-dirs excluded — the blind spot)`)
+  console.log(`   resolveWriteContext declarations: ${decls.length} → ${decls.join(", ") || "(none)"}`)
+  console.log(`   files importing the seam from lib/platform/acting-context: ${seamImporters.size}`)
+  check("resolveWriteContext is declared EXACTLY ONCE in the repo",
+    decls.length === 1, `found ${decls.length}: ${decls.join(", ")}`)
+  check("…and the one declaration is the platform seam",
+    decls[0] === "lib/platform/acting-context.ts", decls[0])
+  check("the retired lib/kernel/identity.ts is GONE",
+    !existsSync(join(ROOT, "lib/kernel/identity.ts")))
+  check("nothing imports from the retired module",
+    kernelImporters.length === 0, kernelImporters.join(", "))
+  check("the kernel barrel no longer re-exports the homonym (and names its survivor)",
+    !/^\s*(resolveWriteContext|requireWriteContext),\s*$/m.test(blankStrings(read("lib/kernel/index.ts"))) &&
+    /lib\/platform\/acting-context\.ts:\d+/.test(read("lib/kernel/index.ts")))
+  check("requireWriteContext is declared nowhere (its callers converted to the seam)",
+    !srcFiles.some((f) => /export\s+async\s+function\s+requireWriteContext\s*\(/.test(blankStrings(read(f)))))
+
+  // §5 — "a grant walks the account and never exceeds it", in BOTH directions.
+  check("read_only still READS — resolveActingContext hands back a db and never consults the write decision",
+    /export async function resolveActingContext/.test(acting) &&
+    !new RegExp(`resolveActingContext[\\s\\S]{0,900}?decideWriteChannel`).test(acting) &&
+    /readOnly: ctx\.impersonationMode === "read_only"/.test(acting))
+  check("…and the writer entry point refuses that same grant before any client is built",
+    (decideWriteChannel({ isAuthenticated: true, isImpersonating: true, impersonationMode: "read_only" }) as any).channel === "refused")
+  check("both entry points resolve the SAME identity (one agentId answer, §6)",
+    (acting.match(/resolveClientAndAgent\(/g) ?? []).length === 3, // 1 declaration + 2 call sites
+    `${(acting.match(/resolveClientAndAgent\(/g) ?? []).length} occurrences`)
+  check("agentId is FK-safe — resolved through resolveAgentId, never `?? userId` (agents.id ⊥ users.id, 23503)",
+    /agentId = await resolveAgentId\(db, ctx\.userId\)/.test(acting) &&
+    !/agentId[^\n]*\?\?\s*ctx\.userId/.test(acting))
+  check("the survivor carries the §1.1 tombstone naming what was merged and what was not",
+    /TOMBSTONE \(§1\.1\)/.test(read("lib/platform/acting-context.ts")))
+
+  // POSITIVE CONTROLS (§2) — a broken finder and a clean tree both report zero.
+  console.log("\n[positive controls — the one-declaration finder]")
+  const twinDecl = "export async function resolveWriteContext(): Promise<WriteContextResult> {"
+  check("control · the declaration finder GOES RED on a spliced-in second declaration",
+    /^\s*export\s+async\s+function\s+resolveWriteContext\s*\(/m.test(blankStrings(twinDecl)))
+  check("control · …and does NOT count a TOMBSTONE that merely names it",
+    !/^\s*export\s+async\s+function\s+resolveWriteContext\s*\(/m.test(
+      blankStrings("// SURVIVOR: export async function resolveWriteContext() lives in acting-context.ts")))
+  check("control · …nor a quoted mention inside a string literal",
+    !/^\s*export\s+async\s+function\s+resolveWriteContext\s*\(/m.test(
+      blankStrings('const s = `export async function resolveWriteContext() {`')))
+  check("control · the retired-import finder GOES RED on a restored kernel import",
+    KERNEL_IMPORT_RE.test(stripComments(KERNEL_IMPORT_SPECIMEN)))
+  check("control · …and does NOT fire on the same text quoted mid-line as a specimen",
+    !KERNEL_IMPORT_RE.test(stripComments(`  const spec = ${JSON.stringify(KERNEL_IMPORT_SPECIMEN.trim())}`)))
+  check("control · a read_only grant WOULD reach the service client if the mode arm were dropped",
+    (() => {
+      const naive = (c: { isAuthenticated: boolean; isImpersonating?: boolean }) =>
+        !c.isAuthenticated ? "refused" : c.isImpersonating ? "service" : "cookie"
+      return naive({ isAuthenticated: true, isImpersonating: true }) === "service" &&
+        decideWriteChannel({ isAuthenticated: true, isImpersonating: true, impersonationMode: "read_only" }).channel === "refused"
     })())
 
   report()

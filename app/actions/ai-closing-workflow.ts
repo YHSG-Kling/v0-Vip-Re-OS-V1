@@ -1,7 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { generateObject } from "@/lib/ai/generate"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
@@ -300,14 +300,14 @@ export async function aiTrackClosingMilestones(params: {
     return { success: false, error: "Invalid IDs" }
   }
 
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId || !ctx.userId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId || !ctx.userId) {
     return { success: false, error: "Unauthorized" }
   }
   const brokerageId = ctx.brokerageId
   const actorUserId = ctx.userId
 
-  const supabase = await createClient()
+  const supabase = ctx.db
 
   try {
     // Tenant-anchored, and the error is destructured: a refused read must not

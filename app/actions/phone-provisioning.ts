@@ -15,7 +15,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { provisionNumber, logPhoneNumberEvent, searchAvailableNumbers } from "@/lib/voice/number-provisioning"
 import { evaluateTenantNumberProvisioning } from "@/lib/billing/phone-plan-resolve"
 
@@ -28,8 +28,8 @@ export interface BrokeragePhoneSettings {
 }
 
 export async function getBrokeragePhoneSettings(): Promise<BrokeragePhoneSettings | null> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) return null
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.brokerageId) return null
 
   const svc = createServiceClient()
   const { data } = await svc
@@ -49,8 +49,8 @@ export async function updateBrokeragePhoneSettings(params: {
   autoProvisionPhoneNumbers?: boolean
   defaultIsaVoiceId?: string | null
 }): Promise<{ success: boolean; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
   if (!isBrokerRole(ctx.userType)) {
@@ -96,8 +96,8 @@ export async function autoProvisionAgentPhone(params: {
   agentId: string
   areaCode?: string  // optional preferred area code
 }): Promise<ProvisionResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
   if (!isBrokerRole(ctx.userType)) {
@@ -212,8 +212,8 @@ export async function manuallyAddAgentPhone(params: {
   twilioSid?: string
   source?: "manually_added" | "ported_in"
 }): Promise<ProvisionResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
 
@@ -428,8 +428,8 @@ export interface PhoneAllowanceStatus {
 export async function getPhoneAllowanceStatusAction(): Promise<
   { success: true; status: PhoneAllowanceStatus } | { success: false; error: string }
 > {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
   const svc = createServiceClient()
   const v = await evaluateTenantNumberProvisioning(svc, ctx.brokerageId)
   return {
@@ -459,8 +459,8 @@ export async function searchBrokerageNumbersAction(params: {
   areaCode?: string
   locality?: string
 }): Promise<{ success: true; candidates: NumberCandidateView[] } | { success: false; error: string; notConfigured?: boolean }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
   if (!isBrokerRole(ctx.userType)) return { success: false, error: "Only broker / admin can search numbers" }
 
   const svc = createServiceClient()
@@ -487,8 +487,8 @@ export async function purchaseBrokerageNumberAction(params: {
   | { success: true; phoneNumber: string; billing: "included" | "overage"; monthlyOverageCents: number }
   | { success: false; error: string; capReached?: boolean }
 > {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
   if (!isBrokerRole(ctx.userType)) return { success: false, error: "Only broker / admin can purchase numbers" }
 
   const svc = createServiceClient()

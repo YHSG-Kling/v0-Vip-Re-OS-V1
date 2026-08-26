@@ -12,7 +12,7 @@
  * total feeds Smarter-this-week digest aggregations.
  */
 
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
 import { generateObject } from "@/lib/ai/generate"
@@ -106,8 +106,8 @@ export async function startObjectionPracticeSession(params: {
   /** Full scenario for AI-generated (call-sourced) scenarios not in the static library. */
   scenario?: ObjectionScenario
 }): Promise<{ success: boolean; sessionId?: string; openingLine?: string; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.userId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.userId) {
     return { success: false, error: "Unauthorized" }
   }
 
@@ -162,8 +162,8 @@ export async function submitPracticeTurn(params: {
   shouldEnd?: boolean
   error?: string
 }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.userId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.userId) {
     return { success: false, error: "Unauthorized" }
   }
 
@@ -254,8 +254,8 @@ export async function endPracticeSession(params: {
   improvements?: string[]
   error?: string
 }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.userId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.userId) {
     return { success: false, error: "Unauthorized" }
   }
 
@@ -315,8 +315,8 @@ export async function endPracticeSession(params: {
 // ─── List sessions ───────────────────────────────────────────────────────────
 
 export async function listPracticeSessions(): Promise<PracticeSession[]> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.userId) return []
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.userId) return []
 
   const svc = createServiceClient()
   const { data } = await svc
@@ -368,8 +368,8 @@ const GeneratedScenarioSchema = z.object({
 export async function generateObjectionScenariosFromCalls(params?: {
   limit?: number
 }): Promise<{ success: boolean; scenarios?: ObjectionScenario[]; message?: string; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.userId) return { success: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.userId) return { success: false, error: "Unauthorized" }
   if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
 
   const svc = createServiceClient()

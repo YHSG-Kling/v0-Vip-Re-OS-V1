@@ -19,7 +19,7 @@
  * gates + brand voice + compliance + kernel events all fire.
  */
 
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { voiceDraftListing } from "./voice-assistant/draft-listing-from-voice"
 import { voiceDraftOffer } from "./voice-assistant/draft-offer-from-voice"
 
@@ -57,8 +57,8 @@ export interface StageWizardPacketResult {
 export async function stageListingFromVoice(
   params: ListingFromVoiceParams,
 ): Promise<StageWizardPacketResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) return { success: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok) return { success: false, error: "Unauthorized" }
 
   const result = await voiceDraftListing({
     voiceInput: params.voiceInput,
@@ -99,8 +99,8 @@ export async function stageListingFromVoice(
 export async function stageOfferFromVoice(
   params: OfferFromVoiceParams,
 ): Promise<StageWizardPacketResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) return { success: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok) return { success: false, error: "Unauthorized" }
 
   const result = await voiceDraftOffer({
     voiceInput: params.voiceInput,

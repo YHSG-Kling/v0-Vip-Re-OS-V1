@@ -14,7 +14,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { KernelEvent } from "@/lib/kernel/events"
 
 /**
@@ -213,8 +213,8 @@ export async function getDefaultSequenceCatalog(brokerageId?: string): Promise<{
   error?: string
   items: Array<{ name: string; description: string; sequenceType: string; triggerLabel: string; stepCount: number; installed: boolean }>
 }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) return { success: false, error: "Unauthorized", items: [] }
+  const ctx = await resolveActingContext()
+  if (!ctx.ok) return { success: false, error: "Unauthorized", items: [] }
   const targetBrokerageId = brokerageId ?? ctx.brokerageId
   if (!targetBrokerageId) return { success: false, error: "No brokerage in scope", items: [] }
   // Same tenant boundary as seedDefaultSequences: a client-supplied brokerageId
@@ -254,8 +254,8 @@ export async function seedDefaultSequences(
   created: number
   skipped: number
 }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok) {
     return { success: false, error: "Unauthorized", created: 0, skipped: 0 }
   }
   // Default to caller's brokerage; allow superadmin to seed any.

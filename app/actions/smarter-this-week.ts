@@ -19,7 +19,7 @@
  *   - lead_score_history → distribution shifts
  */
 
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext } from "@/lib/platform/acting-context"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export interface SmarterMetric {
@@ -43,8 +43,8 @@ export interface SmarterDigest {
 }
 
 export async function getSmarterThisWeek(): Promise<SmarterDigest> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.userId) {
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.userId) {
     return { generatedAt: new Date().toISOString(), weekStart: "", weekEnd: "", metrics: [], highlight: null }
   }
 

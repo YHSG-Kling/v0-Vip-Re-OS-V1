@@ -7,7 +7,7 @@
  * for the broker-visible /dashboard/settings/usage page.
  */
 
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext } from "@/lib/platform/acting-context"
 import { currentUsagePeriod } from "@/lib/usage/period"
 import { createServiceClient } from "@/lib/supabase/service"
 import { toPlanTier } from "@/lib/billing/plan-tier"
@@ -66,8 +66,13 @@ export async function loadUsageOverview(): Promise<{
   data?: UsageOverview
   error?: string
 }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  const ctx = await resolveActingContext()
+  // FAIL CLOSED on a tenantless session (§4). The retired lib/kernel/identity.ts handed
+  // this surface "the first brokerage ordered by created_at" when the session had none,
+  // so a seat with no tenant read ANOTHER brokerage's meter. Refusing is the correct
+  // answer — and without it every query below runs `.eq(…, null)`, which resolves as
+  // zero rows with `error: null` and reports an empty invoice as a real one.
+  if (!ctx.ok || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
   if (!isAdminOrBroker({ user_type: ctx.userType })) return { ok: false, error: "Forbidden" }
 
   const supabase = createServiceClient()

@@ -4,7 +4,7 @@
  * Server actions for the Embed Widget settings page.
  */
 
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { normalizeEnabledModes, type EmbedMode } from "@/lib/embed/widget-modes"
@@ -54,8 +54,8 @@ function rowToWidget(r: any): EmbedWidget {
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export async function listMyEmbeds(): Promise<{ widgets: EmbedWidget[]; canCreateBrokerageWide: boolean; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) return { widgets: [], canCreateBrokerageWide: false, error: "Unauthorized" }
+  const ctx = await resolveActingContext()
+  if (!ctx.ok) return { widgets: [], canCreateBrokerageWide: false, error: "Unauthorized" }
 
   const supabase = createServiceClient()
   const canCreateBrokerageWide = isAdminOrBroker({ user_type: ctx.userType })
@@ -105,8 +105,8 @@ export async function createEmbed(params: {
   scope: "personal" | "brokerage"
   defaultTwinId?: string | null
 }): Promise<{ ok: boolean; widget?: EmbedWidget; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok) return { ok: false, error: "Unauthorized" }
 
   if (params.scope === "brokerage" && !isAdminOrBroker({ user_type: ctx.userType })) {
     return { ok: false, error: "Only brokers / admins can create brokerage-wide embeds" }
@@ -163,8 +163,8 @@ export async function updateEmbed(params: {
   style?: Record<string, any>
   isActive?: boolean
 }): Promise<{ ok: boolean; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok) return { ok: false, error: "Unauthorized" }
 
   const supabase = createServiceClient()
 
@@ -221,8 +221,8 @@ export async function updateEmbed(params: {
 }
 
 export async function deleteEmbed(id: string): Promise<{ ok: boolean; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok) return { ok: false, error: "Unauthorized" }
 
   const supabase = createServiceClient()
   const { data: existing } = await supabase
@@ -246,8 +246,8 @@ export async function deleteEmbed(id: string): Promise<{ ok: boolean; error?: st
  *  brokerage for admin scope). Ready + approved only. */
 export async function listTwinsForEmbed(scope: "personal" | "brokerage"):
   Promise<{ twins: { id: string; label: string; agentName: string | null }[] }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) return { twins: [] }
+  const ctx = await resolveActingContext()
+  if (!ctx.ok) return { twins: [] }
   const supabase = createServiceClient()
 
   // `agents` has NO `full_name` (verified against information_schema), so
@@ -307,8 +307,8 @@ export async function getEmbedAnalytics(params: {
   widgetId?: string
   days?: number
 }): Promise<{ ok: boolean; analytics?: EmbedAnalytics[]; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  const ctx = await resolveActingContext()
+  if (!ctx.ok) return { ok: false, error: "Unauthorized" }
 
   const supabase = createServiceClient()
   const days = params.days ?? 30

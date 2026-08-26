@@ -25,7 +25,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
-import { requireWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { emitLifecycleTransition } from "@/lib/buyer-lifecycle/lifecycle-logger"
 
 async function requireContactAccess(contactId: string): Promise<
@@ -198,11 +198,24 @@ export async function uploadFinancialVerificationDocument(params: {
     return { success: false, error: "Could not read the uploaded file" }
   }
   if (buffer.length === 0) return { success: false, error: "The uploaded file is empty" }
-  if (buffer.length > 8 * 1024 * 1024) return { success: false, error: "File exceeds the 8MB limit" }
 
   const { issueBucketObjectUrl } = await import("@/lib/storage/document-buckets")
   const { removeOrRecordOrphan } = await import("@/lib/storage/put-and-sign")
   const { DOCUMENT_BUCKET } = await import("@/lib/kernel/document-autofile")
+  const { checkUpload } = await import("@/lib/storage/file-limits")
+
+  // The "8MB" here was copied from next.config.ts's serverActions.bodySizeLimit,
+  // which Vercel's 4.5 MB function body cap sits in front of — and this action
+  // takes the file as BASE64, a third larger than the bytes it carries, so the
+  // decodable payload was never above ~3.4 MB. A buyer's bank statement between
+  // 3.4 and 8 MB was accepted by this line and refused at the edge.
+  const gate = checkUpload({
+    bucket: DOCUMENT_BUCKET,
+    transport: "server_action_base64",
+    bytes: buffer.length,
+    contentType: params.contentType || "application/octet-stream",
+  })
+  if (!gate.ok) return { success: false, error: gate.reason }
 
   const svc = createServiceClient()
   const safe = (params.fileName || "document").replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120)
@@ -250,8 +263,8 @@ export async function markFinanciallyVerified(params: {
   // Auth: caller must be an authenticated agent/admin in the contact's brokerage.
   // Without this, service-client bypassed RLS and any caller could mark any
   // contact as financially verified.
-  const ctx = await requireWriteContext()
-  if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok) return { success: false, error: "Not authenticated" }
   if (ctx.brokerageId !== params.brokerageId) {
     return { success: false, error: "Forbidden: brokerage mismatch" }
   }
@@ -455,11 +468,11 @@ export async function loadFinancialProfile(params: {
  * caller to believe it selects the tenant; leaving an ignored one in place is how the
  * body-supplied-tenant IDOR shape gets re-introduced by the next person who "wires it
  * up". Deleted rather than read: the tenant lives in the SESSION, resolved two lines
- * below by requireWriteContext(), and that is the survivor.
+ * below by the act-as seam (resolveActingContext), and that is the survivor.
  */
 export async function getBrokerageLenders(): Promise<{ success: boolean; lenders?: { id: string; full_name: string; email: string | null; phone: string | null }[]; error?: string }> {
-  const ctx = await requireWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
 
@@ -486,8 +499,8 @@ export async function getBrokerageLenders(): Promise<{ success: boolean; lenders
  * resolved from the SESSION (`ctx.agentId`, below), which is the survivor.
  */
 export async function loadMortgageBrokers(): Promise<{ success: boolean; partners?: any[]; error?: string }> {
-  const ctx = await requireWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
 

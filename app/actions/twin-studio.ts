@@ -19,7 +19,7 @@
  * No vendor names ever surface to the user — they only see "Twin".
  */
 
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { isDidSentiment } from "@/lib/did/agent-presenter"
 import { createServiceClient } from "@/lib/supabase/service"
 import { syncAgentVoiceId } from "@/lib/voice/sync-voice-id"
@@ -91,8 +91,8 @@ function rowToTwin(row: any): Twin {
 
 /** Twins owned by the current agent. */
 export async function listMyTwins(): Promise<{ twins: Twin[]; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.agentId) {
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.agentId) {
     return { twins: [], error: "Unauthorized" }
   }
   const supabase = createServiceClient()
@@ -109,8 +109,8 @@ export async function listMyTwins(): Promise<{ twins: Twin[]; error?: string }> 
 
 /** Pending-approval twins for the brokerage (broker / superadmin only). */
 export async function listPendingApprovals(): Promise<{ twins: Twin[]; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) return { twins: [], error: "Unauthorized" }
+  const ctx = await resolveActingContext()
+  if (!ctx.ok) return { twins: [], error: "Unauthorized" }
   if (!isAdminOrBroker({ user_type: ctx.userType })) {
     return { twins: [], error: "Forbidden" }
   }
@@ -131,8 +131,8 @@ export async function listPendingApprovals(): Promise<{ twins: Twin[]; error?: s
 
 /** Set this twin as the agent's default (used by portal widget, ISA, video gen). */
 export async function setDefaultTwin(twinId: string): Promise<{ ok: boolean; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.agentId) return { ok: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.agentId) return { ok: false, error: "Unauthorized" }
   const supabase = createServiceClient()
 
   // Verify ownership
@@ -176,8 +176,8 @@ export async function setDefaultTwin(twinId: string): Promise<{ ok: boolean; err
 
 /** Delete a twin. The default cannot be deleted unless another exists. */
 export async function deleteTwin(twinId: string): Promise<{ ok: boolean; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.agentId) return { ok: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.agentId) return { ok: false, error: "Unauthorized" }
   const supabase = createServiceClient()
 
   const { data: twin } = await supabase
@@ -221,8 +221,8 @@ export async function updateTwinDetails(params: {
   label?: string
   personality?: string
 }): Promise<{ ok: boolean; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.agentId) return { ok: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.agentId) return { ok: false, error: "Unauthorized" }
   const supabase = createServiceClient()
 
   // `error` destructured so a refused read is distinguishable from a genuine
@@ -276,8 +276,8 @@ export async function updateTwinDetails(params: {
 // ─── Broker approval gate ─────────────────────────────────────────────────
 
 export async function approveTwin(twinId: string): Promise<{ ok: boolean; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok) return { ok: false, error: "Unauthorized" }
   if (!isAdminOrBroker({ user_type: ctx.userType })) {
     return { ok: false, error: "Forbidden" }
   }
@@ -310,8 +310,8 @@ export async function rejectTwin(params: {
   twinId: string
   reason: string
 }): Promise<{ ok: boolean; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok) return { ok: false, error: "Unauthorized" }
   if (!isAdminOrBroker({ user_type: ctx.userType })) {
     return { ok: false, error: "Forbidden" }
   }
@@ -362,8 +362,8 @@ export async function createTwinDraft(params: {
   sourceType: "photo" | "video"
   sourceUrl: string
 }): Promise<{ ok: boolean; twinId?: string; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.agentId) return { ok: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.agentId) return { ok: false, error: "Unauthorized" }
 
   const supabase = createServiceClient()
 
@@ -496,8 +496,8 @@ export async function setTwinStockVoice(params: {
   twinId: string
   voiceId: string
 }): Promise<{ ok: boolean; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.agentId) return { ok: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.agentId) return { ok: false, error: "Unauthorized" }
 
   const voiceId = params.voiceId?.trim()
   if (!voiceId) return { ok: false, error: "Pick a voice" }
@@ -556,8 +556,8 @@ export async function finalizeTwin(params: {
   greetingSentiment?: string
   setAsDefault?: boolean
 }): Promise<{ ok: boolean; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.agentId) return { ok: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.agentId) return { ok: false, error: "Unauthorized" }
   const supabase = createServiceClient()
 
   const { data: twin } = await supabase

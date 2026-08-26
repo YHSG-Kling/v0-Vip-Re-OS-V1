@@ -19,7 +19,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { resolveScopedConnection } from "@/lib/connections/resolve-scoped"
 import { resolveSMSProviderForActor } from "@/lib/providers/messaging/resolve-sms-provider"
 import {
@@ -41,8 +41,8 @@ export interface DispatchStopSchedulingResult extends DispatchResult {
 export async function dispatchStopScheduling(
   input: DispatchStopSchedulingInput,
 ): Promise<DispatchStopSchedulingResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) {
     return {
       success: false, error: "Unauthorized",
       providerRef: null, draft: { to: "", body: "" }, sent: false,

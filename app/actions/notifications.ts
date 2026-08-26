@@ -1,9 +1,10 @@
 "use server"
 
 // ★ ACT-AS WRITE SEAM ★ — resolveWriteContext now comes from the PLATFORM seam
-// (lib/platform/acting-context), not the kernel homonym in lib/kernel/identity:
-// the kernel version never checked the impersonation MODE, so a read_only
-// act-as grant could create notifications through the service client below.
+// (lib/platform/acting-context). The kernel homonym in lib/kernel/identity is now
+// DELETED (§1.1 tombstone at lib/platform/acting-context.ts:38); it never checked
+// the impersonation MODE, so a read_only act-as grant could create notifications
+// through the service client below.
 // The seam refuses read_only outright (re-validated on the call) and hands the
 // writers an acting db, so the mark-read updates — which rode the bare cookie
 // client keyed on the EFFECTIVE userId and silently zero-rowed under act-as —

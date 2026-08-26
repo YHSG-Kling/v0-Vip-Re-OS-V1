@@ -38,7 +38,7 @@
  * ─────────────────────────────────────────────────────────────────────────
  */
 
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
 import {
@@ -71,10 +71,10 @@ async function authorizeContactInTenant(
     return { ok: false, reason: "invalid_contact_id" }
   }
 
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) return { ok: false, reason: "unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok) return { ok: false, reason: "unauthorized" }
 
-  const supabase = await createClient()
+  const supabase = ctx.db
   const { data, error } = await supabase
     .from("contacts")
     .select("id")
@@ -232,7 +232,7 @@ const INBOUND_LEAD_CHANNELS = new Set<InboundLeadChannel>(["email", "sms", "voic
  *
  * In BOTH modes the lead is re-read WITH a brokerage predicate downstream, so a
  * forged leadId cannot reach another tenant. The session mode additionally proves
- * the lead is in the caller's brokerage through the COOKIE client, so RLS applies
+ * the lead is in the caller's brokerage through the ACTING client (ctx.db), so RLS applies
  * to the proof itself, and it fails CLOSED on a refused read.
  */
 export async function ingestInboundLeadSignalAction(input: {
@@ -260,14 +260,17 @@ export async function ingestInboundLeadSignalAction(input: {
     !!cronSecret && !!input.internalSecret && input.internalSecret === cronSecret
 
   if (!isTrustedInternal) {
-    const ctx = await resolveWriteContext()
-    if (!ctx.isAuthenticated) return { outcome: "skipped", reason: "unauthorized" }
+    const ctx = await resolveWriteContextForTenant()
+    if (!ctx.ok) return { outcome: "skipped", reason: "unauthorized" }
     if (ctx.brokerageId !== input.brokerageId) return { outcome: "skipped", reason: "forbidden" }
 
-    // Prove the lead is in the caller's tenant through the COOKIE client so RLS
-    // applies to the proof. A refused read resolves as `{ data: null, error }` —
+    // Prove the lead is in the caller's tenant through the ACTING client (ctx.db):
+    // the cookie/RLS client for a normal seat, the service client ONLY under an active
+    // FULL impersonation grant — otherwise a support session's own proof read is
+    // refused, and supabase-js resolves that as zero rows with `error: null`, which
+    // reads as "no such lead". A refused read resolves as `{ data: null, error }` —
     // fail closed rather than reading a refusal as "no such lead".
-    const supabase = await createClient()
+    const supabase = ctx.db
     const { data, error } = await supabase
       .from("leads")
       .select("id")

@@ -13,7 +13,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext } from "@/lib/platform/acting-context"
 import { WEALTH_ACTIVE_STATUSES } from "@/lib/wealth-advisor/recommendation-status"
 
 // ─── Sphere Resonance ────────────────────────────────────────────────────────
@@ -33,8 +33,8 @@ export interface SphereSurface {
 }
 
 export async function getSphereResonanceSurface(): Promise<SphereSurface> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.agentId) {
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.agentId) {
     return { candidates: [], totalAtRisk: 0, topRiskName: null }
   }
 
@@ -116,8 +116,8 @@ export interface WealthSurface {
 }
 
 export async function getWealthAdvisorSurface(): Promise<WealthSurface> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.agentId) {
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.agentId) {
     return { opportunities: [], totalOpen: 0, totalPotentialMonthlySavings: 0, topOpportunityType: null }
   }
 

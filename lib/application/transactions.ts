@@ -1,12 +1,13 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { milestoneJourneyFor } from "@/lib/transactions/milestone-catalog"
+import { MILESTONE_STATUS } from "@/lib/transactions/transaction-stages"
 import { DOCUMENT_OPEN_STATUSES } from "@/lib/transactions/coordination-status"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { runPipelineSimple } from "@/lib/ai"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { syncStampToAgentLedger } from "@/lib/commission/ledger-sync"
-import { TRANSACTION_STATUSES_IN_ESCROW } from "@/lib/transactions/transaction-status"
+import { TRANSACTION_STATUSES_IN_ESCROW, TRANSACTION_STATUSES_TERMINAL, inPipelineColumn } from "@/lib/transactions/transaction-status"
 import { TXN_STATUSES_AFTER, TXN_STAGES_AFTER } from "@/lib/enrichment/deal-vocabulary"
 import { rosterForPrincipal } from "@/lib/notifications/transaction-parties-packet"
 
@@ -1553,13 +1554,37 @@ export async function generateStatusUpdate(transactionId: string) {
 
   if (!transaction) return { success: false }
 
-  const recentMilestones = transaction.transaction_milestones?.filter((m: any) => m.status === "completed").slice(-3)
-  const upcomingMilestones = transaction.transaction_milestones?.filter((m: any) => m.status === "upcoming").slice(0, 3)
+  // `upcoming` is not one of the four values transaction_milestones_status_check admits
+  // (cancelled|completed|overdue|pending), so this list was ALWAYS empty and every
+  // AI-written client update said "Upcoming: " with nothing after it. MILESTONE_STATUS
+  // (lib/transactions/transaction-stages.ts:81) is the ONE vocabulary for this column.
+  const recentMilestones = transaction.transaction_milestones?.filter((m: any) => m.status === MILESTONE_STATUS.COMPLETED).slice(-3)
+  const upcomingMilestones = transaction.transaction_milestones?.filter(
+    (m: any) => m.status === MILESTONE_STATUS.PENDING || m.status === MILESTONE_STATUS.OVERDUE,
+  ).slice(0, 3)
+
+  // `transactions.current_stage` and `transactions.days_in_current_stage` DO NOT EXIST —
+  // this prompt rendered "Current Stage: undefined / Days in Stage: 0" on every run.
+  // The stage lives in `transactions.stage`; how long it has been there is recorded by
+  // the lifecycle event the stage engine emits (transitionLifecycle, "stage.advanced").
+  const { data: lastAdvance } = await supabase
+    .from("lifecycle_events")
+    .select("created_at")
+    .eq("entity_type", "transaction")
+    .eq("entity_id", transactionId)
+    .eq("event_type", "stage.advanced")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  const stageEnteredAt = lastAdvance?.created_at ?? transaction.updated_at ?? null
+  const daysInStage = stageEnteredAt
+    ? Math.max(0, Math.floor((Date.now() - new Date(stageEnteredAt).getTime()) / (1000 * 60 * 60 * 24)))
+    : 0
 
   const updatePrompt = `Generate client-friendly status update:
 
-Current Stage: ${transaction.current_stage}
-Days in Stage: ${transaction.days_in_current_stage || 0}
+Current Stage: ${transaction.stage ?? transaction.status ?? "unknown"}
+Days in Stage: ${daysInStage}
 Recent Completed: ${recentMilestones?.map((m: any) => m.milestone_name).join(", ")}
 Upcoming: ${upcomingMilestones?.map((m: any) => m.milestone_name).join(", ")}
 
@@ -2403,28 +2428,40 @@ export async function getAgentTransactionKanban() {
         .from("transactions")
         .select(`*, contacts!transactions_contact_id_fkey(*), listings(*)`)
         .eq("agent_id", agentId)
-        .neq("status", "closed")
+        // Terminal deals are done — closed/funded/lost/archived, from the ONE vocabulary
+        // (lib/transactions/transaction-status.ts:76). This was `.neq("status","closed")`,
+        // which dragged funded/lost/archived deals onto the board to land in no column.
+        .not("status", "in", `(${TRANSACTION_STATUSES_TERMINAL.join(",")})`)
         .order("created_at", { ascending: false })
     : { data: [] as any[] }
 
+  // Columns come from PIPELINE_COLUMN_STATUSES — lib/transactions/transaction-status.ts:83.
+  // These filters used to name `offer`/`negotiation`/`inspection`/`appraisal`/`financing`,
+  // none of which transactions_status_check admits (they are lowercased `stage` values),
+  // so every column but "Leads" was permanently empty.
   return {
-    lead: { title: "Leads", deals: transactions?.filter((t) => t.status === "lead" || !t.status) || [], color: "gray" },
-    offer: { title: "Active Offers", deals: transactions?.filter((t) => t.status === "offer" || t.status === "negotiation") || [], color: "blue" },
+    lead: { title: "Leads", deals: transactions?.filter((t) => inPipelineColumn(t.status, "lead") || !t.status) || [], color: "gray" },
+    offer: { title: "Active Offers", deals: transactions?.filter((t) => inPipelineColumn(t.status, "offer")) || [], color: "blue" },
     contract: {
       title: "Under Contract",
-      deals: transactions?.filter((t) => t.status === "inspection" || t.status === "appraisal" || t.status === "financing") || [],
+      deals: transactions?.filter((t) => inPipelineColumn(t.status, "contract")) || [],
       color: "yellow",
     },
-    closing: { title: "Closing Soon", deals: transactions?.filter((t) => t.status === "clear_to_close") || [], color: "green" },
+    closing: { title: "Closing Soon", deals: transactions?.filter((t) => inPipelineColumn(t.status, "closing")) || [], color: "green" },
   }
 }
 
 export async function updateTransactionStage(transactionId: string, targetStage: string, reason?: string) {
-  // Kernel OS: requireWriteContext — resolves userId, brokerageId, userType via canonical chain
-  const { requireWriteContext } = await import("@/lib/kernel")
+  // ACT-AS WRITE SEAM — resolves userId, brokerageId, userType via the canonical chain,
+  // refuses a read_only impersonation grant, and narrows brokerageId to a real tenant.
+  // (Was `requireWriteContext` from the retired lib/kernel/identity.ts; survivor is
+  // lib/platform/acting-context.ts:143. Its `if (!ctx)` could never be true — the old
+  // function either threw or returned an object — so the only thing standing between a
+  // read_only grant and this stage advance was the try/catch. Now the gate says so.)
+  const { resolveWriteContextForTenant } = await import("@/lib/platform/acting-context")
   try {
-    const ctx = await requireWriteContext()
-    if (!ctx) return { success: false, error: "Not authenticated" }
+    const ctx = await resolveWriteContextForTenant()
+    if (!ctx.ok) return { success: false, error: ctx.error }
 
     const { TransactionOrchestrator } = await import("@/lib/transactions/transaction-orchestrator")
     const orchestrator = new TransactionOrchestrator({
@@ -2547,14 +2584,16 @@ async function getTeamContacts(transactionId: string) {
 }
 
 async function calculatePipeline(transactions: any[], brokerageId: string) {
+  // Same PIPELINE_COLUMN_STATUSES the kanban uses — lib/transactions/transaction-status.ts:83.
+  // Was filtering on `prospecting`/`offer`/`negotiation`/`inspection`/`appraisal`/`financing`,
+  // six literals transactions_status_check does not admit, so four of the five buckets were
+  // permanently empty and conversionRate counted only `closed` (never `funded`).
   const stages = {
-    prospecting: transactions.filter((t) => t.status === "lead" || t.status === "prospecting"),
-    active_offer: transactions.filter((t) => t.status === "offer" || t.status === "negotiation"),
-    under_contract: transactions.filter(
-      (t) => t.status === "inspection" || t.status === "appraisal" || t.status === "financing",
-    ),
-    closing_soon: transactions.filter((t) => t.status === "clear_to_close"),
-    closed: transactions.filter((t) => t.status === "closed"),
+    prospecting: transactions.filter((t) => inPipelineColumn(t.status, "lead")),
+    active_offer: transactions.filter((t) => inPipelineColumn(t.status, "offer")),
+    under_contract: transactions.filter((t) => inPipelineColumn(t.status, "contract")),
+    closing_soon: transactions.filter((t) => inPipelineColumn(t.status, "closing")),
+    closed: transactions.filter((t) => inPipelineColumn(t.status, "closed")),
   }
 
   const totalValue = transactions.reduce((sum, t) => sum + (t.purchase_price || 0), 0)

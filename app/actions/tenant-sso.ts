@@ -30,7 +30,7 @@
 
 import { revalidatePath } from "next/cache"
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { isCanonicalTier, TIER_LABELS } from "@/lib/kernel/tier-role-matrix"
 import {
   validateSsoEmailDomain,
@@ -95,8 +95,8 @@ interface AdminGate {
 }
 
 async function requireBrokerageAdmin(): Promise<AdminGate | { ok: false; error: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok) return { ok: false, error: "Unauthorized" }
   if (!ADMIN_TYPES.has(ctx.userType ?? "")) return { ok: false, error: "Forbidden — brokerage admin only" }
   const svc = createServiceClient()
   const { data: brk } = await svc
@@ -178,8 +178,8 @@ function rowToView(row: any): SsoConnectionView {
 export async function getSsoPanel(): Promise<
   { ok: true; panel: SsoPanel } | { ok: false; error: string }
 > {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  const ctx = await resolveActingContext()
+  if (!ctx.ok) return { ok: false, error: "Unauthorized" }
   const svc = createServiceClient()
 
   const [{ data: brk }, { data: row }] = await Promise.all([

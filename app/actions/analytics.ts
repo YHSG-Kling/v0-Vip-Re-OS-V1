@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { isValidUUID } from "@/lib/validations"
 
 // ============================================
@@ -30,10 +30,10 @@ async function authorizeAgent(
 ): Promise<{ ok: true; brokerageId: string } | { ok: false; error: string }> {
   if (!isValidUUID(agentId)) return { ok: false, error: "Invalid agent ID" }
 
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok) return { ok: false, error: "Unauthorized" }
 
-  const supabase = await createClient()
+  const supabase = ctx.db
   const { data, error } = await supabase
     .from("agents")
     .select("id, brokerage_id")
@@ -341,10 +341,10 @@ export async function calculateTrustCapital(agentId: string, periodDays: number 
 export async function trackLeadValueJourney(contactId: string) {
   if (!isValidUUID(contactId)) return null
 
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) return null
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok) return null
 
-  const supabase = await createClient()
+  const supabase = ctx.db
 
   // Tenant anchor: the read is what authorises the write below, so it is
   // scoped to the caller's brokerage. Without `.eq("brokerage_id", …)` this

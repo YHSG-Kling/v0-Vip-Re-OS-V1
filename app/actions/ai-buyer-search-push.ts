@@ -18,7 +18,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { searchPropertiesCore, type BuyerSearchResult } from "@/lib/buyer-search/search-engine"
 
 export interface SearchPushResult {
@@ -48,12 +48,12 @@ export async function searchAndPushToBuyer(params: {
 }): Promise<SearchPushResult> {
   const { contactId, searchQuery, agentNote, maxResults = 10 } = params
 
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || (!ctx.agentId && ctx.userType !== "admin" && ctx.userType !== "superadmin")) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || (!ctx.agentId && ctx.userType !== "admin" && ctx.userType !== "superadmin")) {
     return { success: false, matchCount: 0, topMatches: [], error: "Unauthorized" }
   }
 
-  const supabase = await createClient()
+  const supabase = ctx.db
   const svc = createServiceClient()
 
   // Verify the contact belongs to this agent's brokerage

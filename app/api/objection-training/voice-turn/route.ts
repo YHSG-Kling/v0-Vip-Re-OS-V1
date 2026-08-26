@@ -13,7 +13,7 @@
 
 import "server-only"
 import { type NextRequest, NextResponse } from "next/server"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export const runtime = "nodejs"
@@ -25,8 +25,8 @@ interface Body {
 }
 
 export async function POST(request: NextRequest) {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
   const body = (await request.json().catch(() => ({}))) as Body
   if (!body.sessionId || !body.speaker || !body.text?.trim()) {

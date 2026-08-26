@@ -10,7 +10,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 
 export interface AgentVoiceAvatarPrefs {
   voicePreference: "clone" | "generic"
@@ -23,8 +23,8 @@ export interface AgentVoiceAvatarPrefs {
 }
 
 export async function getMyVoiceAvatarPrefs(): Promise<AgentVoiceAvatarPrefs | null> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.userId) return null
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.userId) return null
 
   const svc = createServiceClient()
   const { data: agent } = await svc
@@ -50,8 +50,8 @@ export async function updateMyVoicePreference(params: {
   preference: "clone" | "generic"
   assistantVoiceId?: string | null
 }): Promise<{ success: boolean; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.userId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.userId) {
     return { success: false, error: "Unauthorized" }
   }
 
@@ -76,8 +76,8 @@ export async function updateMyVoicePreference(params: {
 export async function updateMyProspectVoice(params: {
   prospectVoiceId: string | null
 }): Promise<{ success: boolean; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.userId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.userId) {
     return { success: false, error: "Unauthorized" }
   }
 
@@ -118,8 +118,8 @@ export async function updateMyProspectVoice(params: {
 export async function updateMyAssistantAvatar(params: {
   assistantAvatarId: string | null
 }): Promise<{ success: boolean; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.userId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.userId) {
     return { success: false, error: "Unauthorized" }
   }
 

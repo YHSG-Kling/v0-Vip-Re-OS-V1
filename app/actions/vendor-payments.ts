@@ -2,7 +2,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { createClient } from "@/lib/supabase/server"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { requireVendorActor } from "@/lib/kernel/portal-auth"
 // ── WHICH STRIPE ACCOUNT THIS FILE USES, AND WHY IT IS TWO IMPORTS ──────────
 //
@@ -167,8 +167,8 @@ export interface VendorEarningsSummary {
 export async function createVendorInvoice(
   params: CreateInvoiceParams
 ): Promise<InvoiceResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
 
@@ -277,8 +277,8 @@ export async function createVendorInvoice(
 // ---------------------------------------------------------------------------
 
 export async function submitVendorInvoice(invoiceId: string): Promise<InvoiceResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
 
@@ -330,8 +330,8 @@ export async function markInvoicePaid(params: {
   paymentMethod?: string
   stripePaymentIntentId?: string
 }): Promise<InvoiceResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
 
@@ -544,8 +544,8 @@ export async function initiateVendorPayout(params: {
   cashAppReference?: string
   note?: string
 }): Promise<{ success: boolean; payoutId?: string; error?: string; w9Warning?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
 
@@ -700,8 +700,8 @@ export async function getVendorEarningsSummary(
     const actor = await requireVendorActor(vendorId)
     brokerageId = actor.brokerageId
   } catch {
-    const ctx = await resolveWriteContext()
-    if (ctx.isAuthenticated && ctx.brokerageId &&
+    const ctx = await resolveActingContext()
+    if (ctx.ok && ctx.brokerageId &&
         await verifyVendorInCallerBrokerage(vendorId, ctx.brokerageId)) {
       brokerageId = ctx.brokerageId
     }
@@ -1427,8 +1427,8 @@ export async function issueVendorCharge(params: {
   dueDate?: string
   notes?: string
 }): Promise<{ success: boolean; invoiceId?: string; invoiceNumber?: string; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
   const isAdminCharger = VENDOR_CHARGE_ADMIN_ROLES.has(ctx.userType)
   if (!isAdminCharger && ctx.userType !== "agent") {
     return { success: false, error: "Forbidden: broker, admin, team lead, or agent only" }
@@ -1558,8 +1558,8 @@ export async function markVendorChargePaid(params: {
   invoiceId: string
   paymentMethod?: string
 }): Promise<InvoiceResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
   if (!VENDOR_CHARGE_ADMIN_ROLES.has(ctx.userType) && ctx.userType !== "agent") {
     return { success: false, error: "Forbidden: broker, admin, team lead, or agent only" }
   }

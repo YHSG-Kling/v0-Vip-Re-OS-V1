@@ -265,16 +265,16 @@ export type {
 } from "./onboarding"
 
 // ─── IDENTITY & WRITE CONTEXT ─────────────────────────────────────────────────
-
-export {
-  resolveWriteContext,
-  requireWriteContext,
-} from "./identity"
-export type {
-  WriteContext,
-  UnauthenticatedWriteContext,
-  WriteContextResult,
-} from "./identity"
+//
+// TOMBSTONE (§1.1) — `./identity` is DELETED. It declared a SECOND resolveWriteContext()
+// (plus requireWriteContext) with a different shape and no impersonation awareness, so
+// half the app gated on a seam that could neither hand a caller the right client nor
+// refuse a read_only grant. SURVIVOR: lib/platform/acting-context.ts:143
+// (resolveWriteContext / resolveWriteContextForTenant / resolveActingContext), also
+// re-exported from lib/identity/index.ts. The kernel does not re-export it: the seam
+// resolves a REQUEST, and `import "server-only"` at the top of this barrel dragged the
+// server graph into every module that wanted it. Import it from
+// "@/lib/platform/acting-context" directly.
 
 // ─── OUTBOUND COMMUNICATIONS ──────────────────────────────────────────────────
 

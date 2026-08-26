@@ -9,7 +9,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 
 // TENANT ADMIN GATE (kept inline, tenant credentials — deliberately no team_lead):
 // 'superadmin' removed — dead as users.user_type (0 live rows); broker_owner
@@ -22,8 +22,8 @@ async function requireAdmin() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return null
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) return null
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) return null
   if (!ADMIN_TYPES.has(ctx.userType ?? "")) return null
   return ctx
 }

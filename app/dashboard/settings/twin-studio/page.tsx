@@ -13,7 +13,7 @@
 import { Suspense } from "react"
 import Link from "next/link"
 import { listMyTwins, listPendingApprovals } from "@/app/actions/twin-studio"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext } from "@/lib/platform/acting-context"
 import { TwinStudioClient } from "./twin-studio-client"
 import { Skeleton } from "@/app/components/ui/skeleton"
 
@@ -25,8 +25,8 @@ export const dynamic = "force-dynamic"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 async function loadData() {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) {
+  const ctx = await resolveActingContext()
+  if (!ctx.ok) {
     return { ok: false as const, twins: [], pending: [], canApprove: false }
   }
   const canApprove = isAdminOrBroker({ user_type: ctx.userType })

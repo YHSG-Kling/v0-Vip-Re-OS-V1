@@ -14,7 +14,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext, resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 
 // ---------------------------------------------------------------------------
@@ -77,8 +77,8 @@ export async function createFeeType(input: CreateFeeTypeInput): Promise<{
   feeTypeId?: string
   error?: string
 }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
   if (!isBrokerRole(ctx.userType)) {
@@ -128,8 +128,8 @@ export async function toggleFeeType(params: {
   feeTypeId: string
   isActive: boolean
 }): Promise<{ success: boolean; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !isBrokerRole(ctx.userType)) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !isBrokerRole(ctx.userType)) {
     return { success: false, error: "Unauthorized" }
   }
   const svc = createServiceClient()
@@ -146,8 +146,8 @@ export async function toggleFeeType(params: {
 // ---------------------------------------------------------------------------
 
 export async function listFeeTypes(): Promise<FeeType[]> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) return []
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.brokerageId) return []
   // The fee schedule is broker-level financial config — gate the read to the
   // same roles that create/toggle fees (createFeeType / setFeeTypeActive). This
   // uses the service client (RLS-bypassing), so a brokerage_id check alone let
@@ -178,8 +178,8 @@ export async function listFeeTypes(): Promise<FeeType[]> {
 }
 
 export async function getMyOpenCharges(): Promise<AgentFeeCharge[]> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.agentId) return []
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.agentId) return []
 
   const svc = createServiceClient()
   const { data: charges } = await svc
@@ -213,8 +213,8 @@ export async function listBrokerageCharges(filter?: {
   status?: ChargeStatus
   agentId?: string
 }): Promise<AgentFeeCharge[]> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId || !isBrokerRole(ctx.userType)) return []
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.brokerageId || !isBrokerRole(ctx.userType)) return []
 
   const svc = createServiceClient()
   let q = svc
@@ -275,8 +275,8 @@ export async function markChargePaid(params: {
   chargeId: string
   paymentMethod?: string
 }): Promise<{ success: boolean; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !isBrokerRole(ctx.userType)) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !isBrokerRole(ctx.userType)) {
     return { success: false, error: "Unauthorized" }
   }
   const svc = createServiceClient()
@@ -296,8 +296,8 @@ export async function waiveCharge(params: {
   chargeId: string
   reason?: string
 }): Promise<{ success: boolean; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !isBrokerRole(ctx.userType)) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !isBrokerRole(ctx.userType)) {
     return { success: false, error: "Unauthorized" }
   }
   const svc = createServiceClient()

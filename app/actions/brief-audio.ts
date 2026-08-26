@@ -10,7 +10,7 @@
  * the three things that matter today" — this powers the audio half.
  */
 
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import {
   synthesizeSpeech,
   audioBufferToDataUrl,
@@ -32,8 +32,8 @@ export interface BriefAudioResult {
 export async function generateBriefAudio(params: {
   brief: UserTypeBrief
 }): Promise<BriefAudioResult> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok) {
     return { success: false, error: "Unauthorized" }
   }
 

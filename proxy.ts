@@ -1,5 +1,32 @@
 /**
- * proxy.ts (root) — Next.js 16 unified edge middleware.
+ * proxy.ts (root) — Next.js 16 unified proxy (formerly "middleware").
+ *
+ * RUNTIME — corrected 2026-08-26 against the version-matched docs. This header used
+ * to call the file "edge middleware", and the caches below still say "per edge
+ * isolate". That is wrong for Next 16, and the difference is load-bearing:
+ *
+ *   "Proxy defaults to using the Node.js runtime. The `runtime` config option is not
+ *    available in Proxy files. Setting the `runtime` config option in Proxy will throw
+ *    an error."
+ *   — https://nextjs.org/docs/app/api-reference/file-conventions/proxy  (v16.3.3)
+ *
+ * So on Vercel this deploys as a Node.js function, not an Edge Function. Consequences
+ * that were being reasoned about backwards: createServiceClient() (plain supabase-js,
+ * not the ssr package) is fully supported here and reads SUPABASE_SERVICE_ROLE_KEY from
+ * the runtime environment; there is no Edge bundle-size ceiling to respect; and the
+ * module-level Maps below are per Node instance, not per edge isolate. They are still
+ * only TTL'd caches, so a cold instance is correct-but-slower — which is what the docs
+ * mean by "you should not attempt relying on shared modules or globals."
+ *
+ * THIS FILE IS NOT THE SECURITY BOUNDARY, and the docs are explicit about why:
+ *   "Server Functions are not separate routes in this chain. They are handled as POST
+ *    requests to the route where they are used, so a Proxy matcher that excludes a path
+ *    will also skip Proxy coverage. […] Always verify authentication and authorization
+ *    inside each Server Function rather than relying on Proxy alone."
+ *   — same page
+ * That is CLAUDE.md §4 in Vercel's words. Every tenant-writing action gates on
+ * lib/platform/acting-context.ts's seam for exactly this reason; the auth gate below is
+ * a redirect convenience, not the authorization.
  *
  * Next 16 only allows one of middleware.ts / proxy.{js,ts}; we consolidated
  * both prior surfaces into this single file:
@@ -20,7 +47,7 @@
  *      www.theirbrokerage.com at their /site/[slug] storefront. When the
  *      request host is NOT one of the platform's own hosts (env-derived) we
  *      look up tenant_custom_domains (status='active', 60s in-memory TTL
- *      cache per edge isolate) and rewrite "/" (and bare /site) to
+ *      cache per Node instance) and rewrite "/" (and bare /site) to
  *      /site/[slug]. App/auth surfaces on a vanity host bounce to the
  *      canonical origin; a vanity host can never serve ANOTHER tenant's
  *      /site. SAFETY RULE: every custom-domain branch only RETURNS when it
@@ -43,7 +70,7 @@ export default async function proxy(request: NextRequest) {
 
   // ── 0) White-label custom domains ──────────────────────────────────────
   // Only engages when the host is NOT platform-owned; static/asset paths are
-  // skipped so the edge lookup never runs for them. Branches RETURN only when
+  // skipped so the tenant lookup never runs for them. Branches RETURN only when
   // they act — everything else falls through to the existing pipeline.
   const host = (request.headers.get("host") ?? "").toLowerCase().split(":")[0]
   if (
@@ -155,6 +182,31 @@ export default async function proxy(request: NextRequest) {
   if (error || !user) {
     return NextResponse.redirect(new URL("/login", request.url))
   }
+
+  // ── SESSION-LEAK GUARD, required on Vercel specifically ───────────────────
+  // getUser() above can REFRESH the session, and @supabase/ssr then writes the new
+  // JWT onto this response as Set-Cookie (the setAll callback right above). Supabase's
+  // own SSR advanced guide, verbatim:
+  //
+  //   "When @supabase/ssr refreshes a session token server-side, it writes the updated
+  //    JWT to the HTTP response via a Set-Cookie header. If your CDN (e.g. Vercel Edge,
+  //    Cloudflare) caches that response and serves it to a different user, that user's
+  //    browser will store the cached token and be signed in as the wrong person."
+  //   — https://supabase.com/docs/guides/auth/server-side/advanced-guide
+  //
+  // The library sends the needed Cache-Control/Expires/Pragma headers to setAll as a
+  // SECOND ARGUMENT only from v0.10.0. This app is pinned to @supabase/ssr 0.8.0, whose
+  // `SetAllCookies` type (node_modules/@supabase/ssr/dist/main/types.d.ts:16) takes ONE
+  // argument — so the automatic path does not exist here and the guide's manual
+  // fallback is the one that applies: "add Cache-Control: private, no-store to
+  // responses from any route that handles authentication".
+  //
+  // This matters more here than in a normal app: a support seat acting-as a tenant is
+  // the request most likely to be refreshed mid-investigation, and leaking THAT token
+  // hands a tenant user platform-staff credentials.
+  // Re-check when @supabase/ssr is bumped past 0.10.0: apply the second-argument
+  // headers in setAll instead of hardcoding here, and delete this block.
+  response.headers.set("Cache-Control", "private, no-store")
   return response
 }
 
@@ -246,7 +298,7 @@ function isPlatformHost(host: string): boolean {
 }
 
 /** host → brokerage site slug for ACTIVE custom domains, cached in-memory per
- *  edge isolate (60s TTL, negatives cached too; 5s on lookup failure so a
+ *  Node instance (60s TTL, negatives cached too; 5s on lookup failure so a
  *  transient DB error can't pin a bad answer). Middleware talks to Supabase
  *  the same way the embed-CSP path above does — createServiceClient. */
 const DOMAIN_CACHE_TTL_MS = 60_000

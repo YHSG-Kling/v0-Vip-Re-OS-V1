@@ -11,7 +11,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveActingContext } from "@/lib/platform/acting-context"
 import { issueGovernedDocumentUrl, type AccessPurpose } from "@/lib/kernel/document-custody"
 
 export interface DocumentCenterRow {
@@ -63,12 +63,15 @@ export async function getDocumentCenterData(): Promise<{
   blockingIssuesCount: number
   error?: string
 }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, folders: [], totalCount: 0, pendingReviewCount: 0, blockingIssuesCount: 0, error: "Unauthorized" }
   }
 
-  const supabase = await createClient()
+  // ACT-AS SEAM: read THROUGH ctx.db — the cookie/RLS client for a tenant seat, the
+  // service client under an active impersonation grant. Its type is the seam's `any`,
+  // so the row callbacks below are annotated explicitly rather than inferred.
+  const supabase = ctx.db
 
   // Determine role-based filter
   const role = ctx.userType
@@ -99,7 +102,7 @@ export async function getDocumentCenterData(): Promise<{
       .from("contacts")
       .select("id")
       .eq("agent_id", ctx.agentId)
-    const contactIds = (ownedContacts ?? []).map((c) => c.id)
+    const contactIds = (ownedContacts ?? []).map((c: any) => c.id)
     if (contactIds.length === 0) {
       return { success: true, folders: [], totalCount: 0, pendingReviewCount: 0, blockingIssuesCount: 0 }
     }
@@ -113,8 +116,8 @@ export async function getDocumentCenterData(): Promise<{
   }
 
   // Hydrate contact + transaction context in two batched queries
-  const contactIds = Array.from(new Set((docs ?? []).map((d) => d.contact_id).filter(Boolean) as string[]))
-  const transactionIds = Array.from(new Set((docs ?? []).map((d) => d.transaction_id).filter(Boolean) as string[]))
+  const contactIds = Array.from(new Set((docs ?? []).map((d: any) => d.contact_id).filter(Boolean) as string[]))
+  const transactionIds = Array.from(new Set((docs ?? []).map((d: any) => d.transaction_id).filter(Boolean) as string[]))
 
   const [{ data: contacts }, { data: transactions }] = await Promise.all([
     contactIds.length > 0
@@ -125,11 +128,11 @@ export async function getDocumentCenterData(): Promise<{
       : Promise.resolve({ data: [] as any[] }),
   ])
 
-  const contactMap = new Map((contacts ?? []).map((c) => [c.id, `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || "Unnamed"]))
-  const txMap = new Map((transactions ?? []).map((t) => [t.id, t.property_address]))
+  const contactMap = new Map((contacts ?? []).map((c: any) => [c.id, `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || "Unnamed"]))
+  const txMap = new Map((transactions ?? []).map((t: any) => [t.id, t.property_address]))
 
   // Build rows + group by folder
-  const rows: DocumentCenterRow[] = (docs ?? []).map((d) => {
+  const rows: DocumentCenterRow[] = (docs ?? []).map((d: any) => {
     const aiMeta = d.ai_metadata as any
     const sig = aiMeta?.signatureCompleteness ?? null
     return {
@@ -198,8 +201,8 @@ export async function getGovernedDocumentUrl(
   documentId: string,
   purpose: AccessPurpose = "view",
 ): Promise<{ success: boolean; url?: string; ttlSeconds?: number; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.brokerageId) {
     return { success: false, error: "Unauthorized" }
   }
 

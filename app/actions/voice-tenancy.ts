@@ -6,7 +6,7 @@
 // the platform's subaccounts and never touches a Twilio signup).
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { loadVoiceUsage, type VoiceUsage } from "@/lib/voice/twilio-tenancy"
 
 // TENANT ADMIN GATE (kept inline, telecom tenancy — deliberately no team_lead):
@@ -15,8 +15,8 @@ import { loadVoiceUsage, type VoiceUsage } from "@/lib/voice/twilio-tenancy"
 const ADMIN_TYPES = new Set(["broker", "broker_owner", "broker_admin", "admin"])
 
 async function requireBrokerageAdmin(): Promise<{ ok: true; brokerageId: string } | { ok: false; error: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
   if (!ADMIN_TYPES.has(ctx.userType ?? "")) return { ok: false, error: "Forbidden — brokerage admin only" }
   return { ok: true, brokerageId: ctx.brokerageId }
 }

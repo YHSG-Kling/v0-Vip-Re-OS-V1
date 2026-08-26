@@ -20,7 +20,7 @@
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { bestEffort } from '@/lib/db/best-effort'
-import { resolveWriteContext } from '@/lib/kernel/identity'
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { collectError } from '@/lib/errors/collect-error'
 import {
   generatePersonalizedEmail,
@@ -865,8 +865,8 @@ export async function toggleContactAIISA(params: {
   /** ignored — the actor is the authenticated caller */
   actorId?: string
 }): Promise<{ success: boolean; error?: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId || !ctx.userId) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId || !ctx.userId) {
     return { success: false, error: 'Unauthorized' }
   }
   const brokerageId = ctx.brokerageId

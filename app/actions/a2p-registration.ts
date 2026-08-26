@@ -8,7 +8,7 @@
 // master + subaccount creds do the actual filing (lib/voice/a2p-registration).
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolveWriteContext } from "@/lib/kernel/identity"
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import { validateA2pProfile, loadA2pState, runA2pRegistration, describeA2pState, nextA2pStep, type A2pState } from "@/lib/voice/a2p-registration"
 
 function isBrokerRole(t?: string | null) {
@@ -19,8 +19,8 @@ function isBrokerRole(t?: string | null) {
 }
 
 async function requireBrokerCtx(): Promise<{ ok: true; brokerageId: string } | { ok: false; error: string }> {
-  const ctx = await resolveWriteContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
   if (!isBrokerRole(ctx.userType)) return { ok: false, error: "Only broker / admin can manage carrier registration" }
   return { ok: true, brokerageId: ctx.brokerageId }
 }
