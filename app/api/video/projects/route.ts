@@ -14,7 +14,7 @@ const VIDEO_TYPES = [
   "listing_tour", "pre_appointment", "coming_soon", "just_listed", "open_house_promo",
   "just_sold", "agent_intro", "market_update", "education", "social_reel",
   "listing_promo", "testimonial", "welcome", "presentation_chapter", "memory_video",
-  "avatar_explainer",
+  "avatar_explainer", "home_anniversary",
 ] as const
 
 const SOURCE_TYPES = ["property", "campaign", "manual"] as const

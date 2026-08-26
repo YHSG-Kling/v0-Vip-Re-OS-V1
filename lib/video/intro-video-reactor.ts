@@ -503,29 +503,50 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
   //   named past client. Paid promotion of a personal equity message is both a
   //   wasted budget and a privacy problem, and it was caused by one wrong word.
   //
-  // NO MIGRATION AND NO NEW VOCABULARY (CLAUDE.md §6). The live CHECK
-  // ai_video_projects_video_type_check admits 16 values and 'anniversary' is not
-  // one of them — but it does not need to be, because the taxonomy ALREADY has
-  // this situation. lib/video/video-director.ts :: videoTypeForSituation maps
-  // SituationKind 'anniversary' → 'memory_video', so the Director rail (the one
-  // lib/kernel/equity-trigger.ts commissions the data-driven equity reel on) has
-  // been spelling this correctly all along. Minting an 'anniversary' value beside
-  // it would be a SECOND spelling of one idea — the defect §6 forbids — so this
-  // merges onto the survivor instead.
+  // ─── AND THEN IT WAS WEARING ANOTHER PRODUCT'S NAME (m565) ─────────────────
+  // The wave that fixed the ad spend re-stamped this row 'memory_video', because
+  // lib/video/video-director.ts :: videoTypeForSituation mapped SituationKind
+  // 'anniversary' there and the live CHECK admitted the value. The money defect
+  // stayed fixed and a NAMING one took its place, because 'memory_video' is not a
+  // synonym for this moment — it is a DIFFERENT PRODUCT.
   //
-  // WHAT THE OLD VALUE WAS ACCIDENTALLY BUYING, AND HOW IT IS KEPT:
+  // THE OWNER'S RULING, verbatim: "memory video is for sellers that have been in
+  // their home more than 20 years which is a seller dictated video going over the
+  // history of the house so the family has it (this is a special service that can
+  // be offered)." That is a seller-dictated family history sold as a service, not
+  // a yearly equity note to a past client. Two products sharing one word is the
+  // §6 defect in its literal form, so m565 minted the word this video has always
+  // needed and both mappers point at it.
+  //
+  // WHY 'home_anniversary' AND NOT A NEW COINAGE (§6). The moment already has a
+  // spelling, and it is the one on THIS FILE'S OWN LEDGER ROW: the live
+  // agent_intro_videos.trigger CHECK admits exactly
+  // ('contact_agent_assigned','home_anniversary'), `IntroTrigger` above is its
+  // code-side twin, and contacts.home_anniversary is the date it fires from.
+  // Coining 'anniversary' or 'equity_anniversary' beside those would have been a
+  // THIRD spelling of one idea.
+  //
+  // WHAT THE PREVIOUS WORD WAS BUYING, AND HOW ALL OF IT IS KEPT — every one of
+  // these is asserted in scripts/anniversary-video-delivery-simulator.ts against
+  // the real modules, never against a list retyped there:
+  //   · lib/kernel/video-coordination.ts PROMOTABLE_VIDEO_KINDS is
+  //     (just_listed, just_sold, open_house). 'home_anniversary' is no more a
+  //     member than 'memory_video' was, so resolveVideoKind's fallback to
+  //     video_type still cannot raise an `ads_manager:video_ready` signal
+  //     proposing PAID SPEND on a 1:1 clip addressed to one named past client.
   //   · lib/kernel/welcome-personal-video.ts PERSONAL_WELCOME_VIDEO_TYPES is
-  //     (agent_intro, welcome, avatar_explainer). 'memory_video' is no more a
-  //     member than 'just_sold' was, so an anniversary clip still cannot be
-  //     served as a new client's welcome video. Unchanged, deliberately.
-  //   · lib/orchestrator/internal.ts handleVideoGenerated DOES list
-  //     'memory_video' in its per-contact draft types — the one behaviour this
-  //     word change would newly switch on. The anniversary already owns two
+  //     (agent_intro, welcome, avatar_explainer). Still not a member, so an
+  //     anniversary clip cannot be served to a brand-new client as their welcome.
+  //   · lib/orchestrator/internal.ts handleVideoGenerated lists 'memory_video' in
+  //     its per-contact draft types and does NOT list 'home_anniversary'. That is
+  //     the behaviour this rename hands back: the anniversary already owns TWO
   //     delivery halves (the email sweep and the portal card, both in
-  //     app/api/cron/intro-video-email-backfill), so a third would be a
-  //     duplicate touch to the same person. That handler now skips rows already
-  //     on this rail; see the guard there, keyed on video_metadata.intro_video_id.
-  const videoType = input.trigger === "contact_agent_assigned" ? "agent_intro" : "memory_video"
+  //     app/api/cron/intro-video-email-backfill), so a per-contact email + SMS
+  //     draft would be a third touch to the same person about one clip. The
+  //     own-delivery-rail guard added with the previous rename STAYS — it is
+  //     keyed on video_metadata.intro_video_id, which this file stamps below, so
+  //     it holds for anything this rail ever files, whatever it is called.
+  const videoType = input.trigger === "contact_agent_assigned" ? "agent_intro" : "home_anniversary"
   const { data: project, error: projErr } = await svc
     .from("ai_video_projects")
     .insert({

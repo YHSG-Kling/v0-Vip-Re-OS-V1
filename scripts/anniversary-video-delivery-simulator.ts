@@ -25,8 +25,9 @@
  *      `trigger='contact_agent_assigned'`; handleVideoGenerated's per-contact
  *      drafts fire only for video_type ∈ (thank_you, personal, buyer_guide,
  *      memory_video) and the anniversary row was stamped 'just_sold' with no
- *      listing_id (that word is now 'memory_video' — Layer 6 owns the ruling and
- *      the reasons); lib/kernel/anniversary-equity.ts pushes its portal card
+ *      listing_id (that word is now 'home_anniversary' — Layer 6 owns the ruling
+ *      and the reasons, including why the intermediate 'memory_video' spelling
+ *      was another product's name); lib/kernel/anniversary-equity.ts pushes its portal card
  *      BEFORE commissioning the video and never returns to it. The ledger row
  *      sat at 'rendering' forever behind a paid D-ID render.
  *
@@ -389,14 +390,32 @@ function layer6_theWordOnTheRow() {
   check("the anniversary trigger no longer claims a SALE",
     anniversaryStamp !== "just_sold", anniversaryStamp)
 
+  // AND IT NO LONGER WEARS ANOTHER PRODUCT'S NAME (m565). The previous wave
+  // merged this onto 'memory_video' because the Director already mapped
+  // SituationKind 'anniversary' there and the live CHECK admitted the value —
+  // which fixed the ad spend and created a naming defect, because the owner's
+  // ruling makes 'memory_video' a DISTINCT product: a seller-dictated family
+  // history for a 20-year-plus homeowner (lib/video/memory-video-gate.ts).
+  check("...and it does not borrow the memory video's name either — two products,\n    two words (§6)",
+    anniversaryStamp !== "memory_video", anniversaryStamp)
+
   // ── The admissible vocabulary — from the generated live cache, not a guess.
   // A value the CHECK rejects loses the whole row (PGRST204's sibling, 23514).
   const liveVideoTypes = CHECK_VOCABULARIES.ai_video_projects?.video_type ?? []
   check(`both stamps are values the LIVE video_type CHECK admits (${liveVideoTypes.length} in the cache) —\n    so no migration is pending behind this change`,
     liveVideoTypes.includes(introStamp) && liveVideoTypes.includes(anniversaryStamp),
     `${introStamp}=${liveVideoTypes.includes(introStamp)} ${anniversaryStamp}=${liveVideoTypes.includes(anniversaryStamp)}`)
-  check("CONTROL: the cache would have caught an invented value — 'anniversary' is NOT\n    admissible, which is why this merged onto the existing spelling instead",
+  check("CONTROL: the cache still refuses an invented value — 'anniversary' is NOT\n    admissible, so the finder can tell an admitted value from a wished-for one",
     !liveVideoTypes.includes("anniversary"))
+  // §6 — m565 did not coin a new word for a moment the database already names.
+  // agent_intro_videos.trigger carries the SAME spelling, and it is the ledger
+  // row this very video is filed under. Read off the cache, not retyped.
+  const liveTriggers = CHECK_VOCABULARIES.agent_intro_videos?.trigger ?? []
+  check("the stamped video_type is spelled the way the LEDGER's own trigger CHECK\n    spells this moment — one vocabulary, not a second coinage (§6)",
+    liveTriggers.includes(anniversaryStamp),
+    `trigger vocabulary: ${liveTriggers.join("/")} · stamp: ${anniversaryStamp}`)
+  check("CONTROL: that finder would not accept just any admitted video_type —\n    'just_sold' is not a trigger spelling",
+    !liveTriggers.includes("just_sold"))
 
   // ── §6: the survivor already existed. The Director maps SituationKind
   //    'anniversary' onto this same value, so there is ONE spelling, not two.
@@ -437,8 +456,22 @@ function layer6_theWordOnTheRow() {
   const orch = src("lib/orchestrator/internal.ts")
   const personalM = /personalVideoTypes\s*=\s*\[([^\]]*)\]/.exec(orch)
   const personalSet = Array.from((personalM?.[1] ?? "").matchAll(/"([a-z_]+)"/g)).map((x) => x[1])
-  check(`the orchestrator's per-contact draft types DO include the new stamp\n    (${personalSet.join("/")}) — the branch this change switches on`,
-    personalSet.includes(anniversaryStamp))
+  check("the orchestrator's per-contact draft type list was readable", personalSet.length > 0)
+  // THE THIRD TOUCH, AND WHY MEMBERSHIP IS THE SWITCH.
+  // While the anniversary was stamped 'memory_video' this list SWITCHED ON a
+  // per-contact email + SMS draft for it, and a guard keyed on
+  // video_metadata.intro_video_id was added to suppress that. m565 separates the
+  // two products, so the anniversary is simply not a member any more — the guard
+  // is kept as the structural backstop, but the plain rule is asserted first.
+  check(`the anniversary stamp is NOT a per-contact draft type (${personalSet.join("/")}) —\n    it already owns TWO delivery halves, so a third touch cannot be switched on`,
+    !personalSet.includes(anniversaryStamp))
+  // The OTHER half of the split: the memory video is a real product with no
+  // delivery rail of its own, so the drafts here ARE how the finished keepsake
+  // reaches the family. Removing it would orphan the product this wave built.
+  check("...while 'memory_video' — the seller-dictated keepsake — IS one, because the\n    per-contact drafts are its only delivery",
+    personalSet.includes("memory_video"))
+  check("CONTROL: that membership finder works in both directions",
+    personalSet.includes("thank_you") && !personalSet.includes("just_listed"))
   // Asserted as a RULE, not as one line of source (§2 — do not pin to a
   // waypoint): the predicate must be DERIVED from intro_video_id, and the draft
   // branch must be NEGATED by it. How the surrounding condition is spelled is

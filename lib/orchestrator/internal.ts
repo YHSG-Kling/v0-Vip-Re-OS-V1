@@ -676,6 +676,15 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
     // ── 1. Personal videos to a specific contact → drafts in ai_message_drafts ─
     // Channels: email if contact has email, SMS if contact has phone. Agent
     // reviews + acts on these drafts from their unified inbox.
+    // 'memory_video' belongs here and 'home_anniversary' deliberately does NOT.
+    // m565 split the two: a memory video is the seller-dictated family history of
+    // the house (lib/video/memory-video-gate.ts) and it has no delivery rail of
+    // its own, so the per-contact email + SMS drafts below are how the finished
+    // keepsake reaches the family. The home-anniversary clip already owns TWO
+    // delivery halves — the email sweep and the portal card, both in
+    // app/api/cron/intro-video-email-backfill — so drafting here as well would be
+    // a third touch to one person about one clip. Membership of this list is the
+    // switch; the guard below is the backstop for anything already on a rail.
     const personalVideoTypes = ["thank_you", "personal", "buyer_guide", "memory_video"]
     // A VIDEO THAT ALREADY HAS A DELIVERY RAIL MUST NOT GET A SECOND ONE.
     // lib/video/intro-video-reactor.ts files an `agent_intro_videos` row and

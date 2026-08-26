@@ -80,7 +80,25 @@ const VIDEO_TYPES = [
   { value: "welcome",              label: "Welcome" },
   { value: "pre_appointment",      label: "Pre-Appointment" },
   { value: "presentation_chapter", label: "Presentation Chapter" },
-  { value: "memory_video",         label: "Memory Video" },
+  // TOMBSTONE (orphan doctrine §1.3) — REMOVED from this menu: "memory_video".
+  //
+  // This wizard's whole job is to have a MODEL write the script: the chosen
+  // video type is handed straight to generateVideoScript (app/actions/video/
+  // generate-script.ts) below. The owner's ruling makes that the one thing a
+  // memory video may never be — "a seller dictated video going over the history
+  // of the house so the family has it". A model that writes a family's history
+  // is inventing it, and offering the option here is what would let that happen
+  // by accident.
+  //
+  // WHERE THE FUNCTIONALITY WENT (it is BUILT, not dropped):
+  //   · lib/video/memory-video-gate.ts     — eligibility (>20 years in the home)
+  //                                          + the seller-dictated boundary and
+  //                                          the pure assembler of the seller's
+  //                                          own captured words.
+  //   · lib/video/memory-video.ts          — the offer and the capture rail.
+  //   · app/actions/video/memory-video.ts  — the agent-facing surface.
+  // 'home_anniversary' is deliberately absent too: that value is stamped by
+  // lib/video/intro-video-reactor.ts and the Director, never chosen by hand.
 ] as const
 
 const SCRIPT_TYPES = [

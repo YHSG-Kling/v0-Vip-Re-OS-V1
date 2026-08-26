@@ -701,7 +701,12 @@ function videoTypeForSituation(kind: SituationKind): string {
     case "concept_animation": return "education"
     case "lead_intro":    return "education"
     case "presentation":  return "presentation_chapter"
-    case "anniversary":   return "memory_video"
+    // m565 — NOT 'memory_video'. That word names a different product (a
+    // seller-dictated family history for a 20-year-plus homeowner —
+    // lib/video/memory-video-gate.ts). The anniversary/equity moment got its own
+    // CHECK value, spelled the way agent_intro_videos.trigger and
+    // contacts.home_anniversary already spell it (§6, one vocabulary).
+    case "anniversary":   return "home_anniversary"
     case "testimonial":   return "testimonial"
     case "neighborhood":  return "social_reel"
   }

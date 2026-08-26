@@ -1,7 +1,8 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
-import { qualifiesForMemoryVideo } from "@/lib/video/memory-video-gate"
+import { qualifiesForMemoryVideo, assessMemoryVideoTenure } from "@/lib/video/memory-video-gate"
+import { parseLengthOfResidence } from "@/lib/avm/provider-chain"
 
 export async function GET(request: NextRequest) {
   try {
@@ -219,10 +220,14 @@ export async function GET(request: NextRequest) {
     // contact age band is recorded, but selecting who gets marketing by age is
     // protected-class targeting. The persona states the same situation and the
     // client declares it themselves. See lib/video/memory-video-gate.ts.
+    //
+    // m565 ADDED THE RULE THE PERSONA COULD NOT STATE: the owner's ruling makes
+    // eligibility a TENURE test ("more than 20 years"), so the persona is now the
+    // situation signal and assessMemoryVideoTenure is the gate. Both run below.
     const { data: openSellerDeals, error: openSellerError } = await supabase
       .from("transactions")
       .select(
-        "id, contact_id, seller_contact_id, client_name, property_address, seller:seller_contact_id(id, first_name, last_name, contact_persona), client:contact_id(id, first_name, last_name, contact_persona)",
+        "id, contact_id, seller_contact_id, client_name, property_address, seller:seller_contact_id(id, first_name, last_name, contact_persona, length_of_residence), client:contact_id(id, first_name, last_name, contact_persona, length_of_residence)",
       )
       .eq("agent_id", agentId)
       .eq("deal_type", "seller")
@@ -234,10 +239,29 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Failed to generate recommendations" }, { status: 500 })
     }
 
-    type SellerContact = { id: string; first_name: string | null; last_name: string | null; contact_persona: string | null }
+    type SellerContact = { id: string; first_name: string | null; last_name: string | null; contact_persona: string | null; length_of_residence: string | null }
     for (const txn of openSellerDeals || []) {
       const seller = ((txn as any).seller ?? (txn as any).client) as SellerContact | null
       if (!seller || !qualifiesForMemoryVideo(seller.contact_persona)) continue
+
+      // THE OWNER'S RULE IS TENURE, AND IT FAILS CLOSED (m565).
+      //
+      // Two questions, two predicates, and neither substitutes for the other
+      // (CLAUDE.md §6). The persona above says this is the SITUATION a memory
+      // video is for — it is the client's own declaration, and it is why the age
+      // operand this branch once carried is deliberately gone. The verdict below
+      // is the ELIGIBILITY: "memory video is for sellers that have been in their
+      // home more than 20 years". A persona alone can no longer produce the
+      // recommendation, and a seller whose tenure the platform cannot establish
+      // produces nothing at all rather than an offer it has not earned.
+      //
+      // Tenure is read through the ONE parser of contacts.length_of_residence in
+      // this repo (lib/avm/provider-chain.ts::parseLengthOfResidence, the same
+      // survivor lib/predictive-listing/signal-generators.ts derives tenure with).
+      // There is no prior-purchase fallback here on purpose: the transaction in
+      // hand is the CURRENT sale, not the purchase that started the clock.
+      const tenure = assessMemoryVideoTenure(parseLengthOfResidence(seller.length_of_residence))
+      if (!tenure.eligible) continue
 
       // Already commissioned? ai_video_projects.contact_id is a real column —
       // the client link does not have to be dug out of the metadata jsonb.
@@ -260,8 +284,8 @@ export async function GET(request: NextRequest) {
           target_client_id: seller.id,
           client_name: [seller.first_name, seller.last_name].filter(Boolean).join(" ") || txn.client_name,
           property_address: txn.property_address,
-          reason: "Long-time homeowner selling - opportunity for heartfelt memory video",
-          suggested_content: "Celebrate their memories + new chapter",
+          reason: `${tenure.reason} Seller-dictated keepsake — offer it, then capture their own words.`,
+          suggested_content: "The seller dictates the history of the house; the platform writes none of it",
           priority_score: 65,
         })
       }

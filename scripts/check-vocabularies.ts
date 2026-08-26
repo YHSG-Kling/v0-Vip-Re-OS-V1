@@ -20,7 +20,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-08-26
  * source: public.live_check_constraints_json()
- * body-sha256: 0637280cbafe53d2d486e730737ab7540f943e546843dc24f8ba3ac52f374405
+ * body-sha256: c0696c12d88541f8ec75debc65cdeaf94c26d5d59cddabd947915d77fb86f24d
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -238,7 +238,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     status: ["awaiting_presenter_setup", "completed", "draft", "failed", "generating", "published", "queued", "script_ready", "scripting"],
     usage_intent: ["both", "mls", "public_marketing"],
     video_provider: ["did", "upload"],
-    video_type: ["agent_intro", "avatar_explainer", "coming_soon", "education", "just_listed", "just_sold", "listing_promo", "listing_tour", "market_update", "memory_video", "open_house_promo", "pre_appointment", "presentation_chapter", "social_reel", "testimonial", "welcome"],
+    video_type: ["agent_intro", "avatar_explainer", "coming_soon", "education", "home_anniversary", "just_listed", "just_sold", "listing_promo", "listing_tour", "market_update", "memory_video", "open_house_promo", "pre_appointment", "presentation_chapter", "social_reel", "testimonial", "welcome"],
   },
   appointments: {
     status: ["cancelled", "completed", "confirmed", "no_show", "scheduled"],

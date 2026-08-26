@@ -12,6 +12,14 @@ import Link from "next/link"
 import { ExternalLink } from "lucide-react"
 import { LifetimeSegmentSelector } from "./components/lifetime-segment-selector"
 import { normalizeLifetimeSegment } from "@/lib/portal/lifetime-segment"
+import { MemoryVideoCard } from "./components/memory-video-card"
+import { parseLengthOfResidence } from "@/lib/avm/provider-chain"
+import {
+  assessMemoryVideoTenure,
+  MEMORY_VIDEO_PROMPTS,
+  type SellerDictatedSegment,
+} from "@/lib/video/memory-video-gate"
+import { MEMORY_VIDEO_OFFER_TAG } from "@/lib/video/memory-video"
 
 interface Props {
   contactId:    string
@@ -80,6 +88,65 @@ export async function SellerLifetimeOverview({ contactId, contact, brokerageId }
   const contactType = (contact.contact_type as string | null) ?? "contact"
   const fullName = [contact.first_name, contact.last_name].filter(Boolean).join(" ") || "(unnamed)"
 
+  // ─── THE MEMORY-VIDEO OFFER (m565) ──────────────────────────────────────────
+  // "memory video is for sellers that have been in their home more than 20 years
+  // ... (this is a special service that can be offered)". This is the seller-side
+  // detail view, so this is where an agent offers it.
+  //
+  // ELIGIBILITY IS TENURE AND IT FAILS CLOSED. Tenure comes from the ONE parser
+  // this repo has for contacts.length_of_residence (lib/avm/provider-chain.ts
+  // parseLengthOfResidence — the same survivor lib/predictive-listing/
+  // signal-generators.ts uses), falling back to years since the most recent
+  // CLOSED transaction already loaded above. Neither available → verdict refuses
+  // → the card is not rendered at all. There is deliberately no disabled teaser:
+  // an affordance for a service this family cannot be offered is worse than none.
+  const priorClose = (transactions as Array<{ status?: string | null; close_date?: string | null }>)
+    .filter((t) => t.status === "closed" && t.close_date)
+    .map((t) => new Date(t.close_date as string).getTime())
+    .sort((a, b) => b - a)[0]
+  const tenureFromClose = priorClose
+    ? (Date.now() - priorClose) / (365.25 * 24 * 60 * 60 * 1000)
+    : null
+  const memoryVideoVerdict = assessMemoryVideoTenure(
+    parseLengthOfResidence(contact.length_of_residence as string | null) ?? tenureFromClose,
+  )
+
+  let memoryVideoProjectId: string | null = null
+  const memoryVideoWords: Record<string, string> = {}
+  let memoryVideoOfferStanding = false
+  if (memoryVideoVerdict.eligible) {
+    // Read the two halves the card needs: the capture so far, and whether an
+    // offer is already standing. Both reads are tenant-scoped; a refusal is
+    // logged rather than rendered as "nothing captured yet", which would invite
+    // the agent to re-record what the seller already said.
+    const [projectRes, offerRes] = await Promise.all([
+      svc.from("ai_video_projects")
+         .select("id, video_metadata")
+         .eq("brokerage_id", brokerageId)
+         .eq("contact_id", contactId)
+         .eq("video_type", "memory_video")
+         .limit(1),
+      svc.from("agent_client_messages")
+         .select("id")
+         .eq("brokerage_id", brokerageId)
+         .eq("recipient_contact_id", contactId)
+         .like("rationale", `%${MEMORY_VIDEO_OFFER_TAG}%`)
+         .limit(1),
+    ])
+    if (projectRes.error) console.error("[seller-overview] memory-video project read refused:", projectRes.error.message)
+    if (offerRes.error) console.error("[seller-overview] memory-video offer read refused:", offerRes.error.message)
+    const project = (projectRes.data?.[0] as { id: string; video_metadata: unknown } | undefined) ?? null
+    if (project) {
+      memoryVideoProjectId = project.id
+      const dictation = ((project.video_metadata ?? {}) as { dictation?: SellerDictatedSegment[] }).dictation
+      const known = new Set(MEMORY_VIDEO_PROMPTS.map((p) => p.id))
+      for (const seg of Array.isArray(dictation) ? dictation : []) {
+        if (known.has(seg?.promptId)) memoryVideoWords[seg.promptId] = seg.sellerWords ?? ""
+      }
+    }
+    memoryVideoOfferStanding = !offerRes.error && (offerRes.data?.length ?? 0) > 0
+  }
+
   return (
     <div className="p-4 pt-2 space-y-4">
       {/* Identity / status */}
@@ -113,6 +180,17 @@ export async function SellerLifetimeOverview({ contactId, contact, brokerageId }
           </div>
         </CardContent>
       </Card>
+
+      {/* Memory video — rendered ONLY for a seller the tenure gate admitted. */}
+      {memoryVideoVerdict.eligible && memoryVideoVerdict.tenureYears != null ? (
+        <MemoryVideoCard
+          contactId={contactId}
+          tenureYears={memoryVideoVerdict.tenureYears}
+          offerStanding={memoryVideoOfferStanding}
+          initialWords={memoryVideoWords}
+          projectId={memoryVideoProjectId}
+        />
+      ) : null}
 
       {/* Listings */}
       <Card>
