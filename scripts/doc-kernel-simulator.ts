@@ -1907,7 +1907,27 @@ async function main() {
         && src("app/dashboard/financials/brokerage/page.tsx").includes("brokerAgentId && <ProfitLossReportPanel")
         && src("app/actions/marketing-studio.ts").includes('.eq("agent_user_id", userId)')
         && !src("app/actions/marketing-studio.ts").includes('.eq("agent_user_id", agentId)')
-        && src("lib/listing-presentation/section-narration-orchestrator.ts").includes('eq("user_id", pres.agent_user_id)')
+        // WAS PINNED TO THE LITERAL `eq("user_id", pres.agent_user_id)` INLINE IN
+        // THE ORCHESTRATOR, and went red when that line moved into the named
+        // resolver `resolveAgentNarrationAssets` — i.e. it failed BECAUSE the
+        // work finished, which is §2's waypoint trap. The two hand-rolled copies
+        // of this lookup were merged onto one exported survivor (§1.1), and the
+        // merged version is STRONGER than the line this used to match: it reads
+        // the error on the agents lookup rather than treating a refused read as
+        // "this agent has no voice clone" (§3 — supabase-js resolves refusals).
+        //
+        // So assert the RULE the clause was always about: the presentation
+        // crosses users -> agents FIRST, and then keys the two agents-FK asset
+        // tables by that agents id — never by the users-class agent_user_id,
+        // which is the miss that cost every presentation its voice and avatar.
+        && /\.from\("agents"\)\s*\.select\("id"\)\.eq\("user_id",\s*agentUserId\)/.test(
+             stripComments(src("lib/listing-presentation/section-narration-orchestrator.ts")).replace(/\s*\n\s*/g, ""))
+        && /from\("agent_voice_profiles"\)[\s\S]{0,120}\.eq\("agent_id", agentId\)/.test(
+             stripComments(src("lib/listing-presentation/section-narration-orchestrator.ts")))
+        && /from\("agent_avatar_assets"\)[\s\S]{0,160}\.eq\("agent_id", agentId\)/.test(
+             stripComments(src("lib/listing-presentation/section-narration-orchestrator.ts")))
+        && !/agent_voice_profiles[\s\S]{0,120}\.eq\("agent_id",\s*\w*[aA]gent_?[uU]ser_?[iI]d\)/.test(
+             stripComments(src("lib/listing-presentation/section-narration-orchestrator.ts")))
         && src("lib/video/video-identity.ts").includes("agentRecordId")
         // m362: this froze `agentId: agentUserId ?? params.agentId` — a resolved
         // USERS id falling back to the AGENTS id it was resolved FROM, on the
