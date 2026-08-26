@@ -16,6 +16,10 @@ import { createServiceClient } from "@/lib/supabase/service"
 // lib/usage/period.ts for what happened when neither side did.
 import { currentBillingPeriodLabel } from "@/lib/usage/period"
 import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
+// The PURE claimed-tenant decision table (no I/O, no client) — see the
+// CLAIMED-TENANT RULE header in lib/platform/acting-context.ts. Imported so this
+// command and the act-as write seam apply ONE rule, not two spellings of it (§6).
+import { decideClaimedTenant } from "@/lib/platform/acting-context"
 
 /**
  * PURE: is a feature included in a subscription tier's feature set? subscription_tiers.features is a
@@ -63,6 +67,13 @@ export interface BillingActorContext {
   userType: string
   /** Raw `users.platform_role` — null for every tenant user. */
   platformRole?: string | null
+  /**
+   * The actor's OWN `users.brokerage_id`, session-resolved — the tenant this caller
+   * is entitled to by membership. Optional only so the two commands that do not yet
+   * pass it keep compiling; where it is READ (loadBillingWorkspace) its ABSENCE is a
+   * REFUSAL for anyone who is not platform staff, never a pass (§4 fail closed).
+   */
+  brokerageId?: string | null
 }
 
 export interface LoadBillingWorkspaceInput {
@@ -264,14 +275,59 @@ export async function loadBillingWorkspace(
   input: LoadBillingWorkspaceInput
 ): Promise<LoadBillingWorkspaceOutput> {
   try {
-    // Superadmin can view any brokerage; broker can only view own
-    if (
-      input.actorContext.userType === "broker_admin" &&
-      input.actorContext.userId !== input.brokerageId
-    ) {
-      return {
-        success: false,
-        error: "Unauthorized: cannot access other brokerages",
+    // ── THE QUERY-SUPPLIED TENANT ON THIS COMMAND: RESEARCHED, KEPT, AUTHORIZED ──
+    //
+    // `input.brokerageId` reaches here from `?brokerageId=` on
+    // /api/admin/billing/dashboard (app/components/features/admin/billing-dashboard.tsx
+    // builds that URL). A caller-named tenant on a billing READ is the IDOR shape,
+    // so it was researched rather than deleted (owner ruling, 2026-08-26).
+    //
+    // VERDICT: it is a REAL capability and it stays. Platform staff must be able to
+    // open ANY tenant's billing workspace — that is the whole purpose of this
+    // superadmin surface, it is how app/dashboard/admin/billing/page.tsx navigates
+    // ("Pass ?brokerageId=YOUR_ID to view other brokerages"), and §4 says platform
+    // sees all tenants. It is NOT an act-as case: staff are inspecting the tenant's
+    // billing as the PLATFORM, not operating as them, so the impersonation seam is
+    // the wrong instrument here. What was missing was the authorization.
+    //
+    // WHAT WAS ACTUALLY HERE, and why it protected nothing:
+    //   `actorContext.userType === "broker_admin" && actorContext.userId !== input.brokerageId`
+    //   · It compared a users.id to a brokerages.id — two disjoint uuid spaces, so
+    //     for a broker_admin it was ALWAYS true and the command always refused; for
+    //     everyone else it never ran at all.
+    //   · It named ONE user_type out of the fifteen the CHECK admits. A 'broker',
+    //     'admin', 'team_lead' or 'agent' naming a foreign brokerage walked straight
+    //     past it.
+    // The route's requireSuperadminAuth is what has actually been holding this line.
+    // A kernel command must not depend on one caller's gate to be safe: the rule is
+    // stated here, in the command, so a second caller cannot inherit a hole.
+    //
+    // THE RULE: platform staff may name any tenant; everyone else is confined to the
+    // brokerage their own session resolves to; an actor whose tenant is unknown is
+    // REFUSED, because "nobody checked" must never render as "checked and fine".
+    //
+    // ONE VOCABULARY (§6): the "a caller-named tenant is a CLAIM, verified against
+    // the tenant the caller actually holds" rule is decideClaimedTenant — the same
+    // pure decision table the act-as write seam gates server actions with. This
+    // command's only difference is WHO may name a foreign tenant, and that is the
+    // platform-staff test above, not a second spelling of the comparison.
+    const actorIsPlatform = isPlatformSuperadminIdentity(
+      input.actorContext.userType,
+      input.actorContext.platformRole,
+    )
+    if (!actorIsPlatform) {
+      const decision = decideClaimedTenant({
+        actingBrokerageId: input.actorContext.brokerageId,
+        claimedBrokerageId: input.brokerageId,
+      })
+      if (!decision.ok) {
+        return {
+          success: false,
+          error:
+            decision.reason === "no_session_tenant"
+              ? "Unauthorized: billing actor has no resolved brokerage"
+              : "Unauthorized: cannot access other brokerages",
+        }
       }
     }
 

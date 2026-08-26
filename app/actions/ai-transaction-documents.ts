@@ -1,21 +1,42 @@
 "use server"
 
 import { generateTextRouted as generateText } from "@/lib/ai/models"
-import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
-// THE SPEND ACTOR, AND WHY IT IS NOT `params.brokerageId`.
+// ─── THE TENANT, AND WHY `params.brokerageId` IS NOW A CLAIM AND NOT AN INPUT ───
 //
 // Every export here is a "use server" endpoint and every one of them takes a
-// `brokerageId` straight off the caller — the only callers in the tree are the
-// CLIENT component app/dashboard/transactions/[id]/transaction-detail-client.tsx,
-// which passes whatever the browser holds. CLAUDE.md §4: "Tenant comes from the
-// SESSION. Never from a request body, never from a parameter." Billing AI spend
-// against a body-supplied tenant is worse than not billing it: it is an invoice
-// written on another brokerage. So the ledger's tenant is resolved here, from
-// the session, and `params.brokerageId` is left to the row writes it already
-// governs (a pre-existing tenancy defect, reported, not silently widened).
-import { getAgentContext } from "@/lib/identity/get-agent-context"
+// `brokerageId` straight off the caller — the only in-tree caller is the CLIENT
+// component app/dashboard/transactions/[id]/transaction-detail-client.tsx, which
+// passes whatever the browser holds. An earlier pass moved the AI COST LEDGER to
+// the session and deliberately left the ROW WRITES on the parameter, reporting the
+// tenancy defect rather than widening it. This is that report being acted on.
+//
+// RESEARCHED VERDICT (2026-08-26, owner ruling "idor shapes need to include them
+// but that is a researched call for business reason"): THERE IS NO CROSS-TENANT
+// BUSINESS CASE HERE. A transaction, its documents, its deadlines and its
+// compliance checklist all belong to exactly one brokerage; nobody edits another
+// brokerage's deal file. The one legitimate cross-tenant actor — platform staff
+// operating a tenant — is already served by the act-as seam, which resolves the
+// TARGET tenant server-side (lib/platform/acting-context.ts). Evidence that no
+// second case exists is recorded in that file's CLAIMED-TENANT RULE header:
+// live `has_brokerage_access()` grants exactly one brokerage per user plus
+// platform admin, and `user_brokerage_roles` (the multi-seat table) is empty and
+// read by no application code.
+//
+// So the parameter STAYS — it keeps the call self-describing and catches a stale
+// browser tab — but it is VERIFIED, never trusted: resolveWriteContextForTenant
+// refuses when it names a tenant this session does not act on, and every write
+// below stamps `wc.brokerageId` (the session's answer), never `params.brokerageId`.
+//
+// GATING HERE ALSO REPAIRS ACT-AS. These writes used the cookie (RLS) client, and
+// every table below carries `WITH CHECK (brokerage_id = current_user_brokerage_id())`
+// — which is the STAFF member's own brokerage while they act as a tenant. So a
+// superadmin operating a tenant had every one of these writes refused by RLS, and
+// supabase-js resolves a refusal: the extraction-log insert below was a bare
+// `await`, so it reported success over nothing. `wc.db` is the service client under
+// an active FULL grant, and the extraction-log error is now read.
+import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import {
   TRANSACTION_TASK_PRIORITY_PROMPT_UNION,
   coerceTaskPriority,
@@ -61,9 +82,12 @@ export async function analyzeTransactionDocument(params: {
     return { success: false, error: "Invalid document or transaction ID" }
   }
 
-  // Tenant for the AI cost ledger — SESSION, never params.brokerageId (§4).
-  const spendActor = await getAgentContext()
-  const supabase = await createClient()
+  // ★ ACT-AS WRITE SEAM ★ — tenant from the SESSION; params.brokerageId is a
+  // claim verified against it (see header). Fails closed: no session tenant,
+  // read-only act-as grant, or a foreign claim all refuse before any I/O.
+  const wc = await resolveWriteContextForTenant(params.brokerageId)
+  if (!wc.ok) return { success: false, error: wc.error }
+  const supabase = wc.db
 
   try {
     const { data: doc, error: docErr } = await supabase
@@ -71,6 +95,9 @@ export async function analyzeTransactionDocument(params: {
       .select("id, doc_type, doc_label, storage_url, extracted_data, notes")
       .eq("id", params.documentId)
       .eq("transaction_id", params.transactionId)
+      // EXPLICIT TENANT PREDICATE, because `wc.db` is the SERVICE client under an
+      // act-as grant and RLS is not there to confine it (§4 gate-then-service).
+      .eq("brokerage_id", wc.brokerageId)
       .single()
 
     if (docErr || !doc) {
@@ -150,8 +177,8 @@ Return a JSON object:
     }
 
     const { text } = await generateText({
-      brokerageId: spendActor.brokerageId,
-      userId: spendActor.userId || null,
+      brokerageId: wc.brokerageId,
+      userId: wc.userId || null,
       model: "openai/gpt-4o-mini",
       system: systemPrompt,
       messages: [{ role: "user", content: userPrompt }],
@@ -177,22 +204,32 @@ Return a JSON object:
         updated_at: new Date().toISOString(),
       })
       .eq("id", params.documentId)
+      .eq("brokerage_id", wc.brokerageId)
 
     if (updateErr) {
       return { success: false, error: updateErr.message }
     }
 
-    // Write audit row to document_extraction_log
-    await supabase.from("document_extraction_log").insert({
+    // Write audit row to document_extraction_log.
+    // THE ERROR IS READ. This was a bare `await`, and supabase-js RESOLVES a
+    // refusal — so an RLS-blocked audit write (every act-as run, and every run
+    // whose brokerage_id disagreed with the session) returned success with no
+    // audit trail at all. The extraction happened; the record that it happened
+    // did not. A failed audit row does not undo the analysis, so it is reported
+    // rather than thrown, but it is never again silent.
+    const { error: logErr } = await supabase.from("document_extraction_log").insert({
       transaction_doc_id: params.documentId,
       transaction_id: params.transactionId,
-      brokerage_id: params.brokerageId,
+      brokerage_id: wc.brokerageId,
       extraction_method: "ai_claude",
       extracted_fields: extracted,
       confidence_score: confidence,
       processing_status: "completed",
       processed_at: new Date().toISOString(),
     })
+    if (logErr) {
+      console.error("[analyzeTransactionDocument] extraction audit row NOT written:", logErr.message)
+    }
 
     return { success: true, extracted, confidence, analysisType }
   } catch (error) {
@@ -219,26 +256,32 @@ export async function generateTransactionDocumentReminders(params: {
     return { success: false, error: "Invalid transaction ID" }
   }
 
-  // Tenant for the AI cost ledger — SESSION, never params.brokerageId (§4).
-  const spendActor = await getAgentContext()
-  const supabase = await createClient()
+  // ★ ACT-AS WRITE SEAM ★ — see header. Tenant from the session; the claim is verified.
+  const wc = await resolveWriteContextForTenant(params.brokerageId)
+  if (!wc.ok) return { success: false, error: wc.error }
+  const supabase = wc.db
 
   try {
-    // Load transaction + documents + deadlines
+    // Load transaction + documents + deadlines.
+    // Every read carries its own tenant predicate: `wc.db` is the SERVICE client
+    // under an act-as grant, so RLS is not confining these (§4).
     const [{ data: transaction }, { data: docs }, { data: deadlines }] = await Promise.all([
       supabase
         .from("transactions")
         .select("id, property_address, close_date, stage, status")
         .eq("id", params.transactionId)
+        .eq("brokerage_id", wc.brokerageId)
         .single(),
       supabase
         .from("transaction_documents")
         .select("id, doc_type, doc_label, status, uploaded_at")
-        .eq("transaction_id", params.transactionId),
+        .eq("transaction_id", params.transactionId)
+        .eq("brokerage_id", wc.brokerageId),
       supabase
         .from("transaction_deadlines")
         .select("id, deadline_type, deadline_date, status")
         .eq("transaction_id", params.transactionId)
+        .eq("brokerage_id", wc.brokerageId)
         .eq("status", "pending"),
     ])
 
@@ -247,8 +290,8 @@ export async function generateTransactionDocumentReminders(params: {
     }
 
     const { text } = await generateText({
-      brokerageId: spendActor.brokerageId,
-      userId: spendActor.userId || null,
+      brokerageId: wc.brokerageId,
+      userId: wc.userId || null,
       model: "openai/gpt-4o-mini",
       system:
         "You are a real estate transaction coordinator. Generate actionable document deadline reminders. Always respond with valid JSON only.",
@@ -307,7 +350,7 @@ Only generate reminders for real missing or upcoming items. Maximum 8 reminders.
       dueDate.setDate(dueDate.getDate() + (r.dueDateOffset ?? 3))
       return {
         transaction_id: params.transactionId,
-        brokerage_id: params.brokerageId,
+        brokerage_id: wc.brokerageId,
         assigned_to_agent_id: params.agentId,
         title: r.title,
         description: r.description,
@@ -365,19 +408,23 @@ export async function checkTransactionDisclosures(params: {
   // Tenant scope is not optional here — the compliance_checklists RLS WITH CHECK
   // is (brokerage_id = current_user_brokerage_id()) and NULL fails it, so an
   // unstamped write is refused. Reject up front rather than at the database.
+  // (The value itself is no longer what gets written — see the header. It is
+  // still shape-checked so a malformed claim is refused before the seam runs.)
   if (!isValidUUID(params.brokerageId)) {
     return { success: false, error: "Invalid brokerage ID" }
   }
 
-  // Tenant for the AI cost ledger — SESSION, never params.brokerageId (§4).
-  const spendActor = await getAgentContext()
-  const supabase = await createClient()
+  // ★ ACT-AS WRITE SEAM ★ — see header. Tenant from the session; the claim is verified.
+  const wc = await resolveWriteContextForTenant(params.brokerageId)
+  if (!wc.ok) return { success: false, error: wc.error }
+  const supabase = wc.db
 
   try {
     const { data: docs, error: docsError } = await supabase
       .from("transaction_documents")
       .select("doc_type, doc_label, status")
       .eq("transaction_id", params.transactionId)
+      .eq("brokerage_id", wc.brokerageId)
 
     // A refused read resolves rather than throwing. Left undestructured, `docs`
     // would be null and the model would be asked to grade a deal it was told has
@@ -387,8 +434,8 @@ export async function checkTransactionDisclosures(params: {
     }
 
     const { text } = await generateText({
-      brokerageId: spendActor.brokerageId,
-      userId: spendActor.userId || null,
+      brokerageId: wc.brokerageId,
+      userId: wc.userId || null,
       model: "openai/gpt-4o-mini",
       system:
         "You are a real estate compliance officer specializing in state disclosure requirements. Always respond with valid JSON only.",
@@ -448,7 +495,7 @@ Return JSON:
     const { error: checklistError } = await supabase.from("compliance_checklists").upsert(
       {
         transaction_id: params.transactionId,
-        brokerage_id: params.brokerageId,
+        brokerage_id: wc.brokerageId,
         checklist_type: "disclosures",
         items: result.requiredDisclosures ?? [],
         compliance_score: Math.max(0, Math.min(100, Math.round(Number(result.complianceScore ?? 0)))),
@@ -490,13 +537,19 @@ export async function shareDocumentAnalysisWithClient(params: {
     return { success: false, error: "Invalid IDs" }
   }
 
-  const supabase = await createClient()
+  // ★ ACT-AS WRITE SEAM ★ — see header. THIS EXPORT HAD NO IDENTITY CHECK AT ALL:
+  // it took tenant, agent and contact from the caller and wrote a message into a
+  // client's portal. It is the most sensitive of the four (the row is delivered to
+  // a human being outside the brokerage), so it gates the same way as the rest.
+  const wc = await resolveWriteContextForTenant(params.brokerageId)
+  if (!wc.ok) return { success: false, error: wc.error }
+  const supabase = wc.db
 
   const { error } = await supabase.from("client_portal_messages").insert({
     transaction_id: params.transactionId,
     contact_id: params.contactId,
     agent_id: params.agentId,
-    brokerage_id: params.brokerageId,
+    brokerage_id: wc.brokerageId,
     direction: "agent_to_client",
     body: `AI Document Review — ${params.documentLabel}\n\n${params.analysisText}`,
     created_at: new Date().toISOString(),

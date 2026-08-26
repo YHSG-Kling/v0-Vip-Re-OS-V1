@@ -3,6 +3,11 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+// TOMBSTONE: `import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"`
+// stood here for generateInvoice, which is gone — see the tombstone at the foot of
+// this file. The seam remains the one tenant-resolution vocabulary (§6) and is what
+// a future invoice action must gate through; it is simply not imported by anything
+// in this file today.
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
@@ -965,114 +970,36 @@ export async function trackDeposit(params: {
 // ============================================================================
 // WORKFLOW OS — generate invoice draft document
 // ============================================================================
-/**
- * Generates an AI-drafted invoice for a contact (vendor → agent, or agent → client
- * for service work). Called by the draft_document workflow adapter when
- * document_type = "invoice".
- *
- * Writes the invoice line items + total + AI-drafted memo onto the documents
- * record passed in (created upstream by the adapter).
- */
-export async function generateInvoice(params: {
-  brokerageId: string
-  contactId?: string | null
-  agentUserId?: string | null
-  transactionId?: string | null
-  documentId?: string | null
-  /** Optional pre-filled line items; AI suggests if omitted */
-  lineItems?: Array<{ description: string; quantity: number; unitPrice: number }>
-  /** Free-form description of what the invoice is for (used for AI generation) */
-  invoicePurpose?: string
-}): Promise<{
-  success: boolean
-  documentId?: string
-  invoiceTotal?: number
-  error?: string
-}> {
-  try {
-    const supabase = await createClient()
-
-    // Fetch context for the AI to draft against
-    let contactName = "Client"
-    let agentName = "Agent"
-    if (params.contactId) {
-      const { data: c } = await supabase
-        .from("contacts").select("first_name, last_name").eq("id", params.contactId).maybeSingle()
-      if (c) contactName = `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || "Client"
-    }
-    if (params.agentUserId) {
-      const { data: u } = await supabase
-        .from("users").select("first_name, last_name").eq("id", params.agentUserId).maybeSingle()
-      if (u) agentName = `${u.first_name ?? ""} ${u.last_name ?? ""}`.trim() || "Agent"
-    }
-
-    // AI drafts line items if none provided
-    let lineItems = params.lineItems ?? []
-    if (lineItems.length === 0) {
-      const prompt = `Draft a professional real estate invoice from ${agentName} to ${contactName}.
-Purpose: ${params.invoicePurpose ?? "real estate services rendered"}.
-Output ONLY a JSON array of line items: [{"description":"string","quantity":number,"unitPrice":number}].
-Typical items: consultation fee, listing prep, marketing services, transaction coordination, photography reimbursement, etc.
-Suggest 2-4 realistic line items totalling $500-$2500. JSON only, no prose.`
-
-      try {
-        const { text } = await generateText({
-          feature: "invoice_draft",
-          messages: [{ role: "user", content: prompt }],
-        })
-        const cleaned = text.replace(/```json|```/g, "").trim()
-        const parsed = JSON.parse(cleaned)
-        if (Array.isArray(parsed)) {
-          lineItems = parsed.filter(
-            (i: any) => typeof i?.description === "string" && typeof i?.quantity === "number" && typeof i?.unitPrice === "number"
-          )
-        }
-      } catch { /* keep empty */ }
-    }
-
-    const subtotal = lineItems.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0)
-    const invoiceTotal = subtotal // tax handling deferred to per-state config
-
-    // AI drafts a payment memo
-    let memo = `Invoice from ${agentName} for services rendered.`
-    try {
-      const memoPrompt = `Write a professional 1-2 sentence invoice memo for an invoice from ${agentName} to ${contactName} for ${params.invoicePurpose ?? "real estate services"}. Total: $${invoiceTotal.toLocaleString()}. Polite, brief, professional.`
-      const { text } = await generateText({
-        feature: "invoice_memo",
-        messages: [{ role: "user", content: memoPrompt }],
-      })
-      if (text) memo = text.trim()
-    } catch { /* keep default */ }
-
-    const invoiceContent = JSON.stringify({
-      from: agentName,
-      to: contactName,
-      issuedAt: new Date().toISOString(),
-      lineItems,
-      subtotal,
-      total: invoiceTotal,
-      memo,
-    }, null, 2)
-
-    // Update the documents record (created upstream by draft_document adapter)
-    if (params.documentId) {
-      await supabase.from("documents").update({
-        content: invoiceContent,
-        status: "draft_ready",
-        metadata: {
-          line_items: lineItems,
-          total_cents: Math.round(invoiceTotal * 100),
-          memo,
-          contact_name: contactName,
-          agent_name: agentName,
-        },
-        updated_at: new Date().toISOString(),
-      }).eq("id", params.documentId)
-    }
-
-    return { success: true, documentId: params.documentId ?? undefined, invoiceTotal }
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err)
-    return { success: false, error: msg }
-  }
-}
+//
+// TOMBSTONE (orphan doctrine §1.3 — the functionality lives elsewhere).
+// `export async function generateInvoice(params: { brokerageId, contactId,
+// agentUserId, transactionId, documentId, lineItems, invoicePurpose })` stood here.
+// It MOVED, name and all — this is not a deletion and no capability was dropped.
+//
+// SURVIVOR: lib/finance/invoice-draft.ts:generateInvoice — same name, same job,
+// carrying the whole capability plus the research behind this move. LIVE CALLER:
+// lib/workflow/adapters/draft-document.ts:115 (docType === "invoice").
+//
+// WHY IT WENT, since a deletion must name its reason as well as its survivor:
+//   · It was NOT a browsing user's endpoint and never had been. Its only caller in
+//     the entire tree was the CRON workflow adapter, reached through a dynamic
+//     `import()`. No UI, no route, no cron entry of its own.
+//   · Because of that it was BROKEN in exactly the way §4 predicts. It built its
+//     own cookie (RLS) client, and a workflow step has no session — so
+//     `current_user_brokerage_id()` was NULL, the `documents` UPDATE matched
+//     nothing, the bare `await` swallowed the refusal (supabase-js RESOLVES one),
+//     and it returned success:true over a document it had not written. Every
+//     AI-drafted invoice in a sequence was a silent no-op.
+//   · Its `brokerageId` parameter — the reason it was flagged as an IDOR — was
+//     INERT: declared once in the type and read by nothing. It governed no row and
+//     could not be exploited. §1 says build the missing half, so the survivor makes
+//     it load-bearing: it scopes the documents write and books the AI spend, which
+//     lib/ai/models.ts logs only when a brokerageId is present (both calls here had
+//     none, so every invoice draft was AI spend that reached no ledger).
+//
+// Being `"use server"`, this export was a public HTTP endpoint for a function no UI
+// called. Keeping it as a session-gated wrapper for a hypothetical future button
+// would have left an ungated-by-need endpoint standing and an orphan export behind
+// it. When a UI does want to draft an invoice, it adds its own action that gates
+// through lib/platform/acting-context.ts:resolveWriteContextForTenant and calls the
+// survivor — one import, no capability lost.

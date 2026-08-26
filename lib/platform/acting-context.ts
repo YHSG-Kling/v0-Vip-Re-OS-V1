@@ -143,3 +143,104 @@ export async function resolveWriteContext(): Promise<WriteContext> {
     db: decision.channel === "service" ? createServiceClient() : await createClient(),
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ★ THE CLAIMED-TENANT RULE ★  (owner ruling, 2026-08-26: "idor shapes need to
+// include them but that is a researched call for business reason")
+//
+// A caller-supplied `brokerageId` may legitimately EXIST — a client component
+// already holds the id and passing it keeps a call self-describing — but it is
+// never an AUTHORITY. It is a CLAIM, and the only correct handling of a claim is
+// to verify it against the tenant the session actually acts on.
+//
+// THE RESEARCH BEHIND THAT, from the live database (2026-08-26), so the next
+// audit does not have to redo it:
+//   · `current_user_brokerage_id()` is `SELECT brokerage_id FROM users WHERE id =
+//     auth.uid()` — ONE brokerage per user, by definition.
+//   · `has_brokerage_access(t)` is `is_platform_admin() OR t =
+//     current_user_brokerage_id()`. It consults NO multi-brokerage membership
+//     table. So in the live schema the ONLY cross-tenant authority that exists is
+//     platform staff.
+//   · `user_brokerage_roles` (the one table shaped for a user holding seats at
+//     several brokerages — it even carries `is_primary`) has 0 rows and is read
+//     by NO application code: only by migrations and by RLS helpers in
+//     scripts/290-*.sql that the live functions above do not use.
+//   · `getAgentContext()` resolves exactly one `brokerageId` per request.
+// Therefore "a broker who legitimately operates several brokerages" is NOT a
+// capability this system has; it is not being narrowed by anything here. If it is
+// ever wanted, the change is to give `has_brokerage_access` a membership table and
+// to widen THIS function to accept any tenant the session is a member of — one
+// place, not a parameter on every action.
+//
+// The one real cross-tenant case — platform staff operating a tenant — is already
+// covered above: getAgentContext resolves the TARGET tenant while acting-as, so
+// `actingBrokerageId` IS the target and the claim matches without any parameter
+// being trusted. That is why gating through this seam makes act-as work rather
+// than breaking it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+type ClaimedTenantDecision =
+  | { ok: true; brokerageId: string }
+  | { ok: false; reason: "no_session_tenant" | "tenant_mismatch" }
+
+/**
+ * PURE — the one decision table for a caller-supplied tenant id.
+ * Unit-tested by scripts/act-as-write-seam-simulator.ts; keep it dependency-free.
+ *
+ * FAILS CLOSED in both directions (§4): a session with no resolvable tenant is
+ * refused rather than allowed to write untenanted, and a claim that disagrees with
+ * the acting tenant is refused rather than quietly overridden — a browser holding a
+ * stale tenant must be told, not silently redirected into a different brokerage's
+ * data. An ABSENT claim is not a failure: the acting tenant answers.
+ */
+export function decideClaimedTenant(input: {
+  actingBrokerageId: string | null | undefined
+  claimedBrokerageId?: string | null
+}): ClaimedTenantDecision {
+  const acting = input.actingBrokerageId
+  if (!acting) return { ok: false, reason: "no_session_tenant" }
+  const claimed = input.claimedBrokerageId
+  if (claimed && claimed !== acting) return { ok: false, reason: "tenant_mismatch" }
+  return { ok: true, brokerageId: acting }
+}
+
+/** The standard refusal when a caller names a tenant the session does not act on.
+ *  NOT exported: callers relay `error` off the result, exactly as they do for
+ *  READ_ONLY_ACTING_ERROR's sibling path — a second exported constant nothing
+ *  imports is an orphan export, and the seam already hands the message back. */
+const CLAIMED_TENANT_ERROR = "Not authorized for that brokerage"
+
+/**
+ * ★ ACT-AS WRITE SEAM ★ — the gate for a tenant-writing server action whose
+ * signature carries a caller-supplied `brokerageId`.
+ *
+ * Same resolution as resolveWriteContext() (fresh grant re-validation, read_only
+ * refused, service client only under an ACTIVE FULL grant), plus the claimed-tenant
+ * rule above. The returned `brokerageId` is the SESSION's — write that, never the
+ * parameter — and every write must still be scoped to it.
+ */
+type TenantWriteContext =
+  // `brokerageId` is NARROWED to `string`: this entry point refuses a session with
+  // no tenant, so unlike resolveWriteContext() a successful result cannot carry
+  // null — and callers must not have to re-prove that with a `?? ""` that would
+  // silently write an untenanted row.
+  | (Omit<Extract<WriteContext, { ok: true }>, "brokerageId"> & { brokerageId: string })
+  | { ok: false; error: string }
+
+export async function resolveWriteContextForTenant(
+  claimedBrokerageId?: string | null,
+): Promise<TenantWriteContext> {
+  const wc = await resolveWriteContext()
+  if (!wc.ok) return wc
+  const decision = decideClaimedTenant({
+    actingBrokerageId: wc.brokerageId,
+    claimedBrokerageId,
+  })
+  if (!decision.ok) {
+    return {
+      ok: false,
+      error: decision.reason === "no_session_tenant" ? "Unauthorized" : CLAIMED_TENANT_ERROR,
+    }
+  }
+  return { ...wc, brokerageId: decision.brokerageId }
+}

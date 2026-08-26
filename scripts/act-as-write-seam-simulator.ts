@@ -25,7 +25,7 @@
 import { readFileSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
-import { decideWriteChannel } from "../lib/platform/acting-context"
+import { decideWriteChannel, decideClaimedTenant } from "../lib/platform/acting-context"
 import { isSessionActive } from "../lib/platform/impersonation"
 import { stripComments } from "./strip-comments"
 
@@ -360,6 +360,156 @@ function main() {
     })())
   check("resolveActingContext (reader seam) still surfaces readOnly for mixed surfaces",
     /readOnly: ctx\.impersonationMode === "read_only"/.test(acting))
+
+  // ── 5. THE CLAIMED-TENANT RULE ────────────────────────────────────────────
+  //
+  // Owner ruling 2026-08-26: "idor shapes need to include them but that is a
+  // researched call for business reason". A caller-supplied brokerageId may EXIST;
+  // it may never be an AUTHORITY. decideClaimedTenant is the one decision table,
+  // and the three sites that carry such a parameter must gate through it.
+  //
+  // THE IDS BELOW ARE THE TWO LIVE BROKERAGES (SELECT id FROM brokerages,
+  // 2026-08-26) — the guard is written against real tenants, not placeholders, so
+  // "refuses a cross-tenant id" means the two that actually exist.
+  console.log("\n[decideClaimedTenant — pure decision table, live tenant ids]")
+  const OWN     = "b0000000-0000-0000-0000-000000000001" // VIP Premier Realty
+  const FOREIGN = "231f4e64-5022-4752-8047-696886551c35" // Your Brokerage
+
+  check("claim matching the acting tenant → ADMITTED, and the SESSION's id is returned",
+    JSON.stringify(decideClaimedTenant({ actingBrokerageId: OWN, claimedBrokerageId: OWN }))
+      === JSON.stringify({ ok: true, brokerageId: OWN }))
+  check("claim naming the OTHER live brokerage → REFUSED (tenant_mismatch)",
+    JSON.stringify(decideClaimedTenant({ actingBrokerageId: OWN, claimedBrokerageId: FOREIGN }))
+      === JSON.stringify({ ok: false, reason: "tenant_mismatch" }))
+  check("and symmetrically, from the other side",
+    JSON.stringify(decideClaimedTenant({ actingBrokerageId: FOREIGN, claimedBrokerageId: OWN }))
+      === JSON.stringify({ ok: false, reason: "tenant_mismatch" }))
+  check("NO claim → the acting tenant answers (an absent claim is not a failure)",
+    JSON.stringify(decideClaimedTenant({ actingBrokerageId: OWN }))
+      === JSON.stringify({ ok: true, brokerageId: OWN }))
+  check("FAIL CLOSED — session with no tenant is refused even when the claim looks fine",
+    JSON.stringify(decideClaimedTenant({ actingBrokerageId: null, claimedBrokerageId: OWN }))
+      === JSON.stringify({ ok: false, reason: "no_session_tenant" }))
+  check("FAIL CLOSED — no tenant and no claim is still a refusal, never an untenanted pass",
+    JSON.stringify(decideClaimedTenant({ actingBrokerageId: undefined }))
+      === JSON.stringify({ ok: false, reason: "no_session_tenant" }))
+  check("ACT-AS: while acting-as, the acting tenant IS the target, so the target's id is admitted",
+    // getAgentContext resolves brokerageId to the TARGET under an active grant, so a
+    // staff member operating FOREIGN passes a FOREIGN claim — no parameter is trusted,
+    // the seam simply resolved a different tenant. This is why gating makes act-as work.
+    JSON.stringify(decideClaimedTenant({ actingBrokerageId: FOREIGN, claimedBrokerageId: FOREIGN }))
+      === JSON.stringify({ ok: true, brokerageId: FOREIGN }))
+
+  // ── 5b. The three sites gate through it ───────────────────────────────────
+  //
+  // STRIPPED SOURCE, ALWAYS (§2). Each of these files now carries a long comment
+  // explaining the ruling, and those comments NAME resolveWriteContextForTenant and
+  // params.brokerageId repeatedly. Reading raw source would let the explanation of
+  // the fix stand in for the fix — and would let the accusation regex match the
+  // sentence that says the accusation no longer applies.
+  console.log("\n[claimed-tenant rule — the sites, on stripped source]")
+  const txnDocsRaw = read("app/actions/ai-transaction-documents.ts")
+  const txnDocs    = stripComments(txnDocsRaw)
+  const EXPORTS = [
+    "analyzeTransactionDocument",
+    "generateTransactionDocumentReminders",
+    "checkTransactionDisclosures",
+    "shareDocumentAnalysisWithClient",
+  ]
+  const gateCount = (txnDocs.match(/resolveWriteContextForTenant\(params\.brokerageId\)/g) ?? []).length
+  check(`ai-transaction-documents: all ${EXPORTS.length} exports gate through the seam (found ${gateCount})`,
+    gateCount >= EXPORTS.length)
+  for (const fn of EXPORTS) {
+    check(`  ${fn} is still exported (the gate did not delete the capability)`,
+      new RegExp(`export async function ${fn}\\b`).test(txnDocs))
+  }
+  check("ai-transaction-documents: NO write stamps the caller's claim (brokerage_id: params.brokerageId)",
+    !/brokerage_id:\s*params\.brokerageId/.test(txnDocs))
+  check("ai-transaction-documents: writes stamp the SESSION's tenant (wc.brokerageId)",
+    (txnDocs.match(/brokerage_id:\s*wc\.brokerageId/g) ?? []).length >= 4)
+  check("ai-transaction-documents: the extraction-log insert BINDS its error (no bare await)",
+    /const \{ error: logErr \} = await supabase\.from\("document_extraction_log"\)/.test(txnDocs))
+  check("ai-transaction-documents: no longer builds its own cookie client behind the seam",
+    !/createClient\(\)/.test(txnDocs))
+
+  const invoiceActionRaw = read("app/actions/ai-financial-management.ts")
+  const invoiceAction = stripComments(invoiceActionRaw)
+  check("generateInvoice is GONE from the public server-action surface (§1.3, survivor named)",
+    !/export async function generateInvoice\b/.test(invoiceAction))
+  check("…and its tombstone names both the survivor and the live caller",
+    /TOMBSTONE[\s\S]{0,900}lib\/finance\/invoice-draft\.ts:generateInvoice/.test(invoiceActionRaw) &&
+    /TOMBSTONE[\s\S]{0,1200}lib\/workflow\/adapters\/draft-document\.ts/.test(invoiceActionRaw))
+  const invoiceLib = stripComments(read("lib/finance/invoice-draft.ts"))
+  check("the drafter takes its db client EXPLICITLY (no session assumed) and requires a tenant",
+    /export async function generateInvoice\(\s*db: SupabaseClient,/.test(invoiceLib) &&
+    /if \(!params\.brokerageId\)/.test(invoiceLib))
+  check("the drafter's documents UPDATE is tenant-scoped, error-bound AND row-counted (§3)",
+    /\.eq\("brokerage_id", params\.brokerageId\)/.test(invoiceLib) &&
+    /const \{ data: updated, error: updErr \}/.test(invoiceLib) &&
+    /if \(!updated \|\| updated\.length === 0\)/.test(invoiceLib))
+  check("the drafter books its AI spend to a tenant (ai_tool_usage is written only when brokerageId is present)",
+    (invoiceLib.match(/brokerageId: params\.brokerageId/g) ?? []).length >= 2)
+  const draftAdapter = stripComments(read("lib/workflow/adapters/draft-document.ts"))
+  check("the session-less workflow caller passes the executor's service client, not a cookie client",
+    /generateInvoice\(supabase, \{/.test(draftAdapter) &&
+    // …and it reaches the LIB, not the "use server" action that built its own
+    // sessionless cookie client. The name is unchanged (it moved, §1), so the
+    // discriminator is the module it comes from, never the identifier.
+    /import\("@\/lib\/finance\/invoice-draft"\)/.test(draftAdapter) &&
+    !/ai-financial-management/.test(draftAdapter))
+  check("…and it reads the drafter's verdict instead of discarding it",
+    /if \(!drafted\.success\)/.test(draftAdapter))
+
+  const billingKernel = stripComments(read("lib/kernel/billing.ts"))
+  check("loadBillingWorkspace authorizes the named tenant against the ACTOR, not against a user_type literal",
+    /isPlatformSuperadminIdentity\(\s*input\.actorContext\.userType/.test(billingKernel) &&
+    /decideClaimedTenant\(\{/.test(billingKernel))
+  check("…and it does so through the ONE claimed-tenant rule, not a second spelling (§6)",
+    /import \{ decideClaimedTenant \} from "@\/lib\/platform\/acting-context"/.test(billingKernel) &&
+    /claimedBrokerageId: input\.brokerageId/.test(billingKernel) &&
+    /actingBrokerageId: input\.actorContext\.brokerageId/.test(billingKernel))
+  check("loadBillingWorkspace FAILS CLOSED when the actor's own tenant is unknown",
+    /decision\.reason === "no_session_tenant"/.test(billingKernel))
+  check("the dead userId-vs-brokerageId comparison is gone (two disjoint uuid spaces)",
+    !/actorContext\.userId !== input\.brokerageId/.test(billingKernel))
+  const billingRoute = stripComments(read("app/api/admin/billing/dashboard/route.ts"))
+  check("the billing route sends the actor's SESSION brokerage for that comparison",
+    /brokerageId: auth\.brokerageId,/.test(billingRoute))
+
+  // ── 5c. POSITIVE CONTROLS (§2) ────────────────────────────────────────────
+  //
+  // A broken regex and a clean tree both report zero. Every absence assertion above
+  // is re-run here against source that has the ORIGINAL defect spliced back in; the
+  // finder must go red on it, or it is not a finder.
+  console.log("\n[positive controls — the finders still recognise the defects they were written for]")
+  const preFixWrite = txnDocsRaw.replace(
+    /brokerage_id: wc\.brokerageId,/,
+    "brokerage_id: params.brokerageId,",
+  )
+  check("control · the claim-stamping finder GOES RED on the pre-fix write",
+    /brokerage_id:\s*params\.brokerageId/.test(stripComments(preFixWrite)))
+  const preFixGate = txnDocsRaw.replace(/resolveWriteContextForTenant\(params\.brokerageId\)/g, "getAgentContext()")
+  check("control · the gate finder GOES RED when the exports stop riding the seam",
+    (stripComments(preFixGate).match(/resolveWriteContextForTenant\(params\.brokerageId\)/g) ?? []).length === 0)
+  const preFixLog = txnDocsRaw.replace(
+    /const \{ error: logErr \} = await supabase\.from\("document_extraction_log"\)/,
+    'await supabase.from("document_extraction_log")',
+  )
+  check("control · the bare-await finder GOES RED on the swallowed extraction-log insert",
+    !/const \{ error: logErr \} = await supabase\.from\("document_extraction_log"\)/.test(stripComments(preFixLog)))
+  check("control · a TOMBSTONE IS NOT A CALL SITE — the ruling comments naming params.brokerageId do NOT satisfy the gate finder",
+    // The raw file says "params.brokerageId" many times in prose. Strip it all out and
+    // the count must be exactly the four real gates, not the prose.
+    (txnDocsRaw.match(/params\.brokerageId/g) ?? []).length >
+      (txnDocs.match(/params\.brokerageId/g) ?? []).length)
+  check("control · decideClaimedTenant would ADMIT a foreign id if the comparison were dropped",
+    // Mirror of the rule with the mismatch arm removed — proves the refusal above is
+    // the comparison doing work, not a constant.
+    (() => {
+      const naive = (acting: string | null, claimed?: string | null) =>
+        acting ? { ok: true, brokerageId: claimed ?? acting } : { ok: false }
+      return JSON.stringify(naive(OWN, FOREIGN)) !== JSON.stringify(decideClaimedTenant({ actingBrokerageId: OWN, claimedBrokerageId: FOREIGN }))
+    })())
 
   report()
 }

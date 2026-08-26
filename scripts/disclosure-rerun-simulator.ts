@@ -431,12 +431,20 @@ assert({
   },
   breaks: [
     // Anchored to the compliance_checklists payload specifically: the bare
-    // `brokerage_id: params.brokerageId,` line also appears in this file's
-    // transaction_tasks payload, and mutating THAT would leave the code under
-    // test untouched while still changing the file.
+    // `brokerage_id: …` line also appears in this file's transaction_tasks
+    // payload, and mutating THAT would leave the code under test untouched
+    // while still changing the file.
+    //
+    // The stamped VALUE changed on 2026-08-26 (`params.brokerageId` →
+    // `wc.brokerageId`) when every export in that file moved onto the act-as
+    // write seam and the caller's brokerageId became a verified claim rather
+    // than an input — see the header of app/actions/ai-transaction-documents.ts.
+    // S5's RULE is untouched: every write still has to stamp a tenant. Only this
+    // mutation ANCHOR follows the source, and it must, or the negative layer
+    // stops firing and this assertion silently becomes unprovable.
     {
       file: F.txnDocs,
-      find: `        brokerage_id: params.brokerageId,\n        checklist_type: "disclosures",`,
+      find: `        brokerage_id: wc.brokerageId,\n        checklist_type: "disclosures",`,
       replace: `        checklist_type: "disclosures",`,
     },
     { file: F.workflows, find: `          brokerage_id: brokerageId,\n`, replace: "" },

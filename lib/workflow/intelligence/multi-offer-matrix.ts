@@ -57,6 +57,29 @@ export interface MultiOfferMatrix {
   aiSummary:    string                       // 3-paragraph plain-English rec for the seller
 }
 
+/**
+ * TENANCY — AUDITED 2026-08-26, NOT A DEFECT. Recorded so it is not re-flagged.
+ *
+ * The shape ("tenant read off a row on the SERVICE client, keyed by a caller-
+ * supplied id") was raised as a possible IDOR for both exports in this file. Every
+ * entry point gates on the SESSION first, and the tenant here is only ever used to
+ * scope this listing's/offer's own reads and to attribute the AI spend:
+ *
+ *   · buildMultiOfferMatrix ← app/dashboard/listings/[id]/offers/components/
+ *     multi-offer-matrix-card.tsx, a server component rendered by
+ *     app/dashboard/listings/[id]/offers/page.tsx — which reads the listing on the
+ *     COOKIE (RLS) client and redirects when it resolves to nothing, so a foreign
+ *     listingId never reaches here. Also ← app/actions/negotiation-copilot.ts,
+ *     which loads the offer and its listing on the cookie client first and passes
+ *     `listing.id` from that row.
+ *   · buildCounterOfferDiff ← app/actions/counter-offer-diff.ts, which requires a
+ *     session and compares `users.brokerage_id` to `offers.brokerage_id`, refusing
+ *     "Forbidden" on a mismatch — gate-then-service, §4.
+ *
+ * Do not add a `brokerageId` parameter to either export: a caller-supplied tenant
+ * would be a second, weaker source of truth for the one the listing/offer row
+ * already carries. A NEW caller that takes an id from a request must gate there.
+ */
 export async function buildMultiOfferMatrix(input: {
   listingId: string
 }): Promise<MultiOfferMatrix> {

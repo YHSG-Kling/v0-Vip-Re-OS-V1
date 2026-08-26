@@ -144,6 +144,30 @@ Now classify this document content:
 
 `
 
+/**
+ * TENANCY — AUDITED 2026-08-26, NOT A DEFECT. Recorded so it is not re-flagged.
+ *
+ * The shape ("tenant taken from a row read on the SERVICE client, keyed by a
+ * caller-supplied id") was raised as a possible IDOR. It is not one, for two
+ * reasons that must both stay true:
+ *
+ *   1. This module is `server-only` and takes NO brokerageId. The tenant is
+ *      derived from the document's OWN row and is used only to (a) attribute the
+ *      AI spend and (b) write back to THAT SAME ROW. It never carries one
+ *      tenant's id onto another tenant's data — the direction §4 forbids.
+ *   2. Its callers gate FIRST and hand it a document they have already proved
+ *      access to. `lib/documents/upload-document.ts` scans the row it just
+ *      inserted; the surfaces that reach that uploader
+ *      (app/api/listings/[listingId]/upload-document/route.ts,
+ *      app/api/offers/[offerId]/upload-document/route.ts) each resolve the parent
+ *      on the session, compare `users.brokerage_id` to the parent's brokerage,
+ *      403 on a mismatch, and then pass the PARENT ROW'S brokerage_id — never a
+ *      body value. That is gate-then-service exactly as §4 prescribes.
+ *
+ * So: do not add a `brokerageId` parameter here. It would be a second, weaker
+ * source of truth for a tenant the row already carries. If a NEW caller ever
+ * accepts a documentId straight from a request, the gate belongs at that caller.
+ */
 export async function scanUploadedDocument(params: {
   documentId: string
   force?:     boolean
