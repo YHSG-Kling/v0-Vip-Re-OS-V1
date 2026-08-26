@@ -249,7 +249,6 @@
     "test:showing-feedback-routing",
     "test:signal-reaper",
     "test:silent-write",
-    "test:simulator-wiring",
     "test:social-approval",
     "test:social-cadence",
     "test:source-health",

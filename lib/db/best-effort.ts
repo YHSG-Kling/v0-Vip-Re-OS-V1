@@ -24,6 +24,34 @@
 // in the logs with its reason instead of vanishing. scripts/silent-write-guard.ts
 // enforces that writes to consequential tables (money, access, compliance) do
 // one or the other: check the error, or declare themselves here.
+//
+// ── NOT A DUPLICATE OF sentinelWrite. THE SPLIT IS A PRECONDITION, NOT TASTE ──
+// (adjudicated 2026-08-26 against the LIVE database; CLAUDE.md §1/§6)
+//
+// lib/kernel/write-sentinel.ts:sentinelWrite is the same idea spelled a second
+// way, and it looks strictly stronger: it reads the error AND ledgers every loss
+// to self_heal_events, where this only console.warns. §6 would normally end the
+// argument there — merge onto the stronger one, delete this. The usual objections
+// to that merge did NOT survive measurement: zero of this function's 60 call
+// sites read its `{ ok, error }` return, and its one unique idea — the `reason`
+// string — has been MERGED ONTO the sentinel (SentinelWriteContext.reason), so
+// nothing here is now inexpressible there.
+//
+// What keeps this file alive is the ledger's own RLS posture. `self_heal_events`
+// has RLS on and exactly one policy: SELECT, for `authenticated`. No INSERT policy
+// exists for any non-service role. sentinelWrite therefore only ledgers when it is
+// handed a SERVICE-ROLE client; handed a cookie-session client it is refused, and
+// recordSelfHeal swallows that refusal with `.then(() => {}, () => {})`. On a
+// user-scoped path the "stronger" wrapper is WEAKER than this one — a greppable
+// warning becomes silence. 17 of the 44 files calling bestEffort use a user-scoped
+// client for at least some of their writes.
+//
+// SO THE RULE, and it is a rule rather than a preference:
+//   · service-role client (createServiceClient / supabaseAdmin) → sentinelWrite.
+//   · user-scoped client (createClient / createServerClient)    → bestEffort.
+// A caller reaching for this function while holding a service client is choosing
+// the weaker instrument and should switch. This file's remaining job is the
+// narrow one no ledger can cover: the tolerated write made as the USER.
 
 export interface BestEffortResult {
   ok: boolean

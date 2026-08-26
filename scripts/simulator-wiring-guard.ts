@@ -31,7 +31,7 @@
  * everything the curated chain does not, so there is no unwired population left
  * to ration. See the [repo] section for what replaced it.
  */
-import { readFileSync, existsSync } from "node:fs"
+import { readFileSync, existsSync, readdirSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -78,6 +78,62 @@ export function unwiredSimulators(
   return out.sort()
 }
 
+/**
+ * ── THE OTHER DIRECTION, WHICH NOTHING ASSERTED ─────────────────────────────
+ *
+ * Everything above walks package.json OUTWARD: script → file. That direction
+ * catches a script whose file was deleted. It cannot catch the inverse, and the
+ * inverse is the one that actually happened.
+ *
+ * `simulator-sweep.ts` discovers its targets FROM package.json. So does the
+ * curated chain. A proof file with NO `test:*` script naming it is therefore
+ * invisible to BOTH runners — not "unwired and rationed", but outside the census
+ * entirely, which is worse than the population this guard was built to freeze.
+ * Eight of them were found this way (2026-08-26): batchdata-mcp,
+ * connector-gateway, connector-healer, dashboard-data-layer, intelligence-modules,
+ * migration-ledger-guard, portal-curation, scraper-normalizers. All eight were
+ * GREEN when finally run — but nothing in the repo knew that, and one of them
+ * (scraper-normalizers) is the only cover `lib/external/exa-intent-normalizer`
+ * has anywhere. They could equally have been red, for as long as they were wrong.
+ *
+ * So the rule, asserted rather than counted: EVERY proof file under scripts/ is
+ * named by at least one `test:*` script. The number of offenders is DERIVED — no
+ * baseline, no frozen count, nothing to go stale when the work finishes (§2:
+ * "do not pin an assertion to a WAYPOINT"). An exemption must be NAMED, with a
+ * REASON, in PROOF_FILE_EXEMPT below — and a stale exemption naming a file that
+ * no longer exists is itself a failure, because an exemption for nothing reads
+ * from the ✓ column as an invariant being enforced.
+ */
+export const PROOF_FILE_PATTERN = /-(guard|simulator)\.ts$/
+
+/**
+ * scripts/*.ts files that match PROOF_FILE_PATTERN but are deliberately NOT
+ * runnable proofs. Each entry must carry the reason it is not one. Empty is the
+ * correct state; it is a Record rather than a Set so no entry can be added
+ * without writing down why.
+ */
+export const PROOF_FILE_EXEMPT: Record<string, string> = {
+  // (empty — every proof file in scripts/ is currently named by a test:* script)
+}
+
+/** PURE — proof files under scripts/ that no `test:*` script names. */
+export function unrunnableProofFiles(
+  scripts: Record<string, string>,
+  proofFiles: string[],
+  exempt: Record<string, string>,
+): string[] {
+  const named = new Set<string>()
+  for (const [name, body] of Object.entries(scripts)) {
+    if (!name.startsWith("test:")) continue
+    for (const m of body.matchAll(/scripts\/([\w.-]+\.ts)/g)) named.add(m[1])
+  }
+  return proofFiles
+    .filter((f) => PROOF_FILE_PATTERN.test(f))
+    .filter((f) => !named.has(f))
+    .filter((f) => !(f in exempt))
+    .sort()
+}
+
 let passed = 0, failed = 0
 const failures: string[] = []
 const check = (n: string, c: boolean, d?: string) => {
@@ -103,6 +159,32 @@ console.log("\n[pure — the reachability walk]")
   check("flags an unwired script that has a real file", out.includes("test:orphan"))
   check("ignores one whose file does not exist", !out.includes("test:ghost"))
   check("ignores a wired script", !out.includes("test:wired"))
+}
+
+console.log("\n[pure — POSITIVE CONTROL for the file → script direction]")
+{
+  // §2: "Every absence assertion needs a POSITIVE CONTROL." Below, the repo run
+  // claims 0 unrunnable proof files. A broken finder claims 0 too. So the finder
+  // is handed the defect it exists to catch, and must still recognise it.
+  const s = {
+    "test:named":   "tsx scripts/named-simulator.ts",
+    "test:chained": "npm run test:named && tsx scripts/chained-guard.ts",
+    "build":        "next build",
+  }
+  const files = [
+    "named-simulator.ts",     // named directly
+    "chained-guard.ts",       // named inside a compound script body
+    "invisible-simulator.ts", // THE DEFECT: no test:* script names it
+    "excused-guard.ts",       // exempt, with a reason
+    "strip-comments.ts",      // not a proof file at all
+  ]
+  const out = unrunnableProofFiles(s, files, { "excused-guard.ts": "a reason" })
+  check("flags a proof file no test:* script names", out.includes("invisible-simulator.ts"))
+  check("accepts one named directly by a test:* script", !out.includes("named-simulator.ts"))
+  check("accepts one named inside a compound script body", !out.includes("chained-guard.ts"))
+  check("honours a NAMED exemption", !out.includes("excused-guard.ts"))
+  check("ignores a non-proof file in scripts/", !out.includes("strip-comments.ts"))
+  check("finds exactly the one defect planted", out.length === 1, out.join(", "))
 }
 
 console.log("\n[repo]")
@@ -166,6 +248,23 @@ const missingFile = Object.keys(pkg.scripts)
   })
 check(`every test:* script points at a file that exists (${missingFile.length} missing)`,
   missingFile.length === 0, missingFile.slice(0, 6).join(", "))
+
+// ── …and the inverse: every proof FILE is named by a script ────────────────
+const scriptDirFiles = readdirSync(join(root, "scripts")).filter((f) => f.endsWith(".ts"))
+const proofFiles = scriptDirFiles.filter((f) => PROOF_FILE_PATTERN.test(f))
+const unrunnable = unrunnableProofFiles(pkg.scripts, scriptDirFiles, PROOF_FILE_EXEMPT)
+const exemptNames = Object.keys(PROOF_FILE_EXEMPT)
+const staleExempt = exemptNames.filter((f) => !scriptDirFiles.includes(f))
+
+console.log(
+  `  · ${proofFiles.length} proof files in scripts/ (${PROOF_FILE_PATTERN.source})` +
+  ` · ${exemptNames.length} exempt · ${unrunnable.length} named by no test:* script`,
+)
+for (const [f, why] of Object.entries(PROOF_FILE_EXEMPT)) console.log(`      exempt: ${f} — ${why}`)
+check(`every proof file in scripts/ is named by a test:* script (${unrunnable.length} invisible to both runners)`,
+  unrunnable.length === 0, unrunnable.slice(0, 8).join(", "))
+check(`every exemption names a file that still exists (${staleExempt.length} stale)`,
+  staleExempt.length === 0, staleExempt.join(", "))
 
 console.log("\n──────────────────────────────────────────────────")
 console.log(` RESULT: ${passed} passed, ${failed} failed`)
