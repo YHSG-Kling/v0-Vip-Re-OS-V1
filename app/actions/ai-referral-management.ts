@@ -8,6 +8,10 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
+// THE SPEND ACTOR — SESSION, never `params.agentId` (§4). This file already
+// resolves it this way further down; hoisted to a static import so the AI
+// ledger's tenant has one provenance in this module, not two.
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { SPHERE_CONTACT_TYPES } from "@/lib/contact-types"
 
 // ============================================
@@ -152,15 +156,39 @@ Identify:
 }
 
 /**
- * AI-powered referral request generation
+ * AI-powered referral request generation.
+ *
+ * §6 — ONE VOCABULARY. This took `"email" | "text" | "call_script"` and wrote
+ * those literals straight onto `activities.channel`. That column has NO CHECK
+ * (verified live: pg_constraint returns zero rows of contype 'c' for
+ * `activities`), so nothing was refused — which is precisely the §6 defect: the
+ * writes landed and no scorer could match them. Every other writer and reader of
+ * this column spells the same two ideas `"sms"` and `"voice"`:
+ *   writers — app/actions/instant-property-alerts.ts ("sms"),
+ *             app/actions/voice-assistant.ts + app/api/contacts/[contactId]/voice-note
+ *             ("voice"), lib/communications/send-invitation.ts ("email"|"sms"),
+ *             lib/notifications/notify-helpers.ts ("email"|"in_app")
+ *   readers — lib/kernel/conversation-memory.ts:242 (the context spine),
+ *             lib/ai-isa/generate-handoff-brief.ts:174 (the channel hint),
+ *             lib/kernel/communications.ts (the unified inbox lanes: "sms" /
+ *             "email" / "voice" / "portal" / "chat"),
+ *             lib/agent-orchestration/action-plan-generator.ts:352
+ * so "text" and "call_script" were a second spelling of "sms" and "voice" and
+ * are merged onto them here. `call_script` was never a channel at all — it is the
+ * FORMAT of the draft; the channel it is drafted for is voice, and the format is
+ * carried by `activity_type` + `metadata.draft_format` instead.
+ * NOTHING TO BACKFILL: activities.channel is NULL on all 24 live rows, so this
+ * merge cannot orphan an existing value.
  */
 export async function generateReferralRequest(params: {
   contactId: string
   agentId: string
-  channel: "email" | "text" | "call_script"
+  channel: "email" | "sms" | "voice"
   context?: string
 }) {
   try {
+    // Tenant for the AI cost ledger — SESSION, never `params.agentId` (§4).
+    const spendActor = await getAgentContext()
     const supabase = await createClient()
 
     // BOTH embeds here were ambiguous, so PostgREST refused the WHOLE request with
@@ -205,6 +233,12 @@ export async function generateReferralRequest(params: {
       .eq("id", params.agentId)
       .single()
 
+    // The FORMAT of the draft, which is what the prompt needs and what the human
+    // reads — distinct from the CHANNEL it is filed under (see the §6 note on this
+    // function). A voice channel's draft is a call script; that is a format, not a
+    // second channel name.
+    const draftFormat = params.channel === "voice" ? "call script" : params.channel === "sms" ? "text message" : "email"
+
     const { text: referralRequest } = await generateText({
       model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       prompt: `Generate a personalized referral request for:
@@ -216,19 +250,19 @@ Transaction History: ${contact.transactions?.map((t: any) => t.property_address)
 Past Referrals: ${contact.referrals?.length || 0}
 Last Interaction: ${contact.last_contacted_at}
 
-Channel: ${params.channel}
+Channel: ${draftFormat}
 ${params.context ? `Context: ${params.context}` : ''}
 
-Generate a ${params.channel === 'call_script' ? 'call script' : params.channel} that:
+Generate a ${draftFormat} that:
 1. Feels personal and genuine, not salesy
 2. References your shared history
 3. Makes it easy to refer (specific ask)
 4. Offers value in return (market update, etc.)
-5. Is appropriate length for ${params.channel}
+5. Is appropriate length for ${draftFormat}
 
 ${params.channel === 'email' ? 'Include subject line.' : ''}
-${params.channel === 'text' ? 'Keep under 300 characters.' : ''}
-${params.channel === 'call_script' ? 'Include talking points and responses to common objections.' : ''}`,
+${params.channel === 'sms' ? 'Keep under 300 characters.' : ''}
+${params.channel === 'voice' ? 'Include talking points and responses to common objections.' : ''}`,
     })
 
     // Log the referral request. pass 14: referral_requests was a PHANTOM table —
@@ -238,10 +272,10 @@ ${params.channel === 'call_script' ? 'Include talking points and responses to co
       contact_id: params.contactId,
       activity_type: "referral_request_draft",
       channel: params.channel,
-      title: `Referral ask drafted (${params.channel})`,
+      title: `Referral ask drafted (${draftFormat})`,
       description: referralRequest.slice(0, 2000),
       status: "pending",
-      metadata: { ai_generated: true, requested_by: params.agentId },
+      metadata: { ai_generated: true, requested_by: params.agentId, draft_format: draftFormat },
     })
     // The activities row IS the draft's storage (referral_requests was a phantom
     // table, per the note above). If it was rejected the draft returned below

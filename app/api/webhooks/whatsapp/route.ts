@@ -163,15 +163,32 @@ async function handleInboundWhatsapp(params: {
     const byPhone = new Set(phoneCandidates.map((c) => c.brokerage_id)).size === 1 ? phoneCandidates : []
     if (byPhone.length > 0) {
       contactId = byPhone[0].id
-      // Backfill the WhatsApp ID into metadata for future direct matching
+      // Backfill the WhatsApp ID into metadata for future direct matching.
+      //
+      // 🐛 READ-MERGE-WRITE, NOT A BARE WRITE. `.update({ metadata: {...} })`
+      // REPLACES the whole jsonb column — Postgres has no partial-object update
+      // through PostgREST — so the previous spelling here destroyed every sibling
+      // key on the contact. The keys this column actually carries are written by
+      // lib/kernel/conversation-memory.ts (context_spine),
+      // lib/kernel/warm-handoff-runner.ts (warm_handoff),
+      // app/actions/smart-insights.ts (commute_destinations) and
+      // app/actions/portal-lifetime.ts (relocated_welcome) — a WhatsApp message
+      // from a known contact silently wiped their running context summary, the
+      // agent's handoff brief, their saved commutes and their welcome draft, and
+      // the wipe is unrecoverable because none of those writers keeps a copy.
+      // SURVIVOR PATTERN: lib/kernel/conversation-memory.ts:310 — select the
+      // current metadata, spread it, overwrite the ONE key. Same spelling here.
+      const { data: waCur } = await svc.from("contacts").select("metadata").eq("id", contactId).maybeSingle()
+      const waMetadata = {
+        ...(((waCur as any)?.metadata ?? {}) as Record<string, any>),
+        whatsapp_id: params.senderWaId,
+      }
       // The error is READ. A refused backfill means every later WhatsApp message
       // from this number re-runs the fuzzy phone match instead of matching
       // directly — silently, and forever.
       const { error: waBackfillError } = await svc
         .from("contacts")
-        .update({
-          metadata: { whatsapp_id: params.senderWaId },
-        })
+        .update({ metadata: waMetadata })
         .eq("id", contactId)
       if (waBackfillError) {
         console.error(`[whatsapp] whatsapp_id backfill REFUSED for contact ${contactId}:`, waBackfillError.message)

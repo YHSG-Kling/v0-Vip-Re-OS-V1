@@ -213,7 +213,7 @@ export default function LifetimeCustomersPage() {
 
   // Referral script generator dialog
   const [referralScriptContactId, setReferralScriptContactId] = useState<string | null>(null)
-  const [referralScriptChannel, setReferralScriptChannel] = useState<"email" | "text" | "call_script">("email")
+  const [referralScriptChannel, setReferralScriptChannel] = useState<"email" | "sms" | "voice">("email")
   const [referralScriptOpen, setReferralScriptOpen] = useState(false)
 
   // Priority sub-tab within the Relationship Feed
@@ -490,7 +490,7 @@ export default function LifetimeCustomersPage() {
         setTouchpointDraft((result as any).referralRequest)
         setTouchpointDialogTitle(
           referralScriptChannel === "email" ? "Referral Ask — Email Script"
-          : referralScriptChannel === "text" ? "Referral Ask — Text Message"
+          : referralScriptChannel === "sms" ? "Referral Ask — Text Message"
           : "Referral Ask — Call Script"
         )
         setTouchpointDialogOpen(true)
@@ -2145,15 +2145,21 @@ export default function LifetimeCustomersPage() {
                 <label className="text-sm font-medium">Channel</label>
                 <Select
                   value={referralScriptChannel}
-                  onValueChange={(v) => setReferralScriptChannel(v as "email" | "text" | "call_script")}
+                  onValueChange={(v) => setReferralScriptChannel(v as "email" | "sms" | "voice")}
                 >
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
+                    {/* §6 — the VALUES are the canonical activities.channel
+                        vocabulary ("email"/"sms"/"voice"); the LABELS stay the
+                        agent-facing words. "text"/"call_script" were a second
+                        spelling and are gone — see the note on
+                        generateReferralRequest in
+                        app/actions/ai-referral-management.ts. */}
                     <SelectItem value="email">Email</SelectItem>
-                    <SelectItem value="text">Text Message</SelectItem>
-                    <SelectItem value="call_script">Call Script</SelectItem>
+                    <SelectItem value="sms">Text Message</SelectItem>
+                    <SelectItem value="voice">Call Script</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

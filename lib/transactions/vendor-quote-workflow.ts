@@ -274,20 +274,42 @@ export async function declineQuote(params: {
 }) {
   const supabase = createServiceClient()
   
-  // Mark activity declined. A .update() that matches nothing ALSO resolves
-  // clean, so read the error at minimum — a wrong activityId here leaves the
-  // quote task sitting open while the caller is told the decline worked.
-  const { error: declineUpdateError } = await supabase
+  // Mark activity declined.
+  //
+  // 🐛 READING THE ERROR IS NOT ENOUGH HERE. A .update() that matches NOTHING
+  // also resolves with `error: null` and an empty result — byte-identical to one
+  // that worked — so a stale or wrong-tenant activityId left the quote task
+  // sitting OPEN while this returned { success: true }, and then went on to log a
+  // "quote.declined" lifecycle event and open a get_alternative_quote task for a
+  // decline that never happened. The predicate IS the thing being asserted, so
+  // the affected-row count is the only honest signal.
+  // SURVIVOR PATTERN: lib/kernel/crm.ts::archiveContactRecord (~line 981).
+  // ZERO ROWS IS A FAILURE AT THIS SITE (the caller's call, per §3): the whole
+  // point of the command is to close that one task, and leaving it open while
+  // reporting success is the defect. Contrast the subscription-cancel path in
+  // app/actions/superadmin/brokerage-management.ts, where an already-cancelled
+  // row IS the desired outcome.
+  const { data: declinedRows, error: declineUpdateError } = await supabase
     .from("activities")
     .update({
       status: "cancelled",
       completed_at: new Date().toISOString()
     })
     .eq("id", params.activityId)
+    .eq("brokerage_id", params.brokerageId)
+    .select("id")
   if (declineUpdateError) {
     console.error(`[vendor-quote-workflow] declining activity ${params.activityId} REJECTED — the quote task stays open:`, declineUpdateError.message)
+    return { success: false, error: `The quote task could not be closed: ${declineUpdateError.message}` }
   }
-  
+  if (!(declinedRows ?? []).length) {
+    // Deliberately does not distinguish "does not exist" from "not yours" — that
+    // difference is an id-enumeration oracle across tenants (same ruling as
+    // archiveContactRecord). Nothing downstream runs: no lifecycle event and no
+    // follow-up task for a decline that did not take.
+    return { success: false, error: "Quote task not found, already closed, or not yours to decline" }
+  }
+
   // Log event via kernel
   await transitionLifecycle({
     brokerageId: params.brokerageId,

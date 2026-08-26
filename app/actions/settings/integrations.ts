@@ -223,7 +223,15 @@ export async function upsertPlatformCredential(params: {
     }
   }
 
-  // Owner-keyed update-or-insert (unique key is (owner_type, owner_id, platform)).
+  // Owner-keyed update-or-insert. The unique key is (owner_type, owner_id,
+  // platform) and it is REAL — VERIFIED LIVE, not assumed: m104 created it as
+  // `platform_credentials_owner_uniq`, a PARTIAL UNIQUE INDEX
+  // `WHERE owner_type IS NOT NULL`, and a duplicate insert is refused with 23505.
+  // It is spelled out here because it lives in pg_index and NOT in pg_constraint:
+  // a check that dumps pg_constraint for this table sees only the two FKs and the
+  // three CHECKs, reads the key as absent, and reports this comment as a lie. It
+  // is not. A concurrent OAuth callback racing this read-then-write cannot
+  // duplicate the credential — the second writer gets 23505, not a second row.
   const credRow = {
     brokerage_id:  brokerageId,
     owner_type:    "brokerage",

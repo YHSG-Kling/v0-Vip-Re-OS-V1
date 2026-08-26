@@ -1527,13 +1527,38 @@ export async function recalculateCommissionStateCommand(params: {
     // command returned { success: true } with freshly computed grossCommission /
     // agentNet / brokerageNet whatever the write did, so a refusal handed the
     // caller a recalculation that exists only in memory.
+    //
+    // 🐛 IDENTITY CLASS ON recipient_id — RESOLVED FROM THE READERS, NOT GUESSED.
+    // This wrote `params.agentId`, which the m343 note at the top of this command
+    // says is a USERS id. `transaction_commissions.recipient_id` has NO foreign
+    // key (live pg_constraint on the table carries only tc_transaction_id_fkey
+    // and the brokerage FK), so nothing in the database pins the class and no
+    // error was ever raised — the wrong id just sat on the seven-year deal stamp.
+    // THE READERS SETTLE IT, and they are unanimous that for
+    // recipient_type = 'agent' this is an AGENTS id:
+    //   · lib/commission/ledger-sync.ts:152 syncStampToAgentLedger matches
+    //     `agent_commissions.agent_id` (a live FK → agents(id)) against
+    //     stamp.recipient_id;
+    //   · lib/commission/ledger-sync.ts:188 syncAgentLedgerToStamp writes back
+    //     `.eq("recipient_id", ledger.agent_id)` from that same agents-class
+    //     column;
+    //   · that file's own header (line 36) states the rule: "recipient_id →
+    //     agents(id) in practice, NO FK".
+    // agents.id and users.id are DISJOINT (§3), so a users id here matched NO
+    // agent_commissions row: every STAMP → PAYABLE sync silently synced 0 rows
+    // and the two commission ledgers could never agree — the exact divergence
+    // ledger-sync.ts was written to prevent. `agentRecordId` is already resolved
+    // at the top of this command through lib/kernel/agent-identity-resolver.ts.
+    if (!agentRecordId) {
+      return { success: false, error: "No agents record resolves for this user in this brokerage — the commission stamp was NOT written rather than stamped with an id no reader can match" }
+    }
     const { error: stampError } = await supabase.from("transaction_commissions").upsert([
       {
         transaction_id:    params.transactionId,
         brokerage_id:      params.brokerageId,
         recipient_type:    "agent",
         recipient_name:    "Agent",
-        recipient_id:      params.agentId,
+        recipient_id:      agentRecordId,
         commission_type:   "commission_split",
         rate_percentage:   splitPercent,
         calculated_amount: agentNet,

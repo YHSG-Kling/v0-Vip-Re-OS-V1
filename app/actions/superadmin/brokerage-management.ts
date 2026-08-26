@@ -309,6 +309,38 @@ export async function changeBrokerageTierAction(params: {
     details:     { previous_tier: previousTier, new_tier: params.newTier, reason: params.reason ?? null, stripe_applied: stripeApplied, stripe_error: stripeError ?? null },
   })
 
+  // BUILT (orphan doctrine §1.2 — no duplicate existed, the capability is wanted).
+  // lib/kernel/events.ts:407 SUBSCRIPTION_UPGRADED and :408 SUBSCRIPTION_DOWNGRADED
+  // were declared in the enum and emitted by NOBODY — two lifecycle states with a
+  // reader (lib/kernel/emit.ts:59 emitKernelEvent → lifecycle_events + the reactor's
+  // notification / marketing-trigger / sequence fan-out) and no writer at all, while
+  // events.ts:9 states the rule this file was breaking: "every lifecycle state
+  // transition maps to exactly one KernelEvent". A tier change is that transition, and
+  // until now only superadmin_audit_log ever heard about it — a ledger no reactor reads.
+  //
+  // DIRECTION IS DERIVED, NOT TYPED. CANONICAL_TIERS is ordered smallest → largest, so
+  // the rank comparison stays correct if a tier is ever inserted; a hardcoded pair list
+  // would be a waypoint assertion (CLAUDE.md §2) that silently mis-labels the new tier.
+  // Best-effort, exactly as the SUBSCRIPTION_CREATED emit at
+  // app/actions/auth/signup-brokerage.ts:465 — a fan-out failure must not undo a tier
+  // change that already landed in brokerages, subscriptions and Stripe.
+  try {
+    const { emitKernelEvent } = await import("@/lib/kernel/emit")
+    const { KernelEvent } = await import("@/lib/kernel/events")
+    const { CANONICAL_TIERS, toPlanTier } = await import("@/lib/billing/plan-tier")
+    const rank = (t: string) => (CANONICAL_TIERS as readonly string[]).indexOf(toPlanTier(t))
+    const goingUp = rank(params.newTier) > rank(previousTier)
+    await emitKernelEvent({
+      event:      goingUp ? KernelEvent.SUBSCRIPTION_UPGRADED : KernelEvent.SUBSCRIPTION_DOWNGRADED,
+      brokerageId: params.brokerageId,
+      entityType: "brokerage",
+      entityId:   params.brokerageId,
+      metadata:   { previous_tier: previousTier, new_tier: params.newTier, reason: params.reason ?? null, changed_by: auth.userId, stripe_applied: stripeApplied },
+    })
+  } catch (err) {
+    console.warn("[changeBrokerageTierAction] tier lifecycle event emit failed:", (err as any)?.message)
+  }
+
   revalidatePath(`/dashboard/superadmin/brokerages/${params.brokerageId}`)
   revalidatePath("/dashboard/superadmin/brokerages")
   return { ok: true, previousTier, stripeApplied, stripeError }
@@ -409,7 +441,12 @@ export async function cancelBrokerageAction(params: {
     return { ok: false, error: "Cancellation reason required (5+ chars)" }
   }
   const svc = createServiceClient()
-  const { error } = await svc
+  // A .update() matching NOTHING resolves with error null — a non-existent (or
+  // already-archived-away) brokerageId cancelled nothing and still reported ok,
+  // then went on to audit "brokerage.cancelled" for a tenant that was never
+  // touched. `.select()` makes the affected row observable.
+  // SURVIVOR PATTERN: lib/kernel/crm.ts::archiveContactRecord (~line 981).
+  const { data: cancelledBrokerages, error } = await svc
     .from("brokerages")
     .update({
       status:       "cancelled",
@@ -417,7 +454,11 @@ export async function cancelBrokerageAction(params: {
       updated_at:   new Date().toISOString(),
     })
     .eq("id", params.brokerageId)
+    .select("id")
   if (error) return { ok: false, error: error.message }
+  if (!(cancelledBrokerages ?? []).length) {
+    return { ok: false, error: "No such brokerage — nothing was cancelled" }
+  }
 
   // Cancel through to Stripe (at period end) so billing actually stops — not just the local row.
   const { data: subs } = await svc.from("subscriptions").select("id, stripe_subscription_id").eq("brokerage_id", params.brokerageId).in("status", ["active", "trialing", "past_due", "paused"])
@@ -438,12 +479,35 @@ export async function cancelBrokerageAction(params: {
   // THE PAYWALL WRITE. This is the line the silent-write guard's header is
   // about: a cancelled tenant whose subscription row keeps its old status is a
   // tenant the paywall still lets in. It reported ok whatever happened.
-  const { error: cancelError } = await svc.from("subscriptions")
+  //
+  // 🐛 THE PREDICATE IS THE AUTHORIZATION, SO THE ROW COUNT IS THE OUTCOME.
+  // `.eq(brokerage_id).in(status, [...])` matching NOTHING resolves with
+  // `error: null` — byte-identical to a paywall write that landed. Reading the
+  // error alone therefore could not tell "no open subscription to cancel" from
+  // "the open subscription was NOT closed and the tenant still has paid access",
+  // which is exactly the failure the comment above is about.
+  // SURVIVOR PATTERN: lib/kernel/crm.ts::archiveContactRecord (~line 981).
+  // ZERO ROWS IS NOT UNIFORMLY A FAILURE HERE (the caller's call, per §3): a
+  // tenant with no open subscription is already where cancel wants them. What is
+  // NOT acceptable is `subs` above finding open rows with the SAME predicate and
+  // this write then matching none of them — that is the silent fail-open. The two
+  // reads share one predicate, so comparing the counts separates the cases.
+  const openSubCount = ((subs ?? []) as any[]).length
+  const { data: cancelledSubs, error: cancelError } = await svc.from("subscriptions")
     .update({ status: "cancelled", cancelled_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq("brokerage_id", params.brokerageId)
     .in("status", ["active", "trialing", "past_due", "paused"])
+    .select("id")
   if (cancelError) {
     return { ok: false, error: `Brokerage marked cancelled but the subscription row was NOT — the tenant may still have paid access: ${cancelError.message}`, stripeApplied, stripeError }
+  }
+  if (openSubCount > 0 && (cancelledSubs ?? []).length === 0) {
+    return {
+      ok: false,
+      error: `Brokerage marked cancelled but ${openSubCount} open subscription row(s) were NOT closed — the tenant may still have paid access`,
+      stripeApplied,
+      stripeError,
+    }
   }
 
   await writeAuditLog({
@@ -505,9 +569,21 @@ export async function pauseSubscriptionAction(params: { brokerageId: string; pau
 
   // paused/active is an ACCESS state, not just a billing one. Reported ok
   // regardless, a refusal left the tenant on whichever side they were already on.
-  const { error: pauseError } = await svc.from("subscriptions").update({ status: params.pause ? "paused" : "active", updated_at: new Date().toISOString() }).eq("id", (sub as any).id)
+  //
+  // 🐛 AND SO DID A ZERO-ROW MATCH. The row was read a line above and written
+  // here by id; between the two an RLS refusal or a deleted row makes the write
+  // match nothing, which resolves with `error: null` and is byte-identical to a
+  // pause that took. ZERO ROWS IS A FAILURE AT THIS SITE (the caller's call, per
+  // §3): the id came from a read that just succeeded, so nothing legitimate
+  // makes it match nothing, and the operator must not be told a tenant's access
+  // was flipped when it was not.
+  // SURVIVOR PATTERN: lib/kernel/crm.ts::archiveContactRecord (~line 981).
+  const { data: pausedRows, error: pauseError } = await svc.from("subscriptions").update({ status: params.pause ? "paused" : "active", updated_at: new Date().toISOString() }).eq("id", (sub as any).id).select("id")
   if (pauseError) {
     return { ok: false, error: `Could not ${params.pause ? "pause" : "resume"} the subscription: ${pauseError.message}` }
+  }
+  if (!(pausedRows ?? []).length) {
+    return { ok: false, error: `The subscription was NOT ${params.pause ? "paused" : "resumed"} — the row matched nothing on write; the tenant's access is unchanged` }
   }
   const stripeApplied = (await stripePauseCollection((sub as any).stripe_subscription_id, params.pause)).applied
 

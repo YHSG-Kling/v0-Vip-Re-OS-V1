@@ -1,7 +1,9 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { bestEffort } from "@/lib/db/best-effort"
+// `bestEffort` import REMOVED with the dead try/catch fallback in
+// analyzeConversation (see the tombstone at the leads/contacts recency stamp
+// below). SURVIVOR for that call: the affected-row count on the update itself.
 import { generateAIJSON } from "@/lib/ai"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { LIFETIME_CONTACT_TYPES } from "@/lib/contact-types"
@@ -1274,30 +1276,55 @@ Provide ACTIONABLE coaching. Respond with JSON:
     const leadTemperature =
       result.dealProbability >= 70 ? "hot" : result.dealProbability >= 40 ? "warm" : "cold"
 
-    try {
-      await supabase
-        .from("leads")
-        .update({
-          lead_temperature: leadTemperature,
-          last_contacted_at: new Date().toISOString(),
-        })
+    // 🐛 THE FALLBACK WAS WIRED TO A CONDITION THAT CANNOT HAPPEN.
+    // This was `try { leads.update } catch { contacts.update }` with the comment
+    // "Try contacts table if leads doesn't exist". supabase-js RESOLVES a refused
+    // write — a missing table, a missing row and an RLS refusal all come back as
+    // `{ data, error }`, never as a throw — so the catch never ran for the case it
+    // named and the contacts fallback was DEAD. `data.leadId` may be a leads.id OR
+    // a contacts.id (the tenant anchor above says so and asks both tables in turn),
+    // so the intent was real and only the condition was wrong: the observable
+    // signal is the AFFECTED ROW COUNT, not an exception.
+    // SURVIVOR PATTERN: lib/kernel/crm.ts::archiveContactRecord (~line 981) —
+    // `.select()` the update and COUNT what came back.
+    const recencyStamp = new Date().toISOString()
+    const { data: leadTempRows, error: leadTempError } = await supabase
+      .from("leads")
+      .update({
+        lead_temperature: leadTemperature,
+        last_contacted_at: recencyStamp,
+      })
+      .eq("id", data.leadId)
+      .select("id")
+    if (leadTempError) {
+      console.error("[ai-predictions] analyzeConversation: leads temperature write refused:", leadTempError.message)
+    }
+    // Zero rows is NOT a failure here — it is the "else contacts" the comment
+    // always meant. Only a leads row that does not exist reaches contacts.
+    // ONLY THE RECENCY STAMP CROSSES OVER, deliberately: the dead branch wrote
+    // last_contacted_at and nothing else, and this lane is wiring the CONDITION,
+    // not widening the write. (`contacts.lead_temperature` does exist — verified
+    // live against information_schema, so PGRST204 is not the reason; mirroring
+    // the temperature onto contacts would be a behaviour change and belongs to
+    // whoever owns that column's writers, not here.)
+    if (!leadTempError && (leadTempRows ?? []).length === 0) {
+      const { data: contactStampRows, error: contactStampError } = await supabase
+        .from("contacts")
+        .update({ last_contacted_at: recencyStamp })
         .eq("id", data.leadId)
-    } catch (e) {
-      // ⚠ THIS BRANCH IS UNREACHABLE FOR THE CASE IT WAS WRITTEN FOR. supabase-js
-      // RESOLVES a refused write — a missing table, a missing row, an RLS refusal
-      // all come back as `{ error }` — so the `leads` update above never throws
-      // for "leads doesn't exist" and this fallback never runs on it. Left in
-      // place and NOT rewired here (that is a behaviour change, not a silent-write
-      // fix); recorded so the owner can decide. See the lane report.
-      await bestEffort(
-        supabase
-          .from("contacts")
-          .update({
-            last_contacted_at: new Date().toISOString(),
-          })
-          .eq("id", data.leadId),
-        "recency stamp on the fallback branch of an AI-prediction write-back; the prediction itself is already persisted and this branch is only reached on a THROWN client error",
-      )
+        .select("id")
+      if (contactStampError) {
+        console.error(
+          "[ai-predictions] analyzeConversation: contacts recency stamp refused:",
+          contactStampError.message,
+        )
+      } else if ((contactStampRows ?? []).length === 0) {
+        // Neither table owns this id. The prediction itself is already persisted
+        // above; say so rather than reporting a recency stamp that landed nowhere.
+        console.error(
+          `[ai-predictions] analyzeConversation: ${data.leadId} matched no row in leads OR contacts — no recency stamp was written`,
+        )
+      }
     }
 
     // Create AI insight for immediate actions
