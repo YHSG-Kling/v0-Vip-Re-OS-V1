@@ -16,7 +16,21 @@ import { tourRecapBrief, pickStandout } from "../lib/kernel/client-story-drafts"
 
 let pass = 0, fail = 0
 const fails: string[] = []
-const check = (n: string, c: boolean) => { if (c) { pass++; console.log(`  ✓ ${n}`) } else { fail++; fails.push(n); console.log(`  ✗ ${n}`) } }
+// THE OPTIONAL `detail` IS NOT COSMETIC, and it is why this signature widened.
+// The de-pinned tour_stops assertions below PARSE the select list out of the
+// source instead of matching a frozen literal, so when one fails the only useful
+// thing to print is the list they actually found — without it the failure says
+// "the recap read names the WRITTEN columns" and nothing about which column went
+// missing. Two of them were already passing it; this file's local `check` took
+// two parameters, so `tsc --noEmit` failed the whole chain with TS2554 while every
+// individual guard run stayed green (a guard invoked by tsx does not type-check
+// itself). Widened to match the convention at scripts/silent-write-guard.ts:49
+// rather than dropping the argument, because deleting the diagnostic to satisfy
+// the compiler would trade a real failure message for a green build.
+const check = (n: string, c: boolean, detail?: string) => {
+  if (c) { pass++; console.log(`  ✓ ${n}`) }
+  else { fail++; fails.push(n + (detail ? ` — ${detail}` : "")); console.log(`  ✗ ${n}${detail ? ` — ${detail}` : ""}`) }
+}
 
 function main() {
   console.log("\n[Post-tour verdict → learning signal (the strongest taste signal we get)]")
