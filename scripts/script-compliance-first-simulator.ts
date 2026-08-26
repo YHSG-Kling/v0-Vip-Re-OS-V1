@@ -92,7 +92,21 @@ const STUBS: Record<string, string> = {
   "@/lib/kernel/compliance":
     "export const evaluateOutbound = (...a) => globalThis.__SCF.evaluateOutbound(...a)",
   "@/lib/kernel/agent-identity":
-    "export const resolveAgentIdInBrokerage = (...a) => globalThis.__SCF.resolveAgentIdInBrokerage(...a)",
+    "export const resolveAgentIdInBrokerage = (...a) => globalThis.__SCF.resolveAgentIdInBrokerage(...a)\n" +
+    // BOTH resolvers must be stubbed, not just the one this gate calls directly.
+    // The act-as seam merge gave lib/platform/acting-context.ts an FK-safe
+    // `resolveAgentId` fallback, and this simulator reaches that module
+    // transitively: script-compliance -> compliance-monitoring -> lib/identity ->
+    // acting-context. A stub module that omits an export the real module HAS
+    // (agent-identity.ts:43) throws at import time, and the failure surfaced
+    // three layers away as nine assertions about fair-housing verdicts.
+    //
+    // Worth recording WHY that was hard to read: the gate FAILED CLOSED exactly
+    // as §4 demands — it could not run the phrase scan, so it returned `unknown`
+    // and escalated to a human — so the symptom was "a clean script summons a
+    // reviewer", which looks like a compliance defect and is actually a missing
+    // stub export. The nine failures were one cause.
+    "export const resolveAgentId = (...a) => globalThis.__SCF.resolveAgentId(...a)",
 }
 
 registerHooks({
@@ -188,6 +202,11 @@ function query(resolve: () => Promise<Answer>): any {
   }),
   evaluateOutbound: async () => W.evaluate(),
   resolveAgentIdInBrokerage: async () => "agent-uuid-1",
+  // Same agents.id the brokerage-scoped resolver yields, because in this
+  // scenario there is one agent and both resolvers are asking the same question
+  // — a different value here would be inventing a second identity the scenario
+  // never set up. Real signature is (supabase, userId) => Promise<string|null>.
+  resolveAgentId: async () => "agent-uuid-1",
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
