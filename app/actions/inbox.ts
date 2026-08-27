@@ -12,6 +12,18 @@
  *   5. Return plain serializable result
  *
  * Import from this file — never from lib/kernel/communications directly in client components.
+ *
+ * ─── TOMBSTONE (orphan doctrine §1.1, lane BT 2026-08-27) ────────────────────
+ * app/api/inbox/messages/route.ts DELETED. It was a session-gated HTTP door
+ * (GET load / POST reply) onto the same two kernel commands, with ZERO callers:
+ * no mention of "/api/inbox/messages" anywhere in first-party source (verified
+ * on comment-stripped source, positive-controlled finder), no secret lane for an
+ * out-of-process caller (cookie session only — unlike /api/errors/collect,
+ * which stays for exactly that reason), and no vercel.json / CRON_REGISTRY /
+ * provider-console shape. SURVIVOR: getInboxMessages / sendInboxMessage in THIS
+ * file — a strict superset of the deleted handlers (adds leadId/party filters
+ * and the agents-table brokerage_id fallback the route lacked), wired to
+ * app/dashboard/communications/inbox/InboxClient.tsx.
  */
 
 import { createClient } from "@/lib/supabase/server"

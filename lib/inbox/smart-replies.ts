@@ -107,6 +107,17 @@ const FALLBACK_REPLIES: (input: BuildContextInput) => SmartReply[] = (input) => 
   ]
 }
 
+// ─── TOMBSTONE (orphan doctrine §1.1, lane BT 2026-08-27) ────────────────────
+// app/api/inbox/smart-replies/route.ts DELETED. It was a session-gated HTTP
+// door onto THIS function with ZERO callers: no mention of
+// "/api/inbox/smart-replies" anywhere in first-party source (comment-stripped,
+// positive-controlled finder), cookie-session auth only (no secret lane an
+// out-of-process caller could use). SURVIVOR: this function — it keeps every
+// capability the route exposed (channel / contactName / contactType /
+// recentThread / tenant-routed spend booking) — reached in product via
+// app/actions/ai-tools-hub.ts:generateSmartReply (the smart_reply tool, which
+// books the spend on its own ai_tool_usage row). A future inbox-UI caller
+// should call this function through a server action, not resurrect the door.
 export async function generateSmartReplies(
   input: BuildContextInput,
 ): Promise<{ replies: SmartReply[]; usage: SmartReplyUsage }> {

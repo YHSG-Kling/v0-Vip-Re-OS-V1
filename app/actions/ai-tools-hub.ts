@@ -213,9 +213,10 @@ export async function executeAITool(
   // KNOWN RESIDUE, named rather than hidden: a run whose lane reports no usage
   // (`lane_reports_no_usage`) really did call a model, and books 0 here because
   // there is no honest figure to book. Those tokens reach no rail at all. The
-  // fix belongs in the lane — lib/inbox/smart-replies.ts calls
-  // generateObjectRouted with no tenant, so its spend is unledgered AND
-  // uncapped for its OTHER caller (app/api/inbox/smart-replies/route.ts) too.
+  // fix belongs in the lane — lib/inbox/smart-replies.ts only ledgers/caps when
+  // its caller passes a tenant. (Its former OTHER caller,
+  // app/api/inbox/smart-replies/route.ts, was deleted 2026-08-27 — zero callers;
+  // tombstone at lib/inbox/smart-replies.ts:generateSmartReplies.)
   if (run.tokens.measured && brokerageId && ledgerTokens > 0) {
     try {
       const { incrementUsage } = await import("@/lib/usage")
@@ -1417,9 +1418,11 @@ async function generateSmartReply(
     // DELIBERATELY NO TENANT, and this is the one place in this file where that
     // is the RIGHT answer rather than the defect routedTokens describes.
     //
-    // generateSmartReplies now ACCEPTS a tenant (lib/inbox/smart-replies.ts) so
-    // that /api/inbox/smart-replies — which keeps no ledger of its own — can
-    // have the routed lane book the spend. THIS caller already books it, on its
+    // generateSmartReplies ACCEPTS a tenant (lib/inbox/smart-replies.ts) so a
+    // caller that keeps no ledger of its own can have the routed lane book the
+    // spend (the door that motivated this, app/api/inbox/smart-replies/route.ts,
+    // was deleted 2026-08-27 — tombstone at generateSmartReplies; the parameter
+    // stays for the next ledgerless caller). THIS caller already books it, on its
     // own ai_tool_usage row, with the served model and the real counts
     // (smartReplyTokens below). Passing the tenant here as well would put one
     // call on two rows of the table usage-metering sums, and the brokerage's

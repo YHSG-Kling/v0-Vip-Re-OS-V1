@@ -235,6 +235,15 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
  * Direction determines which messages to mark:
  * - 'agent_to_client': marks agent's messages as read (contact opened messages page)
  * - 'client_to_agent': marks client's messages as read (agent opened messages page)
+ *
+ * ─── TOMBSTONE (orphan doctrine §1.1, lane BT 2026-08-27) ───────────────────
+ * app/api/portal/messages/read/route.ts DELETED. It was a 1:1 HTTP wrapper
+ * around THIS action with ZERO callers: no mention of
+ * "/api/portal/messages/read" anywhere in first-party source (comment-stripped,
+ * positive-controlled finder), and no secret/webhook/cron lane. SURVIVOR: this
+ * function, wired directly at app/portal/[contactId]/messages/page.tsx:128.
+ * The sibling routes /api/portal/messages/send and
+ * /api/portal/messages/[contactId] ARE referenced and are untouched.
  */
 export async function markMessagesRead(params: MarkReadParams): Promise<{
   success: boolean

@@ -29,6 +29,19 @@
  * every brokerage's website chat offline until someone created an avatar embed
  * for them. The chat widget's own config is the brokerage row (slug +
  * widget_enabled), so that is what it resolves.
+ *
+ * ─── TOMBSTONE (orphan doctrine §1.1, lane BT 2026-08-27) ────────────────────
+ * app/api/widget/loader/route.ts (export GET) DELETED. That route served a
+ * dynamic loader snippet addressed by nothing in first-party source
+ * (comment-stripped, positive-controlled finder: zero mentions of
+ * "/api/widget/loader"), taking the exact `brokerage_id`/`agent_id`-in-query
+ * identity shape this module records replacing — and its iframe pointed at
+ * `${appUrl}/widget?...`, a path with NO page.tsx (app/widget/ holds only
+ * [brokerageSlug]/ and chat/), so any embed of its snippet rendered a 404
+ * iframe. SURVIVOR: public/widget-loader.js — the static loader the settings
+ * page distributes (app/dashboard/settings/widget/widget-settings-client.tsx),
+ * which iframes /widget/chat; the widget_enabled gate the deleted route
+ * performed lives on the exposed lane, right here (resolveWidgetTenant).
  */
 
 import "server-only"

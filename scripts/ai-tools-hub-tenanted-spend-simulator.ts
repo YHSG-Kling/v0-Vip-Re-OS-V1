@@ -804,18 +804,21 @@ function findingsLayer(): void {
   //     tenant's billable overage from, so this was an invoice defect, not only
   //     a cap one.
   //
-  // WHAT IS STILL OPEN, one layer down: a lane that neither ledgers nor names
-  // its model still books 0 here (lane_reports_no_usage), and lib/inbox/
-  // smart-replies.ts calls generateObjectRouted with NO tenant — so its OTHER
-  // caller, app/api/inbox/smart-replies/route.ts, is still unledgered and
-  // uncapped. That is the inbox lane's own fix, not this hub's.
+  // WHAT WAS STILL OPEN one layer down is now CLOSED from both ends: a lane
+  // that neither ledgers nor names its model still books 0 here
+  // (lane_reports_no_usage), but lib/inbox/smart-replies.ts now takes the
+  // tenant through to generateObjectRouted when its caller passes one, and the
+  // formerly unledgered caller — app/api/inbox/smart-replies/route.ts — was
+  // DELETED 2026-08-27 (zero callers; tombstone at
+  // lib/inbox/smart-replies.ts:generateSmartReplies). Every remaining caller of
+  // the smart-reply lane books its spend: this hub on its own ai_tool_usage
+  // row, and any tenant-passing caller through the routed lane.
   finding(
-    "the smart-reply LANE still calls the model with no tenant",
-    "lib/inbox/smart-replies.ts:102 calls generateObjectRouted without a brokerageId, so it neither ledgers nor " +
-    "caps. Through this hub that is now covered — executeAITool books the measured counts and bumps both counters " +
-    "itself. Through app/api/inbox/smart-replies/route.ts it is not covered at all: that call is unbilled and " +
-    "uncapped, the same defect class this proof opened on. Fixing it means giving generateSmartReplies the tenant, " +
-    "which is the inbox lane's change, not the AI Toolkit's.",
+    "the smart-reply lane's unledgered HTTP door is gone",
+    "lib/inbox/smart-replies.ts ledgers/caps through generateObjectRouted when handed a brokerageId. Through this " +
+    "hub the spend is booked by executeAITool (measured counts, both counters). The one caller that historically " +
+    "rode it unbilled — app/api/inbox/smart-replies/route.ts — was deleted (no callers anywhere in first-party " +
+    "source; tombstone names the survivor), so no unbilled path onto this lane remains in the tree.",
   )
   finding(
     "three client-education tools ride the 'unspecified' routing row",
