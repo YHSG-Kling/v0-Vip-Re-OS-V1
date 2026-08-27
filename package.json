@@ -540,6 +540,7 @@
     "test:sequence-step-palette": "tsx scripts/sequence-step-palette-guard.ts",
     "test:step-palette-consolidation": "tsx scripts/step-palette-consolidation-simulator.ts",
     "test:silent-write": "tsx scripts/silent-write-guard.ts",
+    "test:webhook-contract": "tsx scripts/webhook-contract-guard.ts",
     "test:wired-surface": "tsx scripts/wired-surface-guard.ts",
     "test:seller-listing-wiring": "tsx scripts/seller-listing-wiring-simulator.ts",
     "test:vendor-media-wiring": "tsx scripts/vendor-media-wiring-simulator.ts",

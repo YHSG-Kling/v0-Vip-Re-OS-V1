@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 706 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 704 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-08-24
+ * generated: 2026-08-27
  * source: public.live_schema_json()
- * body-sha256: 2ee9f11aa7bf548a2dc2852cb1974cebf2980f70596680454c2c3ba143eb0f2e
+ * body-sha256: 75de20c282f32af9c663b54b8aeecae47c2f4a5514e4a20f40e49d15c1260a08
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -536,8 +536,6 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   property_smart_insights: ["ai_summary", "brokerage_id", "comparable_sales", "created_at", "days_on_market", "id", "last_analyzed_at", "market_position", "neighborhood_score", "price_per_sqft", "price_reduction_count", "property_mls_id", "school_score", "walkability_score"],
   property_upgrades: ["brokerage_id", "created_at", "estimated_cost", "id", "listing_id", "roi_estimate", "status", "upgrade_description"],
   property_views: ["brokerage_id", "contact_id", "first_viewed_at", "id", "last_viewed_at", "property_id", "source", "time_spent_seconds", "view_count"],
-  prospect_context: ["created_at", "emotion", "id", "life_context", "pain_point", "prospect_id", "situation", "timeline", "updated_at", "what_helps"],
-  prospects: ["agent_id", "brokerage_id", "created_at", "email", "id", "metadata", "name", "phone", "source", "updated_at"],
   provider_overrides: ["config", "created_at", "enabled", "id", "provider_key", "provider_type", "scope_id", "scope_type", "updated_at"],
   push_notification_queue: ["body", "brokerage_id", "created_at", "data", "delivered_at", "error_message", "failed_at", "id", "status", "title", "user_id"],
   push_subscriptions: ["auth", "brokerage_id", "created_at", "disabled_at", "disabled_reason", "endpoint", "id", "last_seen_at", "p256dh", "user_agent", "user_id"],

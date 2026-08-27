@@ -41,5 +41,15 @@
 -- CASCADE — child first anyway, so neither drop can be blocked by the other.
 -- No backfill: there has never been a row to move.
 
+alter table public.generated_content drop constraint if exists generated_content_prospect_id_fkey;
+alter table public.generated_content drop column if exists prospect_id;
 drop table if exists public.prospect_context;
 drop table if exists public.prospects;
+
+-- AMENDED AT APPLY (integrator, 2026-08-27): pg_constraint showed ONE inbound
+-- FK the drop had to clear first — generated_content.prospect_id REFERENCES
+-- prospects(id) ON DELETE SET NULL. No code writes or reads that column (the
+-- only prospect_id tokens in the tree belong to platform_reception_calls,
+-- whose rail rides the DIFFERENT table platform_prospects — verified before
+-- applying, because a reception writer into prospects would have refuted this
+-- migration's whole premise). Column retired with its family.
