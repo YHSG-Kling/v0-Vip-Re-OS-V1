@@ -16,6 +16,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { isPositiveShowingInterest, isNegativeShowingInterest } from "@/lib/behavior-learning/signal-mapping"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import {
@@ -313,18 +314,22 @@ export async function getShowingInsights(contactId: string) {
 
   // Calculate sentiment breakdown
   // showing_feedback has no `sentiment` column — it records `overall_impression`, whose
-  // vocabulary is fixed by a CHECK constraint: loved_it | liked_it | neutral |
-  // not_interested. The old select also named `feedback_text` and `rating`, neither of
-  // which exists, so PostgREST rejected the WHOLE showings query and this page's
-  // feedback was empty by construction rather than by absence of feedback.
-  const POSITIVE = new Set(["loved_it", "liked_it"])
-  const NEGATIVE = new Set(["not_interested"])
+  // vocabulary is fixed by a CHECK constraint: love_it | like_it | maybe | no
+  // (m568 — the ONE showing-verdict vocabulary, shared with
+  // showings.buyer_interest_level and tour_stops.buyer_interest_level). The old
+  // select also named `feedback_text` and `rating`, neither of which exists, so
+  // PostgREST rejected the WHOLE showings query and this page's feedback was
+  // empty by construction rather than by absence of feedback.
+  // TOMBSTONE (m568 wave): the private POSITIVE/NEGATIVE sets that lived here
+  // spelled the ladder's two ends locally; survivor:
+  // lib/behavior-learning/signal-mapping.ts:148 isPositiveShowingInterest /
+  // isNegativeShowingInterest.
   const sentimentBreakdown = { positive: 0, neutral: 0, negative: 0 }
   for (const fb of allFeedback) {
     const impression = (fb as any).overall_impression as string | null
     if (!impression) continue
-    if (POSITIVE.has(impression)) sentimentBreakdown.positive++
-    else if (NEGATIVE.has(impression)) sentimentBreakdown.negative++
+    if (isPositiveShowingInterest(impression)) sentimentBreakdown.positive++
+    else if (isNegativeShowingInterest(impression)) sentimentBreakdown.negative++
     else sentimentBreakdown.neutral++
   }
 

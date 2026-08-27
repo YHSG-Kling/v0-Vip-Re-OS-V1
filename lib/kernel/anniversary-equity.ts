@@ -42,6 +42,7 @@
 // NOT server-only (simulator-driven). Pure helpers carry the math; the runner does
 // I/O. Valuation fetcher, copy generator, and video dispatcher are injectable seams.
 
+import { ordinal } from "@/lib/format/ordinal"
 import { createServiceClient } from "@/lib/supabase/service"
 import type { CopyGenerator } from "@/lib/kernel/ai-copy"
 
@@ -186,10 +187,10 @@ function fmtUsd(n: number): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n)
 }
 
-function ordinal(n: number): string {
-  const s = ["th", "st", "nd", "rd"], v = n % 100
-  return `${n}${s[(v - 20) % 10] ?? s[v] ?? s[0]}`
-}
+// TOMBSTONE (§6 ordinal consolidation): a private `ordinal(n)` lived here,
+// byte-identical to the copy in remotion/EquityReportReel.tsx. Survivor:
+// lib/format/ordinal.ts:32 `ordinal` — a pure leaf both the kernel and the
+// Remotion bundle can import without dragging either side's dependencies in.
 
 export interface EquityNoteArgs {
   firstName: string | null

@@ -20,7 +20,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateObjectRouted } from "@/lib/ai/models"
-import { feedbackTemperatureToRating, impressionToRating } from "@/lib/behavior-learning/signal-mapping"
+import { feedbackTemperatureToRating, tourInterestToRating } from "@/lib/behavior-learning/signal-mapping"
 import { z } from "zod"
 
 export interface ShowingSentimentSummary {
@@ -162,13 +162,16 @@ export async function buildShowingSentimentSummary(
   const averagePresentation = avg(allFeedback.map((f: any) => f.presentation_rating))
   const averageCleanliness = avg(allFeedback.map((f: any) => f.cleanliness_rating))
   // WAS: avg(allFeedback.map((f) => f.overall_impression)) — and
-  // `showing_feedback.overall_impression` is TEXT (live CHECK: loved_it | liked_it
-  // | neutral | not_interested), while avg() keeps only `typeof v === "number"`.
+  // `showing_feedback.overall_impression` is TEXT (live CHECK since m568:
+  // love_it | like_it | maybe | no), while avg() keeps only `typeof v === "number"`.
   // So the filter kept nothing and this average was structurally null on every
   // listing, forever: the seller-sentiment panel's "Impression" figure has only
   // ever rendered as a dash. Same failure as the two counters below — a text
   // vocabulary read as if it were a number — so it is fixed on the same ladder.
-  const averageImpression = avg(allFeedback.map((f: any) => impressionToRating(f.overall_impression)))
+  // m568 put the column on the ONE showing-verdict vocabulary, so the canonical
+  // ladder reads it directly (impressionToRating, the old dialect's bridge, is
+  // retired into tourInterestToRating — see signal-mapping.ts's tombstone).
+  const averageImpression = avg(allFeedback.map((f: any) => tourInterestToRating(f.overall_impression)))
 
   // ONE VOCABULARY (CLAUDE.md §6). WAS:
   //   (f.buyer_interest_level ?? 0) >= 4   /   (f.buyer_interest_level ?? 0) <= 2

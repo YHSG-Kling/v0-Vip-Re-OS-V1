@@ -18,9 +18,9 @@
  * MEASURED AT GENERATION: 436 tables, 760 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-08-26
+ * generated: 2026-08-27
  * source: public.live_check_constraints_json()
- * body-sha256: c0696c12d88541f8ec75debc65cdeaf94c26d5d59cddabd947915d77fb86f24d
+ * body-sha256: b16a1bb43b16afad2ff497a7790acecb3f89f2819c0462d94750270f3e87e550
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -1346,7 +1346,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     buyer_interest_level: ["cold", "cool", "hot", "warm"],
     meets_buyer_needs: ["no", "partially", "yes"],
     offer_interest: ["no", "possible", "unlikely", "very_likely"],
-    overall_impression: ["liked_it", "loved_it", "neutral", "not_interested"],
+    overall_impression: ["like_it", "love_it", "maybe", "no"],
     price_opinion: ["good_value", "priced_right", "too_high"],
   },
   showing_requests: {

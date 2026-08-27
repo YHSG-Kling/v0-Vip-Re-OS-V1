@@ -46,6 +46,7 @@ import {
   useCurrentFrame,
 } from "remotion"
 import { horizontalBars } from "../lib/charts/geometry"
+import { ordinal } from "../lib/format/ordinal"
 import { QrOutroBadge } from "./components/QrOutroBadge"
 
 export interface EquityReportReelBrand {
@@ -107,10 +108,10 @@ function fmtPct(n: number): string {
   return `${sign}${n}%`
 }
 
-function ordinal(n: number): string {
-  const s = ["th", "st", "nd", "rd"], v = n % 100
-  return `${n}${s[(v - 20) % 10] ?? s[v] ?? s[0]}`
-}
+// TOMBSTONE (§6 ordinal consolidation): a private `ordinal(n)` lived here,
+// byte-identical to the copy in lib/kernel/anniversary-equity.ts. Survivor:
+// lib/format/ordinal.ts:32 `ordinal` — a pure leaf (zero imports), so pulling
+// it into the Remotion bundle adds nothing server-side.
 
 /**
  * PURE — which equity treatment the reel renders. Exported so the simulator can

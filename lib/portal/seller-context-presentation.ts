@@ -16,6 +16,8 @@
 //
 // Guarded by scripts/client-server-only-guard.ts.
 
+// signal-mapping is a PURE leaf (no kernel, no Supabase, no server-only) — safe here.
+import { isPositiveShowingInterest, isNegativeShowingInterest } from "@/lib/behavior-learning/signal-mapping"
 import { computeDaysOnMarket } from "@/lib/listings/compute-dom"
 
 export interface ListingData {
@@ -61,7 +63,8 @@ export interface ShowingFeedback {
   price_opinion: 'too_high' | 'priced_right' | 'good_value' | null
   meets_buyer_needs: 'yes' | 'partially' | 'no' | null
   offer_interest: 'very_likely' | 'possible' | 'unlikely' | 'no' | null
-  overall_impression: 'loved_it' | 'liked_it' | 'neutral' | 'not_interested' | null
+  // m568: the ONE showing-verdict vocabulary, shared with showings.buyer_interest_level
+  overall_impression: 'love_it' | 'like_it' | 'maybe' | 'no' | null
   buyer_interest_level: 'hot' | 'warm' | 'cool' | 'cold' | null
   buyer_favorite_features: string | null
   specific_concerns: string | null
@@ -135,16 +138,16 @@ export const OFFER_STATUS_CONFIG: Record<string, { label: string; color: string 
 /**
  * Derives overall sentiment from showing_feedback.overall_impression
  * Since there is no direct 'sentiment' column, we map overall_impression values.
+ *
+ * m568: the column speaks the ONE showing-verdict vocabulary
+ * (love_it | like_it | maybe | no), so the split is owned by the ladder's two
+ * set-helpers rather than a private spelling of the same ends here.
  */
 export function deriveOverallSentiment(
   feedback: Pick<ShowingFeedback, 'overall_impression'>
 ): 'positive' | 'neutral' | 'negative' {
-  if (feedback.overall_impression === 'loved_it' || feedback.overall_impression === 'liked_it') {
-    return 'positive'
-  }
-  if (feedback.overall_impression === 'not_interested') {
-    return 'negative'
-  }
+  if (isPositiveShowingInterest(feedback.overall_impression)) return 'positive'
+  if (isNegativeShowingInterest(feedback.overall_impression)) return 'negative'
   return 'neutral'
 }
 

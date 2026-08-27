@@ -28,8 +28,10 @@ import { readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
+  INVESTOR_CRITERIA_KEYS,
   PERSONA_CONFIGS,
   formatWidgetValue,
+  getInvestorCriteria,
   getPersonaWidgets,
 } from "../lib/portal/persona-config"
 import { blankStrings, stripComments } from "./strip-comments"
@@ -73,8 +75,17 @@ function main() {
     /getPersonaWidgets\(persona, customFields\)/.test(siteCode))
   check("…and renders each value through the ONE formatter (§6)",
     /formatWidgetValue\(w\.value, w\.format\)/.test(siteCode))
+  // Assert the RULE (both names imported from the declaring module), not the
+  // byte-exact import line — pinning the literal list broke the moment a third
+  // legitimate name (getInvestorCriteria, §6 spelling merge) joined the import.
   check("import-pinned to the module that declares them",
-    /import \{ getPersonaWidgets, formatWidgetValue \} from "@\/lib\/portal\/persona-config"/.test(stripComments(read(RENDER_SITE))))
+    (() => {
+      const src = stripComments(read(RENDER_SITE))
+      const m = src.match(/import \{([^}]+)\} from "@\/lib\/portal\/persona-config"/)
+      if (!m) return false
+      const names = m[1].split(",").map((s) => s.trim())
+      return names.includes("getPersonaWidgets") && names.includes("formatWidgetValue")
+    })())
   check("the page still supplies both inputs (customFields off contacts.metadata + personaConfig)",
     (() => {
       const page = blankStrings(stripComments(read("app/portal/[contactId]/properties/page.tsx")))
@@ -153,6 +164,51 @@ function main() {
   }
   check("…and they were never the only unrendered ones — the whole set was",
     keys.size > flagged.length)
+
+  // ── 6. THE INVESTOR CRITERIA READ ONE SPELLING (§6 / §1.1 spelling merge) ──
+  console.log("\n[6 — the investor's three metadata keys are spelled ONCE, feeding widgets AND arithmetic]")
+  {
+    // The accessor and the widget dataKeys must agree — derived from the config,
+    // not restated here, so a renamed dataKey fails this rather than splitting
+    // display from arithmetic silently.
+    const investorKeys = Object.values(INVESTOR_CRITERIA_KEYS) as string[]
+    const investorWidgetKeys = PERSONA_CONFIGS.investor.widgets.map((w) => w.dataKey)
+    for (const k of investorKeys) {
+      check(`  accessor key ${k} is one of the investor persona's own widget dataKeys`,
+        investorWidgetKeys.includes(k))
+    }
+    // The accessor resolves the same value getPersonaWidgets resolves.
+    const bag = { target_cap_rate: 9, investment_strategy: "BRRRR", portfolio_size: 4 }
+    const viaWidgets = Object.fromEntries(
+      getPersonaWidgets("investor", bag).map((w) => [w.dataKey, w.value]),
+    )
+    const viaCriteria = getInvestorCriteria(bag)
+    check("  getInvestorCriteria(target_cap_rate) === the widget-resolved value",
+      viaCriteria.targetCapRate === viaWidgets["target_cap_rate"])
+    check("  getInvestorCriteria(investment_strategy) === the widget-resolved value",
+      viaCriteria.investmentStrategy === viaWidgets["investment_strategy"])
+    check("  getInvestorCriteria(portfolio_size) === the widget-resolved value",
+      viaCriteria.portfolioSize === viaWidgets["portfolio_size"])
+    // Defaults survive an empty bag — the arithmetic must never divide by undefined.
+    const empty = getInvestorCriteria(undefined)
+    check("  an empty metadata bag still yields numeric criteria (7% / 0 properties)",
+      empty.targetCapRate === 7 && empty.portfolioSize === 0 && empty.investmentStrategy.length > 0)
+
+    // The dashboard no longer hand-picks the keys: in STRIPPED source the only
+    // access spelling is the accessor. blankStrings is NOT used here because the
+    // defect IS a string (the key literal) — instead the match requires the
+    // customFields?.<key> member-access shape, which a mention in a comment
+    // cannot produce once comments are stripped.
+    const dash = stripComments(read(RENDER_SITE))
+    const handPicked = investorKeys.filter((k) => new RegExp(`customFields\\??\\.(\\[["'])?${k}`).test(dash))
+    check("  the render site has NO hand-picked read of the three keys (stripped source)",
+      handPicked.length === 0, handPicked.join(","))
+    check("  …and DOES call the one accessor", dash.includes("getInvestorCriteria(customFields)"))
+    // POSITIVE CONTROL: the hand-picked pattern is still findable in a specimen,
+    // so the zero above is cleanliness, not blindness.
+    check("  control · the finder still recognises the retired shape",
+      new RegExp(`customFields\\??\\.(\\[["'])?target_cap_rate`).test(`const t = customFields?.target_cap_rate || 7`))
+  }
 
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)

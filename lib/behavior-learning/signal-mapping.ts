@@ -177,9 +177,10 @@ export function isNegativeShowingInterest(interestLevel: string | null | undefin
  *     route.ts — a tokenized form the LISTING agent sends to a THIRD-PARTY showing
  *     agent, whose row is stamped submitted_by_agent_name / submitted_by_agent_email.
  *   · WHAT ELSE the row holds. That same form already has a property-verdict column
- *     beside this one — `overall_impression` (loved_it | liked_it | neutral |
- *     not_interested) — plus `offer_interest` (very_likely | possible | unlikely |
- *     no). A form does not ask the same question three times. The verdict on the
+ *     beside this one — `overall_impression` (spoke loved_it | liked_it | neutral |
+ *     not_interested at adjudication time; m568 moved it onto the canonical
+ *     love_it | like_it | maybe | no) — plus `offer_interest` (very_likely |
+ *     possible | unlikely | no). A form does not ask the same question three times. The verdict on the
  *     HOUSE is overall_impression; the likelihood of an OFFER is offer_interest;
  *     buyer_interest_level is how hot the BUYER is, which is why it is spelled in
  *     the temperature vocabulary this product uses everywhere else for exactly that
@@ -200,14 +201,14 @@ export function isNegativeShowingInterest(interestLevel: string | null | undefin
  * This mapper gives that reader the ladder the column can actually produce, on the
  * author's own 4/2 thresholds.
  *
- * STILL OPEN, named rather than guessed: `showing_feedback.overall_impression`
- * (loved_it | liked_it | neutral | not_interested) IS a second spelling of the same
- * PROPERTY-VERDICT idea as showings.buyer_interest_level (love_it | like_it | maybe
- * | no) — one fact, two vocabularies, no mapper between them. Merging them is a
- * migration plus five UI surfaces (the portal feedback card, the seller context
- * presentation, the dashboard feedback panel, the tokenized form and its API route),
- * so it is recorded here as an open loop rather than half-done inside another lane's
- * files.
+ * THAT LOOP IS NOW CLOSED (m568): `showing_feedback.overall_impression` was a
+ * second SPELLING of the same property-verdict idea as
+ * showings.buyer_interest_level, and m568 moved its CHECK onto the one
+ * vocabulary (love_it | like_it | maybe | no). Both COLUMNS remain — the buyer's
+ * own tap and the third-party showing agent's form are two speakers who can
+ * disagree on one showing — but they now speak the same four rungs, and
+ * tourInterestToRating reads both. The old dialect's bridge (impressionToRating)
+ * is retired; see its tombstone at the bottom of this file.
  */
 export function feedbackTemperatureToRating(temperature: string | null | undefined): number | null {
   switch (temperature) {
@@ -219,30 +220,17 @@ export function feedbackTemperatureToRating(temperature: string | null | undefin
   }
 }
 
-/**
- * impressionToRating — PURE. The SHOWING-AGENT form's property verdict on the SAME
- * 1-5 ladder as tourInterestToRating, so the two spellings of that one fact can
- * finally be compared.
- *
- * This is the §6 bridge for the open loop named above: `showing_feedback.
- * overall_impression` (live CHECK loved_it | liked_it | neutral | not_interested)
- * and `showings.buyer_interest_level` (love_it | like_it | maybe | no) are one idea
- * in two vocabularies, written by two different parties — the showing agent's form
- * and the buyer's own side. Merging the COLUMNS is a migration plus five UI
- * surfaces; merging the SCALE costs nothing and is what every aggregate reader
- * actually needs. The rungs line up one-for-one by construction:
- * loved_it↔love_it 5, liked_it↔like_it 4, neutral↔maybe 3, not_interested↔no 1.
- *
- * It closes a live defect on arrival: app/actions/seller-showing-sentiment.ts
- * averaged this TEXT column as a number, so the seller-sentiment panel's
- * "Impression" figure was structurally null on every listing.
- */
-export function impressionToRating(impression: string | null | undefined): number | null {
-  switch (impression) {
-    case "loved_it":       return 5
-    case "liked_it":       return 4
-    case "neutral":        return 3
-    case "not_interested": return 1
-    default:               return null
-  }
-}
+// TOMBSTONE (§1, m568 wave): `impressionToRating` lived here — the bridge that
+// spelled the showing-agent form's PRIVATE dialect (loved_it | liked_it | neutral
+// | not_interested) onto the 1-5 ladder while showing_feedback.overall_impression
+// still spoke it. m568 retired that dialect: the column's CHECK now admits the
+// ONE showing-verdict vocabulary (love_it | like_it | maybe | no), the same four
+// rungs showings.buyer_interest_level and tour_stops.buyer_interest_level carry,
+// so a bridge from a vocabulary the column can no longer hold had exactly zero
+// possible inputs. Survivor: tourInterestToRating in THIS FILE (the canonical
+// ladder, defined above), which its one caller
+// app/actions/seller-showing-sentiment.ts:174 now reads directly. Nothing was
+// merged onto the survivor because the survivor already spoke every post-m568
+// rung; the mapping the bridge encoded (loved_it→5 … not_interested→1) survives
+// as m568's data-migration CASE, where it belongs — at the boundary between the
+// old rows and the new vocabulary, not in live code.

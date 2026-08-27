@@ -16,6 +16,31 @@ const OFFER_INTEREST_SCORE: Record<string, number> = {
   no:           5,
 }
 
+/**
+ * BOUNDARY NORMALIZER for the showing verdict (§6, m568). The one vocabulary for
+ * "what did the buyer think of the house" is love_it | like_it | maybe | no —
+ * the same CHECK showings.buyer_interest_level and tour_stops.buyer_interest_level
+ * carry. overall_impression historically spoke a private dialect
+ * (loved_it | liked_it | neutral | not_interested); m568 retires it. The form now
+ * submits the canonical tokens, but a tab opened BEFORE this deploy can still
+ * submit the old spelling — map it here rather than refuse a real buyer verdict.
+ * Unknown tokens become null (the CHECK would refuse them anyway; a null
+ * impression is "not answered", not a 500).
+ *
+ * SEQUENCE: this code assumes m568 is APPLIED (the live CHECK admits only the
+ * new tokens). Deploying it against the pre-m568 CHECK would have every
+ * submission refused with 23514 — apply m568 first, then deploy.
+ */
+function normalizeImpression(v: unknown): "love_it" | "like_it" | "maybe" | "no" | null {
+  switch (v) {
+    case "love_it":  case "loved_it":       return "love_it"
+    case "like_it":  case "liked_it":       return "like_it"
+    case "maybe":    case "neutral":        return "maybe"
+    case "no":       case "not_interested": return "no"
+    default:                                return null
+  }
+}
+
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ token: string }> }
@@ -38,6 +63,8 @@ export async function POST(
       buyerInterestLevel,
       additionalNotes,
     } = body
+
+    const impression = normalizeImpression(overallImpression)
 
     const supabase = createServiceClient()
 
@@ -64,7 +91,7 @@ Cleanliness: ${cleanlinessRating}/5
 Price opinion: ${priceOpinion}
 Meets buyer needs: ${meetsBuyerNeeds}
 Offer interest: ${offerInterest}
-Overall impression: ${overallImpression}
+Overall impression: ${impression ?? "not provided"}
 Buyer interest level: ${buyerInterestLevel}
 Liked most: ${favoriteFeatures || "not provided"}
 Concerns: ${specificConcerns || "none"}
@@ -91,7 +118,7 @@ Additional notes: ${additionalNotes || "none"}`,
         offer_interest:         offerInterest,
         buyer_favorite_features: favoriteFeatures || null,
         specific_concerns:      specificConcerns || null,
-        overall_impression:     overallImpression,
+        overall_impression:     impression,
         buyer_interest_level:   buyerInterestLevel,
         additional_notes:       additionalNotes || null,
         ai_summary:             aiSummary,
@@ -118,7 +145,7 @@ Additional notes: ${additionalNotes || "none"}`,
           offerInterest,
           buyerInterestLevel,
           priceOpinion,
-          overallImpression,
+          overallImpression: impression,
           summary: aiSummary,
         },
       })

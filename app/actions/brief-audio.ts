@@ -10,6 +10,7 @@
  * the three things that matter today" — this powers the audio half.
  */
 
+import { ordinalWord } from "@/lib/format/ordinal"
 import { resolveWriteContextForTenant } from "@/lib/platform/acting-context"
 import {
   synthesizeSpeech,
@@ -97,7 +98,7 @@ function composeBriefScript(brief: UserTypeBrief): string {
         : `Your top ${top.length} priorities:`
     )
     top.forEach((p, i) => {
-      const lead = top.length === 1 ? "" : `${ordinal(i + 1)}, `
+      const lead = top.length === 1 ? "" : `${ordinalWord(i + 1)}, `
       parts.push(`${lead}${p.title}. ${stripMarkdown(p.body)}`)
     })
   }
@@ -118,9 +119,9 @@ function composeBriefScript(brief: UserTypeBrief): string {
   return parts.join(" ")
 }
 
-function ordinal(n: number): string {
-  return ["First", "Second", "Third", "Fourth", "Fifth"][n - 1] ?? `Number ${n}`
-}
+// TOMBSTONE (§6 ordinal consolidation): a private `ordinal(n)` lived here — the
+// SPOKEN register ("First", "Second", …), not the display "1st/2nd" the other
+// two copies spelled. Survivor: lib/format/ordinal.ts:41 `ordinalWord`.
 
 function stripMarkdown(s: string): string {
   return s

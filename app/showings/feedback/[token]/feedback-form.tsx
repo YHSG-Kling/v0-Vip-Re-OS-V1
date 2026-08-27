@@ -92,11 +92,15 @@ const OFFER_OPTIONS: LargeOption[] = [
   { value: "no",          label: "No" },
 ]
 
+// The ONE showing-verdict vocabulary (§6, m568): love_it | like_it | maybe | no —
+// the same CHECK showings.buyer_interest_level and tour_stops.buyer_interest_level
+// carry. The old private dialect (loved_it | liked_it | neutral | not_interested)
+// is retired; the API route still normalises it for tabs opened pre-deploy.
 const IMPRESSION_OPTIONS: LargeOption[] = [
-  { value: "loved_it",        label: "Loved It" },
-  { value: "liked_it",        label: "Liked It" },
-  { value: "neutral",         label: "Neutral" },
-  { value: "not_interested",  label: "Not Interested" },
+  { value: "love_it",  label: "Loved It" },
+  { value: "like_it",  label: "Liked It" },
+  { value: "maybe",    label: "Neutral" },
+  { value: "no",       label: "Not Interested" },
 ]
 
 const INTEREST_OPTIONS: LargeOption[] = [

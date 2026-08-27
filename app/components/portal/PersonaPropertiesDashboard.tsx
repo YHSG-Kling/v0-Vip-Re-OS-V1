@@ -45,7 +45,7 @@ import {
 // The inputs were already here — app/portal/[contactId]/properties/page.tsx has
 // been computing `customFields` off contacts.metadata and passing it in beside
 // `personaConfig` for exactly this. Only the render site was missing.
-import { getPersonaWidgets, formatWidgetValue } from "@/lib/portal/persona-config"
+import { getPersonaWidgets, formatWidgetValue, getInvestorCriteria } from "@/lib/portal/persona-config"
 
 interface PersonaPropertiesDashboardProps {
   contact: any
@@ -438,11 +438,17 @@ export default function PersonaPropertiesDashboard({
   const [mortgageError, setMortgageError] = useState<string | null>(null)
   const [mortgagePending, setMortgagePending] = useState(false)
 
-  // Investor-specific: investment criteria
-  // Investor persona settings — sourced from contacts.metadata (passed in as customFields).
-  const targetCapRate = customFields?.target_cap_rate || 7
-  const investmentStrategy = customFields?.investment_strategy || "Buy and Hold"
-  const portfolioSize = customFields?.portfolio_size || 0
+  // Investor-specific: investment criteria — sourced from contacts.metadata
+  // (passed in as customFields), through the ONE accessor.
+  // TOMBSTONE (§1.1, spelling merge): three hand-picked reads of
+  // customFields?.target_cap_rate / investment_strategy / portfolio_size lived
+  // here — a second spelling of the same three dataKeys getPersonaWidgets
+  // resolves for the "At a glance" strip. Survivor:
+  // lib/portal/persona-config.ts getInvestorCriteria (+ INVESTOR_CRITERIA_KEYS),
+  // so the widget strip and the cap-rate arithmetic below can never read
+  // different keys. The arithmetic itself (meetsTarget etc.) stays HERE — it
+  // was never a duplicate of the display strip.
+  const { targetCapRate, investmentStrategy, portfolioSize } = getInvestorCriteria(customFields)
 
   // AI Smart Search handler
   // `spokenQuery` lets the voice control run the search with the transcript it

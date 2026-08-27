@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server"
+import { isPositiveShowingInterest } from "@/lib/behavior-learning/signal-mapping"
 import { redirect } from "next/navigation"
 import Link from "next/link"
 import { resolveSellerContext, getShowingStats, getRecentFeedback, getOfferSummary } from "@/lib/portal/resolve-seller-context"
@@ -551,7 +552,9 @@ function extractPositivePatterns(feedback: any[]): string[] {
         patternCounts[feature] = (patternCounts[feature] || 0) + 1
       }
     }
-    if (fb.overall_impression === "loved_it" || fb.overall_impression === "liked_it") {
+    // m568: overall_impression speaks the ONE showing-verdict vocabulary
+    // (love_it | like_it | maybe | no); the ladder's positive set owns the split.
+    if (isPositiveShowingInterest(fb.overall_impression)) {
       if (fb.presentation_rating >= 4) patternCounts["Great presentation"] = (patternCounts["Great presentation"] || 0) + 1
       if (fb.cleanliness_rating >= 4) patternCounts["Clean & well-maintained"] = (patternCounts["Clean & well-maintained"] || 0) + 1
     }
