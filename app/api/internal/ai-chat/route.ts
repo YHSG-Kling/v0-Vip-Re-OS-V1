@@ -455,8 +455,42 @@ export async function POST(req: NextRequest) {
 
   const systemPrompt = buildSystemPrompt(role, ctx, identity)
 
-  // Persist session for this role if not yet created
-  const sessionId = req.headers.get("x-internal-session-id")
+  // ── The claimed session must be YOURS before anything is written into it ──
+  //
+  // `x-internal-session-id` arrives on a REQUEST HEADER and everything below
+  // runs on the SERVICE client — the §4 shape exactly: an identity-bearing value
+  // from the request, honored unverified. Any signed-in internal user who
+  // learned another user's session uuid could append messages into that thread.
+  //
+  // THE VERIFICATION KEY IS metadata->user_id, AND THIS IS THE READER THAT
+  // COLUMN NEVER HAD (§1.2). It is the ONLY per-user key an internal session
+  // holds: agent_id is resolved through resolveAgentId and is legitimately NULL
+  // for internal users with no agents row — agents.id and users.id are DISJOINT
+  // (CLAUDE.md §3), so a TC or admin's sessions carry no agent_id at all. The
+  // write at the insert below stored exactly this datum since the route was
+  // built; nothing ever read it back, which the opposite-missing census
+  // reported the moment a dead module's phantom embed stopped hiding it.
+  //
+  // FAIL CLOSED, DEGRADE OPEN: an unverified claim never reaches the claimed
+  // session — it is treated as NO session, so the caller gets a fresh thread of
+  // their own rather than a 403 (the persist here is best-effort UX plumbing,
+  // not the authz boundary for reading anything back).
+  const claimedSessionId = req.headers.get("x-internal-session-id")
+  let sessionId: string | null = null
+  if (claimedSessionId) {
+    const { data: claimed, error: claimErr } = await service
+      .from("chat_sessions")
+      .select("id, brokerage_id, metadata")
+      .eq("id", claimedSessionId)
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+    if (claimErr) {
+      console.error("[internal-ai-chat] session ownership read refused:", claimErr.message)
+    } else if (claimed && (claimed.metadata as { user_id?: string } | null)?.user_id === user.id) {
+      sessionId = claimed.id
+    }
+  }
+
   let newSessionId: string | null = null
   if (!sessionId) {
     const { data: newSession } = await service
@@ -475,17 +509,20 @@ export async function POST(req: NextRequest) {
     newSessionId = newSession?.id ?? null
   }
 
-  // Persist the last user message
-  if (sessionId) {
+  // Persist the last user message — into the VERIFIED session, or the fresh one
+  // just created. (The old shape only persisted when a session id arrived on
+  // the header, so the FIRST message of every thread was never stored.)
+  {
+    const persistTo = sessionId ?? newSessionId
     const lastMsg = messages[messages.length - 1]
-    if (lastMsg?.role === "user") {
+    if (persistTo && lastMsg?.role === "user") {
       const textContent =
         Array.isArray(lastMsg.parts)
           ? lastMsg.parts.filter((p: { type: string }) => p.type === "text").map((p: { text: string }) => p.text).join("")
           : (lastMsg.content as string ?? "")
 
       service.from("chat_messages").insert({
-        session_id: sessionId,
+        session_id: persistTo,
         role: "user",
         content: textContent,
         metadata: { source: "internal", role },

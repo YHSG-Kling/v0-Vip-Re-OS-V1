@@ -87,6 +87,59 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // ── Resume by visitor fingerprint — THE RETURNING VISITOR ─────────────
+    //
+    // THE READER visitor_fingerprint NEVER HAD (§1.2). The resume_token above
+    // lives in the widget's sessionStorage, which dies with the tab — so every
+    // returning visitor (new tab, next day) silently lost their thread, and the
+    // fingerprint the client has computed since day one was written to this row
+    // and read by nothing. The opposite-missing census caught it as a
+    // write-no-read the moment a dead module's phantom embed stopped
+    // camouflaging it.
+    //
+    // THE FINGERPRINT IS COARSE AND THE RULES BELOW ARE LOAD-BEARING. It is a
+    // 32-bit hash of userAgent + screen dims + timezone (widget-chat-client
+    // getFingerprint) — two iPhones in one city collide easily. So a
+    // fingerprint may resume ONLY a thread that is still anonymous:
+    //   · status 'active'            — never a closed conversation
+    //   · capture_state 'none'       — the moment a visitor identifies
+    //                                  themselves (signals_captured/captured)
+    //                                  the thread is about a PERSON, and a
+    //                                  collision would hand it to a stranger
+    //   · contact_id IS NULL         — belt to the same braces
+    //   · same brokerage AND same agent — resolved server-side above
+    //   · touched in the last 24h    — bounds collision exposure
+    // A read error falls through to a fresh session (this is a public door —
+    // fail toward service, not refusal), but is logged rather than swallowed
+    // (§3: supabase-js resolves refusals).
+    if (!resume_token && visitor_fingerprint?.trim()) {
+      const RESUME_WINDOW_MS = 24 * 60 * 60 * 1000
+      let q = supabase
+        .from('chat_sessions')
+        .select('id, widget_session_token, capture_state, status, contact_id, updated_at')
+        .eq('brokerage_id', brokerageId)
+        .eq('visitor_fingerprint', visitor_fingerprint.trim())
+        .eq('status', 'active')
+        .eq('capture_state', 'none')
+        .is('contact_id', null)
+        .gte('updated_at', new Date(Date.now() - RESUME_WINDOW_MS).toISOString())
+        .order('updated_at', { ascending: false })
+        .limit(1)
+      q = agentId ? q.eq('agent_id', agentId) : q.is('agent_id', null)
+      const { data: prior, error: priorErr } = await q.maybeSingle()
+      if (priorErr) {
+        console.error('[Widget/session] fingerprint-resume read refused:', priorErr.message)
+      } else if (prior) {
+        const identity = await resolveIdentity(supabase, brokerageId, agentId)
+        return NextResponse.json({
+          session_token: prior.widget_session_token,
+          session_id: prior.id,
+          capture_state: prior.capture_state,
+          identity,
+        })
+      }
+    }
+
     // ── Create new session ────────────────────────────────────────────────
     const token = randomUUID()
 
