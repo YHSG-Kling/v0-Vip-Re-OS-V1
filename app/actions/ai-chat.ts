@@ -1361,16 +1361,8 @@ export async function checkThemFirstCompliance(message: string) {
   return analyzeThemFirstLanguage(message)
 }
 
-export type ChatSession = {
-  id: string
-  agent_id: string
-  lead_id?: string
-  session_type: string
-  session_status: string
-  them_first_score: number
-  last_activity_at: string
-  context_data?: any
-  contacts?: any
-  messages?: any[]
-  ai_suggestions?: any[]
-}
+// TOMBSTONE (§1.3, 2026-08-27): `ChatSession` deleted — an any-riddled restatement
+// of the ai_chat_sessions row that nothing (including this file) ever referenced.
+// The session shape's one honest spelling is the explicit selects in
+// getChatSession/getAgentChatSessions above, held against the live schema by
+// scripts/schema-snapshot.ts (ai_chat_sessions).

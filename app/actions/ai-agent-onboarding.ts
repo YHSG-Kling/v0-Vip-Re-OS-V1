@@ -105,21 +105,12 @@ export interface OnboardingStep {
   notes?: string
 }
 
-export interface AgentOnboardingSession {
-  id: string
-  agentId: string
-  recruitId?: string
-  status: "pending" | "in_progress" | "completed" | "on_hold"
-  startDate: string
-  targetCompletionDate: string
-  actualCompletionDate?: string
-  checklist: OnboardingChecklist
-  currentStep: string
-  assignedMentorId?: string
-  assignedTCId?: string
-  aiRecommendations?: string[]
-  progressPercentage: number
-}
+// TOMBSTONE (§1.3, 2026-08-27): `AgentOnboardingSession` deleted — an aspirational
+// in-memory session shape referenced by nothing, not even this file. The onboarding
+// session is BUILT ANOTHER WAY: the agent_onboarding row (completion_percentage —
+// read live by lib/recruiting/retention-radar.ts) plus the step/quiz kernel at
+// lib/kernel/agent-onboarding.ts, which is what the onboarding actions actually
+// persist and read.
 
 // ==================== AI ONBOARDING FUNCTIONS ====================
 

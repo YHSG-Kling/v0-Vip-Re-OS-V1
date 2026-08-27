@@ -35,7 +35,9 @@
 
 import "server-only"
 
-import { COMMAND_MAP } from '../helpers/command-map'
+// MappedCommand is the map's own key type — imported so the cast below cannot
+// respell it inline (`keyof typeof COMMAND_MAP` was a second spelling, §6).
+import { COMMAND_MAP, type MappedCommand } from '../helpers/command-map'
 import { COMMAND_EXECUTORS } from '../helpers/command-executors'
 
 export interface DispatchResult {
@@ -107,7 +109,7 @@ export async function dispatchCommand(request: DispatchCommandRequest): Promise<
   try {
     // Resolve the param-mapping (for buildActionParams) + the STATIC executor (bundled +
     // build-validated, unlike the old runtime-string import that never resolved on Vercel).
-    const mapping = COMMAND_MAP[target_action as keyof typeof COMMAND_MAP]
+    const mapping = COMMAND_MAP[target_action as MappedCommand]
     const executor = COMMAND_EXECUTORS[target_action as keyof typeof COMMAND_EXECUTORS]
 
     if (!mapping || !executor) {

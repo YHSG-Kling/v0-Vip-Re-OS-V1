@@ -26,7 +26,18 @@ import {
   type ABTestVariable,
   type HashtagPlatform,
   type DescriptionType,
+  // CHECK-vocabulary mirrors, wired as `satisfies` on every literal write below so a
+  // literal that drifts out of the live CHECK becomes a compile error instead of a
+  // silently-refused insert (the utils' rosters are the one spelling, §6).
+  type ABTestStatus,
+  type SeoKeywordType,
+  CONTENT_CALENDAR_STATUSES,
+  SEO_VISIBILITY_SCOPES,
 } from "./ai-content-generation.utils"
+
+/** The two roster-derived unions used by the `satisfies` checks below. */
+type ContentCalendarStatus = (typeof CONTENT_CALENDAR_STATUSES)[number]
+type SeoVisibilityScope = (typeof SEO_VISIBILITY_SCOPES)[number]
 
 function parseAIJsonResponse(text: string) {
   let cleanText = text.trim()
@@ -463,11 +474,11 @@ export async function addSEOKeyword(data: {
       agent_user_id: auth.actor.userId, // users(id)
       brokerage_id: auth.actor.brokerageId, // NOT NULL in the database
       created_by: auth.actor.userId, // users(id)
-      visibility_scope: "agent", // CHECK member; 'private' is NOT one
+      visibility_scope: "agent" satisfies SeoVisibilityScope, // CHECK member; 'private' is NOT one
       keyword: kw,
       // keyword_type is CHECK-constrained (primary/secondary/long_tail/local/question);
       // map the primary flag onto it.
-      keyword_type: data.isPrimary ? "primary" : "secondary",
+      keyword_type: (data.isPrimary ? "primary" : "secondary") satisfies SeoKeywordType,
       search_volume: data.searchVolume,
       competition: data.competition,
       is_primary: data.isPrimary || false,
@@ -844,7 +855,7 @@ export async function updateABTestResults(
       // CHECK (status IN ('running','completed','cancelled')). This used to
       // write "active", which the constraint refuses outright — verified live,
       // SQLSTATE 23514. Every no-winner save was rejected.
-      status: results.winner ? "completed" : "running",
+      status: (results.winner ? "completed" : "running") satisfies ABTestStatus,
       completed_at: results.winner ? new Date().toISOString() : null,
     })
     .eq("id", testId)
@@ -2318,7 +2329,7 @@ OUTPUT FORMAT (JSON):
           content_type: String(item.content_type),
           scheduled_date: item.date || null,
           platform: item.platforms?.[0] ?? null,
-          status: "draft", // CHECK member
+          status: "draft" satisfies ContentCalendarStatus, // CHECK member
           notes: item.reasoning ?? null,
         }))
 
@@ -2516,7 +2527,7 @@ export async function createABTest(params: {
         test_metric: params.testMetric ?? "engagement_rate",
         target_sample_size: params.targetSampleSize ?? 1000,
         sample_size_per_variant: params.sampleSize || 100,
-        status: "running", // CHECK member
+        status: "running" satisfies ABTestStatus, // CHECK member
         started_at: new Date().toISOString(),
       })
       .select()
@@ -2721,7 +2732,7 @@ export async function analyzeABTest(testId: string): Promise<
         },
         // CHECK (status IN ('running','completed','cancelled')) — only close
         // the test out once the confidence threshold is actually met.
-        status: decided ? "completed" : "running",
+        status: (decided ? "completed" : "running") satisfies ABTestStatus,
         ended_at: decided ? new Date().toISOString() : null,
         completed_at: decided ? new Date().toISOString() : null,
         declared_winner_at: decided ? new Date().toISOString() : null,

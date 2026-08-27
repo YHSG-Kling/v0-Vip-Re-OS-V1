@@ -31,19 +31,11 @@ export type HealthCheck = {
   checked_at: string
 }
 
-export type HealthMetric = {
-  id: string
-  service_key: string
-  period_start: string
-  period_end: string
-  total_checks: number
-  successful_checks: number
-  failed_checks: number
-  uptime_pct: number
-  avg_response_time_ms: number | null
-  p95_response_time_ms: number | null
-  incidents_count: number
-}
+// TOMBSTONE (§1.3, 2026-08-27): `HealthMetric` deleted — it described a period-based
+// system_health_metrics rollup table that does not exist on the live database and
+// that nothing referenced. The uptime rollup is BUILT ANOTHER WAY: the daily
+// health_check_history snapshots written by app/api/cron/health-check and read by
+// getSlaSummary below (service_key, uptime_pct, avg_response_ms, incidents).
 
 export type CronExecutionLog = {
   id: string

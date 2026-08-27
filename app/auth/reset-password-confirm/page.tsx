@@ -17,6 +17,9 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/client'
+// The ONE password-length rule (§6) — this page used to restate `8` in four
+// places; a policy change now lands everywhere this page enforces or describes it.
+import { PASSWORD_REQUIREMENTS } from '@/app/constants/auth'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -75,8 +78,8 @@ export default function ResetPasswordConfirmPage() {
     e.preventDefault()
     setError(null)
 
-    if (password.length < 8) {
-      setError('Password must be at least 8 characters')
+    if (password.length < PASSWORD_REQUIREMENTS.MIN_LENGTH) {
+      setError(`Password must be at least ${PASSWORD_REQUIREMENTS.MIN_LENGTH} characters`)
       return
     }
     if (password !== confirm) {
@@ -141,11 +144,11 @@ export default function ResetPasswordConfirmPage() {
                     id="new-password"
                     type="password"
                     required
-                    minLength={8}
+                    minLength={PASSWORD_REQUIREMENTS.MIN_LENGTH}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     className="pl-10"
-                    placeholder="At least 8 characters"
+                    placeholder={`At least ${PASSWORD_REQUIREMENTS.MIN_LENGTH} characters`}
                   />
                 </div>
               </div>
@@ -157,7 +160,7 @@ export default function ResetPasswordConfirmPage() {
                     id="confirm-password"
                     type="password"
                     required
-                    minLength={8}
+                    minLength={PASSWORD_REQUIREMENTS.MIN_LENGTH}
                     value={confirm}
                     onChange={(e) => setConfirm(e.target.value)}
                     className="pl-10"

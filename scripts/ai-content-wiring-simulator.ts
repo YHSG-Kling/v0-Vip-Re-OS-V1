@@ -473,7 +473,9 @@ function vocabularyLayer() {
     "updateABTestResults writes completed-or-running, and 'active' is gone from the branch",
     (() => {
       const b = fnBody(src, "updateABTestResults")
-      return b.includes('status: results.winner ? "completed" : "running"') && !b.includes('"active"')
+      // The literal is now `satisfies ABTestStatus`-checked against the utils roster
+      // (2026-08-27), so the branch is pinned in its wired form.
+      return b.includes('status: (results.winner ? "completed" : "running") satisfies ABTestStatus') && !b.includes('"active"')
     })()
   )
   check(
@@ -893,8 +895,8 @@ const MUTATIONS: Mutation[] = [
   {
     name: "reinstate the CHECK-violating 'active' status",
     file: ACTIONS,
-    find: 'status: results.winner ? "completed" : "running",',
-    replace: 'status: results.winner ? "completed" : "active",',
+    find: 'status: (results.winner ? "completed" : "running") satisfies ABTestStatus,',
+    replace: 'status: (results.winner ? "completed" : "active") as ABTestStatus,',
     expect: "vocab.abtest.branch",
   },
   {

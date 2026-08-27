@@ -465,14 +465,10 @@ export const DEMO_USERS = [
 // ============================================
 // SESSION CONFIGURATION
 // ============================================
-export const SESSION_CONFIG = {
-  MAX_AGE: 24 * 60 * 60, // 24 hours
-  REFRESH_THRESHOLD: 60 * 60, // 1 hour before expiry
-  COOKIE_NAME: 'session',
-  SECURE: process.env.NODE_ENV === 'production',
-  HTTP_ONLY: true,
-  SAME_SITE: 'lax' as const,
-};
+// TOMBSTONE (§1.3, 2026-08-27): `SESSION_CONFIG` deleted — it configured a
+// hand-rolled 'session' cookie that no code ever set or read. Sessions are
+// BUILT ANOTHER WAY: Supabase SSR auth cookies via lib/supabase/server.ts /
+// lib/supabase/client.ts, whose lifetimes are provider-managed.
 
 // ============================================
 // PASSWORD REQUIREMENTS
@@ -488,13 +484,7 @@ export const PASSWORD_REQUIREMENTS = {
 // ============================================
 // AUTH ERROR CODES
 // ============================================
-export const AUTH_ERROR_CODES = {
-  INVALID_CREDENTIALS: 'invalid_credentials',
-  USER_NOT_FOUND: 'user_not_found',
-  EMAIL_EXISTS: 'email_exists',
-  SESSION_EXPIRED: 'session_expired',
-  UNAUTHORIZED: 'unauthorized',
-  INVALID_TOKEN: 'invalid_token',
-  WEAK_PASSWORD: 'weak_password',
-  INVALID_EMAIL: 'invalid_email',
-} as const;
+// TOMBSTONE (§1.3, 2026-08-27): `AUTH_ERROR_CODES` deleted — a parallel error
+// vocabulary no reader or writer ever compared against (repo-wide, zero literal
+// matches outside this file). Auth errors are BUILT ANOTHER WAY: supabase-js
+// AuthError codes/messages surfaced by app/actions/auth.ts (AuthActionResult).

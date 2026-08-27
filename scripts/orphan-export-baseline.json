@@ -33,6 +33,7 @@
     "app/actions/privacy/data-subject-requests.ts": 1,
     "app/actions/property-buyer-matching.ts": 1,
     "app/actions/reputation-kernel.ts": 3,
+    "app/actions/settings/revenue-share-setting.ts": 1,
     "app/actions/smart-insights.ts": 1,
     "app/actions/social/generate-social-post.ts": 1,
     "app/actions/social-media-automation.ts": 1,
@@ -436,7 +437,7 @@
     "lib/osint-client.ts": 1,
     "lib/outcomes/reconciliation.ts": 1,
     "lib/platform/acting-context.ts": 1,
-    "lib/platform/affiliates.ts": 3,
+    "lib/platform/affiliates.ts": 2,
     "lib/platform/ai-ops.ts": 1,
     "lib/platform/config-snapshots.ts": 1,
     "lib/platform/custom-domains.ts": 1,
@@ -455,6 +456,7 @@
     "lib/platform/product-content.ts": 2,
     "lib/platform/prospect-sourcer.ts": 2,
     "lib/platform/provider-posture.ts": 8,
+    "lib/platform/referral-payouts.ts": 1,
     "lib/platform/revenue-analytics.ts": 1,
     "lib/platform/self-audit-rollup.ts": 1,
     "lib/platform/status-notice.ts": 3,
@@ -572,7 +574,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9368,
+  "census": 9384,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -609,6 +611,7 @@
     "app/actions/admin/locations.ts": 6,
     "app/actions/admin/manager-evals.ts": 9,
     "app/actions/admin/onboarding-steps.ts": 3,
+    "app/actions/admin/referral-earnings.ts": 2,
     "app/actions/admin/run-scrape-test.ts": 1,
     "app/actions/admin/staff-360.ts": 2,
     "app/actions/admin/subscription-agreement.ts": 2,
@@ -1002,7 +1005,7 @@
     "app/actions/settings/provider-settings-actions.ts": 3,
     "app/actions/settings/public-site-links.ts": 1,
     "app/actions/settings/reputation-preferences.ts": 2,
-    "app/actions/settings/revenue-share-setting.ts": 2,
+    "app/actions/settings/revenue-share-setting.ts": 4,
     "app/actions/settings/showing-financial-gate-setting.ts": 2,
     "app/actions/settings/territories.ts": 4,
     "app/actions/settings/update-email-template.ts": 1,
@@ -1759,6 +1762,7 @@
     "app/components/providers.tsx": 1,
     "app/components/public-site/SiteChatLauncher.tsx": 1,
     "app/components/reputation/ReputationPanel.tsx": 1,
+    "app/components/settings/BenefitOfferingsCard.tsx": 1,
     "app/components/settings/BrandingForm.tsx": 1,
     "app/components/settings/ChatWidgetScopeCard.tsx": 1,
     "app/components/settings/CommissionStructureForm.tsx": 1,
@@ -1767,7 +1771,6 @@
     "app/components/settings/GeneralSettingsForm.tsx": 1,
     "app/components/settings/NotificationChannelsCard.tsx": 1,
     "app/components/settings/NotificationRulesForm.tsx": 1,
-    "app/components/settings/RevenueShareToggle.tsx": 1,
     "app/components/settings/SettingsCard.tsx": 1,
     "app/components/settings/SettingsSidebar.tsx": 1,
     "app/components/settings/VoiceAccessSettings.tsx": 1,
@@ -1862,6 +1865,7 @@
     "app/dashboard/admin/asset-manager-actions/client.tsx": 1,
     "app/dashboard/admin/automations/automations-client.tsx": 1,
     "app/dashboard/admin/billing/manage-billing-button.tsx": 1,
+    "app/dashboard/admin/billing/referral-earnings-card.tsx": 1,
     "app/dashboard/admin/billing/revenue-summary-card.tsx": 1,
     "app/dashboard/admin/billing/subscription-agreement-card.tsx": 1,
     "app/dashboard/admin/brand/brand-client.tsx": 1,
@@ -3187,6 +3191,7 @@
     "lib/finance/qb-reconciliation.ts": 10,
     "lib/finance/quarterly-tax-concierge.ts": 2,
     "lib/finance/scoped-accounting-export.ts": 2,
+    "lib/finance/tax-assistance.ts": 1,
     "lib/finance/tax-planning.ts": 6,
     "lib/finance/team-pl-writer.ts": 2,
     "lib/finance/team-pl.ts": 2,
@@ -3842,6 +3847,7 @@
     "lib/platform/prospect-sourcer.ts": 4,
     "lib/platform/provider-posture.ts": 14,
     "lib/platform/public-tiers.ts": 2,
+    "lib/platform/referral-payouts.ts": 6,
     "lib/platform/require-capability.ts": 2,
     "lib/platform/revenue-analytics.ts": 2,
     "lib/platform/save-offer.ts": 2,
@@ -3850,7 +3856,7 @@
     "lib/platform/site-url.ts": 1,
     "lib/platform/staff-action-gate.ts": 2,
     "lib/platform/status-notice.ts": 10,
-    "lib/platform/subscriber-referrals.ts": 3,
+    "lib/platform/subscriber-referrals.ts": 4,
     "lib/platform/subscription-oversight.ts": 4,
     "lib/platform/suppression-list.ts": 4,
     "lib/platform/tenant-export.ts": 2,
@@ -3934,6 +3940,7 @@
     "lib/quality-checker.ts": 1,
     "lib/recruit-pipeline/recruit-processor.ts": 1,
     "lib/recruit-pipeline/recruit-sourcer.ts": 1,
+    "lib/recruiting/benefit-offerings.ts": 3,
     "lib/recruiting/career-tier.ts": 7,
     "lib/recruiting/challenge-runner.ts": 3,
     "lib/recruiting/challenges.ts": 2,
@@ -4461,6 +4468,10 @@
       "listOnboardingCurriculumAction",
       "saveOnboardingStepAction",
       "deleteOnboardingStepAction"
+    ],
+    "app/actions/admin/referral-earnings.ts": [
+      "getReferralEarningsAction",
+      "acknowledgeReferralPayoutAction"
     ],
     "app/actions/admin/run-scrape-test.ts": [
       "runScrapeTestAction"
@@ -7150,7 +7161,9 @@
     ],
     "app/actions/settings/revenue-share-setting.ts": [
       "getRevenueShareSetting",
-      "setRevenueShareEnabled"
+      "setRevenueShareEnabled",
+      "getBenefitOfferings",
+      "setBenefitOffering"
     ],
     "app/actions/settings/showing-financial-gate-setting.ts": [
       "getShowingFinancialGateSetting",
@@ -9990,6 +10003,9 @@
     "app/components/reputation/ReputationPanel.tsx": [
       "ReputationPanel"
     ],
+    "app/components/settings/BenefitOfferingsCard.tsx": [
+      "BenefitOfferingsCard"
+    ],
     "app/components/settings/BrandingForm.tsx": [
       "BrandingForm"
     ],
@@ -10013,9 +10029,6 @@
     ],
     "app/components/settings/NotificationRulesForm.tsx": [
       "NotificationRulesForm"
-    ],
-    "app/components/settings/RevenueShareToggle.tsx": [
-      "RevenueShareToggle"
     ],
     "app/components/settings/SettingsCard.tsx": [
       "SettingsCard"
@@ -10299,6 +10312,9 @@
     ],
     "app/dashboard/admin/billing/manage-billing-button.tsx": [
       "ManageBillingButton"
+    ],
+    "app/dashboard/admin/billing/referral-earnings-card.tsx": [
+      "ReferralEarningsCard"
     ],
     "app/dashboard/admin/billing/revenue-summary-card.tsx": [
       "RevenueSummaryCard"
@@ -15525,6 +15541,9 @@
       "pushTeamPnlToQuickBooks",
       "pushAgentCommissionToQuickBooks"
     ],
+    "lib/finance/tax-assistance.ts": [
+      "resolveTaxAssistanceEnabled"
+    ],
     "lib/finance/tax-planning.ts": [
       "computeSelfEmploymentTax",
       "computeNetSelfEmploymentIncome",
@@ -19012,6 +19031,14 @@
       "loadPublicTiers",
       "formatTierPrice"
     ],
+    "lib/platform/referral-payouts.ts": [
+      "getReferralFeeTerms",
+      "resolveReferralRecipient",
+      "postReferralPayout",
+      "listReferralEarningsForBrokerage",
+      "markReferralPayoutReceived",
+      "summarizeLedgerByProspect"
+    ],
     "lib/platform/require-capability.ts": [
       "resolvePlatformRole",
       "requirePlatformCapability"
@@ -19053,6 +19080,7 @@
     "lib/platform/subscriber-referrals.ts": [
       "makeReferralSource",
       "parseReferrer",
+      "parseReferrerEmail",
       "computeReferralFeeCents"
     ],
     "lib/platform/subscription-oversight.ts": [
@@ -19444,6 +19472,11 @@
     ],
     "lib/recruit-pipeline/recruit-sourcer.ts": [
       "sourceRecruitProspects"
+    ],
+    "lib/recruiting/benefit-offerings.ts": [
+      "loadBenefitOfferings",
+      "offeredBenefitLabels",
+      "benefitsPitchSection"
     ],
     "lib/recruiting/career-tier.ts": [
       "meetsTier",
@@ -21087,5 +21120,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 0
+  "trulyDead": 1
 }

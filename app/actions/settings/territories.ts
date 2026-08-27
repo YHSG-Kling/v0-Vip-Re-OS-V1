@@ -60,6 +60,7 @@ import {
   parseZipInput,
   resolveGrainColumns,
   ZIP_RE,
+  TERRITORY_GRAINS,
   type TerritoryGrain,
   type TerritoryViewer,
 } from "@/app/dashboard/settings/territories/territory-rules"
@@ -161,7 +162,10 @@ async function resolveViewer(): Promise<{ ok: true; ctx: Ctx } | { ok: false; er
 }
 
 function writableGrainsFor(viewer: TerritoryViewer): TerritoryGrain[] {
-  if (viewer.isBrokerageAdmin) return ["brokerage", "team", "agent"]
+  // The full-roster branch reads the ONE grain roster (§6) instead of restating
+  // ["brokerage","team","agent"] — a grain added to territory-rules.ts now
+  // reaches the admin's controls without a second edit here.
+  if (viewer.isBrokerageAdmin) return [...TERRITORY_GRAINS]
   const grains: TerritoryGrain[] = ["agent"]
   if (viewer.ledTeamIds.length > 0) grains.unshift("team")
   return grains

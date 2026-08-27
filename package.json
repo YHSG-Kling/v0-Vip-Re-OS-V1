@@ -252,6 +252,7 @@
     "test:entitlements": "tsx scripts/entitlements-resolver-simulator.ts",
     "test:platform-growth": "tsx scripts/platform-growth-simulator.ts",
     "test:prospect-conversion": "tsx scripts/prospect-conversion-simulator.ts",
+    "test:referral-payouts": "tsx scripts/referral-payouts-simulator.ts",
     "test:referral-appreciation": "tsx scripts/referral-appreciation-simulator.ts",
     "test:product-content": "tsx scripts/product-content-simulator.ts",
     "test:product-video": "tsx scripts/product-video-simulator.ts",

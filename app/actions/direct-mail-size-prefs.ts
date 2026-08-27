@@ -26,12 +26,10 @@ import { getPlatformRecommendation, type DirectMailUseKind, type PostcardSize } 
 
 export type ScopeType = "agent" | "team" | "brokerage"
 
-export interface SizePrefMatrix {
-  scope_type: ScopeType
-  scope_id:   string
-  /** Sparse — only keys the subscriber overrode. Use_kind:persona → size. */
-  overrides:  Record<string, PostcardSize>
-}
+// TOMBSTONE (§1.3, 2026-08-27): `SizePrefMatrix` deleted — a restatement of the
+// matrix that nothing referenced. The matrix contract's one spelling is
+// getSizePrefsMatrix's explicit return type below (scopeId + sparse overrides +
+// resolved cells), which is what the settings client actually consumes.
 
 export interface SizePrefCell {
   use_kind:        DirectMailUseKind

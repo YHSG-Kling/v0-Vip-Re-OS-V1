@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
 import { summarizeRevenueShareBoard } from "../lib/intelligence/revenue-share-board"
+import { benefitsPitchSection, offeredBenefitLabels, NO_BENEFITS } from "../lib/recruiting/benefit-offerings"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -49,6 +50,50 @@ function pureLayer() {
   check("earnerCount = distinct earning agents", board.earnerCount === 2)
   check("names resolved; missing → honest fallback", summarizeRevenueShareBoard([{ agent_id: "z", calculated_amount: 10, status: "paid" }], [], new Map()).earners[0].name === "An agent")
   check("quiet network → honest zeros", summarizeRevenueShareBoard([], [], new Map()).totalShared === 0)
+}
+
+/** BENEFIT OFFERINGS (owner ruling 2026-08-27): residual income IS the revenue-share setting —
+ *  one mark, one settings home — plus the m574 medical/retirement marks, advertised only where
+ *  the broker actually set them. Pure layer proves the fail-closed rendering; source layer proves
+ *  the one home, the one loader, and the readers. */
+function benefitOfferingsLayer() {
+  console.log("\n[benefit offerings · pure — fail-closed: unset is NOT offered, nothing renders]")
+  check("all-false offerings → NO benefits section at all (fail-closed control)", benefitsPitchSection(NO_BENEFITS) === null)
+  check("all-false offerings → zero labels", offeredBenefitLabels(NO_BENEFITS).length === 0)
+  const onlyMedical = offeredBenefitLabels({ revenueShare: false, medical: true, retirement: false })
+  check("one mark → exactly that one label (medical)", onlyMedical.length === 1 && /Medical/.test(onlyMedical[0]))
+  const rs = offeredBenefitLabels({ revenueShare: true, medical: false, retirement: false })
+  check("the residual-income label rides the ONE revenue-share mark (§6 — no second spelling)", rs.length === 1 && /[Rr]esidual income/.test(rs[0]))
+  const all = benefitsPitchSection({ revenueShare: true, medical: true, retirement: true })
+  check("all three marks → three bullets under one heading", (all?.bullets?.length ?? 0) === 3)
+  check("benefit claims carry the eligibility qualifier (compliance wording — offered, never promised)",
+    (all?.paragraphs ?? []).some((p) => /Eligibility/.test(p)))
+
+  console.log("\n[benefit offerings · wiring — one settings home, one loader, real readers]")
+  const setting = src("app/actions/settings/revenue-share-setting.ts")
+  check("the offerings settings home reads all four marks in one gated action", /getBenefitOfferings[\s\S]*?revenue_share_enabled, offers_medical_benefits, offers_retirement_benefits, tax_assistance_enabled/.test(setting))
+  check("setBenefitOffering maps benefit→column through an allow-list (client never names a column)",
+    /medical:\s*"offers_medical_benefits"/.test(setting) && /retirement:\s*"offers_retirement_benefits"/.test(setting))
+  check("the offering write is COUNTED (zero rows ≠ saved)", /setBenefitOffering[\s\S]*?\.select\("id"\)[\s\S]*?saved\.length === 0/.test(setting))
+  const card = src("app/components/settings/BenefitOfferingsCard.tsx")
+  check("ONE settings card carries residual income + medical + retirement + tax assistance", /revenue_share/.test(card) && /medical/.test(card) && /retirement/.test(card) && /tax_assistance/.test(card))
+  check("RevenueShareToggle merged into the card (tombstone names the source)", /TOMBSTONE[\s\S]*?RevenueShareToggle\.tsx/.test(card))
+  check("the commission settings page renders the one offerings card", /BenefitOfferingsCard/.test(src("app/settings/commission/page.tsx")))
+  const kit = src("lib/recruiting/recruiting-pitch-kit.ts")
+  check("the recruit pitch kit loads offerings fail-closed and renders the benefits section", /loadBenefitOfferings\(svc, b\.id\)/.test(kit) && /benefitsPitchSection\(f\.benefits\)/.test(kit))
+  check("flipping a mark regenerates the kit (offerings are in the settings hash)", /ob: f\.benefits \?\? null/.test(kit))
+  check("team kits inherit the BROKERAGE's marks (set before the hash)", /loadBenefitOfferings\(svc, t\.brokerage_id\)[\s\S]*?pitchSettingsHash\(facts\)/.test(kit))
+  const careers = src("app/recruiting/[brokerageSlug]/page.tsx")
+  check("the public careers page passes offerings fail-closed (=== true)", /revenue_share_enabled === true/.test(careers) && /offers_medical_benefits === true/.test(careers) && /offers_retirement_benefits === true/.test(careers))
+  const client = src("app/recruiting/[brokerageSlug]/recruiting-client.tsx")
+  check("the careers client renders benefits ONLY when a mark is set (no hollow section)",
+    /offersRevenueShare \|\| brokerage\.offersMedical \|\| brokerage\.offersRetirement/.test(client))
+  const radar = src("lib/recruiting/retention-radar.ts")
+  check("the retention save-play surfaces offered benefits as a retention lever (best-effort, fail-closed)",
+    /offeredBenefitLabels\(await loadBenefitOfferings\(svc, p\.brokerageId\)\)/.test(radar) && /labels\.length > 0/.test(radar))
+  const reg = src("lib/kernel/manager-registry.ts")
+  check("the benefit-offerings seam is declared (recruiting × finance × compliance)",
+    /benefit_offerings:\s*\{[\s\S]*?managers: \["recruiting_manager", "finance_manager", "compliance_officer"\]/.test(reg))
 }
 
 function sourceLayer() {
@@ -123,6 +168,7 @@ async function liveLayer() {
 
 async function main() {
   pureLayer()
+  benefitOfferingsLayer()
   sourceLayer()
   await liveLayer()
   console.log("\n──────────────────────────────────────────────────")

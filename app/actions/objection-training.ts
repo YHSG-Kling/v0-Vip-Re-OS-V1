@@ -44,14 +44,11 @@ export interface PracticeSession {
   improvements: string[] | null
 }
 
-export interface PracticeTurn {
-  index: number
-  speaker: "prospect" | "agent"
-  text: string
-  audioUrl: string | null
-  turnScore: number | null
-  feedback: string | null
-}
+// TOMBSTONE (§1.3, 2026-08-27): `PracticeTurn` deleted — a camelCase shape no code
+// (including this file) ever produced or consumed. The logged turn is BUILT
+// ANOTHER WAY: the objection_training_turns rows this file inserts and the session
+// getters return verbatim; the live-chat turn on the client is its own lighter
+// ChatTurn in app/dashboard/coaching/practice/practice-client.tsx.
 
 // ─── Scenario resolution ─────────────────────────────────────────────────────
 

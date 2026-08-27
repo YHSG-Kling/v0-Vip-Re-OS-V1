@@ -71,5 +71,8 @@ export const REPURPOSE_LOG_APPROVAL_STATUSES = [
   "rejected",
 ] as const
 
-export type RepurposeLogStatus = (typeof REPURPOSE_LOG_STATUSES)[number]
-export type RepurposeLogApprovalStatus = (typeof REPURPOSE_LOG_APPROVAL_STATUSES)[number]
+// TOMBSTONE (§1.3, 2026-08-27): the derived union types `RepurposeLogStatus` /
+// `RepurposeLogApprovalStatus` are deleted — nothing consumed them. The vocabulary
+// and its ENFORCEMENT live in the two rosters above: imported by
+// app/actions/video-repurposing.ts (runtime-validated on every filtered read) and
+// rendered as the filter options in the repurpose dashboard.

@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { listCommissionStructures } from '@/app/actions/settings/list-commission-structures';
 import { CommissionStructureForm } from '@/app/components/settings/CommissionStructureForm';
 import { CommissionStructureTable } from '@/app/components/settings/CommissionStructureTable';
-import { RevenueShareToggle } from '@/app/components/settings/RevenueShareToggle';
+import { BenefitOfferingsCard } from '@/app/components/settings/BenefitOfferingsCard';
 
 export default function CommissionPage() {
   const [structures, setStructures] = useState<any[]>([]);
@@ -34,11 +34,14 @@ export default function CommissionPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold text-gray-900">Commission Structures</h1>
-        <p className="text-gray-600 mt-2">Define how commissions are calculated</p>
+        <h1 className="text-3xl font-bold text-gray-900">Commission &amp; Offerings</h1>
+        <p className="text-gray-600 mt-2">Define how commissions are calculated and mark what your brokerage offers agents</p>
       </div>
 
-      <RevenueShareToggle />
+      {/* The ONE brokerage-offerings home (§6): residual income (revenue share),
+          medical, retirement, and tax assistance — RevenueShareToggle merged into
+          this card (see its tombstone header). */}
+      <BenefitOfferingsCard />
 
       <CommissionStructureForm onSuccess={loadStructures} />
 
