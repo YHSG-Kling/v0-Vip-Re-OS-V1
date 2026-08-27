@@ -327,5 +327,40 @@ jobs:
       # Node + `npm ci` live in ONE composite action for all four workflows —
       # see .github/actions/node-deps/action.yml.
       - uses: ./.github/actions/node-deps
+      # ── 2026-08-26, run 33021558019 (commit 67fc1b05): THE FAILURE MODE MOVED,
+      # exactly as the bracket above predicted. With webpackBuildWorker on, the
+      # compile FINISHED for the first time on CI — "Compiled with warnings in
+      # 8.0min", where every prior run aborted with exit 134 mid-compile around
+      # 8m10s. ~21 seconds later the RUNNER was shut down and the build worker
+      # SIGKILLed: no V8 abort, no exit 134 — the machine itself ran out. That is
+      # the "RSS is NOT clearly improved — only the heap is" reading coming true
+      # (13.9 GB worker RSS measured locally against a 16 GB machine).
+      #
+      # The bracket's conclusion — "the answer is the runner, not another knob" —
+      # missed one free knob: SWAP. The post-compile spike is TRANSIENT and its
+      # pages are COLD (pack-file-cache buffers being serialized to disk, the
+      # parent's retained compile results) — the exact working-set shape swap
+      # absorbs without thrashing the hot path. The runner has ~14 GB of free SSD
+      # doing nothing during that window. This does not raise any V8 cap (12288
+      # stays fatal for the reason recorded above); it gives the KERNEL somewhere
+      # to put cold pages so the OOM killer does not shoot the runner service.
+      #
+      # BEST-EFFORT BY DESIGN: if no swapfile can be created, the step says so
+      # and the build still runs — the build is the test, and a failed swap step
+      # masking a green build would invert the point. `free -h` prints before and
+      # after so the next reading of this bracket has numbers, not adjectives.
+      - name: Add swap headroom for the post-compile RSS spike
+        run: |
+          echo "── memory before ──"; free -h; swapon --show || true
+          TARGET=/mnt/swapfile-ci
+          sudo test -d /mnt || TARGET=/swapfile-ci
+          if sudo fallocate -l 8G "$TARGET" 2>/dev/null || sudo fallocate -l 4G "$TARGET" 2>/dev/null; then
+            sudo chmod 600 "$TARGET" && sudo mkswap "$TARGET" && sudo swapon "$TARGET" \
+              && echo "swap added at $TARGET" \
+              || echo "swapfile created but could not be enabled — building without it"
+          else
+            echo "no space for a swapfile — building without it"
+          fi
+          echo "── memory after ──"; free -h; swapon --show || true
       - name: Production build (next build)
         run: npm run build

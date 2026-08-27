@@ -314,6 +314,22 @@ function refusedReadOnly(r: any): boolean {
  * marker. Whatever the history looks like later, "the last version without the
  * fix" still means the same thing.
  *
+ * SHALLOW CLONES ARE DEEPENED, NOT TOLERATED. The first CI run after this
+ * function landed proved the fail-closed path works — by failing CI. actions/
+ * checkout fetches depth 1, so `git log` saw exactly one commit, its blob
+ * carried the marker, and the guard threw exactly as designed:
+ *
+ *   Error: act-as-read-path: no pre-fix version of app/actions/voice-tenancy.ts
+ *   is reachable in this history (searched 1 commit(s) …)
+ *
+ * The refusal was correct — the environment genuinely could not supply the
+ * BEFORE half — but the environment is fixable from here: a shallow repo can be
+ * DEEPENED from origin. So when the walk comes up empty AND the repo is
+ * shallow, this fetches more history and retries, escalating depth, before
+ * refusing. The fail-closed throw is unchanged for the cases deepening cannot
+ * cure: a squash-merged history where no pre-fix blob exists on any depth, a
+ * marker that stopped matching, no reachable remote.
+ *
  * FAILS CLOSED (§4). If no such version exists — a squashed history, a fresh
  * clone with no ancestry, a marker that stopped matching — this THROWS rather
  * than falling back to HEAD. Falling back would silently compare the fixed file
@@ -321,26 +337,53 @@ function refusedReadOnly(r: any): boolean {
  * proving nothing: the failure mode this function was rewritten to remove.
  */
 function beforeFix(relPath: string, marker: RegExp = /resolveActingContext|actingWriteContext/): string {
-  const log = execFileSync("git", ["log", "--format=%H", "--", relPath], {
-    cwd: ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
-  }).split("\n").filter(Boolean)
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
 
-  for (const sha of log) {
-    let blob: string
-    try {
-      blob = execFileSync("git", ["show", `${sha}:${relPath}`], {
-        cwd: ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
-      })
-    } catch {
-      continue // the file did not exist at that commit
+  const walk = (): string | null => {
+    const log = git("log", "--format=%H", "--", relPath).split("\n").filter(Boolean)
+    for (const sha of log) {
+      let blob: string
+      try {
+        blob = git("show", `${sha}:${relPath}`)
+      } catch {
+        continue // the file did not exist at that commit
+      }
+      if (!marker.test(blob)) return blob
     }
-    if (!marker.test(blob)) return blob
+    return null
   }
+
+  let found = walk()
+
+  // Depths chosen so the common CI case (depth 1, pre-fix a handful of commits
+  // back) resolves on the first deepen, while a pathological history gets two
+  // more chances before --unshallow fetches everything. Each step is a no-op
+  // once the repo is no longer shallow.
+  for (const deepen of ["--deepen=64", "--deepen=512", "--unshallow"]) {
+    if (found) break
+    let shallow = false
+    try {
+      shallow = git("rev-parse", "--is-shallow-repository").trim() === "true"
+    } catch {
+      break // not even a git repo worth deepening — fall through to the throw
+    }
+    if (!shallow) break
+    try {
+      git("fetch", "--quiet", deepen, "origin")
+    } catch {
+      break // no reachable remote — deepening cannot cure this, refuse below
+    }
+    found = walk()
+  }
+
+  if (found) return found
 
   throw new Error(
     `act-as-read-path: no pre-fix version of ${relPath} is reachable in this history ` +
-      `(searched ${log.length} commit(s) for a blob without ${marker}). The BEFORE half of ` +
-      `this proof cannot run, so it refuses rather than comparing the fixed file to itself.`,
+      `(walked every commit touching it, deepening a shallow clone from origin where possible, ` +
+      `for a blob without ${marker}). The BEFORE half of this proof cannot run, so it refuses ` +
+      `rather than comparing the fixed file to itself.`,
   )
 }
 
