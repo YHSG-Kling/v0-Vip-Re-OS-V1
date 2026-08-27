@@ -50,13 +50,13 @@ async function resolveBrokerAdmin(
   return { ok: true, brokerageId: acting.brokerageId }
 }
 
-export async function getRevenueShareSetting(): Promise<{ ok: boolean; enabled: boolean; error?: string }> {
-  const ctx = await resolveBrokerAdmin("read")
-  if (!ctx.ok) return { ok: false, enabled: false, error: ctx.error }
-  const svc = createServiceClient()
-  const { data } = await svc.from("brokerages").select("revenue_share_enabled").eq("id", ctx.brokerageId).maybeSingle()
-  return { ok: true, enabled: !!(data as any)?.revenue_share_enabled }
-}
+// TOMBSTONE (§1.1): getRevenueShareSetting was DELETED into getBenefitOfferings
+// below. When the offerings card absorbed the old RevenueShareToggle, the
+// four-mark read became this file's one reader-facing getter and the
+// single-mark getter lost its last caller the same wave it gained a sibling —
+// test:wired-surface caught it as a new orphan "use server" action, which in
+// this file means a new PUBLIC HTTP ENDPOINT nobody calls (§4). The survivor
+// returns revenueShare among its four marks through the same read gate.
 
 export async function setRevenueShareEnabled(enabled: boolean): Promise<{ ok: boolean; error?: string }> {
   // "write": read_only impersonation is refused inside the gate.
