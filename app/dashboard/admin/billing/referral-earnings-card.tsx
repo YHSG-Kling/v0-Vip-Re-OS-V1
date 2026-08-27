@@ -74,7 +74,14 @@ export function ReferralEarningsCard({ initialRows }: { initialRows: ReferralEar
               {rows.map((r) => (
                 <tr key={r.id} className="border-b last:border-0">
                   <td className="px-3 py-2 tabular-nums">{r.period}</td>
-                  <td className="px-3 py-2 text-right tabular-nums font-medium">{fmt(r.amountCents)}</td>
+                  {/* The basis this payout was computed under (m576) — a percent-era
+                      row (basis null) renders no chip rather than guessing. */}
+                  <td className="px-3 py-2 text-right tabular-nums font-medium">
+                    {fmt(r.amountCents)}
+                    {r.basis && (
+                      <span className="ml-1 text-[10px] uppercase text-muted-foreground">{r.basis}</span>
+                    )}
+                  </td>
                   <td className="px-3 py-2 text-xs text-muted-foreground">{new Date(r.postedAt).toLocaleDateString()}</td>
                   <td className="px-3 py-2">
                     <Badge variant={r.status === "received" ? "default" : "outline"} className="text-[11px] capitalize">

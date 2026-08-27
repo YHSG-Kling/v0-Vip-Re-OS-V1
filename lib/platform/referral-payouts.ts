@@ -359,6 +359,8 @@ export interface ReferralEarningRow {
    *  The write half has stamped this since the ledger existed; this reader is
    *  what lets a finance admin see WHO on their team confirmed. */
   receivedBy: string | null
+  /** The fee basis this payout was posted under (m576); null = percent-era row. */
+  basis: ReferralFeeBasis | null
 }
 
 /**
@@ -375,7 +377,7 @@ export async function listReferralEarningsForBrokerage(
   const svc = client ?? createServiceClient()
   const { data, error } = await svc
     .from("referral_payouts")
-    .select("id, referrer, amount_cents, fee_percent, period, status, note, posted_at, received_at, received_by")
+    .select("id, referrer, amount_cents, fee_percent, period, status, note, posted_at, received_at, received_by, basis")
     .eq("recipient_brokerage_id", brokerageId)
     .neq("status", "void")
     .order("posted_at", { ascending: false })
@@ -399,6 +401,7 @@ export async function listReferralEarningsForBrokerage(
       postedAt: r.posted_at,
       receivedAt: r.received_at ?? null,
       receivedBy: r.received_by ?? null,
+      basis: (r.basis ?? null) as ReferralFeeBasis | null,
     })),
   }
 }
@@ -458,7 +461,7 @@ export async function summarizeLedgerByProspect(
   const svc = client ?? createServiceClient()
   const { data, error } = await svc
     .from("referral_payouts")
-    .select("prospect_id, amount_cents, status, posted_at, recipient_brokerage_id, recipient_email, posted_by")
+    .select("prospect_id, amount_cents, status, posted_at, recipient_brokerage_id, recipient_email, posted_by, basis")
     .in("prospect_id", prospectIds)
     .order("posted_at", { ascending: false })
     .limit(2000)

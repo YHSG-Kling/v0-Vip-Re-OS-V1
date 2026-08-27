@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 437 tables, 761 columns.
+ * MEASURED AT GENERATION: 438 tables, 765 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-08-27
  * source: public.live_check_constraints_json()
- * body-sha256: 6712bc0e81cf240895cb283854f4bf39c372f737d8490c65e3bbe22a45671e4c
+ * body-sha256: 9e1f846f3e5c297c8c04e0461e9f295ba61f7d6220cae7337073a96bf5b4cee9
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -327,6 +327,8 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     non_cda_payout_default: ["check", "direct_deposit"],
     onboarding_status: ["abandoned", "completed", "in_progress", "pending"],
     plan_tier: ["brokerage", "multi_location", "solo_agent", "team"],
+    revenue_share_rate_type: ["flat", "percent"],
+    revenue_share_source_of_funds: ["agent", "brokerage"],
     signup_source: ["import", "partner", "self_serve", "superadmin"],
     status: ["active", "archived", "cancelled", "suspended"],
   },
@@ -1145,6 +1147,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     severity: ["critical", "info", "warn"],
     status: ["approved", "dismissed", "proposed", "sent"],
   },
+  platform_settings: {
+    referral_fee_basis: ["flat", "percent"],
+  },
   platform_social_accounts: {
     platform: ["facebook", "instagram", "linkedin", "tiktok", "x", "youtube"],
     status: ["connected", "disconnected", "error", "pending"],
@@ -1277,6 +1282,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     partner_type: ["attorney", "contractor", "home_inspector", "insurance_agent", "mortgage_broker", "other", "property_manager", "real_estate_agent", "title_company"],
   },
   referral_payouts: {
+    basis: ["flat", "percent"],
     status: ["posted", "received", "void"],
   },
   referral_sources: {
