@@ -9,8 +9,10 @@ import { ingestMessageService } from "@/lib/communication-spine/ingest-message-s
  * with Messenger/Instagram, but the message payload shape is different
  * (entry[].changes[].value.messages instead of entry[].messaging).
  *
- * Required env: META_VERIFY_TOKEN (shared with /api/webhooks/meta) or
- * a separate WHATSAPP_VERIFY_TOKEN if the brokerage wants isolation.
+ * Required env: WHATSAPP_VERIFY_TOKEN, or META_VERIFY_TOKEN as fallback.
+ * (META_VERIFY_TOKEN was the deleted first-generation Messenger route's env
+ * var — the Messenger/IG survivor is app/api/webhooks/meta-dm/route.ts,
+ * which reads META_WEBHOOK_VERIFY_TOKEN with the same fallback.)
  */
 
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN ?? process.env.META_VERIFY_TOKEN ?? ""

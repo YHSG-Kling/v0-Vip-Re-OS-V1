@@ -42,7 +42,7 @@
  * LIVE layer (creds-gated): the CHECK constraints really do admit exactly the
  * values the classifier partitions.
  */
-import { readFileSync } from "node:fs"
+import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
 import {
@@ -350,8 +350,17 @@ function sourceLayer() {
     check(`${f} no longer writes lead_enrichment_queue directly`,
       !/from\((["'])lead_enrichment_queue\1\)[\s\S]{0,120}?\.insert\(/.test(code(f)))
   }
-  check("lib/ghl-integration.ts's un-drainable copy (no brokerage_id) is gone",
-    !code("lib/ghl-integration.ts").includes("lead_enrichment_queue"))
+  // lib/ghl-integration.ts is DELETED entirely (2026-08-27 — a duplicate of
+  // services/goHighLevelService.ts whose last importer was the removed
+  // app/api/webhooks/ghl route). The un-drainable queue write it once carried
+  // cannot return through a file that no longer exists, so the claim moves to
+  // the survivor, which must never pick the write up. The tombstone check
+  // reads RAW source on purpose — a tombstone IS a comment (§2).
+  check("lib/ghl-integration.ts stays deleted, tombstoned at the survivor",
+    !existsSync(join(process.cwd(), "lib/ghl-integration.ts")) &&
+    src("services/goHighLevelService.ts").includes("lib/ghl-integration.ts"))
+  check("the surviving GHL egress module writes no enrichment queue row",
+    !code("services/goHighLevelService.ts").includes("lead_enrichment_queue"))
   check("the survivor requires the tenant rather than writing an un-drainable row",
     /queueContactEnrichment[\s\S]{0,900}?if\s*\(!contactId\s*\|\|\s*!brokerageId\)/.test(core))
 
@@ -522,12 +531,17 @@ function leadSourceLayer() {
   check("no enrichment module names a ghl_sync trigger anywhere",
     ![CORE, LEAD_CORE, SUPPRESSION, "lib/enrichment/lead-freshness.ts", "lib/enrichment/identifier-guard.ts"]
       .some((f) => /["']ghl_sync["']/.test(code(f))))
-  check("the inbound GHL contact sync is still refused at the source",
-    /syncContactFromGHL[\s\S]{0,300}?Inbound CRM sync is disabled/.test(code("lib/ghl-integration.ts")))
+  // The syncContactFromGHL refusal stub was deleted WITH lib/ghl-integration.ts
+  // (2026-08-27): the ruling "GHL is sync-out only" is enforced where inbound
+  // actually arrives — the verified no-op webhook ack (next check) — and no
+  // module may re-create an inbound GHL contact-sync entry point.
+  check("no GHL inbound contact-sync entry point exists anywhere",
+    !existsSync(join(process.cwd(), "lib/ghl-integration.ts")) &&
+    !/syncContactFromGHL/.test(code("services/goHighLevelService.ts")))
   check("...and the GHL webhook still ignores inbound events",
     /one-way OUT only/.test(code("app/api/webhooks/gohighlevel/route.ts")))
-  check("ghl-integration writes no enrichment queue row (wave-3 deletion holds)",
-    !code("lib/ghl-integration.ts").includes("lead_enrichment_queue"))
+  check("the surviving GHL egress writes no enrichment queue row (wave-3 deletion holds)",
+    !code("services/goHighLevelService.ts").includes("lead_enrichment_queue"))
   // DESTINATION half. syncContactToCRM is the ONE outbound choke point; its
   // payload type is the whole surface that can reach a third-party CRM.
   const crmSync = code("lib/crm/sync.ts")

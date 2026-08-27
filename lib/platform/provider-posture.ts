@@ -33,6 +33,7 @@
 // not a fan-out storm. All egress via the connector gateway.
 
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { canonicalWebhookUrl, findWebhookContractEntry } from "@/lib/providers/webhook-contract"
 import type { A2pState } from "@/lib/voice/a2p-registration"
 import { nextA2pStep } from "@/lib/voice/a2p-registration"
 import { CONNECTOR_REGISTRY } from "@/lib/agentic-os/connector-registry"
@@ -50,16 +51,26 @@ import { runFreeOsintLane } from "@/lib/external/osint-free"
 import { gatewayChat } from "@/lib/ai/gateway-chat"
 
 // ── Webhook expectations (the URLs bindNumberToTwilioLane writes) ────────────
+// ONE VOCABULARY (§6): the paths come from lib/providers/webhook-contract.ts —
+// the per-provider inbound webhook contract — so the drift detector below and
+// the superadmin contract card can never disagree about the canonical URL.
 
 export interface ExpectedWebhooks {
   voice: string
   sms: string
 }
 
-/** PURE: the webhook URLs a bound tenant number is expected to carry. */
+/** PURE: the webhook URLs a bound tenant number is expected to carry —
+ *  derived from the webhook contract, never retyped. */
 export function expectedWebhookTargets(appUrl: string): ExpectedWebhooks {
-  const base = appUrl.replace(/\/$/, "")
-  return { voice: `${base}/api/voice/twilio/inbound`, sms: `${base}/api/providers/inbound` }
+  const voiceEntry = findWebhookContractEntry("/api/voice/twilio/inbound")
+  const smsEntry = findWebhookContractEntry("/api/providers/inbound")
+  // The contract carries both entries by construction (webhook-contract-guard
+  // asserts full route coverage); the fallback keeps this PURE helper total.
+  return {
+    voice: canonicalWebhookUrl(appUrl, voiceEntry ?? { path: "/api/voice/twilio/inbound" }),
+    sms: canonicalWebhookUrl(appUrl, smsEntry ?? { path: "/api/providers/inbound" }),
+  }
 }
 
 export type NumberBinding = "bound" | "unbound" | "drifted"

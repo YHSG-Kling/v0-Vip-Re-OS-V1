@@ -111,10 +111,11 @@ export const MAX_PENDING_CONTACT_ENRICHMENTS = 200
  * Two separate things, both checked:
  *
  *  · TRIGGER. No enrichment may be entered from a GoHighLevel sync. The live
- *    paths already refuse — lib/ghl-integration.ts:syncContactFromGHL returns
- *    "Inbound CRM sync is disabled — GHL is sync-out only", and
- *    app/api/webhooks/gohighlevel/route.ts verifies the signature and then
- *    ignores the event — and wave 3 deleted both the private GHL queue writer
+ *    path already refuses — app/api/webhooks/gohighlevel/route.ts verifies
+ *    the signature and then ignores the event (the syncContactFromGHL refusal
+ *    stub this note once named went down with lib/ghl-integration.ts, deleted
+ *    2026-08-27 as a duplicate of services/goHighLevelService.ts, which has
+ *    no inbound entry point at all) — and wave 3 deleted both the private GHL queue writer
  *    and the cron's GHL third pass. What survived was this member and one
  *    docstring example: vocabulary that named GHL as a legitimate enrichment
  *    trigger and so invited the path back. Removed, with no replacement.

@@ -1,10 +1,31 @@
 
 
 // =====================================================
-// GO HIGH LEVEL (GHL) INTEGRATION SERVICE
+// GO HIGH LEVEL (GHL) INTEGRATION SERVICE — the ONE GHL egress module.
 // =====================================================
 // All communications route through GHL to maintain contact history
 // Includes: SMS, Email, Calls, Social Media, Calendar
+//
+// TOMBSTONE (orphan doctrine §1.3, 2026-08-27) — lib/ghl-integration.ts
+// (class GHLIntegration + singleton ghlIntegration) is DELETED; THIS file is
+// the survivor. Its last importer was the duplicate webhook route
+// app/api/webhooks/ghl/route.ts, deleted the same day (survivor:
+// app/api/webhooks/gohighlevel/route.ts), which left the whole module a
+// second public door onto endpoints this service already owns. Where each of
+// its jobs lives now:
+//   · syncContactToGHL (class copy)      → syncContactToGHL below — the copy
+//     lib/crm/sync.ts and app/actions/communications.ts always called;
+//   · syncContactFromGHL (inbound REFUSAL stub) → the ruling "GHL is sync-out
+//     only" is enforced where inbound arrives: the gohighlevel webhook's
+//     verified no-op ack, with sanctioned inbound import living in
+//     lib/crm/import-pull.ts;
+//   · logComplianceNote                  → addGHLContactNote below;
+//   · handleIncomingMessage (no-op ack)  → inline in the gohighlevel route;
+//   · syncMessageToGHL / sendComplianceApprovedEmail — CALLER-LESS copies of
+//     the `/conversations/messages` POST; outbound messages ride the
+//     approval-rail/outbound-sender lanes, and CRM egress goes through
+//     lib/crm/sync.ts:syncContactToCRM. Not ported: a second unwired door is
+//     the defect, not a capability.
 
 const GHL_BASE_URL = "https://services.leadconnectorhq.com"
 const GHL_API_VERSION = "2021-07-28"

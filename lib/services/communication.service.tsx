@@ -174,8 +174,10 @@ export async function sendSMS(params: SendSMSParams) {
 // sendViaGHL was removed. GoHighLevel is NOT a message-send channel in
 // this product — it's a one-way contact-data sync target (push). Outbound
 // contact communication routes through email / sms / ai_social_dm / portal.
-// GHL sync is owned by lib/ghl-integration.ts (PUT/POST contact updates to
-// GHL's REST API). The other half of that sentence used to name
+// GHL sync is owned by services/goHighLevelService.ts, reached through
+// lib/crm/sync.ts:syncContactToCRM (lib/ghl-integration.ts, once named here,
+// was deleted 2026-08-27 as a whole-module duplicate — tombstone at the top
+// of services/goHighLevelService.ts). The other half of that sentence used to name
 // lib/services/platform-sync.service.ts, which is DELETED — see the tombstone at
 // lib/services/index.ts:29 for where each of its halves went.
 

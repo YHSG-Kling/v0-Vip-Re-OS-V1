@@ -13,18 +13,37 @@ import { twilioTokenCandidates } from '@/lib/voice/sms-inbound'
  *
  * CTIA recognized STOP keywords: STOP, STOPALL, UNSUBSCRIBE, CANCEL, END, QUIT
  *
- * ── NOT THE CANONICAL INBOUND SMS INGRESS ───────────────────────────────────
+ * ── NOT THE CANONICAL INBOUND SMS INGRESS — KEPT, ADJUDICATED UNRESOLVED ────
+ * (Webhook-currency adjudication 2026-08-27, provider console unreachable.)
  * The SmsUrl this platform actually binds on every provisioned tenant number is
  * /api/providers/inbound (set at lib/voice/twilio-voice.ts:151, described as the
- * one messaging rail at lib/kernel/manager-registry.ts:606). That route already
- * covers this one's whole job with MORE care: it verifies the Twilio signature
- * against the OWNING SUBACCOUNT's token, resolves the tenant from the CALLED
- * number, and runs the same CTIA keyword set through
- * lib/ai-isa/opt-out-utils.ts:16 → app/actions/ai-isa/process-opt-out.ts.
- * This handler survives only because its URL may still be pasted into a Twilio
- * console somewhere, and a STOP that reaches a 404 is a TCPA problem, not a
- * tidiness one. It is NOT wired by this repo's own provisioning; if the fleet
- * console shows no number pointing here, delete it — the survivor is named above.
+ * one messaging rail in lib/kernel/manager-registry.ts). That route PROVABLY
+ * handles STOP end-to-end: it verifies the Twilio signature against the OWNING
+ * SUBACCOUNT's token, resolves the tenant from the CALLED number, captures an
+ * unknown texter as a contact, and runs detectOptOutIntent →
+ * app/actions/ai-isa/process-opt-out.ts, whose contact-flag writes are the
+ * flag arm lib/kernel/compliance/check-suppression.ts reads; lead STOPs are
+ * bound to contact_suppression_list via its step 8c. NOTHING here is missing
+ * there, so no merge was needed in that direction.
+ *
+ * WHY THIS FILE IS NOT DELETED (CLAUDE.md §1: prove reachability or write
+ * "unresolved"): a Twilio number has exactly ONE SmsUrl, and this URL may
+ * still be pasted into a console for a number this repo's provisioning never
+ * touched. We cannot see the console from here, so reachability is UNRESOLVED
+ * — and a STOP that 404s is a TCPA defect, so this fails toward keeping the
+ * route. Twilio-side research (support.twilio.com "Twilio support for opt-out
+ * keywords", verified 2026-08-27): Twilio itself block-lists STOP/UNSUBSCRIBE/
+ * etc. (plus REVOKE/OPTOUT since the 2025-04-29 FCC ruling) and STILL passes
+ * the message to the webhook, sending its own confirmation reply — so the
+ * TwiML reply below is belt-and-braces, and the app-side suppression writes
+ * here remain the part only we can do.
+ *
+ * INTEGRATOR SELF-HEAL STEP (the owner's "research the latest path" ruling):
+ * audit the Twilio console — every number's SmsUrl should be the canonical
+ * /api/providers/inbound published by lib/providers/webhook-contract.ts; once
+ * NO number points here, delete this route with a tombstone naming
+ * app/api/providers/inbound/route.ts. Until that audit, this route is carried
+ * in the webhook contract as a compat duplicate of the canonical ingress.
  *
  * ── WHY THE SIGNATURE CHECK BELOW EXISTS ────────────────────────────────────
  * It had NO caller authentication at all. The handler runs on the service client

@@ -175,10 +175,12 @@ export const CLASSIFICATION: Record<string, { verdict: Verdict; why: string }> =
     verdict: "platform",
     why: "Secret/signature-gated webhook whose tenant is unresolvable when the receiving account is not mapped. Converted in this lane to the sendgrid rule: limit(2) + one distinct tenant or nothing; unresolved falls through to the staging insert with a null tenant.",
   },
-  "app/api/webhooks/meta/route.ts :: brokerageId": {
-    verdict: "platform",
-    why: "Same conversion as linkedin — limit(2) + one distinct tenant or nothing.",
-  },
+  // TOMBSTONE (2026-08-27): "app/api/webhooks/meta/route.ts :: brokerageId"
+  // left the population because the FILE was deleted in the meta/meta-dm
+  // duplicate adjudication — survivor app/api/webhooks/meta-dm/route.ts, where
+  // the merged PSID→contact match is scoped by an UNCONDITIONAL
+  // .eq("brokerage_id", …) inside the tenant-resolved branch (fail-closed),
+  // so nothing re-enters here. Baseline moved 55 → 54, removal only.
   "app/api/webhooks/twitter/route.ts :: brokerageId": {
     verdict: "platform",
     why: "Same conversion as linkedin — limit(2) + one distinct tenant or nothing.",
