@@ -229,34 +229,54 @@ export async function POST(req: Request) {
         // step read agent_relationships, which had NO writer until now.
         // Live rules: UNIQUE(agent_id, brokerage_id, relationship_type),
         // agent ≠ sponsor, depth_level = sponsor's depth + 1 (root sponsor = 1).
+        //
+        // TERMS COME FROM THE CONFIGURED MODEL (owner ruling 2026-08-27: the
+        // settings tell the platform how the share is distributed — this write
+        // used to invent `revenue_share_percent: 5, source_of_funds:
+        // "brokerage"` for every brokerage). FAIL-CLOSED: an enabled mark with
+        // no configured model (m575) plants NO edge — nothing is invented; the
+        // broker configures the model in Settings → Commission & Offerings and
+        // future provisions stamp it.
         if ((recruit as any).recruiter_agent_id && (recruit as any).recruiter_agent_id !== agentId) {
-          const sponsorId = (recruit as any).recruiter_agent_id as string
-          const { data: sponsorEdge } = await service
-            .from("agent_relationships")
-            .select("depth_level")
-            .eq("agent_id", sponsorId)
-            .eq("brokerage_id", recruit.brokerage_id)
-            .eq("relationship_type", "sponsor")
-            .eq("is_active", true)
-            .maybeSingle()
-          // Plain await (supabase-js resolves with {error}, never throws) —
-          // the pass-4 silencer ratchet forbids new '.then(noop,noop)' writes.
-          await service.from("agent_relationships").upsert(
-            {
-              brokerage_id: recruit.brokerage_id,
-              agent_id: agentId,
-              sponsor_agent_id: sponsorId,
-              relationship_type: "sponsor",
-              // m264's default residual — brokerage-funded so the downline
-              // never dilutes the producing agent's own split.
-              revenue_share_percent: 5,
-              source_of_funds: "brokerage",
-              depth_level: ((sponsorEdge as any)?.depth_level ?? 0) + 1,
-              effective_from: new Date().toISOString().slice(0, 10),
-              is_active: true,
-            },
-            { onConflict: "agent_id,brokerage_id,relationship_type" }
-          )
+          const { getRevenueShareModel, edgeTermsFromModel } = await import("@/lib/commission/revenue-share-model")
+          const rsState = await getRevenueShareModel(recruit.brokerage_id, service)
+          const edgeTerms = edgeTermsFromModel(rsState)
+          if (!edgeTerms) {
+            console.warn(
+              `[provision-agent] no revenue-share edge planted for recruit ${recruitId}: ` +
+                (rsState.enabled
+                  ? `distribution model unconfigured (missing: ${rsState.missing.join(", ")})`
+                  : "brokerage has not enabled revenue share")
+            )
+          } else {
+            const sponsorId = (recruit as any).recruiter_agent_id as string
+            const { data: sponsorEdge } = await service
+              .from("agent_relationships")
+              .select("depth_level")
+              .eq("agent_id", sponsorId)
+              .eq("brokerage_id", recruit.brokerage_id)
+              .eq("relationship_type", "sponsor")
+              .eq("is_active", true)
+              .maybeSingle()
+            // Plain await (supabase-js resolves with {error}, never throws) —
+            // the pass-4 silencer ratchet forbids new '.then(noop,noop)' writes.
+            // edgeTerms only carries revenue_share_flat_cents for a flat model
+            // (an m575-only configuration), so a percent-model write stays
+            // valid pre-apply — naming an absent column would refuse the whole
+            // upsert (PGRST204, §3).
+            await service.from("agent_relationships").upsert(
+              {
+                brokerage_id: recruit.brokerage_id,
+                agent_id: agentId,
+                sponsor_agent_id: sponsorId,
+                relationship_type: "sponsor",
+                ...edgeTerms,
+                depth_level: ((sponsorEdge as any)?.depth_level ?? 0) + 1,
+                is_active: true,
+              },
+              { onConflict: "agent_id,brokerage_id,relationship_type" }
+            )
+          }
         }
       }
     }

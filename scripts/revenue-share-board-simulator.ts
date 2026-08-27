@@ -15,8 +15,16 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
+import { stripComments } from "./strip-comments"
 import { summarizeRevenueShareBoard } from "../lib/intelligence/revenue-share-board"
 import { benefitsPitchSection, offeredBenefitLabels, NO_BENEFITS } from "../lib/recruiting/benefit-offerings"
+import {
+  parseRevenueShareModel,
+  edgeTermsFromModel,
+  computeRevenueShare,
+  REVENUE_SHARE_SOURCES,
+  REVENUE_SHARE_RATE_TYPES,
+} from "../lib/commission/revenue-share-model"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -96,6 +104,163 @@ function benefitOfferingsLayer() {
     /benefit_offerings:\s*\{[\s\S]*?managers: \["recruiting_manager", "finance_manager", "compliance_officer"\]/.test(reg))
 }
 
+/** THE DISTRIBUTION MODEL (owner ruling 2026-08-27, verbatim: "revenue share
+ *  mark should not be created with any assumption of how it gets configured so
+ *  the settings should be telling the platform how the revenue share gets
+ *  distributed whether it is a portion of the income or the brokerage pays the
+ *  share as a flat fee or % and duration."). m575 + revenue-share-model.ts:
+ *  the mark alone pays NOTHING; the settings say source / rate / duration and
+ *  the waterfall + the edge-planting writer READ them. */
+function distributionModelLayer() {
+  console.log("\n[distribution model · pure — configured is read, unconfigured pays nothing]")
+  const fullPercentRow = {
+    revenue_share_enabled: true, revenue_share_source_of_funds: "agent", revenue_share_rate_type: "percent",
+    revenue_share_default_percent: 5, revenue_share_flat_cents: null, revenue_share_duration_months: 24,
+  }
+  const configured = parseRevenueShareModel(fullPercentRow)
+  check("POSITIVE CONTROL: a fully-described model parses configured", configured.configured && configured.model?.sourceOfFunds === "agent" && configured.model?.defaultPercent === 5 && configured.model?.durationMonths === 24)
+  check("a pre-m575 row (columns absent entirely) parses UNCONFIGURED — absent behaves like NULL, fail-closed",
+    !parseRevenueShareModel({ revenue_share_enabled: true }).configured)
+  const noSource = parseRevenueShareModel({ ...fullPercentRow, revenue_share_source_of_funds: null })
+  check("missing SOURCE → unconfigured, and the missing column is NAMED (published, not guessed)",
+    !noSource.configured && noSource.missing.includes("revenue_share_source_of_funds"))
+  check("a percent model without a percent is unconfigured; a flat model without a flat amount is unconfigured",
+    !parseRevenueShareModel({ ...fullPercentRow, revenue_share_default_percent: null }).configured &&
+    !parseRevenueShareModel({ ...fullPercentRow, revenue_share_rate_type: "flat" }).configured)
+  const flatRow = { ...fullPercentRow, revenue_share_rate_type: "flat", revenue_share_default_percent: null, revenue_share_flat_cents: 25000 }
+  check("a flat model (brokerage tells: flat fee per closing) parses configured", parseRevenueShareModel(flatRow).configured)
+  check("duration NULL is unconfigured — indefinite must be the EXPLICIT 0, never an absence",
+    !parseRevenueShareModel({ ...fullPercentRow, revenue_share_duration_months: null }).configured &&
+    parseRevenueShareModel({ ...fullPercentRow, revenue_share_duration_months: 0 }).configured)
+
+  console.log("\n[edge terms · pure — new edges are stamped FROM the model, never invented]")
+  const from = new Date("2026-08-27T12:00:00Z")
+  const terms = edgeTermsFromModel(configured, from)!
+  check("percent model stamps the percent + source and computes effective_to from the duration",
+    terms.revenue_share_percent === 5 && terms.source_of_funds === "agent" && terms.effective_from === "2026-08-27" && terms.effective_to === "2028-08-27")
+  check("percent model OMITS the flat-cents key entirely (naming an absent column pre-m575 refuses the WHOLE write, PGRST204)",
+    !("revenue_share_flat_cents" in terms))
+  const flatTerms = edgeTermsFromModel(parseRevenueShareModel(flatRow), from)!
+  check("flat model stamps flat cents per closing (and a null percent)", flatTerms.revenue_share_flat_cents === 25000 && flatTerms.revenue_share_percent === null)
+  check("duration 0 (explicit indefinite) stamps effective_to null",
+    edgeTermsFromModel(parseRevenueShareModel({ ...fullPercentRow, revenue_share_duration_months: 0 }), from)!.effective_to === null)
+  check("FAIL-CLOSED: an unconfigured model yields NO edge terms — nothing is planted",
+    edgeTermsFromModel(parseRevenueShareModel({ revenue_share_enabled: true }), from) === null &&
+    edgeTermsFromModel(parseRevenueShareModel({ ...fullPercentRow, revenue_share_enabled: false }), from) === null)
+
+  console.log("\n[money step · pure — the model gates; the edge's stamped terms pay; conservation holds]")
+  const edge = (over: Record<string, unknown>) => ({
+    sponsor_agent_id: "sp-1", relationship_type: "sponsor", depth_level: 1, is_active: true,
+    revenue_share_percent: 5, revenue_share_flat_cents: null, source_of_funds: "agent",
+    effective_from: "2026-01-01", effective_to: null, ...over,
+  }) as any
+  const base = { agentId: "ag-1", agentFinalNetCents: 100_000, brokerageFinalCents: 50_000 }
+  {
+    const r = computeRevenueShare({ ...base, state: { enabled: false, configured: false, model: null, missing: [] }, relationships: [edge({})] })
+    check("disabled → skip 'disabled', zero distributions, balances untouched", r.skipped === "disabled" && r.distributions.length === 0 && r.agentFinalNetCents === 100_000)
+  }
+  {
+    const r = computeRevenueShare({ ...base, state: parseRevenueShareModel({ revenue_share_enabled: true }), relationships: [edge({})] })
+    check("THE OWNER'S RULE: enabled + UNCONFIGURED model → the mark alone pays NOTHING (skip 'model_unconfigured', even with a live 5% edge present)",
+      r.skipped === "model_unconfigured" && r.distributions.length === 0 && r.agentFinalNetCents === 100_000 && r.brokerageFinalCents === 50_000)
+  }
+  const agentState = parseRevenueShareModel(fullPercentRow)
+  {
+    const r = computeRevenueShare({ ...base, state: agentState, relationships: [edge({}), edge({ sponsor_agent_id: "sp-2", depth_level: 2, revenue_share_percent: 3 })] })
+    const dist = Math.round(r.distributions.reduce((s, d) => s + d.calculated_amount * 100, 0))
+    check("agent-funded percent: rolling multi-level (5% of 1000 = 50; 3% of remaining 950 = 28.50), agent pays, brokerage untouched",
+      r.distributions[0].calculated_amount === 50 && r.distributions[1].calculated_amount === 28.5 && r.brokerageFinalCents === 50_000)
+    check("CONSERVATION (agent side): agent final + shares == original agent net", r.agentFinalNetCents + dist === 100_000)
+  }
+  {
+    const r = computeRevenueShare({ ...base, state: agentState, relationships: [edge({ source_of_funds: "brokerage" })] })
+    check("brokerage-funded ('the brokerage pays the share'): agent keeps full net, the BROKERAGE final funds the distribution",
+      r.agentFinalNetCents === 100_000 && r.brokerageFinalCents === 45_000 && r.distributions[0].source_of_funds === "brokerage")
+    check("CONSERVATION (brokerage side — the identity step 11 validates; pre-model this was never deducted and every brokerage-funded closing threw there)",
+      r.brokerageFinalCents + Math.round(r.distributions[0].calculated_amount * 100) === 50_000)
+  }
+  {
+    const r = computeRevenueShare({ ...base, state: agentState, relationships: [edge({ revenue_share_percent: null, revenue_share_flat_cents: 12_500 })] })
+    check("flat edge: cents PER CLOSING (the waterfall runs per transaction), calculation_type 'flat'",
+      r.distributions[0].calculated_amount === 125 && r.distributions[0].calculation_type === "flat")
+  }
+  {
+    const r = computeRevenueShare({ ...base, state: agentState, relationships: [edge({ effective_to: "2026-01-31" })], today: new Date("2026-08-27") })
+    const r2 = computeRevenueShare({ ...base, state: agentState, relationships: [edge({ effective_to: "2026-12-31" })], today: new Date("2026-08-27") })
+    check("DURATION ENFORCED IN THE MONEY STEP: an expired edge pays nothing (control: the same edge in-window pays)",
+      r.distributions.length === 0 && r2.distributions.length === 1)
+    const notYet = computeRevenueShare({ ...base, state: agentState, relationships: [edge({ effective_from: "2027-01-01" })], today: new Date("2026-08-27") })
+    const openBounds = computeRevenueShare({ ...base, state: agentState, relationships: [edge({ effective_from: null, effective_to: null })], today: new Date("2026-08-27") })
+    check("a future-dated edge does not pay yet; open bounds pay (null effective_to = the explicit indefinite)",
+      notYet.distributions.length === 0 && openBounds.distributions.length === 1)
+  }
+  {
+    let agentThrew = false, brokerageThrew = false
+    try { computeRevenueShare({ ...base, agentFinalNetCents: 100, state: agentState, relationships: [edge({ revenue_share_percent: null, revenue_share_flat_cents: 5_000 })] }) } catch { agentThrew = true }
+    try { computeRevenueShare({ ...base, brokerageFinalCents: 100, state: agentState, relationships: [edge({ source_of_funds: "brokerage", revenue_share_percent: null, revenue_share_flat_cents: 5_000 })] }) } catch { brokerageThrew = true }
+    check("overdraft REFUSES on both sides — money that does not exist is never distributed", agentThrew && brokerageThrew)
+  }
+
+  console.log("\n[vocabulary agreement — code sets equal the m575 CHECKs, derived not pinned (§2)]")
+  const mig = src("supabase/migrations/m575-the-revenue-share-mark-enabled-a-payout-the-brokerage-never-described.sql")
+  const sqlSet = (col: string) => {
+    const m = new RegExp(`${col} in \\(([^)]*)\\)`).exec(mig)
+    return new Set((m?.[1] ?? "").split(",").map((s) => s.trim().replace(/'/g, "")).filter(Boolean))
+  }
+  const srcSet = sqlSet("revenue_share_source_of_funds")
+  const rateSet = sqlSet("revenue_share_rate_type")
+  check(`SOURCE vocabulary: code == m575 CHECK ({${[...srcSet].join(", ")}}) == agent_relationships.source_of_funds spelling (§6)`,
+    srcSet.size === REVENUE_SHARE_SOURCES.length && REVENUE_SHARE_SOURCES.every((s) => srcSet.has(s)))
+  check(`RATE vocabulary: code == m575 CHECK ({${[...rateSet].join(", ")}}) == the repo's rate-type pair (§6)`,
+    rateSet.size === REVENUE_SHARE_RATE_TYPES.length && REVENUE_SHARE_RATE_TYPES.every((s) => rateSet.has(s)))
+  check("m575: every model column is nullable with NO default (NULL = unconfigured, fail-closed — a DB default would be the platform assuming again)",
+    !/revenue_share_source_of_funds text (not null|default)/.test(mig) && !/revenue_share_rate_type text (not null|default)/.test(mig) &&
+    !/revenue_share_duration_months integer (not null|default)/.test(mig))
+  check("m575: backfill transcribes ONLY brokerages with live percent-bearing edges (the m264 population), never invents",
+    /where b\.revenue_share_enabled = true[\s\S]*?exists \(\s*select 1 from public\.agent_relationships r/.test(mig))
+  check("m575: the per-edge flat rate lands on agent_relationships (the edge is the record of its terms)",
+    /alter table public\.agent_relationships\s+add column if not exists revenue_share_flat_cents/.test(mig))
+
+  console.log("\n[wiring · stripped scans (§2) — the readers read, the writer stamps, nothing is assumed]")
+  // POSITIVE CONTROLS: each finder proven against the defect it hunts.
+  const hardcodeRe = /revenue_share_percent:\s*\d/
+  check("control: the hardcoded-terms finder catches the old invented stamp",
+    hardcodeRe.test(`await service.from("agent_relationships").upsert({ revenue_share_percent: 5, source_of_funds: "brokerage" })`))
+  const tombstoneSpecimen = "// the old code wrote revenue_share_percent: 5 here\nconst x = 1\n"
+  check("control: stripComments removes a commented token (a tombstone is not a call site)",
+    hardcodeRe.test(tombstoneSpecimen) && !hardcodeRe.test(stripComments(tombstoneSpecimen)))
+
+  const wf = stripComments(src("lib/commission/waterfall/09-revenue-share.ts"))
+  check("waterfall step 09 reads the MODEL (getRevenueShareModel) and computes through the pure step",
+    /getRevenueShareModel\(context\.brokerageId/.test(wf) && /computeRevenueShare\(\{/.test(wf))
+  check("step 09 fail-closed + published: unconfigured → empty distributions with the skip recorded and warned (no-op, not a refusal — the waterfall's absent-config precedent)",
+    /revenueShareSkipped: 'model_unconfigured'/.test(wf) && /console\.warn\(/.test(wf) && /revenueShareDistributions: \[\]/.test(wf))
+  check("step 09 applies BOTH balances from the computation (brokerage-funded shares now deduct)",
+    /brokerageFinalCents: result\.brokerageFinalCents/.test(wf))
+
+  const prov = stripComments(src("app/api/recruiting/provision-agent/route.ts"))
+  check("the edge-planting writer stamps terms FROM the model (edgeTermsFromModel) — the hardcoded 5%/brokerage invention is gone",
+    /edgeTermsFromModel\(rsState\)/.test(prov) && !hardcodeRe.test(prov))
+  check("the writer plants NO edge when the model is unconfigured, and says so", /no revenue-share edge planted/.test(prov) && /if \(!edgeTerms\)/.test(prov))
+
+  const setting = stripComments(src("app/actions/settings/revenue-share-setting.ts"))
+  check("settings home: setRevenueShareDistributionModel is the ONE writer — gated, validated against the vocabularies, COUNTED (§3)",
+    /setRevenueShareDistributionModel/.test(setting) && /REVENUE_SHARE_SOURCES\.includes/.test(setting) &&
+    /revenue_share_duration_months: durationMonths/.test(setting) && /saved\.length === 0/.test(setting))
+  check("settings home: pre-apply honesty — PGRST204 is reported as 'm575 written, not applied', never a mystery",
+    /PGRST204/.test(setting) && /m575/.test(setting))
+  check("settings home: the model READ uses select('*') so the same code is correct pre-apply (absent column → unconfigured, no 42703)",
+    /getRevenueShareDistributionModel/.test(setting) && /\.select\("\*"\)\.eq\("id", ctx\.brokerageId\)/.test(setting))
+  const card = src("app/components/settings/BenefitOfferingsCard.tsx")
+  check("the offerings card carries the model panel on the residual-income row (source / rate / duration, §5 broker-facing)",
+    /RevenueShareModelPanel/.test(card) && /setRevenueShareDistributionModel\(input\)/.test(card))
+  check("the panel says the truth about an unconfigured model: the toggle alone pays nothing",
+    /the toggle alone pays nothing/i.test(card))
+  const reg2 = src("lib/kernel/manager-registry.ts")
+  check("registry: revenue_share_distribution_model domain appended with this proof",
+    /revenue_share_distribution_model:\s*\{\s*manager:\s*"finance_manager",\s*proof:\s*"test:revenue-share-board"/.test(reg2))
+}
+
 function sourceLayer() {
   console.log("\n[wiring — loader slice + client card]")
   const cc = src("lib/kernel/command-center.ts")
@@ -169,6 +334,7 @@ async function liveLayer() {
 async function main() {
   pureLayer()
   benefitOfferingsLayer()
+  distributionModelLayer()
   sourceLayer()
   await liveLayer()
   console.log("\n──────────────────────────────────────────────────")

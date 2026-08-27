@@ -69,7 +69,7 @@ export default async function PlatformGrowthPage() {
       )}
       {/* Subscriber referral fees — who referred each tenant + what's owed (billing roles only) */}
       {referralsRes && referralsRes.ok && (
-        <SubscriberReferralsCard initialRows={referralsRes.rows} feePercent={referralsRes.feePercent} brokerageOptions={referralsRes.brokerageOptions} />
+        <SubscriberReferralsCard initialRows={referralsRes.rows} feePercent={referralsRes.feePercent} terms={referralsRes.terms} brokerageOptions={referralsRes.brokerageOptions} />
       )}
       {/* Brand kit (configurable product name) + watched-topic pool */}
       <BrandTopicsCard initialBrand={brandRes.ok ? brandRes.brand : DEFAULT_PRODUCT_BRAND} initialTopics={topicsRes.ok ? topicsRes.topics : []} />

@@ -35,9 +35,13 @@
  * tree both report zero.
  *
  * BLIND SPOTS, published beside the numbers:
- *   · NO LIVE LAYER: this lane is live-DB read-only AND referral_payouts does
- *     not exist until the integrator applies m573 — live posting/receipt is
- *     proven by the injected-client behavior layer only.
+ *   · NO LIVE LAYER: lanes are live-DB read-only — posting/receipt/duration
+ *     behavior is proven by the injected-client behavior layer only. (m573 is
+ *     applied live — the ledger exists; m576's basis/duration columns are
+ *     WRITTEN, not applied, so the full terms run on reported code defaults
+ *     until the integrator applies + regenerates the caches.)
+ *   · Legacy audit-line payments (pre-ledger 'referral_fee.paid') do NOT
+ *     anchor the duration clock — only ledger rows do.
  *   · The cash rail to a NON-TENANT referrer (external transfer) and the
  *     Stripe customer-balance credit for a tenant referrer are NOT built —
  *     both need a declared money path in lib/billing/stripe-account-scope.ts
@@ -51,11 +55,17 @@ import { stripComments } from "./strip-comments"
 import {
   parseReferrerEmail,
   computeReferralFeeCents,
+  monthIndexForPeriod,
+  describeReferralFeeTerms,
   REFERRAL_FEE_PERCENT,
+  REFERRAL_FEE_BASES,
+  REFERRAL_FEE_BASIS_DEFAULT,
+  REFERRAL_FEE_DURATION_MONTHS_DEFAULT,
   REFERRAL_PAYOUT_STATUSES,
 } from "../lib/platform/subscriber-referrals"
 import {
   getReferralFeeTerms,
+  referralFeeCentsUnderTerms,
   resolveReferralRecipient,
   postReferralPayout,
   listReferralEarningsForBrokerage,
@@ -99,6 +109,13 @@ function fakeSvc(tables: Tables, opts?: { missingTables?: string[]; missingColum
         }
         const rows: any[] = tables[table] ?? (tables[table] = [])
         if (q.op === "insert") {
+          // PGRST204 — an INSERT naming an absent column is refused ENTIRELY
+          // (§3), which is exactly how PostgREST behaves pre-m576 when the
+          // basis column does not exist yet.
+          const namedMissing = missing.find((c) => Object.prototype.hasOwnProperty.call(q.patch ?? {}, c))
+          if (namedMissing) {
+            return { data: null, error: { code: "PGRST204", message: `Could not find the '${namedMissing}' column of '${table}' in the schema cache` } }
+          }
           if (table === "referral_payouts") {
             // UNIQUE(prospect_id, period) — the m573 idempotency key.
             if (rows.some((r) => r.prospect_id === q.patch.prospect_id && r.period === q.patch.period)) {
@@ -225,6 +242,103 @@ async function behaviorLayer() {
     check("pre-m573 reads: earnings + summary report unavailable with zero rows — degraded and SAID, never an empty lie",
       list.ok && list.unavailable && list.rows.length === 0 && summary.unavailable && summary.error === null)
   }
+
+  // ── FULL TERMS (m576): basis + duration, no assumption (owner ruling
+  // 2026-08-27, verbatim: "platform should not make assumption even with
+  // referrals."). Every field's SOURCE is reported; a code default may stand in
+  // only while labeled default_constant; duration is ENFORCED at post time.
+  console.log("\n[Layer 1b · full terms — basis + duration read, reported, enforced]")
+  {
+    const svc = fakeSvc({ platform_settings: [{ id: "s1", created_at: "2026-01-01", referral_fee_percent: 10, referral_fee_basis: "flat", referral_fee_flat_cents: 50_000, referral_fee_duration_months: 1 }] })
+    const t = await getReferralFeeTerms(svc)
+    check("terms: configured flat basis + amount + duration all read with source platform_settings",
+      t.basis === "flat" && t.flatCents === 50_000 && t.durationMonths === 1 &&
+      t.basisSource === "platform_settings" && t.durationSource === "platform_settings")
+  }
+  {
+    const svc = fakeSvc({ platform_settings: [{ id: "s1", created_at: "2026-01-01", referral_fee_percent: 10, referral_fee_basis: "flat", referral_fee_duration_months: 6 }] })
+    const t = await getReferralFeeTerms(svc)
+    check("terms: a stored 'flat' basis WITHOUT a flat amount is incoherent → falls back to the default basis AND says default_constant (fail-closed)",
+      t.basis === REFERRAL_FEE_BASIS_DEFAULT && t.basisSource === "default_constant" && t.flatCents === null)
+  }
+  {
+    const svc = fakeSvc(baseTables())
+    const t = await getReferralFeeTerms(svc)
+    check("terms: unset basis/duration → code defaults, each REPORTED as default_constant (the m573 source pattern, extended per field)",
+      t.basis === REFERRAL_FEE_BASIS_DEFAULT && t.basisSource === "default_constant" &&
+      t.durationMonths === REFERRAL_FEE_DURATION_MONTHS_DEFAULT && t.durationSource === "default_constant")
+    check("the default duration is BOUNDED — indefinite (0) must be an explicit choice, never a default",
+      REFERRAL_FEE_DURATION_MONTHS_DEFAULT > 0)
+  }
+  {
+    const svc = fakeSvc({ platform_settings: [{ id: "s1", created_at: "2026-01-01", referral_fee_percent: 10, referral_fee_duration_months: 0 }] })
+    const t = await getReferralFeeTerms(svc)
+    check("terms: an EXPLICIT stored 0 is honored as indefinite (source platform_settings)",
+      t.durationMonths === 0 && t.durationSource === "platform_settings")
+  }
+  {
+    // MUTATION CONTROL for the Number(null)===0 trap: a stored NULL must fall
+    // to the reported default, never be read as the explicit indefinite 0.
+    const svc = fakeSvc({ platform_settings: [{ id: "s1", created_at: "2026-01-01", referral_fee_percent: 10, referral_fee_duration_months: null }] })
+    const t = await getReferralFeeTerms(svc)
+    check("terms: a stored NULL duration is UNCONFIGURED — reported default, not 'indefinite, chosen'",
+      t.durationMonths === REFERRAL_FEE_DURATION_MONTHS_DEFAULT && t.durationSource === "default_constant")
+  }
+  {
+    // DURATION ENFORCEMENT: 2-month term → months 1 and 2 post, month 3 REFUSES.
+    const tables = { ...baseTables(), platform_settings: [{ id: "s1", created_at: "2026-01-01", referral_fee_percent: 10, referral_fee_duration_months: 2 }] }
+    const svc = fakeSvc(tables)
+    const post = (period: string) => postReferralPayout(svc, { prospectId: "pr-1", referrer: "jane@acme.com", amountCents: 4900, feePercent: 10, period, postedBy: "staff-1" })
+    const p1 = await post("2026-01")
+    const p2 = await post("2026-02")
+    const p3 = await post("2026-03")
+    check("duration: months 1..N post; month N+1 is REFUSED with reason beyond_duration and the term NAMED",
+      p1.ok && p2.ok && !p3.ok && (p3 as any).reason === "beyond_duration" && /month 3/.test((p3 as any).error) && /2 months/.test((p3 as any).error))
+    check("duration refusal names its source (configured terms here)", /configured terms/.test((p3 as any).error))
+    check("the refused month left NO ledger row (control: the count is still 2)", tables.referral_payouts.length === 2)
+    check("basis is STAMPED onto each posting (denormalized like fee_percent — history survives a terms change)",
+      tables.referral_payouts.every((r: any) => r.basis === "percent"))
+  }
+  {
+    // A voided first month must not start the clock: anchor = earliest NON-void.
+    const tables = { ...baseTables(), platform_settings: [{ id: "s1", created_at: "2026-01-01", referral_fee_percent: 10, referral_fee_duration_months: 1 }] }
+    tables.referral_payouts = [
+      { id: "v1", prospect_id: "pr-1", referrer: "x", amount_cents: 100, fee_percent: 10, period: "2026-01", status: "void", posted_at: "2026-01-31" },
+      { id: "k1", prospect_id: "pr-1", referrer: "x", amount_cents: 100, fee_percent: 10, period: "2026-02", status: "posted", posted_at: "2026-02-28" },
+    ]
+    const svc = fakeSvc(tables)
+    const p = await postReferralPayout(svc, { prospectId: "pr-1", referrer: "jane@acme.com", amountCents: 4900, feePercent: 10, period: "2026-03", postedBy: "staff-1" })
+    check("duration anchor skips VOID rows (one-time term anchored at 2026-02, so 2026-03 is month 2 → refused)",
+      !p.ok && (p as any).reason === "beyond_duration" && /2026-02/.test((p as any).error))
+  }
+  {
+    // Explicit indefinite: month 25 still posts.
+    const tables = { ...baseTables(), platform_settings: [{ id: "s1", created_at: "2026-01-01", referral_fee_percent: 10, referral_fee_duration_months: 0 }] }
+    tables.referral_payouts = [{ id: "k1", prospect_id: "pr-1", referrer: "x", amount_cents: 100, fee_percent: 10, period: "2024-08", status: "posted", posted_at: "2024-08-31" }]
+    const svc = fakeSvc(tables)
+    const p = await postReferralPayout(svc, { prospectId: "pr-1", referrer: "jane@acme.com", amountCents: 4900, feePercent: 10, period: "2026-08", postedBy: "staff-1" })
+    check("duration 0 (explicit indefinite) never refuses on the term", p.ok)
+  }
+  {
+    // Default (unconfigured) duration still bounds — and the refusal says the
+    // bound is the platform default, not policy.
+    const tables = baseTables()
+    tables.referral_payouts = [{ id: "k1", prospect_id: "pr-1", referrer: "x", amount_cents: 100, fee_percent: 10, period: "2024-01", status: "posted", posted_at: "2024-01-31" }]
+    const svc = fakeSvc(tables)
+    const p = await postReferralPayout(svc, { prospectId: "pr-1", referrer: "jane@acme.com", amountCents: 4900, feePercent: 10, period: "2026-08", postedBy: "staff-1" })
+    check("unconfigured duration: the bounded code default refuses month 32 AND names itself as the default (never silent policy)",
+      !p.ok && (p as any).reason === "beyond_duration" && /platform default/.test((p as any).error))
+  }
+  {
+    // Pre-m576: referral_payouts exists (m573 applied) but the basis column
+    // does not — the insert naming it is refused whole (PGRST204) and retried
+    // under the m573 shape.
+    const tables = baseTables()
+    const svc = fakeSvc(tables, { missingColumns: { referral_payouts: ["basis"] } })
+    const p = await postReferralPayout(svc, { prospectId: "pr-1", referrer: "jane@acme.com", amountCents: 4900, feePercent: 10, period: "2026-08", postedBy: "staff-1" })
+    check("pre-m576 posting: PGRST204 on the basis column → retried under the m573 shape, the payout still POSTS (basis null like legacy rows)",
+      p.ok && tables.referral_payouts.length === 1 && !("basis" in tables.referral_payouts[0]))
+  }
 }
 
 function pureLayer() {
@@ -235,6 +349,24 @@ function pureLayer() {
   check("fee math: floor of MRR × percent / 100; garbage in → 0, never NaN into a ledger",
     computeReferralFeeCents(49900, 10) === 4990 && computeReferralFeeCents(999, 10) === 99
     && computeReferralFeeCents(-5, 10) === 0 && computeReferralFeeCents(NaN, 10) === 0 && computeReferralFeeCents(100, 0) === 0)
+
+  console.log("\n[Layer 2b · pure — the full-terms math]")
+  check("monthIndexForPeriod: anchor month is 1; next month 2; a year boundary counts through (2026-12 → 2027-01 = 2)",
+    monthIndexForPeriod("2026-01", "2026-01") === 1 && monthIndexForPeriod("2026-01", "2026-02") === 2
+    && monthIndexForPeriod("2026-12", "2027-01") === 2 && monthIndexForPeriod("2025-08", "2026-08") === 13)
+  check("fee under terms: percent basis = % of MRR (the m573 math, unchanged)",
+    referralFeeCentsUnderTerms({ basis: "percent", percent: 10, flatCents: null }, 49900, true) === 4990)
+  check("fee under terms: flat basis = the flat amount for a LINKED tenant; $0 until conversion (a flat fee is per conversion)",
+    referralFeeCentsUnderTerms({ basis: "flat", percent: 10, flatCents: 50_000 }, 49900, true) === 50_000
+    && referralFeeCentsUnderTerms({ basis: "flat", percent: 10, flatCents: 50_000 }, 49900, false) === 0)
+  const cfg = { basis: "flat" as const, percent: 10, flatCents: 50_000, durationMonths: 1, basisSource: "platform_settings", durationSource: "platform_settings" }
+  const dflt = { basis: "percent" as const, percent: 10, flatCents: null, durationMonths: 12, basisSource: "default_constant", durationSource: "default_constant" }
+  check("describeReferralFeeTerms: staff see WHAT the platform will compute and WHETHER it is configured",
+    /\$500\.00 flat per conversion/.test(describeReferralFeeTerms(cfg)) && /one-time/.test(describeReferralFeeTerms(cfg)) && /configured terms/.test(describeReferralFeeTerms(cfg)))
+  check("describeReferralFeeTerms: a defaulted term is LABELED a platform default, never presented as policy",
+    /platform default/.test(describeReferralFeeTerms(dflt)) && /runs 12 months/.test(describeReferralFeeTerms(dflt)))
+  check("describeReferralFeeTerms: explicit indefinite is said in words",
+    /runs indefinitely/.test(describeReferralFeeTerms({ ...dflt, durationMonths: 0, basisSource: "platform_settings", durationSource: "platform_settings" })))
 }
 
 function sourceLayer() {
@@ -267,8 +399,9 @@ function sourceLayer() {
     /POSTED_TRAIL_ACTION/.test(act) && /"referral_payout\.posted"/.test(act))
   check("action: the legacy audit-line write survives ONLY as the labeled degraded path (m573 unapplied)",
     /reason !== "ledger_unavailable"/.test(act) && /ledger_unavailable: "referral_payouts missing — apply m573"/.test(act) && /"audit_log_legacy"/.test(act))
-  check("action: fee display derives from getReferralFeeTerms, not the constant (the constant import is gone)",
-    /getReferralFeeTerms\(svc\)/.test(act) && /computeReferralFeeCents\(mrrCents, terms\.percent\)/.test(act) && !/REFERRAL_FEE_PERCENT/.test(act))
+  check("action: fee display derives from the FULL terms (basis-aware, m576), not the constant (the constant import is gone)",
+    /getReferralFeeTerms\(svc\)/.test(act) && /referralFeeCentsUnderTerms\(terms, mrrCents, !!p\.converted_brokerage_id\)/.test(act) && !/REFERRAL_FEE_PERCENT/.test(act))
+  check("action: the list returns the full terms so the posting surface can show them", /terms,\s*brokerageOptions/.test(act))
 
   const recip = src("app/actions/admin/referral-earnings.ts")
   check("recipient action: tenant comes from the SESSION profile — never from a caller parameter (§4)",
@@ -288,6 +421,33 @@ function sourceLayer() {
   const growth = src("app/dashboard/superadmin/growth/subscriber-referrals-card.tsx")
   check("superadmin card: shows the ledger's posted/received state beside lifetime history",
     /ledgerPostedCents/.test(growth) && /ledgerReceivedCents/.test(growth))
+  check("superadmin card: the header states the CONFIGURED terms (describeReferralFeeTerms), not a hardcoded percent-of-MRR sentence",
+    /describeReferralFeeTerms\(liveTerms\)/.test(growth))
+  check("growth page passes the terms into the card", /terms=\{referralsRes\.terms\}/.test(src("app/dashboard/superadmin/growth/page.tsx")))
+
+  // ── m576: BASIS + DURATION join the rate's one home ─────────────────────────
+  const lib576 = lib // stripped above
+  check("lib: postReferralPayout reads the FULL terms and enforces duration (beyond_duration refusal; void rows never anchor the clock)",
+    /getReferralFeeTerms\(svc\)/.test(lib576) && /"beyond_duration"/.test(lib576) && /\.neq\("status", "void"\)/.test(lib576) && /monthIndexForPeriod\(anchor, period\)/.test(lib576))
+  check("lib: the basis is stamped onto each posting, with the pre-m576 PGRST204 retry under the m573 shape",
+    /basis: terms\.basis/.test(lib576) && /PGRST204/.test(lib576) && /delete payload\.basis/.test(lib576))
+  const mig576Path = "supabase/migrations/m576-the-referral-fee-terms-assumed-percent-of-mrr-with-no-end.sql"
+  const mig576 = raw(mig576Path)
+  check("m576: basis/flat/duration columns are NULLABLE with NO DB default (a default would be the platform assuming again)",
+    /add column if not exists referral_fee_basis text;/.test(mig576) &&
+    /add column if not exists referral_fee_flat_cents integer;/.test(mig576) &&
+    /add column if not exists referral_fee_duration_months integer;/.test(mig576))
+  check("m576: duration CHECK admits the explicit 0 (indefinite) and refuses negatives",
+    /referral_fee_duration_months is null or referral_fee_duration_months >= 0/.test(mig576))
+  check("m576: the posting ledger gains the denormalized basis (history survives a terms change)",
+    /alter table public\.referral_payouts\s+add column if not exists basis text;/.test(mig576))
+  {
+    // Vocabulary agreement, derived not pinned (§2): code basis set == m576 CHECK.
+    const m = /referral_fee_basis in \(([^)]*)\)/.exec(mig576)
+    const sqlBases = new Set((m?.[1] ?? "").split(",").map((s) => s.trim().replace(/'/g, "")).filter(Boolean))
+    check(`referral_fee_basis: code vocabulary equals the m576 CHECK ({${[...sqlBases].join(", ")}}) — the repo's rate-type pair (§6)`,
+      sqlBases.size === REFERRAL_FEE_BASES.length && REFERRAL_FEE_BASES.every((b) => sqlBases.has(b)))
+  }
 
   const migPath = "supabase/migrations/m573-a-paid-referral-fee-was-a-log-line-and-the-referrer-never-saw-it.sql"
   const mig = raw(migPath)
@@ -323,9 +483,11 @@ async function main() {
   sourceLayer()
   agreementLayer()
   console.log("\n──────────────────────────────────────────────────")
-  console.log(" BLIND SPOTS: no live layer (lane read-only; referral_payouts absent until m573 is applied);")
-  console.log(" external-referrer cash rail + Stripe balance-credit application unbuilt (declared, needs a")
-  console.log(" STRIPE_MONEY_PATHS entry — see lib/platform/referral-payouts.ts header).")
+  console.log(" BLIND SPOTS: no live layer (lane read-only; m573 applied live, m576 basis/duration WRITTEN not")
+  console.log(" applied — full terms run on reported code defaults until then); legacy audit-line payments do")
+  console.log(" not anchor the duration clock (only ledger rows do); external-referrer cash rail + Stripe")
+  console.log(" balance-credit application unbuilt (declared, needs a STRIPE_MONEY_PATHS entry — see")
+  console.log(" lib/platform/referral-payouts.ts header).")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
   if (failed > 0) { console.log(" ✗ Failures:"); for (const f of failures) console.log(`   - ${f}`); process.exit(1) }
   console.log(" ✅ REFERRAL_PAYOUTS_PASS — posted = an idempotent ledger row with a resolved recipient; received = the recipient's own counted acknowledgment")

@@ -25,11 +25,12 @@ import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 import {
-  parseReferrer, makeReferralSource, computeReferralFeeCents,
+  parseReferrer, makeReferralSource,
   REFERRAL_SOURCE_PREFIX, type SubscriberReferralRow,
 } from "@/lib/platform/subscriber-referrals"
 import {
   getReferralFeeTerms, postReferralPayout, summarizeLedgerByProspect,
+  referralFeeCentsUnderTerms, type ReferralFeeTerms,
 } from "@/lib/platform/referral-payouts"
 
 /** Legacy audit-line payment record — pre-m573 history + the degraded write path. */
@@ -57,7 +58,16 @@ async function audit(actorUserId: string, actorEmail: string, action: string, ta
 }
 
 export async function listSubscriberReferralsAction(): Promise<
-  | { ok: true; rows: SubscriberReferralRow[]; feePercent: number; brokerageOptions: Array<{ id: string; name: string }> }
+  | {
+      ok: true
+      rows: SubscriberReferralRow[]
+      feePercent: number
+      /** The FULL configured terms (m576: basis + duration beside the m573 rate),
+       *  each field naming its source — the posting surface shows staff exactly
+       *  what the platform will compute, configured or reported default. */
+      terms: ReferralFeeTerms
+      brokerageOptions: Array<{ id: string; name: string }>
+    }
   | { ok: false; error: string }
 > {
   const auth = await requireBilling()
@@ -150,7 +160,11 @@ export async function listSubscriberReferralsAction(): Promise<
       status: p.status ?? "new",
       brokerageId: p.converted_brokerage_id ?? null,
       brokerageName: p.converted_brokerage_id ? (nameById.get(p.converted_brokerage_id) ?? null) : null,
-      mrrCents, feePercent: terms.percent, feeCents: computeReferralFeeCents(mrrCents, terms.percent),
+      // The fee the CONFIGURED terms compute — basis-aware (m576): percent-of-MRR
+      // (computeReferralFeeCents(mrrCents, terms.percent) under the hood) or a
+      // flat amount per conversion, never an assumed shape.
+      mrrCents, feePercent: terms.percent,
+      feeCents: referralFeeCentsUnderTerms(terms, mrrCents, !!p.converted_brokerage_id),
       lastPaidAt: lastPaidAt.get(p.id) ?? null,
       lastPaidCents: lastPaidCents.get(p.id) ?? null,
       totalPaidCents: totalPaidCents.get(p.id) ?? 0,
@@ -161,7 +175,7 @@ export async function listSubscriberReferralsAction(): Promise<
       createdAt: p.created_at,
     }
   })
-  return { ok: true, rows, feePercent: terms.percent, brokerageOptions: ((options ?? []) as any[]).map((b) => ({ id: b.id, name: b.name ?? "—" })) }
+  return { ok: true, rows, feePercent: terms.percent, terms, brokerageOptions: ((options ?? []) as any[]).map((b) => ({ id: b.id, name: b.name ?? "—" })) }
 }
 
 /** Record a subscriber referral — a prospect whose source names the referrer. Idempotent by email. */

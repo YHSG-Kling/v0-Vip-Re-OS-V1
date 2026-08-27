@@ -53,7 +53,13 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { PERIOD_RE, periodFor } from "@/lib/platform/affiliates"
 import {
   REFERRAL_FEE_PERCENT,
+  REFERRAL_FEE_BASES,
+  REFERRAL_FEE_BASIS_DEFAULT,
+  REFERRAL_FEE_DURATION_MONTHS_DEFAULT,
+  computeReferralFeeCents,
+  monthIndexForPeriod,
   parseReferrerEmail,
+  type ReferralFeeBasis,
   type ReferralPayoutStatus,
 } from "@/lib/platform/subscriber-referrals"
 
@@ -63,10 +69,30 @@ type Svc = ReturnType<typeof createServiceClient>
 const MISSING_RELATION = "42P01"
 const MISSING_COLUMN = "42703"
 
+export type ReferralTermsSource = "platform_settings" | "default_constant"
+
+/**
+ * THE FULL TERMS (m576 extends the m573 rate): basis, rate, duration — each
+ * with its OWN reported source, because the owner's ruling ("platform should
+ * not make assumption even with referrals") means a code default may stand in
+ * ONLY while it is visibly labeled as the default, per field. The original
+ * single `source` keeps its m573 meaning (the percent's source) — the pattern
+ * is extended, not forked.
+ */
 export interface ReferralFeeTerms {
   percent: number
-  /** Where the number came from — surfaced, so a default is never mistaken for policy. */
-  source: "platform_settings" | "default_constant"
+  /** Where the percent came from — surfaced, so a default is never mistaken for policy. */
+  source: ReferralTermsSource
+  /** 'percent' of MRR (m573 shape) or 'flat' per conversion (m576). */
+  basis: ReferralFeeBasis
+  basisSource: ReferralTermsSource
+  /** Flat amount in cents when basis='flat'; null otherwise/unset. */
+  flatCents: number | null
+  /** Months of MRR the fee runs (anchored on the first posted period per
+   *  prospect). 1 = one-time; 0 = indefinite — EXPLICIT platform_settings
+   *  choice only, the code default is bounded (12). */
+  durationMonths: number
+  durationSource: ReferralTermsSource
 }
 
 // FOLLOW-UP, deliberately not built pre-apply: an in-app terms EDITOR (a
@@ -86,23 +112,84 @@ export interface ReferralFeeTerms {
  */
 export async function getReferralFeeTerms(client?: Svc): Promise<ReferralFeeTerms> {
   const svc = client ?? createServiceClient()
-  // select("*"), deliberately: naming referral_fee_percent in the select would
-  // be a hard PostgREST refusal (42703) until m573 is applied — the whole read
-  // would fail on today's live schema. The singleton row is tiny; reading it
-  // whole and taking the field off the record makes the SAME code correct
-  // before and after the migration (absent column → undefined → default,
-  // reported as default_constant). Same idiom as buildSnapshotPayload's
-  // allow-list reads in lib/platform/config-snapshots.ts.
+  // select("*"), deliberately: naming referral_fee_percent (m573) or the m576
+  // basis/duration columns in the select would be a hard PostgREST refusal
+  // (42703) until the migrations are applied — the whole read would fail on
+  // today's live schema. The singleton row is tiny; reading it whole and
+  // taking the fields off the record makes the SAME code correct before and
+  // after each migration (absent column → undefined → default, reported as
+  // default_constant). Same idiom as buildSnapshotPayload's allow-list reads
+  // in lib/platform/config-snapshots.ts.
   const { data, error } = await svc
     .from("platform_settings")
     .select("*")
     .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle()
-  if (error || !data) return { percent: REFERRAL_FEE_PERCENT, source: "default_constant" }
-  const p = Number((data as Record<string, unknown>).referral_fee_percent)
-  if (!Number.isFinite(p) || p < 0 || p > 100) return { percent: REFERRAL_FEE_PERCENT, source: "default_constant" }
-  return { percent: p, source: "platform_settings" }
+  const defaults: ReferralFeeTerms = {
+    percent: REFERRAL_FEE_PERCENT,
+    source: "default_constant",
+    basis: REFERRAL_FEE_BASIS_DEFAULT,
+    basisSource: "default_constant",
+    flatCents: null,
+    durationMonths: REFERRAL_FEE_DURATION_MONTHS_DEFAULT,
+    durationSource: "default_constant",
+  }
+  if (error || !data) return defaults
+  const row = data as Record<string, unknown>
+  const terms = { ...defaults }
+
+  const p = Number(row.referral_fee_percent)
+  if (Number.isFinite(p) && p >= 0 && p <= 100) {
+    terms.percent = p
+    terms.source = "platform_settings"
+  }
+
+  // BASIS + FLAT AMOUNT (m576). Fail-closed coherence: a stored basis of
+  // 'flat' with no valid flat amount is UNCONFIGURED — the resolver falls back
+  // to the default basis and SAYS SO, rather than computing a $0 "flat" fee.
+  const flatRaw = Number(row.referral_fee_flat_cents)
+  const flatCents = Number.isInteger(flatRaw) && flatRaw > 0 ? flatRaw : null
+  const basisRaw = row.referral_fee_basis
+  if (REFERRAL_FEE_BASES.includes(basisRaw as ReferralFeeBasis) && (basisRaw !== "flat" || flatCents !== null)) {
+    terms.basis = basisRaw as ReferralFeeBasis
+    terms.basisSource = "platform_settings"
+    terms.flatCents = basisRaw === "flat" ? flatCents : null
+  }
+
+  // DURATION (m576). 0 = indefinite, accepted ONLY as a stored explicit value;
+  // the code default stays bounded at REFERRAL_FEE_DURATION_MONTHS_DEFAULT.
+  // NULL/absent must NOT collapse into the explicit 0 (Number(null) === 0) —
+  // that would read "unconfigured" as "indefinite, chosen".
+  const dRaw = row.referral_fee_duration_months
+  const d = dRaw === null || dRaw === undefined ? Number.NaN : Number(dRaw)
+  if (Number.isInteger(d) && d >= 0) {
+    terms.durationMonths = d
+    terms.durationSource = "platform_settings"
+  }
+
+  return terms
+}
+
+/**
+ * PURE: the fee the configured terms compute. Percent basis → % of MRR (the
+ * m573 math, computeReferralFeeCents); flat basis → the flat amount ONCE the
+ * referral is a linked tenant (a flat fee is per CONVERSION — it does not
+ * scale with MRR, but it is owed to no one until the prospect actually became
+ * a tenant). Lives beside ReferralFeeTerms: the terms module computes what the
+ * terms say, the parsing module stays pure of them.
+ */
+export function referralFeeCentsUnderTerms(
+  terms: { basis: ReferralFeeBasis; percent: number; flatCents: number | null },
+  mrrCents: number,
+  linked: boolean,
+): number {
+  if (terms.basis === "flat") {
+    if (!linked) return 0
+    const flat = Number(terms.flatCents)
+    return Number.isFinite(flat) && flat > 0 ? Math.floor(flat) : 0
+  }
+  return computeReferralFeeCents(mrrCents, terms.percent)
 }
 
 export interface ReferralRecipient {
@@ -142,7 +229,7 @@ export type PostReferralPayoutResult =
   | { ok: true; payoutId: string; period: string; recipient: ReferralRecipient }
   | {
       ok: false
-      reason: "already_posted" | "ledger_unavailable" | "invalid" | "error"
+      reason: "already_posted" | "ledger_unavailable" | "invalid" | "beyond_duration" | "error"
       error: string
       recipient?: ReferralRecipient
     }
@@ -152,6 +239,14 @@ export type PostReferralPayoutResult =
  * The write is .select()ed and READ (§3): a refused insert is a reported
  * refusal, a duplicate is "already posted", and a missing table (pre-m573) is
  * named as such so the caller can degrade honestly.
+ *
+ * READS THE FULL TERMS (m576): a posting for a month beyond the configured
+ * duration is REFUSED (reason 'beyond_duration'), naming the term and where it
+ * came from — configured terms or the reported bounded code default. The run
+ * is anchored on the EARLIEST non-void posted period for the prospect (this
+ * posting itself when it is the first). Duration 0 = indefinite, and only an
+ * explicit platform_settings value can say so. The terms' basis is stamped
+ * onto the row like fee_percent — the ledger records what it was posted under.
  */
 export async function postReferralPayout(
   svc: Svc,
@@ -170,24 +265,72 @@ export async function postReferralPayout(
   const amountCents = Math.floor(Number(input.amountCents))
   if (!Number.isFinite(amountCents) || amountCents <= 0) return { ok: false, reason: "invalid", error: "A positive amount is required" }
 
+  const terms = await getReferralFeeTerms(svc)
+
+  // DURATION ENFORCEMENT. Anchor = earliest non-void posted period (a voided
+  // first month was a retracted posting — it must not start the clock).
+  if (terms.durationMonths > 0) {
+    const { data: prior, error: priorErr } = await svc
+      .from("referral_payouts")
+      .select("period")
+      .eq("prospect_id", input.prospectId)
+      .neq("status", "void")
+      .order("period", { ascending: true })
+      .limit(1)
+    if (priorErr) {
+      // §3: the error is READ. A missing ledger (pre-m573) degrades exactly as
+      // the insert would have — never a throw, never silent.
+      const code = (priorErr as { code?: string }).code
+      if (code === MISSING_RELATION || code === MISSING_COLUMN) {
+        return { ok: false, reason: "ledger_unavailable", error: "referral_payouts does not exist yet — migration m573 is written but not applied." }
+      }
+      return { ok: false, reason: "error", error: priorErr.message }
+    }
+    const earliest = (prior?.[0] as { period?: string } | undefined)?.period
+    const anchor = earliest && earliest < period ? earliest : period
+    const monthIndex = monthIndexForPeriod(anchor, period)
+    if (monthIndex > terms.durationMonths) {
+      const src = terms.durationSource === "platform_settings" ? "the configured terms" : "the platform default (terms not configured)"
+      return {
+        ok: false,
+        reason: "beyond_duration",
+        error:
+          `${period} is month ${monthIndex} of this referral's fee run (anchored at ${anchor}), but ${src} ` +
+          `pay ${terms.durationMonths} month${terms.durationMonths === 1 ? "" : "s"} — posting beyond the term is refused.`,
+      }
+    }
+  }
+
   const recipient = await resolveReferralRecipient(input.referrer, svc)
 
-  const { data, error } = await svc
-    .from("referral_payouts")
-    .insert({
-      prospect_id: input.prospectId,
-      referrer: input.referrer,
-      recipient_brokerage_id: recipient.brokerageId,
-      recipient_email: recipient.email,
-      amount_cents: amountCents,
-      fee_percent: input.feePercent,
-      period,
-      status: "posted",
-      note: (input.note ?? "").trim() || null,
-      posted_by: input.postedBy,
-    })
-    .select("id")
-    .single()
+  const payload: Record<string, unknown> = {
+    prospect_id: input.prospectId,
+    referrer: input.referrer,
+    recipient_brokerage_id: recipient.brokerageId,
+    recipient_email: recipient.email,
+    amount_cents: amountCents,
+    fee_percent: input.feePercent,
+    // Denormalized like fee_percent (m576): the basis this posting was made
+    // under. INTEGRATOR NOTE (post-apply): add `basis` to the earnings/summary
+    // selects so the recipient surface shows it — naming it there TODAY would
+    // 42703-fail those whole reads (the writer is safe: PGRST204 is retried
+    // below), and the opposite-missing census will rightly ask for the reader
+    // once the schema caches learn the column.
+    basis: terms.basis,
+    period,
+    status: "posted",
+    note: (input.note ?? "").trim() || null,
+    posted_by: input.postedBy,
+  }
+  let { data, error } = await svc.from("referral_payouts").insert(payload).select("id").single()
+  if (error && (error as { code?: string }).code === "PGRST204") {
+    // Pre-m576: the basis column is absent, and naming it refuses the WHOLE
+    // insert (§3 — PGRST204 rejects everything, not "most of the row"). Retry
+    // under the m573 shape; the row posts with basis null, exactly like every
+    // legacy percent-era row.
+    delete payload.basis
+    ;({ data, error } = await svc.from("referral_payouts").insert(payload).select("id").single())
+  }
   if (error) {
     const code = (error as { code?: string }).code
     if (code === "23505") {

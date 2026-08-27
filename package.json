@@ -20,6 +20,7 @@
     "test:connector-healer": "tsx scripts/connector-healer-simulator.ts",
     "test:dashboard-data-layer": "tsx scripts/dashboard-data-layer-simulator.ts",
     "test:intelligence-modules": "tsx scripts/intelligence-modules-simulator.ts",
+    "test:deletion-audit": "tsx scripts/deletion-audit-guard.ts",
     "test:migration-ledger": "tsx scripts/migration-ledger-guard.ts",
     "test:portal-curation": "tsx scripts/portal-curation-simulator.ts",
     "test:skills-lock": "tsx scripts/skills-lock-guard.ts",

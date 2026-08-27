@@ -1,1 +1,9 @@
-[]
+[
+  "app/actions/settings/revenue-share-setting.ts::brokerages.revenue_share_default_percent::update",
+  "app/actions/settings/revenue-share-setting.ts::brokerages.revenue_share_duration_months::update",
+  "app/actions/settings/revenue-share-setting.ts::brokerages.revenue_share_flat_cents::update",
+  "app/actions/settings/revenue-share-setting.ts::brokerages.revenue_share_rate_type::update",
+  "app/actions/settings/revenue-share-setting.ts::brokerages.revenue_share_source_of_funds::update",
+  "lib/platform/referral-payouts.ts::referral_payouts.basis::insert(var)",
+  "lib/platform/referral-payouts.ts::referral_payouts.basis::insert(var)"
+]

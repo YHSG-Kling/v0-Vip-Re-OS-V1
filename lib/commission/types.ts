@@ -91,6 +91,13 @@ export interface WaterfallContext {
   /** teams.id whose ledger stage 11 must write back (null when no override applied). */
   teamCapTeamId?: string | null
 
+  // Revenue share (stage 09). OPTIONAL like the team-cap fields above — only
+  // stage 09 sets it. Set when the step paid nothing because the brokerage
+  // never opted in ('disabled') or opted in without describing the
+  // distribution model ('model_unconfigured', m575 — the mark alone pays
+  // nothing; the skip is recorded here and warned, never silent).
+  revenueShareSkipped?: 'disabled' | 'model_unconfigured'
+
   // Distribution collections
   grossAdjustments: DistributionRecord[]
   agentAdjustments: DistributionRecord[]

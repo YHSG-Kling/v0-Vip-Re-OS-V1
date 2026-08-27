@@ -37,6 +37,73 @@ export const REFERRAL_SOURCE_PREFIX = "referral:"
  *  (m573) via getReferralFeeTerms. */
 export const REFERRAL_FEE_PERCENT = 10
 
+// ─── FULL TERMS (m576): BASIS + DURATION, no assumption (owner ruling
+// 2026-08-27, verbatim: "platform should not make assumption even with
+// referrals."). Every default below is a FALLBACK the resolver reports as
+// default_constant — never policy on its own.
+
+/** Fee BASIS vocabulary — the repo's rate-type pair (§6), mirroring the m576 CHECK.
+ *  'percent' = % of the referred tenant's MRR; 'flat' = flat amount per conversion. */
+export const REFERRAL_FEE_BASES = ["percent", "flat"] as const
+export type ReferralFeeBasis = (typeof REFERRAL_FEE_BASES)[number]
+
+/** DEFAULT basis: percent-of-MRR — the m573 shape, the only one that existed
+ *  before m576 gave basis a home. Fallback only, reported as default_constant. */
+export const REFERRAL_FEE_BASIS_DEFAULT: ReferralFeeBasis = "percent"
+
+/** DEFAULT duration in months of MRR, anchored on the first posted period per
+ *  prospect. Deliberately BOUNDED (12): indefinite (0) must be an EXPLICIT
+ *  platform_settings choice, never a default the code invents. Fallback only,
+ *  reported as default_constant. */
+export const REFERRAL_FEE_DURATION_MONTHS_DEFAULT = 12
+
+/**
+ * PURE: 1-based month index of `period` within a fee run anchored at
+ * `anchorPeriod` (both 'YYYY-MM'). anchor === period → 1; the month after → 2.
+ * A period BEFORE the anchor yields ≤ 0 — callers anchor on the earlier of the
+ * two, so that never escapes.
+ */
+export function monthIndexForPeriod(anchorPeriod: string, period: string): number {
+  const [ay, am] = anchorPeriod.split("-").map(Number)
+  const [py, pm] = period.split("-").map(Number)
+  if (![ay, am, py, pm].every(Number.isFinite)) return Number.NaN
+  return (py - ay) * 12 + (pm - am) + 1
+}
+
+// referralFeeCentsUnderTerms (the basis-aware fee math) lives in
+// lib/platform/referral-payouts.ts beside the ReferralFeeTerms it computes
+// from — this module stays the pure parsing/constants half.
+
+/**
+ * PURE: one line describing the configured terms for the surfaces that POST —
+ * staff must see what the platform will compute, including where each piece of
+ * the terms came from (configured vs the reported code default).
+ */
+export function describeReferralFeeTerms(terms: {
+  basis: ReferralFeeBasis
+  percent: number
+  flatCents: number | null
+  durationMonths: number
+  basisSource: string
+  durationSource: string
+}): string {
+  const rate =
+    terms.basis === "flat"
+      ? `$${((terms.flatCents ?? 0) / 100).toFixed(2)} flat per conversion`
+      : `${terms.percent}% of the referred tenant's MRR`
+  const run =
+    terms.durationMonths === 0
+      ? "runs indefinitely"
+      : terms.durationMonths === 1
+        ? "one-time (1 month)"
+        : `runs ${terms.durationMonths} months`
+  const src =
+    terms.basisSource === "platform_settings" && terms.durationSource === "platform_settings"
+      ? "configured terms"
+      : "platform default — configure in platform_settings"
+  return `${rate} · ${run} (${src})`
+}
+
 /** referral_payouts.status vocabulary — mirrors the m573 CHECK (one home, §6). */
 export const REFERRAL_PAYOUT_STATUSES = ["posted", "received", "void"] as const
 export type ReferralPayoutStatus = (typeof REFERRAL_PAYOUT_STATUSES)[number]
