@@ -299,7 +299,31 @@ jobs:
       # It is now costed out in the runner section above rather than left as a
       # gesture at "a bigger machine": what it takes on this repo is moving to an
       # organization, GitHub Team, and ~$35-50/month at the 8-core size.)
-      NODE_OPTIONS: "--max-old-space-size=10240"
+      # ── 2026-08-27, runs 33037848958 attempts 1+2 (commit ad314a0c): 10240 RAN
+      # OUT. Two consecutive heap aborts at the same commit, both the classic
+      # "Ineffective mark-compacts near heap limit":
+      #   attempt 1 — died 5m46s in, last GC 8780.5 used / 9530.1 committed = 93.1% of cap
+      #   attempt 2 — died 8m13s in, last GC 8691.7 used / 9317.5 committed = 91.0% of cap
+      # The previous commit (0d16ad52) went GREEN on this exact config, and its
+      # local worker reading was 87.2% committed — so the wave between them
+      # (+~1,000 lines of first-party TS) moved committed demand onto the ~90%
+      # abort threshold, where runs flip between green and abort on GC timing.
+      # Re-running a third time is a coin toss on a knife edge, not a measurement.
+      #
+      # WHY RAISING THE CAP IS NOW SAFE WHEN 12288 WAS FATAL. The entry below
+      # records 12288 killing the MACHINE via page-data RSS on 16 GB — but that
+      # reading predates two structural changes: the compile now runs in ONE
+      # sequential build worker (not sharing the parent), and the runner now has
+      # an 8 GiB swapfile that demonstrably absorbed a 13.9 GB worker RSS on the
+      # green run. The RSS ceiling that made 12288 fatal has a cushion the old
+      # bracket never had. 11264 is one measured step, not a leap: effective
+      # abort ceiling ~10.1 GB against 8.7-8.9 GB committed demand ≈ 12%
+      # headroom, where 10240 gave ~5% and lost it.
+      #
+      # vercel.json still carries 10240 DELIBERATELY: Vercel's standard build
+      # container is smaller than this runner and has no swap step, so raising
+      # it there is a separate measurement, not a copy-paste.
+      NODE_OPTIONS: "--max-old-space-size=11264"
       #
       # A COMMENT THAT SAID THE OPPOSITE OF THE LINE ABOVE IT USED TO LIVE HERE.
       # It read: "NO max-old-space-size override: `next build` uses Turbopack
