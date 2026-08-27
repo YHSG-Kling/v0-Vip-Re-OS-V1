@@ -2,8 +2,10 @@
 
 // Subscriber referral fees — who referred each paying tenant and what the platform
 // owes them. Data rides the growth-funnel rail (platform_prospects "referral:" source
-// + converted_brokerage_id); payments are read from / written to the append-only
-// superadmin_audit_log ledger. Billing-gated server-side (superadmin + platform admin).
+// + converted_brokerage_id); "Mark paid" POSTS to the referral_payouts ledger (m573;
+// idempotent per referral+month; tenant-referrers see + confirm it on their billing
+// page), with superadmin_audit_log as the audit trail (and the legacy record while
+// m573 is unapplied). Billing-gated server-side (superadmin + platform admin).
 import { useState, useTransition } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -120,7 +122,16 @@ export function SubscriberReferralsCard({ initialRows, feePercent, brokerageOpti
                     <td className="px-3 py-2 text-right tabular-nums font-medium">{r.feeCents > 0 ? fmt(r.feeCents) : "—"}</td>
                     <td className="px-3 py-2 text-xs text-muted-foreground">
                       {r.lastPaidAt
-                        ? <>{fmt(r.lastPaidCents ?? 0)} on {new Date(r.lastPaidAt).toLocaleDateString()}<span className="block">{fmt(r.totalPaidCents)} lifetime</span></>
+                        ? <>
+                            {fmt(r.lastPaidCents ?? 0)} on {new Date(r.lastPaidAt).toLocaleDateString()}
+                            <span className="block">{fmt(r.totalPaidCents)} lifetime</span>
+                            {r.ledgerPostedCents > 0 && (
+                              <span className="block">
+                                {fmt(r.ledgerPostedCents)} posted · {fmt(r.ledgerReceivedCents)} confirmed received
+                                {!r.recipientBrokerageId && " · non-tenant referrer"}
+                              </span>
+                            )}
+                          </>
                         : "Never"}
                     </td>
                     <td className="px-3 py-2 text-right">
@@ -137,7 +148,7 @@ export function SubscriberReferralsCard({ initialRows, feePercent, brokerageOpti
           </div>
         )}
         <p className="text-[11px] text-muted-foreground">
-          Payments are recorded in the append-only platform action ledger (superadmin_audit_log · referral_fee.paid) — full history in <a className="underline" href="/dashboard/superadmin/audit">Audit</a>.
+          &ldquo;Mark paid&rdquo; POSTS the payout to the referral_payouts ledger (one row per referral per month — a repeat post for the same month is refused); a referrer who is a tenant sees it on their own billing page and confirms receipt there. The audit trail (referral_payout.posted, plus legacy referral_fee.paid lines) stays in <a className="underline" href="/dashboard/superadmin/audit">Audit</a>.
         </p>
       </CardContent>
     </Card>

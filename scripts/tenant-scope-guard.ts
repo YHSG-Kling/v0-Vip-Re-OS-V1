@@ -398,6 +398,8 @@ const GLOBAL_LOOKUP_EXEMPT: Record<string, string> = {
     "looks up by recruit.email where the recruit row is already brokerage-scoped; auth emails are global",
   "lib/kernel/users.ts":
     "resolveEmailHolder MUST search globally — users.email is unique platform-wide and a stale holder would break the invite. The BINDING is what needed guarding, and inviteTenantMember now refuses to re-home a user who already belongs to another brokerage unless the caller is a superadmin.",
+  "lib/platform/referral-payouts.ts":
+    "resolveReferralRecipient answers a PLATFORM question — WHICH tenant the free-text referrer on a platform_prospect belongs to (users.email is unique platform-wide; there is no caller tenant to scope by). Callers are billing-gated superadmin actions; the resolved brokerage only ever RECEIVES a payout row on its own billing surface, and the recipient-side read/acknowledge path is separately session-scoped (app/actions/admin/referral-earnings.ts).",
 }
 
 {

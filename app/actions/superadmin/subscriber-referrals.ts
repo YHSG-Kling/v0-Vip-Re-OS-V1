@@ -3,10 +3,21 @@
 // app/actions/superadmin/subscriber-referrals.ts
 // ─────────────────────────────────────────────────────────────────────────────
 // SUBSCRIBER REFERRAL FEES — DB wiring for lib/platform/subscriber-referrals.ts.
-// Rides the EXISTING rails only: platform_prospects (source = "referral:<who>",
-// converted_brokerage_id = the tenant it became), subscriptions + subscription_tiers
-// for MRR, and superadmin_audit_log as the append-only payment ledger (action
-// "referral_fee.paid" — "paid" state is READ BACK from the ledger, no new table).
+// Rides the EXISTING rails: platform_prospects (source = "referral:<who>",
+// converted_brokerage_id = the tenant it became) and subscriptions +
+// subscription_tiers for MRR.
+//
+// PAID is a LEDGER since 2026-08-27 (owner ruling "make sure referral payouts
+// are posted and received by the recipient"): markReferralFeePaidAction POSTS
+// a referral_payouts row (m573 — idempotent per prospect+period, recipient
+// resolved from the referrer email; lib/platform/referral-payouts.ts) and the
+// recipient tenant's billing surface renders + acknowledges it (RECEIVED).
+// superadmin_audit_log is the audit TRAIL beside the ledger — a ledger post
+// writes trail action "referral_payout.posted"; the OLD action
+// "referral_fee.paid" remains readable legacy history AND the degraded write
+// path while m573 is unapplied (the two are disjoint, so totals never double
+// count). Fee terms come from getReferralFeeTerms (platform_settings, m573;
+// code default until applied — the source is reported, never guessed).
 // Money surface ⇒ gated on the "billing" capability (superadmin + platform admin).
 
 import { createServiceClient } from "@/lib/supabase/service"
@@ -15,10 +26,16 @@ import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
 import {
   parseReferrer, makeReferralSource, computeReferralFeeCents,
-  REFERRAL_FEE_PERCENT, REFERRAL_SOURCE_PREFIX, type SubscriberReferralRow,
+  REFERRAL_SOURCE_PREFIX, type SubscriberReferralRow,
 } from "@/lib/platform/subscriber-referrals"
+import {
+  getReferralFeeTerms, postReferralPayout, summarizeLedgerByProspect,
+} from "@/lib/platform/referral-payouts"
 
+/** Legacy audit-line payment record — pre-m573 history + the degraded write path. */
 const PAID_ACTION = "referral_fee.paid"
+/** Audit TRAIL for a ledger posting (never summed — the ledger row is the money). */
+const POSTED_TRAIL_ACTION = "referral_payout.posted"
 
 async function requireBilling(): Promise<{ ok: true; userId: string; email: string } | { ok: false; error: string }> {
   const gate = await requirePlatformCapability("billing")
@@ -46,6 +63,7 @@ export async function listSubscriberReferralsAction(): Promise<
   const auth = await requireBilling()
   if (!auth.ok) return auth
   const svc = createServiceClient()
+  const terms = await getReferralFeeTerms(svc)
 
   const { data: prospects, error } = await svc
     .from("platform_prospects")
@@ -80,12 +98,23 @@ export async function listSubscriberReferralsAction(): Promise<
     }
   }
 
-  // Payment history from the append-only ledger.
+  // Payment history — the referral_payouts LEDGER (posted/received) plus the
+  // LEGACY audit-line records ("referral_fee.paid": pre-ledger payments, and
+  // the degraded write path while m573 is unapplied). The two are DISJOINT by
+  // construction — a ledger post writes the trail action
+  // "referral_payout.posted", never "referral_fee.paid" — so summing both is
+  // the total without double counting.
   const lastPaidAt = new Map<string, string>()
   const lastPaidCents = new Map<string, number>()
   const totalPaidCents = new Map<string, number>()
+  const ledgerSummary = await summarizeLedgerByProspect(prospectIds, svc)
+  if (ledgerSummary.error) return { ok: false, error: ledgerSummary.error }
+  for (const [pid, s] of ledgerSummary.byProspect) {
+    totalPaidCents.set(pid, s.postedCents)
+    if (s.lastPostedAt) { lastPaidAt.set(pid, s.lastPostedAt); lastPaidCents.set(pid, s.lastPostedCents ?? 0) }
+  }
   if (prospectIds.length > 0) {
-    const { data: ledger, error: ledgerErr } = await svc
+    const { data: legacy, error: legacyErr } = await svc
       .from("superadmin_audit_log")
       .select("target_id, created_at, details")
       .eq("action", PAID_ACTION)
@@ -93,11 +122,16 @@ export async function listSubscriberReferralsAction(): Promise<
       .in("target_id", prospectIds)
       .order("created_at", { ascending: false })
       .limit(1000)
-    if (ledgerErr) return { ok: false, error: ledgerErr.message }
-    for (const e of (ledger ?? []) as any[]) {
+    if (legacyErr) return { ok: false, error: legacyErr.message }
+    for (const e of (legacy ?? []) as any[]) {
       const cents = Number(e.details?.amount_cents) || 0
       totalPaidCents.set(e.target_id, (totalPaidCents.get(e.target_id) ?? 0) + cents)
-      if (!lastPaidAt.has(e.target_id)) { lastPaidAt.set(e.target_id, e.created_at); lastPaidCents.set(e.target_id, cents) }
+      // The ledger's latest posting wins over an older legacy line; a NEWER
+      // legacy line (written while the ledger was unavailable) wins on recency.
+      const cur = lastPaidAt.get(e.target_id)
+      if (!cur || Date.parse(e.created_at) > Date.parse(cur)) {
+        lastPaidAt.set(e.target_id, e.created_at); lastPaidCents.set(e.target_id, cents)
+      }
     }
   }
 
@@ -108,6 +142,7 @@ export async function listSubscriberReferralsAction(): Promise<
 
   const rows: SubscriberReferralRow[] = rows0.map((p) => {
     const mrrCents = p.converted_brokerage_id ? (mrrById.get(p.converted_brokerage_id) ?? 0) : 0
+    const ledger = ledgerSummary.byProspect.get(p.id)
     return {
       prospectId: p.id,
       referrer: parseReferrer(p.source) ?? "—",
@@ -115,14 +150,17 @@ export async function listSubscriberReferralsAction(): Promise<
       status: p.status ?? "new",
       brokerageId: p.converted_brokerage_id ?? null,
       brokerageName: p.converted_brokerage_id ? (nameById.get(p.converted_brokerage_id) ?? null) : null,
-      mrrCents, feePercent: REFERRAL_FEE_PERCENT, feeCents: computeReferralFeeCents(mrrCents),
+      mrrCents, feePercent: terms.percent, feeCents: computeReferralFeeCents(mrrCents, terms.percent),
       lastPaidAt: lastPaidAt.get(p.id) ?? null,
       lastPaidCents: lastPaidCents.get(p.id) ?? null,
       totalPaidCents: totalPaidCents.get(p.id) ?? 0,
+      ledgerPostedCents: ledger?.postedCents ?? 0,
+      ledgerReceivedCents: ledger?.receivedCents ?? 0,
+      recipientBrokerageId: ledger?.recipientBrokerageId ?? null,
       createdAt: p.created_at,
     }
   })
-  return { ok: true, rows, feePercent: REFERRAL_FEE_PERCENT, brokerageOptions: ((options ?? []) as any[]).map((b) => ({ id: b.id, name: b.name ?? "—" })) }
+  return { ok: true, rows, feePercent: terms.percent, brokerageOptions: ((options ?? []) as any[]).map((b) => ({ id: b.id, name: b.name ?? "—" })) }
 }
 
 /** Record a subscriber referral — a prospect whose source names the referrer. Idempotent by email. */
@@ -165,10 +203,28 @@ export async function linkReferralConversionAction(input: {
   return { ok: true }
 }
 
-/** Record a referral-fee payment in the append-only ledger (superadmin_audit_log). */
+/**
+ * POST a referral-fee payout. The payment record is a referral_payouts LEDGER
+ * row (m573): idempotent per (prospect, period), recipient resolved from the
+ * referrer's email (a tenant referrer sees it on their billing page — the
+ * RECEIVED half), the write .select()ed and counted (§3). The audit log gets
+ * the TRAIL ("referral_payout.posted"). While m573 is unapplied the ledger is
+ * honestly unavailable and this degrades to the legacy audit-line record
+ * ("referral_fee.paid") — the pre-existing behavior, now labeled as degraded
+ * in the result instead of being the design.
+ */
 export async function markReferralFeePaidAction(input: {
   prospectId: string; amountCents: number; note?: string
-}): Promise<{ ok: boolean; error?: string }> {
+  /** Billing period the fee is for ('YYYY-MM'); defaults to the current month. */
+  period?: string
+}): Promise<{
+  ok: boolean; error?: string
+  /** Where the payment record landed: the m573 ledger, or the legacy audit line. */
+  recordedIn?: "ledger" | "audit_log_legacy"
+  /** Tenant-referrer resolution — null means a non-tenant referrer (no billing surface yet). */
+  recipientBrokerageId?: string | null
+  period?: string
+}> {
   const auth = await requireBilling()
   if (!auth.ok) return auth
   const amountCents = Math.floor(Number(input.amountCents))
@@ -178,8 +234,41 @@ export async function markReferralFeePaidAction(input: {
   if (!p) return { ok: false, error: "Referral not found" }
   const referrer = parseReferrer((p as any).source)
   if (!referrer) return { ok: false, error: "That prospect is not a referral" }
-  // This row IS the payment record (append-only ledger) — its write must be checked,
-  // not fire-and-forget like the side-audits above.
+
+  const terms = await getReferralFeeTerms(svc)
+  const posted = await postReferralPayout(svc, {
+    prospectId: input.prospectId,
+    referrer,
+    amountCents,
+    feePercent: terms.percent,
+    period: input.period ?? null,
+    note: input.note ?? null,
+    postedBy: auth.userId,
+  })
+
+  if (posted.ok) {
+    // TRAIL beside the ledger (best-effort — the money row is already committed).
+    await audit(auth.userId, auth.email, POSTED_TRAIL_ACTION, input.prospectId, {
+      payout_id: posted.payoutId, amount_cents: amountCents, period: posted.period,
+      fee_percent: terms.percent, fee_percent_source: terms.source, referrer,
+      recipient_brokerage_id: posted.recipient.brokerageId,
+      recipient_email: posted.recipient.email,
+      brokerage_id: (p as any).converted_brokerage_id ?? null,
+      note: (input.note ?? "").trim() || null,
+    })
+    revalidatePath("/dashboard/superadmin/growth")
+    revalidatePath("/dashboard/admin/billing")
+    return { ok: true, recordedIn: "ledger", recipientBrokerageId: posted.recipient.brokerageId, period: posted.period }
+  }
+
+  if (posted.reason !== "ledger_unavailable") {
+    // Idempotency refusal / validation / real error — surfaced, never re-recorded.
+    return { ok: false, error: posted.error }
+  }
+
+  // DEGRADED PATH (m573 written, not applied): the legacy audit line IS the
+  // payment record, exactly as before this lane — its write must be checked,
+  // not fire-and-forget like the side-audits.
   const hdrs = await headers()
   const { error } = await svc.from("superadmin_audit_log").insert({
     actor_user_id: auth.userId, actor_email: auth.email, action: PAID_ACTION,
@@ -188,10 +277,11 @@ export async function markReferralFeePaidAction(input: {
       amount_cents: amountCents, referrer,
       brokerage_id: (p as any).converted_brokerage_id ?? null,
       note: (input.note ?? "").trim() || null,
+      ledger_unavailable: "referral_payouts missing — apply m573",
     },
     ip_address: hdrs.get("x-forwarded-for") ?? hdrs.get("x-real-ip"), user_agent: hdrs.get("user-agent"),
   })
   if (error) return { ok: false, error: error.message }
   revalidatePath("/dashboard/superadmin/growth")
-  return { ok: true }
+  return { ok: true, recordedIn: "audit_log_legacy", recipientBrokerageId: posted.recipient?.brokerageId ?? null }
 }

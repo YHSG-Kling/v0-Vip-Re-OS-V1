@@ -5,6 +5,8 @@ import { auditStaffAction, gateStaffAction } from "@/lib/platform/staff-action-g
 import { provisionTenantOwner } from "@/lib/kernel/users"
 import { rollbackTenantCreation } from "@/lib/kernel/tenant-creation-rollback"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { applySnapshotPayload, type SnapshotPayload } from "@/lib/platform/config-snapshots"
+import { snapshotForTier } from "@/lib/platform/trial-funnel"
 import { stripe } from "@/lib/stripe"
 
 export interface CreateSubscriberParams {
@@ -21,6 +23,13 @@ export interface CreateSubscriberParams {
   billingCycle: "monthly" | "annual"
   notes?: string
   stripeCustomerId?: string
+  /** Explicit config snapshot to provision from (staff-picked — the caller gates +
+   *  pre-validates the id). When OMITTED, the tier's live funnel snapshot applies
+   *  (snapshotForTier — the same server-side resolution the self-serve signup
+   *  uses), so EVERY provisioned tenant snapshots at creation (owner ruling:
+   *  "when the platform prospect is converted, the account should also create
+   *  the account with a snapshot"). Best-effort — never fails the provisioning. */
+  snapshotId?: string
 }
 
 export async function createSubscriber(params: CreateSubscriberParams): Promise<{
@@ -31,6 +40,10 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
   inviteSent?: boolean
   inviteError?: string
   error?: string
+  /** Config-snapshot outcome — honest per-part reporting (same shape as signupBrokerageAction). */
+  snapshotApplied?: string[]
+  snapshotName?: string
+  snapshotError?: string
 }> {
   // GATE PARITY (round 19). This used to demand a literal 'superadmin' read off
   // `platform_role ?? user_type ?? role` — including the RETIRED users.role
@@ -156,6 +169,46 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
       return { success: false, error: `Subscription creation failed: ${sErr?.message}` }
     }
 
+    // CONFIG SNAPSHOT AT CREATION (owner ruling: a converted prospect's account
+    // is created WITH a snapshot). ONE apply path for every creation rail:
+    // applySnapshotPayload (allow-listed layers only — never name/slug/email/
+    // status/tier/billing). The snapshot is the staff-picked params.snapshotId
+    // when given, else the tier's live funnel snapshot (snapshotForTier — the
+    // SAME server-side resolver the self-serve signup uses, so the two
+    // provisioning doors cannot drift). Best-effort: a branding problem must
+    // never cost the tenant — the outcome is reported per-part instead.
+    let snapshotApplied: string[] | undefined
+    let snapshotName: string | undefined
+    let snapshotError: string | undefined
+    try {
+      let payload: SnapshotPayload | null = null
+      if (params.snapshotId) {
+        const { data: snap, error: snapErr } = await service
+          .from("platform_config_snapshots")
+          .select("name, payload")
+          .eq("id", params.snapshotId)
+          .maybeSingle()
+        if (snapErr) snapshotError = `Snapshot read failed: ${snapErr.message}`
+        else if (!snap) snapshotError = "Config snapshot not found — tenant provisioned from platform defaults."
+        else {
+          snapshotName = (snap as any).name
+          payload = ((snap as any).payload ?? {}) as SnapshotPayload
+        }
+      } else {
+        const snap = await snapshotForTier(params.tierName, service)
+        if (snap) { snapshotName = snap.name; payload = snap.payload }
+        // No live snapshot for the tier is not an error — the tenant starts
+        // from platform defaults, exactly like the self-serve funnel.
+      }
+      if (payload) {
+        const { applied } = await applySnapshotPayload(payload, brokerageId, callerUser.id, service)
+        snapshotApplied = applied
+      }
+    } catch (err) {
+      snapshotError = err instanceof Error ? err.message : "Snapshot apply failed"
+      console.warn("[createSubscriber] snapshot apply failed (non-fatal):", err)
+    }
+
     // PROSPECT CONVERSION STAMP — if this subscriber was a platform_prospect
     // (any capture channel: web hand-raise, /demo, phone reception, referral,
     // OS-intent sourcing), record the conversion moment: converted_brokerage_id
@@ -202,6 +255,11 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
             billing_cycle: params.billingCycle,
             subscription_id: subscription.id,
             notes: params.notes || "",
+            // Config-snapshot-at-creation outcome — honest either way.
+            snapshot_id: params.snapshotId ?? null,
+            snapshot_name: snapshotName ?? null,
+            snapshot_applied: snapshotApplied ?? null,
+            snapshot_error: snapshotError ?? null,
             timestamp: new Date().toISOString(),
           }),
           created_at: new Date().toISOString(),
@@ -220,6 +278,9 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
       subscriptionId: subscription.id,
       inviteSent: owner.inviteSent,
       inviteError: owner.inviteError,
+      snapshotApplied,
+      snapshotName,
+      snapshotError,
     }
   } catch (err: any) {
     console.error("[createSubscriber] Error:", err)

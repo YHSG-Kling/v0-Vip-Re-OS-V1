@@ -9,17 +9,37 @@
 //     until now) links the referral to the tenant it became;
 //   • superadmin_audit_log (action "referral_fee.paid") is the append-only
 //     PAYMENT ledger — paid history is read back from it, no new table.
-// The fee rate is a named constant here: platform_settings (the singleton rail
-// in lib/platform/platform-controls.ts) has no referral_fee_percent column and
-// adding one is a migration this lane does not apply; when that column lands,
-// swap the constant for a read. Pure math + parsing only — DB work lives in
-// app/actions/superadmin/subscriber-referrals.ts.
+// The fee TERMS' one home (§6) is platform_settings.referral_fee_percent
+// (migration m573 — written, applied by the integrator); the constant below is
+// the DEFAULT the resolver falls back to until the column exists. Read the
+// live terms through lib/platform/referral-payouts.ts::getReferralFeeTerms —
+// never this constant directly on a money surface.
+//
+// PAID is TWO facts since 2026-08-27 (owner ruling "make sure referral payouts
+// are posted and received by the recipient"):
+//   POSTED   — a referral_payouts ledger row (m573; UNIQUE(prospect_id,period)
+//             = idempotent), written by markReferralFeePaidAction through
+//             lib/platform/referral-payouts.ts. The superadmin_audit_log entry
+//             is the audit TRAIL beside it, no longer the ledger.
+//   RECEIVED — the recipient's own surface: a tenant-referrer's billing page
+//             (app/dashboard/admin/billing) lists their earnings and lets them
+//             acknowledge receipt (status posted → received). Non-tenant
+//             referrers are recorded with recipient_email only — their cash
+//             pay-out rail is honestly not built.
+// Pure math + parsing only — DB work lives in
+// app/actions/superadmin/subscriber-referrals.ts + lib/platform/referral-payouts.ts.
 
 /** Prospect.source scheme marking a subscriber referral. */
 export const REFERRAL_SOURCE_PREFIX = "referral:"
 
-/** Referral fee, % of the referred tenant's monthly subscription (MRR). */
+/** DEFAULT referral fee, % of the referred tenant's monthly subscription (MRR).
+ *  Fallback only — the live terms live on platform_settings.referral_fee_percent
+ *  (m573) via getReferralFeeTerms. */
 export const REFERRAL_FEE_PERCENT = 10
+
+/** referral_payouts.status vocabulary — mirrors the m573 CHECK (one home, §6). */
+export const REFERRAL_PAYOUT_STATUSES = ["posted", "received", "void"] as const
+export type ReferralPayoutStatus = (typeof REFERRAL_PAYOUT_STATUSES)[number]
 
 /** PURE: build the platform_prospects.source value for a referral. */
 export function makeReferralSource(referrer: string): string {
@@ -31,6 +51,24 @@ export function parseReferrer(source: string | null | undefined): string | null 
   if (!source || !source.startsWith(REFERRAL_SOURCE_PREFIX)) return null
   const who = source.slice(REFERRAL_SOURCE_PREFIX.length).trim()
   return who || null
+}
+
+/**
+ * PURE: the email inside a referrer string, or null. The referrer is free text
+ * ("Jane Doe <jane@x.com>", "jane@x.com", or just "Jane Doe" — the growth card
+ * says "name or email"). The email is the only key that can resolve WHO gets
+ * the payout: a users.email match makes the referrer a TENANT (payout lands on
+ * their brokerage's billing surface); no email / no match = non-tenant referrer,
+ * recorded on the ledger by address alone.
+ */
+export function parseReferrerEmail(referrer: string | null | undefined): string | null {
+  if (!referrer) return null
+  // Angle-bracket form first ("Name <email>"), then a bare email token.
+  const angled = referrer.match(/<([^<>\s]+@[^<>\s]+\.[^<>\s]+)>/)
+  const bare = angled?.[1] ?? referrer.match(/(?:^|\s)([^\s<>@]+@[^\s<>@]+\.[^\s<>@]+)(?:$|\s)/)?.[1] ?? null
+  if (!bare) return null
+  const email = bare.trim().toLowerCase()
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : null
 }
 
 /** PURE: monthly referral fee in cents — floor, never negative. */
@@ -54,9 +92,17 @@ export interface SubscriberReferralRow {
   mrrCents: number
   feePercent: number
   feeCents: number
-  /** Last "referral_fee.paid" audit entry for this prospect. */
+  /** Latest payment fact — a referral_payouts ledger row when the ledger exists,
+   *  else the last legacy "referral_fee.paid" audit entry. */
   lastPaidAt: string | null
   lastPaidCents: number | null
+  /** Ledger rows + legacy audit lines (disjoint by construction — a ledger post
+   *  writes the trail action "referral_payout.posted", never "referral_fee.paid"). */
   totalPaidCents: number
+  /** POSTED half (m573 ledger). 0 / null until the ledger exists + has rows. */
+  ledgerPostedCents: number
+  ledgerReceivedCents: number
+  /** Where the latest posting resolved its recipient (tenant-referrer), if anywhere. */
+  recipientBrokerageId: string | null
   createdAt: string
 }

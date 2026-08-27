@@ -18,7 +18,10 @@ import { ManageBillingButton } from "./manage-billing-button"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { SubscriptionAgreementCard } from "./subscription-agreement-card"
 import { RevenueSummaryCard } from "./revenue-summary-card"
+import { ReferralEarningsCard } from "./referral-earnings-card"
 import { getSubscriptionAgreementAction } from "@/app/actions/admin/subscription-agreement"
+import { getReferralEarningsAction } from "@/app/actions/admin/referral-earnings"
+import type { ReferralEarningRow } from "@/lib/platform/referral-payouts"
 import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
 
 /**
@@ -86,6 +89,21 @@ export default async function BillingAdminPage({
   if (isTenantBillingAdmin && (userProfile as any).brokerage_id) {
     const agreementRes = await getSubscriptionAgreementAction()
     if (agreementRes.ok) agreementView = agreementRes.view
+  }
+
+  // REFERRAL EARNINGS — the RECIPIENT half of subscriber-referral payouts
+  // (owner ruling: "posted and received by the recipient"). Payouts POSTED to
+  // THIS tenant (referral_payouts.recipient_brokerage_id, m573) render here —
+  // the tenant's own money page — with a "confirm received" acknowledgment.
+  // SESSION tenant only (§4): the action resolves the brokerage from the
+  // session profile, never from ?brokerageId=, so a superadmin inspecting
+  // another tenant sees their OWN earnings or nothing, never someone else's
+  // acknowledgment buttons. Pre-m573 the ledger is absent and this renders
+  // nothing (the action reports `unavailable`, the card returns null on empty).
+  let referralEarnings: ReferralEarningRow[] = []
+  if (isTenantBillingAdmin && (userProfile as any).brokerage_id) {
+    const earningsRes = await getReferralEarningsAction()
+    if (earningsRes.ok) referralEarnings = earningsRes.rows
   }
 
   // ── THE PLAN CARD WAS TELLING EVERY TENANT THE SAME THING, AND IT WAS FALSE ──
@@ -175,6 +193,7 @@ export default async function BillingAdminPage({
           {/* Left Column - Subscription & Features */}
           <div className="lg:col-span-2 space-y-6">
             {agreementView && <SubscriptionAgreementCard initialView={agreementView} />}
+            {referralEarnings.length > 0 && <ReferralEarningsCard initialRows={referralEarnings} />}
             <BillingDashboard brokerageId={brokerageId} />
             <SubscriptionTierCard
               brokerageId={brokerageId}

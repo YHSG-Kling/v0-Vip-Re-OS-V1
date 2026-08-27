@@ -148,6 +148,22 @@ export async function ensureAgentBrokerage(): Promise<EnsureAgentBrokerageResult
     callerUserId: u.id,
   } as any)
 
+  // 3b. CONFIG SNAPSHOT AT CREATION — every tenant-creation path snapshots
+  //     (owner ruling; the other paths are signupBrokerageAction and
+  //     createSubscriber). Same server-side resolution as the self-serve
+  //     funnel: the newest snapshot recommending this tier, applied through
+  //     THE one apply path (allow-listed layers only — never identity/billing
+  //     fields). Best-effort — a branding problem must never cost the heal,
+  //     but the loss is logged, never swallowed.
+  try {
+    const { snapshotForTier } = await import("@/lib/platform/trial-funnel")
+    const { applySnapshotPayload } = await import("@/lib/platform/config-snapshots")
+    const snap = await snapshotForTier("solo_agent", svc)
+    if (snap) await applySnapshotPayload(snap.payload, brokerage.id, u.id, svc)
+  } catch (err) {
+    console.warn("[ensure-agent-brokerage] config snapshot apply failed (non-fatal):", (err as any)?.message)
+  }
+
   // 4. Trialing subscription so fair-use is correct on day one (best-effort).
   try {
     const { data: tierRow } = await svc
