@@ -128,7 +128,8 @@ export function SubscriberReferralsCard({ initialRows, feePercent, brokerageOpti
                             {r.ledgerPostedCents > 0 && (
                               <span className="block">
                                 {fmt(r.ledgerPostedCents)} posted · {fmt(r.ledgerReceivedCents)} confirmed received
-                                {!r.recipientBrokerageId && " · non-tenant referrer"}
+                                {!r.recipientBrokerageId &&
+                                  ` · non-tenant referrer${r.recipientEmail ? ` — pay ${r.recipientEmail}` : ""}`}
                               </span>
                             )}
                           </>

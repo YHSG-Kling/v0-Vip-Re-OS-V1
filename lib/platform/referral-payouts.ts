@@ -212,6 +212,10 @@ export interface ReferralEarningRow {
   note: string | null
   postedAt: string
   receivedAt: string | null
+  /** Provenance: which of the tenant's own users confirmed receipt (users.id).
+   *  The write half has stamped this since the ledger existed; this reader is
+   *  what lets a finance admin see WHO on their team confirmed. */
+  receivedBy: string | null
 }
 
 /**
@@ -228,7 +232,7 @@ export async function listReferralEarningsForBrokerage(
   const svc = client ?? createServiceClient()
   const { data, error } = await svc
     .from("referral_payouts")
-    .select("id, referrer, amount_cents, fee_percent, period, status, note, posted_at, received_at")
+    .select("id, referrer, amount_cents, fee_percent, period, status, note, posted_at, received_at, received_by")
     .eq("recipient_brokerage_id", brokerageId)
     .neq("status", "void")
     .order("posted_at", { ascending: false })
@@ -251,6 +255,7 @@ export async function listReferralEarningsForBrokerage(
       note: r.note ?? null,
       postedAt: r.posted_at,
       receivedAt: r.received_at ?? null,
+      receivedBy: r.received_by ?? null,
     })),
   }
 }
@@ -286,6 +291,14 @@ export interface ProspectLedgerSummary {
   lastPostedAt: string | null
   lastPostedCents: number | null
   recipientBrokerageId: string | null
+  /** WHOM TO PAY when the referrer is not a tenant: the parsed recipient email
+   *  the post resolved. Written at post time and — until this reader existed —
+   *  read by nothing, which the opposite-missing census flagged the moment the
+   *  schema caches learned the table. Null for tenant referrers (they receive
+   *  in-app) and pre-parse legacy rows. */
+  recipientEmail: string | null
+  /** Provenance: which staff user posted the latest payout (users.id). */
+  lastPostedBy: string | null
 }
 
 /**
@@ -302,7 +315,7 @@ export async function summarizeLedgerByProspect(
   const svc = client ?? createServiceClient()
   const { data, error } = await svc
     .from("referral_payouts")
-    .select("prospect_id, amount_cents, status, posted_at, recipient_brokerage_id")
+    .select("prospect_id, amount_cents, status, posted_at, recipient_brokerage_id, recipient_email, posted_by")
     .in("prospect_id", prospectIds)
     .order("posted_at", { ascending: false })
     .limit(2000)
@@ -315,6 +328,7 @@ export async function summarizeLedgerByProspect(
     if (r.status === "void") continue
     const cur = byProspect.get(r.prospect_id) ?? {
       postedCents: 0, receivedCents: 0, lastPostedAt: null, lastPostedCents: null, recipientBrokerageId: null,
+      recipientEmail: null, lastPostedBy: null,
     }
     const cents = Number(r.amount_cents) || 0
     cur.postedCents += cents
@@ -324,6 +338,8 @@ export async function summarizeLedgerByProspect(
       cur.lastPostedAt = r.posted_at
       cur.lastPostedCents = cents
       cur.recipientBrokerageId = r.recipient_brokerage_id ?? null
+      cur.recipientEmail = r.recipient_email ?? null
+      cur.lastPostedBy = r.posted_by ?? null
     }
     byProspect.set(r.prospect_id, cur)
   }

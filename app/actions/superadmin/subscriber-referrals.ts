@@ -157,6 +157,7 @@ export async function listSubscriberReferralsAction(): Promise<
       ledgerPostedCents: ledger?.postedCents ?? 0,
       ledgerReceivedCents: ledger?.receivedCents ?? 0,
       recipientBrokerageId: ledger?.recipientBrokerageId ?? null,
+      recipientEmail: ledger?.recipientEmail ?? null,
       createdAt: p.created_at,
     }
   })

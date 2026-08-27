@@ -104,5 +104,8 @@ export interface SubscriberReferralRow {
   ledgerReceivedCents: number
   /** Where the latest posting resolved its recipient (tenant-referrer), if anywhere. */
   recipientBrokerageId: string | null
+  /** WHOM TO PAY for a non-tenant referrer — the resolved recipient email off
+   *  the latest ledger posting (null for tenant referrers, who receive in-app). */
+  recipientEmail: string | null
   createdAt: string
 }
