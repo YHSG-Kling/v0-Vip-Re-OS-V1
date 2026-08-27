@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1693 of 1750 pairs) — storing them would be
+ * overwhelming majority (1695 of 1753 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,9 +75,9 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 1824 edges across 712 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1750 unordered
- * table pairs carry at least one FK; 57
+ * MEASURED AT GENERATION: 1828 edges across 713 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1753 unordered
+ * table pairs carry at least one FK; 58
  * carry more than one and are listed below. 12 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
  * however many columns it spans, so counting its unnested rows separately would flag an
@@ -86,7 +86,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-08-27
  * source: public.live_foreign_keys_json()
- * body-sha256: 6636afba98e41ac9d1e55d022de3bd0b3142181030575be03aacdde14195e8e6
+ * body-sha256: 4740ccfa918e576577aa355a3e2869156c7a07f9531afd2bc4314d841e8a5d21
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -631,6 +631,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "recruiting_roi": { "brokerage_id": "brokerages", "recruited_agent_id": "agents" },
   "recruits": { "brokerage_id": "brokerages", "provisioned_user_id": "users", "recruiter_agent_id": "agents" },
   "referral_partners": { "agent_id": "agents", "brokerage_id": "brokerages", "vendor_id": "vendors" },
+  "referral_payouts": { "posted_by": "users", "prospect_id": "platform_prospects", "received_by": "users", "recipient_brokerage_id": "brokerages" },
   "referral_sources": { "brokerage_id": "brokerages", "contact_id": "contacts" },
   "referrals": { "agent_id": "agents", "brokerage_id": "brokerages", "partner_id": "referral_partners", "referred_contact_id": "contacts", "referred_lead_id": "leads", "referrer_contact_id": "contacts", "referring_agent_id": "agents" },
   "reg_change_observations": { "brokerage_id": "brokerages" },
@@ -875,6 +876,7 @@ export const SCHEMA_FK_PAIR_CARDINALITY: Record<string, number> = {
   "platform_impersonation_sessions|users": 2,
   "platform_staff_profiles|users": 2,
   "portal_event_stream|users": 2,
+  "referral_payouts|users": 2,
   "remotion_composition_renders|remotion_composition_renders": 2,
   "remotion_composition_renders|video_assets": 3,
   "repurpose_pipelines|users": 2,

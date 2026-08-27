@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 436 tables, 760 columns.
+ * MEASURED AT GENERATION: 437 tables, 761 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-08-27
  * source: public.live_check_constraints_json()
- * body-sha256: b16a1bb43b16afad2ff497a7790acecb3f89f2819c0462d94750270f3e87e550
+ * body-sha256: 6712bc0e81cf240895cb283854f4bf39c372f737d8490c65e3bbe22a45671e4c
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -1275,6 +1275,9 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   referral_partners: {
     agreement_type: ["informal", "one_way", "paid", "reciprocal"],
     partner_type: ["attorney", "contractor", "home_inspector", "insurance_agent", "mortgage_broker", "other", "property_manager", "real_estate_agent", "title_company"],
+  },
+  referral_payouts: {
+    status: ["posted", "received", "void"],
   },
   referral_sources: {
     source_type: ["campaign", "other", "partner", "past_client", "sphere"],

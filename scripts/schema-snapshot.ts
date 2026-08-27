@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 704 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 705 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -17,7 +17,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-08-27
  * source: public.live_schema_json()
- * body-sha256: 5cd16d34cc994576bdf988d7f0e4cfa94d0a6e0b0ee500aa881071ebaac92997
+ * body-sha256: a680c5d107ebbfa167c668fd9e804fbfa479739ea3aaef9269b90d845a905cb9
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -149,7 +149,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   brokerage_p_l: ["agent_splits_paid", "brokerage_id", "computed_at", "gross_commission_income", "id", "marketing_expenses", "net_profit", "notes", "office_expenses", "operating_expenses", "period_label", "profit_margin_pct", "tech_expenses"],
   brokerage_required_documents: ["block_on_missing", "brokerage_id", "classification", "created_at", "created_by", "deal_type", "description", "id", "is_required", "scope_id", "scope_type", "state_code", "template_form_id", "updated_at"],
   brokerage_settings: ["brokerage_id", "created_at", "dotloop_access_token", "esign_api_key", "esign_provider", "ghl_api_key", "google_calendar_token", "id", "idx_api_key", "review_request_delay_days", "settings", "social_accounts", "updated_at"],
-  brokerages: ["about_text", "address", "address_line2", "ai_isa_system_user_id", "archived_at", "auto_provision_phone_numbers", "billing_metadata", "bio_text", "brokerage_on_platform", "cancelled_at", "cda_onboarding_at", "city", "created_at", "dba", "default_assignment_method", "default_cap_amount", "default_cap_anniversary_basis", "default_isa_voice_id", "deleted_at", "direct_mail_size_prefs", "email", "farm_mail_enabled", "farm_mail_max_per_week", "id", "is_active", "is_demo", "license_number", "license_state", "lob_fallback_template_id", "logo_url", "name", "non_cda_payout_default", "offers_cda", "onboarding_status", "phone", "plan_tier", "primary_color", "recruiting_monthly_fee", "recruiting_pitch", "recruiting_split_to_agent", "recruiting_value_props", "require_financial_verification_for_showings", "revenue_share_enabled", "signup_source", "slug", "state", "status", "suspended_at", "team_on_platform", "trial_ends_at", "twilio_subaccount_sid", "twins_require_approval", "updated_at", "website", "widget_enabled", "zip"],
+  brokerages: ["about_text", "address", "address_line2", "ai_isa_system_user_id", "archived_at", "auto_provision_phone_numbers", "billing_metadata", "bio_text", "brokerage_on_platform", "cancelled_at", "cda_onboarding_at", "city", "created_at", "dba", "default_assignment_method", "default_cap_amount", "default_cap_anniversary_basis", "default_isa_voice_id", "deleted_at", "direct_mail_size_prefs", "email", "farm_mail_enabled", "farm_mail_max_per_week", "id", "is_active", "is_demo", "license_number", "license_state", "lob_fallback_template_id", "logo_url", "name", "non_cda_payout_default", "offers_cda", "offers_medical_benefits", "offers_retirement_benefits", "onboarding_status", "phone", "plan_tier", "primary_color", "recruiting_monthly_fee", "recruiting_pitch", "recruiting_split_to_agent", "recruiting_value_props", "require_financial_verification_for_showings", "revenue_share_enabled", "signup_source", "slug", "state", "status", "suspended_at", "tax_assistance_enabled", "team_on_platform", "trial_ends_at", "twilio_subaccount_sid", "twins_require_approval", "updated_at", "website", "widget_enabled", "zip"],
   budgets: ["agent_id", "brokerage_id", "budget_data", "created_at", "id", "income_goal", "updated_at", "year"],
   business_card_scans: ["agent_id", "brokerage_id", "confidence_score", "contact_id", "created_at", "extracted_data", "id", "raw_image_url", "review_status", "reviewed_at", "reviewed_by"],
   business_expenses: ["agent_id", "amount", "brokerage_id", "category", "created_at", "description", "expense_date", "id", "receipt_url", "team_id"],
@@ -492,7 +492,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   platform_reception_calls: ["call_sid", "ended_at", "id", "outcome", "phone_from", "phone_to", "prospect_id", "started_at", "status", "transcript"],
   platform_role_capability_overrides: ["access", "allowed", "capability", "id", "role", "updated_at", "updated_by"],
   platform_sentinel_actions: ["acted_at", "acted_by", "brokerage_id", "created_at", "dedupe_key", "detail", "draft_channel", "draft_text", "id", "kind", "severity", "status", "title"],
-  platform_settings: ["ai_enabled", "collect_tax", "created_at", "emergency_mode", "global_rate_limit_per_minute", "id", "product_brand", "retention_offer", "show_brokerage_budget_warning", "status_notice", "tos_version", "updated_at"],
+  platform_settings: ["ai_enabled", "collect_tax", "created_at", "emergency_mode", "global_rate_limit_per_minute", "id", "product_brand", "referral_fee_percent", "retention_offer", "show_brokerage_budget_warning", "status_notice", "tos_version", "updated_at"],
   platform_social_accounts: ["account_name", "connected_at", "connected_by", "created_at", "credential_ref", "id", "last_verified_at", "platform", "status", "updated_at"],
   platform_social_drafts: ["angle", "channel", "content", "created_at", "created_by", "format", "hashtags", "id", "media_type", "permalink", "scheduled_for", "script", "status", "updated_at", "video_url"],
   platform_staff_profiles: ["agreement_acknowledged_at", "created_at", "created_by", "employment_agreement_text", "notes", "start_date", "title", "updated_at", "user_id"],
@@ -549,6 +549,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   recruiting_roi: ["breakeven_month", "brokerage_id", "computed_at", "id", "lifetime_brokerage_net", "ltv_estimate", "recruited_agent_id", "roi_pct", "total_recruiting_cost"],
   recruits: ["annual_volume", "brokerage_id", "contact_method", "created_at", "current_brokerage", "email", "first_name", "id", "last_contact_date", "last_name", "license_state", "notes", "phone", "provisioned", "provisioned_at", "provisioned_user_id", "recruiter_agent_id", "referral_source", "status", "updated_at", "years_experience"],
   referral_partners: ["active", "address", "agent_id", "agreement_date", "agreement_end_date", "agreement_type", "brokerage_id", "commission_split_percentage", "company_name", "created_at", "email", "id", "notes", "partner_name", "partner_type", "phone", "referral_fee_flat", "total_referrals_received", "total_referrals_sent", "total_value_generated", "updated_at", "user_id", "vendor_id"],
+  referral_payouts: ["amount_cents", "created_at", "fee_percent", "id", "note", "period", "posted_at", "posted_by", "prospect_id", "received_at", "received_by", "recipient_brokerage_id", "recipient_email", "referrer", "status", "updated_at"],
   referrals: ["agent_id", "brokerage_id", "closed_at", "commission_amount", "commission_potential", "converted_at", "created_at", "gift_sent", "gift_sent_at", "id", "notes", "partner_id", "referral_fee_pct", "referral_name", "referral_source", "referred_by", "referred_contact_id", "referred_lead_id", "referrer_contact_id", "referring_agent_id", "source_contact_name", "status", "thank_you_sent", "thank_you_sent_at", "updated_at", "value_estimate"],
   reg_change_observations: ["affected_surfaces", "brokerage_id", "change_signature", "created_at", "effective_date", "escalated_at", "id", "observed_at", "period", "severity_tier", "source", "surface_detail", "title", "url"],
   remotion_composition_renders: ["agent_user_id", "artifact_key", "brokerage_id", "cache_hit", "completed_at", "composition_id", "created_at", "entity_id", "entity_type", "error_message", "facts", "facts_key", "frame_key", "id", "input_props", "is_published", "living_kind", "output_url", "public_slug", "published_at", "refreshed_from_render_id", "render_status", "requested_via", "scope_id", "scope_type", "served_from_render_id", "thumbnail_url", "used_did_avatar", "used_intro_asset_id", "used_music_asset_id", "used_outro_asset_id", "used_voiceover"],
