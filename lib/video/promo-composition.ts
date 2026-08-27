@@ -139,6 +139,29 @@ export function promoNarrationBudget(eventType: string): NarrationBudget {
   return narrationBudget(compositionId, geo ? compositionSeconds(geo) : 0)
 }
 
+/**
+ * Human-readable label for a listing-promo event — the reel's cover hook, the
+ * ai_video_projects title, and the thumbnail eyebrow all speak it.
+ *
+ * MOVED HERE from app/api/internal/remotion/render-just-listed/route.ts (its
+ * private `eventLabel`) when the reactor started staging the project row at
+ * script time: two writers of one title needed one spelling (§6). `price_changed`
+ * is kept — it is a lifecycle alias some older ledger rows carry.
+ */
+export function promoEventLabel(eventType: string): string {
+  switch (eventType) {
+    case "just_listed":         return "Just Listed"
+    case "just_sold":           return "Just Sold"
+    case "price_reduction":     return "Price Update"
+    case "price_changed":       return "Price Update"
+    case "coming_soon":         return "Coming Soon"
+    case "open_house_announce": return "Open House"
+    case "open_house_reminder": return "Open House"
+    case "under_contract":      return "Under Contract"
+    default:                    return "New Listing"
+  }
+}
+
 // ─── Prop builder ─────────────────────────────────────────────────────────────
 
 /** The listing facts the render endpoint already loads (loadListingFacts) plus

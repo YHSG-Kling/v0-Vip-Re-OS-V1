@@ -27,10 +27,12 @@
  *     → claims the oldest remotion_pending row
  *     → POSTs to /api/internal/remotion/render-just-listed
  *         · re-resolves listing facts + brand + agent voice id
- *         · re-runs compliance against the freshly-drafted script
+ *         · REUSES the gated script persisted at step 4c (re-fitting it to the
+ *           composition budget + re-running the rule-based gate on the exact
+ *           text it speaks — zero model calls; re-drafts only as fallback)
  *         · synthesizes ElevenLabs voiceover → Supabase blob URL
  *         · Remotion render (1080×1920, 25s, @ 30fps) → Supabase blob URL
- *         · creates ai_video_projects row with compliance_status='passed'
+ *         · UPDATES the staged ai_video_projects row (compliance_status='passed')
  *         · submits D-ID intro hook + outro CTA renders via dispatchVideo
  *         · status='generating' until both D-ID renders land
  *
@@ -60,7 +62,7 @@ import { resolveLifecycleAutoSpawn, isWithinCooldown, type LifecycleEventType } 
 // be", and it derives from the composition the event actually renders on
 // (lib/video/promo-composition.ts:136 → composition-geometry → script-structure
 // WORDS_PER_MINUTE / NARRATION_HEADROOM). See the TOMBSTONE on EventTemplate.
-import { promoNarrationBudget } from "@/lib/video/promo-composition"
+import { promoNarrationBudget, promoEventLabel } from "@/lib/video/promo-composition"
 import {
   fitNarrationToBudget,
   narrationLengthDirective,
@@ -278,13 +280,60 @@ export async function dispatchListingPromoVideo(
     return { ok: false, status: "failed", reason: "script generation failed" }
   }
 
+  // 4c. PERSIST THE GATED SCRIPT — ONE DRAFT PER PROMO (§5).
+  //
+  // This script used to be a pre-flight probe that was gated and then
+  // DISCARDED: the spoken narration was drafted AGAIN by
+  // app/api/internal/remotion/render-just-listed/route.ts::draftAndClearScript,
+  // so every promo bought TWO model drafts (both billed to ai_tool_usage — a
+  // wrong number there is a wrong invoice) and the text the gate cleared was
+  // never the text that was spoken. The ledger row (listing_promo_videos) has
+  // no script column live, so the script lands where the render endpoint
+  // already reads and writes: the promo's own ai_video_projects row, created
+  // here at 'queued' with video_metadata.promo_ledger_id as the join key. The
+  // render endpoint REUSES script_content (re-fitting it to the budget and
+  // re-running the rule-based evaluateOutbound gate on the exact text it will
+  // speak — zero model calls) and UPDATES this same row when the render lands,
+  // exactly where it used to insert a fresh one.
+  //
+  // HONEST DEGRADATION: if this insert is refused, the render endpoint finds
+  // no staged row and drafts fresh — the pre-fix behavior, logged loudly, never
+  // a lost promo.
+  {
+    const staged = await svc.from("ai_video_projects").insert({
+      brokerage_id:   input.brokerageId,
+      agent_id:       agentRecordId,
+      listing_id:     input.listingId,
+      title:          `${promoEventLabel(input.eventType)} — ${l.address ?? "listing"}`,
+      script_content: script,
+      video_type:     "listing_promo",
+      status:         "queued",
+      usage_intent:   "public_marketing",
+      audience_type:  "customer_facing",
+      compliance_status: "passed",
+      compliance_evaluated_at: new Date().toISOString(),
+      video_metadata: {
+        promo_event_type:     input.eventType,
+        promo_ledger_id:      ledgerId,
+        listing_id:           input.listingId,
+        staged_by:            "listing_promo_reactor",
+        narration_precleared: true,
+      },
+    }).select("id").maybeSingle()
+    if (staged.error || !staged.data) {
+      console.error(
+        `[listing-promo] could not persist the gated script for ledger=${ledgerId}: ` +
+        `${staged.error?.message ?? "no row returned"} — the render endpoint will re-draft (second billed call)`,
+      )
+    }
+  }
+
   // 5. Stage at status='remotion_pending'. The Wave 14 render cron drains
   //    these rows by POSTing to /api/internal/remotion/render-just-listed.
-  //    The render endpoint re-resolves facts + re-runs compliance against
-  //    the freshly-drafted script (deterministic on facts × event_type) so
-  //    the pre-clear we just did is the FAST-FAIL guard — a script that
-  //    fails compliance here never reaches the cron + render dollars are
-  //    never spent on it.
+  //    The render endpoint reuses the persisted script above (re-gating the
+  //    exact text it will speak); the pre-clear we just did is the FAST-FAIL
+  //    guard — a script that fails compliance here never reaches the cron and
+  //    render dollars are never spent on it.
   await svc.from("listing_promo_videos")
     .update({
       status:         "remotion_pending",
@@ -420,13 +469,15 @@ Return ONLY the script text the agent will speak on camera.${violationLine}`
 // than pinned here — the table above is the finding, not the assertion (§2).
 //
 // WHAT THIS FILE'S DRAFT IS FOR, so the next reader does not mistake it. The
-// script drafted here is a PRE-FLIGHT COMPLIANCE PROBE: it is gated by
-// evaluateOutbound and then DISCARDED (step 5 stages the row at
-// remotion_pending; the spoken narration is drafted again, from the composition
-// budget, by app/api/internal/remotion/render-just-listed/route.ts
-// draftAndClearScript). A probe of a 55-word script for a path that can only
-// speak 24 words is not a probe of the same artefact — which is the second
-// reason the lengths had to agree, beyond the token spend.
+// script drafted here IS the spoken narration: step 4c persists it, gated and
+// budget-fitted, onto the promo's staged ai_video_projects row, and
+// app/api/internal/remotion/render-just-listed/route.ts::draftAndClearScript
+// REUSES it (re-fitting + re-gating the exact text it speaks, with zero model
+// calls). It used to be a pre-flight probe that was gated and then DISCARDED
+// while the render endpoint drafted a second script — two ai_tool_usage rows
+// for one artefact, and the gated text was not the spoken text. The re-draft
+// survives only as the render endpoint's FALLBACK for a staged row that was
+// never written or no longer clears the render-time gate.
 // ─────────────────────────────────────────────────────────────────────────────
 interface EventTemplate {
   hook:             string

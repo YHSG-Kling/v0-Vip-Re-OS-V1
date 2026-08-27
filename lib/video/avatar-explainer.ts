@@ -52,6 +52,18 @@ import {
   type AvatarExplainerPreset,
   type ExplainerVoiceSource,
 } from "@/lib/video/avatar-explainer-presets"
+// PURE — safe at top level (client-importable module). The narration budget is
+// DERIVED from the composition that will frame the avatar clip inside a FIXED
+// durationInFrames (TeammateExplainerReel 900f/30fps = 30s, AgentExplainerReel
+// 540f/30fps = 18s): an overrun there is CUT, so the words asked of the model
+// come from the geometry through the ONE contract (§6), never a typed range.
+import { compositionSeconds, geometryFor } from "@/lib/remotion/composition-geometry"
+import {
+  narrationBudget,
+  narrationLengthDirective,
+  fitNarrationToBudget,
+  spokenWords,
+} from "@/lib/video/script-structure"
 
 export { AVATAR_EXPLAINER_PRESETS }
 export type { AvatarExplainerPreset, ExplainerVoiceSource }
@@ -63,7 +75,10 @@ export interface ExplainerContent {
   title: string
   bullets: [string, string, string]
   ctaLabel: string
-  /** The narration the avatar speaks (D-ID + ElevenLabs). ~55-75 words. */
+  /** The narration the avatar speaks (D-ID + ElevenLabs). Its word budget is
+   *  DERIVED from the target composition's geometry via narrationBudget —
+   *  never a typed range (the retired ask was "55-75 words", ~2× what the
+   *  18s AgentExplainerReel fallback can speak). */
   narration: string
 }
 
@@ -224,7 +239,25 @@ export async function authorExplainerContent(args: {
   topic: string
   audience: string
   eyebrowHint?: string | null
+  /**
+   * The composition whose FIXED durationInFrames will frame the avatar clip —
+   * the narration budget is derived from ITS geometry (§6), so the caller that
+   * knows where the video renders is the caller that names it. Both live
+   * callers do: commissionAvatarExplainer passes pickCompositionId()'s answer,
+   * and director-content passes the switch case it is resolving.
+   */
+  compositionId: string
 }): Promise<AuthorExplainerResult> {
+  // THE BUDGET, DERIVED. An unregistered id yields maxWords 0, which means
+  // "this composition cannot carry narration" — refuse, never "no limit".
+  const geo = geometryFor(args.compositionId)
+  const budget = narrationBudget(args.compositionId, geo ? compositionSeconds(geo) : 0)
+  if (budget.maxWords <= 0) {
+    return {
+      ok: false,
+      reason: `composition ${args.compositionId} has no runtime to narrate (${budget.compositionSeconds}s) — no explainer can be authored for it`,
+    }
+  }
   try {
     const [{ resolveBrandContext }, { runWithComplianceRedraft }, { hasFairHousingViolation, sanitizeProperNoun }, { generateTextRouted }, { createServiceClient }] =
       await Promise.all([
@@ -276,8 +309,9 @@ Field rules:
 - title: 4-8 words — the "what you'll learn" hook.
 - bullets: EXACTLY three, each 6-14 words — the three concrete takeaways.
 - cta: 2-4 words (e.g. "Book a consult").
-- narration: 55-75 words the presenter speaks on camera — conversational,
+- narration: the words the presenter speaks on camera — conversational,
   first person, covers the three takeaways in order, ends by inviting the CTA.
+  ${narrationLengthDirective(budget)}
   No stage directions, no emojis, plain spoken sentences only.
 
 Non-negotiable rules:
@@ -316,6 +350,15 @@ Return the JSON now.`
           : text
         if (hasFairHousingViolation(flat)) v.push("protected-class / steering language")
         if (PRICE_FIGURE.test(flat)) v.push("stated a specific price/number — remove all figures")
+        // THE BUDGET IS A GATE, NOT A HOPE. A narration over the composition's
+        // derived word budget is fed back as a violation so the ONE redraft can
+        // fix it whole — cheaper than trimming away the CTA it was told to end on.
+        if (parsed) {
+          const n = spokenWords(parsed.narration).length
+          if (n > budget.maxWords) {
+            v.push(`narration is ${n} words — ${budget.compositionId} can speak at most ${budget.maxWords} (${budget.compositionSeconds}s composition)`)
+          }
+        }
         return { allowed: v.length === 0, violations: v }
       },
     })
@@ -331,7 +374,14 @@ Return the JSON now.`
     if (!content) {
       return { ok: false, reason: "AI authoring returned an unusable draft — try again" }
     }
-    return { ok: true, content }
+    // BACKSTOP — deterministic, reported, never silent. The gate above should
+    // have caught an overrun, but a word ceiling anywhere upstream is a request;
+    // the trim at a sentence boundary is the guarantee (same policy as every
+    // other narration lane). What survives is a prefix of gated sentences, so
+    // no new copy is authored here.
+    const fit = fitNarrationToBudget(content.narration, budget)
+    if (fit.note) console.warn(`[avatar-explainer] ${args.compositionId} — ${fit.note}`)
+    return { ok: true, content: { ...content, narration: fit.script } }
   } catch (e) {
     return { ok: false, reason: `AI authoring unavailable: ${(e as Error).message}` }
   }
@@ -371,6 +421,16 @@ export async function commissionAvatarExplainer(
     agentUserId: params.agentUserId,
   })
 
+  // 0. Resolve the composition FIRST — the narration budget derives from its
+  //    geometry, so the writer must know where the video renders before a word
+  //    is asked for. The fallback (AgentExplainerReel, 18s) is SHORTER than the
+  //    preferred TeammateExplainerReel (30s), so authoring against the wrong id
+  //    would produce a script the actual frames cut mid-sentence.
+  const compositionId = await pickCompositionId()
+  if (compositionId === FALLBACK_COMPOSITION_ID) {
+    warnings.push("TeammateExplainerReel is not registered yet (migration m274 pending) — using AgentExplainerReel frames")
+  }
+
   // 1. AI-author the content (brand voice + compliance gate). Blocking — no
   //    canned fallback ever ships.
   const preset = AVATAR_EXPLAINER_PRESETS.find((p) => p.id === params.presetId) ?? null
@@ -380,6 +440,7 @@ export async function commissionAvatarExplainer(
     topic,
     audience,
     eyebrowHint: preset?.eyebrow ?? null,
+    compositionId,
   })
   if (!authored.ok) {
     return { ok: false, status: "blocked", reason: authored.reason, violations: authored.violations }
@@ -399,10 +460,8 @@ export async function commissionAvatarExplainer(
   }).catch(() => null)
   const agentName = brandCtx?.agentName ?? brandCtx?.displayName ?? "Your Agent"
 
-  const compositionId = await pickCompositionId()
-  if (compositionId === FALLBACK_COMPOSITION_ID) {
-    warnings.push("TeammateExplainerReel is not registered yet (migration m274 pending) — using AgentExplainerReel frames")
-  }
+  // (composition already picked at step 0 — the budget the writer used and the
+  // frames the render uses are the same fact by construction.)
 
   // 3. Input props — the union both compositions understand. avatarVideoUrl is
   //    wired in by the avatar-render-orchestrator when the D-ID clip completes.

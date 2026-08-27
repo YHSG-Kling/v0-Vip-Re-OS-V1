@@ -30,6 +30,27 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
 import { KernelEvent } from "@/lib/kernel/events"
 import { buildComplianceSystemBlocks, postcheckScript } from "@/lib/video/script-compliance"
+// THE ONE speaking-pace vocabulary (§6). A chapter video is a pure D-ID
+// talking head (provider_metadata carries no target_composition_id, so no
+// Remotion frame cap — the clip is as long as the speech). The SECONDS are the
+// product decision below; the words the prompt asks for and the token ceiling
+// paid for both DERIVE from them through script-structure, never a typed range.
+import {
+  estimateDurationSeconds,
+  narrationBudget,
+  narrationMaxTokens,
+  spokenWords,
+  targetWordCount,
+} from "@/lib/video/script-structure"
+
+/**
+ * The declared runtime of one presentation chapter clip. Drip-ready content:
+ * long enough to teach one chapter, short enough to hold attention. These two
+ * numbers are the ONLY length decision in this file — every word count and
+ * token budget derives from them at WORDS_PER_MINUTE.
+ */
+const CHAPTER_TARGET_SECONDS_MIN = 45
+const CHAPTER_TARGET_SECONDS_MAX = 60
 
 export interface PresentationChapter {
   title: string
@@ -384,9 +405,20 @@ async function generateChapterScript(params: {
       (propertyData.sqft ? ` · ${propertyData.sqft} sqft` : "")
     : ""
 
+  // ── THE ASK IS DERIVED FROM THE DECLARED SECONDS (§2/§6) ──────────────────
+  // WHAT STOOD HERE, kept unbroken for the record (the guard asserts it is gone
+  // from live, comment-stripped code — a tombstone is not a call site):
+  //   "Write a 45-60 second video script … - 100-150 words"
+  // with a flat `maxTokens: 400`. The seconds and the words were two separate
+  // hand-typed answers to one question; now the words and the token ceiling
+  // both derive from CHAPTER_TARGET_SECONDS_* at the one WORDS_PER_MINUTE.
+  // headroom 0 because nothing cuts a pure D-ID clip — the declared seconds are
+  // an editorial target, not a frame cap.
+  const chapterBudget = narrationBudget("chapter_video", CHAPTER_TARGET_SECONDS_MAX, 0)
+
   const prompt = `You are ${agentName || "a real estate agent"} speaking directly to a potential seller before a listing appointment.
 
-Write a 45-60 second video script for the chapter titled "${chapter.title}".
+Write a ${CHAPTER_TARGET_SECONDS_MIN}-${CHAPTER_TARGET_SECONDS_MAX} second video script for the chapter titled "${chapter.title}".
 Chapter focus: ${chapter.focus ?? "general"}
 ${propertyContext ? `${propertyContext}` : ""}
 
@@ -395,7 +427,7 @@ Style:
 - Conversational tone — first-person, warm
 - Concrete and specific, not generic
 - Open with a hook, close with a forward-look to the appointment
-- 100-150 words
+- ${targetWordCount(CHAPTER_TARGET_SECONDS_MIN)}-${chapterBudget.maxWords} words (that is ${CHAPTER_TARGET_SECONDS_MIN}-${CHAPTER_TARGET_SECONDS_MAX} seconds at a natural speaking pace)
 
 ${presentationContent ? `Source material from the listing presentation:\n${presentationContent.slice(0, 2000)}\n` : ""}
 
@@ -409,7 +441,9 @@ Return only the script text — no scene directions, no headers, just what the a
     // budget (lib/ai/models.ts:663). Omitting it billed chapter scripts to
     // nobody — N generations per presentation, uncounted.
     brokerageId,
-    maxTokens: 400,
+    // Sized from the SAME derived word budget (§5 — the flat 400 that stood
+    // here paid for text the target length never wanted).
+    maxTokens: narrationMaxTokens(chapterBudget),
     temperature: 0.7,
   })
 
@@ -417,7 +451,9 @@ Return only the script text — no scene directions, no headers, just what the a
 }
 
 function estimateDurationFromScript(script: string): number {
-  // ~150 words per minute = 2.5 words per second
-  const words = script.split(/\s+/).filter(Boolean).length
-  return Math.max(20, Math.round(words / 2.5))
+  // TOMBSTONE (§6): the private `words / 2.5` arithmetic that lived here was a
+  // second spelling of WORDS_PER_MINUTE. Survivor: lib/video/script-structure.ts
+  // estimateDurationSeconds + spokenWords. The 20s floor is this caller's own
+  // (a chapter clip is never billed shorter than its D-ID minimum).
+  return Math.max(20, estimateDurationSeconds(spokenWords(script).length))
 }

@@ -5,6 +5,18 @@ import { generateTextRouted as generateText } from '@/lib/ai/models'
 import { revalidatePath } from 'next/cache'
 import { isValidUUID } from '@/lib/validations'
 import { evaluateThemFirstFocus } from '@/lib/compliance-rules/rule-evaluators'
+// THE ONE narration-length contract (§6). This lane's videos are not
+// Remotion-composition-bound — they are assembled to the DECLARED duration in
+// getDurationForType (stamped on ai_video_projects.duration_seconds and used to
+// pace the scene manifest), so the budget derives from that declared runtime
+// through the same narrationBudget / WORDS_PER_MINUTE vocabulary every other
+// video producer uses. Never a hand-typed word range.
+import {
+  narrationBudget,
+  narrationLengthDirective,
+  narrationMaxTokens,
+  fitNarrationToBudget,
+} from '@/lib/video/script-structure'
 
 // ============================================
 // MAIN: GENERATE LISTING VIDEO
@@ -227,40 +239,39 @@ async function selectPhotosForVideo(
    *  a caller-supplied id (§4). */
   spendActor: { brokerageId: string | null; userId: string | null },
 ) {
+  // `duration` deliberately absent here — it was a byte-for-byte duplicate of
+  // getDurationForType (two spellings of one runtime, §6). The ONE duration
+  // table below is the survivor; this map keeps only what is unique to photo
+  // selection.
   const videoSpecs: Record<string, any> = {
     full_tour: {
       count: 12,
-      duration: 120,
       sequence: 'complete_walkthrough',
       emphasis: 'comprehensive',
     },
     social_snippet: {
       count: 5,
-      duration: 30,
       sequence: 'highlights_only',
       emphasis: 'best_features',
     },
     instagram_story: {
       count: 5,
-      duration: 15,
       sequence: 'quick_tour',
       emphasis: 'eye_catching',
     },
     reel: {
       count: 8,
-      duration: 45,
       sequence: 'dynamic_flow',
       emphasis: 'energetic',
     },
     drone_highlight: {
       count: 6,
-      duration: 30,
       sequence: 'aerial_only',
       emphasis: 'location_property',
     },
   }
 
-  const spec = videoSpecs[videoType]
+  const spec = { ...videoSpecs[videoType], duration: getDurationForType(videoType) }
 
   const prompt = `Select the best ${spec.count} photos for a ${videoType} video (${spec.duration}s total).
 
@@ -352,13 +363,21 @@ async function generateVideoNarration(
   /** Same provenance as selectPhotosForVideo above. */
   spendActor: { brokerageId: string | null; userId: string | null },
 ) {
-  const scriptLengths: Record<string, string> = {
-    full_tour: '150-180 words (2 min narration)',
-    social_snippet: '40-60 words (30 sec)',
-    instagram_story: '20-30 words (15 sec)',
-    reel: '50-70 words (45 sec)',
-    drone_highlight: '30-50 words (30 sec)',
-  }
+  // ── THE LENGTH IS DERIVED, NEVER TYPED (§2/§6) ─────────────────────────────
+  // WHAT STOOD HERE, kept unbroken for the record (the guard asserts these are
+  // gone from live code on comment-stripped source, and still findable RAW —
+  // a tombstone is not a call site):
+  //   full_tour: '150-180 words (2 min narration)',
+  //   social_snippet: '40-60 words (30 sec)',
+  //   instagram_story: '20-30 words (15 sec)',
+  //   reel: '50-70 words (45 sec)',
+  //   drone_highlight: '30-50 words (30 sec)',
+  // Every one was a hand-typed range beside a duration that already exists in
+  // getDurationForType — and the full_tour ask was internally inconsistent
+  // (150-180 words is ~60-72s of speech, not "2 min"). The narration is muxed
+  // into a video assembled to that declared duration, so the budget comes from
+  // it through the ONE contract; move the duration table and the ask moves too.
+  const narrBudget = narrationBudget(`listing_video:${videoType}`, getDurationForType(videoType))
 
   const prompt = `Generate narration script for ${videoType} property video:
 
@@ -373,7 +392,7 @@ async function generateVideoNarration(
 ${selectedPhotos.map((p, i) => `${i + 1}. ${p.photo_type} - ${p.room_name || 'exterior'}`).join('\n')}
 
 **Script Requirements:**
-- Length: ${scriptLengths[videoType]}
+- Length: ${narrationLengthDirective(narrBudget)}
 - Match visual flow (reference what viewer sees)
 - "Them First" approach:
   - Start with emotional appeal (how it FEELS to live here)
@@ -398,9 +417,16 @@ Generate narration script that flows naturally with the visual sequence:`
     model: 'openai/gpt-4o',
     prompt,
     temperature: 0.8,
+    // Sized from the SAME word budget the directive quotes — the lane does not
+    // pay for text the trim below is about to throw away (§5).
+    maxTokens: narrationMaxTokens(narrBudget),
   })
 
-  return text
+  // VERIFY, don't trust — a word ceiling in a prompt is a request. Trim at a
+  // sentence boundary and SAY SO (same policy as every other narration lane).
+  const fit = fitNarrationToBudget(text.trim(), narrBudget)
+  if (fit.note) console.warn(`[listing-video] ${videoType} — ${fit.note}`)
+  return fit.script
 }
 
 // ============================================

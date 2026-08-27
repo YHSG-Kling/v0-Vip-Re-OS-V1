@@ -28,6 +28,10 @@ import {
 import type { ScriptType, ApprovalStatus, VideoScript, ScriptVariation, VideoEventType } from "@/app/types/video-generation"
 import { VIDEO_EVENT_TYPES, PERFORMANCE_THRESHOLDS } from "@/app/types/video-generation"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+// THE ONE speaking-pace vocabulary (§6). The word counts a duration tier asks
+// for are DERIVED from its declared seconds at WORDS_PER_MINUTE — never a
+// second hand-typed range beside the seconds they restate.
+import { targetWordCount } from "@/lib/video/script-structure"
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 //
@@ -1275,18 +1279,31 @@ export async function generateVideoScript(params: {
       empathetic: "empathetic and understanding",
     }
     
-    const lengthMap: Record<string, string> = {
-      short: "30-45 seconds (approximately 75-100 words)",
-      medium: "60-90 seconds (approximately 150-200 words)",
-      long: "2-3 minutes (approximately 300-400 words)",
+    // ── WORDS DERIVED FROM SECONDS, NOT RETYPED BESIDE THEM (§2/§6) ──────────
+    // The tiers DECLARE seconds; the parenthetical word counts were hand-typed
+    // ranges that disagreed with the one speaking pace. For the record (the
+    // guard asserts these are gone from live, comment-stripped code):
+    //   short: "30-45 seconds (approximately 75-100 words)"
+    //   medium: "60-90 seconds (approximately 150-200 words)"
+    //   long: "2-3 minutes (approximately 300-400 words)"
+    // This lane renders as a pure D-ID talking head (no Remotion frame cap —
+    // provider_metadata carries no target_composition_id), so the clip is as
+    // long as the speech: the SECONDS are the product decision and the words
+    // derive from them through targetWordCount at WORDS_PER_MINUTE.
+    const lengthTierSeconds: Record<string, readonly [number, number]> = {
+      short: [30, 45],
+      medium: [60, 90],
+      long: [120, 180],
     }
-    
+    const tierSeconds = lengthTierSeconds[params.length || "medium"] ?? lengthTierSeconds.medium
+    const lengthLine = `${tierSeconds[0]}-${tierSeconds[1]} seconds (approximately ${targetWordCount(tierSeconds[0])}-${targetWordCount(tierSeconds[1])} words at the platform speaking pace)`
+
     const purposeKey = params.purpose ?? params.videoType ?? "welcome"
     const personaKey = params.persona ?? "first_time_buyer"
     const prompt = `Generate a compelling video script for ${purposeDescriptions[purposeKey] || params.description || purposeKey} targeting ${personaDescriptions[personaKey] || personaKey}.
-    
+
 Tone: ${toneMap[params.tone || "friendly"] || "warm and professional"}
-Length: ${lengthMap[params.length || "medium"] || "60-90 seconds"}
+Length: ${lengthLine}
 Contact Name: ${params.contactName}
 ${params.keyPoints?.trim() ? `\nKey points this script must cover:\n${params.keyPoints.trim()}\n` : ""}
 Requirements:

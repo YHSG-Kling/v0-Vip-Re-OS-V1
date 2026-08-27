@@ -510,6 +510,10 @@ export async function resolveDirectorContentProps(
         const authored = await authorExplainerContent({
           brokerageId: args.brokerageId, agentUserId: args.agentUserId,
           topic, audience: audienceFor(situation.kind),
+          // The narration budget derives from the composition THIS case is
+          // resolving — AgentExplainerReel (18s) and TeammateExplainerReel
+          // (30s) speak different word counts, so the writer is told which.
+          compositionId,
         })
         if (!authored.ok) return { ...base, agentName: id.agentName }
         return {

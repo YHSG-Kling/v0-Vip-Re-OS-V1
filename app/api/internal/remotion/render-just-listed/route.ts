@@ -7,16 +7,22 @@
  * 'remotion_pending'. End-to-end orchestration:
  *
  *   1. Load the row + listing + agent_voice_profiles + listing_media images.
- *   2. Draft the narration script via the AI Gateway (banned: invented
- *      facts, protected-class refs, rate/valuation guarantees).
+ *   2. REUSE the narration the reactor already drafted, gated and persisted on
+ *      the staged ai_video_projects row (one model draft per promo, §5) —
+ *      re-fitted to the composition budget and RE-GATED here so the compliance
+ *      verdict is about the exact text spoken. Fallback only (no staged row,
+ *      or it no longer clears): draft fresh via the AI Gateway (banned:
+ *      invented facts, protected-class refs, rate/valuation guarantees).
  *   3. Pre-flight evaluateOutbound (broadcast shape — Brand voice + Fair
- *      Housing state-specific + Them-First). Re-prompt once on violation.
+ *      Housing state-specific + Them-First). Re-prompt once on violation
+ *      (fallback-draft path; the reuse path gates the staged text directly).
  *   4. ElevenLabs TTS — synthesize the narration in the agent's cloned voice;
  *      upload mp3 to Supabase Storage (listing-media bucket).
  *   5. Remotion bundle + renderMedia — produces a 25s 1080×1920 MP4 with
  *      brokerage brand + property images + the voiceover audio track.
  *      Upload to Supabase Storage as the canonical artifact.
- *   6. Create ai_video_projects row with video_url + compliance_status='passed'.
+ *   6. UPDATE the staged ai_video_projects row (or insert one when none was
+ *      staged) with video_url + compliance_status='passed'.
  *   7. HYBRID OPTION: submit two short D-ID renders (intro hook "Hi I'm Jane
  *      — just listed at 123 Main" + outro CTA "DM me to tour") via the same
  *      dispatchVideo egress. The poll-did-videos cron picks them up. The
@@ -56,6 +62,7 @@ import {
   buildPromoProps,
   computeDaysOnMarket,
   promoNarrationBudget,
+  promoEventLabel,
 } from "@/lib/video/promo-composition"
 import {
   narrationLengthDirective,
@@ -166,18 +173,36 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ skipped: "promo agent has no users row — cannot attribute the reel" }, { status: 200 })
   }
 
+  // THE STAGED PROJECT ROW, written by the reactor at script time
+  // (lib/video/listing-promo-reactor.ts step 4c) with the gated, budget-fitted
+  // narration on script_content. Found via video_metadata.promo_ledger_id —
+  // the ledger carries no script column live. Absent → older row or a refused
+  // staging insert → the draft fallback below runs (pre-fix behavior).
+  let stagedProject: { id: string; script_content: string | null } | null = null
+  {
+    const { data: stagedRows } = await svc.from("ai_video_projects")
+      .select("id, script_content")
+      .contains("video_metadata", { promo_ledger_id: promo.id, narration_precleared: true })
+      .order("created_at", { ascending: false })
+      .limit(1)
+    stagedProject = (stagedRows?.[0] as { id: string; script_content: string | null } | undefined) ?? null
+  }
+
   try {
     // 2. Gather facts + brand context.
     const facts = await loadListingFacts(svc, promo.listing_id)
     const brand = await loadBrandContext(svc, promo.brokerage_id, promoAgentUserId)
 
-    // 3. Draft + pre-flight compliance (broadcast shape).
-    const script = await draftAndClearScript({
+    // 3. REUSE the reactor's gated script (one draft per promo, §5); draft
+    //    fresh only when no staged script exists or it no longer clears the
+    //    render-time gate.
+    const { script, reused: scriptReused } = await draftAndClearScript({
       svc,
       brokerageId: promo.brokerage_id,
       agentUserId: promoAgentUserId,
       facts,
       eventType:   promo.event_type,
+      stagedScript: stagedProject?.script_content ?? null,
     })
 
     // 4. ElevenLabs voiceover → Supabase storage URL. The timestamped path also
@@ -221,12 +246,13 @@ export async function POST(req: NextRequest) {
     })
     const reelUrl = reel.url
 
-    // 6. Create ai_video_projects row + emit canonical event.
-    const { data: project } = await svc.from("ai_video_projects").insert({
-      brokerage_id:    promo.brokerage_id,
-      agent_id:        promo.agent_id,
-      listing_id:      promo.listing_id,
-      title:           `${eventLabel(promo.event_type)} — ${facts.address}`,
+    // 6. Land the render on the promo's ai_video_projects row. When the reactor
+    //    staged one (script persistence, step 4c), UPDATE it — one project row
+    //    per promo, whose script_content is exactly what the voiceover spoke.
+    //    Only when no staged row exists is a fresh row inserted (older ledger
+    //    rows, or a refused staging insert).
+    const projectFields = {
+      title:           `${promoEventLabel(promo.event_type)} — ${facts.address}`,
       script_content:  script,
       video_type:      "listing_promo",
       status:          hybrid ? "generating" : "completed",
@@ -245,6 +271,10 @@ export async function POST(req: NextRequest) {
         composition_id:   reel.compositionId,
         composition_fell_back: reel.fellBack,
         composition_fallback_reason: reel.fallbackReason,
+        // ONE DRAFT PER PROMO (§5) — true when the reactor's gated script was
+        // spoken verbatim (zero render-time model calls); false when the
+        // fallback re-draft ran.
+        narration_reused: scriptReused,
         // SOUND-OFF CAPTIONS — the per-character alignment the captions were
         // built from (null when the timestamped TTS path was unavailable and the
         // even-distribution estimate was used). Stored on the EXISTING ledger
@@ -253,10 +283,27 @@ export async function POST(req: NextRequest) {
         caption_timing_source: voiceoverAlignment ? "alignment" : "even",
         voiceover_alignment:   voiceoverAlignment,
       },
-    }).select("id").single()
+    }
+    let projectId: string
+    if (stagedProject) {
+      const { error: updErr } = await svc.from("ai_video_projects")
+        .update(projectFields)
+        .eq("id", stagedProject.id)
+      if (updErr) throw new Error(`staged project update refused: ${updErr.message}`)
+      projectId = stagedProject.id
+    } else {
+      const { data: project, error: insErr } = await svc.from("ai_video_projects").insert({
+        brokerage_id: promo.brokerage_id,
+        agent_id:     promo.agent_id,
+        listing_id:   promo.listing_id,
+        ...projectFields,
+      }).select("id").single()
+      if (insErr || !project) throw new Error(`project insert refused: ${insErr?.message ?? "no row returned"}`)
+      projectId = project.id
+    }
 
     await svc.from("listing_promo_videos").update({
-      video_project_id: project!.id,
+      video_project_id: projectId,
     }).eq("id", promo.id)
 
     await svc.from("lifecycle_events").insert({
@@ -264,12 +311,12 @@ export async function POST(req: NextRequest) {
       actor_user_id: promoAgentUserId,  // FK users(id) — the resolved owner
       event_type:    hybrid ? KernelEvent.VIDEO_GENERATION_REQUESTED : KernelEvent.VIDEO_GENERATION_COMPLETED,
       metadata: {
-        ai_video_project_id: project!.id,
+        ai_video_project_id: projectId,
         promo_ledger_id:     promo.id,
         listing_id:          promo.listing_id,
         hybrid,
       },
-      entity_id:   project!.id,
+      entity_id:   projectId,
       entity_type: "ai_video_project",
       source:      "system",
       processed:   false,
@@ -285,7 +332,7 @@ export async function POST(req: NextRequest) {
         templateId:     buildHybridHookScript("intro", facts, brand.agentName ?? ""),
         recipientEmail: "system@internal",
         systemSource:   `listing_promo_hybrid.intro`,
-        metadata: { ai_video_project_id: project!.id, hook_position: "intro" },
+        metadata: { ai_video_project_id: projectId, hook_position: "intro" },
       })
       const outroResult = await dispatchVideo({
         brokerageId:    promo.brokerage_id,
@@ -293,7 +340,7 @@ export async function POST(req: NextRequest) {
         templateId:     buildHybridHookScript("outro", facts, brand.agentName ?? ""),
         recipientEmail: "system@internal",
         systemSource:   `listing_promo_hybrid.outro`,
-        metadata: { ai_video_project_id: project!.id, hook_position: "outro" },
+        metadata: { ai_video_project_id: projectId, hook_position: "outro" },
       })
       await svc.from("ai_video_projects").update({
         video_metadata: {
@@ -302,17 +349,18 @@ export async function POST(req: NextRequest) {
           listing_id:       promo.listing_id,
           voiceover_url:    voiceoverUrl,
           remotion_only:    false,
+          narration_reused: scriptReused,
           hybrid_intro_job_id: introResult.messageId ?? null,
           hybrid_outro_job_id: outroResult.messageId ?? null,
           hybrid_pending:      true,
         },
-      }).eq("id", project!.id)
+      }).eq("id", projectId)
     }
 
     return NextResponse.json({
       ok:              true,
       promo_id:        promo.id,
-      ai_video_project_id: project!.id,
+      ai_video_project_id: projectId,
       remotion_url:    reelUrl,
       voiceover_url:   voiceoverUrl,
       hybrid_pending:  hybrid,
@@ -323,6 +371,15 @@ export async function POST(req: NextRequest) {
       status:        "failed",
       error_message: msg.slice(0, 800),
     }).eq("id", promo.id)
+    // BOTH ledgers. The staged project row (script persistence) would otherwise
+    // sit at 'queued' claiming to be in flight while the promo ledger says
+    // failed — two tables disagreeing about the same render.
+    if (stagedProject) {
+      await svc.from("ai_video_projects").update({
+        status:        "failed",
+        error_message: `Render failed: ${msg}`.slice(0, 800),
+      }).eq("id", stagedProject.id)
+    }
     return NextResponse.json({ ok: false, error: msg }, { status: 500 })
   }
 }
@@ -393,7 +450,11 @@ async function draftAndClearScript(args: {
   agentUserId: string
   facts: ListingFacts
   eventType: string
-}): Promise<string> {
+  /** The reactor's persisted, gated, budget-fitted script (staged
+   *  ai_video_projects.script_content). When it clears the render-time gate it
+   *  is REUSED verbatim — one model draft per promo (§5). Null/empty → draft. */
+  stagedScript?: string | null
+}): Promise<{ script: string; reused: boolean }> {
   // THE CAP, DERIVED FROM THE COMPOSITION THIS EVENT WILL RENDER ON.
   // renderRemotionReel routes the event through compositionForPromoEvent and
   // buildPromoProps, which hand the mp3 to input_props.voiceoverUrl — an <Audio>
@@ -404,6 +465,34 @@ async function draftAndClearScript(args: {
   // running 25s (JustListedReel) and 12s (the three square event cuts) — so the
   // square cuts lost more than half of every script, silently.
   const budget = promoNarrationBudget(args.eventType)
+
+  // ── REUSE BEFORE RE-DRAFT (§5). The reactor already bought and gated this
+  // script. Re-fit it to the budget (the geometry may have moved between
+  // staging and render) and RE-GATE the exact text that will be spoken —
+  // evaluateOutbound is rule-based, so the reuse path makes ZERO model calls
+  // where the re-draft booked one ai_tool_usage row per promo. A staged script
+  // that no longer clears the gate (brand rules changed since staging) falls
+  // through to a fresh draft rather than being spoken anyway — the gate runs
+  // on what is SPOKEN, never on a stale clearance.
+  const preset = (args.stagedScript ?? "").trim()
+  if (preset) {
+    const fit = fitNarrationToBudget(preset, budget)
+    if (fit.note) console.warn(`[render-just-listed] ${args.eventType} staged script — ${fit.note}`)
+    if (fit.script) {
+      const r = await evaluateOutbound({
+        actorContext: { brokerageId: args.brokerageId, userId: args.agentUserId, role: "system" },
+        journeyType:  "seller",
+        persona:      "other",
+        messageType:  "social",
+        content:      fit.script,
+      })
+      if (r.allowed) return { script: fit.script, reused: true }
+      console.warn(
+        `[render-just-listed] ${args.eventType} staged script failed the render-time gate ` +
+        `(${r.violations.join("; ")}) — drafting fresh (second billed call)`,
+      )
+    }
+  }
 
   const draft = async (violations: string[]) => {
     const violationLine = violations.length > 0
@@ -452,7 +541,7 @@ Return ONLY the script text the avatar will speak — no scene directions.${viol
     },
   })
   if (!result.ok) throw new Error(`compliance failed after redraft: ${result.violations.join("; ")}`)
-  return result.script
+  return { script: result.script, reused: false }
 }
 
 async function renderVoiceover(args: {
@@ -714,16 +803,9 @@ function buildHybridHookScript(position: "intro" | "outro", facts: ListingFacts,
   return `Want to see it? DM me to schedule a tour.`
 }
 
-function eventLabel(eventType: string): string {
-  switch (eventType) {
-    case "just_listed":         return "Just Listed"
-    case "just_sold":           return "Just Sold"
-    case "price_reduction":     return "Price Update"
-    case "price_changed":       return "Price Update"
-    case "coming_soon":         return "Coming Soon"
-    case "open_house_announce": return "Open House"
-    case "open_house_reminder": return "Open House"
-    case "under_contract":      return "Under Contract"
-    default:                    return "New Listing"
-  }
-}
+// TOMBSTONE (§6): the private `eventLabel` that stood here MOVED to
+// lib/video/promo-composition.ts::promoEventLabel when the reactor started
+// staging the project row (and its provisional title) at script time — two
+// writers of one label needed one spelling. This alias keeps the route's many
+// call sites unchanged; the survivor is the export.
+const eventLabel = promoEventLabel

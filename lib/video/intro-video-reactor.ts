@@ -556,7 +556,15 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
     // refusal path swaps in deterministic template chrome. So no sentence
     // reaches the client that evaluateOutbound did not clear, and no sentence
     // reaches the client that the trim silently stripped the disclaimer off.
-    if (input.trigger === "home_anniversary") {
+    //
+    // BOTH TRIGGERS. The trim was anniversary-only while the assignment prompt
+    // still asked for "90-130 words" — the welcome lane rode the SAME
+    // AgentTalkingHeadReel (420 frames @ 30fps = 14s), whose D-ID track is
+    // framed <Video trimBefore={0} trimAfter={BODY}> with BODY = 10s, so a
+    // welcome overrun cut the agent off mid-sentence in a video already
+    // delivered to a brand-new client. The composition does not care which
+    // trigger asked for the render, so neither does the trim.
+    {
       const budget = introNarrationBudget()
       const fit = fitNarrationToBudget(script, budget)
       if (fit.note) {
@@ -565,7 +573,9 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
         console.warn(`[intro-video-reactor] project script trimmed: ${fit.note}`)
       }
       script = fit.script
+    }
 
+    if (input.trigger === "home_anniversary") {
       // FAIL CLOSED (§4). The trim is exactly what can turn a compliant draft
       // into a non-compliant one: it cuts from the END, so a "these are
       // estimates, not an appraisal" parked in the final sentence is the first
@@ -940,10 +950,26 @@ async function draftScript(args: {
   const greeting = anniversaryGreeting({ firstName: args.firstName, yearsHeld: args.yearsAgo ?? null })
   const budget = introNarrationBudget()
 
+  // ── THE ASSIGNMENT ASK IS DERIVED FROM THE SAME COMPOSITION (§2/§6) ─────────
+  // WHAT THIS PROMPT USED TO ASK, and why it was wrong:
+  //
+  //   "Write a 30-45 second video script … 90-130 words."
+  //
+  // That retired sentence is reproduced UNBROKEN here on purpose — the guard
+  // (scripts/narration-word-budget-guard.ts) asserts it is gone from live code
+  // (comment-stripped source) while this tombstone keeps the record §1 requires.
+  // The welcome video rides the SAME AgentTalkingHeadReel the anniversary does:
+  // 420 frames @ 30fps = 14s, ~28 budgeted words at the one WORDS_PER_MINUTE.
+  // "90-130 words" was 3-4× that, the maxTokens ceiling of 300 paid for the
+  // overflow (§5 — ai_tool_usage is the cost ledger), and the composition's
+  // 10-second BODY window cut the agent off mid-sentence. Both branches now ask
+  // narrationLengthDirective(budget) and pay narrationMaxTokens(budget).
   const basePrompt = args.trigger === "contact_agent_assigned"
-    ? `Write a 30-45 second video script for a real estate agent introducing themselves to a new contact named ${args.firstName}.
+    ? `Write a video script for a real estate agent introducing themselves to a new contact named ${args.firstName}.
 Voice: first-person, warm, professional. ${personaLine} ${newsletterLine}${situationBlock}${complianceBlock}
-Open with a hook tied to their journey, not a sales pitch. State your role in one line. Close with a single, specific next step (text/email back to schedule a call). 90-130 words. No jargon left unexplained. No commitments on specific rates or valuations. No exclamation marks. Avoid any reference to protected characteristics (race, religion, family status, national origin, gender, sexual orientation, disability, source of income). Avoid words like "perfect for families" or any phrasing that implies preference. Return ONLY the script text the agent will speak on camera.`
+Open with a hook tied to their journey, not a sales pitch. State your role in one line. Close with a single, specific next step (text/email back to schedule a call).
+${narrationLengthDirective(budget)}
+No jargon left unexplained. No commitments on specific rates or valuations. No exclamation marks. Avoid any reference to protected characteristics (race, religion, family status, national origin, gender, sexual orientation, disability, source of income). Avoid words like "perfect for families" or any phrasing that implies preference. Return ONLY the script text the agent will speak on camera.`
     // ── THE HAPPY ANNIVERSARY WITH AN EQUITY REPORT ─────────────────────────
     // OWNER RULING: "anniversary video is a happy anniversary with an equity
     // report." The order of the two halves is the framing, so it is the order
@@ -993,10 +1019,11 @@ Avoid any reference to protected characteristics. Return ONLY the script text th
   const { text } = await generateTextRouted({
     feature:     "intro_video_script",
     prompt:      basePrompt + violationLine,
-    // The anniversary lane pays for the words it can actually speak. The
-    // assignment lane keeps its prior ceiling — its own 90-130 word ask is a
-    // separate overrun on the same composition and belongs to the welcome lane.
-    maxTokens:   args.trigger === "home_anniversary" ? narrationMaxTokens(budget) : 300,
+    // BOTH lanes pay for the words the composition can actually speak — the
+    // ONE token budget sized from the ONE word budget. The assignment lane's
+    // prior flat 300 bought ~3× the text the 14s reel can carry, and the
+    // overflow was billed to ai_tool_usage and then thrown away (§5).
+    maxTokens:   narrationMaxTokens(budget),
     temperature: 0.6,
     // BOOK THE SPEND. `?? null` and not `?? ""` — these land in uuid columns and
     // Postgres refuses '' with 22P02, which logAIUsage swallows into a console

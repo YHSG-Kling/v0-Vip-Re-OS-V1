@@ -94,8 +94,11 @@ function main() {
     !/durationSeconds\s*:/.test(reactor) && !/wordCount\s*:/.test(reactor))
   check("…and no template still hands the prompt a hand-typed range",
     !/\b\d{2}\s*-\s*\d{2}\s+words?\b/i.test(reactor))
+  // Assert the RULE, not the exact import spelling (§2): promoNarrationBudget
+  // must come from the survivor module, whatever siblings ride the same import
+  // (promoEventLabel joined it when the staged-title writer moved there).
   check("the reactor asks the ONE budget helper instead (import-pinned)",
-    /import \{ promoNarrationBudget \} from "@\/lib\/video\/promo-composition"/.test(stripComments(reactorRaw))
+    /import \{[^}]*\bpromoNarrationBudget\b[^}]*\} from "@\/lib\/video\/promo-composition"/.test(stripComments(reactorRaw))
     && /promoNarrationBudget\(args\.eventType\)/.test(reactor))
   check("the prompt is CONSTRAINED by the derived budget",
     /narrationLengthDirective\(budget\)/.test(reactor))
@@ -172,12 +175,48 @@ function main() {
   check("neither re-declares a words-per-minute pace of its own",
     !/WORDS_PER_MINUTE\s*=/.test(reactor) && !/WORDS_PER_MINUTE\s*=/.test(renderRoute))
 
+  // ── 5. ONE DRAFT PER PROMO — the gated script is PERSISTED and REUSED ─────
+  //
+  // The blind spot this guard used to publish is CLOSED: the reactor's draft
+  // was compliance-gated and then DISCARDED, and render-just-listed drafted the
+  // spoken narration AGAIN — two ai_tool_usage rows for one artefact (§5), with
+  // the gated text never the spoken text. Now the reactor persists the gated,
+  // budget-fitted script on the promo's staged ai_video_projects row and the
+  // render endpoint reuses it, re-gating the exact text it speaks.
+  console.log("\n[5 — the gated script is persisted, reused, and re-gated as spoken]")
+  check("the reactor PERSISTS the gated script (script_content on the staged project row)",
+    /script_content:\s*script/.test(reactor) && /narration_precleared:\s*true/.test(reactor))
+  check("…keyed by the promo ledger id the render endpoint joins on",
+    /promo_ledger_id:\s*ledgerId/.test(reactor))
+  check("the render endpoint LOOKS UP the staged row by that key",
+    /narration_precleared:\s*true/.test(renderRoute) && /promo_ledger_id:\s*promo\.id/.test(renderRoute))
+  check("…and threads the staged script into the draft step",
+    /stagedScript:\s*stagedProject\?\.script_content/.test(renderRoute))
+  check("the REUSED script is re-fitted to the budget before anything else",
+    /fitNarrationToBudget\(preset,\s*budget\)/.test(renderRoute))
+  check("…and the render-time gate runs on the FITTED text that will be spoken,\n    not on a stale clearance",
+    /content:\s*fit\.script/.test(renderRoute))
+  check("a staged script that fails the render-time gate falls through to a fresh\n    draft rather than being spoken anyway",
+    renderRoute.indexOf("reused: true") < renderRoute.indexOf("runWithComplianceRedraft(")
+    && /reused:\s*false/.test(renderRoute))
+  check("the render lands on the SAME staged row (update), inserting only when no\n    staged row exists",
+    /if\s*\(stagedProject\)/.test(renderRoute) && /\.update\(projectFields\)/.test(renderRoute))
+  // POSITIVE CONTROLS (§2): a broken finder and a missing persistence both
+  // report the same nothing, so prove each finder still recognises its shape.
+  check("control · the persist finder matches the staged-insert shape when present…",
+    /script_content:\s*script\b/.test(blankStrings(stripComments("  await svc.from(\"ai_video_projects\").insert({ script_content: script, })"))))
+  check("control · …and reports ABSENT when the persistence is spliced out",
+    !/script_content:\s*script\b/.test(reactor.replace(/script_content:\s*script\b/g, "")))
+  check("control · a comment claiming the reuse does NOT satisfy the reuse finder",
+    !/stagedScript:\s*stagedProject\?\.script_content/.test(
+      stripComments("// stagedScript: stagedProject?.script_content is threaded here")))
+
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
-  console.log(" BLIND SPOT: this guard proves the reactor's PRE-FLIGHT draft is budgeted.")
-  console.log("   That draft is compliance-gated and then DISCARDED — the spoken narration is")
-  console.log("   drafted again by render-just-listed. Sizing them alike is what makes the")
-  console.log("   pre-flight a probe of the same artefact; it is not itself the spoken script.")
+  console.log(" BLIND SPOT: this guard reads code shape, not runtime rows — it cannot see a")
+  console.log("   staging INSERT refused live (that path degrades to the pre-fix re-draft and")
+  console.log("   logs it), and it does not measure ai_tool_usage deltas; test:ai-spend-booked")
+  console.log("   owns the ledger itself.")
   if (failed > 0) {
     console.log(" ✗ Failures:")
     for (const f of failures) console.log(`   - ${f}`)
