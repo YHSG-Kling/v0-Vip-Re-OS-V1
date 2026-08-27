@@ -103,13 +103,13 @@ import type { SubjectFeatures } from "./state-adjustment-rates"
 /** At least this many SOLD comps, per the ruling. */
 export const REQUIRED_SOLD_COMPS = 3
 /** Exactly this many ACTIVE comps. */
-export const REQUIRED_ACTIVE_COMPS = 2
+const REQUIRED_ACTIVE_COMPS = 2
 /** Exactly this many PENDING comps. */
-export const REQUIRED_PENDING_COMPS = 1
+const REQUIRED_PENDING_COMPS = 1
 /** The sold window we try first. */
 export const PRIMARY_SOLD_WINDOW_MONTHS = 6
 /** The widened window, used ONLY when the primary one is short of the minimum. */
-export const WIDENED_SOLD_WINDOW_MONTHS = 12
+const WIDENED_SOLD_WINDOW_MONTHS = 12
 
 /** The three sides of the required mix, named so a shortfall can be attributed. */
 export type CompSlot = "sold" | "active" | "pending"

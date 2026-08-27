@@ -358,7 +358,7 @@ export async function executeAgentDeactivation(
 }
 
 /** Subject the warm hand-off re-introduction uses (also the idempotency key per contact). */
-export const SUCCESSOR_REINTRO_SUBJECT = "A quick introduction from your new point of contact"
+const SUCCESSOR_REINTRO_SUBJECT = "A quick introduction from your new point of contact"
 
 /**
  * proposeSuccessorReintroductions — for every CONTACT inherited by the successor, propose a

@@ -263,9 +263,9 @@ export async function publishApprovalSlaReferrals(client?: Svc): Promise<SlaRefe
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Paid leads must clear this floor in 30d before the quality dispute is worth arguing. */
-export const LEAD_QUALITY_MIN_PAID_LEADS = 5
+const LEAD_QUALITY_MIN_PAID_LEADS = 5
 /** Below this qualified share (ISA ledger vs ad-reported leads) the sweep raises the dispute. */
-export const LEAD_QUALITY_QUALIFIED_SHARE_FLOOR = 0.2
+const LEAD_QUALITY_QUALIFIED_SHARE_FLOOR = 0.2
 
 /**
  * THE LEAD-QUALITY SWEEP (lead_quality_spend, deliberative): tenants with LIVE ad

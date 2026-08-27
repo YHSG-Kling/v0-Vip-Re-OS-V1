@@ -96,8 +96,12 @@ export async function listPlatformProspectsAction(): Promise<{ ok: true; prospec
   const auth = await requireMarketingStaff()
   if (!auth.ok) return auth
   const svc = createServiceClient()
+  // `phone` is selected because the AI reception captures phone-only prospects
+  // (email null — l32-s01 dropped the NOT NULL): without it the board showed a
+  // caller with NO way to reach them (the phone column was written by
+  // capturePhoneProspect and read by nothing staff-facing — §1.2, 2026-08-27).
   const { data, error } = await svc.from("platform_prospects")
-    .select("id, name, email, company, role_interest, source, status, interest_note, details, contacted_at, created_at")
+    .select("id, name, email, phone, company, role_interest, source, status, interest_note, details, contacted_at, created_at")
     .order("created_at", { ascending: false }).limit(500)
   if (error) return { ok: false, error: error.message }
   return { ok: true, prospects: data ?? [], funnel: rollupGrowthFunnel(data ?? []) }

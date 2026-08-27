@@ -54,7 +54,7 @@ export interface UpdateBlogPostParams {
   callToAction?: string
 }
 
-export interface BlogPostResult {
+interface BlogPostResult {
   title: string
   slug: string
   excerpt: string

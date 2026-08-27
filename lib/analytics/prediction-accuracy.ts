@@ -1433,8 +1433,8 @@ export async function loadRailAccuracy(svc: Svc, rail: AccuracyRailId, brokerage
 
 export const TRUST_CHIP_MIN_OBSERVATIONS = 5
 export const TRUST_CHIP_NET_SHEET_MIN_WITHIN = 0.8
-export const TRUST_CHIP_CLOSING_COST_MIN_WITHIN = 0.7
-export const TRUST_CHIP_PRICE_MAX_MEDIAN_PCT = 0.05
+const TRUST_CHIP_CLOSING_COST_MIN_WITHIN = 0.7
+const TRUST_CHIP_PRICE_MAX_MEDIAN_PCT = 0.05
 
 export interface PredictionTrustChip {
   rail: AccuracyRailId

@@ -8,7 +8,7 @@ import { emitKernelEvent } from "@/lib/kernel/emit"
 import { computeDaysOnMarketOrZero } from "@/lib/listings/compute-dom"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
-export interface BehavioralPattern {
+interface BehavioralPattern {
   id: string
   pattern_slug: string
   pattern_name: string

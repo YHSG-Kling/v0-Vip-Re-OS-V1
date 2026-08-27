@@ -23,8 +23,8 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 type Svc = SupabaseClient<any, any, any>
 
 export const MIN_ZIP_CONTACTS = 8    // a farm needs a real book before its close rate counts
-export const HOT_CLOSE_RATE = 0.10   // ≥10% of the book in a ZIP closing = a lane to lean into
-export const COLD_CLOSE_RATE = 0.02  // ≤2% with volume = a book that isn't converting
+const HOT_CLOSE_RATE = 0.10   // ≥10% of the book in a ZIP closing = a lane to lean into
+const COLD_CLOSE_RATE = 0.02  // ≤2% with volume = a book that isn't converting
 
 export interface ZipBook {
   zip: string

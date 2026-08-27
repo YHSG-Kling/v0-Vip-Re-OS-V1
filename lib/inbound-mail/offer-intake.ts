@@ -91,7 +91,7 @@ type Svc = ReturnType<typeof createServiceClient>
 const OFFER_DOCUMENTS_BUCKET = "offer-documents"
 const ACTIVE_LISTING_STATUSES = ["active", "coming_soon", "pending"]
 /** The sweep cap. A cap that truncates is reported, never hidden — see the header. */
-export const LISTING_SWEEP_LIMIT = 300
+const LISTING_SWEEP_LIMIT = 300
 
 export interface InboundOfferAttachment { fileName: string; mime: string; contentB64: string | null }
 

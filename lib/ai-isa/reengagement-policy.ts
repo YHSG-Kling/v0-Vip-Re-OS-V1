@@ -40,7 +40,7 @@ export const DEFAULT_MAX_HORIZON_ATTEMPTS = 13
 
 /** Phase-1 (fresh ghost) send days: Mon/Wed/Fri only — aggressive while the lead is
  *  still warm. getDay(): 0=Sun 1=Mon 2=Tue 3=Wed 4=Thu 5=Fri 6=Sat. */
-export const PHASE1_SEND_DAYS = [1, 3, 5] as const
+const PHASE1_SEND_DAYS = [1, 3, 5] as const
 /** The window (days from first outreach) that counts as Phase 1. */
 export const PHASE1_WINDOW_DAYS = 14
 /** Phase-2 (long-haul) minimum spacing between sends, in days. */

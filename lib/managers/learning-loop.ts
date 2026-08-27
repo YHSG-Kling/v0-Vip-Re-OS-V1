@@ -37,11 +37,11 @@ export interface OutcomeStats {
 
 /** Minimum sample before the loop will tune anything — below this it stays silent (honest). */
 export const MIN_LOST_SAMPLE = 4
-export const MIN_STRATEGY_SAMPLE = 5
+const MIN_STRATEGY_SAMPLE = 5
 /** A brokerage losing this share of its deals to financing earns a high financing-risk posture. */
 export const FINANCING_LOSS_SHARE_HIGH = 0.3
 /** Offer rejections above this share (with aggressive deviation) earn a conservative posture. */
-export const OFFER_REJECT_SHARE_HIGH = 0.4
+const OFFER_REJECT_SHARE_HIGH = 0.4
 
 /**
  * PURE: derive the learned adjustments from a brokerage's recent outcome stats. Returns [] when

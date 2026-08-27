@@ -701,8 +701,19 @@ export async function loadCommissionDistributions(
       data: (distributions ?? []).map((d) => ({
         id:               d.id,
         agentId:          d.agent_id,
-        recipientId:      d.recipient_id,
-        recipientName:    d.recipient_name ?? "",
+        // TOMBSTONE (2026-08-27, §1.1): this used to read `d.recipient_id` and
+        // `d.recipient_name`. recipient_id is writer-less — the engine's ONLY
+        // insert (lib/commission/waterfall/11-validate-persist.ts:164
+        // distributionRows) writes distribution_type + agent_id / team_id and
+        // has never named it; live-verified 2026-08-27 on hrvaqgvukzxfskkcrwbt:
+        // 0 rows, no trigger, no pg_proc, no FK, no view touches it (m571
+        // retires the column). recipient_name was worse: NOT A COLUMN on
+        // commission_distributions at all, so `?? ""` rendered every recipient
+        // cell as an empty string and masked the null id behind it. SURVIVORS:
+        // agent_id / team_id + distribution_type — the columns the engine
+        // actually stamps the recipient with.
+        recipientId:      d.agent_id ?? d.team_id ?? null,
+        recipientName:    null,
         type:             d.distribution_type,
         calculatedAmount: d.calculated_amount,
         status:           d.status,

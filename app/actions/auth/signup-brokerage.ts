@@ -250,6 +250,25 @@ export async function signupBrokerageAction(
     )
   }
 
+  // PROSPECT CONVERSION STAMP — the acquisition rail's conversion moment. If
+  // this signer-upper was a platform_prospect (hand-raise on /get-started or
+  // /demo, phone reception capture, referral, OS-intent sourcing), stamp
+  // converted_brokerage_id + status 'trial' (self-serve starts a trial, not a
+  // paid plan — the growth board / billing rail advances trial → converted).
+  // Counted + idempotent (lib/platform/prospect-conversion.ts); best-effort —
+  // a stamping problem must never cost the signup, but the loss is logged.
+  try {
+    const { stampProspectConversion } = await import("@/lib/platform/prospect-conversion")
+    const stamp = await stampProspectConversion(service, {
+      brokerageId: brokerage.id,
+      emails: [input.adminEmail],
+      outcome: "trial",
+    })
+    if (stamp.errors.length > 0) {
+      console.warn("[signupBrokerage] prospect conversion stamp incomplete:", stamp.errors.join("; "), { matched: stamp.matched, linked: stamp.linked })
+    }
+  } catch (err) { console.warn("[signupBrokerage] prospect conversion stamp failed (non-fatal):", (err as any)?.message) }
+
   // AI-ISA SYSTEM ACTOR — provision the tenant's ISA identity at birth.
   // Idempotent (returns the cached ai_isa_system_user_id when present). Without
   // this call nothing in the tree ever provisioned the actor, so

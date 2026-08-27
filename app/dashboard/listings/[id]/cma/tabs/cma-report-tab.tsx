@@ -4,10 +4,20 @@ import { useState, useTransition } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { ChevronDown, ChevronRight, Zap, Sparkles } from "lucide-react"
+import { ChevronDown, ChevronRight, Zap, Sparkles, ShieldCheck, Printer } from "lucide-react"
 import { triggerAICompScoring } from "@/app/actions/seller-cma"
 import { resolveCompRiskFlag } from "@/app/actions/compliance-monitoring"
 import { generateAICMA } from "@/app/actions/ai-cma"
+// The appraiser packet's ONE remaining door (§1, 2026-08-27): the CMA report tab
+// is where the agent already stands when a low appraisal threatens the deal, so
+// the packet is built from THIS report's id. The HTTP route that used to wrap
+// this action (app/api/listings/[listingId]/appraisal-defense/route.ts) had no
+// caller anywhere in the tree and is deleted — this entry is its survivor.
+// §5: everything in the packet is DETERMINISTIC (comp rows + state-guideline
+// adjustments with their vintage, template bullets over computed numbers) —
+// nothing model-authored reaches the licensed appraiser (see one_cma_engine +
+// current_year_appraiser_guidelines in lib/kernel/manager-registry.ts).
+import { buildAppraisalDefensePackage, type AppraisalDefensePackage } from "@/app/actions/appraisal-defense"
 import type { CMAPageData } from "@/app/actions/seller-cma"
 import { useRouter } from "next/navigation"
 
@@ -66,7 +76,36 @@ export function CMAReportTab({ listing, data }: Props) {
   const [resolvedFlagIds, setResolvedFlagIds] = useState<Set<string>>(new Set())
   const [resolvingFlagId, setResolvingFlagId] = useState<string | null>(null)
   const [flagMsg, setFlagMsg] = useState<string | null>(null)
+  // Appraisal defense packet — built on demand from THIS CMA; errors shown, never swallowed.
+  const [defense, setDefense] = useState<AppraisalDefensePackage | null>(null)
+  const [defenseError, setDefenseError] = useState<string | null>(null)
+  const [defenseBuilding, setDefenseBuilding] = useState(false)
+  const [contractPriceInput, setContractPriceInput] = useState("")
   const router = useRouter()
+
+  async function handleBuildDefense() {
+    if (!cma) return
+    setDefenseBuilding(true)
+    setDefenseError(null)
+    try {
+      const parsed = Number(contractPriceInput.replace(/[^0-9.]/g, ""))
+      const result = await buildAppraisalDefensePackage({
+        cmaReportId: cma.id,
+        contractPrice: Number.isFinite(parsed) && parsed > 0 ? parsed : undefined,
+      })
+      if (result.success) setDefense(result.package)
+      else
+        setDefenseError(
+          result.error === "no_comparables"
+            ? "This CMA has no saved comparables — regenerate the CMA before building an appraiser packet."
+            : result.error,
+        )
+    } catch (e: any) {
+      setDefenseError(e?.message ?? "Could not build the packet.")
+    } finally {
+      setDefenseBuilding(false)
+    }
+  }
 
   const openRiskFlags = riskFlags.filter((f) => !resolvedFlagIds.has(f.id))
 
@@ -328,6 +367,109 @@ export function CMAReportTab({ listing, data }: Props) {
               </tbody>
             </table>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Appraisal defense packet — the appraiser-facing one-pager built from
+          THIS report's comps + state-guideline adjustments. Used pre-appraisal
+          (leave at the appointment), post-low-appraisal (reconsideration of
+          value), or buyer-side. Deterministic content only (§5). */}
+      <Card>
+        <CardHeader className="py-3 px-4">
+          <CardTitle className="text-sm font-medium text-foreground flex items-center gap-2">
+            <ShieldCheck className="h-4 w-4" />
+            Appraisal Defense Packet
+          </CardTitle>
+          <p className="text-xs text-muted-foreground">
+            A printable one-pager arguing the price from this report's adjusted comps —
+            for the appraisal appointment or a reconsideration of value.
+          </p>
+        </CardHeader>
+        <CardContent className="px-4 pb-4 space-y-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <input
+              type="text"
+              inputMode="numeric"
+              className="rounded border border-border bg-background px-2 py-1.5 text-sm w-44"
+              placeholder="Contract price (optional)"
+              value={contractPriceInput}
+              onChange={(e) => setContractPriceInput(e.target.value)}
+            />
+            <Button size="sm" className="gap-2" disabled={defenseBuilding} onClick={handleBuildDefense}>
+              <ShieldCheck className="h-4 w-4" />
+              {defenseBuilding ? "Building packet…" : defense ? "Rebuild packet" : "Build packet"}
+            </Button>
+            {defense && (
+              <Button size="sm" variant="outline" className="gap-2 print:hidden" onClick={() => window.print()}>
+                <Printer className="h-4 w-4" />
+                Print
+              </Button>
+            )}
+          </div>
+          {defenseError && <p className="text-xs text-destructive">{defenseError}</p>}
+
+          {defense && (
+            <div className="space-y-4 rounded-lg border border-border p-4">
+              <div>
+                <p className="text-sm font-semibold text-foreground">{defense.subjectProperty.address}</p>
+                <p className="text-xs text-muted-foreground">
+                  Prepared {new Date(defense.generatedAt).toLocaleDateString()}
+                  {defense.subjectProperty.contractPrice != null
+                    ? ` · contract price $${Number(defense.subjectProperty.contractPrice).toLocaleString()}`
+                    : ""}
+                  {defense.marketConditionLabel && defense.marketConditionLabel !== "unknown"
+                    ? ` · ${defense.marketConditionLabel} market`
+                    : ""}
+                </p>
+              </div>
+
+              <div className="rounded bg-muted/40 px-3 py-2 text-sm">
+                Indicated range{" "}
+                <b>
+                  ${Math.round(defense.summary.indicatedRangeLow).toLocaleString()}–$
+                  {Math.round(defense.summary.indicatedRangeHigh).toLocaleString()}
+                </b>{" "}
+                · midpoint ${Math.round(defense.summary.indicatedMidpoint).toLocaleString()}
+                {defense.summary.perSqftRangeLow != null && defense.summary.perSqftRangeHigh != null
+                  ? ` · $${defense.summary.perSqftRangeLow.toFixed(0)}–$${defense.summary.perSqftRangeHigh.toFixed(0)}/sqft`
+                  : ""}
+              </div>
+
+              <ul className="list-disc pl-5 space-y-1 text-sm text-foreground">
+                {defense.argumentBullets.map((b, i) => (
+                  <li key={i}>{b}</li>
+                ))}
+              </ul>
+
+              <div className="space-y-3">
+                {defense.comparables.map((c, i) => (
+                  <div key={i} className="rounded border border-border px-3 py-2">
+                    <div className="flex justify-between text-sm">
+                      <span className="font-medium text-foreground">{c.address}</span>
+                      <span className="text-foreground">
+                        ${c.salePrice.toLocaleString()} → <b>${Math.round(c.adjustedValue).toLocaleString()}</b>
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {c.saleDate ? `Sold ${new Date(c.saleDate).toLocaleDateString()}` : "Sale date —"}
+                      {c.distanceMi != null ? ` · ${c.distanceMi.toFixed(1)} mi` : ""}
+                      {c.sqft ? ` · ${c.sqft.toLocaleString()} sqft` : ""}
+                    </p>
+                    {c.adjustments.length > 0 && (
+                      <ul className="mt-1 space-y-0.5">
+                        {c.adjustments.map((a, j) => (
+                          <li key={j} className="text-xs text-muted-foreground">
+                            {a.direction === "add" ? "+" : "−"}${a.amount.toLocaleString()} {a.label}
+                            {a.rationale ? ` — ${a.rationale}` : ""}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>

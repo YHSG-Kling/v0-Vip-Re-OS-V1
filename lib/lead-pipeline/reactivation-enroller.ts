@@ -17,8 +17,8 @@ import { NOT_CONVERTED_FILTER } from "@/lib/lead-pipeline/lead-lifecycle"
 
 type Svc = ReturnType<typeof createServiceClient>
 
-export const CONTACT_DORMANT_DAYS = 7
-export const LEAD_DORMANT_DAYS = 10
+const CONTACT_DORMANT_DAYS = 7
+const LEAD_DORMANT_DAYS = 10
 
 export interface ReactivationEnrollInput {
   brokerageId: string

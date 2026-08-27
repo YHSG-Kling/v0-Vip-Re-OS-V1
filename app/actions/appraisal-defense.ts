@@ -17,6 +17,19 @@
  *   • cma_reports           — selected CMA for the listing
  *   • cma_comparables       — comps already chosen by the agent
  *   • cma_price_adjustments — per-feature adjustments (migration 996b)
+ *
+ * TOMBSTONE (2026-08-27, §1.1): POST /api/listings/[listingId]/appraisal-defense
+ * (app/api/listings/[listingId]/appraisal-defense/route.ts) is DELETED. It was
+ * the only caller of this action and NOTHING in the tree called the route
+ * (repo-wide sweep incl. e2e/workflows/tools/services; it sat in
+ * scripts/opposite-missing-baseline.json as a door with no knocker). The
+ * SURVIVOR is the UI entry that was the missing half: the CMA report tab —
+ * app/dashboard/listings/[id]/cma/tabs/cma-report-tab.tsx (handleBuildDefense)
+ * — calls this server action directly with the report id it already holds,
+ * where the route had to re-resolve listing → latest CMA first. §5 note: this
+ * packet is appraiser-facing, so its content is DETERMINISTIC end to end —
+ * comp rows, state-guideline adjustments with their vintage, template bullets
+ * over computed numbers; no model-authored text (see one_cma_engine).
  */
 
 import { createClient } from "@/lib/supabase/server"

@@ -156,6 +156,27 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
       return { success: false, error: `Subscription creation failed: ${sErr?.message}` }
     }
 
+    // PROSPECT CONVERSION STAMP — if this subscriber was a platform_prospect
+    // (any capture channel: web hand-raise, /demo, phone reception, referral,
+    // OS-intent sourcing), record the conversion moment: converted_brokerage_id
+    // + status 'converted' (this path creates an ACTIVE subscription — a paying
+    // tenant, unlike the self-serve trial). Matches by admin + brokerage email
+    // and by the brokerage phone (the reception's caller-ID key). Counted +
+    // idempotent (lib/platform/prospect-conversion.ts); best-effort — a
+    // stamping problem must never cost the provisioning, but the loss is logged.
+    try {
+      const { stampProspectConversion } = await import("@/lib/platform/prospect-conversion")
+      const stamp = await stampProspectConversion(service, {
+        brokerageId,
+        emails: [params.adminEmail, params.brokerageEmail],
+        phone: params.brokeragePhone ?? null,
+        outcome: "converted",
+      })
+      if (stamp.errors.length > 0) {
+        console.warn("[createSubscriber] prospect conversion stamp incomplete:", stamp.errors.join("; "), { matched: stamp.matched, linked: stamp.linked })
+      }
+    } catch (err) { console.warn("[createSubscriber] prospect conversion stamp failed (non-fatal):", (err as any)?.message) }
+
     // Step 5: Audit log — activities has no metadata column; use notes as JSON string
     //
     // IDENTITY CLASS. activities.agent_id FKs agents(id); callerUser.id is a

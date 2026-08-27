@@ -32,7 +32,7 @@ export const SELLER_UPDATE_KIND = "seller_weekly_update"
 /** Distinct entity_type for the gated VIDEO seller-update message — so it (a) doesn't share an
  *  idempotency window with the separate TEXT seller-update (both were entity_type='listing',
  *  silently de-duping each other) and (b) lets approval materialize the rich seller_updates card. */
-export const SELLER_UPDATE_ENTITY_TYPE = "seller_update_video"
+const SELLER_UPDATE_ENTITY_TYPE = "seller_update_video"
 
 export interface SellerUpdateStats {
   listingAddress: string

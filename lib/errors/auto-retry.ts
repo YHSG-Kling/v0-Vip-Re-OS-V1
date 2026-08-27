@@ -21,7 +21,7 @@ import { collectError } from "./collect-error"
 
 const MAX_RETRY_ATTEMPTS = 5
 
-export interface RetryResult {
+interface RetryResult {
   success: boolean
   error?: string
   attemptNumber?: number
