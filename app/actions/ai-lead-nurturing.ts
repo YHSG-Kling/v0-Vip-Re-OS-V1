@@ -166,6 +166,27 @@ export async function aiGenerateDripCampaign(params: {
       "12_months": 365,
     }[params.duration]
 
+    // ── THEM-FIRST EMPATHY GUIDANCE (2026-08-27, lane CB, §1.2) ─────────────
+    // The authored empathy library (lib/them-first/empathy-library.ts) sat
+    // behind one uncalled HTTP route since it shipped; this is its first real
+    // consumer. When the contact's persona has authored content, the drip
+    // prompt carries the owner's Them-First arc (pain → empathy → trust →
+    // value → solution) so the campaign leads with the prospect's likely pain,
+    // not the agent's pitch. No match = no block — the model is never handed a
+    // wrong persona's script.
+    const { empathyGuidanceForCrmPersona } = await import("@/lib/them-first")
+    const empathy = empathyGuidanceForCrmPersona(contact.contact_persona, contact.contact_type)
+    const empathyBlock = empathy
+      ? `\nTHEM-FIRST EMPATHY PLAYBOOK (authored for the "${empathy.libraryPersonaId}" persona — follow this arc, do not invent statistics beyond it):\n` +
+        empathy.painPoints
+          .map(
+            (p, i) =>
+              `${i + 1}. Likely pain: ${p.pain}\n   Empathy: ${p.empathy}\n   Trust: ${p.trust}\n   Value: ${p.value}\n   Solution: ${p.solution}`,
+          )
+          .join("\n") +
+        `\nEvery touchpoint must be them-first: name the likely pain before any offer, and echo this playbook's tone.\n`
+      : ""
+
     // AI generates campaign
     const { object: campaign } = await generateObject({
       model: resolveModel("openai/gpt-4o"),
@@ -204,7 +225,8 @@ DURATION: ${durationDays} days
 Create a mix of email, SMS, and call touchpoints. Space them appropriately (not too frequent).
 Each touchpoint should be personalized, provide value, and move the relationship forward.
 Include market updates, educational content, and soft check-ins.
-Make content warm and personal, not salesy.`,
+Make content warm and personal, not salesy.
+${empathyBlock}`,
     })
 
     // ── Land it where the executor can reach it ─────────────────────────────

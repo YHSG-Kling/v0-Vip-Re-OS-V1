@@ -82,6 +82,27 @@ export default function ResetPasswordConfirmPage() {
       setError(`Password must be at least ${PASSWORD_REQUIREMENTS.MIN_LENGTH} characters`)
       return
     }
+    // The complexity flags were declared and enforced NOWHERE (adjudicated
+    // 2026-08-27, lane CB): a form that reads only MIN_LENGTH accepts "aaaaaaaa"
+    // while the constants promise four character classes. Each flag gates its own
+    // check so turning one off in app/constants/auth.ts turns the check off with
+    // it — one vocabulary, one enforcement (§6).
+    if (PASSWORD_REQUIREMENTS.REQUIRE_UPPERCASE && !/[A-Z]/.test(password)) {
+      setError('Password must include at least one uppercase letter')
+      return
+    }
+    if (PASSWORD_REQUIREMENTS.REQUIRE_LOWERCASE && !/[a-z]/.test(password)) {
+      setError('Password must include at least one lowercase letter')
+      return
+    }
+    if (PASSWORD_REQUIREMENTS.REQUIRE_NUMBERS && !/[0-9]/.test(password)) {
+      setError('Password must include at least one number')
+      return
+    }
+    if (PASSWORD_REQUIREMENTS.REQUIRE_SPECIAL && !/[^A-Za-z0-9]/.test(password)) {
+      setError('Password must include at least one special character')
+      return
+    }
     if (password !== confirm) {
       setError('The two passwords do not match')
       return

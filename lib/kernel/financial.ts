@@ -694,7 +694,70 @@ export async function loadCommissionDistributions(
       query = query.eq("agent_id", agentId)
     }
 
-    const { data: distributions } = await query
+    const { data: distributions, error: distError } = await query
+    if (distError) {
+      return { success: false, error: distError.message }
+    }
+
+    // ── RESOLVE RECIPIENT NAMES (2026-08-27, lane CB — §1.2 the missing half) ──
+    // recipientName was hardcoded null after the recipient_id/recipient_name
+    // tombstone below, and the one UI consumer
+    // (app/dashboard/financials/agent/agent-financials-client.tsx:639 renders
+    // `recipientName ?? recipientId`) therefore showed a RAW UUID in the
+    // recipient cell. The recipient the engine stamps is agent_id / team_id, so
+    // the name is resolvable: agents.id → agents.user_id → users.first/last name
+    // (agents.id and users.id are DISJOINT classes — never fed to each other,
+    // CLAUDE.md §3), and teams.id → teams.name. Batched, error-READ, and
+    // display-only: a refused name read logs and falls back to null (the UI then
+    // shows the id) rather than failing the money list — the amounts are the
+    // load-bearing data, the label is not.
+    const agentIds = [...new Set((distributions ?? []).map((d) => d.agent_id).filter(Boolean))] as string[]
+    const teamIds = [...new Set((distributions ?? []).map((d) => d.team_id).filter(Boolean))] as string[]
+    const agentNameById = new Map<string, string>()
+    const teamNameById = new Map<string, string>()
+
+    if (agentIds.length > 0) {
+      const { data: agentRows, error: agentErr } = await supabase
+        .from("agents")
+        .select("id, user_id")
+        .in("id", agentIds)
+        .eq("brokerage_id", brokerageId)
+      if (agentErr) {
+        console.error("[financial-kernel] distribution agent lookup refused:", agentErr.message)
+      } else if (agentRows && agentRows.length > 0) {
+        const userIds = [...new Set(agentRows.map((a) => a.user_id).filter(Boolean))] as string[]
+        const { data: userRows, error: userErr } = await supabase
+          .from("users")
+          .select("id, first_name, last_name")
+          .in("id", userIds)
+        if (userErr) {
+          console.error("[financial-kernel] distribution user-name lookup refused:", userErr.message)
+        } else {
+          const userNameById = new Map(
+            (userRows ?? []).map((u) => [u.id, [u.first_name, u.last_name].filter(Boolean).join(" ").trim()]),
+          )
+          for (const a of agentRows) {
+            const name = a.user_id ? userNameById.get(a.user_id) : undefined
+            if (name) agentNameById.set(a.id, name)
+          }
+        }
+      }
+    }
+
+    if (teamIds.length > 0) {
+      const { data: teamRows, error: teamErr } = await supabase
+        .from("teams")
+        .select("id, name")
+        .in("id", teamIds)
+        .eq("brokerage_id", brokerageId)
+      if (teamErr) {
+        console.error("[financial-kernel] distribution team lookup refused:", teamErr.message)
+      } else {
+        for (const t of teamRows ?? []) {
+          if (t.name) teamNameById.set(t.id, t.name)
+        }
+      }
+    }
 
     return {
       success: true,
@@ -711,9 +774,11 @@ export async function loadCommissionDistributions(
         // commission_distributions at all, so `?? ""` rendered every recipient
         // cell as an empty string and masked the null id behind it. SURVIVORS:
         // agent_id / team_id + distribution_type — the columns the engine
-        // actually stamps the recipient with.
+        // actually stamps the recipient with, now resolved to display names above.
         recipientId:      d.agent_id ?? d.team_id ?? null,
-        recipientName:    null,
+        recipientName:    (d.agent_id ? agentNameById.get(d.agent_id) : undefined)
+                            ?? (d.team_id ? teamNameById.get(d.team_id) : undefined)
+                            ?? null,
         type:             d.distribution_type,
         calculatedAmount: d.calculated_amount,
         status:           d.status,

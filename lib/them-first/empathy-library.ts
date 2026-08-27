@@ -359,3 +359,55 @@ export function getAllEmpathyResponses(personaId: string): EmpathyResponse[] {
 export function listAllPersonas(): string[] {
   return Object.keys(EMPATHY_RESPONSES)
 }
+
+// ─── CRM-PERSONA BRIDGE (2026-08-27, lane CB — §1.2 the missing consumer) ────
+//
+// This authored library sat behind ONE uncalled HTTP route since it shipped.
+// Its persona ids are their own dialect ("first-time-buyer", "estate-sale"),
+// while the live CRM speaks the contacts/leads `persona` CHECK vocabulary
+// (divorce, downsize, expired, first_time, foreclosure, fsbo, luxury, military,
+// other, probate, relocated, senior, upsize — scripts/check-vocabularies.ts)
+// plus a buyer/seller side from contact_type / lead_type. Two spellings of one
+// idea is a §6 defect; this map is the ONE bridge, so the nurture rail can pull
+// the authored Them-First arc for the persona it is actually writing to.
+//
+// Published blind spot: the library has NO authored content for expired,
+// foreclosure, senior or other — those return null and the caller writes
+// without an exemplar rather than borrowing a wrong persona's script.
+
+const CRM_PERSONA_TO_LIBRARY: Record<string, { buyer?: string; seller?: string; either?: string }> = {
+  first_time: { buyer: "first-time-buyer", seller: "first-time-seller" },
+  military:   { buyer: "military-buyer", seller: "military-seller" },
+  luxury:     { buyer: "luxury-buyer", seller: "luxury-seller" },
+  relocated:  { buyer: "relocation-buyer", seller: "relocation-seller" },
+  downsize:   { either: "downsizing-seller" },
+  upsize:     { either: "upsizing" },
+  probate:    { either: "estate-sale" },
+  divorce:    { either: "divorce" },
+  fsbo:       { either: "fsbo" },
+}
+
+/**
+ * Resolve the authored empathy pain-point exemplars for a live CRM contact.
+ * `persona` is the contacts/leads persona value; `contactType` decides the
+ * buyer/seller variant (contact_type "investor" gets the investor-buyer set).
+ * Returns null when no authored content matches — never a wrong-persona script.
+ */
+export function empathyGuidanceForCrmPersona(
+  persona: string | null | undefined,
+  contactType: string | null | undefined,
+): { libraryPersonaId: string; painPoints: EmpathyResponse[] } | null {
+  const type = (contactType ?? "").toLowerCase()
+  if (type === "investor") {
+    return { libraryPersonaId: "investor-buyer", painPoints: getAllEmpathyResponses("investor-buyer") }
+  }
+  const entry = persona ? CRM_PERSONA_TO_LIBRARY[persona] : undefined
+  if (!entry) return null
+  const side: "buyer" | "seller" = type === "seller" ? "seller" : "buyer"
+  // Prefer the exact side; "both"/unknown falls to buyer first, then seller,
+  // then the side-less entry — never to silence when authored content exists.
+  const id = entry.either ?? entry[side] ?? entry.buyer ?? entry.seller
+  if (!id) return null
+  const painPoints = getAllEmpathyResponses(id)
+  return painPoints.length > 0 ? { libraryPersonaId: id, painPoints } : null
+}

@@ -1,10 +1,24 @@
 // ─── EMPATHY LIBRARY ──────────────────────────────────────────────────────────
+//
+// TOMBSTONE (2026-08-27, §1.3, lane CB) — app/api/them-first/empathy-response/
+// route.ts is DELETED. It was an UNAUTHENTICATED, tenant-less HTTP door and the
+// library's ONLY consumer, itself called by nothing (repo-wide, stripped
+// source; recorded by the prospects_route_family_retired registry entry as the
+// open question of this family). The question is now answered the §1.2 way:
+// the library is WIRED to a real surface — empathyGuidanceForCrmPersona (the
+// CRM-persona bridge in ./empathy-library.ts) feeds the authored Them-First
+// arc into the nurture rail's drip-campaign prompt at
+// app/actions/ai-lead-nurturing.ts (generatePersonalizedCampaign), keyed off
+// the contact's live persona/contact_type. With a wired consumer in place, an
+// uncalled public route serving the same content is a duplicate door, not a
+// capability.
 export type { EmpathyResponse } from "./empathy-library"
 export {
   EMPATHY_RESPONSES,
   getEmpathyResponse,
   getAllEmpathyResponses,
   listAllPersonas,
+  empathyGuidanceForCrmPersona,
 } from "./empathy-library"
 
 // ─── VALIDATOR ────────────────────────────────────────────────────────────────
