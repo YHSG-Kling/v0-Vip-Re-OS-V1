@@ -72,7 +72,7 @@ const STUDIO    = src("app/components/content-studio/LinkToVideoGenerator.tsx")
 const REAPER    = src("lib/video/video-pipeline-reaper-policy.ts")
 // m374 moved the vocabulary itself here; the reaper policy only re-exports it.
 // Imported, not grepped — see the membership checks below for why.
-import { VIDEO_TERMINAL_STATUSES } from "../lib/video/video-status"
+import { VIDEO_TERMINAL_STATUSES, CANONICAL_VIDEO_STATUSES } from "../lib/video/video-status"
 import { stripComments } from "./strip-comments"
 const POLL      = src("app/api/cron/poll-did-videos/route.ts")
 
@@ -187,6 +187,52 @@ console.log("\n── startVideoGeneration actually starts a generation ──")
     /provider_metadata: \{ provider: "did", mode: "talk", talk_id: render\.videoId \}/.test(LINKVIDEO))
   check("…and a refused render marks the project failed so the queue follows",
     /status: "failed", error_message: `Render not started: \$\{reason\}`/.test(LINKVIDEO))
+}
+
+console.log("\n── the THIRD writer stages on the rail that renders (merged 2026-08-27) ──")
+{
+  // generateListingVideo was the last queue writer whose work reached no
+  // renderer: it hand-rolled an ai_video_projects insert WITHOUT `status`
+  // (the live column default 'planning' violates the m374 CHECK, so the insert
+  // failed 23514 on every call — m569 fixes the default), and its queue row
+  // ({project_id, priority, status}) carried no organization_id, so the only
+  // queue reader (getVideoQueue) could never show it. It now commissions
+  // through the Director (photo_walkthrough), whose staged rows
+  // director-reel-render + composition-render-queue actually execute.
+  const LISTING = src("app/actions/listing-video.ts")
+  const LISTING_RAW = existsSync("app/actions/listing-video.ts")
+    ? readFileSync("app/actions/listing-video.ts", "utf8") : ""
+  check("it commissions through the Director rail (photo_walkthrough)",
+    /commissionVideo\(/.test(LISTING) && /['"]photo_walkthrough['"]/.test(LISTING))
+  check("…sharing the walkthrough-premiere idempotency key, so the button and the\n    autonomous play (video-plays.ts) converge on ONE reel per listing",
+    /idempotencyDiscriminator:\s*['"]walkthrough['"]/.test(LISTING))
+  check("the hand-rolled, status-omitting project insert is GONE",
+    !/from\(['"]ai_video_projects['"]\)\s*\.\s*insert\(/.test(LISTING))
+  check("the reader-less queue insert is GONE from live code",
+    !/from\(['"]video_generation_queue['"]\)/.test(LISTING))
+  // Positive control for the two absence claims above: the RAW source still
+  // names both tables in the merge tombstone — proving the stripper (not a
+  // blind regex) is what makes the stripped source clean.
+  check("  control · the RAW source still names video_generation_queue in the\n    tombstone (a tombstone is not a call site — §2)",
+    LISTING_RAW.includes("video_generation_queue"))
+  check("the agents.id → users.id crossing is explicit (disjoint id spaces, §3)",
+    /\.from\(['"]agents['"]\)[\s\S]{0,200}?select\(['"]user_id['"]\)/.test(LISTING))
+}
+
+console.log("\n── m569: the default that refused every status-omitting insert ──")
+{
+  // Verified live 2026-08-27: pg_attrdef says DEFAULT 'planning'::text while
+  // ai_video_projects_status_check admits only the nine canonical values —
+  // 'planning' not among them — so an insert relying on the default was
+  // refused WHOLE (23514). The migration must move the default onto the
+  // canonical value 'planning' retired into, and must not touch rows.
+  const M569 = sql("supabase/migrations/m569-the-status-default-was-a-spelling-the-check-refuses.sql")
+  check("m569 exists and re-defaults ai_video_projects.status",
+    /alter table public\.ai_video_projects\s+alter column status set default 'draft'/.test(M569))
+  check("…to a value the m374 CHECK actually admits",
+    (CANONICAL_VIDEO_STATUSES as readonly string[]).includes("draft"))
+  check("…and performs NO backfill (the CHECK made rows under the bad default impossible)",
+    !/update\s+public\.ai_video_projects/i.test(M569))
 }
 
 console.log("\n── the poll cron can still see what we stamp ──")

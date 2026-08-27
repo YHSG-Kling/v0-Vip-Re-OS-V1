@@ -58,6 +58,7 @@ export function FinancialVerificationPanel({ contactId, brokerageId, agentUserId
   const [preApprovalAmount, setPreApprovalAmount] = useState<string>("")
   const [preApprovalExpiresAt, setPreApprovalExpiresAt] = useState<string>("")
   const [downPaymentPercent, setDownPaymentPercent] = useState<string>("")
+  const [downPaymentAmount, setDownPaymentAmount] = useState<string>("")
   const [agentNotes, setAgentNotes] = useState<string>("")
   const [bypassReason, setBypassReason] = useState<string>("")
 
@@ -87,6 +88,9 @@ export function FinancialVerificationPanel({ contactId, brokerageId, agentUserId
         setPreApprovalExpiresAt(profileResult.profile.pre_approval_expires_at ?? "")
         setDownPaymentPercent(
           profileResult.profile.down_payment_percent != null ? String(profileResult.profile.down_payment_percent) : ""
+        )
+        setDownPaymentAmount(
+          profileResult.profile.down_payment_amount != null ? String(profileResult.profile.down_payment_amount) : ""
         )
         setAgentNotes(profileResult.profile.agent_notes ?? "")
         // Restore previously linked lender
@@ -131,6 +135,7 @@ export function FinancialVerificationPanel({ contactId, brokerageId, agentUserId
         preApprovalLender: selectedLender?.full_name || undefined,
         preApprovalExpiresAt: preApprovalExpiresAt || undefined,
         downPaymentPercent: downPaymentPercent ? Number(downPaymentPercent) : undefined,
+        downPaymentAmount: downPaymentAmount ? Number(downPaymentAmount) : undefined,
       })
       if (result.success) {
         toast.success("Financial profile saved.")
@@ -357,6 +362,21 @@ ${agentName ?? "[Agent Name]"}`
                     value={downPaymentPercent}
                     onChange={(e) => setDownPaymentPercent(e.target.value)}
                     placeholder="20"
+                    className="h-8 mt-1"
+                  />
+                </div>
+                <div>
+                  {/* A pre-approval often states a dollar figure, not a percent.
+                      This was the ONLY missing writer of
+                      buyer_financial_profiles.down_payment_amount — the buyer
+                      closing-cost estimator already read it. */}
+                  <Label className="text-xs">Down payment $</Label>
+                  <Input
+                    type="number"
+                    inputMode="decimal"
+                    value={downPaymentAmount}
+                    onChange={(e) => setDownPaymentAmount(e.target.value)}
+                    placeholder="50000"
                     className="h-8 mt-1"
                   />
                 </div>

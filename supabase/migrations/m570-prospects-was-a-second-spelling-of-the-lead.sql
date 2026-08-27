@@ -1,0 +1,45 @@
+-- m570-prospects-was-a-second-spelling-of-the-lead.sql
+-- ─────────────────────────────────────────────────────────────────────────────
+-- DROP prospects + prospect_context — a parallel mini-CRM nothing ever used.
+--
+-- WRITTEN 2026-08-27, NOT APPLIED (integrator applies; lanes only write).
+-- Apply ONLY after the same-branch code deletions land, and regenerate the
+-- schema caches afterwards (schema-snapshot.ts, schema-fk-map.ts,
+-- live-tables.ts, check-vocabularies.ts — all generated, never hand-edited).
+--
+-- THE EVIDENCE (verified live on hrvaqgvukzxfskkcrwbt, 2026-08-27):
+--   · prospects: 0 rows. prospect_context: 0 rows.
+--   · No trigger on either table (pg_trigger, tgisinternal = false: none).
+--   · No pg_proc body inserts into either table.
+--   · The ONLY code that ever addressed them — four session-gated routes with
+--     ZERO in-tree callers — is deleted in this change set:
+--       app/api/prospects/route.ts
+--       app/api/prospects/[id]/context/route.ts
+--       app/api/generate/text/route.ts   (read prospect_context .single() —
+--       app/api/generate/email/route.ts   a guaranteed PGRST116/500 on the
+--                                         permanently-empty table)
+--     docs/wave20-audit.md had already recorded "saved_calculations,
+--     prospects and prospect_context have no insert call sites at all";
+--     docs/wave27-audit.md ruled prospect_context's "fate follows prospects".
+--   · Registry tombstone: lib/kernel/manager-registry.ts
+--     `prospects_route_family_retired` names every deleted path + survivors.
+--
+-- THE SURVIVOR (§1 + §5): the lead CRM. Leads belong to the BROKERAGE and
+-- carry every field this pair promised —
+--     prospects.name/email/phone/source/metadata → leads (full pipeline)
+--     prospect_context.emotion / pain_point      → leads.motivation_type,
+--                                                  leads.qualification_summary
+--     prospect_context.situation / life_context  → leads.life_events, persona
+--     prospect_context.timeline                  → leads.timeline (the §5
+--                                                  bucket vocabulary)
+--     prospect_context.what_helps                → leads.notes,
+--                                                  leads.isa_handoff_brief
+-- and the outreach the generate routes promised is the live ISA/nurture rail
+-- (speed-to-lead, lead-action-plan, ai-lead-nurturing).
+--
+-- ORDER MATTERS: prospect_context.prospect_id FKs prospects(id) ON DELETE
+-- CASCADE — child first anyway, so neither drop can be blocked by the other.
+-- No backfill: there has never been a row to move.
+
+drop table if exists public.prospect_context;
+drop table if exists public.prospects;

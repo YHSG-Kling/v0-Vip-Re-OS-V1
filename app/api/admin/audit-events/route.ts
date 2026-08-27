@@ -245,9 +245,17 @@ export async function GET(request: NextRequest) {
 
   // 4. commission_distributions (compliance sensitive)
   if (entityType === "all" || entityType === "commission" || complianceOnly) {
+    // `recipient_id` REMOVED from this select (2026-08-27): on
+    // commission_distributions NO writer has ever set that column — the wired
+    // identity spelling on this table is `agent_id` (lib/agents/
+    // referral-closer.ts, lib/application/transactions.ts both write it), and
+    // the polymorphic recipient_id lives on transaction_commissions (see
+    // lib/commission/ledger-sync.ts). This handler also never used the value
+    // it selected. The column itself is now writer-less AND reader-less —
+    // recorded for a future schema retirement pass, not dropped here.
     const { data: distributions } = await supabase
       .from("commission_distributions")
-      .select("id, transaction_id, recipient_id, distribution_type, calculated_amount, created_at")
+      .select("id, transaction_id, distribution_type, calculated_amount, created_at")
       .eq("brokerage_id", brokerageId)
       .gte("created_at", startDate.toISOString())
       .lte("created_at", endDate.toISOString())

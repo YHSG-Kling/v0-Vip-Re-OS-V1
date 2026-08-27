@@ -1003,61 +1003,37 @@ export const supabaseService = {
   // =====================================================
   // SCRIPTS & CONTENT
   // =====================================================
-
-  async getScripts(status?: string) {
-    try {
-      const supabase = getSupabaseAdmin()
-      let query = supabase.from("scripts").select("*")
-
-      if (status) {
-        query = query.eq("status", status)
-      }
-
-      const { data, error } = await query.order("created_at", { ascending: false })
-      if (error) throw error
-
-      return data || []
-    } catch (error) {
-      console.error("[Supabase Service] Error fetching scripts:", error)
-      return []
-    }
-  },
-
-  async createScript(script: any) {
-    try {
-      const supabase = getSupabaseAdmin()
-      const { data, error } = await supabase.from("scripts").insert(script).select().single()
-      if (error) throw error
-      return data
-    } catch (error) {
-      console.error("[Supabase Service] Error creating script:", error)
-      return null
-    }
-  },
-
-  async updateScript(id: string, updates: any) {
-    try {
-      const supabase = getSupabaseAdmin()
-      const { data, error } = await supabase.from("scripts").update(updates).eq("id", id).select().single()
-      if (error) throw error
-      return data
-    } catch (error) {
-      console.error("[Supabase Service] Error updating script:", error)
-      return null
-    }
-  },
-
-  async deleteScript(id: string) {
-    try {
-      const supabase = getSupabaseAdmin()
-      const { error } = await supabase.from("scripts").delete().eq("id", id)
-      if (error) throw error
-      return true
-    } catch (error) {
-      console.error("[Supabase Service] Error deleting script:", error)
-      return false
-    }
-  },
+  //
+  // TOMBSTONE (2026-08-27, §1.3) — the four `scripts`-table methods that stood
+  // here (getScripts / createScript / updateScript / deleteScript) are DELETED,
+  // together with the two session-gated routes that were their only doorway:
+  //
+  //   app/api/scripts/create/route.ts  — sole caller of createScript. Zero
+  //     in-tree callers of the route itself; the capability lives at
+  //     app/actions/workflows.ts:546 (the stamped, error-read insert under the
+  //     m429 RLS INSERT policy). The route also spread the request body
+  //     (`...scriptData`) UNDER the identity stamp, so a body could post
+  //     `status: "approved"` — and app/dashboard/voice/page.tsx:104 reads
+  //     status='approved' scripts for live calling, making that spread a
+  //     self-approval door. The real approval lever is
+  //     app/actions/video-generation.ts:328 updateScriptApprovalStatus.
+  //   app/api/scripts/list/route.ts — zero in-tree callers; it read the table
+  //     on the SERVICE client filtered only by created_by. The session-client
+  //     readers it duplicated are RLS-scoped and wired:
+  //     app/dashboard/videos/create/video-create-client.tsx:370 (own +
+  //     brokerage-shared + platform catalogue picker) and
+  //     app/dashboard/voice/page.tsx:104 (approved scripts).
+  //
+  //   getScripts / updateScript / deleteScript had ZERO callers anywhere —
+  //   tenant-unfiltered service-client access to a tenant table, the same
+  //   hazard class as the video-methods tombstone above. Update/delete on
+  //   `scripts` belong to the RLS policies (scripts_upd / scripts_del pin
+  //   created_by/brokerage) and lib/video/viral-script-share.ts:152 for the
+  //   one governed visibility promotion.
+  //
+  // The `scripts` TABLE ITSELF IS ALIVE and untouched — writers
+  // app/actions/workflows.ts:546 and lib/video/viral-script-share.ts, readers
+  // named above plus app/actions/video/create-video-project.ts:651 (lineage).
 
   async getContentIdeas() {
     try {

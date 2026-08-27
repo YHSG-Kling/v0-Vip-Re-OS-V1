@@ -72,6 +72,12 @@ export async function upsertFinancialProfile(params: {
   preApprovalLetterDocId?: string
   proofOfFundsDocId?: string
   downPaymentPercent?: number
+  /** Dollar down payment stated on the pre-approval. Until 2026-08-27 the
+   *  down_payment_amount COLUMN had readers (app/actions/buyer-closing-costs.ts
+   *  resolves the buyer's loan from it, fourth in its provenance chain) and NO
+   *  writer anywhere — a pre-approval that stated a dollar figure instead of a
+   *  percent could never inform the closing-cost estimate. */
+  downPaymentAmount?: number
   estimatedMonthlyBudget?: number
 }): Promise<{ success: boolean; profileId?: string; error?: string }> {
   const access = await requireContactAccess(params.contactId)
@@ -94,6 +100,7 @@ export async function upsertFinancialProfile(params: {
         pre_approval_letter_doc_id:   params.preApprovalLetterDocId ?? null,
         proof_of_funds_doc_id:        params.proofOfFundsDocId ?? null,
         down_payment_percent:         params.downPaymentPercent ?? null,
+        down_payment_amount:          params.downPaymentAmount ?? null,
         estimated_monthly_budget:     params.estimatedMonthlyBudget ?? null,
         updated_at:                   new Date().toISOString(),
       },

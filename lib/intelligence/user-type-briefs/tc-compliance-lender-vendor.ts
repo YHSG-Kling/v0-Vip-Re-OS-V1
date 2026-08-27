@@ -45,6 +45,12 @@ export async function generateComplianceBrief(params: {
     supabase
       .from("compliance_checks")
       .select("id", { count: "exact", head: true })
+      // TENANT-SCOPED (2026-08-27): this count had NO brokerage filter at all,
+      // so on the service client it counted every tenant's open checks into
+      // this brokerage's brief. The `.is.null` arm stays only for legacy rows
+      // written before app/actions/documents.ts stamped the brokerage_id
+      // column (it used to live only inside the findings jsonb).
+      .or(`brokerage_id.eq.${params.brokerageId},brokerage_id.is.null`)
       .in("status", ["pending", "needs_review"]),
   ])
 

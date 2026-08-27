@@ -141,37 +141,30 @@ function main() {
       fit.wordCount <= introBudget.maxWords && fit.overran && fit.note.length > 0)
   }
 
-  // ── 2. app/actions/listing-video.ts — budget from the ONE duration table ──
-  console.log("\n[2 — app/actions/listing-video.ts (listing slideshow narration)]")
+  // ── 2. app/actions/listing-video.ts — the narration lane is MERGED AWAY ───
+  // 2026-08-27: generateListingVideo no longer authors narration AT ALL. Its
+  // bespoke assembler (AI photo selection + narration + a queue row nothing
+  // read) was merged onto the Director rail (§1.1 — survivor
+  // lib/video/video-director.ts commissionVideo, kind 'photo_walkthrough');
+  // this guard's earlier finding here ("budget derives from the ONE duration
+  // table") described a prompt whose output was written to a project row no
+  // renderer ever picked up. The rule this section now holds: the file stages
+  // through the Director and does not grow a narration ask back — and if one
+  // ever returns, RAW_RANGE + the derived-directive finders above will judge
+  // it like every other lane.
+  console.log("\n[2 — app/actions/listing-video.ts (merged onto the Director rail)]")
   const listingRaw = read("app/actions/listing-video.ts")
   const listing = stripComments(listingRaw)
   check("no hand-typed word range survives in live code", !RAW_RANGE.test(listing))
   check("…while the RAW source keeps the retired map legible as the record",
     listingRaw.includes("150-180 words (2 min narration)"))
-  check("the budget derives from the ONE duration table (getDurationForType)",
-    /narrationBudget\(`listing_video:\$\{videoType\}`,\s*getDurationForType\(videoType\)\)/.test(listing))
-  check("the prompt asks the ONE directive",
-    /\$\{narrationLengthDirective\(narrBudget\)\}/.test(listing))
-  check("the token ceiling is derived from the same budget",
-    /maxTokens:\s*narrationMaxTokens\(narrBudget\)/.test(listing))
-  check("the returned narration is FITTED, and the trim is reported",
-    /fitNarrationToBudget\(text\.trim\(\),\s*narrBudget\)/.test(listing) && /fit\.note/.test(listing))
-  check("the duration duplicate is gone — videoSpecs no longer declares its own\n    `duration:` beside getDurationForType (§6)",
-    !/duration:\s*\d+\s*,/.test(listing.replace(/durations|duration_seconds/g, "")))
-  // The arithmetic, derived from the file's own table — parsed, not retyped.
-  {
-    const tableMatch = /function getDurationForType[\s\S]*?\{([\s\S]*?)\}\s*return/.exec(listing)
-    const table = tableMatch?.[1] ?? ""
-    const entries = [...table.matchAll(/(\w+):\s*(\d+)\s*,/g)].map((m) => [m[1], Number(m[2])] as const)
-    check("the duration table parses (denominator for the derivation below)",
-      entries.length >= 5, `parsed ${entries.length}`)
-    for (const [type, secs] of entries) {
-      const b = narrationBudget(`listing_video:${type}`, secs)
-      console.log(`   ${type.padEnd(16)} ${String(secs).padStart(4)}s declared → ${String(b.maxWords).padStart(3)} words (directive: "AT MOST ${b.maxWords} words")`)
-      check(`  ${type} — budget derived, positive, and quoted by its directive`,
-        b.maxWords > 0 && narrationLengthDirective(b).includes(`AT MOST ${b.maxWords} words`))
-    }
-  }
+  check("the file stages through the Director's commissionVideo (photo_walkthrough)",
+    /commissionVideo\(/.test(listing) && /['"]photo_walkthrough['"]/.test(listing))
+  check("no narration is authored here any more — no model call remains",
+    !/generateText\(/.test(listing) && !/generateAIResponse\(/.test(listing)
+    && !/maxTokens/.test(listing))
+  check("…and no private duration table came back (the geometry lives in\n    lib/remotion/composition-geometry.ts, §6)",
+    !/getDurationForType/.test(listing))
 
   // ── 3. app/actions/video-generation.ts — tier words derive from tier seconds ─
   console.log("\n[3 — app/actions/video-generation.ts (1:1 contact messages, pure D-ID)]")
@@ -273,9 +266,11 @@ function main() {
   console.log("   · Single-digit on-screen copy rules (explainer eyebrow/title/bullets/cta,")
   console.log("     newsletter's editorial '25-35 word' target under its enforced cap) are")
   console.log("     layout/editorial constraints, deliberately outside RAW_RANGE's reach.")
-  console.log("   · listing-video.ts / video-generation.ts asks are derived from DECLARED")
-  console.log("     durations, not Remotion frame caps — those lanes have no composition to")
-  console.log("     derive from; reachability of the listing-video queue is unresolved.")
+  console.log("   · video-generation.ts asks are derived from DECLARED durations, not")
+  console.log("     Remotion frame caps — that lane is pure D-ID with no composition to")
+  console.log("     derive from. listing-video.ts's queue reachability question is RESOLVED")
+  console.log("     (2026-08-27): its narration lane never reached a renderer and was merged")
+  console.log("     onto commissionVideo — section 2 now asserts the merged state.")
   if (failed > 0) {
     console.log(" ✗ Failures:")
     for (const f of failures) console.log(`   - ${f}`)

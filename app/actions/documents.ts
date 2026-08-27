@@ -615,6 +615,16 @@ Set overallStatus to "blocking_issues" only if missing signatures would invalida
           .insert({
             check_type: "signature_completeness",
             status: scan.overallStatus,
+            // The TENANT goes on the COLUMN, not only inside the findings jsonb.
+            // Until 2026-08-27 this insert wrote brokerage_id only inside
+            // `findings`, so the column was NULL on every row — and the
+            // compliance-officer brief (lib/intelligence/user-type-briefs/
+            // tc-compliance-lender-vendor.ts) filters
+            // `.or(brokerage_id.eq.<tenant>, brokerage_id.is.null)`, which made
+            // EVERY tenant's scans count into every brokerage's brief. The
+            // findings copy stays as payload provenance; the column is the
+            // filterable fact.
+            brokerage_id: docRecord?.brokerage_id ?? null,
             findings: {
               ...scan,
               document_id: documentId,

@@ -328,16 +328,37 @@ console.log("\n[5. THEM FIRST — four readings of one ratio, collapsed onto one
   // The duplicates are gone from BOTH app/actions files. String-masked: each
   // file's tombstone names the deleted function, and a tombstone is not a
   // declaration.
+  //
+  // 2026-08-27: listing-video.ts no longer CALLS the survivor either — its
+  // narration step (the only caller in that file) was merged onto
+  // commissionVideo (lib/video/video-director.ts), whose hook copy is gated by
+  // runWithComplianceRedraft + evaluateOutbound. The file authors no script,
+  // so there is nothing for evaluateThemFirstFocus to judge there; the
+  // "calls the survivor" assertion now applies only to the file that still
+  // authors content. The no-resurrection check stays on BOTH files.
   for (const f of ["app/actions/ai-content-generation.tsx", "app/actions/listing-video.ts"]) {
     const masked = tokens(f)
     t(`${f}: no local validateThemFirstContent declaration survives`,
       !/(?:export\s+)?async function validateThemFirstContent\(/.test(masked))
+  }
+  {
+    const f = "app/actions/ai-content-generation.tsx"
+    const masked = tokens(f)
     t(`${f}: it calls the survivor instead`, /evaluateThemFirstFocus\(/.test(masked))
     // Comment-stripped but NOT string-masked: an import specifier IS a string,
     // so blankStrings would blank the very thing being asserted. Pinned to an
     // `import … from` statement so a path mentioned in a tombstone cannot pass.
     t(`${f}: and imports it from the survivor module`,
       /import\s*\{[^}]*evaluateThemFirstFocus[^}]*\}\s*from\s*['"]@\/lib\/compliance-rules\/rule-evaluators['"]/.test(code(f)))
+  }
+  {
+    // listing-video authors no content any more — it must stage through the
+    // Director (whose gate is the kernel rule array), not regrow its own pass.
+    const masked = tokens("app/actions/listing-video.ts")
+    t("app/actions/listing-video.ts: stages through commissionVideo (the gated rail)",
+      /commissionVideo\(/.test(masked))
+    t("app/actions/listing-video.ts: authors no script for a private gate to miss",
+      !/generateText\(/.test(masked) && !/generateAIResponse\(/.test(masked))
   }
   // The RICHER instrument is a different tool and must NOT have been collapsed in.
   t("lib/them-first/validator.ts::validateThemFirstContent is UNTOUCHED (AI structural analysis is a different tool)",

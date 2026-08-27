@@ -360,6 +360,114 @@ export async function acceptVendorInviteAction(
     updated_at:   new Date().toISOString(),
   })
 
+  // ── THE VENDOR'S GLOBAL PLATFORM IDENTITY — the writer that never existed ──
+  // (§1.2, built 2026-08-27.) vendor_marketplace_profiles is the table the
+  // ENTIRE vendor platform rail keys on: requireVendorProfile in
+  // app/actions/vendor-billing.ts (Stripe checkout), the /vendor/* pages,
+  // app/api/webhooks/stripe/vendor (subscription events), vendor-service-areas,
+  // and lib/vendors/vendor-platform-identity.ts (m549's one-charge-per-company
+  // rule). Verified live 2026-08-27: the table held 0 rows, NO code path,
+  // migration, or trigger ever inserted one (the only trigger touches
+  // updated_at) — so every one of those surfaces dead-ended at "No vendor
+  // marketplace profile for this account", and the identity module could only
+  // ever fall through its fallbacks to null. This acceptance is the one moment
+  // the platform holds BOTH halves — the vendor company (invitation.vendor_id)
+  // and the human login (user.id) — so the identity is established here.
+  //
+  // Failure here is LOGGED AND NON-FATAL: the portal seat (users +
+  // user_role_assignments above) is the invitation's contract; the platform
+  // identity is retried implicitly the next time this company invites a seat.
+  try {
+    const { data: vendorRow, error: vendorReadErr } = await svc
+      .from("vendors")
+      .select("id, name, email, platform_vendor_id")
+      .eq("id", invitation.vendor_id)
+      .maybeSingle()
+    if (vendorReadErr) throw new Error(`vendor read refused: ${vendorReadErr.message}`)
+
+    // 1. This login may already carry a profile (a vendor accepting a second
+    //    brokerage's bench invite from the same email).
+    let profileId: string | null = null
+    const { data: byUser, error: byUserErr } = await svc
+      .from("vendor_marketplace_profiles")
+      .select("id")
+      .eq("user_id", user.id)
+      .limit(1)
+      .maybeSingle()
+    if (byUserErr) throw new Error(`profile read refused: ${byUserErr.message}`)
+    profileId = (byUser as { id: string } | null)?.id ?? null
+
+    // 2. Else the COMPANY may already hold one under a different login —
+    //    UNIQUE(company_name) is the table's global company key, and m549's
+    //    ruling is one platform identity per company, never a second. `.eq`
+    //    mirrors that constraint's exact-match semantics on purpose.
+    const companyName = ((vendorRow as { name?: string | null } | null)?.name ?? "").trim()
+    if (!profileId && companyName) {
+      const { data: byCompany, error: byCompanyErr } = await svc
+        .from("vendor_marketplace_profiles")
+        .select("id")
+        .eq("company_name", companyName)
+        .limit(1)
+        .maybeSingle()
+      if (byCompanyErr) throw new Error(`profile company read refused: ${byCompanyErr.message}`)
+      profileId = (byCompany as { id: string } | null)?.id ?? null
+    }
+
+    // 3. Else create it — with EXPLICIT money-facing values, never the column
+    //    defaults. The live defaults are subscription_tier 'basic' AND
+    //    subscription_status 'active', and 'active' is in
+    //    PLATFORM_USE_PAYING_STATUSES (lib/vendors/vendor-platform-identity.ts)
+    //    — a defaulted row would read as a vendor already PAYING the platform,
+    //    which both exempts its brokerages from platform-use charges they owe
+    //    (m549 gate) and misstates the vendor's own billing. 'canceled' is the
+    //    one non-paying token in the SubscriptionStatus vocabulary
+    //    (lib/kernel/vendor-subscription.ts) and collapses to basic
+    //    capabilities until the vendor actually checks out through
+    //    createVendorSubscriptionCheckout.
+    if (!profileId && companyName) {
+      const { data: created, error: createErr } = await svc
+        .from("vendor_marketplace_profiles")
+        .insert({
+          user_id:             user.id,
+          company_name:        companyName,
+          category:            "service", // bench trades are services (CHECK: api|service|tool|integration)
+          support_email:       ((vendorRow as { email?: string | null } | null)?.email ?? user.email).toLowerCase(),
+          subscription_tier:   "basic",
+          subscription_status: "canceled",
+          status:              "pending",
+        })
+        .select("id")
+        .single()
+      if (createErr) throw new Error(`profile insert refused: ${createErr.message}`)
+      profileId = (created as { id: string }).id
+    }
+
+    // 4. Stamp the canonical link vendors.platform_vendor_id → profile (m549's
+    //    Fallback-0), so the identity module stops needing its portal-grant and
+    //    email fallbacks for this vendor. First-writer-wins: never overwrite an
+    //    existing link. The update is COUNTED (§3 — a matched-nothing UPDATE
+    //    resolves identically to one that worked).
+    if (profileId && vendorRow && !(vendorRow as { platform_vendor_id?: string | null }).platform_vendor_id) {
+      const { data: linked, error: linkErr } = await svc
+        .from("vendors")
+        .update({ platform_vendor_id: profileId, updated_at: new Date().toISOString() })
+        .eq("id", invitation.vendor_id)
+        .is("platform_vendor_id", null)
+        .select("id")
+      if (linkErr) {
+        console.error(`[acceptVendorInvite] platform_vendor_id link refused for vendor ${invitation.vendor_id}: ${linkErr.message}`)
+      } else if (!linked || linked.length === 0) {
+        // A concurrent acceptance linked it first — fine, the link exists.
+        console.warn(`[acceptVendorInvite] vendor ${invitation.vendor_id} was linked concurrently; kept the first link`)
+      }
+    }
+    if (!companyName && !profileId) {
+      console.error(`[acceptVendorInvite] vendor ${invitation.vendor_id} has no company name — platform identity NOT established`)
+    }
+  } catch (e) {
+    console.error(`[acceptVendorInvite] platform identity not established for vendor ${invitation.vendor_id}:`, (e as Error).message)
+  }
+
   // Mark invitation accepted
   await svc.from("vendor_invitations").update({
     status:      "accepted",
