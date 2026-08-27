@@ -33,7 +33,6 @@
     "app/actions/privacy/data-subject-requests.ts": 1,
     "app/actions/property-buyer-matching.ts": 1,
     "app/actions/reputation-kernel.ts": 3,
-    "app/actions/settings/revenue-share-setting.ts": 1,
     "app/actions/smart-insights.ts": 1,
     "app/actions/social/generate-social-post.ts": 1,
     "app/actions/social-media-automation.ts": 1,
@@ -574,7 +573,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9384,
+  "census": 9383,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -1005,7 +1004,7 @@
     "app/actions/settings/provider-settings-actions.ts": 3,
     "app/actions/settings/public-site-links.ts": 1,
     "app/actions/settings/reputation-preferences.ts": 2,
-    "app/actions/settings/revenue-share-setting.ts": 4,
+    "app/actions/settings/revenue-share-setting.ts": 3,
     "app/actions/settings/showing-financial-gate-setting.ts": 2,
     "app/actions/settings/territories.ts": 4,
     "app/actions/settings/update-email-template.ts": 1,
@@ -7160,7 +7159,6 @@
       "saveReputationPreferences"
     ],
     "app/actions/settings/revenue-share-setting.ts": [
-      "getRevenueShareSetting",
       "setRevenueShareEnabled",
       "getBenefitOfferings",
       "setBenefitOffering"
@@ -21120,5 +21118,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 1
+  "trulyDead": 0
 }
