@@ -165,10 +165,24 @@ async function main() {
     //     military) are also PROTECTED_CLASS_TOKENS — so the seam needs a named owner.
     //     NON-deliberative: the owner ruled both halves, so there is nothing to argue,
     //     and no REFERRAL_EMITTERS raiser exists for it.
-    && Object.keys(MANAGER_COLLABORATIONS).length === 19
+    // 19 → 20. NAMED, per the rule above — bumping the number without naming
+    // the edge is how the tripwire gets turned off:
+    //
+    //   benefit_offerings                 recruiting_manager + finance_manager + compliance_officer
+    //     OWNER RULING (2026-08-27): brokerages mark residual income / medical /
+    //     retirement in settings. The marks are written by the finance-gated
+    //     settings home, READ by recruiting surfaces (pitch kit, careers page,
+    //     retention lever), and WORDED under compliance's offered-never-promised
+    //     rule — a mark flipped on the finance side silently changes what
+    //     recruiting advertises, which is exactly the seam that must be declared.
+    //     NON-deliberative: the broker declares, finance gates, compliance words —
+    //     a settled handoff chain with no live raiser that could stage an argument.
+    && Object.keys(MANAGER_COLLABORATIONS).length === 20
     && !isDeliberativeDomain("tenant_principal_books")
     && !isDeliberativeDomain("seller_signal_education_routing")
     && !isDeliberativeDomain("ad_audience_basis")
+    && !isDeliberativeDomain("benefit_offerings")
+    && JSON.stringify(MANAGER_COLLABORATIONS.benefit_offerings.managers.slice().sort()) === JSON.stringify(["compliance_officer", "finance_manager", "recruiting_manager"])
     && JSON.stringify(MANAGER_COLLABORATIONS.ad_audience_basis.managers.slice().sort()) === JSON.stringify(["ads_manager", "compliance_officer"]))
   check("every deliberative domain's evidence names its LIVE RAISER (no aspirational edges)",
     deliberativeDomains().every((d) => /raiser|sweep|hook|assignVendorToTransaction|publish/i.test(d.evidence)))
