@@ -38,6 +38,7 @@ import {
   commissionAdjustmentReasonLabel,
   isCommissionAdjustmentReason,
 } from "@/lib/commission/adjustment-vocabulary"
+import { resolveTotalCommissionRate } from "@/lib/commission/agreement-total-rate"
 
 // ============================================================================
 // DOMAIN 1: Seller Decision & Commitment
@@ -550,6 +551,18 @@ export async function markAgreementSigned(params: {
   commissionTerms?: {
     listingRate?: number
     buyerRate?: number
+    /**
+     * `listing_agreements.total_commission_rate` — the TOTAL commission percent
+     * as it appears on the executed agreement. Owner ruling (2026-08-27):
+     * "listing agreement total commission rate is part of the agreement which is
+     * a state form and/or seller agreement" — so it is captured at intake, not
+     * inferred later. Rules (one vocabulary with the seven readers, see
+     * lib/commission/agreement-total-rate.ts): PERCENT values (3 = 3%);
+     * total-only agreements are legal (total set, splits blank); when both
+     * splits are entered the total must equal their sum and is DERIVED as that
+     * sum when left blank; blank everywhere writes NULL, never 0.
+     */
+    totalRate?: number
     isFlatFee?: boolean
     flatAmount?: number
     /**
@@ -790,6 +803,20 @@ export async function markAgreementSigned(params: {
   const sellerTransactionFee =
     rawFee === undefined || rawFee === null ? null : Number(rawFee)
 
+  // THE AGREEMENT'S TOTAL — validated/derived BEFORE the write (owner ruling
+  // 2026-08-27: the total commission rate is part of the state form / seller
+  // agreement). resolveAgreedCommission gives a written total precedence over
+  // the split sum, so a total that disagrees with the splits must be refused
+  // here rather than written and left to silently win downstream.
+  const totalRateResolution = resolveTotalCommissionRate({
+    listingRate: commissionTerms?.listingRate ?? null,
+    buyerRate: commissionTerms?.buyerRate ?? null,
+    totalRate: commissionTerms?.totalRate ?? null,
+  })
+  if (!totalRateResolution.ok) {
+    return { success: false, error: totalRateResolution.error }
+  }
+
   const { data: agreement, error: agreementError } = await supabase
     .from("listing_agreements")
     .insert({
@@ -825,6 +852,10 @@ export async function markAgreementSigned(params: {
       fully_executed_at:           new Date().toISOString(),
       listing_commission_rate:     commissionTerms?.listingRate ?? null,
       buyer_commission_rate:       commissionTerms?.buyerRate ?? null,
+      // Entered on the form, or derived as listing + buyer when both sides were
+      // entered and the total line was left blank; NULL when nothing was
+      // recorded. See resolveTotalCommissionRate for the refusal rules.
+      total_commission_rate:       totalRateResolution.total,
       commission_is_flat_fee:      commissionTerms?.isFlatFee ?? false,
       commission_flat_amount:      commissionTerms?.flatAmount ?? null,
       // NULL, never 0, when none was agreed — see the doc on the parameter. The

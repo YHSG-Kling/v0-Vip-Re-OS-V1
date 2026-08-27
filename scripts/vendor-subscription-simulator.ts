@@ -24,6 +24,7 @@ import {
   resolveTierPrice,
   resolveVendorTiers,
 } from "../lib/kernel/vendor-subscription"
+import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -101,6 +102,53 @@ function sourceLayer() {
   check("package.json wires the proof", /"test:vendor-subscription":\s*"tsx scripts\/vendor-subscription-simulator\.ts"/.test(src("package.json")))
 }
 
+// ── NO DEFAULTS ON THE MARKETPLACE (owner ruling 2026-08-27, verbatim: "the
+// vendor marketplace should not have any default"). The live defaults included
+// subscription_status 'active' — in PLATFORM_USE_PAYING_STATUSES, so a
+// defaulted row was born already paying the platform — and tier 'basic'.
+// m571 drops every business-value default; the covered column list is DERIVED
+// from the schema snapshot cache (§2: assert the rule, derive the number),
+// never retyped here.
+
+/** Bookkeeping columns whose defaults the ruling deliberately keeps. */
+const NO_DEFAULT_ALLOWLIST = new Set(["id", "created_at", "updated_at"])
+
+/** Columns the migration must DROP DEFAULT on that it does not. PURE for the mutation control. */
+function missingDropDefaults(migrationSql: string, snapshotColumns: string[]): string[] {
+  return snapshotColumns
+    .filter((c) => !NO_DEFAULT_ALLOWLIST.has(c))
+    .filter((c) => !new RegExp(`alter\\s+column\\s+${c}\\s+drop\\s+default`, "i").test(migrationSql))
+}
+
+function noDefaultLayer() {
+  console.log("\n[no defaults — m571 covers every business column, derived from the snapshot]")
+  const MIGRATION = "supabase/migrations/m571-the-vendor-marketplace-should-not-have-any-default.sql"
+  const cols = SCHEMA_SNAPSHOT.vendor_marketplace_profiles ?? []
+  check("the snapshot cache knows the table (denominator exists)", cols.length > 0)
+  const sql = src(MIGRATION)
+  const missing = missingDropDefaults(sql, cols)
+  check(`m571 drops the default on all ${cols.length - NO_DEFAULT_ALLOWLIST.size} business columns (snapshot-derived; id/timestamps kept)`,
+    missing.length === 0)
+  if (missing.length) console.log("    missing:", missing.join(", "))
+  check("m571 self-checks the RULE in the database (derives offenders from information_schema, allowlist only id/timestamps)",
+    /information_schema\.columns/.test(sql) && /not in \('id', 'created_at', 'updated_at'\)/.test(sql))
+  check("MUTATION CONTROL — the coverage checker flags a migration missing one column",
+    missingDropDefaults(sql.replace(/alter column subscription_status\s+drop default,?/i, ""), cols)
+      .includes("subscription_status"))
+
+  // Every writer now provides the de-defaulted NOT NULL values EXPLICITLY —
+  // fail-closed means a value-less insert REFUSES, so legitimate flows must say
+  // what they mean. Stripped-scan (2026-08-27) found exactly two inserts.
+  const invite = src("app/actions/vendor-invite.ts")
+  check("the ONE app insert (vendor-invite) sets subscription_tier + subscription_status + status explicitly",
+    /subscription_tier:\s*"basic"/.test(invite) &&
+    /subscription_status:\s*"canceled"/.test(invite) &&
+    /status:\s*"pending"/.test(invite))
+  const self = src("scripts/vendor-subscription-simulator.ts")
+  check("this simulator's own live insert sets tier + subscription_status + status explicitly",
+    /subscription_tier:\s*"premium",\s*subscription_status:\s*"active"/.test(self) && /status:\s*"approved"/.test(self))
+}
+
 async function liveLayer() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY
@@ -132,11 +180,40 @@ async function liveLayer() {
     for (const c of cleanup) { const { count } = await svc.from(c.table).select("id", { count: "exact", head: true }).eq("id", c.id); left += count ?? 0 }
     check("live: cleanup count == 0", left === 0)
   }
+
+  // ── NO-DEFAULT FAIL-CLOSED PROBE. An insert omitting subscription_status /
+  // subscription_tier must REFUSE once m571 is applied (NOT NULL, no default).
+  // Files are not the database (§3): until the integrator applies m571 this
+  // probe reports PENDING rather than passing or failing — and while pending it
+  // proves the finder can still SEE defaults (the positive control §2 demands).
+  console.log("\n[live] no-default probe — an insert that omits tier/status must refuse (post-m571)")
+  {
+    const { data: usr2 } = await svc.from("users").select("id").limit(1).maybeSingle()
+    if (!usr2) { console.log("  ⊘ no user — skipping probe"); return }
+    const { data: bare, error: bareErr } = await svc.from("vendor_marketplace_profiles").insert({
+      user_id: (usr2 as any).id, company_name: "ZZ No-Default Probe Vendor", category: "service",
+      // subscription_tier / subscription_status / status DELIBERATELY omitted.
+    }).select("id, subscription_tier, subscription_status, status").single()
+    if (bareErr && !bare) {
+      check("live: value-less insert REFUSES (m571 applied — fail closed, nothing defaulted)",
+        /null value|not-null|violates/i.test(bareErr.message))
+      console.log(`    refusal: ${bareErr.message}`)
+    } else if (bare) {
+      const b = bare as any
+      console.log("  ⊘ PENDING — m571 is WRITTEN, NOT APPLIED: the insert still succeeded via column defaults")
+      check("live: (positive control while pending) the probe still SEES the defaults it exists to remove",
+        b.subscription_status === "active" && b.subscription_tier === "basic" && b.status === "pending")
+      await svc.from("vendor_marketplace_profiles").delete().eq("id", b.id)
+      const { count } = await svc.from("vendor_marketplace_profiles").select("id", { count: "exact", head: true }).eq("id", b.id)
+      check("live: probe cleanup count == 0", (count ?? 0) === 0)
+    }
+  }
 }
 
 async function main() {
   pureLayer()
   sourceLayer()
+  noDefaultLayer()
   await liveLayer()
   console.log("\n──────────────────────────────────────────────────")
   if (fails.length) { console.log("FAILURES:"); fails.forEach((f) => console.log("  - " + f)) }

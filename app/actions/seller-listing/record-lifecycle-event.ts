@@ -136,6 +136,10 @@ export async function recordLifecycleEventAction(input: {
         commissionTerms: {
           listingRate: num("listingRate"),
           buyerRate: num("buyerRate"),
+          // The state-form / seller-agreement TOTAL (owner ruling 2026-08-27).
+          // Blank passes undefined, so the recorder derives it from the sides
+          // (or writes NULL) — see resolveTotalCommissionRate.
+          totalRate: num("totalRate"),
           sellerTransactionFee: num("sellerTransactionFee"),
         },
       })

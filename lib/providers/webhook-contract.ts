@@ -348,7 +348,15 @@ export const WEBHOOK_CONTRACT: WebhookContractEntry[] = [
     protocolVersion: "Stripe webhook signature v1 (t=…,v1=… HMAC-SHA256)",
     consoleField: "Stripe Dashboard → Developers → Webhooks → endpoint URL (vendor_marketplace endpoint)",
     failureVisibility: "Stripe dashboard retries + the stripe-drift cron cross-checks",
-    notes: "Per-endpoint signing secret resolved by verifyStripeWebhook, not a single env var.",
+    notes:
+      "Per-endpoint signing secret resolved by verifyStripeWebhook, not a single env var. " +
+      "Event kinds handled (researched 2026-08-27 against stripe@20.4.1 / apiVersion 2026-02-25.clover): " +
+      "subscription lifecycle — customer.subscription.created/updated/deleted, invoice.payment_succeeded/payment_failed " +
+      "(platform-signed ONLY: the vendor pays the PLATFORM); payout completion — transfer.created/transfer.reversed " +
+      "(the Transfer initiateVendorPayout creates on the BROKERAGE's account; tenant-signed deliveries are scoped to the " +
+      "signing tenant's own vendor_payouts rows) and payout.paid/payout.failed (po_… ids on vendor_payouts.stripe_payout_id). " +
+      "There is NO transfer.paid/transfer.failed in current Stripe API versions — completion IS transfer.created, " +
+      "failure IS transfer.reversed. Proof: test:vendor-payout-completion.",
   },
 
   // ── Ops / content providers ────────────────────────────────────────────────

@@ -133,6 +133,21 @@ export const RECORDABLE_EVENTS: Record<RecordableAction, RecordableEvent> = {
       { key: "providerRef", label: "Provider reference", type: "text", required: false, help: "For provider_pull — the envelope / loop id." },
       { key: "listingRate", label: "Listing side commission %", type: "number", required: false },
       { key: "buyerRate", label: "Buyer side commission %", type: "number", required: false },
+      // Owner ruling (2026-08-27): "listing agreement total commission rate is
+      // part of the agreement which is a state form and/or seller agreement" —
+      // so the total is captured HERE, where the agreement's terms are filed.
+      // OPTIONAL on purpose, in the shape the seven total_commission_rate
+      // readers already speak (lib/commission/agreement-total-rate.ts): a
+      // total-only agreement is entered with the side lines blank; when both
+      // sides are entered the total is derived as their sum, and an entered
+      // total that disagrees with the sides is REFUSED by the recorder.
+      {
+        key: "totalRate",
+        label: "Total commission % (per the agreement)",
+        type: "number",
+        required: false,
+        help: "The agreement's total line. Leave blank when you entered both sides — it is derived as their sum. Enter it alone for a total-only agreement.",
+      },
       {
         key: "sellerTransactionFee",
         label: "Seller transaction fee ($)",
