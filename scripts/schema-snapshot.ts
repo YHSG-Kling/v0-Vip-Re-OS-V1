@@ -17,7 +17,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-08-27
  * source: public.live_schema_json()
- * body-sha256: 75de20c282f32af9c663b54b8aeecae47c2f4a5514e4a20f40e49d15c1260a08
+ * body-sha256: 5cd16d34cc994576bdf988d7f0e4cfa94d0a6e0b0ee500aa881071ebaac92997
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -204,7 +204,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   collaborative_searches: ["brokerage_id", "contact_id", "created_at", "created_by_contact_id", "description", "id", "name", "search_criteria", "status", "updated_at"],
   commission_adjustments: ["adjustment_type", "applies_to", "approved_by_agent_id", "brokerage_id", "created_at", "created_by_agent_id", "direction", "effective_date", "id", "is_active", "notes", "recipient_name", "recipient_type", "transaction_id", "updated_at", "value", "value_type"],
   commission_calculations: ["agent_id", "breakdown_json", "brokerage_id", "calculated_at", "calculation_details_json", "calculation_version", "engine_inputs", "id", "total_commission", "transaction_id"],
-  commission_distributions: ["accounting_export_id", "agent_id", "brokerage_id", "calculated_amount", "calculation_type", "calculation_value", "calculation_version", "cap_applied", "cap_status", "commission_id", "created_at", "distribution_type", "id", "paid_at", "recipient_id", "rule_id", "source_of_funds", "status", "team_id", "transaction_id", "voided_at", "voided_reason"],
+  commission_distributions: ["accounting_export_id", "agent_id", "brokerage_id", "calculated_amount", "calculation_type", "calculation_value", "calculation_version", "cap_applied", "cap_status", "commission_id", "created_at", "distribution_type", "id", "paid_at", "rule_id", "source_of_funds", "status", "team_id", "transaction_id", "voided_at", "voided_reason"],
   commission_splits: ["agent_amount", "agent_id", "brokerage_amount", "brokerage_id", "commission_id", "created_at", "id", "location_id", "metadata", "paid_at", "status", "transaction_id", "updated_at"],
   commission_structures: ["base_amount", "base_percentage", "brokerage_id", "commission_type", "created_at", "description", "id", "is_active", "is_default", "name", "tier_rules", "updated_at"],
   communication_audit_log: ["agent_id", "body_snippet", "brokerage_id", "channel", "communication_type", "compliance_passed", "contact_id", "created_at", "id", "lead_id", "lead_temperature", "sent_at", "subject", "user_id", "was_approved_content"],

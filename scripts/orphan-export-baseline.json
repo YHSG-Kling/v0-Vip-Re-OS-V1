@@ -572,7 +572,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9375,
+  "census": 9368,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -1410,10 +1410,8 @@
     "app/api/forms/provider-library/route.ts": 1,
     "app/api/forms/submit/route.ts": 1,
     "app/api/forms/templates/route.ts": 1,
-    "app/api/generate/email/route.ts": 1,
     "app/api/generate/newsletter/route.ts": 1,
     "app/api/generate/social/route.ts": 1,
-    "app/api/generate/text/route.ts": 1,
     "app/api/integrations/oauth/[provider]/route.ts": 1,
     "app/api/integrations/test/[provider]/route.ts": 1,
     "app/api/intelligence/classify/route.ts": 1,
@@ -1436,7 +1434,6 @@
     "app/api/leads/process-pipeline/route.ts": 1,
     "app/api/leads/raw/route.ts": 2,
     "app/api/leads/route.ts": 1,
-    "app/api/listings/[listingId]/appraisal-defense/route.ts": 1,
     "app/api/listings/[listingId]/upload-document/route.ts": 1,
     "app/api/listings/create/route.ts": 1,
     "app/api/listings/mls-check/route.ts": 1,
@@ -1468,8 +1465,6 @@
     "app/api/portal/messages/[contactId]/route.ts": 1,
     "app/api/portal/messages/send/route.ts": 1,
     "app/api/property-alerts/run/route.ts": 2,
-    "app/api/prospects/[id]/context/route.ts": 2,
-    "app/api/prospects/route.ts": 2,
     "app/api/providers/inbound/route.ts": 1,
     "app/api/qr/scan/route.ts": 1,
     "app/api/qr/submit/route.ts": 1,
@@ -1477,8 +1472,6 @@
     "app/api/recruiting/provision-agent/route.ts": 1,
     "app/api/ref/route.ts": 1,
     "app/api/referrals/thank-you-draft/route.ts": 1,
-    "app/api/scripts/create/route.ts": 1,
-    "app/api/scripts/list/route.ts": 1,
     "app/api/search/buyer-smart-search/route.ts": 1,
     "app/api/seed/users/route.ts": 1,
     "app/api/showings/feedback/[token]/route.ts": 1,
@@ -1495,7 +1488,6 @@
     "app/api/twiml/whisper-bridge/route.ts": 2,
     "app/api/unsubscribe/route.ts": 1,
     "app/api/unsubscribe/token/route.ts": 2,
-    "app/api/validate-them-first/route.ts": 1,
     "app/api/vendor-costs/route.ts": 1,
     "app/api/video/engagement/route.ts": 2,
     "app/api/video/projects/[projectId]/generate/route.ts": 2,
@@ -1524,13 +1516,11 @@
     "app/api/webhooks/did/route.ts": 1,
     "app/api/webhooks/docusign/route.ts": 1,
     "app/api/webhooks/dotloop/route.ts": 1,
-    "app/api/webhooks/ghl/route.ts": 1,
     "app/api/webhooks/gohighlevel/route.ts": 1,
     "app/api/webhooks/inbound-mail/route.ts": 1,
     "app/api/webhooks/inbound-suppression/route.ts": 1,
     "app/api/webhooks/linkedin/route.ts": 2,
     "app/api/webhooks/lob-events/route.ts": 1,
-    "app/api/webhooks/meta/route.ts": 2,
     "app/api/webhooks/meta-dm/route.ts": 2,
     "app/api/webhooks/meta-leadgen/route.ts": 2,
     "app/api/webhooks/sendgrid-events/route.ts": 1,
@@ -2383,6 +2373,7 @@
     "app/dashboard/superadmin/connectors/go-live-card.tsx": 2,
     "app/dashboard/superadmin/connectors/platform-reception-panel.tsx": 1,
     "app/dashboard/superadmin/connectors/provider-posture-cards.tsx": 3,
+    "app/dashboard/superadmin/connectors/webhook-contract-card.tsx": 1,
     "app/dashboard/superadmin/contracts/subscription-contracts-manager.tsx": 1,
     "app/dashboard/superadmin/coupons/coupons-manager.tsx": 1,
     "app/dashboard/superadmin/demo-room/demo-room-client.tsx": 1,
@@ -2948,6 +2939,7 @@
     "lib/cma/seller-upgrades.ts": 1,
     "lib/cma/state-adjustment-rates.ts": 3,
     "lib/commission/adjustment-vocabulary.ts": 4,
+    "lib/commission/agreement-total-rate.ts": 1,
     "lib/commission/cap-resolver.ts": 7,
     "lib/commission/cda-discrepancy.ts": 6,
     "lib/commission/engine.ts": 1,
@@ -3845,6 +3837,7 @@
     "lib/platform/platform-staff-roster.ts": 9,
     "lib/platform/product-brand.ts": 5,
     "lib/platform/product-content.ts": 5,
+    "lib/platform/prospect-conversion.ts": 1,
     "lib/platform/prospect-followup.ts": 1,
     "lib/platform/prospect-sourcer.ts": 4,
     "lib/platform/provider-posture.ts": 14,
@@ -3937,6 +3930,7 @@
     "lib/providers/tenancy-matrix.ts": 1,
     "lib/providers/vibe.ts": 2,
     "lib/providers/web-push.ts": 2,
+    "lib/providers/webhook-contract.ts": 2,
     "lib/quality-checker.ts": 1,
     "lib/recruit-pipeline/recruit-processor.ts": 1,
     "lib/recruit-pipeline/recruit-sourcer.ts": 1,
@@ -4124,6 +4118,7 @@
     "lib/vendors/premium-placement.ts": 3,
     "lib/vendors/rank.ts": 3,
     "lib/vendors/vendor-money-directions.ts": 2,
+    "lib/vendors/vendor-payout-events.ts": 1,
     "lib/vendors/vendor-platform-identity.ts": 3,
     "lib/vendors/vendor-scope.ts": 7,
     "lib/vendors/vendor-service-area.ts": 7,
@@ -8920,16 +8915,10 @@
     "app/api/forms/templates/route.ts": [
       "GET"
     ],
-    "app/api/generate/email/route.ts": [
-      "POST"
-    ],
     "app/api/generate/newsletter/route.ts": [
       "POST"
     ],
     "app/api/generate/social/route.ts": [
-      "POST"
-    ],
-    "app/api/generate/text/route.ts": [
       "POST"
     ],
     "app/api/integrations/oauth/[provider]/route.ts": [
@@ -8999,9 +8988,6 @@
     ],
     "app/api/leads/route.ts": [
       "GET"
-    ],
-    "app/api/listings/[listingId]/appraisal-defense/route.ts": [
-      "POST"
     ],
     "app/api/listings/[listingId]/upload-document/route.ts": [
       "POST"
@@ -9098,14 +9084,6 @@
       "POST",
       "GET"
     ],
-    "app/api/prospects/[id]/context/route.ts": [
-      "GET",
-      "POST"
-    ],
-    "app/api/prospects/route.ts": [
-      "GET",
-      "POST"
-    ],
     "app/api/providers/inbound/route.ts": [
       "POST"
     ],
@@ -9126,12 +9104,6 @@
     ],
     "app/api/referrals/thank-you-draft/route.ts": [
       "POST"
-    ],
-    "app/api/scripts/create/route.ts": [
-      "POST"
-    ],
-    "app/api/scripts/list/route.ts": [
-      "GET"
     ],
     "app/api/search/buyer-smart-search/route.ts": [
       "GET"
@@ -9182,9 +9154,6 @@
     ],
     "app/api/unsubscribe/token/route.ts": [
       "GET",
-      "POST"
-    ],
-    "app/api/validate-them-first/route.ts": [
       "POST"
     ],
     "app/api/vendor-costs/route.ts": [
@@ -9277,9 +9246,6 @@
     "app/api/webhooks/dotloop/route.ts": [
       "POST"
     ],
-    "app/api/webhooks/ghl/route.ts": [
-      "POST"
-    ],
     "app/api/webhooks/gohighlevel/route.ts": [
       "POST"
     ],
@@ -9294,10 +9260,6 @@
       "POST"
     ],
     "app/api/webhooks/lob-events/route.ts": [
-      "POST"
-    ],
-    "app/api/webhooks/meta/route.ts": [
-      "GET",
       "POST"
     ],
     "app/api/webhooks/meta-dm/route.ts": [
@@ -11921,6 +11883,9 @@
       "TwilioFleetPostureCard",
       "SendgridPostureCard"
     ],
+    "app/dashboard/superadmin/connectors/webhook-contract-card.tsx": [
+      "WebhookContractCard"
+    ],
     "app/dashboard/superadmin/contracts/subscription-contracts-manager.tsx": [
       "SubscriptionContractsManager"
     ],
@@ -14348,6 +14313,9 @@
       "recipientTypeForReason",
       "isCommissionAdjustmentReason",
       "commissionAdjustmentReasonLabel"
+    ],
+    "lib/commission/agreement-total-rate.ts": [
+      "resolveTotalCommissionRate"
     ],
     "lib/commission/cap-resolver.ts": [
       "normalizeCapAnniversaryBasis",
@@ -19012,6 +18980,9 @@
       "videoProofBeats",
       "composeProductVideoSpec"
     ],
+    "lib/platform/prospect-conversion.ts": [
+      "stampProspectConversion"
+    ],
     "lib/platform/prospect-followup.ts": [
       "runProspectFollowupSweep"
     ],
@@ -19460,6 +19431,10 @@
     "lib/providers/web-push.ts": [
       "isWebPushConfigured",
       "sendWebPush"
+    ],
+    "lib/providers/webhook-contract.ts": [
+      "canonicalWebhookUrl",
+      "findWebhookContractEntry"
     ],
     "lib/quality-checker.ts": [
       "analyzeContentQuality"
@@ -20319,6 +20294,9 @@
     "lib/vendors/vendor-money-directions.ts": [
       "isVendorPackageDirection",
       "describeDirection"
+    ],
+    "lib/vendors/vendor-payout-events.ts": [
+      "applyVendorPayoutProviderEvent"
     ],
     "lib/vendors/vendor-platform-identity.ts": [
       "platformUseChargeVerdict",
