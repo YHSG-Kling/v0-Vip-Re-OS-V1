@@ -572,7 +572,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9377,
+  "census": 9375,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -1414,8 +1414,6 @@
     "app/api/generate/newsletter/route.ts": 1,
     "app/api/generate/social/route.ts": 1,
     "app/api/generate/text/route.ts": 1,
-    "app/api/inbox/messages/route.ts": 2,
-    "app/api/inbox/smart-replies/route.ts": 1,
     "app/api/integrations/oauth/[provider]/route.ts": 1,
     "app/api/integrations/test/[provider]/route.ts": 1,
     "app/api/intelligence/classify/route.ts": 1,
@@ -1468,7 +1466,6 @@
     "app/api/portal/education/[contactId]/route.ts": 1,
     "app/api/portal/escalate/route.ts": 1,
     "app/api/portal/messages/[contactId]/route.ts": 1,
-    "app/api/portal/messages/read/route.ts": 1,
     "app/api/portal/messages/send/route.ts": 1,
     "app/api/property-alerts/run/route.ts": 2,
     "app/api/prospects/[id]/context/route.ts": 2,
@@ -1548,7 +1545,6 @@
     "app/api/widget/capture-lead/route.ts": 1,
     "app/api/widget/intake/route.ts": 1,
     "app/api/widget/live-agent-request/route.ts": 1,
-    "app/api/widget/loader/route.ts": 1,
     "app/api/widget/message/route.ts": 1,
     "app/api/widget/session/route.ts": 1,
     "app/api/workflow/buyer-intake/create/route.ts": 1,
@@ -2848,7 +2844,7 @@
     "lib/avm/provider-chain.ts": 3,
     "lib/behavior-learning/prediction-engine.ts": 2,
     "lib/behavior-learning/preference-updater.ts": 2,
-    "lib/behavior-learning/signal-mapping.ts": 8,
+    "lib/behavior-learning/signal-mapping.ts": 7,
     "lib/billing/ai-overage.ts": 4,
     "lib/billing/billing-access.ts": 2,
     "lib/billing/dunning.ts": 5,
@@ -3207,6 +3203,7 @@
     "lib/financing/letter-strength.ts": 1,
     "lib/financing/rate-lock-watch-runner.ts": 1,
     "lib/financing/rate-lock-watch.ts": 1,
+    "lib/format/ordinal.ts": 2,
     "lib/forms/esign-anchor-adapters.ts": 4,
     "lib/forms/esign-anchor-eval.ts": 2,
     "lib/forms/esign-anchor-plan.ts": 1,
@@ -3885,7 +3882,7 @@
     "lib/portal/lifetime-segment.ts": 3,
     "lib/portal/next-move.ts": 3,
     "lib/portal/orchestrate-portal-push-send.ts": 1,
-    "lib/portal/persona-config.ts": 4,
+    "lib/portal/persona-config.ts": 5,
     "lib/portal/portal-clients-read.ts": 1,
     "lib/portal/portal-invite-core.ts": 3,
     "lib/portal/portal-showing-feed.ts": 5,
@@ -4163,7 +4160,7 @@
     "lib/video/persona-variant-post-pass.ts": 1,
     "lib/video/playable-video.ts": 1,
     "lib/video/presenter-media.ts": 1,
-    "lib/video/promo-composition.ts": 5,
+    "lib/video/promo-composition.ts": 6,
     "lib/video/reel-brand.ts": 2,
     "lib/video/reel-voiceover.ts": 2,
     "lib/video/repurpose-planner.ts": 3,
@@ -8935,13 +8932,6 @@
     "app/api/generate/text/route.ts": [
       "POST"
     ],
-    "app/api/inbox/messages/route.ts": [
-      "GET",
-      "POST"
-    ],
-    "app/api/inbox/smart-replies/route.ts": [
-      "POST"
-    ],
     "app/api/integrations/oauth/[provider]/route.ts": [
       "GET"
     ],
@@ -9100,9 +9090,6 @@
     ],
     "app/api/portal/messages/[contactId]/route.ts": [
       "GET"
-    ],
-    "app/api/portal/messages/read/route.ts": [
-      "POST"
     ],
     "app/api/portal/messages/send/route.ts": [
       "POST"
@@ -9358,9 +9345,6 @@
     ],
     "app/api/widget/live-agent-request/route.ts": [
       "POST"
-    ],
-    "app/api/widget/loader/route.ts": [
-      "GET"
     ],
     "app/api/widget/message/route.ts": [
       "POST"
@@ -13782,8 +13766,7 @@
       "tourInterestToRating",
       "isPositiveShowingInterest",
       "isNegativeShowingInterest",
-      "feedbackTemperatureToRating",
-      "impressionToRating"
+      "feedbackTemperatureToRating"
     ],
     "lib/billing/ai-overage.ts": [
       "deriveAIOverage",
@@ -15606,6 +15589,10 @@
     ],
     "lib/financing/rate-lock-watch.ts": [
       "computeRateLockRisk"
+    ],
+    "lib/format/ordinal.ts": [
+      "ordinal",
+      "ordinalWord"
     ],
     "lib/forms/esign-anchor-adapters.ts": [
       "anchorsForProvider",
@@ -19225,6 +19212,7 @@
       "orchestratePortalPushSend"
     ],
     "lib/portal/persona-config.ts": [
+      "getInvestorCriteria",
       "getPersonaConfig",
       "getPersonaWidgets",
       "getPersonaJourneyStages",
@@ -20523,6 +20511,7 @@
     "lib/video/promo-composition.ts": [
       "compositionForPromoEvent",
       "promoNarrationBudget",
+      "promoEventLabel",
       "buildPromoProps",
       "buildComingSoonTeaser",
       "computeDaysOnMarket"

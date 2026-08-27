@@ -51,6 +51,7 @@
  * only run in production is not a check.
  */
 import { FAIR_HOUSING_WRITING_FLOOR } from "@/lib/contact-promotion/welcome-situation"
+import { ordinal } from "@/lib/format/ordinal"
 import { spokenSentences } from "@/lib/video/script-structure"
 import type { ScriptSituation } from "@/lib/video/intro-video-reactor"
 
@@ -63,9 +64,13 @@ import type { ScriptSituation } from "@/lib/video/intro-video-reactor"
  * number the project title stamps as "(Ny)". This only spells it (§6 — one way
  * to say the same idea, not a second way to work it out).
  */
+// TOMBSTONE (§6): ordinalYear's private suffix-speller was the FOURTH copy of
+// the ordinal formatter; its body is retired onto the survivor,
+// lib/format/ordinal.ts:32, the same pure leaf the kernel and the Remotion
+// bundle already import. The local name is kept because the callers below read
+// "the Nth YEAR", which is this file's domain vocabulary, not a formatter's.
 function ordinalYear(n: number): string {
-  const s = ["th", "st", "nd", "rd"], v = Math.trunc(n) % 100
-  return `${Math.trunc(n)}${s[(v - 20) % 10] ?? s[v] ?? s[0]}`
+  return ordinal(Math.trunc(n))
 }
 
 /**
