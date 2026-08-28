@@ -88,6 +88,7 @@ export function VendorJobDetail({ job, vendorId }: VendorJobDetailProps) {
   const [status, setStatus] = useState(job.status)
   const [vendorNotes, setVendorNotes] = useState(job.vendor_notes || "")
   const [costActual, setCostActual] = useState(job.cost_actual?.toString() || "")
+  const [costEstimate, setCostEstimate] = useState(job.cost_estimate?.toString() || "")
   const [message, setMessage] = useState("")
   const [loading, setLoading] = useState(false)
   const [saveStatus, setSaveStatus] = useState("")
@@ -137,20 +138,32 @@ export function VendorJobDetail({ job, vendorId }: VendorJobDetailProps) {
     setLoading(false)
   }
 
-  const handleCostChange = async () => {
-    if (!costActual.trim()) return
+  /**
+   * Save the money on this job. `field` says WHICH figure the vendor just typed:
+   * the quote (before the work) or the final bill (after it). Before this, the
+   * estimate had no writer at all and the "Estimated Cost" panel below could only
+   * ever read "N/A".
+   */
+  const handleCostChange = async (field: "estimate" | "actual") => {
+    const raw = field === "estimate" ? costEstimate : costActual
+    if (!raw.trim()) return
+    const amount = parseFloat(raw)
+    if (!Number.isFinite(amount) || amount < 0) {
+      setSaveStatus("Enter a non-negative amount")
+      return
+    }
     setLoading(true)
     setSaveStatus("")
     try {
       await updateVendorJobCost({
         jobId: job.id,
         vendorId,
-        costActual: parseFloat(costActual),
+        ...(field === "estimate" ? { costEstimate: amount } : { costActual: amount }),
       })
-      setSaveStatus("Cost updated")
+      setSaveStatus(field === "estimate" ? "Quote saved" : "Cost updated")
       setTimeout(() => setSaveStatus(""), 2000)
     } catch (error) {
-      setSaveStatus("Failed to update cost")
+      setSaveStatus(field === "estimate" ? "Failed to save the quote" : "Failed to update cost")
     }
     setLoading(false)
   }
@@ -314,10 +327,29 @@ export function VendorJobDetail({ job, vendorId }: VendorJobDetailProps) {
         <CardContent className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <Label className="text-muted-foreground text-sm">Estimated Cost</Label>
-              <p className="text-2xl font-bold">
-                ${job.cost_estimate?.toLocaleString() || "N/A"}
-              </p>
+              <Label htmlFor="cost_estimate" className="text-sm">
+                Estimated Cost (your quote)
+              </Label>
+              <div className="flex gap-2 mt-1">
+                <Input
+                  id="cost_estimate"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="Enter your quote"
+                  value={costEstimate}
+                  onChange={(e) => setCostEstimate(e.target.value)}
+                  disabled={loading}
+                />
+                <Button
+                  variant="outline"
+                  onClick={() => handleCostChange("estimate")}
+                  disabled={loading || !costEstimate.trim()}
+                  size="sm"
+                >
+                  Save
+                </Button>
+              </div>
             </div>
             <div>
               <Label htmlFor="cost_actual" className="text-sm">
@@ -327,6 +359,8 @@ export function VendorJobDetail({ job, vendorId }: VendorJobDetailProps) {
                 <Input
                   id="cost_actual"
                   type="number"
+                  min="0"
+                  step="0.01"
                   placeholder="Enter actual cost"
                   value={costActual}
                   onChange={(e) => setCostActual(e.target.value)}
@@ -334,7 +368,7 @@ export function VendorJobDetail({ job, vendorId }: VendorJobDetailProps) {
                 />
                 <Button
                   variant="outline"
-                  onClick={handleCostChange}
+                  onClick={() => handleCostChange("actual")}
                   disabled={loading || !costActual.trim()}
                   size="sm"
                 >

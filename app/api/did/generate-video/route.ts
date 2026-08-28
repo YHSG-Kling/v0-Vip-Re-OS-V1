@@ -483,11 +483,34 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    await supabase.from("video_render_log").insert({
+    // THE RENDER LEDGER ROW — now carrying the two facts that make it usable.
+    //
+    // This insert named only project_id/provider/render_duration_seconds, so
+    // `provider_job_id` was NULL on every row (nothing could correlate a log
+    // line with the D-ID job it records, and the poll cron below had no key to
+    // update it by) and `status` sat on its DEFAULT 'submitted' forever — the
+    // render-attempt list in app/components/content-studio/
+    // LinkToVideoGenerator.tsx:614 reads exactly those columns and could
+    // therefore never show a completed or a failed attempt, only "submitted".
+    // Both are known right here, at submit.
+    //
+    // `cost_usd` stays NULL deliberately: no D-ID price table exists anywhere in
+    // this repo, and a per-render dollar figure invented here would be a wrong
+    // number in a cost ledger (CLAUDE.md §5).
+    const { error: renderLogError } = await supabase.from("video_render_log").insert({
       project_id: video_project_id,
+      brokerage_id: auth.brokerageId ?? null,
       provider: "did",
+      provider_job_id: did_talk_id,
+      status: "submitted",
       render_duration_seconds: null,
     })
+    // Best-effort by design — the render is already running and must not be
+    // reported as failed because its audit line did not land — but a swallowed
+    // refusal here is why the ledger looked empty, so it is READ and said aloud.
+    if (renderLogError) {
+      console.error("[D-ID] render log row refused:", renderLogError.message)
+    }
 
     await processKernelEvent({
       event: KernelEvent.VIDEO_GENERATION_REQUESTED,

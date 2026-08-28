@@ -297,16 +297,36 @@ export async function updateVendorJobStatus(data: {
   if (updateError) throw updateError
   if (!job) throw new Error("Job not found in your scope")
 
-  // If job is completed, also update the parent assignment — scoped
+  // If job is completed, also update the parent assignment — scoped.
+  //
+  // `completed_date` is stamped here, at the one moment it becomes true. It was
+  // written by nobody while the vendor workspace reads it back
+  // (lib/kernel/vendors.ts:311 selects it beside scheduled_date and status), so
+  // a completed assignment showed a scheduled date and no completion date at
+  // all — indistinguishable, on that surface, from work that never happened.
   if (data.status === "completed" && job.assignment_id) {
-    await supabase
+    const { data: closedAssignments, error: assignmentError } = await supabase
       .from("vendor_assignments")
       .update({
         status: "completed",
+        completed_date: new Date().toISOString(),
       })
       .eq("id", job.assignment_id)
       .eq("vendor_id", gate.vendorId)
       .eq("brokerage_id", gate.brokerageId)
+      .select("id")
+
+    // COUNTED, not assumed (CLAUDE.md §3): an UPDATE whose predicate matched
+    // nothing resolves exactly like one that landed. The job itself is already
+    // completed and must not be rolled back over its parent row, so this is
+    // reported rather than thrown.
+    if (assignmentError) {
+      console.error("[vendor-portal] parent assignment not closed out:", assignmentError.message)
+    } else if ((closedAssignments ?? []).length === 0) {
+      console.error(
+        `[vendor-portal] job ${data.jobId} completed but its assignment ${job.assignment_id} matched no row in this vendor's scope — the assignment is still open`,
+      )
+    }
   }
 
   return job
@@ -354,22 +374,61 @@ export async function addVendorJobNote(data: {
   return job
 }
 
+/**
+ * The vendor states the money on a job — the QUOTE and, later, the FINAL BILL.
+ *
+ * `cost_actual` always had this writer. `cost_estimate` had none anywhere in the
+ * tree, while four surfaces read it and rendered whatever came back:
+ * app/components/vendor/job-detail.tsx:319 ("N/A", forever),
+ * app/components/vendor/jobs-list.tsx:77, the agent-side
+ * app/components/transactions/VendorBookingSection.tsx:361 ("· est. $…", which
+ * simply never appeared) and the client portal's vendor tab
+ * (app/portal/[contactId]/vendors/page.tsx:97). So the quote a brokerage books
+ * against was structurally absent, and the agent comparing bench vendors on the
+ * transaction screen was comparing blanks.
+ *
+ * The quote belongs to the SAME actor and the SAME gate as the final cost — the
+ * vendor, on their own job — so it lands here rather than in a second parallel
+ * money writer (§6). Both figures are optional and at least one must be present:
+ * a quote arrives before the work, the final bill after it, and neither should
+ * be forced to overwrite the other with a placeholder.
+ */
 export async function updateVendorJobCost(data: {
   jobId: string
   vendorId: string
-  costActual: number
+  costActual?: number
+  /** The vendor's quote, stated before the work. */
+  costEstimate?: number
 }) {
   const gate = await gateVendor(data.vendorId)
   if (!gate.ok) throw new Error(gate.error)
+
+  // Each column is NAMED and assigned on its own line. A `patch[key] = value`
+  // loop over a pair list would be shorter and would make both money columns
+  // invisible to every static scanner in this repo — a computed key reads as
+  // "this column has no writer", which is exactly the defect this change exists
+  // to close.
+  const money = (label: string, value: number | undefined): number | null => {
+    if (value === undefined || value === null) return null
+    const amount = Number(value)
+    if (!Number.isFinite(amount) || amount < 0) throw new Error(`${label} must be a non-negative number`)
+    return amount
+  }
+  const actual = money("Actual cost", data.costActual)
+  const estimate = money("Estimated cost", data.costEstimate)
+  if (actual === null && estimate === null) {
+    throw new Error("Nothing to save — provide an estimated cost, an actual cost, or both")
+  }
+
+  const patch: Record<string, unknown> = { updated_at: new Date().toISOString() }
+  if (actual !== null) patch.cost_actual = actual
+  if (estimate !== null) patch.cost_estimate = estimate
 
   const supabase = await createClient()
 
   const { data: job, error } = await supabase
     .from("vendor_jobs")
-    .update({
-      cost_actual: data.costActual,
-      updated_at: new Date().toISOString(),
-    })
+    .update(patch)
     .eq("id", data.jobId)
     .eq("vendor_id", gate.vendorId)
     .eq("brokerage_id", gate.brokerageId)

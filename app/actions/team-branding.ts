@@ -1218,3 +1218,191 @@ export async function saveTeamSignature(input: TeamSignatureInput): Promise<Save
   const snapshot = await loadTeamBranding()
   return { success: true, snapshot }
 }
+
+// ── TEAM REVENUE GOAL ────────────────────────────────────────────────────────
+
+export interface TeamRevenueGoalInput {
+  /** Admin path only, re-authorised against the session's brokerage. */
+  teamId?: string | null
+  /** `YYYY-MM`. Omitted = the current month, the period the rollup keys on. */
+  periodLabel?: string | null
+  /** Dollars. Blank clears the goal back to "no target set". */
+  goalAmount: string
+}
+
+export interface SaveTeamRevenueGoalResult {
+  success: boolean
+  error?: string
+  periodLabel?: string
+  goalAmount?: number | null
+}
+
+/**
+ * THE MISSING WRITER for a team's revenue target.
+ *
+ * `team_performance.goal_amount` is read in four places — the team P&L report
+ * (lib/kernel/reporting.ts:747, which divides by it to produce `attainment_pct`),
+ * the team financials page (app/dashboard/financials/team/page.tsx:285, whose
+ * "Team Below Revenue Target" priority card is gated on `goalAmount > 0`), the
+ * reports client (app/dashboard/reports/reports-client.tsx:870) and the AI tools
+ * hub summary (app/actions/ai-tools-hub.ts:1567) — and NOTHING has ever written
+ * it. The column carries `DEFAULT 0`, so every one of those surfaces read a real
+ * zero: attainment was permanently 0%, and the below-target card could not fire
+ * for any team on the platform.
+ *
+ * The nightly rollup deliberately does not invent one — lib/finance/team-pl-
+ * writer.ts:84 records "no per-team-period source yet — honest NULL, never
+ * fabricated", and that ruling stands: a goal is a DECISION, not a derivation,
+ * and dividing somebody's annual GCI target by twelve would be exactly the
+ * fabrication that comment refuses. So the missing half is the decision itself,
+ * and this is where it is taken.
+ *
+ * WHO. The same fact-based gate as every other writer in this file: the lead of
+ * the team (`teams.team_lead_id`, resolved from the SESSION), or a brokerage
+ * admin naming a team in their OWN brokerage. Note this is deliberately NOT the
+ * `isBrokerageFinanceAdmin` roster that guards app/actions/financials.ts: that
+ * roster gates the brokerage's BOOKS (agent_commissions, brokerage_p_l), which a
+ * team lead may not see. A target their own team is measured against is theirs
+ * to set, and the m472 ruling it implements ("admin surfaces admit team_lead,
+ * the brokerage's books do not") puts a goal on the admissible side.
+ *
+ * WHERE IT LANDS. `team_performance` keyed on (team_id, period_label) — the same
+ * unique index the rollup upserts against (m259), so the goal and the measured
+ * revenue are one row and cannot disagree about which month they describe. The
+ * rollup names only the columns it computes, so a goal set here SURVIVES every
+ * subsequent nightly run.
+ *
+ * `goal_pct` is deliberately NOT written. Attainment already has one derivation
+ * — lib/kernel/reporting.ts:762 computes it as total_revenue / goal_amount at
+ * read time — and a stored percentage would be a second opinion that goes stale
+ * the moment the nightly rollup moves the revenue underneath it (§6, one
+ * vocabulary per function). The goal is the DECISION; the percentage is derived.
+ */
+export async function saveTeamRevenueGoal(
+  input: TeamRevenueGoalInput,
+): Promise<SaveTeamRevenueGoalResult> {
+  const g = await gate()
+  if (!g.ok) return { success: false, error: g.error }
+
+  const target = await resolveWritableTeamId(g, input.teamId, "set the revenue goal for")
+  if (!target.ok) return { success: false, error: target.error }
+
+  const { monthLabel } = await import("@/lib/finance/team-pl")
+  const period = (input.periodLabel ?? "").trim() || monthLabel(new Date())
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) {
+    return { success: false, error: `The period must look like 2026-09 — "${period}" does not.` }
+  }
+
+  // Blank CLEARS the goal. Every other value goes through the same money parser
+  // the split writer uses, so "1e6", "0x10" and "Infinity" cannot reach a money
+  // column here either.
+  const raw = (input.goalAmount ?? "").trim()
+  let amount: number | null = null
+  if (raw !== "") {
+    const parsed = normalizeAmount(raw, "The team revenue goal", {
+      min: 0,
+      max: 1_000_000_000,
+      decimals: 2,
+      unit: "",
+    })
+    if (!parsed.ok) return { success: false, error: parsed.error }
+    amount = parsed.value
+  }
+
+  // Gate first, THEN the service client (§4): team_performance is a rollup table
+  // written by the nightly job under the service role, and a lead's own
+  // credential cannot write it. Authorisation was settled above.
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+
+  // The revenue the rollup already measured for this period — the only honest
+  // basis for goal_pct. A refused read must not become "0% attainment".
+  const { data: existing, error: readErr } = await svc
+    .from("team_performance")
+    .select("id, total_revenue")
+    .eq("team_id", target.teamId)
+    .eq("period_label", period)
+    .maybeSingle()
+  if (readErr) {
+    return { success: false, error: `Could not read this team's period row: ${readErr.message}` }
+  }
+
+  // Read only so the panel can say what the goal is measured against; the
+  // percentage itself is derived at read time, never stored (see above).
+  void (existing as { total_revenue?: number | null } | null)?.total_revenue
+
+  const { data: written, error: writeErr } = await svc
+    .from("team_performance")
+    .upsert(
+      {
+        brokerage_id: g.brokerageId,
+        team_id: target.teamId,
+        period_label: period,
+        goal_amount: amount,
+      },
+      { onConflict: "team_id,period_label" },
+    )
+    .select("id")
+
+  if (writeErr) return { success: false, error: `The database refused the goal: ${writeErr.message}` }
+  if (!written || written.length === 0) {
+    return {
+      success: false,
+      error: "The database accepted the request but wrote no row — the goal was not saved.",
+    }
+  }
+
+  revalidatePath("/dashboard/financials/team")
+  revalidatePath("/dashboard/settings/teams")
+
+  return { success: true, periodLabel: period, goalAmount: amount }
+}
+
+/**
+ * The goal currently stored for one team + period, so the panel shows what is in
+ * force rather than an empty box that reads as "no goal".
+ *
+ * Same gate as the writer — a caller may only look at a team they lead, or (as a
+ * brokerage admin) a team in their own brokerage.
+ */
+export async function loadTeamRevenueGoal(input: {
+  teamId?: string | null
+  periodLabel?: string | null
+}): Promise<{
+  success: boolean
+  error?: string
+  periodLabel?: string
+  goalAmount?: number | null
+  totalRevenue?: number | null
+}> {
+  const g = await gate()
+  if (!g.ok) return { success: false, error: g.error }
+
+  const target = await resolveWritableTeamId(g, input.teamId, "see the revenue goal for")
+  if (!target.ok) return { success: false, error: target.error }
+
+  const { monthLabel } = await import("@/lib/finance/team-pl")
+  const period = (input.periodLabel ?? "").trim() || monthLabel(new Date())
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) {
+    return { success: false, error: `The period must look like 2026-09 — "${period}" does not.` }
+  }
+
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const { data, error } = await createServiceClient()
+    .from("team_performance")
+    .select("goal_amount, total_revenue")
+    .eq("team_id", target.teamId)
+    .eq("period_label", period)
+    .maybeSingle()
+
+  // Fail CLOSED: a refused read must never render as "this team has no goal".
+  if (error) return { success: false, error: `Could not read the team's goal: ${error.message}` }
+
+  const row = data as { goal_amount?: number | null; total_revenue?: number | null } | null
+  return {
+    success: true,
+    periodLabel: period,
+    goalAmount: row?.goal_amount ?? null,
+    totalRevenue: row?.total_revenue ?? null,
+  }
+}

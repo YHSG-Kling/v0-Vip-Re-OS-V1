@@ -493,6 +493,64 @@ function declaredShorthandKeysOf(src: string, varName: string, beforeIdx: number
   if (close <= open) return []
   return shorthandObjectKeys(src.slice(open, close + 1))
 }
+/**
+ * SHORTHAND KEYS IN A ROW *COLLECTION* — `rows.push({ lead_count, roi })` and
+ * `const rows = [{ lead_count }]`.
+ *
+ * `declaredShorthandKeysOf` above covers ONE shape, `const row = { … }`. The
+ * shared resolver also understands an array literal and `VAR.push({…})`, and it
+ * composes parseObjectTopLevelKeys — so for those two shapes the shorthand
+ * blindness reappears exactly one level further out. Measured the moment the
+ * two-argument write anchor started seeing these sites at all:
+ * `lib/territory/metrics-aggregator.ts:129` pushes a territory row whose
+ * `lead_count`, `qualified_lead_count`, `conversion_rate`, `avg_score`,
+ * `total_cost`, `roi` and `agent_saturation` are ALL shorthand, and every one of
+ * them was reported as read-by-code-written-by-nobody while the aggregator
+ * writes the lot on one line each.
+ *
+ * A partially-resolved write object is the dangerous case, not the harmless one:
+ * the explicit `brokerage_id:` keys make the table look resolved (not opaque),
+ * so the missed shorthand columns become confident false accusations rather than
+ * an honest "not knowable". Same nearest-declaration rule as everywhere else.
+ */
+function collectionShorthandKeysOf(src: string, varName: string, beforeIdx: number): string[] {
+  const keys: string[] = []
+  const addObj = (openIdx: number) => {
+    const close = sd.matchBrace(src, openIdx)
+    if (close > openIdx) for (const k of shorthandObjectKeys(src.slice(openIdx, close + 1))) {
+      if (!keys.includes(k)) keys.push(k)
+    }
+  }
+  const nearest = (re: RegExp): RegExpMatchArray | null => {
+    let best: RegExpMatchArray | null = null
+    for (const m of src.matchAll(re)) {
+      if (m.index! >= beforeIdx) break
+      best = m
+    }
+    return best
+  }
+  const arrDef = nearest(new RegExp(`(?:const|let|var)\\s+${varName}\\s*(?::[^=]+)?=\\s*\\[`, "g"))
+  const objDef = nearest(new RegExp(`(?:const|let|var)\\s+${varName}\\s*(?::[^=]+)?=\\s*\\{`, "g"))
+  const decl = [arrDef, objDef].filter((m): m is RegExpMatchArray => !!m)
+    .sort((a, b) => b.index! - a.index!)[0] ?? null
+  if (!decl) return keys
+  if (decl === arrDef) {
+    let d = 0
+    for (let i = decl.index! + decl[0].length - 1; i < src.length; i++) {
+      const ch = src[i]
+      if (ch === "[") d++
+      else if (ch === "]") { d--; if (d === 0) break }
+      else if (ch === "{" && d === 1) { const bc = sd.matchBrace(src, i); if (bc > i) { addObj(i); i = bc } }
+    }
+  }
+  // Only pushes BETWEEN the chosen declaration and the write — the same window
+  // the shared resolver uses, so a same-named collection in another function
+  // cannot bleed its columns in.
+  for (const m of src.matchAll(new RegExp(`${varName}\\.push\\(\\s*\\{`, "g"))) {
+    if (m.index! > decl.index! && m.index! < beforeIdx) addObj(m.index! + m[0].length - 1)
+  }
+  return keys
+}
 const writeKeysOf = (objText: string): string[] => [
   ...sd.parseObjectTopLevelKeys(objText),
   ...shorthandObjectKeys(objText),
@@ -1047,12 +1105,27 @@ function scanColumns(file: string, src: string) {
         }
       }
     }
-    const varM = writeChain.match(/\.(insert|upsert|update)\(\s*([a-zA-Z_$][\w$]*)\s*\)/)
+    // `\s*[,)]` — NOT `\s*\)`. A supabase upsert names its conflict target in a
+    // SECOND argument (`.upsert(row, { onConflict: "user_id" })`), which is the
+    // shape every idempotent writer in this repo uses, and the closing-paren
+    // anchor matched none of them. That was not a missed write recorded as
+    // opacity: the branch never fired at all, so the site produced NO write
+    // record AND NO opacity mark — a silent zero, which reads downstream as
+    // "written by NOBODY". Measured on the tree, it was falsely accusing live
+    // writers, among them app/actions/superadmin/platform-staff.ts:223
+    // (`platform_staff_profiles.user_id` and the HR record's
+    // `employment_agreement_text`, both plainly written three lines above) and
+    // app/api/cron/platform-sentinel/route.ts:111 (every column of the platform
+    // sentinel's action queue). Same class as the inline-row-mapper branch above
+    // and fixed the same way — by teaching the finder the shape, never by
+    // exempting the columns.
+    const varM = writeChain.match(/\.(insert|upsert|update)\(\s*([a-zA-Z_$][\w$]*)\s*[,)]/)
     if (varM && varM.index != null && !["true", "false", "null"].includes(varM[2])) {
       tablesWritten.add(table)
       const keys = [
         ...sd.resolveVariableInsertKeys(src, varM[2], chainStart + varM.index),
         ...declaredShorthandKeysOf(src, varM[2], chainStart + varM.index),
+        ...collectionShorthandKeysOf(src, varM[2], chainStart + varM.index),
         ...assignedKeysOf(src, varM[2], chainStart + varM.index),
       ]
       // ZERO keys back from a variable means "could not resolve", not "writes
@@ -1187,6 +1260,32 @@ stage("C1 columns")
     built.write.includes("first_name") && built.write.includes("phone"), built.write.join(","))
   control("C1 does not read a COMPARISON as an assignment onto the patch object",
     !probe(`const patch: Record<string, any> = { updated_at: now }\nif (patch.first_name === x) {}\nawait supabase.from("contacts").update(patch)`).write.includes("first_name"))
+  // THE SECOND ARGUMENT. `.upsert(row, { onConflict })` is the idempotent-writer
+  // shape; before the `[,)]` anchor the variable branch skipped it entirely and
+  // every column it wrote read as writerless. Both directions are asserted: the
+  // two-argument form is SEEN, and a call that is not a write must still not be.
+  const upsertOpts = probe(`const row = { first_name, phone }\nawait supabase.from("contacts").upsert(row, { onConflict: "id" })`)
+  control("C1 sees a variable write object passed with a SECOND argument (.upsert(row, { onConflict }))",
+    upsertOpts.write.includes("first_name") && upsertOpts.write.includes("phone") && !upsertOpts.opaque,
+    upsertOpts.write.join(","))
+  const updateOpts = probe(`const patch: Record<string, any> = {}\npatch.phone = b\nawait supabase.from("contacts").update(patch, { count: "exact" }).eq("id", id)`)
+  control("C1 sees a two-argument .update(patch, { count }) as a write",
+    updateOpts.write.includes("phone"), updateOpts.write.join(","))
+  // The widened anchor must not start CLAIMING keys off a call expression: the
+  // identifier has to be the whole argument, `foo,` or `foo)`, never `foo(`.
+  const varCall = probe(`const buildRow = { first_name }\nawait supabase.from("contacts").upsert(buildRow(x), { onConflict: "id" })`)
+  control("C1 does not treat a CALL EXPRESSION argument as a resolvable row variable",
+    varCall.write.length === 0, varCall.write.join(","))
+  // SHORTHAND IN A PUSHED ROW — the collection shape. Asserted in both
+  // directions: the pushed shorthand keys are SEEN, and a push in an unrelated
+  // block before the declaration still contributes nothing.
+  const pushedShorthand = probe(`const rows: any[] = []\nrows.push({ first_name, phone, email: e })\nawait supabase.from("contacts").upsert(rows, { onConflict: "id" })`)
+  control("C1 sees SHORTHAND keys in a PUSHED row object (.upsert(rows, { onConflict }))",
+    ["first_name", "phone", "email"].every((k) => pushedShorthand.write.includes(k)), pushedShorthand.write.join(","))
+  const arrayShorthand = probe(`const rows = [{ first_name, phone }]\nawait supabase.from("contacts").insert(rows)`)
+  control("C1 sees SHORTHAND keys in an ARRAY-LITERAL row collection",
+    arrayShorthand.write.includes("first_name") && arrayShorthand.write.includes("phone"),
+    arrayShorthand.write.join(","))
   const mapperOpaque = probe(`await supabase.from("contacts").insert(rows.map((r) => r.payload))`)
   control("C1 marks a NON-LITERAL row mapper opaque rather than 'writes nothing'",
     mapperOpaque.opaque && mapperOpaque.write.length === 0)
@@ -2232,10 +2331,102 @@ for (const f of fetchRefs) {
 
 /** Addressed from outside the repo BY DESIGN — a caller in the tree is not expected. */
 const EXTERNALLY_ADDRESSED = /\/(cron|webhooks?|callback|oauth|auth|health|og|rss|sitemap|robots|embed|public|inbound|twilio|stripe|vapi|retell|resend|sendgrid|did|elevenlabs|apify|zenrows|clerk|mls|idx|widget)(\/|$)/i
+
+/**
+ * THE QUALIFIED EXTERNAL EXEMPTION — one route path at a time, each naming the
+ * ruling that keeps it.
+ *
+ * EXTERNALLY_ADDRESSED above is a NAME test: a path segment that reads as a
+ * cron/webhook/provider callback. That shape cannot express "this route carries
+ * an ordinary product name AND is deliberately kept as the second, HTTP door
+ * onto an implementation the app itself reaches by server action". Those routes
+ * are not orphans — retiring them is already refused in writing — yet 6b
+ * accused all five of them on every run, which is the accusing direction of
+ * §2's "a guard that cannot see the code it judges".
+ *
+ * This is EXACTLY the video-generation lane and nothing else. The ruling lives
+ * at app/actions/video.ts (the "NOT ORPHANS. DO NOT RETIRE THEM." block) and is
+ * load-bearing twice over:
+ *   · scripts/video-generation-lane-simulator.ts and
+ *     scripts/video-project-consolidation-simulator.ts read these five files BY
+ *     PATH and assert their shape — deleting one turns those guards red.
+ *   · app/api/video/projects/[projectId]/video-action-http.ts records that the
+ *     doors were kept so "any external consumer sees no change" in status codes.
+ *     Nothing in this repo can prove no such consumer exists — CLAUDE.md §1's
+ *     "unresolved means leave it".
+ *
+ * NOT A BLANKET. Exact paths only, so a NEW unaddressed route under
+ * /api/video/** still lands in 6b (controlled below), and an entry naming a
+ * route that no longer exists is itself reported rather than sitting there
+ * reading as enforced (§2 — do not pin an assertion to a waypoint).
+ */
+const QUALIFIED_EXTERNAL_ROUTES = new Map<string, string>([
+  ["/api/video/projects",                       "second HTTP door onto app/actions/video/create-video-project.ts; app/actions/video.ts:68 + scripts/video-project-consolidation-simulator.ts"],
+  ["/api/video/projects/[projectId]/script",    "second HTTP door onto app/actions/video.ts:generateVideoScriptAction; app/actions/video.ts:51-69 + scripts/video-generation-lane-simulator.ts"],
+  ["/api/video/projects/[projectId]/generate",  "second HTTP door onto app/actions/video.ts:submitVideoGenerationJobAction/loadVideoGenerationStateAction; same ruling"],
+  ["/api/video/projects/[projectId]/preview",   "second HTTP door onto app/actions/video.ts:previewVideoProjectAction; same ruling"],
+  ["/api/video/projects/[projectId]/publish",   "second HTTP door onto app/actions/video.ts:distributeVideoProjectAction/repurposeVideoOutputAction; same ruling"],
+  // ── Service-to-service intake (lane G5 2026-08-28) ────────────────────────
+  // Not the video lane's shape — this one is a REMOTE INTAKE door. Its handler
+  // authorizes on the `x-internal-api-secret` header (INTERNAL_API_SECRET)
+  // BEFORE falling back to a session (app/api/errors/collect/route.ts:13-27),
+  // which is the same service-to-service shape as /api/intelligence/*. The
+  // ruling that kept it is written at app/actions/error-handler.ts:21-25:
+  // collectError() is called in-process by four modules already, so the HTTP
+  // door exists precisely for callers that are NOT in this process, and nothing
+  // in this repo can prove none exists — CLAUDE.md §1's "unresolved means leave
+  // it". Its two siblings are deliberately NOT here: /api/errors/retry and
+  // /api/errors/escalate are operator doors, and lane G5 gave them their
+  // missing caller (app/components/admin/errors/ErrorDetailsPanel.tsx) rather
+  // than an exemption, so they must stay subject to 6b.
+  ["/api/errors/collect", "service-to-service intake authorized by x-internal-api-secret (route.ts:13-27); ruling at app/actions/error-handler.ts:21-25 — out-of-process callers cannot be disproved from this repo"],
+
+  // ── THE AGENTIC-API / MCP SPINE, and one webhook (lane G2 2026-08-28) ─────
+  // A STRONGER CLASS OF EVIDENCE THAN THE VIDEO FIVE, and worth saying why: those
+  // are second doors onto something the app also reaches by server action, so "no
+  // in-tree caller" is a judgement call. These four are the OS's PUBLISHED MACHINE
+  // SURFACE. They authenticate on a `vos_…` AGENT BEARER TOKEN through
+  // resolveAgenticCaller — credentials minted for third parties at
+  // app/dashboard/superadmin/api-tokens and documented to tenants at
+  // app/settings/developers/developers-client.tsx:326 ("Scoped Bearer credentials
+  // (vos_…) for the Agentic-OS API (/api/agentic-os/*)"). A caller in this tree
+  // would be the anomaly; somebody else's agent calling them is the product.
+  //
+  // THE TEST THAT SEPARATES A DOOR FROM AN ORPHAN HERE — applied one route at a
+  // time, never to the /api/agentic-os/** prefix: CAN A TOKEN GET IN? Two routes in
+  // that same directory FAIL it and are deliberately absent from this map.
+  // /api/agentic-os/voice refuses `caller.via === "token"` outright (every dispatched
+  // step records a users.id as `spoken_by`, and a credential has no human behind it);
+  // /api/agentic-os/resolve-capability is gated by requirePlatformStaffAuth →
+  // requireAuth, which reads a Supabase session a bearer token never mints. Both were
+  // session-only endpoints with NO session-bearing caller — loops, not doors — and
+  // lane G2 closed them with real callers
+  // (app/components/dashboard/voice/KernelPlanCard.tsx and
+  // app/dashboard/superadmin/connectors/capability-resolver-card.tsx) instead of
+  // exempting them. Same directory, opposite verdicts, decided on the auth path.
+  ["/api/agentic-os/actions",              "Agentic-API DISCOVER (agenticapi.com ACTION model) — the vendor-anonymous action manifest an EXTERNAL agent reads first. Auth: vos_ bearer token via resolveAgenticCaller; credentials minted at app/dashboard/superadmin/api-tokens, documented at app/settings/developers/developers-client.tsx:326"],
+  ["/api/agentic-os/actions/[capability]", "Agentic-API DESCRIBE — the typed input spec an external agent must satisfy before INVOKE; same bearer-token auth. Its sibling …/invoke is NOT listed because it is genuinely addressed: this route and the MCP server both hand callers the literal `/api/agentic-os/actions/${…}/invoke`"],
+  ["/api/agentic-os/connectivity",         "Connectivity API Agent — an external agent reads connector health here BEFORE planning, so it never invokes a capability whose OAuth token has lapsed. Gated by the connectivity:read scope on a bearer token"],
+  ["/api/agentic-os/mcp",                  "MCP server (Streamable-HTTP / JSON-RPC 2.0). The caller is an MCP CLIENT outside this repo — initialize / tools/list / tools/call — scope-gated per call by the same bearer token and audit-logged through lib/agentic-os/invocation-log.ts"],
+  ["/api/workflow/trigger",                "Universal webhook entry point for the workflow trigger fabric (GHL / IDX / Zapier / QR scans / email-provider open+click). Auth is Bearer WORKFLOW_WEBHOOK_SECRET, never a session, so an in-tree caller is impossible; named at lib/workflow/triggers.ts:19. The path carries no cron/webhook segment, which is precisely why the NAME test above cannot see it"],
+])
+
 for (const r of routesWithNoCaller) {
-  const external = EXTERNALLY_ADDRESSED.test(r.path)
+  const qualified = QUALIFIED_EXTERNAL_ROUTES.get(r.path)
+  const external = qualified !== undefined || EXTERNALLY_ADDRESSED.test(r.path)
+  const why = qualified !== undefined
+    ? ` (external door kept BY RULING — ${qualified})`
+    : external ? " (external caller expected — classify, do not delete)" : ""
   add(external ? "route-external-caller" : "route-no-caller", r.path, `${r.file}:1`,
-    `${r.methods.join("/")} exported; no string in the tree addresses it${external ? " (external caller expected — classify, do not delete)" : ""}`)
+    `${r.methods.join("/")} exported; no string in the tree addresses it${why}`)
+}
+// A qualified entry that no longer names a live route is a stale exemption, and a
+// stale exemption is indistinguishable from an enforced one until it is reported.
+for (const [p, why] of QUALIFIED_EXTERNAL_ROUTES) {
+  if (!routeDefs.some((r) => r.path === p)) {
+    add("route-no-caller", p, "scripts/opposite-missing-census.ts:1",
+      `STALE EXEMPTION: no route file defines this path any more — remove the entry (${why})`)
+  }
 }
 for (const f of fetchesWithNoRoute) add("fetch-no-route", f.path, `${f.file}:${f.line}`, `addressed, but no app/api route file exists`)
 
@@ -2246,6 +2437,21 @@ for (const f of fetchesWithNoRoute) add("fetch-no-route", f.path, `${f.file}:${f
   control("C6 matches a catch-all", routeMatches("/api/auth/[...nextauth]", "/api/auth/signin/x"))
   control("C6 refuses a length mismatch", !routeMatches("/api/a/b", "/api/a"))
   control("C6 refuses a segment mismatch", !routeMatches("/api/a/b", "/api/a/c"))
+  // ── THE QUALIFIED EXTERNAL EXEMPTION, both arms ───────────────────────────
+  // An exemption that only ever exempts is indistinguishable from a scan that
+  // stopped working, so both directions are proved, not just the exempting one.
+  control("C6 the qualified exemption reclassifies ONLY the paths it names",
+    [...QUALIFIED_EXTERNAL_ROUTES.keys()].every((p) =>
+      findings.some((f) => f.cat === "route-external-caller" && f.key === p)) ||
+    [...QUALIFIED_EXTERNAL_ROUTES.keys()].every((p) => !routesWithNoCaller.some((r) => r.path === p)),
+    `${QUALIFIED_EXTERNAL_ROUTES.size} qualified door(s); a named door that gains an in-tree caller drops out of C6 entirely, which also satisfies this`)
+  control("C6 NEGATIVE — an unnamed sibling under the SAME prefix is still a 6b finding",
+    !QUALIFIED_EXTERNAL_ROUTES.has("/api/video/projects/[projectId]/control-probe") &&
+    (QUALIFIED_EXTERNAL_ROUTES.get("/api/video/projects/[projectId]/control-probe") ?? null) === null,
+    "exact-path map, not a prefix — /api/video/** is not blanket-exempt")
+  control("C6 NEGATIVE — every qualified entry names a route file that still exists",
+    [...QUALIFIED_EXTERNAL_ROUTES.keys()].every((p) => routeDefs.some((r) => r.path === p)),
+    "a stale entry would otherwise sit here reading as enforced (§2)")
   control("C6 ignores an ABSOLUTE url on another host", (() => {
     const before = fetchRefs.length
     collectFetchRefs("<control>", `const u = "https://other.example.com/api/whatever"`)
@@ -2375,24 +2581,45 @@ console.log(`               · ${opaqueWrite.size} tables with an OPAQUE write o
 console.log(`               · ${TRIGGER_WRITTEN.size} table(s) with DB-trigger-written columns read from supabase/migrations (exempt from 1b)`)
 console.log(`               · ${sqlSeeded} column read(s) written by an applied .sql seed/backfill across ${SQL_WRITTEN.size} table(s) (exempt from 1b)`)
 console.log(`               · ${defaultWritten} column read(s) computed by a DB expression DEFAULT across ${DEFAULT_WRITTEN.size} table(s) (exempt from 1b) — CONSTANT defaults are NOT exempt`)
-// BLIND SPOT, printed beside its number. This scan reads DDL out of the repo's
-// .sql; the live database (hrvaqgvukzxfskkcrwbt) carries DEFAULTs for tables
-// whose CREATE TABLE is not in supabase/migrations or scripts/*.sql at all.
+// BLIND SPOT, printed beside its number, and DERIVED rather than pinned. This
+// scan reads DDL out of the repo's .sql; the live database
+// (hrvaqgvukzxfskkcrwbt) carries DEFAULTs for tables whose CREATE TABLE is not
+// in supabase/migrations or scripts/*.sql at all.
+//
 // MEASURED 2026-08-22 against information_schema.columns: 85 of the 230 columns
-// then in 1b carry a default; 43 of those are EXPRESSION defaults, and 13 of
-// THOSE are invisible here because their DDL never landed in the repo —
-// agent_outcome_evaluations.evaluated_at, approval_items.submitted_at,
-// call_whisper_logs.delivered_at, collaborative_search_properties.added_at,
-// data_subject_requests.due_at, home_value_estimates.generated_at,
-// market_insights.generated_at, platform_coupon_redemptions.redeemed_at,
-// prediction_accuracy_log.logged_at, price_predictions.prediction_date,
-// pricing_history.recorded_at, transaction_assignments.assigned_at,
-// transaction_health_factors.scored_at. Those thirteen are still ACCUSED, and
-// the accusation is wrong. Closing it needs a fifth generated schema cache
-// (column defaults, alongside schema-snapshot/fk-map/check-vocabularies/
-// live-tables) fed by a service-role RPC — the same shape as m485's
-// live_check_constraints_json — because CI holds no database credentials.
-console.log(`               · ≥13 live EXPRESSION defaults are NOT visible to this scan (their DDL is not in the repo) — see the blind-spot note at this line`)
+// then in 1b carried a default; 43 of those were EXPRESSION defaults, and 13 of
+// THOSE were invisible here because their DDL never landed in the repo. Those
+// thirteen were ACCUSED, and the accusation was wrong.
+//
+// ALL THIRTEEN ARE NOW RECORDED, by the remedy the doctrine prescribes — bring
+// the DDL into the repo so the offline scan can see the writer, never exempt the
+// column by hand:
+//   · data_subject_requests.due_at — m582 (a trigger, not a default).
+//   · transaction_health_factors.scored_at — the analysis writer now stamps it
+//     explicitly (lib/application/transactions.ts), so the value is visible to
+//     this scan instead of resting on a default no file records.
+//   · the other ELEVEN — m583, one `ALTER COLUMN … SET DEFAULT` apiece,
+//     re-measured live on 2026-08-28 and no-ops against production.
+//
+// The COUNT below is derived from that list rather than hardcoded, so this line
+// cannot go stale the way a pinned "≥13" would: it counts how many of the named
+// columns this run still reports in 1b. A future table whose DDL never lands in
+// the repo will not be in the list — that is the standing residual, and closing
+// it for good needs a fifth generated schema cache (column defaults, alongside
+// schema-snapshot/fk-map/check-vocabularies/live-tables) fed by a service-role
+// RPC, the same shape as m485's live_check_constraints_json, because CI holds no
+// database credentials.
+const KNOWN_OFFLINE_INVISIBLE_DEFAULTS = [
+  "agent_outcome_evaluations.evaluated_at", "approval_items.submitted_at",
+  "call_whisper_logs.delivered_at", "collaborative_search_properties.added_at",
+  "data_subject_requests.due_at", "home_value_estimates.generated_at",
+  "market_insights.generated_at", "platform_coupon_redemptions.redeemed_at",
+  "prediction_accuracy_log.logged_at", "price_predictions.prediction_date",
+  "pricing_history.recorded_at", "transaction_assignments.assigned_at",
+  "transaction_health_factors.scored_at",
+]
+const stillInvisible = KNOWN_OFFLINE_INVISIBLE_DEFAULTS.filter((k) => colReadNeverWritten.includes(k))
+console.log(`               · ${stillInvisible.length} of ${KNOWN_OFFLINE_INVISIBLE_DEFAULTS.length} known live-only EXPRESSION defaults are still invisible to this scan${stillInvisible.length ? ` (${stillInvisible.join(", ")})` : " — all recorded in-repo (m582, m583)"}; a table whose DDL never lands in the repo is the standing residual — see the blind-spot note at this line`)
 console.log(`               · ${unresolvedEmbeds} unresolvable embeds · ${unresolvedFilterTerms} unresolvable filter terms · ${rpcTouched.size} tables in .rpc() files (excluded entirely)`)
 console.log(`  C2 imports   · ${importBindings.length} bindings across ${importStatements} statements (+${sideEffectImports} side-effect imports, not bindings)`)
 console.log(`  C3 exports   · ${typeExports.length} non-function exports · ${typeProofOnly.length} named only by a proof (reported, not failed)`)

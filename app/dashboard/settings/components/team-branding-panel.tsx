@@ -60,6 +60,8 @@ import {
   saveTeamBranding,
   saveTeamSplits,
   saveTeamSignature,
+  saveTeamRevenueGoal,
+  loadTeamRevenueGoal,
   type TeamBrandingSnapshot,
   type TeamBrandOption,
   type TeamSplitType,
@@ -239,6 +241,15 @@ export function TeamBrandingPanel() {
   const [splitPending, startSplit] = useTransition()
   const [sigPending, startSig] = useTransition()
 
+  // ── TEAM REVENUE GOAL ──────────────────────────────────────────────────────
+  // team_performance.goal_amount is what four surfaces divide by to state
+  // attainment; nothing could set it until now, so every team read 0%.
+  const [goal, setGoal] = useState("")
+  const [savedGoal, setSavedGoal] = useState("")
+  const [goalPeriod, setGoalPeriod] = useState("")
+  const [goalRevenue, setGoalRevenue] = useState<number | null>(null)
+  const [goalPending, startGoal] = useTransition()
+
   const apply = useCallback((s: TeamBrandingSnapshot, preferId?: string | null) => {
     setSnap(s)
     const id = preferId && s.teams.some((t) => t.id === preferId) ? preferId : s.activeTeamId
@@ -316,6 +327,43 @@ export function TeamBrandingPanel() {
         split.capAmount.trim()
           ? "Team split and cap saved. They apply to commissions calculated from now on."
           : "Team split saved, with no cap — the team keeps collecting all year. It applies to commissions calculated from now on.",
+      )
+    })
+  }
+
+  // Load the goal in force for the active team (and the revenue it is measured
+  // against). A refused read is SHOWN, never rendered as "no goal set".
+  useEffect(() => {
+    if (!activeId) { setGoal(""); setSavedGoal(""); setGoalRevenue(null); return }
+    let cancelled = false
+    void loadTeamRevenueGoal({ teamId: activeId }).then((r) => {
+      if (cancelled) return
+      if (!r.success) { toast.error(r.error ?? "Could not read this team's revenue goal."); return }
+      const g = r.goalAmount != null ? String(r.goalAmount) : ""
+      setGoal(g)
+      setSavedGoal(g)
+      setGoalPeriod(r.periodLabel ?? "")
+      setGoalRevenue(r.totalRevenue ?? null)
+    })
+    return () => { cancelled = true }
+  }, [activeId])
+
+  function saveGoal() {
+    if (!activeId) return
+    startGoal(async () => {
+      const res = await saveTeamRevenueGoal({ teamId: activeId, goalAmount: goal })
+      if (!res.success) {
+        toast.error(res.error ?? "Could not save your team's revenue goal.")
+        return
+      }
+      const g = res.goalAmount != null ? String(res.goalAmount) : ""
+      setGoal(g)
+      setSavedGoal(g)
+      if (res.periodLabel) setGoalPeriod(res.periodLabel)
+      toast.success(
+        res.goalAmount != null
+          ? `Revenue goal saved for ${res.periodLabel}. Attainment is measured against it from now on.`
+          : "Revenue goal cleared. Attainment stops being reported for this period.",
       )
     })
   }
@@ -910,6 +958,47 @@ export function TeamBrandingPanel() {
           <div className="flex items-center justify-end gap-3 pt-1">
             <Button size="sm" onClick={saveSignature} disabled={!sigDirty || sigPending || unmergeable}>
               {sigPending ? "Saving…" : "Save team signature"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ── 4. TEAM REVENUE GOAL ───────────────────────────────────────────── */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Percent className="h-4 w-4" />
+            Team Revenue Goal
+          </CardTitle>
+          <CardDescription>
+            The revenue target this team is measured against for{" "}
+            <span className="font-medium text-foreground">{goalPeriod || "this month"}</span>. Team
+            attainment on the reports and the financials dashboard is this number divided into the
+            revenue the nightly rollup measured — with no goal set, attainment cannot be reported at
+            all.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="team-goal">Goal for this month ($)</Label>
+            <Input
+              id="team-goal"
+              inputMode="decimal"
+              placeholder="e.g. 250000"
+              value={goal}
+              onChange={(e) => setGoal(e.target.value)}
+              disabled={goalPending}
+            />
+            <p className="text-xs text-muted-foreground">
+              {goalRevenue != null
+                ? `Measured revenue so far this period: $${Number(goalRevenue).toLocaleString()}.`
+                : "The nightly rollup has not measured revenue for this period yet, so attainment stays blank until it does."}{" "}
+              Clearing this box removes the goal.
+            </p>
+          </div>
+          <div className="flex items-center justify-end gap-3 pt-1">
+            <Button size="sm" onClick={saveGoal} disabled={goal === savedGoal || goalPending}>
+              {goalPending ? "Saving…" : "Save revenue goal"}
             </Button>
           </div>
         </CardContent>

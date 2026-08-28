@@ -531,13 +531,26 @@ export function ReputationPanel({
     }
   }
 
+  // What was ACTUALLY paid, per gift row, entered at the moment the agent marks
+  // it sent. Empty = "don't know", which leaves client_gifts.actual_cost NULL and
+  // the spend read falls back to the budget exactly as it did before.
+  const [giftPaid, setGiftPaid] = useState<Record<string, string>>({})
+
   async function handleMarkGiftSent(giftId: string) {
     setMarkingSent(giftId)
     try {
-      const result = await markGiftSentAction(giftId)
+      const typed = (giftPaid[giftId] ?? "").trim()
+      const paid = typed === "" ? undefined : Number(typed)
+      if (paid !== undefined && (!Number.isFinite(paid) || paid < 0)) {
+        toast.error("Enter what you paid as a non-negative number, or leave it blank")
+        return
+      }
+      const result = await markGiftSentAction(giftId, paid)
       if (result.success) {
-        toast.success("Gift marked as sent")
-        setGiftHistory(prev => prev.map(g => g.id === giftId ? { ...g, status: "sent", sent_at: new Date().toISOString() } : g))
+        toast.success(paid === undefined ? "Gift marked as sent" : `Gift marked as sent — $${paid} recorded`)
+        setGiftHistory(prev => prev.map(g => g.id === giftId
+          ? { ...g, status: "sent", sent_at: new Date().toISOString(), actual_cost: paid ?? g.actual_cost }
+          : g))
       } else {
         toast.error(result.error ?? "Failed to update gift")
       }
@@ -1319,11 +1332,28 @@ export function ReputationPanel({
                         <div className="min-w-0">
                           <p className="font-medium truncate">{g.gift_name}</p>
                           <p className="text-xs text-muted-foreground capitalize">
-                            {g.occasion} &middot; ${g.estimated_cost} &middot; {new Date(g.created_at).toLocaleDateString()}
+                            {g.occasion} &middot;{" "}
+                            {g.actual_cost != null
+                              ? `$${g.actual_cost} paid`
+                              : `$${g.estimated_cost} budget`}{" "}
+                            &middot; {new Date(g.created_at).toLocaleDateString()}
                           </p>
                         </div>
                         <div className="flex items-center gap-2 shrink-0 ml-2">
                           <Badge variant="outline" className={`text-xs ${statusBadge(g.status)}`}>{g.status}</Badge>
+                          {g.status === "recommended" && (
+                            <Input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              inputMode="decimal"
+                              className="h-8 w-24 text-xs"
+                              placeholder="Paid $"
+                              aria-label="Amount actually paid for this gift"
+                              value={giftPaid[g.id] ?? ""}
+                              onChange={(e) => setGiftPaid(prev => ({ ...prev, [g.id]: e.target.value }))}
+                            />
+                          )}
                           {g.status === "recommended" && (
                             <Button
                               size="sm"

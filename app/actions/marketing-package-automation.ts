@@ -793,6 +793,72 @@ export async function getMarketingPackageServices(packageId: string) {
 }
 
 /**
+ * CLOSE OUT one booked marketing service — the missing half of the booking above.
+ *
+ * `bookMarketingService` opened the row at status `scheduled`, and NOTHING in
+ * the tree ever closed it. Two consequences, both visible to an agent every day:
+ *
+ *   · `completed_at` gated the "Remind vendor" button
+ *     (marketing-tier/marketing-package-panel.tsx:361 — `!s.completed_at`), so a
+ *     finished service kept offering to nudge its vendor about a job already
+ *     done, forever.
+ *   · `actual_cost` is the MONEY this lane spends, read back by
+ *     getMarketingPackageServices (this file) — and written by nobody, so the
+ *     per-listing marketing spend was structurally $0/NULL no matter how much
+ *     the brokerage actually paid its bench.
+ *
+ * This is the point in the process where both facts become true: the vendor has
+ * delivered and the invoice is known. `actualCost` is optional — a completion
+ * with no invoice to hand still closes the row honestly and leaves the money
+ * column NULL rather than stamping a guess (the same reasoning that keeps
+ * `estimated_cost` NULL at booking time, recorded above).
+ *
+ * Tenant comes from the SESSION and is applied as a PREDICATE on the update, and
+ * the update is COUNTED: an UPDATE that matched no row resolves with error null
+ * and data [] (CLAUDE.md §3), which would otherwise report another brokerage's
+ * refusal as a successful completion.
+ */
+export async function completeMarketingService(params: {
+  serviceId: string
+  actualCost?: number | null
+}): Promise<{ success: boolean; error?: string; completedAt?: string }> {
+  if (!isValidUUID(params.serviceId)) return { success: false, error: "Invalid service ID" }
+
+  const auth = await requireBrokerage()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const completedAt = new Date().toISOString()
+  const patch: Record<string, unknown> = {
+    status: "completed",
+    completed_at: completedAt,
+    updated_at: completedAt,
+  }
+  if (params.actualCost !== undefined && params.actualCost !== null) {
+    const paid = Number(params.actualCost)
+    if (!Number.isFinite(paid) || paid < 0) {
+      return { success: false, error: "Actual cost must be a non-negative number." }
+    }
+    patch.actual_cost = paid
+  }
+
+  const svc = createServiceClient()
+  const { data, error } = await svc
+    .from("listing_marketing_services")
+    .update(patch)
+    .eq("id", params.serviceId)
+    .eq("brokerage_id", auth.brokerageId)
+    .select("id")
+
+  if (error) return { success: false, error: error.message }
+  if ((data ?? []).length === 0) {
+    return { success: false, error: "That service is not in your brokerage." }
+  }
+
+  revalidatePath("/dashboard/listings")
+  return { success: true, completedAt }
+}
+
+/**
  * Nudge a booked service's vendor about its upcoming date. Delegates to the
  * canonical reminder (lib/communications/vendor-communications:
  * sendVendorServiceReminder — real dispatchEmail + vendor_communications

@@ -486,6 +486,43 @@ export async function recordReview(
       return { success: false, error: error?.message ?? "Failed to record review." }
     }
 
+    // ── THE REQUEST THIS REVIEW ANSWERS ──────────────────────────────────────
+    // `review_requests.completed_at` is read by the workspace loader above
+    // (loadReputationWorkspace selects it) and was written by NOBODY: a request
+    // sent to a client stayed `pending`/`sent` for ever, even after the client
+    // left the review, so the reputation workspace could not tell an outstanding
+    // ask from a satisfied one and every follow-up cadence would chase clients
+    // who had already done what was asked.
+    //
+    // THIS is the moment the fact becomes true — a review arrived from this
+    // contact on this platform for this agent. Closing it here rather than in a
+    // second reconciler keeps one writer for the transition.
+    //
+    // Requires a contact to match on: an anonymous inbound review cannot be
+    // attributed to a particular ask, and guessing would close the wrong one.
+    if (input.contactId) {
+      const { data: closed, error: closeErr } = await supabase
+        .from("review_requests")
+        .update({ status: "completed", completed_at: new Date().toISOString() })
+        .eq("agent_id",     input.agentId)
+        .eq("brokerage_id", input.brokerageId)
+        .eq("contact_id",   input.contactId)
+        .eq("platform",     input.platform)
+        .in("status",       ["pending", "sent"])
+        .is("completed_at", null)
+        .select("id")
+
+      // COUNTED (CLAUDE.md §3): an UPDATE matching nothing resolves exactly like
+      // one that landed. Zero rows here is the ORDINARY case — a review that
+      // nobody asked for — so it is not an error; a refusal is, and it is said
+      // aloud rather than swallowed into a silent no-op.
+      if (closeErr) {
+        console.error("[reputation] review request not closed out:", closeErr.message)
+      } else if ((closed ?? []).length > 0) {
+        console.log(`[reputation] closed ${closed!.length} review request(s) answered by review ${data.id}`)
+      }
+    }
+
     await emitLifecycleEvent({
       supabase,
       brokerageId: input.brokerageId,

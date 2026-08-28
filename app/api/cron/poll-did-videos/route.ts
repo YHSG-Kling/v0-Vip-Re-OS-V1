@@ -30,6 +30,57 @@ import { verifyCronAuth } from "@/lib/cron-auth"
 
 const DID_API_BASE = "https://api.d-id.com"
 
+/**
+ * CLOSE OUT the render ledger row for one D-ID job.
+ *
+ * `video_render_log` is the per-attempt cost/SLA/debug ledger
+ * (scripts/992-create-video-render-log.sql). Its `status` carries DEFAULT
+ * 'submitted' and its `error_message` had no writer at all, so the render-attempt
+ * list an agent sees (app/components/content-studio/LinkToVideoGenerator.tsx:614,
+ * fed by app/actions/link-to-video.ts:586) showed every attempt — successes and
+ * hard failures alike — as a permanent "submitted" with no reason attached. The
+ * project row already learned the outcome at each of the four terminal points
+ * below; the ledger never did.
+ *
+ * Keyed on project_id AND provider_job_id so a re-render's ledger line is not
+ * overwritten by the outcome of the previous attempt: the submit route
+ * (app/api/did/generate-video/route.ts) now stamps the talk id on the row it
+ * inserts. Rows written before that stamp existed carry a NULL job id and are
+ * left alone rather than being back-filled with a guess.
+ *
+ * Best-effort: the project's own status is the source of truth for the agent, and
+ * a refused audit write must never turn a delivered video into a failure. But the
+ * refusal IS read and logged (CLAUDE.md §3) — a silently swallowed one is how
+ * this ledger came to look empty.
+ */
+async function recordRenderOutcome(
+  supabase: ReturnType<typeof createServiceClient>,
+  projectId: string,
+  providerJobId: string | null | undefined,
+  outcome: { status: string; errorMessage?: string | null; renderDurationSeconds?: number | null },
+): Promise<void> {
+  if (!providerJobId) return
+  // Every column NAMED, no spread. A `{ ...patch }` update object is opaque to
+  // every static scanner in this repo, and an opaque write does not merely hide
+  // these three columns — it suppresses the honest finding still outstanding on
+  // this table (`cost_usd`, which has no provider price source and therefore
+  // still has no writer). Hiding a real gap is worse than leaving it visible.
+  const { error } = await supabase
+    .from("video_render_log")
+    .update({
+      status: outcome.status,
+      error_message: outcome.errorMessage ?? null,
+      render_duration_seconds: outcome.renderDurationSeconds ?? null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("project_id", projectId)
+    .eq("provider_job_id", providerJobId)
+  if (error) {
+    console.error(`[poll-did-videos] render log outcome not recorded for ${projectId}: ${error.message}`)
+  }
+}
+
+
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
@@ -142,6 +193,10 @@ export async function GET(request: NextRequest) {
                 is_read: false,
               })
             }
+            await recordRenderOutcome(supabase, video.id, video.provider_job_id, {
+              status: "failed",
+              errorMessage: `D-ID no longer has job ${video.provider_job_id} (404 on /${mode}) — it expired or was never created`,
+            })
             results.failed++
             continue
           }
@@ -157,6 +212,10 @@ export async function GET(request: NextRequest) {
             error_message: failure.userMessage,
             retry_count: (video.retry_count ?? 0) + 1,
           }).eq("id", video.id)
+          await recordRenderOutcome(supabase, video.id, video.provider_job_id, {
+            status: "failed",
+            errorMessage: failure.userMessage,
+          })
           console.error(`[poll-did-videos] terminal for ${video.id}: ${failure.operatorMessage}`)
           results.failed++
           continue
@@ -451,11 +510,11 @@ export async function GET(request: NextRequest) {
             console.error("[poll-did-videos] avatar→remotion handoff failed:", (e as Error).message)
           }
 
-          await supabase
-            .from("video_render_log")
-            .update({ render_duration_seconds: duration ?? null })
-            .eq("project_id", video.id)
-            .eq("provider", "did")
+          await recordRenderOutcome(supabase, video.id, video.provider_job_id, {
+            status: "completed",
+            errorMessage: null,
+            renderDurationSeconds: duration ?? null,
+          })
 
           // Notify agent — schema: user_id, brokerage_id, type, title, body, entity_type, entity_id
           if (agentUserId) {
@@ -548,6 +607,11 @@ export async function GET(request: NextRequest) {
               retry_count: retryCount + 1,
             })
             .eq("id", video.id)
+
+          await recordRenderOutcome(supabase, video.id, video.provider_job_id, {
+            status: "failed",
+            errorMessage: errorMsg,
+          })
 
           if (agentUserId) {
             await supabase.from("notifications").insert({

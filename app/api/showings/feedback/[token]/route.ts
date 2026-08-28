@@ -62,6 +62,8 @@ export async function POST(
       overallImpression,
       buyerInterestLevel,
       additionalNotes,
+      submittedByAgentName,
+      submittedByAgentEmail,
     } = body
 
     const impression = normalizeImpression(overallImpression)
@@ -122,6 +124,20 @@ Additional notes: ${additionalNotes || "none"}`,
         buyer_interest_level:   buyerInterestLevel,
         additional_notes:       additionalNotes || null,
         ai_summary:             aiSummary,
+        // WHO SUBMITTED — the two columns the listing agent's feedback panel
+        // renders (feedback-summary-panel.tsx:217) and getShowingFeedbackCards
+        // selects (app/actions/seller-showings.ts:731). Nothing in the tree
+        // wrote either of them, so every feedback card on every listing fell
+        // through to the showing's buyer-agent name or to "Anonymous" — this is
+        // a THIRD-PARTY showing agent's form, and the person who took the time
+        // could never be named. Blank stays NULL: the form says anonymity is
+        // allowed, so an empty box must not become an empty string.
+        submitted_by_agent_name:  typeof submittedByAgentName === "string" && submittedByAgentName.trim()
+          ? submittedByAgentName.trim().slice(0, 200)
+          : null,
+        submitted_by_agent_email: typeof submittedByAgentEmail === "string" && submittedByAgentEmail.trim()
+          ? submittedByAgentEmail.trim().slice(0, 320)
+          : null,
         // sentiment_score: simple mapping 0-1
         sentiment_score: offerInterest === "very_likely" || buyerInterestLevel === "hot"
           ? 0.85

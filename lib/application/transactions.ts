@@ -1804,12 +1804,33 @@ Return JSON array of tasks.`
         // task_items links to the transaction via checklist_id → smart_checklists,
         // not a direct transaction_id. Real columns: title/description/assigned_to/
         // completed (no status/client_visible).
+        //
+        // THE DEADLINE WAS ASKED FOR AND THEN THROWN AWAY. The prompt above
+        // requires `due_date_offset (days from now)` on every task, and this
+        // insert dropped it, so `task_items.due_date` was NULL on every row this
+        // generator has ever written. detectTransactionIssues, ~40 lines below,
+        // reads exactly that column to count OVERDUE TASKS
+        // (`!t.completed && t.due_date && new Date(t.due_date) < new Date()`) and
+        // feeds the count into the transaction-health prompt — so "Overdue Tasks"
+        // was structurally 0 for every deal on the platform and the health score
+        // was computed as if no checklist task were ever late. Deadline tracking
+        // was in the prompt, in the schema and in the reader; only the write was
+        // missing.
+        //
+        // A non-numeric or negative offset is left NULL rather than coerced:
+        // a fabricated deadline on a compliance checklist is worse than an
+        // absent one.
+        const offsetDays = Number(task.due_date_offset)
+        const dueDate = Number.isFinite(offsetDays) && offsetDays >= 0
+          ? new Date(Date.now() + offsetDays * 86_400_000).toISOString()
+          : null
         await supabase.from("task_items").insert({
           checklist_id: checklistRecord.id,
           title: task.task_name,
           description: task.task_description,
           assigned_to: task.assigned_to_role,
           priority: task.priority,
+          due_date: dueDate,
           completed: false,
         })
       }
@@ -1871,6 +1892,7 @@ Return:
 {
   "health_score": 85,
   "health_status": "healthy|at_risk|critical",
+  "narrative": "two or three sentences explaining the score in plain language",
   "red_flags": [],
   "warning_signs": [],
   "recommendations": [],
@@ -1880,10 +1902,24 @@ Return:
     const analysis = JSON.parse(await runPipelineSimple(issuePrompt, { feature: "transaction_issue_analysis" }))
 
   if (analysis.data) {
+    // `ai_narrative` is the finding here; `scored_at` is stamped alongside it.
+    //
+    // The deal-health breakdown (app/transactions/[transactionId]/page.tsx:112)
+    // selects `ai_narrative` beside every score and orders on `scored_at`.
+    // MEASURED LIVE against hrvaqgvukzxfskkcrwbt on 2026-08-28
+    // (information_schema.columns): `scored_at` carries DEFAULT now(), so the
+    // ordering was never actually broken — it is stamped explicitly only so the
+    // value is visible to an offline scan instead of resting on a default no
+    // file in this repo records. `ai_narrative` has NO default and NO writer:
+    // the explanation beside every health score has been blank on every deal,
+    // and the model that produced the score is the only thing that can write it,
+    // which is why the prompt above now asks for it.
     await supabase.from("transaction_health_factors").insert({
       transaction_id: transactionId,
       factor_type: "comprehensive",
       factor_score: analysis.data.health_score || 100,
+      ai_narrative: typeof analysis.data.narrative === "string" ? analysis.data.narrative : null,
+      scored_at: new Date().toISOString(),
       red_flags: analysis.data.red_flags || [],
       warning_signs: analysis.data.warning_signs || [],
       recommendations: analysis.data.recommendations || [],
@@ -2038,6 +2074,7 @@ COMMUNICATION PATTERNS:
 Calculate health scores (0-100):
 {
   "overall_health": 85,
+  "narrative": "two or three sentences explaining the overall health score in plain language",
   "timeline_health": 90,
   "communication_health": 80,
   "documentation_health": 85,
@@ -2063,10 +2100,15 @@ Calculate health scores (0-100):
       })
       .eq("id", transactionId)
 
+    // Same two stamps as the issue-analysis writer above — one vocabulary, so
+    // the breakdown's narrative behaves identically whichever analysis produced
+    // the row.
     await supabase.from("transaction_health_factors").insert({
       transaction_id: transactionId,
       factor_type: "comprehensive",
       factor_score: health.data.overall_health,
+      ai_narrative: typeof health.data.narrative === "string" ? health.data.narrative : null,
+      scored_at: new Date().toISOString(),
       red_flags: health.data.risk_factors,
       recommendations: health.data.recommendations,
     })

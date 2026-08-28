@@ -17,6 +17,7 @@ import { Package, CheckCircle2, Loader2, AlertCircle, Sparkles, Globe, RefreshCw
 import {
   activateMarketingPackage,
   bookMarketingService,
+  completeMarketingService,
   getMarketingPackageServices,
   getSyndicationStatus,
   getVendorRecommendations,
@@ -63,6 +64,7 @@ interface BookedService {
   scheduled_date: string | null
   completed_at: string | null
   estimated_cost: number | null
+  actual_cost: number | null
   vendor: { company_name: string | null } | null
 }
 
@@ -123,6 +125,45 @@ export function MarketingPackagePanel({ transactionId, activePackage }: Marketin
         setRemindMessage("Reminder failed")
       } finally {
         setRemindingId(null)
+      }
+    })()
+  }
+
+  // "Mark done" — closes the booked service and records what the vendor actually
+  // billed. Nothing used to close a service at all, so completed_at stayed NULL
+  // (the reminder button below never retired) and actual_cost — the per-listing
+  // marketing SPEND — was written by nobody. The invoice box is optional: a
+  // completion with no figure to hand still closes the row and leaves the money
+  // column NULL rather than recording a guess.
+  const [completingId, setCompletingId] = useState<string | null>(null)
+  const [servicePaid, setServicePaid] = useState<Record<string, string>>({})
+
+  const handleCompleteService = (serviceId: string) => {
+    const typed = (servicePaid[serviceId] ?? "").trim()
+    const paid = typed === "" ? undefined : Number(typed)
+    if (paid !== undefined && (!Number.isFinite(paid) || paid < 0)) {
+      setRemindMessage("Enter the invoiced amount as a non-negative number, or leave it blank.")
+      return
+    }
+    setCompletingId(serviceId)
+    setRemindMessage(null)
+    void (async () => {
+      try {
+        const res = await completeMarketingService({ serviceId, actualCost: paid })
+        if (!res.success) {
+          setRemindMessage(res.error ?? "Could not mark the service complete")
+          return
+        }
+        setRemindMessage(
+          paid === undefined
+            ? "Service marked complete."
+            : `Service marked complete — ${formatCurrency(paid)} recorded as the actual cost.`,
+        )
+        await loadServices()
+      } catch {
+        setRemindMessage("Could not mark the service complete")
+      } finally {
+        setCompletingId(null)
       }
     })()
   }
@@ -351,10 +392,43 @@ export function MarketingPackagePanel({ transactionId, activePackage }: Marketin
                           </p>
                         </div>
                         <div className="flex shrink-0 items-center gap-2">
-                          {s.estimated_cost !== null && (
+                          {/* What was actually paid wins over the quote when it exists —
+                              actual_cost is now written at completion. */}
+                          {s.actual_cost !== null && s.actual_cost !== undefined ? (
+                            <Badge variant="outline">{formatCurrency(s.actual_cost)} paid</Badge>
+                          ) : s.estimated_cost !== null ? (
                             <Badge variant="outline">{formatCurrency(s.estimated_cost)}</Badge>
-                          )}
+                          ) : null}
                           <Badge variant="secondary">{s.status ?? "scheduled"}</Badge>
+                          {/* Close-out — records completed_at and the invoiced amount. */}
+                          {s.vendor && !s.completed_at && (
+                            <>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                inputMode="decimal"
+                                aria-label="Amount the vendor invoiced for this service"
+                                placeholder="Invoiced $"
+                                className="h-7 w-24 rounded-md border bg-background px-2 text-xs"
+                                value={servicePaid[s.id] ?? ""}
+                                onChange={(e) =>
+                                  setServicePaid((prev) => ({ ...prev, [s.id]: e.target.value }))
+                                }
+                              />
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-xs"
+                                disabled={completingId === s.id}
+                                onClick={() => handleCompleteService(s.id)}
+                              >
+                                {completingId === s.id
+                                  ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                  : "Mark done"}
+                              </Button>
+                            </>
+                          )}
                           {/* Vendor nudge — sendServiceReminderToVendor delegates to the
                               canonical reminder (real email + delivery ledger). Only for a
                               booked, scheduled, not-yet-completed service. */}

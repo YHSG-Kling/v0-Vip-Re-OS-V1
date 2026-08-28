@@ -169,6 +169,42 @@ export async function sendThankYouNoteAction(input: {
 
   if (noteErr) return { success: false, error: noteErr.message }
 
+  // ── THE TEMPLATE'S USE COUNTER ───────────────────────────────────────────
+  // `thank_you_note_templates.use_count` is what loadThankYouTemplatesAction
+  // ORDERS BY (this file, `.order("use_count", { ascending: false })`) — the
+  // "your most-used templates first" ordering an agent sees. It carries
+  // `NOT NULL DEFAULT 0` (scripts/create-gifting-notes-tables.sql:58) and had no
+  // incrementer anywhere, so every template sat at 0 and the ordering was
+  // arbitrary for ever. Sending a note IS the use.
+  //
+  // Read-then-write, not an atomic bump: PostgREST has no `col = col + 1` and
+  // this repo has no increment RPC for the table. Two notes sent in the same
+  // instant can therefore cost one tick — acceptable for a POPULARITY ordering,
+  // and stated rather than hidden. It is not acceptable for money, which is why
+  // no ledger in this lane is written this way.
+  if (input.templateId) {
+    const { data: tpl, error: tplErr } = await service
+      .from("thank_you_note_templates")
+      .select("id, use_count")
+      .eq("id", input.templateId)
+      .maybeSingle()
+    if (tplErr) {
+      console.error("[reputation-kernel] template use_count not read:", tplErr.message)
+    } else if (tpl) {
+      const { data: bumped, error: bumpErr } = await service
+        .from("thank_you_note_templates")
+        .update({ use_count: Number((tpl as { use_count: number | null }).use_count ?? 0) + 1 })
+        .eq("id", input.templateId)
+        .select("id")
+      // COUNTED (§3): a zero-row update resolves exactly like one that landed.
+      // The note itself is already filed, so this is reported, never thrown.
+      if (bumpErr) console.error("[reputation-kernel] template use_count not bumped:", bumpErr.message)
+      else if ((bumped ?? []).length === 0) {
+        console.error(`[reputation-kernel] template ${input.templateId} matched no row when bumping use_count`)
+      }
+    }
+  }
+
   if (channel === "email") {
     if (!input.contactEmail) return { success: false, error: "Contact has no email address." }
 
@@ -418,18 +454,55 @@ export async function assignGiftAction(input: {
   return { success: true, giftId: data?.id }
 }
 
-export async function markGiftSentAction(giftId: string): Promise<{ success: boolean; error?: string }> {
+/**
+ * MARK SENT is where the gift's MONEY becomes true.
+ *
+ * `client_gifts.estimated_cost` is the budget the recommendation was made
+ * against; `client_gifts.actual_cost` is what was really paid, and it is the
+ * FIRST value the spend read prefers — app/actions/ai-client-gifting.ts:511
+ * computes `Number(g.actual_cost ?? g.estimated_cost ?? 0)`. Nothing in the tree
+ * wrote `actual_cost`, so that coalesce could only ever fall through to the
+ * budget: every gift dashboard reported the QUOTE as the spend, and an agent who
+ * bought a $40 gift on a $120 budget was billed against the wrong number for the
+ * whole year. There is no second writer to merge onto — the missing half is the
+ * write, and this is the one moment in the process where the amount is known:
+ * the agent has bought the thing and is recording that they sent it.
+ *
+ * `actualCost` is OPTIONAL: an agent who does not know or does not care still
+ * gets the status transition, and the column stays NULL so the coalesce above
+ * falls back to the budget exactly as before. Only a supplied, finite,
+ * non-negative number is stamped.
+ */
+export async function markGiftSentAction(
+  giftId: string,
+  actualCost?: number | null,
+): Promise<{ success: boolean; error?: string }> {
   const actor = await resolveActor()
   if (!actor) return { success: false, error: "Not authenticated." }
 
+  const patch: Record<string, unknown> = { status: "sent", sent_at: new Date().toISOString() }
+  if (actualCost !== undefined && actualCost !== null) {
+    const paid = Number(actualCost)
+    if (!Number.isFinite(paid) || paid < 0) {
+      return { success: false, error: "Amount paid must be a non-negative number." }
+    }
+    patch.actual_cost = paid
+  }
+
   const service = createServiceClient()
-  const { error } = await service
+  // COUNTED. An update whose tenant/agent predicate matched nothing resolves with
+  // error === null and data === [] — byte-identical to a write that landed
+  // (CLAUDE.md §3) — so "gift marked sent" would be reported for another agent's
+  // row. `.select("id")` makes the zero case visible.
+  const { data, error } = await service
     .from("client_gifts")
-    .update({ status: "sent", sent_at: new Date().toISOString() })
+    .update(patch)
     .eq("id",       giftId)
     .eq("agent_id", actor.agentId)
+    .select("id")
 
   if (error) return { success: false, error: error.message }
+  if ((data ?? []).length === 0) return { success: false, error: "That gift is not yours to update." }
   return { success: true }
 }
 
@@ -444,7 +517,7 @@ export async function loadGiftHistoryAction(contactId: string): Promise<{
   const service = createServiceClient()
   const { data, error } = await service
     .from("client_gifts")
-    .select("id, gift_name, gift_type, occasion, status, estimated_cost, sent_at, created_at")
+    .select("id, gift_name, gift_type, occasion, status, estimated_cost, actual_cost, sent_at, created_at")
     .eq("contact_id", contactId)
     .eq("agent_id",   actor.agentId)
     .order("created_at", { ascending: false })

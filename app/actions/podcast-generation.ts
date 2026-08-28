@@ -91,7 +91,7 @@ export async function createPodcastEpisode(params: {
     })
 
     // If template provided, load template settings
-    let templateData = null
+    let templateData: { use_count?: number | null; [k: string]: unknown } | null = null
     if (params.templateId) {
       const { data: template } = await supabase
         .from("podcast_templates")
@@ -213,6 +213,33 @@ export async function createPodcastEpisode(params: {
       })
       .select()
       .single()
+
+    // ── THE TEMPLATE'S USE COUNTER ─────────────────────────────────────────
+    // `podcast_templates.use_count` is ORDERED BY in getPodcastTemplates
+    // (this file) and RENDERED verbatim — "Used {n} times" —
+    // app/dashboard/marketing/podcast/components/templates-tab.tsx:204. Nothing
+    // incremented it, so every template read "Used 0 times" for ever and the
+    // most-used ordering was arbitrary. Creating an episode FROM a template is
+    // the use.
+    //
+    // Read-then-write: PostgREST cannot express `col = col + 1` and there is no
+    // increment RPC for this table, so two simultaneous generations can cost one
+    // tick. That is acceptable for a popularity counter and is stated rather
+    // than hidden. Never blocks the episode — an unbumped counter must not lose
+    // a podcast the tenant already paid to generate.
+    if (params.templateId && !error) {
+      const { data: bumped, error: bumpErr } = await supabase
+        .from("podcast_templates")
+        .update({ use_count: Number(templateData?.use_count ?? 0) + 1 })
+        .eq("id", params.templateId)
+        .eq("agent_id", agentId)
+        .eq("brokerage_id", brokerageId)
+        .select("id")
+      if (bumpErr) console.error("[podcast] template use_count not bumped:", bumpErr.message)
+      else if ((bumped ?? []).length === 0) {
+        console.error(`[podcast] template ${params.templateId} matched no row in this tenant when bumping use_count`)
+      }
+    }
 
     if (error) throw error
 
