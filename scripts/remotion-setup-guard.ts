@@ -223,6 +223,64 @@ console.log("\n═══ 3. Geometry agrees, because three systems trust the DB 
     stillsInRoot.length >= 8)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n═══ 3b. …and the SNAPSHOT still matches the LIVE table ═══")
+// THE BLIND SPOT SECTION 3 HAD, NAMED AND CLOSED WHERE IT CAN BE.
+//
+// Sections 2-3 compare Root.tsx against COMPOSITION_GEOMETRY — a STATIC mirror
+// of remotion_compositions checked into lib/. That proves Root and the mirror
+// agree; it proves NOTHING about the live table, which is what actually feeds
+// the render cache key, the narration pad and the still/moving fork at runtime.
+// So the exact drift the guard's own header says it exists to prevent could sit
+// in production with every assertion green: edit the live row, leave the mirror
+// alone, and the OS offers a video that renders at a geometry nobody checked.
+//
+// CI has no database, so this cannot be a hard requirement there — a gate that
+// cannot run must refuse rather than pass (CLAUDE.md §4), and the honest form of
+// "refuse" for a check with no credentials is to SAY IT SKIPPED. It never
+// reports ✓ for a comparison it did not make.
+//
+// Verified by hand against hrvaqgvukzxfskkcrwbt on 2026-08-28: all 33 rows, all
+// four geometry fields, ZERO drift across Root.tsx / COMPOSITION_GEOMETRY / live.
+{
+  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
+  if (!url || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    console.log("  ⏭  skipped — no SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY.")
+    console.log("     The static mirror is UNVERIFIED against the live table in this run.")
+  } else {
+    const { createServiceClient } = await import("../lib/supabase/service")
+    const svc = createServiceClient()
+    const { data, error } = await svc
+      .from("remotion_compositions")
+      .select("composition_id, width, height, fps, duration_frames")
+    // supabase-js RESOLVES a refusal (§3). A swallowed error would leave `rows`
+    // empty and every comparison below vacuously true — the exact "reports zero
+    // and reads as a clean bill of health" shape §2 warns about.
+    if (error) {
+      ok("the live remotion_compositions read succeeded", false, error.message)
+    } else {
+      const rows = (data ?? []) as Array<{ composition_id: string; width: number; height: number; fps: number; duration_frames: number }>
+      const liveById = new Map(rows.map((r) => [r.composition_id, r]))
+      ok(`the live table returned rows at all (${rows.length})`, rows.length > 0)
+      const onlyLive = rows.map((r) => r.composition_id).filter((id) => !REGISTRY[id])
+      const onlyMirror = Object.keys(REGISTRY).filter((id) => !liveById.has(id))
+      ok("the live table and the checked-in mirror name the SAME compositions",
+        onlyLive.length === 0 && onlyMirror.length === 0,
+        [...onlyLive.map((i) => `live-only ${i}`), ...onlyMirror.map((i) => `mirror-only ${i}`)].join(", "))
+      const drift: string[] = []
+      for (const [id, m] of Object.entries(REGISTRY)) {
+        const l = liveById.get(id)
+        if (!l) continue
+        for (const f of ["width", "height", "fps", "duration_frames"] as const) {
+          if (m[f] !== l[f]) drift.push(`${id}.${f} mirror=${m[f]} live=${l[f]}`)
+        }
+      }
+      ok("no geometry drift between the checked-in mirror and the LIVE table —\n    regenerate COMPOSITION_GEOMETRY (the SQL is in its header) if this fails",
+        drift.length === 0, drift.slice(0, 6).join(" | "))
+    }
+  }
+}
+
 console.log("\n═══ 4. Every composition is renderable as configured ═══")
 {
   const bad: string[] = []
@@ -302,6 +360,67 @@ console.log("\n═══ 5. The rules that silently do not render ═══")
     !trimProp.test(blankStrings(stripComments(`// use startFrom={0} — no\nconst x = "endAt={1}"`))))
   ok(`no <Video>/<Audio> in remotion/ still uses startFrom/endAt — one spelling,\n    and the new one is the only one the skill documents`,
     deprecatedTrim.length === 0, deprecatedTrim.slice(0, 6).join(", "))
+
+  // ── EVERY interpolate() CLAMPS ON BOTH SIDES ───────────────────────────────
+  //
+  // The skill's example scene passes `extrapolateLeft` AND `extrapolateRight` on
+  // every call, and Remotion's default on the missing side is "extend" — it keeps
+  // extrapolating the line past the input range. That is the same class of defect
+  // as the CSS-transition rule above: the render SUCCEEDS and the frame is wrong.
+  //
+  // WHY THIS GUARD EXISTS RATHER THAN THE PREVIOUS WAVE'S ONE-OFF PASS. A lane
+  // reported "all 131 interpolate() calls now clamp"; measured here on
+  // 2026-08-28, 105 did and 26 clamped only the RIGHT side, because the sweep
+  // looked for `extrapolate` rather than for BOTH keys. Half of a two-sided rule
+  // reads exactly like all of it. Eight of those 26 opened on an input range
+  // starting after frame 0, so the left extension really produced out-of-range
+  // output — remotion/TeammateExplainerReel.tsx's progress bar interpolated to a
+  // NEGATIVE width for its first eight frames, which CSS discards, so the bar
+  // rendered at full width during the very frames it was supposed to be empty.
+  // All 26 now clamp both sides; this keeps the next one from landing.
+  //
+  // BALANCED-PAREN SCAN, not a line regex: the majority of these calls span
+  // several lines, and a per-line test would report every one of them as missing
+  // a key that sits two lines down — the accusing direction of §2.
+  const unclamped: string[] = []
+  let interpolateCalls = 0
+  const scanClamps = (src: string, label: string) => {
+    const lines = src.split("\n")
+    for (let i = 0; i < lines.length; i++) {
+      const at = lines[i].indexOf("interpolate(")
+      if (at < 0) continue
+      interpolateCalls++
+      let depth = 0, text = "", started = false
+      for (let j = i; j < Math.min(lines.length, i + 30); j++) {
+        for (const ch of j === i ? lines[j].slice(at) : lines[j]) {
+          text += ch
+          if (ch === "(") { depth++; started = true }
+          else if (ch === ")") depth--
+        }
+        if (started && depth === 0) break
+      }
+      if (!/extrapolateLeft/.test(text) || !/extrapolateRight/.test(text)) {
+        unclamped.push(`${label}:${i + 1}`)
+      }
+    }
+  }
+  const before = interpolateCalls
+  // POSITIVE CONTROL (§2) — a broken scanner and a clean tree both report zero.
+  scanClamps(`const a = interpolate(frame, [0, 10], [0, 1])`, "<control-bare>")
+  scanClamps(`const b = interpolate(frame, [0, 10], [0, 1], { extrapolateRight: "clamp" })`, "<control-half>")
+  const controlCaught = unclamped.length === 2
+  scanClamps(`const c = interpolate(frame, [0, 10], [0, 1], {\n  extrapolateLeft: "clamp",\n  extrapolateRight: "clamp",\n})`, "<control-multiline>")
+  const controlClean = unclamped.length === 2
+  unclamped.length = 0
+  interpolateCalls = before
+  ok("the clamp finder still catches a bare call AND a right-only call",
+    controlCaught)
+  ok("...and does NOT accuse a MULTI-LINE call that clamps both sides",
+    controlClean)
+
+  for (const f of files) scanClamps(stripComments(readFileSync(f, "utf8")), f)
+  ok(`every interpolate() in remotion/ clamps BOTH sides (${interpolateCalls} call sites) —\n    an unclamped side extends the line past the range and renders a wrong frame`,
+    unclamped.length === 0, unclamped.slice(0, 8).join(", "))
 
   // ── MEDIA COMPONENTS COME FROM @remotion/media, NOT FROM "remotion" (§6) ───
   //

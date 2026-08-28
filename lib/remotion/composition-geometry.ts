@@ -26,6 +26,16 @@
  *
  * Composition geometry is not tenant data. It is a literal in Root.tsx, mirrored
  * into `remotion_compositions` (m168) and proven equal by test:remotion-setup.
+ *
+ * READ THAT CLAIM PRECISELY, because it used to be half of one. test:remotion-setup
+ * §2-3 prove ROOT.TSX == THIS FILE. They cannot, in CI, prove THIS FILE == the
+ * LIVE `remotion_compositions` rows, which is the copy the render cache key, the
+ * m313 narration pad and the still/moving fork read at runtime — so an edit made
+ * directly to the table would drift from here with every assertion still green.
+ * §3b now makes that comparison whenever SUPABASE_SERVICE_ROLE_KEY is present and
+ * SAYS IT SKIPPED otherwise; it never reports a comparison it did not make.
+ * Hand-verified against hrvaqgvukzxfskkcrwbt on 2026-08-28: 33 rows, four
+ * geometry fields each, zero drift on all three copies.
  * A narration cap derived from it must be computable with NO I/O:
  *   · the deterministic section-narration fallback runs when the AI is down —
  *     a cap that needed a network hop would be unavailable exactly then, and a

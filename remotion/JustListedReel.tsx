@@ -127,7 +127,7 @@ export const JustListedReel: React.FC<JustListedReelProps> = (props) => {
 
 const CoverFrame: React.FC<JustListedReelProps> = ({ hook, address, cityState, brand }) => {
   const frame = useCurrentFrame()
-  const opacity = interpolate(frame, [0, 15, 45, 60], [0, 1, 1, 0.85], { extrapolateRight: "clamp" })
+  const opacity = interpolate(frame, [0, 15, 45, 60], [0, 1, 1, 0.85], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, opacity, padding: 80 }}>
       <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", height: "100%" }}>
@@ -159,6 +159,7 @@ const PropertyImages: React.FC<{ images: string[] }> = ({ images }) => {
   // Ken-burns: subtle scale + drift over each slide
   const scale = interpolate(localFrame, [0, slideFrames], [1.0, 1.08], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   const opacity = interpolate(localFrame, [0, 8, slideFrames - 8, slideFrames], [0, 1, 1, 0], {
+    extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   })
   const url = images[idx]
@@ -182,8 +183,8 @@ const PropertyImages: React.FC<{ images: string[] }> = ({ images }) => {
 
 const FactCards: React.FC<JustListedReelProps> = ({ price, bedrooms, bathrooms, sqft, brand }) => {
   const frame = useCurrentFrame()
-  const enter = interpolate(frame, [0, 20], [60, 0], { extrapolateRight: "clamp" })
-  const opacity = interpolate(frame, [0, 20], [0, 1], { extrapolateRight: "clamp" })
+  const enter = interpolate(frame, [0, 20], [60, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+  const opacity = interpolate(frame, [0, 20], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   const cards = [
     { label: "Price",    value: price    || "—" },
     { label: "Beds",     value: bedrooms || "—" },
@@ -219,7 +220,7 @@ const FactCards: React.FC<JustListedReelProps> = ({ price, bedrooms, bathrooms, 
 
 const CTAFrame: React.FC<JustListedReelProps> = ({ brand }) => {
   const frame = useCurrentFrame()
-  const opacity = interpolate(frame, [0, 15, 75, 90], [0, 1, 1, 1], { extrapolateRight: "clamp" })
+  const opacity = interpolate(frame, [0, 15, 75, 90], [0, 1, 1, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor, padding: 80, justifyContent: "center", opacity }}>
       {brand.logoUrl && (

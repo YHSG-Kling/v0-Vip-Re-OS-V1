@@ -81,10 +81,10 @@ export const BrollLayer: React.FC<BrollLayerProps> = ({
   const fadingIn    = localFrame < crossfade && activeIdx > 0
   const prevIdx     = fadingIn ? activeIdx - 1 : null
   const inOpacity   = fadingIn
-    ? interpolate(localFrame, [0, crossfade], [0, 1], { extrapolateRight: "clamp" })
+    ? interpolate(localFrame, [0, crossfade], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
     : 1
   const outOpacity  = fadingIn
-    ? interpolate(localFrame, [0, crossfade], [1, 0], { extrapolateRight: "clamp" })
+    ? interpolate(localFrame, [0, crossfade], [1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
     : 0
 
   return (

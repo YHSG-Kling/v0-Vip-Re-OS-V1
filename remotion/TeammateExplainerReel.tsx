@@ -81,7 +81,7 @@ const IntroCard: React.FC<{
   brand: TeammateExplainerReelProps["brand"]
 }> = ({ eyebrow, title, brand }) => {
   const frame = useCurrentFrame()
-  const barWidth = interpolate(frame, [8, INTRO - 8], [0, 320], { extrapolateRight: "clamp" })
+  const barWidth = interpolate(frame, [8, INTRO - 8], [0, 320], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <AbsoluteFill
       style={{
@@ -113,7 +113,7 @@ const IntroCard: React.FC<{
         style={{
           fontSize: 66, fontWeight: 800, color: "#fff", lineHeight: 1.1, maxWidth: 880,
           opacity: interpolate(frame, [10, 32], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
-          transform: `translateY(${interpolate(frame, [10, 32], [24, 0], { extrapolateRight: "clamp" })}px)`,
+          transform: `translateY(${interpolate(frame, [10, 32], [24, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })}px)`,
         }}
       >
         {title}
@@ -131,7 +131,7 @@ const LowerThird: React.FC<{
   accentColor: string
 }> = ({ agentName, brokerageName, primaryColor, accentColor }) => {
   const frame = useCurrentFrame()
-  const slideIn = interpolate(frame, [0, 16], [-560, 0], { extrapolateRight: "clamp" })
+  const slideIn = interpolate(frame, [0, 16], [-560, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <div style={{ position: "absolute", left: 0, bottom: 168, transform: `translateX(${slideIn}px)` }}>
       <div
@@ -163,7 +163,7 @@ const AvatarBody: React.FC<{
   brand: TeammateExplainerReelProps["brand"]
 }> = ({ avatarVideoUrl, agentPhotoUrl, agentName, title, brand }) => {
   const frame = useCurrentFrame()
-  const fadeIn = interpolate(frame, [0, 10], [0, 1], { extrapolateRight: "clamp" })
+  const fadeIn = interpolate(frame, [0, 10], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <AbsoluteFill style={{ backgroundColor: brand.primaryColor }}>
       {avatarVideoUrl ? (
@@ -233,7 +233,7 @@ const OutroCard: React.FC<{
         style={{
           fontSize: 76, fontWeight: 800, lineHeight: 1.05, marginBottom: 24, maxWidth: 900,
           opacity: interpolate(frame, [4, 20], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
-          transform: `translateY(${interpolate(frame, [4, 20], [20, 0], { extrapolateRight: "clamp" })}px)`,
+          transform: `translateY(${interpolate(frame, [4, 20], [20, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })}px)`,
         }}
       >
         {ctaLabel}

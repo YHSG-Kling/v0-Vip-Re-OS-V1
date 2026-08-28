@@ -3,6 +3,56 @@ import { createClient } from "@/lib/supabase/server"
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 import { qualifiesForMemoryVideo, assessMemoryVideoTenure } from "@/lib/video/memory-video-gate"
 import { parseLengthOfResidence } from "@/lib/avm/provider-chain"
+import { CHECK_VOCABULARIES } from "@/scripts/check-vocabularies"
+
+/**
+ * GET /api/ai/video-recommendations?agent_id=… — "what should I film next".
+ *
+ * WIRED 2026-08-28 (orphan doctrine §1.2 — no duplicate existed and the
+ * capability is wanted). Five recommendation branches lived here, each one
+ * repaired by an earlier wave (phantom columns, a phantom embed, and the m565
+ * memory-video tenure gate), and NOTHING in the tree had ever called the route:
+ * every fix landed on a surface no agent could reach. The door is
+ * app/dashboard/videos/board/video-recommendations-card.tsx, mounted on the
+ * video pipeline board.
+ *
+ * TWO THINGS HAD TO BE TRUE BEFORE A DOOR COULD BE OPENED, and neither was:
+ *
+ * 1. THE VOCABULARY. `video_type` was emitted as "personalized_buyer", which is
+ *    NOT a value ai_video_projects.video_type admits — it is a SCRIPT PURPOSE,
+ *    from the unrelated map at app/actions/video-generation.ts:1301 and the
+ *    picker at app/video-assistant/page.tsx:292. Two vocabularies wearing one
+ *    field name is CLAUDE.md §6, and it is not cosmetic here: a surface that
+ *    forwarded the token into a create call would be refused by the CHECK (the
+ *    row is rejected ENTIRELY — §3), so the recommendation could never become a
+ *    video. Every branch now emits a value from the LIVE CHECK, asserted below
+ *    against the generated cache rather than against a list retyped here.
+ *
+ * 2. THE RAIL. "Make this video" is not one destination. memory_video may never
+ *    be model-authored (owner ruling, m565), so sending it to the AI wizard —
+ *    which exists to have a model write the script — is precisely the mistake
+ *    the wizard's own tombstone records refusing. Each recommendation therefore
+ *    names the rail the agent should act on, and the card routes by it.
+ */
+const VIDEO_TYPE_VOCABULARY: readonly string[] = CHECK_VOCABULARIES.ai_video_projects.video_type
+
+/** Where the agent acts on a recommendation. The card routes on this. */
+type RecommendationRail = "video_wizard" | "contact_detail"
+
+/**
+ * Fails CLOSED on a token the column would refuse. A recommendation that cannot
+ * become a row is worse than a missing one: it is an offer the platform cannot
+ * honour, and the agent finds that out at the insert.
+ */
+function assertVideoType(videoType: string): string {
+  if (!VIDEO_TYPE_VOCABULARY.includes(videoType)) {
+    throw new Error(
+      `video-recommendations: "${videoType}" is not in ai_video_projects.video_type — ` +
+      `regenerate scripts/check-vocabularies.ts or fix the branch`,
+    )
+  }
+  return videoType
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -67,7 +117,12 @@ export async function GET(request: NextRequest) {
 
       recommendations.push({
         type: "high_priority",
-        video_type: "personalized_buyer",
+        // Was "personalized_buyer" — a SCRIPT PURPOSE, not a video type (see the
+        // header). This branch's own suggested_content names what the clip is:
+        // "properties matching their search + market update", and market_update
+        // is the live value for it.
+        video_type: assertVideoType("market_update"),
+        rail: "video_wizard" as RecommendationRail,
         target_client_id: lead.id,
         client_name: [lead.first_name, lead.last_name].filter(Boolean).join(" ") || null,
         reason: `High-intent lead (score ${lead.lead_score}) but no response in ${daysSinceContact} days`,
@@ -116,7 +171,8 @@ export async function GET(request: NextRequest) {
     for (const listing of listingsWithoutVideos) {
       recommendations.push({
         type: "listing_opportunity",
-        video_type: "listing_tour",
+        video_type: assertVideoType("listing_tour"),
+        rail: "video_wizard" as RecommendationRail,
         target_listing_id: listing.listing_id,
         target_transaction_id: listing.id,
         property_address: listing.property_address,
@@ -157,7 +213,25 @@ export async function GET(request: NextRequest) {
 
       recommendations.push({
         type: "upcoming_opportunity",
-        video_type: "personalized_buyer",
+        // Was "personalized_buyer". m565 coined `home_anniversary` for EXACTLY
+        // this moment and spelled it the way agent_intro_videos.trigger and
+        // contacts.home_anniversary already spell it (§6); this branch is that
+        // moment, one year after the close.
+        //
+        // THE RAIL IS NOT THE WIZARD, and that is the same ruling twice over.
+        // lib/kernel/anniversary-equity.ts already commissions this clip and the
+        // intro-video-email-backfill cron delivers it, so the agent's action is
+        // to look at the client — not to film a second one. The wizard does not
+        // even offer this type (app/dashboard/videos/create/video-create-client
+        // .tsx:68's VIDEO_TYPES list), so sending them there would be a door
+        // onto a menu with no matching entry.
+        //
+        // OWNER QUESTION, RAISED NOT ANSWERED: with the automatic rail already
+        // in place, is this branch a recommendation at all, or a NOTIFICATION
+        // that a clip is on its way? Left standing and labelled rather than
+        // dropped — deleting it would be deleting a capability to tidy a number.
+        video_type: assertVideoType("home_anniversary"),
+        rail: "contact_detail" as RecommendationRail,
         target_client_id: txn.contact_id ?? client?.id ?? null,
         client_name: [client?.first_name, client?.last_name].filter(Boolean).join(" ") || txn.client_name,
         property_address: txn.property_address,
@@ -199,7 +273,8 @@ export async function GET(request: NextRequest) {
       if (buyerCount && buyerCount > 5) {
         recommendations.push({
           type: "high_priority",
-          video_type: "market_update",
+          video_type: assertVideoType("market_update"),
+          rail: "video_wizard" as RecommendationRail,
           reason: `No market update in 30 days, ${buyerCount} active buyer clients`,
           suggested_content: "Market conditions + what it means for buyers",
           priority_score: 75,
@@ -280,7 +355,15 @@ export async function GET(request: NextRequest) {
       if (!existingMemoryVideo || existingMemoryVideo.length === 0) {
         recommendations.push({
           type: "upcoming_opportunity",
-          video_type: "memory_video",
+          video_type: assertVideoType("memory_video"),
+          // NEVER the wizard. The wizard's job is to have a MODEL write the
+          // script, and the owner's ruling makes that the one thing a memory
+          // video may never be — the option was removed from its menu with a
+          // tombstone (app/dashboard/videos/create/video-create-client.tsx:82)
+          // for exactly this reason. The rail is the seller's contact detail
+          // view, where lib/video/memory-video.ts's offer and the seller-
+          // dictated capture sheet live.
+          rail: "contact_detail" as RecommendationRail,
           target_client_id: seller.id,
           client_name: [seller.first_name, seller.last_name].filter(Boolean).join(" ") || txn.client_name,
           property_address: txn.property_address,

@@ -642,15 +642,58 @@ export async function recordVideoEngagementEvent(data: {
 
   // Resolve the actual brokerage_id from the target video row to prevent a
   // hostile caller from logging events against another tenant's videos.
+  //
+  // MERGED 2026-08-28 from the sibling writer at
+  // app/api/video/engagement/route.ts:assertVideoBelongsToTenant (§1.1 — the
+  // survivor gets what it was missing BEFORE anything else happens). Two things
+  // came across, and both were holes here:
+  //
+  //  · THE ASSET WAS RESOLVED THROUGH THE AGGREGATE, NOT THROUGH THE ASSET.
+  //    `video_performance_tracking` is written BY THIS FUNCTION, so on the FIRST
+  //    event for an asset there is no row — the resolve returned null, the
+  //    fallback below stamped the CALLER's brokerage, and the equality test then
+  //    compared that value against itself and passed. A caller in brokerage A
+  //    could open the ledger on brokerage B's video_asset under A's tenant. The
+  //    route consulted `video_assets` itself, which exists before any event does.
+  //  · THE READS DID NOT DESTRUCTURE `error` (CLAUDE.md §3). supabase-js RESOLVES
+  //    a refusal, so a refused lookup was byte-identical to "no such row" and
+  //    degraded into exactly the same session fallback. A refusal now throws.
+  //
+  // THE ORDER MATTERS AND IS NOT ARBITRARY. video_asset_id and
+  // ai_video_projects.id are the SAME ID SPACE on the wired call site
+  // (app/dashboard/videos/library/page.tsx:406 passes one id as both, and
+  // app/actions/contact-details.ts joins video_asset_id against
+  // ai_video_projects.id), so a project id will not be found in `video_assets`.
+  // Requiring the asset row would have refused the only live caller. Each source
+  // is therefore consulted in turn and the FIRST that knows the id decides;
+  // the session fallback is reached only when NOTHING in the schema knows it.
   let resolvedBrokerageId: string | null = null
-  if (data.videoProjectId && isValidUUID(data.videoProjectId)) {
-    const { data: proj } = await supabase
+  if (data.videoAssetId && isValidUUID(data.videoAssetId)) {
+    const { data: asset, error: assetError } = await supabase
+      .from("video_assets").select("brokerage_id").eq("id", data.videoAssetId).maybeSingle()
+    if (assetError) throw new Error(`video_assets lookup refused: ${assetError.message}`)
+    resolvedBrokerageId = (asset as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+
+    if (!resolvedBrokerageId) {
+      const { data: tracking, error: trackingError } = await supabase
+        .from("video_performance_tracking").select("brokerage_id").eq("video_asset_id", data.videoAssetId).maybeSingle()
+      if (trackingError) throw new Error(`video_performance_tracking lookup refused: ${trackingError.message}`)
+      resolvedBrokerageId = (tracking as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+    }
+  }
+  if (!resolvedBrokerageId && data.videoProjectId && isValidUUID(data.videoProjectId)) {
+    const { data: proj, error: projError } = await supabase
       .from("ai_video_projects").select("brokerage_id").eq("id", data.videoProjectId).maybeSingle()
-    resolvedBrokerageId = proj?.brokerage_id ?? null
-  } else if (data.videoAssetId && isValidUUID(data.videoAssetId)) {
-    const { data: tracking } = await supabase
-      .from("video_performance_tracking").select("brokerage_id").eq("video_asset_id", data.videoAssetId).maybeSingle()
-    resolvedBrokerageId = tracking?.brokerage_id ?? null
+    if (projError) throw new Error(`ai_video_projects lookup refused: ${projError.message}`)
+    resolvedBrokerageId = (proj as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
+  }
+  // The shared id space again: a videoAssetId that is really a project id is
+  // resolved through the projects table rather than being handed the fallback.
+  if (!resolvedBrokerageId && data.videoAssetId && isValidUUID(data.videoAssetId)) {
+    const { data: projAsAsset, error: projAsAssetError } = await supabase
+      .from("ai_video_projects").select("brokerage_id").eq("id", data.videoAssetId).maybeSingle()
+    if (projAsAssetError) throw new Error(`ai_video_projects lookup refused: ${projAsAssetError.message}`)
+    resolvedBrokerageId = (projAsAsset as { brokerage_id?: string | null } | null)?.brokerage_id ?? null
   }
   // Fall back to session brokerage if no video row exists yet (first event).
   if (!resolvedBrokerageId) resolvedBrokerageId = auth.brokerageId

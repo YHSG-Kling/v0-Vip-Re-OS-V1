@@ -91,7 +91,7 @@ const StarRow: React.FC<{ stars: number; accentColor: string }> = ({ stars, acce
     <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
       {Array.from({ length: 5 }).map((_, i) => {
         const filled = i < safe
-        const fade   = interpolate(frame, [i * 4, i * 4 + 14], [0, 1], { extrapolateRight: "clamp" })
+        const fade   = interpolate(frame, [i * 4, i * 4 + 14], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
         return (
           <span key={i} style={{
             fontSize: 36, lineHeight: 1, opacity: fade,

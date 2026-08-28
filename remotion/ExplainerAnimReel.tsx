@@ -344,20 +344,20 @@ export const ExplainerAnimReel: React.FC<ExplainerAnimReelProps> = ({
           {brand.logoUrl && (
             <Img src={brand.logoUrl} style={{
               height: 56, objectFit: "contain", marginBottom: 28,
-              opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateRight: "clamp" }),
+              opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }} />
           )}
           <div style={{
             display: "inline-block", padding: "8px 20px", borderRadius: 4,
             backgroundColor: brand.accentColor, color: brand.primaryColor,
             fontSize: 18, fontWeight: 700, letterSpacing: 4, textTransform: "uppercase",
-            marginBottom: 28, opacity: interpolate(frame, [4, 20], [0, 1], { extrapolateRight: "clamp" }),
+            marginBottom: 28, opacity: interpolate(frame, [4, 20], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {eyebrow}
           </div>
           <div style={{
             fontSize: 64, fontWeight: 800, color: "#fff", lineHeight: 1.1, maxWidth: 840,
-            opacity: interpolate(frame, [12, 36], [0, 1], { extrapolateRight: "clamp" }),
+            opacity: interpolate(frame, [12, 36], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             transform: `translateY(${interpolate(frame, [12, 36], [16, 0], { easing: ENTER, extrapolateLeft: "clamp", extrapolateRight: "clamp" })}px)`,
           }}>
             {title}

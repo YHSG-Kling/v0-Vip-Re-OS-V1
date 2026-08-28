@@ -260,7 +260,7 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
 
 const SoldPhotoFrame: React.FC<{ url: string; span: number }> = ({ url, span }) => {
   const frame = useCurrentFrame()
-  const scale = interpolate(frame, [0, span], [1, 1.08], { extrapolateRight: "clamp" })
+  const scale = interpolate(frame, [0, span], [1, 1.08], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <AbsoluteFill style={{ overflow: "hidden" }}>
       <Img

@@ -151,8 +151,8 @@ const BulletPanel: React.FC<{
   accentColor:  string
 }> = ({ index, text, accentColor }) => {
   const frame = useCurrentFrame()
-  const indexFade  = interpolate(frame, [0, 12], [0, 1], { extrapolateRight: "clamp" })
-  const textFade   = interpolate(frame, [8, 24], [0, 1], { extrapolateRight: "clamp" })
+  const indexFade  = interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+  const textFade   = interpolate(frame, [8, 24], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
     <div style={{
       position: "absolute", top: 0, right: 0, bottom: 0,

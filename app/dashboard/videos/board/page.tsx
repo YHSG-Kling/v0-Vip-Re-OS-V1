@@ -46,6 +46,7 @@ import {
 import { toast } from "sonner"
 import { distributeVideo } from "@/app/actions/video/distribute-video"
 import { VideoStudioDialog } from "./video-studio-dialog"
+import { VideoRecommendationsCard } from "./video-recommendations-card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -502,6 +503,10 @@ export default function VideoKanbanBoard() {
           </AlertDescription>
         </Alert>
       )}
+
+      {/* What to film next — the door onto GET /api/ai/video-recommendations,
+          which had five working branches and no caller until this was wired. */}
+      <VideoRecommendationsCard userId={user?.id} />
 
       {/* Kanban Board */}
       <div className="flex gap-4 overflow-x-auto pb-4">

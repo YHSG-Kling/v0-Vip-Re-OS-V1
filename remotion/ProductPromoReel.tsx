@@ -170,7 +170,7 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({ hook, proofs
       <Sequence from={0} durationInFrames={90}>
         <AbsoluteFill style={{ ...scene, alignItems: "flex-start" }}>
           <WordReveal text={hook} size={width * 0.06} />
-          <div style={{ marginTop: 24, opacity: interpolate(frame, [40, 70], [0, 1], { extrapolateRight: "clamp" }), fontSize: width * 0.024, color: "#ffffffaa" }}>
+          <div style={{ marginTop: 24, opacity: interpolate(frame, [40, 70], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }), fontSize: width * 0.024, color: "#ffffffaa" }}>
             {tagline}
           </div>
         </AbsoluteFill>

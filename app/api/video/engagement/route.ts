@@ -7,6 +7,49 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
 // ============================================
 // LAYER 8.5 VIDEO ENGAGEMENT TRACKING API
 // ============================================
+//
+// ── ADJUDICATED, NOT DELETED (lane G1, 2026-08-28) ──────────────────────────
+// The census reports this route under 6b: nothing in the tree addresses it. It
+// is NOT an orphan capability and it is NOT a duplicate to retire, and the two
+// halves of that verdict are separate.
+//
+// 1. THE POST IS A SIBLING WRITER, AND IT WAS THE STRICTER ONE. Three writers
+//    reach video_engagement_events, and each has a different caller shape:
+//      · this route                                   — HTTP, session-gated
+//      · app/actions/video-generation.ts
+//        :recordVideoEngagementEvent                  — server action, WIRED
+//        (app/dashboard/videos/library/page.tsx:406 records a share)
+//      · services/supabaseService.ts:logVideoEngagement — service client, no
+//        caller identity, tenant resolved THROUGH the record
+//    Same table, same three steps (raw event → aggregate → threshold events).
+//    But this handler proved the named video into the tenant against
+//    `video_assets` itself, while the wired action resolved an asset's tenant
+//    through `video_performance_tracking` — a table it writes, so the FIRST
+//    event on an asset found no row and fell back to the caller's own
+//    brokerage. That check has now been MERGED ONTO THE SURVIVOR (§1.1,
+//    app/actions/video-generation.ts:643) before anything else was decided.
+//
+// 2. WHAT IS ACTUALLY MISSING IS THE PRODUCER, AND IT IS NOT THIS FILE.
+//    Nothing anywhere emits view / complete / pause / cta_click. The only
+//    engagement any surface records is the `share` above, so every completion
+//    rate and click-through on /dashboard/videos/analytics can currently only
+//    read zero. The producer would have to be a VIEWER-side player, and the two
+//    that exist cannot use this route as written:
+//      · app/v/[slug]/video-player.tsx — a public reel, the watcher is a
+//        prospect with NO account. requireAuth refuses it by design; that page
+//        raises ai_video_projects.view_count through the unauthenticated
+//        app/actions/listing-video.ts:trackVideoView instead.
+//      · app/portal/[contactId]/components/RecentUpdatesFeed.tsx — a client
+//        watching their agent's clip, which is the exact event this ledger was
+//        built for (it carries contact_id, and app/actions/contact-details.ts
+//        reads it back per contact). It cannot call this yet either: the card
+//        carries only a metadata URL, with no video_asset_id or project id to
+//        attribute the event to.
+//    OWNER DECISION: wiring the portal player means plumbing the video's id
+//    onto the transparency_updates card. That is a data-shape change on a
+//    client-facing surface, not a refactor, so it is raised rather than taken.
+//    Deleting this route instead would remove the strictest of the three
+//    writers and the only HTTP door — deleting to move a number.
 
 // Supported event types for video_engagement_events
 const VALID_EVENT_TYPES = [

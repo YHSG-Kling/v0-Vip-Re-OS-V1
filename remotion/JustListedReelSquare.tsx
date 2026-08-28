@@ -89,7 +89,7 @@ const CTA    = 2  * FPS                          // 10-12s
  *  image, lively enough that the feed scroll doesn't read it as a
  *  static frame and skip past. */
 function kenBurnsScale(localFrame: number, span: number): number {
-  return interpolate(localFrame, [0, span], [1, 1.08], { extrapolateRight: "clamp" })
+  return interpolate(localFrame, [0, span], [1, 1.08], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
 }
 
 export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
