@@ -17,8 +17,8 @@ export const maxDuration = 300
  *
  * For each active agent in every brokerage, computes:
  *   gci_gross          = sum(agent_commissions.gross_commission) closed this month
- *   agent_payout       = sum(agent_commissions.agent_commission)
- *   brokerage_gross    = gci_gross - agent_payout
+ *   agent_payout       = sum(net_to_agent ?? agent_commission)   — NET-PREFERENCE RULE
+ *   brokerage_gross    = sum(net_to_brokerage ?? gross - agent_commission)
  *   ai_cost_cents      = sum(ai_tool_usage.cost_cents) for this agent this month
  *   fee_income_cents   = sum(agent_fee_charges.amount * 100) where status='paid'
  *   marketing_spend_cents = 0 (future: attribute campaign spend)
@@ -66,16 +66,22 @@ export async function GET(req: NextRequest) {
         // ── GCI from agent_commissions (the canonical, populated table) ──────
         // commission_records was never written (dead table) → this P&L showed $0.
         // GCI is recognized at CLOSE (close_date), not payout.
+        // NET-PREFERENCE RULE (owner ruling 2026-08-28 — see
+        // lib/finance/brokerage-earnings-writer.ts:foldCommissionRows): prefer
+        // the STORED post-cap, post-fee net_to_agent / net_to_brokerage; fall
+        // back to the GENERATED pre-cap split only for manually entered rows.
+        // Post-cap the two disagree on purpose (agent keeps 100%, brokerage $0).
         const { data: commissions } = await supabase
           .from("agent_commissions")
-          .select("gross_commission, agent_commission, close_date")
+          .select("gross_commission, agent_commission, net_to_agent, net_to_brokerage, close_date")
           .eq("agent_id", agent.id)
           .gte("close_date", `${monthStart}T00:00:00Z`)
           .lte("close_date", `${monthEnd}T23:59:59Z`)
 
         const gciGross    = commissions?.reduce((s, r) => s + (r.gross_commission ?? 0), 0) ?? 0
-        const agentPayout = commissions?.reduce((s, r) => s + (r.agent_commission ?? 0), 0) ?? 0
-        const brokerageGross = gciGross - agentPayout
+        const agentPayout = commissions?.reduce((s, r) => s + (r.net_to_agent ?? r.agent_commission ?? 0), 0) ?? 0
+        const brokerageGross = commissions?.reduce(
+          (s, r) => s + (r.net_to_brokerage ?? ((r.gross_commission ?? 0) - (r.agent_commission ?? 0))), 0) ?? 0
         const txCount = commissions?.length ?? 0
 
         // ── AI cost from ai_tool_usage ────────────────────────────────────────

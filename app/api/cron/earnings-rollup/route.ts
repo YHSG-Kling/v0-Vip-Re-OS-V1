@@ -48,10 +48,18 @@ export async function GET(req: NextRequest) {
     if (agentsError) {
       errors.push(`Failed to load agents: ${agentsError.message}`)
     } else {
-      const agg = (rows: Array<{ gross_commission?: number | null; agent_commission?: number | null; brokerage_commission?: number | null }>) => ({
+      // NET-PREFERENCE RULE (owner ruling 2026-08-28, the cap ruling's rollup
+      // sibling — see lib/finance/brokerage-earnings-writer.ts:foldCommissionRows):
+      // agent_commission / brokerage_commission are GENERATED pre-cap splits;
+      // the waterfall's ACTUAL post-cap, post-fee results are the stored
+      // net_to_agent / net_to_brokerage. Post-cap they disagree on purpose
+      // (agent keeps 100%, brokerage $0), so prefer the stored net when
+      // non-null and fall back to the generated split only for manually
+      // entered rows that carry a split percent and no net.
+      const agg = (rows: Array<{ gross_commission?: number | null; agent_commission?: number | null; brokerage_commission?: number | null; net_to_agent?: number | null; net_to_brokerage?: number | null }>) => ({
         gross: rows.reduce((s, r) => s + (r.gross_commission ?? 0), 0),
-        net: rows.reduce((s, r) => s + (r.agent_commission ?? 0), 0),
-        brok: rows.reduce((s, r) => s + (r.brokerage_commission ?? 0), 0),
+        net: rows.reduce((s, r) => s + (r.net_to_agent ?? r.agent_commission ?? 0), 0),
+        brok: rows.reduce((s, r) => s + (r.net_to_brokerage ?? r.brokerage_commission ?? 0), 0),
         count: rows.length,
       })
 
@@ -63,7 +71,7 @@ export async function GET(req: NextRequest) {
           // (close_date is always set; payout via paid_at can lag).
           const { data: ytdRows } = await supabase
             .from("agent_commissions")
-            .select("gross_commission, agent_commission, brokerage_commission, close_date")
+            .select("gross_commission, agent_commission, brokerage_commission, net_to_agent, net_to_brokerage, close_date")
             .eq("agent_id", agent.id)
             .gte("close_date", startOfYear.toISOString())
 
