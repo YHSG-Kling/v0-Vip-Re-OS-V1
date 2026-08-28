@@ -73,7 +73,8 @@ for (const f of all) {
 // Entry-point actions reachable via Next.js convention rather than an import (none today;
 // add here with a justification if a genuine convention-only action ever exists).
 const EXEMPT = new Set<string>([
-  "app/actions/index.ts", // the barrel itself, imported as @/app/actions
+  // "app/actions/index.ts" left this list when the barrel was DELETED (wave 14,
+  // 2026-08-28): zero importers, every re-export reachable by direct path.
   // Demo-mode scaffolding — intentionally unwired; REMOVE AT GO-LIVE (owner decision).
   // (demo-login.ts was deleted: it was a second, uncalled implementation of the
   // gated demoSignIn in app/actions/demo-auth.ts, and two auth paths drift.)

@@ -39,7 +39,7 @@
 //   cascade (16)  DESTROYED it via ON DELETE      retains it — CASCADE never fires
 //   detach (15)   kept the row, NULLED its        retains it AND its listing_id;
 //                 listing pointer                 SET NULL never fires
-//   block  (20)   REFUSED the whole operation     nothing to refuse — see below
+//   block  (19)   REFUSED the whole operation     nothing to refuse — see below
 //
 // So the ledger is the measurement behind the sentence "archive destroys
 // nothing": 42 of the 62 keys name rows a delete would have destroyed or
@@ -206,7 +206,7 @@ export const LISTING_CHILD_RULES: readonly ChildRule[] = [
   { table: "listing_packet_jobs", column: "listing_id", disposition: "remove", why: "packet render jobs for this listing" },
   { table: "listing_media", column: "listing_id", disposition: "remove", why: "the listing's own media rows — and their storage blobs, which a delete never cleaned" },
 
-  // ── block (20): a hard delete was REFUSED by these. Archive is not. ───────
+  // ── block (19): a hard delete was REFUSED by these. Archive is not. ───────
   // These are somebody else's record MENTIONING the listing. A delete had to
   // refuse because it would have destroyed them; an archive leaves every one of
   // them intact and still pointing at a live row, so there is nothing to refuse.
@@ -218,7 +218,8 @@ export const LISTING_CHILD_RULES: readonly ChildRule[] = [
   { table: "tour_stops", column: "listing_id", disposition: "block", why: "belongs to a tour" },
   { table: "journey_states", column: "listing_id", disposition: "block", why: "a contact's journey, also keyed to transactions" },
   { table: "buyer_behavior_log", column: "listing_id", disposition: "block", why: "a contact's behaviour trail" },
-  { table: "listing_engagement", column: "listing_id", disposition: "block", why: "per-contact engagement" },
+  // listing_engagement left this list when m581 dropped the table (2026-08-28;
+  // its engagement feed lives on the written primitives — see the migration).
   { table: "smart_landing_sessions", column: "listing_id", disposition: "block", why: "a contact's session" },
   { table: "property_alert_results", column: "listing_id", disposition: "block", why: "belongs to a property_alerts row and a contact" },
   { table: "cma_reports", column: "listing_id", disposition: "block", why: "a report delivered to a contact" },

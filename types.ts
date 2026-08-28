@@ -197,6 +197,7 @@ export interface DealTeamMember {
 // (app/actions/transaction-transparency.ts) and the video lane (video_assets);
 // the zero-code transparency_videos table (anon already off per m413) stays
 // recorded on the opposite-missing wire list for the table-retirement lane.
+// TABLE RETIRED (m581, 2026-08-28): dropped live — survivor video_assets.
 
 
 // --- CORE OS ENHANCEMENTS ---
@@ -263,6 +264,8 @@ export interface AutomationError {
 // scripts/agent-fk-columns.ts) feeding seller reporting
 // (lib/listings/seller-weekly-report-runner.ts); the zero-code listing_engagement
 // table stays recorded on the opposite-missing wire list.
+// TABLE RETIRED (m581, 2026-08-28): dropped live — the feed lives on the written
+// primitives (property_views / saved_properties / listing_inquiries / showings).
 
 
 export interface ListingMetrics {
@@ -734,6 +737,7 @@ export interface Keyword {
 // app/actions/video-repurposing.ts over video_snippets (source assets in
 // video_assets); the zero-code long_form_videos table (anon off per m413) stays
 // recorded on the opposite-missing wire list.
+// TABLE RETIRED (m581, 2026-08-28): dropped live — survivor ai_video_projects.
 
 
 // TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `ShortClip` deleted with `LongFormVideo`
@@ -1088,6 +1092,9 @@ export interface AuditFlag {
 // subscriptions (app/actions/push-subscriptions.ts); the zero-code
 // notification_preferences table stays recorded on the opposite-missing wire
 // list for the table-retirement lane.
+// TABLE RETIRED (m581, 2026-08-28): dropped live — the capability is the
+// agents.notification_preferences COLUMN (plus contacts.metadata), the side
+// consulted at send time.
 
 
 // TOMBSTONE (§1.3, 2026-08-27, lane CB orphan tranche): `DealStakeholder` deleted —

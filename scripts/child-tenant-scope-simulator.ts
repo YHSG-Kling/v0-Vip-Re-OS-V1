@@ -64,7 +64,7 @@ const ALLOWED: Record<string, string> = {
   onboarding_quizzes: "platform onboarding content",
   plan_limits: "subscription plan limits — public by nature",
   platform_settings: "platform-level settings",
-  playbooks: "canonical playbook library",
+  // playbooks: dropped by m581 (2026-08-28) — seeds merged into template_marketplace.
   prohibited_phrases: "Fair-Housing phrase list — must be readable by every tenant",
   required_disclosures: "state disclosure requirements",
   // `scripts` was here as (a) global reference data — "canonical call/objection
@@ -87,9 +87,9 @@ const ALLOWED: Record<string, string> = {
   user_roles: "role vocabulary",
 
   // (b) no tenant anchor — tracked, not blessed
-  long_form_videos: "DEAD SCHEMA: 0 rows, no writer, and its only reader (a cross-tenant service-client select) was deleted — nothing to scope",
+  // long_form_videos: dropped by m581 (2026-08-28) — survivor ai_video_projects.
   marketing_stats: "DEAD SCHEMA: 0 rows, no writer, and its only reader (a cross-tenant service-client select) was deleted — nothing to scope",
-  transparency_videos: "DEAD SCHEMA: 0 rows, no writer, and its only reader (a cross-tenant service-client select) was deleted — nothing to scope",
+  // transparency_videos: dropped by m581 (2026-08-28) — survivor video_assets.
   // Was "platform demo fixture; writes already restricted to is_platform_admin()".
   // m543 RETIRED it as a resolved orphan and the reason is now stronger than that:
   // its world-readable dpc_select (a finding m471 recorded and left open) is DROPPED,

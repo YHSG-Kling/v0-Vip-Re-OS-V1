@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 438 tables, 765 columns.
+ * MEASURED AT GENERATION: 436 tables, 767 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-08-27
+ * generated: 2026-08-28
  * source: public.live_check_constraints_json()
- * body-sha256: 9e1f846f3e5c297c8c04e0461e9f295ba61f7d6220cae7337073a96bf5b4cee9
+ * body-sha256: 0a2ccbb23838a2c4edf201ce8c4ecb8e6f38efd3b7d5b27d1eb4a685afceda66
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -490,6 +490,13 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     risk_type: ["data_gap", "declining_comps", "limited_comps", "low_confidence", "market_shift", "price_outlier", "stale_comps", "unusual_property"],
     severity: ["critical", "high", "low", "medium"],
   },
+  company_books_obligations: {
+    calculation_type: ["flat", "percent"],
+    cap_status: ["hit_cap", "n/a", "post_cap", "pre_cap"],
+    obligation_type: ["residual", "team_member"],
+    reason: ["post_cap_company_books"],
+    status: ["approved", "paid", "pending", "voided"],
+  },
   competitor_ads: {
     source_platform: ["facebook", "google", "instagram"],
   },
@@ -847,9 +854,6 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     esign_status: ["declined", "fully_signed", "partially_signed", "pending", "sent", "voided"],
     upload_mode: ["manual_upload", "provider_pull"],
   },
-  listing_engagement: {
-    engagement_type: ["inquiry", "save", "showing", "view"],
-  },
   listing_health_interventions: {
     severity: ["critical", "high", "low", "medium"],
   },
@@ -888,9 +892,6 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     lifecycle_stage: ["AGENT_CONSULTATION", "APPOINTMENT_SET", "APPRAISAL", "CLOSED", "CLOSING_PREP", "CMA_GENERATION", "COMING_SOON_ACTIVE", "COMING_SOON_PREP", "FINANCING", "INSPECTION", "LEAD", "LEAD_ASSIGNED", "LIFETIME_CUSTOMER", "LISTING_AGREEMENT_INITIATED", "LISTING_AGREEMENT_SIGNED", "LISTING_CANCELLED", "LISTING_EXPIRED", "LISTING_PRESENTATION_CREATED", "MEDIA_APPROVED", "MEDIA_CAPTURE", "MLS_ACTIVE", "MLS_DATE_CONFIRMED", "MLS_READY", "NEGOTIATION", "OFFERS_RECEIVED", "OPEN_HOUSE_EVENT", "OPEN_HOUSE_MARKETING", "PRESENTATION_DRIP_PREP", "PRESENTATION_VIDEO_GENERATED", "REPAIRS_IN_PROGRESS", "SELLER_DECISION", "SELLER_DECLINED", "SHOWINGS_ACTIVE", "UNDER_CONTRACT"],
     property_type: ["commercial", "condo", "land", "multi_family", "other", "single_family", "townhouse"],
     status: ["active", "cancelled", "coming_soon", "draft", "expired", "listing_signed", "off_market", "pending", "sold", "withdrawn"],
-  },
-  long_form_videos: {
-    status: ["editing", "planning", "published", "recording"],
   },
   mail_response_tracking: {
     response_type: ["appointment", "call", "form_submit", "landing_visit", "qr_scan", "reply"],
@@ -1161,9 +1162,6 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   platform_suppression_list: {
     reason: ["explicit_opt_out", "federal_dnc", "litigator", "manual_admin", "spam_complaint", "tcpa_violation"],
-  },
-  playbooks: {
-    status: ["active", "archived", "draft"],
   },
   podcast_analytics_events: {
     event_type: ["complete", "cta_click", "download", "pause", "play", "share", "subscribe"],

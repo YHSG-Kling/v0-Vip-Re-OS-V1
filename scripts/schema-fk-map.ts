@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1694 of 1752 pairs) — storing them would be
+ * overwhelming majority (1687 of 1745 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 1827 edges across 712 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1752 unordered
+ * MEASURED AT GENERATION: 1820 edges across 708 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1745 unordered
  * table pairs carry at least one FK; 58
  * carry more than one and are listed below. 12 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -86,7 +86,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-08-28
  * source: public.live_foreign_keys_json()
- * body-sha256: 1d4cfbba8d8d997b69771354664916fe6d07f578c8667b35dac57d6856709d2b
+ * body-sha256: 019e35e38cd7d8698c3b91125a414b399970786beb7fdeda4b8793fccdc21829
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -455,7 +455,6 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "lifetime_customer_npv_scores": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts" },
   "lifetime_customer_touchpoints": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "related_transaction_id": "transactions" },
   "listing_agreements": { "agent_user_id": "users", "brokerage_id": "brokerages", "listing_id": "listings", "seller_contact_id": "contacts" },
-  "listing_engagement": { "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings" },
   "listing_health_interventions": { "agent_id": "agents", "brokerage_id": "brokerages", "listing_id": "listings", "resolved_by": "users" },
   "listing_health_scores": { "agent_id": "agents", "brokerage_id": "brokerages", "listing_id": "listings" },
   "listing_inquiries": { "brokerage_id": "brokerages", "listing_id": "listings" },
@@ -477,7 +476,6 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "listings": { "agent_id": "agents", "appointment_event_id": "calendar_events", "brokerage_id": "brokerages", "contact_id": "contacts", "location_id": "locations", "marketing_tier_id": "listing_marketing_tiers", "seller_contact_id": "contacts", "team_id": "teams" },
   "local_news_sources": { "brokerage_id": "brokerages" },
   "locations": { "brokerage_id": "brokerages" },
-  "long_form_videos": { "script_id": "scripts" },
   "mail_response_tracking": { "brokerage_id": "brokerages", "campaign_id": "direct_mail_campaigns", "contact_id": "contacts", "lead_id": "leads" },
   "mail_tracking": { "brokerage_id": "brokerages", "campaign_id": "direct_mail_campaigns" },
   "managed_agent_sessions": { "brokerage_id": "brokerages", "managed_agent_id": "managed_agents" },
@@ -529,7 +527,6 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "newsletter_video_renders": { "agent_id": "agents", "brokerage_id": "brokerages", "newsletter_campaign_id": "newsletter_campaigns", "video_project_id": "ai_video_projects" },
   "nextdoor_activity": { "brokerage_id": "brokerages" },
   "notification_log": { "brokerage_id": "brokerages", "notification_id": "notifications" },
-  "notification_preferences": { "user_id": "users" },
   "notification_queue": { "notification_id": "notifications" },
   "notification_rules": { "brokerage_id": "brokerages" },
   "notifications": { "activity_id": "activities", "brokerage_id": "brokerages", "compliance_event_id": "compliance_events", "contact_id": "contacts", "lifecycle_event_id": "lifecycle_events", "user_id": "users" },
@@ -577,7 +574,6 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "platform_sentinel_actions": { "acted_by": "users", "brokerage_id": "brokerages" },
   "platform_social_accounts": { "connected_by": "users" },
   "platform_staff_profiles": { "created_by": "users", "user_id": "users" },
-  "playbooks": { "created_by": "users" },
   "podcast_analytics_events": { "brokerage_id": "brokerages", "episode_id": "podcast_episodes", "listener_contact_id": "contacts" },
   "podcast_auto_runs": { "agent_id": "agents", "brokerage_id": "brokerages", "podcast_episode_id": "podcast_episodes" },
   "podcast_distribution_channels": { "brokerage_id": "brokerages" },
@@ -749,7 +745,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "transaction_title_escrow": { "brokerage_id": "brokerages", "transaction_id": "transactions" },
   "transaction_vendor_services": { "brokerage_id": "brokerages", "transaction_id": "transactions", "vendor_id": "vendors" },
   "transactions": { "agent_id": "agents", "brokerage_id": "brokerages", "buyer_agent_id": "agents", "buyer_contact_id": "contacts", "contact_id": "contacts", "coordinator_id": "transaction_coordinators", "listing_id": "listings", "offer_id": "offers", "seller_agent_id": "agents", "seller_contact_id": "contacts" },
-  "transparency_updates": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings", "transaction_id": "transactions", "transparency_video_id": "transparency_videos" },
+  "transparency_updates": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings", "transaction_id": "transactions" },
   "trend_alerts": { "brokerage_id": "brokerages" },
   "trid_timeline": { "brokerage_id": "brokerages", "transaction_id": "transactions" },
   "unified_lead_profile": { "brokerage_id": "brokerages", "contact_id": "contacts" },

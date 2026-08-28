@@ -45,9 +45,15 @@ const check = (n: string, c: boolean, detail = "") => {
   else { fail++; fails.push(n); console.log(`  ✗ ${n}${detail ? ` — ${detail}` : ""}`) }
 }
 const src = (p: string) => readFileSync(join(process.cwd(), p), "utf8")
+const srcIfExists = (p: string) => { try { return src(p) } catch { return "" } }
 
 const LICENSE = "app/actions/onboarding/license.ts"
 const ONBOARDING = "app/actions/ai-agent-onboarding.ts"
+// The actions barrel was DELETED in wave 14 (2026-08-28): zero importers, every
+// re-export reachable by direct path — a paper shield over function-level
+// orphans (its own CENSUS header records the finding). The probes that read it
+// asserted ABSENCES ("does not re-export X"), which a deleted file satisfies
+// even harder; the read is tolerant so the assertions keep running.
 const BARREL = "app/actions/index.ts"
 
 /** The E&O function body only — so a match somewhere else in the file cannot pass a check for it. */
@@ -152,7 +158,9 @@ const PROBES: Probe[] = [
   },
   {
     name: "V3 the barrel no longer re-exports it (a retired action must not stay reachable)",
-    run: (_l, _o, barrel) => !/^\s*verifyAgentLicense,\s*$/m.test(barrel),
+    // The barrel is deleted (wave 14); the probe must stay falsifiable against a
+    // RESURRECTED barrel too, so it rejects both re-export spellings.
+    run: (_l, _o, barrel) => !/^\s*verifyAgentLicense,\s*$/m.test(barrel) && !/export \{[^}]*verifyAgentLicense/.test(barrel),
   },
   {
     name: "V4 the surviving verifier is the STATE-REGISTRY one, still wired from licence submission",
@@ -163,7 +171,7 @@ const PROBES: Probe[] = [
 
 function sourceLayer() {
   console.log("\n[ASSERTIONS · the licence record keeps what it is given]")
-  const l = src(LICENSE), o = src(ONBOARDING), b = src(BARREL)
+  const l = src(LICENSE), o = src(ONBOARDING), b = srcIfExists(BARREL)
   for (const p of PROBES) check(p.name, p.run(l, o, b))
 }
 
@@ -210,13 +218,16 @@ const MUTATIONS: Array<{ name: string; probe: string; mutate: (l: string, o: str
   {
     name: "the barrel re-exports the retired action",
     probe: "V3",
-    mutate: (l, o, b) => [l, o, b.replace("  generateWelcomeMessage,", "  verifyAgentLicense,\n  generateWelcomeMessage,")],
+    // With the barrel deleted the anchor-replace form became a no-op (the old
+    // unfalsifiability this control exists to catch): resurrect a minimal barrel
+    // that re-exports the retired name instead.
+    mutate: (l, o, b) => [l, o, b + '\nexport { verifyAgentLicense } from "./onboarding/license"\n'],
   },
 ]
 
 function negativeControls() {
   console.log("\n[NEGATIVE CONTROLS · each must go RED]")
-  const l0 = src(LICENSE), o0 = src(ONBOARDING), b0 = src(BARREL)
+  const l0 = src(LICENSE), o0 = src(ONBOARDING), b0 = srcIfExists(BARREL)
   for (const m of MUTATIONS) {
     const probe = PROBES.find((p) => p.name.startsWith(m.probe + " "))
     if (!probe) { check(`NEGATIVE CONTROL ${m.name} — probe ${m.probe} not found`, false); continue }

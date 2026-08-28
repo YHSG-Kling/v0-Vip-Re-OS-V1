@@ -2,13 +2,17 @@
   "files": {
     "app/actions/accounting-sync.ts": 1,
     "app/actions/admin/commission-agreement.ts": 1,
-    "app/actions/agents.ts": 5,
+    "app/actions/agents.ts": 8,
+    "app/actions/ai-agent-onboarding.ts": 1,
     "app/actions/ai-auto-response.ts": 1,
+    "app/actions/ai-calendar-management.ts": 1,
+    "app/actions/ai-client-gifting.ts": 1,
     "app/actions/ai-content-generation.tsx": 3,
     "app/actions/ai-contract-review.ts": 1,
     "app/actions/ai-document-intelligence.ts": 1,
     "app/actions/ai-marketing-automation.ts": 4,
     "app/actions/ai-predictions.ts": 5,
+    "app/actions/ai-showing-management.ts": 2,
     "app/actions/ai-transaction-coordinator.ts": 2,
     "app/actions/ai-voice-transcription.ts": 1,
     "app/actions/billing.ts": 3,
@@ -38,11 +42,13 @@
     "app/actions/social-media-automation.ts": 1,
     "app/actions/social-publishing.ts": 1,
     "app/actions/superadmin/parked-retention.ts": 1,
+    "app/actions/tasks.ts": 3,
     "app/actions/vendor-marketplace.ts": 2,
     "app/actions/vendor-payments.ts": 1,
     "app/actions/vendor-verification.ts": 1,
     "app/actions/video/create-video-project.ts": 5,
     "app/actions/video-repurposing.ts": 3,
+    "app/actions/workflows.ts": 2,
     "app/components/portal/FitBadge.tsx": 1,
     "app/dashboard/intelligence-report/trust-receipts-card.tsx": 1,
     "app/dashboard/videos/components/BackgroundPicker.tsx": 1,
@@ -573,7 +579,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9383,
+  "census": 9352,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -623,9 +629,9 @@
     "app/actions/agent-public-profile.ts": 1,
     "app/actions/agent-settings.ts": 2,
     "app/actions/agentic-tokens.ts": 3,
-    "app/actions/agents.ts": 19,
+    "app/actions/agents.ts": 16,
     "app/actions/ai-agent-goals.ts": 6,
-    "app/actions/ai-agent-onboarding.ts": 7,
+    "app/actions/ai-agent-onboarding.ts": 2,
     "app/actions/ai-auto-response.ts": 6,
     "app/actions/ai-buyer-search-push.ts": 1,
     "app/actions/ai-calendar-management.ts": 13,
@@ -635,7 +641,7 @@
     "app/actions/ai-closing-workflow.ts": 5,
     "app/actions/ai-cma.ts": 4,
     "app/actions/ai-communication-hub.ts": 9,
-    "app/actions/ai-content-generation.tsx": 41,
+    "app/actions/ai-content-generation.tsx": 42,
     "app/actions/ai-contract-review.ts": 6,
     "app/actions/ai-direct-mail.ts": 11,
     "app/actions/ai-document-intelligence.ts": 7,
@@ -652,7 +658,7 @@
     "app/actions/ai-isa/schedule-appointment.ts": 1,
     "app/actions/ai-isa/speed-to-lead-metrics.ts": 1,
     "app/actions/ai-isa-settings.ts": 5,
-    "app/actions/ai-isa.ts": 18,
+    "app/actions/ai-isa.ts": 14,
     "app/actions/ai-lead-nurturing.ts": 4,
     "app/actions/ai-lead-scoring.ts": 3,
     "app/actions/ai-listing-intake.ts": 9,
@@ -660,8 +666,8 @@
     "app/actions/ai-listing-presentation.ts": 3,
     "app/actions/ai-market-intelligence.ts": 3,
     "app/actions/ai-marketing-automation.ts": 8,
-    "app/actions/ai-newsletter.ts": 15,
-    "app/actions/ai-offer-creation.ts": 11,
+    "app/actions/ai-newsletter.ts": 13,
+    "app/actions/ai-offer-creation.ts": 9,
     "app/actions/ai-predictions.ts": 24,
     "app/actions/ai-property-matching.ts": 4,
     "app/actions/ai-referral-management.ts": 5,
@@ -747,18 +753,18 @@
     "app/actions/collaborative-search.ts": 15,
     "app/actions/coming-soon-content.ts": 1,
     "app/actions/command-center.ts": 3,
-    "app/actions/communications.ts": 11,
+    "app/actions/communications.ts": 10,
     "app/actions/compliance/dashboard.ts": 2,
     "app/actions/compliance/manage-required-docs.ts": 4,
     "app/actions/compliance/seed-required-docs.ts": 1,
     "app/actions/compliance-bridge-actions.ts": 3,
-    "app/actions/compliance-monitoring.ts": 19,
+    "app/actions/compliance-monitoring.ts": 15,
     "app/actions/compliance-phrases.ts": 4,
     "app/actions/composition-library.ts": 1,
     "app/actions/connection-health.ts": 2,
     "app/actions/connections/connection-center.ts": 4,
-    "app/actions/contact-details.ts": 8,
-    "app/actions/contact-enrichment.ts": 9,
+    "app/actions/contact-details.ts": 7,
+    "app/actions/contact-enrichment.ts": 8,
     "app/actions/contact-intelligence.ts": 2,
     "app/actions/contact-quick-actions.ts": 3,
     "app/actions/contact-reassignment.ts": 2,
@@ -774,7 +780,7 @@
     "app/actions/content-prediction.ts": 4,
     "app/actions/content-studio.ts": 10,
     "app/actions/continuity-receipt.ts": 1,
-    "app/actions/conversation-analytics.ts": 5,
+    "app/actions/conversation-analytics.ts": 3,
     "app/actions/convert-outside-inquiry.ts": 1,
     "app/actions/copilot.ts": 10,
     "app/actions/counter-offer-diff.ts": 1,
@@ -783,7 +789,7 @@
     "app/actions/credit-copilot.ts": 9,
     "app/actions/critical-setup.ts": 1,
     "app/actions/crm-connect.ts": 4,
-    "app/actions/crm.ts": 11,
+    "app/actions/crm.ts": 10,
     "app/actions/cron-kernel.ts": 5,
     "app/actions/ctv-ads.ts": 3,
     "app/actions/custom-domains.ts": 4,
@@ -1004,14 +1010,14 @@
     "app/actions/settings/provider-settings-actions.ts": 3,
     "app/actions/settings/public-site-links.ts": 1,
     "app/actions/settings/reputation-preferences.ts": 2,
-    "app/actions/settings/revenue-share-setting.ts": 3,
+    "app/actions/settings/revenue-share-setting.ts": 5,
     "app/actions/settings/showing-financial-gate-setting.ts": 2,
     "app/actions/settings/territories.ts": 4,
     "app/actions/settings/update-email-template.ts": 1,
     "app/actions/settings/update-global-settings.ts": 1,
     "app/actions/settings/update-notification-rules.ts": 1,
     "app/actions/setup-readiness.ts": 1,
-    "app/actions/showings.ts": 7,
+    "app/actions/showings.ts": 6,
     "app/actions/smart-insights.ts": 13,
     "app/actions/smart-queue.ts": 1,
     "app/actions/smarter-this-week.ts": 1,
@@ -1131,9 +1137,9 @@
     "app/actions/voice-assistant/draft-listing-from-voice.ts": 1,
     "app/actions/voice-assistant/draft-offer-from-voice.ts": 1,
     "app/actions/voice-assistant/handle-voice-command.ts": 1,
-    "app/actions/voice-assistant.ts": 6,
+    "app/actions/voice-assistant.ts": 5,
     "app/actions/voice-avatar-settings.ts": 4,
-    "app/actions/voice-call-bridge.ts": 4,
+    "app/actions/voice-call-bridge.ts": 3,
     "app/actions/voice-dial-batch.ts": 3,
     "app/actions/voice-tenancy.ts": 3,
     "app/actions/walkthrough-outcome.ts": 1,
@@ -1143,7 +1149,7 @@
     "app/actions/workflow-monitoring.ts": 4,
     "app/actions/workflow-orchestrator.ts": 7,
     "app/actions/workflow-reports.ts": 1,
-    "app/actions/workflows.ts": 13,
+    "app/actions/workflows.ts": 9,
     "app/api/accounting/sync/route.ts": 1,
     "app/api/admin/agents/sessions/route.ts": 1,
     "app/api/admin/audit-events/route.ts": 1,
@@ -1406,7 +1412,6 @@
     "app/api/external-portal/documents/download/route.ts": 1,
     "app/api/fatigue/calculate/route.ts": 1,
     "app/api/fatigue/cron/route.ts": 1,
-    "app/api/financial/commissions/route.ts": 1,
     "app/api/financial/expenses/route.ts": 2,
     "app/api/form-wizard/resolve-provider/route.ts": 1,
     "app/api/forms/provider-library/route.ts": 1,
@@ -1484,7 +1489,6 @@
     "app/api/storage/upload-temp/route.ts": 1,
     "app/api/superadmin/tenant-export/[brokerageId]/route.ts": 1,
     "app/api/system/schema-readiness/route.ts": 1,
-    "app/api/them-first/empathy-response/route.ts": 2,
     "app/api/track/identify/route.ts": 1,
     "app/api/track/pixel/route.ts": 1,
     "app/api/twiml/whisper-bridge/route.ts": 2,
@@ -2515,6 +2519,7 @@
     "app/mobile/mobile-bottom-nav.tsx": 1,
     "app/mobile/voice/quick-dial-search.tsx": 1,
     "app/mobile/voice/voice-session-button.tsx": 1,
+    "app/mobile/voice/voice-settings-card.tsx": 1,
     "app/newsletters/newsletters-client.tsx": 1,
     "app/newsletters/personalize-preview-panel.tsx": 1,
     "app/newsletters/subscribers-panel.tsx": 1,
@@ -2813,8 +2818,8 @@
     "lib/analytics/territory-coverage.ts": 4,
     "lib/analytics/territory-roi.ts": 5,
     "lib/analytics/vendor-roi.ts": 2,
-    "lib/application/ai-isa.ts": 6,
-    "lib/application/compliance-monitoring.ts": 20,
+    "lib/application/ai-isa.ts": 2,
+    "lib/application/compliance-monitoring.ts": 17,
     "lib/application/lead-application-service.ts": 5,
     "lib/application/listing-lifecycle.ts": 16,
     "lib/application/listings.ts": 2,
@@ -2950,6 +2955,7 @@
     "lib/commission/ledger-sync.ts": 7,
     "lib/commission/payment-tracker.ts": 3,
     "lib/commission/reconcile-tracking.ts": 5,
+    "lib/commission/revenue-share-model.ts": 4,
     "lib/commission/team-lead-split.ts": 5,
     "lib/commission/utils.ts": 4,
     "lib/commission/waterfall/01-resolve-rate.ts": 1,
@@ -3179,7 +3185,7 @@
     "lib/fatigue/recovery-generator.ts": 1,
     "lib/finance/accounting-egress.ts": 3,
     "lib/finance/auto-dispute.ts": 2,
-    "lib/finance/brokerage-earnings-writer.ts": 1,
+    "lib/finance/brokerage-earnings-writer.ts": 2,
     "lib/finance/cap-crush.ts": 2,
     "lib/finance/cap-progress.ts": 2,
     "lib/finance/commission-leak-policy.ts": 1,
@@ -3846,7 +3852,7 @@
     "lib/platform/prospect-sourcer.ts": 4,
     "lib/platform/provider-posture.ts": 14,
     "lib/platform/public-tiers.ts": 2,
-    "lib/platform/referral-payouts.ts": 6,
+    "lib/platform/referral-payouts.ts": 7,
     "lib/platform/require-capability.ts": 2,
     "lib/platform/revenue-analytics.ts": 2,
     "lib/platform/save-offer.ts": 2,
@@ -3855,7 +3861,7 @@
     "lib/platform/site-url.ts": 1,
     "lib/platform/staff-action-gate.ts": 2,
     "lib/platform/status-notice.ts": 10,
-    "lib/platform/subscriber-referrals.ts": 4,
+    "lib/platform/subscriber-referrals.ts": 6,
     "lib/platform/subscription-oversight.ts": 4,
     "lib/platform/suppression-list.ts": 4,
     "lib/platform/tenant-export.ts": 2,
@@ -4054,7 +4060,7 @@
     "lib/teams/team-scope.ts": 2,
     "lib/territory/metrics-aggregator.ts": 3,
     "lib/testimonials/testimonial-policy.ts": 1,
-    "lib/them-first/empathy-library.ts": 3,
+    "lib/them-first/empathy-library.ts": 4,
     "lib/them-first/validator.ts": 1,
     "lib/tools/visitor-id.ts": 2,
     "lib/training/objection-scenarios.ts": 1,
@@ -4291,7 +4297,7 @@
     "remotion/charts/PriceTrendLine.tsx": 1,
     "remotion/components/CaptionLayer.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 2,
-    "services/goHighLevelService.ts": 4,
+    "services/goHighLevelService.ts": 3,
     "services/supabase.ts": 3,
     "workflows/market-insight-workflow.ts": 1
   },
@@ -4518,9 +4524,7 @@
     ],
     "app/actions/agents.ts": [
       "getAgents",
-      "getAgentById",
       "createAgent",
-      "updateAgent",
       "awardPoints",
       "getAgentAchievements",
       "getAgentCommissions",
@@ -4533,7 +4537,6 @@
       "setAgentGoal",
       "updateGoalProgress",
       "assignAgentToContact",
-      "getAgentContacts",
       "getAgentStats",
       "getBrokerageStats"
     ],
@@ -4546,13 +4549,8 @@
       "syncGoalCurrentValues"
     ],
     "app/actions/ai-agent-onboarding.ts": [
-      "startAgentOnboarding",
-      "getOnboardingStatus",
       "completeAISessionStep",
-      "generateWelcomeMessage",
-      "askOnboardingBuddy",
-      "certifyAgent",
-      "getOnboardingAnalytics"
+      "generateWelcomeMessage"
     ],
     "app/actions/ai-auto-response.ts": [
       "getAutoResponseSettings",
@@ -4640,6 +4638,7 @@
       "getBrandVoiceProfile",
       "updateBrandVoiceProfile",
       "getContentTemplates",
+      "recordContentTemplateUse",
       "saveContentTemplate",
       "getGeneratedContent",
       "createGeneratedContent",
@@ -4771,10 +4770,6 @@
       "getAIISAStats"
     ],
     "app/actions/ai-isa.ts": [
-      "launchAIISACampaign",
-      "queueAIISACall",
-      "getAIISACampaigns",
-      "getAIISACalls",
       "retryFailedCalls",
       "updateCampaignStatus",
       "listISACampaigns",
@@ -4851,8 +4846,6 @@
       "manageSubscribers",
       "getNewsletters",
       "deleteNewsletterCampaign",
-      "createNewsletter",
-      "generateNewsletterContent",
       "queueNewsletterForContact",
       "manageSubscriberBatch"
     ],
@@ -4864,8 +4857,6 @@
       "getOfferForms",
       "createOfferDotloop",
       "aiCounterOfferStrategy",
-      "aiAnalyzeOfferStrategy",
-      "generateOfferLetter",
       "runCompleteOfferWorkflow",
       "generateOfferDraft"
     ],
@@ -5443,7 +5434,6 @@
       "sendSMS",
       "sendEmail",
       "logCall",
-      "getContactHistory",
       "getCommunicationStats",
       "getRecentCommunications",
       "addContactNote",
@@ -5471,19 +5461,15 @@
       "loadComplianceBridgeStatusAction"
     ],
     "app/actions/compliance-monitoring.ts": [
-      "logAuditEvent",
       "checkComplianceStatus",
       "resolveComplianceAlert",
       "resolveCompRiskFlag",
       "trackCertificationExpiration",
-      "analyzeFairHousingRisk",
       "monitorTRIDCompliance",
-      "applyDocumentRetention",
       "exportAuditTrail",
       "scanContentCompliance",
       "submitContentForApproval",
       "reviewContentApproval",
-      "logCommunicationWithCompliance",
       "getApprovedContentLibrary",
       "getPendingApprovals",
       "getComplianceViolations",
@@ -5517,8 +5503,7 @@
       "getContactTransactions",
       "getContactCopilotSuggestions",
       "getContactActivity",
-      "getContactDocuments",
-      "getContactInteractions"
+      "getContactDocuments"
     ],
     "app/actions/contact-enrichment.ts": [
       "enrichContact",
@@ -5528,7 +5513,6 @@
       "getContactsNeedingLifeChangeCheck",
       "getRecentLifeChanges",
       "markLifeChangeNotified",
-      "enrichContactData",
       "getContactInsights"
     ],
     "app/actions/contact-intelligence.ts": [
@@ -5626,8 +5610,6 @@
     "app/actions/conversation-analytics.ts": [
       "logConversationMetadata",
       "runWeeklyAIAudit",
-      "getConversationAnalytics",
-      "getAuditFlags",
       "reviewAuditFlag"
     ],
     "app/actions/convert-outside-inquiry.ts": [
@@ -5682,7 +5664,6 @@
       "getContacts",
       "getContactById",
       "searchContacts",
-      "getContactTimeline",
       "mergeContacts",
       "findDuplicateContacts",
       "addContactNote",
@@ -7161,7 +7142,9 @@
     "app/actions/settings/revenue-share-setting.ts": [
       "setRevenueShareEnabled",
       "getBenefitOfferings",
-      "setBenefitOffering"
+      "setBenefitOffering",
+      "getRevenueShareDistributionModel",
+      "setRevenueShareDistributionModel"
     ],
     "app/actions/settings/showing-financial-gate-setting.ts": [
       "getShowingFinancialGateSetting",
@@ -7191,8 +7174,7 @@
       "completeShowing",
       "createShowing",
       "updateShowing",
-      "cancelShowing",
-      "confirmShowing"
+      "cancelShowing"
     ],
     "app/actions/smart-insights.ts": [
       "generateSmartInsights",
@@ -8026,8 +8008,7 @@
       "startVoiceSession",
       "endVoiceSession",
       "getVoiceConfig",
-      "updateVoiceConfig",
-      "getVoiceCommandHistory"
+      "updateVoiceConfig"
     ],
     "app/actions/voice-avatar-settings.ts": [
       "getMyVoiceAvatarPrefs",
@@ -8038,8 +8019,7 @@
     "app/actions/voice-call-bridge.ts": [
       "initiateWhisperBridge",
       "updateWhisperBridgeStatus",
-      "triggerAiVoiceCall",
-      "getWhisperBridgeCalls"
+      "triggerAiVoiceCall"
     ],
     "app/actions/voice-dial-batch.ts": [
       "proposeDialBatchAction",
@@ -8084,15 +8064,11 @@
     ],
     "app/actions/workflows.ts": [
       "executeAITool",
-      "checkFairHousingCompliance",
       "generateCopilotPlan",
-      "startSmartDrip",
       "sendMessage",
-      "calculateListingMetrics",
       "triggerCMAPackage",
-      "grantPortalAccess",
-      "triggerComplianceChecklist",
       "generateScriptContent",
+      "savePrivateScript",
       "retryFailedWorkflow",
       "logUserActivity",
       "executeWorkflow"
@@ -8907,9 +8883,6 @@
     "app/api/fatigue/cron/route.ts": [
       "GET"
     ],
-    "app/api/financial/commissions/route.ts": [
-      "GET"
-    ],
     "app/api/financial/expenses/route.ts": [
       "GET",
       "POST"
@@ -9144,10 +9117,6 @@
       "GET"
     ],
     "app/api/system/schema-readiness/route.ts": [
-      "GET"
-    ],
-    "app/api/them-first/empathy-response/route.ts": [
-      "POST",
       "GET"
     ],
     "app/api/track/identify/route.ts": [
@@ -12328,6 +12297,9 @@
     "app/mobile/voice/voice-session-button.tsx": [
       "VoiceSessionButton"
     ],
+    "app/mobile/voice/voice-settings-card.tsx": [
+      "VoiceSettingsCard"
+    ],
     "app/newsletters/newsletters-client.tsx": [
       "NewslettersClient"
     ],
@@ -13520,20 +13492,14 @@
       "providerMetricsToCsv"
     ],
     "lib/application/ai-isa.ts": [
-      "launchAIISACampaignService",
-      "queueAIISACallService",
-      "getAIISACampaignsService",
-      "getAIISACallsService",
       "retryFailedCallsService",
       "updateCampaignStatusService"
     ],
     "lib/application/compliance-monitoring.ts": [
-      "logAuditEventService",
       "checkComplianceStatusService",
       "resolveComplianceAlertService",
       "resolveCompRiskFlagService",
       "trackCertificationExpirationService",
-      "analyzeFairHousingRiskService",
       "monitorTRIDComplianceService",
       "createTRIDTimelineService",
       "updateTRIDMilestoneService",
@@ -13543,7 +13509,6 @@
       "scanContentComplianceService",
       "submitContentForApprovalService",
       "reviewContentApprovalService",
-      "logCommunicationWithComplianceService",
       "getApprovedContentLibraryService",
       "getPendingApprovalsService",
       "getComplianceViolationsService",
@@ -14375,6 +14340,12 @@
       "finalizeCommissionAtClose",
       "recordCommissionDepositReceived",
       "reconcileCommissionDisbursement"
+    ],
+    "lib/commission/revenue-share-model.ts": [
+      "parseRevenueShareModel",
+      "getRevenueShareModel",
+      "edgeTermsFromModel",
+      "computeRevenueShare"
     ],
     "lib/commission/team-lead-split.ts": [
       "pickTeamTerms",
@@ -15493,6 +15464,7 @@
       "autoDetectCommissionDispute"
     ],
     "lib/finance/brokerage-earnings-writer.ts": [
+      "foldCommissionRows",
       "runBrokerageEarningsRollup"
     ],
     "lib/finance/cap-crush.ts": [
@@ -19031,6 +19003,7 @@
     ],
     "lib/platform/referral-payouts.ts": [
       "getReferralFeeTerms",
+      "referralFeeCentsUnderTerms",
       "resolveReferralRecipient",
       "postReferralPayout",
       "listReferralEarningsForBrokerage",
@@ -19076,6 +19049,8 @@
       "clearProposedStatusNotice"
     ],
     "lib/platform/subscriber-referrals.ts": [
+      "monthIndexForPeriod",
+      "describeReferralFeeTerms",
       "makeReferralSource",
       "parseReferrer",
       "parseReferrerEmail",
@@ -20031,7 +20006,8 @@
     "lib/them-first/empathy-library.ts": [
       "getEmpathyResponse",
       "getAllEmpathyResponses",
-      "listAllPersonas"
+      "listAllPersonas",
+      "empathyGuidanceForCrmPersona"
     ],
     "lib/them-first/validator.ts": [
       "validateThemFirstContent"
@@ -21105,7 +21081,6 @@
     ],
     "services/goHighLevelService.ts": [
       "syncContactToGHL",
-      "getContactConversationHistory",
       "logGHLCall",
       "addGHLContactNote"
     ],
@@ -21118,5 +21093,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 0
+  "trulyDead": 8
 }

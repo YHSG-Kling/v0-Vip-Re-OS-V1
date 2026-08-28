@@ -1,6 +1,6 @@
 -- m580 — tool_usage_sessions kept two clocks, and nobody ever read the second.
 --
--- STATUS: WRITTEN, NOT APPLIED. The integrator applies migrations; app code
+-- STATUS: APPLIED 2026-08-28 hrvaqgvukzxfskkcrwbt (integrator). App code
 -- (app/actions/calculators.ts trackToolUsage) already stopped writing the
 -- column, which is safe either way because it is NOT NULL DEFAULT NOW().
 --
@@ -22,15 +22,15 @@
 -- was the per-tool index, which is re-pointed first so the drop cannot leave
 -- the tool_name lookups unindexed.
 
-BEGIN;
+-- NO EXPLICIT BEGIN/COMMIT: the migration runner wraps this file in a
+-- transaction; a nested COMMIT would break the all-or-nothing (per m519 —
+-- the integrator removed the pair this file originally carried).
 
 DROP INDEX IF EXISTS idx_tool_usage_sessions_tool;
 CREATE INDEX IF NOT EXISTS idx_tool_usage_sessions_tool
   ON public.tool_usage_sessions (tool_name, created_at DESC);
 
 ALTER TABLE public.tool_usage_sessions DROP COLUMN IF EXISTS "timestamp";
-
-COMMIT;
 
 -- After applying: regenerate the schema caches (schema-snapshot.ts et al.) per
 -- CLAUDE.md §3 so the guards see the column gone.

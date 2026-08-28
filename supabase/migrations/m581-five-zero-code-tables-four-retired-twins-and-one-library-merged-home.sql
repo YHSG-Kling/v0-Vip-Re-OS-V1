@@ -1,9 +1,14 @@
 -- m581 — FIVE ZERO-CODE TABLES: FOUR RETIRED TWINS AND ONE LIBRARY MERGED HOME
 --
--- WRITTEN, NOT APPLIED (lane E4, 2026-08-28). The integrator applies (§3) after
--- running the EVIDENCE queries below against hrvaqgvukzxfskkcrwbt — this lane
--- had no live access, so every live claim here is a repo-recorded prior finding
--- that the integrator re-verifies at apply time.
+-- APPLIED 2026-08-28 hrvaqgvukzxfskkcrwbt.
+-- Written by lane E4; applied by the integrator (§3) after running every
+-- EVIDENCE query below live: row counts 0,0,0,8,0; no triggers; no procs; the
+-- one expected inbound FK (transparency_updates.transparency_video_id — the
+-- constraint's short name transparency_updates_video_id_fkey names the same
+-- column, verified via pg_constraint/conkey); live playbooks shape {content,
+-- created_at, created_by, description, id, name, playbook_type, status,
+-- updated_at} (name-col path). Post-apply: 0 of the 5 tables remain, 8 seed
+-- rows merged into template_marketplace, both retired columns gone.
 --
 -- Lane CD's census (2026-08-28) reported these five tables ZERO-CODE — no
 -- `.from("<table>")` call site on either side of the wire — and each of its

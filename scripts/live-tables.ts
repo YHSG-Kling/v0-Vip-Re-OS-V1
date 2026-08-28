@@ -1,7 +1,7 @@
 /**
  * scripts/live-tables.ts
  *
- * EVERY relation the live public schema exposes — 762 of them — as a flat sorted list.
+ * EVERY relation the live public schema exposes — 757 of them — as a flat sorted list.
  *
  * This is the oracle for "does this name exist in the database", which SCHEMA_SNAPSHOT cannot be:
  * that file holds only the tables the code QUERIES and the database HAS (`referenced ∩ live`), so a
@@ -20,7 +20,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-08-28
  * source: public.live_schema_json()
- * body-sha256: b7dd1254ecdfd7aeec8379ac28de13a4b91db57a18f76a3517894228aae043a3
+ * body-sha256: 8c50024f880de01688e8d3fde8c12ec6e4e9a03ccab8d1ffe2cf33ab87f2d348
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -409,7 +409,6 @@ export const LIVE_TABLES: readonly string[] = [
   "lifetime_customer_npv_scores",
   "lifetime_customer_touchpoints",
   "listing_agreements",
-  "listing_engagement",
   "listing_health_interventions",
   "listing_health_scores",
   "listing_inquiries",
@@ -431,7 +430,6 @@ export const LIVE_TABLES: readonly string[] = [
   "listings",
   "local_news_sources",
   "locations",
-  "long_form_videos",
   "mail_response_tracking",
   "mail_tracking",
   "managed_agent_sessions",
@@ -487,7 +485,6 @@ export const LIVE_TABLES: readonly string[] = [
   "newsletter_video_renders",
   "nextdoor_activity",
   "notification_log",
-  "notification_preferences",
   "notification_queue",
   "notification_rules",
   "notifications",
@@ -541,7 +538,6 @@ export const LIVE_TABLES: readonly string[] = [
   "platform_staff_profiles",
   "platform_suppression_list",
   "platform_tos_acceptances",
-  "playbooks",
   "podcast_analytics_events",
   "podcast_auto_runs",
   "podcast_distribution_channels",
@@ -726,7 +722,6 @@ export const LIVE_TABLES: readonly string[] = [
   "transaction_vendor_services",
   "transactions",
   "transparency_updates",
-  "transparency_videos",
   "trend_alerts",
   "trid_timeline",
   "unified_lead_profile",
