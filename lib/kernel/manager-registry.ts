@@ -2057,6 +2057,11 @@ export const CRON_MANAGER: Record<string, ManagerKey> = {
   "/api/cron/long-term-nurture": "ai_isa",
   "/api/cron/ghost-detection": "ai_isa",
   "/api/cron/engagement-scores": "ai_isa",
+  // Conversation analytics refresh (lane F3, 2026-08-28) — sweeps conversations
+  // whose last message outran their stored insight and re-derives
+  // health/trajectory/escalation. Same engagement-intelligence rail as
+  // engagement-scores above.
+  "/api/cron/conversation-insights-refresh": "ai_isa",
   "/api/cron/source-conversion-learning": "ai_isa",
   "/api/cron/intent-campaign": "ai_isa",
   "/api/cron/voice-call-analysis": "ai_isa",
