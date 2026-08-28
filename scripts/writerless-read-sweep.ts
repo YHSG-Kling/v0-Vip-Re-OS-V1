@@ -35,7 +35,9 @@ const SEEDED_REFERENCE = new Set([
   "offer_strategy_templates", "listing_task_templates", "transaction_milestone_templates",
   "email_templates", "newsletter_templates", "video_templates", "brand_templates",
   "content_templates", "document_templates", "chat_templates",
-  "thank_you_note_templates", "remotion_compositions", "ai_prompt_templates",
+  // ai_prompt_templates left this list when m578 dropped the table (2026-08-28;
+  // prompts live in code beside their actions — see the migration header).
+  "thank_you_note_templates", "remotion_compositions",
   "ai_agent_templates", "template_marketplace", "vendor_plans", "journey_tools",
   "local_news_sources", "neighborhood_data_sources", "market_data_sources",
   "content_topic_sources",

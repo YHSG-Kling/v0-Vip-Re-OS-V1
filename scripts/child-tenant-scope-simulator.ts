@@ -50,7 +50,8 @@ if (!url || !key) {
 const ALLOWED: Record<string, string> = {
   // (a) global reference data
   achievements: "gamification catalogue — same for every tenant",
-  ai_prompt_templates: "platform prompt library",
+  // ai_prompt_templates: dropped by m578 (2026-08-28) — a retired name must not
+  // sit in an ALLOWED list reading as adjudicated (§2).
   compliance_rules: "regulatory rules, identical per state for all tenants",
   document_templates: "platform-supplied document templates",
   feature_flags: "platform flags — read by every tenant",

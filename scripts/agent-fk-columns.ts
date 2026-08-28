@@ -18,12 +18,12 @@
  * credentials, so without the cache the identity-class guard goes blind — that is the only reason
  * it is committed.
  *
- * MEASURED AT GENERATION: 212 agents(id) columns across 203 tables, 33 agent-ish users(id) columns across 31 tables, 164 contact_id tables.
+ * MEASURED AT GENERATION: 213 agents(id) columns across 204 tables, 33 agent-ish users(id) columns across 31 tables, 162 contact_id tables.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-08-27
+ * generated: 2026-08-28
  * source: public.live_foreign_keys_json()
- * body-sha256: 675136ed17ec968e162cd00a8ecb8fdde61e420b725cd818de8c999a883b353c
+ * body-sha256: 50feb0a1f33d333031c0bf5f2cd7f6f08b8958cc462ad5d700b5dc0baed350b4
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -122,6 +122,7 @@ export const AGENT_FK_COLUMNS: Record<string, string[]> = {
   commission_splits: ["agent_id"],
   communication_audit_log: ["agent_id"],
   communications: ["agent_id"],
+  company_books_obligations: ["agent_id"],
   compliance_flags: ["agent_id"],
   compliance_tasks: ["agent_id"],
   contact_portal_modules: ["enabled_by_agent_id"],
@@ -337,7 +338,6 @@ export const CONTACT_FK_TABLES: string[] = [
   "conversations",
   "copilot_plans",
   "credit_accounts",
-  "credit_conversation_logs",
   "credit_partner_referrals",
   "credit_status",
   "data_health_logs",
@@ -414,7 +414,6 @@ export const CONTACT_FK_TABLES: string[] = [
   "property_search_log",
   "property_views",
   "qr_scan_events",
-  "real_estate_events",
   "referral_sources",
   "review_requests",
   "saved_properties",

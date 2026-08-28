@@ -1,7 +1,9 @@
 -- m578 — THREE TABLES THE CENSUS PROVED EMPTY ON BOTH SIDES OF THE WIRE
 --
--- WRITTEN, NOT APPLIED (lane CD, 2026-08-28). Lanes write migrations; only the
--- integrator applies them (CLAUDE.md §3).
+-- APPLIED 2026-08-28 hrvaqgvukzxfskkcrwbt.
+-- Written by lane CD 2026-08-28; applied by the integrator (CLAUDE.md §3), who
+-- pre-verified live: 0 rows in all three, 0 inbound FKs; the fail-closed
+-- assertion below passed and information_schema reports 0 of the three names.
 --
 -- Lane CB's orphan tranche (2026-08-27) deleted the three types that restated
 -- these rows — AIPromptTemplate, CreditConversationLog, EventRegistration — and

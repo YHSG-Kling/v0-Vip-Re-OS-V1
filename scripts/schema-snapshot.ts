@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 705 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 706 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-08-27
+ * generated: 2026-08-28
  * source: public.live_schema_json()
- * body-sha256: aedfab925ca732a8e429acb9fe1b91fc0e950daa3cd130b3db832e0b16e43e86
+ * body-sha256: da072463a1c028b9e61ee33a8048ff768cbc840b82c706df0cdde0c6b1e30776
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -210,6 +210,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   communication_audit_log: ["agent_id", "body_snippet", "brokerage_id", "channel", "communication_type", "compliance_passed", "contact_id", "created_at", "id", "lead_id", "lead_temperature", "sent_at", "subject", "user_id", "was_approved_content"],
   communications: ["agent_id", "brokerage_id", "channel", "contact_email", "contact_id", "content_preview", "created_at", "direction", "id", "metadata", "sent_at", "subject", "to_email"],
   comp_risk_flags: ["brokerage_id", "cma_id", "created_at", "description", "id", "is_resolved", "listing_id", "recommended_action", "risk_type", "severity"],
+  company_books_obligations: ["agent_id", "brokerage_id", "calculated_amount", "calculation_type", "calculation_value", "calculation_version", "cap_status", "created_at", "id", "obligation_type", "paid_at", "reason", "status", "transaction_id", "voided_at", "voided_reason"],
   competitor_ads: ["ad_copy", "ad_delivery_start", "ad_delivery_stop", "ad_headline", "brokerage_id", "categories", "competitor_id", "competitor_name", "engagement_score", "first_seen_at", "geo_relevance", "id", "impressions_lower", "impressions_upper", "landing_page_url", "last_seen_at", "media_url", "provider_ad_id", "raw_payload", "source_platform", "spend_lower_cents", "spend_upper_cents"],
   competitor_brokerages: ["brokerage_id", "competitor_name", "created_at", "facebook_page_id", "google_advertiser_id", "id", "is_active", "min_engagement_score", "watch_zip_codes"],
   competitor_content: ["brokerage_id", "caption", "comments_count", "competitor_id", "content_type", "content_url", "cta_present", "detected_keywords", "detected_topics", "emotional_tone", "engagement_rate", "hook_type", "id", "is_high_performing", "likes_count", "media_url", "observed_at", "platform", "posted_at", "raw_engagement_data", "shares_count", "views_count"],

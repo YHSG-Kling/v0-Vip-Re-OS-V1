@@ -1,7 +1,7 @@
 /**
  * scripts/live-tables.ts
  *
- * EVERY relation the live public schema exposes — 764 of them — as a flat sorted list.
+ * EVERY relation the live public schema exposes — 762 of them — as a flat sorted list.
  *
  * This is the oracle for "does this name exist in the database", which SCHEMA_SNAPSHOT cannot be:
  * that file holds only the tables the code QUERIES and the database HAS (`referenced ∩ live`), so a
@@ -18,9 +18,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-08-27
+ * generated: 2026-08-28
  * source: public.live_schema_json()
- * body-sha256: 8a5e6708eab55b5d5d5125c0ac71eff1e83145516a5934f8b31e70295ea2419e
+ * body-sha256: b7dd1254ecdfd7aeec8379ac28de13a4b91db57a18f76a3517894228aae043a3
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -111,7 +111,6 @@ export const LIVE_TABLES: readonly string[] = [
   "ai_message_drafts",
   "ai_overage_invoices",
   "ai_predictions",
-  "ai_prompt_templates",
   "ai_quota_overrides",
   "ai_search_citation_observations",
   "ai_search_landing_citation_observations",
@@ -227,6 +226,7 @@ export const LIVE_TABLES: readonly string[] = [
   "communication_audit_log",
   "communications",
   "comp_risk_flags",
+  "company_books_obligations",
   "competitor_ads",
   "competitor_brokerages",
   "competitor_content",
@@ -278,7 +278,6 @@ export const LIVE_TABLES: readonly string[] = [
   "cost_allocation",
   "cost_breakdown_tracking",
   "credit_accounts",
-  "credit_conversation_logs",
   "credit_partner_referrals",
   "credit_status",
   "cron_execution_logs",
@@ -590,7 +589,6 @@ export const LIVE_TABLES: readonly string[] = [
   "qr_scan_events",
   "raw_recruit_prospects",
   "raw_scraped_leads",
-  "real_estate_events",
   "reaper_runs",
   "recruiting_analytics",
   "recruiting_costs",

@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1695 of 1753 pairs) — storing them would be
+ * overwhelming majority (1694 of 1752 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 1828 edges across 713 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1753 unordered
+ * MEASURED AT GENERATION: 1827 edges across 712 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1752 unordered
  * table pairs carry at least one FK; 58
  * carry more than one and are listed below. 12 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -84,9 +84,9 @@
  * unambiguous pair as ambiguous.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-08-27
+ * generated: 2026-08-28
  * source: public.live_foreign_keys_json()
- * body-sha256: 4740ccfa918e576577aa355a3e2869156c7a07f9531afd2bc4314d841e8a5d21
+ * body-sha256: 1d4cfbba8d8d997b69771354664916fe6d07f578c8667b35dac57d6856709d2b
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -290,6 +290,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "communication_audit_log": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "user_id": "users" },
   "communications": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts" },
   "comp_risk_flags": { "brokerage_id": "brokerages", "cma_id": "cma_reports", "listing_id": "listings" },
+  "company_books_obligations": { "agent_id": "agents", "brokerage_id": "brokerages", "transaction_id": "transactions" },
   "competitor_ads": { "brokerage_id": "brokerages", "competitor_id": "competitor_brokerages" },
   "competitor_brokerages": { "brokerage_id": "brokerages" },
   "competitor_content": { "brokerage_id": "brokerages", "competitor_id": "competitor_profiles" },
@@ -336,7 +337,6 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "cost_allocation": { "agent_id": "agents", "brokerage_id": "brokerages", "team_id": "teams" },
   "cost_breakdown_tracking": { "brokerage_id": "brokerages", "transaction_id": "transactions" },
   "credit_accounts": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts" },
-  "credit_conversation_logs": { "brokerage_id": "brokerages", "contact_id": "contacts" },
   "credit_partner_referrals": { "brokerage_id": "brokerages", "contact_id": "contacts", "partner_id": "referral_partners" },
   "credit_status": { "brokerage_id": "brokerages", "contact_id": "contacts" },
   "cron_execution_logs": { "brokerage_id": "brokerages" },
@@ -624,7 +624,6 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "qr_scan_events": { "brokerage_id": "brokerages", "contact_id": "contacts", "qr_code_id": "qr_codes" },
   "raw_recruit_prospects": { "brokerage_id": "brokerages", "market_id": "lead_scraping_markets", "recruit_id": "recruits" },
   "raw_scraped_leads": { "brokerage_id": "brokerages", "lead_id": "leads", "market_id": "lead_scraping_markets", "scraper_execution_id": "scraper_executions" },
-  "real_estate_events": { "brokerage_id": "brokerages", "contact_id": "contacts" },
   "reaper_runs": { "brokerage_id": "brokerages" },
   "recruiting_analytics": { "brokerage_id": "brokerages", "recruit_id": "recruits", "recruited_agent_id": "agents" },
   "recruiting_costs": { "brokerage_id": "brokerages", "recruit_id": "recruits", "recruited_agent_id": "agents" },
