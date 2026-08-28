@@ -6,6 +6,19 @@
  * 
  * IMPORTANT: Always use these canonical exports rather than importing
  * directly from individual action files to prevent duplication.
+ *
+ * CENSUS (lane CD, 2026-08-28): the paragraph above is FALSE IN PRACTICE and
+ * has been for some time — ZERO files import this barrel (every `…/actions`
+ * import specifier in the tree was resolved; none lands here; positive control
+ * getContacts resolves 7 direct-path importers). Of the 157 names re-exported
+ * here, 93 are referenced somewhere by direct path and 64 are BARREL-ONLY —
+ * reachable on paper only, which scripts/orphan-export-guard.ts scores as
+ * "wired" because a barrel mention counts as a reference. So this file is not
+ * an entry point; it is a paper shield over 64 function-level orphans
+ * (list in the lane-CD report). Do not add new re-exports here to "wire"
+ * something. Whether the barrel is deleted (flipping those 64 into the orphan
+ * ledger honestly, which the only-down baseline must absorb) is the
+ * integrator's call, recorded open.
  */
 
 // ============================================

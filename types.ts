@@ -69,19 +69,11 @@ export interface User {
 }
 
 // --- AI TOOLS SUITE ---
-export type AIToolName =
-  | "listing_description"
-  | "email_composer"
-  | "social_post"
-  | "market_report"
-  | "offer_letter"
-  | "contract_explainer"
-  | "negotiation_advisor"
-  | "objection_handler"
-  | "lead_qualifier"
-  | "doc_summarizer"
-  | "price_justification"
-  | "faq_answerer"
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `AIToolName` deleted with
+// `SavedAIOutput` (below) — its only user. The live tool-name vocabulary is the
+// tool registry in app/actions/ai-tools-hub.ts (executeAITool), spend-ledgered in
+// ai_tool_usage.
+
 
 // TOMBSTONE (§1.3, 2026-08-27, lane CB orphan tranche): `AIToolUsage` deleted — a
 // camelCase restatement of the ai_tool_usage cost-ledger row that nothing referenced
@@ -95,17 +87,13 @@ export type AIToolName =
 // (lib/ai/models.ts MODEL_CONFIG + per-feature routing), not in a template table;
 // the live ai_prompt_templates table itself has ZERO in-tree readers or writers and
 // stays recorded on the opposite-missing wire list for the table-retirement lane.
+// TABLE RETIRED (lane CD, 2026-08-28): m578 drops ai_prompt_templates — 0 rows, no
+// triggers/procs/inbound FKs live-verified; prompts stay code-resident per §5.
 
-export interface SavedAIOutput {
-  id: string
-  userId: string
-  toolName: AIToolName
-  title: string
-  content: string
-  tags: string[]
-  favorited: boolean
-  createdAt: string
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `SavedAIOutput` deleted —
+// referenced by nothing. The live saved-output row is saved_ai_outputs, written by
+// lib/kernel/ai-tools.ts and read by services/supabaseService.ts.
+
 
 // --- VOICE AI SYSTEM ---
 // TOMBSTONE (§1.3, 2026-08-27, lane CB orphan tranche): `VoiceCommand` deleted — an
@@ -199,51 +187,24 @@ export interface DealTeamMember {
 // live schema by scripts/schema-snapshot.ts (ai_isa_activities).
 
 // --- TRANSPARENCY SYSTEM ---
-export interface TransparencyUpdate {
-  id: string
-  dealId?: string
-  listingId?: string
-  contactId: string
-  stage: string
-  title: string
-  plainLanguageSummary: string
-  responsibleParty: "agent" | "title" | "lender" | "inspector" | "appraiser" | "client" | "team"
-  responsiblePartyName?: string
-  communicationLinksJson?: string
-  nextStep?: string
-  nextStepDate?: string
-  transparencyVideoId?: string
-  status: "active" | "completed" | "superseded"
-  createdAt: string
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `TransparencyUpdate` deleted —
+// referenced by nothing. The live transparency lane is transparency_updates (25
+// call sites; writer/reader app/actions/transaction-transparency.ts).
 
-export interface TransparencyVideo {
-  id: string
-  stage: string
-  persona: "buyer" | "seller" | "both"
-  title: string
-  description?: string
-  scriptId?: string
-  assetId?: string
-  videoUrl?: string
-  thumbnailUrl?: string
-  durationSeconds: number
-  defaultEnabled: boolean
-  viewCount: number
-  createdAt: string
-}
+
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `TransparencyVideo` deleted —
+// referenced by nothing. Stage-explainer content rides the transparency lane
+// (app/actions/transaction-transparency.ts) and the video lane (video_assets);
+// the zero-code transparency_videos table (anon already off per m413) stays
+// recorded on the opposite-missing wire list for the table-retirement lane.
+
 
 // --- CORE OS ENHANCEMENTS ---
-export interface OS_Event {
-  id: string
-  event_type: string
-  actor_role: UserRole
-  actor_id: string
-  context_type: string
-  context_id: string
-  payload_JSON: string
-  created_at: string
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `OS_Event` deleted — an
+// aspirational event-bus row referenced by nothing. The live event spine is the
+// kernel: lib/kernel/events.ts (KernelEvent) + lifecycle_events rows
+// (LIFECYCLE_EVENT_CONTRACT.md).
+
 
 export interface Playbook {
   id: string
@@ -255,50 +216,18 @@ export interface Playbook {
   is_active: boolean
 }
 
-export interface SmartAssistantSuggestion {
-  id: string
-  agent_id: string
-  context_type: string
-  context_id: string
-  title: string
-  description: string
-  action_type: string
-  action_payload_JSON: string
-  status: "pending" | "accepted" | "ignored" | "executed"
-  priority: "low" | "medium" | "high"
-  dedupeKey: string
-  created_at: string
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `SmartAssistantSuggestion`
+// deleted — referenced by nothing. The live suggestion row is
+// smart_assistant_suggestions (18 call sites; app/actions/assistant.ts).
+
 
 // --- COPILOT PLANS ---
-export interface RelationshipPlan {
-  id: string
-  contactId: string
-  agentId: string
-  persona: string
-  stage: string
-  planSummary: string
-  generatedAt: string
-  expiresAt: string
-  status: "active" | "completed" | "expired"
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `RelationshipPlan` +
+// `PlanTask` deleted together — referenced by nothing. The live copilot-plan lane
+// is copilot_plans + plan_tasks, written by generateCopilotPlan
+// (app/actions/workflows.ts:129, called from app/crm/page.tsx).
 
-export interface PlanTask {
-  id: string
-  planId: string
-  dayIndex: number
-  ownerRole: string
-  roleView: "agent" | "admin" | "client"
-  taskText: string
-  taskType: string
-  channel: string
-  priority: string
-  approvalRequired: boolean
-  status: "pending" | "in_progress" | "completed" | "skipped"
-  completedAt?: string
-  completedByUserId?: string
-  notes?: string
-}
+
 
 // --- TRANSACTIONS ---
 export interface TransactionMilestone {
@@ -330,19 +259,13 @@ export interface AutomationError {
 }
 
 // --- ANALYTICS SYSTEM ---
-export interface ListingEngagement {
-  id: string
-  listingId: string
-  date: string
-  onlineViews: number
-  detailPageViews: number
-  photoViews: number
-  mapViews: number
-  favoriteCount: number
-  shareCount: number
-  source: "zillow" | "realtor_com" | "mls" | "agent_site" | "social"
-  createdAt: string
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `ListingEngagement` deleted —
+// referenced by nothing. Live engagement telemetry is the property-interaction
+// lane (property_views / property_interactions / qr_scan_events, per
+// scripts/agent-fk-columns.ts) feeding seller reporting
+// (lib/listings/seller-weekly-report-runner.ts); the zero-code listing_engagement
+// table stays recorded on the opposite-missing wire list.
+
 
 export interface ListingMetrics {
   id: string
@@ -476,19 +399,11 @@ export interface ShowingFeedback {
   timestamp?: string
 }
 
-export interface RealEstateEvent {
-  id: string
-  name: string
-  dateTime: string
-  location: string
-  type: string
-  description: string
-  faqText?: string
-  rsvpCount: number
-  attendeeCount: number
-  listingId?: string
-  buyerAgentName?: string
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `RealEstateEvent` deleted —
+// referenced by nothing; the sibling of the EventRegistration tombstone below.
+// Events live on open_house_events/open_house_attendees (lib/kernel/open-house.ts)
+// and calendar_events; the real_estate_events table is retired by m578.
+
 
 export interface PropertyUpgrade {
   id: string
@@ -554,20 +469,22 @@ export interface PastClient {
 // deleted — referenced by nothing. The credit lane lives at
 // app/actions/credit-copilot.ts; the live credit_conversation_logs table has zero
 // in-tree readers/writers and stays recorded on the opposite-missing wire list.
+// TABLE RETIRED (lane CD, 2026-08-28): m578 drops credit_conversation_logs —
+// survivors conversation_logs (logConversationMetadata) + activities; the credit
+// lane's own rebuild (scripts/060:7) had already DROPped it and not recreated it.
 
-export interface CreditPartnerReferral {
-  id: string
-  contactId: string
-  status: "pending" | "in_progress" | "completed" | "cancelled"
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `CreditPartnerReferral`
+// deleted — referenced by nothing. The live referral row is
+// credit_partner_referrals, written and read by app/actions/credit-copilot.ts
+// (insert :367, board read :512); its status vocabulary is the table CHECK
+// (referred|in_progress|completed|declined), not this type's four spellings.
 
-export interface VideoEngagementEvent {
-  id: string
-  contactId: string
-  videoAssetId: string
-  eventType: "viewed" | "completed"
-  createdAt: string
-}
+
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `VideoEngagementEvent`
+// deleted — referenced by nothing. The live row is video_engagement_events (8
+// call sites; ingest door app/api/video/engagement/route.ts, read by
+// app/actions/contact-details.ts and video-generation.ts).
+
 
 export interface Script {
   id: string
@@ -587,19 +504,16 @@ export type ScriptStatus = "Draft" | "PendingApproval" | "Approved" | "Rejected"
 export type TargetPersona = "Agent" | "Buyer" | "Seller" | "PastClient" | "Partner"
 export type VideoMode = "Avatar" | "Faceless"
 
-export interface VideoAssetLibraryRecord {
-  id: string
-  scriptId: string
-  status: VideoGenerationStatus
-  outputUrl?: string
-  thumbnailUrl?: string
-  durationSeconds?: number
-  createdAt: string
-  persona?: string
-  deliveryChannelTargets?: string[]
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `VideoAssetLibraryRecord`
+// deleted with its status vocabulary `VideoGenerationStatus` (below) —
+// referenced by nothing. The live asset row is video_assets (21 call sites;
+// app/actions/composition-library.ts, video-repurposing.ts, copilot.ts), whose
+// status vocabulary is the live CHECK held by scripts/check-vocabularies.ts.
 
-export type VideoGenerationStatus = "Queued" | "Generating" | "Ready" | "Failed"
+
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `VideoGenerationStatus` deleted
+// with `VideoAssetLibraryRecord` (above) — one cluster, one decision.
+
 
 export interface Message {
   id: string
@@ -618,14 +532,12 @@ export interface Message {
 // document_classifications, filed by lib/documents/auto-filer.ts under the
 // vocabulary in lib/compliance/document-classifications.ts (proof test:doc-kernel).
 
-export interface TaskMasterTemplate {
-  id: string
-  taskName: string
-  role: string
-  phase: string
-  triggerKeyword?: string
-  daysAfterAccepted: number
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `TaskMasterTemplate` deleted —
+// referenced by nothing. Task templating lives on the seeded template catalogues
+// transaction_milestone_templates + listing_task_templates (SEEDED_REFERENCE in
+// scripts/writerless-read-sweep.ts), consumed by app/actions/transaction-tasks.ts
+// and transaction-milestones.ts.
+
 
 // TOMBSTONE (§1.3, 2026-08-27, lane CB orphan tranche): `ComplianceRule` deleted —
 // a three-field sketch referenced by nothing. The live rule row is compliance_rules
@@ -640,18 +552,10 @@ export interface TaskMasterTemplate {
 // app/compliance/reports (export-report-button.tsx) over compliance_checks rows,
 // tenant-scoped per the compliance_checks brokerage_id fix (commit dd56fc92).
 
-export interface SmartOffer {
-  id: string
-  agentId: string
-  contactId: string
-  offerText: string
-  warmDMScript: string
-  smsScript: string
-  emailSnippet: string
-  socialHook1: string
-  socialHook2: string
-  createdAt: string
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `SmartOffer` deleted — referenced by
+// nothing. The live offer lane is the offers kernel:
+// app/actions/offer-kernel-actions.ts + buyer-offers.ts over the offers tables.
+
 
 export type AudienceType = "Buyer" | "Seller" | "Investor"
 export type ContextType = "New Outreach" | "Follow-up" | "Referral Ask" | "Content Post"
@@ -663,25 +567,18 @@ export type ContextType = "New Outreach" | "Follow-up" | "Referral Ask" | "Conte
 // inspection-defect lane is app/actions/transaction-inspections.ts (inspection
 // records + vendor quote flow on the transaction detail surface).
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'MarketplaceVendor'" in BuyerPortal.tsx and PartnersManager.tsx
- */
-export interface MarketplaceVendor extends Vendor {
-  specialOffers?: string[]
-  featured?: boolean
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `MarketplaceVendor` deleted —
+// scaffolding for the deleted BuyerPortal.tsx/PartnersManager.tsx, referenced by
+// nothing. `Vendor` (this file) survives with live users; "featured" placement is
+// the live vendor-premium-placement lane (app/actions/vendor-premium-placement.ts)
+// and offers live on vendor_marketplace (app/actions/vendor-marketplace.ts).
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'ResourceGuide'" in BuyerPortal.tsx
- */
-export interface ResourceGuide {
-  id: string
-  title: string
-  description: string
-  category: "Market" | "Expertise" | "Process"
-  unlockedAt: string
-  isNew?: boolean
-}
+
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `ResourceGuide` deleted —
+// scaffolding for the deleted BuyerPortal.tsx, referenced by nothing. Client
+// education material is the portal education lane (app/actions/portal-education.ts
+// + education-kernel.ts).
+
 
 /**
  * Added to fix "Module '"../../types"' has no exported member 'Showing'" in BuyerPortal.tsx and ShowingsDesk.tsx
@@ -724,52 +621,24 @@ export interface CalendarSlot {
 // ContractEsignStatus) fed by the docusign / authentisign / skyslope / dotloop
 // webhook doors under app/api/webhooks/ (proof test:coordination-status).
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'ClientReferral'" in BuyerPortal.tsx and SphereManager.tsx
- */
-export interface ClientReferral {
-  id: string
-  referrerId: string
-  referrerName: string
-  friendName: string
-  friendPhone: string
-  status: "New" | "Contacted" | "Closed Deal"
-  rewardStatus: "Pending" | "Sent"
-  rewardType: string
-  timestamp: string
-  notes?: string
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `ClientReferral` deleted —
+// scaffolding for the deleted BuyerPortal.tsx/SphereManager.tsx, referenced by
+// nothing. Referrals live on the referrals lane (app/actions/referrals/) and
+// referral_partners (app/actions/credit-copilot.ts:163 reads the partner side).
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'NegotiationRound'" in BuyerPortal.tsx
- */
-export interface NegotiationRound {
-  id: string
-  dealId: string
-  roundNumber: number
-  offerPrice: number
-  concessions: string
-  closingDate: string
-  status: "Received" | "Accepted" | "Rejected" | "Countered"
-  timestamp: string
-  source: "Other Side" | "Agent"
-}
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'TransactionTask'" in BuyerPortal.tsx and ClosingDashboard.tsx
- */
-export interface TransactionTask {
-  id: string
-  dealId: string
-  title: string
-  status: "To Do" | "In Progress" | "Done"
-  priority: "High" | "Med" | "Low" | "Critical"
-  category: string
-  due: string
-  phase: string
-  assignedTo: string
-  description?: string
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `NegotiationRound` deleted —
+// scaffolding for the deleted BuyerPortal.tsx, referenced by nothing. Offer
+// rounds live on the offers kernel and the counter-offer lane
+// (app/actions/counter-offer-diff.ts, negotiation-copilot.ts).
+
+
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `TransactionTask` deleted —
+// scaffolding for the deleted BuyerPortal.tsx/ClosingDashboard.tsx, referenced by
+// nothing. The live row is transaction_tasks (25 call sites;
+// app/actions/transaction-tasks.ts), whose status/priority vocabularies are the
+// table CHECKs, not this type's Title Case spellings.
+
 
 /**
  * Added to fix "Module '"../../types"' has no exported member 'LoanStage'" in BuyerPortal.tsx
@@ -813,25 +682,27 @@ export interface TourStop {
   internalNotes?: string
 }
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'VideoAsset'" in MarketingStudio.tsx
- */
-export interface VideoAsset {
-  id: string
-  url: string
-  type: "image" | "video"
-  status: string
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `VideoAsset` deleted — scaffolding for
+// the deleted MarketingStudio.tsx, referenced by nothing. The live asset row is
+// video_assets (21 call sites; app/actions/composition-library.ts and siblings).
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'ContentIdea'" in MarketingStudio.tsx
- */
-export interface ContentIdea {
-  id: string
-  title: string
-  type: ContentIdeaType
-  platform: ContentIdeaPlatform
-}
+
+// TOMBSTONE (§1.3, 2026-08-28, lane CD): `ContentIdea` + `ContentIdeaType` +
+// `ContentIdeaPlatform` deleted as ONE decision — the trio the CompetitorSnapshot
+// tombstone below deferred "for a later tranche, together". All three were
+// scaffolding for the deleted MarketingStudio.tsx; word-boundary search on
+// stripped source finds ZERO references outside this file (positive control on the
+// same run: SocialPlatform resolves in 3 live modules).
+//   · ContentIdea → the row's one honest spelling is the LIVE content_ideas lane
+//     (125 rows, tenant policy content_ideas_tenant): writer saveContentIdea
+//     (app/actions/content-studio.ts:358), readers getContentIdeas/getSavedIdeas
+//     + app/content-studio/content-studio-client.tsx, registry owner
+//     campaign_orchestrator (lib/kernel/manager-registry.ts:1638).
+//   · ContentIdeaType ("Educational"|"Local"|"Personal"|"Listing") → a second,
+//     never-written spelling of content_ideas.content_type, whose live values are
+//     snake_case ("social_post" UI default; live rows carry "video") — §6.
+//   · ContentIdeaPlatform → the live platform vocabulary is SOCIAL_PLATFORMS /
+//     SocialPlatform at lib/constants/index.ts:371 (the social publishing lane).
 
 // TOMBSTONE (§1.3, 2026-08-27, lane CB orphan tranche): `CompetitorSnapshot` deleted
 // — scaffolding for the deleted MarketingStudio.tsx, referenced by nothing. The live
@@ -851,60 +722,36 @@ export interface Keyword {
   category: KeywordCategory
 }
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'ContentIdeaType'" in MarketingStudio.tsx
- */
-export type ContentIdeaType = "Educational" | "Local" | "Personal" | "Listing"
+// ContentIdeaType and ContentIdeaPlatform deleted with ContentIdea — one trio,
+// one decision; tombstone above at the ContentIdea site (lane CD, 2026-08-28).
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'ContentIdeaPlatform'" in MarketingStudio.tsx
- */
-export type ContentIdeaPlatform = "Instagram" | "Facebook" | "LinkedIn" | "TikTok" | "YouTube" | "Pinterest"
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `SocialTone` deleted with the
+// `SocialContent` cluster — tone vocabulary lives with the social publishing
+// lane's own prompt options (app/actions/social/generate-social-post.ts).
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'SocialTone'" in MarketingStudio.tsx
- */
-export type SocialTone = "Professional" | "Bold" | "Minimalist"
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'LongFormVideo'" in MarketingStudio.tsx
- */
-export interface LongFormVideo {
-  id: string
-  title: string
-  originalUrl: string
-  durationSeconds: number
-  uploadedByUserId: string
-  sourceType: SourceType
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `LongFormVideo` deleted with
+// `ShortClip`/`ClipPlatform`/`ClipDimensions` (below) — the MarketingStudio.tsx
+// repurposing scaffolding, referenced by nothing. The live repurposing lane is
+// app/actions/video-repurposing.ts over video_snippets (source assets in
+// video_assets); the zero-code long_form_videos table (anon off per m413) stays
+// recorded on the opposite-missing wire list.
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'ShortClip'" in MarketingStudio.tsx
- */
-export interface ShortClip {
-  id: string
-  title: string
-  platform: ClipPlatform
-  dimensions: ClipDimensions
-  hook: string
-  caption: string
-  thumbnailUrl?: string
-}
+
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `ShortClip` deleted with `LongFormVideo`
+// (above); clip platform/dimension vocabulary lives in
+// app/actions/video-repurposing.utils.ts on the video_snippets lane.
+
 
 /**
  * Added to fix "Module '"../../types"' has no exported member 'SourceType'" in MarketingStudio.tsx
  */
 export type SourceType = "listing_tour" | "educational_talking_head" | "vlog"
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'ClipPlatform'" in MarketingStudio.tsx
- */
-export type ClipPlatform = "instagram_reel" | "tiktok" | "youtube_short" | "facebook_reel" | "all"
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `ClipPlatform` + `ClipDimensions`
+// deleted with `ShortClip` (above) — one cluster, one decision.
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'ClipDimensions'" in MarketingStudio.tsx
- */
-export type ClipDimensions = "9:16_vertical" | "1:1_square" | "16:9_horizontal"
+
 
 /**
  * Added to fix "Module '"../../types"' has no exported member 'KeywordIntent'" in MarketingStudio.tsx
@@ -921,26 +768,11 @@ export type KeywordCategory = "Neighborhood" | "Strategy" | "Market Trends"
  */
 export type SocialPlatform = "Instagram" | "Facebook" | "LinkedIn" | "TikTok" | "YouTube" | "Pinterest" | "X"
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'NewsletterCampaign'" in MarketingStudio.tsx
- */
-export interface NewsletterCampaign {
-  id: string
-  title: string
-  subjectLine: string
-  previewText?: string
-  templateStyle: "modern" | "bold" | "minimal"
-  status: "draft" | "sent" | "scheduled"
-  includeVideoIds: string[]
-  includeListingIds: string[]
-  includeContentIdeaIds: string[]
-  sentToCount?: number
-  audienceCount: number
-  openRate?: number
-  clickRate?: number
-  createdByUserId: string
-  createdAt: string
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `NewsletterCampaign` deleted —
+// scaffolding for the deleted MarketingStudio.tsx, referenced by nothing. The
+// live campaign row is newsletter_campaigns (60 call sites;
+// app/actions/ai-newsletter.ts, newsletter/schedule-newsletter.ts).
+
 
 // TOMBSTONE (§1.3, 2026-08-27, lane CB orphan tranche): `DirectMailCampaign` deleted
 // — scaffolding for the deleted MarketingStudio.tsx, referenced by nothing. The live
@@ -964,21 +796,16 @@ export interface ScrapeJob {
   status: string
 }
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'SearchActivityLog'" in CRM.tsx
- */
-export interface SearchActivityLog {
-  id: string
-  query: string
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `SearchActivityLog` deleted —
+// scaffolding for the deleted CRM.tsx, referenced by nothing. Search telemetry
+// lives on property_search_log (app/actions/idx-search.ts).
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'SocialLeadLog'" in CRM.tsx
- */
-export interface SocialLeadLog {
-  id: string
-  platform: string
-}
+
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `SocialLeadLog` deleted —
+// scaffolding for the deleted CRM.tsx, referenced by nothing. Social-origin leads
+// ride the signal-ingest lane (app/actions/lead-signal-ingest.ts,
+// scrape-social-media.ts) into the brokerage lead board.
+
 
 /**
  * Added to fix "Module '"../../types"' has no exported member 'Vendor'" in VendorMarketplace.tsx and PartnersManager.tsx
@@ -997,24 +824,13 @@ export interface Vendor {
   isStarredByAgent?: boolean
 }
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'PointRule'" in SystemConfig.tsx
- */
-export interface PointRule {
-  id: string
-  activity: string
-  basePoints: number
-  currentMultiplier: number
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `PointRule` + `ScoringWeight`
+// deleted together — scaffolding for the deleted SystemConfig.tsx, referenced by
+// nothing. Points live on the gamification lane (app/actions/gamification.ts over
+// achievements/gamification_badges); lead-score weighting is the scoring lane
+// (app/actions/ai-lead-scoring.ts).
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'ScoringWeight'" in SystemConfig.tsx
- */
-export interface ScoringWeight {
-  id: string
-  activityName: string
-  points: number
-}
+
 
 // TOMBSTONE (§1.3, 2026-08-27, lane CB orphan tranche): `ComplianceLogEntry` deleted
 // — scaffolding for the deleted SystemConfig.tsx, referenced by nothing. Phone
@@ -1076,22 +892,12 @@ export interface Conversation {
   messages: Message[]
 }
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'SellerReport'" in SellerDashboard.tsx and ListingReports.tsx
- */
-export interface SellerReport {
-  id: string
-  listingId: string
-  address: string
-  weekEnding: string
-  viewsZillow: number
-  showingsCount: number
-  status: "Sent" | "Draft"
-  feedbackSummaryAI: string
-  pdfUrl?: string
-  openRate?: number
-  replyRate?: number
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `SellerReport` deleted — scaffolding
+// for the deleted SellerDashboard.tsx/ListingReports.tsx, referenced by nothing.
+// The live weekly report is seller_weekly_reports, produced by
+// lib/listings/seller-weekly-report-runner.ts and read by the seller portal
+// (app/portal/[contactId]/listing/page.tsx).
+
 
 /**
  * Added to fix "Module '"../../types"' has no exported member 'MarketStat'" in SellerDashboard.tsx
@@ -1104,36 +910,17 @@ export interface MarketStat {
   trend: string
 }
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'MarketingAsset'" in SellerDashboard.tsx
- */
-export interface MarketingAsset {
-  id: string
-  listingId: string
-  name: string
-  url: string
-  type: "Video" | "Image" | "PDF"
-  platform: string
-  category: string
-  aiTags: string[]
-  uploadDate: string
-  size: string
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `MarketingAsset` deleted —
+// scaffolding for the deleted SellerDashboard.tsx, referenced by nothing. The
+// live asset row is marketing_assets (37 call sites;
+// app/actions/marketing-studio.ts, marketing/image-library.ts).
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'OpenHouse'" in SellerDashboard.tsx and OpenHouseManager.tsx
- */
-export interface OpenHouse {
-  id: string
-  listingId: string
-  address: string
-  startTime: string
-  endTime: string
-  theme: string
-  status: "Active" | "Closed"
-  rsvpCount: number
-  qrCodeUrl?: string
-}
+
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `OpenHouse` deleted — scaffolding for
+// the deleted SellerDashboard.tsx/OpenHouseManager.tsx, referenced by nothing.
+// The event row is open_house_events + open_house_attendees
+// (lib/kernel/open-house.ts); m543 already retired the open_houses table twin.
+
 
 /**
  * Added to fix "Module '"../../types"' has no exported member 'NetSheetScenario'" in SellerDashboard.tsx
@@ -1209,18 +996,11 @@ export interface TransactionDocument {
 // by the doc kernel's custody/access lane (lib/kernel/document-custody.ts), not by
 // a three-value string.
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'ClientPlaybookData'" in ClientPlaybook.tsx
- */
-export interface ClientPlaybookData {
-  id: string
-  name: string
-  progress: number
-  currentStepIndex: number
-  lastActivity: string
-  stalled: boolean
-  steps: PlaybookStep[]
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `ClientPlaybookData` deleted —
+// scaffolding for the deleted ClientPlaybook.tsx, referenced by nothing.
+// `PlaybookStep` (below) survives with live users; guided client journeys live on
+// the journey lane (journey_blueprints + app/actions/journey-tasks.ts).
+
 
 /**
  * Added to fix "Module '"../../types"' has no exported member 'PlaybookStep'" in ClientPlaybook.tsx
@@ -1249,27 +1029,18 @@ export interface Review {
   status: "Pending" | "Replied"
 }
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'ReviewAndFeedback'" in SphereManager.tsx
- */
-export interface ReviewAndFeedback {
-  id: string
-  transactionId: string
-  clientName: string
-  agentName: string
-  internalRating: number
-  status: "Requested" | "Received" | "Nurture Mode"
-  giftSent: boolean
-  timestamp: string
-  sentimentTrend: "Euphoric" | "Positive" | "Neutral" | "Rocky" | "Negative"
-  feedbackText?: string
-  publicReviewLink?: string
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `ReviewAndFeedback` deleted —
+// scaffolding for the deleted SphereManager.tsx, referenced by nothing. Review
+// collection lives on review_requests (12 call sites;
+// app/actions/ai-review-automation.ts, reputation-kernel.ts) and NPS on
+// app/actions/nps.ts.
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'TaskRole'" in ComplianceManager.tsx
- */
-export type TaskRole = "Agent" | "Client" | "TC" | "Lender" | "Title"
+
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `TaskRole` deleted — scaffolding for the
+// deleted ComplianceManager.tsx, referenced by nothing. Transaction party roles
+// live on the parties lane (lib/notifications/notify-helpers.ts,
+// notifyTransactionParties) and transaction_tasks.assigned_to.
+
 
 /**
  * Added to fix "Module '"../../types"' has no exported member 'AuditFlag'" in AIAudit.tsx
@@ -1285,20 +1056,11 @@ export interface AuditFlag {
   detectedAt: string
 }
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'VendorApplication'" in VendorCompliance.tsx
- */
-export interface VendorApplication {
-  id: string
-  businessName: string
-  contactEmail: string
-  description: string
-  category: string
-  status: "New" | "AI Review" | "Approved" | "Rejected"
-  aiSuggestedTags: string[]
-  licenseUrl: string
-  submittedDate: string
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `VendorApplication` deleted —
+// scaffolding for the deleted VendorCompliance.tsx, referenced by nothing. Vendor
+// intake/verification lives on app/actions/vendor-invite.ts +
+// vendor-verification.ts + vendor-w9.ts over the vendors lane.
+
 
 // TOMBSTONE (§1.3, 2026-08-27, lane CB orphan tranche): `EventRegistration` deleted
 // — scaffolding for the deleted Events.tsx, referenced by nothing. Event attendance
@@ -1306,45 +1068,29 @@ export interface VendorApplication {
 // lib/kernel/open-house.ts (proof test:tour-checkin covers the tour sibling); the
 // live real_estate_events table has zero in-tree readers/writers and stays recorded
 // on the opposite-missing wire list.
+// TABLE RETIRED (lane CD, 2026-08-28): m578 drops real_estate_events — survivors
+// open_house_events/open_house_attendees (attendance) + calendar_events (dated,
+// located, titled events with tenancy this table never grew).
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'RoutingLog'" in LeadDistribution.tsx
- */
-export interface RoutingLog {
-  id: string
-  leadName: string
-  agentName: string
-  agentId: string
-  zipCode: string
-  budget: number
-  matchReason: string
-  timestamp: string
-  status: "Assigned" | "Overridden"
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `RoutingLog` deleted — scaffolding for
+// the deleted LeadDistribution.tsx, referenced by nothing. Lead routing and its
+// audit trail live on app/actions/lead-assignment/assign-lead.ts writing
+// assignment_log.
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'NotificationRule'" in NotificationSettings.tsx
- */
-export interface NotificationRule {
-  id: string
-  name: string
-  scoreThreshold: number
-  primaryChannel: "SMS" | "Email" | "Slack"
-  isActive: boolean
-}
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'NotificationPreference'" in NotificationSettings.tsx
- */
-export interface NotificationPreference {
-  agentId: string
-  smsHotLeads: boolean
-  emailWarmLeads: boolean
-  slackTeamUpdates: boolean
-  quietHoursEnabled: boolean
-  quietHoursStart: string
-  quietHoursEnd: string
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `NotificationRule` deleted —
+// scaffolding for the deleted NotificationSettings.tsx, referenced by nothing.
+// The live rule row is notification_rules (lib/kernel/notification-rules.ts +
+// notification-engine.ts, surfaced at app/dashboard/settings/page.tsx).
+
+
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `NotificationPreference`
+// deleted — scaffolding for the deleted NotificationSettings.tsx, referenced by
+// nothing. Channel preferences ride notification_rules (above) and push
+// subscriptions (app/actions/push-subscriptions.ts); the zero-code
+// notification_preferences table stays recorded on the opposite-missing wire
+// list for the table-retirement lane.
+
 
 // TOMBSTONE (§1.3, 2026-08-27, lane CB orphan tranche): `DealStakeholder` deleted —
 // scaffolding for the deleted NotificationSettings.tsx, referenced by nothing.
@@ -1356,15 +1102,11 @@ export interface NotificationPreference {
 // message ledger is the universal inbox kernel (lib/kernel/communications.ts,
 // loadUniversalInbox/sendInboxReply) over the communications table.
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'ReminderConfig'" in NotificationSettings.tsx
- */
-export interface ReminderConfig {
-  intervals: ("24h" | "2h" | "15m")[]
-  googleMapsApiKey: string
-  weatherApiKey: string
-  isActive: boolean
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `ReminderConfig` deleted —
+// scaffolding for the deleted NotificationSettings.tsx (it even carried API keys
+// as fields), referenced by nothing. Reminders live on the notification kernel
+// (lib/kernel/notification-engine.ts) and calendar_events.deadline_notified.
+
 
 /**
  * Added to fix "Module '"../../types"' has no exported member 'Closing'" in ClosingDashboard.tsx
@@ -1375,46 +1117,24 @@ export interface Closing {
   closingDate: string
 }
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'ListingApproval'" in ListingApprovals.tsx
- */
-export interface ListingApproval {
-  id: string
-  listingId: string
-  address: string
-  agentName: string
-  riskScore: number
-  flaggedTerms: string[]
-  price: number
-  pricePerSqft: number
-  status: "Pending AI" | "Needs Review" | "Approved" | "Rejected"
-  aiFeedback?: string
-  submittedDate: string
-  description: string
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `ListingApproval` deleted —
+// scaffolding for the deleted ListingApprovals.tsx, referenced by nothing.
+// Listing risk review lives on app/actions/listing-risk-agent.ts and the
+// compliance lane (compliance_checks); marketing approvals on
+// app/actions/marketing-ai-approvals.ts.
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'OHTemplate'" in OpenHouseManager.tsx
- */
-export interface OHTemplate {
-  id: string
-  name: string
-  description: string
-  aiPrompt: string
-}
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'TagRule'" in SegmentationDesk.tsx
- */
-export interface TagRule {
-  id: string
-  ruleName: string
-  conditionField: string
-  conditionValue: string
-  frequencyThreshold: number
-  tagToApply: string
-  isActive: boolean
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `OHTemplate` deleted — scaffolding for
+// the deleted OpenHouseManager.tsx, referenced by nothing. Open-house content
+// generation lives on app/actions/open-house-automation.ts over the
+// open_house_events lane.
+
+
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `TagRule` deleted — scaffolding for the
+// deleted SegmentationDesk.tsx, referenced by nothing. Segmentation lives on
+// contact_segments (lib/workflow/adapters/segment-ops.ts,
+// lib/marketing/email-campaign-sender.ts).
+
 
 // TOMBSTONE (§1.3, 2026-08-27, lane CB orphan tranche): `AvailabilitySettings`
 // deleted — scaffolding for the deleted CalendarDashboard.tsx, referenced by
@@ -1426,47 +1146,25 @@ export interface TagRule {
 // app/actions/seller-showing-sentiment.ts (lib/behavior-learning/signal-mapping.ts
 // tourInterestToRating), and seller sharing is governed there — not by a flag.
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'RiskIncident'" in RiskManagement.tsx
- */
-export interface RiskIncident {
-  id: string
-  severity: string
-  triggerPhrase: string
-  status: "Open" | "Broker Intervening" | "Resolved"
-  transcript: string
-  clientName: string
-  agentName: string
-  dealId: string
-  timestamp: string
-  sentimentScore: number
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `RiskIncident` deleted — scaffolding
+// for the deleted RiskManagement.tsx, referenced by nothing. Conversation-risk
+// escalation lives on conversation_audit_flags
+// (app/actions/conversation-analytics.ts) and deal risk on
+// app/actions/deal-risk-agent.ts / deal-shaky.ts.
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'SocialContent'" in SocialScheduler.tsx
- */
-export interface SocialContent {
-  id: string
-  platform: SocialPlatform
-  category: SocialCategory
-  imageUrl: string
-  captionText: string
-  format: MediaFormat
-  status: "Draft" | "Scheduled" | "Posted"
-  complianceScore: number
-  complianceFlags: string[]
-  ghlSyncStatus: "Pending" | "Synced" | "Failed"
-}
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'SocialCategory'" in SocialScheduler.tsx
- */
-export type SocialCategory = "Educational" | "Local" | "Personal" | "Listing"
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `SocialContent` deleted with
+// `SocialCategory`/`MediaFormat` (below) and `SocialTone` — SocialScheduler.tsx/
+// MarketingStudio.tsx scaffolding, referenced by nothing. The live lane is
+// social publishing (app/actions/social-publishing.ts,
+// social/generate-social-post.ts) with the SOCIAL_PLATFORMS vocabulary at
+// lib/constants/index.ts:371. `SocialPlatform` here survives — it has live users.
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'MediaFormat'" in SocialScheduler.tsx
- */
-export type MediaFormat = "Square" | "Vertical" | "Horizontal"
+
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `SocialCategory` + `MediaFormat`
+// deleted with `SocialContent` (above) — one cluster, one decision.
+
+
 
 // TOMBSTONE (§1.3, 2026-08-27, lane CB orphan tranche): `AgentVideo` deleted —
 // scaffolding for the deleted VideoGenerator.tsx, referenced by nothing. Agent
@@ -1491,26 +1189,13 @@ export interface Recruit {
   notes?: string
 }
 
-/**
- * Added to fix missing members in ListingDistribution.tsx
- */
-export interface SyndicationLink {
-  id: string
-  listingId: string
-  platform: string
-  url: string
-  status: "Active" | "Processing" | "Failed"
-  clicks: number
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `SyndicationLink` +
+// `SyndicationError` deleted together — scaffolding for the deleted
+// ListingDistribution.tsx, referenced by nothing. Syndication is the listing
+// execution lane (app/actions/seller-listing/execution-engine.ts, emitting
+// seller.listing.syndicated at :1832).
 
-export interface SyndicationError {
-  id: string
-  listingId: string
-  address: string
-  platform: string
-  error: string
-  timestamp: string
-}
+
 
 // --- MISSING INTERFACES FOR FINANCIALS AND CLIENT SELF-SERVICE ---
 
@@ -1622,14 +1307,12 @@ export interface InsiderEditNewsletter {
   openRate?: number
 }
 
-export interface ListingAnalysis {
-  address: string
-  recentPriceDrop: boolean
-  curbAppealScore: number
-  hiddenValuePoints: string[]
-  vibeMatch: InsiderEditVibe
-  marketContext?: string
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `ListingAnalysis` deleted —
+// referenced by nothing. The live insider-edit lane types (InsiderEditInput /
+// InsiderEditNewsletter, this file) are consumed by
+// app/api/ai/insider-edit-generate/route.ts; listing scoring lives on
+// lib/listing-health (health-scorer) and app/actions/predictive-listing.ts.
+
 
 export type {
   Contact,

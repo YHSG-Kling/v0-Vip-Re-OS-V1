@@ -474,6 +474,29 @@ export async function triggerComplianceChecklist(
 
 /**
  * Generate marketing script content.
+ *
+ * WIRE STATE (§1 adjudication, lane CD 2026-08-28): this is the ONLY runtime
+ * INSERT into `scripts` — the agent-authored script lane the owner ruled into
+ * being (m429: private → viral promotion to brokerage via
+ * lib/video/viral-script-share.ts, picked up by the video-create saved-scripts
+ * picker, #186). NOT a duplicate: the curated video lane
+ * (app/actions/video/generate-script.ts + saveVideoScript) writes
+ * video_scripts_library, a different lane with an approval queue. But NOTHING
+ * CALLS THIS: its only export paths are this file (no importer names it) and
+ * the app/actions/index.ts barrel (which itself has ZERO importers — resolved
+ * every `…/actions` import specifier in the tree). So `scripts` has live
+ * readers, a live promoter, and no reachable writer: 0 rows in production.
+ * Deleting it is forbidden (§1 — it is the lane's only door); wiring it needs
+ * two decisions this lane cannot make alone:
+ *   1. WHICH SURFACE calls it (candidates: a "save as my private script" door
+ *      beside handleSaveScriptToLibrary in video-create-client.tsx, whose
+ *      current save routes agent-authored text into the CURATED queue instead;
+ *      or a workflow-automation door once executeAITool's routing table stops
+ *      being decorative — see the report on its unknown tool names).
+ *   2. THE COMPLIANCE GATE: once reachable this becomes a sixth script
+ *      generator, and scripts/video-script-compliance-guard.ts holds the other
+ *      five to lib/video/script-compliance.ts (§5 compliance-first). Wire the
+ *      gate in the same change that wires the caller.
  */
 export async function generateScriptContent(
   scriptType: string,
