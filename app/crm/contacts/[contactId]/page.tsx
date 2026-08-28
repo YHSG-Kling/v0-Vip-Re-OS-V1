@@ -14,6 +14,7 @@ import { WorkflowRunsPanel }         from "./components/workflow-runs-panel"
 import { EnrichmentPanel }          from "./components/enrichment-panel"
 import { FollowupCard }            from "./components/followup-card"
 import { SmartDripCard }           from "./components/smart-drip-card"
+import { ShowingRoutePlanner }     from "./showing-route-planner"
 import { CampaignBundleSendCard, type BundleOption } from "./components/campaign-bundle-send-card"
 import { listCampaignBundles }      from "@/app/actions/campaign-bundles"
 import { AgentActionDispositionQueue } from "@/app/components/agent/AgentActionDispositionQueue"
@@ -495,6 +496,16 @@ export default async function ContactDetailPage({ params }: PageProps) {
       {contact.contact_type === "investor" && (
         <div className="px-4 pt-3">
           <InvestorDealsPanel contactId={contactId} />
+        </div>
+      )}
+
+      {/* THE WRITER FOR THE CARD BELOW. smart_showing_recommendations had exactly one
+          writer in the product — app/actions/ai-predictions.ts:optimizeShowingRoute —
+          and it had no caller, so the "AI Showing Plan" card underneath has never had
+          a row to render for anyone. This is that caller; see the component header. */}
+      {contact.buyer_stage && (
+        <div className="px-4 pt-3">
+          <ShowingRoutePlanner contactId={contactId} />
         </div>
       )}
 

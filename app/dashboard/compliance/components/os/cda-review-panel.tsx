@@ -34,6 +34,20 @@ import {
   sendCdaToTitleAction,
   requestCdaChangesAction,
   manualOverrideCdaAction,
+  // THE GATE THAT NOTHING COULD ARM.
+  //
+  // approveCdaAction reads closing_disclosure_agreement.signature_check_passed:
+  // true ⇒ may approve, false ⇒ must Manual Override with a reason, NULL ⇒
+  // grandfathered (an older CDA predating the check). runSignatureCheckForCdaAction
+  // is the ONLY writer of that column and of missing_docs — and it had no caller
+  // anywhere, so the column was NULL on every CDA ever created. Every disbursement
+  // authorization therefore took the grandfathered branch: the signature gate
+  // existed, the panel already rendered its verdict badges and its missing-document
+  // list below, and the verdict was never computed for anyone.
+  //
+  // This is the missing half (CLAUDE.md §1.2), not a second writer: nothing else
+  // in the tree writes signature_check_passed.
+  runSignatureCheckForCdaAction,
 } from "@/app/actions/cda-portal"
 import { listCdasForComplianceReviewAction, type CdaReviewItem } from "@/app/actions/cda-portal-list"
 import { toast } from "sonner"
@@ -88,6 +102,33 @@ export function CdaReviewPanel() {
           toast.error("error" in res ? res.error : "Approval failed")
         }
       }
+    })
+  }
+
+  /**
+   * Run (or re-run) the signature/document scan for one CDA and re-read the queue
+   * so the verdict badges and the missing-document list reflect it.
+   *
+   * The outcome is READ, and a refusal says so: the scan's own write is the thing
+   * the approval gate depends on, and a scan that silently failed used to leave
+   * signature_check_passed NULL — which approveCdaAction treats as grandfathered,
+   * i.e. a failed scan would OPEN the money gate rather than close it.
+   */
+  function handleSignatureCheck(cdaId: string) {
+    startTransition(async () => {
+      const res = await runSignatureCheckForCdaAction({ cdaId })
+      if (!res.success) {
+        toast.error("error" in res ? res.error : "The signature check could not be run")
+        return
+      }
+      if (res.passed) {
+        toast.success("Signature check passed — every document on this transaction is signed off")
+      } else {
+        toast.warning(
+          `Signature check failed — ${res.missing.length} document${res.missing.length === 1 ? "" : "s"} outstanding`,
+        )
+      }
+      void reload()
     })
   }
 
@@ -194,7 +235,7 @@ export function CdaReviewPanel() {
           </div>
         ) : (
           <>
-            {submitted.map(c => <CdaRow key={c.id} item={c} pending={pending} onApprove={handleApprove} onOpenDialog={openDialog} />)}
+            {submitted.map(c => <CdaRow key={c.id} item={c} pending={pending} onApprove={handleApprove} onOpenDialog={openDialog} onSignatureCheck={handleSignatureCheck} />)}
             {changesRequested.length > 0 && (
               <div className="pt-3 border-t">
                 <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Awaiting agent revision</p>
@@ -315,13 +356,19 @@ interface RowProps {
   onApprove?: (id: string) => void
   onOpenDialog?: (id: string, mode: Exclude<Mode, null>) => void
   onBrokerSign?: (id: string) => void
+  /** Run the signature/document scan that arms the approval gate. */
+  onSignatureCheck?: (id: string) => void
   /** Renders the delivery action instead of the review actions. */
   sendToTitle?: boolean
 }
 
-function CdaRow({ item, pending, compact, onApprove, onOpenDialog, onBrokerSign, sendToTitle }: RowProps) {
+function CdaRow({ item, pending, compact, onApprove, onOpenDialog, onBrokerSign, onSignatureCheck, sendToTitle }: RowProps) {
   const sigPassed = item.signatureCheckPassed === true
   const sigFailed = item.signatureCheckPassed === false
+  // NULL is not "fine" — it is "nobody looked". approveCdaAction grandfathers it,
+  // so the reviewer must be able to see the difference between a check that passed
+  // and a check that was never run before they authorise a disbursement.
+  const sigUnchecked = item.signatureCheckPassed === null
   const contractPassed = item.contractCheckPassed === true
   const contractFailed = item.contractCheckPassed === false
   const contractBlocker = (item.contractDiscrepancies ?? []).some(d => d.severity === "blocker")
@@ -342,6 +389,7 @@ function CdaRow({ item, pending, compact, onApprove, onOpenDialog, onBrokerSign,
           )}
           {sigPassed && <Badge className="bg-green-100 text-green-800 text-[10px]"><CheckCircle className="h-3 w-3 mr-1" /> Sigs OK</Badge>}
           {sigFailed && !overridden && <Badge variant="destructive" className="text-[10px]"><FileWarning className="h-3 w-3 mr-1" /> Missing sigs</Badge>}
+          {sigUnchecked && <Badge variant="outline" className="text-[10px] border-slate-400 text-slate-600">Sigs not checked</Badge>}
           {contractPassed && <Badge className="bg-green-100 text-green-800 text-[10px]"><CheckCircle className="h-3 w-3 mr-1" /> Split OK</Badge>}
           {contractFailed && contractBlocker && !overridden && <Badge variant="destructive" className="text-[10px]"><AlertTriangle className="h-3 w-3 mr-1" /> Split ≠ contract</Badge>}
           {item.outstandingFees > 0 && <Badge variant="outline" className="text-[10px] border-amber-500 text-amber-700">Owes ${item.outstandingFees.toLocaleString()} fees</Badge>}
@@ -391,6 +439,14 @@ function CdaRow({ item, pending, compact, onApprove, onOpenDialog, onBrokerSign,
             onClick={() => onOpenDialog(item.id, "request_changes")}>
             Request changes
           </Button>
+          {onSignatureCheck && (
+            <Button size="sm" variant="outline" disabled={pending}
+              onClick={() => onSignatureCheck(item.id)}
+              className="gap-1">
+              <ShieldCheck className="h-3 w-3" />
+              {sigUnchecked ? "Check signatures" : "Re-check signatures"}
+            </Button>
+          )}
           {(sigFailed || (contractFailed && contractBlocker)) && !overridden && (
             <Button size="sm" variant="outline" disabled={pending}
               onClick={() => onOpenDialog(item.id, "manual_override")}

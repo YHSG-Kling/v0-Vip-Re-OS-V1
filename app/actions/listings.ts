@@ -106,6 +106,34 @@ export async function getListings(params?: {
 // UUID validation regex
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+/**
+ * REPORTED, NOT WIRED AND NOT DELETED (lane G4, 2026-08-28) — the verdict, so the
+ * next pass does not re-derive it.
+ *
+ * This is the by-id listing RESOLVER, and it is deliberately the one read on this
+ * rail that does NOT filter `deleted_at` — an archived listing must still open by
+ * id or it has been destroyed in every sense that matters, which is what
+ * scripts/listing-archive-simulator.ts pins it as a negative control for. That
+ * makes it a WATCHED function rather than an abandoned one.
+ *
+ * It has no caller. It is NOT a duplicate that can be collapsed: the by-id reads
+ * that exist are each narrower on purpose and are not interchangeable with it —
+ * the lifecycle, media, offers and seller-update pages each select the columns
+ * their own screen needs, server-side, and the offer wizard's read
+ * (app/crm/contacts/[contactId]/offers/components/offer-form-wizard.tsx) takes
+ * three columns through the browser's RLS client. Repointing any of them at this
+ * would push a `select("*")` listing row — `commission_rate` and
+ * `seller_walkaway_price` included — onto an agent-facing client bundle, which
+ * §5 forbids. There is one same-named twin, services/supabaseService.ts:
+ * getListingById, and it is the WORSE half (admin client, no auth, no tenant
+ * predicate, returns null on a refused read) and also has no caller — a
+ * merge-then-delete onto THIS survivor is the right call, but that file is
+ * outside this lane's set and is reported instead.
+ *
+ * The honest missing half is a listing surface that needs the whole record over
+ * the wire, and none exists today. Build the surface, then wire this; do not
+ * invent a caller for it.
+ */
 export async function getListingById(listingId: string) {
   try {
     // Validate listingId is a proper UUID (not "new" or other invalid values)
@@ -178,7 +206,63 @@ export async function createListing(params: {
   return result
 }
 
-export async function updateListing(listingId: string, updates: any, _actorUserId?: string) {
+/**
+ * THE HAND-EDIT WRITER, AND THE ONLY PRICE-CHANGE LANE.
+ *
+ * WIRED (lane G4, 2026-08-28): app/dashboard/listings/[id]/components/price-reduction-sheet.tsx.
+ *
+ * It was unreachable, and that mattered more than an unused export normally
+ * does, because two capabilities hang off THIS function and nothing else:
+ *
+ *   1. `listing_price_changes` — read by the SELLER PORTAL's price history
+ *      (app/actions/portal-seller.ts:228) and counted by the market-position
+ *      snapshot (lib/intelligence/derived-snapshots.ts:48). The ledger's only
+ *      writer is the insert below, so with no caller the seller's price history
+ *      was permanently empty and `price_reduction_count` was permanently 0.
+ *   2. `assignTierToListing` — marketing tier is priced off list price, so a
+ *      price change that skips it leaves the tier assigned against a number
+ *      that no longer exists.
+ *
+ * NOT A DUPLICATE of listings-kernel.ts:saveListingDraftAction, which was
+ * checked end to end before wiring: that is the DESCRIPTION/marketing-copy edit
+ * door (its live caller sends `public_remarks` only), it runs neither of the two
+ * consequences above, and it holds an allow-list this one does not need because
+ * its only caller passes one field. Different business process, same table —
+ * merging them would have destroyed the price lane, not consolidated it.
+ *
+ * NOT A DUPLICATE of listing-lifecycle.ts:handlePriceReduction either. That is
+ * the ORCHESTRATOR EVENT handler for `listing.price_reduction`
+ * (lib/orchestrator/internal.ts:87) and all it does is raise the "update all
+ * marketing with the new price" task. It never touched `listings.list_price` —
+ * so the "Reduce Price" sheet, which called it alone, toasted "Price reduced
+ * to $X" over a price that had not moved. Both now run, in the order the
+ * business process needs: the price is written HERE first, the follow-up task
+ * is raised there second.
+ *
+ * ── THE ALLOW-LIST EXISTS BECAUSE THE WIRE DOES ──────────────────────────────
+ *
+ * `updates` used to be spread into the UPDATE with only `brokerage_id` and `id`
+ * deleted from it. That was survivable for as long as nothing could call this;
+ * the moment it has a browser-reachable caller it is an open write on every
+ * other column of a 60-column table, including `status`, `lifecycle_stage`,
+ * `agent_id`, `mls_number` and `sold_price` — all of which belong to actions
+ * that own them (launchListingAction, updateListingStatus, the stage engine).
+ * Wiring a door onto a deny-list is how a fix becomes a hole, so the allow-list
+ * is part of the wire, not a follow-up.
+ *
+ * It is deliberately ONE column. This function's whole reason to exist beyond
+ * saveListingDraftAction is the two price consequences above; every other
+ * hand-editable column already has its door at
+ * listings-kernel.ts:saveListingDraftAction, whose EDITABLE_LISTING_FIELDS is
+ * the allow-list for that lane. Two lists that overlap would be two vocabularies
+ * for one idea (§6) — these do not overlap except on `list_price` itself, which
+ * is reported as the one remaining second price door: it is reachable through
+ * the draft action's allow-list and, going that way, skips the ledger and the
+ * tier. Nothing in the product sends it that way today.
+ */
+const PRICE_LANE_FIELDS = ["list_price"] as const
+
+export async function updateListing(listingId: string, updates: Record<string, unknown>) {
   try {
     if (!UUID_REGEX.test(listingId)) return { success: false, error: "Invalid listing ID" }
 
@@ -205,12 +289,36 @@ export async function updateListing(listingId: string, updates: any, _actorUserI
     const brokerageId = currentListing.brokerage_id as string
     const currentPrice = currentListing.list_price as number | null
 
-    const priceUpdated = updates.list_price !== undefined || updates.price !== undefined
+    // ALLOW-LIST, not a deny-list. A key this lane does not own is REFUSED BY
+    // NAME rather than dropped: a caller who sent `status` and got `{ success:
+    // true }` back would reasonably believe the status changed.
+    const incoming = updates ?? {}
+    const safeUpdates: Record<string, unknown> = {}
+    const rejected: string[] = []
+    for (const key of Object.keys(incoming)) {
+      if ((PRICE_LANE_FIELDS as readonly string[]).includes(key)) safeUpdates[key] = incoming[key]
+      else rejected.push(key)
+    }
+    if (rejected.length > 0) {
+      return {
+        success: false,
+        error:
+          `This action only changes the list price. Not editable here: ${rejected.join(", ")} ` +
+          `— use the listing's own edit surface (saveListingDraftAction) for those.`,
+      }
+    }
+    if (Object.keys(safeUpdates).length === 0) {
+      return { success: false, error: "No updates provided" }
+    }
 
-    // Never let caller-supplied updates change tenant ownership
-    const safeUpdates = { ...updates }
-    delete safeUpdates.brokerage_id
-    delete safeUpdates.id
+    // A price must be a real number. `list_price` is numeric in the live schema,
+    // so a string or NaN reaching the UPDATE is a raw Postgres error the caller
+    // cannot act on — and a negative or zero list price is not a price.
+    const submittedPrice = Number(safeUpdates.list_price)
+    if (!Number.isFinite(submittedPrice) || submittedPrice <= 0) {
+      return { success: false, error: "Enter a list price greater than zero." }
+    }
+    safeUpdates.list_price = submittedPrice
 
     const { data, error } = await supabase
       .from("listings")
@@ -222,22 +330,36 @@ export async function updateListing(listingId: string, updates: any, _actorUserI
 
     if (error) throw error
 
-    // Trigger tier assignment ONLY when price changes
-    const newPrice = updates.list_price ?? updates.price
-    if (priceUpdated && newPrice !== currentPrice) {
+    // Trigger tier assignment ONLY when the price actually moved. `newPrice` is
+    // the COERCED number validated above, not the raw body value — comparing a
+    // string "485000" against a numeric currentPrice is always "changed", which
+    // would ledger a no-op price change on every save.
+    const newPrice = submittedPrice
+    if (newPrice !== currentPrice) {
       await assignTierToListing(listingId, brokerageId, actorUserId).catch((err) => {
         console.error("[updateListing] Tier assignment failed (non-blocking):", err)
       })
       // PRICE-CHANGE LEDGER (writer-less burn-down): the seller portal's price
       // history read had NO writer — every price change now lands the ledger row
       // the portal renders. Best-effort; the update itself never fails on it.
+      //
+      // change_reason is DERIVED from the two prices this function already holds,
+      // not taken from the caller (§6 — one vocabulary per function, and the one
+      // authority on which way a price moved is the pair of numbers). It stood at
+      // the constant "manual_update", which is what the SELLER reads on their own
+      // price-history card: every reduction rendered to them as a nameless edit.
+      const priceChangeReason =
+        currentPrice == null      ? "price_set"
+        : newPrice < currentPrice ? "price_reduction"
+        : newPrice > currentPrice ? "price_increase"
+        : "manual_update"
       await supabase.from("listing_price_changes").insert({
         brokerage_id: brokerageId,
         listing_id: listingId,
         agent_id: (currentListing as any).agent_id ?? null,
         old_price: currentPrice,
         new_price: newPrice,
-        change_reason: "manual_update",
+        change_reason: priceChangeReason,
         effective_date: new Date().toISOString().split("T")[0],
       }).then(() => undefined, (e: unknown) => console.error("[updateListing] price-change ledger:", e))
     }

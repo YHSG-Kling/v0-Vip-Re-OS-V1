@@ -8,6 +8,10 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge'
 import { ArrowLeft, CheckCircle2, Clock, AlertTriangle, Calendar } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
+// THE BOARD'S MISSING HALF — this page listed every open task and offered no way
+// to act on one. See the component's header for why these three controls and not
+// more, and which writer each one uses.
+import { TaskRowActions } from './task-row-actions'
 
 export const dynamic = 'force-dynamic'
 
@@ -107,7 +111,10 @@ export default async function AdminTasksPage() {
                         Overdue by {formatDistanceToNow(new Date(task.due_date!))}
                       </div>
                     </div>
-                    <Badge className={getPriorityColor(task.priority)}>{task.priority || 'normal'}</Badge>
+                    <div className="flex items-center gap-3">
+                      <Badge className={getPriorityColor(task.priority)}>{task.priority || 'normal'}</Badge>
+                      <TaskRowActions taskId={task.id} status={task.status} />
+                    </div>
                   </div>
                 ))}
               </div>
@@ -144,7 +151,10 @@ export default async function AdminTasksPage() {
                         </div>
                       )}
                     </div>
-                    <Badge className={getPriorityColor(task.priority)}>{task.priority || 'normal'}</Badge>
+                    <div className="flex items-center gap-3">
+                      <Badge className={getPriorityColor(task.priority)}>{task.priority || 'normal'}</Badge>
+                      <TaskRowActions taskId={task.id} status={task.status} />
+                    </div>
                   </div>
                 ))}
               </div>
@@ -181,7 +191,10 @@ export default async function AdminTasksPage() {
                         </div>
                       )}
                     </div>
-                    <Badge className={getPriorityColor(task.priority)}>{task.priority || 'normal'}</Badge>
+                    <div className="flex items-center gap-3">
+                      <Badge className={getPriorityColor(task.priority)}>{task.priority || 'normal'}</Badge>
+                      <TaskRowActions taskId={task.id} status={task.status} />
+                    </div>
                   </div>
                 ))}
               </div>

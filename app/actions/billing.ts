@@ -486,6 +486,38 @@ export async function cancelSubscription(subscriptionId: string) {
 // complete cross-tenant read is lib/platform/subscription-oversight.ts
 // (loadSubscriptionOversight), and the wired tier writer is
 // app/actions/superadmin/brokerage-management.ts:changeBrokerageTierAction.
+//
+// ── EVIDENCE ADDED 2026-08-28 (lane G4), so the next pass does not re-derive it.
+//
+// The verdicts above were re-checked end to end against the live database rather
+// than by name, per the owner's ruling that a same-sounding function is not the
+// same capability.
+//
+//  · manualTierOverride vs changeBrokerageTierAction — SAME business process.
+//    The one thing this pair genuinely disagreed on was REACH: this action moves
+//    a subscription onto any `subscription_tiers` row by id, while the survivor
+//    takes a CanonicalTier name union of four values, so a catalog row outside
+//    that union would have been reachable only from here. Measured on
+//    hrvaqgvukzxfskkcrwbt: `subscription_tiers` holds exactly FOUR active rows —
+//    solo_agent, team, brokerage, multi_location — i.e. the union is the whole
+//    catalog and this action reaches nothing the survivor cannot. The survivor
+//    is otherwise strictly fuller (brokerages.plan_tier AND subscriptions.tier_id,
+//    the Stripe price swap, the ai_subscription_tier entitlement row, the
+//    SUBSCRIPTION_UPGRADED/DOWNGRADED kernel events and superadmin_audit_log).
+//    THE ONE PIECE THE SURVIVOR IS MISSING before it can absorb this: the
+//    MANDATORY substantive reason. Here a price change is refused without one
+//    ("A substantive reason (10+ chars) is required — this is the audit record
+//    for a price change"); on the survivor `reason` is optional and lands as
+//    null. That merge belongs in brokerage-management.ts, not here.
+//
+//  · getAllBrokeragesBilling — covered by loadSubscriptionOversight, which
+//    returns the same tenant/tier/status/MRR per brokerage and classifies it.
+//
+//  · getDelinquentAccounts — the past-due set is covered (oversight detects it
+//    from subscriptions.status AND from the latest unpaid invoice, which is
+//    broader than the `status = 'past_due'` filter here). The ONE field this one
+//    carries that SubscriptionOversightRow does not is the brokerage EMAIL — the
+//    dunning contact. A collapse should add it to the oversight row first.
 
 // ─── GET ALL BROKERAGES BILLING (PLATFORM 'billing' CAPABILITY) ──────────────
 export async function getAllBrokeragesBilling(): Promise<
