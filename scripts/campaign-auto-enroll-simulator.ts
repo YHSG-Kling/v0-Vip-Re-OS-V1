@@ -203,7 +203,13 @@ console.log("\n── the enroller ──")
   check("selects by brokerage + source_key + active",
     sel?.filters.brokerage_id === "b1" && sel?.filters.source_key === "home_value" && sel?.filters.is_active === true)
   const ins = a.calls.find((c) => c.table === "sequence_enrollments" && c.payload)
-  check("writes an active enrolment at step 1", ins?.payload.status === "active" && ins?.payload.current_step === 1)
+  // current_step is the last COMPLETED step (engine convention — the executor
+  // sends current_step + 1). This check used to pin current_step === 1, which
+  // was the off-by-one itself: every auto-enrolled contact skipped the first
+  // touch (fixed 2026-08-28). Assert the RULE: fresh enrolment at 0, and a
+  // next_step_at the step cron can actually poll.
+  check("writes an active enrolment awaiting its FIRST touch (current_step 0, next_step_at set)",
+    ins?.payload.status === "active" && ins?.payload.current_step === 0 && typeof ins?.payload.next_step_at === "string")
   check("first step defaults to 24h out",
     ins?.payload.next_step_at === "2026-07-30T00:00:00.000Z")
   check("carries the tenant and the enrolling agent",

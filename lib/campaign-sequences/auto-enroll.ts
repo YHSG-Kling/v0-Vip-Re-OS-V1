@@ -167,7 +167,11 @@ export async function autoEnrollContact(
       brokerage_id: input.brokerageId,
       enrolled_by: input.enrolledBy ?? null,
       status: "active",
-      current_step: 1,
+      // current_step is the last COMPLETED step (engine convention; the
+      // executor sends current_step + 1). This wrote 1, so every auto-enrolled
+      // contact SKIPPED the sequence's first touch (found 2026-08-28; zero
+      // live enrollment rows existed, so no data repair was owed).
+      current_step: 0,
       next_step_at: new Date(now.getTime() + delay).toISOString(),
     })
 

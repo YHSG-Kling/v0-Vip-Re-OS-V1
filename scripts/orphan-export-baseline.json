@@ -4,7 +4,6 @@
     "app/actions/admin/commission-agreement.ts": 1,
     "app/actions/agents.ts": 6,
     "app/actions/ai-auto-response.ts": 1,
-    "app/actions/ai-client-gifting.ts": 1,
     "app/actions/ai-content-generation.tsx": 3,
     "app/actions/ai-contract-review.ts": 1,
     "app/actions/ai-document-intelligence.ts": 1,
@@ -221,7 +220,7 @@
     "lib/intelligence/appointment-whisper.ts": 1,
     "lib/intelligence/brokerage-pnl.ts": 2,
     "lib/intelligence/career-architect.ts": 4,
-    "lib/intelligence/conversation-insights.ts": 1,
+    "lib/intelligence/conversation-insights.ts": 2,
     "lib/intelligence/curriculum-board.ts": 1,
     "lib/intelligence/decision-velocity.ts": 1,
     "lib/intelligence/deliverables-summary.ts": 2,
@@ -577,7 +576,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9353,
+  "census": 9367,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -629,7 +628,7 @@
     "app/actions/agentic-tokens.ts": 3,
     "app/actions/agents.ts": 16,
     "app/actions/ai-agent-goals.ts": 6,
-    "app/actions/ai-agent-onboarding.ts": 2,
+    "app/actions/ai-agent-onboarding.ts": 4,
     "app/actions/ai-auto-response.ts": 6,
     "app/actions/ai-buyer-search-push.ts": 1,
     "app/actions/ai-calendar-management.ts": 13,
@@ -656,7 +655,7 @@
     "app/actions/ai-isa/schedule-appointment.ts": 1,
     "app/actions/ai-isa/speed-to-lead-metrics.ts": 1,
     "app/actions/ai-isa-settings.ts": 5,
-    "app/actions/ai-isa.ts": 14,
+    "app/actions/ai-isa.ts": 16,
     "app/actions/ai-lead-nurturing.ts": 4,
     "app/actions/ai-lead-scoring.ts": 3,
     "app/actions/ai-listing-intake.ts": 9,
@@ -756,7 +755,7 @@
     "app/actions/compliance/manage-required-docs.ts": 4,
     "app/actions/compliance/seed-required-docs.ts": 1,
     "app/actions/compliance-bridge-actions.ts": 3,
-    "app/actions/compliance-monitoring.ts": 15,
+    "app/actions/compliance-monitoring.ts": 16,
     "app/actions/compliance-phrases.ts": 4,
     "app/actions/composition-library.ts": 1,
     "app/actions/connection-health.ts": 2,
@@ -1147,7 +1146,7 @@
     "app/actions/workflow-monitoring.ts": 4,
     "app/actions/workflow-orchestrator.ts": 7,
     "app/actions/workflow-reports.ts": 1,
-    "app/actions/workflows.ts": 9,
+    "app/actions/workflows.ts": 10,
     "app/api/accounting/sync/route.ts": 1,
     "app/api/admin/agents/sessions/route.ts": 1,
     "app/api/admin/audit-events/route.ts": 1,
@@ -1248,6 +1247,7 @@
     "app/api/cron/content-performance-aggregator/route.ts": 1,
     "app/api/cron/context-spine-refresh/route.ts": 1,
     "app/api/cron/contingency-scan/route.ts": 1,
+    "app/api/cron/conversation-insights-refresh/route.ts": 1,
     "app/api/cron/credential-refresh/route.ts": 1,
     "app/api/cron/daily-briefing/route.ts": 1,
     "app/api/cron/deadline-watcher/route.ts": 1,
@@ -1843,6 +1843,7 @@
     "app/crm/contacts/[contactId]/components/followup-card.tsx": 1,
     "app/crm/contacts/[contactId]/components/lifetime-segment-selector.tsx": 1,
     "app/crm/contacts/[contactId]/components/memory-video-card.tsx": 1,
+    "app/crm/contacts/[contactId]/components/smart-drip-card.tsx": 1,
     "app/crm/contacts/[contactId]/components/workflow-runs-panel.tsx": 1,
     "app/crm/contacts/[contactId]/listings/new/new-listing-page-client.tsx": 1,
     "app/crm/contacts/[contactId]/offers/[offerId]/offer-actions-bar.tsx": 1,
@@ -2257,6 +2258,7 @@
     "app/dashboard/motivation/motivation-client.tsx": 1,
     "app/dashboard/onboarding/OnboardingDashboardClient.tsx": 1,
     "app/dashboard/onboarding/OnboardingQuizClient.tsx": 1,
+    "app/dashboard/onboarding/admin/agents/[id]/certify-agent-card.tsx": 1,
     "app/dashboard/onboarding/admin/agents/[id]/welcome-message-card.tsx": 1,
     "app/dashboard/onboarding/ai-call-setup/AICallSetupClient.tsx": 1,
     "app/dashboard/onboarding/brand/brand-setup-client.tsx": 1,
@@ -2500,6 +2502,7 @@
     "app/lib/gamification/award-on-action.ts": 1,
     "app/lib/listing-utils.ts": 2,
     "app/lifetime-customers/components/campaigns-gifting-panel.tsx": 1,
+    "app/lifetime-customers/components/gift-vendor-rolodex.tsx": 1,
     "app/listing/[slug]/page.tsx": 1,
     "app/listings/[listingId]/outside-agent-showing-form.tsx": 1,
     "app/listings/[listingId]/page.tsx": 1,
@@ -2817,8 +2820,8 @@
     "lib/analytics/territory-coverage.ts": 4,
     "lib/analytics/territory-roi.ts": 5,
     "lib/analytics/vendor-roi.ts": 2,
-    "lib/application/ai-isa.ts": 2,
-    "lib/application/compliance-monitoring.ts": 17,
+    "lib/application/ai-isa.ts": 4,
+    "lib/application/compliance-monitoring.ts": 18,
     "lib/application/lead-application-service.ts": 5,
     "lib/application/listing-lifecycle.ts": 16,
     "lib/application/listings.ts": 2,
@@ -3257,7 +3260,7 @@
     "lib/intelligence/buyer-stall-predictor.ts": 1,
     "lib/intelligence/career-architect.ts": 5,
     "lib/intelligence/coaching-engine.ts": 1,
-    "lib/intelligence/conversation-insights.ts": 3,
+    "lib/intelligence/conversation-insights.ts": 4,
     "lib/intelligence/curriculum-board.ts": 2,
     "lib/intelligence/daily-briefing-generator.ts": 2,
     "lib/intelligence/decision-receipts-runner.ts": 1,
@@ -4549,7 +4552,9 @@
     ],
     "app/actions/ai-agent-onboarding.ts": [
       "completeAISessionStep",
-      "generateWelcomeMessage"
+      "generateWelcomeMessage",
+      "getCertificationReadiness",
+      "certifyAgent"
     ],
     "app/actions/ai-auto-response.ts": [
       "getAutoResponseSettings",
@@ -4769,6 +4774,8 @@
       "getAIISAStats"
     ],
     "app/actions/ai-isa.ts": [
+      "launchAIISACampaign",
+      "queueAIISACall",
       "retryFailedCalls",
       "updateCampaignStatus",
       "listISACampaigns",
@@ -5464,6 +5471,7 @@
       "resolveComplianceAlert",
       "resolveCompRiskFlag",
       "trackCertificationExpiration",
+      "analyzeFairHousingRisk",
       "monitorTRIDCompliance",
       "exportAuditTrail",
       "scanContentCompliance",
@@ -8064,6 +8072,7 @@
     "app/actions/workflows.ts": [
       "executeAITool",
       "generateCopilotPlan",
+      "startSmartDrip",
       "sendMessage",
       "triggerCMAPackage",
       "generateScriptContent",
@@ -8379,6 +8388,9 @@
       "GET"
     ],
     "app/api/cron/contingency-scan/route.ts": [
+      "GET"
+    ],
+    "app/api/cron/conversation-insights-refresh/route.ts": [
       "GET"
     ],
     "app/api/cron/credential-refresh/route.ts": [
@@ -10210,6 +10222,9 @@
     "app/crm/contacts/[contactId]/components/memory-video-card.tsx": [
       "MemoryVideoCard"
     ],
+    "app/crm/contacts/[contactId]/components/smart-drip-card.tsx": [
+      "SmartDripCard"
+    ],
     "app/crm/contacts/[contactId]/components/workflow-runs-panel.tsx": [
       "WorkflowRunsPanel"
     ],
@@ -11475,6 +11490,9 @@
     "app/dashboard/onboarding/OnboardingQuizClient.tsx": [
       "OnboardingQuizClient"
     ],
+    "app/dashboard/onboarding/admin/agents/[id]/certify-agent-card.tsx": [
+      "CertifyAgentCard"
+    ],
     "app/dashboard/onboarding/admin/agents/[id]/welcome-message-card.tsx": [
       "WelcomeMessageCard"
     ],
@@ -12244,6 +12262,9 @@
     ],
     "app/lifetime-customers/components/campaigns-gifting-panel.tsx": [
       "CampaignsGiftingPanel"
+    ],
+    "app/lifetime-customers/components/gift-vendor-rolodex.tsx": [
+      "GiftVendorRolodex"
     ],
     "app/listing/[slug]/page.tsx": [
       "generateMetadata"
@@ -13494,6 +13515,8 @@
       "providerMetricsToCsv"
     ],
     "lib/application/ai-isa.ts": [
+      "launchAIISACampaignService",
+      "queueAIISACallService",
       "retryFailedCallsService",
       "updateCampaignStatusService"
     ],
@@ -13502,6 +13525,7 @@
       "resolveComplianceAlertService",
       "resolveCompRiskFlagService",
       "trackCertificationExpirationService",
+      "analyzeFairHousingRiskService",
       "monitorTRIDComplianceService",
       "createTRIDTimelineService",
       "updateTRIDMilestoneService",
@@ -15789,6 +15813,7 @@
     "lib/intelligence/conversation-insights.ts": [
       "getContactMemory",
       "buildContextWindow",
+      "deriveConversationAnalytics",
       "updateConversationMemory"
     ],
     "lib/intelligence/curriculum-board.ts": [
@@ -21095,5 +21120,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 1
+  "trulyDead": 0
 }

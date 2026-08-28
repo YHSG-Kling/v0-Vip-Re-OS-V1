@@ -91,6 +91,24 @@ export async function enrollInSequence(
   if (contactError) return { enrollment: null, error: contactError.message }
   if (!contactRow) return { enrollment: null, error: "Contact not found in this brokerage" }
 
+  // THE ENROLLMENT MUST BE EXECUTABLE (found 2026-08-28, lane F1's report):
+  // this door wrote current_step: 1 with NO next_step_at, while the step cron
+  // polls next_step_at <= now and the executor sends step current_step + 1 —
+  // so an enrollment through here never fired, and had it fired it would have
+  // SKIPPED the first touch. One convention (§6, the engine's):
+  // current_step = last COMPLETED step (0 at enrollment), next_step_at derived
+  // from step 1's own delay exactly as enrollment-engine.ts derives it.
+  const { data: firstStep } = await service
+    .from("campaign_sequence_steps")
+    .select("delay_days, delay_hours")
+    .eq("sequence_id", sequenceId)
+    .eq("step_number", 1)
+    .eq("is_active", true)
+    .maybeSingle()
+  const firstDelayMs =
+    ((firstStep?.delay_days ?? 0) * 24 * 60 * 60 * 1000) +
+    ((firstStep?.delay_hours ?? 0) * 60 * 60 * 1000)
+
   const { data, error } = await service
     .from("sequence_enrollments")
     .insert({
@@ -100,8 +118,9 @@ export async function enrollInSequence(
       brokerage_id: brokerageId,
       enrolled_by: params.enrolledBy ?? null,
       status: "active",
-      current_step: 1,
+      current_step: 0,
       enrolled_at: new Date().toISOString(),
+      next_step_at: new Date(Date.now() + firstDelayMs).toISOString(),
     })
     .select()
     .maybeSingle()

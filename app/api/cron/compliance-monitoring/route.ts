@@ -124,15 +124,18 @@ export async function GET(request: NextRequest) {
     try {
       const retentionWindowStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
         .toISOString().split("T")[0]
+      // tenant anchor (same idiom as the TRID sweep above): the platform sweep
+      // carries each row's brokerage and excludes orphan rows without a tenant.
       const { data: closedTxns, error: closedErr } = await supabase
         .from("transactions")
-        .select("id")
+        .select("id, brokerage_id")
+        .not("brokerage_id", "is", null)
         .not("close_date", "is", null)
         .gte("close_date", retentionWindowStart)
       if (closedErr) {
         console.error("[ComplianceMonitoring] closed-transaction sweep read failed:", closedErr.message)
       }
-      for (const txn of (closedTxns ?? []) as Array<{ id: string }>) {
+      for (const txn of (closedTxns ?? []) as Array<{ id: string; brokerage_id: string }>) {
         const retention = await applyDocumentRetentionService(txn.id, supabase)
         if (retention.success) {
           results.retention_transactions_processed++
