@@ -8,7 +8,7 @@
     "app/actions/ai-contract-review.ts": 1,
     "app/actions/ai-document-intelligence.ts": 1,
     "app/actions/ai-marketing-automation.ts": 4,
-    "app/actions/ai-predictions.ts": 5,
+    "app/actions/ai-predictions.ts": 4,
     "app/actions/ai-showing-management.ts": 1,
     "app/actions/ai-transaction-coordinator.ts": 2,
     "app/actions/ai-voice-transcription.ts": 1,
@@ -17,7 +17,7 @@
     "app/actions/buyer-financial.ts": 1,
     "app/actions/buyer-offer/handle-multi-offer.ts": 1,
     "app/actions/calculators.ts": 1,
-    "app/actions/cda-portal.ts": 4,
+    "app/actions/cda-portal.ts": 3,
     "app/actions/credit-copilot.ts": 1,
     "app/actions/documents.ts": 1,
     "app/actions/dotloop-integration.ts": 1,
@@ -39,7 +39,6 @@
     "app/actions/social-media-automation.ts": 1,
     "app/actions/social-publishing.ts": 1,
     "app/actions/superadmin/parked-retention.ts": 1,
-    "app/actions/tasks.ts": 2,
     "app/actions/vendor-marketplace.ts": 2,
     "app/actions/vendor-payments.ts": 1,
     "app/actions/vendor-verification.ts": 1,
@@ -576,7 +575,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9367,
+  "census": 9371,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -628,7 +627,7 @@
     "app/actions/agentic-tokens.ts": 3,
     "app/actions/agents.ts": 16,
     "app/actions/ai-agent-goals.ts": 6,
-    "app/actions/ai-agent-onboarding.ts": 4,
+    "app/actions/ai-agent-onboarding.ts": 3,
     "app/actions/ai-auto-response.ts": 6,
     "app/actions/ai-buyer-search-push.ts": 1,
     "app/actions/ai-calendar-management.ts": 13,
@@ -890,7 +889,7 @@
     "app/actions/marketing-campaigns-admin.ts": 2,
     "app/actions/marketing-intelligence.ts": 3,
     "app/actions/marketing-ops.ts": 2,
-    "app/actions/marketing-package-automation.ts": 9,
+    "app/actions/marketing-package-automation.ts": 10,
     "app/actions/marketing-studio.ts": 19,
     "app/actions/multi-persona.ts": 28,
     "app/actions/negotiation-copilot.ts": 2,
@@ -1073,7 +1072,7 @@
     "app/actions/tasks.ts": 5,
     "app/actions/tax-planning.ts": 3,
     "app/actions/tcpa-compliance.ts": 1,
-    "app/actions/team-branding.ts": 4,
+    "app/actions/team-branding.ts": 6,
     "app/actions/team-heatmap.ts": 7,
     "app/actions/tenant-connections.ts": 2,
     "app/actions/tenant-safety-actions.ts": 3,
@@ -1545,8 +1544,6 @@
     "app/api/workflow/buyer-intake/submit/route.ts": 1,
     "app/api/workflow/buyer-intake/upload/route.ts": 1,
     "app/api/workflow/intake/approve-packet/route.ts": 1,
-    "app/api/workflow/intake/listing/route.ts": 1,
-    "app/api/workflow/intake/offer/route.ts": 1,
     "app/api/workflow/listing-presentation/route.ts": 1,
     "app/api/workflow/trigger/route.ts": 1,
     "app/api/workflows/market-insight/route.ts": 1,
@@ -1620,6 +1617,7 @@
     "app/components/dashboard/smarter-widget/smarter-widget.tsx": 1,
     "app/components/dashboard/steer-my-day-card.tsx": 1,
     "app/components/dashboard/voice/AiOutboundCallPanel.tsx": 1,
+    "app/components/dashboard/voice/KernelPlanCard.tsx": 1,
     "app/components/dashboard/voice/PreCallBriefCard.tsx": 1,
     "app/components/dashboard/voice/QuickCommandGrid.tsx": 1,
     "app/components/dashboard/voice/RecentCommandsFeed.tsx": 1,
@@ -1854,6 +1852,7 @@
     "app/crm/contacts/[contactId]/offers/offers-client.tsx": 1,
     "app/crm/contacts/[contactId]/search/search-client.tsx": 1,
     "app/crm/contacts/[contactId]/seller-lifetime-overview.tsx": 1,
+    "app/crm/contacts/[contactId]/showing-route-planner.tsx": 1,
     "app/crm/contacts/[contactId]/tours/components/optimized-route-summary.tsx": 1,
     "app/crm/contacts/[contactId]/tours/components/tour-confirm-tab.tsx": 1,
     "app/crm/contacts/[contactId]/tours/components/tour-day-of-tab.tsx": 1,
@@ -1944,6 +1943,7 @@
     "app/dashboard/admin/scrape-diagnostics/scrape-diagnostics-client.tsx": 1,
     "app/dashboard/admin/scrape-diagnostics/tenant-coverage-card.tsx": 1,
     "app/dashboard/admin/support-tickets/support-queue-client.tsx": 1,
+    "app/dashboard/admin/tasks/task-row-actions.tsx": 1,
     "app/dashboard/admin/tenant-safety/tenant-safety-client.tsx": 1,
     "app/dashboard/admin/usage/usage-by-type-chart.tsx": 1,
     "app/dashboard/admin/usage/usage-trends-chart.tsx": 1,
@@ -2378,6 +2378,7 @@
     "app/dashboard/superadmin/brokerages/new/manual-subscriber-form.tsx": 1,
     "app/dashboard/superadmin/connector-healing/proposal-actions.tsx": 1,
     "app/dashboard/superadmin/connectors/a2p-verify-card.tsx": 1,
+    "app/dashboard/superadmin/connectors/capability-resolver-card.tsx": 1,
     "app/dashboard/superadmin/connectors/go-live-card.tsx": 2,
     "app/dashboard/superadmin/connectors/platform-reception-panel.tsx": 1,
     "app/dashboard/superadmin/connectors/provider-posture-cards.tsx": 3,
@@ -2460,6 +2461,7 @@
     "app/dashboard/vendors/vendor-directory-client.tsx": 1,
     "app/dashboard/vendors/vendor-plan-catalogue-panel.tsx": 1,
     "app/dashboard/vendors/vendor-portal-invite-panel.tsx": 1,
+    "app/dashboard/videos/board/video-recommendations-card.tsx": 1,
     "app/dashboard/videos/board/video-studio-dialog.tsx": 1,
     "app/dashboard/videos/components/BackgroundPicker.tsx": 1,
     "app/dashboard/videos/components/BrollPicker.tsx": 1,
@@ -2820,7 +2822,7 @@
     "lib/analytics/territory-coverage.ts": 4,
     "lib/analytics/territory-roi.ts": 5,
     "lib/analytics/vendor-roi.ts": 2,
-    "lib/application/ai-isa.ts": 4,
+    "lib/application/ai-isa.ts": 3,
     "lib/application/compliance-monitoring.ts": 18,
     "lib/application/lead-application-service.ts": 5,
     "lib/application/listing-lifecycle.ts": 16,
@@ -4551,7 +4553,6 @@
       "syncGoalCurrentValues"
     ],
     "app/actions/ai-agent-onboarding.ts": [
-      "completeAISessionStep",
       "generateWelcomeMessage",
       "getCertificationReadiness",
       "certifyAgent"
@@ -4777,10 +4778,10 @@
       "launchAIISACampaign",
       "queueAIISACall",
       "retryFailedCalls",
-      "updateCampaignStatus",
       "listISACampaigns",
       "createISACampaign",
       "toggleCampaignStatus",
+      "completeISACampaign",
       "sendCampaignTestTouch",
       "getChannelFeatureFlags",
       "getEngagementFeed",
@@ -6379,6 +6380,7 @@
       "generateListingOptimizations",
       "getMarketingPackageStatus",
       "getMarketingPackageServices",
+      "completeMarketingService",
       "sendServiceReminderToVendor"
     ],
     "app/actions/marketing-studio.ts": [
@@ -7552,7 +7554,9 @@
       "loadTeamBranding",
       "saveTeamBranding",
       "saveTeamSplits",
-      "saveTeamSignature"
+      "saveTeamSignature",
+      "saveTeamRevenueGoal",
+      "loadTeamRevenueGoal"
     ],
     "app/actions/team-heatmap.ts": [
       "getHeatmapSnapshots",
@@ -9317,12 +9321,6 @@
     "app/api/workflow/intake/approve-packet/route.ts": [
       "POST"
     ],
-    "app/api/workflow/intake/listing/route.ts": [
-      "POST"
-    ],
-    "app/api/workflow/intake/offer/route.ts": [
-      "POST"
-    ],
     "app/api/workflow/listing-presentation/route.ts": [
       "POST"
     ],
@@ -9544,6 +9542,9 @@
     ],
     "app/components/dashboard/voice/AiOutboundCallPanel.tsx": [
       "AiOutboundCallPanel"
+    ],
+    "app/components/dashboard/voice/KernelPlanCard.tsx": [
+      "KernelPlanCard"
     ],
     "app/components/dashboard/voice/PreCallBriefCard.tsx": [
       "PreCallBriefCard"
@@ -10255,6 +10256,9 @@
     "app/crm/contacts/[contactId]/seller-lifetime-overview.tsx": [
       "SellerLifetimeOverview"
     ],
+    "app/crm/contacts/[contactId]/showing-route-planner.tsx": [
+      "ShowingRoutePlanner"
+    ],
     "app/crm/contacts/[contactId]/tours/components/optimized-route-summary.tsx": [
       "OptimizedRouteSummary"
     ],
@@ -10526,6 +10530,9 @@
     ],
     "app/dashboard/admin/support-tickets/support-queue-client.tsx": [
       "SupportQueueClient"
+    ],
+    "app/dashboard/admin/tasks/task-row-actions.tsx": [
+      "TaskRowActions"
     ],
     "app/dashboard/admin/tenant-safety/tenant-safety-client.tsx": [
       "TenantSafetyClient"
@@ -11874,6 +11881,9 @@
     "app/dashboard/superadmin/connectors/a2p-verify-card.tsx": [
       "A2pVerifyCard"
     ],
+    "app/dashboard/superadmin/connectors/capability-resolver-card.tsx": [
+      "CapabilityResolverCard"
+    ],
     "app/dashboard/superadmin/connectors/go-live-card.tsx": [
       "GoLiveCard",
       "LaunchChecklistCard"
@@ -12128,6 +12138,9 @@
     ],
     "app/dashboard/vendors/vendor-portal-invite-panel.tsx": [
       "VendorPortalInvitePanel"
+    ],
+    "app/dashboard/videos/board/video-recommendations-card.tsx": [
+      "VideoRecommendationsCard"
     ],
     "app/dashboard/videos/board/video-studio-dialog.tsx": [
       "VideoStudioDialog"
@@ -13517,8 +13530,7 @@
     "lib/application/ai-isa.ts": [
       "launchAIISACampaignService",
       "queueAIISACallService",
-      "retryFailedCallsService",
-      "updateCampaignStatusService"
+      "retryFailedCallsService"
     ],
     "lib/application/compliance-monitoring.ts": [
       "checkComplianceStatusService",

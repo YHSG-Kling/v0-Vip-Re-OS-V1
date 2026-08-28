@@ -1,6 +1,6 @@
 -- m583 — eleven clocks the database already sets, and the repo never recorded.
 --
--- WRITTEN, NOT APPLIED. Every statement below is a NO-OP against the live
+-- APPLIED 2026-08-28 hrvaqgvukzxfskkcrwbt (integrator verified all eleven live defaults byte-identical BEFORE applying, so the apply recorded the migration without changing behavior; the nested BEGIN/COMMIT was dropped at apply time per the m519 ruling). Every statement below is a NO-OP against the live
 -- database: each column ALREADY carries exactly the default this file states.
 -- MEASURED LIVE on 2026-08-28 against hrvaqgvukzxfskkcrwbt from
 -- information_schema.columns (table_schema='public', column_default IS NOT NULL);
