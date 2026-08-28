@@ -36,6 +36,10 @@ import { scoreLeadWithAI, getLeadInsights, bulkScoreLeads } from "@/app/actions/
 import { createPortalInviteForContact } from "@/app/actions/portal-invites"
 import { sendSMS, logCall } from "@/app/actions/communications"
 import { RecentMessagesCard } from "@/app/crm/components/recent-messages-card"
+// The reader app/actions/contacts.ts:64-67 ruled had to be built for
+// /api/contacts/analytics — the only computation of by_type / by_persona /
+// by_status / by_timeline / conversion_rate in the product.
+import { ContactsAnalyticsStrip } from "@/app/crm/components/contacts-analytics-strip"
 import { scheduleAppointment } from "@/app/actions/ai-isa/schedule-appointment"
 import { analyzeCallTranscript, generateCallSummaryEmail } from "@/app/actions/ai-voice-transcription"
 import { AddressAutocomplete } from "@/app/components/ui/address-autocomplete"
@@ -3088,6 +3092,13 @@ export default function CRMPage() {
           </Button>
         </div>
       </div>
+
+      {/* Book at a glance — /api/contacts/analytics. Sits above the search box
+          because it answers a different question from the list: the list is what
+          you filtered to, this is the shape of the whole book you may see. The
+          endpoint scopes itself from the SESSION (§4), so nothing on this page
+          is passed to it. */}
+      <ContactsAnalyticsStrip />
 
       {/* Search */}
       <div className="relative">

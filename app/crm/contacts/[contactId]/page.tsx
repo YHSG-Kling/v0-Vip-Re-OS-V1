@@ -14,6 +14,10 @@ import { WorkflowRunsPanel }         from "./components/workflow-runs-panel"
 import { EnrichmentPanel }          from "./components/enrichment-panel"
 import { FollowupCard }            from "./components/followup-card"
 import { SmartDripCard }           from "./components/smart-drip-card"
+import { LeadHistoryCard }        from "./components/lead-history-card"
+import { VoiceNoteCard }          from "./components/voice-note-card"
+import { IsaOutreachCard }        from "./components/isa-outreach-card"
+import { SegmentMemberships }      from "./components/segment-memberships"
 import { ShowingRoutePlanner }     from "./showing-route-planner"
 import { CampaignBundleSendCard, type BundleOption } from "./components/campaign-bundle-send-card"
 import { listCampaignBundles }      from "@/app/actions/campaign-bundles"
@@ -109,8 +113,13 @@ export default async function ContactDetailPage({ params }: PageProps) {
     // gating code (and the service-role client) into a CLIENT bundle, which is what finally
     // broke the production build.
     checkBuyerOfferEligibility(contactId),
-    // Segment memberships — written by the workflow "add to segment" step
-    // (lib/workflow/adapters/segment-ops.ts). Active memberships only.
+    // Segment memberships — opened and closed by
+    // lib/marketing/segment-membership.ts, reached from the workflow
+    // add_to_segment / remove_from_segment steps and from the X on each badge
+    // below (app/actions/contacts/segment-membership.ts). ACTIVE memberships
+    // only: `removed_at IS NULL` is the same filter the campaign sender uses to
+    // resolve recipients, so what this page shows is exactly who a
+    // segment-targeted campaign would reach.
     supabase
       .from("contact_segments")
       .select("id, segment_id, added_at")
@@ -343,16 +352,13 @@ export default async function ContactDetailPage({ params }: PageProps) {
         />
       </div>
 
-      {/* Segment memberships — added by campaign workflow "add to segment" steps */}
+      {/* Segment memberships — opened by the workflow "add to segment" step, and
+          closable HERE. The badges used to be read-only, which was the visible
+          face of a real defect: contact_segments.removed_at was read by the
+          campaign sender and written by nothing, so a contact added to a
+          marketing segment received its campaigns forever. */}
       {contactSegments.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5 px-4 pt-3">
-          <span className="text-xs text-muted-foreground">Segments</span>
-          {contactSegments.map((s) => (
-            <Badge key={s.id} variant="secondary" className="text-xs font-mono">
-              {s.segment_id.slice(0, 8)}
-            </Badge>
-          ))}
-        </div>
+        <SegmentMemberships contactId={contactId} segments={contactSegments} />
       )}
 
       {/* Addressing memory ("call me Bill") + the auto-prepared strategy session
@@ -459,6 +465,38 @@ export default async function ContactDetailPage({ params }: PageProps) {
           carry the content, so the door is honest about missing sequences). */}
       <div className="px-4 pt-3">
         <SmartDripCard contactId={contactId} />
+      </div>
+
+      {/* ── Lane H2: the three contact routes that had no door ─────────────────
+          Each is the sole implementation of its capability and each was on the
+          census's "route handler nothing in the tree addresses" list. The routes
+          stay the implementation — these cards only call them and read what
+          comes back. Ordered context-then-action: where this person came from,
+          then what you do about it. */}
+
+      {/* Lead lineage — the sole reader of the contact_lead_history view
+          (migration 039). NOT the brief's one-sentence provenance line: this is
+          a row per lead, with source family/channel/subtype, qualification
+          summary and the ISA handoff. */}
+      <div className="px-4 pt-3">
+        <LeadHistoryCard contactId={contactId} />
+      </div>
+
+      {/* Dictate the note after a showing or a call — parsed into a written
+          note, a sentiment read and the follow-up tasks the agent actually
+          named. Distinct from the hands-free voice COMMAND lane
+          (app/actions/voice-assistant.ts), which writes a plain contact_notes
+          row; see the card header for that comparison. */}
+      <div className="px-4 pt-3">
+        <VoiceNoteCard contactId={contactId} />
+      </div>
+
+      {/* ISA follow-up / direct mail — compliance-gated outbound. The route's
+          own activity description ("Operator triggered direct mail from CRM
+          contact record") named this surface; every consent and sender gate
+          stays on the server and every refusal is printed. */}
+      <div className="px-4 pt-3">
+        <IsaOutreachCard contactId={contactId} />
       </div>
 
       {/* Stated future re-contact date — the suppression the reactivation

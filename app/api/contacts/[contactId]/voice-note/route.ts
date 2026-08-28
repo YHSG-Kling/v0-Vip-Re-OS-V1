@@ -84,13 +84,27 @@ export async function POST(
   if (voiceNoteActivityError) {
     console.error("[voice-note] voice_note activity REJECTED — the dictated note was NOT saved:", voiceNoteActivityError.message)
   }
+  // …AND THE CALLER IS TOLD. The console line above is the only place that
+  // refusal used to go: the response was `{ success: true }` either way, so the
+  // agent who just dictated a note would be told it was captured while the only
+  // row that carries their words had been refused. Nothing in the tree addressed
+  // this route until now, so no caller regresses — but a door was being built
+  // onto it, and a door that reports success over an unread refusal is the
+  // defect this repo has shipped before. The transcript summary still rides the
+  // note append above, hence "partially" rather than an outright failure.
+  const noteRecorded = !voiceNoteActivityError
 
   const createdTasks: Array<{ id: string; title: string; due_date: string | null }> = []
   for (const t of parsed.tasks) {
     const due = t.dueInDays != null
       ? new Date(Date.now() + t.dueInDays * 86_400_000).toISOString().slice(0, 10)
       : null
-    const { data: row } = await supabase
+    // §3 — supabase-js RESOLVES refusals. This insert used to destructure only
+    // `data`, so a refused task (a CHECK on priority/status, a missing agents
+    // row behind either agent_id FK, RLS) silently produced a shorter list and
+    // the caller could not tell "the agent mentioned no follow-up" from "the
+    // follow-up they DID mention was refused".
+    const { data: row, error: taskError } = await supabase
       .from("tasks")
       .insert({
         contact_id: contactId,
@@ -105,6 +119,9 @@ export async function POST(
       })
       .select("id, title, due_date")
       .single()
+    if (taskError) {
+      console.error(`[voice-note] follow-up task REJECTED (“${t.title}”):`, taskError.message)
+    }
     if (row) createdTasks.push(row as any)
   }
 
@@ -114,5 +131,12 @@ export async function POST(
     sentiment: parsed.sentiment,
     nextStep: parsed.nextStep,
     tasks: createdTasks,
+    /** false ⇒ the `voice_note` activities row was refused; the note survives
+     *  only as the one-line stamp on contacts.notes. */
+    noteRecorded,
+    /** How many follow-up tasks the parser ASKED for, so a caller can see that
+     *  a requested task did not come back as a created row rather than reading
+     *  an empty list as "the agent mentioned no follow-up". */
+    tasksRequested: parsed.tasks.length,
   })
 }
