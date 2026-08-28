@@ -3,6 +3,13 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
+import {
+  buildComplianceSystemBlocks,
+  precheckBriefForFairHousing,
+  postcheckScript,
+  detectFairHousingRedFlags,
+  detectProhibitedPhraseRedFlags,
+} from "@/lib/video/script-compliance"
 
 /**
  * SECURITY: every entry point that mutates per-tenant data verifies the
@@ -531,45 +538,161 @@ export async function triggerComplianceChecklist(
 }
 
 /**
- * Generate marketing script content.
+ * Which journey a marketing script is graded against by the compliance gate.
+ * Seller-side subjects (a listing, a homeowner, a farm, a sale) grade as
+ * "seller"; everything else speaks to a buyer — the same split
+ * app/actions/video-generation.ts draws from its purpose keys.
+ */
+function scriptJourneyType(scriptType: string): "buyer" | "seller" {
+  return /sell|listing|sold|farm|expired|fsbo|homeowner/i.test(scriptType) ? "seller" : "buyer"
+}
+
+/**
+ * The compliance grade + THE single `scripts` INSERT, fused so no path can
+ * reach the write without passing the gate (§5). Both doors below —
+ * generateScriptContent (model-written text) and savePrivateScript
+ * (agent-written text) — store through here and nowhere else, which is what
+ * keeps `scripts` on ONE writer path (§1; lib/video/viral-script-share.ts is
+ * an UPDATE-only promoter, not a second writer).
  *
- * WIRE STATE (§1 adjudication, lane CD 2026-08-28): this is the ONLY runtime
- * INSERT into `scripts` — the agent-authored script lane the owner ruled into
- * being (m429: private → viral promotion to brokerage via
- * lib/video/viral-script-share.ts, picked up by the video-create saved-scripts
- * picker, #186). NOT a duplicate: the curated video lane
- * (app/actions/video/generate-script.ts + saveVideoScript) writes
- * video_scripts_library, a different lane with an approval queue. But NOTHING
- * CALLS THIS: its only export paths are this file (no importer names it) and
- * the app/actions/index.ts barrel (which itself has ZERO importers — resolved
- * every `…/actions` import specifier in the tree). So `scripts` has live
- * readers, a live promoter, and no reachable writer: 0 rows in production.
- * Deleting it is forbidden (§1 — it is the lane's only door); wiring it needs
- * two decisions this lane cannot make alone:
- *   1. WHICH SURFACE calls it (candidates: a "save as my private script" door
- *      beside handleSaveScriptToLibrary in video-create-client.tsx, whose
- *      current save routes agent-authored text into the CURATED queue instead;
- *      or a workflow-automation door through executeAITool's routing table —
- *      no longer decorative since 2026-08-28, when the three content-studio
- *      names it did not know were wired to their canonical implementations).
- *   2. THE COMPLIANCE GATE: once reachable this becomes a sixth script
- *      generator, and scripts/video-script-compliance-guard.ts holds the other
- *      five to lib/video/script-compliance.ts (§5 compliance-first). Wire the
- *      gate in the same change that wires the caller.
+ * THE HARD LINE (owner's §5 ruling): advisory findings pass through — they are
+ * returned for the surface to show, and the store proceeds. A HARD fair-housing
+ * red flag (deterministic protected-class/steering hit) or a phrase the
+ * brokerage graded BLOCKING refuses the store. The red-flag set is re-derived
+ * the way lib/video/script-compliance.ts:assessScriptCompliance builds it —
+ * detectFairHousingRedFlags is pure/synchronous (so a DB outage can never make
+ * a protected-class hit read as clean), and the blocking phrase findings are
+ * recovered from postcheckScript's flat list by their contract prefix.
+ *
+ * Store notes (m429):
+ *   · title is NOT NULL; scriptType→category (no CHECK — free vocabulary);
+ *     the status CHECK is draft|approved|archived and is the EDITORIAL
+ *     lifecycle.
+ *   · brokerage_id — the session tenant, never a caller-supplied one. An
+ *     untenanted script is a PLATFORM-catalogue script under m429, which the
+ *     SELECT policy publishes to every brokerage on the OS; the CHECK
+ *     constraint and the INSERT policy both refuse it from a non-platform
+ *     author, and this is the writer half of that.
+ *   · visibility 'private' — an agent's script starts as their own work.
+ *     lib/video/viral-script-share.ts is the ONLY thing that promotes it to
+ *     'brokerage', and only when a video rendered from it crosses
+ *     VIRAL_VIEW_THRESHOLD.
+ *   · `error` IS DESTRUCTURED, AND THAT IS NOT NEGOTIABLE. supabase-js
+ *     RESOLVES a refused write, so a bare `await …insert()` returns normally
+ *     for a row that was never created. Until m429 the INSERT policy was
+ *     `is_platform_admin()` with no per-author clause, so this write was
+ *     refused for every ordinary agent — which is why the table held zero
+ *     rows. The policy is fixed; the honesty stays.
+ */
+async function gateAndStorePrivateScript(params: {
+  actor: { userId: string; brokerageId: string; teamId?: string }
+  title: string
+  category: string
+  content: string
+  journeyType: "buyer" | "seller"
+}): Promise<{
+  scriptId?: string
+  storeError?: string
+  /** Advisory + UNKNOWN lines for the surface to show. Never blocking. */
+  complianceWarnings?: string[]
+  /** Non-empty means the store was REFUSED. */
+  redFlags: string[]
+}> {
+  const { actor, content, journeyType } = params
+
+  const complianceWarnings = await postcheckScript(actor, content, journeyType)
+
+  const redFlags = [
+    ...detectFairHousingRedFlags(content, journeyType),
+    ...detectProhibitedPhraseRedFlags(complianceWarnings ?? []),
+  ]
+  if (redFlags.length > 0) {
+    return { redFlags, complianceWarnings }
+  }
+
+  const supabase = await createClient()
+  const { data: stored, error: storeError } = await supabase
+    .from("scripts")
+    .insert({
+      title: params.title,
+      category: params.category,
+      content,
+      status: "draft",
+      created_by: actor.userId,
+      brokerage_id: actor.brokerageId,
+      visibility: "private",
+    })
+    .select("id")
+    .single()
+
+  if (storeError) return { redFlags: [], complianceWarnings, storeError: storeError.message }
+  if (!stored?.id) return { redFlags: [], complianceWarnings, storeError: "the scripts write returned no row" }
+  return { redFlags: [], complianceWarnings, scriptId: stored.id as string }
+}
+
+/**
+ * Generate marketing script content and save it as the caller's PRIVATE script.
+ *
+ * WIRE STATE (updated 2026-08-28, lane E1 — supersedes the lane CD note that
+ * recorded `scripts` as reader-only): the agent-authored script lane
+ * (m429: private → viral promotion to brokerage via
+ * lib/video/viral-script-share.ts, read back by the video-create saved-scripts
+ * picker, #186) now has a LIVE door. video-create-client.tsx imports
+ * savePrivateScript (below) — "Save as my private script", beside the curated
+ * save-to-library button — and both that action and this one store through
+ * gateAndStorePrivateScript above, the file's single `scripts` INSERT. This
+ * function's own generate-and-store composite is exported here and through the
+ * app/actions/index.ts barrel and has no runtime importer of its own yet —
+ * executeAITool's routing table carries no "generate-script" name because no
+ * workflow definition sends one; add the adapter only when a caller exists.
+ * NOT a duplicate of the curated video lane
+ * (app/actions/video/generate-script.ts + saveVideoScript →
+ * video_scripts_library): that is a different table with an approval queue.
+ *
+ * THE COMPLIANCE GATE (§5, sixth generator on
+ * scripts/video-script-compliance-guard.ts's roster): the caller-supplied
+ * context is PRE-checked for fair housing before any tokens are spent, the
+ * shared compliance blocks (brand voice, ThemFirst, Fair Housing, the
+ * brokerage's prohibited words) ride IN the writing prompt, and the generated
+ * script is post-checked — advisory warnings pass through in
+ * complianceWarnings, a hard red flag refuses the store (see
+ * gateAndStorePrivateScript).
  */
 export async function generateScriptContent(
   scriptType: string,
   context: any,
   _agentId?: string // ignored — derived from session
-): Promise<{ success: boolean; content?: string; scriptId?: string; error?: string }> {
+): Promise<{
+  success: boolean
+  content?: string
+  scriptId?: string
+  complianceWarnings?: string[]
+  error?: string
+}> {
   try {
-    const supabase = await createClient()
     const ctx = await getAgentContext()
 
     if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
     if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
     const brokerageId = ctx.brokerageId
     const agentId = ctx.agentId
+
+    const actor = { userId: ctx.userId, brokerageId, teamId: ctx.teamId ?? undefined }
+    const journeyType = scriptJourneyType(scriptType)
+
+    // The context is the only caller-authored prose here — scriptType is a
+    // vocabulary key. Pre-check it BEFORE the model runs (§5: a protected-class
+    // brief is refused, not laundered into cleaner-sounding copy).
+    const contextProse = typeof context === "string" ? context : context ? JSON.stringify(context) : ""
+    if (contextProse?.trim()) {
+      const preCheck = await precheckBriefForFairHousing(actor, contextProse, journeyType)
+      if (preCheck.blocked) {
+        return {
+          success: false,
+          error: `Script context contains a Fair Housing violation: ${preCheck.reason}`,
+        }
+      }
+    }
 
     // ON THE GATEWAY. This used to construct an `@ai-sdk/anthropic` client
     // directly — `anthropic("claude-sonnet-4-20250514")` — which reached the
@@ -582,81 +705,126 @@ export async function generateScriptContent(
     // so the output is unchanged and the accounting now exists.
     const { generateTextRouted } = await import("@/lib/ai/models")
 
+    // Brand voice + ThemFirst + Fair Housing + the brokerage's own prohibited
+    // words, injected proactively — the rules are an INPUT to the writing, not
+    // only a grade on what came out (§5).
+    const complianceBlocks = await buildComplianceSystemBlocks(brokerageId)
+
     const { text: script } = await generateTextRouted({
       prompt: `Generate a ${scriptType} script for a real estate agent. Context: ${JSON.stringify(context)}`,
+      system: complianceBlocks.length ? complianceBlocks.join("\n\n") : undefined,
       feature: "marketing_script_generation",
       userId: ctx.userId,
       brokerageId,
       agentId: agentId ?? undefined,
     })
 
-    // Store generated script. title is NOT NULL; script_type→category; the
-    // status CHECK is draft|approved|archived and is the EDITORIAL lifecycle.
-    //
-    // THE PRODUCT DECISION THIS COMMENT USED TO DEFER HAS BEEN MADE. It read
-    // "whether agent-authored scripts deserve their own author-scoped home is a
-    // product decision, not something to settle from inside a catch block." The
-    // owner ruled: "agent authored scripts should save to scripts and if it the
-    // video goes viral using that script, it should be shared to the whole
-    // brokerage." m429 implements that ruling — `scripts` gained a nullable
-    // brokerage_id (NULL = the platform catalogue, per the m406/m408/m421
-    // convention) and a `visibility` column with its own vocabulary
-    // (private|brokerage|platform), and the INSERT policy now admits an ordinary
-    // agent writing their OWN script into their OWN brokerage.
-    //
-    // So this write stamps BOTH, and neither is optional:
-    //   · brokerage_id — the session tenant, never a caller-supplied one. An
-    //     untenanted script is a PLATFORM-catalogue script under m429, which the
-    //     SELECT policy publishes to every brokerage on the OS; the CHECK
-    //     constraint and the INSERT policy both refuse it from a non-platform
-    //     author, and this is the writer half of that.
-    //   · visibility 'private' — an agent's script starts as their own work.
-    //     lib/video/viral-script-share.ts is the ONLY thing that promotes it to
-    //     'brokerage', and only when a video rendered from it crosses
-    //     VIRAL_VIEW_THRESHOLD.
-    //
-    // `error` IS STILL DESTRUCTURED, AND THAT IS NOT NEGOTIABLE. supabase-js
-    // RESOLVES a refused write, so a bare `await …insert()` returns normally and
-    // reports `{ success: true }` for a row that was never created. Until m429
-    // the INSERT policy was `is_platform_admin()` with no per-author clause, so
-    // this write was refused for every ordinary agent — which is why the table
-    // held zero rows, and why the honest refusal report below existed at all.
-    // The policy is fixed; the honesty stays. A store that is refused for any
-    // future reason still returns the generated text (it is the useful output)
-    // WITH the error saying it was not saved — never a silent success.
-    const { data: stored, error: storeError } = await supabase
-      .from("scripts")
-      .insert({
-        title: `${scriptType} script`,
-        category: scriptType,
-        content: script,
-        status: "draft",
-        created_by: ctx.userId,
-        brokerage_id: brokerageId,
-        visibility: "private",
-      })
-      .select("id")
-      .single()
+    const gated = await gateAndStorePrivateScript({
+      actor,
+      title: `${scriptType} script`,
+      category: scriptType,
+      content: script,
+      journeyType,
+    })
 
-    if (storeError) {
-      console.error("[workflows] script generated but NOT stored:", storeError.message)
+    if (gated.redFlags.length > 0) {
+      // The store is REFUSED, and the caller is told exactly why. The text is
+      // still returned so the agent can see what was flagged and fix it — but
+      // success is false, so no automation can mistake this for a saved script.
+      return {
+        success: false,
+        content: script,
+        complianceWarnings: gated.complianceWarnings,
+        error: `Not saved — hard compliance flag: ${gated.redFlags[0]}`,
+      }
+    }
+    if (gated.storeError) {
+      // A refused store still returns the generated text (it is the useful
+      // output) WITH the error saying it was not saved — never a silent success.
+      console.error("[workflows] script generated but NOT stored:", gated.storeError)
       return {
         success: true,
         content: script,
-        error: `Script generated but not saved to the library: ${storeError.message}`,
-      }
-    }
-    if (!stored?.id) {
-      return {
-        success: true,
-        content: script,
-        error: "Script generated but the library write returned no row",
+        complianceWarnings: gated.complianceWarnings,
+        error: `Script generated but not saved: ${gated.storeError}`,
       }
     }
 
-    return { success: true, content: script, scriptId: stored.id }
+    return {
+      success: true,
+      content: script,
+      scriptId: gated.scriptId,
+      complianceWarnings: gated.complianceWarnings,
+    }
   } catch (error: any) {
     return { success: false, error: error?.message ?? "Failed to generate script" }
+  }
+}
+
+/**
+ * Save agent-written script text as the caller's own PRIVATE script (m429
+ * lane): `public.scripts`, visibility 'private', tenant from the SESSION (§4).
+ * The door for this is the "Save as my private script" button beside the
+ * curated save-to-library button in
+ * app/dashboard/videos/create/video-create-client.tsx — private is the honest
+ * verb for the text the agent already has (regenerating would discard their
+ * edits), so this stores the CURRENT working text through the same fused
+ * gate+store as generateScriptContent rather than duplicating the writer.
+ *
+ * The content is a FINISHED script, not a brief headed for a model, so it is
+ * POST-checked (postcheckScript inside gateAndStorePrivateScript) rather than
+ * pre-checked — no `if (x?.trim())` prose gate here by design; that marker is
+ * for caller prose entering a writing prompt
+ * (scripts/video-script-compliance-guard.ts unprecheckedProseGates). Advisory
+ * findings come back in complianceWarnings and the store proceeds; a hard
+ * fair-housing red flag or a phrase the brokerage graded blocking refuses it.
+ */
+export async function savePrivateScript(params: {
+  title: string
+  /** Vocabulary key (e.g. a video_scripts_library script_type) — not prose. */
+  scriptType: string
+  content: string
+}): Promise<{
+  success: boolean
+  scriptId?: string
+  complianceWarnings?: string[]
+  error?: string
+}> {
+  try {
+    const ctx = await getAgentContext()
+
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
+    if (!params.content?.trim()) return { success: false, error: "There is no script text to save" }
+
+    const gated = await gateAndStorePrivateScript({
+      actor: { userId: ctx.userId, brokerageId: ctx.brokerageId, teamId: ctx.teamId ?? undefined },
+      title: params.title?.trim() || `${params.scriptType} script`,
+      category: params.scriptType,
+      content: params.content,
+      journeyType: scriptJourneyType(params.scriptType),
+    })
+
+    if (gated.redFlags.length > 0) {
+      return {
+        success: false,
+        complianceWarnings: gated.complianceWarnings,
+        error: `Not saved — hard compliance flag: ${gated.redFlags[0]}`,
+      }
+    }
+    if (gated.storeError) {
+      // Storing IS the whole job here, so a refused write is a failure — not a
+      // success with a footnote.
+      return {
+        success: false,
+        complianceWarnings: gated.complianceWarnings,
+        error: `Script not saved: ${gated.storeError}`,
+      }
+    }
+
+    return { success: true, scriptId: gated.scriptId, complianceWarnings: gated.complianceWarnings }
+  } catch (error: any) {
+    return { success: false, error: error?.message ?? "Failed to save script" }
   }
 }
 

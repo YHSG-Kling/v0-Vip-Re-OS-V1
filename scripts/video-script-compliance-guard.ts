@@ -19,7 +19,10 @@
  * @/lib/content-generation, so resolving import specifiers to file paths does
  * not find it. Re-exports hide callers — check the barrel, not just the module.
  *
- * The gate now lives in lib/video/script-compliance.ts and all five call it.
+ * The gate now lives in lib/video/script-compliance.ts and every generator on
+ * the GENERATORS roster below calls it — five at extraction, six since
+ * 2026-08-28 when app/actions/workflows.ts (generateScriptContent /
+ * savePrivateScript, the private-scripts lane) became reachable.
  * This guard is what stops it drifting back into one file's private business.
  *
  * THE SILENT AUDIT. Nine call sites passed evaluateOutbound a stub contact with
@@ -122,6 +125,23 @@ const GENERATORS: Array<{ id: string; file: string; needs: string[] }> = [
     // where the authenticated actor already resolves.
     id: "CONTENT-ENGINE",
     file: "app/actions/content-generation-engine.ts",
+    needs: ["buildComplianceSystemBlocks", "precheckBriefForFairHousing", "postcheckScript"],
+  },
+  {
+    // The SIXTH generator, reachable since 2026-08-28: generateScriptContent
+    // (caller-supplied context pre-checked, compliance blocks IN the writing
+    // prompt) and savePrivateScript (agent-written text, post-checked) both
+    // store to `public.scripts` through ONE fused gate+store helper
+    // (gateAndStorePrivateScript), so there is exactly one `await
+    // postcheckScript(` in the file and no path reaches the INSERT without the
+    // gate — a hard fair-housing / blocking-phrase flag refuses the store.
+    // savePrivateScript's content is a FINISHED script, not model-bound prose,
+    // so it deliberately carries no `if (x?.trim())` prose-gate marker (see
+    // unprecheckedProseGates below): the marker is for caller prose entering a
+    // writing prompt, and the only such field here is generateScriptContent's
+    // context, whose gate does pre-check.
+    id: "WORKFLOWS",
+    file: "app/actions/workflows.ts",
     needs: ["buildComplianceSystemBlocks", "precheckBriefForFairHousing", "postcheckScript"],
   },
 ]
@@ -341,6 +361,24 @@ check(
   /result\?\.error/.test(superpowers),
   "agent-superpowers-panel.tsx must show result.error rather than 'Generated script is empty'",
 )
+
+// ── 4b. workflows: a hard red flag refuses the `scripts` store ───────────────
+// The owner's ruling for the private-script lane: advisory findings ride along,
+// a hard fair-housing / blocking-phrase flag means the row is NOT written.
+// Asserted as a CONSTRUCT AND AN ORDER, not a spelling: the red-flag early
+// return must exist and must precede the file's single `.from("scripts")`
+// INSERT, so gutting the branch or moving the write above the gate goes red.
+
+{
+  const wf = stripComments(read("app/actions/workflows.ts"))
+  const refusal = wf.search(/const\s+redFlags\s*=[\s\S]*?if\s*\(redFlags\.length > 0\)\s*\{\s*return/)
+  const insert = wf.indexOf('.from("scripts")')
+  check(
+    "WORKFLOWS-RED-FLAG-REFUSES-STORE",
+    refusal !== -1 && insert !== -1 && refusal < insert,
+    "app/actions/workflows.ts must return on redFlags BEFORE its single .from(\"scripts\") insert — a red-flagged script must never be stored",
+  )
+}
 
 // ── 5. link-to-video: a deterministic Fair Housing hit is not overridable ────
 

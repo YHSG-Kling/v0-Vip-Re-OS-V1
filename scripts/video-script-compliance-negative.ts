@@ -2,7 +2,7 @@
 /**
  * Negative test for scripts/video-script-compliance-guard.ts.
  *
- * An assertion that cannot fail proves nothing. For each of the guard's 33
+ * An assertion that cannot fail proves nothing. For each of the guard's
  * assertions this mutates the real source so that assertion SHOULD trip, runs
  * the guard, and requires that specific assertion id to appear in the failure
  * output. Every file is restored and the restore is verified by sha256 against
@@ -73,6 +73,10 @@ const mutations: Mutation[] = [
       ["LINK-TO-VIDEO", "app/actions/link-to-video.ts", ["buildComplianceSystemBlocks", "postcheckScript"]],
       ["KERNEL-VIDEO", "lib/kernel/video.ts", ["buildComplianceSystemBlocks", "postcheckScript"]],
       ["CONTENT-ENGINE", "app/actions/content-generation-engine.ts", ["buildComplianceSystemBlocks", "precheckBriefForFairHousing", "postcheckScript"]],
+      // The sixth generator (2026-08-28). Both its doors share ONE fused
+      // gate+store helper, so each `await <fn>(` appears exactly once and the
+      // first-occurrence substitution below guts the only call.
+      ["WORKFLOWS", "app/actions/workflows.ts", ["buildComplianceSystemBlocks", "precheckBriefForFairHousing", "postcheckScript"]],
     ] as Array<[string, string, string[]]>
   ).flatMap(([id, file, fns]) =>
     fns.map((fn) => ({
@@ -134,6 +138,11 @@ const mutations: Mutation[] = [
     id: "SUPERPOWERS-REPORTS-REFUSAL",
     file: "app/dashboard/agent/components/agent-superpowers-panel.tsx",
     apply: sub("result?.error ??", "undefined ??"),
+  },
+  {
+    id: "WORKFLOWS-RED-FLAG-REFUSES-STORE",
+    file: "app/actions/workflows.ts",
+    apply: sub("if (redFlags.length > 0) {", "if (false) {"),
   },
   {
     id: "LINK-TO-VIDEO-FORCES-REVISION",

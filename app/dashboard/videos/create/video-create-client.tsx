@@ -54,6 +54,7 @@ import type { VideoPurpose, RepurposeDestination, ListingVideoMode, SellerUpdate
 import { generateVideoScript } from "@/app/actions/video/generate-script"
 import { improveScript, type ScriptImprovement } from "@/app/actions/video/create-video-project"
 import { saveVideoScript, getAgentVideoProfile } from "@/app/actions/video-generation"
+import { savePrivateScript } from "@/app/actions/workflows"
 import { getVoiceOptionsForGeneration } from "@/app/actions/video-voice"
 import type { GenerationVoiceOption } from "@/app/actions/video-voice.types"
 import { toLibraryScriptType } from "@/app/types/video-generation"
@@ -244,6 +245,15 @@ export default function VideoCreatePage() {
   const [isSavingScript, setIsSavingScript] = useState(false)
   const [saveScriptMessage, setSaveScriptMessage] = useState<string | null>(null)
   const [saveScriptError, setSaveScriptError] = useState<string | null>(null)
+
+  // "Save as my private script" — the OTHER save door (#186, m429): the agent's
+  // own `public.scripts` row, visibility 'private'. No approval queue — it is
+  // immediately selectable in the Library tab's saved-scripts picker above, and
+  // lib/video/viral-script-share.ts shares it to the whole brokerage only if a
+  // video rendered from it goes viral.
+  const [isSavingPrivate, setIsSavingPrivate] = useState(false)
+  const [savePrivateMessage, setSavePrivateMessage] = useState<string | null>(null)
+  const [savePrivateError, setSavePrivateError] = useState<string | null>(null)
 
   // "Improve this script" — rewrites the script already in the box. The wizard
   // could only ever generate a script FROM SCRATCH; there was no way to nudge
@@ -981,6 +991,55 @@ export default function VideoCreatePage() {
     }
   }
 
+  // Save the working script as the agent's OWN private script — the m429 lane
+  // (`public.scripts`, visibility 'private'), NOT the curated approval queue.
+  // The action post-checks the text through the shared compliance gate: advisory
+  // findings come back in complianceWarnings (surfaced in the alert above) and
+  // the save proceeds; a hard fair-housing red flag refuses the save and the
+  // refusal is shown, never swallowed.
+  const handleSavePrivateScript = async () => {
+    if (!customScript.trim()) return
+    setIsSavingPrivate(true)
+    setSavePrivateError(null)
+    setSavePrivateMessage(null)
+    try {
+      const savedTitle = scriptTitle || `My script — ${new Date().toLocaleDateString()}`
+      const savedType = toLibraryScriptType(aiScriptVideoType)
+      const result = await savePrivateScript({
+        title: savedTitle,
+        scriptType: savedType,
+        content: customScript,
+      })
+      if (result.complianceWarnings?.length) {
+        setScriptComplianceWarnings(result.complianceWarnings)
+      }
+      if (!result.success || !result.scriptId) {
+        setSavePrivateError(result.error ?? "Could not save this as a private script")
+        return
+      }
+      // Immediately selectable from the Library tab — same normalized shape the
+      // loader gives rows read back from `scripts`.
+      setScripts((prev) => [
+        {
+          id: result.scriptId,
+          title: savedTitle,
+          script_content: customScript,
+          script_type: savedType,
+          duration_target_seconds: null,
+          __saved: true,
+        },
+        ...prev,
+      ])
+      setSavePrivateMessage(
+        "Saved as your private script — it's in the Library tab now. It stays yours unless a video made from it goes viral, which shares it with your brokerage.",
+      )
+    } catch (err: any) {
+      setSavePrivateError(err?.message ?? "Could not save this as a private script")
+    } finally {
+      setIsSavingPrivate(false)
+    }
+  }
+
   // ─── Render ─────────────────────────────────────────────────────────────────
 
   if (loading) {
@@ -1400,26 +1459,57 @@ export default function VideoCreatePage() {
                       {improveError && <p className="text-xs text-destructive">{improveError}</p>}
                     </div>
 
-                    {/* Save into the shared library so this script can be
-                        approved once and reused from the Library tab above. */}
+                    {/* Two save doors, honest about the difference:
+                        · Library — the brokerage's CURATED queue: enters
+                          pending_review and a reviewer approves it before it
+                          becomes selectable for anyone.
+                        · Private — the agent's OWN scripts (m429 lane): saved
+                          immediately, no queue, selectable right away in the
+                          Library tab picker; shared to the whole brokerage
+                          ONLY if a video made from it goes viral. */}
                     <div className="space-y-1">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={isSavingScript || customScript.trim().length < 20}
-                        onClick={handleSaveScriptToLibrary}
-                      >
-                        {isSavingScript ? (
-                          <><Loader2 className="h-3 w-3 mr-2 animate-spin" />Saving…</>
-                        ) : (
-                          <><Save className="h-3 w-3 mr-2" />Save to Script Library</>
-                        )}
-                      </Button>
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={isSavingScript || customScript.trim().length < 20}
+                          onClick={handleSaveScriptToLibrary}
+                        >
+                          {isSavingScript ? (
+                            <><Loader2 className="h-3 w-3 mr-2 animate-spin" />Saving…</>
+                          ) : (
+                            <><Save className="h-3 w-3 mr-2" />Save to Script Library</>
+                          )}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={isSavingPrivate || customScript.trim().length < 20}
+                          onClick={handleSavePrivateScript}
+                        >
+                          {isSavingPrivate ? (
+                            <><Loader2 className="h-3 w-3 mr-2 animate-spin" />Saving…</>
+                          ) : (
+                            <><Save className="h-3 w-3 mr-2" />Save as my private script</>
+                          )}
+                        </Button>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Library sends this script to your brokerage&apos;s approval queue for everyone to
+                        reuse once approved. A private script is yours alone and usable right away —
+                        it&apos;s shared with the brokerage only if a video made from it goes viral.
+                      </p>
                       {saveScriptMessage && (
                         <p className="text-xs text-muted-foreground">{saveScriptMessage}</p>
                       )}
                       {saveScriptError && (
                         <p className="text-xs text-destructive">{saveScriptError}</p>
+                      )}
+                      {savePrivateMessage && (
+                        <p className="text-xs text-muted-foreground">{savePrivateMessage}</p>
+                      )}
+                      {savePrivateError && (
+                        <p className="text-xs text-destructive">{savePrivateError}</p>
                       )}
                     </div>
                   </TabsContent>
