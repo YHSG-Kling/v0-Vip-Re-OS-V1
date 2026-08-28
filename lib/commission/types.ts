@@ -36,6 +36,10 @@ export interface CommissionCalculationResult {
   team_cap_status?: TeamCapStatus
   total_fees: number
   distributions?: DistributionRecord[]
+  /** Company-books obligations recorded beside (not inside) the deal's
+   *  distribution set — see CompanyObligationRecord. Optional so existing
+   *  callers are unaffected; absent means none arose. */
+  company_obligations?: CompanyObligationRecord[]
   error?: string
 }
 
@@ -51,6 +55,35 @@ export interface DistributionRecord {
   cap_status?: string
   rule_id?: string
   recipient_type?: string
+  notes?: string
+}
+
+/**
+ * A COMPANY-BOOKS OBLIGATION — money the brokerage OWES from its own books, not
+ * from this deal's company dollar (owner ruling 2026-08-28: the cap ends the
+ * brokerage TAKING from the agent; it does not end the brokerage PAYING its own
+ * obligations). Produced when a brokerage-funded share (today: revenue share)
+ * lands on a deal whose company dollar cannot fund it — post-cap the brokerage's
+ * in-deal final is $0, so there is nothing in the deal to deduct from. The
+ * obligation is recorded OUTSIDE the in-waterfall distribution set: it is NOT in
+ * step 11's gross == distributed + finals identity (it is not this deal's money)
+ * and it is persisted to company_books_obligations (m577), never to
+ * commission_distributions — the deal's disbursement sweeps
+ * (payment-tracker.markCommissionPaid, reconcile-tracking's orphan lock) mark
+ * every distribution row paid when the DEAL pays, and a company-books payable is
+ * not paid by the deal's disbursement.
+ */
+export interface CompanyObligationRecord {
+  /** §6: the distributions vocabulary word for the share class (revenue share = 'residual'). */
+  obligation_type: 'residual'
+  /** Recipient — agents.id (the sponsor). */
+  agent_id: string
+  calculation_type: 'percent' | 'flat'
+  calculation_value?: number
+  /** Dollars, like DistributionRecord.calculated_amount. */
+  calculated_amount: number
+  /** Why this is on company books instead of in the deal. */
+  reason: 'post_cap_company_books'
   notes?: string
 }
 
@@ -97,6 +130,14 @@ export interface WaterfallContext {
   // distribution model ('model_unconfigured', m575 — the mark alone pays
   // nothing; the skip is recorded here and warned, never silent).
   revenueShareSkipped?: 'disabled' | 'model_unconfigured'
+
+  // Company-books obligations (stage 09, owner ruling 2026-08-28). OPTIONAL like
+  // the fields above — only stage 09 sets it. Brokerage-funded shares the deal's
+  // company dollar could not fund (post-cap, or a straddling deal whose remaining
+  // dollar is smaller than the share). Deliberately NOT a distribution collection:
+  // stage 11 excludes these from the conservation identity and persists them to
+  // company_books_obligations (m577), never silently dropping them.
+  companyObligations?: CompanyObligationRecord[]
 
   // Distribution collections
   grossAdjustments: DistributionRecord[]

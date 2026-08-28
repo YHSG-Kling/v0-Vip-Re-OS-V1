@@ -30,6 +30,13 @@ import {
  *     final (conservation holds — step 11 validates gross == distributed +
  *     finals, and the pre-model code pushed brokerage-funded distributions
  *     with no deduction, so every brokerage-funded closing threw there).
+ *     A brokerage-funded share the deal's company dollar CANNOT fund (post-cap
+ *     it is $0 — owner ruling 2026-08-28: the cap ends the brokerage TAKING
+ *     from the agent, not the brokerage PAYING its own obligations) is neither
+ *     refused nor overdrafted in-deal: it becomes a company-books obligation
+ *     (context.companyObligations, reason 'post_cap_company_books'), recorded
+ *     by step 11 on company_books_obligations (m577) outside the deal's
+ *     distribution set.
  *
  * DURATION is enforced here for the first time: effective_from/effective_to
  * existed on agent_relationships but were never read — an expired edge kept
@@ -83,6 +90,12 @@ export async function applyRevenueShare(
     agentFinalNetCents: result.agentFinalNetCents,
     brokerageFinalCents: result.brokerageFinalCents,
     revenueShareDistributions: result.distributions,
+    // Brokerage-funded shares this deal's company dollar could not fund (owner
+    // ruling 2026-08-28: post-cap the brokerage stops TAKING, not PAYING) —
+    // carried OUTSIDE the distribution collections so step 11's conservation
+    // identity never sees them, and persisted by step 11 to the company payables
+    // ledger (company_books_obligations, m577). Never silently dropped.
+    companyObligations: result.companyObligations,
     revenueShareSkipped: result.skipped ?? undefined,
   }
 }

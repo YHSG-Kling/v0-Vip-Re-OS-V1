@@ -178,6 +178,8 @@ function distributionModelLayer() {
       r.agentFinalNetCents === 100_000 && r.brokerageFinalCents === 45_000 && r.distributions[0].source_of_funds === "brokerage")
     check("CONSERVATION (brokerage side — the identity step 11 validates; pre-model this was never deducted and every brokerage-funded closing threw there)",
       r.brokerageFinalCents + Math.round(r.distributions[0].calculated_amount * 100) === 50_000)
+    check("PRE-CAP UNCHANGED: sufficient company dollar pays IN-DEAL — no company-books obligation arises",
+      r.companyObligations.length === 0)
   }
   {
     const r = computeRevenueShare({ ...base, state: agentState, relationships: [edge({ revenue_share_percent: null, revenue_share_flat_cents: 12_500 })] })
@@ -195,10 +197,99 @@ function distributionModelLayer() {
       notYet.distributions.length === 0 && openBounds.distributions.length === 1)
   }
   {
-    let agentThrew = false, brokerageThrew = false
+    let agentThrew = false
     try { computeRevenueShare({ ...base, agentFinalNetCents: 100, state: agentState, relationships: [edge({ revenue_share_percent: null, revenue_share_flat_cents: 5_000 })] }) } catch { agentThrew = true }
-    try { computeRevenueShare({ ...base, brokerageFinalCents: 100, state: agentState, relationships: [edge({ source_of_funds: "brokerage", revenue_share_percent: null, revenue_share_flat_cents: 5_000 })] }) } catch { brokerageThrew = true }
-    check("overdraft REFUSES on both sides — money that does not exist is never distributed", agentThrew && brokerageThrew)
+    check("AGENT-FUNDED UNCHANGED: an agent-side overdraft still REFUSES — the agent's own money on this deal cannot go negative", agentThrew)
+  }
+
+  // ══ THE POST-CAP BROKERAGE-FUNDED SHARE (owner ruling 2026-08-28) ══════════
+  //
+  // "usually when a cap is met, the brokerage no longer takes from the agents if
+  // the agent has splits with a cap as a commission level offering." The cap
+  // ends the brokerage TAKING (stage 07 zeroes its in-deal final); it does not
+  // end the brokerage PAYING its own obligations. A brokerage-funded share on a
+  // post-cap deal has no company dollar IN THE DEAL to fund it — so it becomes a
+  // COMPANY-BOOKS OBLIGATION (reason 'post_cap_company_books'), recorded outside
+  // the in-waterfall distribution set (company_books_obligations, m577): never
+  // refused (the old overdraft throw failed the producing agent's entire
+  // commission), never silently dropped, never an in-deal overdraft.
+  console.log("\n[post-cap company books · pure — the brokerage stops taking, it does not stop paying]")
+  {
+    // POST-CAP: stage 07 left the brokerage $0 in this deal.
+    const r = computeRevenueShare({ ...base, brokerageFinalCents: 0, state: agentState, relationships: [edge({ source_of_funds: "brokerage" })] })
+    check("post-cap brokerage-funded → RECORDED as a company-books obligation (5% of the agent's net), not refused",
+      r.companyObligations.length === 1 && r.companyObligations[0].calculated_amount === 50 && r.companyObligations[0].agent_id === "sp-1")
+    check("…with the reason the ledger will carry ('post_cap_company_books') and the §6 vocabulary word for the class ('residual')",
+      r.companyObligations[0].reason === "post_cap_company_books" && r.companyObligations[0].obligation_type === "residual")
+    check("…and NOT distributed in-deal: zero distributions, both in-deal balances untouched (no overdraft, conservation trivially holds)",
+      r.distributions.length === 0 && r.agentFinalNetCents === 100_000 && r.brokerageFinalCents === 0)
+  }
+  {
+    // STRADDLING (hit_cap): $1 of company dollar remains, the flat share is $50 —
+    // the share routes WHOLE to company books; the deal's $1 stays in the deal.
+    const r = computeRevenueShare({ ...base, brokerageFinalCents: 100, state: agentState, relationships: [edge({ source_of_funds: "brokerage", revenue_share_percent: null, revenue_share_flat_cents: 5_000 })] })
+    check("insufficient company dollar (straddling deal): the WHOLE share goes to company books — one share, one ledger row, one payer",
+      r.companyObligations.length === 1 && r.companyObligations[0].calculated_amount === 50 && r.distributions.length === 0 && r.brokerageFinalCents === 100)
+  }
+  {
+    // MIXED: two brokerage-funded flat edges against $600 of company dollar —
+    // the first ($5) fits in-deal, the second ($50) does not and goes to books.
+    const r = computeRevenueShare({ ...base, brokerageFinalCents: 600, state: agentState, relationships: [
+      edge({ source_of_funds: "brokerage", revenue_share_percent: null, revenue_share_flat_cents: 500 }),
+      edge({ sponsor_agent_id: "sp-2", depth_level: 2, source_of_funds: "brokerage", revenue_share_percent: null, revenue_share_flat_cents: 5_000 }),
+    ] })
+    check("a deal funds what it can: the share that fits pays in-deal, the one that does not goes to company books — conservation holds on the in-deal side",
+      r.distributions.length === 1 && r.brokerageFinalCents === 100
+      && r.companyObligations.length === 1 && r.companyObligations[0].agent_id === "sp-2"
+      && r.brokerageFinalCents + Math.round(r.distributions[0].calculated_amount * 100) === 600)
+  }
+  {
+    // AGENT-FUNDED shares are UNAFFECTED by the brokerage's cap state: post-cap,
+    // an agent-funded edge still pays from the agent's side, no obligation.
+    const r = computeRevenueShare({ ...base, brokerageFinalCents: 0, state: agentState, relationships: [edge({})] })
+    check("agent-funded unaffected post-cap: pays from the agent's side as always, no company-books obligation",
+      r.distributions.length === 1 && r.agentFinalNetCents === 95_000 && r.companyObligations.length === 0)
+  }
+
+  console.log("\n[post-cap company books · negative controls — each must go RED]")
+  {
+    const postCapInput = { ...base, brokerageFinalCents: 0, state: agentState, relationships: [edge({ source_of_funds: "brokerage" })] }
+    // The probe predicates, named so the controls exercise the REAL assertions.
+    const recorded = (r: ReturnType<typeof computeRevenueShare>) =>
+      r.companyObligations.length === 1 && r.companyObligations[0].reason === "post_cap_company_books"
+    const noOverdraft = (r: ReturnType<typeof computeRevenueShare>) =>
+      r.brokerageFinalCents >= 0 && r.distributions.length === 0
+
+    check("POSITIVE CONTROL: the real computation passes both predicates", recorded(computeRevenueShare(postCapInput)) && noOverdraft(computeRevenueShare(postCapInput)))
+
+    // BROKEN #1 — the share is SILENTLY DROPPED (the sponsor is never paid, and
+    // nothing says so). The recorded-obligation predicate must go red.
+    const dropped = { ...computeRevenueShare(postCapInput), companyObligations: [] }
+    check("NEGATIVE CONTROL: silently dropping the share goes RED (obligation-recorded predicate)", !recorded(dropped))
+
+    // BROKEN #2 — the share is paid as an IN-DEAL overdraft (distributed out of
+    // money the deal does not have). The no-overdraft predicate must go red.
+    const real = computeRevenueShare(postCapInput)
+    const overdrafted = {
+      ...real,
+      companyObligations: [],
+      brokerageFinalCents: real.brokerageFinalCents - real.companyObligations.reduce((s, o) => s + Math.round(o.calculated_amount * 100), 0),
+      distributions: real.companyObligations.map((o) => ({
+        distribution_type: "residual" as const, agent_id: o.agent_id, calculation_type: o.calculation_type,
+        calculation_value: o.calculation_value, calculated_amount: o.calculated_amount, source_of_funds: "brokerage" as const,
+      })),
+    }
+    check("NEGATIVE CONTROL: paying it as an in-deal overdraft goes RED (no-overdraft predicate)", !noOverdraft(overdrafted))
+
+    // BROKEN #3 — the old refusal resurrected: post-cap brokerage-funded throws.
+    const refuses = (i: Parameters<typeof computeRevenueShare>[0]) => {
+      const r = computeRevenueShare(i)
+      if (r.companyObligations.length > 0) throw new Error("[revenue-share] Brokerage-funded revenue share exceeds the brokerage's dollar")
+      return r
+    }
+    let threw = false
+    try { refuses(postCapInput) } catch { threw = true }
+    check("NEGATIVE CONTROL: the resurrected refusal goes RED (a real business case is not an error)", threw)
   }
 
   console.log("\n[vocabulary agreement — code sets equal the m575 CHECKs, derived not pinned (§2)]")
@@ -259,6 +350,59 @@ function distributionModelLayer() {
   const reg2 = src("lib/kernel/manager-registry.ts")
   check("registry: revenue_share_distribution_model domain appended with this proof",
     /revenue_share_distribution_model:\s*\{\s*manager:\s*"finance_manager",\s*proof:\s*"test:revenue-share-board"/.test(reg2))
+
+  console.log("\n[post-cap company books · wiring — stripped scans (§2): recorded outside the deal, never swept by the deal]")
+  // POSITIVE CONTROLS: each finder proven against the defect it hunts, and
+  // proven comment-blind (a tombstone naming companyObligations is not a fold).
+  // `[^\]]*`, not `[\s\S]*?` — the lazy form walks past the array's closing
+  // bracket to the `const companyObligations = …` line below it and reports a
+  // fold that is not there (the commission-cap simulator's S8 lesson).
+  const foldRe = /allDistributions = \[[^\]]*companyObligations[^\]]*\]/
+  check("control: the fold-finder catches obligations summed into the deal's distribution set",
+    foldRe.test("const allDistributions = [\n  ...context.teamDistributions,\n  ...(context.companyObligations ?? []),\n]"))
+  // The REAL step 11 carries exactly this shape: a comment inside the array
+  // explaining why companyObligations is absent. Raw source counts it as a fold
+  // (a tombstone is not a call site — §2); stripped source must not.
+  const foldTombstone = "const allDistributions = [\n  ...context.teamDistributions,\n  // companyObligations deliberately NOT folded here\n]\n"
+  check("control: a comment naming companyObligations inside the array is a tombstone, not a fold — stripped first (§2)",
+    foldRe.test(foldTombstone) && !foldRe.test(stripComments(foldTombstone)))
+
+  const wf11 = stripComments(src("lib/commission/waterfall/11-validate-persist.ts"))
+  check("step 11 keeps obligations OUT of the conservation identity — companyObligations is not folded into allDistributions",
+    !foldRe.test(wf11) && /const companyObligations = context\.companyObligations \?\? \[\]/.test(wf11))
+  check("step 11 records them on company_books_obligations (m577), NEVER commission_distributions — the deal's payment sweeps must not mark a company payable paid",
+    /\.from\('company_books_obligations'\)[\s\S]{0,600}?\.insert\(/.test(wf11)
+    && !/\.from\('commission_distributions'\)[\s\S]{0,600}?companyObligations/.test(wf11))
+  check("the write is COUNTED (§3: an RLS refusal is error:null + zero rows) and a refusal THROWS naming m577 — never a silently dropped obligation",
+    /\.select\('id'\)/.test(wf11)
+    && /obligationRows\.length !== companyObligations\.length/.test(wf11)
+    && /m577/.test(wf11))
+  check("idempotent per transaction: only this deal's still-PENDING rows are replaced (paid/voided rows are payment history)",
+    /\.delete\(\)[\s\S]{0,200}?\.eq\('transaction_id', context\.transactionId\)[\s\S]{0,120}?\.eq\('brokerage_id', context\.brokerageId\)[\s\S]{0,120}?\.eq\('status', 'pending'\)/.test(wf11))
+  check("step 09 threads the obligations from the pure computation onto the context",
+    /companyObligations: result\.companyObligations/.test(stripComments(src("lib/commission/waterfall/09-revenue-share.ts"))))
+
+  const m577 = src("supabase/migrations/m577-a-post-cap-brokerage-funded-share-is-owed-from-company-books-not-refused.sql")
+  const m577Set = (col: string) => {
+    // \b so `status` cannot match inside `cap_status` (underscore is a word
+    // character, so the boundary lands exactly where the column name starts).
+    const m = new RegExp(`\\b${col} in \\(([^)]*)\\)`).exec(m577)
+    return new Set((m?.[1] ?? "").split(",").map((s) => s.trim().replace(/'/g, "")).filter(Boolean))
+  }
+  check("m577: the reason vocabulary admits exactly what the code writes ('post_cap_company_books')",
+    m577Set("reason").size === 1 && m577Set("reason").has("post_cap_company_books"))
+  check("m577: status + cap_status + calculation_type reuse commission_distributions' exact sets (§6 — no second spelling)",
+    ["pending", "approved", "paid", "voided"].every((s) => m577Set("status").has(s)) && m577Set("status").size === 4
+    && ["pre_cap", "hit_cap", "post_cap", "n/a"].every((s) => m577Set("cap_status").has(s)) && m577Set("cap_status").size === 4
+    && ["flat", "percent"].every((s) => m577Set("calculation_type").has(s)) && m577Set("calculation_type").size === 2)
+  check("m577: obligation_type admits only what is written ('residual' — the distributions vocabulary word for revenue share)",
+    m577Set("obligation_type").size === 1 && m577Set("obligation_type").has("residual"))
+  check("m577: RLS enabled, recipient is an agents.id FK, and the triggering deal is audit-linked (set null on delete, never cascade-erasing a payable)",
+    /alter table public\.company_books_obligations enable row level security/.test(m577)
+    && /agent_id\s+uuid not null references public\.agents\(id\)/.test(m577)
+    && /references public\.transactions\(id\) on delete set null/.test(m577))
+  check("registry: the post-cap company-books ruling is a declared finance domain",
+    /post_cap_company_books/.test(reg2) && /company_books_obligations/.test(reg2))
 }
 
 function sourceLayer() {

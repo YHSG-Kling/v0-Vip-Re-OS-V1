@@ -23,7 +23,16 @@ export async function validateAndPersist(
   calculationMode: 'preview' | 'final',
   triggeredBy?: string | null
 ): Promise<CommissionCalculationResult> {
-  // Collect all distributions
+  // Collect all distributions. context.companyObligations is DELIBERATELY not
+  // here: an out-of-deal obligation is not an in-deal distribution (owner ruling
+  // 2026-08-28 — post-cap the brokerage stops TAKING; what it still owes to PAY
+  // comes from company books, not from this deal's gross), so it is neither
+  // summed into the conservation identity below nor written to
+  // commission_distributions — the deal's disbursement sweeps
+  // (payment-tracker.markCommissionPaid by commission_id, reconcile-tracking's
+  // orphan lock by transaction_id + NULL commission_id) mark every distribution
+  // row paid when the DEAL pays, and a company-books payable is not paid by the
+  // deal's disbursement. It is persisted below to company_books_obligations.
   const allDistributions = [
     ...context.grossAdjustments,
     ...context.agentAdjustments,
@@ -32,6 +41,7 @@ export async function validateAndPersist(
     ...context.revenueShareDistributions,
     ...context.feeDistributions
   ]
+  const companyObligations = context.companyObligations ?? []
 
   // Validate waterfall
   const totalDistributedCents = sumCents([
@@ -63,6 +73,7 @@ export async function validateAndPersist(
       cap_status: context.capStatus,
       team_cap_status: context.teamCapStatus ?? 'n/a',
       total_fees: centsToDollars(context.totalFeesCents),
+      company_obligations: companyObligations,
       distributions: [
         ...allDistributions,
         {
@@ -125,6 +136,66 @@ export async function validateAndPersist(
       }
       // Finalized but no stored commission (shouldn't happen) — persist once so the
       // locked deal still has its ledger rather than nothing.
+    }
+  }
+
+  // 0b. COMPANY-BOOKS OBLIGATIONS (owner ruling 2026-08-28) — brokerage-funded
+  // shares this deal's company dollar could not fund (post-cap it is $0). These
+  // are recorded on company_books_obligations (m577), the company payables
+  // ledger, NOT on commission_distributions — see the note on allDistributions:
+  // the deal's disbursement sweeps would falsely mark a company payable paid.
+  //
+  // FIRST, before the summary insert, so a refused write fails the calculation
+  // BEFORE anything is persisted — never a half-recorded deal, and NEVER a
+  // silently dropped obligation. Pre-apply (m577 written, not applied) the
+  // insert is refused by PostgREST (missing table) and this THROWS naming the
+  // migration: the closing fails loudly, exactly as the old overdraft refusal
+  // did, until the integrator applies m577 — strictly no worse, and honest.
+  //
+  // IDEMPOTENT per transaction: a re-run (preview→final race, retry) replaces
+  // this deal's still-PENDING obligation rows rather than double-booking; a row
+  // already paid or voided is company payment history and is never touched.
+  if (companyObligations.length > 0) {
+    const { error: obligationClearError } = await supabase
+      .from('company_books_obligations')
+      .delete()
+      .eq('transaction_id', context.transactionId)
+      .eq('brokerage_id', context.brokerageId)
+      .eq('status', 'pending')
+      .select('id')
+    // §3: supabase-js RESOLVES refusals — read the error. (Zero rows deleted is
+    // the normal first run, not a failure: the caller's call, and here it is fine.)
+    if (obligationClearError) {
+      throw new Error(
+        `[commission-engine] company_books_obligations clear refused (is m577 applied?): ${obligationClearError.message}`
+      )
+    }
+
+    const { data: obligationRows, error: obligationError } = await supabase
+      .from('company_books_obligations')
+      .insert(companyObligations.map((o) => ({
+        brokerage_id: context.brokerageId,
+        transaction_id: context.transactionId,
+        agent_id: o.agent_id,
+        obligation_type: o.obligation_type,
+        calculation_type: o.calculation_type,
+        calculation_value: o.calculation_value ?? null,
+        calculated_amount: o.calculated_amount,
+        reason: o.reason,
+        cap_status: context.capStatus,
+        status: 'pending',
+        calculation_version: CURRENT_ENGINE_VERSION,
+        created_at: new Date().toISOString(),
+      })))
+      .select('id')
+    // COUNTED (§3): an RLS refusal arrives as error:null + zero rows, which must
+    // not read as "recorded".
+    if (obligationError || !obligationRows || obligationRows.length !== companyObligations.length) {
+      throw new Error(
+        `[commission-engine] Failed to record ${companyObligations.length} company-books obligation(s) ` +
+        `(post-cap brokerage-funded share — owner ruling 2026-08-28; table company_books_obligations, m577): ` +
+        `${obligationError?.message ?? `${obligationRows?.length ?? 0} of ${companyObligations.length} rows landed`}`
+      )
     }
   }
 
@@ -419,6 +490,7 @@ export async function validateAndPersist(
     cap_status: context.capStatus,
     team_cap_status: context.teamCapStatus ?? 'n/a',
     total_fees: centsToDollars(context.totalFeesCents),
+    company_obligations: companyObligations,
       distributions: distributionRows.map(d => ({
       distribution_type: (d as any).distribution_type as any,
       agent_id: (d as any).agent_id,

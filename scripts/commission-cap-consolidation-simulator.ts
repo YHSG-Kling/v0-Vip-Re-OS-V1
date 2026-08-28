@@ -57,6 +57,8 @@ import {
   DEFAULT_CAP_ANNIVERSARY_BASIS,
   type CommissionProfileCapRow,
 } from "../lib/commission/cap-resolver"
+import { applyFees } from "../lib/commission/waterfall/10-fees"
+import type { WaterfallContext, CommissionStructureResolved } from "../lib/commission/types"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -357,6 +359,177 @@ const PURE_PROBES: PureProbe[] = [
       && DEFAULT_CAP_ANNIVERSARY_BASIS === "agent_start_date",
   },
 ]
+
+// ─── STAGE-10 CAP SEMANTICS (owner ruling 2026-08-28) ────────────────────────
+//
+// "usually when a cap is met, the brokerage no longer takes from the agents if
+// the agent has splits with a cap as a commission level offering."
+//
+// Stage 07 already models it (post_cap → brokerage $0, agent gets the full
+// brokerage portion back; hit_cap → only the remaining cap is taken). What DRIFT
+// looked like: stage 10 recomputed the agent's final from the PRE-cap
+// agentPortionCents — silently confiscating the cap bonus stage 07 had handed
+// back, re-adding every stage-08/09 deduction, and breaking stage 11's
+// gross == distributed + finals identity so any post-cap / team / revenue-share
+// deal failed the whole calculation. MEASURED before the fix: a $20,000 post-cap
+// deal (80/20, $500 flat fee) returned $15,500 where the ruling requires
+// $19,500, and stage 11 saw distributed $16,000 against gross $20,000.
+//
+// applyFees is PURE (no DB), so the ruling is asserted directly, and each
+// assertion is re-run against the resurrected clobber (negative controls).
+
+/** A context exactly as stages 04→09 hand it to stage 10. */
+function feeCtx(over: Partial<WaterfallContext>): WaterfallContext {
+  return {
+    transactionId: "t", brokerageId: "b", agentId: "a",
+    purchasePriceCents: 66_666_600, grossRateDecimal: 0.03, agentSplitPercent: 80,
+    resolvedFrom: "brokerage_default",
+    grossCommissionCents: 2_000_000, adjustedGrossCents: 2_000_000,
+    agentPortionCents: 1_600_000, brokeragePortionCents: 400_000,
+    agentNetCents: 1_600_000, brokerageFinalCents: 400_000,
+    agentFinalNetCents: 1_600_000, totalFeesCents: 0,
+    capApplied: false, capStatus: "pre_cap", amountTowardsCap: 400_000,
+    grossAdjustments: [], agentAdjustments: [], brokerageAdjustments: [],
+    teamDistributions: [], revenueShareDistributions: [], feeDistributions: [],
+    ...over,
+  } as WaterfallContext
+}
+
+/** POST-CAP as stage 07 produces it: brokerage $0, agent holds the full portion. */
+const POST_CAP = feeCtx({
+  agentNetCents: 2_000_000, brokerageFinalCents: 0, agentFinalNetCents: 2_000_000,
+  capApplied: true, capStatus: "post_cap", amountTowardsCap: 0,
+})
+/** HIT-CAP (straddling): $1,000 of cap remained; the rest crossed to the agent. */
+const HIT_CAP = feeCtx({
+  agentNetCents: 1_900_000, brokerageFinalCents: 100_000, agentFinalNetCents: 1_900_000,
+  capApplied: true, capStatus: "hit_cap", amountTowardsCap: 100_000,
+})
+
+const FLAT_500: CommissionStructureResolved = {
+  transactionFeeType: "flat", transactionFeeValue: 500,
+  deskFeeType: "flat", deskFeeValue: 0,
+  technologyFeeType: "flat", technologyFeeValue: 0,
+  eoFeeType: "flat", eoFeeValue: 0,
+}
+const PCT_5: CommissionStructureResolved = { ...FLAT_500, transactionFeeType: "percent", transactionFeeValue: 5 }
+
+/** Stage 11's identity, restated: adjusted gross == Σ distributions + finals. */
+function conserves(out: WaterfallContext): boolean {
+  const dist = [
+    ...out.grossAdjustments, ...out.agentAdjustments, ...out.brokerageAdjustments,
+    ...out.teamDistributions, ...out.revenueShareDistributions, ...out.feeDistributions,
+  ].reduce((s, d) => s + Math.round(d.calculated_amount * 100), 0)
+  return Math.abs(out.adjustedGrossCents - (dist + out.agentFinalNetCents + out.brokerageFinalCents)) <= 1
+}
+
+type FeeStep = typeof applyFees
+type FeeProbe = { name: string; run: (fees: FeeStep) => Promise<boolean> }
+
+const FEE_PROBES: FeeProbe[] = [
+  {
+    name: "F1 POST-CAP: the agent keeps the FULL brokerage portion through the fee step — the ruling, end-to-end ($20,000 − $500 = $19,500)",
+    run: async (fees) => {
+      const out = await fees(POST_CAP, FLAT_500)
+      return out.agentFinalNetCents === 1_950_000 && out.brokerageFinalCents === 0
+    },
+  },
+  {
+    name: "F2 HIT-CAP (straddling): the brokerage took only the remaining cap, and the fee step preserves the partial bonus",
+    run: async (fees) => {
+      const out = await fees(HIT_CAP, FLAT_500)
+      return out.agentFinalNetCents === 1_850_000 && out.brokerageFinalCents === 100_000
+    },
+  },
+  {
+    name: "F3 fees are NOT the split: a configured fee is still charged post-cap (the cap ends the brokerage's TAKE of the split, not the fee schedule)",
+    run: async (fees) => {
+      const out = await fees(POST_CAP, FLAT_500)
+      return out.totalFeesCents === 50_000 && out.feeDistributions.length === 1
+    },
+  },
+  {
+    name: "F4 stage 11's conservation identity survives the fee step on a post-cap deal WITH a stage-08 deduction in place",
+    run: async (fees) => {
+      // A $2,000 agent-funded team deduction already applied by stage 08.
+      const withTeam = feeCtx({
+        agentNetCents: 2_000_000, brokerageFinalCents: 0, agentFinalNetCents: 1_800_000,
+        capApplied: true, capStatus: "post_cap", amountTowardsCap: 0,
+        teamDistributions: [{
+          distribution_type: "team_member", agent_id: "m", calculation_type: "percent",
+          calculation_value: 10, calculated_amount: 2000, source_of_funds: "agent",
+        }],
+      })
+      return conserves(await fees(withTeam, FLAT_500))
+    },
+  },
+  {
+    name: "F5 a PERCENT fee's base is the SPLIT PORTION, not the cap-inflated net — crossing the cap must not inflate a percentage fee",
+    run: async (fees) => {
+      const pre = await fees(feeCtx({}), PCT_5)
+      const post = await fees(POST_CAP, PCT_5)
+      // Same portion (1,600,000¢) both sides of the cap ⇒ same 5% fee = 80,000¢.
+      return pre.totalFeesCents === 80_000 && post.totalFeesCents === 80_000
+    },
+  },
+  {
+    name: "F6 a fee schedule that overdraws the agent's remaining net is REFUSED, not silently paid into a negative balance",
+    run: async (fees) => {
+      const tiny = feeCtx({ agentFinalNetCents: 10_000 })
+      try { await fees(tiny, FLAT_500); return false } catch { return true }
+    },
+  },
+]
+
+/** THE RESURRECTED CLOBBER — stage 10 exactly as it was before the 2026-08-28
+ *  fix: the final recomputed from the pre-cap portion. */
+const clobberFees: FeeStep = async (context, structure) => {
+  const out = await applyFees(feeCtx({ ...context, agentFinalNetCents: Number.MAX_SAFE_INTEGER }), structure)
+  return { ...out, agentFinalNetCents: context.agentPortionCents - out.totalFeesCents }
+}
+
+/** A fee step that bases percent fees on the cap-inflated net. */
+const inflatedBaseFees: FeeStep = async (context, structure) => {
+  const real = await applyFees(context, structure)
+  if (structure.transactionFeeType !== "percent") return real
+  const feeCents = Math.round(context.agentFinalNetCents * (structure.transactionFeeValue / 100))
+  return { ...real, totalFeesCents: feeCents, agentFinalNetCents: context.agentFinalNetCents - feeCents }
+}
+
+/** A fee step whose overdraft refusal was deleted. */
+const noRefusalFees: FeeStep = async (context, structure) => {
+  try { return await applyFees(context, structure) } catch {
+    const out = await applyFees({ ...context, agentFinalNetCents: Number.MAX_SAFE_INTEGER } as WaterfallContext, structure)
+    return { ...out, agentFinalNetCents: context.agentFinalNetCents - out.totalFeesCents }
+  }
+}
+
+const FEE_MUTATIONS: Array<{ name: string; probes: string[]; step: FeeStep }> = [
+  { name: "stage 10 recomputes the final from the PRE-cap portion again (the confiscated cap bonus)", probes: ["F1", "F2", "F4"], step: clobberFees },
+  { name: "percent fees re-base onto the cap-inflated net (crossing the cap raises the fee)", probes: ["F5"], step: inflatedBaseFees },
+  { name: "the overdraft refusal is deleted (fees silently drive the net negative)", probes: ["F6"], step: noRefusalFees },
+]
+
+async function feeLayer() {
+  console.log("\n[ASSERTIONS · stage 10 honors the cap — post-cap the brokerage takes $0 and the agent keeps the portion, fees survive]")
+  for (const p of FEE_PROBES) {
+    let ok: boolean
+    try { ok = await p.run(applyFees) } catch { ok = false }
+    check(p.name, ok)
+  }
+
+  console.log("\n[NEGATIVE CONTROLS · stage 10 — each must go RED]")
+  for (const m of FEE_MUTATIONS) {
+    for (const id of m.probes) {
+      const probe = FEE_PROBES.find((p) => p.name.startsWith(id + " "))
+      if (!probe) { check(`NEGATIVE CONTROL ${m.name} — probe ${id} not found`, false); continue }
+      let stillGreen: boolean
+      try { stillGreen = await probe.run(m.step) } catch { stillGreen = false }
+      check(`NEGATIVE CONTROL [${id}] ${m.name} — went RED as required`, !stillGreen,
+        stillGreen ? `probe ${id} stayed green against the broken implementation` : "")
+    }
+  }
+}
 
 // ─── SOURCE PROBES ───────────────────────────────────────────────────────────
 
@@ -1168,6 +1341,7 @@ async function main() {
     recruiterSim: src(RECRUITER_SIM),
   }
   pureLayer()
+  await feeLayer()
   sourceLayer(s)
   negativeControls(s)
   await liveLayer()

@@ -33,7 +33,7 @@
 // whether anything pays at all, and the template new edges receive.
 
 import { createServiceClient } from "@/lib/supabase/service"
-import type { DistributionRecord } from "./types"
+import type { DistributionRecord, CompanyObligationRecord } from "./types"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -197,6 +197,11 @@ export interface RevenueShareComputation {
   agentFinalNetCents: number
   brokerageFinalCents: number
   distributions: DistributionRecord[]
+  /** Brokerage-funded shares this DEAL's company dollar could not fund — owed
+   *  from the company's own books instead (owner ruling 2026-08-28: the cap ends
+   *  the brokerage TAKING, not the brokerage PAYING). Never part of the in-deal
+   *  distribution set; persisted by step 11 to company_books_obligations (m577). */
+  companyObligations: CompanyObligationRecord[]
   skipped: RevenueShareSkipReason | null
 }
 
@@ -216,9 +221,23 @@ export interface RevenueShareComputation {
  * rolling net — the base the step has always used); the model is the GATE:
  * disabled or unconfigured → no distribution, skip reason returned (the caller
  * records + warns; never silent). An edge outside its effective window pays
- * nothing. Overdraft on either side THROWS — the same refusal the step has
- * always made for a bad configuration, failing the calculation loudly rather
- * than paying money that does not exist.
+ * nothing.
+ *
+ * OVERDRAFT — the two sides are now DIFFERENT, deliberately (owner ruling
+ * 2026-08-28: when a cap is met the brokerage no longer TAKES from the agent;
+ * its own obligations to PAY do not end with the deal's company dollar):
+ *   · AGENT-funded overdraft still THROWS. The agent's side is the agent's own
+ *     money on this deal; a schedule that pays out more than the agent nets is
+ *     a contradictory configuration, refused loudly as always.
+ *   · BROKERAGE-funded share the deal cannot fund (post-cap the brokerage final
+ *     is $0; a straddling deal may leave less than the share) is NOT refused
+ *     and NOT overdrafted in-deal: the WHOLE share becomes a COMPANY-BOOKS
+ *     OBLIGATION (reason 'post_cap_company_books') in `companyObligations`,
+ *     outside the deal's distribution set — the deal's conservation identity
+ *     never sees it, and step 11 records it on the company payables ledger
+ *     (company_books_obligations, m577) rather than dropping it. The share is
+ *     routed whole, never split across the two funding rails: one share, one
+ *     ledger row, one payer.
  */
 export function computeRevenueShare(input: {
   agentId: string
@@ -233,6 +252,7 @@ export function computeRevenueShare(input: {
     agentFinalNetCents: input.agentFinalNetCents,
     brokerageFinalCents: input.brokerageFinalCents,
     distributions: [] as DistributionRecord[],
+    companyObligations: [] as CompanyObligationRecord[],
   }
   if (!state.enabled) return { ...base, skipped: "disabled" }
   if (!state.configured || !state.model) return { ...base, skipped: "model_unconfigured" }
@@ -241,6 +261,7 @@ export function computeRevenueShare(input: {
   let runningAgentCents = input.agentFinalNetCents
   let runningBrokerageCents = input.brokerageFinalCents
   const distributions: DistributionRecord[] = []
+  const companyObligations: CompanyObligationRecord[] = []
 
   for (const rel of input.relationships) {
     if (rel.is_active === false || !rel.sponsor_agent_id) continue
@@ -281,14 +302,29 @@ export function computeRevenueShare(input: {
         )
       }
     } else {
-      runningBrokerageCents -= shareCents
-      if (runningBrokerageCents < 0) {
-        throw new Error(
-          `[revenue-share] Brokerage-funded revenue share exceeds the brokerage's dollar on this deal ` +
-            `(level ${rel.depth_level ?? "?"} sponsor for agent ${input.agentId}). ` +
-            `The configured model pays more than this closing leaves the brokerage — refusing rather than over-distributing.`
-        )
+      // BROKERAGE-funded: the deal's company dollar pays while it lasts. When it
+      // cannot cover this share — post-cap it is $0 by the cap ruling; a
+      // straddling (hit_cap) deal may leave less than the share — the share is
+      // NOT refused (the old overdraft throw failed the producing agent's whole
+      // commission over the brokerage's own side-obligation) and NOT overdrafted
+      // in-deal: it becomes a company-books obligation, whole, and the in-deal
+      // balance is untouched.
+      if (shareCents > runningBrokerageCents) {
+        companyObligations.push({
+          obligation_type: "residual",
+          agent_id: rel.sponsor_agent_id,
+          calculation_type: calculationType,
+          calculation_value: calculationValue,
+          calculated_amount: shareCents / 100,
+          reason: "post_cap_company_books",
+          notes:
+            `${rel.relationship_type ?? "sponsor"} revenue share (level ${rel.depth_level ?? 1}, ` +
+            `${calculationType}, brokerage-funded) — this deal's company dollar (${runningBrokerageCents}¢ remaining) ` +
+            `cannot fund it; owed from company books`,
+        })
+        continue
       }
+      runningBrokerageCents -= shareCents
     }
 
     distributions.push({
@@ -306,6 +342,7 @@ export function computeRevenueShare(input: {
     agentFinalNetCents: runningAgentCents,
     brokerageFinalCents: runningBrokerageCents,
     distributions,
+    companyObligations,
     skipped: null,
   }
 }
