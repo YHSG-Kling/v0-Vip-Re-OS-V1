@@ -26,7 +26,7 @@ import { adCampaignAdapter }        from "./ad-campaign"
 import { listingLandingPageAdapter } from "./listing-landing-page"
 import { sendForEsignAdapter }       from "./send-for-esign"
 import { sendGiftAdapter }           from "./send-gift"
-import { addToSegmentAdapter, removeFromCampaignAdapter } from "./segment-ops"
+import { addToSegmentAdapter, removeFromSegmentAdapter, removeFromCampaignAdapter } from "./segment-ops"
 
 // In-app message adapter (inline — simple enough to not need its own file)
 import type { ChannelAdapter, StepContext, StepResult } from "../channel-registry"
@@ -177,6 +177,7 @@ registry.register(listingLandingPageAdapter)
 registry.register(sendForEsignAdapter)
 registry.register(sendGiftAdapter)
 registry.register(addToSegmentAdapter)
+registry.register(removeFromSegmentAdapter)
 registry.register(removeFromCampaignAdapter)
 registry.register(inAppAdapter)
 registry.register(aiCallAdapter)

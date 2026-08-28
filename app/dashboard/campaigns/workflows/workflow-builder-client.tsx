@@ -616,8 +616,10 @@ export function WorkflowBuilderClient({ brokerageId, userId, userType, initialSe
                       {!!step.task_title && (
                         <p className="text-xs text-muted-foreground mt-0.5 truncate">Task: {String(step.task_title)}</p>
                       )}
-                      {step.channel === "add_to_segment" && !!step.body && (
-                        <p className="text-xs text-muted-foreground mt-0.5">→ Segment: <strong>{String(step.body)}</strong></p>
+                      {(step.channel === "add_to_segment" || step.channel === "remove_from_segment") && !!step.body && (
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          {step.channel === "add_to_segment" ? "→" : "←"} Segment: <strong>{String(step.body)}</strong>
+                        </p>
                       )}
                       {!!step.condition_field && (
                         <p className="text-xs text-muted-foreground mt-0.5">

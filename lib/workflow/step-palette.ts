@@ -471,6 +471,16 @@ export const STEP_PALETTE: ReadonlyArray<StepTypeSpec> = [
     fields: [{ name: "body", label: "Segment", type: "text", required: true }],
   },
   {
+    // The mirror of "Add to Segment", and NOT a spelling of "Remove from
+    // Campaign" below: this closes a `contact_segments` membership (which
+    // marketing list the person is on), that one ends a `sequence_enrollments`
+    // run (whether this campaign is still executing for them). Same `body`
+    // field as the add step — a segment id — so the pair reads as a pair.
+    channel: "remove_from_segment", label: "Remove from Segment", group: "flow", icon: "Tag", flagKey: null,
+    description: "Takes the contact off a segment, so segment-targeted campaigns stop reaching them.",
+    fields: [{ name: "body", label: "Segment", type: "text", required: true }],
+  },
+  {
     channel: "remove_from_campaign", label: "Remove from Campaign", group: "flow", icon: "UserMinus", flagKey: null,
     description: "Takes the contact out of this campaign. Nothing after this step runs.",
     fields: [{ name: "body", label: "Reason", type: "text" }],

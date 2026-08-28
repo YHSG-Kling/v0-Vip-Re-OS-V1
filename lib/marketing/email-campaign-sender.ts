@@ -138,9 +138,18 @@ export async function sendCampaignNow(svc: Svc, campaignId: string): Promise<Cam
       if (result.success) sent++; else failed++
     }
   } else if (campaign.audience_segment_id) {
-    // Path B — segment-targeted send: recipients resolve from contact_segments
-    // (memberships written by the workflow "add to segment" step —
-    // lib/workflow/adapters/segment-ops.ts). Active members only.
+    // Path B — segment-targeted send: recipients resolve from contact_segments.
+    // Memberships are opened and closed by lib/marketing/segment-membership.ts —
+    // reached from the workflow add_to_segment / remove_from_segment steps
+    // (lib/workflow/adapters/segment-ops.ts) and from the agent-facing door on
+    // the contact page (app/actions/contacts/segment-membership.ts).
+    //
+    // ACTIVE MEMBERS ONLY. `removed_at IS NULL` is the whole point of the
+    // column: it used to be read here and written NOWHERE, so a contact added
+    // to a segment received its campaigns forever. It is an AUDIENCE filter,
+    // not a consent one — consent is checked per recipient inside dispatchEmail
+    // (lib/kernel/compliance/check-suppression.ts), which is the last word and
+    // which no segment membership can talk over.
     const { data: members, error: memberError } = await svc.from("contact_segments")
       .select("contact_id")
       .eq("segment_id", campaign.audience_segment_id)

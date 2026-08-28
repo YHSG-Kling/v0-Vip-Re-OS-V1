@@ -74,6 +74,7 @@ export const VALID_STEP_TYPES = new Set([
   "wait",
   "condition",
   "add_to_segment",
+  "remove_from_segment",
   "remove_from_campaign",
   "ai_image",
   "video",

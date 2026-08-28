@@ -20,7 +20,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-08-28
  * source: public.live_check_constraints_json()
- * body-sha256: 0a2ccbb23838a2c4edf201ce8c4ecb8e6f38efd3b7d5b27d1eb4a685afceda66
+ * body-sha256: a5c339ee7180dc2fee07672ddd3ea91c867171adbc3893675b93a6780a89ff85
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -398,7 +398,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   campaign_sequence_steps: {
     ab_variant: ["A", "B"],
-    channel: ["ad_campaign", "add_to_segment", "ai_call", "ai_image", "assign_task", "avm_cma", "commission_video", "condition", "direct_mail", "draft_document", "email", "in_app", "listing_landing_page", "newsletter", "remove_from_campaign", "schedule_showing", "schedule_tour", "send_for_esign", "send_gift", "sms", "social_post", "video", "voice_drop", "wait"],
+    channel: ["ad_campaign", "add_to_segment", "ai_call", "ai_image", "assign_task", "avm_cma", "commission_video", "condition", "direct_mail", "draft_document", "email", "in_app", "listing_landing_page", "newsletter", "remove_from_campaign", "remove_from_segment", "schedule_showing", "schedule_tour", "send_for_esign", "send_gift", "sms", "social_post", "video", "voice_drop", "wait"],
     video_situation_kind: ["anniversary", "cma", "coming_soon", "explainer", "just_sold", "market_update", "neighborhood", "new_listing", "open_house", "presentation", "price_drop", "testimonial"],
   },
   campaign_sequences: {
