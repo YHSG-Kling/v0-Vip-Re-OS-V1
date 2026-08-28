@@ -33,12 +33,70 @@ async function assertOwnership(
  */
 export async function executeAITool(toolName: string, inputData: any, context: any) {
   try {
-    // Route to appropriate AI tool handler
+    // Route to appropriate AI tool handler.
+    //
+    // THE CONTENT-STUDIO DOORS (2026-08-28). The studio's three buttons call
+    // executeWorkflow("publish-content" | "send-newsletter" | "send-direct-mail"),
+    // names this table did not know — every press resolved
+    // { success: false, error: "Unknown tool" } and the UI dutifully reported
+    // it (the buttons were honest about doing nothing). Each name now routes
+    // to the CANONICAL implementation rather than growing a twin (§1):
+    // newsletter sends through ai-newsletter.ts:sendNewsletter (feature-gated,
+    // subscriber-resolved, ownership-verified), direct mail through
+    // direct-mail.ts:sendCampaign (feature-gated, provider-resolved) with the
+    // actor derived from the SESSION — never from inputData (§4) — and the
+    // omni-channel content push books a campaign_calendar row through
+    // content-studio.ts:scheduleContent ('publish' is in the calendar's
+    // event_type CHECK); the channel sends themselves keep their own doors.
     const handlers: Record<string, Function> = {
       "fair-housing-check": checkFairHousingCompliance,
       "generate-plan": generateCopilotPlan,
       "send-message": sendMessage,
       "calculate-metrics": calculateListingMetrics,
+      "publish-content": async (input: any) => {
+        const channel = typeof input?.channel === "string" && input.channel.trim() ? input.channel.trim() : null
+        if (!channel) return { success: false, error: "No channel named" }
+        const text = typeof input?.content === "string" ? input.content.trim() : ""
+        if (!text) return { success: false, error: "No content to publish" }
+        try {
+          const { scheduleContent } = await import("./content-studio")
+          const row = await scheduleContent({
+            title: text.length > 180 ? `${text.slice(0, 177)}…` : text,
+            contentType: "publish",
+            scheduledDate: new Date().toISOString(),
+            platform: channel,
+            notes: input?.contentId ? `content-studio push (content ${input.contentId})` : "content-studio push",
+          })
+          // scheduleContent THROWS on a refused insert and returns the row
+          // otherwise; a null row would mean the insert was silently empty.
+          if (!row) return { success: false, error: "Calendar write returned no row" }
+          return { success: true, calendarId: (row as { id?: string }).id }
+        } catch (e: any) {
+          return { success: false, error: e?.message ?? "Failed to schedule the publish" }
+        }
+      },
+      "send-newsletter": async (input: any) => {
+        if (typeof input?.campaignId !== "string" || !input.campaignId) {
+          return { success: false, error: "No newsletter campaign id" }
+        }
+        const { sendNewsletter } = await import("./ai-newsletter")
+        return sendNewsletter({ newsletterId: input.campaignId })
+      },
+      "send-direct-mail": async (input: any) => {
+        if (typeof input?.campaignId !== "string" || !input.campaignId) {
+          return { success: false, error: "No direct-mail campaign id" }
+        }
+        const ctx = await getAgentContext()
+        if (!ctx.isAuthenticated || !ctx.brokerageId || !ctx.userId) {
+          return { success: false, error: "Not authenticated" }
+        }
+        const { sendCampaign } = await import("./direct-mail")
+        return sendCampaign({
+          campaignId: input.campaignId,
+          actorUserId: ctx.userId,
+          brokerageId: ctx.brokerageId,
+        })
+      },
     }
 
     const handler = handlers[toolName]
@@ -491,8 +549,9 @@ export async function triggerComplianceChecklist(
  *   1. WHICH SURFACE calls it (candidates: a "save as my private script" door
  *      beside handleSaveScriptToLibrary in video-create-client.tsx, whose
  *      current save routes agent-authored text into the CURATED queue instead;
- *      or a workflow-automation door once executeAITool's routing table stops
- *      being decorative — see the report on its unknown tool names).
+ *      or a workflow-automation door through executeAITool's routing table —
+ *      no longer decorative since 2026-08-28, when the three content-studio
+ *      names it did not know were wired to their canonical implementations).
  *   2. THE COMPLIANCE GATE: once reachable this becomes a sixth script
  *      generator, and scripts/video-script-compliance-guard.ts holds the other
  *      five to lib/video/script-compliance.ts (§5 compliance-first). Wire the
