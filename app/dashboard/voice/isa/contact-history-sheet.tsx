@@ -5,6 +5,7 @@ import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
 import { toast } from "sonner"
 import { initiateWhisperBridge } from "@/app/actions/voice-call-bridge"
+import { queueAIISACall } from "@/app/actions/ai-isa"
 import {
   Sheet,
   SheetContent,
@@ -69,6 +70,7 @@ export function ContactHistorySheet({ contactId, open, onOpenChange }: ContactHi
   const [qualifications, setQualifications] = useState<Qualification[]>([])
   const [engagementScore, setEngagementScore] = useState<number | null>(null)
   const [calling, setCalling] = useState(false)
+  const [queueing, setQueueing] = useState(false)
 
   useEffect(() => {
     if (!contactId || !open) return
@@ -162,6 +164,31 @@ export function ContactHistorySheet({ contactId, open, onOpenChange }: ContactHi
       toast.error(err?.message ?? "The call was not placed")
     } finally {
       setCalling(false)
+    }
+  }
+
+  // "AI Call" — queue this contact for an AI ISA call INTO the brokerage's
+  // active campaign (queueAIISACall, restored lane F1 2026-08-28). The engine
+  // runs the TCPA gate (buildCallContext) plus the budget and autonomy gates
+  // in placeOutboundAiCall; identity is derived from the session server-side.
+  async function handleQueueAICall() {
+    if (!contact) return
+    if (!contact.phone) {
+      toast.error("This contact has no phone number on file")
+      return
+    }
+    setQueueing(true)
+    try {
+      const res = await queueAIISACall({ contactId: contact.id })
+      if (!res?.success) {
+        toast.error(res?.error ?? "The call was not queued")
+        return
+      }
+      toast.success("AI ISA call queued into the active campaign")
+    } catch (err: any) {
+      toast.error(err?.message ?? "The call was not queued")
+    } finally {
+      setQueueing(false)
     }
   }
 
@@ -313,6 +340,16 @@ export function ContactHistorySheet({ contactId, open, onOpenChange }: ContactHi
               >
                 <Phone className="h-4 w-4 mr-2" />
                 {calling ? "Ringing you…" : "Manual Call"}
+              </Button>
+              <Button
+                variant="outline"
+                className="flex-1"
+                disabled={queueing || !contact.phone}
+                onClick={handleQueueAICall}
+                title="Queue an AI ISA call into the active campaign — TCPA, budget and autonomy gates apply"
+              >
+                <Activity className="h-4 w-4 mr-2" />
+                {queueing ? "Queueing…" : "AI Call"}
               </Button>
             </div>
           </div>

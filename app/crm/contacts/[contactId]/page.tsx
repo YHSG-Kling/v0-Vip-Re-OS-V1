@@ -13,6 +13,7 @@ import { BuyerBrokerAgreementPanel } from "@/components/contact/buyer-broker-agr
 import { WorkflowRunsPanel }         from "./components/workflow-runs-panel"
 import { EnrichmentPanel }          from "./components/enrichment-panel"
 import { FollowupCard }            from "./components/followup-card"
+import { SmartDripCard }           from "./components/smart-drip-card"
 import { CampaignBundleSendCard, type BundleOption } from "./components/campaign-bundle-send-card"
 import { listCampaignBundles }      from "@/app/actions/campaign-bundles"
 import { AgentActionDispositionQueue } from "@/app/components/agent/AgentActionDispositionQueue"
@@ -450,6 +451,13 @@ export default async function ContactDetailPage({ params }: PageProps) {
           send side of the bundle builder, which had none. */}
       <div className="px-4 pt-3">
         <CampaignBundleSendCard contactId={contactId} bundles={sendableBundles} />
+      </div>
+
+      {/* Smart drip — enroll this contact into the brokerage's compliance-gated
+          sequence of the chosen cadence (restored lane F1; the sequence's steps
+          carry the content, so the door is honest about missing sequences). */}
+      <div className="px-4 pt-3">
+        <SmartDripCard contactId={contactId} />
       </div>
 
       {/* Stated future re-contact date — the suppression the reactivation

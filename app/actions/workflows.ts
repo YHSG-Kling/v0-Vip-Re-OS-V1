@@ -85,6 +85,18 @@ export async function executeAITool(toolName: string, inputData: any, context: a
       },
       "generate-plan": generateCopilotPlan,
       "send-message": sendMessage,
+      // Smart drip — enrolls the contact into the matching compliance-gated
+      // sequence via startSmartDrip (restored lane F1 2026-08-28; identity from
+      // the session inside the action, never from inputData §4).
+      "start-smart-drip": async (input: any) => {
+        const contactId = typeof input?.contactId === "string" ? input.contactId : ""
+        const dripType = typeof input?.dripType === "string" && input.dripType
+          ? input.dripType
+          : typeof input?.drip_type === "string" ? input.drip_type : ""
+        if (!contactId) return { success: false, error: "No contact named" }
+        if (!dripType) return { success: false, error: "No drip type named" }
+        return startSmartDrip(contactId, dripType)
+      },
       // "calculate-metrics" removed with its handler `calculateListingMetrics`
       // (deleted 2026-08-28, lane E2 — see tombstone below; the live listing
       // metric engine is lib/listing-health/health-scorer.ts). Nothing in the
@@ -251,14 +263,147 @@ Generate a specific 7-day plan with daily actions.`,
   }
 }
 
-// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `startSmartDrip` deleted.
-// SURVIVOR: app/actions/ai-lead-nurturing.ts:aiGenerateDripCampaign (wired at
-// app/dashboard/campaigns/sequences/ai-sequence-drafter-card.tsx), whose
-// drip_campaigns rows carry the step plan the queue-drain cron
-// (app/api/cron/queue-drain) actually executes. This twin inserted a BARE
-// status:'active' row with no steps/metadata — a drip the drain could never
-// send anything for — and a stripped-source census found zero callers outside
-// the app/actions/index.ts barrel, which itself has zero importers.
+/**
+ * Start a smart drip on one contact — RESTORED (owner ruling, lane F1
+ * 2026-08-28) with its MISSING HALF built.
+ *
+ * The deleted version inserted a bare drip_campaigns row {contact_id,
+ * drip_type, status 'active'} and stopped. A drip row carries NO message
+ * content, and the queue-drain cron (app/api/cron/queue-drain
+ * :drainDripCampaigns) refuses to invent any: it services such a row by
+ * enrolling the contact into an active, compliance-gated campaign_sequences
+ * row whose sequence_type === drip_type — whose STEPS carry the real copy,
+ * executed by the campaign-sequence-steps cron. When no such sequence exists,
+ * the drain pauses the row with the reason. So the bare insert was a silent
+ * no-op whenever the sequence was missing, and a 5-minute-deferred enrollment
+ * when it wasn't.
+ *
+ * The restore does the drain's honest service INLINE — one enrollment engine,
+ * two doors (§6): the same enrollContact the drain calls, so the caller learns
+ * NOW whether the contact is actually in a cadence. The drip_campaigns row is
+ * still written, as the ledger the drain would have produced (same completed
+ * shape + metadata keys), or left status 'active' for the drain to retry when
+ * the enrollment refusal is transient.
+ *
+ * `drip_type` must be a campaign_sequences.sequence_type the drain can match
+ * (live CHECK: drip | nurture | re_engagement | transaction | post_close);
+ * anything else could never resolve a sequence and is refused up front.
+ */
+export async function startSmartDrip(
+  contactId: string,
+  drip_type: string,
+  _agentId?: string // ignored — derived from session
+): Promise<{
+  success: boolean
+  dripId?: string
+  sequenceId?: string
+  sequenceName?: string
+  enrollmentId?: string
+  alreadyEnrolled?: boolean
+  error?: string
+}> {
+  try {
+    const ctx = await getAgentContext()
+
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
+    const brokerageId = ctx.brokerageId
+    const agentId = ctx.agentId // agents.id — drip_campaigns.agent_id FKs agents
+
+    // Verify contact ownership
+    const own = await assertOwnership("contacts", contactId, brokerageId)
+    if (!own.ok) return { success: false, error: own.error }
+
+    const SEQUENCE_TYPES = ["drip", "nurture", "re_engagement", "transaction", "post_close"]
+    if (!SEQUENCE_TYPES.includes(drip_type)) {
+      return {
+        success: false,
+        error: `'${drip_type}' is not a sequence type the drip drain can service (one of: ${SEQUENCE_TYPES.join(", ")})`,
+      }
+    }
+
+    const svc = createServiceClient()
+
+    // The SAME sequence resolution the queue-drain performs on a drip row.
+    const { data: sequence, error: seqErr } = await svc
+      .from("campaign_sequences")
+      .select("id, name")
+      .eq("brokerage_id", brokerageId)
+      .eq("sequence_type", drip_type)
+      .eq("is_active", true)
+      .eq("compliance_gated", true)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle()
+    if (seqErr) return { success: false, error: seqErr.message }
+    if (!sequence) {
+      // Honest absence, and NO row inserted: an active drip row here would only
+      // be paused by the drain with this same reason five minutes later.
+      return {
+        success: false,
+        error: `No active compliance-gated '${drip_type}' sequence exists in this brokerage — a drip carries no message content of its own, so there is nothing honest to send. Build the sequence first.`,
+      }
+    }
+
+    const { enrollContact } = await import("@/lib/campaign-sequences/enrollment-engine")
+    const enrollment = await enrollContact({
+      sequenceId: sequence.id as string,
+      contactId,
+      brokerageId,
+      enrolledBy: ctx.userId,
+    })
+
+    const now = new Date().toISOString()
+    const enrolledOk = enrollment.success || !!enrollment.alreadyEnrolled
+
+    // The ledger row — completed with its enrollment link (the drain's own
+    // completed shape), or left 'active' for the drain to retry a transient
+    // enrollment failure. `error` and the returned row are both read (§3).
+    const { data: drip, error: dripErr } = await svc
+      .from("drip_campaigns")
+      .insert({
+        contact_id:   contactId,
+        agent_id:     agentId,
+        brokerage_id: brokerageId,
+        drip_type,
+        status:       enrolledOk ? "completed" : "active",
+        started_at:   now,
+        ...(enrolledOk ? { completed_at: now } : {}),
+        metadata: enrolledOk
+          ? {
+              sequence_id:      sequence.id,
+              sequence_name:    sequence.name,
+              enrollment_id:    enrollment.enrollmentId ?? null,
+              already_enrolled: !!enrollment.alreadyEnrolled,
+              drained_by:       "startSmartDrip",
+            }
+          : { enroll_error: enrollment.error ?? "unknown", requested_by: "startSmartDrip" },
+      })
+      .select("id")
+      .single()
+    if (dripErr) return { success: false, error: dripErr.message }
+
+    if (!enrolledOk) {
+      return {
+        success: false,
+        dripId: drip?.id,
+        sequenceId: sequence.id as string,
+        error: `Enrollment refused (${enrollment.error ?? "unknown"}) — the drip row stays queued and the queue-drain will retry it.`,
+      }
+    }
+
+    return {
+      success: true,
+      dripId: drip?.id,
+      sequenceId: sequence.id as string,
+      sequenceName: (sequence.name as string | null) ?? undefined,
+      enrollmentId: enrollment.enrollmentId,
+      alreadyEnrolled: !!enrollment.alreadyEnrolled,
+    }
+  } catch (error: any) {
+    return { success: false, error: error?.message ?? "Failed to start drip" }
+  }
+}
 
 /**
  * Send a message to a contact.

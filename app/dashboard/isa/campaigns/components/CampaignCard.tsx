@@ -3,8 +3,8 @@
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
-import { Mail, Video, FileText, Phone, MessageSquare, PlayCircle, PauseCircle, TestTube } from "lucide-react"
-import { toggleCampaignStatus, sendCampaignTestTouch } from "@/app/actions/ai-isa"
+import { Mail, Video, FileText, Phone, MessageSquare, PlayCircle, PauseCircle, TestTube, Rocket } from "lucide-react"
+import { toggleCampaignStatus, sendCampaignTestTouch, launchAIISACampaign } from "@/app/actions/ai-isa"
 import type { ISACampaignRow } from "@/app/actions/ai-isa"
 
 const TYPE_BADGE: Record<string, string> = {
@@ -35,6 +35,8 @@ export function CampaignCard({ campaign, onStatusChange }: Props) {
   const [loading, setLoading] = useState(false)
   const [testLoading, setTestLoading] = useState(false)
   const [testResult, setTestResult] = useState<string | null>(null)
+  const [launching, setLaunching] = useState(false)
+  const [launchResult, setLaunchResult] = useState<{ ok: boolean; text: string } | null>(null)
 
   const rate = campaign.leads_targeted > 0
     ? ((campaign.conversions / campaign.leads_targeted) * 100).toFixed(1)
@@ -45,6 +47,38 @@ export function CampaignCard({ campaign, onStatusChange }: Props) {
     await toggleCampaignStatus(campaign.id, campaign.status)
     setLoading(false)
     onStatusChange()
+  }
+
+  // Launch = resolve this campaign type's contact segment and ENROLL it into
+  // the matching compliance-gated sequence cadence (never dials). The result
+  // reports honest per-contact counts: enrolled / already in cadence /
+  // consent-skipped / refused.
+  async function handleLaunch() {
+    setLaunching(true)
+    setLaunchResult(null)
+    const result = await launchAIISACampaign({
+      campaignId:   campaign.id,
+      campaignType: campaign.campaign_type,
+    })
+    if (result.success) {
+      const parts = [`Enrolled ${result.enrolled ?? 0}`]
+      if (result.alreadyEnrolled) parts.push(`${result.alreadyEnrolled} already in cadence`)
+      if (result.skipped) {
+        const reasons = Object.entries(result.skipReasons ?? {})
+          .map(([r, n]) => `${n} ${r}`)
+          .join(", ")
+        parts.push(`${result.skipped} skipped${reasons ? ` (${reasons})` : ""}`)
+      }
+      if (result.errors?.length) parts.push(`${result.errors.length} refused: ${result.errors[0]}`)
+      setLaunchResult({
+        ok: true,
+        text: `${parts.join(" · ")} — sequence “${result.sequenceName ?? result.sequenceId}”.`,
+      })
+      onStatusChange()
+    } else {
+      setLaunchResult({ ok: false, text: result.error ?? "Launch failed." })
+    }
+    setLaunching(false)
   }
 
   async function handleTestTouch() {
@@ -127,6 +161,16 @@ export function CampaignCard({ campaign, onStatusChange }: Props) {
       <div className="flex gap-2">
         <Button
           size="sm"
+          className="flex-1 gap-1"
+          onClick={handleLaunch}
+          disabled={launching || campaign.status === "completed"}
+          title="Enroll this type's matching contacts into the sequence cadence — no calls are placed"
+        >
+          <Rocket className="h-3.5 w-3.5" />
+          {launching ? "Launching…" : campaign.status === "draft" ? "Launch campaign" : "Enroll matches"}
+        </Button>
+        <Button
+          size="sm"
           variant="outline"
           className="flex-1 gap-1"
           onClick={handleToggle}
@@ -147,6 +191,11 @@ export function CampaignCard({ campaign, onStatusChange }: Props) {
           <TestTube className="h-3.5 w-3.5" /> Test
         </Button>
       </div>
+      {launchResult && (
+        <p className={launchResult.ok ? "text-xs text-muted-foreground" : "text-xs text-destructive"}>
+          {launchResult.text}
+        </p>
+      )}
       {testResult && (
         <p className="text-xs text-muted-foreground">{testResult}</p>
       )}

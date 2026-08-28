@@ -2,8 +2,11 @@
 
 import { isValidUUID } from "@/lib/validations"
 import {
+  launchAIISACampaignService,
+  queueAIISACallService,
   retryFailedCallsService,
   updateCampaignStatusService,
+  type LaunchAIISACampaignResult,
 } from "@/lib/application"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
@@ -85,25 +88,125 @@ async function runAiIsaComplianceCheck(params: {
     },
   })
 }
-// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — the legacy loginId-shaped ISA
-// quartet was deleted; a stripped-source census found zero callers for any of
-// them outside the app/actions/index.ts barrel, which itself has zero
-// importers. Survivors, all live and session-tenanted:
-//   · launchAIISACampaign → `createISACampaign` (below) creates the campaign;
-//     dialing is the HUMAN-GATED batch lane
+// LEDGER of the legacy loginId-shaped ISA quartet (deleted lane E2, partially
+// RESTORED by owner ruling lane F1, both 2026-08-28):
+//   · launchAIISACampaign → RESTORED below as a CAMPAIGN-TYPE LAUNCHER. Owner
+//     ruling: it "wasn't intended for a dial batch but an actual choice of
+//     drip/ghost/nurture campaigns" — campaigns are a different business
+//     process from dialing. It resolves the type's contact segment and enrolls
+//     into the sequence cadence; it does NOT dial. Dialing stays the
+//     HUMAN-GATED batch lane
 //     (lib/ai-isa/voice-dial-batch.ts:proposeIsaDialBatch/approveIsaDialBatch,
-//     wired at app/dashboard/admin/voice-dial-batches). The deleted twin
-//     dialed an entire caller-named segment immediately with no approval — the
-//     exact shape the gated lane exists to prevent (§5: AI ISA is paid
-//     autonomous outbound).
-//   · queueAIISACall → the single-call door is app/api/voice/initiate-call
-//     (writes voice_calls + ai_isa_calls); its engine,
-//     lib/application/ai-isa.ts:queueAIISACallService, SURVIVES as the
-//     internal engine of `retryFailedCalls` below.
-//   · getAIISACampaigns → `listISACampaigns` (below; wired at
-//     app/dashboard/isa/page.tsx and communications/outreach).
-//   · getAIISACalls → the voice ISA console's own tenant-scoped reads
-//     (app/dashboard/voice/isa/page.tsx, contact-history-sheet.tsx).
+//     wired at app/dashboard/admin/voice-dial-batches).
+//   · queueAIISACall → RESTORED below: the public door for queueing a call
+//     into a campaign; its engine is
+//     lib/application/ai-isa.ts:queueAIISACallService (also the engine of
+//     `retryFailedCalls`). The immediate single-dial route remains
+//     app/api/voice/initiate-call.
+//   · getAIISACampaigns → still deleted; survivor `listISACampaigns` (below;
+//     wired at app/dashboard/isa/page.tsx and communications/outreach).
+//   · getAIISACalls → still deleted; survivors are the voice ISA console's own
+//     tenant-scoped reads (app/dashboard/voice/isa/page.tsx,
+//     contact-history-sheet.tsx).
+
+/**
+ * Launch an AI ISA campaign — the "Launch campaign" door on the ISA console.
+ * The caller picks the campaign TYPE (or names an existing campaign, whose
+ * stored type wins); the service resolves the matching contact segment and
+ * enrolls it into the type's cadence (drip / nurture / re_engagement
+ * sequences). Identity is SESSION-derived (§4) and crossed users.id →
+ * agents.id inside the service (§3). Never dials.
+ */
+export async function launchAIISACampaign(params: {
+  campaignType: CampaignType
+  campaignName?: string
+  /** Launch an existing campaign of the caller's brokerage. */
+  campaignId?: string
+}): Promise<LaunchAIISACampaignResult> {
+  const caller = await requireCaller()
+  if (!caller.ok) return { success: false, error: caller.error }
+  if (params.campaignId && !isValidUUID(params.campaignId)) {
+    return { success: false, error: "Invalid campaign ID" }
+  }
+
+  try {
+    return await launchAIISACampaignService({
+      campaignType: params.campaignType,
+      campaignName: params.campaignName,
+      campaignId:   params.campaignId,
+      userId:       caller.userId,
+      brokerageId:  caller.brokerageId,
+    })
+  } catch (error: any) {
+    console.error("[AI ISA] Campaign launch failed:", error)
+    return { success: false, error: error.message }
+  }
+}
+
+/**
+ * Queue an AI ISA call for one contact INTO a campaign — the campaign-paced
+ * call lane (buildCallContext TCPA gate + placeOutboundAiCall's budget and
+ * autonomy gates run inside the engine). Distinct from the immediate
+ * single-dial route (app/api/voice/initiate-call). Identity comes from the
+ * SESSION (§4): the old signature took a caller-supplied loginId.
+ */
+export async function queueAIISACall(params: {
+  contactId: string
+  /** Omit to queue into the brokerage's most recent ACTIVE campaign. */
+  campaignId?: string
+}): Promise<{ success: boolean; call_id?: string | null; voice_call_id?: string | null; error?: string }> {
+  const caller = await requireCaller()
+  if (!caller.ok) return { success: false, error: caller.error }
+  if (!isValidUUID(params.contactId)) return { success: false, error: "Invalid contact ID" }
+  if (params.campaignId && !isValidUUID(params.campaignId)) {
+    return { success: false, error: "Invalid campaign ID" }
+  }
+
+  const service = createServiceClient()
+
+  // The contact must be the caller's tenant's — this queues paid outbound at them.
+  const { data: contact } = await service
+    .from("contacts")
+    .select("brokerage_id")
+    .eq("id", params.contactId)
+    .maybeSingle()
+  if (!contact) return { success: false, error: "Contact not found" }
+  if (contact.brokerage_id !== caller.brokerageId) return { success: false, error: "Forbidden" }
+
+  // Resolve the campaign: a named one must belong to the tenant; otherwise the
+  // most recent ACTIVE campaign is the pace-setter (same default the
+  // stale-lead processor uses).
+  let campaignId = params.campaignId ?? null
+  if (campaignId) {
+    const { data: campaign } = await service
+      .from("ai_isa_campaigns")
+      .select("brokerage_id")
+      .eq("id", campaignId)
+      .maybeSingle()
+    if (!campaign) return { success: false, error: "Campaign not found" }
+    if (campaign.brokerage_id !== caller.brokerageId) return { success: false, error: "Forbidden" }
+  } else {
+    const { data: defaultCampaign } = await service
+      .from("ai_isa_campaigns")
+      .select("id")
+      .eq("brokerage_id", caller.brokerageId)
+      .eq("is_active", true)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (!defaultCampaign?.id) {
+      return { success: false, error: "No active AI ISA campaign — launch one first, or name a campaign." }
+    }
+    campaignId = defaultCampaign.id as string
+  }
+
+  try {
+    return await queueAIISACallService(campaignId, params.contactId, caller.userId)
+  } catch (error: any) {
+    console.error("[AI ISA] Call queueing failed:", error)
+    return { success: false, error: error.message }
+  }
+}
 
 /**
  * Retry failed AI ISA calls — re-dials calls whose OUTCOME was
