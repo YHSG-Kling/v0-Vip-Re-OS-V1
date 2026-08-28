@@ -980,11 +980,16 @@ async function CompanyBooksObligations({ brokerageId }: { brokerageId: string })
   const obligations = rows ?? []
   if (obligations.length === 0) return null
 
-  // Recipient names — agents.id keys the ledger; resolve display names once.
+  // Recipient names — agents.id keys the ledger, but the NAME lives on users
+  // (agents has no name columns; agents.id and users.id are DISJOINT, §3 —
+  // cross via agents.user_id, the same embed pl-truth-engine.ts uses).
   const agentIds = Array.from(new Set(obligations.map((o) => o.agent_id).filter(Boolean)))
   const { data: agentRows } = await supabase
-    .from("agents").select("id, first_name, last_name").in("id", agentIds).limit(200)
-  const nameOf = new Map((agentRows ?? []).map((a: any) => [a.id, `${a.first_name ?? ""} ${a.last_name ?? ""}`.trim()]))
+    .from("agents").select("id, users:user_id (first_name, last_name)").in("id", agentIds).limit(200)
+  const nameOf = new Map((agentRows ?? []).map((a: any) => {
+    const u = Array.isArray(a.users) ? a.users[0] : a.users
+    return [a.id, `${u?.first_name ?? ""} ${u?.last_name ?? ""}`.trim()]
+  }))
 
   const usd = (n: number | null | undefined) =>
     new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(Number(n ?? 0))
