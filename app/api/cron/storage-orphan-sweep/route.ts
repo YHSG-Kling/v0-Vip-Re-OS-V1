@@ -75,10 +75,18 @@ export async function GET(req: NextRequest) {
         cleaned:            result.cleaned,
         still_failing:      result.stillFailing,
         bookkeeping_errors: bookkeepingErrors.slice(0, 10),
+        // The RECORDER'S OWN reason travels with the still-failing object.
+        // Without it the operator reading this metadata sees a bucket path and
+        // a storage error and cannot tell a refused delete from a signing
+        // failure — the classification put-and-sign.ts stamped at the moment
+        // the orphan was created is the only record of why it exists.
         still_failing_objects: result.swept
           .filter((s) => s.error !== null)
           .slice(0, 10)
-          .map((s) => `${s.bucket}/${s.objectPath}: ${s.error}`),
+          .map((s) =>
+            `${s.bucket}/${s.objectPath} [${s.reason ?? "reason not recorded"}]: ${s.error}` +
+            (s.detail ? ` — originally: ${s.detail}` : ""),
+          ),
       },
     }).catch(() => {})
 

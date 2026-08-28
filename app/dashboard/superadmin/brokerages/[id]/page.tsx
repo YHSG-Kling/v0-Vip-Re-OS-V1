@@ -1,6 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Building2, ArrowLeft, Clock } from "lucide-react"
+import { Building2, ArrowLeft, Clock, KeyRound } from "lucide-react"
 import Link from "next/link"
 import { requirePlatformCapability } from "@/lib/platform/require-capability"
 import { redirect } from "next/navigation"
@@ -41,7 +41,7 @@ export default async function SuperadminBrokerageDetailPage(
   const r = await getBrokerageDetailAction(id)
   if (!r.ok) return <div className="p-6 text-red-600">Failed: {r.error}</div>
 
-  const { brokerage, users, subscriptions, auditEntries } = r
+  const { brokerage, users, subscriptions, auditEntries, accessSessions } = r
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
@@ -163,6 +163,70 @@ export default async function SuperadminBrokerageDetailPage(
           </CardContent>
         </Card>
       )}
+
+      {/* Staff account access — the impersonation grant ledger for THIS tenant.
+          Reads platform_impersonation_sessions: who entered, under what stated
+          reason, in which mode, from where, and whether they exited or the
+          grant simply expired. A grant walks the account and never exceeds it
+          (CLAUDE.md §5); this is where that is checked after the fact. */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <KeyRound className="h-4 w-4 text-primary" />
+            Staff account access
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          {accessSessions.length === 0 ? (
+            <p className="p-4 text-sm text-muted-foreground">No platform staff has entered this tenant.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b bg-muted/10">
+                    <th className="text-left px-4 py-2 font-medium text-muted-foreground">Staff</th>
+                    <th className="text-left px-4 py-2 font-medium text-muted-foreground">Mode</th>
+                    <th className="text-left px-4 py-2 font-medium text-muted-foreground">Stated reason</th>
+                    <th className="text-left px-4 py-2 font-medium text-muted-foreground">Origin</th>
+                    <th className="text-left px-4 py-2 font-medium text-muted-foreground">Started</th>
+                    <th className="text-left px-4 py-2 font-medium text-muted-foreground">Ended</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {accessSessions.map((s: any) => (
+                    <tr key={s.id} className="border-b last:border-0 align-top">
+                      <td className="px-4 py-2.5 text-xs">{s.actor_email ?? s.actor_user_id ?? "—"}</td>
+                      <td className="px-4 py-2.5 text-xs">
+                        <Badge variant={s.mode === "read_only" ? "secondary" : "destructive"}>{s.mode ?? "—"}</Badge>
+                        {s.target_user_id ? <span className="ml-2 text-[10px] text-muted-foreground">as one user</span> : null}
+                      </td>
+                      {/* An entry with NO stated reason is shown as exactly that
+                          — never blanked into looking routine. */}
+                      <td className="px-4 py-2.5 text-xs max-w-xs">
+                        {s.reason ? s.reason : <span className="text-amber-600">no reason recorded</span>}
+                      </td>
+                      <td className="px-4 py-2.5 text-[10px] text-muted-foreground font-mono max-w-[14rem] truncate" title={s.user_agent ?? ""}>
+                        {s.ip_address ?? "ip not recorded"}
+                        {s.user_agent ? ` · ${s.user_agent}` : ""}
+                      </td>
+                      <td className="px-4 py-2.5 text-xs text-muted-foreground">
+                        {s.started_at ? new Date(s.started_at).toLocaleString() : "—"}
+                      </td>
+                      <td className="px-4 py-2.5 text-xs text-muted-foreground">
+                        {s.ended_at
+                          ? new Date(s.ended_at).toLocaleString()
+                          : s.expires_at && Date.parse(s.expires_at) < Date.now()
+                          ? `expired ${new Date(s.expires_at).toLocaleString()}`
+                          : "ACTIVE NOW"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Audit log */}
       <Card>

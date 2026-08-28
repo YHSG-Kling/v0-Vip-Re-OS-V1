@@ -378,32 +378,79 @@ export type SocialPlatform = (typeof SOCIAL_PLATFORMS)[number]
 // imports the survivor and validates against it before publishing. Two names for
 // one platform vocabulary is exactly what CLAUDE.md §6 forbids.
 
-export const EMAIL_TYPES = [
-  "welcome",
-  "listing_alert",
-  "open_house",
-  "price_drop",
-  "sold",
-  "follow_up",
-  "birthday",
-  "anniversary",
-  "market_update",
-] as const
-export type EmailType = (typeof EMAIL_TYPES)[number]
+// TOMBSTONE (orphan burn-down, lane H5, 2026-08-28): EMAIL_TYPES and EmailType
+// are DELETED. Neither had a single reference anywhere in the tree — verified
+// comment-stripped across app/ lib/ hooks/ types/ constants/ components/
+// services/ workflows/ contexts/ remotion/ scripts/; the only occurrences of
+// either name were these two declarations. This was a SECOND hand-kept
+// vocabulary for "what kind of email is this", the exact defect CLAUDE.md §6
+// names, and it disagreed with the live one at the spelling level: it said
+// `follow_up` where the database says `followup`, so nothing could ever have
+// matched across the two.
+//
+// SURVIVORS — each of the nine words placed, so nothing is deleted to move a
+// number:
+//   · TEMPLATE KIND (`welcome`, `follow_up`, and the rest of the transactional
+//     shapes) → email_templates.template_type, a LIVE CHECK admitting
+//     ["closing", "followup", "offer", "reminder", "welcome"] — mirrored in the
+//     generated cache scripts/check-vocabularies.ts:700. That is what actually
+//     decides a stored row; a TypeScript array never could.
+//   · CAMPAIGN SHAPE (`market_update`, a recurring send) → email_campaigns
+//     .campaign_format ["drip", "event_triggered", "one_off", "segmented",
+//     "transactional"] (check-vocabularies.ts:686).
+//   · SEND OUTCOME → email_sends.status / email_tracking.event_type.
+//   · `listing_alert` and `open_house` are LEAD-MAGNET kinds, not email kinds:
+//     lib/kernel/lead-magnets.ts:25 owns that union and lib/marketing/
+//     lead-magnet-copy.ts:93 carries their copy.
+//   · `price_drop` / `sold` are LISTING lifecycle events, carried by the
+//     listing-stage vocabulary, and `birthday` / `anniversary` are relationship
+//     moments — `home_anniversary` is a live ai_video_projects.video_type value
+//     (m565) and contacts.home_anniversary is the column behind it.
+// NOTHING WAS MERGED because nothing was missing: no writer in the tree has
+// ever produced one of these nine strings for an email, so adding them to a
+// survivor would have invented a vocabulary rather than preserved one. Adding
+// any of them for real is a migration + a product decision, not a rename.
 
 // ============================================
 // VIDEO TYPES
 // ============================================
 
-export const VIDEO_TYPES = [
-  "full_tour",
-  "social_snippet",
-  "instagram_story",
-  "reel",
-  "drone_highlight",
-  "agent_intro",
-] as const
-export type VideoType = (typeof VIDEO_TYPES)[number]
+// TOMBSTONE (orphan burn-down, lane H5, 2026-08-28): VIDEO_TYPES and VideoType
+// are DELETED — the THIRD video-type vocabulary in the tree, and the only one
+// with no writer, no reader and no constraint behind it. Neither name had a
+// reference anywhere (verified comment-stripped over the whole export corpus).
+// It is the sibling of the VIDEO_STATUSES deletion recorded a few lines above,
+// and the same §6 ruling applies: two spellings of one fact are a defect, not a
+// style choice.
+//
+// AND IT WAS WORSE THAN UNUSED. Of its six words only `agent_intro` is a value
+// the database accepts. The live CHECK ai_video_projects_video_type_check
+// admits seventeen: agent_intro, avatar_explainer, coming_soon, education,
+// home_anniversary, just_listed, just_sold, listing_promo, listing_tour,
+// market_update, memory_video, open_house_promo, pre_appointment,
+// presentation_chapter, social_reel, testimonial, welcome
+// (generated cache: scripts/check-vocabularies.ts:241). So a caller that had
+// adopted this list would have sent `full_tour`, `social_snippet`,
+// `instagram_story`, `reel` or `drone_highlight` into an insert the database
+// refuses outright — the PGRST/23514 shape CLAUDE.md §3 records, where the row
+// does not land at all.
+//
+// SURVIVORS:
+//   · THE VOCABULARY → the live CHECK above, cached in
+//     scripts/check-vocabularies.ts and regenerated, never hand-edited.
+//   · ITS ENFORCEMENT AT THE EDGE → app/api/video/projects/route.ts:13, which
+//     validates untrusted input against that same seventeen-value list before
+//     the insert so a bad request is a 400 and not a 500.
+//   · FORMAT/ASPECT (what `instagram_story`, `reel` and `social_snippet` were
+//     really reaching for) → the Director's format selection and
+//     lib/kernel/video-coordination.ts PROMOTABLE_VIDEO_KINDS for what may be
+//     promoted, which is a DIFFERENT question from what kind of video it is and
+//     is deliberately kept separate (see manager-registry
+//     `anniversary_video_delivery` for what happened the last time those two
+//     were conflated).
+// NOTHING WAS MERGED: the five non-admitted words name shapes this product does
+// not model as a video_type, and adding one is a migration plus a product
+// decision, not a rename.
 
 // TOMBSTONE (orphan burn-down, lane BC, 2026-08-26): VIDEO_STATUSES and
 // VideoStatus are DELETED — a SECOND video-status vocabulary, which §6 names as

@@ -300,7 +300,12 @@ export function SentinelActionQueue() {
                     <li key={a.id} className="flex items-center gap-2 text-xs">
                       <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${STATUS_BADGE[a.status] ?? 'bg-slate-100 text-slate-600'}`}>{a.status}</span>
                       <span className="truncate">{a.title}</span>
-                      <span className="ml-auto text-muted-foreground shrink-0">{a.actedAt ? new Date(a.actedAt).toLocaleDateString() : ''}</span>
+                      {/* WHO, not just when — the decision is a staff act on a
+                          tenant and the queue is where it is answered for. */}
+                      <span className="ml-auto text-muted-foreground shrink-0">
+                        {a.actedBy ?? 'actor not recorded'}
+                        {a.actedAt ? ` · ${new Date(a.actedAt).toLocaleDateString()}` : ''}
+                      </span>
                     </li>
                   ))}
                 </ul>

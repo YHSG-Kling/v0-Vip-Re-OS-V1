@@ -309,6 +309,16 @@ export async function getMagnetPerformanceAction(magnetId: string) {
  *     id in that column is a refused insert.
  *
  * It also now returns the rendered PNG so the UI stops fetching it from api.qrserver.com.
+ *
+ * THE FOURTH DOOR IS GONE TOO (wave H5). `POST /api/lead-magnets/qr/[magnetId]`
+ * reached the SAME generateQRCode with the same four arguments, but took
+ * `brokerageId` and `agentId` from the REQUEST BODY and handed them to the
+ * service-client minter behind nothing but "some user is signed in" — the
+ * body-supplied-tenant IDOR shape CLAUDE.md §4 names. It is deleted; the
+ * tombstone with the full reasoning is at
+ * app/api/lead-magnets/qr/[magnetId]/route.ts. THIS action is the survivor: the
+ * tenant comes from getAgentContext() and the magnet is re-read scoped by
+ * brokerage_id before anything is minted.
  */
 export async function generateQRCodeAction(input: { magnetId: string; url: string }) {
   try {

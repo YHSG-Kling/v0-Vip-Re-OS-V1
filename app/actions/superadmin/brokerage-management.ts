@@ -203,22 +203,46 @@ export async function listBrokeragesAction(filter?: {
 // ── DETAIL ───────────────────────────────────────────────────────────────────
 
 export async function getBrokerageDetailAction(brokerageId: string): Promise<
-  | { ok: true; brokerage: any; users: any[]; subscriptions: any[]; auditEntries: any[] }
+  | { ok: true; brokerage: any; users: any[]; subscriptions: any[]; auditEntries: any[]; accessSessions: any[] }
   | { ok: false; error: string }
 > {
   const auth = await requireTenantRead()   // read-only: the whole staff roster
   if (!auth.ok) return auth
   const svc = createServiceClient()
 
-  const [{ data: brokerage, error }, { data: users }, { data: subs }, { data: audit }] = await Promise.all([
+  // ── WHO WALKED THIS ACCOUNT (wave H5) ───────────────────────────────────
+  // lib/platform/impersonation.ts:155 stamps actor_email, reason, ip_address
+  // and user_agent on every grant, and NOTHING read any of them: the only
+  // reads of platform_impersonation_sessions are the two active-session
+  // lookups that resolve the current context. So the forensic half of the
+  // grant record was write-only, and CLAUDE.md §5 ("impersonation is a
+  // support-investigation tool: a grant walks the account and never exceeds
+  // it") had no surface on which a grant could be reviewed after the fact.
+  // The superadmin_audit_log copy is NOT a substitute: that insert is wrapped
+  // in a swallowing try/catch (app/actions/superadmin/impersonation.ts:20-28)
+  // while the session insert is error-checked, so the session row is the more
+  // reliable record of the two.
+  const [{ data: brokerage, error }, { data: users }, { data: subs }, { data: audit }, { data: sessions }] = await Promise.all([
     svc.from("brokerages").select("*").eq("id", brokerageId).maybeSingle(),
     svc.from("users").select("id, email, first_name, last_name, user_type, created_at").eq("brokerage_id", brokerageId).order("created_at", { ascending: false }).limit(50),
     svc.from("subscriptions").select("id, tier_id, status, current_period_start, current_period_end, created_at").eq("brokerage_id", brokerageId).order("created_at", { ascending: false }).limit(10),
     svc.from("superadmin_audit_log").select("id, action, actor_email, details, created_at").eq("target_type", "brokerage").eq("target_id", brokerageId).order("created_at", { ascending: false }).limit(30),
+    svc.from("platform_impersonation_sessions")
+      .select("id, actor_user_id, actor_email, target_user_id, mode, reason, ip_address, user_agent, started_at, expires_at, ended_at")
+      .eq("target_brokerage_id", brokerageId)
+      .order("started_at", { ascending: false })
+      .limit(30),
   ])
   if (error || !brokerage) return { ok: false, error: error?.message ?? "Not found" }
 
-  return { ok: true, brokerage, users: users ?? [], subscriptions: subs ?? [], auditEntries: audit ?? [] }
+  return {
+    ok: true,
+    brokerage,
+    users: users ?? [],
+    subscriptions: subs ?? [],
+    auditEntries: audit ?? [],
+    accessSessions: sessions ?? [],
+  }
 }
 
 // ── TIER CHANGE ──────────────────────────────────────────────────────────────

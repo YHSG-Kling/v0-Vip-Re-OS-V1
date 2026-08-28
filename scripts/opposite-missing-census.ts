@@ -382,6 +382,41 @@ const POLICY_OR_AUDIT_CONSUMED = new Set([
   // building a reader of a value that cannot vary. Same class as
   // usage_counters.period_end: written by app code, consumed by a constraint.
   "vendor_subscriptions.billing_direction",
+
+  // WHY THIS ONE. `platform_sentinel_actions.dedupe_key` is written by the one
+  // proposal writer (app/api/cron/platform-sentinel/route.ts:110, weekly-
+  // bucketed keys) and its READER IS THE DATABASE: the same write is an
+  // `.upsert(rows, { onConflict: "dedupe_key", ignoreDuplicates: true })`, so
+  // the UNIQUE index IS the consumer — it is what makes the daily cron
+  // idempotent and, more importantly, what stops a re-proposal from
+  // RESURRECTING an action a staff member already dismissed. Verified live
+  // against hrvaqgvukzxfskkcrwbt on 2026-08-28, pg_constraint:
+  // platform_sentinel_actions_dedupe_key_key UNIQUE (dedupe_key). An app
+  // reader would be reading a key whose only meaning is collision; reporting
+  // it as a one-sided write invites deleting the write and letting every
+  // dismissed proposal come back tomorrow. Same class as
+  // usage_counters.period_end and vendor_subscriptions.billing_direction:
+  // written by app code, consumed by a constraint.
+  "platform_sentinel_actions.dedupe_key",
+
+  // WHY THESE TWO. `closing_cost_accuracy_observations.transaction_id` and
+  // `.document_id` are written by BOTH accuracy writers
+  // (lib/offers/closing-cost-accuracy.ts:493 buyer side, :622 seller side) and
+  // their READER IS THE DATABASE: they are two thirds of the idempotency key
+  // both writers upsert against — `onConflict: "transaction_id,document_id,side"`
+  // — which is what lets the recorder run from BOTH of its trigger paths (the
+  // CLOSED branch of stage-progression and the post-scan hook) without
+  // double-counting a deal into the accuracy rail. Verified live against
+  // hrvaqgvukzxfskkcrwbt on 2026-08-28, pg_indexes: ccao_txn_doc_side_key
+  // UNIQUE (transaction_id, document_id, side) — created by m1105, which also
+  // dropped m1104's 2-column unique. Note the SIDE discriminator is genuinely
+  // read (lib/analytics/prediction-accuracy.ts, the buyer/seller breakdown);
+  // only the two identity columns have no app reader, and building one would
+  // mean inventing a per-observation drill-down nobody asked for. Reporting
+  // them as one-sided writes invites dropping the columns and re-grading the
+  // same closed deal on every scan.
+  "closing_cost_accuracy_observations.transaction_id",
+  "closing_cost_accuracy_observations.document_id",
 ])
 
 /**
@@ -2409,6 +2444,27 @@ const QUALIFIED_EXTERNAL_ROUTES = new Map<string, string>([
   ["/api/agentic-os/connectivity",         "Connectivity API Agent — an external agent reads connector health here BEFORE planning, so it never invokes a capability whose OAuth token has lapsed. Gated by the connectivity:read scope on a bearer token"],
   ["/api/agentic-os/mcp",                  "MCP server (Streamable-HTTP / JSON-RPC 2.0). The caller is an MCP CLIENT outside this repo — initialize / tools/list / tools/call — scope-gated per call by the same bearer token and audit-logged through lib/agentic-os/invocation-log.ts"],
   ["/api/workflow/trigger",                "Universal webhook entry point for the workflow trigger fabric (GHL / IDX / Zapier / QR scans / email-provider open+click). Auth is Bearer WORKFLOW_WEBHOOK_SECRET, never a session, so an in-tree caller is impossible; named at lib/workflow/triggers.ts:19. The path carries no cron/webhook segment, which is precisely why the NAME test above cannot see it"],
+
+  // ── A PROVIDER CALLBACK THE NAME TEST MISSES BY ONE HYPHEN (lane H5) ──────
+  // EXTERNALLY_ADDRESSED requires a path SEGMENT that IS "webhook"; this one is
+  // named `showingtime-webhook`, so the word is a suffix inside the segment and
+  // the regex — correctly, since it must not match `/api/webhooks-admin-ui` —
+  // does not fire. The regex is left alone and the route is qualified by name
+  // instead, which is what this map exists for.
+  //
+  // THE EVIDENCE, and it is the strongest kind in this map: the handler
+  // authenticates on an HMAC-SHA256 of the RAW BODY against
+  // SHOWINGTIME_WEBHOOK_SECRET, compared with crypto.timingSafeEqual
+  // (app/api/showings/showingtime-webhook/route.ts:59-76), and FAILS CLOSED
+  // both ways — 503 when the secret is unset, 401 on any mismatch. No session
+  // is read anywhere in the file, so an in-tree caller is not merely absent, it
+  // is impossible: nothing in this repo can mint that signature.
+  // The outbound half is live and in-tree — app/actions/dispatch-showing.ts:138
+  // dispatches a stop with channel='showingtime' through the resolved
+  // ShowingTime connection — and this route is the return leg ShowingTime makes
+  // for appointment.requested / appointment.confirmed. Deleting it would
+  // silently strand every confirmation for showings the product already sends.
+  ["/api/showings/showingtime-webhook", "ShowingTime provider callback — HMAC-SHA256 over the raw body vs SHOWINGTIME_WEBHOOK_SECRET, timing-safe, fails closed 503/401 (route.ts:59-76); no getUser() anywhere in the file, so an in-tree caller cannot exist. Outbound leg: app/actions/dispatch-showing.ts:138 (channel='showingtime')"],
 ])
 
 for (const r of routesWithNoCaller) {
@@ -2553,6 +2609,41 @@ const CATEGORIES = [
 const counts: Record<string, number> = {}
 for (const [c] of CATEGORIES) counts[c] = findings.filter((f) => f.cat === c).length
 
+/**
+ * THE TWO ROUTE CATEGORIES ARE TWO ANSWERS TO ONE QUESTION (lane H5).
+ *
+ * 6b ("nothing in the tree addresses it") and 6c ("addressed only from OUTSIDE")
+ * are not two defects — they are the unclassified and the classified state of
+ * the SAME finding: "no in-tree caller". The baseline is keyed per category, so
+ * giving an already-listed 6b route its correct 6c classification made the
+ * ratchet report a NEW one-sided pair while simultaneously reporting the very
+ * same path as burned down. That is the accusing direction of §2: the guard
+ * went red BECAUSE a route was adjudicated, which teaches the next lane not to
+ * adjudicate one.
+ *
+ * So the two route categories are diffed as ONE key set. This cannot hide a
+ * real regression: a route in NEITHER baseline key is still fresh, which is
+ * what the control below proves by construction. It only stops a MOVE between
+ * the two from counting as an arrival.
+ *
+ * Deliberately narrow — the column categories (1a/1b) are NOT merged this way.
+ * A column moving from written-never-read to read-never-written means its
+ * writer disappeared, which is a real event and must stay visible.
+ */
+const ROUTE_CATS = new Set(["route-no-caller", "route-external-caller"])
+function diffKeySets(had: Set<string>, now: Set<string>): { fresh: string[]; burned: string[] } {
+  const fresh: string[] = []
+  const burned: string[] = []
+  for (const k of now) if (!had.has(k)) fresh.push(k)
+  for (const k of had) if (!now.has(k)) burned.push(k)
+  return { fresh, burned }
+}
+control("C6c a route present under EITHER route baseline key is a reclassification, not an arrival",
+  diffKeySets(new Set(["/api/a"]), new Set(["/api/a"])).fresh.length === 0)
+control("C6c CONTROL — a route in NEITHER route baseline key is still reported as NEW",
+  diffKeySets(new Set(["/api/a"]), new Set(["/api/a", "/api/brand-new"])).fresh.join() === "/api/brand-new",
+  "the merge must not swallow a genuinely new unaddressed route")
+
 console.log("══════════════════════════════════════════════════")
 console.log(" OPPOSITE-MISSING CENSUS — halves built without their other half")
 console.log("══════════════════════════════════════════════════")
@@ -2674,10 +2765,18 @@ const base = JSON.parse(readFileSync(BASELINE_PATH, "utf8")) as BaselineShape
 const fresh: string[] = []
 const burned: string[] = []
 for (const [cat, label] of CATEGORIES) {
-  const had = new Set(base.keys?.[cat] ?? [])
-  const now = new Set(keysByCat[cat])
-  for (const k of now) if (!had.has(k)) fresh.push(`${label.slice(0, 3)} ${k}`)
-  for (const k of had) if (!now.has(k)) burned.push(`${label.slice(0, 3)} ${k}`)
+  if (ROUTE_CATS.has(cat)) continue           // diffed together, just below
+  const d = diffKeySets(new Set(base.keys?.[cat] ?? []), new Set(keysByCat[cat]))
+  for (const k of d.fresh) fresh.push(`${label.slice(0, 3)} ${k}`)
+  for (const k of d.burned) burned.push(`${label.slice(0, 3)} ${k}`)
+}
+// The route pair, as ONE set — see the ruling above diffKeySets.
+{
+  const unionOf = (src: Record<string, string[]> | undefined) =>
+    new Set([...(src?.["route-no-caller"] ?? []), ...(src?.["route-external-caller"] ?? [])])
+  const d = diffKeySets(unionOf(base.keys), unionOf(keysByCat))
+  for (const k of d.fresh) fresh.push(`6b/6c ${k}`)
+  for (const k of d.burned) burned.push(`6b/6c ${k}`)
 }
 
 if (burned.length > 0) {

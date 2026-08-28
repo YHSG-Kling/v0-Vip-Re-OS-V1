@@ -31,6 +31,15 @@ export interface SweptOrphan {
   objectPath: string
   /** null = the object is gone from the bucket and the row is stamped clean. */
   error:      string | null
+  /** WHY the object was orphaned in the first place — the recorder's own
+   *  classification (put-and-sign.ts:150). Written since m387 and read by
+   *  nothing until wave H5: an object the storage layer will not let go of
+   *  came back as a bare bucket/path with no way to tell a signing failure
+   *  from a refused delete, which is the one fact a human needs to triage it. */
+  reason:     string | null
+  /** the recorder's free-text detail, including the message the ORIGINAL
+   *  remove was refused with. null when the row predates the stamp. */
+  detail:     string | null
 }
 
 export type OrphanSweepResult =
@@ -76,7 +85,7 @@ export async function sweepStorageOrphans(
   // hiding the reader from it would have been the wrong way to go green.
   const { data: rows, error: readError } = await client
     .from("storage_orphaned_objects")
-    .select("id, bucket, object_path, cleanup_attempts")
+    .select("id, bucket, object_path, cleanup_attempts, reason, detail")
     .is("cleaned_at", null)
     .order("cleanup_attempts", { ascending: true })
     .order("detected_at", { ascending: true })
@@ -91,6 +100,8 @@ export async function sweepStorageOrphans(
     bucket: string
     object_path: string
     cleanup_attempts: number | null
+    reason: string | null
+    detail: string | null
   }>
 
   if (worklist.length === 0) {
@@ -134,10 +145,16 @@ export async function sweepStorageOrphans(
 
     if (removeError) {
       stillFailing += 1
-      swept.push({ id: row.id, bucket: row.bucket, objectPath: row.object_path, error: removeError.message })
+      swept.push({
+        id: row.id, bucket: row.bucket, objectPath: row.object_path,
+        error: removeError.message, reason: row.reason ?? null, detail: row.detail ?? null,
+      })
     } else {
       cleaned += 1
-      swept.push({ id: row.id, bucket: row.bucket, objectPath: row.object_path, error: null })
+      swept.push({
+        id: row.id, bucket: row.bucket, objectPath: row.object_path,
+        error: null, reason: row.reason ?? null, detail: row.detail ?? null,
+      })
     }
   }
 
