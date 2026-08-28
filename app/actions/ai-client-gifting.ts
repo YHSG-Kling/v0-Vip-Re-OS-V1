@@ -581,29 +581,43 @@ export async function getGiftAnalytics(params?: { agentId?: string; year?: numbe
 // VENDOR MANAGEMENT
 // ============================================================================
 
-export async function getVendors(params?: { agentId?: string; category?: string }) {
-  try {
-    const supabase = await createClient()
-    
-    let query = supabase
-      .from("gift_vendors")
-      .select("*")
-      .order("name", { ascending: true })
+// THE AGENT'S GIFT-SUPPLIER ROLODEX (owner: "wire a small rolodex", lane F2
+// 2026-08-28). gift_vendors is a different business process from the vendor
+// MARKETPLACE (`vendors` — the brokerage's service-provider directory clients
+// are referred to): these are the florists, engravers and gift-basket shops an
+// AGENT buys closing/anniversary gifts from. Scope is the SESSION agent (§4):
+// `agentId` is no longer accepted — the old restored signatures took it from
+// the caller, which on a public "use server" endpoint let any session read or
+// write any agent's rolodex. Columns verified against scripts/
+// schema-snapshot.ts: agent_id, brokerage_id, category, contact_name,
+// created_at, email, id, is_active, name, notes, phone, updated_at, website.
+// Wired at app/lifetime-customers (Campaigns & Gifting tab → Gift Vendor
+// Rolodex card).
 
-    if (params?.agentId) query = query.eq("agent_id", params.agentId)
-    if (params?.category) query = query.eq("category", params.category)
-
-    const { data, error } = await query
-
-    if (error) throw error
-    return { success: true, vendors: data || [] }
-  } catch (error) {
-    return handleError(error, "getVendors")
+export async function getVendors(params?: { category?: string }) {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.agentId) {
+    return { success: false as const, error: "Not authenticated" }
   }
+
+  const supabase = await createClient()
+  let query = supabase
+    .from("gift_vendors")
+    .select("id, name, category, contact_name, email, phone, website, notes, is_active, created_at")
+    .eq("agent_id", ctx.agentId)
+    .order("category", { ascending: true })
+    .order("name", { ascending: true })
+  if (params?.category?.trim()) query = query.eq("category", params.category.trim())
+
+  const { data, error } = await query
+  // Fail CLOSED and honestly: a refused read must never render as "no vendors".
+  if (error) {
+    return { success: false as const, error: `Could not read your gift vendors: ${error.message}` }
+  }
+  return { success: true as const, vendors: data ?? [] }
 }
 
 export async function createVendor(params: {
-  agentId: string
   name: string
   category: string
   contactName?: string
@@ -612,33 +626,50 @@ export async function createVendor(params: {
   website?: string
   notes?: string
 }) {
-  try {
-    if (!isValidUUID(params.agentId)) {
-      return { success: false, error: "Invalid agent ID" }
-    }
-
-    const supabase = await createClient()
-
-    const { data, error } = await supabase
-      .from("gift_vendors")
-      .insert({
-        agent_id: params.agentId,
-        name: params.name,
-        category: params.category,
-        contact_name: params.contactName,
-        email: params.email,
-        phone: params.phone,
-        website: params.website,
-        notes: params.notes,
-      })
-      .select()
-      .single()
-
-    if (error) throw error
-
-    revalidatePath("/settings")
-    return { success: true, vendor: data }
-  } catch (error) {
-    return handleError(error, "createVendor")
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.agentId) {
+    return { success: false as const, error: "Not authenticated" }
   }
+  if (!ctx.brokerageId) {
+    return { success: false as const, error: "Your account is not linked to a brokerage yet." }
+  }
+
+  const name = params.name?.trim()
+  const category = params.category?.trim()
+  if (!name) return { success: false as const, error: "Vendor name is required" }
+  if (!category) return { success: false as const, error: "Category is required" }
+  if (name.length > 120) return { success: false as const, error: "Vendor name is too long (max 120 characters)" }
+  if (category.length > 60) return { success: false as const, error: "Category is too long (max 60 characters)" }
+
+  const clean = (v?: string) => {
+    const s = (v ?? "").trim()
+    return s === "" ? null : s
+  }
+
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from("gift_vendors")
+    .insert({
+      agent_id: ctx.agentId,
+      // TENANT stamped from the SESSION — the pre-restore insert left
+      // brokerage_id null, invisible to every brokerage-scoped read.
+      brokerage_id: ctx.brokerageId,
+      name,
+      category,
+      contact_name: clean(params.contactName),
+      email: clean(params.email),
+      phone: clean(params.phone),
+      website: clean(params.website),
+      notes: clean(params.notes),
+      is_active: true,
+    })
+    .select("id, name, category, contact_name, email, phone, website, notes, is_active, created_at")
+    .single()
+
+  if (error) {
+    return { success: false as const, error: `The vendor was not saved: ${error.message}` }
+  }
+
+  revalidatePath("/lifetime-customers")
+  return { success: true as const, vendor: data }
 }

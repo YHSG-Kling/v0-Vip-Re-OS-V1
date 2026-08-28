@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { reviewAuditFlag, runWeeklyAIAudit } from "@/app/actions/conversation-analytics"
+import FairHousingReviewCard, { type ReviewContact } from "./FairHousingReviewCard"
 
 interface AuditFlag {
   id: string
@@ -25,6 +26,9 @@ interface AuditFlag {
 interface ComplianceTabProps {
   flags: AuditFlag[]
   reviewerId: string
+  /** Contacts for the Fair-Housing Review card — the restored contact-linked
+   *  post-hoc review (analyzeFairHousingRisk, lane F2 2026-08-28). */
+  reviewContacts: ReviewContact[]
 }
 
 const RISK_TYPE_COLORS: Record<string, string> = {
@@ -147,7 +151,7 @@ function FlagRow({ flag, reviewerId, onUpdated }: { flag: AuditFlag; reviewerId:
   )
 }
 
-export default function ComplianceTab({ flags, reviewerId }: ComplianceTabProps) {
+export default function ComplianceTab({ flags, reviewerId, reviewContacts }: ComplianceTabProps) {
   const router = useRouter()
   const [localFlags, setLocalFlags] = useState(flags)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -208,6 +212,12 @@ export default function ComplianceTab({ flags, reviewerId }: ComplianceTabProps)
         <span className="font-semibold">{"⚠️ Fair Housing Compliance: "}</span>
         All flagged conversations require review within 24 hours of flagging. Violations must be reported to the supervising broker.
       </div>
+
+      {/* Fair-Housing Review — contact-linked post-hoc review of one
+          communication. Findings land in compliance_flags (the command
+          center's flagged-content queue), distinct from the conversation
+          audit flags reviewed below. */}
+      <FairHousingReviewCard contacts={reviewContacts} />
 
       {/* Run the last-7-days compliance re-scan on demand */}
       <div className="flex flex-wrap items-center gap-3">

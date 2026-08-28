@@ -1,18 +1,27 @@
 // ─── AI ISA ───────────────────────────────────────────────────────────────────
-// launchAIISACampaignService / getAIISACampaignsService / getAIISACallsService
-// were deleted (lane E2 2026-08-28) — tombstones naming their survivors sit in
-// ./ai-isa. queueAIISACallService survives as retryFailedCallsService's engine
-// and is not re-exported here (no external caller).
+// getAIISACampaignsService / getAIISACallsService were deleted (lane E2
+// 2026-08-28) — tombstones naming their survivors sit in ./ai-isa.
+// launchAIISACampaignService and queueAIISACallService were RESTORED by owner
+// ruling (lane F1 2026-08-28): the launcher is a campaign-type chooser that
+// enrolls the matched segment into the sequence cadence (it does not dial);
+// the call-queue service regained its public action door in
+// app/actions/ai-isa.ts:queueAIISACall.
 export {
+  launchAIISACampaignService,
+  queueAIISACallService,
   retryFailedCallsService,
   updateCampaignStatusService,
 } from "./ai-isa"
+export type { ISALaunchCampaignType, LaunchAIISACampaignResult } from "./ai-isa"
 
 // ─── COMPLIANCE MONITORING ────────────────────────────────────────────────────
-// logAuditEventService / analyzeFairHousingRiskService /
-// logCommunicationWithComplianceService were deleted (lane E2 2026-08-28) —
-// tombstones naming their survivors sit in ./compliance-monitoring.
+// logAuditEventService / logCommunicationWithComplianceService were deleted
+// (lane E2 2026-08-28) — tombstones naming their survivors sit in
+// ./compliance-monitoring. analyzeFairHousingRiskService was RESTORED by owner
+// ruling (lane F2 2026-08-28): the contact-linked post-hoc review is a
+// different business process from the generation-time and outbound gates.
 export {
+  analyzeFairHousingRiskService,
   checkComplianceStatusService,
   resolveComplianceAlertService,
   resolveCompRiskFlagService,
@@ -30,6 +39,7 @@ export {
   getComplianceViolationsService,
   generateComplianceReportService,
 } from "./compliance-monitoring"
+export type { FairHousingInteractionType } from "./compliance-monitoring"
 
 // ─── LEAD APPLICATION SERVICE ─────────────────────────────────────────────────
 export type { LeadScore, LeadIntent, LeadStatus, LeadSource, Lead } from "./lead-application-service"

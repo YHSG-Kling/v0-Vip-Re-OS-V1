@@ -4,6 +4,7 @@ import { useState } from "react"
 import KPIBar from "./components/KPIBar"
 import HealthTab from "./components/HealthTab"
 import ComplianceTab from "./components/ComplianceTab"
+import type { ReviewContact } from "./components/FairHousingReviewCard"
 import CoachingTab from "./components/CoachingTab"
 import VoiceTab from "./components/VoiceTab"
 
@@ -82,6 +83,8 @@ interface IntelligenceClientProps {
   topicFrequency: { topic: string; count: number }[]
   voiceInsights: VoiceInsight[]
   userId: string
+  /** Contact picker for the Fair-Housing Review card (Risk & Compliance tab). */
+  reviewContacts: ReviewContact[]
 }
 
 const TABS: { id: Tab; label: string }[] = [
@@ -101,6 +104,7 @@ export default function IntelligenceClient({
   topicFrequency,
   voiceInsights,
   userId,
+  reviewContacts,
 }: IntelligenceClientProps) {
   const [activeTab, setActiveTab] = useState<Tab>("health")
 
@@ -147,7 +151,7 @@ export default function IntelligenceClient({
           <HealthTab chartData={chartData} insights={healthInsights} />
         )}
         {activeTab === "compliance" && (
-          <ComplianceTab flags={auditFlags} reviewerId={userId} />
+          <ComplianceTab flags={auditFlags} reviewerId={userId} reviewContacts={reviewContacts} />
         )}
         {activeTab === "coaching" && (
           <CoachingTab

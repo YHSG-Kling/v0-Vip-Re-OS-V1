@@ -1,11 +1,13 @@
 -- m582 — the DSAR 45-day clock lives in a trigger the repo never recorded.
 --
--- RECORD-ONLY, ALREADY LIVE. Verified against project hrvaqgvukzxfskkcrwbt on
--- 2026-08-28 (pg_trigger / pg_get_functiondef): trg_set_dsr_due_at and
--- set_dsr_due_at() exist and enforce the statutory clock on every insert. This
--- file brings the DDL into the repository so the source tree carries the truth
--- the database already enforces. Applying it is a no-op by construction
--- (CREATE OR REPLACE + drop-then-create trigger yields the same objects).
+-- RECORD-ONLY, ALREADY LIVE — APPLIED 2026-08-28 hrvaqgvukzxfskkcrwbt (the
+-- integrator verified this file's function body byte-equivalent to
+-- pg_get_functiondef's live output BEFORE applying, so the apply recorded the
+-- migration in the ledger without changing production behavior). Verified via
+-- pg_trigger / pg_get_functiondef: trg_set_dsr_due_at and set_dsr_due_at()
+-- exist and enforce the statutory clock on every insert. This file brings the
+-- DDL into the repository so the source tree carries the truth the database
+-- already enforces.
 --
 -- WHY THIS MATTERED BEYOND HYGIENE. data_subject_requests.due_at is the CCPA/
 -- CPRA 45-day deadline. It is READ everywhere the queue renders — the

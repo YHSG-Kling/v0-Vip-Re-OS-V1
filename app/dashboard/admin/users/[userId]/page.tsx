@@ -4,7 +4,7 @@ import { ArrowLeft } from "lucide-react"
 import Link from "next/link"
 import { UserEditForm } from "./user-edit-form"
 import { Agent360Panels } from "./agent-360-panels"
-import { getAgentProfileForUserAction, type AgentProfile, type OfficeOption } from "@/app/actions/admin/agent-profile"
+import { getAgentProfileForUserAction, type AgentProfile, type OfficeOption, type TeamOption } from "@/app/actions/admin/agent-profile"
 import { getAgent360Action, type Agent360 } from "@/app/actions/admin/agent-360"
 import { Staff360Panels } from "./staff-360-panels"
 import { getStaff360Action, type Staff360 } from "@/app/actions/admin/staff-360"
@@ -67,10 +67,12 @@ export default async function UserEditPage({ params }: Props) {
   // action so the same authz applies. `agent` is null for non-agent users.
   let agentProfile: AgentProfile | null = null
   let offices: OfficeOption[] = []
+  let teams: TeamOption[] = []
   const profileRes = await getAgentProfileForUserAction(userId)
   if (profileRes.ok) {
     agentProfile = profileRes.agent
     offices = profileRes.offices
+    teams = profileRes.teams
   }
 
   // Agent 360 — the manager's full read of this agent (production, goals,
@@ -121,6 +123,7 @@ export default async function UserEditPage({ params }: Props) {
           brokerages={brokerages}
           agentProfile={agentProfile}
           offices={offices}
+          teams={teams}
         />
         {agent360 && <Agent360Panels data={agent360} targetUserId={userId} />}
         {!agent360 && staff360 && <Staff360Panels data={staff360} targetUserId={userId} />}

@@ -62,9 +62,10 @@ import { revalidatePath } from "next/cache"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
-// (generateObject / resolveAgentRecipient / invalidateAgentIdentity / zod
-// imports left with the five functions deleted 2026-08-28 — see the
-// tombstones below.)
+// (generateObject / invalidateAgentIdentity / zod imports left with the
+// functions deleted 2026-08-28 — see the tombstones below.
+// resolveAgentRecipient returned with the restored certifyAgent.)
+import { resolveAgentRecipient } from "@/lib/notifications/recipient-tenant"
 // THE SPEND ACTOR. Every export in this "use server" file is a public HTTP
 // endpoint and `agentId` is whatever the caller typed, so it can never be the
 // tenant the AI ledger bills (CLAUDE.md §4). getAgentContext resolves the
@@ -435,20 +436,277 @@ The message should:
 // callers outside the app/actions/index.ts barrel, which itself has zero
 // importers. Nothing merged.
 
-// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `certifyAgent` deleted, as
-// this file's own migration map prescribed ("overlaps with claimCertification
-// — pick canonical"; canonical picked). SURVIVORS:
-// app/actions/onboarding/progress.ts:claimCertification +
-// checkCertEligibility (wired at
-// app/dashboard/onboarding/progress/progress-dashboard-client.tsx:275 and
-// OnboardingDashboardClient.tsx:164) — the session-scoped, eligibility-gated
-// certification path. This twin certified and ACTIVATED any caller-supplied
-// agents.id on the strength of a caller-supplied examScore — an unauthorized
-// activation door on a public "use server" endpoint. A stripped-source census
-// found zero callers outside the app/actions/index.ts barrel, which itself
-// has zero importers. Nothing merged (the recipient-resolution hardening it
-// carried already lives in lib/notifications/recipient-tenant.ts, where the
-// survivors reach it).
+// RESTORED (owner ruling, lane F2 2026-08-28) — `certifyAgent` is back, and
+// the earlier deletion note (lane E2 2026-08-28, "overlaps with
+// claimCertification — pick canonical") is REVERSED on the business-process
+// comparison the owner's methodology requires:
+//
+//   · app/actions/onboarding/progress.ts:claimCertification is a LEARNING
+//     credential — the agent themselves claims a named certificate
+//     ("Platform Fundamentals" etc.) once the certification engine's
+//     requirements are met. It writes agent_certifications and nothing else.
+//   · certifyAgent is exam-gated AGENT ACTIVATION — a broker/admin act that
+//     flips agents.is_active = true + onboarding_status = 'completed' and
+//     congratulates the agent. No survivor carried that: the kernel lane
+//     (lib/kernel/agent-onboarding.ts:completeAISessionStep) stamps
+//     agent_onboarding.certification_achieved at 100% steps but never touches
+//     the agents row, so activation was LOST with the deletion.
+//
+// Same-sounding names, different processes — not duplicates.
+//
+// Restored WITH THE FIX the deletion was reacting to: the exam score now
+// comes from the STORED record (agent_quiz_attempts on the certification-
+// category onboarding quiz, written by lib/kernel/agent-onboarding.ts:
+// submitQuizAttempt) — never from a caller-supplied number — and the caller
+// must be a broker/admin of the agent's own brokerage (§4). The 90% gate is
+// kept; the score it is applied to is the record's. The disjoint-id-safe
+// notification (agents.id → users.id via resolveAgentRecipient) is kept
+// verbatim from the old body. Wired at
+// app/dashboard/onboarding/admin/agents/[id]/certify-agent-card.tsx.
+
+/** The activation exam gate — 90%, per the original certifyAgent ruling. */
+const CERTIFICATION_PASSING_SCORE = 90
+
+/**
+ * The STORED certification-exam evidence for one agent: the best score in
+ * agent_quiz_attempts across the quizzes attached to certification-category
+ * onboarding steps (global + this brokerage). Every read destructures its
+ * error — a refused read must surface as a refusal, never as "no attempts".
+ */
+async function readStoredCertificationScore(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  agentId: string,
+  brokerageId: string,
+): Promise<
+  | { ok: true; bestScore: number | null; attemptCount: number }
+  | { ok: false; error: string }
+> {
+  const { data: certSteps, error: stepsError } = await supabase
+    .from("onboarding_steps")
+    .select("id")
+    .eq("category", "certification")
+    .or(`brokerage_id.is.null,brokerage_id.eq.${brokerageId}`)
+  if (stepsError) return { ok: false, error: `Could not read certification steps: ${stepsError.message}` }
+  const stepIds = (certSteps ?? []).map((s: { id: string }) => s.id)
+  if (stepIds.length === 0) {
+    return { ok: false, error: "No certification step is configured for this brokerage, so there is no exam to certify against." }
+  }
+
+  const { data: quizzes, error: quizError } = await supabase
+    .from("onboarding_quizzes")
+    .select("id")
+    .in("step_id", stepIds)
+  if (quizError) return { ok: false, error: `Could not read the certification exam: ${quizError.message}` }
+  const quizIds = (quizzes ?? []).map((q: { id: string }) => q.id)
+  if (quizIds.length === 0) {
+    return { ok: false, error: "No exam is attached to the certification step, so there is no stored score to certify against." }
+  }
+
+  const { data: attempts, error: attemptsError } = await supabase
+    .from("agent_quiz_attempts")
+    .select("score")
+    .eq("agent_id", agentId)
+    .in("quiz_id", quizIds)
+  if (attemptsError) return { ok: false, error: `Could not read the agent's exam attempts: ${attemptsError.message}` }
+
+  const scores = (attempts ?? [])
+    .map((a: { score: number | null }) => a.score)
+    .filter((s): s is number => typeof s === "number" && Number.isFinite(s))
+  return {
+    ok: true,
+    bestScore: scores.length > 0 ? Math.max(...scores) : null,
+    attemptCount: (attempts ?? []).length,
+  }
+}
+
+/**
+ * Read-only companion for the certify affordance: is this agent certifiable on
+ * the STORED record? Admin-gated and tenant-pinned like certifyAgent itself —
+ * it reveals another agent's exam history, so it carries the same gate.
+ */
+export async function getCertificationReadiness(agentId: string): Promise<
+  | {
+      success: true
+      bestScore: number | null
+      attemptCount: number
+      passingScore: number
+      eligible: boolean
+      alreadyActive: boolean
+      onboardingStatus: string | null
+    }
+  | { success: false; error: string }
+> {
+  if (!isValidUUID(agentId)) return { success: false, error: "Invalid agent ID" }
+
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+  if (!ctx.brokerageId) return { success: false, error: "Your account is not linked to a brokerage yet." }
+  const { isAdminOrBroker } = await import("@/lib/auth/resolve-user-role")
+  if (!isAdminOrBroker({ user_type: ctx.userType })) {
+    return { success: false, error: "Only a broker or admin can review certification readiness." }
+  }
+
+  const supabase = await createClient()
+  const { data: agent, error: agentError } = await supabase
+    .from("agents")
+    .select("id, is_active, onboarding_status")
+    .eq("id", agentId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
+  if (agentError) return { success: false, error: `Could not read the agent: ${agentError.message}` }
+  if (!agent) return { success: false, error: "That agent is not in your brokerage." }
+
+  const exam = await readStoredCertificationScore(supabase, agentId, ctx.brokerageId)
+  if (!exam.ok) return { success: false, error: exam.error }
+
+  return {
+    success: true,
+    bestScore: exam.bestScore,
+    attemptCount: exam.attemptCount,
+    passingScore: CERTIFICATION_PASSING_SCORE,
+    eligible: exam.bestScore !== null && exam.bestScore >= CERTIFICATION_PASSING_SCORE,
+    alreadyActive: agent.is_active === true && agent.onboarding_status === "completed",
+    onboardingStatus: agent.onboarding_status ?? null,
+  }
+}
+
+/**
+ * Certify an agent after the final exam — exam-gated AGENT ACTIVATION.
+ *
+ * On certification: agents.is_active = true, onboarding_status = 'completed',
+ * agent_onboarding.certification_achieved stamped, and the agent is notified.
+ * The exam score is read from the STORED quiz record server-side (§4) — the
+ * caller supplies only WHICH agent, and must be a broker/admin of that
+ * agent's brokerage.
+ */
+export async function certifyAgent(agentId: string) {
+  if (!isValidUUID(agentId)) {
+    return { success: false, error: "Invalid agent ID" }
+  }
+
+  // ── Identity and tenant come from the SESSION (§4) ─────────────────────────
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+  if (!ctx.brokerageId) return { success: false, error: "Your account is not linked to a brokerage yet." }
+  const { isAdminOrBroker } = await import("@/lib/auth/resolve-user-role")
+  if (!isAdminOrBroker({ user_type: ctx.userType })) {
+    return { success: false, error: "Only a broker or admin can certify and activate an agent." }
+  }
+
+  const supabase = await createClient()
+
+  try {
+    // The target agent must be in the CALLER's brokerage — the read is pinned
+    // to the session tenant, so a cross-tenant agents.id matches nothing.
+    const { data: agent, error: agentError } = await supabase
+      .from("agents")
+      .select("id, is_active, onboarding_status")
+      .eq("id", agentId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+    if (agentError) return { success: false, error: `Could not read the agent: ${agentError.message}` }
+    if (!agent) return { success: false, error: "That agent is not in your brokerage." }
+
+    // ── THE SCORE COMES FROM THE RECORD, NEVER THE CALLER ────────────────────
+    const exam = await readStoredCertificationScore(supabase, agentId, ctx.brokerageId)
+    if (!exam.ok) return { success: false, error: exam.error }
+    if (exam.bestScore === null) {
+      return {
+        success: false,
+        error: "No certification exam attempt is on record for this agent. The agent must take the exam before they can be certified.",
+      }
+    }
+    if (exam.bestScore < CERTIFICATION_PASSING_SCORE) {
+      return {
+        success: false,
+        error: `Best stored exam score is ${exam.bestScore}%. ${CERTIFICATION_PASSING_SCORE}% is required to certify — the agent should review the training materials and retake the exam.`,
+      }
+    }
+
+    const now = new Date().toISOString()
+
+    // ── Activate the agent — THE act this function exists for ────────────────
+    // .select() the update and count what came back: an UPDATE that matches
+    // nothing also resolves with error null, and "nobody was activated" must
+    // never render as "activated".
+    const { data: activated, error: activateError } = await supabase
+      .from("agents")
+      .update({ is_active: true, onboarding_status: "completed", updated_at: now })
+      .eq("id", agentId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .select("id")
+    if (activateError) return { success: false, error: `Activation refused: ${activateError.message}` }
+    if (!activated || activated.length === 0) {
+      return { success: false, error: "The database accepted the request but activated no agent — nothing was changed." }
+    }
+
+    // ── Stamp the kernel onboarding record (the LIVE family) ─────────────────
+    // agent_onboarding is what the onboarding dashboards read. certified_at is
+    // stamped only where it is still null so a re-certify never rewrites
+    // history; zero rows here is fine (already stamped, or the agent never
+    // opened the onboarding dashboard so no row exists) and is reported, not
+    // failed on — the activation above is the act that matters.
+    const { data: stamped, error: stampError } = await supabase
+      .from("agent_onboarding")
+      .update({ certification_achieved: true, certified_at: now, updated_at: now })
+      .eq("agent_id", agentId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .is("certified_at", null)
+      .select("id")
+    if (stampError) {
+      console.error(`[ai-agent-onboarding] certifyAgent: agent activated but agent_onboarding stamp refused: ${stampError.message}`)
+    }
+
+    // Send certification notification.
+    //
+    // RECIPIENT + TENANT, resolved ONCE through the record this row is filed
+    // against: `agentId` is an agents.id, and `notifications.user_id` is
+    // `REFERENCES users(id)` — DISJOINT spaces. A fallback across that boundary
+    // (the pre-hardening `certAgent?.user_id ?? agentId` shape) handed an
+    // agents.id to a users FK and Postgres refused it 23503: the congrats did
+    // not arrive late; it did not arrive.
+    //
+    // The tenant is the RECIPIENT's `users.brokerage_id` — the exact value
+    // app/api/dashboard/badge-counts/route.ts compares against. Unstamped,
+    // `NULL = <uuid>` is NULL and the certification never counts toward the
+    // bell, on the one notification whose entire job is to be seen.
+    const certRecipient = await resolveAgentRecipient(supabase, agentId)
+    if (!certRecipient.ok) {
+      console.error(`[ai-agent-onboarding] certifyAgent: ${certRecipient.reason} — certification notification NOT written`)
+    } else if (!certRecipient.userId || !certRecipient.brokerageId) {
+      console.error(
+        `[ai-agent-onboarding] certifyAgent: agent ${agentId} resolves to no user or no brokerage — certification notification NOT written rather than written where the bell cannot count it`,
+      )
+    } else {
+      const { error: certNotifyError } = await supabase.from("notifications").insert({
+        user_id: certRecipient.userId,
+        brokerage_id: certRecipient.brokerageId,
+        type: "certification_achieved",
+        title: "Congratulations! You're Certified!",
+        body: "Welcome to the team. You now have full access to the platform.",
+        priority: "high",
+        created_at: now,
+      })
+      if (certNotifyError) {
+        console.error("[ai-agent-onboarding] certification notification insert refused:", certNotifyError.message)
+      }
+    }
+
+    revalidatePath("/dashboard/admin/users")
+    revalidatePath(`/dashboard/onboarding/admin/agents/${agentId}`)
+
+    return {
+      success: true,
+      certified: true,
+      examScore: exam.bestScore,
+      onboardingStamped: (stamped?.length ?? 0) > 0,
+      message: `Certification complete (stored exam score ${exam.bestScore}%). The agent is now active.`,
+    }
+  } catch (error) {
+    console.error("Certify agent error:", error)
+    return handleError(error, "certifyAgent")
+  }
+}
 
 // TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `getOnboardingAnalytics`
 // deleted. SURVIVOR: app/actions/onboarding/progress.ts:

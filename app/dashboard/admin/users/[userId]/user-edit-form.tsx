@@ -3,7 +3,7 @@
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { updateUser } from "@/app/actions/admin/update-user"
-import { updateAgentProfileAction, type AgentProfile, type OfficeOption } from "@/app/actions/admin/agent-profile"
+import { updateAgentProfileAction, type AgentProfile, type OfficeOption, type TeamOption } from "@/app/actions/admin/agent-profile"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -63,11 +63,13 @@ interface Props {
   brokerages: { id: string; name: string }[]
   agentProfile: AgentProfile | null
   offices: OfficeOption[]
+  teams: TeamOption[]
 }
 
 const NO_OFFICE = "__none__"
+const NO_TEAM = "__none__"
 
-export function UserEditForm({ user, callerRole, callerBrokerageId, brokerages, agentProfile, offices }: Props) {
+export function UserEditForm({ user, callerRole, callerBrokerageId, brokerages, agentProfile, offices, teams }: Props) {
   const router = useRouter()
   const isSuperadmin = callerRole === "superadmin"
 
@@ -88,21 +90,30 @@ export function UserEditForm({ user, callerRole, callerBrokerageId, brokerages, 
     team_override_percent:
       agentProfile?.teamOverridePercent != null ? String(agentProfile.teamOverridePercent) : "",
     location_id: agentProfile?.locationId ?? NO_OFFICE,
+    // Team + specializations — restored with the deleted updateAgent's lost
+    // fields (owner ruling, lane F2 2026-08-28). team_id is the RESOLVED team;
+    // specializations render comma-separated (the column IS comma-separated
+    // varchar) and are sent as an array.
+    team_id: agentProfile?.teamId ?? NO_TEAM,
+    specializations: (agentProfile?.specializations ?? []).join(", "),
   })
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [saveNote, setSaveNote] = useState<string | null>(null)
 
   function set(field: keyof typeof form, value: string) {
     setForm((f) => ({ ...f, [field]: value }))
     setSaved(false)
     setError(null)
+    setSaveNote(null)
   }
 
   function setAgentField(field: keyof typeof agent, value: string) {
     setAgent((a) => ({ ...a, [field]: value }))
     setSaved(false)
     setError(null)
+    setSaveNote(null)
   }
 
   async function handleSave() {
@@ -132,6 +143,11 @@ export function UserEditForm({ user, callerRole, callerBrokerageId, brokerages, 
     // Save the agent real-estate profile too (one Save button for the whole
     // person). Only fires when the user actually has an agent profile.
     if (agentProfile) {
+      // The team assignment is sent ONLY when it changed: the action gates it
+      // to broker/admin, and this form is also used by team leads (who may
+      // save splits) — an unchanged team must not fail their save.
+      const initialTeam = agentProfile.teamId ?? NO_TEAM
+      const teamChanged = agent.team_id !== initialTeam
       const agentRes = await updateAgentProfileAction({
         targetUserId: user.id,
         licenseNumber: agent.license_number,
@@ -144,12 +160,20 @@ export function UserEditForm({ user, callerRole, callerBrokerageId, brokerages, 
         teamOverridePercent:
           agent.team_override_percent === "" ? null : Number(agent.team_override_percent),
         locationId: agent.location_id === NO_OFFICE ? null : agent.location_id,
+        ...(teamChanged
+          ? { teamId: agent.team_id === NO_TEAM ? null : agent.team_id }
+          : {}),
+        specializations: agent.specializations
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
       })
       if (!agentRes.ok) {
         setSaving(false)
         setError(agentRes.error)
         return
       }
+      setSaveNote(agentRes.note ?? null)
     }
 
     setSaving(false)
@@ -375,6 +399,58 @@ export function UserEditForm({ user, callerRole, callerBrokerageId, brokerages, 
                 </p>
               )}
             </div>
+            {/*
+              TEAM ASSIGNMENT + SPECIALIZATIONS — the deleted updateAgent's lost
+              fields, restored onto the sanctioned survivor (owner ruling, lane
+              F2 2026-08-28). The team shown is the RESOLVED one (the platform's
+              one precedence rule); changing it writes the explicit-assignment
+              columns only — roster memberships with split terms live at
+              Team → Members and are never touched from here.
+            */}
+            <div className="space-y-1.5">
+              <Label>Team</Label>
+              <Select value={agent.team_id} onValueChange={(v) => setAgentField("team_id", v)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="No team assigned" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NO_TEAM}>No team assigned</SelectItem>
+                  {teams.map((t) => (
+                    <SelectItem key={t.id} value={t.id}>
+                      {t.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {agentProfile?.teamSource === "member" && (
+                <p className="text-xs text-muted-foreground">
+                  This membership comes from the team roster (with commission split terms) — manage
+                  it under Team → Members. Setting a team here overrides the roster for scoping;
+                  clearing it does not remove the roster row.
+                </p>
+              )}
+              {agentProfile?.teamSource === "lead" && (
+                <p className="text-xs text-muted-foreground">
+                  This agent LEADS this team — the lead link always wins over an assignment made here.
+                </p>
+              )}
+              {teams.length === 0 && (
+                <p className="text-xs text-muted-foreground">No teams yet — create one under Team.</p>
+              )}
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="specializations">Specializations</Label>
+              <Input
+                id="specializations"
+                value={agent.specializations}
+                onChange={(e) => setAgentField("specializations", e.target.value)}
+                placeholder="e.g. Luxury, First-Time Buyers, Relocation"
+              />
+              <p className="text-xs text-muted-foreground">
+                Comma-separated expertise tags. Lead routing, mentor matching, and the client portal
+                read these.
+              </p>
+            </div>
           </CardContent>
         </Card>
       )}
@@ -445,6 +521,12 @@ export function UserEditForm({ user, callerRole, callerBrokerageId, brokerages, 
         <div className="flex items-center gap-2 rounded-lg bg-green-50 border border-green-200 p-3 text-sm text-green-700">
           <CheckCircle2 className="h-4 w-4 shrink-0" />
           Changes saved successfully.
+        </div>
+      )}
+      {saved && saveNote && (
+        <div className="flex items-center gap-2 rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm text-amber-800">
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          {saveNote}
         </div>
       )}
       {error && (

@@ -1,6 +1,7 @@
 "use server"
 
 import {
+  analyzeFairHousingRiskService,
   checkComplianceStatusService,
   resolveComplianceAlertService,
   resolveCompRiskFlagService,
@@ -17,6 +18,10 @@ import {
   createTRIDTimelineService,
   updateTRIDMilestoneService,
 } from "@/lib/application"
+import {
+  FAIR_HOUSING_INTERACTION_TYPES,
+  type FairHousingInteractionType,
+} from "@/lib/application/compliance-monitoring"
 import { isValidUUID } from "@/lib/validations"
 
 // TOMBSTONE (§1, lane E2 2026-08-28) — `logAuditEvent` deleted. Audit logging
@@ -60,21 +65,31 @@ export async function trackCertificationExpiration(agentId: string) {
   return trackCertificationExpirationService(agentId)
 }
 
-// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `analyzeFairHousingRisk`
-// deleted. The fair-housing scan → compliance_flags capability lives, WIRED,
-// in two places that cover both directions of content:
-//   · generated content — lib/ai/models.ts:checkCompliance (the routed
-//     generation pipeline) runs evaluateContentCompliance on AI output and
-//     writes fair_housing_violation compliance_flags;
-//   · outbound sends — the kernel dispatch gate
-//     (evaluateOutboundCompliance, reached from lib/providers/dispatch) scans
-//     human/agent communications before they leave;
-//   · ad-hoc content — `scanContentCompliance` below (DB-driven prohibited
-//     phrases + AI), which the content approval flow calls.
-// This orphan was a fourth spelling with a hand-rolled red-flag list, and a
-// stripped-source census found zero callers outside the app/actions/index.ts
-// barrel, which itself has zero importers. Nothing merged: every capability it
-// had exists richer on the survivors.
+// RESTORED (owner ruling, lane F2 2026-08-28) — `analyzeFairHousingRisk` is
+// back. The earlier deletion note (lane E2 2026-08-28) called it a fourth
+// spelling of the three wired scanners, but on the owner's
+// compare-the-process rule it is not: checkCompliance gates AI GENERATIONS,
+// evaluateOutboundCompliance gates OUTBOUND SENDS, scanContentCompliance
+// scans MARKETING CONTENT for approval — none of them is a CONTACT-LINKED
+// POST-HOC review of a communication that already happened, filed against
+// that contact and agent for coaching/audit. Identity and tenant come from
+// the SESSION inside the service (§4); the caller supplies only which
+// contact, what kind of communication, and the text. Findings land as ONE
+// compliance_flags row (status 'flagged') — the queue the compliance command
+// center lists and resolves. Wired at the Communication Intelligence
+// Risk & Compliance tab (fair-housing-review-card.tsx).
+export async function analyzeFairHousingRisk(params: {
+  contactId: string
+  interactionType: FairHousingInteractionType
+  communicationText: string
+}) {
+  if (!isValidUUID(params.contactId)) throw new Error("Invalid contact ID")
+  if (!params.communicationText?.trim()) throw new Error("communicationText is required")
+  if (!FAIR_HOUSING_INTERACTION_TYPES.includes(params.interactionType)) {
+    throw new Error("Unknown interaction type")
+  }
+  return analyzeFairHousingRiskService(params)
+}
 
 // Monitor TRID compliance
 export async function monitorTRIDCompliance(transactionId: string) {

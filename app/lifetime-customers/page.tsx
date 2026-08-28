@@ -75,6 +75,7 @@ import { loadReferralPipelineAction, loadReputationWorkspaceAction } from "@/app
 import { LifeSignalBadge } from "@/app/components/shared/LifeSignalBadge"
 import { ReputationPanel } from "@/app/components/reputation/ReputationPanel"
 import { CampaignsGiftingPanel } from "./components/campaigns-gifting-panel"
+import { GiftVendorRolodex } from "./components/gift-vendor-rolodex"
 import { LifetimeNpvPanel } from "@/app/components/features/lifetime-customers/lifetime-npv-panel"
 import { getAgentLifetimeNpvRanked, type NpvRow } from "@/app/actions/lifetime-npv"
 import { referralStatusLabel } from "@/lib/referrals/referral-status"
@@ -1380,6 +1381,10 @@ export default function LifetimeCustomersPage() {
                 email: c.email,
               }))}
             />
+            {/* The agent's own gift-supplier rolodex (gift_vendors) — owner:
+                "wire a small rolodex" (lane F2 2026-08-28). Session-scoped
+                inside the actions. */}
+            <GiftVendorRolodex />
           </TabsContent>
 
           {/* TAB: Engagement Scores */}

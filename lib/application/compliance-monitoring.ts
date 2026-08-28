@@ -326,19 +326,218 @@ export async function trackCertificationExpirationService(agentId: string, clien
 // FAIR HOUSING
 // ============================================
 
-// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `analyzeFairHousingRiskService`
-// deleted with its only caller, the app/actions/compliance-monitoring.ts
-// wrapper (zero callers outside the importer-less app/actions/index.ts
-// barrel). The fair-housing scan → compliance_flags capability lives, WIRED:
-//   · lib/ai/models.ts:checkCompliance — evaluateContentCompliance over AI
-//     generations, writing fair_housing_violation compliance_flags;
-//   · the kernel outbound dispatch gate (evaluateOutboundCompliance) — scans
-//     agent/system sends before they leave;
-//   · scanContentComplianceService (this file, below) — DB-driven prohibited
-//     phrase + AI scan for the content-approval flow.
-// This copy also ran off-router (resolveModel direct, no ai_tool_usage cost
-// ledger) and compared a 0–1 risk_score against 75/40 for severity — every
-// flag it would ever write was "medium".
+// RESTORED (owner ruling, lane F2 2026-08-28) — `analyzeFairHousingRiskService`
+// is back. The earlier deletion note (lane E2 2026-08-28) named three wired
+// fair-housing scanners as survivors, but on the owner's compare-the-process
+// rule none of them is THIS process:
+//   · lib/ai/models.ts:checkCompliance gates AI GENERATIONS at generation time;
+//   · evaluateOutboundCompliance gates OUTBOUND SENDS before they leave;
+//   · scanContentComplianceService scans ad-hoc MARKETING CONTENT for the
+//     approval flow.
+// This one is the CONTACT-LINKED POST-HOC review: a specific communication
+// that already happened with a specific contact, reviewed after the fact for
+// coaching/audit, with the finding filed against that contact and agent.
+// Same-sounding capability, different business process — not a duplicate.
+//
+// Restored WITH THE FIXES the deletion named:
+//   · SEVERITY MATH — the old copy compared a 0–1 model score against 75/40,
+//     so every flag it would ever write was "medium". The score is now
+//     NORMALIZED to 0–1 (a model answering on a 0–100 scale is divided down)
+//     and severity thresholds live on the same scale (≥0.75 critical,
+//     ≥0.4 high), so severities actually trigger.
+//   · IDENTITY — agent and tenant come from the SESSION (§4); the caller
+//     supplies only WHICH contact and WHAT was said, and the contact read is
+//     pinned to the session brokerage.
+//   · ROUTING — the model call rides generateTextRouted, so the spend reaches
+//     the ai_tool_usage cost ledger (§5) instead of running off-router.
+//   · ONE LEDGER, ONE VOCABULARY (§6) — the old body wrote compliance_flags
+//     TWICE with two violation_type spellings ("fair_housing_violation" always
+//     + "fair_housing" above 0.6) and a compliance_alerts row with
+//     transaction_id null that no reader reads (compliance_alerts readers key
+//     on transaction_id). It now writes ONE compliance_flags row with
+//     "fair_housing_violation" — the spelling the wired writers
+//     (lib/ai/models.ts) already use and the compliance command center's
+//     Flagged Content Queue (getComplianceOfficerDashboard → compliance_flags,
+//     status "flagged") already reads and can resolve. compliance_checks was
+//     evaluated and rejected: its shape is contract_review_id-linked document
+//     scans, with no contact/agent columns to file this finding against.
+// Wired at app/dashboard/communications/intelligence (the Risk & Compliance
+// tab's Fair-Housing Review card).
+
+// (getAgentContext is already imported at the top of this file — the restored
+// service below uses the same session resolver as its siblings.
+// generateTextRouted is imported LAZILY inside the service: a static import
+// would pull lib/ai/models' `server-only` chain into every importer of this
+// module, and the fair-housing-phrase-gate simulator imports this file under
+// tsx, where `server-only` throws.)
+
+/** The closed set of communication kinds a post-hoc review can be filed under. */
+export const FAIR_HOUSING_INTERACTION_TYPES = ["email", "sms", "call_transcript", "note", "other"] as const
+export type FairHousingInteractionType = (typeof FAIR_HOUSING_INTERACTION_TYPES)[number]
+
+/** Severity from a NORMALIZED 0–1 risk score — the fixed math. */
+function fairHousingSeverity(score01: number): "critical" | "high" | "medium" {
+  if (score01 >= 0.75) return "critical"
+  if (score01 >= 0.4) return "high"
+  return "medium"
+}
+
+export async function analyzeFairHousingRiskService(params: {
+  contactId: string
+  interactionType: FairHousingInteractionType
+  communicationText: string
+}): Promise<
+  | {
+      success: true
+      riskScore: number
+      severity: "critical" | "high" | "medium"
+      flagged: boolean
+      protectedClassMentioned: boolean
+      steeringDetected: boolean
+      flaggedPhrases: string[]
+      explanation: string
+      recommendation: string
+    }
+  | { success: false; error: string }
+> {
+  // ── Identity and tenant come from the SESSION (§4) ─────────────────────────
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.userId) return { success: false, error: "Not authenticated" }
+  if (!ctx.brokerageId) return { success: false, error: "Your account is not linked to a brokerage yet." }
+
+  const supabase = await createClient()
+
+  // The contact must be IN the session brokerage — pinned read, so a
+  // cross-tenant contacts.id matches nothing. (contacts.id is the PK the
+  // compliance_flags.contact_id FK references — NOT the secondary contact_id
+  // uuid column, §3.)
+  const { data: contact, error: contactError } = await supabase
+    .from("contacts")
+    .select("id, brokerage_id")
+    .eq("id", params.contactId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
+  if (contactError) return { success: false, error: `Could not read the contact: ${contactError.message}` }
+  if (!contact) return { success: false, error: "That contact is not in your brokerage." }
+
+  const protectedClasses = [
+    "race", "color", "religion", "national origin",
+    "sex", "disability", "familial status", "age",
+  ]
+
+  // Deterministic red-flag phrases — kept as the AI-independent floor: even a
+  // failed model call still catches the classic steering vocabulary.
+  const redFlagPhrases = [
+    "perfect for families", "great for retirees", "quiet neighborhood",
+    "young professional area", "walk to church", "good schools",
+    "safe area", "changing neighborhood",
+  ]
+  const foundPhrases = redFlagPhrases.filter((phrase) =>
+    params.communicationText.toLowerCase().includes(phrase.toLowerCase()),
+  )
+
+  // ROUTED — the spend is booked to the session tenant on the ai_tool_usage
+  // ledger, like every other model call in the tree (§5).
+  let aiAnalysis: {
+    risk_score: number
+    protected_class_mentioned: boolean
+    steering_detected: boolean
+    flagged_content: string[]
+    explanation: string
+    recommendation: string
+  }
+  try {
+    const { generateTextRouted } = await import("@/lib/ai/models")
+    const { text } = await generateTextRouted({
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId,
+      model: "openai/gpt-4o-mini",
+      prompt: `Analyze this real estate communication for potential Fair Housing Act violations.
+
+Communication: "${params.communicationText}"
+
+Protected classes: ${protectedClasses.join(", ")}
+
+Return ONLY a JSON object with:
+- risk_score: 0.0 to 1.0 (0 = no risk, 1 = high risk)
+- protected_class_mentioned: boolean
+- steering_detected: boolean
+- flagged_content: array of concerning phrases
+- explanation: brief explanation of any concerns
+- recommendation: what the agent should do
+
+Focus on detecting:
+1. Direct or indirect references to protected classes
+2. Steering language that suggests or discourages based on demographics
+3. Coded language that implies discrimination
+4. Familial status violations (families with children)`,
+    })
+    const jsonMatch = text.match(/\{[\s\S]*\}/)
+    aiAnalysis = JSON.parse(jsonMatch ? jsonMatch[0] : text)
+  } catch {
+    aiAnalysis = {
+      risk_score: foundPhrases.length > 0 ? 0.7 : 0.3,
+      protected_class_mentioned: false,
+      steering_detected: foundPhrases.length > 0,
+      flagged_content: foundPhrases,
+      explanation: "The AI review did not return a usable verdict — manual review needed.",
+      recommendation: "Review with compliance officer",
+    }
+  }
+
+  // ── NORMALIZE THE SCALE, then apply severity on that one scale ─────────────
+  // The prompt asks for 0–1, but a model that answers 0–100 must not turn a 72
+  // into "72x maximum risk" — anything above 1 is treated as a percentage.
+  const rawScore = Number(aiAnalysis.risk_score)
+  const score01 = Math.min(1, Math.max(0, Number.isFinite(rawScore) ? (rawScore > 1 ? rawScore / 100 : rawScore) : 0))
+  const severity = fairHousingSeverity(score01)
+
+  const aiPhrases = Array.isArray(aiAnalysis.flagged_content)
+    ? aiAnalysis.flagged_content.filter((p): p is string => typeof p === "string")
+    : []
+  const allFlagged = Array.from(new Set([...foundPhrases, ...aiPhrases]))
+
+  // ── ONE flag row, on the ledger the compliance officer actually reads ──────
+  // compliance_flags status='flagged' is what the command center's Flagged
+  // Content Queue lists and submitComplianceReviewDecision resolves. The write
+  // is checked and REPORTED on failure: a fair-housing finding that lands
+  // nowhere a compliance officer can see it is the defect this restore fixes.
+  const { data: flagRows, error: flagError } = await supabase
+    .from("compliance_flags")
+    .insert({
+      brokerage_id: ctx.brokerageId,
+      contact_id: params.contactId,
+      agent_id: ctx.agentId ?? null,
+      user_id: ctx.userId,
+      violation_type: "fair_housing_violation",
+      severity,
+      content_type: params.interactionType,
+      flagged_content: `${allFlagged.join("; ").slice(0, 300)} :: ${params.communicationText.slice(0, 400)}`,
+      detected_at: new Date().toISOString(),
+      status: "flagged",
+    })
+    .select("id")
+  if (flagError) {
+    return { success: false, error: `The review ran but could not be filed to the compliance queue: ${flagError.message}` }
+  }
+  if (!flagRows || flagRows.length === 0) {
+    return { success: false, error: "The review ran but the database stored no compliance flag — nothing reached the queue." }
+  }
+
+  revalidatePath("/dashboard/compliance")
+
+  return {
+    success: true,
+    riskScore: score01,
+    severity,
+    flagged: true,
+    protectedClassMentioned: aiAnalysis.protected_class_mentioned === true,
+    steeringDetected: aiAnalysis.steering_detected === true,
+    flaggedPhrases: allFlagged,
+    explanation: typeof aiAnalysis.explanation === "string" ? aiAnalysis.explanation : "",
+    recommendation: typeof aiAnalysis.recommendation === "string" ? aiAnalysis.recommendation : "",
+  }
+}
 
 // ============================================
 // TRID

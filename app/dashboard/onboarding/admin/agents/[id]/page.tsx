@@ -25,6 +25,8 @@ import {
 } from 'lucide-react'
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { WelcomeMessageCard } from "./welcome-message-card"
+import { CertifyAgentCard } from "./certify-agent-card"
+import { getCertificationReadiness } from "@/app/actions/ai-agent-onboarding"
 
 export const dynamic = 'force-dynamic'
 
@@ -346,8 +348,27 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
 
         {/* AI welcome message — generate-and-review, never auto-sent. The door
             for app/actions/ai-agent-onboarding.ts:generateWelcomeMessage. */}
-        <div className="mt-6">
+        <div className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
           <WelcomeMessageCard agentId={agentId} agentName={agentName} />
+          {/* Exam-gated activation — the door for certifyAgent. Readiness is
+              read server-side from the STORED quiz record; the action re-reads
+              it at certify time (§4: no caller-supplied score). */}
+          <CertifyAgentCard
+            agentId={agentId}
+            agentName={agentName}
+            readiness={await (async () => {
+              const r = await getCertificationReadiness(agentId)
+              return r.success
+                ? {
+                    bestScore: r.bestScore,
+                    attemptCount: r.attemptCount,
+                    passingScore: r.passingScore,
+                    eligible: r.eligible,
+                    alreadyActive: r.alreadyActive,
+                  }
+                : { error: r.error }
+            })()}
+          />
         </div>
 
         {/* Steps by Day */}

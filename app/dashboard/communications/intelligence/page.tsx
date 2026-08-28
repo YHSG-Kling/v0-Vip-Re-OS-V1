@@ -181,6 +181,24 @@ export default async function IntelligencePage() {
       .limit(50),
   ])
 
+  // ── Contacts for the Fair-Housing Review card (lane F2 2026-08-28) ─────────
+  // Brokerage-scoped names only — the picker for the restored contact-linked
+  // post-hoc review (analyzeFairHousingRisk). The action re-verifies the
+  // contact's tenant server-side; this list is just the affordance.
+  const { data: reviewContactRows, error: reviewContactsError } = await service
+    .from("contacts")
+    .select("id, first_name, last_name")
+    .eq("brokerage_id", brokerageId)
+    .order("first_name", { ascending: true })
+    .limit(500)
+  if (reviewContactsError) {
+    console.error("[intelligence] contacts read refused for fair-housing review picker:", reviewContactsError.message)
+  }
+  const reviewContacts = (reviewContactRows ?? []).map((c: any) => ({
+    id: c.id as string,
+    name: `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || "Unnamed contact",
+  }))
+
   // ── Compute KPI values ──────────────────────────────────────────────────────
   const healthRows = healthScoreRes.data ?? []
   const avgHealthScore =
@@ -368,6 +386,7 @@ export default async function IntelligencePage() {
       topicFrequency={topicFrequency}
       voiceInsights={voiceInsights}
       userId={user.id}
+      reviewContacts={reviewContacts}
     />
   )
 }
