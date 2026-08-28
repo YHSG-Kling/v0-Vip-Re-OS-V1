@@ -64,6 +64,11 @@ export interface AgentPLRow {
   brokerage_gross:       number
   ai_cost_cents:         number
   fee_income_cents:      number
+  /** Attributed campaign spend for the month. The rollup currently books 0
+   *  here on every row (campaign attribution not yet wired — the writer says
+   *  so at app/api/cron/brokerage-pl-rollup/route.ts) — rendered as "—" until
+   *  a real attribution writes a real number. */
+  marketing_spend_cents: number
   net_brokerage_margin:  number
   roi_multiple:          number | null
   transaction_count:     number
@@ -126,7 +131,7 @@ export async function getAgentPLSummary(monthYear?: string): Promise<
     .select(`
       agent_id, month_year,
       gci_gross, agent_payout, brokerage_gross,
-      ai_cost_cents, fee_income_cents, net_brokerage_margin,
+      ai_cost_cents, fee_income_cents, marketing_spend_cents, net_brokerage_margin,
       roi_multiple, transaction_count, computed_at,
       agents:agent_id (
         users:user_id (first_name, last_name, email)
@@ -154,6 +159,7 @@ export async function getAgentPLSummary(monthYear?: string): Promise<
       brokerage_gross:      r.brokerage_gross ?? 0,
       ai_cost_cents:        r.ai_cost_cents ?? 0,
       fee_income_cents:     r.fee_income_cents ?? 0,
+      marketing_spend_cents: r.marketing_spend_cents ?? 0,
       net_brokerage_margin: r.net_brokerage_margin ?? 0,
       roi_multiple:         r.roi_multiple ?? null,
       transaction_count:    r.transaction_count ?? 0,

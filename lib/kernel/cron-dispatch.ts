@@ -257,6 +257,13 @@ export const CRON_REGISTRY: CronEntry[] = [
   // the tenant's own leads by address, filed into motivated_seller_signals. Off-peak and daily:
   // city portals publish overnight and the 7-day lookback absorbs their backfill.
   { path: "/api/cron/permit-signal-scan"                  , schedule: "40 5 * * *" },
+  // Conversation-insights refresh — the TRIGGER for the one conversation_insights
+  // writer (updateConversationMemory). Sweeps conversations whose message activity
+  // is newer than their stored insight and re-extracts, so the communications-
+  // intelligence dashboard, the AI-quality review count and the buyer-search
+  // intent merge read live numbers instead of a table nothing ever wrote to.
+  // Every 4 hours, capped at 25 AI extractions per run (cost bound in the route).
+  { path: "/api/cron/conversation-insights-refresh"       , schedule: "35 */4 * * *" },
 ]
 
 /** Pure: one cron field against a value. Supports "*", "*\/n", "a,b,c". */

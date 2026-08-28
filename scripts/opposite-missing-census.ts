@@ -366,6 +366,22 @@ const POLICY_OR_AUDIT_CONSUMED = new Set([
   // the column as a one-sided write invites the next lane to build the reader
   // the doctrine exists to prevent.
   "usage_counters.period_end",
+
+  // WHY THIS ONE. `vendor_subscriptions.billing_direction` is written by the one
+  // enrolment writer (app/actions/vendors/vendor-plan-subscriptions.ts:350,
+  // deliberately explicit — its comment says the direction "is the fact this
+  // whole lane exists to state") and its READER IS THE DATABASE: m497's CHECK
+  // admits exactly ONE literal — verified live against hrvaqgvukzxfskkcrwbt on
+  // 2026-08-28, pg_constraint: CHECK (billing_direction = 'vendor_pays_brokerage')
+  // — so the column exists to make the historically-inverted money direction
+  // (vendor packages once modelled as the brokerage paying the vendor monthly;
+  // see manager-registry `vendor_package_direction`) UNWRITABLE by any future
+  // writer, webhook or backfill. An app reader would be reading a constant the
+  // constraint already guarantees; reporting the column as a one-sided write
+  // invites either deleting the explicit write (losing the stated fact) or
+  // building a reader of a value that cannot vary. Same class as
+  // usage_counters.period_end: written by app code, consumed by a constraint.
+  "vendor_subscriptions.billing_direction",
 ])
 
 /**

@@ -188,6 +188,161 @@ const insightSchema = z.object({
   overall_sentiment: z.enum(['positive', 'neutral', 'negative', 'mixed']).describe('Overall sentiment of the contact'),
 })
 
+// ─────────────────────────────────────────────────────────────────────────────
+// DERIVED CONVERSATION ANALYTICS — the columns the communications-intelligence
+// dashboard reads (app/dashboard/communications/intelligence/page.tsx), the
+// AI-quality panel counts (app/dashboard/system/components/os/ai-quality-panel.tsx
+// requires_human_review) and the buyer-search intent merge consumes
+// (app/actions/buyer-property-search.ts escalation_urgency / health_score).
+//
+// Before this, every one of these columns was READ BY CODE AND WRITTEN BY
+// NOBODY (opposite-missing census, category 1b) — the health/KPI tabs rendered
+// empty forever because updateConversationMemory below wrote only the memory
+// columns. Everything here is DERIVED from facts this writer already holds:
+// the message timestamps it loaded, the extraction it just ran, and the
+// previous row's stored sentiment. Nothing is fabricated: a metric whose
+// input is absent stays null.
+//
+// The voice-only siblings (voice_quality_score / interruption_count /
+// silence_duration_seconds / call_completion_status / is_voice_conversation=true)
+// are DELIBERATELY not derived here — this writer analyzes a text/message
+// thread, so it stamps is_voice_conversation=false and leaves the voice
+// metrics NULL. There is currently no honest source for them anywhere: the
+// voice pipeline stores a flat transcript with no per-utterance timestamps
+// (call_transcriptions.speaker_turns is written as [] —
+// app/actions/ai-voice-transcription.ts:545), so silence/interruption/quality
+// cannot be computed without inventing numbers.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The subset of a messages row the derivation needs, in CHRONOLOGICAL order. */
+export interface AnalyticsMessage {
+  sender_type: string | null
+  created_at: string
+}
+
+export interface DerivedConversationAnalytics {
+  /** overall_sentiment as the DATABASE accepts it. The live CHECK admits only
+   *  positive/neutral/negative (verified against hrvaqgvukzxfskkcrwbt,
+   *  conversation_insights_overall_sentiment_check) — the model may honestly
+   *  judge 'mixed', and before this mapping a 'mixed' verdict was REFUSED
+   *  ENTIRELY (23514: not "most of the row" — nothing, the §3 trap), so every
+   *  mixed-sentiment conversation silently kept its stale memory. 'mixed'
+   *  lands as neutral here and is preserved verbatim in sentiment_trajectory,
+   *  whose CHECK does admit it. */
+  dbSentiment: 'positive' | 'neutral' | 'negative'
+  sentimentTrajectory: 'improving' | 'declining' | 'stable' | 'mixed'
+  responseTimeAvgSeconds: number | null
+  unansweredQuestionsCount: number
+  /** 0..1 — the scale every reader assumes (KPIBar/HealthTab multiply by 100),
+   *  enforced by the live CHECK health_score >= 0 AND <= 1. */
+  healthScore: number
+  escalationRecommended: boolean
+  escalationUrgency: 'low' | 'medium' | 'high' | 'critical' | null
+  requiresHumanReview: boolean
+}
+
+/** Message senders that are the AGENT side of the thread; everything else
+ *  (contact, client, lead, vendor, unknown) is the contact side. */
+const AGENT_SIDE = new Set(['agent', 'ai_assistant', 'system'])
+
+const SENTIMENT_RANK: Record<string, number> = { negative: -1, neutral: 0, positive: 1 }
+
+/**
+ * PURE derivation — exported so a simulator can drive it without a database.
+ *
+ * @param messages       chronological thread slice (what updateConversationMemory loaded)
+ * @param extraction     the AI extraction that just ran
+ * @param previousSentiment  overall_sentiment stored on the existing insight row, if any
+ */
+export function deriveConversationAnalytics(
+  messages: AnalyticsMessage[],
+  extraction: {
+    objections_raised: string[]
+    buying_signals: string[]
+    unresolved_questions: string[]
+    overall_sentiment: 'positive' | 'neutral' | 'negative' | 'mixed'
+  },
+  previousSentiment: string | null,
+): DerivedConversationAnalytics {
+  const raw = extraction.overall_sentiment
+  const dbSentiment: DerivedConversationAnalytics['dbSentiment'] =
+    raw === 'mixed' ? 'neutral' : raw
+
+  // ── Trajectory: this reading vs the previous stored reading ───────────────
+  let sentimentTrajectory: DerivedConversationAnalytics['sentimentTrajectory']
+  if (raw === 'mixed') {
+    sentimentTrajectory = 'mixed'
+  } else if (previousSentiment == null || !(previousSentiment in SENTIMENT_RANK)) {
+    sentimentTrajectory = 'stable' // first reading — no history to compare against
+  } else {
+    const delta = SENTIMENT_RANK[dbSentiment] - SENTIMENT_RANK[previousSentiment]
+    sentimentTrajectory = delta > 0 ? 'improving' : delta < 0 ? 'declining' : 'stable'
+  }
+
+  // ── Average reply gap: contact-side message → next agent-side message ─────
+  // Measured at each contact→agent transition in the chronological thread. A
+  // thread with no such transition has no measurement, so the metric stays
+  // null rather than pretending 0 seconds.
+  const gaps: number[] = []
+  for (let i = 1; i < messages.length; i++) {
+    const prev = messages[i - 1]
+    const cur = messages[i]
+    const prevIsContact = !AGENT_SIDE.has(prev.sender_type ?? '')
+    const curIsAgent = AGENT_SIDE.has(cur.sender_type ?? '')
+    if (!prevIsContact || !curIsAgent) continue
+    const seconds = (new Date(cur.created_at).getTime() - new Date(prev.created_at).getTime()) / 1000
+    if (Number.isFinite(seconds) && seconds >= 0) gaps.push(seconds)
+  }
+  const responseTimeAvgSeconds =
+    gaps.length > 0 ? Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length) : null
+
+  const unansweredQuestionsCount = extraction.unresolved_questions.length
+  const objections = extraction.objections_raised.length
+  const signals = extraction.buying_signals.length
+
+  // ── Health score, 0..1 — a documented composite of the facts above ────────
+  const SENTIMENT_BASE: Record<string, number> = { positive: 0.8, neutral: 0.55, mixed: 0.45, negative: 0.3 }
+  let score = SENTIMENT_BASE[raw]
+  score += Math.min(signals, 3) * 0.05          // interest raises health
+  score -= Math.min(objections, 3) * 0.05       // friction lowers it
+  score -= Math.min(unansweredQuestionsCount, 4) * 0.03 // dropped questions lower it
+  if (responseTimeAvgSeconds != null) {
+    if (responseTimeAvgSeconds <= 900) score += 0.05        // replies within 15 min
+    else if (responseTimeAvgSeconds >= 14_400) score -= 0.05 // replies slower than 4 h
+  }
+  const healthScore = Math.round(Math.min(1, Math.max(0, score)) * 100) / 100
+
+  // ── Escalation: how many independent warning signs are lit ────────────────
+  const warningSigns = [
+    dbSentiment === 'negative',
+    sentimentTrajectory === 'declining',
+    objections >= 2,
+    unansweredQuestionsCount >= 3,
+  ].filter(Boolean).length
+
+  const escalationRecommended = warningSigns >= 2
+  const escalationUrgency: DerivedConversationAnalytics['escalationUrgency'] =
+    !escalationRecommended ? null
+    : warningSigns >= 4 ? 'critical'
+    : warningSigns === 3 ? 'high'
+    : 'medium'
+  // The human-review queue (ai-quality-panel's "review pressure" count) takes
+  // only the conversations where two-signal caution has hardened into a
+  // high/critical escalation — a medium escalation stays with the AI loop.
+  const requiresHumanReview = escalationUrgency === 'high' || escalationUrgency === 'critical'
+
+  return {
+    dbSentiment,
+    sentimentTrajectory,
+    responseTimeAvgSeconds,
+    unansweredQuestionsCount,
+    healthScore,
+    escalationRecommended,
+    escalationUrgency,
+    requiresHumanReview,
+  }
+}
+
 /**
  * Updates conversation memory by extracting insights from recent messages using AI
  */
@@ -230,10 +385,11 @@ export async function updateConversationMemory(
     .map((m) => `[${m.sender_type}]: ${m.body}`)
     .join('\n')
 
-  // Step 2: Check for existing insight record
+  // Step 2: Check for existing insight record. overall_sentiment rides along so
+  // sentiment_trajectory can compare this reading against the last one.
   const { data: existingInsight } = await supabase
     .from('conversation_insights')
-    .select('id')
+    .select('id, overall_sentiment')
     .eq('conversation_id', conversationId)
     .maybeSingle()
 
@@ -250,7 +406,19 @@ export async function updateConversationMemory(
   // Estimate token count for context window tracking
   const estimatedTokens = Math.ceil(formattedMessages.length / 4)
 
-  // Step 4: UPSERT conversation_insights
+  // Step 3b: derive the analytics columns the intelligence dashboard, the
+  // AI-quality panel and the buyer-search intent merge read. `messages` is
+  // chronological here — the .reverse() above mutated it in place.
+  const analytics = deriveConversationAnalytics(
+    messages as AnalyticsMessage[],
+    insights,
+    (existingInsight as { overall_sentiment?: string | null } | null)?.overall_sentiment ?? null,
+  )
+
+  const nowIso = new Date().toISOString()
+
+  // Step 4: UPSERT conversation_insights. Both branches name every column
+  // LITERALLY (no shared spread) so a static scan can attribute each write.
   if (existingInsight) {
     const { error: updateError } = await supabase
       .from('conversation_insights')
@@ -261,8 +429,23 @@ export async function updateConversationMemory(
         buying_signals: insights.buying_signals,
         unresolved_questions: insights.unresolved_questions,
         context_summary: insights.context_summary,
-        overall_sentiment: insights.overall_sentiment,
-        last_updated_at: new Date().toISOString(),
+        // The DB-safe value — the live CHECK refuses 'mixed' (see deriveConversationAnalytics).
+        overall_sentiment: analytics.dbSentiment,
+        sentiment_trajectory: analytics.sentimentTrajectory,
+        health_score: analytics.healthScore,
+        response_time_avg_seconds: analytics.responseTimeAvgSeconds,
+        unanswered_questions_count: analytics.unansweredQuestionsCount,
+        escalation_recommended: analytics.escalationRecommended,
+        escalation_urgency: analytics.escalationUrgency,
+        requires_human_review: analytics.requiresHumanReview,
+        // This writer analyzes a TEXT thread. The voice metrics have no honest
+        // source yet (no per-utterance timestamps anywhere) and stay NULL.
+        is_voice_conversation: false,
+        last_updated_at: nowIso,
+        // Readers filter and order on updated_at (the dashboard's 7/30-day
+        // windows); the DB default only fires on INSERT, so the update path
+        // must stamp it.
+        updated_at: nowIso,
       })
       .eq('id', existingInsight.id)
 
@@ -283,8 +466,16 @@ export async function updateConversationMemory(
         buying_signals: insights.buying_signals,
         unresolved_questions: insights.unresolved_questions,
         context_summary: insights.context_summary,
-        overall_sentiment: insights.overall_sentiment,
-        last_updated_at: new Date().toISOString(),
+        overall_sentiment: analytics.dbSentiment,
+        sentiment_trajectory: analytics.sentimentTrajectory,
+        health_score: analytics.healthScore,
+        response_time_avg_seconds: analytics.responseTimeAvgSeconds,
+        unanswered_questions_count: analytics.unansweredQuestionsCount,
+        escalation_recommended: analytics.escalationRecommended,
+        escalation_urgency: analytics.escalationUrgency,
+        requires_human_review: analytics.requiresHumanReview,
+        is_voice_conversation: false,
+        last_updated_at: nowIso,
       })
 
     if (insertError) {
