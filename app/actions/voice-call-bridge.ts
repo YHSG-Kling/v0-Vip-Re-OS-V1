@@ -5,6 +5,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { placeCall } from "@/lib/providers/messaging"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
 // TOMBSTONE (dead-import tranche): `callConnector` was imported here and never
 // called. Every outbound provider request on this lane already goes through the
 // gateway one layer down — `placeCall` (lib/providers/messaging, imported above)
@@ -275,8 +276,11 @@ export async function triggerAiVoiceCall(params: {
         case "showing_reminder":
           firstMessage = `Hi ${contact.first_name}, just calling to confirm your showing tomorrow. Are we still good for the scheduled time?`
           break
+        // RENDER BOUNDARY (§6) — `price_reduction_alert` is the internal trigger
+        // name and stays; the sentence is SPOKEN to the contact, so it takes the
+        // public word.
         case "price_reduction_alert":
-          firstMessage = `Hi ${contact.first_name}, great news! A property you viewed just had a price reduction. Want to schedule another look?`
+          firstMessage = `Hi ${contact.first_name}, great news! A property you viewed just had a ${priceImprovementLabel("sentence")}. Want to schedule another look?`
           break
         default:
           firstMessage = `Hi ${contact.first_name}, I'm the AI assistant for your real estate agent. How can I help you today?`

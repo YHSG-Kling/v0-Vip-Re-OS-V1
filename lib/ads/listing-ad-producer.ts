@@ -12,6 +12,10 @@
  */
 import { createServiceClient } from "@/lib/supabase/service"
 import { sanitizeProperNoun } from "@/lib/compliance/client-text-guard"
+// ONE SPELLING (§6) — this file was already speaking the owner's public word
+// for a lowered list price; it now takes it from the single label helper so the
+// ad, the postcard, the portal badge and the reel cover frame cannot drift.
+import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
 
 export type ListingAdKind = "just_listed" | "just_sold" | "price_reduction"
 
@@ -45,8 +49,8 @@ export function buildListingCreative(facts: ListingFacts, kind: ListingAdKind): 
     // Positive, industry-standard framing ("improved" not "reduced/desperate");
     // no protected-class language, no suggested value — just the new opportunity.
     return {
-      variationName: "Price Improved — agent-initiated",
-      headline:      "Price Improved!",
+      variationName: `${priceImprovementLabel("badge")} — agent-initiated`,
+      headline:      `${priceImprovementLabel("badge")}!`,
       primaryText:   `New price on this home ${where}${specs ? ` — ${specs}` : ""}. A fresh opportunity to tour or make it yours. Ask for details today.`,
       description:   "New price",
       callToAction:  "LEARN_MORE",
@@ -114,7 +118,7 @@ export async function produceListingAdCampaign(
     agentUserId = await resolveAgentRecordToUserId(listing.agent_id)
   }
 
-  const kindLabel = kind === "just_sold" ? "Just Sold" : kind === "price_reduction" ? "Price Improved" : "Just Listed"
+  const kindLabel = kind === "just_sold" ? "Just Sold" : kind === "price_reduction" ? priceImprovementLabel("badge") : "Just Listed"
   const campaignName = `${kindLabel} — ${listing.address ?? listing.city ?? "Listing"}`
   const { data: campaign, error: cErr } = await supabase.from("ad_campaigns").insert({
     brokerage_id: brokerageId, agent_user_id: agentUserId, campaign_name: campaignName,

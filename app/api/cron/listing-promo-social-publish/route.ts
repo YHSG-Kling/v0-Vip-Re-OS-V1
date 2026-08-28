@@ -22,6 +22,9 @@
  */
 import { NextResponse, type NextRequest } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
+// ONE SPELLING FOR THE PUBLIC EVENT LABEL (§6) — the caption's hook and the
+// reel's cover frame are the same words seen by the same audience.
+import { promoEventLabel } from "@/lib/video/promo-composition"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -150,12 +153,15 @@ export async function GET(req: NextRequest) {
     const address  = r.listing?.address ?? ""
     const cityState = [r.listing?.city, r.listing?.state].filter(Boolean).join(", ")
     const price    = usd(r.listing?.list_price)
-    const hookByEvent: Record<string, string> = {
-      just_listed:   "Just Listed",
-      just_sold:     "Just Sold",
-      price_changed: "Price Update",
-    }
-    const hook = hookByEvent[r.event_type] ?? "New Listing"
+    // TOMBSTONE (§1/§6): the private `hookByEvent` map that stood here — three
+    // entries plus a "New Listing" default — was a SECOND spelling of
+    // lib/video/promo-composition.ts:promoEventLabel, which already carries the
+    // same three events, the same default, and the rest of the lifecycle set.
+    // Both write PUBLIC copy (that one the reel's cover frame, this one the
+    // social caption), so they could not be allowed to disagree; the local one
+    // still said "Price Update" after the owner ruled the public word is a price
+    // improvement. SURVIVOR: lib/video/promo-composition.ts:162 promoEventLabel.
+    const hook = promoEventLabel(r.event_type)
 
     const postIds: string[] = []
     let inserted = 0

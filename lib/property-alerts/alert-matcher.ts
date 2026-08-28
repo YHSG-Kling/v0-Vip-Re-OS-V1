@@ -2,6 +2,11 @@
 // Price+location must match for minimum qualifying score of 40
 
 import { canonicalPropertyType } from "@/lib/constants"
+// RENDER BOUNDARY (§6) — `reasons` is BUYER-FACING copy: it renders as the
+// match chips on the client portal (app/portal/[contactId]/alerts/[alertId]/
+// alert-match-list.tsx) and inside the alert email (lib/property-alerts/
+// alert-notifier.ts). The criteria column names below stay internal.
+import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
 
 export interface AlertProperty {
   mls_number: string
@@ -186,7 +191,7 @@ export function scorePropertyForAlert(
     if (pct < minPct) {
       return { score: 0, reasons: [], qualifies: false, priceMatched, locationMatched }
     }
-    reasons.push(`Price reduced ${pct.toFixed(1)}%`)
+    reasons.push(`${priceImprovementLabel("badge")} ${pct.toFixed(1)}%`)
   }
 
   // Minimum qualifying: price AND location must match (score >= 40)

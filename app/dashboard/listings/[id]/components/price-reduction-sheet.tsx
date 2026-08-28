@@ -25,6 +25,14 @@ import { handlePriceReduction } from "@/app/actions/listing-lifecycle"
 import { updateListing } from "@/app/actions/listings"
 import { createDirectMailCampaign } from "@/app/actions/ai-direct-mail"
 import { launchPriceReductionCampaign } from "@/app/actions/price-reduction-campaign"
+// RENDER BOUNDARY (§6). The campaign name is NOT console-only: createMailCampaign
+// stores it as direct_mail_campaigns.copy_text (campaignName + targetAudience,
+// app/actions/ai-direct-mail.ts:571) and app/actions/direct-mail.ts:835 hands
+// copy_text to Lob as the `copy_text` merge variable — it PRINTS on the piece.
+// designTemplate lands on design_url, which is passed as the Lob templateId.
+// So both strings are consumer-visible and take the public word; the agent-facing
+// toasts in this sheet are left in the agent's own language.
+import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
 
 interface Props {
   listingId: string
@@ -125,10 +133,10 @@ export function PriceReductionSheet({
           await createDirectMailCampaign({
             agentId,
             brokerageId,
-            campaignName: `Price Reduction — ${listingAddress}`,
+            campaignName: `${priceImprovementLabel("noun")} — ${listingAddress}`,
             targetAudience: "local_buyers_investors",
             mailingType: "postcard",
-            designTemplate: `Price Reduction: $${price.toLocaleString()} — ${listingAddress}. ${note}`,
+            designTemplate: `${priceImprovementLabel("noun")}: $${price.toLocaleString()} — ${listingAddress}. ${note}`,
             trackingEnabled: true,
             appOrigin: typeof window !== "undefined" ? window.location.origin : "",
           })
@@ -244,7 +252,7 @@ export function PriceReductionSheet({
               <div>
                 <p className="text-sm font-medium flex items-center gap-1.5">
                   <Megaphone className="h-3.5 w-3.5 text-purple-500" />
-                  Create a &quot;Price Improved&quot; ad + promo video
+                  Create a &quot;{priceImprovementLabel("badge")}&quot; ad + promo video
                 </p>
                 <p className="text-xs text-muted-foreground">
                   Off by default. Drafts a paid-ad creative + avatar video that land in

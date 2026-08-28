@@ -41,6 +41,7 @@
 import type { SituationKind } from "@/lib/video/video-director"
 import { compositionSeconds, geometryFor } from "@/lib/remotion/composition-geometry"
 import { narrationBudget, type NarrationBudget } from "@/lib/video/script-structure"
+import { publicPriceEventLabel } from "@/lib/listings/price-improvement-label"
 
 // The full listing-promo event_type set (lib/kernel/lifecycle-promo-policy
 // LifecycleEventType). Mirrored here as a literal union so the mapper is
@@ -147,13 +148,23 @@ export function promoNarrationBudget(eventType: string): NarrationBudget {
  * private `eventLabel`) when the reactor started staging the project row at
  * script time: two writers of one title needed one spelling (§6). `price_changed`
  * is kept — it is a lifecycle alias some older ledger rows carry.
+ *
+ * THIS LABEL IS PUBLIC. render-just-listed passes it as JustListedReel's `hook`
+ * prop (route.ts:654), which is the 96px headline burned into the reel's cover
+ * frame, and app/api/cron/listing-promo-social-publish/route.ts joins it into
+ * the social caption that publishes to Facebook/Instagram/LinkedIn/TikTok/
+ * YouTube/Pinterest/X. So the price case takes the public word from
+ * lib/listings/price-improvement-label.ts (owner ruling) — it used to read
+ * "Price Update", a third spelling of an idea the ad producer already called
+ * "Price Improved" (lib/ads/listing-ad-producer.ts:49). The event_type KEYS
+ * below are live DB CHECK values and are unchanged.
  */
 export function promoEventLabel(eventType: string): string {
+  const publicPriceLabel = publicPriceEventLabel(eventType, "badge")
+  if (publicPriceLabel) return publicPriceLabel
   switch (eventType) {
     case "just_listed":         return "Just Listed"
     case "just_sold":           return "Just Sold"
-    case "price_reduction":     return "Price Update"
-    case "price_changed":       return "Price Update"
     case "coming_soon":         return "Coming Soon"
     case "open_house_announce": return "Open House"
     case "open_house_reminder": return "Open House"

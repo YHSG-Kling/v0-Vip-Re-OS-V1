@@ -45,6 +45,11 @@ import { orchestrateRenderAndSend } from "@/lib/direct-mail/orchestrate-send"
 import { resolveMailingAddressForContact } from "@/lib/contacts/resolve-mailing-address"
 import type { LifecycleEventType } from "@/lib/kernel/lifecycle-promo-policy"
 import type { Persona } from "@/lib/kernel/types"
+// RENDER BOUNDARY (§6) — `statusBadge` is PRINTED on the postcard that lands in
+// a consumer's mailbox, so it speaks the public word. The EVENT_DEFAULTS key
+// `price_reduction` is the live lifecycle_mail_policy.event_type CHECK value
+// and is UNCHANGED.
+import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
 
 export interface DispatchLifecycleMailArgs {
   brokerageId: string
@@ -80,7 +85,7 @@ const EVENT_DEFAULTS: Record<LifecycleEventType, EventDefaults> = {
   just_listed:         { size: "6x9", statusBadge: "JUST LISTED", persona: "upsize",     withPhoto: true  },
   open_house_announce: { size: "6x9", statusBadge: "OPEN HOUSE",  persona: "first_time", withPhoto: true  },
   open_house_reminder: { size: "4x6", statusBadge: "THIS WEEKEND", persona: "first_time", withPhoto: false },
-  price_reduction:     { size: "4x6", statusBadge: "PRICE REDUCED", persona: "first_time", withPhoto: true  },
+  price_reduction:     { size: "4x6", statusBadge: priceImprovementLabel("print"), persona: "first_time", withPhoto: true  },
   under_contract:      { size: "4x6", statusBadge: "UNDER CONTRACT", persona: "upsize",   withPhoto: false },
   just_sold:           { size: "6x9", statusBadge: "JUST SOLD",   persona: "upsize",     withPhoto: true  },
   back_on_market:      { size: "6x9", statusBadge: "AVAILABLE AGAIN", persona: "first_time", withPhoto: true  },

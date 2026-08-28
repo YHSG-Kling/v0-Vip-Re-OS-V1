@@ -63,6 +63,7 @@ import { resolveLifecycleAutoSpawn, isWithinCooldown, type LifecycleEventType } 
 // (lib/video/promo-composition.ts:136 → composition-geometry → script-structure
 // WORDS_PER_MINUTE / NARRATION_HEADROOM). See the TOMBSTONE on EventTemplate.
 import { promoNarrationBudget, promoEventLabel } from "@/lib/video/promo-composition"
+import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
 import {
   fitNarrationToBudget,
   narrationLengthDirective,
@@ -521,7 +522,13 @@ const TEMPLATES: Record<ListingPromoEventType, EventTemplate> = {
     extraConstraints: "Keep it short — this is a reminder, not the original announcement",
   },
   price_reduction: {
-    hook:            "Pricing update",
+    // PUBLIC NARRATION (§6) — `Lead with: "<hook>"` puts this phrase at the top
+    // of the spoken script, and JustListedReel's cover frame beside it now reads
+    // promoEventLabel's "Price Improved". Both are the same two-word length, so
+    // the derived 50-word budget for this event is unmoved (test:promo-narration
+    // -budget re-derives it). Owner ruling: the public word is a price
+    // improvement. The `price_reduction` KEY is the live CHECK value, unchanged.
+    hook:            priceImprovementLabel("noun"),
     intent:          "Announce the new list price with no opinion on whether the property is underpriced or a deal.",
     tone:            "neutral, factual",
     bodyGuidance:    "State the new price + 1 line on what hasn't changed about the property",

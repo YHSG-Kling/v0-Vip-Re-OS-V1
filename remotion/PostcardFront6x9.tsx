@@ -31,7 +31,10 @@ export interface PostcardFront6x9Props {
   body:     string
   cta:      string
   /** Optional status badge — "JUST LISTED", "JUST SOLD", "OPEN HOUSE",
-   *  "PRICE REDUCED", etc. Null = no badge. */
+   *  "PRICE IMPROVED", etc. Null = no badge. The only writer is
+   *  lib/direct-mail/listing-lifecycle-mail-reactor.ts EVENT_DEFAULTS, which
+   *  takes the price wording from lib/listings/price-improvement-label.ts —
+   *  this card is PRINTED for a consumer, so it never says "reduced". */
   statusBadge:   string | null
   /** Property hero photo URL. When provided, becomes the top ~55% of
    *  the canvas. When null, falls back to a brand-color gradient. */

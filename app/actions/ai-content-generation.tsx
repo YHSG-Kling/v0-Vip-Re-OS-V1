@@ -1300,8 +1300,15 @@ export async function generateEmail(params: {
       agentId: params.agentId,
       contentType: "email",
       targetAudience: params.targetPersona || "general",
+      // emailType TOP-LEVEL, not only nested in context: buildEmailPrompt
+      // (lib/services/content-generation.service.ts:306) reads
+      // `params.emailType`, and this caller passed it ONLY inside `context`,
+      // which nothing reads. The optional top-level field was therefore
+      // undefined on every call and every listing-campaign email prompt began
+      // "Generate a professional real estate undefined email." Kept in
+      // `context` too would be a second spelling of one fact (§6), so it moves.
+      emailType: params.emailType,
       context: {
-        emailType: params.emailType,
         contactId: params.contactId,
         propertyIds: params.propertyIds,
         urgency: params.urgency,

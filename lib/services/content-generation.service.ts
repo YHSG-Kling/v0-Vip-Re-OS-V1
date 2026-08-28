@@ -6,6 +6,7 @@ import { isValidUUID } from "@/lib/validations"
 import { CONTENT_TYPES, type ContentType } from "@/lib/constants"
 import { handleError, ValidationError, NotFoundError } from "@/lib/errors"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { publicPriceEventLabel } from "@/lib/listings/price-improvement-label"
 import { calculateThemFirstScore } from "@/lib/compliance-rules/rule-evaluators"
 
 // ============================================
@@ -303,7 +304,19 @@ function buildEmailPrompt(params: ContentGenerationParams, contextData: any): st
   const contact = contextData.contact
   const property = contextData.property
 
-  let prompt = `Generate a professional real estate ${params.emailType} email.\n\n`
+  // THE PUBLIC WORD, AT THE RENDER BOUNDARY (owner ruling 2026-08-28: a price
+  // reduction is a PRICE IMPROVEMENT wherever a consumer can see it). This
+  // prompt writes an email a client reads, and app/actions/email-campaigns.ts:616
+  // casts the listing campaignType — whose vocabulary includes `price_drop` —
+  // straight into emailType through `as any`. That token was swallowed while the
+  // field went unread; now that it arrives, it must arrive in the product's
+  // language rather than as a raw internal key. Non-price types are humanized
+  // (`follow_up` → `follow up`) for the same reason, and an absent type says so
+  // instead of printing "undefined".
+  const emailKind =
+    publicPriceEventLabel(params.emailType, "sentence")
+    ?? (params.emailType ? String(params.emailType).replace(/_/g, " ") : "client")
+  let prompt = `Generate a professional real estate ${emailKind} email.\n\n`
   prompt += audienceDirection(params)
 
   if (contact) {

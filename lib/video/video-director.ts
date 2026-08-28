@@ -55,6 +55,7 @@ import type { VideoQrKind } from "@/lib/video/video-qr"
 // value here — selectVideoFormatLearned uses recommendFormatAdjustment directly,
 // and selectVideoFormat itself never touches it (backward-compat preserved).
 import { recommendFormatAdjustment, type ScoredFormats } from "@/lib/video/format-learning"
+import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
 
 // ============================================================================
 // SITUATION + FORMAT CONTRACTS (pure)
@@ -525,7 +526,9 @@ export function qrCaptionForSituation(kind: SituationKind): string {
 export function defaultHookForSituation(kind: SituationKind): string {
   switch (kind) {
     case "new_listing":   return "Just Listed"
-    case "price_drop":    return "Pricing Update"
+    // PUBLIC (§6) — this is the reel's cover hook, so it speaks the owner's
+    // public word; the `price_drop` SituationKind itself is unchanged.
+    case "price_drop":    return priceImprovementLabel("badge")
     case "just_sold":     return "Just Sold"
     case "open_house":    return "Open House This Weekend"
     case "coming_soon":   return "Coming Soon"

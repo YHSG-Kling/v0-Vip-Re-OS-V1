@@ -19,6 +19,23 @@ import {
   getBuyerAlertSummary, runAlertNow, previewAlertCriteria, prefillFromProfile,
   saveAlertResultForBuyer, sendAlertResultNow, markResultViewed
 } from "@/app/actions/property-alerts/alert-actions"
+// ONE SCREEN, ONE SPELLING (§6). Every result card here is the agent's PREVIEW
+// of the exact card the buyer receives on the portal (app/portal/[contactId]/
+// alerts/[alertId]/alert-match-list.tsx) and in the alert email — the agent
+// reading a different word than the one the client was sent is the drift §6
+// forbids, so the badge, the result filter and the criteria checkbox all speak
+// the same public word.
+//
+// FLAGGED FOR THE OWNER: this is the one place where the ruling's PUBLIC scope
+// was extended to an agent-console control. The alternative — a "Price Improved"
+// badge sitting under a "Price Reductions" filter tab — was worse. Every other
+// agent-only picker (the video panel, the social composer, the lifecycle-promo
+// settings, the workflow palette) was deliberately LEFT in the internal wording.
+//
+// The internal filter key `price_reductions`, the `is_price_reduction` column and
+// the `include_price_reductions` / `price_reduction_min_percent` criteria columns
+// are all unchanged.
+import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
 
 type Filter = "all" | "new_listings" | "price_reductions" | "not_viewed"
 
@@ -461,7 +478,7 @@ export default function BuyerAlertsPage() {
                         {{
                           all: "All",
                           new_listings: "New Listings",
-                          price_reductions: "Price Reductions",
+                          price_reductions: `${priceImprovementLabel("noun")}s`,
                           not_viewed: `Not Viewed${unviewedCount > 0 ? ` (${unviewedCount})` : ""}`,
                         }[f]}
                       </Button>
@@ -485,7 +502,7 @@ export default function BuyerAlertsPage() {
                             <div className="flex items-start justify-between gap-2">
                               <p className="text-sm font-medium leading-snug">{r.property_address}{r.city ? `, ${r.city}` : ""}</p>
                               {r.is_price_reduction
-                                ? <Badge variant="destructive" className="text-xs flex-shrink-0">Price Reduced</Badge>
+                                ? <Badge variant="destructive" className="text-xs flex-shrink-0">{priceImprovementLabel("badge")}</Badge>
                                 : <Badge className="text-xs flex-shrink-0 bg-green-600">New</Badge>
                               }
                             </div>
@@ -649,11 +666,11 @@ export default function BuyerAlertsPage() {
               <div className="space-y-2">
                 <div className="flex items-center gap-2">
                   <Checkbox id="priceReductions" checked={form.includePriceReductions} onCheckedChange={v => setForm(p => ({...p, includePriceReductions: !!v}))} />
-                  <Label htmlFor="priceReductions">Include Price Reductions</Label>
+                  <Label htmlFor="priceReductions">Include {priceImprovementLabel("noun")}s</Label>
                 </div>
                 {form.includePriceReductions && (
                   <div className="space-y-1 ml-6">
-                    <Label className="text-xs">Min Reduction %</Label>
+                    <Label className="text-xs">Min {priceImprovementLabel("noun")} %</Label>
                     <Input type="number" value={form.priceReductionMinPercent} onChange={e => setForm(p => ({...p, priceReductionMinPercent: e.target.value}))} className="w-24" />
                   </div>
                 )}

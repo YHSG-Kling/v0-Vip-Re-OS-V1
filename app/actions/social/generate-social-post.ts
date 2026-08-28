@@ -22,6 +22,11 @@ import { resolveModel } from "@/lib/ai/resolve-model"
 import { createClient } from "@/lib/supabase/server"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
+import {
+  isPriceImprovementEvent,
+  priceImprovementLabel,
+  publicPriceEventLabel,
+} from "@/lib/listings/price-improvement-label"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -193,6 +198,15 @@ export async function generateSocialPostContent(params: {
       `NEVER use fair housing violations or protected-class language.`,
       `NEVER make guarantees about home values or investment returns.`,
       `NEVER use deceptive urgency tactics.`,
+      // RENDER BOUNDARY (§6). `contentType` is the RAW social_posts.post_type
+      // CHECK value, so a price post used to hand the writer the literal string
+      // "price_reduction" (see the userPrompt below) and the model wrote it
+      // straight into a PUBLIC caption. Owner ruling: the public word is a price
+      // improvement. The stored value itself is untouched — only what the writer
+      // is told to SAY.
+      isPriceImprovementEvent(params.contentType)
+        ? `This post announces a lowered list price. NEVER write "price reduction", "price reduced", "price drop" or "price cut" — call it a ${priceImprovementLabel("sentence")}.`
+        : "",
       brandVoice.prohibited_words?.length
         ? `NEVER use these words: ${brandVoice.prohibited_words.join(", ")}.`
         : "",
@@ -208,7 +222,7 @@ export async function generateSocialPostContent(params: {
     const userPrompt = [
       `Create a ${params.platform} social media post.`,
       `Brief: ${params.brief}`,
-      `Content type: ${params.contentType ?? "general"}`,
+      `Content type: ${publicPriceEventLabel(params.contentType, "noun") ?? params.contentType ?? "general"}`,
       `Tone: ${params.tone ?? brandVoice.tone ?? "professional and warm"}`,
       `Formality: ${brandVoice.formality_level ?? "conversational"}`,
       `Character limit: ${charLimit}`,

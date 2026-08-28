@@ -7,6 +7,9 @@ import { dispatchEmail, dispatchSms } from "@/lib/providers/dispatch"
 // users FK and contacts.agent_id is an agents FK.
 import { resolveAgentRecipient } from "@/lib/notifications/recipient-tenant"
 import type { AlertProperty } from "./alert-matcher"
+// RENDER BOUNDARY (§6) — this email goes to the BUYER, so the chip speaks the
+// public word while `is_price_reduction` (the column) stays as it is.
+import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
 
 export interface DeliverResult {
   sent: number
@@ -246,7 +249,7 @@ function buildEmailHtml(params: {
         ${p.primary_photo_url ? `<img src="${p.primary_photo_url}" width="100%" style="max-height:180px;object-fit:cover;border-radius:6px;margin-bottom:8px;" alt="Property photo" />` : ""}
         <p style="margin:0 0 4px;font-weight:600;font-size:15px;color:#111827;">${p.property_address}${p.city ? `, ${p.city}` : ""}</p>
         <p style="margin:0 0 8px;font-size:14px;color:#374151;">${p.list_price ? new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:0}).format(p.list_price) : "Price TBD"}${p.bedrooms ? ` · ${p.bedrooms} bd` : ""}${p.bathrooms ? ` · ${p.bathrooms} ba` : ""}${p.sqft ? ` · ${p.sqft.toLocaleString()} sqft` : ""}</p>
-        ${p.is_price_reduction ? `<span style="display:inline-block;background:#fef2f2;color:#dc2626;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;margin-bottom:6px;">Price Reduced</span>` : `<span style="display:inline-block;background:#f0fdf4;color:#16a34a;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;margin-bottom:6px;">New Listing</span>`}
+        ${p.is_price_reduction ? `<span style="display:inline-block;background:#fef2f2;color:#dc2626;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;margin-bottom:6px;">${priceImprovementLabel("badge")}</span>` : `<span style="display:inline-block;background:#f0fdf4;color:#16a34a;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;margin-bottom:6px;">New Listing</span>`}
         <p style="margin:4px 0 8px;font-size:12px;color:#6b7280;">${p.matchReasons.slice(0, 3).join(" · ")}</p>
         ${p.listing_url ? `<a href="${p.listing_url}" style="color:#2563eb;font-size:13px;font-weight:600;text-decoration:none;">View Details &rarr;</a>` : ""}
       </td>

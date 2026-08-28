@@ -4,6 +4,10 @@ import { useState } from "react"
 import { Badge } from "@/app/components/ui/badge"
 import { Button } from "@/app/components/ui/button"
 import { markResultViewed } from "@/app/actions/property-alerts/alert-actions"
+// RENDER BOUNDARY (§6) — `is_price_reduction` is the INTERNAL column name and
+// stays. This is the CLIENT PORTAL, so the badge the buyer reads is the public
+// word. Owner ruling: public = price improvement.
+import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
 
 interface Result {
   id: string
@@ -73,7 +77,7 @@ export function AlertMatchList({ contactId, results }: { contactId: string; resu
             </p>
             <div className="flex gap-1 shrink-0">
               {r.is_price_reduction && (
-                <Badge variant="destructive" className="text-[10px]">Price Reduced</Badge>
+                <Badge variant="destructive" className="text-[10px]">{priceImprovementLabel("badge")}</Badge>
               )}
               {r.is_new_listing && <Badge className="text-[10px] bg-green-600">New</Badge>}
               {!viewed[r.id] && <Badge variant="outline" className="text-[10px]">Unseen</Badge>}
