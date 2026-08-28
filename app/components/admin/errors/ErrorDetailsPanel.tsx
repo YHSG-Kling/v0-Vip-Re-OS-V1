@@ -16,7 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Trash2, CheckCircle, UserPlus, Loader2 } from "lucide-react"
+import { Trash2, CheckCircle, UserPlus, Loader2, RotateCw, AlertTriangle } from "lucide-react"
 
 interface ErrorDetailsPanelProps {
   groupId: string
@@ -85,6 +85,79 @@ export function ErrorDetailsPanel({
     loadDetails()
   }, [groupId])
 
+  // ── RETRY / ESCALATE ────────────────────────────────────────────────────────
+  // Lane G5 2026-08-28. This panel RENDERED the auto-retry ledger and the
+  // escalation flag (the block below) while neither had an operator-facing
+  // writer anywhere in the tree: POST /api/errors/retry is the only manual
+  // caller of lib/errors/auto-retry.ts:scheduleRetry outside the cron, and POST
+  // /api/errors/escalate is the only writer of error_resolution_log
+  // action_type='escalated', of the SYSTEM_HEALTH_ALERT lifecycle event and of
+  // the escalation notification — and no string in the tree addressed either
+  // route. The ruling that kept them (app/actions/error-handler.ts:4-30) says
+  // the missing half must be BUILT rather than the route deleted. This is that
+  // half. Both are HTTP doors, not server actions, so they are called with
+  // fetch; the routes re-check the admin/broker + platform_role gate server-side
+  // and this component's visibility is not the gate.
+  const [opBusy, setOpBusy] = useState<"retry" | "escalate" | null>(null)
+  const [opMsg, setOpMsg] = useState<string | null>(null)
+  const [opErr, setOpErr] = useState<string | null>(null)
+
+  async function refreshDetails() {
+    try {
+      setDetails(await getErrorGroupDetails(groupId))
+    } catch {
+      /* the action just taken already reported its own outcome */
+    }
+  }
+
+  async function handleRetry() {
+    setOpMsg(null); setOpErr(null); setOpBusy("retry")
+    try {
+      const res = await fetch("/api/errors/retry", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ errorId: groupId }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error ?? `Retry refused (${res.status})`)
+      // The route reports per-id success; a scheduled retry that the engine
+      // refused must not read as "queued".
+      const failed = (data?.results ?? []).find((r: any) => !r.success)
+      if (failed) throw new Error(failed.error ?? "The retry engine refused this error")
+      setOpMsg("Retry scheduled.")
+      await refreshDetails()
+    } catch (e: any) {
+      setOpErr(e?.message ?? "Could not schedule a retry")
+    } finally {
+      setOpBusy(null)
+    }
+  }
+
+  async function handleEscalate() {
+    setOpMsg(null); setOpErr(null); setOpBusy("escalate")
+    try {
+      const res = await fetch("/api/errors/escalate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          errorId: groupId,
+          escalatedSeverity: "critical",
+          notes: "Escalated from the error triage panel",
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error ?? `Escalation refused (${res.status})`)
+      const failed = (data?.results ?? []).find((r: any) => !r.success)
+      if (failed) throw new Error(failed.error ?? "The escalation was refused")
+      setOpMsg("Escalated to critical — the on-call notification was sent.")
+      await refreshDetails()
+    } catch (e: any) {
+      setOpErr(e?.message ?? "Could not escalate this error")
+    } finally {
+      setOpBusy(null)
+    }
+  }
+
   if (isLoading) {
     return (
       <Card>
@@ -149,6 +222,35 @@ export function ErrorDetailsPanel({
                 {details.retry.isEscalated ? " · escalated" : ""}
               </p>
             )}
+            {opMsg && <p className="text-xs text-green-700">{opMsg}</p>}
+            {opErr && <p className="text-xs text-red-600">{opErr}</p>}
+            <div className="flex gap-2 pt-1">
+              <Button
+                size="sm"
+                variant="secondary"
+                className="flex-1"
+                onClick={handleRetry}
+                disabled={opBusy !== null}
+              >
+                {opBusy === "retry"
+                  ? <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  : <RotateCw className="h-4 w-4 mr-2" />}
+                Retry now
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="flex-1"
+                onClick={handleEscalate}
+                disabled={opBusy !== null || details.retry.isEscalated}
+                title={details.retry.isEscalated ? "Already escalated" : "Raise to critical and notify"}
+              >
+                {opBusy === "escalate"
+                  ? <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  : <AlertTriangle className="h-4 w-4 mr-2" />}
+                Escalate
+              </Button>
+            </div>
           </div>
         )}
 

@@ -383,12 +383,19 @@ export async function processVoiceCommand(params: {
       source: "web",
     })
 
-    // Update session command count
+    // Update session command count. §3 — supabase-js RESOLVES a refusal, so a
+    // bare `await supabase.rpc(...)` here reported success whether the counter
+    // moved or not. It was never noticed because nothing supplied a sessionId
+    // until this function was wired to the mobile mic (lane G5 2026-08-28);
+    // now that the counter is live, a refusal is read and logged.
     if (sessionId) {
-      await supabase.rpc("increment_voice_session_commands", {
+      const { error: counterError } = await supabase.rpc("increment_voice_session_commands", {
         p_session_id: sessionId,
         p_success: success,
       })
+      if (counterError) {
+        console.error(`[voice-assistant] session command counter refused: ${counterError.message}`)
+      }
     }
 
     return { success, response, actionTaken, intent: intent.type }

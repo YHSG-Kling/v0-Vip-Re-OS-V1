@@ -3,8 +3,8 @@
 import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
-import { Mail, Video, FileText, Phone, MessageSquare, PlayCircle, PauseCircle, TestTube, Rocket } from "lucide-react"
-import { toggleCampaignStatus, sendCampaignTestTouch, launchAIISACampaign } from "@/app/actions/ai-isa"
+import { Mail, Video, FileText, Phone, MessageSquare, PlayCircle, PauseCircle, TestTube, Rocket, CheckCircle2 } from "lucide-react"
+import { toggleCampaignStatus, sendCampaignTestTouch, launchAIISACampaign, completeISACampaign } from "@/app/actions/ai-isa"
 import type { ISACampaignRow } from "@/app/actions/ai-isa"
 
 const TYPE_BADGE: Record<string, string> = {
@@ -36,6 +36,7 @@ export function CampaignCard({ campaign, onStatusChange }: Props) {
   const [testLoading, setTestLoading] = useState(false)
   const [testResult, setTestResult] = useState<string | null>(null)
   const [launching, setLaunching] = useState(false)
+  const [completing, setCompleting] = useState(false)
   const [launchResult, setLaunchResult] = useState<{ ok: boolean; text: string } | null>(null)
 
   const rate = campaign.leads_targeted > 0
@@ -47,6 +48,20 @@ export function CampaignCard({ campaign, onStatusChange }: Props) {
     await toggleCampaignStatus(campaign.id, campaign.status)
     setLoading(false)
     onStatusChange()
+  }
+
+  // Retire the campaign. This card already GREYED the badge and disabled both
+  // Launch and Pause on status === "completed" (below) while nothing in the
+  // tree could produce that status — the terminal state was decorative. The
+  // writer is app/actions/ai-isa.ts:completeISACampaign (session-gated,
+  // brokerage-pinned). One-way, hence the confirm.
+  async function handleComplete() {
+    if (!confirm(`Mark “${campaign.name}” completed? A completed campaign can no longer be launched or resumed.`)) return
+    setCompleting(true)
+    const result = await completeISACampaign(campaign.id)
+    setCompleting(false)
+    if (result.success) onStatusChange()
+    else setLaunchResult({ ok: false, text: result.error ?? "Could not complete campaign." })
   }
 
   // Launch = resolve this campaign type's contact segment and ENROLL it into
@@ -189,6 +204,16 @@ export function CampaignCard({ campaign, onStatusChange }: Props) {
           disabled={testLoading}
         >
           <TestTube className="h-3.5 w-3.5" /> Test
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="gap-1"
+          onClick={handleComplete}
+          disabled={completing || campaign.status === "completed" || campaign.status === "draft"}
+          title="Retire this campaign — it can no longer be launched or resumed"
+        >
+          <CheckCircle2 className="h-3.5 w-3.5" /> {completing ? "…" : "Complete"}
         </Button>
       </div>
       {launchResult && (

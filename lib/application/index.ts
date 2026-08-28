@@ -6,11 +6,14 @@
 // enrolls the matched segment into the sequence cadence (it does not dial);
 // the call-queue service regained its public action door in
 // app/actions/ai-isa.ts:queueAIISACall.
+// updateCampaignStatusService was deleted (lane G5 2026-08-28) — it was an
+// ungated, tenant-free write. Survivors are app/actions/ai-isa.ts:
+// toggleCampaignStatus (active↔paused) and completeISACampaign (terminal);
+// tombstone in ./ai-isa.
 export {
   launchAIISACampaignService,
   queueAIISACallService,
   retryFailedCallsService,
-  updateCampaignStatusService,
 } from "./ai-isa"
 export type { ISALaunchCampaignType, LaunchAIISACampaignResult } from "./ai-isa"
 

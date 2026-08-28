@@ -74,35 +74,8 @@ import { resolveAgentRecipient } from "@/lib/notifications/recipient-tenant"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 // ==================== TYPES ====================
-
-export interface OnboardingChecklist {
-  profileComplete: boolean
-  licenseVerified: boolean
-  brokerageAgreementSigned: boolean
-  taxFormsCompleted: boolean
-  directDepositSetup: boolean
-  techStackSetup: boolean
-  crmTrained: boolean
-  complianceTrained: boolean
-  videoPersonaConfigured: boolean
-  firstLeadAssigned: boolean
-  mentorAssigned: boolean
-  firstTransactionStarted: boolean
-}
-
-export interface OnboardingStep {
-  id: string
-  name: string
-  description: string
-  category: "documents" | "training" | "setup" | "compliance" | "mentorship"
-  required: boolean
-  order: number
-  estimatedMinutes: number
-  aiAssisted: boolean
-  completedAt?: string
-  completedBy?: string
-  notes?: string
-}
+// (Emptied lane G5 2026-08-28 — see the completeAISessionStep tombstone below
+// for where OnboardingChecklist and OnboardingStep went.)
 
 // TOMBSTONE (§1.3, 2026-08-27): `AgentOnboardingSession` deleted — an aspirational
 // in-memory session shape referenced by nothing, not even this file. The onboarding
@@ -137,148 +110,52 @@ export interface OnboardingStep {
 // per-view summary; a stripped-source census found zero callers outside the
 // app/actions/index.ts barrel, which itself has zero importers.
 
-/**
- * Complete an onboarding step with AI verification
- */
-export async function completeAISessionStep(params: {
-  sessionId: string
-  stepId: string
-  completedBy: string
-  notes?: string
-  attachments?: string[]
-}) {
-  if (!isValidUUID(params.sessionId) || !isValidUUID(params.stepId)) {
-    return { success: false, error: "Invalid session or step ID" }
-  }
-
-  const supabase = await createClient()
-
-  try {
-    // Get step details
-    const { data: step, error: stepError } = await supabase
-      .from("agent_onboarding_steps")
-      .select("*")
-      .eq("id", params.stepId)
-      .single()
-
-    if (stepError) throw stepError
-
-    // Mark step as complete
-    const { error: updateError } = await supabase
-      .from("agent_onboarding_steps")
-      .update({
-        completed_at: new Date().toISOString(),
-        completed_by: params.completedBy,
-        notes: params.notes,
-        attachments: params.attachments,
-      })
-      .eq("id", params.stepId)
-
-    if (updateError) throw updateError
-
-    // Get session and recalculate progress
-    const { data: session, error: sessionError } = await supabase
-      .from("agent_onboarding_sessions")
-      .select(`
-        *,
-        steps:agent_onboarding_steps(*)
-      `)
-      .eq("id", params.sessionId)
-      .single()
-
-    if (sessionError) throw sessionError
-
-    const completedSteps = session.steps.filter((s: any) => s.completed_at).length
-    const totalSteps = session.steps.length
-    const progressPercentage = Math.round((completedSteps / totalSteps) * 100)
-
-    // Update checklist based on step completed
-    const checklist = session.checklist || {}
-    const checklistMap: Record<string, keyof OnboardingChecklist> = {
-      "Complete Agent Profile": "profileComplete",
-      "License Verification": "licenseVerified",
-      "Sign Brokerage Agreement": "brokerageAgreementSigned",
-      "Complete W-9 Tax Forms": "taxFormsCompleted",
-      "Setup Direct Deposit": "directDepositSetup",
-      "Technology Stack Setup": "techStackSetup",
-      "CRM Training Module": "crmTrained",
-      "Fair Housing Compliance": "complianceTrained",
-      "Configure Video Persona": "videoPersonaConfigured",
-      "First Lead Assignment": "firstLeadAssigned",
-      "Mentor Assignment": "mentorAssigned",
-      "Transaction Training": "firstTransactionStarted",
-    }
-
-    if (checklistMap[step.name]) {
-      checklist[checklistMap[step.name]] = true
-    }
-
-    // Find next step
-    const incompleteSteps = session.steps
-      .filter((s: any) => !s.completed_at)
-      .sort((a: any, b: any) => a.order - b.order)
-    const nextStep = incompleteSteps[0]?.name || "completed"
-
-    // Update session
-    const isComplete = progressPercentage === 100
-
-    await supabase
-      .from("agent_onboarding_sessions")
-      .update({
-        progress_percentage: progressPercentage,
-        current_step: nextStep,
-        checklist,
-        status: isComplete ? "completed" : "in_progress",
-        actual_completion_date: isComplete ? new Date().toISOString() : null,
-      })
-      .eq("id", params.sessionId)
-
-    // If onboarding complete, activate agent
-    if (isComplete) {
-      await supabase
-        .from("agents")
-        .update({
-          is_active: true,
-          onboarding_status: "completed",
-        })
-        .eq("id", session.agent_id)
-
-      // AWARD GAMIFICATION POINTS — AN INCREMENT, NOT AN OVERWRITE.
-      //
-      // This read `gamification_points: 100`. Not "+100": the agent's total was SET
-      // to 100, so an agent who finished onboarding after earning 2,400 points was
-      // silently reset to 100 — dropped from Silver back below Bronze, with their
-      // ledger still showing every award they had earned. The total and the ledger
-      // could not be reconciled afterwards because nothing recorded the loss.
-      //
-      // It now rides the one atomic award path (m484: public.award_agent_points),
-      // which adds the points and writes the ledger row in one transaction.
-      const { awardAgentPoints, POINT_VALUES } = await import("@/lib/gamification/award-points")
-      const awarded = await awardAgentPoints(supabase, {
-        agentId: session.agent_id,
-        points: POINT_VALUES.ONBOARDING_COMPLETED,
-        reason: "ONBOARDING_COMPLETED",
-        referenceType: "agent_onboarding_session",
-        referenceId: params.sessionId,
-      })
-      if (!awarded.ok) {
-        console.error(`[completeAISessionStep] onboarding completion points not awarded: ${awarded.error}`)
-      }
-    }
-
-    revalidatePath("/dashboard/admin/users")
-
-    return {
-      success: true,
-      progressPercentage,
-      nextStep,
-      isComplete,
-    }
-  } catch (error) {
-    console.error("Complete step error:", error)
-    return handleError(error, "completeAISessionStep")
-  }
-}
+// TOMBSTONE (§1.1 merge-then-delete, lane G5 2026-08-28) —
+// `completeAISessionStep` deleted, exactly as this file's own migration map
+// (line 13) prescribed. SURVIVOR:
+// lib/kernel/agent-onboarding.ts:completeAISessionStep, re-exported at
+// lib/kernel/index.ts:156 and wired through
+// app/actions/onboarding/agent-onboarding-actions.ts:26
+// (completeMyOnboardingStep) to app/dashboard/onboarding/
+// OnboardingDashboardClient.tsx:507/517.
+//
+// SAME BUSINESS PROCESS, verified end to end before deleting: mark one
+// onboarding step complete → recompute the agent's percentage → flip the
+// parent record to "completed" at 100%. The twins differed only in which
+// table family they wrote and how much they trusted the caller.
+//
+// MERGED ONTO THE SURVIVOR FIRST — the atomic
+// awardAgentPoints(POINT_VALUES.ONBOARDING_COMPLETED) this copy fired at 100%.
+// The kernel copy awarded nothing, so `ONBOARDING_COMPLETED: 100`
+// (lib/gamification/award-points.ts:56) had no writer anywhere: an agent could
+// finish the whole programme and the leaderboard would not move. It now lives
+// at lib/kernel/agent-onboarding.ts, gated on the false→true edge of
+// certification_achieved so it cannot top up on every re-save.
+//
+// DELIBERATELY NOT MERGED — the `agents.is_active = true` +
+// onboarding_status='completed' auto-activation this copy performed. Going
+// live is the EXAM-GATED admin act (certifyAgent, below in this file, and
+// lib/onboarding/certification-engine.ts which owns agents.onboarding_status).
+// Activating on mere step completion would walk around the exam gate, so
+// porting it would have been a regression dressed as a merge.
+//
+// WHY THIS COPY COULD NOT BE THE SURVIVOR: (a) zero callers — a
+// stripped-source census across app/, lib/ and scripts/ found only its own
+// definition, and app/actions/index.ts no longer exists; (b) it took
+// `completedBy` straight from the caller on a public "use server" endpoint
+// with no auth check at all, while the survivor resolves identity through
+// requireUserContext + assertCanAccessAgent; (c) it drove the DEPRECATED
+// agent_onboarding_sessions / agent_onboarding_steps family, of which this
+// function was the tree's ONLY reader and writer — nothing else creates a
+// session row, so it operated on a family no live surface populates. The live
+// dashboard reads agent_onboarding + onboarding_steps +
+// agent_step_completions.
+//
+// The `OnboardingChecklist` and `OnboardingStep` interfaces that stood at
+// line 78 went with it: OnboardingChecklist was keyed only by this function's
+// checklistMap, and this file's `OnboardingStep` was already referenced by
+// nothing — the live one is lib/kernel/onboarding.ts:45, exported at
+// lib/kernel/index.ts:261.
 
 /**
  * AI-powered mentor matching

@@ -5,7 +5,6 @@ import {
   launchAIISACampaignService,
   queueAIISACallService,
   retryFailedCallsService,
-  updateCampaignStatusService,
   type LaunchAIISACampaignResult,
 } from "@/lib/application"
 import { createClient } from "@/lib/supabase/server"
@@ -230,14 +229,21 @@ export async function retryFailedCalls() {
   }
 }
 
-// Pause/resume campaign
-export async function updateCampaignStatus(campaignId: string, status: "active" | "paused" | "completed") {
-  if (!isValidUUID(campaignId)) {
-    return { success: false, error: "Invalid campaign ID" }
-  }
-
-  return await updateCampaignStatusService(campaignId, status)
-}
+// TOMBSTONE: `updateCampaignStatus(campaignId, status)` stood here, and its
+// engine `lib/application/ai-isa.ts:updateCampaignStatusService`. Deleted lane
+// G5 2026-08-28 AFTER its one distinct capability was merged onto the gated
+// lane. SURVIVORS: the active↔paused flip is
+// app/actions/ai-isa.ts:toggleCampaignStatus (below, wired at three surfaces);
+// the TERMINAL "completed" transition — the only thing toggle could not do — is
+// app/actions/ai-isa.ts:completeISACampaign (below), wired at
+// app/dashboard/isa/campaigns/components/CampaignCard.tsx.
+// WHY IT COULD NOT SURVIVE AS-IS: it was an ungated door. It ran no
+// requireCaller, pinned no brokerage, and its service updated
+// ai_isa_campaigns by `id` alone — so any session that reached it could
+// complete ANY brokerage's campaign (the §4 body-supplied-tenant shape). It
+// also had zero callers; the `updateCampaignStatus` imported at
+// app/dashboard/campaigns/ads/ads-dashboard-client.tsx:75 is the unrelated ADS
+// function from lib/ads/ad-creator.ts:625, a different business process.
 
 // ─── NEW: ISA Campaigns page actions ─────────────────────────────────────────
 
@@ -381,6 +387,69 @@ export async function toggleCampaignStatus(
     .eq("id", campaignId)
     .eq("brokerage_id", auth.brokerageId)
   if (error) return { success: false, error: error.message }
+  return { success: true }
+}
+
+/**
+ * Retire a campaign — the TERMINAL transition, merged onto this gated lane from
+ * the deleted `updateCampaignStatus` (tombstone at line ~233).
+ *
+ * `completed` is a live value of the ai_isa_campaigns.status CHECK
+ * (scripts/check-vocabularies.ts:199) and FOUR surfaces already read it —
+ * CampaignCard.tsx:112/166/177 greys the badge and disables Launch + Pause,
+ * OutreachClient.tsx:88/288 does the same — but nothing reachable could WRITE
+ * it, so the terminal state was decorative. This is the missing writer.
+ *
+ * Same rails as toggleCampaignStatus: session-derived brokerage (§4), a
+ * brokerage pin verified BEFORE the mutation and repeated in the predicate,
+ * and `is_active` mirrored false so the readers that filter
+ * .eq("is_active", true) agree with the status vocabulary. One-way: a
+ * completed campaign is not re-opened here, which is why both toggles disable
+ * on it.
+ */
+export async function completeISACampaign(
+  campaignId: string
+): Promise<{ success: boolean; error?: string }> {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!isValidUUID(campaignId)) return { success: false, error: "Invalid campaign ID" }
+  const service = createServiceClient()
+
+  const { data: existing, error: readError } = await service
+    .from("ai_isa_campaigns")
+    .select("brokerage_id, status")
+    .eq("id", campaignId)
+    .maybeSingle()
+  if (readError) return { success: false, error: readError.message }
+  if (!existing) return { success: false, error: "Campaign not found" }
+  if (existing.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden" }
+  if (existing.status === "completed") return { success: true }
+
+  // §3: a supabase-js UPDATE that matches NOTHING also resolves with a null
+  // error, so the tenant predicate refusing would read as success. Select the
+  // update and count what came back.
+  const { data: updated, error } = await service
+    .from("ai_isa_campaigns")
+    .update({ status: "completed", is_active: false, updated_at: new Date().toISOString() })
+    .eq("id", campaignId)
+    .eq("brokerage_id", auth.brokerageId)
+    .select("id")
+  if (error) return { success: false, error: error.message }
+  if (!updated || updated.length === 0) return { success: false, error: "Campaign not found" }
+
+  await service.from("lifecycle_events").insert({
+    // §6 — reuse the one existing "campaign ended" spelling rather than mint a
+    // twelfth. lib/kernel/lifecycle.ts:84 already maps it.
+    event_type:    KernelEvent.MARKETING_CAMPAIGN_ENDED,
+    entity_type:   "campaign",
+    entity_id:     campaignId,
+    brokerage_id:  auth.brokerageId,
+    actor_user_id: auth.userId,
+    metadata:      { previousStatus: existing.status },
+    created_at:    new Date().toISOString(),
+  })
+
   return { success: true }
 }
 

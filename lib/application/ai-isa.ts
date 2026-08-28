@@ -474,21 +474,13 @@ export async function retryFailedCallsService(loginId: string) {
   return { success: true, retried_count: retriedCount }
 }
 
-// Pause/resume campaign
-export async function updateCampaignStatusService(
-  campaignId: string,
-  status: "active" | "paused" | "completed"
-) {
-  const supabase = await createClient()
-
-  const { error } = await supabase
-    .from("ai_isa_campaigns")
-    // is_active mirrors status — same rule as app/actions/ai-isa.ts writers;
-    // the voice ISA page and stale-lead processor filter on is_active.
-    .update({ status, is_active: status === "active" })
-    .eq("id", campaignId)
-
-  if (error) return { success: false, error: error.message }
-
-  return { success: true }
-}
+// TOMBSTONE: `updateCampaignStatusService(campaignId, status)` stood here.
+// Deleted lane G5 2026-08-28 together with its only door,
+// app/actions/ai-isa.ts:updateCampaignStatus. SURVIVORS, both in
+// app/actions/ai-isa.ts and both session-gated + brokerage-pinned:
+//   · active↔paused  → toggleCampaignStatus  (app/actions/ai-isa.ts:355)
+//   · → "completed"  → completeISACampaign   (app/actions/ai-isa.ts:396)
+// This service updated ai_isa_campaigns by `id` alone with no caller identity
+// and no tenant predicate, which is the §4 shape: one campaign UUID was enough
+// to retire another brokerage's campaign. The `is_active` mirror it carried is
+// preserved on both survivors.
