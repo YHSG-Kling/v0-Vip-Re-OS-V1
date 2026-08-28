@@ -152,10 +152,11 @@ function sourceLayer() {
     && /r\.net_to_agent \?\? r\.agent_commission \?\? 0/.test(crS)
     && /r\.net_to_brokerage \?\? r\.brokerage_commission \?\? 0/.test(crS))
   const snS = stripComments(src("app/api/cron/brokerage-pl-rollup/route.ts"))
-  check("agent_pl_snapshot writer (4th reader, same cron) prefers stored nets with the derived fallback on both sides",
+  check("agent_pl_snapshot writer (4th reader, same cron) selects both nets and folds through the ONE shared foldCommissionRows",
     snS.includes("net_to_agent, net_to_brokerage, close_date")
-    && /r\.net_to_agent \?\? r\.agent_commission \?\? 0/.test(snS)
-    && /r\.net_to_brokerage \?\? \(\(r\.gross_commission \?\? 0\) - \(r\.agent_commission \?\? 0\)\)/.test(snS))
+    && snS.includes("agent_commission, brokerage_commission")
+    && /foldCommissionRows\(foldRows\)/.test(snS)
+    && /import \{ foldCommissionRows/.test(snS))
 }
 
 async function liveLayer() {
