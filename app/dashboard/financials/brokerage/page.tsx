@@ -816,6 +816,20 @@ export default async function BrokeragePLPage() {
         <RecruitingAndReferralEconomics brokerageId={profile.brokerage_id} />
       </Suspense>
 
+      {/* ─── SECTION 9: COMPANY-BOOKS OBLIGATIONS (m577) ──────────────────────
+          The READ half of the post-cap company-books ledger. Waterfall stage 11
+          writes an obligation here when a brokerage-funded share (revenue share,
+          team split) lands on a deal whose company dollar cannot fund it — post-
+          cap the brokerage's in-deal final is $0 (owner ruling 2026-08-28: the
+          cap ends the brokerage TAKING, not the brokerage PAYING). These are
+          payables from the company's own books, deliberately OUTSIDE the deal's
+          distribution set, so the deal's disbursement sweeps never mark them
+          paid — which is exactly why they need their own surface: an unread
+          payables ledger is a bill nobody knows they owe. */}
+      <Suspense fallback={<Skeleton className="h-40 w-full" />}>
+        <CompanyBooksObligations brokerageId={profile.brokerage_id} />
+      </Suspense>
+
       <AgentPLTruthSection brokerageId={profile.brokerage_id} />
     </div>
   )
@@ -931,5 +945,108 @@ async function AgentPLTruthSection({ brokerageId }: { brokerageId: string }) {
     <div className="space-y-2">
       <AgentPLTable rows={result.rows} monthYear={result.monthYear} />
     </div>
+  )
+}
+
+/**
+ * Company-books obligations — the reader of every column stage 11 writes.
+ * Cookie client on purpose: m577's tenant RLS applies to the read itself, so a
+ * cross-tenant row cannot render even if a predicate were wrong. A refused read
+ * is reported, never rendered as a confidently empty ledger (§4).
+ */
+async function CompanyBooksObligations({ brokerageId }: { brokerageId: string }) {
+  const supabase = await createClient()
+  const { data: rows, error } = await supabase
+    .from("company_books_obligations")
+    .select("id, agent_id, obligation_type, calculation_type, calculation_value, calculated_amount, reason, cap_status, status, calculation_version, created_at")
+    .eq("brokerage_id", brokerageId)
+    .order("created_at", { ascending: false })
+    .limit(100)
+
+  if (error) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Company-books obligations</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-destructive">
+            The obligations ledger could not be read: {error.message}. Nothing here means “unreadable”, not “nothing owed”.
+          </p>
+        </CardContent>
+      </Card>
+    )
+  }
+  const obligations = rows ?? []
+  if (obligations.length === 0) return null
+
+  // Recipient names — agents.id keys the ledger; resolve display names once.
+  const agentIds = Array.from(new Set(obligations.map((o) => o.agent_id).filter(Boolean)))
+  const { data: agentRows } = await supabase
+    .from("agents").select("id, first_name, last_name").in("id", agentIds).limit(200)
+  const nameOf = new Map((agentRows ?? []).map((a: any) => [a.id, `${a.first_name ?? ""} ${a.last_name ?? ""}`.trim()]))
+
+  const usd = (n: number | null | undefined) =>
+    new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(Number(n ?? 0))
+  const pendingTotal = obligations.filter((o) => o.status === "pending").reduce((s, o) => s + Number(o.calculated_amount ?? 0), 0)
+  // §6 vocabulary rendered, not restated: 'residual' is the revenue-share word,
+  // 'team_member' the brokerage-funded team split; 'post_cap_company_books' is
+  // the only reason stage 11 writes today.
+  const kindLabel = (t: string | null) => (t === "residual" ? "Revenue share" : t === "team_member" ? "Team member share" : t ?? "—")
+  const reasonLabel = (r: string | null) => (r === "post_cap_company_books" ? "post-cap — company books" : r ?? "—")
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Handshake className="h-5 w-5" /> Company-books obligations
+        </CardTitle>
+        <CardDescription>
+          Brokerage-funded shares that landed on capped deals — the cap ended the taking, not the paying.
+          These are owed from company books, not from any deal&apos;s disbursement. Pending: {usd(pendingTotal)}.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="p-0">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="border-b bg-muted/40">
+              <tr className="text-left">
+                <th className="px-4 py-2 font-medium">Owed to</th>
+                <th className="px-4 py-2 font-medium">Kind</th>
+                <th className="px-4 py-2 font-medium text-right">Amount</th>
+                <th className="px-4 py-2 font-medium">Basis</th>
+                <th className="px-4 py-2 font-medium">Why on company books</th>
+                <th className="px-4 py-2 font-medium">Deal cap state</th>
+                <th className="px-4 py-2 font-medium">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {obligations.map((o) => (
+                <tr key={o.id} className="border-b last:border-0">
+                  <td className="px-4 py-2">{nameOf.get(o.agent_id) || "Unknown agent"}</td>
+                  <td className="px-4 py-2">{kindLabel(o.obligation_type)}</td>
+                  <td className="px-4 py-2 text-right tabular-nums font-medium">{usd(o.calculated_amount)}</td>
+                  <td className="px-4 py-2 text-xs text-muted-foreground">
+                    {o.calculation_type === "percent" && o.calculation_value != null
+                      ? `${o.calculation_value}%`
+                      : o.calculation_type === "flat"
+                        ? "flat"
+                        : o.calculation_type ?? "—"}
+                    {o.calculation_version != null && <span className="ml-1">· engine v{o.calculation_version}</span>}
+                  </td>
+                  <td className="px-4 py-2 text-xs text-muted-foreground">{reasonLabel(o.reason)}</td>
+                  <td className="px-4 py-2">
+                    {o.cap_status ? <Badge variant="outline" className="text-[11px]">{o.cap_status}</Badge> : "—"}
+                  </td>
+                  <td className="px-4 py-2">
+                    <Badge variant={o.status === "paid" ? "default" : "outline"} className="text-[11px] capitalize">{o.status}</Badge>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
   )
 }
