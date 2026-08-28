@@ -274,6 +274,7 @@ export default async function VendorEarningsPage({
                     <span className="text-xs text-muted-foreground">
                       {new Date(p.initiatedAt).toLocaleDateString()}
                       {p.completedAt && ` → ${new Date(p.completedAt).toLocaleDateString()}`}
+                      {p.cashAppReference && ` · ref ${p.cashAppReference}`}
                     </span>
                   </div>
                   <div className="flex items-center gap-3">

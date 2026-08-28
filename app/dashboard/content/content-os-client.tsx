@@ -18,6 +18,7 @@ import {
   updateContentStatus,
   getContentTemplates,
   saveContentTemplate,
+  recordContentTemplateUse,
   learnFromEdits,
   trackContentUsage,
   enhancedGenerateListingDescription,
@@ -387,9 +388,42 @@ export function ContentOsClient() {
                           {t.content_type} · {t.category ?? "uncategorised"}
                         </p>
                       </div>
-                      <Badge variant="outline" className="text-[10px] shrink-0">
-                        used {t.usage_count ?? 0}×
-                      </Badge>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <Badge variant="outline" className="text-[10px]">
+                          used {t.usage_count ?? 0}×
+                        </Badge>
+                        {/* The counter's writer: copies the template content for
+                            the agent and records the use (usage_count had a
+                            reader — this ordering — and no writer at all). */}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 text-xs"
+                          onClick={async () => {
+                            const r = await recordContentTemplateUse(t.id)
+                            if (!r.success) {
+                              toast.error(r.error)
+                              return
+                            }
+                            const content =
+                              r.template.example_output ??
+                              (r.template.structure ? JSON.stringify(r.template.structure, null, 2) : "")
+                            try {
+                              await navigator.clipboard.writeText(content)
+                              toast.success("Template copied to clipboard")
+                            } catch {
+                              toast.success("Template use recorded")
+                            }
+                            setTemplates((ts) =>
+                              ts.map((x) =>
+                                x.id === t.id ? { ...x, usage_count: r.template.usage_count } : x
+                              )
+                            )
+                          }}
+                        >
+                          Use
+                        </Button>
+                      </div>
                     </div>
                   ))}
                 </div>

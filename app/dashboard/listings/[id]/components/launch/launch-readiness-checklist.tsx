@@ -75,6 +75,10 @@ interface LaunchReadinessChecklistProps {
   // Listing agreement
   hasListingAgreement: boolean
   agreementFullyExecuted: boolean
+  /** listing_agreements.compliance_passed — TRUE only when the execution
+   *  engine's document/signature audit passed at execution time. NULL when no
+   *  agreement exists. FALSE covers legacy rows executed before the gate. */
+  agreementCompliancePassed?: boolean | null
   // MLS — the kernel's launch gate blocks on mls_number, so it belongs on the
   // checklist that claims to say whether the listing can launch.
   mlsNumber: string | null
@@ -125,6 +129,7 @@ export function LaunchReadinessChecklist(props: LaunchReadinessChecklistProps) {
     pricingNarrativeReady,
     hasListingAgreement,
     agreementFullyExecuted,
+    agreementCompliancePassed,
     mlsNumber,
     mlsLink,
     listingAddress,
@@ -157,7 +162,9 @@ export function LaunchReadinessChecklist(props: LaunchReadinessChecklistProps) {
       icon: FileSignature,
       status: agreementFullyExecuted ? "complete" : hasListingAgreement ? "in_progress" : "pending",
       detail: agreementFullyExecuted
-        ? "Fully executed"
+        ? agreementCompliancePassed
+          ? "Fully executed · compliance audit passed"
+          : "Fully executed · executed before the compliance gate — re-verify documents"
         : hasListingAgreement
         ? "Sent — awaiting signatures"
         : "Not yet sent",

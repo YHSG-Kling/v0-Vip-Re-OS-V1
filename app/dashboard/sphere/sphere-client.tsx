@@ -198,6 +198,9 @@ function SphereCard({ row, onRefresh }: { row: SphereRow; onRefresh: () => void 
               <span className="truncate">{row.contactName}</span>
               <Badge variant="outline" className="text-[10px]">{eventLabel}</Badge>
               {row.isSensitive && <Badge className="bg-amber-600 text-[10px]">Sensitive &mdash; manual only</Badge>}
+              {row.compliancePassed === false && (
+                <Badge variant="destructive" className="text-[10px]">Blocked by compliance</Badge>
+              )}
             </CardTitle>
             <p className="text-xs text-muted-foreground mt-1 flex items-center gap-2 flex-wrap">
               {row.contactEmail && <span className="flex items-center gap-0.5"><Mail className="h-3 w-3" /> {row.contactEmail}</span>}
@@ -212,6 +215,23 @@ function SphereCard({ row, onRefresh }: { row: SphereRow; onRefresh: () => void 
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
+        {/* The publish gate's verdict (predictive_listing_actions.compliance_violations,
+            written by the auto-send cron). Without this the agent saw a stalled
+            touch with no reason — the fair-housing/tone rulings were write-only. */}
+        {row.compliancePassed === false && (
+          <div className="text-sm text-red-900 bg-red-50 border border-red-200 rounded p-3">
+            <p className="font-medium mb-1">The publish gate blocked this message.</p>
+            <p className="text-xs whitespace-pre-wrap break-words">
+              {Array.isArray(row.complianceViolations)
+                ? (row.complianceViolations as unknown[])
+                    .map((v: any) => (typeof v === "string" ? v : v?.message ?? v?.rule ?? JSON.stringify(v)))
+                    .join("\n")
+                : row.complianceViolations
+                ? JSON.stringify(row.complianceViolations)
+                : "No violation details were recorded. Edit the message and resubmit."}
+            </p>
+          </div>
+        )}
         {row.isSensitive ? (
           <div className="text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded p-3">
             <p className="font-medium mb-1">{eventLabel} — handle personally.</p>

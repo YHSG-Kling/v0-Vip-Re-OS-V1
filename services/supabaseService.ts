@@ -1152,6 +1152,20 @@ export const supabaseService = {
   /**
    * Commission rows for a bounded scope.
    *
+   * TOMBSTONE (orphan burn-down, lane E3 2026-08-28): `app/api/financial/
+   * commissions/route.ts` — this function's ONLY caller — is DELETED. Nothing
+   * in the tree fetched it (opposite-missing census 6b; not in vercel.json
+   * crons, not in lib/kernel/cron-dispatch.ts, and it required a session
+   * cookie, so no external system could address it either), and what it served
+   * was the session AGENT's own commission list — the display CLAUDE.md §5
+   * rules OFF ("Commission is off agent-facing display"). SURVIVORS for the
+   * capability: the gated, tenant-scoped commission surfaces in
+   * app/actions/financials.ts (agent_commissions reads at :324 and the
+   * /dashboard/financials/commissions actions) and app/actions/admin/
+   * agent-360.ts:218. This function itself is KEPT: it is the named
+   * required-scope survivor pattern in scripts/conditional-tenant-predicate-
+   * guard.ts:218 that getContacts/getTransactions were converted onto.
+   *
    * Reads `agent_commissions`. The `commissions` twin this used to select from was
    * dropped in m284, and because the failure landed in a catch that returned `[]`,
    * every caller read "this agent has no commissions" instead of "this is broken".

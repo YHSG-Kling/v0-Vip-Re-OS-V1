@@ -806,7 +806,13 @@ async function trackToolUsage(data: {
       location: boundPublicText(data.location),
     }),
     time_spent_seconds: timeSpent,
-    timestamp: new Date().toISOString(),
+    // TOMBSTONE (§6, one vocabulary): `timestamp` DELETED from this insert.
+    // SURVIVOR: `created_at` (same table, DEFAULT NOW()) — the column every
+    // reader already filters on (app/actions/analytics.ts:85,
+    // lib/finance/usage-metering.ts:31). `timestamp` was a second spelling of
+    // the same instant (also NOT NULL DEFAULT NOW(), scripts/…059 DDL) that no
+    // code ever read; writing both invited the two to disagree. m580 drops the
+    // column and re-points its index at created_at (WRITTEN, NOT APPLIED).
   })
 
   if (error) {

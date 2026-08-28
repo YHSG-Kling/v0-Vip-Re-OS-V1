@@ -80,7 +80,11 @@ export async function aggregateValueDelivered(agentId: string, date: Date) {
       // `session_id` does NOT exist on this table (verified live) — the old
       // `select("*")` + `t.visitor_id || t.session_id` fallback silently read
       // undefined. Selecting it explicitly would now be a hard column error.
-      .select("visitor_id")
+      // tool_name and time_spent_seconds are written on every session
+      // (app/actions/calculators.ts trackToolUsage) and had no reader — the
+      // value ledger counted "a tool was used" while WHICH tool and for HOW
+      // LONG were write-only. Both now land in value_breakdown below.
+      .select("visitor_id, tool_name, time_spent_seconds")
       .eq("brokerage_id", brokerageId)
       .gte("created_at", startIso)
       .lt("created_at", endIso),
@@ -129,12 +133,24 @@ export async function aggregateValueDelivered(agentId: string, date: Date) {
   const downloadRows = educationalContent.data ?? []
   const messageRows = helpfulResponses.data ?? []
 
+  // Which tools, and how long visitors actually engaged — from the session
+  // rows' own columns rather than a flat count.
+  const toolsByName: Record<string, number> = {}
+  let toolEngagementSeconds = 0
+  for (const t of toolRows as Array<{ tool_name?: string | null; time_spent_seconds?: number | null }>) {
+    const name = t.tool_name || "unknown"
+    toolsByName[name] = (toolsByName[name] ?? 0) + 1
+    toolEngagementSeconds += Number(t.time_spent_seconds) || 0
+  }
+
   // Calculate value in dollars
   const valueCalculation = {
     free_tools_used_count: toolRows.length,
     guides_downloaded_count: downloadRows.length,
     questions_answered_count: messageRows.length,
     personalized_reports_sent: 0, // Would track CMAs sent
+    tools_by_name: toolsByName,
+    tool_engagement_seconds: toolEngagementSeconds,
 
     // Value calculations
     free_tools_value: toolRows.length * 50, // $50 per tool use
@@ -543,6 +559,23 @@ export async function loadValueDrivenDashboard(agentId: string, period: string =
   const peopleHelped = valueMetrics?.reduce((sum, m) => sum + (m.recipients_count || 0), 0) || 0
   const toolsUsed = valueMetrics?.reduce((sum, m) => sum + breakdownCount(m, "free_tools_used_count"), 0) || 0
   const guidesShared = valueMetrics?.reduce((sum, m) => sum + breakdownCount(m, "guides_downloaded_count"), 0) || 0
+  // Per-tool + engagement rollup out of value_breakdown.tools_by_name /
+  // .tool_engagement_seconds (written by aggregateValueDelivered above).
+  const toolTotals: Record<string, number> = {}
+  let engagementSeconds = 0
+  for (const m of valueMetrics ?? []) {
+    const b = (m as any)?.value_breakdown
+    if (b && typeof b === "object") {
+      const byName = (b as Record<string, unknown>).tools_by_name
+      if (byName && typeof byName === "object") {
+        for (const [name, n] of Object.entries(byName as Record<string, unknown>)) {
+          toolTotals[name] = (toolTotals[name] ?? 0) + (Number(n) || 0)
+        }
+      }
+      engagementSeconds += Number((b as Record<string, unknown>).tool_engagement_seconds) || 0
+    }
+  }
+  const topTool = Object.entries(toolTotals).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
 
   const closedDeals = transactions?.filter((t) => t.status === "closed") || []
   const monthlyGCI = closedDeals.reduce((sum, t) => sum + ((t.purchase_price || 0) * commissionStructure.agentBuyerSideRate), 0)
@@ -562,6 +595,8 @@ export async function loadValueDrivenDashboard(agentId: string, period: string =
       people_helped: peopleHelped,
       free_tools_used: toolsUsed,
       guides_shared: guidesShared,
+      top_tool: topTool,
+      tool_engagement_minutes: Math.round(engagementSeconds / 60),
       reciprocity_rate: closedDeals.length > 0 ? ((peopleHelped / closedDeals.length) * 100).toFixed(1) : "0",
     },
 

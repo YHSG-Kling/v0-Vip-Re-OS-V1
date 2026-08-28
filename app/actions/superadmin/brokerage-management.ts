@@ -596,15 +596,20 @@ export async function pauseSubscriptionAction(params: { brokerageId: string; pau
 // ── AUDIT LOG ────────────────────────────────────────────────────────────────
 
 export async function listSuperadminAuditLogAction(limit = 100): Promise<
-  | { ok: true; rows: Array<{ id: string; actor_email: string | null; action: string; target_type: string; target_id: string | null; details: Record<string, unknown>; created_at: string }> }
+  | { ok: true; rows: Array<{ id: string; actor_email: string | null; actor_user_id: string | null; ip_address: string | null; user_agent: string | null; action: string; target_type: string; target_id: string | null; details: Record<string, unknown>; created_at: string }> }
   | { ok: false; error: string }
 > {
   const auth = await requireSuperadmin()
   if (!auth.ok) return auth
   const svc = createServiceClient()
+  // actor_user_id / ip_address / user_agent are stamped by many of this ledger's
+  // writers (agentic-tokens, a2p-verify, …) and were read by NOBODY — the
+  // forensic half of a chain-of-custody record (which seat, from where, with
+  // what client) was write-only. This is the ledger's one reader, so the
+  // columns surface here.
   const { data, error } = await svc
     .from("superadmin_audit_log")
-    .select("id, actor_email, action, target_type, target_id, details, created_at")
+    .select("id, actor_email, actor_user_id, ip_address, user_agent, action, target_type, target_id, details, created_at")
     .order("created_at", { ascending: false })
     .limit(limit)
   if (error) return { ok: false, error: error.message }

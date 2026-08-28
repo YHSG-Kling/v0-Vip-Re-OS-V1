@@ -202,6 +202,78 @@ export default async function ComplianceDashboardPage() {
   }
   const todayDateStr = today.toISOString().split("T")[0]
 
+  // ── Document scan verdicts (compliance_checks) ─────────────────────────────
+  // Every client-document upload persists its signature/state scan here
+  // (app/actions/documents.ts), and until now the only readers COUNTED rows by
+  // status — check_type and the findings payload themselves were write-only, so
+  // the officer could see "3 pending" but never WHAT was scanned or what it
+  // found. This list is the reader for both columns.
+  let scanRows: Array<{
+    id: string
+    check_type: string | null
+    status: string | null
+    findings: Record<string, unknown> | null
+    created_at: string | null
+  }> = []
+  // ── Open field obligations (compliance_tasks) ──────────────────────────────
+  // recordDeposit files a deposit-delivery duty per AGENT
+  // (app/actions/ai-financial-management.ts stamps agent_id) but every reader
+  // keyed on transaction_id only — the "whose duty is this" column had no
+  // reader. Resolved agents.id → users.id (§3: the two id spaces are disjoint).
+  let openTasks: Array<{
+    id: string
+    task_type: string | null
+    description: string | null
+    due_date: string | null
+    status: string | null
+    agentName: string | null
+  }> = []
+  if (brokerageId) {
+    const svc = createServiceClient()
+    const [{ data: checks, error: checksError }, { data: tasks, error: tasksError }] = await Promise.all([
+      svc
+        .from("compliance_checks")
+        .select("id, check_type, status, findings, created_at")
+        // Same tenant predicate as the officer brief (tc-compliance-lender-vendor):
+        // the .is.null arm admits only legacy rows written before the column was stamped.
+        .or(`brokerage_id.eq.${brokerageId},brokerage_id.is.null`)
+        .order("created_at", { ascending: false })
+        .limit(10),
+      svc
+        .from("compliance_tasks")
+        .select("id, task_type, description, due_date, status, agent_id")
+        .eq("brokerage_id", brokerageId)
+        .eq("status", "pending")
+        .order("due_date", { ascending: true })
+        .limit(10),
+    ])
+    if (checksError) console.error("[compliance] compliance_checks read refused:", checksError.message)
+    if (tasksError) console.error("[compliance] compliance_tasks read refused:", tasksError.message)
+    scanRows = (checks ?? []) as typeof scanRows
+
+    const taskRows = (tasks ?? []) as Array<{ id: string; task_type: string | null; description: string | null; due_date: string | null; status: string | null; agent_id: string | null }>
+    const taskAgentIds = Array.from(new Set(taskRows.map((t) => t.agent_id).filter(Boolean))) as string[]
+    const nameByAgentId = new Map<string, string>()
+    if (taskAgentIds.length) {
+      const { data: taskAgents } = await svc
+        .from("agents")
+        .select("id, user_id, users(first_name, last_name)")
+        .in("id", taskAgentIds)
+      for (const a of (taskAgents ?? []) as any[]) {
+        const composed = [a.users?.first_name, a.users?.last_name].filter(Boolean).join(" ")
+        nameByAgentId.set(a.id, composed || "Agent")
+      }
+    }
+    openTasks = taskRows.map((t) => ({
+      id: t.id,
+      task_type: t.task_type,
+      description: t.description,
+      due_date: t.due_date,
+      status: t.status,
+      agentName: t.agent_id ? nameByAgentId.get(t.agent_id) ?? null : null,
+    }))
+  }
+
   return (
     <div className="container mx-auto p-6 space-y-6">
       {/* Header */}
@@ -523,6 +595,100 @@ export default async function ComplianceDashboardPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Document scan verdicts + open field obligations — the readers for
+          compliance_checks.check_type/findings and compliance_tasks.agent_id */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <ClipboardCheck className="h-4 w-4 text-primary" />
+              Document Scan Verdicts
+            </CardTitle>
+            <CardDescription>
+              Signature and state-compliance scans recorded on client document uploads
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {scanRows.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-2 text-center">
+                No document scans recorded yet. Scans run automatically on client document uploads.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {scanRows.map((row) => {
+                  const f = (row.findings ?? {}) as Record<string, any>
+                  const sig = f.signatureCompleteness as Record<string, any> | undefined
+                  const missing = [
+                    ...(Array.isArray(sig?.missingSignatures) ? sig!.missingSignatures : []),
+                    ...(Array.isArray(sig?.missingInitials) ? sig!.missingInitials : []),
+                  ]
+                  const stateIssues = Array.isArray(f.stateComplianceIssues) ? f.stateComplianceIssues : []
+                  const bad = row.status === "fail" || missing.length > 0 || stateIssues.length > 0
+                  return (
+                    <div key={row.id} className={`p-3 rounded-lg border ${bad ? "border-amber-200 bg-amber-50" : ""}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-medium capitalize">
+                          {(row.check_type ?? "check").replace(/_/g, " ")}
+                        </p>
+                        <Badge variant={bad ? "destructive" : "outline"} className="text-xs capitalize shrink-0">
+                          {row.status ?? "unknown"}
+                        </Badge>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {missing.length > 0 && `Missing: ${missing.slice(0, 3).join(", ")}${missing.length > 3 ? "…" : ""}`}
+                        {missing.length > 0 && stateIssues.length > 0 && " · "}
+                        {stateIssues.length > 0 && `${stateIssues.length} state issue${stateIssues.length !== 1 ? "s" : ""}`}
+                        {missing.length === 0 && stateIssues.length === 0 && "No missing signatures or state issues found"}
+                        {row.created_at && ` · ${new Date(row.created_at).toLocaleDateString()}`}
+                      </p>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-600" />
+              Open Field Obligations
+            </CardTitle>
+            <CardDescription>
+              Pending compliance duties (escrow deposit delivery, etc.) and the agent each one sits with
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {openTasks.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-2 text-center">
+                No open obligations. Deposit-delivery duties appear here when deposits are recorded.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {openTasks.map((t) => {
+                  const overdue = !!t.due_date && t.due_date.slice(0, 10) <= todayDateStr
+                  return (
+                    <div key={t.id} className={`p-3 rounded-lg border ${overdue ? "border-red-200 bg-red-50" : ""}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-medium capitalize">{(t.task_type ?? "task").replace(/_/g, " ")}</p>
+                        <Badge variant={overdue ? "destructive" : "outline"} className="text-xs shrink-0">
+                          {t.due_date ? `due ${new Date(t.due_date).toLocaleDateString()}` : "no due date"}
+                        </Badge>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {t.agentName ? `Agent: ${t.agentName}` : "Unassigned"}
+                        {t.description && ` · ${t.description}`}
+                      </p>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
 
       {/* Alert Banner */}
       <Alert>

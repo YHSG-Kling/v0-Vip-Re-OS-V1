@@ -260,6 +260,9 @@ export function CDAWorkflowClient({
     revision_number: number
     action: string
     status_at_snapshot: string
+    /** Money snapshot at this state change (free-form split map from the draft
+        form). The audit trail without it recorded who acted but not the numbers. */
+    commission_breakdown: Record<string, unknown> | null
     notes: string | null
     changes_requested_notes: string | null
     acted_at: string
@@ -1228,6 +1231,21 @@ export function CDAWorkflowClient({
                           {(r.changes_requested_notes || r.notes) && (
                             <p className="text-xs text-muted-foreground italic break-words">
                               {r.changes_requested_notes || r.notes}
+                            </p>
+                          )}
+                          {r.commission_breakdown && Object.keys(r.commission_breakdown).length > 0 && (
+                            <p className="text-xs text-muted-foreground break-words">
+                              {Object.entries(r.commission_breakdown)
+                                .filter(([, v]) => v !== null && v !== undefined && v !== "")
+                                .slice(0, 6)
+                                .map(([k, v]) => {
+                                  const n = typeof v === "number" ? v : Number(v)
+                                  const shown = Number.isFinite(n) && String(v).trim() !== "" && !isNaN(n)
+                                    ? `$${n.toLocaleString()}`
+                                    : String(v)
+                                  return `${k.replace(/_/g, " ")}: ${shown}`
+                                })
+                                .join(" · ")}
                             </p>
                           )}
                           <p className="text-xs text-muted-foreground">

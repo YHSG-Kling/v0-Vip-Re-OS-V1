@@ -162,6 +162,8 @@ export default function AnalyticsDashboard() {
       ["Value delivered", "Total value delivered ($)", dashboardData.valueMetrics?.total_value_delivered ?? 0],
       ["Value delivered", "People helped", dashboardData.valueMetrics?.people_helped ?? 0],
       ["Value delivered", "Free tools used", dashboardData.valueMetrics?.free_tools_used ?? 0],
+      ["Value delivered", "Top tool", dashboardData.valueMetrics?.top_tool ?? "—"],
+      ["Value delivered", "Tool engagement (min)", dashboardData.valueMetrics?.tool_engagement_minutes ?? 0],
       ["Value delivered", "Guides shared", dashboardData.valueMetrics?.guides_shared ?? 0],
       ["Value delivered", "Reciprocity rate (%)", dashboardData.valueMetrics?.reciprocity_rate ?? "0"],
       ["Performance", "Monthly GCI ($)", dashboardData.traditionalMetrics?.monthly_gci ?? 0],
@@ -621,7 +623,16 @@ export default function AnalyticsDashboard() {
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">Value Activity Breakdown</CardTitle>
-                <CardDescription>What actions generated value during this period</CardDescription>
+                <CardDescription>
+                  What actions generated value during this period
+                  {dashboardData?.valueMetrics?.top_tool
+                    ? ` · top tool: ${dashboardData.valueMetrics.top_tool}${
+                        dashboardData.valueMetrics.tool_engagement_minutes
+                          ? ` (${dashboardData.valueMetrics.tool_engagement_minutes} min engaged)`
+                          : ""
+                      }`
+                    : ""}
+                </CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="space-y-3">

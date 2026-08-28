@@ -157,6 +157,9 @@ export interface VendorEarningsSummary {
     status: string
     initiatedAt: string
     completedAt: string | null
+    /** Manual Cash App transaction reference — how the vendor matches the row
+     *  to the payment that reached them. Null for Stripe/other methods. */
+    cashAppReference: string | null
   }>
 }
 
@@ -731,7 +734,10 @@ export async function getVendorEarningsSummary(
         .order("created_at", { ascending: false }),
       svc
         .from("vendor_payouts")
-        .select("id, amount, payout_method, status, initiated_at, completed_at")
+        // cash_app_reference is the manual-payout transaction ref written at
+        // payout creation and read by nobody — without it a vendor could not
+        // match a "cash_app" payout row to the payment that actually reached them.
+        .select("id, amount, payout_method, status, initiated_at, completed_at, cash_app_reference")
         .eq("vendor_id", vendorId)
         .eq("brokerage_id", brokerageId)
         .order("initiated_at", { ascending: false }),
@@ -766,6 +772,7 @@ export async function getVendorEarningsSummary(
       status: p.status,
       initiatedAt: p.initiated_at,
       completedAt: p.completed_at,
+      cashAppReference: p.cash_app_reference ?? null,
     })),
   }
 }

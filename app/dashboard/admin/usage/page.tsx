@@ -62,6 +62,7 @@ export default async function UsageMeteringDashboard() {
     aiToolUsageResult,
     trendDataResult,
     subscriptionResult,
+    usageEventsResult,
   ] = await Promise.all([
     // Usage logs for current month summary
     supabase
@@ -118,10 +119,12 @@ export default async function UsageMeteringDashboard() {
       .eq("period_label", currentMonth)
       .not("team_id", "is", null),
 
-    // Feature usage tracking
+    // Feature usage tracking. `last_incremented` and `team_id` are stamped on
+    // every increment (lib/kernel/0.1-feature-access.ts) and were read by
+    // nobody — the recency and team attribution existed only as unread ink.
     supabase
       .from("feature_usage_tracking")
-      .select("feature_key, usage_count, limit_amount, exceeded")
+      .select("feature_key, usage_count, limit_amount, exceeded, last_incremented, team_id, teams:team_id(name)")
       .eq("brokerage_id", brokerageId)
       .order("usage_count", { ascending: false })
       .limit(20),
@@ -152,6 +155,21 @@ export default async function UsageMeteringDashboard() {
       .eq("brokerage_id", brokerageId)
       .eq("status", "active")
       .maybeSingle(),
+
+    // THE EVENT LEDGER — usage_events is what the platform bills off
+    // (lib/usage/log-media-usage.ts writes it as the per-event audit row), and
+    // its attribution columns (feature, user_id, contact_id, session_ref,
+    // metadata) had no reader anywhere: a disputed line item could not be traced
+    // to the surface, seat, contact or vendor session that incurred it. This
+    // table is that trace.
+    supabase
+      .from("usage_events")
+      .select("id, created_at, metric, quantity, cost_cents, feature, user_id, contact_id, session_ref, metadata")
+      .eq("brokerage_id", brokerageId)
+      .gte("created_at", monthStart.toISOString())
+      .lte("created_at", monthEnd.toISOString())
+      .order("created_at", { ascending: false })
+      .limit(50),
   ])
 
   const usageLogs = usageLogsResult.data || []
@@ -163,6 +181,27 @@ export default async function UsageMeteringDashboard() {
   const aiToolUsage = aiToolUsageResult.data || []
   const trendData = trendDataResult.data || []
   const subscription = subscriptionResult.data
+  const usageEvents = usageEventsResult.data || []
+
+  // Resolve actor emails and contact names for the event ledger in two batch
+  // reads (no embeds — resolved by id so a missing FK row degrades to "—",
+  // never to a failed query).
+  const eventUserIds = Array.from(new Set(usageEvents.map((e: any) => e.user_id).filter(Boolean))) as string[]
+  const eventContactIds = Array.from(new Set(usageEvents.map((e: any) => e.contact_id).filter(Boolean))) as string[]
+  const [eventUsersResult, eventContactsResult] = await Promise.all([
+    eventUserIds.length
+      ? supabase.from("users").select("id, email").in("id", eventUserIds)
+      : Promise.resolve({ data: [] as any[] }),
+    eventContactIds.length
+      ? supabase.from("contacts").select("id, first_name, last_name").eq("brokerage_id", brokerageId).in("id", eventContactIds)
+      : Promise.resolve({ data: [] as any[] }),
+  ])
+  const emailByUserId = new Map<string, string>()
+  for (const u of eventUsersResult.data ?? []) emailByUserId.set(u.id, u.email)
+  const contactNameById = new Map<string, string>()
+  for (const c of eventContactsResult.data ?? []) {
+    contactNameById.set(c.id, [c.first_name, c.last_name].filter(Boolean).join(" ") || c.id.slice(0, 8))
+  }
 
   // Calculate KPI summaries
   const aiCallsMTD = usageLogs
@@ -561,6 +600,8 @@ export default async function UsageMeteringDashboard() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Feature</TableHead>
+                      <TableHead>Team</TableHead>
+                      <TableHead>Last used</TableHead>
                       <TableHead className="text-right">Usage</TableHead>
                       <TableHead className="text-right">Status</TableHead>
                     </TableRow>
@@ -569,6 +610,12 @@ export default async function UsageMeteringDashboard() {
                     {featureUsage.slice(0, 10).map((f: any) => (
                       <TableRow key={f.feature_key}>
                         <TableCell className="font-medium">{f.feature_key}</TableCell>
+                        {/* team_id is stamped on every increment row; a row with
+                            none is individual (non-team) usage, not missing data */}
+                        <TableCell className="text-xs text-muted-foreground">{f.teams?.name ?? "—"}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                          {f.last_incremented ? new Date(f.last_incremented).toLocaleDateString() : "—"}
+                        </TableCell>
                         <TableCell className="text-right">
                           {f.usage_count?.toLocaleString()} / {f.limit_amount?.toLocaleString() || "∞"}
                         </TableCell>
@@ -583,7 +630,7 @@ export default async function UsageMeteringDashboard() {
                     ))}
                     {featureUsage.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={3} className="text-center text-muted-foreground py-8">
+                        <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
                           No feature usage data available
                         </TableCell>
                       </TableRow>
@@ -720,6 +767,67 @@ export default async function UsageMeteringDashboard() {
               Showing top 25 of {costAllocations.length} entries. Export CSV for full data.
             </p>
           )}
+        </CardContent>
+      </Card>
+
+      {/* Section 6: Usage event ledger — the per-event audit rows the platform
+          bills off (usage_events). Each row carries WHO (user), FOR WHOM
+          (contact), WHERE (feature surface) and the vendor session reference,
+          which is what makes a disputed line item traceable. */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Usage Event Ledger</CardTitle>
+          <CardDescription>
+            Most recent {usageEvents.length} billable media events for {currentMonth} — the audit trail behind the meters above
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>When</TableHead>
+                <TableHead>Metric</TableHead>
+                <TableHead className="text-right">Qty</TableHead>
+                <TableHead>Feature</TableHead>
+                <TableHead>User</TableHead>
+                <TableHead>Contact</TableHead>
+                <TableHead>Session Ref</TableHead>
+                <TableHead className="text-right">Cost</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {usageEvents.map((e: any) => {
+                const metaStr =
+                  e.metadata && Object.keys(e.metadata).length > 0 ? JSON.stringify(e.metadata) : null
+                return (
+                  <TableRow key={e.id}>
+                    <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                      {new Date(e.created_at).toLocaleString()}
+                    </TableCell>
+                    <TableCell className="text-xs font-medium">{e.metric}</TableCell>
+                    <TableCell className="text-right text-xs">{Number(e.quantity ?? 0).toLocaleString()}</TableCell>
+                    <TableCell className="text-xs" title={metaStr ?? undefined}>
+                      {e.feature ?? "—"}
+                      {metaStr && <span className="text-muted-foreground"> ·…</span>}
+                    </TableCell>
+                    <TableCell className="text-xs">{e.user_id ? emailByUserId.get(e.user_id) ?? e.user_id.slice(0, 8) + "…" : "—"}</TableCell>
+                    <TableCell className="text-xs">{e.contact_id ? contactNameById.get(e.contact_id) ?? e.contact_id.slice(0, 8) + "…" : "—"}</TableCell>
+                    <TableCell className="text-xs font-mono">{e.session_ref ? String(e.session_ref).slice(0, 18) : "—"}</TableCell>
+                    <TableCell className="text-right text-xs">{e.cost_cents != null ? formatCurrency(e.cost_cents) : "—"}</TableCell>
+                  </TableRow>
+                )
+              })}
+              {usageEvents.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
+                    {usageEventsResult.error
+                      ? `Event ledger could not be read: ${usageEventsResult.error.message}`
+                      : "No billable media events recorded this month"}
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
         </CardContent>
       </Card>
     </div>

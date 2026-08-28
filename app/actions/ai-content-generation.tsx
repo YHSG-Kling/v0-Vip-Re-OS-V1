@@ -215,6 +215,51 @@ export async function getContentTemplates(filters?: { category?: string; content
   return { success: true, templates: data ?? [] }
 }
 
+/**
+ * Record one USE of a template. `content_templates.usage_count` was a counter
+ * with a reader (getContentTemplates orders the library by it, and the library
+ * UI shows "used N×") and NO writer anywhere — a DEFAULT-0 that could only ever
+ * display zero, so the "most used first" ordering was a fiction. This is the
+ * incrementer, called by the Content OS when an agent actually pulls a
+ * template's content into their work.
+ */
+export async function recordContentTemplateUse(templateId: string): Promise<
+  { success: true; template: any } | { success: false; error: string }
+> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
+  if (!templateId?.trim()) return { success: false, error: "Template id is required" }
+
+  const supabase = await createClient()
+
+  // Read-then-write on the TENANT'S OWN row only. The .eq(brokerage_id) on both
+  // steps is what stops a cross-tenant increment; a same-millisecond race can
+  // lose one count, which is acceptable for a popularity counter (nothing bills
+  // off it).
+  const { data: template, error: readError } = await supabase
+    .from("content_templates")
+    .select("*")
+    .eq("id", templateId)
+    .eq("brokerage_id", auth.actor.brokerageId)
+    .maybeSingle()
+
+  if (readError) return { success: false, error: readError.message }
+  if (!template) return { success: false, error: "Template not found in your brokerage" }
+
+  const { error: updateError } = await supabase
+    .from("content_templates")
+    .update({ usage_count: (template.usage_count ?? 0) + 1 })
+    .eq("id", templateId)
+    .eq("brokerage_id", auth.actor.brokerageId)
+
+  // The use is recorded best-effort; the template content is still handed back
+  // so the agent's flow never breaks on a refused counter bump — but the
+  // refusal is reported, not swallowed.
+  if (updateError) console.error("[recordContentTemplateUse] counter update refused:", updateError.message)
+
+  return { success: true, template: { ...template, usage_count: (template.usage_count ?? 0) + (updateError ? 0 : 1) } }
+}
+
 export async function saveContentTemplate(data: {
   templateName: string
   contentType: string

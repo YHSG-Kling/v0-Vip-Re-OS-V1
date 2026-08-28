@@ -41,6 +41,12 @@ export interface SphereRow {
   cancelledAt:       string | null
   cancelReason:      string | null
   createdAt:         string
+  /** The publish gate's verdict (fair housing / tone / channel). FALSE means the
+   *  auto-send cron BLOCKED this touch; `complianceViolations` says why. Both
+   *  columns were written by lib/predictive-listing/auto-send.ts and read by
+   *  nobody, so a blocked message showed to the agent with no reason at all. */
+  compliancePassed:  boolean | null
+  complianceViolations: unknown | null
 }
 
 export interface SphereLoad {
@@ -73,6 +79,8 @@ function rowToView(row: any): SphereRow {
     cancelledAt:      row.cancelled_at ?? null,
     cancelReason:     row.cancel_reason ?? null,
     createdAt:        row.created_at,
+    compliancePassed: typeof row.compliance_check_passed === "boolean" ? row.compliance_check_passed : null,
+    complianceViolations: row.compliance_violations ?? null,
   }
 }
 
@@ -93,6 +101,7 @@ export async function loadSphereResonance(): Promise<{ data: SphereLoad } | { er
       id, contact_id, agent_id, action_type, channel, triggering_signals,
       status, message_subject, message_body, scheduled_send_at,
       reviewed_at, cancelled_at, cancel_reason, sent_at, created_at,
+      compliance_check_passed, compliance_violations,
       contact:contact_id (first_name, last_name, email, phone)
     `)
     .is("triggering_pls_score", null)

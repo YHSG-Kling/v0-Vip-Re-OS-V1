@@ -145,7 +145,11 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   // Fetch listing agreement esign status (most recent agreement for this listing)
   const { data: listingAgreement } = await supabase
     .from("listing_agreements")
-    .select("id, agreement_type, esign_status, provider_name, provider_ref, seller_signed_at, agent_signed_at, fully_executed_at, document_url, document_name, effective_date")
+    // compliance_passed is only ever written TRUE after the execution engine's
+    // real document/signature audit (execution-engine.ts §2.5 gate) — it was
+    // written on every executed agreement and read by nobody, so the checklist
+    // could not distinguish "executed through the gate" from a legacy row.
+    .select("id, agreement_type, esign_status, provider_name, provider_ref, seller_signed_at, agent_signed_at, fully_executed_at, document_url, document_name, effective_date, compliance_passed")
     .eq("listing_id", listingId)
     .order("created_at", { ascending: false })
     .limit(1)
@@ -627,6 +631,7 @@ const { data: listingVendorBookings } = await supabase
             pricingNarrativeReady={pricingNarrativeReady}
             hasListingAgreement={!!listingAgreement}
             agreementFullyExecuted={!!listingAgreement?.fully_executed_at}
+            agreementCompliancePassed={listingAgreement ? listingAgreement.compliance_passed === true : null}
             mlsNumber={mlsNumber}
             mlsLink={mlsLink}
             listingAddress={`${listing.address}${listing.city ? `, ${listing.city}` : ""}`}

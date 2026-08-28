@@ -351,6 +351,21 @@ const POLICY_OR_AUDIT_CONSUMED = new Set([
   "ai_subscription_tier.admin_user_id",
   "ai_subscription_tier.is_active",
   "ai_subscription_tier.tier_name",
+
+  // WHY THIS ONE. `usage_counters.period_end` is written by both counter
+  // writers (lib/usage.ts:65, lib/usage/log-media-usage.ts:103) and its READER
+  // IS THE DATABASE: it is part of the row's identity —
+  // UNIQUE(brokerage_id, period_start, period_end, metric),
+  // scripts/120-create-usage-tracking-billing.sql:51 — which is exactly what
+  // the 23505 insert-race handler at lib/usage.ts:70 depends on to fold a lost
+  // race into the winner's row instead of dropping the count. An APP reader is
+  // not merely absent, it is FORBIDDEN by this repo's own period doctrine:
+  // lib/usage/period.ts and app/actions/usage-overview.ts:102-111 record that
+  // keying reads on period_end is how a whole month of AI-token rows became
+  // unreachable before m474 ("readers filter on period_start ALONE"). Reporting
+  // the column as a one-sided write invites the next lane to build the reader
+  // the doctrine exists to prevent.
+  "usage_counters.period_end",
 ])
 
 /**

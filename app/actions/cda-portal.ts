@@ -1072,7 +1072,11 @@ export async function getCdaForTransactionAction(transactionId: string) {
 
   const { data: revisions, error: revErr } = await supabase
     .from("closing_disclosure_agreement_revisions")
-    .select("id, revision_number, action, status_at_snapshot, notes, changes_requested_notes, acted_at, acted_by")
+    // commission_breakdown is the MONEY SNAPSHOT recordRevision stores at each
+    // state change — the whole point of an audit trail on a disbursement
+    // instruction — and it had no reader anywhere: the trail showed who acted
+    // and when, but never what the numbers were at that moment.
+    .select("id, revision_number, action, status_at_snapshot, commission_breakdown, notes, changes_requested_notes, acted_at, acted_by")
     .eq("cda_id", cda.id)
     .order("acted_at", { ascending: false })
   if (revErr) return { success: false as const, error: revErr.message }

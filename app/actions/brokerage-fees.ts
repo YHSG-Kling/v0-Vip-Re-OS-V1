@@ -49,10 +49,18 @@ export interface AgentFeeCharge {
   periodStart: string
   periodEnd: string | null
   amount: number
+  /** ISO currency of `amount` (generatePeriodicCharges stamps it from the fee
+   *  type). Was written on every charge and read by nobody, so both fee UIs
+   *  hardcoded USD — a wrong number the moment a fee type carries anything else. */
+  currency: string
   status: ChargeStatus
   dueDate: string | null
   paidAt: string | null
   paymentMethod: string | null
+  /** Broker's waive reason (waiveCharge writes it). Written since the fee system
+   *  shipped, displayed nowhere — a waived charge showed WITH NO WHY to either
+   *  side of the money. */
+  notes: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -186,7 +194,7 @@ export async function getMyOpenCharges(): Promise<AgentFeeCharge[]> {
     .from("agent_fee_charges")
     .select(`
       id, agent_id, fee_type_id, period_start, period_end,
-      amount, status, due_date, paid_at, payment_method,
+      amount, currency, status, due_date, paid_at, payment_method, notes,
       brokerage_fee_types(name)
     `)
     .eq("agent_id", ctx.agentId)
@@ -202,10 +210,12 @@ export async function getMyOpenCharges(): Promise<AgentFeeCharge[]> {
     periodStart: c.period_start,
     periodEnd: c.period_end,
     amount: c.amount,
+    currency: c.currency ?? "USD",
     status: c.status,
     dueDate: c.due_date,
     paidAt: c.paid_at,
     paymentMethod: c.payment_method,
+    notes: c.notes ?? null,
   }))
 }
 
@@ -221,7 +231,7 @@ export async function listBrokerageCharges(filter?: {
     .from("agent_fee_charges")
     .select(`
       id, agent_id, fee_type_id, period_start, period_end,
-      amount, status, due_date, paid_at, payment_method,
+      amount, currency, status, due_date, paid_at, payment_method, notes,
       brokerage_fee_types(name)
     `)
     .eq("brokerage_id", ctx.brokerageId)
@@ -260,10 +270,12 @@ export async function listBrokerageCharges(filter?: {
     periodStart: c.period_start,
     periodEnd: c.period_end,
     amount: c.amount,
+    currency: c.currency ?? "USD",
     status: c.status,
     dueDate: c.due_date,
     paidAt: c.paid_at,
     paymentMethod: c.payment_method,
+    notes: c.notes ?? null,
   }))
 }
 
