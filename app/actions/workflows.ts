@@ -474,10 +474,14 @@ async function gateAndStorePrivateScript(params: {
  * savePrivateScript (below) — "Save as my private script", beside the curated
  * save-to-library button — and both that action and this one store through
  * gateAndStorePrivateScript above, the file's single `scripts` INSERT. This
- * function's own generate-and-store composite is exported here and through the
- * app/actions/index.ts barrel and has no runtime importer of its own yet —
- * executeAITool's routing table carries no "generate-script" name because no
- * workflow definition sends one; add the adapter only when a caller exists.
+ * function's own generate-and-store composite is wired too (lane E6
+ * 2026-08-28, after the importer-less app/actions/index.ts barrel was
+ * deleted): the "Generate new private script" door in
+ * video-create-client.tsx's script step calls it with the wizard's current
+ * script type + description and replaces the working script with the result.
+ * executeAITool's routing table still carries no "generate-script" name
+ * because no workflow definition sends one; add the adapter only when a
+ * caller exists.
  * NOT a duplicate of the curated video lane
  * (app/actions/video/generate-script.ts + saveVideoScript →
  * video_scripts_library): that is a different table with an approval queue.

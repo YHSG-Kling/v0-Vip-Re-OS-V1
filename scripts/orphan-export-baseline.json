@@ -2,17 +2,15 @@
   "files": {
     "app/actions/accounting-sync.ts": 1,
     "app/actions/admin/commission-agreement.ts": 1,
-    "app/actions/agents.ts": 8,
-    "app/actions/ai-agent-onboarding.ts": 1,
+    "app/actions/agents.ts": 6,
     "app/actions/ai-auto-response.ts": 1,
-    "app/actions/ai-calendar-management.ts": 1,
     "app/actions/ai-client-gifting.ts": 1,
     "app/actions/ai-content-generation.tsx": 3,
     "app/actions/ai-contract-review.ts": 1,
     "app/actions/ai-document-intelligence.ts": 1,
     "app/actions/ai-marketing-automation.ts": 4,
     "app/actions/ai-predictions.ts": 5,
-    "app/actions/ai-showing-management.ts": 2,
+    "app/actions/ai-showing-management.ts": 1,
     "app/actions/ai-transaction-coordinator.ts": 2,
     "app/actions/ai-voice-transcription.ts": 1,
     "app/actions/billing.ts": 3,
@@ -42,13 +40,13 @@
     "app/actions/social-media-automation.ts": 1,
     "app/actions/social-publishing.ts": 1,
     "app/actions/superadmin/parked-retention.ts": 1,
-    "app/actions/tasks.ts": 3,
+    "app/actions/tasks.ts": 2,
     "app/actions/vendor-marketplace.ts": 2,
     "app/actions/vendor-payments.ts": 1,
     "app/actions/vendor-verification.ts": 1,
     "app/actions/video/create-video-project.ts": 5,
     "app/actions/video-repurposing.ts": 3,
-    "app/actions/workflows.ts": 2,
+    "app/actions/workflows.ts": 1,
     "app/components/portal/FitBadge.tsx": 1,
     "app/dashboard/intelligence-report/trust-receipts-card.tsx": 1,
     "app/dashboard/videos/components/BackgroundPicker.tsx": 1,
@@ -579,7 +577,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9352,
+  "census": 9353,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -2259,6 +2257,7 @@
     "app/dashboard/motivation/motivation-client.tsx": 1,
     "app/dashboard/onboarding/OnboardingDashboardClient.tsx": 1,
     "app/dashboard/onboarding/OnboardingQuizClient.tsx": 1,
+    "app/dashboard/onboarding/admin/agents/[id]/welcome-message-card.tsx": 1,
     "app/dashboard/onboarding/ai-call-setup/AICallSetupClient.tsx": 1,
     "app/dashboard/onboarding/brand/brand-setup-client.tsx": 1,
     "app/dashboard/onboarding/license/license-intake-client.tsx": 1,
@@ -11475,6 +11474,9 @@
     ],
     "app/dashboard/onboarding/OnboardingQuizClient.tsx": [
       "OnboardingQuizClient"
+    ],
+    "app/dashboard/onboarding/admin/agents/[id]/welcome-message-card.tsx": [
+      "WelcomeMessageCard"
     ],
     "app/dashboard/onboarding/ai-call-setup/AICallSetupClient.tsx": [
       "AICallSetupClient"
@@ -21093,5 +21095,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 8
+  "trulyDead": 1
 }

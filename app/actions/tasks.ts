@@ -35,6 +35,15 @@ export async function getTasks(params?: {
   listingId?: string
   transactionId?: string
   status?: string
+  /**
+   * Due-date window (YYYY-MM-DD, inclusive) — MERGED from the calendar shell's
+   * inline tasks read when that duplicate was rewired onto this survivor (lane
+   * E6 2026-08-28, app/dashboard/calendar/components/os/calendar-shell.tsx).
+   * Narrowing only; the session-derived tenant + assignee scope above still
+   * applies first.
+   */
+  dueDateFrom?: string
+  dueDateTo?: string
 }) {
   try {
     const ctx = await getAgentContext()
@@ -75,6 +84,8 @@ export async function getTasks(params?: {
     if (params?.listingId) query = query.eq("listing_id", params.listingId)
     if (params?.transactionId) query = query.eq("transaction_id", params.transactionId)
     if (params?.status) query = query.eq("status", params.status)
+    if (params?.dueDateFrom) query = query.gte("due_date", params.dueDateFrom)
+    if (params?.dueDateTo) query = query.lte("due_date", params.dueDateTo)
 
     const { data, error } = await query
 

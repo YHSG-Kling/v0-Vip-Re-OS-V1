@@ -327,6 +327,21 @@ export async function generateWelcomeMessage(agentId: string) {
 
   // Tenant for the AI cost ledger — SESSION, never `agentId` (§4).
   const spendActor = await getAgentContext()
+  // GATED (lane E6 2026-08-28, added with this action's first door — the
+  // AI-welcome card on /dashboard/onboarding/admin/agents/[id]): the caller
+  // must be the agent themselves or a broker/admin, and the agent read below
+  // re-verifies the tenant explicitly rather than leaning on RLS breadth.
+  // Every export in this "use server" file is a public HTTP endpoint, and
+  // spending AI tokens on another tenant's name is not a read RLS should be
+  // the only thing refusing.
+  if (!spendActor.isAuthenticated) return { success: false, error: "Not authenticated" }
+  if (!spendActor.brokerageId) {
+    return { success: false, error: "Your account is not linked to a brokerage yet." }
+  }
+  const { isAdminOrBroker } = await import("@/lib/auth/resolve-user-role")
+  if (spendActor.agentId !== agentId && !isAdminOrBroker({ user_type: spendActor.userType })) {
+    return { success: false, error: "Only a broker or admin can generate another agent's welcome message." }
+  }
   const supabase = await createClient()
 
   try {
@@ -352,11 +367,16 @@ export async function generateWelcomeMessage(agentId: string) {
     // and the brokerage's name.
     const { data: agent, error } = await supabase
       .from("agents")
-      .select("license_state, user:users(first_name, last_name), brokerage:brokerages(name)")
+      .select("license_state, brokerage_id, user:users(first_name, last_name), brokerage:brokerages(name)")
       .eq("id", agentId)
       .single()
 
     if (error) throw error
+    // Tenant re-verified from the row itself (§4) — a cross-tenant agents.id is
+    // refused here even where an RLS policy would have let the read through.
+    if (agent.brokerage_id !== spendActor.brokerageId) {
+      return { success: false, error: "That agent is not in your brokerage." }
+    }
 
     // NORMALIZED, NOT ASSERTED. Naming the embed's columns makes supabase-js
     // type these as ARRAYS: it infers to-one only from a unique constraint on

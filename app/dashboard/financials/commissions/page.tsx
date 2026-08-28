@@ -39,17 +39,16 @@ export default async function CommissionsPage() {
 
   const currentYear = new Date().getFullYear()
 
-  const [commissions, transactions] = await Promise.all([
-    supabase
-      // KEEP-ONE (m283/m284): agent_commissions is the one commission ledger.
-      // net_to_agent is the post-fee take-home when the waterfall engine wrote
-      // the row; agent_commission is the generated pre-fee split fallback.
-      .from('agent_commissions')
-      .select('id, gross_commission, agent_commission, net_to_agent, status, created_at, transaction_id, deposit_received_at')
-      .eq('agent_id', agentId)
-      .gte('created_at', `${currentYear}-01-01`)
-      .order('created_at', { ascending: false })
-      .limit(100),
+  // KEEP-ONE (§1, lane E6 2026-08-28): the ledger read goes through
+  // app/actions/agents.ts:getAgentCommissions — the survivor the dashboard-data
+  // lane recorded for the `commissions` type (lib/dashboard/data-survivors.ts)
+  // and the reader hardened FOR this screen. It re-derives the caller from the
+  // session (requireAgentLedgerAccess), pins the tenant, and reports a refused
+  // read as a refusal — the inline read this replaces dropped the error, so a
+  // permission failure rendered as "No commission records for the year".
+  const { getAgentCommissions } = await import('@/app/actions/agents')
+  const [commissionsResult, transactions] = await Promise.all([
+    getAgentCommissions(agentId, currentYear, { limit: 100 }),
     supabase
       .from('transactions')
       .select('id, property_address, purchase_price, status, close_date')
@@ -59,11 +58,12 @@ export default async function CommissionsPage() {
       .order('close_date', { ascending: false })
       .limit(50),
   ])
+  const commissionsError = commissionsResult.ok ? null : commissionsResult.error
 
   // Normalize the agent's take-home once: prefer the waterfall's post-fee
   // net_to_agent, fall back to the generated pre-fee split. Every total and row
   // below reads agent_commission, so this is the single place it's resolved.
-  const commissionsData = (commissions.data || []).map((c: any) => ({
+  const commissionsData = (commissionsResult.commissions || []).map((c: any) => ({
     ...c,
     agent_commission: c.net_to_agent ?? c.agent_commission ?? 0,
   }))
@@ -144,6 +144,15 @@ export default async function CommissionsPage() {
         </div>
         <ExportCSVButton agentId={agentId} type="commissions" />
       </div>
+
+      {/* A refused read is NOT an empty ledger — say so rather than render
+          "you earned nothing this year" over a permission failure. */}
+      {commissionsError && (
+        <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
+          Your commission records could not be read: {commissionsError}. The figures below are not
+          complete.
+        </div>
+      )}
 
       {/* KPI Row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

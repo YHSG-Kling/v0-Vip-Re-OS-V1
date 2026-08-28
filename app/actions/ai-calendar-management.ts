@@ -63,8 +63,15 @@ export async function getAppointments(params?: { contactId?: string; startDate?:
       query = query.eq("entity_type", "contact").eq("entity_id", params.contactId)
     }
 
+    // Window semantics: an appointment belongs to the window its START falls in
+    // — the calendar convention, and what the one live door (the calendar
+    // shell's week view) needs. This used to compare `end_at <= endDate`, which
+    // dropped any event STARTING inside the window but running past its edge;
+    // aligned when the shell's duplicate inline read was rewired onto this
+    // survivor (lane E6 2026-08-28). endDate is exclusive for the same reason
+    // (a week window is [start, nextWeekStart)).
     if (params?.startDate) query = query.gte("start_at", params.startDate)
-    if (params?.endDate) query = query.lte("end_at", params.endDate)
+    if (params?.endDate) query = query.lt("start_at", params.endDate)
 
     const { data: appointments, error } = await query
 

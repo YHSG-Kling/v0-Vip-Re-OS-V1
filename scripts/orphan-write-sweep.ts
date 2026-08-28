@@ -20,6 +20,7 @@
  */
 import { readFileSync, writeFileSync, existsSync } from "node:fs"
 import { walkTs, rootRuntimeFiles } from "./runtime-roots"
+import { stripComments } from "./strip-comments"
 import { join } from "node:path"
 
 const BASELINE = join(process.cwd(), "scripts/orphan-write-baseline.json")
@@ -96,7 +97,16 @@ function main() {
   const EMBED_TABLE = /(?:^|[,\s(])(?:[a-z_][a-z0-9_]*:)?([a-z_][a-z0-9_]*)\s*(?:!\w+)?\(/g
 
   for (const f of files) {
-    const s = readFileSync(f, "utf8")
+    // STRIPPED source (CLAUDE.md §2): this scan hunts code tokens
+    // (.from / .select / .insert), so comments must not count. Read raw, the
+    // fixed window below is eaten by prose — found live 2026-08-28 when five
+    // comment lines sitting between `.from("tool_usage_sessions")` and its
+    // `.select(` in app/actions/analytics.ts (565 chars of annotation) pushed
+    // the verb past the window and this sweep accused a table WITH a wired
+    // reader of being write-only. Same class as the round-11 widening: the
+    // window measures distance in characters, so only code characters may
+    // count toward it.
+    const s = stripComments(readFileSync(f, "utf8"))
     let m: RegExpExecArray | null
     while ((m = FROM.exec(s))) {
       const table = m[1]

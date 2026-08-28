@@ -54,7 +54,7 @@ import type { VideoPurpose, RepurposeDestination, ListingVideoMode, SellerUpdate
 import { generateVideoScript } from "@/app/actions/video/generate-script"
 import { improveScript, type ScriptImprovement } from "@/app/actions/video/create-video-project"
 import { saveVideoScript, getAgentVideoProfile } from "@/app/actions/video-generation"
-import { savePrivateScript } from "@/app/actions/workflows"
+import { savePrivateScript, generateScriptContent } from "@/app/actions/workflows"
 import { getVoiceOptionsForGeneration } from "@/app/actions/video-voice"
 import type { GenerationVoiceOption } from "@/app/actions/video-voice.types"
 import { toLibraryScriptType } from "@/app/types/video-generation"
@@ -254,6 +254,17 @@ export default function VideoCreatePage() {
   const [isSavingPrivate, setIsSavingPrivate] = useState(false)
   const [savePrivateMessage, setSavePrivateMessage] = useState<string | null>(null)
   const [savePrivateError, setSavePrivateError] = useState<string | null>(null)
+
+  // "Generate new private script" — the generate-and-store composite of the
+  // same m429 private lane (app/actions/workflows.ts:generateScriptContent).
+  // Unlike the wizard's Generate Script above (generateVideoScript — text only,
+  // stored only when the agent presses a save door), this one writes AND stores
+  // in one step through the same fused compliance gate + `scripts` INSERT
+  // (gateAndStorePrivateScript), so the result lands in the saved-scripts
+  // picker immediately.
+  const [isGeneratingPrivate, setIsGeneratingPrivate] = useState(false)
+  const [generatePrivateMessage, setGeneratePrivateMessage] = useState<string | null>(null)
+  const [generatePrivateError, setGeneratePrivateError] = useState<string | null>(null)
 
   // "Improve this script" — rewrites the script already in the box. The wizard
   // could only ever generate a script FROM SCRATCH; there was no way to nudge
@@ -1040,6 +1051,74 @@ export default function VideoCreatePage() {
     }
   }
 
+  // Generate a NEW private script from the wizard's current inputs, in one step.
+  // generateScriptContent derives the tenant and the actor from the session,
+  // pre-checks the description for Fair Housing before spending tokens, writes
+  // with the compliance blocks in the prompt, post-checks the result, and stores
+  // it through the same fused gate as savePrivateScript. The working script is
+  // REPLACED with the returned content; the previous text is backed up through
+  // the same scriptBeforeImprove slot the Improve buttons use, so "Undo rewrite"
+  // restores it. Advisory warnings and errors surface exactly like the
+  // savePrivateScript handler's; a hard red flag means NOT saved — the flagged
+  // text is still shown so the agent can see what tripped it and fix it.
+  const handleGeneratePrivateScript = async () => {
+    if (!aiScriptDescription.trim()) return
+    setIsGeneratingPrivate(true)
+    setGeneratePrivateError(null)
+    setGeneratePrivateMessage(null)
+    try {
+      const savedType = toLibraryScriptType(aiScriptVideoType)
+      const result = await generateScriptContent(savedType, {
+        description: aiScriptDescription,
+        tone: aiScriptTone,
+        targetDurationSeconds: aiScriptDuration,
+      })
+      if (result.complianceWarnings?.length) {
+        setScriptComplianceWarnings(result.complianceWarnings)
+      }
+      if (result.content) {
+        if (customScript.trim()) setScriptBeforeImprove(customScript)
+        setCustomScript(result.content)
+        setScriptSource("custom")
+        if (!scriptTitle) {
+          setScriptTitle(`${savedType.replace(/_/g, " ")} script — ${new Date().toLocaleDateString()}`)
+        }
+      }
+      if (!result.success) {
+        // Hard compliance flag (text returned, store refused) or generation
+        // failure — either way, not saved, and the agent is told why.
+        setGeneratePrivateError(result.error ?? "Could not generate a private script")
+        return
+      }
+      if (!result.scriptId) {
+        // Generated but the store was refused — the text is in the box, the
+        // refusal is shown, and nothing pretends a script row exists.
+        setGeneratePrivateError(result.error ?? "Script generated but not saved")
+        return
+      }
+      // Immediately selectable from the Library tab — same normalized shape the
+      // loader gives rows read back from `scripts`.
+      setScripts((prev) => [
+        {
+          id: result.scriptId,
+          title: scriptTitle || `${savedType.replace(/_/g, " ")} script — ${new Date().toLocaleDateString()}`,
+          script_content: result.content,
+          script_type: savedType,
+          duration_target_seconds: null,
+          __saved: true,
+        },
+        ...prev,
+      ])
+      setGeneratePrivateMessage(
+        "Generated and saved as your private script — it's in the Library tab now. It stays yours unless a video made from it goes viral, which shares it with your brokerage.",
+      )
+    } catch (err: any) {
+      setGeneratePrivateError(err?.message ?? "Could not generate a private script")
+    } finally {
+      setIsGeneratingPrivate(false)
+    }
+  }
+
   // ─── Render ─────────────────────────────────────────────────────────────────
 
   if (loading) {
@@ -1349,7 +1428,7 @@ export default function VideoCreatePage() {
 
                         <Button
                           onClick={handleAiGenerateFromStep1}
-                          disabled={isAiGenerating || !aiScriptDescription.trim()}
+                          disabled={isAiGenerating || isGeneratingPrivate || !aiScriptDescription.trim()}
                           size="sm"
                           className="w-full"
                         >
@@ -1359,6 +1438,36 @@ export default function VideoCreatePage() {
                             <><Sparkles className="h-3 w-3 mr-2" />Generate Script</>
                           )}
                         </Button>
+
+                        {/* The OTHER generate door: writes AND saves in one step
+                            as the agent's own private script (m429 lane), through
+                            the same fused compliance gate as "Save as my private
+                            script" below. Replaces the working script; the prior
+                            text is one "Undo rewrite" away. */}
+                        <Button
+                          onClick={handleGeneratePrivateScript}
+                          disabled={isGeneratingPrivate || isAiGenerating || !aiScriptDescription.trim()}
+                          size="sm"
+                          variant="outline"
+                          className="w-full"
+                        >
+                          {isGeneratingPrivate ? (
+                            <><Loader2 className="h-3 w-3 mr-2 animate-spin" />Generating &amp; saving…</>
+                          ) : (
+                            <><Sparkles className="h-3 w-3 mr-2" />Generate new private script</>
+                          )}
+                        </Button>
+                        <p className="text-xs text-muted-foreground">
+                          Generate new private script writes a script from the description above and
+                          saves it straight to your own private scripts — no approval queue. It
+                          replaces the script in the box below (Undo rewrite brings the old one back).
+                        </p>
+                        {generatePrivateMessage && (
+                          <p className="text-xs text-muted-foreground">{generatePrivateMessage}</p>
+                        )}
+                        {generatePrivateError && (
+                          <p className="text-xs text-destructive">{generatePrivateError}</p>
+                        )}
                       </CardContent>
                     </Card>
 

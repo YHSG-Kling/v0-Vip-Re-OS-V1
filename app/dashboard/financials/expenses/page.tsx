@@ -37,15 +37,17 @@ export default async function ExpensesPage() {
       </div>
     )
   }
-  const { data: expenses } = await supabase
-    .from('business_expenses')
-    .select('id, category, amount, description, expense_date, receipt_url')
-    .eq('agent_id', expenseAgentId)
-    .gte('expense_date', `${currentYear}-01-01`)
-    .order('expense_date', { ascending: false })
-    .limit(100)
+  // KEEP-ONE (§1, lane E6 2026-08-28): the table read goes through
+  // app/actions/agents.ts:getAgentExpenses — the survivor the dashboard-data
+  // lane recorded for the `expenses` type (lib/dashboard/data-survivors.ts),
+  // already sitting next to getExpenseSummary below. It re-derives the caller
+  // from the session (requireAgentLedgerAccess), pins the tenant, and reports a
+  // refused read instead of the dropped-error empty table this replaces.
+  const { getAgentExpenses } = await import("@/app/actions/agents")
+  const expensesResult = await getAgentExpenses(expenseAgentId, currentYear, { limit: 100 })
+  const expensesError = expensesResult.ok ? null : (expensesResult.error ?? "Could not read your expenses.")
 
-  const expenseData = expenses || []
+  const expenseData = expensesResult.expenses || []
   const mtdExpenses = expenseData.filter((e: any) => {
     const expenseMonth = new Date(e.expense_date).getMonth() + 1
     return expenseMonth === currentMonth
@@ -152,6 +154,13 @@ export default async function ExpensesPage() {
         <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
           Your year-to-date totals could not be read: {summaryError}. The figures above and the
           category breakdown below are not complete.
+        </div>
+      )}
+
+      {/* Same rule for the table itself — a refused read is not an empty year. */}
+      {expensesError && (
+        <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
+          Your expense records could not be read: {expensesError}. The table below is not complete.
         </div>
       )}
 

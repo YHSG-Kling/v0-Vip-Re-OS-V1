@@ -2,7 +2,7 @@
   "generated": "2026-08-28",
   "counts": {
     "col-write-no-read": 396,
-    "col-read-no-write": 167,
+    "col-read-no-write": 166,
     "dead-import": 6,
     "orphan-type-export": 126,
     "inert-param": 4,
@@ -419,7 +419,6 @@
       "ai_daily_briefings.agent_id",
       "ai_insights.agent_id",
       "ai_isa_campaigns.max_touches",
-      "ai_isa_campaigns.touch_interval_days",
       "ai_isa_engagement_tracking.metadata",
       "ai_isa_qualifications.contact_id",
       "ai_isa_qualifications.last_outreach_at",

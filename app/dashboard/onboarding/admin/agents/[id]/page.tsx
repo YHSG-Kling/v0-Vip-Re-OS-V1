@@ -24,6 +24,7 @@ import {
   AlertTriangle,
 } from 'lucide-react'
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { WelcomeMessageCard } from "./welcome-message-card"
 
 export const dynamic = 'force-dynamic'
 
@@ -341,6 +342,12 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
               </div>
             </CardContent>
           </Card>
+        </div>
+
+        {/* AI welcome message — generate-and-review, never auto-sent. The door
+            for app/actions/ai-agent-onboarding.ts:generateWelcomeMessage. */}
+        <div className="mt-6">
+          <WelcomeMessageCard agentId={agentId} agentName={agentName} />
         </div>
 
         {/* Steps by Day */}

@@ -47,7 +47,17 @@ import { bestEffort } from "@/lib/db/best-effort"
  * administers the brokerage, in which case it may only NARROW inside the tenant
  * the filter above already pinned.
  */
-export async function getTours(agentId?: string) {
+export async function getTours(
+  agentId?: string,
+  /**
+   * tour_date window (YYYY-MM-DD, inclusive) — MERGED from the calendar
+   * shell's inline tours read when that duplicate was rewired onto this
+   * survivor (lane E6 2026-08-28,
+   * app/dashboard/calendar/components/os/calendar-shell.tsx). Narrowing only;
+   * the session-derived tenant + agent scope below still applies first.
+   */
+  range?: { from?: string; to?: string },
+) {
   try {
     const ctx = await getAgentContext()
     if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated", tours: [] }
@@ -67,13 +77,18 @@ export async function getTours(agentId?: string) {
     }
 
     const supabase = await createClient()
+    // The contacts embed rode in from the calendar shell's read (its agenda
+    // rows show who the tour is with). tours→contacts is a single FK
+    // (contact_id), so the bare embed is unambiguous.
     let query = supabase
       .from("tours")
-      .select("*, showings(*)")
+      .select("*, showings(*), contacts(first_name, last_name)")
       .eq("brokerage_id", ctx.brokerageId)
       .order("tour_date", { ascending: false })
 
     if (agentFilter) query = query.eq("agent_id", agentFilter)
+    if (range?.from) query = query.gte("tour_date", range.from)
+    if (range?.to) query = query.lte("tour_date", range.to)
 
     const { data, error } = await query
 

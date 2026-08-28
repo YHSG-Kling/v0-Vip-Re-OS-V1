@@ -584,7 +584,7 @@ export async function getAgentAchievements(agentId: string) {
 
 // ==================== COMMISSION TRACKING ====================
 
-export async function getAgentCommissions(agentId: string, year?: number) {
+export async function getAgentCommissions(agentId: string, year?: number, opts?: { limit?: number }) {
   // Their own ledger, or a broker/admin looking at their own brokerage's agent.
   // See requireAgentLedgerAccess — the id used to come straight from the caller.
   const access = await requireAgentLedgerAccess(agentId)
@@ -594,19 +594,28 @@ export async function getAgentCommissions(agentId: string, year?: number) {
 
   const currentYear = year || new Date().getFullYear()
   const startDate = `${currentYear}-01-01`
-  const endDate = `${currentYear}-12-31`
-
-  const { data, error } = await supabase
-    .from("agent_commissions")
-    .select(`
-      *,
-      transaction:transactions(id, property_address, purchase_price, status)
-    `)
-    .eq("brokerage_id", access.brokerageId)
-    .eq("agent_id", agentId)
-    .gte("close_date", startDate)
-    .lte("close_date", endDate)
-    .order("close_date", { ascending: false })
+  // MERGED from the Commission Tracker page's inline read (lane E6 2026-08-28,
+  // wiring this survivor to the screen it was hardened for): the year window
+  // pins on created_at, not close_date. A commission record exists from deposit
+  // tracking onward — before the deal's close_date is stamped — so a close_date
+  // window silently dropped every pending row with a NULL close_date, which is
+  // exactly the money an agent checks this screen for. `limit` is the page's
+  // existing render cap, offered as an option rather than baked in.
+  const { data, error } = await (() => {
+    let q = supabase
+      .from("agent_commissions")
+      .select(`
+        *,
+        transaction:transactions(id, property_address, purchase_price, status)
+      `)
+      .eq("brokerage_id", access.brokerageId)
+      .eq("agent_id", agentId)
+      .gte("created_at", startDate)
+      .lt("created_at", `${currentYear + 1}-01-01`)
+      .order("created_at", { ascending: false })
+    if (opts?.limit) q = q.limit(opts.limit)
+    return q
+  })()
 
   // A refused read is NOT an empty ledger. supabase-js resolves a denied query,
   // so returning [] here rendered "you earned nothing this year" for a
@@ -792,7 +801,7 @@ async function updateAgentYTDStats(agentId: string) {
 
 // ==================== EXPENSES ====================
 
-export async function getAgentExpenses(agentId: string, year?: number) {
+export async function getAgentExpenses(agentId: string, year?: number, opts?: { limit?: number }) {
   // Same rule as commissions: your own, or your brokerage's if you administer it.
   const access = await requireAgentLedgerAccess(agentId)
   if (!access.ok) return { ok: false as const, error: access.error, expenses: [] }
@@ -803,14 +812,21 @@ export async function getAgentExpenses(agentId: string, year?: number) {
   const startDate = `${currentYear}-01-01`
   const endDate = `${currentYear}-12-31`
 
-  const { data, error } = await supabase
-    .from("business_expenses")
-    .select("*")
-    .eq("brokerage_id", access.brokerageId)
-    .eq("agent_id", agentId)
-    .gte("expense_date", startDate)
-    .lte("expense_date", endDate)
-    .order("expense_date", { ascending: false })
+  // `limit` MERGED from the Expenses page's inline read (lane E6 2026-08-28,
+  // wiring this survivor to that page): its table renders the 100 most recent
+  // rows while getExpenseSummary carries the untruncated totals beside them.
+  const { data, error } = await (() => {
+    let q = supabase
+      .from("business_expenses")
+      .select("*")
+      .eq("brokerage_id", access.brokerageId)
+      .eq("agent_id", agentId)
+      .gte("expense_date", startDate)
+      .lte("expense_date", endDate)
+      .order("expense_date", { ascending: false })
+    if (opts?.limit) q = q.limit(opts.limit)
+    return q
+  })()
 
   if (error) {
     console.error("[getAgentExpenses] read refused:", error.message)
