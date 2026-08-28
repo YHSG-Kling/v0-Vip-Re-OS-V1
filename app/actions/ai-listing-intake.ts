@@ -1167,9 +1167,11 @@ export async function generateListingAgreement(params: {
     // MERGE, NEVER REPLACE — the listing twin of the offer-side defect fixed in
     // wave 9 (ai-offer-creation.ts:generateOfferDraft).
     //
-    // Both listing staging paths INSERT the document with
-    // `content = { intake, filledPacket }` and then call this function
-    // immediately (draft-listing-from-voice.ts, api/workflow/intake/listing).
+    // The listing staging path INSERTs the document with
+    // `content = { intake, filledPacket }` and then calls this function
+    // immediately (draft-listing-from-voice.ts — the second path,
+    // api/workflow/intake/listing, was a duplicate of it and has been retired
+    // onto it).
     // Assigning `content` wholesale replaced that with a prefill shape carrying
     // NO `filledPacket`, and assigning `metadata` wholesale dropped whatever the
     // stager had put there. `filledPacket` is the ONLY thing

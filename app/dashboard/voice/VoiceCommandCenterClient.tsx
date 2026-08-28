@@ -5,6 +5,9 @@ import { useToast } from "@/hooks/use-toast"
 import { handleVoiceCommand } from "@/app/actions/voice-assistant/handle-voice-command"
 import { WakeWordCard } from "@/app/components/dashboard/voice/WakeWordCard"
 import { QuickCommandGrid } from "@/app/components/dashboard/voice/QuickCommandGrid"
+// The KERNEL lane's door (POST /api/agentic-os/voice → planVoiceCommand). The direct
+// lane below it (handleVoiceCommand → COMMAND_EXECUTORS, one verb) is untouched.
+import { KernelPlanCard } from "@/app/components/dashboard/voice/KernelPlanCard"
 import { RecentCommandsFeed, type VoiceCommandRow } from "@/app/components/dashboard/voice/RecentCommandsFeed"
 import { AiOutboundCallPanel } from "@/app/components/dashboard/voice/AiOutboundCallPanel"
 import { VoiceAnalytics } from "@/app/components/dashboard/voice/VoiceAnalytics"
@@ -100,6 +103,10 @@ export function VoiceCommandCenterClient({
           onCommand={handleQuickCommand}
           isDisabled={isPending}
         />
+
+        {/* One utterance → several capabilities → one governed signal per step,
+            each attributed to the manager whose charter owns it. */}
+        <KernelPlanCard />
 
         <RecentCommandsFeed commands={commands} />
 

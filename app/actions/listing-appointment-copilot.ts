@@ -84,6 +84,31 @@ export interface ListingApptPrepDetail {
   appointmentDate: string | null
   daysUntil:       number | null
   propertyAddress: string | null
+  /**
+   * THE SUBJECT PROPERTY, carried so the agent can rebuild the presentation on
+   * demand instead of waiting for the daily cron.
+   *
+   * POST /api/workflow/listing-presentation ("Prepare for appointment now" — the
+   * same artifact /api/cron/listing-presentation-prep produces) requires
+   * propertyAddress AND state, and refuses 400 without them. Every surface that
+   * could have called it had the address and not the state, which is why the route
+   * sat with no caller in the tree. `workflow_runs.metadata.property_data` already
+   * holds the whole subject — listing-lifecycle.ts writes
+   * {address, city, state, zip, bedrooms, bathrooms, sqft, yearBuilt} onto it when
+   * it fires listing.appointment_set — so nothing new is stored or derived here;
+   * it was simply never read out.
+   *
+   * NOT INVENTED WHEN ABSENT. The AI-ISA booking path may write only {address}
+   * (book-seller-appointment.ts derives a minimal shape from `location`), so
+   * `state` is genuinely null for those runs and the panel says the rebuild is
+   * unavailable rather than guessing a state — the same honest skip the cron makes.
+   */
+  propertyState:   string | null
+  propertyCity:    string | null
+  propertyZip:     string | null
+  /** listings.id when the appointment is on an in-house listing; null for a
+   *  home-value prospect, who has no listing row. */
+  listingId:       string | null
   startedAt:       string
   completedAt:     string | null
   steps:           ListingApptStep[]
@@ -298,7 +323,9 @@ export async function getListingAppointmentPrepDetail(params: {
 
   // Appointment date + property
   const apptDate = (run.metadata?.appointment_date as string | undefined) ?? null
-  const propertyData = run.metadata?.property_data as { address?: string } | undefined
+  const propertyData = run.metadata?.property_data as
+    | { address?: string; city?: string; state?: string; zip?: string }
+    | undefined
   const daysUntil = apptDate
     ? Math.ceil((new Date(apptDate).getTime() - Date.now()) / 86_400_000)
     : null
@@ -413,6 +440,11 @@ export async function getListingAppointmentPrepDetail(params: {
       appointmentDate: apptDate,
       daysUntil,
       propertyAddress: propertyData?.address ?? null,
+      // Read straight off what the chain trigger already wrote; null stays null.
+      propertyState:   propertyData?.state ?? null,
+      propertyCity:    propertyData?.city  ?? null,
+      propertyZip:     propertyData?.zip   ?? null,
+      listingId:       (run.listing_id as string | null) ?? null,
       startedAt:       run.started_at as string,
       completedAt:     run.completed_at as string | null,
       steps,

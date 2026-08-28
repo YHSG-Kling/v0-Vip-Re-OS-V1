@@ -127,6 +127,17 @@ export async function stageOfferFromVoice(
       spokenResponse: result.spokenResponse,
     }
   }
+  // PROACTIVE CHECKS REFUSED. Deliberately NOT needsMoreInfo: the intake is complete,
+  // a pre-flight blocker is. Surfaced with its own text so the Copilot relays what to
+  // fix rather than asking for the same fields again.
+  if (result.kind === "blocked") {
+    return {
+      success: false,
+      sessionId: result.sessionId,
+      spokenResponse: result.spokenResponse,
+      error: result.blockers.map((b) => b.title).join("; ") || "Pre-flight checks refused the offer",
+    }
+  }
   return {
     success: true,
     documentId: result.documentId,

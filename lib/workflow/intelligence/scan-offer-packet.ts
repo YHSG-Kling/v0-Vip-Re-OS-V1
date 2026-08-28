@@ -319,9 +319,10 @@ export interface ListingPacketScanSummary {
    *
    * WHERE THE LISTING SIDE DIFFERS FROM THE OFFER SIDE, AND WHY. On the offer
    * side a staged document that carries no `filledPacket` is a FAULT. Here it
-   * is not, and the evidence is in the tree: BOTH listing staging paths
-   * (`app/actions/voice-assistant/draft-listing-from-voice.ts` and
-   * `app/api/workflow/intake/listing/route.ts`) write `content` as
+   * is not, and the evidence is in the tree: the listing staging path
+   * (`app/actions/voice-assistant/draft-listing-from-voice.ts`; the second one,
+   * `app/api/workflow/intake/listing/route.ts`, was a duplicate of it and has
+   * since been retired onto it) writes `content` as
    * `{ filledPacket, intake }` and then immediately call
    * `ai-listing-intake.ts:generateListingAgreement`, which OVERWRITES that same
    * row's `content` with its prefill shape (`{ packet_type, forms, prefilled,

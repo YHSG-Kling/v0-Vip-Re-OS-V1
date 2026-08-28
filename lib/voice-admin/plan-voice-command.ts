@@ -26,7 +26,11 @@
 // ── THE DOOR (orphan burn-down) ───────────────────────────────────────────────
 // Both exports below were built complete and referenced by NOTHING, so this whole
 // lane — the differentiator lib/kernel/manager-registry.ts:voice_kernel_command_surface
-// describes — had no way in. It does now: app/api/agentic-os/voice/route.ts (POST).
+// describes — had no way in. It does now: app/api/agentic-os/voice/route.ts (POST),
+// and that route in turn is addressed by app/components/dashboard/voice/KernelPlanCard.tsx
+// (rendered in app/dashboard/voice/VoiceCommandCenterClient.tsx). Both halves matter:
+// the route alone left the lane reachable only by a caller that does not exist, since
+// it refuses a bearer token and therefore has no external caller either.
 //
 // THAT DIRECTORY, not a page, because this module's authority source IS the Agentic
 // API's: `authorizedActions` over `buildAppActionManifest`, resolved by

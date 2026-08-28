@@ -12,6 +12,17 @@
 // app/dashboard/voice/VoiceCommandCenterClient.tsx) is untouched and stays the
 // front door for a single command.
 //
+// THE OTHER HALF OF THAT LOOP, closed later: this route was itself addressed by
+// NOTHING. It refuses a bearer token (below), so it can never be an external
+// door — a session-only endpoint no session-bearing surface calls is not
+// "unreferenced by design", it is a planner with a door and no doorway. Its
+// caller is now
+// app/components/dashboard/voice/KernelPlanCard.tsx, rendered beside the direct
+// lane in app/dashboard/voice/VoiceCommandCenterClient.tsx: it POSTs the
+// utterance, renders `lines[]` per step with the owning manager, and on
+// `awaitingConfirmation > 0` re-POSTs with confirmed:true, showing `dispatched`,
+// `failed` and `error` rather than swallowing any of them.
+//
 // WHY HERE AND NOT A PAGE. The planner's own docblock names its authority source:
 // "the same scope machinery the Agentic API uses, so voice cannot reach further
 // than a token could". That machinery is `resolveAgenticCaller`, and this

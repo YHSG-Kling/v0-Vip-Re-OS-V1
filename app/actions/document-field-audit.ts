@@ -7,10 +7,12 @@
  * ledger written by lib/workflow/intelligence/field-audit.ts.
  *
  * WHY THIS FILE EXISTS. That ledger had a complete write loop and NO reader:
- *   · recordAIFill      — app/api/workflow/intake/offer/route.ts:190,
- *                         app/api/workflow/intake/listing/route.ts:138,
- *                         app/actions/voice-assistant/draft-offer-from-voice.ts:196,
- *                         app/actions/voice-assistant/draft-listing-from-voice.ts:171
+ *   · recordAIFill      — app/actions/voice-assistant/draft-offer-from-voice.ts,
+ *                         app/actions/voice-assistant/draft-listing-from-voice.ts
+ *                         (the two HTTP doors that also called it,
+ *                         /api/workflow/intake/offer and /api/workflow/intake/listing,
+ *                         were retired onto those two actions — same pipeline, no
+ *                         caller, session-only so not an external door either)
  *   · recordAgentOverride — app/api/workflow/intake/approve-packet/route.ts:55
  *   · getDocumentAudit  — called by NOTHING.
  * So every AI-staged packet wrote one row per prefilled field, the FormWizard

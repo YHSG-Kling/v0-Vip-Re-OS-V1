@@ -772,8 +772,18 @@ Respond with ONLY the intent string, nothing else.`,
         const { voiceDraftOffer } = await import("@/app/actions/voice-assistant/draft-offer-from-voice")
         const r = await voiceDraftOffer({ voiceInput: transcript })
         spokenResponse = r.kind === "error" ? r.error : r.spokenResponse
-        data = { kind: r.kind, sessionId: r.kind === "error" ? null : r.sessionId, documentId: r.kind === "finalized" ? r.documentId : null }
-        action = r.kind === "finalized" ? "offer_drafted" : r.kind === "error" ? null : "offer_intake_continuing"
+        data = {
+          kind: r.kind,
+          sessionId: r.kind === "error" ? null : r.sessionId,
+          documentId: r.kind === "finalized" ? r.documentId : null,
+          // A pre-flight refusal is not "still gathering fields" — logging it as
+          // offer_intake_continuing would hide every blocked offer in the ledger.
+          blockers: r.kind === "blocked" ? r.blockers.map((b) => b.title) : null,
+        }
+        action = r.kind === "finalized" ? "offer_drafted"
+          : r.kind === "error" ? null
+          : r.kind === "blocked" ? "offer_intake_blocked"
+          : "offer_intake_continuing"
       }
     } else if (intent === "draft_listing") {
       // "Draft a listing agreement for the Garcias at 12 Oak" — the SAME canonical
