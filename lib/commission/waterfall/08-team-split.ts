@@ -1,6 +1,6 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { centsToDollars } from '../utils'
-import type { WaterfallContext, DistributionRecord } from '../types'
+import type { WaterfallContext, DistributionRecord, CompanyObligationRecord } from '../types'
 import {
   resolveTeamLeadOverride,
   isAgreementEffective,
@@ -186,16 +186,59 @@ export async function applyTeamSplit(
   }
 
   const teamDistributions: DistributionRecord[] = []
+  const companyObligations: CompanyObligationRecord[] = [...(context.companyObligations ?? [])]
   let totalTeamDeductionCents = 0
+
+  // ══ BROKERAGE-FUNDED MEMBERS CONSERVE, THE SAME WAY THE REVENUE SHARE DOES ══
+  //
+  // WAS: a source_of_funds='brokerage' row pushed a distribution "tracked … but
+  // not deducted" — deducted from NOTHING. Step 11 sums every distribution plus
+  // both finals against the adjusted gross with 1-cent tolerance, so any deal
+  // with a brokerage-funded member failed the ENTIRE commission calculation,
+  // pre-cap and post-cap alike. This was the last surviving sibling of the m575
+  // revenue-share defect, and it closes under the same owner rulings: money the
+  // BROKERAGE pays comes out of the deal's company dollar, and when the deal
+  // cannot fund it (post-cap that dollar is $0 — the cap ends the brokerage
+  // TAKING from the agent, never the brokerage PAYING its own people) the share
+  // goes WHOLE to company books (m577), never silently dropped and never an
+  // in-deal identity violation. (Semantics (a) of the queued ruling, chosen by
+  // direct precedent from the 2026-08-28 cap ruling + the 9283ed1e/m577 rail;
+  // (b) — always-company-books — remains one owner word away.)
+  //
+  // Order-dependence is real and deliberate: members draw the company dollar
+  // down in roster order, exactly as the revenue share draws what remains after
+  // this step. A share the remaining dollar cannot cover in FULL routes whole to
+  // company books (no cent-splitting one person's payment across two ledgers —
+  // the m577 design).
+  // Defensive: a caller that never ran step 07 (tests, partial pipelines) has
+  // no brokerageFinalCents — treat as $0 company dollar, which routes any
+  // brokerage-funded member to company books rather than NaN-ing the math.
+  let remainingBrokerageDollarCents = Number(context.brokerageFinalCents) || 0
 
   for (const member of teamMembers ?? []) {
     // Calculate member's share
     const memberCents = Math.round(context.agentNetCents * (member.split_percent / 100))
+    if (memberCents <= 0) continue
 
-    // Only deduct from agent if source_of_funds = 'agent'
-    // If source_of_funds = 'brokerage', it's paid separately (tracked in distribution but not deducted)
     if (member.source_of_funds === 'agent') {
       totalTeamDeductionCents += memberCents
+    } else if (member.source_of_funds === 'brokerage') {
+      if (remainingBrokerageDollarCents >= memberCents) {
+        remainingBrokerageDollarCents -= memberCents
+      } else {
+        companyObligations.push({
+          obligation_type: 'team_member',
+          agent_id: member.agent_id,
+          calculation_type: 'percent',
+          calculation_value: member.split_percent,
+          calculated_amount: memberCents / 100,
+          reason: 'post_cap_company_books',
+          notes: `Team ${member.role} split — brokerage-funded, deal company dollar could not fund it (cap_status=${context.capStatus})`,
+        })
+        // NOT a distribution: company-books money is outside the deal's
+        // gross == distributed + finals identity by design (m577).
+        continue
+      }
     }
 
     teamDistributions.push({
@@ -343,6 +386,11 @@ export async function applyTeamSplit(
   return {
     ...context,
     agentFinalNetCents: agentFinalCents,
+    // The company dollar AFTER brokerage-funded member draws — step 09's
+    // revenue share reads this, so the two brokerage-funded rails share one
+    // remaining balance instead of both spending the same dollar.
+    brokerageFinalCents: remainingBrokerageDollarCents,
+    companyObligations,
     teamDistributions,
     // Carried to stage 11, which writes the counter back to team_cap_tracking,
     // and out to the caller so a CDA / P&L can explain the team's number.

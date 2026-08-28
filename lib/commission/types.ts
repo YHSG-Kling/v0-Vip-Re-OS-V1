@@ -74,9 +74,12 @@ export interface DistributionRecord {
  * not paid by the deal's disbursement.
  */
 export interface CompanyObligationRecord {
-  /** §6: the distributions vocabulary word for the share class (revenue share = 'residual'). */
-  obligation_type: 'residual'
-  /** Recipient — agents.id (the sponsor). */
+  /** §6: the distributions vocabulary word for the share class — 'residual' for
+   *  revenue share, 'team_member' for a brokerage-funded team split the deal's
+   *  company dollar could not fund (the m577 sibling, closed by the same owner
+   *  ruling: the cap ends the brokerage TAKING, not the brokerage PAYING). */
+  obligation_type: 'residual' | 'team_member'
+  /** Recipient — agents.id (the sponsor, or the team member being paid). */
   agent_id: string
   calculation_type: 'percent' | 'flat'
   calculation_value?: number
