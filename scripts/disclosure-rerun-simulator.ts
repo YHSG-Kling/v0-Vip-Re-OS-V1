@@ -29,8 +29,8 @@
  *   LAYER 1 · STATIC.  Every assertion reads COMMENT-STRIPPED source, so no claim
  *     can be satisfied by prose that merely describes the fix. Assertions test
  *     CONSTRUCTS — "the write names a conflict arbiter", "the error is
- *     destructured and turned into a returned failure", "all three writers of the
- *     table agree on the same arbiter", "the offered priority vocabulary is
+ *     destructured and turned into a returned failure", "every writer of the
+ *     table agrees on the same arbiter", "the offered priority vocabulary is
  *     interpolated from a constant" — never the presence of a chosen string.
  *     One assertion (S6) deliberately reads the COMMENTS instead, to prove the
  *     false claim is gone and was not replaced by a new one.
@@ -71,7 +71,12 @@ const F = {
 } as const
 
 /** Every module that writes compliance_checklists. They must not disagree. */
-const WRITERS = [F.txnDocs, F.docIntel, F.workflows] as const
+// THE ROSTER SHRANK BY OWNER RULING (2026-08-28, lane E2, deletion approved in
+// the wave-14 ledger review): workflows.ts:triggerComplianceChecklist — the
+// empty-shell third writer of the same ensure-exists upsert row — was deleted
+// with checkTransactionDisclosures named as survivor. Two writers remain, and
+// every assertion below now holds those two to the shared arbiter.
+const WRITERS = [F.txnDocs, F.docIntel] as const
 
 // ─────────────────────────────────────────────────────────────────────────────
 // COMMENT STRIPPER
@@ -350,7 +355,7 @@ assert({
 // ── S3 · EVERY writer of the table agrees on the arbiter ─────────────────────
 assert({
   id: "S3",
-  what: "all three writers of compliance_checklists upsert on the SAME named arbiter — none can disagree about what a re-run means",
+  what: "every writer of compliance_checklists upserts on the SAME named arbiter — none can disagree about what a re-run means",
   run() {
     const seen: string[] = []
     const problems: string[] = []
@@ -384,12 +389,9 @@ assert({
       find: `}, { onConflict: "transaction_id,checklist_type" })`,
       replace: `}, { onConflict: "transaction_id" })`,
     },
-    // Regress the third writer to the insert it used to be.
-    {
-      file: F.workflows,
-      find: `      .upsert(\n        {\n          transaction_id: transactionId,`,
-      replace: `      .insert(\n        {\n          transaction_id: transactionId,`,
-    },
+    // (The third writer's regression mutation left with the writer itself —
+    // lane E2's approved deletion; a mutation on a file outside the roster
+    // proves nothing.)
   ],
 })
 
@@ -411,7 +413,6 @@ assert({
   },
   breaks: [
     { file: F.txnDocs, find: `        updated_at: new Date().toISOString(),\n      },\n      { onConflict:`, replace: `      },\n      { onConflict:` },
-    { file: F.workflows, find: `          updated_at: new Date().toISOString(),\n`, replace: "" },
   ],
 })
 
@@ -447,7 +448,6 @@ assert({
       find: `        brokerage_id: wc.brokerageId,\n        checklist_type: "disclosures",`,
       replace: `        checklist_type: "disclosures",`,
     },
-    { file: F.workflows, find: `          brokerage_id: brokerageId,\n`, replace: "" },
   ],
 })
 
@@ -485,11 +485,12 @@ assert({
       find: `    // ── THE DISCLOSURE CHECK MUST BE RE-RUNNABLE ─────────────────────────────`,
       replace: `    // Insert a fresh compliance_checklists snapshot (point-in-time — no unique constraint on txn+type)`,
     },
-    // A DIFFERENT false claim, to prove S6 is not just string-matching one sentence.
+    // A DIFFERENT false claim on the OTHER surviving writer, to prove S6 is
+    // not just string-matching one sentence in one file.
     {
-      file: F.workflows,
-      find: `    // compliance_checklists has no agent_id/status; checklist_type is NOT NULL.`,
-      replace: `    // compliance_checklists is append-only; every trigger adds a row.`,
+      file: F.docIntel,
+      find: `}, { onConflict: "transaction_id,checklist_type" })`,
+      replace: `}, { onConflict: "transaction_id,checklist_type" }) // append-only history table`,
     },
   ],
 })
