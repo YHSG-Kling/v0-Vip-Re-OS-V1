@@ -528,13 +528,12 @@ Respond with JSON only: { "recommendedResponse": "accept"|"counter"|"walk_away",
 // `createOfferDotloop` above, still exported and still reached through
 // lib/workflow/adapters/send-for-esign.ts.
 
-// Backward compatibility aliases — wrapped because "use server" rejects `const = fn`
-export async function aiAnalyzeOfferStrategy(...args: Parameters<typeof aiOfferStrategyAdvisor>) {
-  return aiOfferStrategyAdvisor(...args)
-}
-export async function generateOfferLetter(...args: Parameters<typeof aiGenerateBuyerLetter>) {
-  return aiGenerateBuyerLetter(...args)
-}
+// TOMBSTONE (§6 one-vocabulary, lane E2 2026-08-28) — the "backward
+// compatibility" aliases `aiAnalyzeOfferStrategy` and `generateOfferLetter`
+// were deleted. Duplicate SPELLINGS of the canonical names in this file —
+// SURVIVORS: `aiOfferStrategyAdvisor` (above) and `aiGenerateBuyerLetter`
+// (above). A stripped-source census found zero callers of either alias
+// outside the app/actions/index.ts barrel, which itself has zero importers.
 
 // ============================================
 // 9. COMPLETE OFFER CREATION WORKFLOW

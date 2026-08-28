@@ -12,9 +12,16 @@ import {
 } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Checkbox } from "@/components/ui/checkbox"
 import { Phone, RotateCcw, ExternalLink, User } from "lucide-react"
 import { ContactHistorySheet } from "./contact-history-sheet"
+import { useRouter } from "next/navigation"
+import { toast } from "sonner"
+// Lane E2 2026-08-28: retryFailedCalls WIRED. The previous "retry" here was a
+// 1-second setTimeout with a comment admitting it did nothing ("For now, just
+// show the action was attempted"). The real action sweeps THIS agent's
+// no-answer/busy/failed calls older than 4h and re-dials them through the
+// TCPA-gated Twilio lane (identity from the session inside the action).
+import { retryFailedCalls } from "@/app/actions/ai-isa"
 
 interface ISACall {
   id: string
@@ -81,44 +88,25 @@ function formatTime(dateString: string): string {
   })
 }
 
-export function ISACallsTable({ calls, emptyMessage, showRetry, brokerageId }: ISACallsTableProps) {
-  const [selectedCalls, setSelectedCalls] = useState<string[]>([])
-  const [retrying, setRetrying] = useState<string | null>(null)
+export function ISACallsTable({ calls, emptyMessage, showRetry }: ISACallsTableProps) {
+  const router = useRouter()
+  const [retrying, setRetrying] = useState(false)
   const [selectedContactId, setSelectedContactId] = useState<string | null>(null)
 
-  const handleRetry = async (callId: string, contactId: string | null) => {
-    if (!contactId || !brokerageId) return
-    setRetrying(callId)
-    
-    // In production, this would trigger a new ISA call via server action
-    // For now, just show the action was attempted
-    await new Promise(resolve => setTimeout(resolve, 1000))
-    setRetrying(null)
-  }
-
-  const handleBulkRetry = async () => {
-    for (const callId of selectedCalls) {
-      const call = calls.find(c => c.id === callId)
-      if (call?.contact_id) {
-        await handleRetry(callId, call.contact_id)
-      }
-    }
-    setSelectedCalls([])
-  }
-
-  const toggleSelect = (callId: string) => {
-    setSelectedCalls(prev => 
-      prev.includes(callId) 
-        ? prev.filter(id => id !== callId)
-        : [...prev, callId]
-    )
-  }
-
-  const toggleSelectAll = () => {
-    if (selectedCalls.length === calls.length) {
-      setSelectedCalls([])
+  // One sweep, not per-row: retryFailedCalls re-queues every eligible failed
+  // call for the signed-in agent (outcome no_answer/busy/failed/canceled, at
+  // least 4h old). Per-row checkboxes were removed with the fake retry — they
+  // selected calls the sweep does not consult, which would be a lying UI.
+  const handleRetryFailed = async () => {
+    setRetrying(true)
+    const res = await retryFailedCalls()
+    setRetrying(false)
+    if ((res as any).success) {
+      const n = (res as any).retried_count ?? 0
+      toast.success(n > 0 ? `Re-queued ${n} failed call${n === 1 ? "" : "s"}` : "No eligible failed calls to retry (4h cool-down)")
+      router.refresh()
     } else {
-      setSelectedCalls(calls.map(c => c.id))
+      toast.error((res as any).error ?? "Retry failed")
     }
   }
 
@@ -133,30 +121,25 @@ export function ISACallsTable({ calls, emptyMessage, showRetry, brokerageId }: I
 
   return (
     <>
-      {showRetry && selectedCalls.length > 0 && (
+      {showRetry && (
         <div className="mb-4 flex items-center gap-2">
-          <Button 
-            size="sm" 
-            onClick={handleBulkRetry}
-            disabled={retrying !== null}
+          <Button
+            size="sm"
+            onClick={handleRetryFailed}
+            disabled={retrying}
           >
-            <RotateCcw className="h-4 w-4 mr-2" />
-            Retry Selected ({selectedCalls.length})
+            <RotateCcw className={`h-4 w-4 mr-2 ${retrying ? "animate-spin" : ""}`} />
+            {retrying ? "Re-dialing..." : "Retry Failed Calls"}
           </Button>
+          <span className="text-xs text-muted-foreground">
+            Re-dials your no-answer / busy / failed calls older than 4 hours
+          </span>
         </div>
       )}
 
       <Table>
         <TableHeader>
           <TableRow>
-            {showRetry && (
-              <TableHead className="w-12">
-                <Checkbox 
-                  checked={selectedCalls.length === calls.length && calls.length > 0}
-                  onCheckedChange={toggleSelectAll}
-                />
-              </TableHead>
-            )}
             <TableHead>Contact</TableHead>
             <TableHead>Phone</TableHead>
             <TableHead>Outcome</TableHead>
@@ -168,14 +151,6 @@ export function ISACallsTable({ calls, emptyMessage, showRetry, brokerageId }: I
         <TableBody>
           {calls.map((call) => (
             <TableRow key={call.id}>
-              {showRetry && (
-                <TableCell>
-                  <Checkbox 
-                    checked={selectedCalls.includes(call.id)}
-                    onCheckedChange={() => toggleSelect(call.id)}
-                  />
-                </TableCell>
-              )}
               <TableCell>
                 <button
                   onClick={() => setSelectedContactId(call.contact_id)}
@@ -195,16 +170,6 @@ export function ISACallsTable({ calls, emptyMessage, showRetry, brokerageId }: I
               <TableCell>{formatTime(call.created_at)}</TableCell>
               <TableCell className="text-right">
                 <div className="flex items-center justify-end gap-2">
-                  {showRetry && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleRetry(call.id, call.contact_id)}
-                      disabled={retrying === call.id}
-                    >
-                      <RotateCcw className={`h-4 w-4 ${retrying === call.id ? "animate-spin" : ""}`} />
-                    </Button>
-                  )}
                   {call.voice_call_id && (
                     <Button variant="ghost" size="sm" asChild>
                       <Link href={`/dashboard/voice/review/${call.voice_call_id}`}>

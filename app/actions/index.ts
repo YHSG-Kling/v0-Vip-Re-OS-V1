@@ -24,14 +24,18 @@
 // ============================================
 // CRM & CONTACTS (Primary: crm.ts)
 // ============================================
-export { 
+// Lane E2 (2026-08-28) adjudicated the 51 barrel-only names recorded by the
+// census above: each was either DELETED at its defining module (tombstone
+// naming the survivor sits there) or WIRED to a real importer — in either
+// case its line here is gone, because a barrel mention is paper, not a wire.
+export {
   getContacts,
   getContactById,
   createContact,
   updateContact,
   deleteContact,
   searchContacts,
-  getContactTimeline,
+  // getContactTimeline deleted — tombstone at crm.ts names the survivor
   mergeContacts,
 } from "./crm"
 
@@ -40,12 +44,12 @@ export {
   getContactActivity,
   getContactDocuments,
   getContactTransactions,
-  getContactInteractions,
+  // getContactInteractions deleted — tombstone at contact-details.ts
 } from "./contact-details"
 
 // Contact enrichment
 export {
-  enrichContactData,
+  // enrichContactData alias deleted (§6) — canonical name is enrichContact
   getContactInsights,
 } from "./contact-enrichment"
 
@@ -53,8 +57,7 @@ export {
 export {
   logConversationMetadata,
   runWeeklyAIAudit,
-  getConversationAnalytics,
-  getAuditFlags,
+  // getConversationAnalytics / getAuditFlags deleted — tombstones in module
   reviewAuditFlag,
 } from "./conversation-analytics"
 
@@ -63,7 +66,7 @@ export {
   initiateWhisperBridge,
   updateWhisperBridgeStatus,
   triggerAiVoiceCall,
-  getWhisperBridgeCalls,
+  // getWhisperBridgeCalls deleted — tombstone at voice-call-bridge.ts
 } from "./voice-call-bridge"
 
 // Voice assistant (hands-free AI assistant)
@@ -73,15 +76,13 @@ export {
   endVoiceSession,
   getVoiceConfig,
   updateVoiceConfig,
-  getVoiceCommandHistory,
+  // getVoiceCommandHistory deleted — tombstone at voice-assistant.ts
 } from "./voice-assistant"
 
 // AI ISA (Inside Sales Agent) - Autonomous outbound calling
 export {
-  launchAIISACampaign,
-  queueAIISACall,
-  getAIISACampaigns,
-  getAIISACalls,
+  // launchAIISACampaign / queueAIISACall / getAIISACampaigns / getAIISACalls
+  // deleted — tombstone at ai-isa.ts names the live survivors
   retryFailedCalls,
   updateCampaignStatus,
 } from "./ai-isa"
@@ -96,8 +97,8 @@ export {
 
 // Agent Onboarding - 7-day onboarding with AI Buddy
 export {
-  startAgentOnboarding,
-  getOnboardingStatus,
+  // startAgentOnboarding / getOnboardingStatus deleted — tombstones at
+  // ai-agent-onboarding.ts name the kernel-lane survivors
   completeAISessionStep,
   // matchMentor retired → canonical deterministic matcher at app/actions/onboarding/mentorship.ts
   // verifyAgentLicense retired → the licence is verified against the STATE REGISTRY by
@@ -105,12 +106,13 @@ export {
   // The copy here asked an LLM to "simulate a verification result with high confidence"
   // and wrote verification_status='verified' from the agent's own session.
   generateWelcomeMessage,
-  getOnboardingAnalytics,
-  askOnboardingBuddy,
+  // getOnboardingAnalytics / askOnboardingBuddy deleted — tombstones at
+  // ai-agent-onboarding.ts
   // submitQuizAttempt retired → canonical gated writer at
   // lib/kernel/agent-onboarding.ts:submitQuizAttempt (reached from
   // app/actions/onboarding/onboarding-quiz-actions.ts:submitQuiz)
-  certifyAgent,
+  // certifyAgent deleted — tombstone at ai-agent-onboarding.ts names
+  // claimCertification as canonical
 } from "./ai-agent-onboarding"
 
 // ============================================
@@ -162,7 +164,8 @@ export {
   createShowing,
   updateShowing,
   cancelShowing,
-  confirmShowing,
+  // confirmShowing deleted — tombstone at showings.ts names
+  // approveShowingRequest as the survivor
   completeShowing,
 } from "./showings"
 
@@ -192,14 +195,13 @@ export {
 // ============================================
 export {
   getAgents,
-  getAgentById,
-  updateAgent,
+  // getAgentById / updateAgent / getAgentContacts deleted — tombstones at
+  // agents.ts name the admin agent-360/profile and contacts.ts survivors
   getAgentStats,
   getAgentAchievements,
   getAgentCommissions,
   getAgentExpenses,
   getAgentGoals,
-  getAgentContacts,
 } from "./agents"
 
 // ============================================
@@ -209,7 +211,7 @@ export {
   sendSMS,
   sendEmail,
   logCall,
-  getContactHistory,
+  // getContactHistory deleted — tombstone at communications.ts
   getCommunicationStats,
 } from "./communications"
 
@@ -223,11 +225,14 @@ export { generateAIText, generateAIObject } from "./ai-generate"
 // AI CMA
 export { generateAICMA, getCMAReports, updateCMAReport } from "./ai-cma"
 
-// AI Offer Creation
-export { aiAnalyzeOfferStrategy, generateOfferLetter } from "./ai-offer-creation"
+// AI Offer Creation — the aiAnalyzeOfferStrategy / generateOfferLetter
+// aliases were deleted (§6); canonical names are aiOfferStrategyAdvisor /
+// aiGenerateBuyerLetter in ai-offer-creation.ts
 
-// AI Newsletter
-export { getNewsletters, createNewsletter, generateNewsletterContent } from "./ai-newsletter"
+// AI Newsletter — the createNewsletter / generateNewsletterContent aliases
+// were deleted (§6); canonical names are createNewsletterCampaign /
+// aiWriteNewsletterContent in ai-newsletter.ts
+export { getNewsletters } from "./ai-newsletter"
 
 // AI Direct Mail
 export { getDirectMailCampaigns, createDirectMailCampaign } from "./ai-direct-mail"
@@ -246,15 +251,13 @@ export {
 // WORKFLOWS
 // ============================================
 // NOTE: executeAITool is already exported above from ai-tools-hub — not re-exported here
+// checkFairHousingCompliance / startSmartDrip / calculateListingMetrics /
+// grantPortalAccess / triggerComplianceChecklist deleted — tombstones at
+// workflows.ts name each survivor
 export {
-  checkFairHousingCompliance,
   generateCopilotPlan,
-  startSmartDrip,
   sendMessage,
-  calculateListingMetrics,
   triggerCMAPackage,
-  grantPortalAccess,
-  triggerComplianceChecklist,
   generateScriptContent,
   retryFailedWorkflow,
   logUserActivity,
@@ -299,18 +302,18 @@ export { getVendors, createVendor } from "./ai-client-gifting"
 // ============================================
 // COMPLIANCE MONITORING
 // ============================================
+// logAuditEvent / analyzeFairHousingRisk / applyDocumentRetention /
+// logCommunicationWithCompliance deleted — tombstones at
+// compliance-monitoring.ts name each survivor (retention now runs from the
+// daily compliance cron)
 export {
-  logAuditEvent,
   checkComplianceStatus,
   trackCertificationExpiration,
-  analyzeFairHousingRisk,
   monitorTRIDCompliance,
-  applyDocumentRetention,
   exportAuditTrail,
   scanContentCompliance,
   submitContentForApproval,
   reviewContentApproval,
-  logCommunicationWithCompliance,
   getApprovedContentLibrary,
   getPendingApprovals,
   getComplianceViolations,

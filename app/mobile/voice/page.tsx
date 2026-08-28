@@ -7,6 +7,7 @@ import { Mic, MicOff, PhoneIncoming, PhoneOutgoing, Clock, CheckCircle, XCircle 
 import { formatDistanceToNow, format } from "date-fns"
 import Link from "next/link"
 import { VoiceSessionButton } from "./voice-session-button"
+import { VoiceSettingsCard } from "./voice-settings-card"
 import { QuickDialSearch } from "./quick-dial-search"
 import { MobileCommandStrip, QuickContactPanel } from "../components/os"
 
@@ -174,6 +175,13 @@ export default async function MobileVoicePage() {
               </div>
             </CardContent>
           </Card>
+        </section>
+
+        {/* Voice settings — the writer half of voice_assistant_config (see
+            voice-settings-card.tsx header). Opening it bootstraps the default
+            config, which is what flips the "Not Set Up" badge above. */}
+        <section>
+          <VoiceSettingsCard />
         </section>
 
         {/* Section 2: Recent Voice Commands */}

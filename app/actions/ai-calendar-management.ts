@@ -190,8 +190,21 @@ export async function createAppointment(params: {
   }
 }
 
+/**
+ * Reschedule a calendar_events appointment.
+ *
+ * WIRED (lane E2 2026-08-28) to the calendar agenda view — the calendar had a
+ * create door (calendar-quick-create-panel) and no edit door anywhere.
+ * Session-gated + tenant-pinned at the same time: this updated any event by
+ * raw uuid before.
+ */
 export async function updateAppointment(appointmentId: string, updates: Record<string, unknown>) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Not authenticated" }
+    }
+
     const supabase = await createClient()
 
     // Map appointment fields to calendar_events fields
@@ -199,15 +212,23 @@ export async function updateAppointment(appointmentId: string, updates: Record<s
     if (updates.start_time) calendarUpdates.start_at = updates.start_time
     if (updates.end_time) calendarUpdates.end_at = updates.end_time
     if (updates.event_type) calendarUpdates.event_type = updates.event_type
+    if (Object.keys(calendarUpdates).length === 0) {
+      return { success: false, error: "Nothing to update" }
+    }
 
     const { data, error } = await supabase
       .from("calendar_events")
       .update(calendarUpdates)
       .eq("id", appointmentId)
+      .eq("brokerage_id", ctx.brokerageId)
       .select()
       .maybeSingle()
 
     if (error) throw error
+    if (!data) {
+      // A zero-row update resolves cleanly (§3) — report it, never "success".
+      return { success: false, error: "Appointment not found, or access refused" }
+    }
 
     revalidatePath("/dashboard")
     revalidatePath("/calendar")
@@ -218,21 +239,51 @@ export async function updateAppointment(appointmentId: string, updates: Record<s
   }
 }
 
+/**
+ * Cancel a calendar_events appointment. WIRED beside updateAppointment (lane
+ * E2 2026-08-28); gated + tenant-pinned the same way. metadata is MERGED, not
+ * replaced — the old write clobbered title/location/notes with
+ * `{ cancelled: true }`, erasing what the event was as it cancelled it.
+ */
 export async function cancelAppointment(appointmentId: string, reason?: string) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Not authenticated" }
+    }
+
     const supabase = await createClient()
 
-    // Delete calendar event (or mark cancelled if schema supports status field)
+    const { data: existing, error: readErr } = await supabase
+      .from("calendar_events")
+      .select("id, metadata")
+      .eq("id", appointmentId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+    if (readErr) throw readErr
+    if (!existing) {
+      return { success: false, error: "Appointment not found, or access refused" }
+    }
+
+    const mergedMetadata = {
+      ...((existing.metadata as Record<string, unknown> | null) ?? {}),
+      cancelled: true,
+      cancelledReason: reason ?? null,
+      cancelledAt: new Date().toISOString(),
+    }
+
     const { data, error } = await supabase
       .from("calendar_events")
-      .update({
-        metadata: { cancelled: true, cancelledReason: reason },
-      })
+      .update({ metadata: mergedMetadata })
       .eq("id", appointmentId)
+      .eq("brokerage_id", ctx.brokerageId)
       .select()
       .maybeSingle()
 
     if (error) throw error
+    if (!data) {
+      return { success: false, error: "Appointment not found, or access refused" }
+    }
 
     revalidatePath("/dashboard")
     revalidatePath("/calendar")

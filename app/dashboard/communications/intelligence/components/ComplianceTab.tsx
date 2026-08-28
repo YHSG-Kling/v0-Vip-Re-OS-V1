@@ -1,7 +1,8 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { reviewAuditFlag } from "@/app/actions/conversation-analytics"
+import { useRouter } from "next/navigation"
+import { reviewAuditFlag, runWeeklyAIAudit } from "@/app/actions/conversation-analytics"
 
 interface AuditFlag {
   id: string
@@ -147,9 +148,29 @@ function FlagRow({ flag, reviewerId, onUpdated }: { flag: AuditFlag; reviewerId:
 }
 
 export default function ComplianceTab({ flags, reviewerId }: ComplianceTabProps) {
+  const router = useRouter()
   const [localFlags, setLocalFlags] = useState(flags)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkPending, startBulk] = useTransition()
+  // Wired (lane E2 2026-08-28): runWeeklyAIAudit had no caller anywhere — the
+  // re-scan that CREATES audit flags was unreachable while this tab reviewed
+  // them. The button runs it on demand for the caller's own scope (RLS-bound
+  // session client inside the action) and reports the result honestly.
+  const [auditPending, startAudit] = useTransition()
+  const [auditResult, setAuditResult] = useState<string | null>(null)
+
+  function handleRunAudit() {
+    setAuditResult(null)
+    startAudit(async () => {
+      const res = await runWeeklyAIAudit()
+      if (res.success) {
+        setAuditResult(`Audited ${res.conversations_audited ?? 0} conversation${(res.conversations_audited ?? 0) === 1 ? "" : "s"}, ${res.flags_created ?? 0} new flag${(res.flags_created ?? 0) === 1 ? "" : "s"}.`)
+        router.refresh()
+      } else {
+        setAuditResult(`Audit failed: ${res.error ?? "unknown error"}`)
+      }
+    })
+  }
 
   const fairHousingFlags = localFlags.filter(f => f.risk_type === "fair_housing" && f.review_status === "pending")
   const allFlags = localFlags
@@ -186,6 +207,18 @@ export default function ComplianceTab({ flags, reviewerId }: ComplianceTabProps)
       <div className="rounded-lg border border-orange-400 bg-orange-50 px-4 py-3 text-sm text-orange-800">
         <span className="font-semibold">{"⚠️ Fair Housing Compliance: "}</span>
         All flagged conversations require review within 24 hours of flagging. Violations must be reported to the supervising broker.
+      </div>
+
+      {/* Run the last-7-days compliance re-scan on demand */}
+      <div className="flex flex-wrap items-center gap-3">
+        <button
+          onClick={handleRunAudit}
+          disabled={auditPending}
+          className="text-xs px-3 py-1.5 bg-primary text-primary-foreground rounded hover:opacity-90 disabled:opacity-40"
+        >
+          {auditPending ? "Running audit…" : "Run AI audit (last 7 days)"}
+        </button>
+        {auditResult && <span className="text-xs text-muted-foreground">{auditResult}</span>}
       </div>
 
       {/* Fair Housing section */}

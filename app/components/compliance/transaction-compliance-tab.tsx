@@ -43,6 +43,9 @@ import {
   monitorTRIDCompliance,
   checkComplianceStatus,
   resolveComplianceAlert,
+  createTRIDTimeline,
+  updateTRIDMilestone,
+  type TridMilestone,
 } from "@/app/actions/compliance-monitoring"
 import { ActionConfirmSheet } from "@/app/components/action-framework"
 import {
@@ -137,6 +140,16 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
   const [exportingId, setExportingId] = useState<string | null>(null)
   const [tridResults, setTridResults] = useState<Record<string, TridResult>>({})
   const [tridPendingId, setTridPendingId] = useState<string | null>(null)
+  // TRID timeline writers (lane E2 2026-08-28: createTRIDTimeline +
+  // updateTRIDMilestone WIRED). Until now trid_timeline had readers everywhere
+  // — the monitor above, the disclosure-clock cron, stage progression — and NO
+  // reachable writer: no deal could ever start TRID tracking or record a
+  // milestone date, so "Check TRID" always answered compliant-by-absence.
+  const [tridStartPendingId, setTridStartPendingId] = useState<string | null>(null)
+  const [milestoneTxnId, setMilestoneTxnId] = useState<string | null>(null)
+  const [milestoneName, setMilestoneName] = useState<TridMilestone>("loan_application_date")
+  const [milestoneDate, setMilestoneDate] = useState("")
+  const [milestonePending, setMilestonePending] = useState(false)
   const [summaries, setSummaries] = useState<Record<string, ComplianceSummary>>({})
   const [summaryPendingId, setSummaryPendingId] = useState<string | null>(null)
   const [resolvingAlertId, setResolvingAlertId] = useState<string | null>(null)
@@ -285,6 +298,46 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
         checkedAt: new Date().toISOString(),
       },
     }))
+  }
+
+  // ── Start TRID tracking for a transaction ──────────────────────────────────
+  async function handleStartTrid(transactionId: string) {
+    setTridStartPendingId(transactionId)
+    try {
+      await createTRIDTimeline(transactionId)
+      toast.success("TRID timeline started — record milestones as disclosures go out")
+      router.refresh()
+    } catch (e: any) {
+      // A second start raises the table's unique transaction FK — report it
+      // as the state it means, not as a failure of the button.
+      const msg: string = e?.message ?? "Could not start TRID tracking"
+      toast.error(msg.includes("duplicate") ? "This deal already has a TRID timeline" : msg)
+    } finally {
+      setTridStartPendingId(null)
+    }
+  }
+
+  // ── Record one TRID milestone date ─────────────────────────────────────────
+  async function handleRecordMilestone() {
+    if (!milestoneTxnId || !milestoneDate) return
+    setMilestonePending(true)
+    try {
+      await updateTRIDMilestone({
+        transactionId: milestoneTxnId,
+        milestone: milestoneName,
+        date: milestoneDate,
+      })
+      toast.success("Milestone recorded — TRID compliance re-checked")
+      setMilestoneTxnId(null)
+      setMilestoneDate("")
+      // The service re-runs monitorTRIDCompliance; refresh the inline result.
+      await handleTRID(milestoneTxnId)
+      router.refresh()
+    } catch (e: any) {
+      toast.error(e?.message ?? "Could not record the milestone")
+    } finally {
+      setMilestonePending(false)
+    }
   }
 
   // ── Load compliance summary per transaction ────────────────────────────────
@@ -568,6 +621,30 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
                           <ScanSearch className="h-3 w-3 mr-1" />
                         )}
                         Check TRID
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs"
+                        onClick={() => handleStartTrid(txnId)}
+                        disabled={tridStartPendingId === txnId}
+                        title="Create the TRID timeline row for this deal"
+                      >
+                        {tridStartPendingId === txnId ? (
+                          <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                        ) : (
+                          <Clock className="h-3 w-3 mr-1" />
+                        )}
+                        Start TRID
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs"
+                        onClick={() => { setMilestoneTxnId(txnId); setMilestoneDate("") }}
+                        title="Record a TRID milestone date"
+                      >
+                        TRID Milestone
                       </Button>
                       {!summary && (
                         <Button
@@ -902,6 +979,53 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
         onConfirm={handleEscalate}
         destructive={false}
       />
+
+      {/* ── TRID Milestone Dialog ────────────────────────────────────────── */}
+      <Dialog open={!!milestoneTxnId} onOpenChange={(open) => { if (!open) setMilestoneTxnId(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Record TRID Milestone</DialogTitle>
+            <DialogDescription>
+              Dates drive the 3-business-day Loan Estimate and Closing Disclosure rules; compliance re-checks immediately.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label htmlFor="trid-milestone">Milestone</Label>
+              <Select value={milestoneName} onValueChange={(v) => setMilestoneName(v as TridMilestone)}>
+                <SelectTrigger id="trid-milestone">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="loan_application_date">Loan application received</SelectItem>
+                  <SelectItem value="loan_estimate_delivered_date">Loan Estimate delivered</SelectItem>
+                  <SelectItem value="closing_disclosure_delivered_date">Closing Disclosure delivered</SelectItem>
+                  <SelectItem value="scheduled_close_date">Scheduled close date</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="trid-date">Date</Label>
+              <input
+                id="trid-date"
+                type="date"
+                value={milestoneDate}
+                onChange={(e) => setMilestoneDate(e.target.value)}
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setMilestoneTxnId(null)} disabled={milestonePending}>
+              Cancel
+            </Button>
+            <Button onClick={handleRecordMilestone} disabled={milestonePending || !milestoneDate}>
+              {milestonePending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Record Milestone
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* ── Review Dialog (preserved) ────────────────────────────────────── */}
       <Dialog open={showReviewDialog} onOpenChange={setShowReviewDialog}>

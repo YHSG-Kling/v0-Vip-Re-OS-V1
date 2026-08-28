@@ -209,7 +209,9 @@ export async function getContactActivity(contactId: string) {
   const supabase = await createClient()
 
   // All activity tables are scoped to the verified contact
-  const [conversations, messages, tasks, activities, portalActivity] = await Promise.all([
+  // contact_notes was merged in from crm.ts:getContactTimeline (§1 keep-one,
+  // lane E2 2026-08-28) — the timeline twin read notes and this one didn't.
+  const [conversations, messages, tasks, activities, portalActivity, notes] = await Promise.all([
     supabase
       .from("conversations")
       .select("*")
@@ -246,6 +248,12 @@ export async function getContactActivity(contactId: string) {
       .select("id, contact_id, activity_type, metadata, created_at")
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
+      .limit(50),
+    supabase
+      .from("contact_notes")
+      .select("*")
+      .eq("contact_id", contactId)
+      .order("created_at", { ascending: false })
       .limit(50)
   ])
 
@@ -275,6 +283,11 @@ export async function getContactActivity(contactId: string) {
       activity_type: item.activity_type ?? "portal_view",
       activity_date: item.created_at,
       notes: item.metadata ? JSON.stringify(item.metadata) : "Portal activity",
+    })),
+    ...(notes.data || []).map((item: any) => ({
+      ...item,
+      activity_type: "note",
+      activity_date: item.created_at
     }))
   ].sort((a, b) => new Date(b.activity_date).getTime() - new Date(a.activity_date).getTime())
 
@@ -283,6 +296,7 @@ export async function getContactActivity(contactId: string) {
   const readErrors = [
     ["conversations", conversations.error], ["messages", messages.error], ["tasks", tasks.error],
     ["activities", activities.error], ["portal activity", portalActivity.error],
+    ["notes", notes.error],
   ].filter(([, e]) => e) as Array<[string, { message: string }]>
   if (readErrors.length > 0) {
     for (const [name, e] of readErrors) console.error(`[contact-details] ${name} read refused:`, e.message)
@@ -309,17 +323,9 @@ export async function getContactDocuments(contactId: string) {
   return { documents: data || [], error }
 }
 
-export async function getContactInteractions(contactId: string) {
-  const gate = await authorizeContactAccess(contactId)
-  if (!gate.ok) return { interactions: [], error: gate.error }
-
-  const supabase = await createClient()
-  const { data, error } = await supabase
-    .from("conversations")
-    .select("*")
-    .eq("contact_id", contactId)
-    .eq("brokerage_id", gate.brokerageId)
-    .order("created_at", { ascending: false })
-
-  return { interactions: data || [], error }
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `getContactInteractions`
+// deleted. SURVIVOR: `getContactActivity` (this file, above; wired at
+// app/crm/page.tsx:417), whose Promise.all already reads the same
+// `conversations` rows for the same verified contact — this was a strict
+// subset with nothing to merge. A stripped-source census found zero callers
+// outside the app/actions/index.ts barrel, which itself has zero importers.

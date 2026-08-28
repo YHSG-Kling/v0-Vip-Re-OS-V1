@@ -1,21 +1,22 @@
 // ─── AI ISA ───────────────────────────────────────────────────────────────────
+// launchAIISACampaignService / getAIISACampaignsService / getAIISACallsService
+// were deleted (lane E2 2026-08-28) — tombstones naming their survivors sit in
+// ./ai-isa. queueAIISACallService survives as retryFailedCallsService's engine
+// and is not re-exported here (no external caller).
 export {
-  launchAIISACampaignService,
-  queueAIISACallService,
-  getAIISACampaignsService,
-  getAIISACallsService,
   retryFailedCallsService,
   updateCampaignStatusService,
 } from "./ai-isa"
 
 // ─── COMPLIANCE MONITORING ────────────────────────────────────────────────────
+// logAuditEventService / analyzeFairHousingRiskService /
+// logCommunicationWithComplianceService were deleted (lane E2 2026-08-28) —
+// tombstones naming their survivors sit in ./compliance-monitoring.
 export {
-  logAuditEventService,
   checkComplianceStatusService,
   resolveComplianceAlertService,
   resolveCompRiskFlagService,
   trackCertificationExpirationService,
-  analyzeFairHousingRiskService,
   monitorTRIDComplianceService,
   createTRIDTimelineService,
   updateTRIDMilestoneService,
@@ -24,7 +25,6 @@ export {
   scanContentComplianceService,
   submitContentForApprovalService,
   reviewContentApprovalService,
-  logCommunicationWithComplianceService,
   getApprovedContentLibraryService,
   getPendingApprovalsService,
   getComplianceViolationsService,

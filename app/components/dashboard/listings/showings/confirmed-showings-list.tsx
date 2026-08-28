@@ -20,6 +20,10 @@ import {
   showingTimeReschedule,
   showingTimeDecline,
 } from "@/app/actions/seller-showings"
+// Manual-mode cancel (lane E2 2026-08-28: cancelShowing WIRED — the wave-4
+// ruling assigned the `cancelled` verb to it, but no surface ever offered it;
+// ShowingTime mode declines through the vendor instead).
+import { cancelShowing } from "@/app/actions/showings"
 import { aiSendShowingConfirmation, aiCollectShowingFeedback } from "@/app/actions/ai-showing-management"
 import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
 
@@ -43,7 +47,8 @@ interface Props {
 
 export default function ConfirmedShowingsList({ showings, listing, brokerageId, agentUserId, mode, onUpdate }: Props) {
   const [activeId, setActiveId] = useState<string | null>(null)
-  const [dialog, setDialog] = useState<"complete" | "reschedule" | "decline" | null>(null)
+  const [dialog, setDialog] = useState<"complete" | "reschedule" | "decline" | "cancel" | null>(null)
+  const [cancelError, setCancelError] = useState<string | null>(null)
   const [declineReason, setDeclineReason] = useState("")
   const [proposedTime, setProposedTime] = useState("")
   const [rescheduleReason, setRescheduleReason] = useState("")
@@ -54,12 +59,13 @@ export default function ConfirmedShowingsList({ showings, listing, brokerageId, 
   const [confirmSent, setConfirmSent] = useState<Set<string>>(new Set())
   const [feedbackRequested, setFeedbackRequested] = useState<Set<string>>(new Set())
 
-  function open(id: string, d: "complete" | "reschedule" | "decline") {
+  function open(id: string, d: "complete" | "reschedule" | "decline" | "cancel") {
     setActiveId(id)
     setDialog(d)
     setDeclineReason("")
     setProposedTime("")
     setRescheduleReason("")
+    setCancelError(null)
   }
 
   function close() { setDialog(null); setActiveId(null) }
@@ -109,6 +115,21 @@ export default function ConfirmedShowingsList({ showings, listing, brokerageId, 
         updateShowing(activeId, { status: "completed" })
         close()
         awardPointsForAction(agentUserId, "showing_completed").catch(() => {})
+      }
+    })
+  }
+
+  function handleCancel() {
+    if (!activeId) return
+    startTransition(async () => {
+      const res = await cancelShowing(activeId, declineReason.trim() || undefined)
+      if (res.success) {
+        updateShowing(activeId, { status: "cancelled" })
+        close()
+      } else {
+        // Left visible in the dialog — a cancel that silently failed would
+        // strand a showing the seller believes is off.
+        setCancelError(res.error ?? "Could not cancel this showing")
       }
     })
   }
@@ -247,10 +268,21 @@ export default function ConfirmedShowingsList({ showings, listing, brokerageId, 
 
                 {/* Manual mode */}
                 {mode.mode === "manual" && s.status !== "completed" && s.status !== "cancelled" && (
-                  <Button size="sm" variant="outline" className="gap-1.5" onClick={() => open(s.id, "complete")}>
-                    <CheckCheck className="h-3.5 w-3.5" />
-                    Mark Completed
-                  </Button>
+                  <>
+                    <Button size="sm" variant="outline" className="gap-1.5" onClick={() => open(s.id, "complete")}>
+                      <CheckCheck className="h-3.5 w-3.5" />
+                      Mark Completed
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="text-destructive hover:bg-destructive/10"
+                      onClick={() => open(s.id, "cancel")}
+                    >
+                      <XCircle className="mr-1.5 h-3.5 w-3.5" />
+                      Cancel
+                    </Button>
+                  </>
                 )}
 
                 {/* ShowingTime mode */}
@@ -297,6 +329,31 @@ export default function ConfirmedShowingsList({ showings, listing, brokerageId, 
             <Button variant="outline" onClick={close} disabled={isPending}>Cancel</Button>
             <Button onClick={handleComplete} disabled={isPending}>
               {isPending ? "Saving..." : "Confirm Completion"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Cancel modal (manual mode) */}
+      <Dialog open={dialog === "cancel"} onOpenChange={close}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Cancel Showing</DialogTitle></DialogHeader>
+          <div className="flex flex-col gap-1">
+            <Label>Reason (optional)</Label>
+            <Textarea
+              value={declineReason}
+              onChange={(e) => setDeclineReason(e.target.value)}
+              rows={2}
+              placeholder="Seller unavailable, property under contract, ..."
+            />
+          </div>
+          {cancelError && (
+            <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">{cancelError}</p>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={close} disabled={isPending}>Keep Showing</Button>
+            <Button variant="destructive" onClick={handleCancel} disabled={isPending}>
+              {isPending ? "Cancelling..." : "Cancel Showing"}
             </Button>
           </DialogFooter>
         </DialogContent>

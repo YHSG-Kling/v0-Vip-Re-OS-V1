@@ -7,6 +7,11 @@ import { Card, CardContent } from "@/components/ui/card"
 import Link from "next/link"
 import { voiceDraftOffer, type VoiceDraftOfferResponse } from "@/app/actions/voice-assistant/draft-offer-from-voice"
 import { voiceDraftListing, type VoiceDraftListingResponse } from "@/app/actions/voice-assistant/draft-listing-from-voice"
+// Lane E2 2026-08-28: startVoiceSession/endVoiceSession WIRED. The page above
+// this button reads voice_assistant_sessions to say "Active session", but
+// nothing ever WROTE a session row — the banner could never be true. A
+// session now opens when the mic starts and closes when recognition ends.
+import { startVoiceSession, endVoiceSession } from "@/app/actions/voice-assistant"
 
 interface VoiceSessionButtonProps {
   agentId: string
@@ -78,6 +83,10 @@ export function VoiceSessionButton({
       }
     }
 
+    // Captured by the onend closure below — component state would be stale
+    // inside these callbacks.
+    let assistantSessionId: string | null = null
+
     recognition.onerror = (event: any) => {
       setError(`Error: ${event.error}`)
       setIsListening(false)
@@ -85,9 +94,25 @@ export function VoiceSessionButton({
 
     recognition.onend = () => {
       setIsListening(false)
+      // Close the assistant session ledger row. Best-effort: the recognition
+      // itself is already over either way.
+      if (assistantSessionId) {
+        void endVoiceSession(assistantSessionId).catch(() => {})
+      }
     }
 
     recognition.start()
+
+    // Open the session row (best-effort — voice keeps working if the ledger
+    // write is refused, and the refusal is logged inside the action).
+    try {
+      const sess = await startVoiceSession(undefined, { surface: "mobile_voice", draft_mode: draftMode })
+      if ((sess as any).success && (sess as any).sessionId) {
+        assistantSessionId = (sess as any).sessionId
+      }
+    } catch {
+      /* session ledger only */
+    }
   }
 
   const handleStopVoice = () => {

@@ -550,33 +550,13 @@ export async function updateVoiceConfig(_agentId: string | undefined, updates: a
   return { success: true, config: data }
 }
 
-// Get recent voice commands for agent
-export async function getVoiceCommandHistory(_agentId?: string, limit = 50) {
-  // _agentId ignored — derived from session
-  const caller = await resolveCallerAgentId()
-  if (!caller.isAuthenticated) {
-    return { success: false, error: "Unauthorized" }
-  }
-  if (!caller.agentId) {
-    return { success: false, error: "No agent profile for current user" }
-  }
-  const supabase = await createClient()
-
-  // voice_commands is owned by user_id (FK→users); there is no contact_id FK to embed.
-  const { data, error } = await supabase
-    .from("voice_commands")
-    .select("*")
-    .eq("user_id", caller.userId)
-    .order("created_at", { ascending: false })
-    .limit(limit)
-
-  if (error) {
-    console.error("[voice-assistant] Error fetching history:", error)
-    return { success: false, error: error.message }
-  }
-
-  return { success: true, commands: data || [] }
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `getVoiceCommandHistory`
+// deleted. SURVIVORS: the direct, session-scoped voice_commands reads at
+// app/dashboard/voice/page.tsx:53-68/136 (RecentCommandsFeed) and
+// app/mobile/voice/page.tsx (Recent Commands section) — the live command
+// history surfaces. This twin duplicated the same read behind an action
+// nothing called; a stripped-source census found zero callers outside the
+// app/actions/index.ts barrel, which itself has zero importers.
 
 // ============================================================================
 // HELPER FUNCTIONS

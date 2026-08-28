@@ -488,6 +488,25 @@ export async function approveShowingRequest(params: {
     .update({ converted_showing_id: showing.id })
     .eq("id", params.requestId)
 
+  // Agent calendar event — MERGED from the deleted
+  // app/actions/showings.ts:confirmShowing (§1 keep-one, lane E2 2026-08-28):
+  // that twin's one capability this survivor lacked. Best-effort: the approval
+  // above is already recorded and error-checked; a refused calendar row must
+  // not un-confirm a showing the buyer's agent has been told about.
+  {
+    const { error: calErr } = await supabase.from("calendar_events").insert({
+      brokerage_id:        auth.brokerageId,
+      entity_type:         "showing_request",
+      entity_id:           params.requestId,
+      event_type:          "showing",
+      start_at:            scheduledAt,
+      is_system_generated: true,
+    })
+    if (calErr) {
+      console.error("[seller-showings] approval calendar_events row refused (showing still approved):", calErr.message)
+    }
+  }
+
   // Kernel sub-event — brokerage_id / actor from session, not params
   await supabase.from("lifecycle_events").insert({
     brokerage_id:   auth.brokerageId,

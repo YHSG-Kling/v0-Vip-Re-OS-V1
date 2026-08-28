@@ -1475,13 +1475,13 @@ export async function deleteNewsletterCampaign(newsletterId: string) {
   }
 }
 
-// Backward compatibility aliases — wrapped because "use server" rejects `const = fn`
-export async function createNewsletter(...args: Parameters<typeof createNewsletterCampaign>) {
-  return createNewsletterCampaign(...args)
-}
-export async function generateNewsletterContent(...args: Parameters<typeof aiWriteNewsletterContent>) {
-  return aiWriteNewsletterContent(...args)
-}
+// TOMBSTONE (§6 one-vocabulary, lane E2 2026-08-28) — the "backward
+// compatibility" aliases `createNewsletter` and `generateNewsletterContent`
+// were deleted. They were duplicate SPELLINGS of the canonical names in this
+// file — SURVIVORS: `createNewsletterCampaign` (above) and
+// `aiWriteNewsletterContent` (above). A stripped-source census found zero
+// callers of either alias outside the app/actions/index.ts barrel, which
+// itself has zero importers.
 
 // ============================================
 // WORKFLOW OS — queue newsletter for a single contact

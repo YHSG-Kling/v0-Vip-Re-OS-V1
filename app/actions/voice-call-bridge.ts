@@ -329,33 +329,15 @@ export async function triggerAiVoiceCall(params: {
 }
 
 // Get whisper bridge call history
-export async function getWhisperBridgeCalls(_agentId?: string) {
-  // _agentId ignored — derived from session
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
-    return { success: false, error: "Unauthorized" }
-  }
-
-  const supabase = await createClient()
-
-  try {
-    // Whisper-bridge calls are voice_calls of type agent_call; the whisper text is the embedded
-    // call_whisper_logs child. Scope by agent (voice_calls.agent_id is agents.id).
-    const { data, error } = await supabase
-      .from("voice_calls")
-      .select("*, contacts(first_name, last_name, phone), call_whisper_logs(whisper_text, delivered_at, agent_heard)")
-      .eq("call_type", "agent_call")
-      .eq("agent_id", ctx.agentId)
-      .order("created_at", { ascending: false })
-      .limit(50)
-
-    if (error) throw error
-
-    return { success: true, calls: data }
-  } catch (error: any) {
-    return { success: false, error: error.message }
-  }
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `getWhisperBridgeCalls`
+// deleted. SURVIVORS: the voice dashboard's own tenant-scoped voice_calls
+// reads (app/dashboard/voice/page.tsx:75-82 → VoiceCallHistoryTable, plus the
+// mobile voice page's Recent Calls) for the call history, and
+// app/dashboard/voice/review/[callId]/page.tsx:152 for the
+// call_whisper_logs whisper text. This twin duplicated the same ledger read
+// behind an action nothing called; a stripped-source census found zero
+// callers outside the app/actions/index.ts barrel, which itself has zero
+// importers.
 
 // AI voice-call history is served from voice_calls (the single ledger) via
 // getWhisperBridgeCalls and the voice dashboards — the legacy getVapiVoiceCalls

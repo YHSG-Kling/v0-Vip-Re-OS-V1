@@ -339,10 +339,11 @@ export async function markLifeChangeNotified(
   return { success: true }
 }
 
-// Alias for backward compatibility — wrapped because "use server" rejects `const = fn`
-export async function enrichContactData(...args: Parameters<typeof enrichContact>) {
-  return enrichContact(...args)
-}
+// TOMBSTONE (§6 one-vocabulary, lane E2 2026-08-28) — the "backward
+// compatibility" alias `enrichContactData` was deleted. Duplicate SPELLING of
+// the canonical name — SURVIVOR: `enrichContact` (this file, above). A
+// stripped-source census found zero callers outside the app/actions/index.ts
+// barrel, which itself has zero importers.
 
 /**
  * Enrichment data + recent life changes for one contact. All enrichment data

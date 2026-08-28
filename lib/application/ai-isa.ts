@@ -1,109 +1,26 @@
 import { createClient } from "@/lib/supabase/server"
 import { buildCallContext } from "@/lib/ai-isa/build-call-context"
-import { BUYER_SHOWING_FEEDBACK_STAGE } from "@/lib/contacts/buyer-stage"
+// (BUYER_SHOWING_FEEDBACK_STAGE import left with the deleted
+// launchAIISACampaignService — see its tombstone below.)
 
 /**
  * AI Inside Sales Agent (ISA) Application Service
  * All business logic lives here. Actions are thin wrappers that call these functions.
  */
 
-// Launch AI ISA campaign
-export async function launchAIISACampaignService(params: {
-  campaignType: string
-  campaignName?: string
-  contactSegment: any
-  loginId: string
-}) {
-  const { campaignType, campaignName, contactSegment, loginId } = params
-  const supabase = await createClient()
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `launchAIISACampaignService`
+// deleted with its only caller (the legacy launchAIISACampaign action; zero
+// callers outside the importer-less app/actions/index.ts barrel). SURVIVORS:
+// app/actions/ai-isa.ts:createISACampaign (campaign creation, session-
+// tenanted) + the human-gated dial-batch lane
+// lib/ai-isa/voice-dial-batch.ts:proposeIsaDialBatch/approveIsaDialBatch.
+// This twin dialed a whole segment immediately on launch with no approval
+// gate — paid autonomous outbound must go through the batch approval (§5).
 
-  // IDENTITY CLASS (m354). loginId is a USERS id — every other lookup in this
-  // file reads `users` by it, and the comment below says so explicitly. But
-  // contacts.agent_id FKs AGENTS, so this filter matched nothing for every
-  // agent, the guard below returned "No contacts match the criteria", and the
-  // AI ISA — the engine that turns scraped leads into calls — could not launch
-  // a single campaign. The error blamed the agent's segment for a class
-  // mismatch, which is why it reads as a data problem rather than a bug.
-  const { data: isaAgentRow } = await supabase
-    .from("agents").select("id").eq("user_id", loginId).maybeSingle()
-  const isaAgentRecordId = (isaAgentRow as { id?: string } | null)?.id ?? null
-  if (!isaAgentRecordId) {
-    return { success: false, error: "No agent profile for this user — an AI ISA campaign is agent-scoped." }
-  }
-
-  // Get contacts matching segment
-  let query = supabase
-    .from("contacts")
-    .select("id, first_name, last_name, phone, lead_score, stage:buyer_stage")
-    .eq("agent_id", isaAgentRecordId)
-
-  if (campaignType === "new_lead_follow_up") {
-    query = query
-      .eq("status", "new_lead")
-      .gte("created_at", new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
-  } else if (campaignType === "dormant_reactivation") {
-    query = query
-      .eq("status", "nurture")
-      .lte("last_contacted_at", new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString())
-  } else if (campaignType === "showing_feedback") {
-    // Was 'toured' — a value contacts.buyer_stage has never admitted (the ladder
-    // says BUYER_TOURING), so this campaign never matched a single contact.
-    query = query.eq("buyer_stage", BUYER_SHOWING_FEEDBACK_STAGE)
-  }
-
-  const { data: contacts } = await query
-
-  if (!contacts || contacts.length === 0) {
-    return { success: false, error: "No contacts match the criteria" }
-  }
-
-  // Resolve brokerage_id from the agent's record — loginId is agent user id
-  const { data: agentForCampaign } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", loginId)
-    .single()
-
-  const campaignBrokerageId = agentForCampaign?.brokerage_id
-  if (!campaignBrokerageId) {
-    return { success: false, error: "Could not resolve brokerage_id for campaign" }
-  }
-
-  const { data: campaign, error: campaignError } = await supabase
-    .from("ai_isa_campaigns")
-    .insert({
-      brokerage_id:           campaignBrokerageId,
-      name:                   campaignName || `${campaignType} - ${new Date().toLocaleDateString()}`,
-      campaign_type:          campaignType,
-      leads_targeted:         contacts.length,
-      is_active:              true,
-      status:                 "active",
-    })
-    .select()
-    .single()
-
-  if (campaignError) throw campaignError
-
-  let queuedCount = 0
-  for (const contact of contacts) {
-    const result = await queueAIISACallService(campaign.id, contact.id, loginId)
-    if (result.success) queuedCount++
-  }
-
-  await supabase
-    .from("ai_isa_campaigns")
-    .update({ leads_targeted: queuedCount })
-    .eq("id", campaign.id)
-
-  return {
-    success: true,
-    campaign_id: campaign.id,
-    contacts_queued: queuedCount,
-  }
-}
-
-// Queue individual AI ISA call
-export async function queueAIISACallService(campaignId: string, contactId: string, loginId: string) {
+// Queue individual AI ISA call — module-private since lane E2 (2026-08-28):
+// its one live caller is retryFailedCallsService below (the public single-call
+// door is app/api/voice/initiate-call).
+async function queueAIISACallService(campaignId: string, contactId: string, loginId: string) {
   const supabase = await createClient()
 
   const { data: contact } = await supabase
@@ -212,62 +129,37 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
   }
 }
 
-// Get AI ISA campaign stats
-export async function getAIISACampaignsService(loginId: string) {
-  const supabase = await createClient()
-
-  // Resolve brokerage_id from the user then query by brokerage scope (ai_isa_campaigns has no login_id)
-  const { data: userRow } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", loginId)
-    .maybeSingle()
-
-  const brokerageId = userRow?.brokerage_id
-  if (!brokerageId) return []
-
-  const { data: campaigns } = await supabase
-    .from("ai_isa_campaigns")
-    .select("id, name, campaign_type, is_active, status, leads_targeted, touches_sent, conversions, touch_interval_days, max_touches, created_at")
-    .eq("brokerage_id", brokerageId)
-    .order("created_at", { ascending: false })
-
-  return campaigns || []
-}
-
-// Get AI ISA call history
-export async function getAIISACallsService(campaignId?: string, loginId?: string) {
-  const supabase = await createClient()
-
-  let query = supabase
-    .from("ai_isa_calls")
-    .select(
-      `
-      *,
-      contact:contacts(first_name, last_name, phone),
-      campaign:ai_isa_campaigns(name, campaign_type),
-      voice_call:voice_calls(vendor_call_id, status, duration_seconds)
-    `
-    )
-    .order("created_at", { ascending: false })
-    .limit(100)
-
-  if (campaignId) query = query.eq("isa_campaign_id", campaignId)
-  if (loginId) query = query.eq("contact_id", loginId) // fallback — callers should pass contactId
-
-  const { data: calls } = await query
-  return calls || []
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `getAIISACampaignsService` and
+// `getAIISACallsService` deleted with their only callers (the legacy
+// getAIISACampaigns/getAIISACalls actions; zero callers outside the
+// importer-less app/actions/index.ts barrel). SURVIVORS:
+// app/actions/ai-isa.ts:listISACampaigns (same ai_isa_campaigns read,
+// session-tenanted; wired at app/dashboard/isa/page.tsx) and the voice ISA
+// console's own tenant-scoped ai_isa_calls reads
+// (app/dashboard/voice/isa/page.tsx, contact-history-sheet.tsx). The calls
+// twin also mixed id spaces — its loginId "fallback" filtered contact_id by a
+// users.id (§3 disjoint).
 
 // Retry failed calls
 export async function retryFailedCallsService(loginId: string) {
   const supabase = await createClient()
 
+  // voice_calls.agent_id is an AGENTS id; loginId is a USERS id — the two
+  // spaces are disjoint (§3, 23503), so the old `.eq("agent_id", loginId)`
+  // matched nothing and this sweep never found a call to retry. Cross via
+  // agents.user_id.
+  const { data: retryAgentRow } = await supabase
+    .from("agents").select("id").eq("user_id", loginId).maybeSingle()
+  const retryAgentId = (retryAgentRow as { id?: string } | null)?.id ?? null
+  if (!retryAgentId) {
+    return { success: false, error: "No agent profile for this user — ISA calls are agent-scoped." }
+  }
+
   // Resolve failed voice_calls for this agent, then look up ai_isa_calls via voice_call_id
   const { data: failedVoiceCalls } = await supabase
     .from("voice_calls")
     .select("id, contact_id")
-    .eq("agent_id", loginId)
+    .eq("agent_id", retryAgentId)
     // Disposition lives in OUTCOME, not status — the Twilio callback closes every
     // terminated leg as status="completed". This sweep never found a call to
     // retry because it was reading the wrong column.
@@ -300,7 +192,9 @@ export async function updateCampaignStatusService(
 
   const { error } = await supabase
     .from("ai_isa_campaigns")
-    .update({ status })
+    // is_active mirrors status — same rule as app/actions/ai-isa.ts writers;
+    // the voice ISA page and stale-lead processor filter on is_active.
+    .update({ status, is_active: status === "active" })
     .eq("id", campaignId)
 
   if (error) return { success: false, error: error.message }

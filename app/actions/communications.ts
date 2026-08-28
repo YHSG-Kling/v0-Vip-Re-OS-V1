@@ -11,7 +11,6 @@
 import {
   logGHLCall,
   syncContactToGHL,
-  getContactConversationHistory,
   addGHLContactNote,
 } from "@/services/goHighLevelService"
 import { createClient } from "@/lib/supabase/server"
@@ -194,10 +193,23 @@ export async function logCall(params: {
   notes?: string
   outcome?: "answered" | "voicemail" | "no_answer" | "busy"
 }) {
+  // SESSION GATE + TENANT ANCHOR (added when this action was wired to the CRM
+  // contact pane, lane E2 2026-08-28 — it previously had "no gate of its own",
+  // as the behavioural-event note below records). Tenant from the SESSION,
+  // never from params (§4): the contact must belong to the caller's brokerage
+  // or the log is refused.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Not authenticated" }
+  }
+
   const contact = await supabaseService.getContactById(params.contactId)
 
   if (!contact) {
     return { success: false, error: "Contact not found" }
+  }
+  if ((contact as any).brokerage_id !== ctx.brokerageId) {
+    return { success: false, error: "Forbidden" }
   }
 
   // Sync to GHL
@@ -275,23 +287,19 @@ export async function logCall(params: {
 }
 
 // =====================================================
-// GET CONTACT HISTORY (from GHL)
+// GET CONTACT HISTORY
 // =====================================================
-
-export async function getContactHistory(contactId: string) {
-  // Try to get from GHL first
-  const ghlHistory = await getContactConversationHistory(contactId)
-
-  // Also get local activity log
-  const localActivities = await supabaseService.getContactActivities(contactId)
-
-  return {
-    success: true,
-    ghlHistory: ghlHistory.history,
-    localActivities,
-    mock: ghlHistory.mock,
-  }
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `getContactHistory` deleted.
+// SURVIVORS: app/actions/contact-details.ts:getContactActivity (the gated,
+// multi-source contact timeline wired at app/crm/page.tsx:417) and
+// `getRecentCommunications` below (the tenant-scoped message history). The
+// GHL half of this twin pulled conversation history from GoHighLevel — but
+// GHL is a one-way contact-data SYNC TARGET in this product, not a message
+// transport (ruling recorded at lib/services/communication.service.tsx:174),
+// and no surface ever rendered the pull: a stripped-source census found zero
+// callers outside the app/actions/index.ts barrel, which itself has zero
+// importers. The GHL fetcher chain (`getContactConversationHistory` +
+// helpers) went with it — tombstone at services/goHighLevelService.ts.
 
 export async function getCommunicationStats(params?: { agentId?: string; startDate?: string; endDate?: string }) {
   try {

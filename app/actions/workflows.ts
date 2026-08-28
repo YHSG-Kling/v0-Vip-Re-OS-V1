@@ -56,10 +56,39 @@ export async function executeAITool(toolName: string, inputData: any, context: a
     // content-studio.ts:scheduleContent ('publish' is in the calendar's
     // event_type CHECK); the channel sends themselves keep their own doors.
     const handlers: Record<string, Function> = {
-      "fair-housing-check": checkFairHousingCompliance,
+      // "fair-housing-check" routes to the CANONICAL scanner (§1): the local
+      // regex twin `checkFairHousingCompliance` was deleted 2026-08-28 (lane
+      // E2) — see the tombstone below. The old direct entry was also
+      // arity-broken: handler(inputData, context) landed inputData in the
+      // twin's ignored _userId slot and scanned `undefined`.
+      "fair-housing-check": async (input: any) => {
+        const text =
+          typeof input?.content === "string" && input.content.trim() ? input.content.trim()
+          : typeof input?.text === "string" && input.text.trim() ? input.text.trim()
+          : ""
+        if (!text) return { success: false, error: "No content to scan" }
+        const { scanContentCompliance } = await import("./compliance-monitoring")
+        try {
+          const scan = await scanContentCompliance({
+            contentBody: text,
+            contentType: typeof input?.contentType === "string" && input.contentType ? input.contentType : "marketing",
+            targetAudience: typeof input?.targetAudience === "string" && input.targetAudience ? input.targetAudience : "general",
+            distributionChannels: Array.isArray(input?.channels) ? input.channels : [],
+            agentState: typeof input?.agentState === "string" ? input.agentState : "",
+          })
+          return { success: true, scan }
+        } catch (e: any) {
+          // Fail CLOSED and say so — an unscanned "pass" is the one answer a
+          // compliance door must never give (§4 fail-closed).
+          return { success: false, error: e?.message ?? "Compliance scan failed" }
+        }
+      },
       "generate-plan": generateCopilotPlan,
       "send-message": sendMessage,
-      "calculate-metrics": calculateListingMetrics,
+      // "calculate-metrics" removed with its handler `calculateListingMetrics`
+      // (deleted 2026-08-28, lane E2 — see tombstone below; the live listing
+      // metric engine is lib/listing-health/health-scorer.ts). Nothing in the
+      // tree ever dispatched the name.
       "publish-content": async (input: any) => {
         const channel = typeof input?.channel === "string" && input.channel.trim() ? input.channel.trim() : null
         if (!channel) return { success: false, error: "No channel named" }
@@ -118,75 +147,20 @@ export async function executeAITool(toolName: string, inputData: any, context: a
   }
 }
 
-/**
- * Check message content for fair housing compliance violations.
- */
-export async function checkFairHousingCompliance(
-  _userId: string | undefined, // ignored — derived from session
-  contentType: string,
-  text: string
-): Promise<{ success: boolean; compliant: boolean; violations?: string[] }> {
-  try {
-    const supabase = await createClient()
-    const ctx = await getAgentContext()
-
-    if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, compliant: false }
-    const brokerageId = ctx.brokerageId
-
-    // Fair Housing compliance check patterns
-    const fairHousingViolations = [
-      { pattern: /familial status|children|pregnant/gi, rule: "No familial status discrimination" },
-      { pattern: /disability|handicap|medical condition/gi, rule: "No disability discrimination" },
-      { pattern: /religion|church|synagogue|mosque/gi, rule: "No religious discrimination" },
-      { pattern: /race|color|ethnicity/gi, rule: "No racial discrimination" },
-      { pattern: /national origin|immigrant/gi, rule: "No national origin discrimination" },
-      { pattern: /gender|sexual orientation|LGBTQ/gi, rule: "No gender/orientation discrimination" },
-      { pattern: /age|senior|elderly/gi, rule: "No age discrimination" },
-    ]
-
-    const violations: string[] = []
-    fairHousingViolations.forEach(({ pattern, rule }) => {
-      if (pattern.test(text)) {
-        violations.push(rule)
-      }
-    })
-
-    // Log compliance check
-    if (violations.length > 0) {
-      // A COMPLIANCE VIOLATION record. Losing it silently is losing the evidence
-      // that the violation was detected at all.
-      //
-      // `contentType` WAS ACCEPTED AND READ BY NOTHING until 2026-08-24, so this
-      // record — the only evidence the detection happened — could not say what was
-      // scanned. A fair-housing flag on a listing description, an outbound email
-      // and a video script are three different remediations, and a reviewer reading
-      // this row had no way to tell them apart. It is written into both the human
-      // title and the machine-readable `metadata` so neither reader has to guess.
-      const scannedKind = contentType?.trim() || "unspecified content"
-      const { error: violationLogError } = await supabase.from("activities").insert({
-        brokerage_id: brokerageId,
-        entity_type: "compliance",
-        activity_type: "fair_housing_violation_detected",
-        title: `Fair Housing Violation Detected — ${scannedKind}`,
-        description: violations.join("; "),
-        metadata: { content_type: scannedKind, violation_count: violations.length },
-        status: "flagged",
-      })
-      if (violationLogError) {
-        console.error("[checkFairHousingCompliance] violation NOT logged:", violationLogError.message)
-      }
-    }
-
-    return {
-      success: true,
-      compliant: violations.length === 0,
-      violations: violations.length > 0 ? violations : undefined,
-    }
-  } catch (error: any) {
-    console.error("[checkFairHousingCompliance] Error:", error)
-    return { success: false, compliant: false }
-  }
-}
+// TOMBSTONE (§1 keep-one + §6 one-vocabulary, lane E2 2026-08-28) —
+// `checkFairHousingCompliance` deleted. SURVIVOR:
+// app/actions/compliance-monitoring.ts:scanContentCompliance →
+// lib/application/compliance-monitoring.ts:scanContentComplianceService (the
+// DB-driven prohibited-phrase + AI scanner, wired at
+// app/components/compliance/FairHousingScanner.tsx and
+// app/components/shared/compliance/submit-content-form.tsx). The dispatcher
+// name "fair-housing-check" in executeAITool above now routes to that
+// survivor through a correctly-shaped adapter; the old entry passed
+// (inputData, context) into this function's (userId, contentType, text)
+// signature and scanned `undefined`. Nothing merged: the survivor's phrase
+// vocabulary lives in the database (compliance_phrases), where §5's
+// compliance-first ruling keeps it maintained, and its violations land in the
+// canonical compliance ledger rather than this twin's activities rows.
 
 /**
  * Generate a 7-day copilot plan for a contact.
@@ -277,44 +251,14 @@ Generate a specific 7-day plan with daily actions.`,
   }
 }
 
-/**
- * Start a smart drip campaign for a contact.
- */
-export async function startSmartDrip(
-  contactId: string,
-  drip_type: string,
-  _agentId?: string // ignored — derived from session
-): Promise<{ success: boolean; dripId?: string; error?: string }> {
-  try {
-    const supabase = await createClient()
-    const ctx = await getAgentContext()
-
-    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
-    if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
-    const brokerageId = ctx.brokerageId
-    const agentId = ctx.agentId
-
-    // Verify contact ownership
-    const own = await assertOwnership("contacts", contactId, brokerageId)
-    if (!own.ok) return { success: false, error: own.error }
-
-    const { data: drip } = await supabase
-      .from("drip_campaigns")
-      .insert({
-        contact_id: contactId,
-        agent_id: agentId,
-        brokerage_id: brokerageId,
-        drip_type,
-        status: "active",
-      })
-      .select()
-      .single()
-
-    return { success: true, dripId: drip?.id }
-  } catch (error: any) {
-    return { success: false, error: error?.message ?? "Failed to start drip" }
-  }
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `startSmartDrip` deleted.
+// SURVIVOR: app/actions/ai-lead-nurturing.ts:aiGenerateDripCampaign (wired at
+// app/dashboard/campaigns/sequences/ai-sequence-drafter-card.tsx), whose
+// drip_campaigns rows carry the step plan the queue-drain cron
+// (app/api/cron/queue-drain) actually executes. This twin inserted a BARE
+// status:'active' row with no steps/metadata — a drip the drain could never
+// send anything for — and a stripped-source census found zero callers outside
+// the app/actions/index.ts barrel, which itself has zero importers.
 
 /**
  * Send a message to a contact.
@@ -365,41 +309,15 @@ export async function sendMessage(
   }
 }
 
-/**
- * Calculate real estate listing metrics.
- */
-export async function calculateListingMetrics(listingId: string, _params: any = {}) {
-  try {
-    const supabase = await createClient()
-    const ctx = await getAgentContext()
-
-    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
-    if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
-
-    // Verify listing ownership
-    const own = await assertOwnership("listings", listingId, ctx.brokerageId)
-    if (!own.ok) return { success: false, error: own.error }
-
-    const { data: listing } = await supabase
-      .from("listings")
-      .select("*")
-      .eq("id", listingId)
-      .maybeSingle()
-
-    if (!listing) return { success: false, error: "Listing not found" }
-
-    // Calculate metrics
-    const metrics = {
-      price_per_sqft: listing.price && listing.square_feet ? listing.price / listing.square_feet : null,
-      dom_percentile: null, // Would be calculated from market data
-      market_position: "neutral",
-    }
-
-    return { success: true, metrics }
-  } catch (error: any) {
-    return { success: false, error: error?.message ?? "Failed to calculate metrics" }
-  }
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `calculateListingMetrics`
+// deleted, and its "calculate-metrics" dispatcher entry in executeAITool
+// removed (nothing ever dispatched the name). SURVIVOR:
+// lib/listing-health/health-scorer.ts:calculateListingHealth — the live
+// listing metric engine (wired at app/actions/listing-health-actions.ts and
+// the app/api/cron/listing-health-scan sweep). This twin computed
+// price-per-sqft plus two hardcoded placeholders (dom_percentile: null,
+// market_position: "neutral") and returned them without persisting anything.
+// Nothing merged.
 
 /**
  * Trigger CMA package generation.
@@ -431,111 +349,26 @@ export async function triggerCMAPackage(
   }
 }
 
-/**
- * Grant portal access to a contact.
- */
-export async function grantPortalAccess(
-  contactId: string,
-  accessType: string,
-  _agentId?: string // ignored — derived from session
-): Promise<{ success: boolean; accessId?: string; error?: string }> {
-  try {
-    const supabase = await createClient()
-    const ctx = await getAgentContext()
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `grantPortalAccess` deleted.
+// SURVIVOR: app/actions/portal-invites.ts:createPortalInviteForContact (wired
+// at app/crm/page.tsx:36) — the thing that actually GRANTS portal access by
+// minting the contact's invite. This twin granted nothing: it wrote a
+// portal_access_logs row that merely CLAIMED access was active, which is a log
+// entry impersonating a grant. A stripped-source census found zero callers
+// outside the app/actions/index.ts barrel, which itself has zero importers.
+// Nothing merged.
 
-    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
-    if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
-    const brokerageId = ctx.brokerageId
-    const agentId = ctx.agentId
-
-    // Verify contact ownership
-    const own = await assertOwnership("contacts", contactId, brokerageId)
-    if (!own.ok) return { success: false, error: own.error }
-
-    // portal_access_logs is the canonical portal-access-log table. Map the
-    // legacy access_type → action; the active/inactive flag lives in metadata
-    // since the real schema doesn't carry a `status` column.
-    const { data: access } = await supabase
-      .from("portal_access_logs")
-      .insert({
-        contact_id: contactId,
-        agent_id: agentId,
-        brokerage_id: brokerageId,
-        module_key: "portal",
-        action: accessType,
-        metadata: { status: "active" },
-      })
-      .select()
-      .single()
-
-    return { success: true, accessId: access?.id }
-  } catch (error: any) {
-    return { success: false, error: error?.message ?? "Failed to grant portal access" }
-  }
-}
-
-/**
- * Trigger compliance checklist for a transaction.
- */
-export async function triggerComplianceChecklist(
-  transactionId: string,
-  _agentId?: string // ignored — derived from session
-): Promise<{ success: boolean; checklistId?: string; error?: string }> {
-  try {
-    const supabase = await createClient()
-    const ctx = await getAgentContext()
-
-    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
-    if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
-    const brokerageId = ctx.brokerageId
-    const agentId = ctx.agentId
-
-    // Verify transaction ownership
-    const own = await assertOwnership("transactions", transactionId, brokerageId)
-    if (!own.ok) return { success: false, error: own.error }
-
-    // compliance_checklists has no agent_id/status; checklist_type is NOT NULL.
-    //
-    // THIRD WRITER OF THIS TABLE — it must agree with the other two about what a
-    // re-run means. compliance_checklists is UNIQUE on
-    // (transaction_id, checklist_type), so this plain .insert() succeeded once
-    // per deal and raised duplicate-key forever after; with the error left
-    // undestructured supabase-js RESOLVED that refusal, so `checklist` came back
-    // null and this returned `{ success: true, checklistId: undefined }` — a
-    // caller told the trigger worked, holding no id.
-    //
-    // Upsert on the same named arbiter as
-    // app/actions/ai-transaction-documents.ts : checkTransactionDisclosures and
-    // app/actions/ai-document-intelligence.ts : aiCheckDisclosures. This payload
-    // deliberately carries no items/compliance_score: PostgREST's
-    // merge-duplicates only SETs the columns present, so re-triggering
-    // ensure-exists here can never wipe an AI-written score.
-    const { data: checklist, error: checklistError } = await supabase
-      .from("compliance_checklists")
-      .upsert(
-        {
-          transaction_id: transactionId,
-          brokerage_id: brokerageId,
-          checklist_type: "disclosures",
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "transaction_id,checklist_type" },
-      )
-      .select()
-      .single()
-
-    if (checklistError) {
-      return { success: false, error: `Compliance checklist could not be recorded: ${checklistError.message}` }
-    }
-    if (!checklist?.id) {
-      return { success: false, error: "Compliance checklist write returned no row" }
-    }
-
-    return { success: true, checklistId: checklist.id }
-  } catch (error: any) {
-    return { success: false, error: error?.message ?? "Failed to trigger compliance checklist" }
-  }
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `triggerComplianceChecklist`
+// deleted. SURVIVOR: app/actions/ai-transaction-documents.ts:
+// checkTransactionDisclosures (wired at
+// app/dashboard/transactions/[id]/transaction-detail-client.tsx:1101), which
+// upserts the SAME compliance_checklists row on the same
+// (transaction_id, checklist_type) arbiter and, unlike this ensure-exists
+// twin, actually populates items and compliance_score. Sibling writer:
+// app/actions/ai-document-intelligence.ts:aiCheckDisclosures. This third
+// writer contributed only an empty shell row; a stripped-source census found
+// zero callers outside the app/actions/index.ts barrel, which itself has zero
+// importers. Nothing merged.
 
 /**
  * Which journey a marketing script is graded against by the compliance gate.

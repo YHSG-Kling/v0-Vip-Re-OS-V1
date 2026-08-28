@@ -223,57 +223,17 @@ export interface GHLMessage {
 // into `{ success: false, error }` for its caller. A helper that swallowed the
 // error would have handed the caller an empty history that read as success.
 
-async function fetchGHLConversations(
-  locationId: string,
-  params?: { contactId?: string; limit?: number; startAfter?: string },
-): Promise<any[]> {
-  let url = `/conversations/?locationId=${locationId}`
-  if (params?.contactId) url += `&contactId=${params.contactId}`
-  if (params?.limit) url += `&limit=${params.limit}`
-  if (params?.startAfter) url += `&startAfter=${params.startAfter}`
-
-  const result = await ghlFetch(url)
-  return result.conversations || []
-}
-
-async function fetchGHLMessages(conversationId: string, limit = 50): Promise<any[]> {
-  const result = await ghlFetch(`/conversations/${conversationId}/messages?limit=${limit}`)
-  return result.messages || []
-}
-
-export async function getContactConversationHistory(contactId: string) {
-  const config = getGHLConfig()
-  if (!config) {
-    return {
-      success: false,
-      error: "GHL not configured",
-      history: [],
-      mock: true,
-    }
-  }
-
-  try {
-    // Get all conversations for this contact
-    const conversations = await fetchGHLConversations(config.locationId, { contactId })
-
-    // Get messages from each conversation
-    const history: any[] = []
-    for (const conv of conversations.slice(0, 5)) {
-      // Limit to last 5 conversations
-      const messages = await fetchGHLMessages(conv.id, 20)
-      history.push({
-        conversationId: conv.id,
-        type: conv.type,
-        lastMessageDate: conv.lastMessageDate,
-        messages,
-      })
-    }
-
-    return { success: true, history }
-  } catch (error: any) {
-    return { success: false, error: error.message, history: [] }
-  }
-}
+// TOMBSTONE (§1, lane E2 2026-08-28) — `getContactConversationHistory` and its
+// module-private fetchers (`fetchGHLConversations`, `fetchGHLMessages`)
+// deleted. The lane-O merge above kept this chain alive for exactly one
+// caller, app/actions/communications.ts:getContactHistory — which a
+// stripped-source census then found to have zero callers of its own outside
+// the importer-less app/actions/index.ts barrel, so the whole chain was
+// unreachable. Contact message history is served locally — SURVIVORS:
+// app/actions/contact-details.ts:getContactActivity and
+// app/actions/communications.ts:getRecentCommunications. GHL remains a
+// one-way contact-data sync target (syncContactToGHL below); it is not a
+// message-history source in this product.
 
 // =====================================================
 // SOCIAL MEDIA POSTING (via GHL Social Planner)

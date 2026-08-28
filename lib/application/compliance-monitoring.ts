@@ -1,8 +1,8 @@
 import { createClient } from "@/lib/supabase/server"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { revalidatePath } from "next/cache"
-import { generateText } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
+// (generateText/resolveModel imports left with the deleted
+// analyzeFairHousingRiskService — see its tombstone below.)
 import { businessDaysInclusive } from "@/lib/compliance/trid-disclosure-clock"
 import { resolveBrokerageComplianceIdentity } from "@/lib/brokerage/compliance-identity"
 import { getAgentContext } from "@/lib/identity"
@@ -11,43 +11,13 @@ import { getAgentContext } from "@/lib/identity"
 // AUDIT LOGGING
 // ============================================
 
-export async function logAuditEventService(params: {
-  userId: string
-  action: string
-  entityType: string
-  entityId: string
-  changes?: any
-  ipAddress?: string
-  userAgent?: string
-  complianceRelevant?: boolean
-}) {
-  const supabase = await createClient()
-
-  const { error } = await supabase.from("audit_log").insert({
-    user_id: params.userId,
-    action: params.action,
-    entity_type: params.entityType,
-    entity_id: params.entityId,
-    // audit_log carries before/after JSONB. The legacy `audit_logs` callsite
-    // passed a single `changes` payload; we put it in `after` and fold the
-    // request-context (ip / UA / compliance flag) into the same JSONB so we
-    // don't lose the data on the schema unification.
-    before: null,
-    after: {
-      changes: params.changes ?? null,
-      ip_address: params.ipAddress ?? null,
-      user_agent: params.userAgent ?? null,
-      compliance_relevant: params.complianceRelevant ?? false,
-    },
-  })
-
-  if (error) {
-    console.error("[ComplianceMonitoring] Error logging audit event:", error)
-    throw new Error("Failed to log audit event")
-  }
-
-  return { success: true }
-}
+// TOMBSTONE (§1, lane E2 2026-08-28) — `logAuditEventService` deleted with its
+// only caller, the app/actions/compliance-monitoring.ts:logAuditEvent wrapper
+// (zero callers outside the importer-less app/actions/index.ts barrel).
+// Audit logging lives at the call sites as direct
+// `supabase.from("audit_log").insert(...)` writes — e.g.
+// app/actions/billing.ts:633, lib/kernel/transactions.ts:1457 — and at
+// app/actions/workflows.ts:logUserActivity for session-derived user activity.
 
 // ============================================
 // COMPLIANCE STATUS
@@ -356,134 +326,19 @@ export async function trackCertificationExpirationService(agentId: string, clien
 // FAIR HOUSING
 // ============================================
 
-export async function analyzeFairHousingRiskService(params: {
-  contactId: string
-  agentId: string
-  interactionType: string
-  communicationText: string
-}) {
-  const supabase = await createClient()
-
-  const protectedClasses = [
-    "race", "color", "religion", "national origin",
-    "sex", "disability", "familial status", "age",
-  ]
-
-  const redFlagPhrases = [
-    "perfect for families", "great for retirees", "quiet neighborhood",
-    "young professional area", "walk to church", "good schools",
-    "safe area", "changing neighborhood",
-  ]
-
-  const foundPhrases = redFlagPhrases.filter((phrase) =>
-    params.communicationText.toLowerCase().includes(phrase.toLowerCase()),
-  )
-
-  const { text } = await generateText({
-    model: resolveModel("openai/gpt-4o-mini"),
-    prompt: `Analyze this real estate communication for potential Fair Housing Act violations.
-
-Communication: "${params.communicationText}"
-
-Protected classes: ${protectedClasses.join(", ")}
-
-Return a JSON object with:
-- risk_score: 0.0 to 1.0 (0 = no risk, 1 = high risk)
-- protected_class_mentioned: boolean
-- steering_detected: boolean
-- flagged_content: array of concerning phrases
-- explanation: brief explanation of any concerns
-- recommendation: what the agent should do
-
-Focus on detecting:
-1. Direct or indirect references to protected classes
-2. Steering language that suggests or discourages based on demographics
-3. Coded language that implies discrimination
-4. Familial status violations (families with children)`,
-  })
-
-  let aiAnalysis
-  try {
-    aiAnalysis = JSON.parse(text)
-  } catch {
-    aiAnalysis = {
-      risk_score: foundPhrases.length > 0 ? 0.7 : 0.3,
-      protected_class_mentioned: false,
-      steering_detected: foundPhrases.length > 0,
-      flagged_content: foundPhrases,
-      explanation: "Manual review needed",
-      recommendation: "Review with compliance officer",
-    }
-  }
-
-  // Resolve brokerage from the contact (fallback to agent) so every audit row is
-  // tenant-scoped and visible to brokerage-scoped reads / RLS.
-  const { data: fhContact } = await supabase
-    .from("contacts").select("brokerage_id").eq("id", params.contactId).maybeSingle()
-  let brokerageId: string | null = fhContact?.brokerage_id ?? null
-  if (!brokerageId && params.agentId) {
-    const { data: fhAgent } = await supabase
-      .from("agents").select("brokerage_id").eq("id", params.agentId).maybeSingle()
-    brokerageId = fhAgent?.brokerage_id ?? null
-  }
-
-  // compliance_flags is the CANONICAL compliance ledger (the compliance UI
-  // reads it and explicitly ignores fair_housing_logs — that table was a
-  // write-only twin nothing consumed; keep-one repoint, open-loop sweep).
-  const allFlagged = [...foundPhrases, ...aiAnalysis.flagged_content]
-  const { error } = await supabase
-    .from("compliance_flags")
-    .insert({
-      brokerage_id: brokerageId,
-      contact_id: params.contactId,
-      agent_id: params.agentId,
-      violation_type: "fair_housing_violation",
-      severity: aiAnalysis.risk_score >= 75 ? "critical" : aiAnalysis.risk_score >= 40 ? "high" : "medium",
-      content_type: params.interactionType,
-      flagged_content: `${allFlagged.join("; ").slice(0, 300)} :: ${params.communicationText.slice(0, 400)}`,
-      detected_at: new Date().toISOString(),
-      status: "flagged",
-    })
-
-  if (error) {
-    console.error("[ComplianceMonitoring] Error logging fair housing analysis:", error)
-  }
-
-  if (aiAnalysis.risk_score >= 0.6) {
-    await supabase.from("compliance_alerts").insert({
-      brokerage_id: brokerageId,
-      transaction_id: null,
-      alert_type: "FAIR_HOUSING_RISK",
-      severity: aiAnalysis.risk_score >= 0.8 ? "critical" : "high",
-      message: `Potential fair housing violation detected in ${params.interactionType}`,
-      details: {
-        contact_id: params.contactId,
-        agent_id: params.agentId,
-        risk_score: aiAnalysis.risk_score,
-        flagged_phrases: aiAnalysis.flagged_content,
-        recommendation: aiAnalysis.recommendation,
-      },
-    })
-
-    // Surface to compliance_flags — the table the compliance dashboard reads
-    // (filtered by violation_type='fair_housing' + brokerage_id). Without this,
-    // the analysis is invisible to the UI.
-    await supabase.from("compliance_flags").insert({
-      brokerage_id: brokerageId,
-      agent_id: params.agentId,
-      contact_id: params.contactId,
-      content_type: params.interactionType,
-      violation_type: "fair_housing",
-      flagged_content: { text: params.communicationText, ...aiAnalysis },
-      severity: aiAnalysis.risk_score >= 0.8 ? "critical" : "high",
-      status: "flagged",
-      detected_at: new Date().toISOString(),
-    })
-  }
-
-  revalidatePath("/dashboard/compliance")
-  return aiAnalysis
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `analyzeFairHousingRiskService`
+// deleted with its only caller, the app/actions/compliance-monitoring.ts
+// wrapper (zero callers outside the importer-less app/actions/index.ts
+// barrel). The fair-housing scan → compliance_flags capability lives, WIRED:
+//   · lib/ai/models.ts:checkCompliance — evaluateContentCompliance over AI
+//     generations, writing fair_housing_violation compliance_flags;
+//   · the kernel outbound dispatch gate (evaluateOutboundCompliance) — scans
+//     agent/system sends before they leave;
+//   · scanContentComplianceService (this file, below) — DB-driven prohibited
+//     phrase + AI scan for the content-approval flow.
+// This copy also ran off-router (resolveModel direct, no ai_tool_usage cost
+// ledger) and compared a 0–1 risk_score against 75/40 for severity — every
+// flag it would ever write was "medium".
 
 // ============================================
 // TRID
@@ -612,8 +467,11 @@ export async function updateTRIDMilestoneService(params: {
 // DOCUMENT RETENTION
 // ============================================
 
-export async function applyDocumentRetentionService(transactionId: string) {
-  const supabase = await createClient()
+export async function applyDocumentRetentionService(transactionId: string, client?: SupabaseClient) {
+  // Accept a caller-supplied client so the daily compliance cron can pass a
+  // service-role client (no session there); UI/action callers default to the
+  // request-scoped client. Same shape as trackCertificationExpirationService.
+  const supabase = client ?? await createClient()
 
   const { data: transaction } = await supabase
     .from("transactions")
@@ -1163,81 +1021,17 @@ export async function reviewContentApprovalService(data: {
   return { success: true }
 }
 
-export async function logCommunicationWithComplianceService(data: {
-  userId: string
-  agentId?: string
-  contactId?: string
-  leadId?: string
-  communicationType: string
-  leadTemperature: string
-  contentId?: string
-  contentSnapshot: string
-  sentVia?: string
-}) {
-  const supabase = await createClient()
-
-  // Resolve brokerage from the acting user so audit rows are tenant-scoped.
-  const { data: logUser } = await supabase
-    .from("users").select("brokerage_id").eq("id", data.userId).maybeSingle()
-  const logBrokerageId: string | null = logUser?.brokerage_id ?? null
-
-  let complianceCheck = { passed: true, warnings: [] as any[] }
-
-  if (data.leadTemperature === "cold" && !["email", "print"].includes(data.communicationType)) {
-    complianceCheck = {
-      passed: false,
-      warnings: [
-        {
-          type: "channel_violation",
-          message: "Cold leads can only be contacted via email or print mail",
-        },
-      ],
-    }
-
-    await supabase.from("compliance_flags").insert({
-      brokerage_id: logBrokerageId,
-      user_id: data.userId,
-      agent_id: data.agentId,
-      contact_id: data.contactId ?? null,
-      content_type: data.communicationType,
-      violation_type: "cold_lead_channel_violation",
-      flagged_content: {
-        channel_used: data.communicationType,
-        lead_temperature: data.leadTemperature,
-        allowed_channels: ["email", "print"],
-      },
-      severity: "high",
-      status: "flagged",
-      detected_at: new Date().toISOString(),
-    })
-  }
-
-  const { data: log, error } = await supabase
-    .from("communication_audit_log")
-    .insert({
-      brokerage_id: logBrokerageId,
-      user_id: data.userId,
-      agent_id: data.agentId,
-      contact_id: data.contactId,
-      lead_id: data.leadId,
-      communication_type: data.communicationType,
-      lead_temperature: data.leadTemperature,
-      was_approved_content: !!data.contentId,
-      channel: data.sentVia,
-      body_snippet: data.contentSnapshot?.slice(0, 500),
-      compliance_passed: complianceCheck.passed,
-      sent_at: new Date().toISOString(),
-    })
-    .select()
-    .single()
-
-  if (error) {
-    console.error("[ComplianceMonitoring] Error logging communication:", error)
-    throw error
-  }
-
-  return { success: true, compliancePassed: complianceCheck.passed, log }
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) —
+// `logCommunicationWithComplianceService` deleted with its only caller, the
+// app/actions/compliance-monitoring.ts wrapper (zero callers outside the
+// importer-less app/actions/index.ts barrel). SURVIVOR:
+// lib/services/communication.service.tsx:logCommunication — the
+// communication_audit_log writer real sends reach. Merged onto the survivor
+// before deleting: lead_temperature + was_approved_content on the audit row,
+// and the cold-lead channel rule (compliance_passed=false + a
+// compliance_flags `cold_lead_channel_violation` row when a cold lead is
+// reached outside email/print) — the exact columns the daily compliance
+// cron's cold-lead and unapproved-content sweeps read.
 
 export async function getApprovedContentLibraryService(filters?: {
   category?: string

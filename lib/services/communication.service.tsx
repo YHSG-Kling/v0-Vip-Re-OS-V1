@@ -67,6 +67,11 @@ export interface LogCommunicationParams {
   content: string
   status: "sent" | "failed" | "queued"
   metadata?: any
+  /** approved_content_library id when the send used pre-approved content.
+   *  Stamps was_approved_content on the audit row — the column the daily
+   *  compliance cron's unapproved-content sweep reads. (Merged from the
+   *  deleted logCommunicationWithComplianceService, lane E2 2026-08-28.) */
+  approvedContentId?: string
 }
 
 // Resolve brokerage_id from explicit param, falling back to a contact lookup.
@@ -194,11 +199,11 @@ export async function logCommunication(params: LogCommunicationParams) {
     // brokerage_id is NOT NULL there; look it up from the contact when the
     // caller didn't supply it.
     let auditBrokerageId: string | null = null
-    let contactRow: { agent_id: string | null; brokerage_id: string | null } | null = null
+    let contactRow: { agent_id: string | null; brokerage_id: string | null; lead_temperature: string | null } | null = null
     if (params.contactId && isValidUUID(params.contactId)) {
       const { data } = await supabase
         .from("contacts")
-        .select("agent_id, brokerage_id")
+        .select("agent_id, brokerage_id, lead_temperature")
         .eq("id", params.contactId)
         .maybeSingle()
       contactRow = data ?? null
@@ -211,6 +216,41 @@ export async function logCommunication(params: LogCommunicationParams) {
       // message_provider_logs.channel CHECK.
       const channel =
         params.communicationType === "notification" ? "in_app" : params.communicationType
+
+      // ── COLD-LEAD CHANNEL RULE (merged from the deleted
+      // logCommunicationWithComplianceService, §1 keep-one, lane E2
+      // 2026-08-28). Cold leads may only be reached via email or print mail.
+      // The daily compliance cron (app/api/cron/compliance-monitoring)
+      // sweeps communication_audit_log for lead_temperature='cold' rows
+      // outside those channels — columns that previously had NO writer on any
+      // reachable path, so the sweep could never fire. The temperature comes
+      // from the CONTACT ROW, never from the caller.
+      const leadTemperature = contactRow?.lead_temperature ?? null
+      const coldChannelViolation =
+        params.status === "sent" &&
+        leadTemperature === "cold" &&
+        !["email", "print"].includes(params.communicationType)
+      if (coldChannelViolation) {
+        const { error: flagError } = await supabase.from("compliance_flags").insert({
+          brokerage_id: auditBrokerageId,
+          agent_id: params.agentId ?? contactRow?.agent_id ?? null,
+          contact_id: params.contactId ?? null,
+          content_type: params.communicationType,
+          violation_type: "cold_lead_channel_violation",
+          flagged_content: {
+            channel_used: params.communicationType,
+            lead_temperature: leadTemperature,
+            allowed_channels: ["email", "print"],
+          },
+          severity: "high",
+          status: "flagged",
+          detected_at: new Date().toISOString(),
+        })
+        if (flagError) {
+          console.error("[CommunicationService] cold-lead compliance_flags row refused:", flagError.message)
+        }
+      }
+
       const { error: auditLogError } = await supabase.from("communication_audit_log").insert({
         brokerage_id: auditBrokerageId,
         contact_id: params.contactId ?? null,
@@ -219,7 +259,9 @@ export async function logCommunication(params: LogCommunicationParams) {
         channel,
         subject: params.subject ?? null,
         body_snippet: params.content.slice(0, 500),
-        compliance_passed: params.status === "sent" ? true : null,
+        lead_temperature: leadTemperature,
+        was_approved_content: !!params.approvedContentId,
+        compliance_passed: coldChannelViolation ? false : params.status === "sent" ? true : null,
         sent_at: params.status === "sent" ? new Date().toISOString() : null,
       })
       if (auditLogError) {

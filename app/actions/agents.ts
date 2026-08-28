@@ -180,39 +180,16 @@ async function requireAgentLedgerAccess(
   return { ok: true, brokerageId: ctx.brokerageId }
 }
 
-export async function getAgentById(agentId: string) {
-  const supabase = await createClient()
-
-  // Same dead embed as getAgents: `users` has no `name` and no `avatar_url`, so
-  // this whole read returned an error and every caller saw `null` as "no such
-  // agent". Name comes off users.first_name/last_name; the photo is on `agents`
-  // itself and `*` already returns it.
-  const { data, error } = await supabase
-    .from("agents")
-    .select(`
-      *,
-      user:users(id, first_name, last_name, email, phone),
-      commissions:agent_commissions(*),
-      expenses:business_expenses(*),
-      badges:agent_badges(*, badge:gamification_badges(*)),
-      goals:agent_goals(*)
-    `)
-    .eq("id", agentId)
-    .single()
-
-  if (error) {
-    console.error("Error fetching agent:", error)
-    return null
-  }
-
-  const u = (data as any)?.user ?? null
-  return {
-    ...(data as any),
-    user: u
-      ? { ...u, name: [u.first_name, u.last_name].filter(Boolean).join(" ") || null }
-      : null,
-  }
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `getAgentById` deleted.
+// SURVIVORS: app/actions/admin/agent-360.ts:getAgent360Action and
+// app/actions/admin/agent-profile.ts:getAgentProfileForUserAction — the
+// admin-gated agent detail reads wired at
+// app/dashboard/admin/users/[userId]/page.tsx:7-8. This twin returned the
+// full agent row WITH commissions and expenses embeds to any authenticated
+// caller holding an agents.id (commission is off agent-facing display, §5),
+// and a stripped-source census found zero callers outside the
+// app/actions/index.ts barrel, which itself has zero importers. Nothing
+// merged: the survivors carry richer, gated versions of every embed.
 
 /**
  * Provision the missing `agents` domain record for a user who already exists in
@@ -478,42 +455,21 @@ export async function createAgent(agentData: {
  * app/actions/admin/agent-profile.ts). `lib/commission/cap-resolver.ts` resolves
  * between them and materialises the answer into the ledger.
  */
-export async function updateAgent(
-  agentId: string,
-  updates: Partial<{
-    license_number: string
-    license_state: string
-    license_expiry: string
-    commission_split: number
-    team_id: string
-    specializations: string[]
-    bio: string
-    is_active: boolean
-  }>,
-) {
-  const supabase = await createClient()
-
-  // Re-sanitized rather than trusted: this is a spread of a caller-supplied
-  // object, so a `cap_amount` (or anything else) smuggled past the type would
-  // otherwise reach the column the type just removed.
-  const { cap_amount: _droppedCap, cap_progress: _droppedProgress, ...safeUpdates } =
-    (updates ?? {}) as Record<string, unknown>
-
-  const { data, error } = await supabase
-    .from("agents")
-    .update({ ...safeUpdates, updated_at: new Date().toISOString() })
-    .eq("id", agentId)
-    .select()
-    .single()
-
-  if (error) {
-    console.error("Error updating agent:", error)
-    return { error: error.message }
-  }
-
-  revalidatePath("/dashboard/admin/users")
-  return { data }
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `updateAgent` deleted. Every
+// field it accepted has a live, gated home:
+//   · license_number / license_state / license_expiry / commission_split →
+//     app/actions/admin/agent-profile.ts:updateAgentProfileAction (admin-gated,
+//     brokerage-pinned; wired at
+//     app/dashboard/admin/users/[userId]/user-edit-form.tsx:135);
+//   · bio / specializations → app/actions/user-profile.ts:updateMyAgentIdentity
+//     (self-service, session-scoped);
+//   · is_active → app/actions/agent-deactivation.ts:deactivateAgent (the
+//     governed off-boarding path);
+//   · team_id → team management (teams anchor on teams.team_lead_id, §4).
+// This twin took an arbitrary agents.id with no role/tenant gate beyond RLS
+// and a stripped-source census found zero callers outside the
+// app/actions/index.ts barrel, which itself has zero importers. Nothing
+// merged.
 
 // ==================== GAMIFICATION ====================
 
@@ -1317,28 +1273,14 @@ export async function assignAgentToContact(contactId: string, agentId: string) {
   return { data: data?.[0] ?? null }
 }
 
-export async function getAgentContacts(agentId: string) {
-  // Return empty array for invalid UUIDs - production apps should require valid auth
-  if (!isValidUUID(agentId)) {
-    console.warn("[agents.ts] getAgentContacts called with invalid UUID:", agentId)
-    return []
-  }
-
-  const supabase = await createClient()
-
-  const { data, error } = await supabase
-    .from("contacts")
-    .select("*")
-    .eq("agent_id", agentId)
-    .order("created_at", { ascending: false })
-
-  if (error) {
-    console.error("Error fetching agent contacts:", error)
-    return []
-  }
-
-  return data || []
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `getAgentContacts` deleted.
+// SURVIVOR: app/actions/contacts.ts:getContacts — the session-scoped contact
+// list (tenant from getAgentContext, refuses when unlinked; wired at
+// app/crm/page.tsx:6). This twin listed any agent's full contact book by a
+// caller-supplied agents.id with `select("*")` and no tenant anchor beyond
+// RLS, and a stripped-source census found zero callers outside the
+// app/actions/index.ts barrel, which itself has zero importers. Nothing
+// merged.
 
 export async function getAgentStats(userIdOrAgentId: string) {
   // Return empty stats for invalid UUIDs - production apps should require valid auth

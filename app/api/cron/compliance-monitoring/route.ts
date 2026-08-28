@@ -1,7 +1,11 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { rawRoleVariantsFor } from "@/lib/security/types"
 import { createServiceClient } from "@/lib/supabase/service"
-import { trackCertificationExpirationService, monitorTRIDComplianceService } from "@/lib/application"
+import {
+  trackCertificationExpirationService,
+  monitorTRIDComplianceService,
+  applyDocumentRetentionService,
+} from "@/lib/application"
 import {
   createCronRunContextAction,
   recordCronStartAction,
@@ -45,6 +49,8 @@ export async function GET(request: NextRequest) {
       cold_lead_violations_detected: 0,
       license_readiness_reminded: 0,
       license_readiness_blocked: 0,
+      retention_transactions_processed: 0,
+      retention_documents_stamped: 0,
     }
 
     // AGENT LICENSE / CE / ETHICS READINESS — autonomously warn agents BEFORE a lapse and escalate a
@@ -107,6 +113,35 @@ export async function GET(request: NextRequest) {
           results.trid_violations += compliance.violations.length
         }
       }
+    }
+
+    // DOCUMENT RETENTION (lane E2 2026-08-28: applyDocumentRetentionService
+    // WIRED — its action wrapper had zero reachable callers, so no
+    // document_retention row had ever been stamped). Sweep transactions closed
+    // in the last 30 days and upsert their retention schedule; the upsert is
+    // idempotent on document_id, so re-sweeping an already-stamped deal is a
+    // no-op rather than a duplicate.
+    try {
+      const retentionWindowStart = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+        .toISOString().split("T")[0]
+      const { data: closedTxns, error: closedErr } = await supabase
+        .from("transactions")
+        .select("id")
+        .not("close_date", "is", null)
+        .gte("close_date", retentionWindowStart)
+      if (closedErr) {
+        console.error("[ComplianceMonitoring] closed-transaction sweep read failed:", closedErr.message)
+      }
+      for (const txn of (closedTxns ?? []) as Array<{ id: string }>) {
+        const retention = await applyDocumentRetentionService(txn.id, supabase)
+        if (retention.success) {
+          results.retention_transactions_processed++
+          results.retention_documents_stamped +=
+            "documents_processed" in retention ? (retention.documents_processed ?? 0) : 0
+        }
+      }
+    } catch (e) {
+      console.error("[ComplianceMonitoring] document retention sweep:", e)
     }
 
     // FORWARD-LOOKING TRID DISCLOSURE CLOCK — per brokerage, warn BEFORE the Closing

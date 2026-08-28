@@ -6,7 +6,7 @@ import { requireActiveBBA } from "@/lib/buyer-broker/gate"
 import { guardShowingFinancialGate } from "@/lib/buyer-execution/showing-financial-policy"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { bestEffort } from "@/lib/db/best-effort"
+// bestEffort import left with the deleted confirmShowing — see its tombstone below.
 
 export async function requestShowing(data: {
   contactId: string
@@ -589,9 +589,59 @@ export async function updateShowing(showingId: string, updates: any) {
   }
 }
 
+/**
+ * Cancel a showing request (the `cancelled` verb of the request lifecycle —
+ * the wave-4 ruling assigned it here beside approveShowingRequest /
+ * denyShowingRequest / suggestAlternativeTime in seller-showings.ts).
+ *
+ * WIRED (lane E2 2026-08-28) to the listing showings console
+ * (showing-requests-panel.tsx) — until then nothing could cancel an approved
+ * request. Gated at the same time: this had no session check and updated any
+ * request by uuid; now the request must resolve into the caller's brokerage
+ * (contact first — always stamped — falling back to the listing), and the
+ * `.select()` + zero-row refusal stays so an RLS-refused update cannot report
+ * success.
+ */
 export async function cancelShowing(showingId: string, reason?: string) {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Not authenticated" }
+    }
+
     const supabase = await createClient()
+
+    // The id may be a showing_requests.id, or — from the confirmed-showings
+    // list, which renders converted `showings` rows — a showings.id; the
+    // request points at its conversion via converted_showing_id.
+    const reqSelect =
+      "id, brokerage_id, contact_id, listing_id, converted_showing_id, contacts(brokerage_id), listings(brokerage_id)"
+    let { data: reqRow, error: reqErr } = await supabase
+      .from("showing_requests")
+      .select(reqSelect)
+      .eq("id", showingId)
+      .maybeSingle()
+    if (reqErr) return { success: false, error: reqErr.message }
+    if (!reqRow) {
+      const byConversion = await supabase
+        .from("showing_requests")
+        .select(reqSelect)
+        .eq("converted_showing_id", showingId)
+        .maybeSingle()
+      if (byConversion.error) return { success: false, error: byConversion.error.message }
+      reqRow = byConversion.data
+    }
+    if (!reqRow) return { success: false, error: "Showing request not found" }
+
+    // Tenant check — via the request's own stamp, contact, or listing.
+    const rowTenant =
+      (reqRow as any).brokerage_id ??
+      (reqRow as any).contacts?.brokerage_id ??
+      (reqRow as any).listings?.brokerage_id ??
+      null
+    if (rowTenant !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
 
     const { data, error } = await supabase
       .from("showing_requests")
@@ -600,11 +650,28 @@ export async function cancelShowing(showingId: string, reason?: string) {
         ...(reason !== undefined ? { seller_notes: reason } : {}),
         updated_at: new Date().toISOString(),
       })
-      .eq("id", showingId)
+      .eq("id", (reqRow as any).id)
       .select()
       .single()
 
     if (error) throw error
+
+    // The converted showings row (what the confirmed list renders) must agree —
+    // a cancelled request with a still-"confirmed" showing is two truths.
+    const convertedId = (reqRow as any).converted_showing_id
+    if (convertedId) {
+      const { data: cancelledShowings, error: showErr } = await supabase
+        .from("showings")
+        .update({ status: "cancelled" })
+        .eq("id", convertedId)
+        .select("id")
+      if (showErr) {
+        return { success: false, error: `Request cancelled, but the showing row was refused: ${showErr.message}` }
+      }
+      if (!cancelledShowings || cancelledShowings.length === 0) {
+        return { success: false, error: "Request cancelled, but the converted showing row was not found" }
+      }
+    }
 
     revalidatePath("/dashboard")
 
@@ -615,59 +682,15 @@ export async function cancelShowing(showingId: string, reason?: string) {
   }
 }
 
-export async function confirmShowing(showingId: string, confirmedDate: string) {
-  try {
-    const supabase = await createClient()
-
-    const { data, error } = await supabase
-      .from("showing_requests")
-      .update({
-        status:             "approved", // CHECK-valid; "confirmed" is not allowed
-        seller_approved:    true,
-        seller_approved_at: new Date().toISOString(),
-        updated_at:         new Date().toISOString(),
-      })
-      .eq("id", showingId)
-      .select("id, contact_id, brokerage_id, listing_id, requested_date")
-      .single()
-
-    if (error) throw error
-
-    // Write the agent's calendar_event — only appears now that it is confirmed.
-    // The contact's calendar event is written separately when the tour is sent/confirmed.
-    try {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (user) {
-        const { data: u } = await supabase.from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
-        await supabase.from("calendar_events").insert({
-          brokerage_id:        u?.brokerage_id ?? data.brokerage_id,
-          entity_type:         "showing_request",
-          entity_id:           data.id,
-          event_type:          "showing",
-          start_at:            confirmedDate,
-          is_system_generated: true,
-        })
-      }
-    } catch { /* non-critical */ }
-
-    // Update activities row status to completed
-    await bestEffort(
-      supabase
-        .from("activities")
-        .update({ status: "completed", completed_at: new Date().toISOString() })
-        .eq("entity_type", "showing_request")
-        .eq("entity_id", showingId),
-      "the showing itself is already confirmed and error-checked above; closing out the feed task is cosmetic and must not fail a confirmation the client has been given",
-    )
-
-    revalidatePath("/dashboard")
-    revalidatePath(`/crm/contacts/${data.contact_id}`)
-
-    return { success: true, showing: data }
-  } catch (error: any) {
-    return { success: false, error: error.message }
-  }
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `confirmShowing` deleted.
+// SURVIVOR: app/actions/seller-showings.ts:approveShowingRequest (wired at
+// app/components/dashboard/listings/showings/showing-requests-panel.tsx:83),
+// the session-gated, listing-tenancy-checked approval that also converts the
+// request into a real `showings` row, stamps converted_showing_id, and fires
+// SHOWING_SCHEDULED. What this twin had that the survivor lacked — the
+// agent's calendar_events write — was MERGED onto the survivor first. This
+// copy had no auth gate, and a stripped-source census found zero callers
+// outside the app/actions/index.ts barrel, which itself has zero importers.
 
 // NOTE: getShowingFeedback (by listingId) is canonically defined in seller-updates.ts —
 // the showing_requests-based duplicate that lived here wrote/read phantom feedback

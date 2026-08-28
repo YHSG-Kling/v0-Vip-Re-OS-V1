@@ -145,46 +145,14 @@ export async function searchContacts(params: { agentId: string; query: string })
   }
 }
 
-export async function getContactTimeline(contactId: string) {
-  try {
-    const supabase = await createClient()
-
-    const [interactions, tasks, communications, notes] = await Promise.all([
-      supabase
-        .from("activities")
-        .select("id, activity_type, title, description, notes, outcome, channel, status, created_at")
-        .eq("contact_id", contactId)
-        .order("created_at", { ascending: false }),
-      supabase
-        .from("tasks")
-        .select("*")
-        .eq("contact_id", contactId)
-        .order("created_at", { ascending: false }),
-      supabase
-        .from("messages")
-        .select("*")
-        .eq("contact_id", contactId)
-        .order("created_at", { ascending: false }),
-      supabase
-        .from("contact_notes")
-        .select("*")
-        .eq("contact_id", contactId)
-        .order("created_at", { ascending: false })
-    ])
-
-    // Combine all timeline events
-    const timeline = [
-      ...(interactions.data || []).map((i: any) => ({ ...i, type: "interaction", date: i.created_at })),
-      ...(tasks.data || []).map((t: any) => ({ ...t, type: "task", date: t.created_at })),
-      ...(communications.data || []).map((c: any) => ({ ...c, type: "communication", date: c.created_at })),
-      ...(notes.data || []).map((n: any) => ({ ...n, type: "note", date: n.created_at }))
-    ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-
-    return { success: true, timeline }
-  } catch (error) {
-    return handleError(error, "getContactTimeline")
-  }
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `getContactTimeline` deleted.
+// SURVIVOR: app/actions/contact-details.ts:getContactActivity (wired at
+// app/crm/page.tsx:417), which is the gated, tenant-checked, error-honest
+// contact timeline. What this twin had that the survivor lacked — the
+// `contact_notes` source — was merged onto the survivor first. This copy had
+// no auth gate at all (a bare contact uuid returned another tenant's history
+// up to RLS), and a stripped-source census found zero callers outside the
+// app/actions/index.ts barrel, which itself has zero importers.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MERGE / DEDUPE

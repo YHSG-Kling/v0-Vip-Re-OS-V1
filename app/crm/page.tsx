@@ -32,9 +32,9 @@ import { generateCopilotPlan } from "@/app/actions/workflows"
 import { GratitudeGiftingPanel } from "@/app/dashboard/referrals/components/os/gratitude-gifting-panel"
 import { getBuyerInsights } from "@/app/actions/buyer-insights"
 import { getBuyerFatigueScore } from "@/app/actions/buyer-fatigue"
-import { scoreLeadWithAI } from "@/app/actions/ai-lead-scoring"
+import { scoreLeadWithAI, getLeadInsights, bulkScoreLeads } from "@/app/actions/ai-lead-scoring"
 import { createPortalInviteForContact } from "@/app/actions/portal-invites"
-import { sendSMS } from "@/app/actions/communications"
+import { sendSMS, logCall } from "@/app/actions/communications"
 import { RecentMessagesCard } from "@/app/crm/components/recent-messages-card"
 import { scheduleAppointment } from "@/app/actions/ai-isa/schedule-appointment"
 import { analyzeCallTranscript, generateCallSummaryEmail } from "@/app/actions/ai-voice-transcription"
@@ -271,6 +271,28 @@ export default function CRMPage() {
   const [autoDialogOpen, setAutoDialogOpen] = useState(false)
   const [autoWorkflowId, setAutoWorkflowId] = useState("")
   const [autoSending, setAutoSending] = useState(false)
+
+  // Log Call dialog (lane E2 2026-08-28: logCall WIRED — the manual phone-call
+  // log an agent files after hanging up; "answered" also feeds the behavioural
+  // call_answered scoring event inside the action)
+  const [callDialogOpen, setCallDialogOpen] = useState(false)
+  const [callDirection, setCallDirection] = useState<"inbound" | "outbound">("outbound")
+  const [callOutcome, setCallOutcome] = useState<"answered" | "voicemail" | "no_answer" | "busy">("answered")
+  const [callMinutes, setCallMinutes] = useState("")
+  const [callNotes, setCallNotes] = useState("")
+  const [callSaving, setCallSaving] = useState(false)
+
+  // Stored score insights for the selected contact (lane E2 2026-08-28:
+  // getLeadInsights WIRED — reads lead_score_history instead of forcing a
+  // fresh AI call)
+  const [scoreInsights, setScoreInsights] = useState<any | null>(null)
+  const [scoreInsightsLoading, setScoreInsightsLoading] = useState(false)
+
+  // Bulk scoring sweep (lane E2 2026-08-28: bulkScoreLeads WIRED)
+  const [bulkScoring, setBulkScoring] = useState(false)
+
+  // Stored score insights belong to ONE contact — drop them on switch.
+  useEffect(() => { setScoreInsights(null) }, [selectedContactId])
 
   // Suggested follow-up actions for the selected contact
   const [suggestedActions, setSuggestedActions] = useState<any[]>([])
@@ -1261,6 +1283,43 @@ export default function CRMPage() {
                     <Star className="h-3.5 w-3.5" />
                     Run AI Score
                   </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full gap-1.5 text-xs justify-start"
+                    disabled={scoreInsightsLoading}
+                    onClick={async () => {
+                      if (!selectedContactId) return
+                      setScoreInsightsLoading(true)
+                      const res = await getLeadInsights(selectedContactId)
+                      setScoreInsightsLoading(false)
+                      if ((res as any).success) setScoreInsights(res)
+                      else toast.error((res as any)?.error?.message ?? (res as any)?.error ?? "Could not load score insights")
+                    }}
+                  >
+                    {scoreInsightsLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <TrendingUp className="h-3.5 w-3.5" />}
+                    Score Insights
+                  </Button>
+                  {scoreInsights?.currentScore && (
+                    <div className="rounded-md border bg-background px-3 py-2 space-y-0.5">
+                      <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Stored Score</p>
+                      <p className="text-xs text-foreground">
+                        Overall {scoreInsights.currentScore.overall} · Engagement {scoreInsights.currentScore.engagement} · Intent {scoreInsights.currentScore.intent}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground capitalize">
+                        Readiness: {scoreInsights.currentScore.readiness} · {scoreInsights.history?.length ?? 0} prior score{(scoreInsights.history?.length ?? 0) === 1 ? "" : "s"}
+                      </p>
+                    </div>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full gap-1.5 text-xs justify-start"
+                    onClick={() => { setCallDirection("outbound"); setCallOutcome("answered"); setCallMinutes(""); setCallNotes(""); setCallDialogOpen(true) }}
+                  >
+                    <Phone className="h-3.5 w-3.5" />
+                    Log Call
+                  </Button>
                   {(!portalInviteData?.status || portalInviteData.status === "not_invited") && brokerageId && (
                     <Button
                       size="sm"
@@ -1392,6 +1451,77 @@ export default function CRMPage() {
                       >
                         {smsSending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
                         Send
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+
+                {/* Log Call Dialog — writes the call to the contact record via
+                    logCall (session-gated in the action; "answered" also lands
+                    the behavioural call_answered scoring event) */}
+                <Dialog open={callDialogOpen} onOpenChange={setCallDialogOpen}>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Log Call</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <Label className="text-xs">Direction</Label>
+                          <select
+                            value={callDirection}
+                            onChange={(e) => setCallDirection(e.target.value as "inbound" | "outbound")}
+                            className="mt-1 flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                          >
+                            <option value="outbound">Outbound</option>
+                            <option value="inbound">Inbound</option>
+                          </select>
+                        </div>
+                        <div>
+                          <Label className="text-xs">Outcome</Label>
+                          <select
+                            value={callOutcome}
+                            onChange={(e) => setCallOutcome(e.target.value as "answered" | "voicemail" | "no_answer" | "busy")}
+                            className="mt-1 flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                          >
+                            <option value="answered">Answered</option>
+                            <option value="voicemail">Voicemail</option>
+                            <option value="no_answer">No answer</option>
+                            <option value="busy">Busy</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div>
+                        <Label className="text-xs">Duration (minutes, optional)</Label>
+                        <Input type="number" min="0" value={callMinutes} onChange={e => setCallMinutes(e.target.value)} placeholder="5" className="mt-1" />
+                      </div>
+                      <div>
+                        <Label className="text-xs">Notes (optional)</Label>
+                        <Input value={callNotes} onChange={e => setCallNotes(e.target.value)} placeholder="Talked pricing; wants comps by Friday" className="mt-1" />
+                      </div>
+                    </div>
+                    <DialogFooter>
+                      <Button variant="outline" onClick={() => setCallDialogOpen(false)}>Cancel</Button>
+                      <Button
+                        disabled={callSaving}
+                        onClick={async () => {
+                          if (!selectedContactId) return
+                          setCallSaving(true)
+                          const minutes = Number.parseFloat(callMinutes)
+                          const result = await logCall({
+                            contactId: selectedContactId,
+                            direction: callDirection,
+                            outcome: callOutcome,
+                            duration: Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes * 60) : undefined,
+                            notes: callNotes.trim() || undefined,
+                          })
+                          setCallSaving(false)
+                          if ((result as any).success) { toast.success("Call logged"); setCallDialogOpen(false) }
+                          else toast.error((result as any)?.error ?? "Could not log the call")
+                        }}
+                      >
+                        {callSaving && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+                        Save Call
                       </Button>
                     </DialogFooter>
                   </DialogContent>
@@ -2925,6 +3055,28 @@ export default function CRMPage() {
               className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`}
             />
             Refresh
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={bulkScoring || !agentId}
+            onClick={async () => {
+              if (!agentId) return
+              setBulkScoring(true)
+              // Scores the caller's own active pipeline (new/nurturing/qualified),
+              // capped at 50 inside the action.
+              const res = await bulkScoreLeads({ agentId })
+              setBulkScoring(false)
+              if ((res as any).success) {
+                toast.success(`Scored ${(res as any).totalScored} lead${(res as any).totalScored === 1 ? "" : "s"}`)
+                loadContacts()
+              } else {
+                toast.error((res as any)?.error?.message ?? (res as any)?.error ?? "Bulk scoring failed")
+              }
+            }}
+          >
+            {bulkScoring ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Star className="h-4 w-4 mr-2" />}
+            Score Pipeline
           </Button>
           <Button
             size="sm"

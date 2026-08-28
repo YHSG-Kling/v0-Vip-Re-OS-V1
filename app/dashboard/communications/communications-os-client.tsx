@@ -122,6 +122,11 @@ interface CommunicationsOSClientProps {
   sentimentItems: SentimentItem[]
   inboxStats: InboxStats
   connectedSocialAccounts?: ConnectedSocialAccount[]
+  /** 30-day outbound message volume (lane E2 2026-08-28:
+   *  getCommunicationStats WIRED — served by the page from the tenant-scoped
+   *  messages ledger; null when the read was refused, rendered as unavailable
+   *  rather than as zeros). */
+  outboundStats?: { total: number; sms: number; email: number; call: number } | null
 }
 
 export function CommunicationsOSClient({
@@ -136,6 +141,7 @@ export function CommunicationsOSClient({
   sentimentItems,
   inboxStats,
   connectedSocialAccounts = [],
+  outboundStats = null,
 }: CommunicationsOSClientProps) {
   const router = useRouter()
   const [selectedConversation, setSelectedConversation] = useState<PressureItem | null>(null)
@@ -308,6 +314,17 @@ export function CommunicationsOSClient({
           socialChannels={inboxStats.socialChannels}
           totalSocialUnread={inboxStats.totalSocialUnread}
         />
+
+        {/* Outbound volume strip — last 30 days, from the messages ledger */}
+        {outboundStats && (
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-1 rounded-lg border bg-card px-4 py-2 text-sm">
+            <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Sent (30d)</span>
+            <span><span className="font-semibold">{outboundStats.total}</span> total</span>
+            <span className="text-muted-foreground">{outboundStats.email} email</span>
+            <span className="text-muted-foreground">{outboundStats.sms} SMS</span>
+            <span className="text-muted-foreground">{outboundStats.call} call</span>
+          </div>
+        )}
 
         {/* Main Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">

@@ -59,20 +59,18 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { generateObject } from "@/lib/ai/generate"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
-import { resolveAgentRecipient } from "@/lib/notifications/recipient-tenant"
-// A new `agents` row invalidates any memoized "this user has no agent record" answer.
-import { invalidateAgentIdentity } from "@/lib/kernel/agent-identity-resolver"
+// (generateObject / resolveAgentRecipient / invalidateAgentIdentity / zod
+// imports left with the five functions deleted 2026-08-28 — see the
+// tombstones below.)
 // THE SPEND ACTOR. Every export in this "use server" file is a public HTTP
 // endpoint and `agentId` is whatever the caller typed, so it can never be the
 // tenant the AI ledger bills (CLAUDE.md §4). getAgentContext resolves the
 // brokerage from the SESSION; the routed calls below carry that and nothing
 // else, which is what makes lib/ai/models.ts's `if (request.brokerageId)` fire.
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { z } from "zod"
 
 // ==================== TYPES ====================
 
@@ -114,244 +112,29 @@ export interface OnboardingStep {
 
 // ==================== AI ONBOARDING FUNCTIONS ====================
 
-/**
- * Start a new agent onboarding session
- */
-export async function startAgentOnboarding(params: {
-  recruitId?: string
-  agentUserId: string
-  agentName: string
-  agentEmail: string
-  licenseNumber: string
-  licenseState: string
-  experienceYears: number
-  brokerageId: string
-  teamId?: string
-  referringAgentId?: string
-}) {
-  if (!isValidUUID(params.agentUserId) || !isValidUUID(params.brokerageId)) {
-    return { success: false, error: "Invalid user or brokerage ID" }
-  }
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `startAgentOnboarding`
+// deleted. SURVIVORS: `createAgent` (app/actions/agents.ts:237 — the gated
+// agent-record provisioner wired at
+// app/dashboard/admin/users/create-agent-record-button.tsx, tenant from the
+// SESSION) and the kernel onboarding lane
+// (lib/kernel/agent-onboarding.ts over agent_onboarding + onboarding_steps +
+// agent_step_completions — wired at app/dashboard/onboarding). This twin took
+// brokerageId FROM THE CALLER and inserted an agents row into any tenant a
+// caller named (§4's IDOR shape on a public "use server" endpoint), then
+// seeded the DEPRECATED agent_onboarding_sessions/agent_onboarding_steps
+// family that the live dashboard does not read. A stripped-source census
+// found zero callers outside the app/actions/index.ts barrel, which itself
+// has zero importers. Nothing merged.
 
-  const supabase = await createClient()
-
-  try {
-    // Create the agent record first
-    const { data: agent, error: agentError } = await supabase
-      .from("agents")
-      .insert({
-        user_id: params.agentUserId,
-        brokerage_id: params.brokerageId,
-        team_id: params.teamId,
-        license_number: params.licenseNumber,
-        license_state: params.licenseState,
-        license_expiry: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), // Default 1 year
-        commission_split: 70, // Default split
-        is_active: false, // Not active until onboarding complete
-        onboarding_status: "in_progress",
-        gamification_points: 0,
-        ytd_gci: 0,
-        ytd_transactions: 0,
-      })
-      .select()
-      .single()
-
-    if (agentError) throw agentError
-
-    // DROP THE STALE "NO SUCH AGENT" ANSWER. lib/kernel/agent-identity-resolver.ts
-    // memoizes NEGATIVE lookups for the whole process lifetime, so on a warm
-    // serverless instance a `null` cached before this insert would keep the agent
-    // we just created unresolvable until the instance recycles. Precise: only the
-    // two keys this row can have poisoned.
-    invalidateAgentIdentity({
-      agentRecordId: agent?.id ?? null,
-      userId: params.agentUserId,
-      brokerageId: params.brokerageId,
-    })
-
-    // Generate AI-personalized onboarding plan
-    const { object: onboardingPlan } = await generateObject({
-      model: "openai/gpt-4o-mini",
-      schema: z.object({
-        recommendedMentorProfile: z.string(),
-        prioritizedSteps: z.array(z.string()),
-        estimatedCompletionDays: z.number(),
-        customTrainingRecommendations: z.array(z.string()),
-        riskFactors: z.array(z.string()),
-        successPrediction: z.number(),
-      }),
-      prompt: `Create a personalized onboarding plan for a new real estate agent:
-        
-Name: ${params.agentName}
-Experience: ${params.experienceYears} years
-License State: ${params.licenseState}
-Has Referral: ${params.referringAgentId ? "Yes" : "No"}
-
-Consider:
-1. Their experience level to adjust training depth
-2. State-specific compliance requirements
-3. Optimal mentor matching criteria
-4. Risk factors that could slow onboarding
-5. Success prediction based on profile
-
-Provide actionable recommendations.`,
-    })
-
-    // Create onboarding session
-    const targetDate = new Date()
-    targetDate.setDate(targetDate.getDate() + (onboardingPlan.estimatedCompletionDays || 14))
-
-    const { data: session, error: sessionError } = await supabase
-      .from("agent_onboarding_sessions")
-      .insert({
-        agent_id: agent.id,
-        brokerage_id: params.brokerageId,
-        recruit_id: params.recruitId,
-        status: "in_progress",
-        start_date: new Date().toISOString(),
-        target_completion_date: targetDate.toISOString(),
-        current_step: "profile_setup",
-        progress_percentage: 0,
-        ai_recommendations: onboardingPlan.customTrainingRecommendations,
-        ai_success_prediction: onboardingPlan.successPrediction,
-        ai_risk_factors: onboardingPlan.riskFactors,
-        checklist: {
-          profileComplete: false,
-          licenseVerified: false,
-          brokerageAgreementSigned: false,
-          taxFormsCompleted: false,
-          directDepositSetup: false,
-          techStackSetup: false,
-          crmTrained: false,
-          complianceTrained: false,
-          videoPersonaConfigured: false,
-          firstLeadAssigned: false,
-          mentorAssigned: false,
-          firstTransactionStarted: false,
-        },
-      })
-      .select()
-      .single()
-
-    if (sessionError) throw sessionError
-
-    // Create default onboarding steps
-    const defaultSteps: Omit<OnboardingStep, "id">[] = [
-      { name: "Complete Agent Profile", description: "Fill out personal information, bio, photo, and specialties", category: "setup", required: true, order: 1, estimatedMinutes: 30, aiAssisted: true },
-      { name: "License Verification", description: "Upload license and verify with state board", category: "compliance", required: true, order: 2, estimatedMinutes: 15, aiAssisted: true },
-      { name: "Sign Brokerage Agreement", description: "Review and e-sign Independent Contractor Agreement", category: "documents", required: true, order: 3, estimatedMinutes: 20, aiAssisted: false },
-      { name: "Complete W-9 Tax Forms", description: "Submit W-9 for commission payments", category: "documents", required: true, order: 4, estimatedMinutes: 10, aiAssisted: false },
-      { name: "Setup Direct Deposit", description: "Configure bank account for commission deposits", category: "setup", required: true, order: 5, estimatedMinutes: 10, aiAssisted: false },
-      { name: "Technology Stack Setup", description: "Configure email, CRM access, and mobile apps", category: "setup", required: true, order: 6, estimatedMinutes: 45, aiAssisted: true },
-      { name: "CRM Training Module", description: "Complete CRM basics training course", category: "training", required: true, order: 7, estimatedMinutes: 60, aiAssisted: true },
-      { name: "Fair Housing Compliance", description: "Complete required fair housing training", category: "compliance", required: true, order: 8, estimatedMinutes: 90, aiAssisted: true },
-      { name: "Configure Video Persona", description: "Setup D-ID avatar and ElevenLabs voice for AI videos", category: "setup", required: false, order: 9, estimatedMinutes: 30, aiAssisted: true },
-      { name: "Mentor Assignment", description: "Get matched with experienced mentor", category: "mentorship", required: true, order: 10, estimatedMinutes: 15, aiAssisted: true },
-      { name: "First Lead Assignment", description: "Receive and respond to first lead", category: "training", required: false, order: 11, estimatedMinutes: 30, aiAssisted: true },
-      { name: "Transaction Training", description: "Complete transaction workflow training", category: "training", required: true, order: 12, estimatedMinutes: 120, aiAssisted: true },
-    ]
-
-    const { data: stepBrok } = await supabase.from("agents").select("brokerage_id").eq("id", agent.id).maybeSingle()
-    for (const step of defaultSteps) {
-      await supabase.from("agent_onboarding_steps").insert({
-        brokerage_id: stepBrok?.brokerage_id,
-        agent_id: agent.id,
-        session_id: session.id,
-        step_title: step.name,
-        step_description: `[${step.category}] ${step.description}`,
-        step_type: "task",
-        step_order: step.order,
-        ai_generated: step.aiAssisted,
-        status: "pending",
-      })
-    }
-
-    // Update recruit status if applicable (recruits.status CHECK is lowercase;
-    // there is no joined_at column — the provisioned fields capture the date).
-    if (params.recruitId) {
-      await supabase
-        .from("recruits")
-        .update({ status: "joined", updated_at: new Date().toISOString() })
-        .eq("id", params.recruitId)
-    }
-
-    revalidatePath("/dashboard/admin/users")
-    revalidatePath("/dashboard/recruiting-roi")
-
-    return {
-      success: true,
-      agentId: agent.id,
-      sessionId: session.id,
-      onboardingPlan,
-    }
-  } catch (error) {
-    console.error("Start onboarding error:", error)
-    return handleError(error, "startAgentOnboarding")
-  }
-}
-
-/**
- * Get agent onboarding status with AI insights
- */
-export async function getOnboardingStatus(agentId: string) {
-  if (!isValidUUID(agentId)) {
-    return { success: false, error: "Invalid agent ID" }
-  }
-
-  // Tenant for the AI cost ledger — SESSION, never `agentId` (§4).
-  const spendActor = await getAgentContext()
-  const supabase = await createClient()
-
-  try {
-    const { data: session, error: sessionError } = await supabase
-      .from("agent_onboarding_sessions")
-      .select(`
-        *,
-        agent:agents(*),
-        steps:agent_onboarding_steps(*)
-      `)
-      .eq("agent_id", agentId)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .single()
-
-    if (sessionError) throw sessionError
-
-    const completedSteps = session.steps.filter((s: any) => s.completed_at).length
-    const totalSteps = session.steps.length
-    const progressPercentage = Math.round((completedSteps / totalSteps) * 100)
-
-    // Generate AI status summary
-    const { text: aiSummary } = await generateText({
-      brokerageId: spendActor.brokerageId,
-      userId: spendActor.userId || null,
-      model: "openai/gpt-4o-mini",
-      prompt: `Summarize onboarding progress for agent:
-        
-Progress: ${progressPercentage}%
-Completed Steps: ${completedSteps}/${totalSteps}
-Days Since Start: ${Math.floor((Date.now() - new Date(session.start_date).getTime()) / (1000 * 60 * 60 * 24))}
-Target Completion: ${new Date(session.target_completion_date).toLocaleDateString()}
-Risk Factors: ${JSON.stringify(session.ai_risk_factors || [])}
-
-Provide a brief 2-3 sentence summary with encouragement and next priority action.`,
-    })
-
-    return {
-      success: true,
-      session: {
-        ...session,
-        progressPercentage,
-        completedSteps,
-        totalSteps,
-      },
-      aiSummary,
-    }
-  } catch (error) {
-    console.error("Get onboarding status error:", error)
-    return handleError(error, "getOnboardingStatus")
-  }
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `getOnboardingStatus`
+// deleted, exactly as this file's own migration map prescribed. SURVIVOR:
+// lib/kernel/agent-onboarding.ts:getAgentOnboardingDashboard (wired at
+// app/dashboard/onboarding/page.tsx:99 and
+// app/dashboard/onboarding/admin/agents/[id]/page.tsx:103), which reads the
+// live agent_onboarding + step-completion family. This twin read the
+// deprecated agent_onboarding_sessions family and spent AI tokens on a
+// per-view summary; a stripped-source census found zero callers outside the
+// app/actions/index.ts barrel, which itself has zero importers.
 
 /**
  * Complete an onboarding step with AI verification
@@ -621,228 +404,38 @@ The message should:
   }
 }
 
-/**
- * AI Onboarding Buddy - 24/7 question answering assistant
- */
-export async function askOnboardingBuddy(params: {
-  agentId: string
-  question: string
-}) {
-  if (!isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid agent ID" }
-  }
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `askOnboardingBuddy` deleted.
+// SURVIVOR: app/api/onboarding/assistant/route.ts (wired at
+// app/components/features/onboarding/AISetupAssistant.tsx) — the streaming
+// setup assistant that resolves identity from requireAuth, searches the
+// knowledge base, fires SETUP_ASSISTANT_QUERY_MADE, and writes the same
+// onboarding_ai_chats log on finish. This twin answered for any
+// caller-supplied agents.id and read context from the deprecated
+// agent_onboarding_sessions family; a stripped-source census found zero
+// callers outside the app/actions/index.ts barrel, which itself has zero
+// importers. Nothing merged.
 
-  // Tenant for the AI cost ledger — SESSION, never `params.agentId` (§4).
-  const spendActor = await getAgentContext()
-  const supabase = await createClient()
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `certifyAgent` deleted, as
+// this file's own migration map prescribed ("overlaps with claimCertification
+// — pick canonical"; canonical picked). SURVIVORS:
+// app/actions/onboarding/progress.ts:claimCertification +
+// checkCertEligibility (wired at
+// app/dashboard/onboarding/progress/progress-dashboard-client.tsx:275 and
+// OnboardingDashboardClient.tsx:164) — the session-scoped, eligibility-gated
+// certification path. This twin certified and ACTIVATED any caller-supplied
+// agents.id on the strength of a caller-supplied examScore — an unauthorized
+// activation door on a public "use server" endpoint. A stripped-source census
+// found zero callers outside the app/actions/index.ts barrel, which itself
+// has zero importers. Nothing merged (the recipient-resolution hardening it
+// carried already lives in lib/notifications/recipient-tenant.ts, where the
+// survivors reach it).
 
-  try {
-    // Get agent's onboarding context
-    const { data: session } = await supabase
-      .from("agent_onboarding_sessions")
-      .select("current_step, progress_percentage, status")
-      .eq("agent_id", params.agentId)
-      .single()
-
-    // Generate AI response
-    const { text: answer } = await generateText({
-      brokerageId: spendActor.brokerageId,
-      userId: spendActor.userId || null,
-      model: "openai/gpt-4o-mini",
-      prompt: `You are the AI Onboarding Buddy for new real estate agents on this platform.
-
-Your Role:
-- Help new agents learn the system
-- Answer questions about features and workflows
-- Provide encouragement and motivation
-- Guide them through tasks step-by-step
-- Never judge or make them feel stupid
-
-Personality:
-- Supportive and patient (like a friendly mentor)
-- Enthusiastic about their progress
-- Clear and concise in explanations
-- Uses analogies and examples
-- Celebrates small wins
-
-Agent Context:
-- Current Progress: ${session?.progress_percentage || 0}%
-- Current Step: ${session?.current_step || "Getting Started"}
-- Status: ${session?.status || "Starting"}
-
-Question: ${params.question}
-
-Provide a helpful, encouraging answer in 2-3 paragraphs. Include actionable next steps and relevant tips.`,
-    })
-
-    // Log the conversation
-    const { data: chatBrok } = await supabase.from("agents").select("brokerage_id").eq("id", params.agentId).maybeSingle()
-    await supabase.from("onboarding_ai_chats").insert({
-      brokerage_id: chatBrok?.brokerage_id,
-      agent_id: params.agentId,
-      question: params.question,
-      ai_response: answer,
-      created_at: new Date().toISOString(),
-    })
-
-    return {
-      success: true,
-      answer,
-    }
-  } catch (error) {
-    console.error("AI Buddy error:", error)
-    return handleError(error, "askOnboardingBuddy")
-  }
-}
-
-/**
- * Certify agent after final exam
- */
-export async function certifyAgent(params: {
-  agentId: string
-  examScore: number
-  sessionId: string
-}) {
-  if (!isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid agent ID" }
-  }
-
-  const supabase = await createClient()
-
-  try {
-    if (params.examScore < 90) {
-      return {
-        success: false,
-        message: `Score: ${params.examScore}%. Need 90% to certify. Review training materials and try again.`,
-      }
-    }
-
-    // Grant certification
-    await supabase
-      .from("agent_onboarding_sessions")
-      .update({
-        status: "completed",
-        progress_percentage: 100,
-        certification_achieved: true,
-        certified_at: new Date().toISOString(),
-        actual_completion_date: new Date().toISOString(),
-      })
-      .eq("id", params.sessionId)
-
-    // Activate agent
-    await supabase
-      .from("agents")
-      .update({
-        is_active: true,
-        onboarding_status: "completed",
-      })
-      .eq("id", params.agentId)
-
-    // Send certification notification.
-    //
-    // RECIPIENT + TENANT, resolved ONCE through the record this row is filed
-    // against: `params.agentId` is an agents.id, and `notifications.user_id` is
-    // `REFERENCES users(id)` — DISJOINT spaces. The previous
-    // `certAgent?.user_id ?? params.agentId` fell back ACROSS that boundary, so
-    // whenever the agents read came back empty (or was refused, which arrives
-    // identically when `error` is not destructured) the insert carried an
-    // agents.id into a users FK and Postgres refused it 23503. The congrats did
-    // not arrive late; it did not arrive.
-    //
-    // The tenant is the RECIPIENT's `users.brokerage_id` — the exact value
-    // app/api/dashboard/badge-counts/route.ts:62 compares against. Unstamped,
-    // `NULL = <uuid>` is NULL and the certification never counts toward the
-    // bell, on the one notification whose entire job is to be seen.
-    const certRecipient = await resolveAgentRecipient(supabase, params.agentId)
-    if (!certRecipient.ok) {
-      console.error(`[ai-agent-onboarding] certifyAgent: ${certRecipient.reason} — certification notification NOT written`)
-    } else if (!certRecipient.userId || !certRecipient.brokerageId) {
-      console.error(
-        `[ai-agent-onboarding] certifyAgent: agent ${params.agentId} resolves to no user or no brokerage — certification notification NOT written rather than written where the bell cannot count it`,
-      )
-    } else {
-      const { error: certNotifyError } = await supabase.from("notifications").insert({
-        user_id: certRecipient.userId,
-        brokerage_id: certRecipient.brokerageId,
-        type: "certification_achieved",
-        title: "Congratulations! You're Certified!",
-        body: "Welcome to the team. You now have full access to the platform.",
-        priority: "high",
-        created_at: new Date().toISOString(),
-      })
-      if (certNotifyError) {
-        console.error("[ai-agent-onboarding] certification notification insert refused:", certNotifyError.message)
-      }
-    }
-
-    revalidatePath("/dashboard/admin/users")
-
-    return {
-      success: true,
-      certified: true,
-      message: "Certification complete! Welcome to the team.",
-    }
-  } catch (error) {
-    console.error("Certify agent error:", error)
-    return handleError(error, "certifyAgent")
-  }
-}
-
-/**
- * Get onboarding analytics for admin dashboard
- */
-export async function getOnboardingAnalytics(brokerageId: string) {
-  if (!isValidUUID(brokerageId)) {
-    return { success: false, error: "Invalid brokerage ID" }
-  }
-
-  const supabase = await createClient()
-
-  try {
-    // Get all sessions for brokerage
-    const { data: sessions, error } = await supabase
-      .from("agent_onboarding_sessions")
-      .select(`
-        *,
-        agent:agents!inner(brokerage_id)
-      `)
-      .eq("agent.brokerage_id", brokerageId)
-
-    if (error) throw error
-
-    const analytics = {
-      totalOnboarding: sessions.length,
-      inProgress: sessions.filter((s: any) => s.status === "in_progress").length,
-      completed: sessions.filter((s: any) => s.status === "completed").length,
-      onHold: sessions.filter((s: any) => s.status === "on_hold").length,
-      averageCompletionDays: 0,
-      averageProgressPercentage: 0,
-      bottleneckSteps: [] as string[],
-    }
-
-    // Calculate averages
-    const completedSessions = sessions.filter((s: any) => s.status === "completed")
-    if (completedSessions.length > 0) {
-      const totalDays = completedSessions.reduce((sum: number, s: any) => {
-        const start = new Date(s.start_date)
-        const end = new Date(s.actual_completion_date)
-        return sum + Math.floor((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24))
-      }, 0)
-      analytics.averageCompletionDays = Math.round(totalDays / completedSessions.length)
-    }
-
-    const inProgressSessions = sessions.filter((s: any) => s.status === "in_progress")
-    if (inProgressSessions.length > 0) {
-      const totalProgress = inProgressSessions.reduce((sum: number, s: any) => sum + (s.progress_percentage || 0), 0)
-      analytics.averageProgressPercentage = Math.round(totalProgress / inProgressSessions.length)
-    }
-
-    return {
-      success: true,
-      analytics,
-    }
-  } catch (error) {
-    console.error("Get analytics error:", error)
-    return handleError(error, "getOnboardingAnalytics")
-  }
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `getOnboardingAnalytics`
+// deleted. SURVIVOR: app/actions/onboarding/progress.ts:
+// getAdminOnboardingOverview (wired at
+// app/dashboard/onboarding/OnboardingDashboardClient.tsx:228) — the
+// admin-gated, session-tenanted onboarding rollup over the live kernel
+// family. This twin took brokerageId FROM THE CALLER (§4) and aggregated the
+// deprecated agent_onboarding_sessions family; a stripped-source census found
+// zero callers outside the app/actions/index.ts barrel, which itself has zero
+// importers.

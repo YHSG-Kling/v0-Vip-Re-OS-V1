@@ -2,10 +2,6 @@
 
 import { isValidUUID } from "@/lib/validations"
 import {
-  launchAIISACampaignService,
-  queueAIISACallService,
-  getAIISACampaignsService,
-  getAIISACallsService,
   retryFailedCallsService,
   updateCampaignStatusService,
 } from "@/lib/application"
@@ -89,63 +85,42 @@ async function runAiIsaComplianceCheck(params: {
     },
   })
 }
-// Launch AI ISA campaign
-export async function launchAIISACampaign(params: {
-  campaignType: string
-  campaignName?: string
-  contactSegment: any
-  loginId: string
-}) {
-  const { loginId } = params
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — the legacy loginId-shaped ISA
+// quartet was deleted; a stripped-source census found zero callers for any of
+// them outside the app/actions/index.ts barrel, which itself has zero
+// importers. Survivors, all live and session-tenanted:
+//   · launchAIISACampaign → `createISACampaign` (below) creates the campaign;
+//     dialing is the HUMAN-GATED batch lane
+//     (lib/ai-isa/voice-dial-batch.ts:proposeIsaDialBatch/approveIsaDialBatch,
+//     wired at app/dashboard/admin/voice-dial-batches). The deleted twin
+//     dialed an entire caller-named segment immediately with no approval — the
+//     exact shape the gated lane exists to prevent (§5: AI ISA is paid
+//     autonomous outbound).
+//   · queueAIISACall → the single-call door is app/api/voice/initiate-call
+//     (writes voice_calls + ai_isa_calls); its engine,
+//     lib/application/ai-isa.ts:queueAIISACallService, SURVIVES as the
+//     internal engine of `retryFailedCalls` below.
+//   · getAIISACampaigns → `listISACampaigns` (below; wired at
+//     app/dashboard/isa/page.tsx and communications/outreach).
+//   · getAIISACalls → the voice ISA console's own tenant-scoped reads
+//     (app/dashboard/voice/isa/page.tsx, contact-history-sheet.tsx).
 
-  if (!isValidUUID(loginId)) {
-    return { success: false, error: "Invalid login ID" }
-  }
-
-  try {
-    return await launchAIISACampaignService(params)
-  } catch (error: any) {
-    console.error("[AI ISA] Campaign launch failed:", error)
-    return { success: false, error: error.message }
-  }
-}
-
-// Queue individual AI ISA call
-export async function queueAIISACall(campaignId: string, contactId: string, loginId: string) {
-  try {
-    return await queueAIISACallService(campaignId, contactId, loginId)
-  } catch (error: any) {
-    console.error("[AI ISA] Call queueing failed:", error)
-    return { success: false, error: error.message }
-  }
-}
-
-// Get AI ISA campaign stats
-export async function getAIISACampaigns(loginId: string) {
-  if (!isValidUUID(loginId)) {
-    return []
-  }
-
-  return await getAIISACampaignsService(loginId)
-}
-
-// Get AI ISA call history
-export async function getAIISACalls(campaignId?: string, loginId?: string) {
-  if (loginId && !isValidUUID(loginId)) {
-    return []
-  }
-
-  return await getAIISACallsService(campaignId, loginId)
-}
-
-// Retry failed calls
-export async function retryFailedCalls(loginId: string) {
-  if (!isValidUUID(loginId)) {
-    return { success: false, error: "Invalid login ID" }
-  }
+/**
+ * Retry failed AI ISA calls — re-dials calls whose OUTCOME was
+ * no_answer/busy/failed/canceled and that are at least 4 hours old.
+ *
+ * WIRED (lane E2 2026-08-28) to the voice ISA console
+ * (app/dashboard/voice/isa). Identity comes from the SESSION (§4) — the old
+ * signature took a caller-supplied loginId, which both violated tenancy and
+ * never matched: voice_calls.agent_id is an agents.id, and the loginId passed
+ * around this file is a users.id (disjoint spaces, §3).
+ */
+export async function retryFailedCalls() {
+  const caller = await requireCaller()
+  if (!caller.ok) return { success: false, error: caller.error }
 
   try {
-    return await retryFailedCallsService(loginId)
+    return await retryFailedCallsService(caller.userId)
   } catch (error: any) {
     console.error("[AI ISA] Retry failed calls error:", error)
     return { success: false, error: error.message }
@@ -246,6 +221,10 @@ export async function createISACampaign(params: {
       channels:       cleanChannels,
       target_segment: params.targetSegment ?? {},
       status:         "draft",
+      // is_active mirrors status — merged from the deleted legacy launcher
+      // (lane E2 2026-08-28), which was this column's only writer while the
+      // voice ISA page and the stale-lead processor both FILTER on it.
+      is_active:      false,
       leads_targeted: 0,
       touches_sent:   0,
       conversions:    0,
@@ -293,7 +272,9 @@ export async function toggleCampaignStatus(
 
   const { error } = await service
     .from("ai_isa_campaigns")
-    .update({ status: newStatus, updated_at: new Date().toISOString() })
+    // is_active mirrors status (see createISACampaign) — the readers that
+    // filter .eq("is_active", true) must agree with the status vocabulary.
+    .update({ status: newStatus, is_active: newStatus === "active", updated_at: new Date().toISOString() })
     .eq("id", campaignId)
     .eq("brokerage_id", auth.brokerageId)
   if (error) return { success: false, error: error.message }

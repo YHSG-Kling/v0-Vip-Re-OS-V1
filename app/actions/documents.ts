@@ -69,14 +69,30 @@ export async function getDocuments(params?: { contactId?: string; transactionId?
 
 export async function deleteDocument(documentId: string) {
   try {
+    // SESSION GATE + TENANT ANCHOR (added when this was wired to the
+    // transaction detail page's document list, lane E2 2026-08-28). Deleting a
+    // record's bytes on the strength of a raw uuid, gated only by RLS, is the
+    // shape this codebase has been burned by; the document's transaction must
+    // belong to the caller's brokerage or the delete is refused.
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) {
+      return { success: false, error: "Not authenticated" }
+    }
+
     const supabase = await createClient()
-    
-    // Get document to delete blob
-    const { data: doc } = await supabase
+
+    // Get document to check tenancy and delete blob
+    const { data: doc, error: docErr } = await supabase
       .from("transaction_documents")
-      .select("storage_url")
+      .select("storage_url, brokerage_id")
       .eq("id", documentId)
       .single()
+    if (docErr) {
+      return { success: false, error: docErr.message }
+    }
+    if (((doc as any)?.brokerage_id ?? null) !== ctx.brokerageId) {
+      return { success: false, error: "Forbidden" }
+    }
 
     // DELETE THE OBJECT, NOT A BLOB. `del(url)` was a Vercel Blob call against a
     // URL that is now a Supabase object URL — it could never have matched, so
@@ -109,13 +125,20 @@ export async function deleteDocument(documentId: string) {
       }
     }
 
-    // Delete from database
-    const { error } = await supabase
+    // Delete from database. `.select()` and COUNT — a delete that matches
+    // nothing resolves with error=null exactly like one that worked (§3), and
+    // here a zero-row delete means RLS refused or the row is already gone;
+    // either way the caller must not be told the delete happened.
+    const { data: deletedRows, error } = await supabase
       .from("transaction_documents")
       .delete()
       .eq("id", documentId)
+      .select("id")
 
     if (error) throw error
+    if (!deletedRows || deletedRows.length === 0) {
+      return { success: false, error: "Document row was not deleted (not found, or access refused)" }
+    }
 
     revalidatePath("/dashboard")
     return { success: true }

@@ -77,6 +77,7 @@ import {
   Share2,
   ChevronRight,
   XCircle,
+  Trash2,
 } from "lucide-react"
 import { format } from "date-fns"
 import { createClient } from "@/lib/supabase/client"
@@ -108,6 +109,10 @@ import {
   checkTransactionDisclosures,
   shareDocumentAnalysisWithClient,
 } from "@/app/actions/ai-transaction-documents"
+// Lane E2 2026-08-28: deleteDocument WIRED — the delete verb for
+// transaction_documents had no surface anywhere (session-gated + tenancy-
+// checked inside the action; removes the storage object with the row).
+import { deleteDocument } from "@/app/actions/documents"
 import {
   resolveFormsProviderAction,
   loadAvailableFormsAction,
@@ -989,6 +994,7 @@ export function TransactionDetailClient({
 
   // AI Document Intelligence state
   const [analyzingDocId, setAnalyzingDocId] = useState<string | null>(null)
+  const [deletingDocId, setDeletingDocId] = useState<string | null>(null)
   const [docAnalysisResults, setDocAnalysisResults] = useState<Record<string, Record<string, unknown>>>({})
   const [expandedDocId, setExpandedDocId] = useState<string | null>(null)
   const [disclosureResult, setDisclosureResult] = useState<{
@@ -3936,6 +3942,31 @@ export function TransactionDetailClient({
                                     AI Analyze
                                   </Button>
                                 )}
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="text-xs h-7 gap-1 text-destructive hover:bg-destructive/10"
+                                  disabled={deletingDocId === d.id}
+                                  title="Delete document"
+                                  onClick={async () => {
+                                    if (!window.confirm(`Delete "${d.doc_label ?? d.doc_type}"? The file is removed from storage as well.`)) return
+                                    setDeletingDocId(d.id)
+                                    const res = await deleteDocument(d.id)
+                                    setDeletingDocId(null)
+                                    if ((res as any)?.success) {
+                                      toast.success("Document deleted")
+                                      router.refresh()
+                                    } else {
+                                      toast.error((res as any)?.error?.message ?? (res as any)?.error ?? "Delete failed")
+                                    }
+                                  }}
+                                >
+                                  {deletingDocId === d.id ? (
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                  ) : (
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  )}
+                                </Button>
                               </div>
                             </div>
 

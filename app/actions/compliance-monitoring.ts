@@ -1,19 +1,15 @@
 "use server"
 
 import {
-  logAuditEventService,
   checkComplianceStatusService,
   resolveComplianceAlertService,
   resolveCompRiskFlagService,
   trackCertificationExpirationService,
-  analyzeFairHousingRiskService,
   monitorTRIDComplianceService,
-  applyDocumentRetentionService,
   exportAuditTrailService,
   scanContentComplianceService,
   submitContentForApprovalService,
   reviewContentApprovalService,
-  logCommunicationWithComplianceService,
   getApprovedContentLibraryService,
   getPendingApprovalsService,
   getComplianceViolationsService,
@@ -23,22 +19,15 @@ import {
 } from "@/lib/application"
 import { isValidUUID } from "@/lib/validations"
 
-// Audit logging
-export async function logAuditEvent(params: {
-  userId: string
-  action: string
-  entityType: string
-  entityId: string
-  changes?: any
-  ipAddress?: string
-  userAgent?: string
-  complianceRelevant?: boolean
-}) {
-  if (!params.userId || !params.action || !params.entityType || !params.entityId) {
-    throw new Error("userId, action, entityType and entityId are required")
-  }
-  return logAuditEventService(params)
-}
+// TOMBSTONE (§1, lane E2 2026-08-28) — `logAuditEvent` deleted. Audit logging
+// lives at the call sites as direct `supabase.from("audit_log").insert(...)`
+// writes (e.g. app/actions/billing.ts:633, lib/kernel/transactions.ts:1457,
+// app/actions/tenant-sso.ts:115) and, for session-derived user activity, at
+// app/actions/workflows.ts:logUserActivity. This wrapper had zero callers
+// outside the app/actions/index.ts barrel (itself importer-less) and was also
+// the §4 anti-shape: a public "use server" endpoint accepting a caller-supplied
+// userId/ip/UA as audit truth — any authenticated session could write audit
+// rows attributed to anyone.
 
 // Check compliance status for a transaction
 export async function checkComplianceStatus(transactionId: string) {
@@ -71,18 +60,21 @@ export async function trackCertificationExpiration(agentId: string) {
   return trackCertificationExpirationService(agentId)
 }
 
-// Analyze fair housing risk with AI
-export async function analyzeFairHousingRisk(params: {
-  contactId: string
-  agentId: string
-  interactionType: string
-  communicationText: string
-}) {
-  if (!isValidUUID(params.contactId)) throw new Error("Invalid contact ID")
-  if (!isValidUUID(params.agentId))  throw new Error("Invalid agent ID")
-  if (!params.communicationText?.trim()) throw new Error("communicationText is required")
-  return analyzeFairHousingRiskService(params)
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `analyzeFairHousingRisk`
+// deleted. The fair-housing scan → compliance_flags capability lives, WIRED,
+// in two places that cover both directions of content:
+//   · generated content — lib/ai/models.ts:checkCompliance (the routed
+//     generation pipeline) runs evaluateContentCompliance on AI output and
+//     writes fair_housing_violation compliance_flags;
+//   · outbound sends — the kernel dispatch gate
+//     (evaluateOutboundCompliance, reached from lib/providers/dispatch) scans
+//     human/agent communications before they leave;
+//   · ad-hoc content — `scanContentCompliance` below (DB-driven prohibited
+//     phrases + AI), which the content approval flow calls.
+// This orphan was a fourth spelling with a hand-rolled red-flag list, and a
+// stripped-source census found zero callers outside the app/actions/index.ts
+// barrel, which itself has zero importers. Nothing merged: every capability it
+// had exists richer on the survivors.
 
 // Monitor TRID compliance
 export async function monitorTRIDCompliance(transactionId: string) {
@@ -90,11 +82,16 @@ export async function monitorTRIDCompliance(transactionId: string) {
   return monitorTRIDComplianceService(transactionId)
 }
 
-// Apply document retention policies
-export async function applyDocumentRetention(transactionId: string) {
-  if (!isValidUUID(transactionId)) throw new Error("Invalid transaction ID")
-  return applyDocumentRetentionService(transactionId)
-}
+// TOMBSTONE (§1, lane E2 2026-08-28) — the `applyDocumentRetention` action
+// wrapper was deleted; the CAPABILITY was wired instead of the paper door.
+// SURVIVOR: lib/application/compliance-monitoring.ts:applyDocumentRetentionService,
+// now reached from the daily compliance cron
+// (app/api/cron/compliance-monitoring/route.ts), which sweeps recently closed
+// transactions and stamps document_retention rows automatically. Retention is
+// a records-law obligation (§5: real-estate records are kept), so it must not
+// depend on a human remembering to press a button; the census found this
+// wrapper had zero callers outside the importer-less app/actions/index.ts
+// barrel, i.e. retention had never run at all.
 
 // Export audit trail
 export async function exportAuditTrail(params: {
@@ -153,23 +150,17 @@ export async function reviewContentApproval(data: {
   return reviewContentApprovalService(data)
 }
 
-// Log communication with compliance check
-export async function logCommunicationWithCompliance(data: {
-  userId: string
-  agentId?: string
-  contactId?: string
-  leadId?: string
-  communicationType: string
-  leadTemperature: string
-  contentId?: string
-  contentSnapshot: string
-  sentVia?: string
-}) {
-  if (!data.userId)           throw new Error("userId is required")
-  if (!data.communicationType) throw new Error("communicationType is required")
-  if (!data.leadTemperature)   throw new Error("leadTemperature is required")
-  return logCommunicationWithComplianceService(data)
-}
+// TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `logCommunicationWithCompliance`
+// deleted. SURVIVOR: lib/services/communication.service.tsx:logCommunication,
+// the communication_audit_log writer that real sends actually reach. What this
+// orphan had that the survivor lacked was MERGED onto the survivor first:
+// lead_temperature + was_approved_content on the audit row, and the cold-lead
+// channel rule (compliance_passed=false + a compliance_flags row when a cold
+// lead is reached outside email/print) — the exact columns the daily
+// compliance cron's cold-lead and unapproved-content sweeps read, which could
+// match nothing while their only writer was this uncalled wrapper. A
+// stripped-source census found zero callers outside the app/actions/index.ts
+// barrel, which itself has zero importers.
 
 // Get approved content library
 export async function getApprovedContentLibrary(filters?: {
@@ -211,14 +202,28 @@ export async function createTRIDTimeline(transactionId: string) {
   return createTRIDTimelineService(transactionId)
 }
 
+// The four date columns a TRID milestone may write. The service applies
+// `updateData[milestone] = date` — an unconstrained column name here would let
+// a caller write compliance_status or violations directly, so the vocabulary
+// is closed at the door (lane E2 2026-08-28, hardened while wiring the
+// transaction compliance tab's milestone dialog to this action).
+// NOT exported as a value: "use server" files may only export async functions.
+const TRID_MILESTONES = [
+  "loan_application_date",
+  "loan_estimate_delivered_date",
+  "closing_disclosure_delivered_date",
+  "scheduled_close_date",
+] as const
+export type TridMilestone = (typeof TRID_MILESTONES)[number]
+
 // Update TRID milestone
 export async function updateTRIDMilestone(params: {
   transactionId: string
-  milestone: string
+  milestone: TridMilestone
   date: string
 }) {
   if (!isValidUUID(params.transactionId)) throw new Error("Invalid transaction ID")
-  if (!params.milestone)                   throw new Error("milestone is required")
+  if (!TRID_MILESTONES.includes(params.milestone as TridMilestone)) throw new Error("Unknown TRID milestone")
   if (!params.date)                        throw new Error("date is required")
   return updateTRIDMilestoneService(params)
 }

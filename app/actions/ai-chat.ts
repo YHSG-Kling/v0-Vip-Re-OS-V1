@@ -1016,10 +1016,47 @@ export async function endChatSession(sessionId: string) {
     })
     .eq("id", sessionId)
     .eq("brokerage_id", identity.brokerageId)
-    .select("id")
+    .select("id, contact_id, agent_id, type")
 
   if (error) throw error
   if (!data || data.length === 0) throw new Error("That conversation was not found")
+
+  // ── CONVERSATION ANALYTICS (lane E2 2026-08-28: logConversationMetadata WIRED) ──
+  // conversation_logs + conversation_audit_flags feed the Communication
+  // Intelligence dashboard (app/dashboard/communications/intelligence), whose
+  // AuditFlagsTab/ComplianceTab review flags via reviewAuditFlag — but NOTHING
+  // in the tree wrote either table: the reviewers were reviewing rows that
+  // could never exist. Ending a chat session is the one moment a conversation
+  // is complete, so the sentiment/topic/compliance log is written here.
+  // Best-effort by design: analytics must never fail the close the user asked
+  // for — a refusal is logged inside logConversationMetadata, not swallowed.
+  const closed = data[0] as { id: string; contact_id: string | null; agent_id: string | null; type: string | null }
+  if (closed.contact_id) {
+    try {
+      const { data: msgs } = await supabase
+        .from("messages")
+        .select("body, direction, created_at")
+        .eq("conversation_id", closed.id)
+        .order("created_at", { ascending: true })
+        .limit(200)
+      if (msgs && msgs.length > 0) {
+        const { logConversationMetadata } = await import("@/app/actions/conversation-analytics")
+        await logConversationMetadata({
+          contactId: closed.contact_id,
+          agentId: closed.agent_id ?? undefined,
+          conversationHistory: msgs.map((m) => ({
+            role: m.direction === "outbound" ? "assistant" : "user",
+            content: m.body ?? "",
+            timestamp: m.created_at,
+          })),
+          channel: closed.type ?? "ai_assistant",
+          conversationType: "general_inquiry",
+        })
+      }
+    } catch (analyticsErr) {
+      console.error("[ai-chat] conversation analytics log failed (session close unaffected):", analyticsErr)
+    }
+  }
 
   revalidatePath("/dashboard/chat")
   return { success: true }
