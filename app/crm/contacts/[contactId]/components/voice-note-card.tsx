@@ -92,13 +92,15 @@ export function VoiceNoteCard({ contactId }: { contactId: string }) {
   }, [])
 
   const startDictation = useCallback(() => {
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-    if (!SR) {
+    // Named for what the message names (error-message-honesty): the condition
+    // and the sentence the agent reads must be about the same thing.
+    const speechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+    if (!speechRecognition) {
       setError("This browser has no speech recognition — type or paste the note instead.")
       return
     }
     setError(null)
-    const recognition = new SR()
+    const recognition = new speechRecognition()
     recognition.continuous = true
     recognition.interimResults = false
     recognition.lang = "en-US"
@@ -132,8 +134,8 @@ export function VoiceNoteCard({ contactId }: { contactId: string }) {
   }, [])
 
   async function save() {
-    const text = transcript.trim()
-    if (!text) {
+    const note = transcript.trim()
+    if (!note) {
       setError("Nothing to save yet — dictate or type the note first.")
       return
     }
@@ -145,7 +147,7 @@ export function VoiceNoteCard({ contactId }: { contactId: string }) {
       const res = await fetch(`/api/contacts/${contactId}/voice-note`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript: text }),
+        body: JSON.stringify({ transcript: note }),
       })
       const payload = await res.json().catch(() => null)
       // READ THE RESPONSE. 400 (empty transcript), 404 (contact outside the
