@@ -126,6 +126,27 @@ type RentcastCaller = RentcastEligibilityContext & {
 }
 
 export interface RentcastSearchFilters {
+  /**
+   * ONE home, by its postal address — "123 Main St, Austin, TX 78701".
+   *
+   * RentCast's `/listings/sale` and `/listings/rental/long-term` both accept an
+   * `address` and return the listing(s) AT that address rather than an area
+   * sweep; it is the same parameter `/avm/value` takes above, which is why the
+   * spelling is not guessed here.
+   *
+   * WHY A SEARCH READER GREW A SINGLE-PROPERTY FILTER. The showing-route planner
+   * has to resolve a SPECIFIC saved home, not "homes in Austin". Under the owner
+   * ruling RentCast is the PLATFORM DEFAULT source for tenants who have not
+   * connected their own IDX Broker feed, so without this the default source could
+   * not answer the one question that lane asks. A second reader for it would be a
+   * second gate, a second meter and a second refusal contract over the same
+   * endpoint — §6 — so the endpoint's own parameter is exposed instead.
+   *
+   * Combines with the area filters (RentCast treats `address` + `radius` as a
+   * circular search); every caller in this tree passes it ALONE, meaning "this
+   * home".
+   */
+  address?: string
   city?: string
   state?: string
   zipCode?: string
@@ -297,22 +318,37 @@ export async function searchRentcastSaleListings(
 
   const qs = new URLSearchParams()
   const f = params.filters
-  if (f.city) qs.set("city", f.city)
-  if (f.state) qs.set("state", f.state)
-  if (f.zipCode) qs.set("zipCode", f.zipCode)
-  // MCP-verified contract: bedrooms/bathrooms/price are RANGE params — a plain
-  // "3" means EXACTLY 3 (a 3+ buyer would silently lose 4-bed homes); the min-
-  // only form is "3:*". Price has no minPrice/maxPrice — one `price=min:max`.
-  if (f.bedroomsMin != null && f.bedroomsMax != null) qs.set("bedrooms", `${f.bedroomsMin}:${f.bedroomsMax}`)
-  else if (f.bedroomsMin != null) qs.set("bedrooms", `${f.bedroomsMin}:*`)
-  if (f.bathroomsMin != null) qs.set("bathrooms", `${f.bathroomsMin}:*`)
-  if (f.priceMin != null && f.priceMax != null) qs.set("price", `${f.priceMin}:${f.priceMax}`)
-  else if (f.priceMin != null) qs.set("price", `${f.priceMin}:*`)
-  else if (f.priceMax != null) qs.set("price", `*:${f.priceMax}`)
-  if (f.propertyType) qs.set("propertyType", f.propertyType)
-  qs.set("status", f.status ?? "Active")
-  qs.set("limit", String(f.limit ?? 30))
-
+  // A SINGLE-HOME LOOKUP IS ITS OWN QUERY MODE, not one more filter.
+  // RentCast's search-queries reference (checked against the live docs
+  // 2026-08-28): "If you need to retrieve property data or listing information
+  // for a specific property, you can do so by providing its full address in the
+  // `address` query parameter, and OMITTING ALL OTHER QUERY PARAMETERS." An
+  // address sent beside the status/limit this builder always sets is not the
+  // documented shape, and the provider is then free to ignore it and answer an
+  // AREA search instead — the dangerous failure, because it returns 200 with
+  // listings, so a showing route would silently plan a tour around the wrong
+  // homes rather than reporting the one it could not resolve. Sent on BOTH
+  // readers: an accepted-and-dropped filter is the exact defect this file's
+  // rental reader was corrected for.
+  if (f.address) {
+    qs.set("address", f.address)
+  } else {
+    if (f.city) qs.set("city", f.city)
+    if (f.state) qs.set("state", f.state)
+    if (f.zipCode) qs.set("zipCode", f.zipCode)
+    // MCP-verified contract: bedrooms/bathrooms/price are RANGE params — a plain
+    // "3" means EXACTLY 3 (a 3+ buyer would silently lose 4-bed homes); the min-
+    // only form is "3:*". Price has no minPrice/maxPrice — one `price=min:max`.
+    if (f.bedroomsMin != null && f.bedroomsMax != null) qs.set("bedrooms", `${f.bedroomsMin}:${f.bedroomsMax}`)
+    else if (f.bedroomsMin != null) qs.set("bedrooms", `${f.bedroomsMin}:*`)
+    if (f.bathroomsMin != null) qs.set("bathrooms", `${f.bathroomsMin}:*`)
+    if (f.priceMin != null && f.priceMax != null) qs.set("price", `${f.priceMin}:${f.priceMax}`)
+    else if (f.priceMin != null) qs.set("price", `${f.priceMin}:*`)
+    else if (f.priceMax != null) qs.set("price", `*:${f.priceMax}`)
+    if (f.propertyType) qs.set("propertyType", f.propertyType)
+    qs.set("status", f.status ?? "Active")
+    qs.set("limit", String(f.limit ?? 30))
+  }
   try {
     const res = await rentcastGet(apiKey, "/listings/sale", qs)
     meterCall({
@@ -453,23 +489,41 @@ export async function searchRentcastRentalListings(
 
   const qs = new URLSearchParams()
   const f = params.filters
-  if (f.city) qs.set("city", f.city)
-  if (f.state) qs.set("state", f.state)
-  if (f.zipCode) qs.set("zipCode", f.zipCode)
-  // Same MCP-verified range contract as the for-sale search: a bare "3" means
-  // EXACTLY 3, so a min-only filter must be written "3:*". `price` here is the
-  // monthly rent range, which is the same query parameter on this endpoint.
-  if (f.bedroomsMin != null && f.bedroomsMax != null) qs.set("bedrooms", `${f.bedroomsMin}:${f.bedroomsMax}`)
-  else if (f.bedroomsMin != null) qs.set("bedrooms", `${f.bedroomsMin}:*`)
-  else if (f.bedroomsMax != null) qs.set("bedrooms", `*:${f.bedroomsMax}`)
-  if (f.bathroomsMin != null) qs.set("bathrooms", `${f.bathroomsMin}:*`)
-  if (f.priceMin != null && f.priceMax != null) qs.set("price", `${f.priceMin}:${f.priceMax}`)
-  else if (f.priceMin != null) qs.set("price", `${f.priceMin}:*`)
-  else if (f.priceMax != null) qs.set("price", `*:${f.priceMax}`)
-  if (f.propertyType) qs.set("propertyType", f.propertyType)
-  qs.set("status", f.status ?? "Active")
-  qs.set("limit", String(f.limit ?? 20))
-
+  // Same single-home lookup the for-sale reader sends. Honoured here rather than
+  // silently dropped: this reader has already been through one round of
+  // accepted-and-discarded filters and must not grow another.
+  // A SINGLE-HOME LOOKUP IS ITS OWN QUERY MODE, not one more filter.
+  // RentCast's search-queries reference (checked against the live docs
+  // 2026-08-28): "If you need to retrieve property data or listing information
+  // for a specific property, you can do so by providing its full address in the
+  // `address` query parameter, and OMITTING ALL OTHER QUERY PARAMETERS." An
+  // address sent beside the status/limit this builder always sets is not the
+  // documented shape, and the provider is then free to ignore it and answer an
+  // AREA search instead — the dangerous failure, because it returns 200 with
+  // listings, so a showing route would silently plan a tour around the wrong
+  // homes rather than reporting the one it could not resolve. Sent on BOTH
+  // readers: an accepted-and-dropped filter is the exact defect this file's
+  // rental reader was corrected for.
+  if (f.address) {
+    qs.set("address", f.address)
+  } else {
+    if (f.city) qs.set("city", f.city)
+    if (f.state) qs.set("state", f.state)
+    if (f.zipCode) qs.set("zipCode", f.zipCode)
+    // Same MCP-verified range contract as the for-sale search: a bare "3" means
+    // EXACTLY 3, so a min-only filter must be written "3:*". `price` here is the
+    // monthly rent range, which is the same query parameter on this endpoint.
+    if (f.bedroomsMin != null && f.bedroomsMax != null) qs.set("bedrooms", `${f.bedroomsMin}:${f.bedroomsMax}`)
+    else if (f.bedroomsMin != null) qs.set("bedrooms", `${f.bedroomsMin}:*`)
+    else if (f.bedroomsMax != null) qs.set("bedrooms", `*:${f.bedroomsMax}`)
+    if (f.bathroomsMin != null) qs.set("bathrooms", `${f.bathroomsMin}:*`)
+    if (f.priceMin != null && f.priceMax != null) qs.set("price", `${f.priceMin}:${f.priceMax}`)
+    else if (f.priceMin != null) qs.set("price", `${f.priceMin}:*`)
+    else if (f.priceMax != null) qs.set("price", `*:${f.priceMax}`)
+    if (f.propertyType) qs.set("propertyType", f.propertyType)
+    qs.set("status", f.status ?? "Active")
+    qs.set("limit", String(f.limit ?? 20))
+  }
   try {
     const res = await rentcastGet(apiKey, "/listings/rental/long-term", qs)
     meterCall({

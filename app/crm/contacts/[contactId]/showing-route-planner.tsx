@@ -33,13 +33,22 @@
  * `smart_showing_recommendations_select` is has_brokerage_access(brokerage_id),
  * and has_brokerage_access(NULL) is false for everyone.
  *
- * WHAT WE SEND AS A "propertyId": the action hands each entry to
- * IDXBrokerClient.searchProperties(query), which is a free-text query against the
- * brokerage's IDX feed — not a uuid lookup. The MLS number is the precise form of
- * that query; the street address is the fallback for a saved home with no MLS
- * number on file. A saved home that carries neither cannot be looked up, so it is
- * shown as un-selectable rather than silently dropped from a route the agent
- * thinks it is in.
+ * WHAT WE SEND PER SAVED HOME, AND WHY IT IS TWO IDENTIFIERS AND NOT ONE.
+ * The action resolves each home through whichever source serves this tenant —
+ * the PLATFORM's RentCast by default, the tenant's own IDX Broker feed when they
+ * have connected one (owner ruling; the precedence lives in
+ * lib/property/listing-source.ts). The two sources do not resolve a home the same
+ * way: an IDX feed takes a free-text query, and an MLS number is the precise form
+ * of it, while RentCast resolves a POSTAL ADDRESS. Sending only the IDX query —
+ * which is what this surface used to send — left every MLS-numbered saved home
+ * unresolvable the moment RentCast, the default, was the source.
+ *
+ * So each home goes out with both: `idxQuery` (MLS number, else the address) and
+ * `address` (null when the saved home has none on file). A saved home that
+ * carries NEITHER an MLS number nor an address cannot be looked up by any source,
+ * so it is shown as un-selectable rather than silently dropped from a route the
+ * agent thinks it is in — and a home that a source simply could not answer comes
+ * back named in `unresolved` and is shown here, for the same reason.
  */
 
 import { useEffect, useState, useTransition } from "react"
@@ -61,13 +70,23 @@ interface SavedHome {
   list_price: number | null
 }
 
-/** The free-text query the IDX feed can actually resolve this home by. */
-function idxQueryFor(h: SavedHome): string | null {
+/** What each source needs to resolve this home — or null when neither can. */
+interface HomeReference {
+  /** The free-text query an IDX feed resolves by. MLS number first, else the address. */
+  idxQuery: string
+  /** The postal address RentCast resolves by. Null when the home has none on file. */
+  address: string | null
+  /** What to call this home when a source could not answer for it. */
+  label: string
+}
+
+function referenceFor(h: SavedHome): HomeReference | null {
   const mls = h.mls_number?.trim()
-  if (mls) return mls
-  const addr = h.property_address?.trim()
-  if (!addr) return null
-  return [addr, h.city?.trim(), h.state?.trim()].filter(Boolean).join(", ")
+  const street = h.property_address?.trim()
+  const address = street ? [street, h.city?.trim(), h.state?.trim()].filter(Boolean).join(", ") : null
+  const idxQuery = mls || address
+  if (!idxQuery) return null
+  return { idxQuery, address, label: street || (mls ? `MLS ${mls}` : "Saved home") }
 }
 
 export function ShowingRoutePlanner({ contactId }: { contactId: string }) {
@@ -83,6 +102,8 @@ export function ShowingRoutePlanner({ contactId }: { contactId: string }) {
   const [startLocation, setStartLocation] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  /** Homes the chosen source could not answer for, with the reason it gave. */
+  const [unresolved, setUnresolved] = useState<Array<{ home: string; why: string }>>([])
   const [isPending, startTransition] = useTransition()
 
   useEffect(() => {
@@ -117,9 +138,10 @@ export function ShowingRoutePlanner({ contactId }: { contactId: string }) {
   function build() {
     setError(null)
     setNotice(null)
+    setUnresolved([])
 
     const chosen = (homes ?? []).filter((h) => selected.has(h.id))
-    const queries = chosen.map(idxQueryFor).filter((q): q is string => !!q)
+    const queries = chosen.map(referenceFor).filter((q): q is HomeReference => !!q)
     if (queries.length < 2) {
       setError("Pick at least two saved homes — a route needs somewhere to go and somewhere to go next.")
       return
@@ -133,10 +155,16 @@ export function ShowingRoutePlanner({ contactId }: { contactId: string }) {
       try {
         const res = await optimizeShowingRoute({
           contactId,
-          propertyIds: queries,
+          properties: queries,
           preferredDate: date,
           startLocation: startLocation.trim(),
         })
+        // HOMES THE SOURCE COULD NOT ANSWER ARE SHOWN WHETHER OR NOT THE PLAN
+        // SAVED. They come back on both outcomes — a plan built over four of six
+        // homes is a different plan from the one the agent asked for, and a
+        // refusal (an exhausted vendor budget, an unset platform key) names itself
+        // here instead of looking like "this buyer's homes are not for sale".
+        setUnresolved(res?.unresolved ?? [])
         // The action reports a REFUSED insert as { success: false, error } while
         // still handing back the route it built. Saying "plan saved" over that
         // would be the exact lie the card was built to avoid — the plan is not on
@@ -180,7 +208,7 @@ export function ShowingRoutePlanner({ contactId }: { contactId: string }) {
         ) : (
           <ul className="space-y-1.5 max-h-64 overflow-y-auto">
             {homes.map((h) => {
-              const query = idxQueryFor(h)
+              const query = referenceFor(h)
               return (
                 <li key={h.id}>
                   <label
@@ -210,7 +238,7 @@ export function ShowingRoutePlanner({ contactId }: { contactId: string }) {
                       </span>
                       {!query && (
                         <span className="block text-xs text-amber-700">
-                          No MLS number and no address on this saved home — the feed cannot look it up.
+                          No MLS number and no address on this saved home — no property source can look it up.
                         </span>
                       )}
                     </span>
@@ -246,6 +274,23 @@ export function ShowingRoutePlanner({ contactId }: { contactId: string }) {
 
         {error && <p className="text-xs text-destructive">{error}</p>}
         {notice && <p className="text-xs text-emerald-700">{notice}</p>}
+
+        {unresolved.length > 0 && (
+          <div className="rounded-md border border-amber-300 bg-amber-50 p-2">
+            <p className="text-xs font-medium text-amber-900">
+              {unresolved.length === 1
+                ? "One home is not in this plan:"
+                : `${unresolved.length} homes are not in this plan:`}
+            </p>
+            <ul className="mt-1 space-y-0.5">
+              {unresolved.map((u, i) => (
+                <li key={`${u.home}-${i}`} className="text-xs text-amber-800">
+                  <span className="font-medium">{u.home}</span> — {u.why}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         <Button size="sm" onClick={build} disabled={isPending || !homes || homes.length === 0}>
           {isPending && <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />}

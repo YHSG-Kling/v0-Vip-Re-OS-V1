@@ -2966,6 +2966,18 @@ Detect churn risk and provide save strategy:
 // SHOWING ROUTE OPTIMIZER
 // ============================================
 
+/**
+ * The vendor-ledger lane a showing-route property lookup spends under.
+ *
+ * NOT `buyer_search`, which is the RentCast readers' default and the lane a
+ * buyer's AREA search files under. Touring a shortlist the buyer has ALREADY
+ * saved is a different lane with a different cost shape, and RentCast metering
+ * used to hard-code `buyer_search` on every reader — so the one question the
+ * vendor ledger exists to answer ("what is this spend actually going to?") had a
+ * single possible answer and it was wrong for most calls.
+ */
+const SHOWING_ROUTE_SYSTEM_SOURCE = "showing_route"
+
 // STILL UNWIRED, AND THE READER IS ALREADY BUILT.
 //
 // app/crm/contacts/[contactId]/page.tsx:224 renders an "AI Showing Plan" card off
@@ -2984,14 +2996,69 @@ Detect churn risk and provide save strategy:
 //   · the insert's error was never destructured, so a refusal returned
 //     `{ success: true }` with the route rendered on screen and nothing stored.
 //
-// CONTACTS ONLY — OWNER RULING (this wave). The route is built from an IDX Broker
-// feed, so the identity is resolved against contacts BEFORE the client exists,
-// and a non-contact is refused rather than served. The parameter is named for the
+// CONTACTS ONLY — OWNER RULING. The route is built from a paid property feed, so
+// the identity is resolved against contacts BEFORE any provider exists, and a
+// non-contact is refused rather than served. The parameter is named for the
 // class it now holds; it previously carried an unchecked id straight into the
-// row's leads-class column.
+// row's other-class column.
+//
+// ─── THE SOURCE IS NO LONGER IDX-ONLY — OWNER RULING (this wave) ─────────────
+// "smart showing routes only looks at idx broker which is only set by the users
+//  if they have an account, we are defaulting the platform provider rentcast
+//  functionality."
+//
+// This function used to open with `IDXBrokerClient.forBrokerage(...)` and resolve
+// every saved home through `searchProperties`. IDX Broker is TENANT-SETTABLE
+// (lib/providers/tenancy-matrix.ts: `tenant_optional_key`), so for the tenants who
+// never connected one — the majority, by construction — the feed resolved nothing
+// and the planner silently produced a route over zero homes. A source that most
+// tenants do not have is not a default.
+//
+// RentCast is the PLATFORM default (same matrix, `platform_metered`: one platform
+// account serving every tenant, per-tenant metered and budget-gated, never
+// user-connectable), and a tenant's own IDX feed "changes which SOURCE answers a
+// listing search". So the precedence is the one the product already has, asked
+// through the modules that already own it — there is no second cascade here:
+//
+//   lib/property/rentcast-eligibility.ts  → THE one gate. Answers, in order:
+//        has this tenant connected their OWN IDX Broker feed / could we not tell /
+//        is the platform key set / is the vendor budget exhausted — and names
+//        which one said no.
+//   lib/property/listing-source.ts        → THE one selector. CONNECTION decides,
+//        not result counts: IDX when the tenant owns a feed, RentCast otherwise.
+//
+// The tiers are EXCLUSIVE, exactly as lib/property/external-listings-search.ts
+// states them: a connected IDX feed that returns nothing for a home returns
+// nothing. It does not fall through to RentCast, because the ruling turns on the
+// CONNECTION and not on what the connection returned.
+//
+// HONEST ABOUT WHAT IT COULD NOT RESOLVE. A home the chosen source cannot answer
+// is REPORTED by address, never dropped — the planner already refuses to hide a
+// saved home it cannot look up (it renders those un-selectable) and this keeps
+// that discipline on the server side, where the provider actually answers. And a
+// budget refusal is surfaced as a REFUSAL: `resolveRentcastEligibility` returns
+// `budget_exhausted` with its own sentence, and this function returns that
+// sentence instead of building a plan over an empty list, because "the platform
+// paused paid property data this month" and "this buyer's homes are not for sale"
+// must never render as the same screen.
 export async function optimizeShowingRoute(data: {
   contactId: string
-  propertyIds: string[]
+  /**
+   * The buyer's saved homes, each carrying BOTH identifiers, because the two
+   * sources resolve by different ones: an IDX feed takes a free-text query and an
+   * MLS number is the precise form of it, while RentCast resolves a POSTAL
+   * ADDRESS. Sending only the IDX query (what this action used to take) would
+   * leave every MLS-numbered saved home unresolvable the moment RentCast — the
+   * default — is the source.
+   */
+  properties: Array<{
+    /** MLS number when the saved home has one, else its address. Never empty. */
+    idxQuery: string
+    /** "123 Main St, Austin, TX" — null when the saved home carries no address. */
+    address: string | null
+    /** What to call this home in a report about homes that could not be resolved. */
+    label: string
+  }>
   preferredDate: string
   startLocation: string
 }) {
@@ -3024,17 +3091,130 @@ export async function optimizeShowingRoute(data: {
   if (routeCallerError) throw new Error(`Caller lookup failed: ${routeCallerError.message}`)
   const routeBrokerageId = routeCallerRow?.brokerage_id as string | undefined
   if (!routeBrokerageId) throw new Error("No brokerage on this account")
-  // This function had ALREADY resolved its tenant for the row it writes; the IDX
-  // client now uses THAT resolve rather than deriving the owner a second, different
-  // way. `routeCaller.id` is a users.id, which is what the agent tier of the
-  // ownership cascade is keyed on.
-  const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
-  const idxClient = await IDXBrokerClient.forBrokerage(routeBrokerageId, {
+  // This function had ALREADY resolved its tenant for the row it writes; the
+  // provider lane now uses THAT resolve rather than deriving the owner a second,
+  // different way. `routeCaller.id` is a users.id, which is what the agent tier of
+  // the ownership cascade is keyed on — `agents.id` and `contacts.id` are disjoint
+  // spaces and neither is ever substituted for it.
+  const routeTeamId = (routeCallerRow?.team_id as string | null | undefined) ?? null
+
+  // ── WHICH SOURCE ANSWERS THIS TENANT'S LOOKUP ────────────────────────────────
+  // ONE gate, ONE selector — both already own this question for the rest of the
+  // property lane. The gate is asked at the FULLEST scope this caller holds
+  // (agent → team → brokerage), so an agent who connected their own IDX Broker
+  // account is seen; a gate asked only at brokerage scope cannot see that tier and
+  // would spend the platform's RentCast against the ruling.
+  const { resolveRentcastEligibility } = await import("@/lib/property/rentcast-eligibility")
+  const { resolveListingSource } = await import("@/lib/property/listing-source")
+  const routeEligibility = await resolveRentcastEligibility({
+    brokerageId: routeBrokerageId,
     agentUserId: routeCaller.id,
-    teamId: (routeCallerRow?.team_id as string | null | undefined) ?? null,
+    teamId: routeTeamId,
+  })
+  const routeSource = resolveListingSource({
+    hasIdx: routeEligibility.idx.status === "connected",
+    hasRentcast: routeEligibility.eligible,
   })
 
-  const properties = (await Promise.all(data.propertyIds.map((id) => idxClient.searchProperties(id)))).flat()
+  interface RouteHome { address: string; listPrice: number | null; propertyType: string | null }
+  const properties: RouteHome[] = []
+  const unresolved: Array<{ home: string; why: string }> = []
+
+  // NEITHER SOURCE CAN SERVE THIS TENANT — REFUSE, DO NOT PLAN.
+  // `routeEligibility.detail` is one plain sentence naming WHICH question said no:
+  // the platform key is unset, the vendor budget is exhausted for the month, or the
+  // IDX check itself was unreadable and the gate failed closed. Returning here
+  // costs no AI tokens and, crucially, is not a route with zero stops.
+  if (routeSource === "none") {
+    return {
+      success: false as const,
+      error: `No property source could resolve this buyer's saved homes. ${routeEligibility.detail}`,
+      route: null,
+      source: routeSource,
+      unresolved: data.properties.map((h) => ({ home: h.label, why: routeEligibility.detail })),
+    }
+  }
+
+  if (routeSource === "idx") {
+    const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
+    const idxClient = await IDXBrokerClient.forBrokerage(routeBrokerageId, {
+      agentUserId: routeCaller.id,
+      teamId: routeTeamId,
+    })
+    for (const home of data.properties) {
+      const rows = await idxClient.searchProperties(home.idxQuery)
+      const row = (Array.isArray(rows) ? rows : [])[0]
+      if (!row) {
+        unresolved.push({
+          home: home.label,
+          why: "this brokerage's own IDX Broker feed returned no listing for it",
+        })
+        continue
+      }
+      properties.push({
+        address: (row.address as string | undefined) || home.label,
+        listPrice: typeof row.listPrice === "number" ? row.listPrice : null,
+        propertyType: (row.propType as string | undefined) ?? (row.propertyType as string | undefined) ?? null,
+      })
+    }
+  } else {
+    // THE PLATFORM DEFAULT. Metering and budget governance are NOT re-implemented
+    // here and are not bypassed: `searchRentcastSaleListings` calls `gateRentcast`
+    // itself before any request leaves, and meters the call against this brokerage
+    // through logVendorUsage. What this call site owes the ledger is the truth
+    // about WHO spent and WHY — the tenant, the lane, and the contact the lookup
+    // was made for — so all three are passed rather than defaulted.
+    const { searchRentcastSaleListings } = await import("@/lib/property/rentcast")
+    for (const home of data.properties) {
+      if (!home.address) {
+        unresolved.push({
+          home: home.label,
+          why: "RentCast resolves a home by its postal address and this saved home has none on file",
+        })
+        continue
+      }
+      const rc = await searchRentcastSaleListings({
+        brokerageId: routeBrokerageId,
+        agentUserId: routeCaller.id,
+        teamId: routeTeamId,
+        systemSource: SHOWING_ROUTE_SYSTEM_SOURCE,
+        contactId: data.contactId,
+        filters: { address: home.address, limit: 1 },
+      })
+      // THE ERROR IS READ. A refused gate and a provider outage both resolve here
+      // with `success: false` and an empty list — reporting that as "no listing
+      // found" is the conflation this whole lane exists to prevent.
+      if (!rc.success) {
+        unresolved.push({ home: home.label, why: rc.error ?? "the RentCast lookup did not complete" })
+        continue
+      }
+      const row = rc.listings[0]
+      if (!row) {
+        unresolved.push({ home: home.label, why: "RentCast carries no active for-sale listing at that address" })
+        continue
+      }
+      properties.push({
+        address: row.address || home.label,
+        listPrice: row.price,
+        propertyType: row.propertyType,
+      })
+    }
+  }
+
+  // EVERY HOME FAILED TO RESOLVE. There is nothing to order, and asking the model
+  // to optimize an empty tour would produce a confident, empty plan. Each home
+  // carries its own reason, so the agent is told what actually happened.
+  if (properties.length === 0) {
+    return {
+      success: false as const,
+      error: `None of the selected homes could be resolved from ${
+        routeSource === "idx" ? "this brokerage's IDX Broker feed" : "the platform's RentCast feed"
+      }. No showing plan was built.`,
+      route: null,
+      source: routeSource,
+      unresolved,
+    }
+  }
 
   const prompt = `You are an AI showing coordinator. Optimize this showing route:
 
@@ -3043,10 +3223,13 @@ Date: ${data.preferredDate}
 Properties to Show (${properties.length}):
 ${properties
   .map(
-    (p: any, i: number) => `
+    // A price or a type the source did not publish is stated as UNKNOWN rather
+    // than printed as "$undefined" — a coordinator prompt that reads like a
+    // corrupted record invites the model to invent the missing figure.
+    (p: RouteHome, i: number) => `
 ${i + 1}. ${p.address}
-   Price: $${p.listPrice?.toLocaleString()}
-   Type: ${p.propertyType}
+   Price: ${p.listPrice != null ? `$${p.listPrice.toLocaleString()}` : "not published by the feed"}
+   Type: ${p.propertyType ?? "not published by the feed"}
 `,
   )
   .join("\n")}
@@ -3105,17 +3288,39 @@ Optimize for:
       total_drive_time: optimizedRoute.data.optimizedRoute?.totalDriveTime,
       suggested_order: optimizedRoute.data.optimizedRoute?.properties?.map((p: any) => p.address),
       recommended_day: data.preferredDate,
-      why_these_properties: "AI-optimized for maximum impact",
+      // THE ROW SAYS WHICH SOURCE ANSWERED AND WHAT IT COULD NOT ANSWER.
+      // `smart_showing_recommendations` has no column for a shortfall, and the
+      // card that reads this row is the only place an agent revisits the plan —
+      // so the free-text column that already explains the plan carries it, rather
+      // than the omission being invisible on the record while it is visible on
+      // screen once.
+      why_these_properties: [
+        "AI-optimized for maximum impact",
+        `Source: ${routeSource === "idx" ? "this brokerage's own IDX Broker feed" : "the platform's RentCast feed"}.`,
+        unresolved.length > 0
+          ? `Not included (${unresolved.length}): ${unresolved.map((u) => `${u.home} — ${u.why}`).join("; ")}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(" "),
     })
     if (recError) {
       console.error("[ai-predictions] smart_showing_recommendations insert refused:", recError.message)
-      return { success: false as const, error: recError.message, route: optimizedRoute.data.optimizedRoute }
+      return {
+        success: false as const,
+        error: recError.message,
+        route: optimizedRoute.data.optimizedRoute,
+        source: routeSource,
+        unresolved,
+      }
     }
 
     return {
       success: true as const,
       error: null,
       route: optimizedRoute.data.optimizedRoute,
+      source: routeSource,
+      unresolved,
     }
   } catch (error) {
     console.error("[v0] Error in optimizeShowingRoute:", error)
