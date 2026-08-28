@@ -465,7 +465,7 @@ export async function scheduleContactFollowup(params: {
     if (!result.ok) return { success: false, error: result.error ?? "Follow-up not saved" }
 
     revalidatePath(`/crm/contacts/${params.contactId}`)
-    revalidatePath("/crm/contacts")
+    revalidatePath("/crm")
     return { success: true }
   } catch (error) {
     return handleError(error, "scheduleContactFollowup") as { success: boolean; error?: string }

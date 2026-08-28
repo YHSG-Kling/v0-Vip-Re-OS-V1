@@ -1,31 +1,38 @@
 import { redirect } from "next/navigation"
 
-// /crm/contacts — THE LIST LIVES AT /crm, AND NINE PLACES SAID OTHERWISE.
+// TOMBSTONE (§1/§6) — `/crm/contacts` was a SECOND ADDRESS for one surface.
+// SURVIVOR: app/crm/page.tsx — the CRM workspace titled "My Contacts",
+// registered in the command palette (app/components/command-palette.tsx:29 as
+// `{ label: "My Contacts (CRM)", href: "/crm" }`) and role-gated at
+// lib/kernel/helpers.ts:83. It is the survivor on every test: it is the one
+// with a page, a nav entry and a gate.
 //
-// There has never been a page at this path: app/crm/contacts/ holds only
-// [contactId]/ and new/. Nine call sites address it anyway — including two the
-// user only ever reaches while something is already wrong:
+// THE DEFECT. This directory held only `[contactId]/` and `new/`, so the path
+// itself rendered a 404 — while FOURTEEN in-tree sites addressed it, two of
+// them reachable only when something had already gone wrong:
+//   · app/crm/contacts/[contactId]/error.tsx — the error boundary's RECOVERY
+//     button, so a contact page that threw sent the agent to a second failure
+//   · app/crm/contacts/[contactId]/listings/new/page.tsx — the redirect for a
+//     contact that could not be resolved
+// plus the create-form's cancel/back controls, the CSV-import success CTA,
+// three team-page entries, the first-deal checklist, and six
+// revalidatePath("/crm/contacts") calls that revalidated nothing — themselves
+// evidence the authors believed a page was here.
 //
-//   · app/crm/contacts/[contactId]/error.tsx:51 — the error boundary's RECOVERY
-//     button. A contact page that throws offered "back to contacts" and landed
-//     the agent on a 404, so the recovery from one failure was a second one.
-//   · app/crm/contacts/[contactId]/listings/new/page.tsx:45 — the redirect for a
-//     contact that cannot be loaded.
-//   · app/crm/contacts/new/page.tsx:137,270 (cancel / after-save), the CSV
-//     import success screen (app/dashboard/admin/import/page.tsx:340), three
-//     team-page links, and the first-deal checklist.
+// ALL FOURTEEN NOW ADDRESS `/crm` DIRECTLY, so the tree carries ONE spelling.
+// This file stays as a redirect ONLY for addresses already outside the tree —
+// bookmarks, links in sent email, and anything a browser autocompleted while
+// the 404 was live. It is deliberately not a second list: two surfaces
+// answering one question drift (the tabs and search state on /crm would have
+// no twin here), which is the §6 defect this file exists to close rather than
+// re-open.
 //
-// Every one of them means "take me to the contacts list", and that list is
-// /crm — titled "My Contacts", registered in the command palette
-// (app/components/command-palette.tsx:29) and role-gated at
-// lib/kernel/helpers.ts:83. So this is the redirect, not a second list: a
-// duplicate page here would be two surfaces answering one question, and the
-// tabs/search state on /crm would drift from whatever this one grew (§6).
-//
-// WHY THE GUARDS DID NOT CATCH IT: test:orphan-routes asks the opposite
-// question — which route files nothing links to — and correctly reports 0. No
-// guard asks which internal links point at no route at all. Found by lane H2
-// while wiring the contact routes; recorded here rather than only in a report.
+// WHY NO GUARD CAUGHT IT: test:orphan-routes asks which ROUTES nothing links
+// to and correctly reported 0; the opposite question — which LINKS point at no
+// route — was asked for /api/** only (opposite-missing category 6a), never for
+// page routes. scripts/dangling-link-sweep.ts now asks it (npm run
+// test:dangling-links), with the positive control and the published
+// denominator §2 requires.
 export default function ContactsIndexRedirect() {
   redirect("/crm")
 }

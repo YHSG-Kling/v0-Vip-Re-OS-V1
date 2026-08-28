@@ -337,7 +337,7 @@ export default function ImportPage() {
             <button onClick={reset} className="rounded-md border border-border px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors">
               Import another file
             </button>
-            <a href="/crm/contacts" className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
+            <a href="/crm" className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors">
               View contacts
             </a>
           </div>

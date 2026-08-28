@@ -134,7 +134,7 @@ export default function NewContactPage() {
       <div className="border-b border-border bg-card">
         <div className="max-w-3xl mx-auto px-6 py-4">
           <div className="flex items-center gap-4">
-            <Link href="/crm/contacts">
+            <Link href="/crm">
               <Button variant="ghost" size="sm">
                 <ArrowLeft className="h-4 w-4 mr-2" />
                 Back to Contacts
@@ -267,7 +267,7 @@ export default function NewContactPage() {
 
           {/* Actions */}
           <div className="flex items-center justify-end gap-4">
-            <Link href="/crm/contacts">
+            <Link href="/crm">
               <Button variant="outline" type="button">Cancel</Button>
             </Link>
             <Button type="submit" disabled={isSubmitting}>

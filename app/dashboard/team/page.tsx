@@ -526,7 +526,7 @@ export default async function TeamDashboard() {
               icon: Users,
               color: "text-blue-500",
               bg: "bg-blue-500/10",
-              href: "/crm/contacts",
+              href: "/crm",
             },
             {
               label: "Active Transactions",
@@ -550,7 +550,7 @@ export default async function TeamDashboard() {
               icon: Clock,
               color: "text-amber-500",
               bg: "bg-amber-500/10",
-              href: "/crm/contacts",
+              href: "/crm",
             },
             {
               label: "Handoff Required",
@@ -889,7 +889,7 @@ export default async function TeamDashboard() {
                         </div>
                       </Link>
                     ))}
-                    <Link href="/crm/contacts">
+                    <Link href="/crm">
                       <Button variant="outline" size="sm" className="w-full text-xs mt-1">
                         Work Stale Queue
                       </Button>

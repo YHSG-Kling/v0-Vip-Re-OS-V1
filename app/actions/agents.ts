@@ -1285,7 +1285,7 @@ export async function assignAgentToContact(contactId: string, agentId: string) {
   const { POINT_VALUES: PV } = await import("@/lib/gamification/award-points")
   await awardPoints(agentId, PV.CONTACT_ASSIGNED, "CONTACT_ASSIGNED", "lead")
 
-  revalidatePath("/crm/contacts")
+  revalidatePath("/crm")
   return { data: data?.[0] ?? null }
 }
 
