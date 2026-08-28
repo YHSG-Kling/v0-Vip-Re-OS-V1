@@ -206,15 +206,13 @@ export interface DealTeamMember {
 // (LIFECYCLE_EVENT_CONTRACT.md).
 
 
-export interface Playbook {
-  id: string
-  name: string
-  trigger: string
-  audience: any
-  steps_JSON: string
-  tools_JSON: string
-  is_active: boolean
-}
+// TOMBSTONE (§1.3, 2026-08-28, lane E4 table-retirement tranche): `Playbook` deleted —
+// imported by nothing (positive control: the finder still sees a synthetic
+// `import { Playbook } from "@/types"` specimen). It mirrored the 030-era shape of
+// the `playbooks` table, which m581 retires: the live playbook rows are plan_tasks
+// (writer createPlaybook app/actions/services-config.ts:235, reader getPlaybooks
+// :208, clone writer app/actions/academy.ts:cloneTemplate) and the cross-tenant
+// library is template_marketplace, where m581 merges the seed rows.
 
 // TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `SmartAssistantSuggestion`
 // deleted — referenced by nothing. The live suggestion row is
