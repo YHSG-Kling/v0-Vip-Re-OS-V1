@@ -1480,7 +1480,7 @@ export async function deleteNewsletterCampaign(newsletterId: string) {
 // were deleted. They were duplicate SPELLINGS of the canonical names in this
 // file — SURVIVORS: `createNewsletterCampaign` (above) and
 // `aiWriteNewsletterContent` (above). A stripped-source census found zero
-// callers of either alias outside the app/actions/index.ts barrel, which
+// callers of either alias outside the the actions barrel (app/actions/index, deleted this wave) barrel, which
 // itself has zero importers.
 
 // ============================================

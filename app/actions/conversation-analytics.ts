@@ -434,7 +434,7 @@ export async function runWeeklyAIAudit() {
 // session's brokerage). This twin aggregated the same subject (conversation
 // health/sentiment) from conversation_logs with caller-supplied agent filters
 // and no tenant anchor of its own, and a stripped-source census found zero
-// callers outside the app/actions/index.ts barrel, which itself has zero
+// callers outside the the actions barrel (app/actions/index, deleted this wave) barrel, which itself has zero
 // importers. Nothing was merged: the survivor's conversation_insights rollup
 // is the richer read of the same capability.
 
@@ -444,7 +444,7 @@ export async function runWeeklyAIAudit() {
 // app/dashboard/communications/intelligence/page.tsx:115-135, rendered by
 // AuditFlagsTab/ComplianceTab, where reviewAuditFlag (below) closes the loop.
 // A stripped-source census found zero callers outside the
-// app/actions/index.ts barrel, which itself has zero importers.
+// the actions barrel (app/actions/index, deleted this wave) barrel, which itself has zero importers.
 
 export async function reviewAuditFlag(params: {
   flagId: string

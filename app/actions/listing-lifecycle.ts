@@ -37,7 +37,7 @@ import {
 //                   lib/dashboard/data-survivors.ts:103, which recorded the same
 //                   defect as already merged onto that survivor)
 //
-// app/actions/index.ts:106-113 already exports BOTH names from "./listings", so
+// the actions barrel (app/actions/index, deleted this wave):106-113 already exports BOTH names from "./listings", so
 // nothing imported them from here and no caller changes. The comment these lines
 // carried — "Re-exports moved to direct imports from listings.ts" — says the move
 // happened; only the deletion was missed.

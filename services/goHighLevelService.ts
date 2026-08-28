@@ -228,7 +228,7 @@ export interface GHLMessage {
 // deleted. The lane-O merge above kept this chain alive for exactly one
 // caller, app/actions/communications.ts:getContactHistory — which a
 // stripped-source census then found to have zero callers of its own outside
-// the importer-less app/actions/index.ts barrel, so the whole chain was
+// the importer-less the actions barrel (app/actions/index, deleted this wave) barrel, so the whole chain was
 // unreachable. Contact message history is served locally — SURVIVORS:
 // app/actions/contact-details.ts:getContactActivity and
 // app/actions/communications.ts:getRecentCommunications. GHL remains a

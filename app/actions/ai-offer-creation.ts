@@ -533,7 +533,7 @@ Respond with JSON only: { "recommendedResponse": "accept"|"counter"|"walk_away",
 // were deleted. Duplicate SPELLINGS of the canonical names in this file —
 // SURVIVORS: `aiOfferStrategyAdvisor` (above) and `aiGenerateBuyerLetter`
 // (above). A stripped-source census found zero callers of either alias
-// outside the app/actions/index.ts barrel, which itself has zero importers.
+// outside the the actions barrel (app/actions/index, deleted this wave) barrel, which itself has zero importers.
 
 // ============================================
 // 9. COMPLETE OFFER CREATION WORKFLOW

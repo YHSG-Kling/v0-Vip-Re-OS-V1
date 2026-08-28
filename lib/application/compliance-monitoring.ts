@@ -13,7 +13,7 @@ import { getAgentContext } from "@/lib/identity"
 
 // TOMBSTONE (§1, lane E2 2026-08-28) — `logAuditEventService` deleted with its
 // only caller, the app/actions/compliance-monitoring.ts:logAuditEvent wrapper
-// (zero callers outside the importer-less app/actions/index.ts barrel).
+// (zero callers outside the importer-less the actions barrel (app/actions/index, deleted this wave) barrel).
 // Audit logging lives at the call sites as direct
 // `supabase.from("audit_log").insert(...)` writes — e.g.
 // app/actions/billing.ts:633, lib/kernel/transactions.ts:1457 — and at
@@ -1223,7 +1223,7 @@ export async function reviewContentApprovalService(data: {
 // TOMBSTONE (§1 keep-one, lane E2 2026-08-28) —
 // `logCommunicationWithComplianceService` deleted with its only caller, the
 // app/actions/compliance-monitoring.ts wrapper (zero callers outside the
-// importer-less app/actions/index.ts barrel). SURVIVOR:
+// importer-less the actions barrel (app/actions/index, deleted this wave) barrel). SURVIVOR:
 // lib/services/communication.service.tsx:logCommunication — the
 // communication_audit_log writer real sends reach. Merged onto the survivor
 // before deleting: lead_temperature + was_approved_content on the audit row,

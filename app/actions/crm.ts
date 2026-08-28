@@ -152,7 +152,7 @@ export async function searchContacts(params: { agentId: string; query: string })
 // `contact_notes` source — was merged onto the survivor first. This copy had
 // no auth gate at all (a bare contact uuid returned another tenant's history
 // up to RLS), and a stripped-source census found zero callers outside the
-// app/actions/index.ts barrel, which itself has zero importers.
+// the actions barrel (app/actions/index, deleted this wave) barrel, which itself has zero importers.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MERGE / DEDUPE

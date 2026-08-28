@@ -423,7 +423,7 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
 // TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `getAIISACampaignsService` and
 // `getAIISACallsService` deleted with their only callers (the legacy
 // getAIISACampaigns/getAIISACalls actions; zero callers outside the
-// importer-less app/actions/index.ts barrel). SURVIVORS:
+// importer-less the actions barrel (app/actions/index, deleted this wave) barrel). SURVIVORS:
 // app/actions/ai-isa.ts:listISACampaigns (same ai_isa_campaigns read,
 // session-tenanted; wired at app/dashboard/isa/page.tsx) and the voice ISA
 // console's own tenant-scoped ai_isa_calls reads

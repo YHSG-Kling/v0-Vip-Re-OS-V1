@@ -297,7 +297,7 @@ export async function logCall(params: {
 // GHL is a one-way contact-data SYNC TARGET in this product, not a message
 // transport (ruling recorded at lib/services/communication.service.tsx:174),
 // and no surface ever rendered the pull: a stripped-source census found zero
-// callers outside the app/actions/index.ts barrel, which itself has zero
+// callers outside the the actions barrel (app/actions/index, deleted this wave) barrel, which itself has zero
 // importers. The GHL fetcher chain (`getContactConversationHistory` +
 // helpers) went with it — tombstone at services/goHighLevelService.ts.
 

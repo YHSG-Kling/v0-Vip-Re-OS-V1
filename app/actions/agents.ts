@@ -188,7 +188,7 @@ async function requireAgentLedgerAccess(
 // full agent row WITH commissions and expenses embeds to any authenticated
 // caller holding an agents.id (commission is off agent-facing display, §5),
 // and a stripped-source census found zero callers outside the
-// app/actions/index.ts barrel, which itself has zero importers. Nothing
+// the actions barrel (app/actions/index, deleted this wave) barrel, which itself has zero importers. Nothing
 // merged: the survivors carry richer, gated versions of every embed.
 
 /**
@@ -468,7 +468,7 @@ export async function createAgent(agentData: {
 //   · team_id → team management (teams anchor on teams.team_lead_id, §4).
 // This twin took an arbitrary agents.id with no role/tenant gate beyond RLS
 // and a stripped-source census found zero callers outside the
-// app/actions/index.ts barrel, which itself has zero importers. Nothing
+// the actions barrel (app/actions/index, deleted this wave) barrel, which itself has zero importers. Nothing
 // merged.
 
 // ==================== GAMIFICATION ====================
@@ -556,7 +556,7 @@ export async function awardPoints(agentId: string, points: number, reason: strin
 /**
  * COMPATIBILITY ALIAS over the survivor ledger. `agent_achievements` no longer
  * exists; an agent's unlocked rewards are `agent_badges` rows. The name is kept
- * only because app/actions/index.ts re-exports it and that barrel is not this
+ * only because the actions barrel (app/actions/index, deleted this wave) re-exports it and that barrel is not this
  * lane's to edit — the rows and the table underneath are the badge ledger.
  */
 export async function getAgentAchievements(agentId: string) {
@@ -1295,7 +1295,7 @@ export async function assignAgentToContact(contactId: string, agentId: string) {
 // app/crm/page.tsx:6). This twin listed any agent's full contact book by a
 // caller-supplied agents.id with `select("*")` and no tenant anchor beyond
 // RLS, and a stripped-source census found zero callers outside the
-// app/actions/index.ts barrel, which itself has zero importers. Nothing
+// the actions barrel (app/actions/index, deleted this wave) barrel, which itself has zero importers. Nothing
 // merged.
 
 export async function getAgentStats(userIdOrAgentId: string) {
