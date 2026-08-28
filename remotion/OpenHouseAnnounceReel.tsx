@@ -113,19 +113,19 @@ export const OpenHouseAnnounceReel: React.FC<OpenHouseAnnounceReelProps> = ({
               display: "inline-block", padding: "10px 24px", borderRadius: 6,
               backgroundColor: brand.accentColor, color: brand.primaryColor,
               fontSize: 26, fontWeight: 900, letterSpacing: 6, textTransform: "uppercase",
-              marginBottom: 36, opacity: interpolate(frame, [0, 14], [0, 1]),
+              marginBottom: 36, opacity: interpolate(frame, [0, 14], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }}>
               Open House
             </div>
             <div style={{
               fontSize: 96, fontWeight: 900, color: "#fff", lineHeight: 0.95,
-              marginBottom: 16, opacity: interpolate(frame, [10, 32], [0, 1]),
+              marginBottom: 16, opacity: interpolate(frame, [10, 32], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }}>
               {dateLabel}
             </div>
             <div style={{
               fontSize: 48, color: brand.accentColor, fontWeight: 800,
-              opacity: interpolate(frame, [20, 42], [0, 1]),
+              opacity: interpolate(frame, [20, 42], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }}>
               {timeLabel}
             </div>

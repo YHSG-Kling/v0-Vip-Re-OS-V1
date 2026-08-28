@@ -132,7 +132,7 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
           {brand.logoUrl && (
             <Img src={brand.logoUrl} style={{
               height: 56, objectFit: "contain", marginBottom: 32,
-              opacity: interpolate(frame, [0, 12], [0, 1]),
+              opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }} />
           )}
           <div style={{
@@ -140,19 +140,19 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
             padding: "14px 36px", borderRadius: 6,
             backgroundColor: brand.accentColor, color: brand.primaryColor,
             fontSize: 36, fontWeight: 900, letterSpacing: 8, textTransform: "uppercase",
-            transform: `scale(${interpolate(frame, [0, 18], [0.85, 1])})`,
-            opacity: interpolate(frame, [0, 14], [0, 1]),
+            transform: `scale(${interpolate(frame, [0, 18], [0.85, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })})`,
+            opacity: interpolate(frame, [0, 14], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             Coming Soon
           </div>
           <div style={{
             fontSize: 64, fontWeight: 800, color: "#fff", lineHeight: 1.05,
-            marginTop: 32, opacity: interpolate(frame, [14, 36], [0, 1]),
+            marginTop: 32, opacity: interpolate(frame, [14, 36], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {whenString}
           </div>
           <div style={{
-            fontSize: 28, color: "#fff", opacity: interpolate(frame, [24, 48], [0, 0.7]),
+            fontSize: 28, color: "#fff", opacity: interpolate(frame, [24, 48], [0, 0.7], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             marginTop: 12, letterSpacing: 3,
           }}>
             {cityState}

@@ -44,7 +44,7 @@ const WordReveal: React.FC<{ text: string; size: number; weight?: number; delay?
       {words.map((w, i) => {
         const t = spring({ frame: frame - delay - i * 3, fps, config: { damping: 200 } })
         return (
-          <span key={i} style={{ opacity: t, transform: `translateY(${interpolate(t, [0, 1], [26, 0])}px)`, display: "inline-block" }}>
+          <span key={i} style={{ opacity: t, transform: `translateY(${interpolate(t, [0, 1], [26, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })}px)`, display: "inline-block" }}>
             {w}
           </span>
         )
@@ -158,7 +158,7 @@ export const ProductPromoReel: React.FC<ProductPromoReelProps> = ({ hook, proofs
           <KenBurnsShot src={imageUrls![idx % imageUrls!.length]} primary={primary} />
         </Sequence>
       ))}
-      <AbsoluteFill style={{ background: `radial-gradient(circle at ${interpolate(frame, [0, 450], [15, 85])}% 12%, ${accent}26, transparent 55%)` }} />
+      <AbsoluteFill style={{ background: `radial-gradient(circle at ${interpolate(frame, [0, 450], [15, 85], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })}% 12%, ${accent}26, transparent 55%)` }} />
 
       {/* persistent brand eyebrow + live-status dot */}
       <div style={{ position: "absolute", top: pad, left: pad, right: pad, display: "flex", alignItems: "center", gap: 12 }}>

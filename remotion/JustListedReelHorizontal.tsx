@@ -126,18 +126,18 @@ export const JustListedReelHorizontal: React.FC<JustListedReelHorizontalProps> =
           <div style={{
             fontSize: 32, letterSpacing: 8, textTransform: "uppercase",
             color: brand.accentColor, fontWeight: 800,
-            opacity: interpolate(frame, [0, 18], [0, 1]),
+            opacity: interpolate(frame, [0, 18], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {hook}
           </div>
           <div style={{
             fontSize: 124, fontWeight: 900, color: "#fff", lineHeight: 1.0,
-            marginTop: 32, opacity: interpolate(frame, [14, 36], [0, 1]),
+            marginTop: 32, opacity: interpolate(frame, [14, 36], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {address}
           </div>
           <div style={{
-            fontSize: 44, color: "#fff", opacity: interpolate(frame, [28, 50], [0, 0.85]),
+            fontSize: 44, color: "#fff", opacity: interpolate(frame, [28, 50], [0, 0.85], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             marginTop: 20, letterSpacing: 4,
           }}>
             {cityState}

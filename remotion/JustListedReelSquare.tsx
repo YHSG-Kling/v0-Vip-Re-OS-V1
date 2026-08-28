@@ -115,18 +115,18 @@ export const JustListedReelSquare: React.FC<JustListedReelSquareProps> = ({
         }}>
           <div style={{
             fontSize: 28, letterSpacing: 6, textTransform: "uppercase",
-            color: brand.accentColor, fontWeight: 700, opacity: interpolate(frame, [0, 15], [0, 1]),
+            color: brand.accentColor, fontWeight: 700, opacity: interpolate(frame, [0, 15], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {hook}
           </div>
           <div style={{
             fontSize: 80, fontWeight: 800, color: "#fff", lineHeight: 1.05,
-            marginTop: 28, opacity: interpolate(frame, [10, 30], [0, 1]),
+            marginTop: 28, opacity: interpolate(frame, [10, 30], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {address}
           </div>
           <div style={{
-            fontSize: 36, color: "#fff", opacity: interpolate(frame, [20, 40], [0, 0.85]),
+            fontSize: 36, color: "#fff", opacity: interpolate(frame, [20, 40], [0, 0.85], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             marginTop: 16,
           }}>
             {cityState}

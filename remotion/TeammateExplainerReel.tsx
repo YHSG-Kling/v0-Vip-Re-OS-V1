@@ -92,10 +92,10 @@ const IntroCard: React.FC<{
       {brand.logoUrl ? (
         <Img
           src={brand.logoUrl}
-          style={{ height: 64, objectFit: "contain", marginBottom: 30, opacity: interpolate(frame, [0, 12], [0, 1]) }}
+          style={{ height: 64, objectFit: "contain", marginBottom: 30, opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }) }}
         />
       ) : (
-        <div style={{ fontSize: 22, letterSpacing: 4, textTransform: "uppercase", color: "#fff", opacity: 0.7 * interpolate(frame, [0, 12], [0, 1]), marginBottom: 30 }}>
+        <div style={{ fontSize: 22, letterSpacing: 4, textTransform: "uppercase", color: "#fff", opacity: 0.7 * interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }), marginBottom: 30 }}>
           {brand.brokerageName}
         </div>
       )}
@@ -104,7 +104,7 @@ const IntroCard: React.FC<{
           display: "inline-block", padding: "8px 22px", borderRadius: 4,
           backgroundColor: brand.accentColor, color: brand.primaryColor,
           fontSize: 20, fontWeight: 700, letterSpacing: 4, textTransform: "uppercase",
-          marginBottom: 30, opacity: interpolate(frame, [4, 18], [0, 1]),
+          marginBottom: 30, opacity: interpolate(frame, [4, 18], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
         }}
       >
         {eyebrow}
@@ -112,7 +112,7 @@ const IntroCard: React.FC<{
       <div
         style={{
           fontSize: 66, fontWeight: 800, color: "#fff", lineHeight: 1.1, maxWidth: 880,
-          opacity: interpolate(frame, [10, 32], [0, 1]),
+          opacity: interpolate(frame, [10, 32], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           transform: `translateY(${interpolate(frame, [10, 32], [24, 0], { extrapolateRight: "clamp" })}px)`,
         }}
       >
@@ -227,18 +227,18 @@ const OutroCard: React.FC<{
       }}
     >
       {brand.logoUrl && (
-        <Img src={brand.logoUrl} style={{ height: 56, objectFit: "contain", marginBottom: 28, opacity: interpolate(frame, [0, 10], [0, 1]) }} />
+        <Img src={brand.logoUrl} style={{ height: 56, objectFit: "contain", marginBottom: 28, opacity: interpolate(frame, [0, 10], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }) }} />
       )}
       <div
         style={{
           fontSize: 76, fontWeight: 800, lineHeight: 1.05, marginBottom: 24, maxWidth: 900,
-          opacity: interpolate(frame, [4, 20], [0, 1]),
+          opacity: interpolate(frame, [4, 20], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           transform: `translateY(${interpolate(frame, [4, 20], [20, 0], { extrapolateRight: "clamp" })}px)`,
         }}
       >
         {ctaLabel}
       </div>
-      <div style={{ fontSize: 38, color: brand.accentColor, fontWeight: 700, opacity: interpolate(frame, [12, 26], [0, 1]) }}>
+      <div style={{ fontSize: 38, color: brand.accentColor, fontWeight: 700, opacity: interpolate(frame, [12, 26], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }) }}>
         {agentName}
       </div>
       <div

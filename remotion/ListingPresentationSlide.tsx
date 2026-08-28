@@ -200,17 +200,17 @@ const TitleSlideBody: React.FC<{ title: string; body: string[]; accentColor: str
     }}>
       <div style={{
         width: 64, height: 4, backgroundColor: accentColor, marginBottom: 32,
-        opacity: interpolate(frame, [0, 12], [0, 1]),
+        opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
       }} />
       <div style={{
         fontSize: 84, fontWeight: 800, lineHeight: 1.05, marginBottom: 24,
-        opacity: interpolate(frame, [6, 24], [0, 1]),
+        opacity: interpolate(frame, [6, 24], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
       }}>
         {title}
       </div>
       {body.map((p, i) => (
         <div key={i} style={{
-          fontSize: 28, opacity: interpolate(frame, [18 + i * 6, 36 + i * 6], [0, 0.8]),
+          fontSize: 28, opacity: interpolate(frame, [18 + i * 6, 36 + i * 6], [0, 0.8], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           maxWidth: 1200, lineHeight: 1.45,
         }}>{p}</div>
       ))}

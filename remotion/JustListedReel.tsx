@@ -6,8 +6,10 @@
  *
  *   0–2s   CoverFrame      — brokerage logo + "Just Listed" hook + address
  *   2–18s  PropertyImages  — image grid panning ken-burns through up to
- *                            8 property photos (sort_order asc); each
- *                            slide is 2s with a 0.3s crossfade
+ *                            8 property photos (sort_order asc); the 16s
+ *                            window is split evenly across however many
+ *                            photos arrived (2s each at the full 8), with
+ *                            a 0.3s crossfade
  *   18–22s FactCards       — price / beds / baths / sqft in brand colors
  *   22–25s CTAFrame        — agent name + phone + "DM me to tour"
  *
@@ -144,11 +146,18 @@ const CoverFrame: React.FC<JustListedReelProps> = ({ hook, address, cityState, b
 
 const PropertyImages: React.FC<{ images: string[] }> = ({ images }) => {
   const frame = useCurrentFrame()
-  const slideFrames = 60 // 2s per slide @ 30fps
+  // The window is divided across however many images actually arrived — the
+  // same idiom as JustListedReelSquare/Horizontal's `perPhoto`. This used to be
+  // a fixed 60 frames (2s), sized for the full 8 images: with fewer, the last
+  // slide's crossfade-out clamped opacity to 0 and the remaining seconds of the
+  // 16s window rendered EMPTY (gradient over the #111 background) while the
+  // voiceover kept narrating.
+  const windowFrames = FRAMES.IMAGES_END - FRAMES.IMAGES_START
+  const slideFrames = images.length > 0 ? windowFrames / images.length : windowFrames
   const idx = Math.min(images.length - 1, Math.floor(frame / slideFrames))
   const localFrame = frame - idx * slideFrames
-  // Ken-burns: subtle scale + drift over 60 frames
-  const scale = interpolate(localFrame, [0, slideFrames], [1.0, 1.08])
+  // Ken-burns: subtle scale + drift over each slide
+  const scale = interpolate(localFrame, [0, slideFrames], [1.0, 1.08], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   const opacity = interpolate(localFrame, [0, 8, slideFrames - 8, slideFrames], [0, 1, 1, 0], {
     extrapolateRight: "clamp",
   })

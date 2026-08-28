@@ -131,20 +131,20 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
           {brand.logoUrl && (
             <Img src={brand.logoUrl} style={{
               height: 56, objectFit: "contain", marginBottom: 32,
-              opacity: interpolate(frame, [0, 12], [0, 1]),
+              opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }} />
           )}
           <div style={{
             display: "inline-block", padding: "8px 20px", borderRadius: 4,
             backgroundColor: brand.accentColor, color: brand.primaryColor,
             fontSize: 18, fontWeight: 700, letterSpacing: 5, textTransform: "uppercase",
-            marginBottom: 24, opacity: interpolate(frame, [4, 18], [0, 1]),
+            marginBottom: 24, opacity: interpolate(frame, [4, 18], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             Neighborhood spotlight
           </div>
           <div style={{
             fontSize: 96, fontWeight: 900, color: "#fff", lineHeight: 0.98,
-            opacity: interpolate(frame, [12, 32], [0, 1]),
+            opacity: interpolate(frame, [12, 32], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             textShadow: "0 4px 24px rgba(0,0,0,0.45)",
           }}>
             {neighborhood}
@@ -163,7 +163,7 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
             fontSize: 44, fontWeight: 700, color: "#fff", lineHeight: 1.2,
             textAlign: "center", maxWidth: 880, marginLeft: "auto", marginRight: "auto",
             textShadow: "0 4px 16px rgba(0,0,0,0.45)",
-            opacity: interpolate(frame, [6, 24], [0, 1]),
+            opacity: interpolate(frame, [6, 24], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {tagline}
           </div>
@@ -193,7 +193,7 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
                 padding: "16px 24px", borderRadius: 8,
                 backgroundColor: "rgba(0,0,0,0.65)",
                 color: "#fff", minWidth: 180,
-                opacity: interpolate(frame, [40 + i * 8, 60 + i * 8], [0, 1]),
+                opacity: interpolate(frame, [40 + i * 8, 60 + i * 8], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
               }}>
                 <div style={{ fontSize: 36, fontWeight: 900, color: brand.accentColor, lineHeight: 1 }}>
                   {h.value}

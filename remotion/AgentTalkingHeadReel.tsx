@@ -138,7 +138,7 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
           padding: 64, textAlign: "center",
         }}>
           {brand.logoUrl ? (
-            <Img src={brand.logoUrl} style={{ height: 72, objectFit: "contain", marginBottom: 32, opacity: interpolate(frame, [0, 12], [0, 1]) }} />
+            <Img src={brand.logoUrl} style={{ height: 72, objectFit: "contain", marginBottom: 32, opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }) }} />
           ) : (
             <div style={{
               fontSize: 22, letterSpacing: 4, textTransform: "uppercase", color: "#fff", opacity: 0.7, marginBottom: 32,
@@ -147,13 +147,13 @@ export const AgentTalkingHeadReel: React.FC<AgentTalkingHeadReelProps> = ({
           <div style={{
             fontSize: 28, letterSpacing: 6, textTransform: "uppercase",
             color: brand.accentColor, fontWeight: 700,
-            opacity: interpolate(frame, [5, 20], [0, 1]),
+            opacity: interpolate(frame, [5, 20], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {hook}
           </div>
           <div style={{
             fontSize: 72, fontWeight: 800, color: "#fff", lineHeight: 1.05, marginTop: 24,
-            opacity: interpolate(frame, [15, 35], [0, 1]),
+            opacity: interpolate(frame, [15, 35], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             {agentName}
           </div>

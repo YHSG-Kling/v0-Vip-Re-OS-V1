@@ -130,19 +130,19 @@ export const TestimonialReel: React.FC<TestimonialReelProps> = ({
           {brand.logoUrl && (
             <Img src={brand.logoUrl} style={{
               height: 56, objectFit: "contain", marginBottom: 32,
-              opacity: interpolate(frame, [0, 12], [0, 1]),
+              opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             }} />
           )}
           <div style={{
             display: "inline-block", padding: "10px 24px", borderRadius: 6,
             backgroundColor: brand.accentColor, color: brand.primaryColor,
             fontSize: 26, fontWeight: 900, letterSpacing: 6, textTransform: "uppercase",
-            marginBottom: 24, opacity: interpolate(frame, [4, 18], [0, 1]),
+            marginBottom: 24, opacity: interpolate(frame, [4, 18], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             5-Star Review
           </div>
           <div style={{
-            fontSize: 36, color: "#fff", opacity: interpolate(frame, [12, 32], [0, 0.85]),
+            fontSize: 36, color: "#fff", opacity: interpolate(frame, [12, 32], [0, 0.85], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             letterSpacing: 2, fontWeight: 600,
           }}>
             {clientRole}
@@ -159,7 +159,7 @@ export const TestimonialReel: React.FC<TestimonialReelProps> = ({
           {showStars && <StarRow stars={stars ?? 5} accentColor={brand.accentColor} />}
           <div style={{
             fontSize: 48, lineHeight: 1.25, fontWeight: 700, fontStyle: "italic",
-            opacity: interpolate(frame, [12, 30], [0, 1]),
+            opacity: interpolate(frame, [12, 30], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             maxWidth: 920,
             position: "relative",
           }}>
@@ -171,7 +171,7 @@ export const TestimonialReel: React.FC<TestimonialReelProps> = ({
           </div>
           <div style={{
             marginTop: 36, fontSize: 24, color: brand.accentColor, fontWeight: 700, letterSpacing: 2,
-            opacity: interpolate(frame, [40, 60], [0, 1]),
+            opacity: interpolate(frame, [40, 60], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             — {clientName}
             {closingLabel && <span style={{ opacity: 0.7, marginLeft: 12 }}> · {closingLabel}</span>}
