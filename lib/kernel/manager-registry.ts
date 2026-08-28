@@ -1539,6 +1539,9 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   commission_distributions: "finance_manager",
   commission_splits: "finance_manager",
   commission_structures: "finance_manager",
+  // m577 — post-cap company-books payables (residual / team_member), written by
+  // waterfall stage 11 beside (not inside) the deal's distribution set.
+  company_books_obligations: "finance_manager",
   compliance_alerts: "compliance_officer",
   compliance_checklists: "compliance_officer",
   compliance_checks: "compliance_officer",
