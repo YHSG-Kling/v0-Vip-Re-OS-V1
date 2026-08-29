@@ -2237,6 +2237,54 @@ function resolveViewerSide(
   return null
 }
 
+/**
+ * Stamp the read receipt on a client's unread updates — THE WRITE HALF, MOVED
+ * OUT OF THE LOADER ON PURPOSE.
+ *
+ * `client_friendly_updates.read_at` had three writers of the row and none that
+ * ever marked it seen, so an agent could not tell an update the client had read
+ * from one they had never opened. The stamp was first written inline inside
+ * `loadClientDashboard`, and act-as-read-path-simulator refused it for two
+ * reasons that are really one:
+ *
+ *   · this file's header names `loadClientDashboard` among the READERS
+ *     deliberately left on the caller's RLS client — that is what lets a
+ *     read_only act-as grant still SEE the tenant — and
+ *   · every WRITER in this file must resolve its client from
+ *     actingWriteContext(), because under an act-as grant the caller's client is
+ *     refused by the TARGET tenant's RLS and supabase-js RESOLVES that refusal
+ *     as success (§3). Forty writers were converted for exactly that reason.
+ *
+ * A function cannot be both. So the loader stays a reader and the write lives
+ * here, behind the seam — and the split is not bookkeeping, it is the correct
+ * behaviour: under a READ_ONLY grant the gate refuses and a support seat
+ * previewing a client's dashboard no longer marks that client's mail as read.
+ * For an ordinary client session the seam returns the caller's own client and
+ * the path is byte-identical.
+ *
+ * Returns the refusal rather than throwing: a receipt that could not be stamped
+ * must not cost the client the dashboard they asked for.
+ */
+async function stampClientUpdateReceipts(
+  transactionId: string,
+): Promise<{ stamped: number; refusal: string | null }> {
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { stamped: 0, refusal: gate.error }
+  // The predicate is the transaction plus "not already read" — never anything
+  // the caller supplied about WHICH rows to touch; the contact was proven a
+  // party to this transaction by the loader before this is reached. `.select()`
+  // the update and COUNT it: an UPDATE that matches nothing resolves exactly
+  // like one that worked (§3).
+  const { data, error } = await gate.db
+    .from("client_friendly_updates")
+    .update({ read_at: new Date().toISOString() })
+    .eq("transaction_id", transactionId)
+    .is("read_at", null)
+    .select("id")
+  if (error) return { stamped: 0, refusal: error.message }
+  return { stamped: (data ?? []).length, refusal: null }
+}
+
 export async function loadClientDashboard(transactionId: string, contactId?: string) {
   const supabase = await createClient()
   
@@ -2402,20 +2450,14 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
     clientFriendlyUpdates.filter((u: any) => u.read_at == null).map((u: any) => u.id as string),
   )
   if (isClientView && updateWasUnread.size > 0) {
-    // Gate-then-write: the contact was proven a party to this transaction at the
-    // top of this function, so the predicate is the transaction plus "not
-    // already read" — never anything the caller supplied about which rows to
-    // touch. `.select()` the update and COUNT it: an UPDATE that matches nothing
-    // resolves exactly like one that worked (§3).
-    const { data: stamped, error: readErr } = await supabase
-      .from("client_friendly_updates")
-      .update({ read_at: new Date().toISOString() })
-      .eq("transaction_id", transactionId)
-      .is("read_at", null)
-      .select("id")
-    if (readErr) {
-      console.error("[client-dashboard] read receipts NOT stamped — updates will keep reading as unopened:", readErr.message)
-    } else if ((stamped ?? []).length === 0) {
+    // The write itself rides the act-as seam in stampClientUpdateReceipts above
+    // — this loader must keep the caller's RLS client so a read_only grant can
+    // still SEE the tenant, and a writer in this file must NOT. A refusal is
+    // logged and never allowed to cost the client their dashboard.
+    const receipt = await stampClientUpdateReceipts(transactionId)
+    if (receipt.refusal) {
+      console.error("[client-dashboard] read receipts NOT stamped — updates will keep reading as unopened:", receipt.refusal)
+    } else if (receipt.stamped === 0) {
       console.warn("[client-dashboard] read receipt matched 0 rows for transaction", transactionId, "— the client saw updates the agent will still see as unread")
     }
   }
