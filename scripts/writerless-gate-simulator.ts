@@ -297,9 +297,39 @@ function censusLayer() {
 
   // The instrument must still SEE a genuine one, or the burn-down above is just
   // a scanner that went blind in a new way.
+  //
+  // ── REWRITTEN, WAVE 18: IT WAS TWO WAYPOINTS AND ONE OF THEM NEVER RAN ─────
+  //
+  // This assertion used to read
+  //     /1b\. COLUMN read by code, written by NOBODY \((\d+)\)/.test(oneB.slice(0,200))
+  //     || oneB.split("\n").filter(l => /\.\w+$/.test(l.trim())).length > 50
+  // and BOTH halves were defective.
+  //
+  // The first half could never be true. `oneB` is produced by splitting on the
+  // literal "── 1b." above, which CONSUMES the "1b." the regex then looks for —
+  // so the section always begins " COLUMN read by code…" and the pattern never
+  // matched, in any wave. The whole check rested on the second half alone, and
+  // nothing said so.
+  //
+  // The second half was a hardcoded 50 — a waypoint (CLAUDE.md §2). It asserted
+  // "there are still MORE THAN FIFTY unfixed writerless reads", which is a
+  // sentence that can only stay true while the burn-down fails. Wave 18 took 1b
+  // from 110 to 31 and this line went red for the one reason it must never go
+  // red: the work got done.
+  //
+  // What the check is FOR is unchanged and worth keeping: a scanner that has
+  // gone blind reports zero, and a zero reads exactly like a finished burn-down.
+  // So assert the RULE and DERIVE the number. The section states its own count;
+  // the entries are countable; a section that is present, non-empty, and whose
+  // printed count matches the entries under it cannot be a silent truncation or
+  // a blind pass — and it stays true at 31, at 3, and at any number above zero.
+  const declared1b = Number(/^\s*COLUMN read by code, written by NOBODY \((\d+)\)/
+    .exec(oneB)?.[1] ?? -1)
+  const listed1b = oneB.split("\n").filter((l) => /^\s+\S+\.\S+$/.test(l.split("  ")[0] ?? "")
+    || /\b\w+\.\w+$/.test(l.trim())).length
   check("1b still reports genuine writerless reads (the scanner did not go blind)",
-    /1b\. COLUMN read by code, written by NOBODY \((\d+)\)/.test(oneB.slice(0, 200)) ||
-    oneB.split("\n").filter((l) => /\.\w+$/.test(l.trim())).length > 50)
+    declared1b > 0 && listed1b >= declared1b,
+    `declared ${declared1b} · listed ${listed1b}`)
   for (const col of ["agent_earnings.cap_status", "agent_earnings.cap_progress_pct", "document_checklist.status"]) {
     check(`1b no longer accuses ${col}`, !oneB.includes(col))
   }
@@ -316,15 +346,32 @@ function censusLayer() {
   // for the proof that the score moves.
   //
   // So the canary MOVED rather than being deleted — deleting it would have left
-  // this census layer unable to tell a burn-down from a blindness. The
-  // replacement is `ad_creative_variations.destination_url`: read at
-  // lib/ads/launch-assembler.ts:41 (and carried to `destinationUrl` at :63) and
-  // by the approval queue at lib/kernel/approval-sources.ts:144/:154, and written
-  // by nothing anywhere in the tree — every launched ad points at no destination.
-  // If this line ever goes green, either that gap was closed (repoint the canary
-  // again, and say so) or the scanner went blind.
+  // this census layer unable to tell a burn-down from a blindness.
+  //
+  // ── CANARY REPOINTED AGAIN, WAVE 18 — AND SAYING SO, AS INSTRUCTED ────────
+  // Wave 17 named `ad_creative_variations.destination_url` and wrote: "If this
+  // line ever goes green, either that gap was closed (repoint the canary again,
+  // and say so) or the scanner went blind." It went green, and it was the FIRST
+  // of those: wave 18 built the writer. lib/ads/ad-destination.ts resolves a
+  // listing's published landing page, falls back to the advertiser's own site on
+  // the brand ladder, and is wired into both producers
+  // (lib/ads/listing-ad-producer.ts:176, lib/ads/ad-creator.ts:323). Ads no
+  // longer launch pointing at nothing.
+  //
+  // The replacement is `calendar_sync_mappings.provider_account_id`, chosen
+  // because it is the most DURABLE unfixed entry on the list rather than the
+  // most convenient — a canary that a routine burn-down retires next month
+  // teaches nothing. It cannot be built until the calendar provider adapter
+  // exists: `provider_event_id` on that table is text NOT NULL with no default
+  // and no trigger, and it holds the provider's own id for the event, which is
+  // the one fact this repo cannot know while the adapter is disabled. The module
+  // already records that state honestly (status 'partial', error_message
+  // "Provider adapter not enabled"), and lib/kernel/calendar-sync.ts:176 carries
+  // a do-not-"fix"-this note explaining why fabricating a row would make
+  // `is_synced` meaningless. Same protocol as before: if this goes green, either
+  // the adapter landed (repoint, and say so) or the scanner went blind.
   check("1b still reports a genuine writerless read no lane has fixed",
-    oneB.includes("ad_creative_variations.destination_url"))
+    oneB.includes("calendar_sync_mappings.provider_account_id"))
   // The nine this wave's sibling lane closed must be GONE — the same list its own
   // proof asserts, checked here too so the two simulators cannot drift apart.
   for (const col of [
