@@ -246,6 +246,7 @@
     "lib/intelligence/skill-freshness-board.ts": 1,
     "lib/intelligence/steer-my-day.ts": 1,
     "lib/intelligence/time-to-value-radar.ts": 1,
+    "lib/kernel/adapters/content-generation.ts": 1,
     "lib/kernel/agent-coaching.ts": 4,
     "lib/kernel/agent-identity.ts": 1,
     "lib/kernel/ai-search-citation-monitor.ts": 8,
@@ -342,7 +343,7 @@
     "lib/kernel/tenant-provisioning-spec.ts": 2,
     "lib/kernel/title-closing-watchtower.ts": 3,
     "lib/kernel/tour-optimizer.ts": 5,
-    "lib/kernel/vendor-coverage-forecast.ts": 3,
+    "lib/kernel/vendor-coverage-forecast.ts": 2,
     "lib/kernel/vendor-doc-compliance.ts": 3,
     "lib/kernel/vendor-no-show-autopilot.ts": 3,
     "lib/kernel/vendor-orchestration.ts": 5,
@@ -485,7 +486,7 @@
     "lib/recruiting/mentorship-lifecycle.ts": 4,
     "lib/recruiting/recruiting-pitch-kit.ts": 4,
     "lib/recruiting/retention-intervention.ts": 2,
-    "lib/recruiting/retention-radar.ts": 3,
+    "lib/recruiting/retention-radar.ts": 2,
     "lib/recruiting/switch-propensity-scout.ts": 2,
     "lib/recruiting/switch-propensity.ts": 1,
     "lib/recruiting/vendor-recruitment-propensity.ts": 1,
@@ -558,7 +559,6 @@
     "lib/voice/platform-reception.ts": 2,
     "lib/voice/reception-inventory.ts": 2,
     "lib/voice/studio-session.ts": 8,
-    "lib/voice/task-command.ts": 3,
     "lib/voice/tool-registry.ts": 2,
     "lib/voice/twilio-outbound.ts": 1,
     "lib/voice/twilio-tenancy.ts": 2,
@@ -575,7 +575,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9388,
+  "census": 9406,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -674,7 +674,7 @@
     "app/actions/ai-teammates.ts": 4,
     "app/actions/ai-tools-hub.ts": 4,
     "app/actions/ai-training-coaching.ts": 4,
-    "app/actions/ai-transaction-coordinator.ts": 9,
+    "app/actions/ai-transaction-coordinator.ts": 10,
     "app/actions/ai-transaction-documents.ts": 4,
     "app/actions/ai-vendor-management.ts": 5,
     "app/actions/ai-voice-transcription.ts": 4,
@@ -746,7 +746,7 @@
     "app/actions/cma-presentation/net-sheet-calculator.ts": 6,
     "app/actions/cma-presentation/presentation-assembler.ts": 1,
     "app/actions/coaching.ts": 2,
-    "app/actions/collaborative-search.ts": 15,
+    "app/actions/collaborative-search.ts": 16,
     "app/actions/coming-soon-content.ts": 1,
     "app/actions/command-center.ts": 3,
     "app/actions/communications.ts": 10,
@@ -812,7 +812,7 @@
     "app/actions/dotloop-integration.ts": 13,
     "app/actions/education-kernel.ts": 5,
     "app/actions/education-tutor.ts": 1,
-    "app/actions/email-campaigns.ts": 10,
+    "app/actions/email-campaigns.ts": 11,
     "app/actions/embed-widgets.ts": 6,
     "app/actions/error-handler.ts": 7,
     "app/actions/exception-center.ts": 5,
@@ -1166,7 +1166,7 @@
     "app/api/admin/transaction-forms/route.ts": 4,
     "app/api/admin/usage/export-csv/route.ts": 1,
     "app/api/agent/update-video-profile/route.ts": 1,
-    "app/api/agent-assistant/session/route.ts": 1,
+    "app/api/agent-assistant/session/route.ts": 2,
     "app/api/agent-assistant/tool-call/route.ts": 1,
     "app/api/agentic-os/actions/[capability]/invoke/route.ts": 1,
     "app/api/agentic-os/actions/[capability]/route.ts": 1,
@@ -2627,6 +2627,7 @@
     "app/title/components/os/title-operations-panel.tsx": 1,
     "app/title/orders/title-order-row.tsx": 1,
     "app/trust/page.tsx": 1,
+    "app/types/auth.ts": 1,
     "app/types/video-generation.ts": 1,
     "app/unsubscribe/[token]/token-client.tsx": 1,
     "app/unsubscribe/unsubscribe-client.tsx": 1,
@@ -2661,6 +2662,7 @@
     "lib/activities/activity-tenant.ts": 3,
     "lib/ads/ad-creative-engine.ts": 4,
     "lib/ads/ad-creator.ts": 6,
+    "lib/ads/ad-destination.ts": 1,
     "lib/ads/ad-engagement-decay.ts": 1,
     "lib/ads/ad-lead-intake.ts": 3,
     "lib/ads/ad-manager.ts": 4,
@@ -2730,6 +2732,7 @@
     "lib/agents/deal-coordinator.ts": 1,
     "lib/agents/education-delivery-producer.ts": 5,
     "lib/agents/extract-client-messages.ts": 1,
+    "lib/agents/generate-client-message.ts": 1,
     "lib/agents/listing-concierge.ts": 1,
     "lib/agents/managed-agents-egress.ts": 4,
     "lib/agents/manager-outbound-eval.ts": 2,
@@ -2757,7 +2760,7 @@
     "lib/ai/cost-tracking.ts": 6,
     "lib/ai/fair-use.ts": 2,
     "lib/ai/gateway-chat.ts": 2,
-    "lib/ai/generate.ts": 3,
+    "lib/ai/generate.ts": 5,
     "lib/ai/get-message-text.ts": 1,
     "lib/ai/image-generation.ts": 1,
     "lib/ai/lead-analyzer.ts": 1,
@@ -2790,7 +2793,7 @@
     "lib/ai-isa/ghost-reengagement.ts": 2,
     "lib/ai-isa/inbound-intent-classifier.ts": 2,
     "lib/ai-isa/isa-acting-scope.ts": 2,
-    "lib/ai-isa/isa-outreach-logger.ts": 3,
+    "lib/ai-isa/isa-outreach-logger.ts": 4,
     "lib/ai-isa/lead-action-plan.ts": 7,
     "lib/ai-isa/lead-call-intent.ts": 1,
     "lib/ai-isa/lead-channel-policy.ts": 1,
@@ -3101,6 +3104,7 @@
     "lib/direct-mail/listing-lifecycle-mail-reactor.ts": 1,
     "lib/direct-mail/mail-opt-out-affordance.ts": 2,
     "lib/direct-mail/mail-unsubscribe.ts": 2,
+    "lib/direct-mail/neighbor-campaign-rollup.ts": 1,
     "lib/direct-mail/orchestrate-bundle-send.ts": 1,
     "lib/direct-mail/orchestrate-preset-send.ts": 1,
     "lib/direct-mail/orchestrate-send.ts": 1,
@@ -3429,7 +3433,6 @@
     "lib/kernel/consent-recovery.ts": 3,
     "lib/kernel/consistency-guardian.ts": 5,
     "lib/kernel/consult-outcome-resolver.ts": 1,
-    "lib/kernel/content-generation-boundary.ts": 1,
     "lib/kernel/content-studio.ts": 7,
     "lib/kernel/continuity-receipt.ts": 3,
     "lib/kernel/contracts.ts": 2,
@@ -3754,6 +3757,7 @@
     "lib/marketing/content-topics.ts": 2,
     "lib/marketing/creative-playbooks.ts": 1,
     "lib/marketing/email-campaign-sender.ts": 2,
+    "lib/marketing/engagement-rollup.ts": 2,
     "lib/marketing/geo-faq.ts": 3,
     "lib/marketing/guide-booklet-content.ts": 2,
     "lib/marketing/home-value-email.ts": 2,
@@ -3829,6 +3833,7 @@
     "lib/open-house/instant-greeting.ts": 1,
     "lib/orchestrator/internal.ts": 2,
     "lib/osint-client.ts": 2,
+    "lib/outcomes/provider-event-fanout.ts": 3,
     "lib/outcomes/reconciliation-ledger.ts": 3,
     "lib/outcomes/reconciliation.ts": 4,
     "lib/permissions/offer-permissions.ts": 5,
@@ -4154,7 +4159,7 @@
     "lib/video/anniversary-script.ts": 5,
     "lib/video/assistant-faces.ts": 1,
     "lib/video/assistant-options.ts": 1,
-    "lib/video/avatar-explainer.ts": 2,
+    "lib/video/avatar-explainer.ts": 4,
     "lib/video/avatar-render-orchestrator.ts": 7,
     "lib/video/broll-picker.ts": 2,
     "lib/video/caption-plan.ts": 2,
@@ -4201,6 +4206,7 @@
     "lib/voice/a2p-registration.ts": 9,
     "lib/voice/broker-commands.ts": 3,
     "lib/voice/call-analysis.ts": 4,
+    "lib/voice/call-coaching.ts": 1,
     "lib/voice/call-recording.ts": 8,
     "lib/voice/campaign-command.ts": 1,
     "lib/voice/command-coverage.ts": 3,
@@ -4975,6 +4981,7 @@
       "generateSmartTasks",
       "draftTransactionCommunication",
       "listTransactionCommunications",
+      "sendTransactionCommunication",
       "monitorTransactionRisks",
       "prepareForClosing",
       "generatePostClosingPlan",
@@ -5426,6 +5433,7 @@
       "createCollaborativeSearch",
       "getCollaborativeSearches",
       "getCollaborativeSearchById",
+      "closeCollaborativeSearch",
       "updateSearchCriteria",
       "inviteFamilyMember",
       "acceptInvitation",
@@ -5834,6 +5842,7 @@
       "askEducationTutor"
     ],
     "app/actions/email-campaigns.ts": [
+      "listAudienceSegments",
       "createEmailCampaign",
       "getEmailCampaigns",
       "getEmailCampaign",
@@ -8166,7 +8175,8 @@
       "POST"
     ],
     "app/api/agent-assistant/session/route.ts": [
-      "POST"
+      "POST",
+      "PATCH"
     ],
     "app/api/agent-assistant/tool-call/route.ts": [
       "POST"
@@ -12660,6 +12670,9 @@
     "app/trust/page.tsx": [
       "generateMetadata"
     ],
+    "app/types/auth.ts": [
+      "toMagicLinkMessage"
+    ],
     "app/types/video-generation.ts": [
       "toLibraryScriptType"
     ],
@@ -12774,6 +12787,9 @@
       "rejectCreativeVariation",
       "launchAdCampaign",
       "updateCampaignStatus"
+    ],
+    "lib/ads/ad-destination.ts": [
+      "resolveAdDestination"
     ],
     "lib/ads/ad-engagement-decay.ts": [
       "computeEngagementDecay"
@@ -13093,6 +13109,9 @@
     "lib/agents/extract-client-messages.ts": [
       "extractClientMessages"
     ],
+    "lib/agents/generate-client-message.ts": [
+      "generateClientMessage"
+    ],
     "lib/agents/listing-concierge.ts": [
       "spawnListingConciergeForSeller"
     ],
@@ -13211,6 +13230,8 @@
     ],
     "lib/ai/generate.ts": [
       "generateAIJSON",
+      "generateAIText",
+      "generateChatResponse",
       "generateObject",
       "generateAIObject"
     ],
@@ -13350,6 +13371,7 @@
       "isaTenantWorkQueue"
     ],
     "lib/ai-isa/isa-outreach-logger.ts": [
+      "clampMaxTouches",
       "logISAOutreach",
       "checkMaxTouches",
       "checkUnderContractPause"
@@ -15038,6 +15060,9 @@
       "resolveMailUnsubscribeToken",
       "applyMailUnsubscribe"
     ],
+    "lib/direct-mail/neighbor-campaign-rollup.ts": [
+      "refreshNeighborCampaignCounters"
+    ],
     "lib/direct-mail/orchestrate-bundle-send.ts": [
       "orchestrateBundleSend"
     ],
@@ -16620,9 +16645,6 @@
     ],
     "lib/kernel/consult-outcome-resolver.ts": [
       "resolveConsultOutcomes"
-    ],
-    "lib/kernel/content-generation-boundary.ts": [
-      "generateKernelContent"
     ],
     "lib/kernel/content-studio.ts": [
       "captionStateOf",
@@ -18469,6 +18491,10 @@
       "sendCampaignNow",
       "runScheduledEmailCampaigns"
     ],
+    "lib/marketing/engagement-rollup.ts": [
+      "rollupEmailCampaignRates",
+      "rollupNewsletterCampaignRates"
+    ],
     "lib/marketing/geo-faq.ts": [
       "buildFaqFromTopics",
       "faqPageJsonLd",
@@ -18832,6 +18858,11 @@
     "lib/osint-client.ts": [
       "recordTypeIntent",
       "parseTerritoryCourtRecords"
+    ],
+    "lib/outcomes/provider-event-fanout.ts": [
+      "recordProviderEventOnLog",
+      "fanOutEmailEngagement",
+      "recordSequenceReply"
     ],
     "lib/outcomes/reconciliation-ledger.ts": [
       "recordOutcomeClaim",
@@ -20442,6 +20473,8 @@
     ],
     "lib/video/avatar-explainer.ts": [
       "getAvatarExplainerReadiness",
+      "authorExplainerContent",
+      "commissionAvatarExplainer",
       "resumeAwaitingProviderExplainers"
     ],
     "lib/video/avatar-render-orchestrator.ts": [
@@ -20698,6 +20731,9 @@
       "extractVoiceIntel",
       "analyzeVoiceCallRow",
       "sweepVoiceCallIntelligence"
+    ],
+    "lib/voice/call-coaching.ts": [
+      "writeCallCoachingInsights"
     ],
     "lib/voice/call-recording.ts": [
       "readCallRecordingPolicy",
@@ -21179,5 +21215,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 0
+  "trulyDead": 1
 }
