@@ -1263,7 +1263,10 @@ export async function generateSocialPost(params: {
     // ── LAYER 0.1: Track usage after successful generation ──────────────────
     await incrementFeatureUsage(agentContext.userId, "ai_social_content")
 
-    revalidatePath("/dashboard/content/social")
+    // /dashboard/content/social has no page.tsx. The reader of ai_generated_content
+    // is the Content OS drafts tab, app/dashboard/content/page.tsx — the same path
+    // generateContentPlan in this file already revalidates.
+    revalidatePath("/dashboard/content")
     return {
       success: true,
       data: result.content,
@@ -1391,7 +1394,9 @@ export async function generateEmail(params: {
       entityId: result.content?.id || "",
     })
 
-    revalidatePath("/dashboard/content/email")
+    // /dashboard/content/email has no page.tsx — the drafts this writes are read
+    // by the Content OS at /dashboard/content.
+    revalidatePath("/dashboard/content")
     return {
       success: true,
       data: result.content,
@@ -1488,7 +1493,10 @@ export async function generateBlogPost(params: {
       console.error("[generateBlogPost] Generation log failed:", costLog.error)
     }
 
-    revalidatePath("/dashboard/content/blog")
+    // /dashboard/content/blog has no page.tsx. The generated row lands in
+    // ai_generated_content, read by the Content OS drafts tab at /dashboard/content;
+    // the blog EDITOR surface is /dashboard/marketing/blog, which this does not write.
+    revalidatePath("/dashboard/content")
     return { success: true, data: result, contentId: savedContent?.id }
   } catch (error) {
     console.error("Generate blog post error:", error)
@@ -2475,7 +2483,10 @@ export async function scheduleContent(params: {
     return { success: false, error: "Failed to schedule content" }
   }
 
-  revalidatePath("/dashboard/content/calendar")
+  // /dashboard/content/calendar has no page.tsx. content_calendar is revalidated at
+  // /dashboard/content, the same path generateContentPlan uses after its own
+  // content_calendar inserts.
+  revalidatePath("/dashboard/content")
   return { success: true, data: scheduled }
 }
 

@@ -531,7 +531,11 @@ Return JSON:
 
     if (saveError) throw saveError
 
-    revalidatePath("/dashboard/marketing/direct-mail")
+    // /dashboard/marketing/direct-mail has no page.tsx. direct_mail_campaigns is read
+    // by the full manager at app/dashboard/campaigns/mail and mirrored on the studio
+    // "mail" tab (app/dashboard/marketing/studio/marketing-studio-client.tsx:3354).
+    revalidatePath("/dashboard/campaigns/mail")
+    revalidatePath("/dashboard/marketing/studio")
 
     return {
       success: true,

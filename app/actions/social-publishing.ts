@@ -242,7 +242,11 @@ export async function connectSocialAccount(params: {
 
   if (error) throw error
 
-  revalidatePath("/settings/social-accounts")
+  // /settings/social-accounts has no page.tsx. social_media_accounts is connected
+  // and disconnected from app/dashboard/profile (profile-settings-client.tsx:245) and
+  // listed by the social dashboard (app/dashboard/social/page.tsx).
+  revalidatePath("/dashboard/profile")
+  revalidatePath("/dashboard/social")
   return data
 }
 
@@ -260,7 +264,11 @@ export async function disconnectSocialAccount(accountId: string, _userId?: strin
 
   if (error) throw error
 
-  revalidatePath("/settings/social-accounts")
+  // /settings/social-accounts has no page.tsx. social_media_accounts is connected
+  // and disconnected from app/dashboard/profile (profile-settings-client.tsx:245) and
+  // listed by the social dashboard (app/dashboard/social/page.tsx).
+  revalidatePath("/dashboard/profile")
+  revalidatePath("/dashboard/social")
 }
 
 export async function getSocialPosts(filters?: {

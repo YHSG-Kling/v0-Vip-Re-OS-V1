@@ -11,6 +11,7 @@ import { isValidUUID, validateEmail, validatePhone, validateContact } from "@/li
 import { LEAD_SOURCES, normalizeLeadSource } from "@/lib/constants"
 import { handleError, ValidationError, NotFoundError, DatabaseError } from "@/lib/errors"
 import { calculateLeadScore } from "./lead-management.service"
+import { statusForNewContact } from "@/lib/contact-promotion/qualification"
 // NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
 // not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
 // `server-only` (it holds the service client and the paid PeopleData/OSINT
@@ -131,7 +132,15 @@ export async function createContact(params: CreateContactParams) {
         email: params.email,
         phone: params.phone,
         source,   // canonical — see the vocabulary gate above
-        status: params.status || "active",
+        // OWNER RULING: a contact cannot be BORN qualified — "any other new contacts
+        // coming in from forms, lead magnets, other real estate sites, etc. haven't
+        // been qualified yet." `params.status` is caller-supplied and this path is
+        // reachable from a "use server" export (a public HTTP endpoint, §4), so the
+        // refusal has to live here and not in a dropdown. 'qualified' is earned by
+        // the lead→contact CONVERSION alone and stamped in exactly one place,
+        // lib/portal/portal-invite-core.ts:77 stampQualifiedIfLeadConverted. The
+        // fallback below is this path's OWN prior default, so no other status moves.
+        status: statusForNewContact(params.status, "active"),
         lead_temperature: "cold",
         budget_min: params.budgetMin,
         budget_max: params.budgetMax,
@@ -172,7 +181,9 @@ export async function createContact(params: CreateContactParams) {
       agentId: params.agentId,
     })
 
-    revalidatePath("/dashboard/crm")
+    // TOMBSTONE (§1.1): revalidatePath("/dashboard/crm") deleted from this site —
+    // /dashboard/crm has no page.tsx and never had one; the survivor is /crm
+    // (app/crm/page.tsx), already revalidated on the next line.
     revalidatePath("/crm")
 
     return { success: true, contact }
@@ -257,7 +268,9 @@ export async function updateContact(params: UpdateContactParams) {
       })
     }
 
-    revalidatePath("/dashboard/crm")
+    // TOMBSTONE (§1.1): revalidatePath("/dashboard/crm") deleted from this site —
+    // /dashboard/crm has no page.tsx and never had one; the survivor is /crm
+    // (app/crm/page.tsx), already revalidated on the next line.
     revalidatePath("/crm")
     revalidatePath(`/crm/contacts/${params.contactId}`)
 
@@ -304,7 +317,9 @@ export async function deleteContact(contactId: string, agentId: string) {
       throw new DatabaseError("Failed to delete contact", error)
     }
 
-    revalidatePath("/dashboard/crm")
+    // TOMBSTONE (§1.1): revalidatePath("/dashboard/crm") deleted from this site —
+    // /dashboard/crm has no page.tsx and never had one; the survivor is /crm
+    // (app/crm/page.tsx), already revalidated on the next line.
     revalidatePath("/crm")
 
     return { success: true }
@@ -466,7 +481,10 @@ export async function addContactTags(contactId: string, agentId: string, tags: s
       throw new DatabaseError("Failed to add tags", error)
     }
 
-    revalidatePath("/dashboard/crm")
+    // /dashboard/crm has no page.tsx — this was a no-op. The tag list is rendered
+    // by /crm and by the contact detail page, so both are revalidated.
+    revalidatePath("/crm")
+    revalidatePath(`/crm/contacts/${contactId}`)
     return { success: true, tags: newTags }
   } catch (error) {
     return handleError(error, "addContactTags")
@@ -498,7 +516,10 @@ export async function removeContactTags(contactId: string, agentId: string, tags
       throw new DatabaseError("Failed to remove tags", error)
     }
 
-    revalidatePath("/dashboard/crm")
+    // /dashboard/crm has no page.tsx — this was a no-op. The tag list is rendered
+    // by /crm and by the contact detail page, so both are revalidated.
+    revalidatePath("/crm")
+    revalidatePath(`/crm/contacts/${contactId}`)
     return { success: true, tags: newTags }
   } catch (error) {
     return handleError(error, "removeContactTags")
@@ -571,7 +592,10 @@ export async function mergeContacts(params: { primaryContactId: string; duplicat
     // Soft delete duplicate
     await deleteContact(params.duplicateContactId, params.agentId)
 
-    revalidatePath("/dashboard/crm")
+    // /dashboard/crm has no page.tsx. The merge changes the roster AND the
+    // surviving contact's record, so both live paths are revalidated.
+    revalidatePath("/crm")
+    revalidatePath(`/crm/contacts/${params.primaryContactId}`)
 
     return { success: true }
   } catch (error) {

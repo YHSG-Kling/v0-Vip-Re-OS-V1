@@ -432,7 +432,9 @@ export async function archiveContact(contactId: string) {
     // cached CRM lists until the next full reload, so the UI keeps showing a record
     // the user was just told is gone.
     revalidatePath("/crm")
-    revalidatePath("/dashboard/crm")
+    // TOMBSTONE (§1.1): revalidatePath("/dashboard/crm") deleted here — /dashboard/crm
+    // has no page.tsx, so it revalidated nothing. Survivor is the line above,
+    // app/crm/page.tsx.
 
     return { success: true }
   } catch (error: any) {

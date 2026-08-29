@@ -19,6 +19,11 @@
  * tombstone is not a link). Reference forms: href="…", router.push/replace(…),
  * redirect(…), revalidatePath(…), and `href: "…"` object keys — LITERALS ONLY.
  *
+ * THE DENOMINATOR OF *ROUTES* is every app/**\/page.tsx AND every non-api
+ * app/**\/route.ts (see routeFromPage). Route handlers were missing from it
+ * until 2026-08-29, so the sweep listed /dashboard/superadmin/usage-reports/
+ * export — a CSV download that has always worked — as a dangling link.
+ *
  * ── WHAT IS EXCLUDED, AND WHY (published beside the count, §2) ──────────────
  *  · TEMPLATE LITERALS and any path holding `${…}`: not statically resolvable.
  *    Guessing would manufacture false accusations, which is the failure this
@@ -47,10 +52,21 @@ const ROOT = process.cwd()
 const BASELINE = join(ROOT, "scripts/dangling-link-baseline.json")
 const rel = (f: string) => f.slice(ROOT.length + 1)
 
-/** app/(group)/x/[id]/page.tsx → /x/[id]   (route groups vanish; api skipped) */
+/**
+ * app/(group)/x/[id]/page.tsx → /x/[id]   (route groups vanish; api skipped)
+ *
+ * ROUTE HANDLERS COUNT TOO. A `route.ts` outside app/api serves a real URL —
+ * app/dashboard/superadmin/usage-reports/export/route.ts is the CSV download
+ * behind that page's "Download CSV" link. Counting only page.tsx made this
+ * guard accuse a LIVE route of not existing (§2: a guard that cannot see the
+ * code it judges). Four such handlers exist in the tree today: /auth/callback,
+ * /auth/logout, /dashboard/superadmin/usage-reports/export and /llms.txt.
+ */
 function routeFromPage(r: string): string | null {
-  if (!r.startsWith("app/") || !r.endsWith("/page.tsx")) return null
-  const inner = r.slice("app/".length, r.length - "/page.tsx".length)
+  if (!r.startsWith("app/")) return null
+  const suffix = r.endsWith("/page.tsx") ? "/page.tsx" : r.endsWith("/route.ts") ? "/route.ts" : null
+  if (!suffix) return null
+  const inner = r.slice("app/".length, r.length - suffix.length)
   if (inner.startsWith("api/") || inner === "api") return null
   const segs = inner.split("/").filter((s) => s && !(s.startsWith("(") && s.endsWith(")")))
   return "/" + segs.join("/")
@@ -173,6 +189,13 @@ function main() {
   controls.push(["CONTROL an /api path is left to opposite-missing", !isScannablePath("/api/contacts/analytics")])
   controls.push(["CONTROL a config-redirect source is not dangling",
     redirects.length === 0 || redirects.some((s) => redirectMatches(s, ["contacts"]))])
+  // A ROUTE HANDLER IS A ROUTE. Counting only page.tsx made this guard accuse
+  // app/dashboard/superadmin/usage-reports/export/route.ts — the CSV download
+  // its own page links — of not existing.
+  controls.push(["CONTROL a non-api route.ts handler counts as a route",
+    routeFromPage("app/dashboard/superadmin/usage-reports/export/route.ts") === "/dashboard/superadmin/usage-reports/export"])
+  controls.push(["CONTROL an /api route.ts is still left to opposite-missing",
+    routeFromPage("app/api/contacts/analytics/route.ts") === null])
 
   const failedControls = controls.filter(([, ok]) => !ok)
   console.log("══════════════════════════════════════════════════")

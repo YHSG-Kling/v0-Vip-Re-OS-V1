@@ -51,8 +51,8 @@ export async function createLenderApplication(input: {
     application_url: input.applicationUrl.trim(), // the lender's own application link (l72_s12)
   }).select("id").single()
   if (error) return { success: false, error: error.message }
-  revalidatePath("/lender")
-  revalidatePath("/dashboard/partners")
+  revalidatePath("/lender/dashboard")
+  revalidatePath("/dashboard/vendors")
   return { success: true, applicationId: data.id as string }
 }
 
@@ -79,7 +79,7 @@ export async function updateLenderApplicationStatus(
     .select("id")
   if (error) return { success: false, error: error.message }
   if (!data || data.length === 0) return { success: false, error: "application_not_found_in_brokerage" }
-  revalidatePath("/lender")
+  revalidatePath("/lender/dashboard")
   return { success: true }
 }
 
@@ -110,7 +110,7 @@ export async function createTitleOrder(input: {
   }).select("id").single()
   if (error) return { success: false, error: error.message }
   revalidatePath("/title/orders")
-  revalidatePath("/dashboard/partners")
+  revalidatePath("/dashboard/vendors")
   return { success: true, orderId: data.id as string }
 }
 

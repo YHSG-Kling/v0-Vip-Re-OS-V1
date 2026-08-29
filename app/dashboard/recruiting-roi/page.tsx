@@ -16,6 +16,7 @@ import { LTVScatterChart } from "./ltv-scatter-chart"
 import { RecruitROITable } from "./recruit-roi-table"
 import { CostEntryPanel } from "./cost-entry-panel"
 import { RecruitingPipelineClient } from "./recruiting-pipeline-client"
+import { RecruitingPitchPanel } from "./recruiting-pitch-panel"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
@@ -182,6 +183,11 @@ export default async function RecruitingROIPage() {
 
         {/* Tab 1: Analysis */}
         <TabsContent value="pipeline" className="space-y-4">
+          {/* The pitch is the top of this funnel: it is what the public careers page
+              says and what the Recruiting Manager's outreach one-pager is built from.
+              It had no editor anywhere in the app until now — see
+              app/actions/settings/recruiting-pitch.ts. */}
+          <RecruitingPitchPanel />
           <RecruitingPipelineClient recruits={(recruitRows as any[]) ?? []} brokerageId={profile.brokerage_id} />
         </TabsContent>
 

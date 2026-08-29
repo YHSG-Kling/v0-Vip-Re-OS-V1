@@ -63,11 +63,25 @@ const ACTION_ITEMS = [
   { label: "Schedule open house",         href: "/dashboard/open-houses?action=new",                      icon: CalendarDays, group: "Create" },
   { label: "Schedule showing",            href: "/crm?action=schedule_showing",                           icon: Calendar,  group: "Create" },
   { label: "Schedule buyer tour",         href: "/crm?action=schedule_tour",                              icon: MapPin,    group: "Create" },
-  { label: "Generate CMA",                href: "/dashboard/cma/new",                                     icon: BarChart3, group: "Create" },
-  { label: "Compose newsletter",          href: "/dashboard/marketing/newsletter?action=new",             icon: Newspaper, group: "Create" },
-  { label: "Compose email campaign",      href: "/dashboard/marketing/email?action=new",                  icon: Mail,      group: "Create" },
-  { label: "Compose social post",         href: "/dashboard/social?action=new",                           icon: Share2,    group: "Create" },
-  { label: "Generate AI image",           href: "/dashboard/marketing/image?action=new",                  icon: ImageIcon, group: "Create" },
+  // ── FIVE DEAD CONTROLS, REPOINTED (dangling-link sweep, 2026-08-29) ────────
+  // Each of these hrefs had NO page.tsx, so typing the command landed the user
+  // on a 404. Each now names the surface that actually performs the action:
+  //   /dashboard/cma/new                 → /dashboard/listings (MassCMAButton +
+  //       CmaHistorySheet live there; per-listing CMA is /dashboard/listings/[id]/cma,
+  //       and ROUTE_ALIASES already records /dashboard/cma → /dashboard/listings)
+  //   /dashboard/marketing/newsletter    → /newsletters ("Create Newsletter",
+  //       newsletter_campaigns)
+  //   /dashboard/marketing/email         → /dashboard/marketing/studio?tab=newsletters,
+  //       whose "Email Campaigns" card is the writer of email_campaigns
+  //   /dashboard/marketing/image         → /dashboard/social?action=create, the only
+  //       surface that mounts <GenerateImageButton> (the post composer)
+  // ?action=new on the social composer was ALSO dead: page.tsx reads
+  // `action === "create"`, so the composer never opened. One spelling now (§6).
+  { label: "Generate CMA",                href: "/dashboard/listings",                                    icon: BarChart3, group: "Create" },
+  { label: "Compose newsletter",          href: "/newsletters",                                           icon: Newspaper, group: "Create" },
+  { label: "Compose email campaign",      href: "/dashboard/marketing/studio?tab=newsletters",            icon: Mail,      group: "Create" },
+  { label: "Compose social post",         href: "/dashboard/social?action=create",                        icon: Share2,    group: "Create" },
+  { label: "Generate AI image",           href: "/dashboard/social?action=create",                        icon: ImageIcon, group: "Create" },
   { label: "Generate AI video",           href: "/dashboard/videos/create",                               icon: Video,     group: "Create" },
   { label: "Record podcast episode",      href: "/dashboard/marketing/podcast?action=new",                icon: Headphones,group: "Create" },
   { label: "Write blog post",             href: "/dashboard/marketing/blog/new",                          icon: PenLine,   group: "Create" },
@@ -128,7 +142,9 @@ const ACTION_ITEMS = [
 
   // Operations
   { label: "Open vendor marketplace",     href: "/dashboard/vendors",                                       icon: Users,     group: "Operations" },
-  { label: "Open lender pipeline",        href: "/dashboard/lender",                                        icon: DollarSign,group: "Operations" },
+  // /dashboard/lender never had a page.tsx. The loan pipeline is the lender
+  // portal's own board, app/lender/pipeline/page.tsx.
+  { label: "Open lender pipeline",        href: "/lender/pipeline",                                         icon: DollarSign,group: "Operations" },
   { label: "Open TC dashboard",           href: "/dashboard/coordinator",                                  icon: ClipboardCheck, group: "Operations" },
   { label: "Open broker dashboard",       href: "/dashboard/admin",                                        icon: BarChart3, group: "Operations" },
   { label: "View commissions",            href: "/dashboard/financials/agent",                              icon: DollarSign,group: "Operations" },

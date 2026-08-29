@@ -123,7 +123,11 @@ export async function generateTeamLeadBrief(params: {
         : "All claimed — follow up on first-touch quality",
       severity: unclaimedHandoffs > 0 ? "high" : "medium",
       manager: "ai_isa",
-      ctas: [{ label: "Open team pipeline", href: "/dashboard/team-lead" }],
+      // /dashboard/team-lead never had a page.tsx. The team console is
+      // app/dashboard/team/page.tsx, whose boardScopeFor() gives user_type
+      // 'team_lead' the TEAM tier — their own board, exactly this brief's reader.
+      // (ROUTE_ALIASES already maps the other misspelling, /dashboard/teams → it.)
+      ctas: [{ label: "Open team pipeline", href: "/dashboard/team" }],
     })
   }
 
@@ -134,7 +138,7 @@ export async function generateTeamLeadBrief(params: {
       body: `Most critical: ${dealsAtRisk[0].property_address ?? "unknown"} (score ${Math.round(dealsAtRisk[0].overall_score)})`,
       severity: dealsAtRisk[0].risk_level === "critical" ? "critical" : "high",
       manager: "deal_coordinator",
-      ctas: [{ label: "Open team pipeline", href: "/dashboard/team-lead" }],
+      ctas: [{ label: "Open team pipeline", href: "/dashboard/team" }],
     })
   }
 
@@ -146,7 +150,7 @@ export async function generateTeamLeadBrief(params: {
         ? `${teamHotContacts} hot contacts across the team — schedule 1:1s with members carrying the most`
         : `Pipeline stable — good time for skill-building 1:1s`,
       severity: "medium",
-      ctas: [{ label: "View team", href: "/dashboard/team-lead" }],
+      ctas: [{ label: "View team", href: "/dashboard/team" }],
     })
   }
 

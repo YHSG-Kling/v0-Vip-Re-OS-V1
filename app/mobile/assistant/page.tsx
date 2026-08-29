@@ -208,8 +208,11 @@ export default async function MobileAssistantPage() {
           />
         </section>
 
-        {/* Mobile OS Field Quick Actions */}
-        <FieldQuickActions agentId={agentId ?? ""} />
+        {/* Mobile OS Field Quick Actions — the Quick Note box lives here; the
+            command strip's "Quick Note" tile targets this id. */}
+        <div id="quick-note">
+          <FieldQuickActions agentId={agentId ?? ""} />
+        </div>
 
         {/* Section 2: Quick Actions Grid */}
         <section>
@@ -217,8 +220,9 @@ export default async function MobileAssistantPage() {
           <QuickActionGrid />
         </section>
 
-        {/* Section 3: Today's Schedule */}
-        <section>
+        {/* Section 3: Today's Schedule — every stop below carries its own
+            "Directions" button; the command strip's Directions tile targets this id. */}
+        <section id="todays-schedule">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-medium">Today&apos;s Schedule</h2>
             <Link href="/dashboard/calendar" className="text-xs text-primary min-h-[44px] flex items-center">

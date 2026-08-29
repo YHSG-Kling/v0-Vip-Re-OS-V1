@@ -257,7 +257,12 @@ export const SETUP_ITEMS: SetupItem[] = [
     href: "/dashboard/settings/isa-calling", detect: (s) => s.hasIsaPhone },
   { key: "recruiting_pitch", label: "Set your recruiting pitch", roles: ["broker", "admin"], required: false, category: "growth", tiers: ORG,
     why: "Powers the Recruiting Manager's outreach to the agents you want to attract.",
-    href: "/dashboard/recruiting", detect: (s) => s.hasRecruitingPitch },
+    // /dashboard/recruiting never had a page.tsx, so this checklist item sent the
+    // broker to a 404 — and brokerages.recruiting_pitch had no writer anywhere, so
+    // the item could never be completed either. Both halves are fixed: the editor is
+    // app/dashboard/recruiting-roi/recruiting-pitch-panel.tsx (Pipeline tab), on the
+    // canonical recruiting surface that /admin/recruiting-hub was retired into.
+    href: "/dashboard/recruiting-roi", detect: (s) => s.hasRecruitingPitch },
   { key: "accounting", label: "Connect accounting (QuickBooks/Xero)", roles: ["broker", "admin"], required: false, category: "integrations",
     why: "Syncs commissions and expenses so your P&L is always current.",
     href: "/settings/accounting", detect: (s) => s.hasAccountingSync },

@@ -162,7 +162,9 @@ export async function saveTaxProfileAction(input: {
     }, { onConflict: "agent_id,tax_year" })
   if (error) return { success: false, error: error.message }
 
-  revalidatePath("/dashboard/financials/planning")
+  // /dashboard/financials/planning has no page.tsx. agent_tax_profile is read by
+  // TaxSetasidePanel, mounted on app/dashboard/financials/agent/agent-financials-client.tsx:419.
+  revalidatePath("/dashboard/financials/agent")
   return { success: true }
 }
 
@@ -199,6 +201,8 @@ export async function recordQuarterlyPaymentAction(input: {
     }, { onConflict: "agent_id,tax_year" })
   if (error) return { success: false, error: error.message }
 
-  revalidatePath("/dashboard/financials/planning")
+  // /dashboard/financials/planning has no page.tsx. agent_tax_profile is read by
+  // TaxSetasidePanel, mounted on app/dashboard/financials/agent/agent-financials-client.tsx:419.
+  revalidatePath("/dashboard/financials/agent")
   return { success: true }
 }

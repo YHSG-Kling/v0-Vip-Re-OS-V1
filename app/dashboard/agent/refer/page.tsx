@@ -38,7 +38,11 @@ export default async function AgentReferralPage() {
     svc.from("agents").select("id").eq("user_id", user.id).maybeSingle(),
   ])
   if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
-  if (!agentRow?.id) redirect("/dashboard/agent/setup")
+  // /dashboard/agent/setup never had a page.tsx — this recovery from a missing
+  // agents row was itself a 404. The canonical "you have no agent record yet"
+  // destination is the onboarding wizard, which is what every other page in the
+  // tree already sends this case to (e.g. app/dashboard/communications/page.tsx:67).
+  if (!agentRow?.id) redirect("/dashboard/onboarding")
 
   const { data: brokerage } = await svc
     .from("brokerages")

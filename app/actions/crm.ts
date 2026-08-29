@@ -310,7 +310,8 @@ export async function mergeContacts(params: {
     )
 
     revalidatePath("/crm")
-    revalidatePath("/dashboard/crm")
+    // TOMBSTONE (§1.1): revalidatePath("/dashboard/crm") deleted — no page.tsx at
+    // that path, so the call was a no-op. Survivor: the /crm line above.
     return { success: true, moved }
   } catch (error) {
     return handleError(error, "mergeContacts") as MergeContactsResult

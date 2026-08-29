@@ -245,7 +245,9 @@ export async function saveAIIdentityProfile(
     }
 
     // Revalidate relevant pages
-    revalidatePath("/settings/admin/ai-identity")
+    // /settings/admin/ai-identity has no page.tsx — the brokerage-scope editor is
+    // app/dashboard/admin/ai-identity, the third of the three scope pages below.
+    revalidatePath("/dashboard/admin/ai-identity")
     revalidatePath("/dashboard/team/ai-identity")
     revalidatePath("/dashboard/agent/ai-identity")
 

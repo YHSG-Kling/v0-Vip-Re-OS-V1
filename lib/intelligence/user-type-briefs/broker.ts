@@ -148,7 +148,11 @@ export async function generateBrokerBrief(params: {
       title: `${agentName}'s license expires in ${days} days`,
       body: `${expiringLicenses.length} agent${expiringLicenses.length === 1 ? "" : "s"} with licenses expiring within 60 days`,
       severity: days <= 14 ? "critical" : days <= 30 ? "high" : "medium",
-      ctas: [{ label: "Review licenses", href: "/dashboard/brokerage/licenses" }],
+      // /dashboard/brokerage/licenses never had a page.tsx. The brokerage licence
+      // board lives on the admin onboarding console's "License & CE" tab —
+      // app/dashboard/admin/onboarding/admin-onboarding-os-client.tsx:219 (roster,
+      // expiry filters, manual review). Same gate as this brief's reader (broker/admin).
+      ctas: [{ label: "Review licenses", href: "/dashboard/admin/onboarding?tab=license" }],
     })
   }
 
@@ -189,7 +193,11 @@ export async function generateBrokerBrief(params: {
         body: worst ? `Most at-risk: ${worst.name} (${worst.score}/100). Review their save-plays before they slip.` : "Review save-plays in your approval queue.",
         severity: retentionAtRisk > 2 ? "critical" : "high",
         manager: "recruiting_manager",
-        ctas: [{ label: "Open Command Center", href: "/dashboard/command-center" }],
+        // /dashboard/command-center never had a page.tsx. The Command Center is
+        // app/dashboard/admin/command-center/page.tsx — the manager approval queue,
+        // Trust Meter and Earned Autonomy this priority is sending the broker to.
+        // All four sites in this file now carry the one spelling (§6).
+        ctas: [{ label: "Open Command Center", href: "/dashboard/admin/command-center" }],
       })
     }
   } catch (err) {
@@ -216,7 +224,7 @@ export async function generateBrokerBrief(params: {
           body: `${line.label} is waiting on your decision.`,
           severity: "high",
           manager: line.manager,
-          ctas: [{ label: "Open Command Center", href: "/dashboard/command-center" }],
+          ctas: [{ label: "Open Command Center", href: "/dashboard/admin/command-center" }],
         })
       }
     }
@@ -230,8 +238,8 @@ export async function generateBrokerBrief(params: {
     { label: "Critical deals", value: criticalDeals.length, href: "/dashboard/brokerage/deal-health" },
     { label: "Unassigned leads", value: unassignedLeadsCount, href: "/dashboard/admin/lead-lineage" },
     { label: "Compliance flags 7d", value: complianceEvents.length, href: "/dashboard/compliance" },
-    { label: "Agents at flight risk", value: retentionAtRisk, href: "/dashboard/command-center" },
-    ...(curriculumPending > 0 ? [{ label: "AI curriculum pending", value: curriculumPending, href: "/dashboard/command-center" }] : []),
+    { label: "Agents at flight risk", value: retentionAtRisk, href: "/dashboard/admin/command-center" },
+    ...(curriculumPending > 0 ? [{ label: "AI curriculum pending", value: curriculumPending, href: "/dashboard/admin/command-center" }] : []),
     // Standup digest — one metric per reporting manager (label = manager, value = 24h activity)
     ...standupLines.slice(0, 4).map((l) => ({
       label: l.label,
