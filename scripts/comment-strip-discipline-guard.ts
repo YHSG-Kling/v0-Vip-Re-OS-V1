@@ -2,8 +2,8 @@
 /**
  * scripts/comment-strip-discipline-guard.ts   (npm run test:comment-strip-discipline)
  * ─────────────────────────────────────────────────────────────────────────────
- * EVERY ANALYZER IN scripts/ REMOVES COMMENTS THROUGH scripts/strip-comments.ts,
- * OR THIS GOES RED.
+ * EVERY ANALYZER IN scripts/ REMOVES COMMENTS — AND MASKS STRING AND TEMPLATE
+ * LITERALS — THROUGH scripts/strip-comments.ts, OR THIS GOES RED.
  *
  * WHY THIS GUARD EXISTS
  *
@@ -55,6 +55,54 @@
  * delimiter with indexOf/split, hoisting the regex into a variable, filtering trimmed
  * lines — and not to the names inside it, which are exactly what let the class hide.
  *
+ * ── AND THEN A FIFTH VARIANT, WHICH THIS GUARD WAS NOT EVEN LOOKING FOR ─────
+ * (lane K6, 2026-08-29)
+ *
+ * Comments are only half of what an analyzer has to remove before it can judge
+ * code. The other half is STRING AND TEMPLATE CONTENTS — an export name inside a
+ * narrative string is documentation, not wiring — and scripts/strip-comments.ts
+ * grew `blankStrings()` for exactly that, with a header dissecting the idiom every
+ * analyzer had independently reinvented:
+ *
+ *     .replace(TEMPLATE_PAIRER, "").replace(DOUBLE_PAIRER, "").replace(SINGLE_PAIRER, "")
+ *
+ * That is the block-comments-first defect wearing its second hat, and it fails the
+ * same way: the backtick pass pairs LEFT TO RIGHT and cannot see that a backtick is
+ * TEXT inside a quoted string. An ODD number of such backticks before any point
+ * leaves the pairer inside a phantom template from there on, and everything to the
+ * next backtick — code included — is masked away. Ordering the three passes
+ * differently only moves the bug, for the identical reason it did for comments.
+ *
+ * THIS GUARD POLICED COMMENT STRIPPING ONLY, so the population it would have
+ * caught sat in front of it and it reported the tree clean. Three analyzers were
+ * hand-rolling the pairer, and one of them was scripts/orphan-export-guard.ts —
+ * the instrument that produces this repo's orphan ledger. Measured at conversion,
+ * on the shape every model-response parser here carries:
+ *
+ *     if (s.startsWith("```json")) s = s.slice(7)   ← nine backticks of string
+ *     if (s.startsWith("```"))     s = s.slice(3)     CONTENT, an ODD count
+ *     if (s.endsWith("```"))       s = s.slice(0, -3)
+ *
+ * In lib/agents/generate-client-message.ts that swallowed 917 characters including
+ * `export async function generateClientMessage`, and the same shape hid four more
+ * exported functions in lib/ai/generate.ts and lib/video/avatar-explainer.ts. It
+ * also blanked the `await import(...)` call sites in
+ * app/api/internal/voice-command/route.ts, so five live, wired capabilities were
+ * reported as referenced by nothing. Across the corpus the retired masker and
+ * blankStrings disagreed on 1,693 of 4,641 files, in BOTH directions at once —
+ * blind to real identifiers, and leaking quoted prose back in as code.
+ *
+ * RULES 8 and 9 exist because of that. They are keyed to the SHAPE of a quote
+ * pairer — a regex that opens on a quote, closes on the same quote, and runs to it
+ * through a negated class and an escape alternation — and not to what the function
+ * around it is called.
+ *
+ * STATED BLIND SPOT (§2 — publish blind spots beside the number): a hand-rolled
+ * CHARACTER SCANNER that masks literals without ever writing a regex is caught by
+ * RULE 4 only if it also compares a character to a slash and a star, i.e. only if
+ * it strips comments too. A pure literal-masking scanner is not currently
+ * detected. No such file exists in scripts/ today; that is measured, not assumed.
+ *
  * ── HOW THIS PROOF IS BUILT ─────────────────────────────────────────────────
  * A detector that is broken and a tree that is clean both report zero offenders, and
  * only one of those is good news. This guard therefore refuses to report a pass on
@@ -89,6 +137,12 @@ const CANONICAL = new Set(["strip-comments.ts", "strip-sql-comments.ts"])
 // examples registering as offenders.
 const SLASH = String.fromCharCode(47)
 const STAR = String.fromCharCode(42)
+// The three quote delimiters, built the same way and for the same reason: RULES 8
+// and 9 below hunt regexes that pair these, and a guard that spells its own
+// offence literally becomes an offender in its own directory scan.
+const BTICK = String.fromCharCode(96)
+const DQUOTE = String.fromCharCode(34)
+const SQUOTE = String.fromCharCode(39)
 
 type Offence = { file: string; line: number; rule: string; text: string }
 
@@ -165,6 +219,8 @@ const ALL_RULES = [
   "comment DELIMITER searched by indexOf/split (hand-rolled scanner)",
   "comment regex HOISTED into a variable",
   "line-comment filter inside a LOOP (trimmed line startsWith)",
+  "regex PAIRS QUOTES to mask literals (re-implements blankStrings)",
+  "quote-pairing regex ASSEMBLED from char codes (grep-invisible)",
 ] as const
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -238,6 +294,41 @@ const LINE_EATER = re(`\\\\${SLASH}\\\\${SLASH}(?:\\.\\${STAR}|\\[\\^)`)
 
 /** `l.trim().startsWith("//")` — the loop form of the whole-line filter. */
 const TRIMMED_LINE_FILTER = re(`trim\\(\\)\\s*\\.\\s*startsWith\\(\\s*["']${SLASH}${SLASH}["']`)
+
+/**
+ * Is this regex literal a QUOTE PAIRER — the string/template half of the defect?
+ *
+ * Keyed to the shape, not to the surrounding function's name, because the name is
+ * exactly what let the character-scanner class hide for a whole wave. A masker's
+ * pattern IS the literal it wants to consume: it OPENS on a quote, CLOSES on the
+ * same quote, and gets between them by running through a NEGATED CLASS naming that
+ * quote plus an ESCAPE alternation. All four together, or it is some other regex
+ * that merely happens to mention a quote.
+ *
+ * That conjunction is what keeps ordinary patterns out. `/"([A-Za-z_]+)"/` matches
+ * a quoted word and has no negated class; `/[^"]+/` has the class but does not open
+ * or close on the quote; `/"(?:x|y)"/` has neither escape nor class. None of them
+ * is trying to consume an arbitrary literal, and none of them is flagged.
+ *
+ * Returns the quote character it pairs, or null.
+ */
+function literalPairer(lit: string): string | null {
+  const m = /^\/([\s\S]*)\/[gimsuy]*$/.exec(lit)
+  if (!m) return null
+  const body = m[1]
+  for (const q of [BTICK, DQUOTE, SQUOTE]) {
+    // The same prefix peel RULE 6 does: a pattern may legitimately open with an
+    // anchor, leading whitespace or a group before the delimiter it is really
+    // about. A backslash before the quote is allowed too — authors write \" out of
+    // habit even though a quote needs no escaping in a regex.
+    const opens = re(`^(?:\\^|\\\\s\\*|\\(\\?:|\\()*\\\\?${q}`).test(body)
+    const closes = re(`\\\\?${q}$`).test(body)
+    const negated = body.includes(`[^${q}`) || body.includes(`[^\\${q}`)
+    const escapes = body.includes("\\\\")
+    if (opens && closes && negated && escapes) return q
+  }
+  return null
+}
 
 /**
  * Offences in ONE file's source. Runs on comment-stripped text, so a file that
@@ -352,6 +443,33 @@ export function detect(file: string, rawSrc: string): Offence[] {
       if (!/\.(filter|map|some|every)\(/.test(around)) {
         add(m.index, "line-comment filter inside a LOOP (trimmed line startsWith)", around.slice(-90))
       }
+    }
+  }
+
+  // ── RULE 8 — a hand-rolled STRING/TEMPLATE masker ──────────────────────────
+  // The other half of what an analyzer must remove before it judges code, and the
+  // half this guard could not see until 2026-08-29. Three analyzers were pairing
+  // quotes with regexes, one of them the orphan ledger itself; the header above
+  // records what it cost. Inline or hoisted makes no difference here — unlike
+  // RULE 1/RULE 6 for comments, the pattern alone is conclusive, so both forms are
+  // caught by the same sweep over every regex literal in the file.
+  for (const m of src.matchAll(ANY_REGEX)) {
+    if (literalPairer(m[0])) {
+      add(m.index!, "regex PAIRS QUOTES to mask literals (re-implements blankStrings)", m[0])
+    }
+  }
+
+  // ── RULE 9 — the same pairer, assembled so no grep finds it ────────────────
+  // RULE 2's sibling, and it exists for the same recorded reason: the comment
+  // idiom hid from every grep once by being built out of String.fromCharCode, and
+  // a rule that any author can dodge by concatenation is not a rule. Shape-keyed
+  // like RULE 8 — a regex CONSTRUCTED in a file that manufactures a quote
+  // character, whose source carries a negated class — never keyed to what the
+  // variables holding those characters are called.
+  const quoteBuilt = /fromCharCode\(\s*(?:96|34|39)\s*\)/.test(src)
+  if (quoteBuilt && /new RegExp\(/.test(src)) {
+    for (const m of src.matchAll(/new RegExp\([^)\n]*\[\^[^)\n]*\)/g)) {
+      add(m.index!, "quote-pairing regex ASSEMBLED from char codes (grep-invisible)", m[0])
     }
   }
 
@@ -525,8 +643,60 @@ const FIXTURES: { name: string; src: string; mustFlag: boolean; rule?: string }[
     mustFlag: false,
   },
   {
+    // RULE 8. Built by interpolation rather than typed, exactly as the comment
+    // fixtures are: written out, this line would make the guard an offender in its
+    // own directory scan. The interpolation happens at RUNTIME, so the fixture
+    // STRING holds the real idiom while this file never does.
+    name: "the template-literal pairer — the masker half of the same defect",
+    src: `const mask = (s) => s.replace(/${BTICK}(?:\\\\.|[^${BTICK}\\\\])*${BTICK}/g, "")`,
+    mustFlag: true,
+    rule: "regex PAIRS QUOTES to mask literals (re-implements blankStrings)",
+  },
+  {
+    name: "the same pairer for double quotes, HOISTED into a const",
+    src: [
+      `const DOUBLE = /${DQUOTE}(?:\\\\.|[^${DQUOTE}\\\\])*${DQUOTE}/g`,
+      `const mask = (s: string) => s.replace(DOUBLE, "")`,
+    ].join("\n"),
+    mustFlag: true,
+    rule: "regex PAIRS QUOTES to mask literals (re-implements blankStrings)",
+  },
+  {
+    name: "…and for single quotes, so no one quote style is the only one policed",
+    src: `const mask = (s) => s.replace(/${SQUOTE}(?:\\\\.|[^${SQUOTE}\\\\])*${SQUOTE}/g, "")`,
+    mustFlag: true,
+    rule: "regex PAIRS QUOTES to mask literals (re-implements blankStrings)",
+  },
+  {
+    // RULE 9, the assembled form. Same construction trick RULE 2's fixture uses.
+    name: "the quote pairer assembled from char codes, which no grep finds",
+    src: [
+      `const Q = String.fromCharCode(96)`,
+      `const TPL = ${["new", "RegExp"].join(" ")}(Q + "(?:\\\\\\\\.|[^" + Q + "\\\\\\\\])*" + Q, "g")`,
+    ].join("\n"),
+    mustFlag: true,
+    rule: "quote-pairing regex ASSEMBLED from char codes (grep-invisible)",
+  },
+  {
+    // The near-misses RULE 8 must NOT sweep up. Every analyzer in scripts/ matches
+    // quoted arguments — a table name, a route, a column — and none of those is a
+    // masker. If the rule cannot tell them apart it is unusable.
+    name: "matching a quoted WORD is not masking literals",
+    src: [
+      `const TABLE = /\\.from\\(${DQUOTE}([A-Za-z_]+)${DQUOTE}\\)/g`,
+      `const NEG = /[^${DQUOTE}]+/g`,
+      `const ALT = /${SQUOTE}(?:contacts|leads)${SQUOTE}/g`,
+    ].join("\n"),
+    mustFlag: false,
+  },
+  {
     name: "the correct thing — routed through strip-comments.ts",
-    src: [`import { stripComments } from "./strip-comments"`, `const code = (p) => stripComments(raw(p))`].join("\n"),
+    src: [
+      `import { stripComments, blankComments, blankStrings } from "./strip-comments"`,
+      `const code = (p) => stripComments(raw(p))`,
+      `const masked = (p) => blankStrings(raw(p))`,
+      `const offsets = (p) => blankComments(raw(p))`,
+    ].join("\n"),
     mustFlag: false,
   },
   {
@@ -568,11 +738,16 @@ function positiveControl(): string[] {
 const PROBE = join(SCRIPTS, "comment-strip-negative-control.probe.ts")
 
 function negativeControl(baseline: number): string | null {
+  // BOTH idioms, because this guard now polices both. Writing only the comment one
+  // would leave the string-masking rules proven by fixtures alone — and a fixture
+  // proves the detector matches a string, not that the DIRECTORY SCAN reacts.
   const body = [
     `${SLASH}${SLASH} Written by comment-strip-discipline-guard.ts as its negative control.`,
     `${SLASH}${SLASH} If you are reading this on disk, the guard died mid-run — delete it.`,
     `export const code = (s: string) =>`,
     `  s.replace(/\\${SLASH}\\${STAR}[\\s\\S]*?\\${STAR}\\${SLASH}/g, "").replace(/^[ \\t]*\\${SLASH}\\${SLASH}.*$/gm, "")`,
+    `export const mask = (s: string) =>`,
+    `  s.replace(/${BTICK}(?:\\\\.|[^${BTICK}\\\\])*${BTICK}/g, "").replace(/${DQUOTE}(?:\\\\.|[^${DQUOTE}\\\\])*${DQUOTE}/g, "")`,
     "",
   ].join("\n")
   writeFileSync(PROBE, body)
@@ -582,6 +757,14 @@ function negativeControl(baseline: number): string | null {
     const hit = after.filter((o) => o.file === "comment-strip-negative-control.probe.ts")
     if (hit.length === 0) {
       return "the block-first idiom was written into scripts/ and the SCAN DID NOT GO RED — this guard cannot be trusted"
+    }
+    // BY RULE, not merely by count: the comment idiom fires several rules at once,
+    // so "something fired" would have been satisfied with the string-masking rules
+    // dead — which is exactly how a dead rule hid behind a live one here before.
+    for (const wanted of ["regex removes BLOCK comments", "regex PAIRS QUOTES to mask literals (re-implements blankStrings)"]) {
+      if (!hit.some((h) => h.rule === wanted)) {
+        return `the probe was written into scripts/ but the scan never reported "${wanted}" — that rule is not reaching the tree`
+      }
     }
     if (after.length !== baseline + hit.length) {
       return `scan moved unexpectedly: ${baseline} → ${after.length} with ${hit.length} probe offences`
@@ -661,16 +844,20 @@ function main() {
   }
 
   if (live.length) {
-    console.log(`\n  ✗ ${live.length} file(s) remove comments without scripts/strip-comments.ts:\n`)
+    console.log(`\n  ✗ ${live.length} file(s) strip comments or mask literals without scripts/strip-comments.ts:\n`)
     for (const o of live) console.log(`    scripts/${o.file}:${o.line}  [${o.rule}]\n      ${o.text}`)
-    console.log("\n  Fix: import { stripComments } from \"./strip-comments\" — or blankComments if the")
-    console.log("  analyzer computes positions from match indices and needs character offsets to hold.")
+    console.log("\n  Fix: import from \"./strip-comments\" — stripComments when you report LINE")
+    console.log("  NUMBERS, blankComments when you compute positions from match indices, and")
+    console.log("  blankStrings when a quoted literal would confuse the parse. Pairing quotes with")
+    console.log("  regexes fails the same way pairing comment delimiters does: one desynchronising")
+    console.log("  backtick shifts every literal after it and the scan goes confidently wrong.")
     console.log("\n ❌ COMMENT_STRIP_DISCIPLINE_FAIL")
     process.exit(1)
   }
 
-  console.log("\n ✅ COMMENT_STRIP_DISCIPLINE_PASS — every analyzer in scripts/ removes comments")
-  console.log("    through scripts/strip-comments.ts, and the detector proved it can still fail.")
+  console.log("\n ✅ COMMENT_STRIP_DISCIPLINE_PASS — every analyzer in scripts/ removes comments AND")
+  console.log("    masks string/template literals through scripts/strip-comments.ts, and the")
+  console.log("    detector proved it can still fail.")
 }
 
 main()

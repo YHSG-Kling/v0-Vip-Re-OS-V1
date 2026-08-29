@@ -65,7 +65,7 @@ import {
   selectPrimaryRole,
   type RoleGrant,
 } from "../lib/auth/role-grants"
-import { blankComments } from "./strip-comments"
+import { blankComments, blankStrings } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -236,13 +236,41 @@ function codeOnly(s: string): string {
  * sentence. Pinning a scan to a file path is how a probe goes blind the day the
  * code moves, and editing the documentation to dodge the scanner would leave the
  * scanner still wrong for the next quotation someone writes.
+ *
+ * ── THE ONE SCANNER, NOT THREE REGEXES (lane K6, 2026-08-29) ────────────────
+ *
+ * This used to blank literals with three global regexes run one after another —
+ * template, then double quote, then single quote, "longest-first so a template
+ * literal is not chewed up by the quote rules". That ordering argument is the
+ * block-comments-first defect restated: order cannot decide it, because the
+ * backtick pass pairs LEFT TO RIGHT and cannot see that a backtick is TEXT inside
+ * a quoted string. An odd number of such backticks leaves the pairer inside a
+ * phantom template, and everything to the next backtick is blanked away — code
+ * included. This copy also used the `\\.` escape form, and `.` does not match a
+ * newline, so a backslash at end of line (a legal line continuation) could not be
+ * consumed and desynchronised the pairing a second way.
+ *
+ * MEASURED on this tree before the conversion, over the 5,487 files this proof
+ * walks: the retired masker and blankStrings disagree on 2,239 of them. It was
+ * blind to 10,007 identifier slots — `lib/agents/asset-manager.ts` alone lost 152,
+ * because its `${…}` interpolations were blanked with the template text around
+ * them — and it LEAKED 5,164 prose slots back in as if they were code, because
+ * literals it failed to pair were never blanked at all
+ * (`lib/direct-mail/draft-copy.ts` 369, `lib/elevenlabs/conv-ai.ts` 201). Leaking
+ * prose is precisely the failure this helper's header, above, exists to describe.
+ *
+ * The scans below did not MOVE on that — orderPickedAgentLinkage reports 0 either
+ * way — because none of the mis-read regions happens to contain
+ * `.find(g => g.agent_id)` today. That is luck, not correctness: the helper was
+ * right about this tree while being wrong about how to read it, and the next
+ * quotation or the next fenced JSON parser is not obliged to keep it lucky.
+ *
+ * blankStrings() does comments AND literal contents in ONE left-to-right scan, so
+ * the separate codeOnly() pass is no longer needed here. `${…}` interpolations
+ * stay CODE, which is what they are — a call written inside one is a call.
  */
 function executableCodeOnly(s: string): string {
-  return codeOnly(s)
-    // Longest-first so a template literal is not chewed up by the quote rules.
-    .replace(/`(?:\\.|[^`\\])*`/g, (m) => m.replace(/[^\n]/g, " "))
-    .replace(/"(?:\\.|[^"\\\n])*"/g, (m) => " ".repeat(m.length))
-    .replace(/'(?:\\.|[^'\\\n])*'/g, (m) => " ".repeat(m.length))
+  return blankStrings(s)
 }
 
 /**
@@ -371,6 +399,51 @@ function sourceLayer() {
     scan(quoted + "\nconst agentId = grants.find((g) => g.agent_id)?.agent_id"))
   check("blanking preserves line numbers, so a reported hit still points at the right line",
     executableCodeOnly(quoted).split("\n").length === quoted.split("\n").length)
+
+  // ── THE MASKING SHAPE THAT MOTIVATED THE 2026-08-29 CONVERSION ─────────────
+  // The controls above prove the scan can tell a quotation from a call. They do
+  // NOT prove the masker can find the call in the first place, and the masker that
+  // stood here until this pass could not: three global regexes, template pass
+  // first, pairing backticks LEFT TO RIGHT. Every module in this repo that parses a
+  // model's JSON answer strips the markdown fence with nine backticks of string
+  // CONTENT — an ODD count — and from the ninth onwards a naive pairer is inside a
+  // phantom template and blanks live code away. Verbatim shape from
+  // lib/agents/generate-client-message.ts:72-74, with a real call underneath it.
+  //
+  // THE TRAILING TEMPLATE IS LOAD-BEARING. A phantom template only SWALLOWS a
+  // region once it finds a closing backtick, so a fixture whose odd backtick is the
+  // LAST one in the text proves nothing — the naive pairer just fails to match and
+  // the code survives by accident. Real files always have another backtick further
+  // down; without one here this control is a decoration, and the first draft of it
+  // passed against the very idiom it was written to catch.
+  const fenced = [
+    'let s = text.trim()',
+    'if (s.startsWith("```json")) s = s.slice(7)',
+    'if (s.startsWith("```")) s = s.slice(3)',
+    'if (s.endsWith("```")) s = s.slice(0, -3)',
+    'const agentId = grants.find((g) => g.agent_id)?.agent_id ?? null',
+    'log(`picked ${agentId}`)',
+  ].join("\n")
+  const beforeCall = fenced.slice(0, fenced.indexOf("const agentId"))
+  check("the fence specimen carries the ODD backtick count that desynchronises a naive pairer",
+    (beforeCall.match(/`/g) ?? []).length % 2 === 1 &&
+    (fenced.slice(fenced.indexOf("const agentId")).match(/`/g) ?? []).length > 0)
+  check("NEGATIVE CONTROL a real call BELOW that odd backtick is still seen — the masker no longer swallows it",
+    scan(fenced))
+  check("…and the fence text itself is still blanked, so the literal cannot be read as code",
+    !executableCodeOnly(fenced).includes("json"))
+
+  // A `/* */` sequence inside a `//` line, and an apostrophe inside a comment: the
+  // two prose shapes that make a block-comments-first stripper eat the code below.
+  check("a slash-star inside a LINE comment does not swallow the call below it",
+    scan("// keeps kernel/* + agents/* out of the client bundle\nconst a = grants.find((g) => g.agent_id)"))
+  check("an apostrophe and a URL inside comments do not swallow the call below them",
+    scan("// the script's own agent — see https://example.invalid/a/b\nconst a = grants.find((g) => g.agent_id)"))
+
+  // The behaviour that CHANGED: `${…}` is executable, so a call written inside one
+  // is a call. The retired pass blanked whole templates, interpolations and all.
+  check("a call inside a ${} interpolation IS seen (an interpolation is code, not text)",
+    scan("const s = `picked: ${grants.find((g) => g.agent_id)?.agent_id}`"))
 
   const unsound = unsoundSingleRowReads()
   check(

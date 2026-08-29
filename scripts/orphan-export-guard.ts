@@ -44,7 +44,7 @@
 import { readFileSync, existsSync, writeFileSync } from "node:fs"
 import { walkTs } from "./runtime-roots"
 import { join, relative } from "node:path"
-import { stripComments } from "./strip-comments"
+import { stripComments, blankStrings } from "./strip-comments"
 
 const root = process.cwd()
 /**
@@ -207,32 +207,22 @@ for (const f of files) {
   try { corpus.set(f, readFileSync(join(root, f), "utf8")) } catch { corpus.set(f, "") }
 }
 
-/** Comments stripped so a mention in prose does not count as an export or a use. */
-function code(f: string): string {
-  const raw = corpus.get(f) ?? ""
-  // WAS two regexes: block comments first, then line comments. That order is the
-  // defect — a slash-star inside a LINE comment opened a block comment for the
-  // first regex, which then ran to the next star-slash anywhere below and deleted
-  // the code in between. It cost this census its credibility twice: once
-  // swallowing ~670 lines, and once swallowing 5,936 of 12,967 characters of
-  // compliance-bridge-panel.tsx — which made two WIRED server actions
-  // (emitCompliancePassedAction, loadComplianceBridgeStatusAction) read as
-  // "referenced NOWHERE". An analyzer that under-reads does not go quiet; it
-  // accuses working code. stripComments() is a single left-to-right scan that
-  // tracks state, which is the only thing that can actually decide this.
-  return stripComments(raw)
-}
-
-const codeCache = new Map<string, string>()
-for (const f of files) codeCache.set(f, code(f))
+// TOMBSTONE (orphan doctrine §1.3) — `code()` and its `codeCache` stood here and
+// did HALF of what callSites() now does in one pass: strip comments, then hand the
+// result to a second, hand-rolled masker. The functionality moved into
+// scripts/strip-comments.ts:116 (`blankStrings`), which removes comments AND blanks
+// literal contents in the SAME left-to-right scan. Two passes could not be merged
+// while the second one was regexes; with the canonical scanner there is nothing
+// left for a separate comment stage to do. The narrative both halves carried is
+// merged onto callSites() below, because that is where the reasoning now lives.
 
 /**
  * A CALL SITE, NOT A MENTION.
  *
- * code() strips comments, so prose in a /* *\/ block never counted as a use.
- * STRING LITERALS survived it, and that hole was load-bearing: 240 exports were
- * classed "referenced" on the strength of a name appearing inside a string, 231
- * of them inside the narrative `what:` fields of lib/kernel/manager-registry.ts.
+ * Comments are removed, so prose in a /* *\/ block never counts as a use.
+ * STRING LITERALS are blanked too, and that half is load-bearing: 240 exports were
+ * once classed "referenced" on the strength of a name appearing inside a string,
+ * 231 of them inside the narrative `what:` fields of lib/kernel/manager-registry.ts.
  * One of those passages literally reads "NOTHING WAS DELETED: addAgentExpense,
  * setAgentGoal and assignAgentToContact each have a named more-complete
  * survivor" — so the registry's own record of retiring three functions was the
@@ -249,34 +239,231 @@ for (const f of files) codeCache.set(f, code(f))
  * Contents are blanked but the quotes are kept, so nothing downstream that
  * counts or slices this text shifts.
  *
+ * ── THE ONE SCANNER, NOT THREE REGEXES (lane K6, 2026-08-29) ────────────────
+ *
+ * This masking used to be three global regexes — one per quote style, run
+ * independently over the file:
+ *
+ *     .replace(TEMPLATE_RE, "``").replace(DOUBLE_RE, '""').replace(SINGLE_RE, "''")
+ *
+ * It is the block-comments-first defect wearing its second hat, and this guard was
+ * living proof of it. The backtick pass runs FIRST and pairs LEFT TO RIGHT, so
+ * backticks that are ordinary TEXT inside a quoted string are read as template
+ * delimiters. An ODD number of them before any point leaves the pairer inside a
+ * phantom template from there on, and everything to the next backtick — code
+ * included — is masked away. No error, no warning: the analyzer simply reports on
+ * what is left.
+ *
+ * MEASURED ON THIS TREE, not theorised. Every module in this repo that parses a
+ * model's JSON answer strips the markdown fence the same way:
+ *
+ *     if (s.startsWith("```json")) s = s.slice(7)
+ *     if (s.startsWith("```"))     s = s.slice(3)
+ *     if (s.endsWith("```"))       s = s.slice(0, -3)
+ *
+ * NINE backticks, all of them string CONTENT, all of them odd. In
+ * lib/agents/generate-client-message.ts that is lines 72-74, and the ninth opened a
+ * "template" that closed 19 lines later — swallowing 917 characters including line
+ * 83, `export async function generateClientMessage`. The guard therefore did not
+ * know the module exports it. Same shape, same outcome, in lib/ai/generate.ts
+ * (generateAIText, generateChatResponse) and lib/video/avatar-explainer.ts
+ * (authorExplainerContent, commissionAvatarExplainer): five exported functions
+ * that this census could not see AT ALL. That is the exact worked example
+ * scripts/strip-comments.ts's own blankStrings() header records — the header was
+ * describing this file.
+ *
+ * And it accused. The mask ran over REFERENCE text as well as declarations, so
+ * app/api/internal/voice-command/route.ts — which reaches five capabilities through
+ * `await import(...)` at lines 577, 631 and 677 — had those call sites blanked out
+ * of view, and the census reported runVendorCoverageForecast,
+ * draftSavePlaysForAtRiskAgents, parseRelativeDueDate, buildVoiceTaskRow and
+ * spokenTaskConfirmation as unreferenced. Five live, wired capabilities on the
+ * wire-list. That is the same mechanism, and the same route-file shape, as the
+ * compliance-bridge-panel.tsx failure this guard's own history records.
+ *
+ * blankStrings() is that single left-to-right scan. Two behaviours change, both
+ * deliberately: a template's `${…}` INTERPOLATION now stays CODE (a name inside one
+ * is a real reference — the old pass blanked the whole template, interpolations
+ * and all), and comment removal happens in the same scan rather than in a separate
+ * pass that had to run first.
+ *
+ * MEASURED A/B on ONE snapshot of the corpus (4,641 files) rather than by running
+ * the guard twice, because four other lanes were editing app/ and lib/ at the time
+ * and a before/after across two trees would have measured them instead:
+ *
+ *     census   9406 → 9411     (+5: the five declarations listed above)
+ *     orphans  1230 → 1225     (−5: the five acquittals listed above)
+ *     A 1021 → 1016 · B 209 → 209 · C 0 → 0
+ *     newly orphaned by the fix: 0.  category moves: 0.
+ *
+ * Both numbers move in the direction that means the instrument had been BLIND, and
+ * nothing entered the wire-list (§2). Identifier visibility differs on 1,694 of the
+ * 4,641 files — 4,663 name-slots the old mask could not see, 2,519 it leaked back
+ * in as code — so the five that changed a verdict are the tip of it; the rest
+ * happened not to be export names.
+ *
  * DELIBERATELY NOT APPLIED TO proofCorpus below: a proof legitimately names the
  * capability it stands over inside a string (a needs: [...] list, a table of
- * expected symbols). Stripping there would collapse category A into C and
+ * expected symbols). Blanking there would collapse category A into C and
  * report proven-but-unwired work as dead — the exact misread this guard exists
- * to prevent.
+ * to prevent. proofCorpus therefore keeps stripComments(), which removes comments
+ * and leaves every literal intact.
  */
-function callSites(src: string): string {
-  // `\\.` DOES NOT MATCH A BACKSLASH-NEWLINE — `.` excludes newline in JS regex. A
-  // template literal containing a line continuation therefore failed to match, the
-  // scanner paired the WRONG backticks, and everything to the next one was masked
-  // away. lib/agents/asset-manager.ts collapsed from 36,824 characters to 5,745 —
-  // 85% of the file gone as a reference source — which hid the only caller of
-  // lib/remotion/registry.ts:listCompositionsForTier and reported it as an orphan.
-  // Second false-accusation mechanism found in this census in one wave, and like
-  // the first it was a lane refusing to delete live code that surfaced it.
-  // `\\[\s\S]` consumes the escaped character whatever it is, newline included.
-  return src
-    .replace(/`(?:\\[\s\S]|[^`\\])*`/g, "``")
-    .replace(/"(?:\\[\s\S]|[^"\\\n])*"/g, '""')
-    .replace(/'(?:\\[\s\S]|[^'\\\n])*'/g, "''")
+function callSites(raw: string): string {
+  return blankStrings(raw)
 }
 
 const useCache = new Map<string, string>()
-for (const f of files) useCache.set(f, callSites(codeCache.get(f)!))
+for (const f of files) useCache.set(f, callSites(corpus.get(f) ?? ""))
 
 interface ExportRef { file: string; name: string }
 
 const SCANNED_ROOTS = scannedRoots(files)
+
+/**
+ * The two declaration shapes this census counts, and the reference rule.
+ *
+ * Lifted out of the scan loop so the CONTROLS below can run the real finder rather
+ * than a re-typed copy of it. A control that exercises a second spelling of the
+ * regex proves the second spelling works, which is not the claim being made.
+ */
+const EXPORT_FN = /export\s+(?:async\s+)?function\s+([A-Za-z0-9_$]+)/g
+const EXPORT_ARROW = /export\s+const\s+([A-Za-z0-9_$]+)\s*(?::[^=]+)?=\s*(?:async\s*)?\(/g
+const nameRe = (name: string) => new RegExp(`\\b${name.replace(/\$/g, "\\$")}\\b`)
+
+/** Every export this census recognises in ALREADY-MASKED text. */
+function exportedNames(masked: string): string[] {
+  const out: string[] = []
+  for (const re of [EXPORT_FN, EXPORT_ARROW]) {
+    for (const m of masked.matchAll(re)) out.push(m[1])
+  }
+  return out
+}
+
+// ── POSITIVE CONTROLS (CLAUDE.md §2) ────────────────────────────────────────
+//
+// This guard's headline output is an ABSENCE — "these exports are referenced
+// NOWHERE" — and a broken finder reports the same shape as a clean tree, only
+// louder. Worse, everything here is a masking question, and the mask that stood
+// in this file until 2026-08-29 was broken in BOTH directions at once: blind to
+// five declarations and to the `await import(...)` call sites of five more, while
+// leaking quoted prose back in as if it were code. Nothing in this file could have
+// told anyone that, because nothing in this file had ever been asked to fail.
+//
+// So the controls run FIRST, on every invocation including `--list`, and each one
+// names the defect it stands over. If the finder has stopped finding, or the mask
+// has started swallowing, this goes red BEFORE it reports a number that would read
+// as a clean bill of health.
+function maskingControls(): string[] {
+  const bad: string[] = []
+  const ok = (claim: string, held: boolean) => { if (!held) bad.push(claim) }
+
+  // ── 1. THE FINDER STILL FINDS ─────────────────────────────────────────────
+  const decls = [
+    "export async function alphaCapability(x: number) { return x }",
+    "export function betaCapability() { return 1 }",
+    "export const gammaCapability = async (a: string) => a",
+    "export const deltaCapability: Handler = (a) => a",
+  ].join("\n")
+  const found = exportedNames(callSites(decls))
+  ok("the export finder recognises all four declaration shapes it counts",
+    ["alphaCapability", "betaCapability", "gammaCapability", "deltaCapability"].every((n) => found.includes(n)))
+  ok("the reference rule recognises a plain call site",
+    nameRe("alphaCapability").test(callSites("await alphaCapability(1)")))
+  ok("…and does NOT match a longer name that merely contains it",
+    !nameRe("alphaCapability").test(callSites("await alphaCapabilityLegacy(1)")))
+
+  // ── 2. THE MASKING SHAPE THAT MOTIVATED THE 2026-08-29 CONVERSION ─────────
+  // The markdown-fence stripper every model-response parser in this repo carries.
+  // Nine backticks, all of them CONTENT inside double-quoted strings — an ODD
+  // count, which is precisely what leaves a left-to-right backtick pairer inside a
+  // phantom template for the whole rest of the file. Verbatim from
+  // lib/agents/generate-client-message.ts:72-74, with the declaration and the
+  // caller that followed it.
+  //
+  // THE TRAILING TEMPLATE IS LOAD-BEARING, and leaving it out is how the first
+  // draft of this control passed against the very idiom it was written to catch.
+  // A phantom template only SWALLOWS a region once it finds a closing backtick, so
+  // a fixture whose odd backtick is the LAST one in the text never demonstrates
+  // anything — the naive pairer simply fails to match and the code survives by
+  // accident. Real files always have another backtick further down; this one has
+  // to as well, or the control is a decoration.
+  const fence = [
+    'function parseModelJson(text: string) {',
+    '  let s = text.trim()',
+    '  if (s.startsWith("```json")) s = s.slice(7)',
+    '  if (s.startsWith("```")) s = s.slice(3)',
+    '  if (s.endsWith("```")) s = s.slice(0, -3)',
+    '  return JSON.parse(s)',
+    '}',
+    'export async function fencedCapability(brief: Brief) { return brief }',
+    'const { fencedCapability: alias } = await import("@/lib/example/fenced")',
+    'const label = `capability: ${alias}`',
+  ].join("\n")
+  const beforeDecl = fence.slice(0, fence.indexOf("export async function"))
+  ok("the specimen still carries the ODD backtick count that desynchronises a naive pairer",
+    (beforeDecl.match(/`/g) ?? []).length % 2 === 1)
+  ok("…and a LATER backtick for the phantom template to close on, or nothing is swallowed",
+    (fence.slice(fence.indexOf("export async function")).match(/`/g) ?? []).length > 0)
+  const maskedFence = callSites(fence)
+  ok("the DECLARATION after that odd backtick survives masking (it did not, before the conversion)",
+    exportedNames(maskedFence).includes("fencedCapability"))
+  ok("…and so does the `await import` CALL SITE below it — the shape that made five live capabilities read as orphans",
+    (maskedFence.match(/\bfencedCapability\b/g) ?? []).length === 2)
+  ok("…while the fence text itself is gone, so a literal cannot be read as code",
+    !maskedFence.includes("json"))
+
+  // ── 3. A COMMENT MAY NOT SWALLOW THE CODE BELOW IT ────────────────────────
+  // The block-comments-first defect, and the two prose shapes that trigger it: a
+  // slash-star inside a `//` line, and an apostrophe or a URL inside a comment.
+  const slashStarInLine = [
+    "// keeps kernel/* + agents/* out of the client bundle",
+    "export async function survivesSlashStar() { return 1 }",
+  ].join("\n")
+  ok("a slash-star sequence inside a LINE comment does not swallow the declaration below it",
+    exportedNames(callSites(slashStarInLine)).includes("survivesSlashStar"))
+  const apostropheAndUrl = [
+    "// the script's own agent — see https://example.invalid/a/b for why",
+    "/* the vendor's docs live at https://example.invalid/x */",
+    "export async function survivesApostrophe() { return 1 }",
+  ].join("\n")
+  ok("an apostrophe and a URL inside comments do not swallow the declaration below them",
+    exportedNames(callSites(apostropheAndUrl)).includes("survivesApostrophe"))
+
+  // ── 4. PROSE IS NOT WIRING, AND A QUOTED DECLARATION IS NOT AN EXPORT ─────
+  // The two defects this masking exists to prevent, asserted in both directions.
+  const quotedMention = 'const what = "NOTHING WAS DELETED: quotedCapability has a named survivor"'
+  ok("a name inside a STRING is not a reference (the 240-export false-acquittal)",
+    !nameRe("quotedCapability").test(callSites(quotedMention)))
+  const quotedDecl = 'const marker = "export async function phantomCapability"'
+  ok("a DECLARATION inside a string mints no export (the cross-referral phantom)",
+    exportedNames(callSites(quotedDecl)).length === 0)
+  ok("…in a template and in a single-quoted string too",
+    !nameRe("quotedCapability").test(callSites("const t = `see quotedCapability for the old shape`")) &&
+    !nameRe("quotedCapability").test(callSites("const s = 'see quotedCapability'")))
+  ok("a name inside a COMMENT is not a reference either",
+    !nameRe("quotedCapability").test(callSites("// quotedCapability was retired here")))
+
+  // ── 5. AN INTERPOLATION IS CODE, NOT TEXT ─────────────────────────────────
+  // The behaviour that CHANGED with the conversion, pinned so it cannot drift back.
+  // `${ … }` is executable: a name inside one is a genuine reference, and the
+  // retired pass blanked the whole template, interpolations and all.
+  ok("a name inside a ${} interpolation IS a reference",
+    nameRe("interpolatedCapability").test(callSites("const s = `total: ${interpolatedCapability(rows)}`")))
+  ok("…even when the interpolation holds a NESTED template",
+    nameRe("nestedCapability").test(
+      callSites("const u = `${base.startsWith(\"http\") ? base : `https://${nestedCapability(base)}`}/api/x`")))
+
+  return bad
+}
+
+const controlFailures = maskingControls()
+if (controlFailures.length > 0) {
+  console.log("\n[orphan-export guard] ✗ THE INSTRUMENT IS BROKEN — a count from it would mean nothing:")
+  for (const c of controlFailures) console.log(`     - ${c}`)
+  console.log(" ❌ ORPHAN_EXPORT_FAIL — positive control")
+  process.exit(1)
+}
 
 const exportsFound: ExportRef[] = []
 for (const f of files) {
@@ -284,20 +471,16 @@ for (const f of files) {
   // "has no slash" rather than as a prefix.
   const top = f.indexOf("/") === -1 ? "" : f.slice(0, f.indexOf("/"))
   if (!SCANNED_ROOTS.includes(top)) continue
-  // STRING-MASKED, not just comment-stripped. The comment-stripped text still
-  // carried string LITERALS, and the export regex matched inside them: the
-  // cross-referral sweep registry stores each sweep's grep marker as data —
-  // `marker: "export async function publishApprovalSlaReferrals"` — and every
-  // such row minted a PHANTOM export (five of them, all in
-  // lib/managers/cross-referral.ts), double-counting functions that exist once.
-  // callSites() blanks string contents but keeps the quotes, so a declaration's
-  // own name (never inside a string) still matches while quoted prose cannot.
-  const src = useCache.get(f)!
-  for (const m of src.matchAll(/export\s+(?:async\s+)?function\s+([A-Za-z0-9_$]+)/g)) {
-    exportsFound.push({ file: f, name: m[1] })
-  }
-  for (const m of src.matchAll(/export\s+const\s+([A-Za-z0-9_$]+)\s*(?::[^=]+)?=\s*(?:async\s*)?\(/g)) {
-    exportsFound.push({ file: f, name: m[1] })
+  // STRING-MASKED, not just comment-stripped. Comment-stripped text still carries
+  // string LITERALS, and the export regex matches inside them: the cross-referral
+  // sweep registry stores each sweep's grep marker as data —
+  // `marker: "export async function publishApprovalSlaReferrals"` — and every such
+  // row minted a PHANTOM export (five of them, all in lib/managers/cross-referral.ts),
+  // double-counting functions that exist once. callSites() blanks string contents
+  // but keeps the quotes, so a declaration's own name (never inside a string) still
+  // matches while quoted prose cannot.
+  for (const name of exportedNames(useCache.get(f)!)) {
+    exportsFound.push({ file: f, name })
   }
 }
 

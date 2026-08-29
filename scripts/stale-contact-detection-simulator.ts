@@ -58,7 +58,7 @@ import {
   LIFETIME_STALE_DAYS,
   type StaleEligibilityInput,
 } from "../lib/ai-isa/reengagement-policy"
-import { blankComments } from "./strip-comments"
+import { blankComments, blankStrings } from "./strip-comments"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -197,18 +197,30 @@ function walk(dir: string): string[] {
  * nothing — which is the failure mode this repo has hit repeatedly.
  */
 function executableCodeOnly(s: string): string {
-  // Comments go through the canonical scanner; literals are still masked here
-  // because THIS helper deliberately wants quoted text gone too.
+  // ── THE ONE SCANNER, NOT THREE REGEXES (lane K6, 2026-08-29) ──────────────
   //
-  // The escape alternations below are the two-char class, NOT the dot form. A dot
-  // does not match a newline, so a backslash sitting at end of line — a legal
-  // line continuation — could not be consumed: the literal then failed to match,
-  // was left unmasked, and every scan downstream read quoted prose as if it were
-  // code. Same defect class as the block-first comment strip, one layer over.
-  return blankComments(s)
-    .replace(/`(?:\\[\s\S]|[^`\\])*`/g, (m) => m.replace(/[^\n]/g, " "))
-    .replace(/"(?:\\[\s\S]|[^"\\\n])*"/g, (m) => m.replace(/[^\n]/g, " "))
-    .replace(/'(?:\\[\s\S]|[^'\\\n])*'/g, (m) => m.replace(/[^\n]/g, " "))
+  // This used to run blankComments and then three global regexes, one per quote
+  // style. The comment note it carried was already half of the lesson: the escape
+  // alternation had to be the two-char class rather than the dot form, because a
+  // dot does not match a newline and a backslash at end of line therefore left the
+  // literal unpaired and unmasked. Fixing the escape class fixed one desynchroniser
+  // and left the other standing — the backtick pass pairs LEFT TO RIGHT and cannot
+  // see that a backtick is TEXT inside a quoted string. The markdown-fence stripper
+  // every model-response parser here carries puts NINE such backticks in a row
+  // (`"```json"`, `"```"`, `"```"`), an ODD count, and from the ninth onwards the
+  // pairer is inside a phantom template blanking live code away.
+  //
+  // MEASURED before the conversion, over the 4,662 files this proof walks: the
+  // retired masker and blankStrings disagree on 1,694 of them — blind to 4,654
+  // identifier slots (every `${…}` interpolation was blanked with its template) and
+  // leaking 2,538 prose slots back in as code, which is the exact failure this
+  // header says the helper exists to prevent. lib/video/avatar-explainer.ts shows
+  // both at once: 90 identifiers invisible, 130 prose words visible.
+  //
+  // blankStrings() is the canonical single left-to-right scan and does comments and
+  // literal contents together, so the separate blankComments pass is gone. `${…}`
+  // interpolations stay CODE, which is what they are.
+  return blankStrings(s)
 }
 
 /** Comments blanked, literals intact. Newlines preserved so line numbers survive. */
@@ -234,17 +246,34 @@ function codeOnly(s: string): string {
  * then blank every literal that remains. A real call survives as
  * `.from(__TBL_contacts).lt(__COL_created_at, …)`; a sentence about one, wherever
  * it is stored, does not.
+ *
+ * ── THE ONE SCANNER, NOT THREE REGEXES (lane K6, 2026-08-29) ────────────────
+ *
+ * The "blank every literal that remains" step used to be three global regexes in
+ * the dot-escape form — the same idiom, and the same defect, as executableCodeOnly
+ * above; see its comment for the measured damage. Only the BLANKING changed here.
+ * The normalization stays exactly where it was and still runs FIRST, because the
+ * order is what makes this helper work at all: the two quoted arguments that ARE
+ * the signal are turned into bare identifiers while their quotes are still there,
+ * and only then is everything still quoted blanked. Reversing that would erase the
+ * signal and leave this scan reporting a confident, permanent zero.
+ *
+ * Normalizing before blanking is safe for the canonical scanner in a way it was
+ * not obviously safe for the regexes: each substitution consumes a MATCHED PAIR of
+ * quotes that were literal CONTENT or a complete argument, never a delimiter that
+ * a longer literal depends on, and padEnd keeps every offset. A quotation of the
+ * shape inside a string is still blanked, because the string's own delimiters are
+ * untouched — which is what the controls in sourceLayer assert.
  */
 function scannableCode(s: string): string {
-  return codeOnly(s)
-    .replace(/\.from\(\s*["'](contacts|leads)["']\s*\)/g, (_m, t) => `.from(__TBL_${t})`.padEnd(_m.length, " "))
-    .replace(
-      /\.(lt|lte)\(\s*["'](created_at|updated_at|last_contacted_at)["']/g,
-      (_m, op, col) => `.${op}(__COL_${col}`.padEnd(_m.length, " "),
-    )
-    .replace(/`(?:\\.|[^`\\])*`/g, (m) => m.replace(/[^\n]/g, " "))
-    .replace(/"(?:\\.|[^"\\\n])*"/g, (m) => " ".repeat(m.length))
-    .replace(/'(?:\\.|[^'\\\n])*'/g, (m) => " ".repeat(m.length))
+  return blankStrings(
+    codeOnly(s)
+      .replace(/\.from\(\s*["'](contacts|leads)["']\s*\)/g, (_m, t) => `.from(__TBL_${t})`.padEnd(_m.length, " "))
+      .replace(
+        /\.(lt|lte)\(\s*["'](created_at|updated_at|last_contacted_at)["']/g,
+        (_m, op, col) => `.${op}(__COL_${col}`.padEnd(_m.length, " "),
+      ),
+  )
 }
 
 const lineOf = (s: string, i: number) => s.slice(0, i).split("\n").length
@@ -383,6 +412,57 @@ function sourceLayer() {
     scan(`await svc.from("contacts").select("id")\n${quoted}\n.lt('created_at', cutoff)`))
   check("normalizing + blanking preserves line numbers, so a reported hit points at the right line",
     scannableCode(quoted).split("\n").length === quoted.split("\n").length)
+
+  // ── THE MASKING SHAPE THAT MOTIVATED THE 2026-08-29 CONVERSION ─────────────
+  // Everything above proves the scan can tell a quotation from a call. None of it
+  // proves the masker can still SEE the call, and the masker that stood here until
+  // this pass could not be trusted to: three global regexes, template pass first,
+  // pairing backticks LEFT TO RIGHT. The markdown-fence stripper every
+  // model-response parser in this repo carries puts NINE backticks of string
+  // CONTENT in a row — an ODD count — and from the ninth onwards a naive pairer is
+  // inside a phantom template and blanks live code away. Verbatim shape from
+  // lib/agents/generate-client-message.ts:72-74, with a real stale read underneath.
+  //
+  // THE TRAILING TEMPLATE IS LOAD-BEARING. A phantom template only SWALLOWS a
+  // region once it finds a closing backtick, so a fixture whose odd backtick is the
+  // LAST one in the text proves nothing — the naive pairer just fails to match and
+  // the code survives by accident. Real files always have another backtick further
+  // down; without one here this control is a decoration, and the first draft of it
+  // passed against the very idiom it was written to catch.
+  const fenced = [
+    `let s = text.trim()`,
+    `if (s.startsWith("\`\`\`json")) s = s.slice(7)`,
+    `if (s.startsWith("\`\`\`")) s = s.slice(3)`,
+    `if (s.endsWith("\`\`\`")) s = s.slice(0, -3)`,
+    `const { data } = await svc.from("contacts").select("id").lt("created_at", cutoff)`,
+    "log(`rows ${data?.length}`)",
+  ].join("\n")
+  const beforeRead = fenced.slice(0, fenced.indexOf("const { data }"))
+  check("the fence specimen carries the ODD backtick count that desynchronises a naive pairer",
+    (beforeRead.match(/`/g) ?? []).length % 2 === 1 &&
+    (fenced.slice(fenced.indexOf("const { data }")).match(/`/g) ?? []).length > 0)
+  check("NEGATIVE CONTROL a real staleness read BELOW that odd backtick is still caught",
+    scan(fenced))
+  check("…and the fence text itself is still blanked, so the literal cannot be read as code",
+    !scannableCode(fenced).includes("json"))
+
+  // A `/* */` sequence inside a `//` line, and an apostrophe inside a comment: the
+  // two prose shapes that make a block-comments-first stripper eat the code below.
+  check("a slash-star inside a LINE comment does not swallow the read below it",
+    scan(`// keeps kernel/* + agents/* out of the client bundle\nsvc.from("contacts").select("id").lt("created_at", cutoff)`))
+  check("an apostrophe and a URL inside comments do not swallow the read below them",
+    scan(`// the agent's own console — see https://example.invalid/a/b\nsvc.from("contacts").select("id").lt("created_at", cutoff)`))
+
+  // The normalization runs BEFORE the blanking, and that order is the whole trick.
+  // Both halves are asserted: the signal survives inside real code, and the SAME
+  // text quoted inside a string is still blanked — normalizing did not punch a hole
+  // in the literal that carries it.
+  check("the quoted ARGUMENTS that are the signal survive normalization as identifiers",
+    /\.from\(__TBL_contacts\)/.test(scannableCode(`svc.from("contacts").select("id")`)) &&
+    /\.lt\(__COL_created_at/.test(scannableCode(`svc.lt("created_at", cutoff)`)))
+  check("…while the same shape written INSIDE a string literal is still blanked away",
+    !scan(`const NOTE = "svc.from('contacts').select('id').lt('created_at', cutoff)"`) &&
+    !scan("const TPL = `svc.from('contacts').select('id').lt('created_at', cutoff)`"))
 
   console.log("\n[the engagement reason · source — one wrapper must not flatten six reasons to one]")
   // engageContact branches on `reason` (the 'ghosted' → ghost_recovery call
