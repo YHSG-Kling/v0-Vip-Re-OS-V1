@@ -339,9 +339,19 @@ async function loadCompetitorTargets(supabase: Svc, brokerageId: string): Promis
     for (const r of (data ?? []) as any[]) add(r.competitor_name, r.competitor_url)
   } catch { /* enrichment only */ }
   try {
+    // NAME ONLY FROM THIS ARM. `competitor_profiles.website_url` was read here
+    // as the domain half, but nothing writes it: the profile row is created by
+    // lib/competitive-intel/content-intel-scan.ts:68 from a
+    // `competitor_brokerages` watchlist entry, and that table carries no url
+    // column at all — so this arm contributed `null` on every row and the
+    // `add()` merge above kept whatever the `competitors` arm had. The domain
+    // this monitor uses comes from competitors.competitor_url, read one arm up
+    // at lib/kernel/ai-search-citation-monitor.ts:337. Asking for a column with
+    // no writer made the merge look like it had two sources of domain when it
+    // has one, which is the drift §6 exists to stop.
     const { data } = await supabase.from("competitor_profiles")
-      .select("competitor_name, website_url").eq("brokerage_id", brokerageId).eq("is_active", true)
-    for (const r of (data ?? []) as any[]) add(r.competitor_name, r.website_url)
+      .select("competitor_name").eq("brokerage_id", brokerageId).eq("is_active", true)
+    for (const r of (data ?? []) as any[]) add(r.competitor_name, null)
   } catch { /* enrichment only */ }
   return [...byName.values()]
 }

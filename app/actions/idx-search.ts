@@ -355,17 +355,103 @@ export async function trackPropertyView(data: {
     const { createServiceClient } = await import("@/lib/supabase/service")
     const svc = createServiceClient()
 
+    // WHICH HOME WAS VIEWED — the column this row was missing.
+    //
+    // WHAT WAS BROKEN. This insert recorded WHO viewed and FOR HOW LONG and
+    // never WHAT: `property_id` was left null on every row, and nothing else in
+    // the repo writes it. Two live readers depend on it and both were answering
+    // with a fixed wrong number:
+    //
+    //   · lib/listings/listing-metrics-rollup.ts:48 sums view_count filtered by
+    //     `.eq("property_id", l.id)`, so EVERY listing's `listing_metrics.views`
+    //     rolled up as 0 while its saves, inquiries and showings — keyed on
+    //     listing_id, which IS written — came back real. An agent's listing
+    //     performance card therefore read "0 views, 4 saves, 2 showings", which
+    //     is not merely incomplete, it is self-contradictory.
+    //   · app/actions/ai-property-matching.ts:90 feeds the buyer's viewing
+    //     history to the matcher as (property_id, view_count, …), so the model
+    //     received a list of views of nothing.
+    //
+    // The caller identifies the home by MLS number, so it is resolved to the
+    // listing here. `property_id` carries no foreign key (live schema), and the
+    // one reader that filters on it compares against `listings.id` — so that is
+    // what goes in it. An MLS number this brokerage has no listing for leaves it
+    // null, which is the honest state for an off-market IDX result, and the
+    // row still records the dwell time.
+    let propertyId: string | null = null
+    if (data.mlsNumber) {
+      const { data: listingRow, error: listingError } = await svc
+        .from("listings")
+        .select("id")
+        .eq("brokerage_id", access.brokerageId)
+        .eq("mls_number", data.mlsNumber)
+        .limit(1)
+        .maybeSingle()
+      if (listingError) {
+        console.error("Track view — listing lookup refused:", listingError.message)
+      } else {
+        propertyId = (listingRow as { id: string } | null)?.id ?? null
+      }
+    }
+
+    // ONE ROW PER (contact, property), COUNTED — not one row per view.
+    // `view_count` DEFAULT 1 with no writer meant a repeat visit appended a
+    // second row that also said "1", so the rollup's SUM happened to be right by
+    // accident while the count column itself never recorded anything. There is
+    // no unique index on (contact_id, property_id) to upsert against, so this is
+    // the same read-then-write shape ensureCompetitorProfile uses.
+    type PriorView = { id: string; view_count: number | null; time_spent_seconds: number | null }
+    let existingView: PriorView | null = null
+    if (propertyId) {
+      const { data: prior, error: priorError } = await svc
+        .from("property_views")
+        .select("id, view_count, time_spent_seconds")
+        .eq("brokerage_id", access.brokerageId)
+        .eq("contact_id", data.contactId)
+        .eq("property_id", propertyId)
+        .limit(1)
+        .maybeSingle()
+      if (priorError) {
+        console.error("Track view — prior-view lookup refused:", priorError.message)
+      } else {
+        existingView = prior as PriorView | null
+      }
+    }
+
     // The result was discarded entirely. supabase-js RESOLVES a refused write rather
     // than throwing, so the surrounding try/catch never saw an RLS denial and the
     // action reported success for a row that was never written.
-    const { error: viewError } = await svc.from("property_views").insert({
-      brokerage_id: access.brokerageId,
-      contact_id: data.contactId,
-      time_spent_seconds: data.timeSpent,
-    })
-    if (viewError) {
-      console.error("Track view error:", viewError.message)
-      return { success: false, error: viewError.message }
+    if (existingView) {
+      // `.select("id")` and COUNT it: an UPDATE that matches nothing resolves
+      // with error null and an empty array, byte-identical to one that worked.
+      const { data: bumped, error: bumpError } = await svc.from("property_views")
+        .update({
+          view_count: (existingView.view_count ?? 1) + 1,
+          time_spent_seconds: (existingView.time_spent_seconds ?? 0) + data.timeSpent,
+          last_viewed_at: new Date().toISOString(),
+        })
+        .eq("id", existingView.id)
+        .select("id")
+      if (bumpError) {
+        console.error("Track view error:", bumpError.message)
+        return { success: false, error: bumpError.message }
+      }
+      if (!bumped?.length) {
+        console.error("Track view — repeat-view update matched 0 rows for", existingView.id)
+        return { success: false, error: "Property view was not recorded" }
+      }
+    } else {
+      const { error: viewError } = await svc.from("property_views").insert({
+        brokerage_id: access.brokerageId,
+        contact_id: data.contactId,
+        property_id: propertyId,
+        view_count: 1,
+        time_spent_seconds: data.timeSpent,
+      })
+      if (viewError) {
+        console.error("Track view error:", viewError.message)
+        return { success: false, error: viewError.message }
+      }
     }
 
     // BEHAVIOURAL EVENT LOG — the stream the canonical scorer's 30% behavioural

@@ -176,15 +176,34 @@ export async function trackBehavior(sessionData: {
       signalId = newSignal.id
     }
 
-    // Log site activity — inherits brokerage from the signal
-    await supabase.from("site_activity").insert({
+    // Log site activity — inherits brokerage AND contact from the signal.
+    //
+    // `contact_id` WAS THE MISSING HALF. lib/portal/portal-clients-read.ts:80
+    // reads site_activity.contact_id as one of the two arms of a portal client's
+    // "last activity" stamp (the other being portal_event_stream.contact_id,
+    // which is written) — and no writer had ever set it, so that arm returned
+    // nothing on every call and a client's on-site browsing never counted as
+    // activity. The contact is not a new fact to look up: identifyVisitor stamps
+    // it onto the signal at app/actions/lead-intelligence.ts:2201, so from the
+    // visit AFTER an identification the signal already carries it, and it
+    // inherits down here exactly the way brokerage_id does. Null until the
+    // visitor is identified, which is the honest state — an anonymous session
+    // belongs to no contact.
+    const { error: activityError } = await supabase.from("site_activity").insert({
       behavioral_signal_id: signalId,
       brokerage_id: brokerageId,
+      contact_id: (signal as { contact_id?: string | null } | null)?.contact_id ?? null,
       page_visited: sessionData.page_visited,
       time_on_page_seconds: sessionData.time_spent,
       action_taken: sessionData.action_taken,
       search_terms: sessionData.search_terms || [],
     })
+    // supabase-js RESOLVES a refusal (CLAUDE.md §3): this insert was unchecked,
+    // so a blocked write left the visit unlogged and the caller was told the
+    // session tracked fine.
+    if (activityError) {
+      console.error("[lead-intelligence] site_activity insert was refused:", activityError.message)
+    }
 
     // Get page history for AI analysis if multiple sessions
     if (totalSessions >= 2) {

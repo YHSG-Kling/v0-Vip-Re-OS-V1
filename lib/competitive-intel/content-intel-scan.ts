@@ -46,6 +46,33 @@ export function classifyHook(title: string): string {
   return "statement"
 }
 
+/**
+ * Emotional tone from the caption/title — the missing half of `emotional_tone`.
+ *
+ * WHAT WAS BROKEN. `competitor_content.emotional_tone` was read by
+ * getCompetitorPostInspiration (app/actions/marketing-intelligence.ts:201) and
+ * written by nobody, so the "repurpose this concept" prompt an agent generates
+ * from a rival's post always said the SAME thing — the `?? "warm and
+ * informative"` fallback — no matter what the post's tone actually was. That is
+ * a scored input that never varied.
+ *
+ * Deterministic and free, the same shape as classifyHook above: the tone is
+ * read off text we already hold at scan time, so it costs no extra provider
+ * call and invents nothing the caption does not say. Ordered most-specific
+ * first; "informative" is the honest default for a plain statement, and it is
+ * the same word the reader's old fallback used, so an existing row that never
+ * got a tone and a new plain one still read alike.
+ */
+export function classifyEmotionalTone(text: string): string {
+  const t = text.toLowerCase()
+  if (/\b(don't|avoid|mistake|warning|beware|risk|before you)\b/.test(t)) return "cautionary"
+  if (/\b(congratulations|thrilled|excited|proud|celebrat|love|dream)\b/.test(t)) return "celebratory"
+  if (/\b(sold|closed|record|success|helped|thank you|testimonial)\b/.test(t)) return "reassuring"
+  if (/\b(now|today|hurry|last chance|limited|don t miss|act fast|only \d)\b/.test(t)) return "urgent"
+  if (/[?]|\b(how|why|what if|did you know|guess)\b/.test(t)) return "curious"
+  return "informative"
+}
+
 function platformFromUrl(url: string): string {
   if (url.includes("facebook.com/ads/library")) return "facebook"
   if (url.includes("facebook.com")) return "facebook"
@@ -125,6 +152,12 @@ async function scanOneCompetitor(
         detected_topics: extractKeyphrases(r.title, 4),
         detected_keywords: extractKeyphrases(`${r.title} ${r.summary}`, 8),
         hook_type: classifyHook(r.title),
+        // The other half of the repurpose brief. hook_type says HOW the post
+        // opens; emotional_tone says how it FEELS, and the inspiration prompt
+        // at app/actions/marketing-intelligence.ts:221 asks for both. Only
+        // hook_type was ever written, so the tone half of every brief was the
+        // reader's hardcoded fallback.
+        emotional_tone: classifyEmotionalTone(`${r.title} ${r.summary}`),
         cta_present: /call|contact|dm|schedule|book|visit/i.test(caption),
         raw_engagement_data: { source: "exa", exa_score: r.engagement_score, rank: i, categories: r.categories },
       })

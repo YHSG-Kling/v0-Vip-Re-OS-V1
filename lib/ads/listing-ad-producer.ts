@@ -140,11 +140,14 @@ export async function produceListingAdCampaign(
   // principles — and generated_from records the decision so the flywheel
   // is auditable ('learned:<arm>' vs the norm path).
   let generatedFrom = "listing_handoff"
+  // HOISTED OUT OF THE try. The team is the first rung of the destination
+  // ladder too (lib/ads/ad-destination.ts), and a learned-emphasis failure
+  // must not also cost the creative its landing page.
+  let teamId: string | null = null
   try {
     const { learnedCreativeEmphasis } = await import("./ad-outcome-loop")
     // Scope ladder: this agent's own evidence first, then their team's,
     // then the brokerage blend — every tier learns from ITS OWN results.
-    let teamId: string | null = null
     if (listing.agent_id) {
       const { data: agentRow } = await supabase.from("agents").select("team_id").eq("id", listing.agent_id).maybeSingle()
       teamId = (agentRow as { team_id: string | null } | null)?.team_id ?? null
@@ -162,10 +165,20 @@ export async function produceListingAdCampaign(
   } catch { /* the deterministic FH-clean creative stands */ }
 
   const media = await resolveMedia(brokerageId, agentUserId, supabase)
+  // WHERE THE CLICK GOES. `destination_url` was read at launch
+  // (lib/ads/launch-assembler.ts:51) and written by no producer, so every Google
+  // ad and every non-`leads` Meta objective failed validateAdReadiness with
+  // `missing: ["creative.destinationUrl"]` and could never launch. For a listing
+  // ad the destination is that listing's own published landing page; null when
+  // it is not published yet, which keeps the readiness check refusing rather
+  // than sending paid traffic to a 404. See lib/ads/ad-destination.ts.
+  const { resolveAdDestination } = await import("./ad-destination")
+  const destinationUrl = await resolveAdDestination(supabase, { brokerageId, listingId, teamId })
   const { data: cr, error: crErr } = await supabase.from("ad_creative_variations").insert({
     brokerage_id: brokerageId, ad_campaign_id: campaignId, variation_name: creative.variationName,
     headline: creative.headline, primary_text: creative.primaryText, description: creative.description, call_to_action: creative.callToAction,
     media_asset_url: media?.url ?? null, source_marketing_asset_id: media?.assetId ?? null,
+    destination_url: destinationUrl,
     generated_from: generatedFrom, approval_status: "draft",
   }).select("id").single()
   if (crErr || !cr) return { produced: false, campaignId, reason: crErr?.message ?? "creative insert failed" }

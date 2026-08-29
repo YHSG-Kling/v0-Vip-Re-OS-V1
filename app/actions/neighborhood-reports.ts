@@ -248,11 +248,69 @@ export async function refreshNeighborhoodReport(listingId: string): Promise<{
         rc.price_trend_yoy_pct > 2 ? "appreciating" : rc.price_trend_yoy_pct < -2 ? "depreciating" : "stable"
       reportData.data_source = reportData.data_source ? `${reportData.data_source}+rentcast` : "rentcast"
 
-      await supabase
+      // REGISTER THE SOURCE, DON'T JUST STAMP IT.
+      //
+      // WHAT WAS BROKEN. This was a bare UPDATE … WHERE brokerage_id AND
+      // source_name='RentCast', and NOTHING in the repo has ever INSERTed a
+      // `neighborhood_data_sources` row — `source_name` and `source_type` are
+      // both NOT NULL with no default, no trigger and no seed, and the live
+      // table (project hrvaqgvukzxfskkcrwbt) holds 0 rows. So the update matched
+      // nothing on every run. An UPDATE that matches nothing RESOLVES with
+      // `error === null` and an empty result, byte-identical to one that worked
+      // (CLAUDE.md §3), and the call did not even destructure — so the miss was
+      // unreportable. Downstream, getNeighborhoodReport reads this table for the
+      // "Data Sources" footer of the seller-facing report, which therefore had
+      // no provenance to show: a report that quotes RentCast's median could not
+      // say where the number came from.
+      //
+      // The fact becomes known HERE — RentCast just answered for this tenant —
+      // so this is where the registration belongs. Written as a select-then-
+      // insert/update pair because the table carries no unique index on
+      // (brokerage_id, source_name) to upsert against.
+      const { data: existingSource, error: sourceReadError } = await supabase
         .from("neighborhood_data_sources")
-        .update({ last_synced_at: new Date().toISOString() })
+        .select("id")
         .eq("brokerage_id", brokerageId)
         .eq("source_name", "RentCast")
+        .maybeSingle()
+      if (sourceReadError) {
+        console.error("[neighborhood-report] data-source lookup was refused:", sourceReadError.message)
+      } else if (existingSource) {
+        // `.select("id")` so a row RLS hides reports failure instead of a silent
+        // success on zero rows — the trap this whole block exists to close.
+        const { data: touched, error: sourceUpdateError } = await supabase
+          .from("neighborhood_data_sources")
+          .update({ last_synced_at: new Date().toISOString(), is_active: true })
+          .eq("id", (existingSource as { id: string }).id)
+          .select("id")
+        if (sourceUpdateError) {
+          console.error("[neighborhood-report] data-source sync stamp was refused:", sourceUpdateError.message)
+        } else if (!touched?.length) {
+          console.error("[neighborhood-report] data-source sync stamp matched no row — the RentCast provenance line will be stale")
+        }
+      } else if (brokerageId) {
+        const { error: sourceInsertError } = await supabase
+          .from("neighborhood_data_sources")
+          .insert({
+            brokerage_id: brokerageId,
+            source_name: "RentCast",
+            // 'custom' IS THE ONLY ADMITTED VALUE FOR RENTCAST. The live CHECK
+            // on source_type is {attom, census, custom, housecanary, walkscore}
+            // — written before HouseCanary was retired in favour of RentCast, so
+            // the provider this row describes has no name of its own in the
+            // vocabulary yet (scripts/check-vocabularies.ts:986). Naming
+            // anything else here is a 23514 that refuses the WHOLE insert
+            // (CLAUDE.md §3), which is exactly how this registration would have
+            // failed silently a second time. source_name carries the provider.
+            source_type: "custom",
+            api_endpoint: "/markets",
+            is_active: true,
+            last_synced_at: new Date().toISOString(),
+          })
+        if (sourceInsertError) {
+          console.error("[neighborhood-report] data-source registration was refused:", sourceInsertError.message)
+        }
+      }
     }
   } catch (err) {
     console.error("RentCast market-stats error:", err)

@@ -165,13 +165,25 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // reading the error alone would let a silently unmatched write report success,
   // and the Identified tile this whole path exists to fill would stay at zero
   // with nothing anywhere saying why.
-  const updatePayload: Record<string, string> = { identified_at: new Date().toISOString() }
-  if (contactId) updatePayload['contact_id'] = contactId
-  if (leadId) updatePayload['lead_id'] = leadId
-
+  //
+  // WRITTEN AS A LITERAL, ON PURPOSE. This was a `Record<string, string>` built
+  // by bracket assignment — `updatePayload['contact_id'] = contactId` — which is
+  // an OPAQUE write object: no static reader (the opposite-missing census
+  // included) can see which columns it names, so both `contact_id` and
+  // `lead_id` were reported as "read by code, written by NOBODY" while this
+  // very line wrote them. A finding list that accuses live code teaches its
+  // readers to stop reading it (CLAUDE.md §2), so the write now says what it
+  // writes. Behaviour is unchanged: exactly one of the two is non-null on this
+  // path (`leadId` is computed as null whenever a contact matched), and the
+  // other is already null on the row — the guard above returns early when
+  // either is set, so this never clears an existing link.
   const { data: stamped, error: updateError } = await supabase
     .from('website_visitors')
-    .update(updatePayload)
+    .update({
+      identified_at: new Date().toISOString(),
+      contact_id: contactId,
+      lead_id: leadId,
+    })
     .eq('id', visitor.id)
     .select('id')
 

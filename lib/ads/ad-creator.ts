@@ -205,9 +205,12 @@ export async function generateAdCreative(
   // Tenant predicate added: this read was `.eq("id", adCampaignId)` alone, so a
   // bare campaign uuid disclosed another brokerage's campaign name/objective and,
   // worse, let the caller write creative variations against it below.
+  // `targeting_config` is read for the campaign's listing_id — the first rung of
+  // the destination ladder below. It is the same jsonb the auto-producer stamps
+  // (lib/ads/listing-ad-producer.ts) and the launch assembler already reads.
   const { data: campaign, error: campaignError } = await supabase
     .from("ad_campaigns")
-    .select("platform, objective, campaign_name")
+    .select("platform, objective, campaign_name, team_id, targeting_config")
     .eq("id", adCampaignId)
     .eq("brokerage_id", brokerageId)
     .maybeSingle()
@@ -305,6 +308,24 @@ Respond with ONLY valid JSON array of 3 objects, no other text.
     }
 
     // ── 6. Evaluate compliance for each variation ─────────────────────────────
+    //
+    // WHERE THE CLICK GOES, resolved ONCE for the batch (it is a property of the
+    // campaign, not of a variation). `destination_url` is read at launch
+    // (lib/ads/launch-assembler.ts:51) and was written by nothing, so
+    // validateAdReadiness refused EVERY Google ad and every non-`leads` Meta
+    // objective these variations belong to with
+    // `missing: ["creative.destinationUrl"]` — a human could approve a creative
+    // that had no path to a provider. Null stays null and keeps that refusal:
+    // see lib/ads/ad-destination.ts for why an unresolvable destination must
+    // never be filled in with a guessed host.
+    const { resolveAdDestination } = await import("./ad-destination")
+    const targeting = (campaign.targeting_config ?? {}) as Record<string, unknown>
+    const destinationUrl = await resolveAdDestination(supabase as never, {
+      brokerageId: context.brokerageId,
+      listingId: typeof targeting.listing_id === "string" ? targeting.listing_id : null,
+      teamId: (campaign as { team_id?: string | null }).team_id ?? null,
+    })
+
     const processedVariations: AdCreativeVariation[] = []
 
     for (const variation of variations) {
@@ -338,6 +359,7 @@ Respond with ONLY valid JSON array of 3 objects, no other text.
           primary_text: variation.primaryText,
           description: variation.description,
           call_to_action: variation.callToAction,
+          destination_url: destinationUrl,
           approval_status: approvalStatus,
         })
         .select("id")

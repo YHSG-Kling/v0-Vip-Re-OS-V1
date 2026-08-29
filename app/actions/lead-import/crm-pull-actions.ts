@@ -96,7 +96,7 @@ export async function runCrmImportAction(input: {
 
   const svc = createServiceClient()
   const { data: cred } = await svc.from("platform_credentials")
-    .select("api_key, api_url, config")
+    .select("id, api_key, api_url, config")
     .eq("brokerage_id", input.brokerageId).eq("platform", input.provider).eq("is_active", true).maybeSingle()
   if (!(cred as any)?.api_key) {
     return { ok: false, error: `${input.provider} isn't connected for this brokerage yet — save their API key first.`, ...zero }
@@ -142,6 +142,35 @@ export async function runCrmImportAction(input: {
     pages += 1
     cursor = page.nextCursor
     if (!cursor) break
+  }
+
+  // STAMP THE CREDENTIAL THIS RUN JUST USED.
+  //
+  // WHAT WAS BROKEN. `platform_credentials.last_synced_at` and `sync_error` are
+  // read by the connected-provider cards (app/dashboard/forms/page.tsx:70 →
+  // FormsLibraryClient.tsx:327 "Synced N ago", and the integrations settings
+  // surface) and were written by NOBODY — no trigger, no default, no seed on
+  // the live table. This run is the one place in the repo where a sync against
+  // a stored platform credential actually completes, so it is where the fact
+  // becomes known. Without it the card could only ever say "connected", never
+  // "connected and last pulled at …", which is the half a broker needs to tell
+  // a working integration from a stale one.
+  //
+  // `sync_error` is written on the SAME line, null on a clean run — a stamp
+  // that only ever records success would let a failed pull leave yesterday's
+  // error sitting next to today's fresh timestamp.
+  const credId = (cred as { id?: string } | null)?.id
+  if (credId) {
+    const { error: stampError } = await svc.from("platform_credentials")
+      .update({
+        last_synced_at: new Date().toISOString(),
+        sync_error: pullError ?? null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", credId)
+    if (stampError) {
+      console.error(`[crm-pull] sync stamp on ${input.provider} credential was refused:`, stampError.message)
+    }
   }
 
   await auditStaffAction(gate, "crm_import_run", input.brokerageId, {

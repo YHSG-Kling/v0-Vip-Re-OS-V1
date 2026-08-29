@@ -105,7 +105,17 @@ export async function generateAINewsletter(params: NewsletterGenerationParams): 
       params.includeMarketData
         ? supabase
             .from("market_data")
-            .select("median_sale_price, median_list_price, avg_days_on_market, active_listings, recorded_date:data_date")
+            // `median_list_price` IS DELIBERATELY ABSENT. The column carries
+            // DEFAULT 0 and has no writer anywhere — the only upsert into this
+            // table (lib/intelligence/market-insight-generator.ts:233) does not
+            // name it — so every row answers 0, and `(0).toLocaleString()` is
+            // the truthy string "0", which slipped straight past the `|| "N/A"`
+            // below and put the line "Median List Price: $0" into the prompt of
+            // a newsletter that goes to the agent's whole contact list. A
+            // fabricated market number in front of clients is worse than an
+            // absent one. The median this newsletter quotes is
+            // median_sale_price, written at market-insight-generator.ts:244.
+            .select("median_sale_price, avg_days_on_market, active_listings, recorded_date:data_date")
             .eq("brokerage_id", auth.brokerageId)
             .order("data_date", { ascending: false })
             .limit(1)
@@ -158,8 +168,7 @@ TONE: ${params.tone || "friendly"}
 ${marketData ? `MARKET DATA:
 - Median Price: $${marketData.median_sale_price?.toLocaleString() || "N/A"}
 - Days on Market: ${marketData.avg_days_on_market || "N/A"}
-- Active Inventory: ${marketData.active_listings || "N/A"} homes
-- Median List Price: $${marketData.median_list_price?.toLocaleString() || "N/A"}` : ""}
+- Active Inventory: ${marketData.active_listings || "N/A"} homes` : ""}
 
 ${featuredListings.length > 0 ? `FEATURED LISTINGS:
 ${featuredListings.map((l: any) => `- ${l.address}, ${l.city} - $${l.list_price?.toLocaleString()} | ${l.bedrooms}bd/${l.bathrooms}ba`).join("\n")}` : ""}

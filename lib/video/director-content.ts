@@ -255,8 +255,9 @@ export function marketUpdateProps(md: MarketDataRow, id: DirectorIdentity): Reco
     })
   }
   if (md.avg_days_on_market != null && md.avg_days_on_market > 0) {
-    // market_data.dom_trend is CHECK-constrained to decreasing|stable|increasing
-    // — an ENUM, not a human delta line. Passing it through verbatim would print
+    // dom_trend is the enum decreasing|stable|increasing — not a human delta
+    // line. (Sourced from market_insights.dom_trend, the only spelling of this
+    // fact anything writes; see readMarketData.) Passing it through verbatim would print
     // the word "decreasing" where the card shows "-3 days vs Sept", and would
     // also have hardcoded the arrow: for a seller, days-on-market FALLING is
     // good news and RISING is not, and the column already says which.
@@ -285,10 +286,11 @@ export function marketUpdateProps(md: MarketDataRow, id: DirectorIdentity): Reco
 }
 
 /**
- * market_data.dom_trend's live vocabulary, mapped to what the card shows.
+ * market_insights.dom_trend's live vocabulary, mapped to what the card shows.
  *
- * The CHECK on that column is decreasing|stable|increasing. Read from the live
- * schema rather than assumed: the first cut of this file put the raw column
+ * The generator's schema (lib/intelligence/market-insight-generator.ts:76) and
+ * the CHECK on the twin market_data column agree: decreasing|stable|increasing.
+ * Read from the live schema rather than assumed: the first cut of this file put the raw column
  * value into the card's delta line, which would have rendered the literal word
  * "decreasing" in the slot the composition reserves for "-3 days vs Sept".
  */
@@ -587,14 +589,40 @@ async function readMarketData(
     || listing?.city?.trim()
     || null
   try {
+    // `dom_trend` IS NOT SELECTED FROM market_data. The column exists there and
+    // carries the same CHECK vocabulary, but nothing has ever written it — the
+    // only upsert into market_data (lib/intelligence/market-insight-generator.ts:233)
+    // names market_type and never dom_trend. The trend is DERIVED by comparing
+    // market_trends snapshots, which is work the insight layer does, and it is
+    // written exactly once, at
+    // lib/intelligence/market-insight-generator.ts:434, onto
+    // market_insights.dom_trend. One spelling (CLAUDE.md §6): that one. Reading
+    // it from market_data made every MarketUpdateReel print the days-on-market
+    // card with no delta line and a flat arrow, whatever the market was doing.
     let q = svc.from("market_data")
-      .select("market_area, city, state, data_date, median_sale_price, avg_days_on_market, active_listings, price_trend_pct_30d, dom_trend")
+      .select("market_area, city, state, data_date, median_sale_price, avg_days_on_market, active_listings, price_trend_pct_30d")
       .eq("brokerage_id", brokerageId)
       .order("data_date", { ascending: false })
       .limit(1)
     if (city) q = q.ilike("city", city)
     const { data } = await q.maybeSingle()
-    return (data as MarketDataRow | null) ?? null
+    const row = (data as MarketDataRow | null) ?? null
+    if (!row) return null
+
+    // The freshest insight for the SAME market area, for its dom_trend alone.
+    // A missing insight row leaves dom_trend null, which marketUpdateProps
+    // already renders as "no delta, flat arrow" — an honest absence, not a
+    // guessed direction.
+    let iq = svc.from("market_insights")
+      .select("dom_trend")
+      .eq("brokerage_id", brokerageId)
+      .order("insight_date", { ascending: false })
+      .limit(1)
+    const area = (row.market_area ?? row.city ?? city ?? "").trim()
+    if (area) iq = iq.eq("market_area", area)
+    const { data: insight } = await iq.maybeSingle()
+    row.dom_trend = (insight as { dom_trend: string | null } | null)?.dom_trend ?? null
+    return row
   } catch { return null }
 }
 

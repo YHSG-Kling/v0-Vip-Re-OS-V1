@@ -172,13 +172,38 @@ export async function pushCalendarEventToProvider(params: {
 
   const syncHash = computeSyncHash(calendarEvent as CalendarEventForHash)
 
-  // Check if a sync mapping already exists for this event + provider account
-  const { data: existingMapping } = await supabase
+  // A MAPPING ROW CANNOT EXIST YET, AND THAT IS CORRECT — do not "fix" this by
+  // inserting one.
+  //
+  // `calendar_sync_mappings` is read here (brokerage_id, calendar_event_id,
+  // provider_account_id) and inserted by nothing, which reads like a missing
+  // writer. It is not. Measured live on 2026-08-29 against
+  // hrvaqgvukzxfskkcrwbt: the table holds 0 rows, and `provider_event_id` is
+  // `text NOT NULL` with no default and no trigger. That column is the
+  // PROVIDER'S id for the event — the one fact this module cannot know, because
+  // the provider adapter is not enabled (the two sync logs below record exactly
+  // that, status 'partial', error_message "Provider adapter not enabled").
+  // Writing a mapping without it is impossible; writing one with a placeholder
+  // would assert that a local event is synced to a Google/Outlook event that
+  // does not exist, and `is_synced` would stop meaning anything.
+  //
+  // So the missing half is the ADAPTER, not a row. When it lands, the mapping is
+  // inserted at the point the provider returns its event id, and this lookup
+  // starts finding rows without changing. Until then the branch below is
+  // correctly unreachable and the module correctly reports 'partial'.
+  const { data: existingMapping, error: mappingError } = await supabase
     .from("calendar_sync_mappings")
     .select("id")
     .eq("calendar_event_id", params.calendarEventId)
     .eq("provider_account_id", params.providerAccountId)
     .maybeSingle()
+
+  // A refused read resolves as data:null, which is indistinguishable from "no
+  // mapping yet" — and "no mapping yet" is this path's normal state, so the
+  // refusal would be invisible forever (CLAUDE.md §3).
+  if (mappingError) {
+    throw new Error(`Failed to read sync mapping: ${mappingError.message}`)
+  }
 
   if (existingMapping) {
     // Update sync_hash only — provider_event_id is managed by the real provider adapter
