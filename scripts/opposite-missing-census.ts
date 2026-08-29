@@ -1649,6 +1649,202 @@ stage("C2 imports")
 for (const d of deadImports) add("dead-import", `${d.file}::${d.local}`, `${d.file}:${d.line}`, `imported from "${d.from}", never used in this file`)
 
 // ═══════════════════════════════════════════════════════════════════════════
+// THE MODULE REACHABILITY GRAPH — who can actually see whom
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// WHY THIS EXISTS (2026-08-29). Category 3 decided "is this export referenced"
+// with a bare-token test: does the identifier occur in ANY other file. It never
+// asked whether that other file can REACH the module that declares it, so a
+// same-named export anywhere in the tree acquitted an orphan permanently and
+// silently.
+//
+// The decisive specimen, measured: `lib/kernel/adapters/content-generation.ts`
+// and `lib/kernel/content-generation-boundary.ts` both declare
+// `KernelContentRequest`, are near-byte-identical, and NOTHING imports either.
+// Each cleared the other. A MUTUAL ACQUITTAL — two copies of one wrapper hiding
+// each other from the only instrument that looks for them. Within one file the
+// same defect picks winners by how common the token is: `lib/routes.ts` had
+// `AppRoute` reported and `ROUTES` not, purely because something else in the
+// tree also says `ROUTES`.
+//
+// A false ACQUITTAL is worse than a false accusation, which is why this is worth
+// a graph. A false accusation is loud and someone argues with it; a false
+// acquittal hides work, and nothing downstream can ever notice it happened.
+//
+// So reachability is resolved for real. The graph is also what category 5 needs,
+// so resolveModule lives here now rather than 500 lines below.
+
+/**
+ * THE PATH ALIASES, READ FROM tsconfig.json — never re-typed here.
+ *
+ * The old resolver mapped `@/x` to `<root>/x` and stopped. This repo's tsconfig
+ * carries SEVEN mappings and one of them is not the identity: `@/components/*`
+ * resolves to `./app/components/*`, not `./components/*` (there is no
+ * `components/` directory at the root at all). Hardcoding `@/` therefore made
+ * every `@/components/…` import invisible — and `app/components/**` is 54 of the
+ * files this graph would otherwise have called unimported, including
+ * `CollaborativeSearchDashboard.tsx`, which `app/portal/[contactId]/search/page.tsx:6`
+ * imports by that exact spelling. Reading the mappings from the compiler's own
+ * config is the only version of this that cannot drift: add a path there and the
+ * graph follows, with nobody remembering to edit a list. Longest prefix first,
+ * which is how TypeScript itself picks among overlapping mappings.
+ */
+const TS_PATH_ALIASES: Array<[string, string]> = (() => {
+  try {
+    const raw = readFileSync(join(root, "tsconfig.json"), "utf8")
+    const cfg = JSON.parse(blankComments(raw)) as { compilerOptions?: { paths?: Record<string, string[]> } }
+    return Object.entries(cfg.compilerOptions?.paths ?? {})
+      .map(([k, v]) => [k.replace(/\*$/, ""), String(v[0]).replace(/\*$/, "")] as [string, string])
+      .sort((a, b) => b[0].length - a[0].length)
+  } catch { return [["@/", "./"]] }
+})()
+
+function resolveModule(fromFile: string, spec: string): string | null {
+  let base: string | null = null
+  if (spec.startsWith("./") || spec.startsWith("../")) base = resolve(root, dirname(fromFile), spec)
+  else for (const [prefix, target] of TS_PATH_ALIASES) {
+    if (spec.startsWith(prefix)) { base = resolve(root, target, spec.slice(prefix.length)); break }
+  }
+  if (base === null) return null                          // bare package specifier
+  const cands = [
+    base, `${base}.ts`, `${base}.tsx`, `${base}.js`, `${base}.jsx`, `${base}.mjs`, `${base}.json`,
+    join(base, "index.ts"), join(base, "index.tsx"), join(base, "index.js"),
+  ]
+  for (const c of cands) {
+    try { if (statSync(c).isFile()) return rel(c) } catch { /* keep looking */ }
+  }
+  return null
+}
+
+/**
+ * SPECIFIERS ARE COLLECTED THROUGH THE TOKENIZER, not by a regex over source.
+ *
+ * §2 names strip-comments.ts as the one correct scanner, and this is the exact
+ * place the shortcut would bite: a `from "./y"` written INSIDE a control fixture
+ * — a template literal in this very file — is text, not an import. A regex over
+ * comment-blanked source read 22 such phantom specifiers out of scripts/, all of
+ * them fixture text in guards and simulators, six of them from the C2 controls a
+ * hundred lines above. `stringLiterals()` reports a nested literal only when it
+ * sits inside a `${…}` interpolation, i.e. only when it is really CODE, so
+ * fixture text cannot manufacture an edge.
+ */
+const IMPORT_PREFIX = /(?:\bfrom|\bimport\s*\(|\brequire\s*\()\s*$/
+const REEXPORT_PREFIX = /\bexport\s+(?:\*(?:\s+as\s+[A-Za-z_$][\w$]*)?|\{[^}]*\}|type\s*\{[^}]*\})\s*from\s*$/
+const AMBIENT_RE = /\.d\.ts$/
+/** Next's app-router file contract — the framework loads these; nothing imports them. */
+const NEXT_ENTRY_RE = /(?:^|\/)(?:page|layout|route|loading|error|global-error|not-found|template|default|sitemap|robots|manifest|opengraph-image|twitter-image|icon|apple-icon|middleware|instrumentation)\.[jt]sx?$/
+const TEST_ENTRY_RE = /\.(?:test|spec)\.[jt]sx?$/
+
+const directImports = new Map<string, Set<string>>()
+const reexportsFrom = new Map<string, Set<string>>()
+const importersOf = new Map<string, Set<string>>()
+/**
+ * Files whose reach CANNOT BE DECIDED, so they are treated as reaching
+ * everything. An `await import(`${…}`)` builds its target at runtime; four
+ * guards in scripts/ load a module under test that way. Counting them as
+ * omniscient keeps this graph on the false-NEGATIVE side of its own rule — the
+ * standing preference of this file — and the number is published beside the
+ * count rather than left implicit.
+ */
+const wildcardReachers = new Set<string>()
+let graphEdges = 0
+let graphUnresolvedInRepo = 0
+
+for (const f of [...productFiles, ...proofFiles]) {
+  const code = codeOf.get(f) ?? ""
+  const di = new Set<string>()
+  const re = new Set<string>()
+  for (const lit of stringLiterals(code)) {
+    const before = code.slice(Math.max(0, lit.start - 64), lit.start)
+    if (!IMPORT_PREFIX.test(before)) continue
+    if (lit.kind === "template" && lit.text.includes("${")) { wildcardReachers.add(f); continue }
+    const target = resolveModule(f, lit.text)
+    if (target === null) {
+      if (lit.text.startsWith(".") || TS_PATH_ALIASES.some(([p]) => lit.text.startsWith(p))) graphUnresolvedInRepo++
+      continue
+    }
+    di.add(target)
+    graphEdges++
+    let s = importersOf.get(target)
+    if (!s) { s = new Set(); importersOf.set(target, s) }
+    s.add(f)
+    if (REEXPORT_PREFIX.test(before)) re.add(target)
+  }
+  directImports.set(f, di)
+  reexportsFrom.set(f, re)
+}
+stage("C3 graph")
+
+/**
+ * A BARREL FORWARDS REACH. `export { X } from "./m"` means a file importing the
+ * barrel can name `m`'s `X` without ever naming `m`, so the closure of re-export
+ * edges is part of what a direct import buys. Cycle-guarded, memoised, and
+ * finite by construction — the visited set only ever grows.
+ */
+const reexportClosureCache = new Map<string, Set<string>>()
+function reexportClosure(mod: string): Set<string> {
+  const hit = reexportClosureCache.get(mod)
+  if (hit) return hit
+  const out = new Set<string>([mod])
+  reexportClosureCache.set(mod, out)                      // seed first: a cycle sees a partial set, never recurses forever
+  const queue = [mod]
+  while (queue.length) {
+    const cur = queue.pop()!
+    for (const next of reexportsFrom.get(cur) ?? []) if (!out.has(next)) { out.add(next); queue.push(next) }
+  }
+  return out
+}
+
+const reachCache = new Map<string, Set<string>>()
+function reachSetOf(from: string): Set<string> {
+  const hit = reachCache.get(from)
+  if (hit) return hit
+  const out = new Set<string>()
+  for (const d of directImports.get(from) ?? []) for (const m of reexportClosure(d)) out.add(m)
+  reachCache.set(from, out)
+  return out
+}
+
+/** Can `from` see the module `target` at all? */
+function reachesModule(from: string, target: string): boolean {
+  if (from === target) return true
+  if (AMBIENT_RE.test(target)) return true                // a .d.ts is ambient: its types need no import
+  if (wildcardReachers.has(from)) return true             // undecidable specifier — never used as evidence AGAINST
+  return reachSetOf(from).has(target)
+}
+
+/**
+ * IS ANYTHING AT ALL ON THE OTHER END OF THIS MODULE?
+ *
+ * The structural-reachability exclusion below says "a consumer reaches this type
+ * through another export of the same module". That sentence has a premise: that
+ * a consumer exists. In a module NOTHING imports there is no consumer, so the
+ * exclusion was clearing types on the strength of a reader who is not there —
+ * which is precisely how `KernelContentRequest` stayed invisible in both of its
+ * two copies.
+ *
+ * "Unreferenced is not dead" (§1) is the reason this is not simply
+ * `importersOf.has(file)`. A Next app-router file is loaded BY THE FRAMEWORK and
+ * is unimported by design; so is a root-level runtime file (proxy.ts, the edge
+ * auth gate — see the C0b control), a `.d.ts`, a test file the runner loads, and
+ * a Remotion root. Each of those is DERIVED, not listed: the app-router names are
+ * Next's published contract, a root file is one with no `/` in its path, and a
+ * Remotion entry is recognised by the `registerRoot(` call that makes it one.
+ */
+function frameworkLoads(file: string): boolean {
+  if (AMBIENT_RE.test(file)) return true
+  if (!file.includes("/")) return true                    // root-level runtime file
+  if (NEXT_ENTRY_RE.test(file)) return true
+  if (TEST_ENTRY_RE.test(file)) return true
+  if (/\bregisterRoot\s*\(/.test(codeOf.get(file) ?? "")) return true   // Remotion bundle entry
+  return false
+}
+function moduleIsAddressable(file: string): boolean {
+  if ((importersOf.get(file)?.size ?? 0) > 0) return true
+  return frameworkLoads(file)
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // CATEGORY 3 — ORPHANED NON-FUNCTION EXPORT (type / interface / enum / class / const)
 // ═══════════════════════════════════════════════════════════════════════════
 //
@@ -1666,8 +1862,31 @@ const typeExports: ExportRef[] = []
 const FN_EXPORT_RE = /export\s+(?:async\s+)?function\s+([A-Za-z0-9_$]+)/g
 const FN_CONST_RE = /export\s+const\s+([A-Za-z0-9_$]+)\s*(?::[^=]+)?=\s*(?:async\s*)?\(/g
 
+/**
+ * NEXT'S ROUTE SEGMENT CONFIG — exported TO THE FRAMEWORK, never to an importer.
+ *
+ * `export const dynamic = "force-dynamic"` is not a symbol anyone imports; it is
+ * a value Next reads off the module it just loaded. Until the reachability graph
+ * arrived these were cleared by accident, because 213 route files all say
+ * `dynamic` and the old bare-token test counted any of them as vouching for all
+ * the others. Once a reference had to actually REACH the declaring module, all
+ * 394 of them arrived on the list at once — a false-accusation flood that would
+ * have buried the 17 real arrivals it came in with. The list below is Next's
+ * published segment-config contract, and the exclusion applies only where that
+ * contract is in force: a module the FRAMEWORK loads rather than an importer.
+ * That includes the edge middleware at the repository root — in this repo it is
+ * `proxy.ts` (Next 16's name for it; see scripts/runtime-roots.ts), whose
+ * `export const config = { matcher: … }` is read by the runtime and by nobody
+ * else, and which no app-router filename pattern would ever match.
+ */
+const NEXT_SEGMENT_CONFIG = new Set([
+  "dynamic", "dynamicParams", "revalidate", "fetchCache", "runtime", "preferredRegion",
+  "maxDuration", "experimental_ppr", "metadata", "viewport", "alt", "size", "contentType", "config",
+])
+
 function scanTypeExports(file: string, src: string): ExportRef[] {
   const out: ExportRef[] = []
+  const isFrameworkLoaded = file !== "<control>" && frameworkLoads(file)
   // The two shapes orphan-export-guard ALREADY owns. Collected first and used as
   // an exclusion set so the two censuses partition the export space rather than
   // both counting the same symbol — a double count would make the combined
@@ -1677,6 +1896,7 @@ function scanTypeExports(file: string, src: string): ExportRef[] {
   for (const m of src.matchAll(new RegExp(FN_CONST_RE.source, "g"))) alreadyCounted.add(m[1])
   const push = (name: string, kind: string, idx: number) => {
     if (alreadyCounted.has(name)) return
+    if (isFrameworkLoaded && NEXT_SEGMENT_CONFIG.has(name)) return
     out.push({ file, name, kind, line: lineOf(src, idx) })
   }
   for (const m of src.matchAll(/export\s+(?:declare\s+)?interface\s+([A-Za-z0-9_$]+)/g)) push(m[1], "interface", m.index!)
@@ -1715,10 +1935,28 @@ const productIndex = identifierIndex(productFiles)
 const proofIndex = identifierIndex(proofFiles)
 stage("C3 index")
 
-const refIn = (name: string, from: string, idx: Map<string, Set<string>>) => {
+/**
+ * A REFERENCE, NOT A COINCIDENCE — the false-ACQUITTAL class this closes.
+ *
+ * This used to return true the moment the identifier occurred in any OTHER file,
+ * whatever that file was. TypeScript does not work that way: naming an exported
+ * type from module M requires an import that reaches M. So a bare token in an
+ * unrelated file is not weak evidence, it is NO evidence — and it was the only
+ * evidence clearing 17 measured exports, including both copies of
+ * `KernelContentRequest`, which acquitted each other.
+ *
+ * `requireReach = false` reproduces the retired rule EXACTLY, and exists so the
+ * control below can show the two answers differ on the same input. A fix nobody
+ * can watch discriminate is a fix nobody can tell from a scan that stopped
+ * working (§2).
+ */
+const refIn = (name: string, from: string, idx: Map<string, Set<string>>, requireReach = true) => {
   const hits = idx.get(name)
   if (!hits) return false
-  for (const f of hits) if (f !== from) return true
+  for (const f of hits) {
+    if (f === from) continue
+    if (!requireReach || reachesModule(f, from)) return true
+  }
   return false
 }
 /**
@@ -1776,34 +2014,146 @@ const refIn = (name: string, from: string, idx: Map<string, Set<string>>) => {
  * `inExport` is the mirror defect — a false ACQUITTAL that swallows the private
  * helper below and hides a real finding — so that exact shape is pinned by its
  * own control beside the reachability one.
+ *
+ * ── THE PRIVATE-`Props` HOP THIS CLOSES (2026-08-29) ────────────────────────
+ *
+ * The walk above asked ONE question and stopped: is the name used inside another
+ * EXPORTED declaration? It never asked whether the declaration that names it is
+ * itself reachable. Every React component in this repo types its props with a
+ * PRIVATE interface, so the real chain has a hop in the middle:
+ *
+ *     export interface SavedPropertyOption { … }        ← reported as an orphan
+ *     interface CollaborativeSearchDashboardProps {     ← private, so invisible
+ *       savedProperties?: SavedPropertyOption[]
+ *     }
+ *     export function CollaborativeSearchDashboard(     ← the real public surface
+ *       props: CollaborativeSearchDashboardProps) { … }
+ *
+ * `app/portal/[contactId]/search/page.tsx:436` renders that component and gets
+ * `SavedPropertyOption` by inference, never by import. Ten measured exports were
+ * accused this way — ComplianceReportPayload, ListingIntelligenceProperty,
+ * MailPreviewColors, BrollSelection and the rest — all of them the same shape,
+ * all of them live.
+ *
+ * So the walk is now TRANSITIVE, and the hop is deliberately narrow: it follows
+ * a reachable declaration into a PRIVATE TYPE it names, and into nothing else.
+ * That is the rule the type system actually enforces — you cannot name a private
+ * TYPE in an exported signature without exposing its structure to every caller,
+ * so a private type named by a reachable declaration IS public surface. A
+ * private FUNCTION named by an export is a CALL, not a surface, and following
+ * that edge would turn this exclusion into the blanket acquittal its mirror
+ * control exists to forbid. `export const VALUE = helper()` must not clear the
+ * private type `helper` happens to take.
+ *
+ * The walk is a fixpoint over a finite set of declarations, so it terminates on
+ * its own; the round cap is there so that a future defect in the closing rule
+ * cannot turn "terminates" into "eventually".
  */
-function namedInAnotherExport(src: string, name: string, ownLine: number): boolean {
+type DeclKind = "type" | "interface" | "enum" | "class" | "value" | "function"
+interface DeclSpan { name: string; kind: DeclKind; exported: boolean; start: number; end: number; names: Set<string> }
+/** Only these carry TYPE surface — see the hop rule above. */
+const TYPE_DECL_KINDS = new Set<DeclKind>(["type", "interface", "enum", "class"])
+const DECL_START_RE = /^(export\s+)?(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(type|interface|enum|class|const|let|var|async\s+function|function)\s+([A-Za-z0-9_$]+)/
+const kindOf = (kw: string): DeclKind =>
+  kw === "type" || kw === "interface" || kw === "enum" || kw === "class" ? kw : kw.endsWith("function") ? "function" : "value"
+
+const declSpanCache = new Map<string, DeclSpan[]>()
+function declarationSpans(src: string): DeclSpan[] {
+  const hit = declSpanCache.get(src)
+  if (hit) return hit
   const lines = src.split("\n")
-  const word = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`)
-  let inExport = false
+  const spans: DeclSpan[] = []
+  let cur: { span: DeclSpan; text: string[] } | null = null
   let depth = 0
+  const close = () => {
+    if (!cur) return
+    for (const m of cur.text.join("\n").matchAll(/[A-Za-z_$][\w$]*/g)) cur.span.names.add(m[0])
+    spans.push(cur.span)
+    cur = null
+  }
   for (let i = 0; i < lines.length; i++) {
     const ln = lines[i]
-    if (!inExport && /^export\s+(type|interface|enum|class|const|let|var|abstract|declare|async\s+function|function)\b/.test(ln)) {
-      inExport = true
+    const m = DECL_START_RE.exec(ln)
+    // A column-0 `export` is always a NEW top-level declaration — the TS grammar
+    // has no other place to put one — so it closes whatever was open. Without
+    // that, one mis-closed private span could swallow an exported neighbour and
+    // remove it from the seed set, which is a false-accusation generator.
+    if (m && (m[1] || !cur)) {
+      close()
+      cur = {
+        span: { name: m[3], kind: kindOf(m[2]), exported: !!m[1], start: i + 1, end: i + 1, names: new Set() },
+        text: [],
+      }
       depth = 0
     }
-    if (inExport) {
-      // Its OWN declaration proves nothing — a type referencing itself is not a consumer.
-      const isOwn = i + 1 === ownLine
-      if (!isOwn && word.test(ln)) return true
-      for (const ch of ln) {
-        if (ch === "{" || ch === "(" || ch === "[" || ch === "<") depth++
-        else if (ch === "}" || ch === ")" || ch === "]" || ch === ">") depth--
-      }
-      // A one-line export (`export type X = "a" | "b"`) closes immediately —
-      // but a declaration left OPEN by a trailing operator, or continued by a
-      // union/intersection arm on the next line, has not ended yet.
-      const trimmed = ln.trimEnd()
-      const opensBelow = /[,{([<=|&?:]\s*$/.test(trimmed)
-      const continuesBelow = /^\s*(?:[|&?:]|extends\b)/.test(lines[i + 1] ?? "")
-      if (depth <= 0 && !opensBelow && !continuesBelow) inExport = false
+    if (!cur) continue
+    cur.text.push(ln)
+    cur.span.end = i + 1
+    // ANGLE BRACKETS ARE NOT BRACKETS IN A .tsx BODY, and counting them as such
+    // closed a component's span 400 lines early. `=>` is a bare `>`, so is every
+    // `a > b`, and a JSX body is full of both — depth went NEGATIVE inside
+    // app/dashboard/admin/lead-lineage/lead-lineage-client.tsx and the walk
+    // stopped before line 641, where the exported component reads its own
+    // exported `STAGES`. Only `{}`, `()` and `[]` actually nest here.
+    for (const ch of ln) {
+      if (ch === "{" || ch === "(" || ch === "[") depth++
+      else if (ch === "}" || ch === ")" || ch === "]") depth--
     }
+    // A one-line declaration (`export type X = "a" | "b"`) closes immediately —
+    // but one left OPEN by a trailing operator, or continued by a
+    // union/intersection arm on the next line, has not ended yet.
+    const trimmed = ln.trimEnd()
+    const opensBelow = /[,{([<=|&?:]\s*$/.test(trimmed)
+    // …and a line that OPENS with `>` is closing a generic argument list that
+    // began on an earlier line — `): Promise<` / `  {…} | {…}` / `> {`. With
+    // angle brackets out of the depth count that middle line looks finished, and
+    // the walk stopped one line short of every such function's body.
+    const continuesBelow = /^\s*(?:[|&?:>]|extends\b)/.test(lines[i + 1] ?? "")
+    if (depth <= 0 && !opensBelow && !continuesBelow) close()
+  }
+  close()
+  declSpanCache.set(src, spans)
+  return spans
+}
+
+/** The declarations a consumer of this module can actually reach, by fixpoint. */
+const reachDeclCache = new Map<string, Map<boolean, DeclSpan[]>>()
+function reachableDeclarations(src: string, transitive: boolean): DeclSpan[] {
+  let perMode = reachDeclCache.get(src)
+  if (!perMode) { perMode = new Map(); reachDeclCache.set(src, perMode) }
+  const hit = perMode.get(transitive)
+  if (hit) return hit
+  const spans = declarationSpans(src)
+  const reached = new Set<number>()
+  spans.forEach((s, i) => { if (s.exported) reached.add(i) })
+  if (transitive) {
+    for (let round = 0; round < 16; round++) {
+      let grew = false
+      for (let i = 0; i < spans.length; i++) {
+        if (reached.has(i) || !TYPE_DECL_KINDS.has(spans[i].kind) || !spans[i].name) continue
+        for (const j of [...reached]) {
+          if (spans[j].names.has(spans[i].name)) { reached.add(i); grew = true; break }
+        }
+      }
+      if (!grew) break
+    }
+  }
+  const out = [...reached].sort((a, b) => a - b).map((i) => spans[i])
+  perMode.set(transitive, out)
+  return out
+}
+
+/**
+ * Is `name` named by any declaration a consumer of this module can reach?
+ * `transitive = false` is the retired one-level rule, kept only so the controls
+ * can show the two disagreeing on the same specimen.
+ */
+function namedInReachableDeclaration(src: string, name: string, ownLine: number, transitive = true): boolean {
+  for (const s of reachableDeclarations(src, transitive)) {
+    // Its OWN declaration proves nothing — a type referencing itself, on any line
+    // of its own body, is not a consumer.
+    if (ownLine >= s.start && ownLine <= s.end) continue
+    if (s.names.has(name)) return true
   }
   return false
 }
@@ -1811,12 +2161,21 @@ function namedInAnotherExport(src: string, name: string, ownLine: number): boole
 const typeOrphans: ExportRef[] = []
 const typeProofOnly: ExportRef[] = []
 let typeStructurallyReachable = 0
+let typeInUnaddressedModule = 0
 for (const e of typeExports) {
   if (refIn(e.name, e.file, productIndex)) continue
-  if (namedInAnotherExport(maskOf.get(e.file) ?? "", e.name, e.line)) { typeStructurallyReachable++; continue }
+  // THE PREMISE OF THE STRUCTURAL EXCLUSION IS A CONSUMER. "Reachable through
+  // another export of this module" clears nothing in a module NOTHING can reach:
+  // there is no consumer to do the reaching. Both copies of
+  // `KernelContentRequest` hid here — each is the parameter type of an exported
+  // `generateKernelContent` that no file, and no framework, ever loads.
+  const addressable = moduleIsAddressable(e.file)
+  if (!addressable) typeInUnaddressedModule++
+  if (addressable && namedInReachableDeclaration(maskOf.get(e.file) ?? "", e.name, e.line)) { typeStructurallyReachable++; continue }
   if (refIn(e.name, e.file, proofIndex)) { typeProofOnly.push(e); continue }
   typeOrphans.push(e)
 }
+
 stage("C3 exports")
 for (const e of typeOrphans) add("orphan-type-export", `${e.file}::${e.name}`, `${e.file}:${e.line}`, `exported ${e.kind}, referenced by no other file`)
 
@@ -1839,12 +2198,95 @@ control("C3 counted non-function exports at all", typeExports.length > 200, `${t
   const names = got.map((g) => g.name).sort().join(",")
   control("C3 counts every NON-function export shape and no function shape",
     names === "CThing,EKind,IFace,TAlias,VALUE_MAP", names)
+
+  // THE SEGMENT-CONFIG EXCLUSION, BOTH DIRECTIONS. It must drop `dynamic` in a
+  // route file and keep the SAME NAME in an ordinary module, where it really is
+  // an export with an audience — otherwise it is a blanket name filter.
+  const segment = `export const dynamic = "force-dynamic"\nexport const maxDuration = 60\nexport interface Kept { a: string }\n`
+  const inRoute = scanTypeExports("app/api/x/route.ts", maskStrings(blankComments(segment))).map((g) => g.name).sort().join(",")
+  const inLib = scanTypeExports("lib/x/helpers.ts", maskStrings(blankComments(segment))).map((g) => g.name).sort().join(",")
+  control("C3 drops Next's route SEGMENT CONFIG in an entry file (the framework is its reader)", inRoute === "Kept", inRoute)
+  control("C3 …and keeps the same names in an ordinary module (not a blanket name filter)",
+    inLib === "Kept,dynamic,maxDuration", inLib)
+  // The middleware's matcher, on the real file rather than a fixture — the one
+  // segment-config site no app-router filename pattern reaches.
+  control("C3 the edge middleware's `export const config` is framework-read, not an orphan",
+    !typeExports.some((e) => e.file === "proxy.ts" && e.name === "config"),
+    typeExports.filter((e) => e.file === "proxy.ts").map((e) => e.name).join(",") || "none")
 }
 {
   // A type that IS imported elsewhere must not be reported. `SCHEMA_SNAPSHOT` is
   // imported by this very file and by schema-drift-guard.
   control("C3 sees a REFERENCED export as referenced (no false accusation)",
     !typeOrphans.some((e) => e.name === "SCHEMA_SNAPSHOT"))
+}
+{
+  // ── THE GRAPH ITSELF ──────────────────────────────────────────────────────
+  // Everything category 3 now decides rests on this resolver, so it is checked
+  // on the two shapes that decide it: an alias that IS the identity, and the one
+  // that is NOT. `@/components/*` → `./app/components/*` is the mapping the old
+  // resolver could not do, and 54 files under app/components/ hung on it.
+  control("C3 the resolver reads tsconfig `paths` (more than the bare `@/` identity)",
+    TS_PATH_ALIASES.length > 1 && TS_PATH_ALIASES.some(([p, t]) => p !== t.replace(/^\.\//, "@/")),
+    TS_PATH_ALIASES.map(([p, t]) => `${p}→${t}`).join(" "))
+  control("C3 resolves the NON-identity alias `@/components/…` to app/components/…",
+    resolveModule("app/portal/x/page.tsx", "@/components/portal/CollaborativeSearchDashboard")
+      === "app/components/portal/CollaborativeSearchDashboard.tsx",
+    String(resolveModule("app/portal/x/page.tsx", "@/components/portal/CollaborativeSearchDashboard")))
+  control("C3 the graph has real edges and a direction",
+    reachesModule("scripts/opposite-missing-census.ts", "scripts/strip-comments.ts")
+      && !reachesModule("scripts/strip-comments.ts", "scripts/opposite-missing-census.ts"),
+    `${graphEdges} resolved edges`)
+  // A fixture `from "./y"` inside a template literal is TEXT. If specifiers were
+  // read with a regex over source instead of through the tokenizer, this file's
+  // own C2 controls would forge edges out of scripts/ — measured at 22 of them.
+  control("C3 fixture text inside a template literal forges no import edge",
+    !(directImports.get("scripts/opposite-missing-census.ts") ?? new Set()).has("scripts/y.ts"),
+    [...(directImports.get("scripts/opposite-missing-census.ts") ?? [])].length + " real edges out of this file")
+
+  // ── DEFECT B, BOTH DIRECTIONS ─────────────────────────────────────────────
+  // The discrimination check: the SAME index, the SAME name, the two rules
+  // disagreeing. `Widget` is declared in a module the naming file cannot see.
+  const fakeIdx = new Map<string, Set<string>>([["Widget", new Set(["lib/kernel/marketing.ts"])]])
+  control("C3 a bare token in an UNREACHING file is no longer evidence (defect B fixed)",
+    !refIn("Widget", "lib/routes.ts", fakeIdx, true))
+  control("C3 …and the retired rule gives the OTHER answer on that same input (the control discriminates)",
+    refIn("Widget", "lib/routes.ts", fakeIdx, false))
+  // The mirror: B must not have become a blanket accusation. Derived from the
+  // RULE — every export some other file imports BY NAME from this exact module
+  // must be absent from the list — never pinned to one specimen that a later
+  // wave could delete.
+  {
+    const orphanKeys = new Set(typeOrphans.map((e) => `${e.file}::${e.name}`))
+    let namedImportPairs = 0
+    const violations: string[] = []
+    for (const f of [...productFiles, ...proofFiles]) {
+      const code = codeOf.get(f) ?? ""
+      for (const m of code.matchAll(/import\s+(?:type\s+)?\{([^}]*)\}\s*from\s*(["'])([^"'\n]+)\2/g)) {
+        const target = resolveModule(f, m[3])
+        if (!target || target === f) continue
+        for (const piece of m[1].split(",")) {
+          const p = piece.trim().replace(/^type\s+/, "").split(/\s+as\s+/)[0].trim()
+          if (!/^[A-Za-z_$][\w$]*$/.test(p)) continue
+          namedImportPairs++
+          if (orphanKeys.has(`${target}::${p}`)) violations.push(`${target}::${p} ← ${f}`)
+        }
+      }
+    }
+    control("C3 an export something imports BY NAME is never on the list (B is no blanket accusation)",
+      violations.length === 0 && namedImportPairs > 1000,
+      `${namedImportPairs} named-import pairs resolved · ${violations.length} violation(s)${violations.length ? `: ${violations.slice(0, 5).join(", ")}` : ""}`)
+  }
+  // The positive: a module NOTHING reaches and no framework loads must have its
+  // non-function exports REPORTED, not cleared by its own signature.
+  {
+    const unaddressed = [...new Set(typeExports.map((e) => e.file))].filter((f) => !moduleIsAddressable(f))
+    const reportedFrom = new Set(typeOrphans.map((e) => e.file))
+    const missed = unaddressed.filter((f) => !reportedFrom.has(f))
+    control("C3 every non-function export of an UNREACHED module is reported (defect B, positive side)",
+      unaddressed.length > 0 && missed.length === 0,
+      `${unaddressed.length} unreached module(s) declaring non-function exports · ${missed.length} still cleared${missed.length ? `: ${missed.slice(0, 5).join(", ")}` : ""}`)
+  }
 }
 {
   // THE STRUCTURAL-REACHABILITY EXCLUSION, BOTH DIRECTIONS. An exclusion that
@@ -1855,7 +2297,7 @@ control("C3 counted non-function exports at all", typeExports.length > 200, `${t
     `export async function doIt(req: ReqShape): Promise<number> { return 1 }`,
   ].join("\n")
   control("C3 EXCLUDES a type named in another export's declaration",
-    namedInAnotherExport(reachable, "ReqShape", 1))
+    namedInReachableDeclaration(reachable, "ReqShape", 1))
 
   const privateOnly = [
     `export interface OnlyPrivate { a: string }`,
@@ -1863,14 +2305,86 @@ control("C3 counted non-function exports at all", typeExports.length > 200, `${t
     `export const VALUE = 1`,
   ].join("\n")
   control("C3 STILL REPORTS a type used only by a PRIVATE helper — the exclusion is not a blanket pass",
-    !namedInAnotherExport(privateOnly, "OnlyPrivate", 1))
+    !namedInReachableDeclaration(privateOnly, "OnlyPrivate", 1))
 
   const selfOnly = [
     `export type Alone = "a" | "b"`,
     `export const OTHER = 2`,
   ].join("\n")
   control("C3 does not count a type's OWN declaration as a consumer of itself",
-    !namedInAnotherExport(selfOnly, "Alone", 1))
+    !namedInReachableDeclaration(selfOnly, "Alone", 1))
+
+  // ── DEFECT A: THE PRIVATE-`Props` HOP, BOTH DIRECTIONS ────────────────────
+  // The real chain from app/components/portal/CollaborativeSearchDashboard.tsx,
+  // reduced to its bones: exported type → PRIVATE props interface → exported
+  // component. A caller writing <Comp savedProperties={…}/> gets the type by
+  // inference and never imports it.
+  const privatePropsHop = [
+    `export interface SavedPropertyOption { listing_id: string }`,
+    `interface DashboardProps {`,
+    `  savedProperties?: SavedPropertyOption[]`,
+    `}`,
+    `export function Dashboard({ savedProperties }: DashboardProps) { return savedProperties }`,
+  ].join("\n")
+  control("C3 EXCLUDES a type reached only through a PRIVATE props interface (defect A fixed)",
+    namedInReachableDeclaration(privatePropsHop, "SavedPropertyOption", 1))
+  control("C3 …and the retired one-level rule gives the OTHER answer on that same specimen (the control discriminates)",
+    !namedInReachableDeclaration(privatePropsHop, "SavedPropertyOption", 1, false))
+
+  // The mirror. A private type NO export names is not surface, and the type it
+  // carries stays a finding — otherwise the hop is a blanket acquittal and this
+  // category has simply stopped reporting.
+  const privateTypeNobodyNames = [
+    `export interface OnlyPrivate { a: string }`,
+    `interface UnreachedProps { p: OnlyPrivate }`,
+    `export const VALUE = 1`,
+  ].join("\n")
+  control("C3 STILL REPORTS a type behind a private type that NO export names (the hop is not a blanket pass)",
+    !namedInReachableDeclaration(privateTypeNobodyNames, "OnlyPrivate", 1))
+  // …and the hop refuses to follow a private FUNCTION. Calling a helper is not
+  // exposing its parameter type, so `export const VALUE = helper()` must not
+  // clear `OnlyPrivate`.
+  const privateFunctionCalledByExport = [
+    `export interface OnlyPrivate { a: string }`,
+    `function helper(x: OnlyPrivate) { return x }`,
+    `export const VALUE = helper({ a: "x" })`,
+  ].join("\n")
+  control("C3 the hop follows a private TYPE and never a private FUNCTION an export merely calls",
+    !namedInReachableDeclaration(privateFunctionCalledByExport, "OnlyPrivate", 1))
+
+  // A .tsx BODY MUST NOT CLOSE ITS OWN DECLARATION. `=>` and `a > b` are bare
+  // `>` characters; counting them as closing brackets drove the walk's depth
+  // negative and ended an exported component's span before the line that reads
+  // the const under test. Pinned on both halves: the arrow-laden body must still
+  // be INSIDE the span, and a real `}` after it must still CLOSE it.
+  const tsxBody = [
+    `export const STAGES = [{ key: "a" }]`,
+    `export default function Board({ rows }: { rows: string[] }) {`,
+    `  const pick = (k: string) => STAGES.find((s) => s.key === k)`,
+    `  return rows.length > 0 ? pick("a") : null`,
+    `}`,
+    `interface AfterTheBody { z: string }`,
+  ].join("\n")
+  control("C3 an arrow-and-comparison body does not close its own declaration early",
+    namedInReachableDeclaration(tsxBody, "STAGES", 1))
+  control("C3 …and the `}` that really ends it still closes the span (no runaway swallow)",
+    declarationSpans(tsxBody).some((s) => s.name === "AfterTheBody" && s.start === 6),
+    declarationSpans(tsxBody).map((s) => `${s.name}@${s.start}-${s.end}`).join(" "))
+
+  // The mirror of the angle-bracket fix: a generic return type that CLOSES on
+  // its own line. `): Promise<` … `> {` reads as finished at the middle line
+  // once `<`/`>` are out of the depth count, and the body below it was lost.
+  const genericReturn = [
+    `export const CORE_TABLES = ["contacts"] as const`,
+    `export async function load(svc: Client): Promise<`,
+    `  { ok: true } | { ok: false }`,
+    `> {`,
+    `  return CORE_TABLES.length > 0 ? { ok: true } : { ok: false }`,
+    `}`,
+  ].join("\n")
+  control("C3 a generic return type closing on its own line does not cut the body off",
+    namedInReachableDeclaration(genericReturn, "CORE_TABLES", 1),
+    declarationSpans(genericReturn).map((s) => `${s.name}@${s.start}-${s.end}`).join(" "))
 
   // ── THE CONTINUATION PAIR ─────────────────────────────────────────────────
   // A fix that only ever EXCLUDES more is indistinguishable from a scanner that
@@ -1884,7 +2398,7 @@ control("C3 counted non-function exports at all", typeExports.length > 200, `${t
     `  | { ok: false; error: string }`,
   ].join("\n")
   control("C3 EXCLUDES a type named only in a MULTI-LINE union arm of another export",
-    namedInAnotherExport(multilineUnion, "NormalizedPlanTier", 1))
+    namedInReachableDeclaration(multilineUnion, "NormalizedPlanTier", 1))
 
   const unionThenPrivate = [
     `export interface OnlyPrivate { a: string }`,
@@ -1895,7 +2409,7 @@ control("C3 counted non-function exports at all", typeExports.length > 200, `${t
     `export const VALUE = 1`,
   ].join("\n")
   control("C3 the continuation rule CLOSES: a private helper after a multi-line union is not swallowed",
-    !namedInAnotherExport(unionThenPrivate, "OnlyPrivate", 1))
+    !namedInReachableDeclaration(unionThenPrivate, "OnlyPrivate", 1))
 
   const extendsArm = [
     `export interface BaseShape { a: string }`,
@@ -1903,7 +2417,7 @@ control("C3 counted non-function exports at all", typeExports.length > 200, `${t
     `  extends BaseShape { b: string }`,
   ].join("\n")
   control("C3 EXCLUDES a type reached through an `extends` clause on the following line",
-    namedInAnotherExport(extendsArm, "BaseShape", 1))
+    namedInReachableDeclaration(extendsArm, "BaseShape", 1))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2207,20 +2721,12 @@ let dynExternal = 0
 let dynNamedChecked = 0
 let dynNamedUnresolvable = 0
 
-function resolveModule(fromFile: string, spec: string): string | null {
-  let base: string
-  if (spec.startsWith("@/")) base = join(root, spec.slice(2))
-  else if (spec.startsWith("./") || spec.startsWith("../")) base = resolve(root, dirname(fromFile), spec)
-  else return null                                        // bare package specifier
-  const cands = [
-    base, `${base}.ts`, `${base}.tsx`, `${base}.js`, `${base}.jsx`, `${base}.mjs`, `${base}.json`,
-    join(base, "index.ts"), join(base, "index.tsx"), join(base, "index.js"),
-  ]
-  for (const c of cands) {
-    try { if (statSync(c).isFile()) return rel(c) } catch { /* keep looking */ }
-  }
-  return null
-}
+// resolveModule() USED TO LIVE HERE, knowing only `@/x → <root>/x`. It moved up
+// to the module-reachability graph (this file, "THE MODULE REACHABILITY GRAPH"
+// section above resolveModule) because category 3 needs the same answer, and it
+// gained the tsconfig `paths` table on the way — the old copy could not resolve
+// `@/components/…`, which this repo maps to `./app/components/…`. This category
+// is a caller of the survivor now, not a second copy of it.
 
 /** The names a module exports, as far as a static read can tell. */
 const exportNamesCache = new Map<string, Set<string> | null>()
@@ -2981,7 +3487,10 @@ console.log(`               · ${stillInvisible.length} of ${KNOWN_OFFLINE_INVIS
 console.log(`               · ${unresolvedEmbeds} unresolvable embeds · ${unresolvedFilterTerms} unresolvable filter terms · ${rpcTouched.size} tables in .rpc() files (excluded entirely)`)
 console.log(`  C2 imports   · ${importBindings.length} bindings across ${importStatements} statements (+${sideEffectImports} side-effect imports, not bindings)`)
 console.log(`  C3 exports   · ${typeExports.length} non-function exports · ${typeProofOnly.length} named only by a proof (reported, not failed)`)
-console.log(`               · ${typeStructurallyReachable} reachable through ANOTHER export of the same module (a type in an exported signature needs no named import)`)
+console.log(`               · ${typeStructurallyReachable} reachable through another declaration of the same module, private props interfaces included (a type in an exported signature needs no named import)`)
+console.log(`               · ${typeInUnaddressedModule} declared in a module NOTHING imports and no framework loads — the structural exclusion does not apply there, because it has no consumer to apply through`)
+console.log(`  C3 graph     · ${graphEdges} resolved import edges over ${TS_PATH_ALIASES.length} tsconfig path alias(es) · ${importersOf.size} modules with at least one importer`)
+console.log(`               · BLIND SPOTS: ${graphUnresolvedInRepo} in-repo specifier(s) that resolve to no file · ${wildcardReachers.size} file(s) whose \`import(\\\`\${…}\\\`)\` target is built at runtime (treated as reaching EVERYTHING, never as evidence against) · a mock registrar (jest.mock/vi.mock) and a specifier assembled outside an import position are not edges this graph can see`)
 console.log(`  C4 params    · ${paramsExamined} plain params in ${functionsExamined} function declarations · ${paramsUnresolved} unresolved (destructured/defaulted/rest/overload)`)
 console.log(`  C5 dynimport · ${dynImports} sites · ${dynNamedChecked} named-export checks · ${dynExternal} bare package specifiers skipped · ${dynUnresolvedSpecifier} interpolated · ${dynNamedUnresolvable} behind an \`export *\``)
 console.log(`  C6 routes    · ${routeDefs.length} route files with a method export · ${fetchRefs.length} /api/ literals (${fetchRefs.filter((f) => f.isRequest).length} handed to a request)`)
