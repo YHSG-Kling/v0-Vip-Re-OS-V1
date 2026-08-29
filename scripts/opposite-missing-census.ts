@@ -86,7 +86,7 @@
  */
 import { readFileSync, readdirSync, statSync, existsSync, writeFileSync } from "node:fs"
 import { join, relative, dirname, resolve } from "node:path"
-import { blankComments, blankStrings } from "./strip-comments"
+import { blankComments, blankStrings, stringLiterals } from "./strip-comments"
 import { stripSqlComments } from "./strip-sql-comments"
 import { runtimeFiles, walkTs } from "./runtime-roots"
 import { SCHEMA_SNAPSHOT } from "./schema-snapshot"
@@ -2345,16 +2345,6 @@ for (const name of ["vercel.json", "next.config.mjs", "next.config.js", "middlew
   if (existsSync(p)) { try { extraRefCorpus.push(readFileSync(p, "utf8")) } catch { /* unreadable */ } }
 }
 
-// THREE regexes, one per quote style, and none of them uses a BACKREFERENCE.
-// The single `(["'`])…\1` form backtracks catastrophically on a file with an
-// unterminated quote (an apostrophe in JSX text is enough), and this scan runs
-// over every file in the tree — a hang here would look exactly like a slow
-// census rather than like a bug.
-const LITERAL_RES = [
-  /"((?:\\.|[^"\\\n])*)"/g,
-  /'((?:\\.|[^'\\\n])*)'/g,
-  /`((?:\\.|[^`\\])*)`/g,
-]
 /**
  * A literal that is the ARGUMENT OF A REQUEST, not merely a literal that looks
  * like a path.
@@ -2390,12 +2380,73 @@ function isRequestArgument(src: string, litStart: number): boolean {
   return !back.slice(opener).includes(")")
 }
 
+/**
+ * THE ONE TOKENIZER, NOT THREE REGEXES (lane K1, 2026-08-29).
+ *
+ * This function used to pair quotes with three global regexes — one per quote
+ * style, run independently over the file. That is the idiom scripts/strip-comments.ts
+ * exists to end, wearing its third hat: it collects rather than strips or masks,
+ * and it fails the identical way, because the backtick regex pairs LEFT TO RIGHT
+ * and cannot see nesting. ONE desynchronising backtick shifts every pairing after
+ * it, and the scan then reads real literals as being inside a template and template
+ * text as being a literal — silently, with no error, reporting fewer call sites
+ * than the file contains.
+ *
+ * MEASURED, not theorised. lib/elevenlabs/conv-ai.ts:403 registers this app's own
+ * webhook with ElevenLabs as `${appUrl}/api/agent-assistant/tool-call` — a
+ * same-origin self-call, CLAUDE.md §1's named reachability evidence, and exactly the
+ * shape the admission below was deliberately taught to accept. 25 backticks precede
+ * it; the regex match before it opened at line 388 and CLOSED on this literal's
+ * OPENING backtick, so the URL landed in no match at all and category 6b accused a
+ * live provider webhook of having no caller. Five more were missed the same way —
+ * app/actions/{brokerage-intelligence,lifetime-npv,portal-stream,revenue-protection,
+ * tenant-safety-actions}.ts each build a cron self-call as
+ * `${base.startsWith("http") ? base : `https://${base}`}/api/cron/…`, a template
+ * NESTED inside an interpolation, which is precisely the shape strip-comments.ts's
+ * header records desynchronising lib/kernel/marketing.ts.
+ *
+ * WHY THE WORKLIST. A template's TEXT can itself be a program: the blog view
+ * tracker, the embed loader and the visitor-tracking pixel all ship generated
+ * client-side JS inside a template literal, and those snippets call
+ * `/api/blog/track-view`, `/api/embed/script`, `/api/track/pixel` and
+ * `/api/track/identify` with an ordinary quoted string. To the tokenizer those
+ * quotes are template TEXT, not literals — correct as tokenization, and a loss as
+ * evidence. MEASURED: a tokenizer swap WITHOUT the worklist dropped 6 literals and
+ * left three route paths with no caller at all — /api/track/pixel and
+ * /api/track/identify into 6b, /api/embed/script into 6c — three fresh false
+ * accusations bought with a fix. The three-regex idiom saw them by
+ * accident (each regex ran over the whole file independently), so the fix keeps
+ * that reach ON PURPOSE — every template's raw inner span is re-tokenized, to any
+ * depth, and a literal is admitted once per ABSOLUTE OFFSET so an interpolation's
+ * contents (already emitted by the enclosing scan) are never counted twice.
+ *
+ * Measured across the 4,619-file corpus: 669 → 675 literals, 125 handed to a
+ * request in both, ZERO lost. §2 — a count that moves is the finding, and this one
+ * moves in the direction that means the finder had been blind.
+ *
+ * KEPT FROM THE RETIRED COMMENT, because the hazard it named is real: the compact
+ * `(["'`])…\1` form backtracks catastrophically on a file with an unterminated
+ * quote, and a hang in a repo-wide scan looks exactly like a slow census rather
+ * than like a bug. Three separate regexes avoided the backreference; a single
+ * left-to-right scan has no backtracking to avoid, so the hazard is gone rather
+ * than worked around.
+ */
 function collectFetchRefs(file: string, src: string) {
-  for (const re of LITERAL_RES) {
-    re.lastIndex = 0
-    let m: RegExpExecArray | null
-    while ((m = re.exec(src))) {
-      let text = m[1]
+  // Absolute offsets already admitted. The outer scan emits interpolation-interior
+  // literals with their true offsets, so re-tokenizing a template's raw span
+  // rediscovers them at the same offset and this set drops the duplicate.
+  const seenLiteral = new Set<number>()
+  const spans: Array<{ text: string; base: number }> = [{ text: src, base: 0 }]
+  while (spans.length > 0) {
+    const { text: span, base } = spans.pop()!
+    for (const lit of stringLiterals(span)) {
+      const at = base + lit.start
+      if (seenLiteral.has(at)) continue
+      seenLiteral.add(at)
+      // Every template is re-entered as a span of its own: generated JS inside one
+      // is a program, and each recursion is strictly shorter, so this terminates.
+      if (lit.kind === "template") spans.push({ text: span.slice(lit.start + 1, lit.end - 1), base: at + 1 })
+      let text = lit.text
       // Must START with /api/ — that rules out `https://other.host/api/x`, which
       // is somebody else's server and not a route this repo is expected to own.
       //
@@ -2421,6 +2472,13 @@ function collectFetchRefs(file: string, src: string) {
       // comment was really about: `${API_BASE}/api/v1/…` pointing at somebody
       // else's host still cannot be reported as a runtime 404 here — it lands in
       // unroutedNonRequestLiterals, counted and never accused.
+      //
+      // The tokenizer hands every `${…}` back as the canonical `${}` — its interior
+      // is CODE, not text, and may hold a whole nested template. That is what makes
+      // `${base.startsWith("http") ? base : `https://${base}`}/api/cron/…` legible
+      // as ONE leading interpolation; the old regex saw its inner backtick as the
+      // template's closing one. Both tests below read the same `${…}` shape they
+      // always did, so nothing about which literals qualify has changed.
       let selfOriginPrefixed = false
       if (!text.startsWith("/api/")) {
         // Exactly ONE leading interpolation, immediately followed by /api/.
@@ -2432,8 +2490,8 @@ function collectFetchRefs(file: string, src: string) {
       }
       const path = text.split("?")[0].split("#")[0].replace(/\$\{[^}]*\}/g, "*").replace(/\/+$/, "")
       fetchRefs.push({
-        path, file, line: lineOf(src, m.index!),
-        isRequest: selfOriginPrefixed ? false : isRequestArgument(src, m.index!),
+        path, file, line: lineOf(src, at),
+        isRequest: selfOriginPrefixed ? false : isRequestArgument(src, at),
       })
     }
   }
@@ -2573,41 +2631,26 @@ const QUALIFIED_EXTERNAL_ROUTES = new Map<string, string>([
   // ShowingTime connection — and this route is the return leg ShowingTime makes
   // for appointment.requested / appointment.confirmed. Deleting it would
   // silently strand every confirmation for showings the product already sends.
-  // ── THE ELEVENLABS TOOL WEBHOOK, AND THE SCANNER DEFECT IT EXPOSED (lane J5) ─
+  // ── TOMBSTONE: /api/agent-assistant/tool-call, REMOVED 2026-08-29 (lane K1) ──
+  // The ElevenLabs Conv-AI tool webhook was qualified BY NAME here by lane J5,
+  // for one reason only: its in-tree caller — lib/elevenlabs/conv-ai.ts:403,
+  // `${appUrl}/api/agent-assistant/tool-call`, a same-origin self-call and
+  // CLAUDE.md §1's own reachability evidence — was INVISIBLE to the collector,
+  // which paired backticks with three global regexes that cannot see nesting.
+  // J5 wrote that down as "a standing question about the finder" rather than a
+  // property of the route, and it was right: collectFetchRefs() now runs through
+  // scan() in scripts/strip-comments.ts and SEES that literal, so the route has a
+  // named caller and leaves category 6 on its own evidence.
   //
-  // EVIDENCE THAT IT IS A DOOR. The handler's first act is a constant-time
-  // compare of the `x-elevenlabs-tool-secret` header against
-  // AGENT_ASSISTANT_TOOL_SECRET and a 403 on any mismatch OR on an unset secret
-  // (route.ts:62-67) — it FAILS CLOSED both ways, reads no session anywhere in
-  // 2700 lines, and resolves its tenant from the agent_assistant_sessions row
-  // ElevenLabs' conversation_id attributes to. Nothing in this repo can mint
-  // that header from a browser, so an in-tree caller is not merely absent, it is
-  // impossible. The outbound half is live and in-tree: buildToolsConfig()
-  // registers this exact URL with ElevenLabs at agent-provisioning time —
-  // lib/elevenlabs/conv-ai.ts:403, `${appUrl}/api/agent-assistant/tool-call`.
-  // Deleting it would silently strand every tool the voice assistant invokes.
-  //
-  // AND IT IS ALSO A FALSE ACCUSATION, which is why this note is longer than
-  // the others. That conv-ai.ts:403 literal is a SAME-ORIGIN SELF-CALL of
-  // exactly the `${baseUrl}/api/…` shape collectFetchRefs() above was taught to
-  // admit as reachability evidence (CLAUDE.md §1). It is admitted in principle
-  // and MISSED in fact, because LITERAL_RES is the three-regex idiom this
-  // repo's own strip-comments.ts header exists to warn about: backticks are
-  // paired left-to-right by a regex that cannot see nesting, so ONE desyncing
-  // backtick earlier in the file shifts every pairing after it. Measured on
-  // lib/elevenlabs/conv-ai.ts: 25 backticks precede the literal (an ODD count),
-  // the match before it opens at line 388 and CLOSES on this literal's OPENING
-  // backtick, and the URL therefore appears in no match at all — the census
-  // sees zero /api/ literals in a file that names one.
-  //
-  // The route is qualified BY NAME here rather than by patching LITERAL_RES,
-  // because replacing that idiom means routing category 6 through the one
-  // correct tokenizer (scan() in strip-comments.ts, which already tracks
-  // template nesting) and that is a change to shared measurement machinery, not
-  // a burn-down. RECORDED SO IT IS NOT LOST: any file whose backtick count
-  // desynchronises can hide a self-call the same way, so this exemption is
-  // evidence of ONE route and a standing question about the finder.
-  ["/api/agent-assistant/tool-call", "ElevenLabs Conv-AI tool webhook — constant-time x-elevenlabs-tool-secret vs AGENT_ASSISTANT_TOOL_SECRET, fails closed 403 on mismatch AND on unset (route.ts:62-67); no session read anywhere in the file. Registered with the provider at lib/elevenlabs/conv-ai.ts:403 as `${appUrl}/api/agent-assistant/tool-call` — a same-origin self-call LITERAL_RES cannot see because that file's backticks pair off-by-one (see the note above this entry)"],
+  // The entry is gone rather than kept "just in case" because §2 forbids pinning
+  // an assertion to a WAYPOINT: an exemption whose only justification was a blind
+  // finder becomes, the moment the finder can see, a line that reads as enforced
+  // while asserting nothing. The route's door-ness is unchanged and still true
+  // (constant-time x-elevenlabs-tool-secret vs AGENT_ASSISTANT_TOOL_SECRET,
+  // fails closed 403 on mismatch AND on unset, app/api/agent-assistant/tool-call/route.ts:62-67,
+  // no session read anywhere in the file) — it simply no longer needs saying HERE.
+  // If that caller is ever deleted the route reappears in 6b, which is the correct
+  // signal and the one an exemption would have suppressed.
 
   ["/api/showings/showingtime-webhook", "ShowingTime provider callback — HMAC-SHA256 over the raw body vs SHOWINGTIME_WEBHOOK_SECRET, timing-safe, fails closed 503/401 (route.ts:59-76); no getUser() anywhere in the file, so an in-tree caller cannot exist. Outbound leg: app/actions/dispatch-showing.ts:138 (channel='showingtime')"],
 ])
@@ -2641,11 +2684,20 @@ for (const f of fetchesWithNoRoute) add("fetch-no-route", f.path, `${f.file}:${f
   // ── THE QUALIFIED EXTERNAL EXEMPTION, both arms ───────────────────────────
   // An exemption that only ever exempts is indistinguishable from a scan that
   // stopped working, so both directions are proved, not just the exempting one.
+  // PER PATH, not all-or-nothing. Written as two whole-set `every`s ORed together,
+  // this control failed the moment ONE named door gained an in-tree caller while
+  // the rest had not — which is §2's waypoint defect in a control: it could only
+  // pass while every door was in the same state, so ADJUDICATING one turned it
+  // red. Lane K1 hit exactly that when the tokenizer swap gave
+  // /api/agent-assistant/tool-call its caller back. The RULE is per route: each
+  // named door is either reclassified as 6c, or has left C6 altogether because
+  // something in the tree now addresses it. Both are correct outcomes; neither
+  // depends on what the OTHER twelve are doing.
   control("C6 the qualified exemption reclassifies ONLY the paths it names",
     [...QUALIFIED_EXTERNAL_ROUTES.keys()].every((p) =>
-      findings.some((f) => f.cat === "route-external-caller" && f.key === p)) ||
-    [...QUALIFIED_EXTERNAL_ROUTES.keys()].every((p) => !routesWithNoCaller.some((r) => r.path === p)),
-    `${QUALIFIED_EXTERNAL_ROUTES.size} qualified door(s); a named door that gains an in-tree caller drops out of C6 entirely, which also satisfies this`)
+      findings.some((f) => f.cat === "route-external-caller" && f.key === p) ||
+      !routesWithNoCaller.some((r) => r.path === p)),
+    `${QUALIFIED_EXTERNAL_ROUTES.size} qualified door(s); a named door that gains an in-tree caller drops out of C6 entirely, which also satisfies this — per path, so one door being adjudicated cannot fail the others`)
   control("C6 NEGATIVE — an unnamed sibling under the SAME prefix is still a 6b finding",
     !QUALIFIED_EXTERNAL_ROUTES.has("/api/video/projects/[projectId]/control-probe") &&
     (QUALIFIED_EXTERNAL_ROUTES.get("/api/video/projects/[projectId]/control-probe") ?? null) === null,
@@ -2725,6 +2777,76 @@ for (const f of fetchesWithNoRoute) add("fetch-no-route", f.path, `${f.file}:${f
     fetchRefs.length = before
     return clean
   })())
+  // ── THE TOKENIZER, PROVED ON THE SHAPES THAT BROKE THE REGEX (lane K1) ─────
+  // Category 6 collected `/api/…` literals with three global regexes until
+  // 2026-08-29. Swapping that for scan() in strip-comments.ts is a change to
+  // MEASUREMENT MACHINERY, so it is pinned on the exact shapes the old idiom got
+  // wrong — and, in the last control of this group, on the shape it must still
+  // get right, because a fix that only ever EXCLUDES more is indistinguishable
+  // from a finder that stopped finding (§2).
+  const probeRefs = (src: string) => {
+    const before = fetchRefs.length
+    collectFetchRefs("<control>", src)
+    const got = fetchRefs.slice(before)
+    fetchRefs.length = before
+    return got
+  }
+  control("C6 TOKENIZER — a `${base}/api/…` self-call after an ODD number of backticks is STILL collected", (() => {
+    // The desync shape itself, constructed rather than asserted on the real file:
+    // a lone backtick inside a QUOTED STRING. The three-regex idiom pairs it with
+    // the next backtick in the file — which is the target literal's OPENING one —
+    // so the URL falls inside no match at all and the census reads the file as
+    // naming zero /api/ literals. This is what hid lib/elevenlabs/conv-ai.ts:403.
+    const src = [
+      "const a = `a plain template`",
+      'const b = "a stray ` backtick inside a quoted string"',
+      "await fetch(`${appUrl}/api/control/after-a-desync`)",
+    ].join("\n")
+    const target = src.indexOf("`${appUrl}")
+    const backticksBefore = (src.slice(0, target).match(/`/g) ?? []).length
+    const got = probeRefs(src)
+    // Oddness is DERIVED from the specimen, so editing the specimen cannot leave
+    // this control passing while no longer testing a desync.
+    return backticksBefore % 2 === 1 &&
+      got.length === 1 && got[0].path === "/api/control/after-a-desync"
+  })(), "the exact defect: one backtick inside a string desynchronises every regex pairing after it")
+  control("C6 TOKENIZER — a NESTED template still yields its `/api/…` (the cron self-call shape)", (() => {
+    // `${base.startsWith("http") ? base : `https://${base}`}/api/cron/…` — five
+    // live cron self-calls in app/actions/ are written exactly this way, and the
+    // regex read the inner backtick as the outer template's closing one.
+    const got = probeRefs("const u = `${a(`${b}/api/control/nested-inner`)}/api/control/nested-outer`")
+    const paths = got.map((g) => g.path).sort()
+    return paths.join(",") === "/api/control/nested-inner,/api/control/nested-outer"
+  })(), "both the inner literal and the outer template's own path are collected, each once")
+  control("C6 TOKENIZER — an /api/ path inside a COMMENT is NOT collected", (() => {
+    const line = probeRefs('// the tracker posts to "/api/control/in-a-line-comment"\nconst x = 1')
+    const block = probeRefs('/* see "/api/control/in-a-block-comment" */\nconst y = 2')
+    // …and the same text OUTSIDE a comment must still be collected, or this
+    // control passes merely because the collector is broken.
+    const live = probeRefs('const z = "/api/control/in-a-line-comment"')
+    return line.length === 0 && block.length === 0 && live.length === 1
+  })(), "the tokenizer knows it is in a comment; a tombstone or a note is never a call site (§2)")
+  control("C6 TOKENIZER — generated JS INSIDE a template still counts as a caller", (() => {
+    // The blog view tracker, the embed loader and the visitor-tracking pixel ship
+    // client-side JS inside a template literal. To a tokenizer those quotes are
+    // template TEXT; dropping them retired three route paths' only caller
+    // (/api/track/pixel and /api/track/identify into 6b, /api/embed/script into
+    // 6c), so every template is re-entered as a span of its own.
+    const got = probeRefs('const script = `<script>fetch("/api/control/inside-generated-js")</script>`')
+    return got.length === 1 && got[0].path === "/api/control/inside-generated-js"
+  })(), "re-entering template text is deliberate reach, not sloppiness — it is what the three regexes did by accident")
+  control("C6 NEGATIVE — a route NOTHING addresses is still reported by the 6b predicate", (() => {
+    // The negative control the tokenizer swap needs most. Every other control here
+    // proves the finder SEES more; this one proves it can still ACCUSE, so a
+    // change that only ever suppressed findings could not pass unnoticed.
+    const phantom = "/api/control/nobody-addresses-this"
+    const unaddressed = !fetchRefs.some((f) => routeMatches(phantom, f.path))
+    const unexempt = !QUALIFIED_EXTERNAL_ROUTES.has(phantom) && !EXTERNALLY_ADDRESSED.test(phantom)
+    // …and the predicate is the SAME one 6b runs, re-applied to the real corpus:
+    // every route it reported must genuinely have no matching literal.
+    const consistent = routesWithNoCaller.every((r) => !fetchRefs.some((f) => routeMatches(r.path, f.path)))
+    return unaddressed && unexempt && consistent
+  })(), "6b would still form the accusation — and every route it did report is re-derived here")
   control("C6 does NOT read a middleware PREFIX table entry as a request", (() => {
     const before = fetchRefs.length
     collectFetchRefs("<control>", `const PUBLIC_PREFIXES = ["/api/auth", "/api/public"]`)

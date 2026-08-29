@@ -118,11 +118,73 @@ export function blankStrings(src: string): string {
 }
 
 /**
+ * One string or template literal, as the scanner saw it.
+ *
+ * `start` is the offset of the OPENING delimiter and `end` is one past the CLOSING
+ * one, so `src.slice(start, end)` is the literal including its quotes — the same
+ * offset a `/"…"/g` match index would have reported, which is what callers that
+ * compute a line number or look BACKWARD for a call opener need.
+ */
+export interface StringLiteral {
+  start: number
+  end: number
+  kind: "single" | "double" | "template"
+  /**
+   * The literal's CONTENT, delimiters excluded, escapes left raw — identical to
+   * what the capture group of the three-regex idiom would have held, with ONE
+   * deliberate difference: in a template every top-level `${…}` interpolation is
+   * canonicalised to `${}`. The interior of an interpolation is CODE, not text
+   * (it may itself contain a whole nested template), and any caller that wants
+   * to normalise `${…}` → `*` gets the same answer from `${}` while a nested
+   * literal is reported as its OWN entry rather than smeared into its parent's.
+   */
+  text: string
+}
+
+/**
+ * Every properly-closed string and template literal, in the order each one CLOSES,
+ * from the same single left-to-right scan that decides where a comment is.
+ *
+ * ── WHY THIS EXISTS, AND WHAT IT COST TO LEARN (round five) ─────────────────
+ *
+ * The mirror of blankStrings: some analyzers do not want string contents blanked,
+ * they want to READ them — an `/api/…` path, a table name, a route. Every one of
+ * them grew the same three-regex idiom the blankStrings header dissects, this time
+ * to COLLECT rather than to mask:
+ *
+ *     for (const re of [ /"((?:\\.|[^"\\\n])*)"/g, /'…'/g, /`…`/g ]) …
+ *
+ * It fails identically and for the identical reason — the backtick regex pairs
+ * left to right and cannot see nesting, so one desynchronising backtick shifts
+ * every pairing after it. Measured on lib/elevenlabs/conv-ai.ts: 25 backticks
+ * precede line 403's `${appUrl}/api/agent-assistant/tool-call`, the match before
+ * it opens at line 388 and CLOSES on that literal's OPENING backtick, and the URL
+ * therefore appears in no match at all. scripts/opposite-missing-census.ts's
+ * category 6 read that file as naming zero `/api/` literals when it names one —
+ * a same-origin self-call, which CLAUDE.md §1 names as reachability evidence — and
+ * the route it registers had to be exempted BY NAME to stop the census accusing a
+ * live provider webhook of having no caller.
+ *
+ * Comments are skipped for free, because the scanner already knows it is in one.
+ */
+export function stringLiterals(src: string): StringLiteral[] {
+  const out: StringLiteral[] = []
+  // `blank`/`mask` govern the returned TEXT only, which this caller discards; the
+  // literal sink is filled the same way whichever is passed.
+  scan(src, true, false, out)
+  return out
+}
+
+/**
  * @param blank  replace comments with SPACES (offsets survive) rather than deleting them
  * @param mask   additionally blank string and template CONTENTS (delimiters kept,
  *               `${…}` interpolations left as code)
+ * @param sink   optional: every closed string/template literal is pushed here as it
+ *               closes. Purely additive — when it is absent this scan behaves, and
+ *               returns, exactly as it did before the sink existed, which is what
+ *               keeps stripComments/blankComments/blankStrings unchanged.
  */
-function scan(src: string, blank: boolean, mask = false): string {
+function scan(src: string, blank: boolean, mask = false, sink?: StringLiteral[]): string {
   let out = ""
   let i = 0
   const n = src.length
@@ -146,31 +208,58 @@ function scan(src: string, blank: boolean, mask = false): string {
   const tmplStack: number[] = [] // brace depth captured at each open `${`
   let braceDepth = 0
 
+  // Open template literals, innermost last — one entry per unclosed backtick, so a
+  // template opened INSIDE an interpolation collects its own text and is emitted as
+  // its own literal instead of being smeared into its parent. Only maintained when a
+  // sink was passed; with no sink these stay empty and cost one length check per
+  // template character.
+  const openTmpl: Array<{ start: number; parts: string[] }> = []
+
   /** Same span, every character a space except the newlines (offsets AND lines survive). */
   const blanked = (text: string) => text.replace(/[^\n]/g, " ")
 
   while (i < n) {
     if (mode === "template") {
       const t = src[i]
+      const top = openTmpl.length > 0 ? openTmpl[openTmpl.length - 1] : null
       if (t === "\\") {
         const esc = src[i] + (src[i + 1] ?? "")
         out += mask ? blanked(esc) : esc
+        top?.parts.push(esc)
         i += 2
         continue
       }
-      if (t === "`") { out += t; i++; mode = "code"; prevSignificant = "`"; continue }
+      if (t === "`") {
+        out += t
+        i++
+        mode = "code"
+        prevSignificant = "`"
+        if (sink && top) { openTmpl.pop(); sink.push({ start: top.start, end: i, kind: "template", text: top.parts.join("") }) }
+        continue
+      }
       if (t === "$" && src[i + 1] === "{") {
         out += "${"
         i += 2
         tmplStack.push(braceDepth)
         mode = "code"
         prevSignificant = "{"
+        // The interpolation's INTERIOR is code and is deliberately not collected as
+        // this template's text; anything quoted inside it arrives in the sink on its
+        // own. `${}` keeps the shape a `${…}` → `*` normaliser expects.
+        top?.parts.push("${}")
         continue
       }
       let k = i
       while (k < n && src[k] !== "\\" && src[k] !== "`" && !(src[k] === "$" && src[k + 1] === "{")) k++
-      if (k > i) { const span = src.slice(i, k); out += mask ? blanked(span) : span; i = k; continue }
+      if (k > i) {
+        const span = src.slice(i, k)
+        out += mask ? blanked(span) : span
+        top?.parts.push(span)
+        i = k
+        continue
+      }
       out += mask ? blanked(t) : t
+      top?.parts.push(t)
       i++
       continue
     }
@@ -213,6 +302,7 @@ function scan(src: string, blank: boolean, mask = false): string {
     }
 
     if (c === "`") {
+      if (sink) openTmpl.push({ start: i, parts: [] })
       out += c
       i++
       mode = "template"
@@ -221,6 +311,8 @@ function scan(src: string, blank: boolean, mask = false): string {
 
     if (c === '"' || c === "'") {
       const quote = c
+      const litStart = i
+      let closed = false
       out += c
       i++
       while (i < n) {
@@ -230,7 +322,7 @@ function scan(src: string, blank: boolean, mask = false): string {
           i += 2
           continue
         }
-        if (src[i] === quote) { out += src[i]; i++; break }
+        if (src[i] === quote) { out += src[i]; i++; closed = true; break }
         // A single- or double-quoted literal cannot span a newline; if one appears, the quote was
         // not a string at all (an apostrophe in JSX text, say) and swallowing to EOF would repeat
         // the very bug this file exists to end.
@@ -246,6 +338,16 @@ function scan(src: string, blank: boolean, mask = false): string {
         if (k > i) { const span = src.slice(i, k); out += mask ? blanked(span) : span; i = k; continue }
         out += mask ? blanked(src[i]) : src[i]
         i++
+      }
+      // An UNCLOSED quote is not a literal — an apostrophe in JSX text ends at the
+      // newline above and must not be reported as a string, which is the same ruling
+      // the `\n` break in this loop already makes for the returned text.
+      if (sink && closed) {
+        sink.push({
+          start: litStart, end: i,
+          kind: quote === '"' ? "double" : "single",
+          text: src.slice(litStart + 1, i - 1),
+        })
       }
       prevSignificant = quote
       continue
