@@ -98,6 +98,17 @@ export interface SendFeedbackRequestParams {
 export interface ChannelOutcome {
   delivered: boolean
   error?: string
+  /**
+   * The provider's own id for this send.
+   *
+   * It was already being read out of the dispatch result two lines below and
+   * handed to `logChannelAttempt` for the activity metadata — and then dropped,
+   * so the CALLER never saw it. That is why `open_house_invitations.message_id`
+   * was NULL on every invitation this product has ever mailed, and therefore
+   * why `opened_at`/`clicked_at` on that table — read by the listing Marketing
+   * tab — had no writer: the SendGrid webhook had no id to correlate on.
+   */
+  messageId?: string | null
 }
 
 export interface SendInvitationResult {
@@ -239,7 +250,11 @@ export async function sendOpenHouseInvitation(params: SendInvitationParams): Pro
           channelPurpose: "campaign",
           systemSource: "open_house_invitation",
         })
-        email = { delivered: res.success, error: res.success ? undefined : (res.error ?? "Email was not delivered") }
+        email = {
+          delivered: res.success,
+          error: res.success ? undefined : (res.error ?? "Email was not delivered"),
+          messageId: res.messageId ?? null,
+        }
         await logChannelAttempt(supabase, {
           contactId: params.contactId,
           agentId: contact.agent_id,
@@ -269,7 +284,11 @@ export async function sendOpenHouseInvitation(params: SendInvitationParams): Pro
             `Hi ${contact.first_name}! You're invited to our open house at ${property.address} on ${eventDate} from ${event.start_time} to ${event.end_time}.${rsvpLink ? ` RSVP: ${rsvpLink}` : ""}`,
           systemSource: "open_house_invitation",
         })
-        sms = { delivered: res.success, error: res.success ? undefined : (res.error ?? "Text was not delivered") }
+        sms = {
+          delivered: res.success,
+          error: res.success ? undefined : (res.error ?? "Text was not delivered"),
+          messageId: res.messageId ?? null,
+        }
         await logChannelAttempt(supabase, {
           contactId: params.contactId,
           agentId: contact.agent_id,

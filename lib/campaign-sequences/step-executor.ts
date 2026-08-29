@@ -483,6 +483,23 @@ export async function executeSequenceStep(
   // `replied_at`). Unstamped it fell outside that reader's
   // `.eq("brokerage_id", …)`, so the channel-order advisory was computed over an
   // empty window for every brokerage and could only ever recommend nothing.
+  //
+  // ── TWO COLUMNS, TWO DIFFERENT FACTS (CLAUDE.md §6) ────────────────────────
+  // `blocked_reason` is why THE OS REFUSED to send — a gate ruled, the provider
+  // was never called, no money was spent, nothing reached the contact.
+  // `error_message` is why THE PROVIDER refused — we did call out, and it came
+  // back rejected. They are not two spellings of one idea and the receipts
+  // reader knows it: lib/intelligence/decision-receipts.ts:80 renders
+  // blocked_reason for a blocked/skipped step and line 82 prefers error_message
+  // for a failed one. This insert put BOTH into blocked_reason, so
+  // `error_message` had no writer at all and every provider failure in the
+  // agent's decision trail read as a policy block — "email failed: Outbound
+  // blocked", which is the one sentence that is never true of a failure.
+  // Routed by the gate vocabulary dispatch itself returns as providerKey.
+  const GATE_PROVIDER_KEYS = new Set(["compliance_gate", "deconflict_gate", "autonomy_gate"])
+  const refusedByGate = GATE_PROVIDER_KEYS.has(dispatchResult.providerKey ?? "")
+  const failureReason = dispatchResult.error ?? null
+
   const { error: stepLedgerError } = await supabase.from("sequence_step_executions").insert({
     enrollment_id: enrollmentId,
     brokerage_id: brokerageId,
@@ -493,7 +510,8 @@ export async function executeSequenceStep(
     status: executionStatus,
     provider_message_id: dispatchResult.messageId ?? null,
     sent_at: dispatchResult.status === "sent" ? now : null,
-    blocked_reason: dispatchResult.error ?? null,
+    blocked_reason: refusedByGate ? failureReason : null,
+    error_message: refusedByGate ? null : failureReason,
     step_output: dispatchResult.output ?? null,
     output_variable_name: step.output_variable_name ?? null,
     provider_key: dispatchResult.providerKey ?? null,

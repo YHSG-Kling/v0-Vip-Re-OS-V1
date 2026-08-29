@@ -16,6 +16,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveUnambiguousTenant } from "@/lib/kernel/unambiguous-tenant"
+import { fanOutEmailEngagement, recordProviderEventOnLog } from "@/lib/outcomes/provider-event-fanout"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -38,6 +39,18 @@ const TRACKING_EVENT: Record<string, string> = {
   bounce: "bounce",
   dropped: "dropped",
   spamreport: "spam_complaint",
+}
+
+// The verdict a NON-engagement event carries for message_provider_logs.
+// Its vocabulary is the one the five inserters already write and that
+// app/actions/system-health.ts aggregates — 'sent' | 'failed' | 'bounced' —
+// so a provider verdict lands in the same words as a sender claim and the
+// health board can compare them.
+const DELIVERY_EVENT: Record<string, string> = {
+  delivered: "sent",
+  bounce: "bounced",
+  spamreport: "bounced",
+  dropped: "failed",
 }
 
 export async function POST(request: NextRequest) {
@@ -113,15 +126,63 @@ export async function POST(request: NextRequest) {
         (trackContacts ?? []) as Array<{ id: string; brokerage_id: string | null }>,
       )
       const trackContact = trackMatch.ok ? trackMatch.rows[0] : null
+      const eventAt = ev?.timestamp
+        ? new Date(Number(ev.timestamp) * 1000).toISOString()
+        : new Date().toISOString()
+
+      // ── THE PER-SEND LEDGERS, walked back from the provider id ─────────────
+      // This webhook already landed the engagement STREAM (email_tracking) and
+      // the inbox chip (messages.status), and stopped there. The rows that
+      // recorded the outbound — newsletter_sends, sequence_step_executions,
+      // open_house_invitations, email_sends, message_provider_logs — carried
+      // opened_at/clicked_at/event_at columns that every reporting surface in
+      // the product reads and that NOTHING wrote, so a real campaign rendered a
+      // permanent 0% open / 0% click to the agent deciding what to send next.
+      // Correlation is exact on the id we ourselves stored at send time; an id
+      // we never stored matches nothing and no-ops.
+      let fanout: Awaited<ReturnType<typeof fanOutEmailEngagement>> | null = null
+      if ((kind === "open" || kind === "click") && sgId) {
+        fanout = await fanOutEmailEngagement(svc, {
+          providerMessageId: sgId,
+          kind,
+          at: eventAt,
+          brokerageId: eventBrokerageId ?? trackContact?.brokerage_id ?? null,
+        })
+        // A REFUSED per-send write is not "nobody engaged" — that conflation is
+        // the exact failure this fan-out exists to close, so it is said aloud.
+        if (fanout.refusals.length > 0) {
+          console.error("[sendgrid-events] per-send engagement stamp refused:", fanout.refusals.join(" | "))
+        }
+      } else if (sgId && DELIVERY_EVENT[kind]) {
+        // Delivery / bounce / drop: no per-send engagement column, but the
+        // dispatch audit row still gets the PROVIDER'S time and verdict, which
+        // is the pair app/actions/system-health.ts:534 documents as unwritten.
+        const logged = await recordProviderEventOnLog(svc, {
+          providerMessageId: sgId,
+          providerEvent: kind,
+          providerStatus: DELIVERY_EVENT[kind],
+          at: eventAt,
+          brokerageId: eventBrokerageId,
+        })
+        if (logged.refusal) console.error("[sendgrid-events] provider log stamp refused:", logged.refusal)
+      }
+
       if (trackingType && trackContact) {
         await svc.from("email_tracking").insert({
           contact_id: trackContact.id,
           brokerage_id: trackContact.brokerage_id ?? null,
           event_type: trackingType,
+          // THE ATTRIBUTION LEG. app/api/cron/bundle-attribution-rollup/route.ts
+          // walks outcomes.email.message_id → email_sends.id →
+          // email_tracking.email_send_id, and this column was NULL on every row
+          // ever written, so that leg counted zero opens for every dispatch it
+          // has ever measured. Null stays honest when the send recorded no
+          // provider id — a partial correlation, never a guessed one.
+          email_send_id: fanout?.emailSendId ?? null,
           url: kind === "click" ? (String(ev?.url ?? "") || null) : null,
           user_agent: String(ev?.useragent ?? "") || null,
           metadata: { sg_message_id: sgId || null, sg_event_id: String(ev?.sg_event_id ?? "") || null },
-          event_at: ev?.timestamp ? new Date(Number(ev.timestamp) * 1000).toISOString() : new Date().toISOString(),
+          event_at: eventAt,
         })
 
         // BEHAVIOURAL EVENT LOG — email_open (3 pts) / email_click (10 pts) in the

@@ -35,6 +35,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { refreshNeighborCampaignCounters } from "./neighbor-campaign-rollup"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -244,6 +245,17 @@ export async function runDirectMailCampaignDrain(
             `[campaign-drain] recipient status update refused for ${recipientRowId}: ${recStatusErr.message}`,
           )
         }
+      }
+
+      // NEIGHBOR-NOTIFICATION COUNTERS — derived here because THIS is the first
+      // moment a piece has really gone to the printer. The staging action used
+      // to write recipients_sent at staging time and its own tombstone explains
+      // why that was removed (nothing had been mailed); the consequence was
+      // that the column, and responses_received beside it, had no writer at all
+      // and the listing's neighbor card reported 0 mailed forever.
+      const nnRollup = await refreshNeighborCampaignCounters(svc, row.id)
+      if (nnRollup.refusal) {
+        console.error(`[campaign-drain] neighbor counter rollup refused for ${row.id}: ${nnRollup.refusal}`)
       }
 
       if (result.success) out.sent++

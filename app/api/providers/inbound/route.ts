@@ -183,6 +183,41 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
   }
 
+  // ── Step 5c: CREDIT THE SEQUENCE STEP THAT EARNED THIS REPLY ───────────────
+  // `sequence_step_executions.replied_at` is the numerator of every per-channel
+  // reply rate this OS computes — lib/campaign-sequences/channel-order-runner.ts
+  // turns it into the "lead with SMS, it earns 2× the replies here" advisory,
+  // lib/intelligence/predictor-outcome-resolver.ts resolves predictions against
+  // it, and the decision-receipts trail renders it. Nothing wrote it, so every
+  // channel scored a flat 0% and the advisory could only ever rank a field that
+  // was tied at zero. This ingress is the only place in the tree that knows a
+  // contact answered.
+  //
+  // WhatsApp is deliberately not mapped: `campaign_sequence_steps.channel` has
+  // no whatsapp member, so crediting a WhatsApp reply to an SMS step would
+  // attribute a reply to a touch that never happened.
+  if (entityType === "contact" && entityId) {
+    const replyChannel =
+      inbound.channel === "sms" ? "sms" : inbound.channel === "email" ? "email" : null
+    if (replyChannel) {
+      try {
+        const { recordSequenceReply } = await import("@/lib/outcomes/provider-event-fanout")
+        const credited = await recordSequenceReply(supabase, {
+          brokerageId: inbound.brokerageId,
+          contactId: entityId,
+          channel: replyChannel,
+        })
+        // A refused write must not read as "this channel earns no replies" —
+        // that conflation is what kept the advisory blind in the first place.
+        if (credited.refusal) {
+          console.error("[InboundRouter] sequence reply credit refused:", credited.refusal)
+        }
+      } catch (err) {
+        console.error("[InboundRouter] sequence reply credit failed (non-blocking):", err)
+      }
+    }
+  }
+
   // ── Step 6: Write lifecycle_events ─────────────────────────────────────────
   // DB column is `metadata` (jsonb) — pass plain object, not JSON.stringify
   await supabase.from("lifecycle_events").insert({

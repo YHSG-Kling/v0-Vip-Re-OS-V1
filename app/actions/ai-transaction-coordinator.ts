@@ -785,6 +785,138 @@ export async function listTransactionCommunications(transactionId: string) {
 }
 
 /**
+ * SEND A RECORDED DRAFT — the half `draftTransactionCommunication` never had.
+ *
+ * The drafter wrote `ai_draft` and status 'draft' and stopped there. Nothing in
+ * the tree ever moved a row past that, which is why `final_content` and
+ * `sent_at` — both selected by listTransactionCommunications above and both
+ * typed on the panel's CommunicationRow — were read on a live surface and
+ * written by NOBODY. Every recorded communication rendered as a permanent
+ * "draft, never sent", and the vocabulary's other three states ('sent',
+ * 'delivered', 'failed') were unreachable.
+ *
+ * THE TWO COLUMNS ARE NOT THE SAME TEXT. `ai_draft` is what the model wrote;
+ * `final_content` is what the human actually sent after editing it. Recording
+ * only the first would make the file a record of what was PROPOSED, not of what
+ * was said to a client — and this row is the thing an agent goes back to when a
+ * party disputes what they were told.
+ *
+ * Tenant from the SESSION via scopeTransaction (§4), and the row is re-read
+ * inside that tenant so a communication id from another brokerage cannot be
+ * driven through this door. Egress rides dispatchEmail — the one consent-gated
+ * send — so a suppressed or DNC recipient is refused here exactly as anywhere
+ * else, and that refusal is recorded as 'failed' rather than reported as sent.
+ */
+export async function sendTransactionCommunication(params: {
+  transactionId: string
+  communicationId: string
+  finalContent: string
+}) {
+  try {
+    if (!isValidUUID(params.communicationId)) {
+      return { success: false, error: "Invalid communication ID" }
+    }
+    const body = (params.finalContent ?? "").trim()
+    if (!body) {
+      return { success: false, error: "Nothing to send — the message body is empty." }
+    }
+
+    const scope = await scopeTransaction(params.transactionId)
+    if (!scope.ok) return { success: false, error: scope.error }
+
+    const supabase = await createClient()
+
+    // Re-read inside the caller's own tenant. `.eq("brokerage_id", …)` is the
+    // gate, not the id: an id proves a row exists, never that it is ours.
+    const { data: comm, error: commError } = await supabase
+      .from("transaction_communications")
+      .select("id, recipient_role, communication_type, status, transaction_id")
+      .eq("id", params.communicationId)
+      .eq("transaction_id", params.transactionId)
+      .eq("brokerage_id", scope.brokerageId!)
+      .maybeSingle()
+    if (commError) {
+      return { success: false, error: `Could not load that communication: ${commError.message}` }
+    }
+    if (!comm) return { success: false, error: "Communication not found" }
+    if (comm.status !== "draft") {
+      return { success: false, error: `Already ${comm.status} — a sent communication is not re-sent.` }
+    }
+
+    // The recipient is the transaction participant holding the drafted role —
+    // the same slot the drafter addressed. No fallback to transactions.contact_id:
+    // that is whichever side we represent, which on a seller-side deal is the
+    // seller, and mailing the seller a letter addressed to the buyer is the
+    // exact error the drafter's own note warns about.
+    const { data: participants, error: partError } = await supabase
+      .from("transaction_participants")
+      .select("role, name, email")
+      .eq("transaction_id", params.transactionId)
+    if (partError) {
+      return { success: false, error: `Could not load the participants: ${partError.message}` }
+    }
+    const recipient = ((participants ?? []) as Array<{ role: string | null; name: string | null; email: string | null }>)
+      .find((p) => p.role === comm.recipient_role)
+    if (!recipient?.email) {
+      return {
+        success: false,
+        error: `No email on file for the ${String(comm.recipient_role ?? "recipient").replace(/_/g, " ")} on this transaction.`,
+      }
+    }
+
+    const { dispatchEmail } = await import("@/lib/providers/dispatch")
+    const { resolveOutboundSender, formatSenderOrUndefined } = await import("@/lib/providers/outbound-sender")
+    const sender = await resolveOutboundSender(supabase, scope.brokerageId!)
+    const result = await dispatchEmail({
+      brokerageId: scope.brokerageId!,
+      userId: scope.userId ?? undefined,
+      agentId: scope.agentId ?? undefined,
+      from: formatSenderOrUndefined(sender),
+      to: recipient.email,
+      subject: `${String(comm.communication_type ?? "Update").replace(/_/g, " ")} — your transaction`,
+      html: body.replace(/\n/g, "<br />"),
+      channelPurpose: "transactional",
+      systemSource: "transaction_communication",
+      metadata: { transaction_id: params.transactionId, transaction_communication_id: comm.id },
+    })
+
+    // RECORD WHAT ACTUALLY HAPPENED, both ways. A gate refusal and a provider
+    // rejection both land as 'failed' with the reason attached, because a
+    // communication that reads 'sent' when nothing left the building is the
+    // failure this whole lane exists to stop. `final_content` is stamped either
+    // way — the agent wrote it and the record of what they intended to send
+    // survives the send failing.
+    const nowIso = new Date().toISOString()
+    const { data: updated, error: updateError } = await supabase
+      .from("transaction_communications")
+      .update({
+        final_content: body,
+        status: result.success ? "sent" : "failed",
+        sent_at: result.success ? nowIso : null,
+      })
+      .eq("id", comm.id)
+      .eq("brokerage_id", scope.brokerageId!)
+      .select("id, status, sent_at")
+    if (updateError) {
+      return { success: false, error: `The message was handled but the record could not be updated: ${updateError.message}` }
+    }
+    // An UPDATE that matched nothing RESOLVES with error null and an empty
+    // array — byte-identical to one that worked (CLAUDE.md §3). Count it.
+    if (!updated || updated.length === 0) {
+      return { success: false, error: "The communication record was not updated — nothing was saved." }
+    }
+
+    revalidatePath(`/dashboard/transactions/${params.transactionId}`)
+    if (!result.success) {
+      return { success: false, error: result.error ?? "The provider did not accept the message.", status: "failed" }
+    }
+    return { success: true, status: "sent", sentAt: nowIso, recipientEmail: recipient.email }
+  } catch (error) {
+    return handleError(error, "sendTransactionCommunication")
+  }
+}
+
+/**
  * AI-powered transaction risk monitoring
  */
 export async function monitorTransactionRisks(agentId: string) {

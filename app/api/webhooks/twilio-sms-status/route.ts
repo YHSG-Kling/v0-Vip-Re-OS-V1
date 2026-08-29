@@ -29,6 +29,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { ingestProviderTruth } from "@/lib/outcomes/reconciliation-ledger"
+import { recordProviderEventOnLog } from "@/lib/outcomes/provider-event-fanout"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -73,6 +74,25 @@ export async function POST(request: NextRequest) {
     providerRef: sid,
     truth: { status, at: now, detail: errorCode ? { error_code: errorCode } : null },
   })
+
+  // 1b. Stamp the DISPATCH AUDIT ROW with the provider's own time and verdict.
+  //     message_provider_logs carries `sent_at` (when WE handed it over) and
+  //     `event_at` (when the PROVIDER reported back). Only the first was ever
+  //     written, so the delivery rate on the system-health board was computed
+  //     entirely from what the sender CLAIMED — a carrier rejection minutes
+  //     later never touched it. Correlated on the same MessageSid the ledger
+  //     already matched, scoped to the brokerage that claim resolved to.
+  const logged = await recordProviderEventOnLog(createServiceClient(), {
+    providerMessageId: sid,
+    providerEvent: status,
+    providerStatus: INBOX_STATUS[status] === "failed" ? "failed" : "sent",
+    at: now,
+    brokerageId: recon.brokerageId ?? null,
+  })
+  if (logged.refusal) {
+    // A refused audit write is not "the provider said nothing" — say which.
+    console.error("[twilio-sms-status] provider log stamp refused:", logged.refusal)
+  }
 
   // 2. Mirror onto the inbox thread, so the agent sees the truth where they work.
   //    Correlated by the same sid the send stored in metadata.

@@ -131,9 +131,25 @@ export async function sendCampaignNow(svc: Svc, campaignId: string): Promise<Cam
         systemSource: "email_campaign",
         metadata: { campaign_id: campaignId, email_send_id: row.id },
       })
+      // THE PROVIDER ID IS THE ONLY THING THAT CAN CORRELATE AN OPEN BACK HERE.
+      // dispatchEmail has returned it since the email branch stopped dropping it
+      // on the floor, and this row is the one place it belongs — but nothing
+      // wrote it, so email_sends.provider_message_id was NULL on every row.
+      // Consequence, not theory: the bundle-attribution rollup
+      // (app/api/cron/bundle-attribution-rollup/route.ts:147) looks the row up
+      // BY this column to reach email_tracking, so the email leg of every
+      // dispatch it has ever measured counted zero engagement, and the SendGrid
+      // webhook had no id to stamp email_tracking.email_send_id with.
+      //
+      // `failed_at` and `error_message` are deliberately NOT written here. They
+      // exist on the table and nothing in the tree reads either one, so filling
+      // them would trade one orphan for two — a write with no reader is the
+      // same defect as a read with no writer (CLAUDE.md §1), and the failure is
+      // already on the record as status='failed'. Build the reader first.
       await svc.from("email_sends").update({
         status: result.success ? "sent" : "failed",
         ...(result.success && { sent_at: new Date().toISOString() }),
+        provider_message_id: result.messageId ?? null,
       }).eq("id", row.id)
       if (result.success) sent++; else failed++
     }
@@ -233,6 +249,12 @@ export async function sendCampaignNow(svc: Svc, campaignId: string): Promise<Cam
           campaign_id: campaignId,
           subject: campaign.subject_line,
           status: result.success ? "sent" : "failed",
+          // Same reason as the email_sends update above, and the same column
+          // publish-newsletters already fills: without the provider id, the
+          // SendGrid webhook cannot find this row when the recipient opens it,
+          // so opened_at/clicked_at stayed NULL and every rate derived from
+          // them was a permanent zero.
+          provider_message_id: result.messageId ?? null,
           sent_at: result.success ? new Date().toISOString() : null,
         })
       }

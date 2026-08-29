@@ -647,9 +647,22 @@ export async function sendOpenHouseInvitations(params: { eventId: string; contac
       })
 
       if (sendRes.success) {
+        // ── message_id IS THE CORRELATION KEY, and it was never stored ───────
+        // This row carries opened_at and clicked_at, both read by the listing's
+        // Marketing tab (app/actions/seller-open-house.ts:130) and neither ever
+        // written — because the ONLY way an open can find its way back to an
+        // invitation is the provider id, and `message_id` sat NULL on every
+        // invitation ever mailed. The SendGrid webhook now stamps those two
+        // columns by matching this exact value
+        // (lib/outcomes/provider-event-fanout.ts), so an unstamped id here is
+        // the difference between a live engagement number and a permanent zero.
+        //
+        // Email wins over SMS on a "both" send: SendGrid is the channel whose
+        // opens and clicks this OS actually receives.
+        const providerMessageId = sendRes.email?.messageId ?? sendRes.sms?.messageId ?? null
         await supabase
           .from("open_house_invitations")
-          .update({ status: "sent", sent_at: new Date().toISOString() })
+          .update({ status: "sent", sent_at: new Date().toISOString(), message_id: providerMessageId })
           .eq("id", invitation.id)
       }
 

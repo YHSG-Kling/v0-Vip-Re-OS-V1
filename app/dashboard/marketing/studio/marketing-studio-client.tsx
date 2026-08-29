@@ -422,7 +422,16 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
 
   // Create newsletter dialog state (inline in studio)
   const [isCreateNewsletterOpen, setIsCreateNewsletterOpen] = useState(false)
-  const [newNewsletter, setNewNewsletter] = useState({ campaignName: "", subjectLine: "", content: "" })
+  const [newNewsletter, setNewNewsletter] = useState({ campaignName: "", subjectLine: "", content: "", marketingCampaignId: "", audienceSegmentId: "" })
+  // The segments this brokerage actually has. There is no segment catalogue in
+  // the schema (contact_segments.segment_id carries no FK and nothing names a
+  // segment), so the list is derived from live memberships and labelled by id
+  // prefix + member count — the same honest treatment the contact page's
+  // segment badges already use. Without this control
+  // email_campaigns.audience_segment_id had no writer at all and the sender's
+  // segment-targeted path was unreachable.
+  const [audienceSegments, setAudienceSegments] = useState<Array<{ segmentId: string; memberCount: number }>>([])
+  const [audienceSegmentsError, setAudienceSegmentsError] = useState<string | null>(null)
   const [isCreatingNewsletter, setIsCreatingNewsletter] = useState(false)
 
   // Create QR dialog state (inline in studio)
@@ -557,6 +566,20 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
     } finally {
       setIsLoading(false)
     }
+  }
+
+  async function loadAudienceSegments() {
+    const { listAudienceSegments } = await import("@/app/actions/email-campaigns")
+    const res = await listAudienceSegments()
+    if (!(res as any).success) {
+      // A refused read is NOT "you have no segments" — say so, or the agent
+      // picks "everyone" believing that is their only option.
+      setAudienceSegmentsError((res as any).error ?? "Could not load your segments")
+      setAudienceSegments([])
+      return
+    }
+    setAudienceSegmentsError(null)
+    setAudienceSegments((res as any).segments ?? [])
   }
 
   async function loadCampaigns() {
@@ -3820,7 +3843,17 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
         </Dialog>
 
         {/* Create Newsletter Campaign Dialog */}
-        <Dialog open={isCreateNewsletterOpen} onOpenChange={setIsCreateNewsletterOpen}>
+        <Dialog
+          open={isCreateNewsletterOpen}
+          onOpenChange={(open) => {
+            setIsCreateNewsletterOpen(open)
+            // Segments are loaded on OPEN rather than at mount: the list is
+            // derived by scanning live memberships, so it is worth one query at
+            // the moment an agent is actually choosing an audience and not on
+            // every visit to the studio.
+            if (open) void loadAudienceSegments()
+          }}
+        >
           <DialogContent className="sm:max-w-[500px]">
             <DialogHeader>
               <DialogTitle>New Newsletter Campaign</DialogTitle>
@@ -3857,6 +3890,65 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                   onChange={(e) => setNewNewsletter((prev) => ({ ...prev, content: e.target.value }))}
                 />
               </div>
+              {/* ★ THE UMBRELLA LINK ★ email_campaigns.marketing_campaign_id.
+                  The column is read by the campaign ROI measurer and by the
+                  video/image fan-out that embeds a finished render into every
+                  asset under the same campaign — and NOTHING wrote it, so an
+                  email created here could never be measured with its campaign
+                  or receive its campaign's video. The campaigns list is already
+                  in state on this page; this is the control that was missing. */}
+              <div className="space-y-1.5">
+                <Label htmlFor="nl-campaign">Part of a campaign (optional)</Label>
+                <Select
+                  value={newNewsletter.marketingCampaignId || "none"}
+                  onValueChange={(v) =>
+                    setNewNewsletter((prev) => ({ ...prev, marketingCampaignId: v === "none" ? "" : v }))
+                  }
+                >
+                  <SelectTrigger id="nl-campaign">
+                    <SelectValue placeholder="Standalone email" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Standalone email</SelectItem>
+                    {campaigns.map((c) => (
+                      <SelectItem key={c.id} value={c.id}>
+                        {c.campaign_name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {/* ★ THE AUDIENCE ★ email_campaigns.audience_segment_id. The
+                  sender resolves a segmented campaign's recipients from active
+                  contact_segments memberships — a path that could never run,
+                  because nothing wrote this column. Segments are shown by id
+                  prefix and live member count: contact_segments.segment_id has
+                  no FK and this schema has no segment catalogue to name them
+                  from, and a made-up label would be worse than an honest id. */}
+              <div className="space-y-1.5">
+                <Label htmlFor="nl-segment">Audience segment (optional)</Label>
+                <Select
+                  value={newNewsletter.audienceSegmentId || "all"}
+                  onValueChange={(v) =>
+                    setNewNewsletter((prev) => ({ ...prev, audienceSegmentId: v === "all" ? "" : v }))
+                  }
+                >
+                  <SelectTrigger id="nl-segment">
+                    <SelectValue placeholder="All subscribers" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All subscribers</SelectItem>
+                    {audienceSegments.map((sg) => (
+                      <SelectItem key={sg.segmentId} value={sg.segmentId}>
+                        {`Segment ${sg.segmentId.slice(0, 8)} — ${sg.memberCount} member${sg.memberCount === 1 ? "" : "s"}`}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {audienceSegmentsError ? (
+                  <p className="text-xs text-red-600">{audienceSegmentsError}</p>
+                ) : null}
+              </div>
             </div>
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setIsCreateNewsletterOpen(false)}>
@@ -3880,10 +3972,12 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                       // email_campaigns.created_by FKs users — the actor, not
                       // the agent record. It was passed the same id as agentId.
                       createdBy: userIdProp ?? "",
+                      marketingCampaignId: newNewsletter.marketingCampaignId || undefined,
+                      audienceSegmentId: newNewsletter.audienceSegmentId || undefined,
                     })
                     if (result.success) {
                       setIsCreateNewsletterOpen(false)
-                      setNewNewsletter({ campaignName: "", subjectLine: "", content: "" })
+                      setNewNewsletter({ campaignName: "", subjectLine: "", content: "", marketingCampaignId: "", audienceSegmentId: "" })
                       await loadNewsletterData()
                     } else {
                       toast({ title: "Failed to create newsletter", description: (result as any).error ?? "Unknown error", variant: "destructive" })

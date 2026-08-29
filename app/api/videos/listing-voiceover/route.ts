@@ -152,11 +152,29 @@ export async function POST(request: NextRequest) {
     // attempt nobody ever updated. The voiceover IS the deliverable of this
     // route — the slideshow render is a later step — so the honest state of THIS
     // attempt is submitted, matching the project's own 'generating'.
+    //
+    // `cost_usd` IS KNOWN ON THIS LANE, and that is the whole reason it is
+    // filled here and nowhere else. The column is read by the render-attempt
+    // list (app/actions/link-to-video.ts:583) and had no writer at all, because
+    // the D-ID lane deliberately refuses to invent a figure it has no price
+    // table for (see app/api/did/generate-video/route.ts:497 — that refusal
+    // stands). ElevenLabs is different: lib/vendor-governance/cost-normalizer.ts
+    // carries a documented $0.30/1K-character rate for it, and the character
+    // count of the script is right here. So this is the repo's own price table
+    // applied to a measured quantity, not a per-render guess — the distinction
+    // §5 draws when it says a wrong number in a cost ledger is a wrong invoice.
+    // A render whose provider has no entry in that table still writes NULL.
+    const { normalizeVendorCost, VENDOR_PRICING } = await import("@/lib/vendor-governance/cost-normalizer")
+    const voiceCostUsd = VENDOR_PRICING["elevenlabs"]
+      ? normalizeVendorCost("elevenlabs", String(script ?? "").length)
+      : null
+
     const { error: renderLogError } = await supabase.from("video_render_log").insert({
       project_id: video_project_id,
       brokerage_id: auth.brokerageId,
       provider: "elevenlabs_slideshow",
       status: "submitted",
+      cost_usd: voiceCostUsd,
     })
     // The ledger row is not the product — a refused insert is logged, and the
     // voiceover the caller paid for is still returned rather than discarded.

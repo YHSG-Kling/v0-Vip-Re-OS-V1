@@ -661,6 +661,21 @@ export async function logResponse(params: LogResponseParams) {
       console.error("[DirectMail] ROI ledger write refused:", roiError.message)
     }
 
+    // A neighbor-notification campaign is a direct-mail campaign wearing a
+    // different card, and `responses_received` on that card had no writer — so
+    // a neighbour who called back was recorded here and invisible there.
+    // Derived from the responses just filed rather than incremented, so a
+    // re-run cannot double-count.
+    try {
+      const { refreshNeighborCampaignCounters } = await import("@/lib/direct-mail/neighbor-campaign-rollup")
+      const nnRollup = await refreshNeighborCampaignCounters(supabase, params.campaignId)
+      if (nnRollup.refusal) {
+        console.error("[DirectMail] neighbor counter rollup refused:", nnRollup.refusal)
+      }
+    } catch (err) {
+      console.error("[DirectMail] neighbor counter rollup failed (non-blocking):", err)
+    }
+
     // ── THE DOOR ──────────────────────────────────────────────────────────────
     // Only for a LEAD. A contact's mail response already lives in the CRM the
     // contact belongs to; there is nothing to convert.

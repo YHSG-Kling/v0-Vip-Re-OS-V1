@@ -65,6 +65,81 @@ export interface CreateEmailCampaignParams {
   content?: string
   sendDate?: string
   createdBy: string
+  /**
+   * THE UMBRELLA THIS EMAIL BELONGS TO — marketing_campaigns.id.
+   *
+   * `email_campaigns.marketing_campaign_id` was read in two places and written
+   * in none. lib/orchestrator/internal.ts:835 fans a finished video (and
+   * :1060 a finished image) into every asset sharing the umbrella, so a
+   * rendered video could never be embedded into the campaign email it was made
+   * for; lib/marketing/campaign-measurer.ts rolls child-asset engagement up to
+   * the parent campaign, so the ROI board scored every umbrella at zero email
+   * engagement. Same defect and same fix as qr_codes.marketing_campaign_id
+   * (lib/marketing/tracked-qr.ts:122) — an FK with no writer.
+   *
+   * Optional: an email campaign that belongs to no umbrella is normal, and NULL
+   * says exactly that.
+   */
+  marketingCampaignId?: string
+  /**
+   * THE AUDIENCE — contact_segments.segment_id.
+   *
+   * `email_campaigns.audience_segment_id` is read by
+   * lib/marketing/email-campaign-sender.ts:56 and drives PATH B of the sender:
+   * recipients resolved from active segment memberships. Nothing ever wrote the
+   * column, so Path B was unreachable — every campaign fell through to the
+   * broadcast path and went to the whole subscriber list, no matter what
+   * audience the agent had in mind. A segmented send was a feature the schema
+   * described and the product could not perform.
+   *
+   * Optional: no segment means the broadcast path, which is what already
+   * happened for every campaign ever created here.
+   */
+  audienceSegmentId?: string
+}
+
+/**
+ * The segments this brokerage actually has, derived from the membership ledger.
+ *
+ * There is NO segment catalogue table in this schema — `contact_segments`
+ * .segment_id carries no FK and nothing names a segment (the contact page's
+ * badge list records the same finding and shows an id prefix for the same
+ * reason). So the honest list of segments is the DISTINCT set of ids that have
+ * live members in the caller's own tenant, with that member count beside them:
+ * derived from real rows, inventing no catalogue and no label.
+ *
+ * ACTIVE MEMBERSHIPS ONLY — `removed_at IS NULL` — the same filter the sender
+ * applies, so a segment whose members have all been removed does not appear as
+ * a choice that would send to nobody.
+ */
+export async function listAudienceSegments() {
+  try {
+    const auth = await requireCaller()
+    if (!auth.ok) return { success: false as const, error: auth.error, segments: [] }
+
+    const supabase = await createClient()
+    const { data, error } = await supabase
+      .from("contact_segments")
+      .select("segment_id")
+      .eq("brokerage_id", auth.brokerageId)
+      .is("removed_at", null)
+      .limit(10_000)
+    // A refused read must not render as "this brokerage has no segments" — that
+    // reads as a clean empty picker and the agent silently broadcasts instead.
+    if (error) return { success: false as const, error: error.message, segments: [] }
+
+    const counts = new Map<string, number>()
+    for (const row of (data ?? []) as Array<{ segment_id: string | null }>) {
+      if (!row.segment_id) continue
+      counts.set(row.segment_id, (counts.get(row.segment_id) ?? 0) + 1)
+    }
+    const segments = [...counts.entries()]
+      .map(([segmentId, memberCount]) => ({ segmentId, memberCount }))
+      .sort((a, b) => b.memberCount - a.memberCount)
+    return { success: true as const, segments }
+  } catch (error) {
+    return handleError(error, "listAudienceSegments")
+  }
 }
 
 export interface UpdateEmailCampaignParams {
@@ -105,11 +180,62 @@ export async function createEmailCampaign(params: CreateEmailCampaignParams) {
 
     const supabase = await createClient()
 
+    // THE UMBRELLA MUST BE ONE OF OURS. An FK proves a marketing_campaigns row
+    // exists; it never proves the row belongs to the caller's brokerage, and
+    // attaching this tenant's email to another tenant's campaign would feed
+    // their ROI rollup and their video fan-out. Same gate, same wording as
+    // app/actions/marketing-studio.ts:1098 where this pattern already stands.
+    let marketingCampaignId: string | null = null
+    if (params.marketingCampaignId) {
+      if (!isValidUUID(params.marketingCampaignId)) {
+        return { success: false, error: "Invalid campaign ID" }
+      }
+      const { data: umbrella, error: umbrellaError } = await supabase
+        .from("marketing_campaigns")
+        .select("id")
+        .eq("id", params.marketingCampaignId)
+        .eq("brokerage_id", auth.brokerageId)
+        .maybeSingle()
+      if (umbrellaError) {
+        return { success: false, error: `Could not verify that campaign: ${umbrellaError.message}` }
+      }
+      if (!umbrella) return { success: false, error: "That campaign is not on your brokerage." }
+      marketingCampaignId = umbrella.id as string
+    }
+
+    // THE SEGMENT MUST HAVE MEMBERS IN THIS TENANT. contact_segments.segment_id
+    // has no FK and no catalogue, so "does this segment exist" can only be
+    // answered by "does anyone in MY brokerage belong to it" — which is also
+    // exactly the question the sender will ask when it resolves recipients. A
+    // campaign pointed at a segment with no local members would claim an
+    // audience and send to nobody.
+    let audienceSegmentId: string | null = null
+    if (params.audienceSegmentId) {
+      if (!isValidUUID(params.audienceSegmentId)) {
+        return { success: false, error: "Invalid segment ID" }
+      }
+      const { data: member, error: segmentError } = await supabase
+        .from("contact_segments")
+        .select("id")
+        .eq("segment_id", params.audienceSegmentId)
+        .eq("brokerage_id", auth.brokerageId)
+        .is("removed_at", null)
+        .limit(1)
+        .maybeSingle()
+      if (segmentError) {
+        return { success: false, error: `Could not verify that segment: ${segmentError.message}` }
+      }
+      if (!member) return { success: false, error: "That segment has no active members on your brokerage." }
+      audienceSegmentId = params.audienceSegmentId
+    }
+
     const { data: campaign, error } = await supabase
       .from("email_campaigns")
       .insert({
         brokerage_id: auth.brokerageId,  // from session, not params
         agent_id: params.agentId ?? null,
+        marketing_campaign_id: marketingCampaignId,
+        audience_segment_id: audienceSegmentId,
         campaign_name: params.campaignName,
         subject_line: params.subjectLine,
         content: params.content ?? "",

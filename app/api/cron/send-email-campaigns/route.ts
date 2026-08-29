@@ -38,12 +38,27 @@ export async function GET(request: NextRequest) {
     const svc = createServiceClient()
     const { runScheduledEmailCampaigns } = await import("@/lib/marketing/email-campaign-sender")
     const summary = await runScheduledEmailCampaigns(svc)
+
+    // ENGAGEMENT ARRIVES AFTER THE SEND, so the rate cannot be computed at send
+    // time — it is refreshed on every tick for campaigns still inside the
+    // window. email_campaigns.open_rate/.click_rate were read by
+    // getEmailCampaignStats, campaign-measurer and the content-topic ranker and
+    // written by NOBODY, so every one of them reported 0% forever while the
+    // per-recipient rows underneath held the real answer.
+    const { rollupEmailCampaignRates } = await import("@/lib/marketing/engagement-rollup")
+    const rates = await rollupEmailCampaignRates(svc)
+    if (rates.refusals.length > 0) {
+      // A refused rollup read is not "no engagement" — name it rather than
+      // letting the campaign keep a stale or zero rate silently.
+      console.error("[send-email-campaigns] rate rollup refusals:", rates.refusals.join(" | "))
+    }
+
     await recordCronSuccessAction({
       context_id: contextId,
       records_processed: summary.campaignsSent,
-      metadata: summary as any,
+      metadata: { ...summary, rates } as any,
     })
-    return NextResponse.json({ message: "Email campaigns processed", summary })
+    return NextResponse.json({ message: "Email campaigns processed", summary, rates })
   } catch (e) {
     const message = e instanceof Error ? e.message : "Email campaign send failed"
     await recordCronFailureAction({ context_id: contextId, error: message })

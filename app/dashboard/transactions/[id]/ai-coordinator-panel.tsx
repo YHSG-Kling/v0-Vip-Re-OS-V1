@@ -47,6 +47,7 @@ import {
   draftTransactionCommunication,
   generatePostClosingPlan,
   listTransactionCommunications,
+  sendTransactionCommunication,
 } from "@/app/actions/ai-transaction-coordinator"
 import { aiGenerateDocumentReminders } from "@/app/actions/ai-document-intelligence"
 
@@ -129,6 +130,43 @@ export function AiCoordinatorPanel({
 
   const [communications, setCommunications] = useState<CommunicationRow[]>([])
   const [commsError, setCommsError] = useState<string | null>(null)
+
+  // ── SENDING A RECORDED DRAFT ───────────────────────────────────────────────
+  // The panel could record a draft and never move it. transaction_communications
+  // .final_content and .sent_at are typed on CommunicationRow above and rendered
+  // below, and NOTHING wrote either — so every row sat at 'draft' forever and
+  // the two columns were read on this surface with no writer anywhere. The edit
+  // box is the point: `final_content` is what the AGENT sends, which is not the
+  // same text as `ai_draft`, and the record has to hold what was actually said.
+  const [sendingId, setSendingId] = useState<string | null>(null)
+  const [sendBody, setSendBody] = useState("")
+  const [sendVerdict, setSendVerdict] = useState<Verdict | null>(null)
+
+  const runSend = (communicationId: string) => {
+    setSendVerdict(null)
+    startTransition(async () => {
+      const res: any = await sendTransactionCommunication({
+        transactionId,
+        communicationId,
+        finalContent: sendBody,
+      })
+      if (!res?.success) {
+        // A gate refusal and a provider rejection are both real outcomes and
+        // both are shown. "Sent" is never printed unless the server said so.
+        setSendVerdict({ ok: false, headline: res?.error ?? "The message was not sent." })
+        await loadCommunications()
+        return
+      }
+      setSendingId(null)
+      setSendBody("")
+      setSendVerdict({
+        ok: true,
+        headline: `Sent to ${res.recipientEmail}.`,
+        detail: res.sentAt ? new Date(res.sentAt).toLocaleString() : undefined,
+      })
+      await loadCommunications()
+    })
+  }
 
   // The recorded drafts — the reader that makes the write visible. If this read
   // fails, the panel says so rather than showing an empty (and therefore
@@ -467,11 +505,62 @@ export function AiCoordinatorPanel({
                       <span className="text-muted-foreground">
                         {c.created_at ? new Date(c.created_at).toLocaleString() : ""}
                       </span>
+                      {/* The provider's own timestamp, not ours — blank until
+                          something actually left the building. */}
+                      {c.sent_at ? (
+                        <span className="text-muted-foreground">sent {new Date(c.sent_at).toLocaleString()}</span>
+                      ) : null}
+                      {c.status === "draft" ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-6 px-2 text-[10px] ml-auto"
+                          disabled={pending}
+                          onClick={() => {
+                            setSendVerdict(null)
+                            setSendingId(sendingId === c.id ? null : c.id)
+                            // Seed the editor with the AI's text. What the agent
+                            // sends from here is what gets recorded.
+                            setSendBody(c.final_content ?? c.ai_draft ?? "")
+                          }}
+                        >
+                          {sendingId === c.id ? "Cancel" : "Review & send"}
+                        </Button>
+                      ) : null}
                     </div>
+                    {/* WHAT WAS ACTUALLY SENT, once it has been. Shown instead
+                        of the AI draft so the record reads as the record. */}
+                    {c.final_content && c.status !== "draft" ? (
+                      <pre className="mt-1 whitespace-pre-wrap border rounded p-2 bg-muted/40 overflow-x-auto text-[11px]">
+                        {c.final_content}
+                      </pre>
+                    ) : null}
+                    {sendingId === c.id ? (
+                      <div className="mt-2 space-y-2">
+                        <Textarea
+                          rows={6}
+                          value={sendBody}
+                          onChange={(e) => setSendBody(e.target.value)}
+                          className="text-xs"
+                        />
+                        <div className="flex justify-end">
+                          <Button
+                            size="sm"
+                            className="h-7 text-xs"
+                            disabled={pending || !sendBody.trim()}
+                            onClick={() => runSend(c.id)}
+                          >
+                            {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : <Mail className="h-3.5 w-3.5 mr-1" />}
+                            Send
+                          </Button>
+                        </div>
+                      </div>
+                    ) : null}
                   </li>
                 ))}
               </ul>
             )}
+            <VerdictNote verdict={sendVerdict} />
           </div>
         </section>
 
