@@ -1,31 +1,4 @@
 {
-  "generated": "2026-08-28",
-  "dangling": [
-    "/dashboard/admin/license-tracking",
-    "/dashboard/agent/setup",
-    "/dashboard/brokerage/licenses",
-    "/dashboard/cma/new",
-    "/dashboard/command-center",
-    "/dashboard/content/blog",
-    "/dashboard/content/calendar",
-    "/dashboard/content/email",
-    "/dashboard/content/social",
-    "/dashboard/crm",
-    "/dashboard/financials/planning",
-    "/dashboard/lender",
-    "/dashboard/marketing/approvals",
-    "/dashboard/marketing/direct-mail",
-    "/dashboard/marketing/email",
-    "/dashboard/marketing/image",
-    "/dashboard/marketing/newsletter",
-    "/dashboard/partners",
-    "/dashboard/recruiting",
-    "/dashboard/superadmin/usage-reports/export",
-    "/dashboard/team-lead",
-    "/lender",
-    "/mobile/directions",
-    "/mobile/notes/new",
-    "/settings/admin/ai-identity",
-    "/settings/social-accounts"
-  ]
+  "generated": "2026-08-29",
+  "dangling": []
 }

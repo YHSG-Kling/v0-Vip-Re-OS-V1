@@ -341,7 +341,7 @@
     "lib/kernel/team-query.ts": 2,
     "lib/kernel/tenant-provisioning-spec.ts": 2,
     "lib/kernel/title-closing-watchtower.ts": 3,
-    "lib/kernel/tour-optimizer.ts": 9,
+    "lib/kernel/tour-optimizer.ts": 5,
     "lib/kernel/vendor-coverage-forecast.ts": 3,
     "lib/kernel/vendor-doc-compliance.ts": 3,
     "lib/kernel/vendor-no-show-autopilot.ts": 3,
@@ -575,7 +575,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9371,
+  "census": 9388,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -766,6 +766,7 @@
     "app/actions/contact-reassignment.ts": 2,
     "app/actions/contact-vendor-booking.ts": 1,
     "app/actions/contacts/last-promise.ts": 1,
+    "app/actions/contacts/segment-membership.ts": 1,
     "app/actions/contacts/update-addressing.ts": 1,
     "app/actions/contacts/update-channel-controls.ts": 2,
     "app/actions/contacts.ts": 6,
@@ -916,7 +917,7 @@
     "app/actions/onboarding/daily-plan.ts": 1,
     "app/actions/onboarding/ensure-agent-brokerage.ts": 1,
     "app/actions/onboarding/license.ts": 7,
-    "app/actions/onboarding/mentor-session.ts": 2,
+    "app/actions/onboarding/mentor-session.ts": 3,
     "app/actions/onboarding/mentorship.ts": 1,
     "app/actions/onboarding/onboarding-ops.ts": 2,
     "app/actions/onboarding/onboarding-quiz-actions.ts": 2,
@@ -956,7 +957,7 @@
     "app/actions/presentations-list.ts": 1,
     "app/actions/price-reduction-campaign.ts": 1,
     "app/actions/privacy/data-subject-requests.ts": 6,
-    "app/actions/property-alerts/alert-actions.ts": 15,
+    "app/actions/property-alerts/alert-actions.ts": 16,
     "app/actions/property-buyer-matching.ts": 3,
     "app/actions/property-evaluation.ts": 1,
     "app/actions/public/tos-acceptance.ts": 2,
@@ -1005,6 +1006,7 @@
     "app/actions/settings/manage-notification-rules.ts": 3,
     "app/actions/settings/provider-settings-actions.ts": 3,
     "app/actions/settings/public-site-links.ts": 1,
+    "app/actions/settings/recruiting-pitch.ts": 2,
     "app/actions/settings/reputation-preferences.ts": 2,
     "app/actions/settings/revenue-share-setting.ts": 5,
     "app/actions/settings/showing-financial-gate-setting.ts": 2,
@@ -1080,7 +1082,7 @@
     "app/actions/tenant-webhooks.ts": 10,
     "app/actions/time-to-value.ts": 1,
     "app/actions/title-portal.ts": 6,
-    "app/actions/tour-planner.ts": 11,
+    "app/actions/tour-planner.ts": 12,
     "app/actions/transaction-compliance.ts": 6,
     "app/actions/transaction-document-signatures.ts": 4,
     "app/actions/transaction-hazard-insurance.ts": 2,
@@ -1197,7 +1199,6 @@
     "app/api/contacts/[contactId]/lead-history/route.ts": 1,
     "app/api/contacts/[contactId]/voice-note/route.ts": 1,
     "app/api/contacts/analytics/route.ts": 1,
-    "app/api/contacts/qualify/route.ts": 1,
     "app/api/contacts/send-isa-email/route.ts": 1,
     "app/api/credit/status/route.ts": 1,
     "app/api/cron/actor-health/route.ts": 1,
@@ -1432,7 +1433,7 @@
     "app/api/internal/user-wake-word/route.ts": 1,
     "app/api/internal/voice-command/route.ts": 1,
     "app/api/internal/voice-tts/route.ts": 1,
-    "app/api/lead-magnets/qr/[magnetId]/route.ts": 2,
+    "app/api/lead-magnets/qr/[magnetId]/route.ts": 1,
     "app/api/lead-magnets/submissions/route.ts": 1,
     "app/api/leads/deduplication-log/route.ts": 1,
     "app/api/leads/process-pipeline/route.ts": 1,
@@ -1808,6 +1809,7 @@
     "app/crm/components/ai-pilot-control.tsx": 1,
     "app/crm/components/closing-workflow-tab.tsx": 1,
     "app/crm/components/contact-header-card.tsx": 1,
+    "app/crm/components/contacts-analytics-strip.tsx": 1,
     "app/crm/components/financial-verification-panel.tsx": 1,
     "app/crm/components/listing-consultation-scheduler.tsx": 1,
     "app/crm/components/merge-contacts-dialog.tsx": 1,
@@ -1839,9 +1841,13 @@
     "app/crm/contacts/[contactId]/components/fatigue-widget.tsx": 1,
     "app/crm/contacts/[contactId]/components/financial-verification-panel.tsx": 1,
     "app/crm/contacts/[contactId]/components/followup-card.tsx": 1,
+    "app/crm/contacts/[contactId]/components/isa-outreach-card.tsx": 1,
+    "app/crm/contacts/[contactId]/components/lead-history-card.tsx": 1,
     "app/crm/contacts/[contactId]/components/lifetime-segment-selector.tsx": 1,
     "app/crm/contacts/[contactId]/components/memory-video-card.tsx": 1,
+    "app/crm/contacts/[contactId]/components/segment-memberships.tsx": 1,
     "app/crm/contacts/[contactId]/components/smart-drip-card.tsx": 1,
+    "app/crm/contacts/[contactId]/components/voice-note-card.tsx": 1,
     "app/crm/contacts/[contactId]/components/workflow-runs-panel.tsx": 1,
     "app/crm/contacts/[contactId]/listings/new/new-listing-page-client.tsx": 1,
     "app/crm/contacts/[contactId]/offers/[offerId]/offer-actions-bar.tsx": 1,
@@ -1852,7 +1858,7 @@
     "app/crm/contacts/[contactId]/offers/offers-client.tsx": 1,
     "app/crm/contacts/[contactId]/search/search-client.tsx": 1,
     "app/crm/contacts/[contactId]/seller-lifetime-overview.tsx": 1,
-    "app/crm/contacts/[contactId]/showing-route-planner.tsx": 1,
+    "app/crm/contacts/[contactId]/showing-route-planner.tsx": 2,
     "app/crm/contacts/[contactId]/tours/components/optimized-route-summary.tsx": 1,
     "app/crm/contacts/[contactId]/tours/components/tour-confirm-tab.tsx": 1,
     "app/crm/contacts/[contactId]/tours/components/tour-day-of-tab.tsx": 1,
@@ -2288,6 +2294,7 @@
     "app/dashboard/recruiting-roi/ltv-scatter-chart.tsx": 1,
     "app/dashboard/recruiting-roi/recruit-roi-table.tsx": 1,
     "app/dashboard/recruiting-roi/recruiting-pipeline-client.tsx": 1,
+    "app/dashboard/recruiting-roi/recruiting-pitch-panel.tsx": 1,
     "app/dashboard/recruiting-roi/yearly-revenue-chart.tsx": 1,
     "app/dashboard/referrals/components/os/advocacy-action-stack.tsx": 1,
     "app/dashboard/referrals/components/os/advocacy-radar.tsx": 1,
@@ -3036,6 +3043,7 @@
     "lib/contact-promotion/promote-lead-to-contact.ts": 1,
     "lib/contact-promotion/promotion-eligibility.ts": 1,
     "lib/contact-promotion/promotion-logger.ts": 1,
+    "lib/contact-promotion/qualification.ts": 1,
     "lib/contact-promotion/welcome-avatar-video.ts": 1,
     "lib/contact-promotion/welcome-situation.ts": 2,
     "lib/contact-types.ts": 4,
@@ -3716,6 +3724,7 @@
     "lib/listings/mls-rule-check.ts": 1,
     "lib/listings/mls-verification.ts": 4,
     "lib/listings/photo-intelligence.ts": 11,
+    "lib/listings/price-improvement-label.ts": 3,
     "lib/listings/relist-recovery-runner.ts": 1,
     "lib/listings/relist-recovery.ts": 2,
     "lib/listings/seller-team-activity.ts": 2,
@@ -3758,6 +3767,7 @@
     "lib/marketing/newsletter-cadence.ts": 1,
     "lib/marketing/package-catalog.ts": 5,
     "lib/marketing/qr-asset-linker.ts": 5,
+    "lib/marketing/segment-membership.ts": 2,
     "lib/marketing/social-baselines.ts": 2,
     "lib/marketing/social-cadence.ts": 2,
     "lib/marketing/social-carousel.ts": 3,
@@ -5542,6 +5552,9 @@
     "app/actions/contacts/last-promise.ts": [
       "setLastPromiseAction"
     ],
+    "app/actions/contacts/segment-membership.ts": [
+      "removeContactFromSegmentAction"
+    ],
     "app/actions/contacts/update-addressing.ts": [
       "updateContactAddressingAction"
     ],
@@ -6552,6 +6565,7 @@
     ],
     "app/actions/onboarding/mentor-session.ts": [
       "logMentorSession",
+      "listMentorSessions",
       "getMentorLift"
     ],
     "app/actions/onboarding/mentorship.ts": [
@@ -6834,6 +6848,7 @@
       "buyerAdjustAlert",
       "runAlertNow",
       "testIdxConnection",
+      "resolveAlertListingSourceStatus",
       "previewAlertCriteria",
       "prefillFromProfile",
       "saveAlertResultForBuyer",
@@ -7143,6 +7158,10 @@
     ],
     "app/actions/settings/public-site-links.ts": [
       "getMyPublicSiteLinks"
+    ],
+    "app/actions/settings/recruiting-pitch.ts": [
+      "getRecruitingPitch",
+      "setRecruitingPitch"
     ],
     "app/actions/settings/reputation-preferences.ts": [
       "getReputationPreferences",
@@ -7617,7 +7636,8 @@
       "rateTourStop",
       "completeTour",
       "generateTourNarrative",
-      "updateTourStopOrder"
+      "updateTourStopOrder",
+      "createTourFromShowingRecommendation"
     ],
     "app/actions/transaction-compliance.ts": [
       "seedTransactionComplianceChecks",
@@ -8245,9 +8265,6 @@
     ],
     "app/api/contacts/analytics/route.ts": [
       "GET"
-    ],
-    "app/api/contacts/qualify/route.ts": [
-      "POST"
     ],
     "app/api/contacts/send-isa-email/route.ts": [
       "POST"
@@ -8969,7 +8986,6 @@
       "POST"
     ],
     "app/api/lead-magnets/qr/[magnetId]/route.ts": [
-      "POST",
       "GET"
     ],
     "app/api/lead-magnets/submissions/route.ts": [
@@ -10124,6 +10140,9 @@
     "app/crm/components/contact-header-card.tsx": [
       "ContactHeaderCard"
     ],
+    "app/crm/components/contacts-analytics-strip.tsx": [
+      "ContactsAnalyticsStrip"
+    ],
     "app/crm/components/financial-verification-panel.tsx": [
       "FinancialVerificationPanel"
     ],
@@ -10217,14 +10236,26 @@
     "app/crm/contacts/[contactId]/components/followup-card.tsx": [
       "FollowupCard"
     ],
+    "app/crm/contacts/[contactId]/components/isa-outreach-card.tsx": [
+      "IsaOutreachCard"
+    ],
+    "app/crm/contacts/[contactId]/components/lead-history-card.tsx": [
+      "LeadHistoryCard"
+    ],
     "app/crm/contacts/[contactId]/components/lifetime-segment-selector.tsx": [
       "LifetimeSegmentSelector"
     ],
     "app/crm/contacts/[contactId]/components/memory-video-card.tsx": [
       "MemoryVideoCard"
     ],
+    "app/crm/contacts/[contactId]/components/segment-memberships.tsx": [
+      "SegmentMemberships"
+    ],
     "app/crm/contacts/[contactId]/components/smart-drip-card.tsx": [
       "SmartDripCard"
+    ],
+    "app/crm/contacts/[contactId]/components/voice-note-card.tsx": [
+      "VoiceNoteCard"
     ],
     "app/crm/contacts/[contactId]/components/workflow-runs-panel.tsx": [
       "WorkflowRunsPanel"
@@ -10257,7 +10288,8 @@
       "SellerLifetimeOverview"
     ],
     "app/crm/contacts/[contactId]/showing-route-planner.tsx": [
-      "ShowingRoutePlanner"
+      "ShowingRoutePlanner",
+      "ShowingPlanTourHandoff"
     ],
     "app/crm/contacts/[contactId]/tours/components/optimized-route-summary.tsx": [
       "OptimizedRouteSummary"
@@ -11588,6 +11620,9 @@
     ],
     "app/dashboard/recruiting-roi/recruiting-pipeline-client.tsx": [
       "RecruitingPipelineClient"
+    ],
+    "app/dashboard/recruiting-roi/recruiting-pitch-panel.tsx": [
+      "RecruitingPitchPanel"
     ],
     "app/dashboard/recruiting-roi/yearly-revenue-chart.tsx": [
       "YearlyRevenueChart"
@@ -14747,6 +14782,9 @@
     ],
     "lib/contact-promotion/promotion-logger.ts": [
       "logPromotionActivity"
+    ],
+    "lib/contact-promotion/qualification.ts": [
+      "statusForNewContact"
     ],
     "lib/contact-promotion/welcome-avatar-video.ts": [
       "ensureWelcomeAvatarVideo"
@@ -18265,6 +18303,11 @@
       "runPhotoIntelligenceSweep",
       "twilightConvertPhoto"
     ],
+    "lib/listings/price-improvement-label.ts": [
+      "priceImprovementLabel",
+      "isPriceImprovementEvent",
+      "publicPriceEventLabel"
+    ],
     "lib/listings/relist-recovery-runner.ts": [
       "runRelistRecovery"
     ],
@@ -18488,6 +18531,10 @@
       "getAssetQrLinks",
       "getQrCodePerformance",
       "listAvailableQrCodes"
+    ],
+    "lib/marketing/segment-membership.ts": [
+      "addContactToSegment",
+      "removeContactFromSegment"
     ],
     "lib/marketing/social-baselines.ts": [
       "listSocialBaselines",
