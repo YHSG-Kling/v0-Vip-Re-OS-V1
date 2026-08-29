@@ -27,6 +27,7 @@ import {
   priceImprovementLabel,
   publicPriceEventLabel,
 } from "@/lib/listings/price-improvement-label"
+import { SOCIAL_POST_CHAR_LIMITS, SOCIAL_POST_CHAR_LIMIT_DEFAULT } from "@/lib/constants"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -137,14 +138,14 @@ async function resolveBrandVoice(
 }
 
 // ─── PLATFORM CHARACTER LIMITS ────────────────────────────────────────────────
-
-const CHAR_LIMITS: Record<string, number> = {
-  facebook:  63000,
-  instagram: 2200,
-  linkedin:  3000,
-  twitter:   280,
-  tiktok:    2200,
-}
+//
+// TOMBSTONE (§1.1 / §6, 2026-08-29): the private `CHAR_LIMITS` literal that stood
+// here is DELETED. SURVIVOR: lib/constants/index.ts `SOCIAL_POST_CHAR_LIMITS` +
+// `SOCIAL_POST_CHAR_LIMIT_DEFAULT`, which this map was merged ONTO first — it is
+// where the tiktok arm and this map's shape came from, and it is where the four
+// orphaned `CONTENT_LIMITS.SOCIAL_POST_*` constants went. Two numbers for one
+// platform is the §6 defect exactly: facebook read 63000 here and 63206 there,
+// and only one of them is Facebook's actual ceiling.
 
 // ─── GENERATE SOCIAL POST ─────────────────────────────────────────────────────
 
@@ -189,7 +190,7 @@ export async function generateSocialPostContent(params: {
       }
     }
 
-    const charLimit = CHAR_LIMITS[params.platform] ?? 2200
+    const charLimit = SOCIAL_POST_CHAR_LIMITS[params.platform] ?? SOCIAL_POST_CHAR_LIMIT_DEFAULT
 
     // ── 3. Build prompts from resolved brand voice ───────────────────────────
     const systemPrompt = [

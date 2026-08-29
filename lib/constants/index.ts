@@ -167,6 +167,25 @@ export const LEAD_SOURCES = [
   "realtor_com",     // merged from crm/contacts/new LEAD_SOURCES
   "cold_call",       // merged from crm/contacts/new LEAD_SOURCES
   "door_knock",      // merged from crm/contacts/new LEAD_SOURCES
+  // ── SECOND MERGE WAVE (2026-08-29) ─────────────────────────────────────────
+  // Two MORE copies of this vocabulary were still standing after the first
+  // merge, and neither was reachable from anything: constants/crm-standards.ts
+  // `STANDARD_SOURCES` (12 values) and services/aiMappingService.ts
+  // `STANDARD_SOURCES` (7 values). They hid from the orphan census by acquitting
+  // EACH OTHER — both spell the identifier `STANDARD_SOURCES`, and the census
+  // asks "does this name occur in another file?", not "does that file reach my
+  // module?". Four ideas this list genuinely lacked are folded in below so the
+  // merge loses nothing (§1.1); the rest were spellings of members already here
+  // and became LEAD_SOURCE_ALIASES entries instead of a fifth vocabulary.
+  //
+  // The two PREMIER values are NOT duplicates of the plain portal values beside
+  // them: Zillow Premier Agent and Realtor.com Connections are PAID lead
+  // products, and folding them into "zillow"/"realtor_com" would erase the only
+  // distinction source-ROI reporting has between a paid lead and an organic one.
+  "sphere",              // merged from crm-standards STANDARD_SOURCES — Sphere of Influence
+  "past_client",         // merged from crm-standards STANDARD_SOURCES
+  "zillow_premier",      // merged from crm-standards STANDARD_SOURCES — PAID, ≠ "zillow"
+  "realtor_com_premier", // merged from crm-standards STANDARD_SOURCES — PAID, ≠ "realtor_com"
   "other",
 ] as const
 export type LeadSource = (typeof LEAD_SOURCES)[number]
@@ -189,6 +208,12 @@ export const LEAD_SOURCE_LABELS: Record<LeadSource, string> = {
   realtor_com:     "Realtor.com",
   cold_call:       "Cold Call",
   door_knock:      "Door Knock",
+  // Wording taken verbatim from constants/crm-standards.ts SOURCE_LABELS, the
+  // map these four arrived with, so the merge changed no user-visible string.
+  sphere:              "Sphere of Influence",
+  past_client:         "Past Client",
+  zillow_premier:      "Zillow Premier",
+  realtor_com_premier: "Realtor.com Premier",
   other:           "Other",
 }
 
@@ -203,6 +228,11 @@ export const LEAD_SOURCE_LABELS: Record<LeadSource, string> = {
  */
 export const LEAD_SOURCE_ALIASES: Readonly<Record<string, LeadSource>> = {
   website_widget: "website",
+  // Measured in services/aiMappingService.ts STANDARD_SOURCES, the fifth copy,
+  // deleted 2026-08-29. Both are SPELLINGS of members this list already has —
+  // they fold rather than widening the vocabulary (§6).
+  social: "social_media",
+  "realtor.com": "realtor_com",
 }
 
 /**
@@ -574,16 +604,46 @@ export const PAGINATION = {
 export const CONTENT_LIMITS = {
   EMAIL_SUBJECT_MAX: 150,
   EMAIL_BODY_MAX: 10000,
-  SOCIAL_POST_TWITTER: 280,
-  SOCIAL_POST_FACEBOOK: 63206,
-  SOCIAL_POST_INSTAGRAM: 2200,
-  SOCIAL_POST_LINKEDIN: 3000,
   DESCRIPTION_SHORT: 500,
   DESCRIPTION_STANDARD: 2000,
   DESCRIPTION_EXTENDED: 5000,
   HASHTAGS_MAX: 30,
   HASHTAG_LENGTH_MAX: 50,
 } as const
+
+/**
+ * PLATFORM CHARACTER LIMITS — keyed by the platform string the callers already
+ * carry, which is the shape the one live consumer needs.
+ *
+ * MERGED (§1.1 / §6, 2026-08-29). Two copies of this stood in the tree:
+ *   1. `CONTENT_LIMITS.SOCIAL_POST_*` above — flat SCREAMING_CASE keys, exported,
+ *      and imported by nobody. It could not be used by the live caller even in
+ *      principle: that caller has `params.platform` as a string and needs a
+ *      lookup, not four constants it would have to switch over by hand.
+ *   2. `CHAR_LIMITS` at app/actions/social/generate-social-post.ts:141 — private,
+ *      LIVE (it is the number written into the model prompt), and the only one
+ *      with a `tiktok` arm at all.
+ * Neither was a superset, so the merge takes from both: the live map's shape and
+ * its tiktok arm, this module's facebook figure (63206 — Facebook's actual post
+ * ceiling; the live copy carried a rounded 63000), and a single home so a fifth
+ * platform is added in one place instead of two.
+ *
+ * The default belongs HERE too. The live caller wrote `?? 2200`, an unlabelled
+ * repeat of the instagram figure. The VALUE is kept exactly as it was — this
+ * change moves no live number, and picking a different bound would need evidence
+ * about platforms nobody has mapped — but it is named now, so the next reader
+ * can see it is a chosen fallback and not a copy of the line above it.
+ */
+export const SOCIAL_POST_CHAR_LIMITS: Readonly<Record<string, number>> = {
+  facebook:  63206,
+  instagram: 2200,
+  linkedin:  3000,
+  twitter:   280,
+  tiktok:    2200,
+}
+
+/** Ceiling for a platform not in the map above. Unchanged from the live caller's `?? 2200`. */
+export const SOCIAL_POST_CHAR_LIMIT_DEFAULT = 2200
 
 // TOMBSTONE (lane BI, 2026-08-26): the hand-kept FILE_LIMITS literal that stood
 // here is DELETED. The name survives — it is RE-EXPORTED from its survivor below

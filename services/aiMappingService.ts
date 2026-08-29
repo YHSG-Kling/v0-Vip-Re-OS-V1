@@ -75,17 +75,28 @@ export type StandardContactType = (typeof STANDARD_CONTACT_TYPES)[number]
 // `STANDARD_CRM_STATUSES` / `STANDARD_CONTACT_PERSONAS` / `STANDARD_CONTACT_TYPES`
 // lists they validate against and their fallback matchers.
 
-export const STANDARD_SOURCES = [
-  "website",
-  "referral",
-  "cold_call",
-  "social",
-  "other",
-  "zillow",
-  "realtor.com",
-] as const
-
-export type StandardSource = (typeof STANDARD_SOURCES)[number]
+// `STANDARD_SOURCES` / `StandardSource` — DELETED HERE (2026-08-29), the same
+// way and for the same reason as the timeline pair above it.
+// SURVIVOR: lib/constants/index.ts:152 `LEAD_SOURCES` + `LEAD_SOURCE_LABELS`,
+// merged onto FIRST: this list's `social` and `realtor.com` were SPELLINGS of
+// members the survivor already had, so they are folded into
+// `LEAD_SOURCE_ALIASES` rather than becoming vocabulary members of their own;
+// `website`, `referral`, `cold_call`, `zillow` and `other` were already there.
+//
+// Checked rather than assumed, exactly as the timeline note above records:
+//   · this module has NO `mapSource` — nothing here ever consumed the list, so
+//     it normalized nothing on any write path;
+//   · `grep -rn "STANDARD_SOURCES\|StandardSource"` (comment-stripped) matched
+//     this file and constants/crm-standards.ts and nothing else, and that other
+//     copy is deleted in the same change;
+//   · the only import of this module anywhere is
+//     `import { aiMappingService } from "./aiMappingService"`
+//     (services/supabaseService.ts:5) — the OBJECT, never these two symbols.
+//
+// The two copies were invisible to the orphan census because they ACQUITTED
+// EACH OTHER — both spell the identifier `STANDARD_SOURCES`, and the census asks
+// whether a name occurs in another file, not whether that file reaches this
+// module. A dead vocabulary with a same-named twin is cleared forever.
 
 /**
  * AI-powered mapping service that converts external/imported field values

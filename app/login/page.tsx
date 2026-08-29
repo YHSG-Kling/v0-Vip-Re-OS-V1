@@ -11,6 +11,7 @@ import { useState, useEffect, Suspense } from 'react'
 import { Mail, Lock, Loader2, KeyRound } from 'lucide-react'
 import { checkSsoDomainAction } from '@/app/actions/tenant-sso'
 import { loginUser } from '@/app/actions/auth'
+import { MAGIC_LINK_MESSAGE_COPY, toMagicLinkMessage } from '@/app/types/auth'
 
 function LoginContent() {
   const [email, setEmail] = useState('')
@@ -37,6 +38,21 @@ function LoginContent() {
     const errorParam = searchParams.get('error')
     if (errorParam) {
       setError(decodeURIComponent(errorParam))
+    }
+
+    // ── THE ?message= RAIL, WHICH HAD NO READER ─────────────────────────────
+    // app/auth/callback/route.ts bounces every failed magic-link exchange here
+    // as `/login?message=<code>` (link-expired, link-used, error), and
+    // app/auth/error/page.tsx forwards into the same rail. Nothing on this page
+    // ever read that parameter, so an expired link landed the user back on a
+    // blank sign-in form with no explanation and no instruction to request
+    // another. The codes are the one vocabulary in app/types/auth.ts; an
+    // unrecognised value narrows to null and renders nothing rather than
+    // echoing arbitrary query text as if the product had said it.
+    const magic = toMagicLinkMessage(searchParams.get('message'))
+    if (magic) {
+      if (magic === 'check-email') setMessage(MAGIC_LINK_MESSAGE_COPY[magic])
+      else setError(MAGIC_LINK_MESSAGE_COPY[magic])
     }
   }, [searchParams])
 
@@ -146,7 +162,9 @@ function LoginContent() {
         return
       }
 
-      setMessage('Check your email for the magic link!')
+      // One wording per outcome (§6) — the same copy the ?message=check-email
+      // rail renders, so the two paths cannot drift apart.
+      setMessage(MAGIC_LINK_MESSAGE_COPY['check-email'])
       setIsLoading(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An unexpected error occurred')

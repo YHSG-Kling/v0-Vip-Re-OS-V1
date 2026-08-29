@@ -127,22 +127,32 @@ export const STANDARD_TIMELINES = [
 
 export type StandardTimeline = (typeof STANDARD_TIMELINES)[number]
 
-export const STANDARD_SOURCES = [
-  "website",
-  "referral",
-  "sphere",
-  "open_house",
-  "cold_call",
-  "door_knock",
-  "social_media",
-  "zillow_premier",
-  "realtor_com_premier",
-  "paid_ad",
-  "past_client",
-  "other",
-] as const
-
-export type StandardSource = (typeof STANDARD_SOURCES)[number]
+// TOMBSTONE (§1.1 / §6, 2026-08-29): `STANDARD_SOURCES`, `StandardSource` and
+// their `SOURCE_LABELS` map are DELETED from this module.
+// SURVIVOR: lib/constants/index.ts:152 `LEAD_SOURCES` + `LEAD_SOURCE_LABELS`
+// (+ `LEAD_SOURCE_ALIASES` / `normalizeLeadSource`, the half that actually
+// binds at the write seam) — MERGED ONTO FIRST, then deleted here:
+//   · `sphere`, `past_client`, `zillow_premier`, `realtor_com_premier` were the
+//     four ideas the survivor lacked; they are now members of LEAD_SOURCES with
+//     this file's own wording carried over verbatim into LEAD_SOURCE_LABELS, so
+//     nothing user-visible changed.
+//   · every other member of this list was already a member of the survivor.
+//
+// WHY IT WAS SAFE, checked rather than assumed (comment-stripped, whole tree):
+//   · `grep -rn "STANDARD_SOURCES\|StandardSource"` matched this file and
+//     services/aiMappingService.ts and NOTHING else. That other file is a
+//     SIXTH copy — 7 values, `social` and `realtor.com` — with no `mapSource`
+//     to consume it; it is deleted in the same change.
+//   · The two copies were invisible to the orphan census because they ACQUIT
+//     EACH OTHER: the census asks "does this identifier occur in some other
+//     file?", never "does that file reach my module?". Two dead modules that
+//     happen to spell a name the same way clear each other forever. Only
+//     SOURCE_LABELS — a name nothing else spells — was ever reported.
+//
+// The live column carries no CHECK (contacts.source, leads.source — measured
+// 2026-08-25), so the vocabulary binds ONLY where code calls it. That is why the
+// survivor is the one with `normalizeLeadSource` and this one had to go, rather
+// than the other way round.
 
 // Human-readable labels for display
 export const STATUS_LABELS: Record<StandardCRMStatus, string> = {
@@ -199,20 +209,9 @@ export const TIMELINE_LABELS: Record<StandardTimeline, string> = {
   researching: "Just Researching",
 }
 
-export const SOURCE_LABELS: Record<StandardSource, string> = {
-  website: "Website",
-  referral: "Referral",
-  sphere: "Sphere of Influence",
-  open_house: "Open House",
-  cold_call: "Cold Call",
-  door_knock: "Door Knock",
-  social_media: "Social Media",
-  zillow_premier: "Zillow Premier",
-  realtor_com_premier: "Realtor.com Premier",
-  paid_ad: "Paid Ad",
-  past_client: "Past Client",
-  other: "Other",
-}
+// `SOURCE_LABELS` — DELETED here with the vocabulary it labelled. Its wording is
+// now LEAD_SOURCE_LABELS at lib/constants/index.ts:174; see the tombstone above
+// STATUS_LABELS in this file for the full merge record.
 
 export const PERSONA_DESCRIPTIONS: Record<StandardContactPersona, string> = {
   first_time_buyer: "Never owned before, needs education and guidance",
