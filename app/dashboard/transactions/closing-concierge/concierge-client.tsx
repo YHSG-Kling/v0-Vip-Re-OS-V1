@@ -304,6 +304,51 @@ export function ClosingConciergeClient({ board }: Props) {
         })}
       </div>
 
+      {/* ── WHAT WAS CLEARED, AND BY WHOM ───────────────────────────────── */}
+      {/* The board above shows only status='open'. resolved_at / resolved_by /
+          resolution_note were written on every resolve and dismiss and read by
+          nothing, so the account of how a closing blocker was handled — and who
+          handled it — existed only in the row. A dismissal is labelled as a
+          dismissal: closing it out is not the same as fixing it. */}
+      {board.recentlyResolved.length > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <ShieldCheck className="h-4 w-4 text-emerald-600" />
+              Recently closed out ({board.recentlyResolved.length})
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {board.recentlyResolved.map((r) => (
+              <div key={r.id} className="border-b last:border-0 pb-2 last:pb-0 space-y-0.5">
+                <div className="flex flex-wrap items-center gap-2 text-sm">
+                  <Badge
+                    variant="outline"
+                    className={cn("text-[10px]", r.status === "dismissed" && "text-muted-foreground")}
+                  >
+                    {r.status}
+                  </Badge>
+                  <span className="font-medium">{r.headline}</span>
+                  <Link
+                    href={`/dashboard/transactions/${r.transactionId}`}
+                    className="text-xs text-muted-foreground hover:underline"
+                  >
+                    {r.transactionLabel}
+                  </Link>
+                  <span className="ml-auto text-xs text-muted-foreground">
+                    {r.resolvedByName ?? "unknown user"}
+                    {r.resolvedAt ? ` · ${new Date(r.resolvedAt).toLocaleDateString()}` : ""}
+                  </span>
+                </div>
+                {r.resolutionNote && (
+                  <p className="text-xs text-muted-foreground whitespace-pre-wrap">{r.resolutionNote}</p>
+                )}
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
       {/* ── Draft + dispatch dialog ─────────────────────────────────────── */}
       <Dialog open={draftOpen} onOpenChange={(o) => { if (!o) setDraftOpen(false) }}>
         <DialogContent className="max-w-2xl">

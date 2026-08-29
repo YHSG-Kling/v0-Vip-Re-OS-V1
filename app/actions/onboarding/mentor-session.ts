@@ -68,6 +68,162 @@ export async function logMentorSession(input: {
   return { ok: true, id: (row as any).id }
 }
 
+/** One logged coaching session, as the mentorship page shows it. */
+export interface MentorSessionEntry {
+  id: string
+  loggedAt: string | null
+  /** check_in / deal_review / skill_building / crisis_support. */
+  sessionType: string | null
+  durationMinutes: number | null
+  topics: string[]
+  menteeRating: number | null
+  actionItem: string | null
+  mentorNotes: string | null
+  /** True when the viewing agent was the MENTOR on this session. */
+  viewerWasMentor: boolean
+  /** The other party's display name, resolved through agents.user_id -> users. */
+  counterpartName: string | null
+  /** Whether this session hangs off the active agent_mentor_relationships row. */
+  onCurrentRelationship: boolean
+  /** Who pressed "log session" — the accountability half of the record. */
+  loggedByName: string | null
+}
+
+/**
+ * THE COACHING HISTORY — the reader half of logMentorSession.
+ *
+ * mentor_sessions was written on every logged session and read by NOTHING: the
+ * mentorship page had the form and no history, so a mentee's rating, the agreed
+ * ACTION ITEM and the mentor's notes were recorded and then unreachable by
+ * either party. `getMentorLift` (below) answers a different question entirely —
+ * it is a brokerage-level cohort KPI computed from agents/relationships/
+ * retention scores and never touches this table — so this is not a second
+ * reader of an answered question, it is the missing first one.
+ *
+ * SCOPE. The rows are the viewer's OWN sessions, on either side of the pairing:
+ * `.or(mentor_agent_id.eq.X, mentee_agent_id.eq.X)` plus the agent's brokerage,
+ * so a session is visible to the two people who held it and to nobody else.
+ * The caller's agent row is resolved from the SESSION (§4), never passed in.
+ *
+ * §3: `error` is destructured and reported. An RLS refusal rendered as "you
+ * have had no sessions" would tell a mentee their coaching history is empty.
+ *
+ * IDENTITY (§3 trap): `mentor_agent_id`/`mentee_agent_id` are agents.id and
+ * `logged_by` is users.id — DISJOINT id spaces. The two lookups are therefore
+ * separate, crossing via agents.user_id, never by matching the two directly.
+ */
+export async function listMentorSessions(
+  limit = 25,
+): Promise<{ ok: true; entries: MentorSessionEntry[] } | { ok: false; error: string }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Not authenticated" }
+
+  const svc = createServiceClient()
+  const { data: me, error: meErr } = await svc
+    .from("agents")
+    .select("id, brokerage_id")
+    .eq("user_id", user.id)
+    .maybeSingle()
+  if (meErr) return { ok: false, error: `Could not resolve your agent profile: ${meErr.message}` }
+  if (!me?.id) return { ok: false, error: "No agent profile" }
+  const myAgentId = me.id as string
+
+  const { data: rows, error } = await svc
+    .from("mentor_sessions")
+    .select(
+      "id, created_at, relationship_id, mentor_agent_id, mentee_agent_id, session_type, duration_minutes, topics, mentee_rating, action_item, mentor_notes, logged_by",
+    )
+    .eq("brokerage_id", me.brokerage_id)
+    .or(`mentor_agent_id.eq.${myAgentId},mentee_agent_id.eq.${myAgentId}`)
+    .order("created_at", { ascending: false })
+    .limit(Math.max(1, Math.min(limit, 100)))
+  if (error) return { ok: false, error: error.message }
+
+  const list = (rows ?? []) as any[]
+  if (list.length === 0) return { ok: true, entries: [] }
+
+  // The relationship that is CURRENT, so a session logged under a retired
+  // pairing is not shown as if it belonged to today's mentor.
+  const { data: activeRel } = await svc
+    .from("agent_mentor_relationships")
+    .select("id")
+    .eq("brokerage_id", me.brokerage_id)
+    .eq("status", "active")
+    .or(`mentor_agent_id.eq.${myAgentId},mentee_agent_id.eq.${myAgentId}`)
+    .limit(10)
+  const activeRelIds = new Set(((activeRel ?? []) as any[]).map((r) => r.id as string))
+
+  // AGENTS class → users, via agents.user_id (agents.id and users.id are disjoint).
+  const counterpartAgentIds = [
+    ...new Set(
+      list
+        .map((r) => (r.mentor_agent_id === myAgentId ? r.mentee_agent_id : r.mentor_agent_id))
+        .filter(Boolean) as string[],
+    ),
+  ]
+  const nameByAgentId = new Map<string, string>()
+  if (counterpartAgentIds.length > 0) {
+    const { data: agentRows } = await svc
+      .from("agents")
+      .select("id, user_id")
+      .in("id", counterpartAgentIds)
+      .eq("brokerage_id", me.brokerage_id)
+    const agentUserIds = ((agentRows ?? []) as any[]).map((a) => a.user_id).filter(Boolean) as string[]
+    if (agentUserIds.length > 0) {
+      const { data: agentUsers } = await svc
+        .from("users")
+        .select("id, first_name, last_name, email")
+        .in("id", agentUserIds)
+      const labelByUserId = new Map<string, string>()
+      for (const u of (agentUsers ?? []) as any[]) {
+        const label = [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email
+        if (label) labelByUserId.set(u.id as string, label as string)
+      }
+      for (const a of (agentRows ?? []) as any[]) {
+        const label = a.user_id ? labelByUserId.get(a.user_id as string) : undefined
+        if (label) nameByAgentId.set(a.id as string, label)
+      }
+    }
+  }
+
+  // USERS class — logged_by is a users.id written from auth.getUser().
+  const loggerIds = [...new Set(list.map((r) => r.logged_by).filter(Boolean) as string[])]
+  const nameByUserId = new Map<string, string>()
+  if (loggerIds.length > 0) {
+    const { data: loggers } = await svc
+      .from("users")
+      .select("id, first_name, last_name, email")
+      .in("id", loggerIds)
+    for (const u of (loggers ?? []) as any[]) {
+      const label = [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email
+      if (label) nameByUserId.set(u.id as string, label as string)
+    }
+  }
+
+  return {
+    ok: true,
+    entries: list.map((r) => {
+      const viewerWasMentor = r.mentor_agent_id === myAgentId
+      const counterpartId = viewerWasMentor ? r.mentee_agent_id : r.mentor_agent_id
+      return {
+        id: r.id as string,
+        loggedAt: (r.created_at as string) ?? null,
+        sessionType: (r.session_type as string) ?? null,
+        durationMinutes: r.duration_minutes == null ? null : Number(r.duration_minutes),
+        topics: Array.isArray(r.topics) ? (r.topics as string[]) : [],
+        menteeRating: r.mentee_rating == null ? null : Number(r.mentee_rating),
+        actionItem: (r.action_item as string) ?? null,
+        mentorNotes: (r.mentor_notes as string) ?? null,
+        viewerWasMentor,
+        counterpartName: counterpartId ? nameByAgentId.get(counterpartId as string) ?? null : null,
+        onCurrentRelationship: !!r.relationship_id && activeRelIds.has(r.relationship_id as string),
+        loggedByName: r.logged_by ? nameByUserId.get(r.logged_by as string) ?? null : null,
+      }
+    }),
+  }
+}
+
 /**
  * Broker KPI — mentored vs unmentored production/retention lift. Compares newer agents (<2 yrs) with an
  * active mentor to those without. Honest: null lifts + no verdict until each cohort has enough agents.

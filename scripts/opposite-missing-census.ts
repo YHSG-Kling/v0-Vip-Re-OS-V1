@@ -417,6 +417,52 @@ const POLICY_OR_AUDIT_CONSUMED = new Set([
   // same closed deal on every scan.
   "closing_cost_accuracy_observations.transaction_id",
   "closing_cost_accuracy_observations.document_id",
+
+  // WHY THIS ONE. `vendor_review_flags.flagged_by` is written by the one flag
+  // writer (app/actions/vendor-marketplace.ts:1042) and its READER IS THE
+  // DATABASE: the same insert relies on the UNIQUE to make a repeat flag a
+  // no-op, and the code says so and then PROVES it by swallowing the
+  // unique-violation — `if (flagErr && !/duplicate key|unique/i.test(...)) throw`.
+  // Verified live against hrvaqgvukzxfskkcrwbt on 2026-08-29, pg_indexes:
+  // vendor_review_flags_review_id_flagged_by_key UNIQUE (review_id, flagged_by).
+  // The moderation escalation counts DISTINCT flag rows
+  // (moderationAfterFlag(flag_count)), so "one flag per reviewer per review" is
+  // not a nicety — without it a single user could brigade a vendor's review off
+  // the marketplace by clicking twice. An app reader would be reading a key
+  // whose only meaning is collision; reporting it as a one-sided write invites
+  // dropping the column and with it the whole dedupe. Same class as
+  // usage_counters.period_end and platform_sentinel_actions.dedupe_key.
+  "vendor_review_flags.flagged_by",
+
+  // WHY THIS ONE. `podcast_auto_runs.iso_week` is written by the one weekly
+  // producer (lib/podcast/auto-producer.ts:94) and its READER IS THE DATABASE:
+  // the insert IS the idempotency ledger, and the producer's very next branch
+  // reads the constraint's refusal by SQLSTATE — `if (error.code === "23505")
+  // return { status: "already_run" }` (auto-producer.ts:101). Verified live
+  // against hrvaqgvukzxfskkcrwbt on 2026-08-29, pg_indexes:
+  // uq_podcast_auto_runs_brokerage_week UNIQUE (brokerage_id, iso_week). A
+  // re-run of the weekly cron is caught by the index and by nothing else; an
+  // app reader would be a second, racier opinion about a question the database
+  // already answers atomically. Reporting it as a one-sided write invites
+  // deleting the column and producing the same episode every time the cron
+  // retries.
+  "podcast_auto_runs.iso_week",
+
+  // WHY THIS ONE. `ai_search_landing_citation_observations.platform` is written
+  // by the one citation monitor (lib/kernel/ai-search-citation-monitor.ts:707)
+  // and its READER IS THE DATABASE: the write is an
+  // `.upsert(…, { onConflict: "form_id,platform,observed_on" })` — the column is
+  // one third of the conflict target, which is what makes a re-scan of the same
+  // landing page on the same day UPDATE the day's observation instead of
+  // stacking a duplicate into the visibility score. Verified live against
+  // hrvaqgvukzxfskkcrwbt on 2026-08-29, pg_indexes:
+  // ai_search_landing_citation_uniq UNIQUE (form_id, platform, observed_on).
+  // NOTE the sibling `outcome` IS genuinely read (scoreCitationVisibility over
+  // the observations) — only the identity third of the key has no app reader,
+  // and building one would mean inventing a per-platform drill-down nobody
+  // asked for. Same class as closing_cost_accuracy_observations' two identity
+  // columns: written by app code, consumed by the conflict target.
+  "ai_search_landing_citation_observations.platform",
 ])
 
 /**
@@ -1705,6 +1751,31 @@ const refIn = (name: string, from: string, idx: Map<string, Set<string>>) => {
  * consumer reaches it through that export and the pair is not one-sided. If it
  * appears only inside a private helper, or nowhere, it stays a finding — that is
  * still the wire-or-build question this category exists to ask.
+ *
+ * ── THE CONTINUATION BUG THIS CLOSES (2026-08-29) ───────────────────────────
+ *
+ * The walk ended a declaration at the first line whose bracket depth returned to
+ * zero and which did not end in an OPENING bracket. A multi-line union does
+ * neither — it ends the first line on the `=` and carries the arms below it:
+ *
+ *     export interface NormalizedPlanTier { … }
+ *     export type ValidationResult =
+ *       | { ok: true; value: NormalizedPlanTier }
+ *       | { ok: false; error: string }
+ *
+ * `export type ValidationResult =` closes at depth 0 with a trailing `=`, so
+ * `inExport` went false immediately and the two arms were never examined. The
+ * type named in them — reachable by every consumer of ValidationResult, and
+ * deletable by nobody — was reported as referenced by no other file. Measured on
+ * this tree, and the shape is everywhere here because the repo's whole result
+ * idiom is a multi-line discriminated union.
+ *
+ * So a declaration now also CONTINUES when the line ends in an operator that
+ * cannot end a declaration (`= | & ? :`) or when the NEXT line opens with a
+ * union/intersection arm or an `extends` clause. The risk of a sticky
+ * `inExport` is the mirror defect — a false ACQUITTAL that swallows the private
+ * helper below and hides a real finding — so that exact shape is pinned by its
+ * own control beside the reachability one.
  */
 function namedInAnotherExport(src: string, name: string, ownLine: number): boolean {
   const lines = src.split("\n")
@@ -1725,8 +1796,13 @@ function namedInAnotherExport(src: string, name: string, ownLine: number): boole
         if (ch === "{" || ch === "(" || ch === "[" || ch === "<") depth++
         else if (ch === "}" || ch === ")" || ch === "]" || ch === ">") depth--
       }
-      // A one-line export (`export type X = "a" | "b"`) closes immediately.
-      if (depth <= 0 && !/[,{([<]\s*$/.test(ln.trimEnd())) inExport = false
+      // A one-line export (`export type X = "a" | "b"`) closes immediately —
+      // but a declaration left OPEN by a trailing operator, or continued by a
+      // union/intersection arm on the next line, has not ended yet.
+      const trimmed = ln.trimEnd()
+      const opensBelow = /[,{([<=|&?:]\s*$/.test(trimmed)
+      const continuesBelow = /^\s*(?:[|&?:]|extends\b)/.test(lines[i + 1] ?? "")
+      if (depth <= 0 && !opensBelow && !continuesBelow) inExport = false
     }
   }
   return false
@@ -1795,6 +1871,39 @@ control("C3 counted non-function exports at all", typeExports.length > 200, `${t
   ].join("\n")
   control("C3 does not count a type's OWN declaration as a consumer of itself",
     !namedInAnotherExport(selfOnly, "Alone", 1))
+
+  // ── THE CONTINUATION PAIR ─────────────────────────────────────────────────
+  // A fix that only ever EXCLUDES more is indistinguishable from a scanner that
+  // stopped reporting, so the two directions are pinned together: the union arm
+  // below a trailing `=` must be SEEN, and the private helper that follows the
+  // union must still CLOSE the declaration rather than being swallowed by it.
+  const multilineUnion = [
+    `export interface NormalizedPlanTier { tierName: string }`,
+    `export type ValidationResult =`,
+    `  | { ok: true; value: NormalizedPlanTier }`,
+    `  | { ok: false; error: string }`,
+  ].join("\n")
+  control("C3 EXCLUDES a type named only in a MULTI-LINE union arm of another export",
+    namedInAnotherExport(multilineUnion, "NormalizedPlanTier", 1))
+
+  const unionThenPrivate = [
+    `export interface OnlyPrivate { a: string }`,
+    `export type Verdict =`,
+    `  | { ok: true }`,
+    `  | { ok: false }`,
+    `function helper(x: OnlyPrivate) { return x }`,
+    `export const VALUE = 1`,
+  ].join("\n")
+  control("C3 the continuation rule CLOSES: a private helper after a multi-line union is not swallowed",
+    !namedInAnotherExport(unionThenPrivate, "OnlyPrivate", 1))
+
+  const extendsArm = [
+    `export interface BaseShape { a: string }`,
+    `export interface Wider`,
+    `  extends BaseShape { b: string }`,
+  ].join("\n")
+  control("C3 EXCLUDES a type reached through an `extends` clause on the following line",
+    namedInAnotherExport(extendsArm, "BaseShape", 1))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2464,6 +2573,42 @@ const QUALIFIED_EXTERNAL_ROUTES = new Map<string, string>([
   // ShowingTime connection — and this route is the return leg ShowingTime makes
   // for appointment.requested / appointment.confirmed. Deleting it would
   // silently strand every confirmation for showings the product already sends.
+  // ── THE ELEVENLABS TOOL WEBHOOK, AND THE SCANNER DEFECT IT EXPOSED (lane J5) ─
+  //
+  // EVIDENCE THAT IT IS A DOOR. The handler's first act is a constant-time
+  // compare of the `x-elevenlabs-tool-secret` header against
+  // AGENT_ASSISTANT_TOOL_SECRET and a 403 on any mismatch OR on an unset secret
+  // (route.ts:62-67) — it FAILS CLOSED both ways, reads no session anywhere in
+  // 2700 lines, and resolves its tenant from the agent_assistant_sessions row
+  // ElevenLabs' conversation_id attributes to. Nothing in this repo can mint
+  // that header from a browser, so an in-tree caller is not merely absent, it is
+  // impossible. The outbound half is live and in-tree: buildToolsConfig()
+  // registers this exact URL with ElevenLabs at agent-provisioning time —
+  // lib/elevenlabs/conv-ai.ts:403, `${appUrl}/api/agent-assistant/tool-call`.
+  // Deleting it would silently strand every tool the voice assistant invokes.
+  //
+  // AND IT IS ALSO A FALSE ACCUSATION, which is why this note is longer than
+  // the others. That conv-ai.ts:403 literal is a SAME-ORIGIN SELF-CALL of
+  // exactly the `${baseUrl}/api/…` shape collectFetchRefs() above was taught to
+  // admit as reachability evidence (CLAUDE.md §1). It is admitted in principle
+  // and MISSED in fact, because LITERAL_RES is the three-regex idiom this
+  // repo's own strip-comments.ts header exists to warn about: backticks are
+  // paired left-to-right by a regex that cannot see nesting, so ONE desyncing
+  // backtick earlier in the file shifts every pairing after it. Measured on
+  // lib/elevenlabs/conv-ai.ts: 25 backticks precede the literal (an ODD count),
+  // the match before it opens at line 388 and CLOSES on this literal's OPENING
+  // backtick, and the URL therefore appears in no match at all — the census
+  // sees zero /api/ literals in a file that names one.
+  //
+  // The route is qualified BY NAME here rather than by patching LITERAL_RES,
+  // because replacing that idiom means routing category 6 through the one
+  // correct tokenizer (scan() in strip-comments.ts, which already tracks
+  // template nesting) and that is a change to shared measurement machinery, not
+  // a burn-down. RECORDED SO IT IS NOT LOST: any file whose backtick count
+  // desynchronises can hide a self-call the same way, so this exemption is
+  // evidence of ONE route and a standing question about the finder.
+  ["/api/agent-assistant/tool-call", "ElevenLabs Conv-AI tool webhook — constant-time x-elevenlabs-tool-secret vs AGENT_ASSISTANT_TOOL_SECRET, fails closed 403 on mismatch AND on unset (route.ts:62-67); no session read anywhere in the file. Registered with the provider at lib/elevenlabs/conv-ai.ts:403 as `${appUrl}/api/agent-assistant/tool-call` — a same-origin self-call LITERAL_RES cannot see because that file's backticks pair off-by-one (see the note above this entry)"],
+
   ["/api/showings/showingtime-webhook", "ShowingTime provider callback — HMAC-SHA256 over the raw body vs SHOWINGTIME_WEBHOOK_SECRET, timing-safe, fails closed 503/401 (route.ts:59-76); no getUser() anywhere in the file, so an in-tree caller cannot exist. Outbound leg: app/actions/dispatch-showing.ts:138 (channel='showingtime')"],
 ])
 

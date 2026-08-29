@@ -839,6 +839,30 @@ async function stageListingPacket(
 
     if (error || !doc) return { error: error?.message ?? "Could not create listing document" }
 
+    // ── THE E&O AUDIT OF WHAT THE MODEL FILLED ───────────────────────────────
+    //
+    // The two in-app doors onto this same pipeline —
+    // app/actions/voice-assistant/draft-listing-from-voice.ts:190 and
+    // draft-offer-from-voice.ts:295 — both call recordAIFill after the packet is
+    // assembled, and this webhook did not. Same fillListingPacket, same
+    // documents row, same legal packet: the only difference was that a listing
+    // agreement staged from a PHONE CALL left no record of which fields the
+    // model wrote, so the FormWizard's review tab (getDocumentAudit) showed an
+    // empty audit and an E&O question about it had no answer. That is not a
+    // second implementation to merge — this door's auth model, its tenant
+    // resolution and its post-call email hand-off are all genuinely different —
+    // it is the audit half of the SAME engine that was never wired to it.
+    //
+    // Best-effort, exactly as on the other two lanes: a failed audit write must
+    // not lose the staged packet the agent is about to be emailed. It is never
+    // silent — an unwritten audit row is a fill nobody can account for.
+    try {
+      const { recordAIFill } = await import("@/lib/workflow/intelligence/field-audit")
+      await recordAIFill(doc.id, [...filledPacket.forms, ...filledPacket.brokerageForms])
+    } catch (auditErr) {
+      console.error("[voice/stageListingPacket] recordAIFill failed (non-blocking):", auditErr)
+    }
+
     // Post-call hand-off: email the agent with the review link. Same pattern
     // as stageOfferPacket — voice tells them "I've emailed you the link",
     // they open it after the call to review + dispatch for signatures.
@@ -1021,6 +1045,17 @@ async function stageOfferPacket(
       .select("id")
       .maybeSingle()
     if (error || !doc) return { error: error?.message ?? "Could not create offer document" }
+
+    // THE E&O AUDIT — see the note on the listing branch above. Both in-app
+    // doors onto this pipeline record which fields the model filled; this
+    // webhook did not, so an offer staged from a phone call reached the
+    // FormWizard with an empty audit trail.
+    try {
+      const { recordAIFill } = await import("@/lib/workflow/intelligence/field-audit")
+      await recordAIFill(doc.id, [...filledPacket.forms, ...filledPacket.brokerageForms])
+    } catch (auditErr) {
+      console.error("[voice/stageOfferPacket] recordAIFill failed (non-blocking):", auditErr)
+    }
 
     // Also create the canonical `offers` row so the post-signed chain
     // (compliance.passed → recordSellerResponse → convertOfferToTransaction)

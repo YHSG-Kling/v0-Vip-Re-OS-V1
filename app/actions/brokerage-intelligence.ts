@@ -57,6 +57,20 @@ export interface BrokerageInsight {
   severity:              "low" | "medium" | "high" | "critical"
   status:                "open" | "dismissed" | "superseded" | "expired"
   computedAt:            string
+  /**
+   * WHO KILLED THIS INSIGHT, WHEN, AND WHY.
+   *
+   * dismissInsightAction has always written dismissed_at / dismissed_by /
+   * dismissal_reason and the reader selected none of them — so the "Recently
+   * dismissed" list on /dashboard/admin/intelligence-mesh could say a
+   * brokerage-wide pattern had been waved away but not by whom or on what
+   * grounds. That is the one thing a second reviewer needs in order to reopen
+   * it. Null on an open insight, and null on a dismissal whose actor id no
+   * longer resolves to a user.
+   */
+  dismissedAt:           string | null
+  dismissedByName:       string | null
+  dismissalReason:       string | null
 }
 
 async function requireAdmin(): Promise<
@@ -90,13 +104,32 @@ export async function getBrokerageInsights(params?: {
   const status = params?.status ?? "open"
   const { data, error } = await supabase
     .from("brokerage_intelligence_insights")
-    .select("id, pattern_key, headline, metric_label, top_quartile_value, median_value, bottom_quartile_value, outcome_label, top_quartile_outcome, median_outcome, bottom_quartile_outcome, lift_pct, sample_size, supporting_agent_count, playbook, playbook_actions, severity, status, computed_at")
+    .select("id, pattern_key, headline, metric_label, top_quartile_value, median_value, bottom_quartile_value, outcome_label, top_quartile_outcome, median_outcome, bottom_quartile_outcome, lift_pct, sample_size, supporting_agent_count, playbook, playbook_actions, severity, status, computed_at, dismissed_at, dismissed_by, dismissal_reason")
     .eq("brokerage_id", auth.brokerageId)
     .eq("status", status)
     .order("lift_pct", { ascending: false })
     .limit(params?.limit ?? 20)
 
   if (error) return { success: false, error: error.message }
+
+  // dismissed_by is a users.id (written from the admin gate's auth user), never
+  // an agents.id — the classes are disjoint (CLAUDE.md §3). Brokerage-scoped,
+  // because a dismissal is always made by someone inside the tenant. A failed
+  // lookup leaves the name null; the dismissal record still renders.
+  const dismisserIds = [...new Set((data ?? []).map((r: any) => r.dismissed_by).filter(Boolean) as string[])]
+  const dismisserNameById = new Map<string, string>()
+  if (dismisserIds.length > 0) {
+    const { data: dismissers, error: dismisserErr } = await supabase
+      .from("users")
+      .select("id, first_name, last_name, email")
+      .in("id", dismisserIds)
+      .eq("brokerage_id", auth.brokerageId)
+    if (dismisserErr) console.error("[brokerage-intelligence] dismisser lookup failed:", dismisserErr.message)
+    for (const u of (dismissers ?? []) as any[]) {
+      const label = [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email
+      if (label) dismisserNameById.set(u.id as string, label as string)
+    }
+  }
 
   return {
     success: true,
@@ -120,6 +153,9 @@ export async function getBrokerageInsights(params?: {
       severity:              r.severity as BrokerageInsight["severity"],
       status:                r.status as BrokerageInsight["status"],
       computedAt:            r.computed_at as string,
+      dismissedAt:           (r.dismissed_at as string | null) ?? null,
+      dismissedByName:       r.dismissed_by ? dismisserNameById.get(r.dismissed_by as string) ?? null : null,
+      dismissalReason:       (r.dismissal_reason as string | null) ?? null,
     })),
   }
 }

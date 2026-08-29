@@ -43,11 +43,39 @@ export interface ConciergeClosing {
   blockers:      number
 }
 
+/**
+ * A CLOSED-OUT ACTION — the record of what was done about a blocker.
+ *
+ * resolveConciergeAction / dismissConciergeAction have always written
+ * resolved_at, resolved_by and resolution_note, and the board only ever read
+ * `status = "open"` rows — so the note an agent typed to explain how a closing
+ * blocker was handled, and the name of whoever handled it, went straight into
+ * the table and out of reach. On a transaction lane that is not bookkeeping: it
+ * is the answer to "who cleared this, and what did they say" when a deal is
+ * audited after the fact.
+ */
+export interface ConciergeResolvedAction {
+  id:              string
+  transactionId:   string
+  transactionLabel:string
+  actionType:      string
+  headline:        string
+  severity:        Severity
+  /** "resolved" or "dismissed" — a dismissal is not a fix and must not read as one. */
+  status:          string
+  resolvedAt:      string | null
+  /** Display name of the user in resolved_by; null when the id no longer resolves. */
+  resolvedByName:  string | null
+  resolutionNote:  string | null
+}
+
 export interface ConciergeBoard {
   actions: ConciergeAction[]
   summary: { urgent: number; high: number; medium: number; low: number }
   /** Deals closing in the next 14 days with their war-room readiness verdicts. */
   closings: ConciergeClosing[]
+  /** Recently closed-out actions — the reader for the resolution record. */
+  recentlyResolved: ConciergeResolvedAction[]
 }
 
 const SEV_ORDER: Record<Severity, number> = { urgent: 0, high: 1, medium: 2, low: 3 }
@@ -127,7 +155,54 @@ export async function loadClosingConciergeBoard(): Promise<ConciergeBoard | { er
     console.error("[closing-concierge] war-room fan-out failed (non-fatal):", err)
   }
 
-  return { actions: rows, summary, closings }
+  // ── WHAT WAS CLEARED, BY WHOM, AND WHY ──────────────────────────────────
+  // The closed-out half of the same board. Same agent scope as the open list.
+  // §3: `error` is read — a refused history must not render as "nothing has
+  // ever been resolved", which is the exact shape of a clean bill of health.
+  let recentlyResolved: ConciergeResolvedAction[] = []
+  const { data: closedRows, error: closedErr } = await svc
+    .from("transaction_pending_actions")
+    .select(`
+      id, transaction_id, action_type, severity, headline, status,
+      resolved_at, resolved_by, resolution_note,
+      transaction:transaction_id (deal_name, property_address)
+    `)
+    .eq("agent_id", agentRow.id)
+    .in("status", ["resolved", "dismissed"])
+    .not("resolved_at", "is", null)
+    .order("resolved_at", { ascending: false })
+    .limit(20)
+  if (closedErr) {
+    console.error("[closing-concierge] resolved-action history read refused:", closedErr.message)
+  } else {
+    const resolverIds = [...new Set(((closedRows ?? []) as any[]).map((r) => r.resolved_by).filter(Boolean) as string[])]
+    const nameById = new Map<string, string>()
+    if (resolverIds.length > 0) {
+      // resolved_by is a users.id (written from auth.getUser()), NOT an agents.id
+      // — the two classes are disjoint, so this looks up `users` and nothing else.
+      const { data: resolvers, error: resolverErr } = await svc
+        .from("users").select("id, first_name, last_name, email").in("id", resolverIds)
+      if (resolverErr) console.error("[closing-concierge] resolver name lookup failed:", resolverErr.message)
+      for (const u of (resolvers ?? []) as any[]) {
+        const label = [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email
+        if (label) nameById.set(u.id as string, label as string)
+      }
+    }
+    recentlyResolved = ((closedRows ?? []) as any[]).map((r) => ({
+      id:               r.id,
+      transactionId:    r.transaction_id,
+      transactionLabel: r.transaction?.deal_name ?? r.transaction?.property_address ?? "Transaction",
+      actionType:       r.action_type,
+      headline:         r.headline,
+      severity:         r.severity as Severity,
+      status:           r.status,
+      resolvedAt:       r.resolved_at ?? null,
+      resolvedByName:   r.resolved_by ? nameById.get(r.resolved_by as string) ?? null : null,
+      resolutionNote:   r.resolution_note ?? null,
+    }))
+  }
+
+  return { actions: rows, summary, closings, recentlyResolved }
 }
 
 export async function resolveConciergeAction(

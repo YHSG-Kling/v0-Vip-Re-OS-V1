@@ -8,7 +8,7 @@ import { Loader2, Users, Sparkles, Calendar, CheckCircle2, ArrowLeft, Mail, Phon
 import { toast } from "sonner"
 import Link from "next/link"
 import { matchMentor } from "@/app/actions/onboarding/mentorship"
-import { logMentorSession } from "@/app/actions/onboarding/mentor-session"
+import { logMentorSession, type MentorSessionEntry } from "@/app/actions/onboarding/mentor-session"
 
 interface MentorData {
   mentorId: string
@@ -24,9 +24,15 @@ interface Props {
   agentId: string
   brokerageId: string
   initialMentor: MentorData | null
+  /** Logged coaching sessions, both sides of the pairing — the reader half of
+   *  logMentorSession (mentor_sessions had no reader at all until now). */
+  sessions: MentorSessionEntry[]
+  /** Set when the history read was REFUSED. Shown instead of an empty list, so
+   *  an outage never renders as "you have never had a session". */
+  sessionsError: string | null
 }
 
-export function MentorshipClient({ agentId, brokerageId, initialMentor }: Props) {
+export function MentorshipClient({ agentId, brokerageId, initialMentor, sessions, sessionsError }: Props) {
   const [mentor, setMentor] = useState<MentorData | null>(initialMentor)
   const [matching, setMatching] = useState(false)
 
@@ -208,12 +214,95 @@ export function MentorshipClient({ agentId, brokerageId, initialMentor }: Props)
         </Card>
       )}
 
+      <SessionHistoryCard sessions={sessions} error={sessionsError} />
+
       <div className="flex justify-between pt-2">
         <Link href="/dashboard/onboarding">
           <Button variant="outline">Back to Onboarding</Button>
         </Link>
       </div>
     </div>
+  )
+}
+
+const SESSION_TYPE_LABEL: Record<string, string> = {
+  check_in: "Check-in",
+  deal_review: "Deal review",
+  skill_building: "Skill building",
+  crisis_support: "Crisis support",
+}
+
+/**
+ * WHAT WAS ACTUALLY COACHED — the reader for mentor_sessions.
+ *
+ * Every field here was written by logMentorSession and read by nothing: the
+ * rating, the agreed ACTION ITEM, the mentor's notes, the duration, the topics
+ * and who logged the session. A coaching record neither party can read is a
+ * record nobody can act on, which is the whole point of keeping one.
+ */
+function SessionHistoryCard({ sessions, error }: { sessions: MentorSessionEntry[]; error: string | null }) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm flex items-center gap-1.5">
+          <Calendar className="h-4 w-4 text-primary" />
+          Session history{sessions.length > 0 ? ` (${sessions.length})` : ""}
+        </CardTitle>
+        <CardDescription>
+          Every session logged on this pairing — what you covered, what you agreed to do next.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {error ? (
+          <p className="text-sm text-red-600">Could not load your session history: {error}</p>
+        ) : sessions.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No sessions logged yet. Log one above after your next conversation — it is what both of you look
+            back on.
+          </p>
+        ) : (
+          sessions.map((s) => (
+            <div key={s.id} className="rounded-md border p-3 space-y-1.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="outline" className="text-[11px]">
+                  {SESSION_TYPE_LABEL[s.sessionType ?? ""] ?? s.sessionType ?? "Session"}
+                </Badge>
+                <span className="text-sm font-medium">
+                  {s.viewerWasMentor ? "You mentored" : "Mentored by"} {s.counterpartName ?? "your pairing"}
+                </span>
+                {!s.onCurrentRelationship && (
+                  <Badge variant="secondary" className="text-[10px]">earlier pairing</Badge>
+                )}
+                <span className="ml-auto text-xs text-muted-foreground">
+                  {s.loggedAt ? new Date(s.loggedAt).toLocaleDateString() : ""}
+                  {s.durationMinutes ? ` · ${s.durationMinutes} min` : ""}
+                  {s.menteeRating != null ? ` · ${s.menteeRating}★` : ""}
+                </span>
+              </div>
+              {s.topics.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {s.topics.map((t) => (
+                    <Badge key={t} variant="secondary" className="text-[10px] font-normal">{t}</Badge>
+                  ))}
+                </div>
+              )}
+              {s.actionItem && (
+                <p className="text-sm flex items-start gap-1.5">
+                  <CheckCircle2 className="h-3.5 w-3.5 mt-0.5 text-emerald-600 shrink-0" />
+                  <span><span className="font-medium">Agreed next step: </span>{s.actionItem}</span>
+                </p>
+              )}
+              {s.mentorNotes && (
+                <p className="text-sm text-muted-foreground whitespace-pre-wrap">{s.mentorNotes}</p>
+              )}
+              {s.loggedByName && (
+                <p className="text-[11px] text-muted-foreground">Logged by {s.loggedByName}</p>
+              )}
+            </div>
+          ))
+        )}
+      </CardContent>
+    </Card>
   )
 }
 

@@ -304,14 +304,23 @@ export function TourDayOfTab({ tours, contactId, brokerageId, agentUserId, buyer
       const showingIds = sortedStops
         .filter(s => s.showing_id)
         .map(s => s.showing_id!)
+      // NO agentId IS PASSED. This surface holds a users.id (`agentUserId`), and
+      // `showings.agent_id` is an agents.id — disjoint spaces, so the id this
+      // component could supply matched NOTHING and every click came back "No
+      // showings found for this date". The action resolves the agent from the
+      // SESSION now; the parameter it still accepts is an admin's narrowing
+      // claim, which this surface is not making.
       const res = await aiOptimizeShowingRoute({
-        agentId:    agentUserId,
         date:       activeTour.tour_date,
         showingIds: showingIds.length > 0 ? showingIds : undefined,
       })
       if (res.success) {
         setRouteOptimized(true)
-        toast({ title: 'Route optimized for today' })
+        // The action's own words: how many stops could actually be placed and
+        // whether the drive total is an estimate. A generic "optimized" toast
+        // over a partially-placed day is the fabrication this lane keeps
+        // refusing.
+        toast({ title: (res as { summary?: string }).summary ?? 'Route optimized for today' })
         onRefresh()
       } else {
         toast({ title: res.error ?? 'Route optimization failed', variant: 'destructive' })

@@ -47,7 +47,27 @@ export interface TenantFeatureRow {
   override: "grant_trial" | "disable" | null
   trialEndsAt: string | null
 }
-export interface TenantQuotaGrant { id: string; extraTokens: number; reason: string; effectiveUntil: string | null; approvedAt: string | null }
+export interface TenantQuotaGrant {
+  id: string
+  extraTokens: number
+  reason: string
+  effectiveUntil: string | null
+  approvedAt: string | null
+  /**
+   * WHO SIGNED THIS OFF. grantTenantQuotaAction stamps both requested_by and
+   * approved_by with the acting staffer's users.id, and no surface read either —
+   * so a grant that raises a tenant's paid AI allowance showed an amount and a
+   * reason with nobody's name on it. An unread approval column is an approval
+   * nobody can check. Null when the id no longer resolves to a user.
+   */
+  approvedByName: string | null
+  /** The requester, when it differs from the approver — the two are the same
+   *  staffer on the immediate-grant path this panel uses, and separating them
+   *  is what would make a future request/approve split visible here. */
+  requestedByName: string | null
+  /** True when one person both asked for and approved the grant. */
+  selfApproved: boolean
+}
 export interface TenantSeatInfo {
   /** Active seat-role users right now. */
   inUse: number
@@ -81,7 +101,7 @@ export async function getTenantEntitlementsAction(brokerageId: string): Promise<
       .eq("enabled", true).eq("deprecated", false).order("category").order("display_name").limit(500),
     svc.from("feature_access_overrides").select("feature_key, override_type, trial_ends_at").eq("brokerage_id", brokerageId).is("user_id", null).is("team_id", null),
     svc.from("v_brokerage_ai_quota").select("tokens_used, token_limit, percent_used, quota_status").eq("brokerage_id", brokerageId).maybeSingle(),
-    svc.from("ai_quota_overrides").select("id, extra_tokens, reason, effective_until, approved_at").eq("brokerage_id", brokerageId).eq("status", "approved").order("approved_at", { ascending: false }).limit(50),
+    svc.from("ai_quota_overrides").select("id, extra_tokens, reason, effective_until, approved_at, approved_by, requested_by").eq("brokerage_id", brokerageId).eq("status", "approved").order("approved_at", { ascending: false }).limit(50),
   ])
 
   // Same seat resolver the invite gates and every display surface use. This was a
@@ -94,6 +114,31 @@ export async function getTenantEntitlementsAction(brokerageId: string): Promise<
   // staffer deciding whether a tenant needs an override is not reading a literal
   // that drifted from the plan the tenant actually bought.
   const catalogSeats = await resolveCatalogSeatLimits(svc)
+
+  // NAME THE APPROVER. approved_by / requested_by are users.id (the staffer's
+  // auth id, not an agents.id — the two are disjoint, CLAUDE.md §3), so the
+  // lookup is against `users` and is NOT brokerage-scoped: platform staff who
+  // grant a tenant's quota do not sit inside that tenant. A failed lookup
+  // degrades to null and the grant still renders; it never blanks the panel.
+  const staffIds = [
+    ...new Set(
+      ((grants ?? []) as any[])
+        .flatMap((g) => [g.approved_by, g.requested_by])
+        .filter(Boolean) as string[],
+    ),
+  ]
+  const staffNameById = new Map<string, string>()
+  if (staffIds.length > 0) {
+    const { data: staff, error: staffErr } = await svc
+      .from("users")
+      .select("id, first_name, last_name, email")
+      .in("id", staffIds)
+    if (staffErr) console.error("[tenant-entitlements] grant approver lookup failed:", staffErr.message)
+    for (const u of (staff ?? []) as any[]) {
+      const label = [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email
+      if (label) staffNameById.set(u.id as string, label as string)
+    }
+  }
 
   const overrideByKey = new Map<string, { type: string; trialEndsAt: string | null }>()
   for (const o of (overrides ?? []) as any[]) overrideByKey.set(o.feature_key, { type: o.override_type, trialEndsAt: o.trial_ends_at })
@@ -118,7 +163,16 @@ export async function getTenantEntitlementsAction(brokerageId: string): Promise<
         percent: Number((quota as any)?.percent_used ?? 0),
         status: (quota as any)?.quota_status ?? "ok",
       },
-      grants: ((grants ?? []) as any[]).map((g) => ({ id: g.id, extraTokens: Number(g.extra_tokens), reason: g.reason, effectiveUntil: g.effective_until, approvedAt: g.approved_at })),
+      grants: ((grants ?? []) as any[]).map((g) => ({
+        id: g.id,
+        extraTokens: Number(g.extra_tokens),
+        reason: g.reason,
+        effectiveUntil: g.effective_until,
+        approvedAt: g.approved_at,
+        approvedByName: g.approved_by ? staffNameById.get(g.approved_by as string) ?? null : null,
+        requestedByName: g.requested_by ? staffNameById.get(g.requested_by as string) ?? null : null,
+        selfApproved: !!g.approved_by && g.approved_by === g.requested_by,
+      })),
       seats: (() => {
         const override = parseSeatOverride((brk as any)?.billing_metadata)
         return {

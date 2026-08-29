@@ -65,14 +65,25 @@ export function MobileCommandStrip({
   //    HISTORY, and the logging verbs live on the field surfaces
   //    (field-quick-actions / contact-command-strip → `logActivity`).
   //
-  //    STILL DANGLING, reported not guessed: `/mobile/directions` and
-  //    `/mobile/notes/new` have no page either. Neither has an existing surface
-  //    that obviously IS them, so inventing a destination would be a guess —
-  //    they are left as-is and named in the lane report.
+  //    THE OTHER TWO, RESOLVED (dangling-link sweep, 2026-08-29). The earlier pass
+  //    left `/mobile/directions` and `/mobile/notes/new` standing because neither
+  //    had "an existing surface that obviously IS them". Both do — they are
+  //    CAPABILITIES ON A PAGE rather than pages, and both live on /mobile/assistant:
+  //
+  //    · DIRECTIONS is `handleGetDirections` (window.open of maps.google.com), wired
+  //      per-stop in showing-day-panel.tsx:69, open-house-panel.tsx:156 and
+  //      tour-day-panel.tsx:76 — all three rendered by app/mobile/assistant/page.tsx.
+  //      There is no address-less directions screen to build: the tile means "get me
+  //      to my next stop", so it lands on Today's Schedule where the stops are.
+  //    · QUICK NOTE is the note box in field-quick-actions.tsx:98 (`logActivity`
+  //      with activityType "note"), also rendered by /mobile/assistant.
+  //
+  //    Both use a fragment so the tap lands on the right block, not the top of the
+  //    page; the ids are on app/mobile/assistant/page.tsx.
   const secondaryActions = [
-    { icon: MapPin, label: "Directions", href: "/mobile/directions" },
+    { icon: MapPin, label: "Directions", href: "/mobile/assistant#todays-schedule" },
     { icon: Clock, label: "Activity", href: "/mobile/activity" },
-    { icon: FileText, label: "Quick Note", href: "/mobile/notes/new" },
+    { icon: FileText, label: "Quick Note", href: "/mobile/assistant#quick-note" },
     { icon: Plus, label: "New Contact", href: "/mobile/contacts/new" },
   ]
 

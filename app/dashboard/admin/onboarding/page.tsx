@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { redirect } from "next/navigation"
-import { AdminOnboardingOsClient } from "./admin-onboarding-os-client"
+import { AdminOnboardingOsClient, TAB_KEYS, type TabKey } from "./admin-onboarding-os-client"
 import { OnboardingCurriculumEditor } from "./onboarding-curriculum-editor"
 import { getBrokerageProviderReadiness } from "@/lib/platform/provider-posture"
 import { loadOnboardingRoster } from "@/lib/onboarding/onboarding-roster"
@@ -13,7 +13,21 @@ export const metadata = {
   description: "Command center for agent onboarding, training, and adoption metrics",
 }
 
-export default async function AdminOnboardingOsPage() {
+/** ?tab= → a tab key, or undefined. Unknown values fall back to the default tab
+ *  rather than rendering an empty console. */
+function normalizeTab(raw: string | string[] | undefined): TabKey | undefined {
+  const candidate = Array.isArray(raw) ? raw[0] : raw
+  return typeof candidate === "string" && (TAB_KEYS as readonly string[]).includes(candidate)
+    ? (candidate as TabKey)
+    : undefined
+}
+
+export default async function AdminOnboardingOsPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ tab?: string | string[] }>
+}) {
+  const initialTab = normalizeTab((await searchParams)?.tab)
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
@@ -104,6 +118,7 @@ export default async function AdminOnboardingOsPage() {
         trainingProgress={trainingProgress || []}
         providerReadiness={providerReadiness}
         recentOnboardings={recentOnboardings || []}
+        initialTab={initialTab}
       />
       {/* Curriculum authoring — the write surface the monitoring console lacked */}
       <div id="onboarding-curriculum" className="px-4 sm:px-6 pb-6">

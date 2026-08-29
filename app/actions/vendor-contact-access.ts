@@ -497,6 +497,17 @@ export async function listVendorAssignmentsForBrokerageAction(
         status:           string
         granted_at:       string
         revoked_at:       string | null
+        /** Free-text reason recorded on the grant. Written by grant/reactivate
+         *  and read by nothing until now — a PII grant whose stated purpose is
+         *  unreadable is a grant nobody can review. */
+        notes:            string | null
+        /** WHO opened this door. */
+        assigned_by_name: string | null
+        /** WHO shut it, and WHY — the two halves of a revocation record that
+         *  were both written and both unread, on the panel whose own heading
+         *  calls itself "the record of who once had access". */
+        revoked_by_name:  string | null
+        revoke_reason:    string | null
       }>
     }
   | { ok: false; error: string }
@@ -511,7 +522,7 @@ export async function listVendorAssignmentsForBrokerageAction(
     .from("vendor_contact_assignments")
     .select(`
       id, vendor_id, contact_id, transaction_id, scope, status,
-      granted_at, revoked_at,
+      granted_at, revoked_at, assigned_by, revoked_by, revoke_reason, notes,
       vendor:vendors!inner ( name ),
       contact:contacts!inner ( first_name, last_name )
     `)
@@ -523,6 +534,31 @@ export async function listVendorAssignmentsForBrokerageAction(
 
   const { data, error } = await q
   if (error) return { ok: false, error: error.message }
+
+  // NAME THE TWO ACTORS. assigned_by / revoked_by are users.id — written from
+  // the authenticated staffer, never an agents.id (the classes are disjoint,
+  // CLAUDE.md §3) — so this resolves against `users`, brokerage-scoped because
+  // this is a service-role read on a tenant panel. A failed lookup leaves the
+  // names null and the grant record still renders: the audit row is real even
+  // when the display name is not.
+  const actorIds = [
+    ...new Set(
+      (data ?? []).flatMap((r: any) => [r.assigned_by, r.revoked_by]).filter(Boolean) as string[],
+    ),
+  ]
+  const actorNameById = new Map<string, string>()
+  if (actorIds.length > 0) {
+    const { data: actors, error: actorErr } = await svc
+      .from("users")
+      .select("id, first_name, last_name, email")
+      .in("id", actorIds)
+      .eq("brokerage_id", auth.brokerageId)
+    if (actorErr) console.error("[vendor-contact-access] grant actor lookup failed:", actorErr.message)
+    for (const u of (actors ?? []) as any[]) {
+      const label = [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email
+      if (label) actorNameById.set(u.id as string, label as string)
+    }
+  }
 
   return {
     ok: true,
@@ -540,6 +576,10 @@ export async function listVendorAssignmentsForBrokerageAction(
         status:         r.status,
         granted_at:     r.granted_at,
         revoked_at:     r.revoked_at,
+        notes:            r.notes ?? null,
+        assigned_by_name: r.assigned_by ? actorNameById.get(r.assigned_by as string) ?? null : null,
+        revoked_by_name:  r.revoked_by  ? actorNameById.get(r.revoked_by  as string) ?? null : null,
+        revoke_reason:    r.revoke_reason ?? null,
       }
     }),
   }

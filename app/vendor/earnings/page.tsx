@@ -275,7 +275,16 @@ export default async function VendorEarningsPage({
                       {new Date(p.initiatedAt).toLocaleDateString()}
                       {p.completedAt && ` → ${new Date(p.completedAt).toLocaleDateString()}`}
                       {p.cashAppReference && ` · ref ${p.cashAppReference}`}
+                      {/* What the transfer settled. Written at payout creation and
+                          previously unreadable by the payee — a lump sum with no
+                          count of the jobs behind it cannot be reconciled. */}
+                      {p.coveredEarningsCount > 0 &&
+                        ` · covers ${p.coveredEarningsCount} earning${p.coveredEarningsCount === 1 ? "" : "s"}`}
                     </span>
+                    {/* The brokerage's own note on this payout. */}
+                    {p.note && (
+                      <span className="text-xs text-muted-foreground italic">{p.note}</span>
+                    )}
                   </div>
                   <div className="flex items-center gap-3">
                     <span className="font-semibold">{fmt(p.amount)}</span>

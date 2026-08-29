@@ -62,7 +62,18 @@ interface AdminOnboardingOsClientProps {
   trainingProgress: TrainingProgress[]
   providerReadiness: BrokerageProviderReadiness
   recentOnboardings: RecentOnboarding[]
+  /**
+   * Which tab to open on. Resolved SERVER-SIDE from ?tab= (page.tsx) against
+   * TAB_KEYS, so a deep link lands where it says it does — the broker's licence
+   * links (app/dashboard/admin/components/os/license-expiry-panel.tsx and
+   * lib/intelligence/user-type-briefs/broker.ts) point at ?tab=license.
+   */
+  initialTab?: TabKey
 }
+
+/** The tab vocabulary — ONE list, shared with page.tsx's ?tab= normaliser. */
+export const TAB_KEYS = ['overview', 'setup', 'training', 'license', 'actions'] as const
+export type TabKey = (typeof TAB_KEYS)[number]
 
 export function AdminOnboardingOsClient({
   userId,
@@ -73,8 +84,9 @@ export function AdminOnboardingOsClient({
   trainingProgress,
   providerReadiness,
   recentOnboardings,
+  initialTab,
 }: AdminOnboardingOsClientProps) {
-  const [activeTab, setActiveTab] = useState('overview')
+  const [activeTab, setActiveTab] = useState<string>(initialTab ?? 'overview')
   const [batchPreselect, setBatchPreselect] = useState<string[] | undefined>(undefined)
   const [licenseStatuses, setLicenseStatuses] = useState<AgentLicenseStatus[]>([])
   const [licenseLoading, setLicenseLoading] = useState(false)

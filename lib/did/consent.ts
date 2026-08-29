@@ -170,6 +170,23 @@ export interface StoredConsent {
   didConsentId: string
   consentText: string
   status: "pending" | "verified" | "failed"
+  /**
+   * THE PROVENANCE OF THE CONSENT — when it was granted, in what language it
+   * was recorded, and the recording that proves it.
+   *
+   * All three were written (POST /api/did/consent stamps `language`, POST
+   * /api/did/consent/verify stamps `source_url` and `verified_at`) and read by
+   * NOTHING. This is a legal likeness consent: the record that an agent agreed
+   * to their own face and voice backing generated video. A consent whose date,
+   * language and evidence cannot be read is a consent that cannot be produced
+   * when it is challenged — the only moment it exists for. Nullable because a
+   * pending row has not been verified yet.
+   */
+  verifiedAt: string | null
+  language: string | null
+  /** The consent VIDEO the agent recorded. Evidence, not a play button — it is
+   *  a provider-side URL and is surfaced as "on file / not on file". */
+  sourceUrl: string | null
 }
 
 /**
@@ -184,13 +201,16 @@ export async function findVerifiedConsent(
 ): Promise<StoredConsent | null> {
   try {
     const { data } = await svc.from("agent_did_consents")
-      .select("id, did_consent_id, consent_text, status")
+      .select("id, did_consent_id, consent_text, status, verified_at, language, source_url")
       .eq("agent_id", agentId).eq("status", "verified")
       .maybeSingle()
     if (!data) return null
     return {
       id: data.id, didConsentId: data.did_consent_id,
       consentText: data.consent_text, status: "verified",
+      verifiedAt: data.verified_at ?? null,
+      language: data.language ?? null,
+      sourceUrl: data.source_url ?? null,
     }
   } catch { return null }
 }

@@ -46,6 +46,16 @@ export async function GET() {
       // The passcode is NOT returned once verified — it has served its purpose
       // and showing it again would only invite a pointless re-record.
       instructions: CONSENT_INSTRUCTIONS,
+      // THE PROVENANCE. verified_at / language / source_url are stamped by the
+      // verify route and were read by nothing, so the agent could be told
+      // "consent verified" with no way to see WHEN they gave it, in WHAT
+      // language, or that the recording backing it is on file. On a likeness
+      // consent that is the whole record. The URL itself is NOT returned — it
+      // is a provider-side asset and the agent needs to know it EXISTS, not to
+      // be handed a link to it.
+      verified_at: verified.verifiedAt,
+      language: verified.language,
+      recording_on_file: !!verified.sourceUrl,
     })
   }
 

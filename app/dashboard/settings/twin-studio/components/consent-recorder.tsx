@@ -45,6 +45,11 @@ type Phase = "loading" | "ready" | "recording" | "review" | "submitting" | "veri
 
 interface ConsentState {
   status: "none" | "pending" | "verified"
+  /** Provenance of a VERIFIED consent — when, in what language, and whether the
+   *  recording that backs it is on file. Absent while pending. */
+  verifiedAt?: string | null
+  language?: string | null
+  recordingOnFile?: boolean
   consentId?: string
   consentText?: string
   instructions: readonly string[]
@@ -101,7 +106,13 @@ export function ConsentRecorder({ onVerified, onSkip, maxSeconds = 20 }: Props) 
         if (cancelled) return
 
         if (data.status === "verified") {
-          setConsent({ status: "verified", instructions: data.instructions ?? [] })
+          setConsent({
+            status: "verified",
+            instructions: data.instructions ?? [],
+            verifiedAt: data.verified_at ?? null,
+            language: data.language ?? null,
+            recordingOnFile: !!data.recording_on_file,
+          })
           setPhase("verified")
           return
         }
@@ -258,6 +269,19 @@ export function ConsentRecorder({ onVerified, onSkip, maxSeconds = 20 }: Props) 
         </div>
         <p className="text-sm text-emerald-800">
           You only do this once — it covers every video twin you create from now on.
+        </p>
+        {/* THE RECORD ITSELF. Written by the verify route on every consent and
+            read by nothing until now: a likeness consent the agent cannot see
+            the date, language or evidence of is a consent that cannot be
+            produced when it is questioned. */}
+        <p className="text-xs text-emerald-800">
+          {consent?.verifiedAt
+            ? `Recorded ${new Date(consent.verifiedAt).toLocaleDateString()}`
+            : "Recorded"}
+          {consent?.language ? ` · in ${consent.language}` : ""}
+          {consent?.recordingOnFile
+            ? " · your consent recording is on file"
+            : " · no consent recording on file"}
         </p>
         {onSkip && <Button onClick={onSkip}>Continue</Button>}
       </div>

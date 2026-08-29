@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { MentorshipClient } from "./mentorship-client"
+import { listMentorSessions, type MentorSessionEntry } from "@/app/actions/onboarding/mentor-session"
 
 export const dynamic = "force-dynamic"
 
@@ -72,11 +73,22 @@ export default async function MentorshipPage() {
       }
     : null
 
+  // THE COACHING HISTORY. logMentorSession has written mentor_sessions since it
+  // was built and NOTHING read the table: the rating a mentee gave, the action
+  // item the pair agreed and the mentor's notes were all recorded and then
+  // unreachable by either of them. A refusal is surfaced rather than rendered as
+  // "no sessions yet" — an empty coaching history is a claim, not a default.
+  const sessionsRes = await listMentorSessions(25)
+  const sessions: MentorSessionEntry[] = sessionsRes.ok ? sessionsRes.entries : []
+  const sessionsError = sessionsRes.ok ? null : sessionsRes.error
+
   return (
     <MentorshipClient
       agentId={agent.id}
       brokerageId={agent.brokerage_id}
       initialMentor={mentorData}
+      sessions={sessions}
+      sessionsError={sessionsError}
     />
   )
 }

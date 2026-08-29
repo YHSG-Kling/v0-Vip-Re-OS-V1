@@ -55,6 +55,14 @@ export interface VendorAccessAssignmentRow {
   status:         string
   granted_at:     string
   revoked_at:     string | null
+  /** The stated purpose of the grant (vendor_contact_assignments.notes). */
+  notes:            string | null
+  /** Who opened the door / who shut it, and why. All four were written on every
+   *  grant and revoke and read by nothing — an access record with no actor and
+   *  no reason cannot answer the only question it exists to answer. */
+  assigned_by_name: string | null
+  revoked_by_name:  string | null
+  revoke_reason:    string | null
 }
 
 export interface VendorAccessPanelProps {
@@ -218,7 +226,14 @@ export function VendorAccessPanel({ assignments, vendors, contacts, loadError, c
                 <tbody>
                   {active.map((a) => (
                     <tr key={a.id} className="border-b last:border-0">
-                      <td className="px-4 py-2.5 font-medium">{a.vendor_name}</td>
+                      <td className="px-4 py-2.5 font-medium">
+                        {a.vendor_name}
+                        {/* WHO GRANTED IT, and the reason they typed. */}
+                        <span className="block text-[11px] font-normal text-muted-foreground">
+                          {a.assigned_by_name ? `granted by ${a.assigned_by_name}` : "granter not on file"}
+                          {a.notes ? ` · ${a.notes}` : ""}
+                        </span>
+                      </td>
                       <td className="px-4 py-2.5">{a.contact_name}</td>
                       <td className="px-4 py-2.5">
                         <Badge variant="outline" className="text-[11px]">{a.scope.replace(/_/g, " ")}</Badge>
@@ -267,6 +282,11 @@ export function VendorAccessPanel({ assignments, vendors, contacts, loadError, c
                 <span className="text-muted-foreground">→ {a.contact_name}</span>
                 <span className="ml-auto text-muted-foreground">
                   {a.revoked_at ? `ended ${new Date(a.revoked_at).toLocaleDateString()}` : ""}
+                  {/* The revoker and the stated reason. This card calls itself
+                      "the record of who once had access" — until now it could
+                      not say who ended it or why. */}
+                  {a.revoked_by_name ? ` by ${a.revoked_by_name}` : ""}
+                  {a.revoke_reason ? ` — ${a.revoke_reason}` : ""}
                 </span>
               </div>
             ))}

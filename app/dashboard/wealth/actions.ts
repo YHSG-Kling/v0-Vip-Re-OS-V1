@@ -56,6 +56,19 @@ export interface WealthRow {
   pushedToPortalAt:         string | null
   expiresAt:                string | null
   createdAt:                string
+  /**
+   * WHO CLOSED THIS OUT, WHEN, AND (on a dismissal) WHY.
+   *
+   * markWealthActed, dismissWealthOpportunity and pushWealthToPortal all stamp
+   * reviewed_by_user_id + reviewed_at, and the dismissal also writes
+   * dismissed_reason — and the loader selected none of the three, so the
+   * "Recent history" strip could say an equity opportunity worth six figures to
+   * a client had been dismissed without saying by whom or on what grounds. On a
+   * shared book that is the difference between a decision and a disappearance.
+   */
+  reviewedAt:               string | null
+  reviewedByName:           string | null
+  dismissedReason:          string | null
 }
 
 export interface WealthLoad {
@@ -88,6 +101,11 @@ function rowToView(row: any): WealthRow {
     pushedToPortalAt:         row.pushed_to_portal_at ?? null,
     expiresAt:                row.expires_at ?? null,
     createdAt:                row.created_at,
+    reviewedAt:               row.reviewed_at ?? null,
+    // Resolved by the caller (loadWealthOpportunities) — rowToView is pure over
+    // one row and has no client to look a name up with.
+    reviewedByName:           row.__reviewed_by_name ?? null,
+    dismissedReason:          row.dismissed_reason ?? null,
   }
 }
 
@@ -110,6 +128,7 @@ export async function loadWealthOpportunities(): Promise<{ data: WealthLoad } | 
       monthly_savings_estimate, one_time_proceeds_estimate,
       ai_narrative, scenarios, signals_supporting, status,
       pushed_to_portal_at, expires_at, created_at,
+      reviewed_at, reviewed_by_user_id, dismissed_reason,
       contact:contact_id (first_name, last_name, email, phone)
     `)
     .eq("agent_id", agentRow.id)
@@ -117,10 +136,30 @@ export async function loadWealthOpportunities(): Promise<{ data: WealthLoad } | 
     .order("estimated_equity", { ascending: false, nullsFirst: false })
     .limit(200)
 
+  // reviewed_by_user_id is a users.id (written straight from auth.getUser()),
+  // NOT an agents.id — the two are disjoint (CLAUDE.md §3). A failed lookup
+  // leaves the name null and the history row still renders.
+  const reviewerIds = [...new Set(((rows ?? []) as any[]).map((r) => r.reviewed_by_user_id).filter(Boolean) as string[])]
+  const reviewerNameById = new Map<string, string>()
+  if (reviewerIds.length > 0) {
+    const { data: reviewers, error: reviewerErr } = await svc
+      .from("users")
+      .select("id, first_name, last_name, email")
+      .in("id", reviewerIds)
+    if (reviewerErr) console.error("[wealth] reviewer name lookup failed:", reviewerErr.message)
+    for (const u of (reviewers ?? []) as any[]) {
+      const label = [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email
+      if (label) reviewerNameById.set(u.id as string, label as string)
+    }
+  }
+
   const byType: Record<string, WealthRow[]> = {}
   const acted: WealthRow[] = []
   for (const r of (rows ?? []) as any[]) {
-    const v = rowToView(r)
+    const v = rowToView({
+      ...r,
+      __reviewed_by_name: r.reviewed_by_user_id ? reviewerNameById.get(r.reviewed_by_user_id) ?? null : null,
+    })
     if (isWealthActive(v.status)) {
       const bucket = (byType[v.opportunityType] ??= [])
       bucket.push(v)
