@@ -52,8 +52,14 @@ function publicOrigin(): string | null {
 /**
  * The published landing page for a listing, as an absolute URL. Null when the
  * listing has no published page or the origin is unset.
+ *
+ * NOT EXPORTED: the only caller is resolveAdDestination below, which IS the
+ * module's door and is what both producers import. An `export` keyword whose
+ * only reader is its own file is the finding orphan-export-guard exists to
+ * raise, and the honest resolution is to stop claiming a door that nobody
+ * knocks on — not to widen the guard's baseline until it stops saying so.
  */
-export async function listingAdDestination(
+async function listingAdDestination(
   supabase: Svc, listingId: string | null | undefined,
 ): Promise<string | null> {
   const origin = publicOrigin()
@@ -80,8 +86,11 @@ export async function listingAdDestination(
 /**
  * The advertiser's own site for this brokerage/team, on the brand ladder.
  * Null when nothing on the ladder is recorded.
+ *
+ * NOT EXPORTED — see the note on listingAdDestination above. resolveAdDestination
+ * is this module's one door.
  */
-export async function brandAdDestination(
+async function brandAdDestination(
   supabase: Svc, brokerageId: string, teamId?: string | null,
 ): Promise<string | null> {
   const normalize = (v: unknown): string | null => {

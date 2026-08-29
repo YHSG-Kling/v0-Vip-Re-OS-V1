@@ -62,8 +62,24 @@ export function classifyHook(title: string): string {
  * first; "informative" is the honest default for a plain statement, and it is
  * the same word the reader's old fallback used, so an existing row that never
  * got a tone and a new plain one still read alike.
+ *
+ * NOT EXPORTED, deliberately unlike classifyHook and extractKeyphrases above.
+ * Those two carry an `export` no other file in the tree reads, which is why
+ * this file already stood at two unreferenced exports before this function
+ * existed — and adding a third in the same style would have been copying a
+ * defect for consistency's sake. runContentIntelScan is the module's one door.
+ *
+ * WHY THE OTHER TWO WERE LEFT ALONE, having been un-exported and then put back:
+ * orphan-export-guard tracks its baseline BY NAME, so removing the `export`
+ * keyword from a name already in that baseline is indistinguishable, to the
+ * guard, from deleting the capability — it reported "CAPABILITY REMOVED — 2
+ * exports exist NOWHERE in the tree" and was right to. Tidying two accepted
+ * entries is not burn-down; it buys a cosmetic −2 with a false signal on the
+ * one guard that exists to make deletions expensive. This function is different
+ * because it is NEW: it never entered the baseline, so declining to export it
+ * costs nothing and closes the regression it would otherwise have opened.
  */
-export function classifyEmotionalTone(text: string): string {
+function classifyEmotionalTone(text: string): string {
   const t = text.toLowerCase()
   if (/\b(don't|avoid|mistake|warning|beware|risk|before you)\b/.test(t)) return "cautionary"
   if (/\b(congratulations|thrilled|excited|proud|celebrat|love|dream)\b/.test(t)) return "celebratory"

@@ -99,8 +99,15 @@ function clean(s: unknown): string {
  * with no objections, a mid-range coaching score, neutral sentiment and no
  * urgency yields ZERO insights — which is the honest reading, and different
  * from the old permanent zero because it is now a measurement.
+ *
+ * NOT EXPORTED: writeCallCoachingInsights below is this module's door, and both
+ * analyser lanes reach the derivation through it. Exporting the pure half as
+ * well would claim a second entry point nobody uses — the shape
+ * orphan-export-guard raises as an unfinished feature. If a proof is ever
+ * written for these branches it should export it THEN, with the proof, rather
+ * than leave the keyword standing as an IOU.
  */
-export function deriveCoachingInsights(facts: CoachingSourceFacts): DerivedCoachingInsight[] {
+function deriveCoachingInsights(facts: CoachingSourceFacts): DerivedCoachingInsight[] {
   const out: DerivedCoachingInsight[] = []
 
   // ── OBJECTIONS → objection_handling ──────────────────────────────────────
