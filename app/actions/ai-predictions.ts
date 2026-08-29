@@ -2978,6 +2978,13 @@ Detect churn risk and provide save strategy:
  */
 const SHOWING_ROUTE_SYSTEM_SOURCE = "showing_route"
 
+/**
+ * Minutes at each home. The same default `createTourPlan` writes into
+ * `tour_stops.suggested_duration_minutes`, so the shortlist's clock and the tour
+ * the agent turns it into agree instead of disagreeing by construction.
+ */
+const SHOWING_VISIT_MINUTES = 30
+
 // STILL UNWIRED, AND THE READER IS ALREADY BUILT.
 //
 // app/crm/contacts/[contactId]/page.tsx:224 renders an "AI Showing Plan" card off
@@ -3032,6 +3039,38 @@ const SHOWING_ROUTE_SYSTEM_SOURCE = "showing_route"
 // nothing. It does not fall through to RentCast, because the ruling turns on the
 // CONNECTION and not on what the connection returned.
 //
+// ─── ONE ENGINE FOR ROUTE ORDER AND DRIVE TIME — DRIFT COLLAPSE (this wave) ──
+// Owner ruling, verbatim: "you have smart showing route but there is also tour
+// planning which was what we built originally. you have to be careful and not
+// create more drifts we are trying to solve."
+//
+// This function used to ask a language model for the stop ORDER, the arrival
+// TIMES and `totalDriveTime`, and filed those numbers in
+// smart_showing_recommendations while the product's REAL route engine —
+// lib/kernel/tour-optimizer.ts, older, wired, and computing actual geometry —
+// answered the same question for tours. Two engines, two answers, one fact.
+//
+// THE SURVIVOR IS THE KERNEL (§1: merge onto the survivor, then delete the
+// duplicate). Order, per-leg drive minutes and arrival times now come from
+// `sequenceStopsByDriveTime` / `recomputeStopTimes` over coordinates the FREE
+// Nominatim geocoder actually resolved, with the kernel's honest degradation:
+// a home the geocoder cannot place keeps its entered position and carries NO
+// drive time, and `total_drive_time` is written NULL rather than 0 when not one
+// leg could be measured — "we could not measure the driving" and "there is no
+// driving" must not render as the same badge.
+//
+// WHAT STAYS DISTINCT, AND IS WHY THIS FUNCTION SURVIVES AT ALL: the tour lane
+// plans an AGREED tour out of rows the agent has already chosen; this one
+// resolves a buyer's saved homes against whichever property source serves the
+// tenant, reports the ones no source could answer, and says WHY each home is
+// worth seeing. The model is still asked for that — the talking points, the
+// order rationale, the post-showing plan — and for nothing that has a number.
+//
+// AND IT HANDS OFF RATHER THAN RE-IMPLEMENTING: the row this writes carries the
+// start time and start address, so `createTourFromShowingRecommendation`
+// (app/actions/tour-planner.ts) can turn the shortlist into a real tour —
+// tours + tour_stops + showings — and re-run the same kernel optimizer over it.
+//
 // HONEST ABOUT WHAT IT COULD NOT RESOLVE. A home the chosen source cannot answer
 // is REPORTED by address, never dropped — the planner already refuses to hide a
 // saved home it cannot look up (it renders those un-selectable) and this keeps
@@ -3061,6 +3100,13 @@ export async function optimizeShowingRoute(data: {
   }>
   preferredDate: string
   startLocation: string
+  /**
+   * "HH:MM" — when the day starts. REQUIRED by the clock walk that produces
+   * arrival times, and by `createTourPlan` if the agent turns this shortlist
+   * into a tour. Unparseable input yields NO arrival times rather than invented
+   * ones (lib/kernel/tour-optimizer.ts:recomputeStopTimes returns an empty map).
+   */
+  startTime: string
 }) {
   const supabase = await createClient()
 
@@ -3130,6 +3176,7 @@ export async function optimizeShowingRoute(data: {
       success: false as const,
       error: `No property source could resolve this buyer's saved homes. ${routeEligibility.detail}`,
       route: null,
+      recommendationId: null,
       source: routeSource,
       unresolved: data.properties.map((h) => ({ home: h.label, why: routeEligibility.detail })),
     }
@@ -3211,65 +3258,146 @@ export async function optimizeShowingRoute(data: {
         routeSource === "idx" ? "this brokerage's IDX Broker feed" : "the platform's RentCast feed"
       }. No showing plan was built.`,
       route: null,
+      recommendationId: null,
       source: routeSource,
       unresolved,
     }
   }
 
-  const prompt = `You are an AI showing coordinator. Optimize this showing route:
+  // ── THE ROUTE IS SEQUENCED BY THE KERNEL, NOT GUESSED BY A MODEL ────────────
+  // Same module the tour lane runs (lib/kernel/tour-optimizer.ts), same free
+  // geocoder, same 30mph straight-line ESTIMATE labeled as one. A home the
+  // geocoder cannot place is NOT dropped and NOT given a fabricated drive: it
+  // keeps its entered position with a null leg, exactly as a tour stop does.
+  const tourKernel = await import("@/lib/kernel/tour-optimizer")
+  const geocode = (await import("@/lib/external/nominatim-geocode")).createCachedGeocoder()
 
-Start Location: ${data.startLocation}
+  const geoStops = []
+  for (let i = 0; i < properties.length; i++) {
+    const p = properties[i]
+    const point = await geocode({ address: p.address })
+    geoStops.push({
+      id: String(i),
+      order_index: i,
+      lat: point?.lat ?? null,
+      lng: point?.lng ?? null,
+      address: p.address,
+      listPrice: p.listPrice,
+      propertyType: p.propertyType,
+    })
+  }
+
+  // ORIGIN = where the agent says the day starts — the same role
+  // `tours.start_address` plays for a tour. Un-geocodable → the sequence anchors
+  // on the first entered home instead (the kernel's documented fallback).
+  const startLocation = data.startLocation.trim()
+  const routeOrigin = startLocation ? await geocode({ address: startLocation }) : null
+
+  const sequenced = tourKernel.sequenceStopsByDriveTime(geoStops, routeOrigin)
+  const stopsSequenced = sequenced.filter((s) => s.sequenced).length
+  const measuredLegs = sequenced.filter((s) => s.driveMinutes != null).length
+  // NULL, NOT ZERO, when nothing could be measured. `total_drive_time` renders as
+  // a "~N min drive" badge on the contact card, and a 0 there is a claim.
+  const totalDriveMinutes = measuredLegs > 0 ? tourKernel.totalEstimatedDriveMinutes(sequenced) : null
+  const arrivalTimes = tourKernel.recomputeStopTimes(
+    sequenced,
+    data.startTime,
+    new Map(sequenced.map((s) => [s.id, SHOWING_VISIT_MINUTES])),
+  )
+
+  const orderedHomes = sequenced.map((s) => ({
+    order: s.order_index + 1,
+    address: String((s as { address?: unknown }).address ?? ""),
+    listPrice: ((s as { listPrice?: number | null }).listPrice ?? null) as number | null,
+    propertyType: ((s as { propertyType?: string | null }).propertyType ?? null) as string | null,
+    arrivalTime: arrivalTimes.get(s.id) ?? null,
+    durationMinutes: SHOWING_VISIT_MINUTES,
+    driveMinutesFromPrev: s.driveMinutes,
+    milesFromPrev: s.haversineMiles != null ? Number(s.haversineMiles.toFixed(2)) : null,
+    placedByGeocoder: s.sequenced,
+  }))
+
+  // The model is asked for the WHY and nothing that carries a number: the order
+  // is fixed above and stated to it as a fact, so there is no second answer to
+  // reconcile.
+  const prompt = `You are an AI showing coordinator preparing a buyer's shortlist.
+
+The ORDER BELOW IS ALREADY FIXED by a route optimizer that measured real
+coordinates. Do NOT reorder it, do NOT propose different times, and do NOT state
+any drive time or distance — those are computed facts and are not yours to
+supply.
+
 Date: ${data.preferredDate}
-Properties to Show (${properties.length}):
-${properties
+Day starts: ${data.startTime} from ${startLocation || "the agent's chosen starting point"}
+Homes in confirmed order (${orderedHomes.length}):
+${orderedHomes
   .map(
     // A price or a type the source did not publish is stated as UNKNOWN rather
     // than printed as "$undefined" — a coordinator prompt that reads like a
     // corrupted record invites the model to invent the missing figure.
-    (p: RouteHome, i: number) => `
-${i + 1}. ${p.address}
+    (p) => `
+${p.order}. ${p.address}
    Price: ${p.listPrice != null ? `$${p.listPrice.toLocaleString()}` : "not published by the feed"}
    Type: ${p.propertyType ?? "not published by the feed"}
 `,
   )
   .join("\n")}
 
-Optimize for:
-1. Minimize drive time
-2. Group by neighborhood
-3. Save "best" for last
-4. Allow 30 min per property
-5. Account for traffic
+For EACH home give the buyer-facing reason it is worth seeing in that position
+and two or three concrete talking points drawn only from what is stated above.
+Use no protected-class, neighborhood-desirability or steering language.
 
 {
-  "optimizedRoute": {
-    "totalDriveTime": 45,
-    "totalShowingTime": 150,
-    "suggestedStartTime": "10:00 AM",
-    "properties": [
-      {
-        "order": 1,
-        "address": "...",
-        "arrivalTime": "10:00 AM",
-        "durationMinutes": 30,
-        "why_first": "Warm up property",
-        "talking_points": ["Good schools", "Move-in ready"]
-      }
-    ],
-    "themFirstApproach": "I've organized these to help you see the progression. We're saving the best for last!",
-    "postShowingPlan": {
-      "immediate": "Get feedback while in car",
-      "same_day": "Send summary email",
-      "next_day": "Follow up to discuss favorites"
-    }
+  "homes": [
+    { "order": 1, "why_first": "Warm-up home that sets the baseline", "talking_points": ["Move-in ready", "Single level"] }
+  ],
+  "themFirstApproach": "I've organized these so the day builds — here's what to watch for at each stop.",
+  "postShowingPlan": {
+    "immediate": "Get feedback while in car",
+    "same_day": "Send summary email",
+    "next_day": "Follow up to discuss favorites"
   }
 }`
 
   try {
-    const optimizedRoute = await generateAIJSON(prompt)
+    const coaching = await generateAIJSON<{
+      homes?: Array<{ order?: number; why_first?: string; talking_points?: string[] }>
+      themFirstApproach?: string
+      postShowingPlan?: Record<string, string>
+    }>(prompt)
 
-    if (!optimizedRoute.data) {
-      throw new Error("Route optimization failed")
+    // A MODEL FAILURE NO LONGER LOSES THE PLAN. The route is the kernel's work
+    // and is already complete; the copy is the optional half, so an AI outage
+    // costs the talking points and says so, rather than throwing away a
+    // sequenced, source-resolved shortlist.
+    const byOrder = new Map<number, { why_first?: string; talking_points?: string[] }>()
+    for (const h of coaching.data?.homes ?? []) {
+      if (typeof h?.order === "number") byOrder.set(h.order, h)
+    }
+    const coachingUnavailable = !coaching.data
+
+    const recommendedProperties = orderedHomes.map((p) => ({
+      ...p,
+      why_first: byOrder.get(p.order)?.why_first ?? null,
+      talking_points: byOrder.get(p.order)?.talking_points ?? [],
+    }))
+
+    const optimizedRoute = {
+      engine: "lib/kernel/tour-optimizer.ts",
+      estimateBasis: `${tourKernel.ASSUMED_AVG_MPH}mph straight-line (haversine) — an ESTIMATE for sequencing and review, never a traffic-aware drive time`,
+      startTime: data.startTime,
+      startAddress: startLocation || null,
+      startAddressGeocoded: routeOrigin != null,
+      stopsTotal: orderedHomes.length,
+      stopsSequenced,
+      totalDriveTime: totalDriveMinutes,
+      totalShowingTime: orderedHomes.length * SHOWING_VISIT_MINUTES,
+      source: routeSource,
+      properties: recommendedProperties,
+      themFirstApproach: coaching.data?.themFirstApproach ?? null,
+      postShowingPlan: coaching.data?.postShowingPlan ?? null,
+      unresolved,
+      coachingUnavailable,
     }
 
     // THE ROW IS CONTACTS-CLASS, SO IT IS FILED UNDER THE CONTACTS COLUMN.
@@ -3280,13 +3408,18 @@ Optimize for:
     // joining the contact's pre-conversion records, so a contacts.id parked in it
     // would never match anything. `contact_id` exists on this table
     // (scripts/schema-snapshot.ts) and is exactly what that reader matches first.
-    const { error: recError } = await supabase.from("smart_showing_recommendations").insert({
+    const { data: recRow, error: recError } = await supabase.from("smart_showing_recommendations").insert({
       contact_id: data.contactId,
       brokerage_id: routeBrokerageId, // without this the row is unreadable by everyone
-      recommended_properties: optimizedRoute.data.optimizedRoute?.properties ?? [],
-      showing_route: optimizedRoute.data.optimizedRoute,
-      total_drive_time: optimizedRoute.data.optimizedRoute?.totalDriveTime,
-      suggested_order: optimizedRoute.data.optimizedRoute?.properties?.map((p: any) => p.address),
+      recommended_properties: recommendedProperties,
+      // THE THREE ROUTE COLUMNS CARRY THE KERNEL'S ANSWER OR NOTHING.
+      // `total_drive_time` is NULL when not one leg could be measured — the old
+      // body wrote whatever number the model said, which is how this table came
+      // to hold a second, softer answer to a question the tour lane already
+      // answers from geometry.
+      showing_route: optimizedRoute,
+      total_drive_time: totalDriveMinutes,
+      suggested_order: recommendedProperties.map((p) => p.address),
       recommended_day: data.preferredDate,
       // THE ROW SAYS WHICH SOURCE ANSWERED AND WHAT IT COULD NOT ANSWER.
       // `smart_showing_recommendations` has no column for a shortfall, and the
@@ -3295,8 +3428,14 @@ Optimize for:
       // than the omission being invisible on the record while it is visible on
       // screen once.
       why_these_properties: [
-        "AI-optimized for maximum impact",
+        `Ordered by the tour route optimizer (lib/kernel/tour-optimizer.ts): ${stopsSequenced} of ${orderedHomes.length} homes were placed on the map${
+          stopsSequenced < orderedHomes.length ? "; the rest keep their entered order with no drive time invented for them" : ""
+        }.`,
+        totalDriveMinutes != null
+          ? `~${totalDriveMinutes} min total drive (est., straight-line — not traffic-aware).`
+          : "No drive time could be measured for this plan, so none is claimed.",
         `Source: ${routeSource === "idx" ? "this brokerage's own IDX Broker feed" : "the platform's RentCast feed"}.`,
+        coachingUnavailable ? "Talking points were unavailable when this plan was built." : null,
         unresolved.length > 0
           ? `Not included (${unresolved.length}): ${unresolved.map((u) => `${u.home} — ${u.why}`).join("; ")}`
           : null,
@@ -3304,12 +3443,15 @@ Optimize for:
         .filter(Boolean)
         .join(" "),
     })
+      .select("id")
+      .maybeSingle()
     if (recError) {
       console.error("[ai-predictions] smart_showing_recommendations insert refused:", recError.message)
       return {
         success: false as const,
         error: recError.message,
-        route: optimizedRoute.data.optimizedRoute,
+        route: optimizedRoute,
+        recommendationId: null,
         source: routeSource,
         unresolved,
       }
@@ -3318,7 +3460,10 @@ Optimize for:
     return {
       success: true as const,
       error: null,
-      route: optimizedRoute.data.optimizedRoute,
+      route: optimizedRoute,
+      // The id the tour handoff is keyed on
+      // (app/actions/tour-planner.ts:createTourFromShowingRecommendation).
+      recommendationId: (recRow as { id: string } | null)?.id ?? null,
       source: routeSource,
       unresolved,
     }

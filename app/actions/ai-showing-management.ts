@@ -424,155 +424,216 @@ Return JSON only:
 }
 
 /**
- * AI Route Optimizer
- * Creates optimal showing routes based on location, time, and traffic patterns
+ * THE AGENT'S WHOLE SHOWING DAY, SEQUENCED BY THE ONE ROUTE ENGINE.
+ *
+ * SCOPE — why this is not a duplicate of optimizeTourRoute above: that one
+ * orders the stops of ONE buyer's tour; this one orders every showing on an
+ * agent's calendar for a date, which may span several buyers and several tours.
+ * Same fact (order + drive time), different SET of stops.
+ *
+ * REWIRED onto lib/kernel/tour-optimizer.ts (this wave). The previous body was
+ * the third parallel implementation of drive time in the tree: it asked
+ * gpt-4o to invent `travelTimeFromPrevious`, `estimatedMiles` and an
+ * `optimizationScore`, then wrote those invented numbers into `showing_routes`
+ * and PUSHED THEM ONTO `showings.scheduled_time` — real appointments moved by a
+ * guess. The kernel does the honest version: nearest-neighbor over coordinates
+ * the free Nominatim geocoder actually resolved, per-leg estimates at a
+ * documented assumed speed labeled as ESTIMATES, and NO number at all for a
+ * showing whose address could not be placed.
+ *
+ * TWO DEFECTS FIXED WITH IT:
+ *   · IDENTITY CLASS. It filtered `showings.agent_id` — an agents.id — with the
+ *     users.id its only caller had (the CRM day-of tab). Disjoint spaces (§3),
+ *     so the read matched NOTHING and every click answered "No showings found
+ *     for this date". The agent is resolved from the SESSION now; the parameter
+ *     survives only as an admin's narrowing claim, exactly as in getTours.
+ *   · TENANT. The `showing_routes` insert omitted `brokerage_id`, so the audit
+ *     row it wrote was unreadable by every tenant-scoped policy, and the read
+ *     was not tenant-pinned either.
+ *
+ * A SHOWING IS ONLY MOVED WHEN THE MOVE IS MEASURED. Un-geocoded showings keep
+ * their booked time untouched — a confirmed appointment must never be rewritten
+ * on the strength of a stop we could not place.
  */
 export async function aiOptimizeShowingRoute(params: {
-  agentId: string
+  /**
+   * OPTIONAL narrowing claim, honored only for an admin/broker seat — never the
+   * authority. An ordinary agent is scoped to their own agents.id from session.
+   */
+  agentId?: string
   date: string
   showingIds?: string[]
 }) {
-  if (!isValidUUID(params.agentId)) {
+  if (params.agentId && !isValidUUID(params.agentId)) {
     return { success: false, error: "Invalid agent ID" }
   }
 
-  // Tenant for the AI cost ledger — SESSION, never `params.agentId` (§4).
-  const spendActor = await getAgentContext()
-  const supabase = await createClient()
-
   try {
-    // Get all showings for the date
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.brokerageId) return { success: false, error: "Your account is not linked to a brokerage yet." }
+
+    // agents.id, from the session. Never a users.id, never a caller's claim.
+    let agentFilter: string | undefined
+    if (isAdminOrBroker({ user_type: ctx.userType })) {
+      agentFilter = params.agentId
+    } else {
+      if (!ctx.agentId) return { success: false, error: "Agent profile not found" }
+      agentFilter = ctx.agentId
+    }
+
+    // The route write needs the service client (showing_routes); the tenant and
+    // agent scope above are the gate, applied to every statement below.
+    const supabase = createServiceClient()
+
+    // showings→listings is a SINGLE foreign key (listing_id), so this embed is
+    // unambiguous — no PGRST201 risk, and the columns are named so the schema
+    // guard can see drift.
     let query = supabase
       .from("showings")
-      .select(`
-        *,
-        listings(*),
-        contacts(first_name, last_name, phone, email)
-      `)
-      .eq("agent_id", params.agentId)
+      .select("id, scheduled_time, scheduled_date, duration_minutes, listing_id, listings(address, city, state, zip)")
+      .eq("brokerage_id", ctx.brokerageId)
       .eq("scheduled_date", params.date)
       .in("status", ["scheduled", "confirmed"])
 
-    if (params.showingIds?.length) {
-      query = query.in("id", params.showingIds)
+    if (agentFilter) query = query.eq("agent_id", agentFilter)
+    if (params.showingIds?.length) query = query.in("id", params.showingIds)
+
+    // THE ERROR IS READ. A refused read and an empty day are byte-identical if
+    // only `data` is destructured, and telling an agent they have no showings
+    // when we simply could not look is the failure this whole guard family
+    // exists to prevent.
+    const { data: showings, error: showingsError } = await query
+    if (showingsError) {
+      return { success: false, error: `Could not read the day's showings: ${showingsError.message}` }
     }
-
-    const { data: showings } = await query
-
     if (!showings || showings.length === 0) {
       return { success: false, error: "No showings found for this date" }
     }
 
-    // Get agent's starting location from their brokerage (users has no address columns;
-    // brokerages exposes city/state only).
-    const { data: agent } = await supabase
-      .from("users")
-      // AMBIGUOUS WITHOUT THE HINT. users↔brokerages is joined by TWO foreign
-      // keys — users.brokerage_id → brokerages, and brokerages.ai_isa_system_user_id
-      // → users (migration 043). PostgREST sees two candidate relationships,
-      // answers PGRST201 and rejects the WHOLE query. Naming the constraint says
-      // "the brokerage this user belongs to", not "brokerages that point at this
-      // user as their ISA system account". Do not simplify the hint away.
-      .select("brokerages!users_brokerage_id_fkey(name, city, state)")
-      .eq("id", params.agentId)
-      .single()
+    const kernel = await import("@/lib/kernel/tour-optimizer")
+    const geocode = (await import("@/lib/external/nominatim-geocode")).createCachedGeocoder()
 
-    // AI Route Optimization
-    const { text: routeAnalysis } = await generateText({
-      brokerageId: spendActor.brokerageId,
-      userId: spendActor.userId || null,
-      model: "openai/gpt-4o",
-      prompt: `You are a real estate showing route optimizer. Create an optimal route.
+    const rows = showings as unknown as Array<{
+      id: string
+      scheduled_time: string | null
+      duration_minutes: number | null
+      listings: { address: string | null; city: string | null; state: string | null; zip: string | null } | null
+    }>
 
-AGENT STARTING LOCATION: ${(agent as any)?.brokerages?.name || "Office"}, ${(agent as any)?.brokerages?.city || ""}, ${(agent as any)?.brokerages?.state || ""}
+    // Original order = the booked clock, so the optimization score compares the
+    // new sequence against the day as it actually stands.
+    const byClock = [...rows].sort((a, b) => String(a.scheduled_time ?? "").localeCompare(String(b.scheduled_time ?? "")))
 
-SHOWINGS TO SCHEDULE:
-${showings
-  .map(
-    (s: any, i: number) => `
-${i + 1}. Property: ${s.listings?.address}, ${s.listings?.city}
-   - Scheduled Time: ${s.scheduled_time}
-   - Contact: ${s.contacts?.first_name} ${s.contacts?.last_name}
-   - Property Type: ${s.listings?.property_type}
-   - Notes: ${s.notes || "None"}
-`
-  )
-  .join("")}
-
-Consider:
-1. Geographic clustering to minimize travel
-2. Traffic patterns (rush hour, school zones)
-3. Time between showings (minimum 30 min)
-4. Property viewing duration (larger homes need more time)
-
-Provide JSON response:
-{
-  "optimizedOrder": [
-    {
-      "showingId": "id",
-      "recommendedTime": "HH:MM",
-      "estimatedDuration": 30,
-      "travelTimeFromPrevious": 15,
-      "notes": "string"
-    }
-  ],
-  "totalDuration": 240,
-  "estimatedMiles": 25,
-  "optimizationScore": 85,
-  "routeNotes": ["note1", "note2"],
-  "breakSuggestion": {
-    "afterShowing": 2,
-    "duration": 15,
-    "nearbyOptions": ["coffee shop", "restaurant"]
-  }
-}`,
-    })
-
-    let optimizedRoute
-    try {
-      const jsonMatch = routeAnalysis.match(/\{[\s\S]*\}/)
-      optimizedRoute = jsonMatch ? JSON.parse(jsonMatch[0]) : {}
-    } catch {
-      optimizedRoute = { optimizedOrder: showings.map((s: any) => ({ showingId: s.id })) }
+    const geoStops = []
+    for (let i = 0; i < byClock.length; i++) {
+      const s = byClock[i]
+      const point = s.listings?.address
+        ? await geocode({
+            address: s.listings.address,
+            city: s.listings.city,
+            state: s.listings.state,
+            zip: s.listings.zip,
+          })
+        : null
+      geoStops.push({
+        id: s.id,
+        order_index: i,
+        lat: point?.lat ?? null,
+        lng: point?.lng ?? null,
+        address: s.listings?.address ?? null,
+      })
     }
 
-    // Save the optimized route
-    const { data: route, error } = await supabase
+    // ORIGIN — the brokerage's own city/state, the only address the schema
+    // carries for an agent's day (users has no address columns). Un-geocodable →
+    // the sequence anchors on the first booked showing instead.
+    const { data: brokerage } = await supabase
+      .from("brokerages")
+      .select("name, city, state")
+      .eq("id", ctx.brokerageId)
+      .maybeSingle()
+    const office = brokerage as { name?: string | null; city?: string | null; state?: string | null } | null
+    const origin = office?.city
+      ? await geocode({ address: office.name ?? null, city: office.city, state: office.state })
+      : null
+
+    const sequenced = kernel.sequenceStopsByDriveTime(geoStops, origin)
+    const stopsSequenced = sequenced.filter((s) => s.sequenced).length
+    const measuredLegs = sequenced.filter((s) => s.driveMinutes != null).length
+    const totalDriveMinutes = measuredLegs > 0 ? kernel.totalEstimatedDriveMinutes(sequenced) : null
+    const score = kernel.optimizationScore(geoStops, sequenced, origin)
+    const estimatedMiles = sequenced.reduce((sum, s) => sum + (s.haversineMiles ?? 0), 0)
+
+    // The day starts at the earliest time already on the books — we re-order the
+    // day, we do not decide when the agent starts working.
+    const dayStart = byClock.find((s) => s.scheduled_time)?.scheduled_time ?? null
+    const durations = new Map(
+      byClock.map((s) => [s.id, Number(s.duration_minutes ?? 30)] as [string, number]),
+    )
+    const newTimes = kernel.recomputeStopTimes(sequenced, dayStart, durations)
+
+    const optimizedOrder = sequenced.map((s) => ({
+      showingId: s.id,
+      order: s.order_index,
+      address: (s as { address?: string | null }).address ?? null,
+      recommendedTime: s.sequenced ? (newTimes.get(s.id) ?? null) : null,
+      estimatedDuration: durations.get(s.id) ?? 30,
+      travelTimeFromPrevious: s.driveMinutes,
+      milesFromPrevious: s.haversineMiles != null ? Number(s.haversineMiles.toFixed(2)) : null,
+      placedByGeocoder: s.sequenced,
+    }))
+
+    const { data: route, error: routeError } = await supabase
       .from("showing_routes")
       .insert({
-        agent_id: params.agentId,
+        agent_id: agentFilter ?? ctx.agentId,
+        // Without this the audit row is unreadable by every tenant-scoped policy.
+        brokerage_id: ctx.brokerageId,
         route_date: params.date,
-        showings: showings.map((s: any) => s.id),
-        optimized_order: optimizedRoute.optimizedOrder,
-        total_duration: optimizedRoute.totalDuration,
-        estimated_miles: optimizedRoute.estimatedMiles,
-        optimization_score: optimizedRoute.optimizationScore,
-        route_notes: optimizedRoute.routeNotes,
-        created_at: new Date().toISOString(),
+        showings: rows.map((s) => s.id),
+        optimized_order: optimizedOrder,
+        total_duration: totalDriveMinutes,
+        estimated_miles: Number(estimatedMiles.toFixed(2)),
+        optimization_score: score,
+        route_notes: `Agent day route — nearest-neighbor over geocoded addresses. Drive times are ESTIMATES at ${kernel.ASSUMED_AVG_MPH}mph straight-line (haversine), not traffic-aware. ${stopsSequenced}/${rows.length} showings had a placeable address; the rest kept their booked time.`,
       })
-      .select()
-      .single()
+      .select("id")
+      .maybeSingle()
+    if (routeError) {
+      return { success: false, error: `The route could not be saved: ${routeError.message}` }
+    }
 
-    if (error) throw error
-
-    // Update showing times if changed
-    for (const item of optimizedRoute.optimizedOrder || []) {
-      if (item.showingId && item.recommendedTime) {
-        await supabase
-          .from("showings")
-          .update({
-            scheduled_time: item.recommendedTime,
-          })
-          .eq("id", item.showingId)
-      }
+    // ONLY MEASURED MOVES ARE WRITTEN BACK.
+    let moved = 0
+    for (const item of optimizedOrder) {
+      if (!item.placedByGeocoder || !item.recommendedTime) continue
+      const { error: moveError } = await supabase
+        .from("showings")
+        .update({ scheduled_time: item.recommendedTime })
+        .eq("id", item.showingId)
+        .eq("brokerage_id", ctx.brokerageId)
+      if (!moveError) moved += 1
     }
 
     revalidatePath("/showings")
 
+    const summary =
+      stopsSequenced === rows.length
+        ? `${rows.length} showings reordered by drive time${
+            totalDriveMinutes != null ? ` (~${totalDriveMinutes} min total drive, est., straight-line)` : ""
+          }.`
+        : `${stopsSequenced}/${rows.length} showings had a placeable address and were reordered; the rest kept their booked time (no drive invented).`
+
     return {
       success: true,
       route,
-      optimizedRoute,
+      summary,
+      moved,
+      stopsSequenced,
+      stopsTotal: rows.length,
+      totalDriveMinutes,
+      optimizedOrder,
     }
   } catch (error) {
     return handleError(error, "aiOptimizeShowingRoute")

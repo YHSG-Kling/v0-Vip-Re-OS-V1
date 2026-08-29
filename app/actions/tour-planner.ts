@@ -1310,3 +1310,155 @@ export async function updateTourStopOrder(
   if (failed?.error) return { success: false, error: failed.error.message }
   return { success: true }
 }
+
+// ─── 11. The shortlist BECOMES a tour ────────────────────────────────────────
+//
+// THE DRIFT THIS CLOSES. The product grew a second route/drive-time lane:
+// `app/actions/ai-predictions.ts:optimizeShowingRoute` writes
+// `smart_showing_recommendations` — which of a buyer's SAVED homes are worth
+// seeing, resolved against whichever property source serves the tenant (the
+// platform's RentCast by default, the tenant's own IDX feed when connected),
+// with the homes no source could answer reported by name. That is a REAL and
+// distinct act: it is a recommendation, and nothing else in the product makes
+// one. What it must NOT be is a second tour planner, and until this wave it was
+// one — it guessed its own stop order and drive time from a model while the
+// tour lane (tours + tour_stops + showings, and the kernel optimizer that
+// sequences them by real geometry) answered the same question from coordinates.
+//
+// Owner ruling, verbatim: "you have smart showing route but there is also tour
+// planning which was what we built originally. you have to be careful and not
+// create more drifts we are trying to solve."
+//
+// So the recommendation now HANDS OFF instead of re-deriving: the row carries
+// the kernel's order, the start time and the start address, and this action
+// turns it into the real thing — createTourPlan (above) writes tours +
+// tour_stops + showings, and lib/kernel/tour-optimizer.ts:optimizeTourRoute then
+// runs over the SAVED tour, stamping tours.total_drive_time_minutes and the
+// showing_routes audit row. One engine, one set of numbers, one lane the agent
+// can actually schedule, confirm and run.
+//
+// EVERY GATE createTourPlan HOLDS STILL HOLDS: session-derived tenant and agent
+// seat, the contact must be in the caller's brokerage, and the buyer must be
+// financially verified. This is a shortcut through the shortlist, never around
+// the gates.
+export async function createTourFromShowingRecommendation(params: {
+  recommendationId: string
+}): Promise<{ success: boolean; error?: string; tourId?: string; stopCount?: number; optimized?: string }> {
+  const { recommendationId } = params
+  if (!isValidUUID(recommendationId)) return { success: false, error: 'Invalid recommendation ID' }
+
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const supabase = createServiceClient()
+
+  // The error is READ. supabase-js resolves a refusal, so "we were refused" and
+  // "no such plan" are byte-identical if only `data` is destructured — and one
+  // of those is a tenancy problem the agent must be told about.
+  const { data: rec, error: recError } = await supabase
+    .from('smart_showing_recommendations')
+    .select('id, brokerage_id, contact_id, recommended_properties, showing_route, recommended_day')
+    .eq('id', recommendationId)
+    .maybeSingle()
+  if (recError) return { success: false, error: `Could not read the showing plan: ${recError.message}` }
+  if (!rec) return { success: false, error: 'Showing plan not found' }
+  if (rec.brokerage_id !== auth.brokerageId) return { success: false, error: 'Forbidden' }
+  if (!rec.contact_id) {
+    // The table is dual-keyed (lead_id | contact_id). A tour hangs off a CONTACT,
+    // and `contacts.id` and `leads.id` are disjoint spaces — so a lead-keyed plan
+    // is refused rather than filed against a contact that does not exist.
+    return {
+      success: false,
+      error: 'This showing plan is filed against a pre-conversion record. Promote it to a contact before planning a tour.',
+    }
+  }
+
+  const route = (rec.showing_route ?? {}) as {
+    startTime?: string | null
+    startAddress?: string | null
+    properties?: unknown
+  }
+  const rows = Array.isArray(rec.recommended_properties)
+    ? (rec.recommended_properties as Array<Record<string, unknown>>)
+    : []
+  if (rows.length === 0) return { success: false, error: 'This showing plan has no homes in it.' }
+
+  // The ORDER is the kernel's, carried across unchanged: the plan was sequenced
+  // by lib/kernel/tour-optimizer.ts and re-sorting it here would be a second
+  // opinion on the one fact this whole change exists to keep single.
+  const ordered = [...rows].sort(
+    (a, b) => Number(a.order ?? 0) - Number(b.order ?? 0),
+  )
+
+  const stops: TourStop[] = ordered
+    .map((r) => {
+      const address = typeof r.address === 'string' ? r.address.trim() : ''
+      if (!address) return null
+      const drive = typeof r.driveMinutesFromPrev === 'number' ? r.driveMinutesFromPrev : undefined
+      const duration = typeof r.durationMinutes === 'number' ? r.durationMinutes : 30
+      return {
+        propertyAddress: address,
+        suggestedDurationMinutes: duration,
+        // Carried so the created plan's clock matches the shortlist the agent
+        // approved. Un-geocoded homes carried NO drive on the plan and carry
+        // none here either — `undefined`, never 0.
+        driveTimeFromPrevMinutes: drive ?? undefined,
+      } as TourStop
+    })
+    .filter((s): s is TourStop => s !== null)
+
+  if (stops.length === 0) return { success: false, error: 'None of the homes on this plan carry an address to tour.' }
+
+  const startTime = typeof route.startTime === 'string' && /^\d{1,2}:\d{2}/.test(route.startTime)
+    ? route.startTime
+    : null
+  if (!startTime) {
+    return { success: false, error: 'This showing plan has no start time, so a tour day cannot be laid out from it.' }
+  }
+  const tourDate = rec.recommended_day
+  if (!tourDate) return { success: false, error: 'This showing plan has no date.' }
+
+  const created = await createTourPlan({
+    contactId: rec.contact_id,
+    // Ignored by createTourPlan — it derives both from the session (§4). Passed
+    // only because the parameter shape requires them.
+    agentUserId: auth.userId,
+    brokerageId: auth.brokerageId,
+    tourDate,
+    startTime,
+    startAddress: typeof route.startAddress === 'string' && route.startAddress.trim()
+      ? route.startAddress.trim()
+      : undefined,
+    stops,
+    // NO totalDriveTimeMinutes ON PURPOSE. A non-null tours.total_drive_time_minutes
+    // is the kernel optimizer's idempotency stamp, so passing one here would mark
+    // the new tour "already optimized" and the run below — the one that writes the
+    // per-leg drives and the showing_routes audit row — would skip it forever.
+    totalDurationMinutes: stops.reduce(
+      (a, s) => a + (s.suggestedDurationMinutes ?? 30) + (s.driveTimeFromPrevMinutes ?? 0),
+      0,
+    ),
+  })
+  if (!created.success || !created.tourId) {
+    return { success: false, error: created.error ?? 'Failed to create the tour' }
+  }
+
+  // ONE ENGINE, RUN ON THE SAVED TOUR. Same module the plan tab, the confirm tab,
+  // the voice lane and the cron sweep run. A refusal here does not undo the tour:
+  // the tour exists and is schedulable; what it lacks is the audit row, and that
+  // is reported rather than hidden.
+  let optimized: string | undefined
+  try {
+    const { optimizeTourRoute } = await import('@/lib/kernel/tour-optimizer')
+    const r = await optimizeTourRoute(created.tourId, supabase)
+    optimized = r.ok
+      ? `${r.stopsSequenced}/${r.stopsTotal} stops sequenced by drive time (~${r.totalDriveMinutes} min est.).`
+      : `The tour was created but the route optimizer did not run: ${r.reason ?? 'unknown'}.`
+  } catch (err) {
+    optimized = `The tour was created but the route optimizer did not run: ${
+      err instanceof Error ? err.message : 'unknown error'
+    }.`
+  }
+
+  return { success: true, tourId: created.tourId, stopCount: stops.length, optimized }
+}

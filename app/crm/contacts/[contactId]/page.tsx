@@ -18,7 +18,7 @@ import { LeadHistoryCard }        from "./components/lead-history-card"
 import { VoiceNoteCard }          from "./components/voice-note-card"
 import { IsaOutreachCard }        from "./components/isa-outreach-card"
 import { SegmentMemberships }      from "./components/segment-memberships"
-import { ShowingRoutePlanner }     from "./showing-route-planner"
+import { ShowingRoutePlanner, ShowingPlanTourHandoff } from "./showing-route-planner"
 import { CampaignBundleSendCard, type BundleOption } from "./components/campaign-bundle-send-card"
 import { listCampaignBundles }      from "@/app/actions/campaign-bundles"
 import { AgentActionDispositionQueue } from "@/app/components/agent/AgentActionDispositionQueue"
@@ -537,10 +537,22 @@ export default async function ContactDetailPage({ params }: PageProps) {
         </div>
       )}
 
-      {/* THE WRITER FOR THE CARD BELOW. smart_showing_recommendations had exactly one
-          writer in the product — app/actions/ai-predictions.ts:optimizeShowingRoute —
-          and it had no caller, so the "AI Showing Plan" card underneath has never had
-          a row to render for anyone. This is that caller; see the component header. */}
+      {/* ONE DOOR, NOT TWO — the drift this page carried until this wave.
+          This card and the tour lane (/crm/contacts/[contactId]/tours, reachable
+          from the Tours tab above) were two route/drive-time planners on one
+          page, and they used two different engines: the tour lane's real
+          optimizer (lib/kernel/tour-optimizer.ts, real coordinates) and a model
+          asked to guess an order and a drive total. Owner ruling, verbatim: "you
+          have smart showing route but there is also tour planning which was what
+          we built originally. you have to be careful and not create more drifts
+          we are trying to solve."
+          THE COLLAPSE: this card keeps the act that exists nowhere else — WHICH
+          saved homes are worth seeing, resolved against the tenant's property
+          source, with the ones no source could answer named — and gives up the
+          act the tour lane owns. Order and drive minutes come from the kernel
+          now, and the plan card below carries the single on-ramp into the tour
+          lane (ShowingPlanTourHandoff). Nothing was deleted; the second engine
+          was. */}
       {contact.buyer_stage && (
         <div className="px-4 pt-3">
           <ShowingRoutePlanner contactId={contactId} />
@@ -560,9 +572,14 @@ export default async function ContactDetailPage({ params }: PageProps) {
                     {new Date(showingRec.recommended_day).toLocaleDateString()}
                   </Badge>
                 )}
+                {/* "est." is load-bearing. The number is the tour optimizer's
+                    straight-line haversine estimate at a documented assumed
+                    speed — not a traffic-aware drive time — and it is NULL, not
+                    0, when no leg could be measured, so an absent badge means
+                    "not measured" rather than "no driving". */}
                 {showingRec.total_drive_time != null && (
                   <Badge variant="secondary" className="text-xs">
-                    ~{Math.round(showingRec.total_drive_time)} min drive
+                    ~{Math.round(showingRec.total_drive_time)} min drive (est.)
                   </Badge>
                 )}
               </CardTitle>
@@ -606,6 +623,12 @@ export default async function ContactDetailPage({ params }: PageProps) {
               ) : (
                 <p className="text-sm text-muted-foreground">No properties in this plan.</p>
               )}
+
+              {/* THE ON-RAMP. A shortlist that cannot become a tour is advice
+                  nobody can act on — and building a second scheduling lane here
+                  is the drift this wave collapsed. So the plan hands off into
+                  the tour lane instead. */}
+              <ShowingPlanTourHandoff contactId={contactId} recommendationId={showingRec.id} />
             </CardContent>
           </Card>
         </div>

@@ -1,7 +1,35 @@
 "use client"
 
 /**
- * THE DOOR THE "AI SHOWING PLAN" CARD NEVER HAD.
+ * THE SHORTLIST STEP OF THE TOUR LANE — AND ITS ON-RAMP INTO IT.
+ *
+ * ─── THE DRIFT THIS CARD USED TO BE (resolved this wave) ────────────────────
+ * Owner ruling, verbatim: "you have smart showing route but there is also tour
+ * planning which was what we built originally. you have to be careful and not
+ * create more drifts we are trying to solve."
+ *
+ * This card shipped as "Build a showing route" — a SECOND route planner on a
+ * contact page that already links the tour lane (tours + tour_stops + showings,
+ * the kernel optimizer, scheduling, confirmation, day-of, portal). Two doors,
+ * two engines, one fact: ROUTE ORDER AND DRIVE TIME.
+ *
+ * The verdict was NOT to delete a capability. A RECOMMENDATION — which of this
+ * buyer's saved homes are worth seeing, resolved against whichever property
+ * source serves the tenant, with the ones no source could answer named — exists
+ * NOWHERE else in the product, and it is genuinely a different act from planning
+ * an agreed tour. What is not different is the ORDER and the MINUTES, so those
+ * come from lib/kernel/tour-optimizer.ts now (real coordinates, haversine at a
+ * documented 30mph ESTIMATE, un-geocodable homes kept in place with no invented
+ * drive) instead of from a model.
+ *
+ * So this is ONE door, not two: shortlist here → "Plan this as a tour" on the
+ * plan card below (ShowingPlanTourHandoff, same file) →
+ * app/actions/tour-planner.ts:createTourFromShowingRecommendation → the tour
+ * lane at /crm/contacts/[contactId]/tours, where a tour can actually be
+ * scheduled, confirmed, walked and recapped. Nothing here schedules anything;
+ * that is the tour lane's job and it keeps it.
+ *
+ * ─── THE ORIGINAL NOTE, KEPT: THE DOOR THE "AI SHOWING PLAN" CARD NEVER HAD ──
  *
  * app/crm/contacts/[contactId]/page.tsx renders an "AI Showing Plan" card off
  * `smart_showing_recommendations`. That card is complete — it resolves both
@@ -58,8 +86,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Route, Loader2 } from "lucide-react"
+import { Route, Loader2, CalendarPlus } from "lucide-react"
 import { optimizeShowingRoute } from "@/app/actions/ai-predictions"
+import { createTourFromShowingRecommendation } from "@/app/actions/tour-planner"
 
 interface SavedHome {
   id: string
@@ -100,6 +129,9 @@ export function ShowingRoutePlanner({ contactId }: { contactId: string }) {
     return d.toISOString().slice(0, 10)
   })
   const [startLocation, setStartLocation] = useState("")
+  /** The day's start clock. The kernel walks it stop by stop to produce arrival
+   *  times, and `createTourPlan` needs it if this shortlist becomes a tour. */
+  const [startTime, setStartTime] = useState("10:00")
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   /** Homes the chosen source could not answer for, with the reason it gave. */
@@ -147,7 +179,11 @@ export function ShowingRoutePlanner({ contactId }: { contactId: string }) {
       return
     }
     if (!startLocation.trim()) {
-      setError("Where does the tour start? The route is ordered from that point.")
+      setError("Where does the day start? The order is measured from that point.")
+      return
+    }
+    if (!/^\d{1,2}:\d{2}$/.test(startTime)) {
+      setError("Pick a start time — the arrival times are walked forward from it.")
       return
     }
 
@@ -158,6 +194,7 @@ export function ShowingRoutePlanner({ contactId }: { contactId: string }) {
           properties: queries,
           preferredDate: date,
           startLocation: startLocation.trim(),
+          startTime,
         })
         // HOMES THE SOURCE COULD NOT ANSWER ARE SHOWN WHETHER OR NOT THE PLAN
         // SAVED. They come back on both outcomes — a plan built over four of six
@@ -173,7 +210,9 @@ export function ShowingRoutePlanner({ contactId }: { contactId: string }) {
           setError(res?.error ?? "The showing plan could not be saved.")
           return
         }
-        setNotice("Showing plan saved — it is on the AI Showing Plan card below.")
+        setNotice(
+          "Shortlist saved — it is on the AI Showing Plan card below, ordered by the tour route optimizer. Turn it into a tour from there.",
+        )
         setSelected(new Set())
         router.refresh()
       } catch (e: unknown) {
@@ -187,11 +226,14 @@ export function ShowingRoutePlanner({ contactId }: { contactId: string }) {
       <CardHeader className="pb-3">
         <CardTitle className="text-sm flex items-center gap-2">
           <Route className="h-4 w-4 text-primary" />
-          Build a showing route
+          Shortlist homes to tour
         </CardTitle>
         <CardDescription className="text-xs">
-          Pick the saved homes to tour. The route is ordered to cut drive time and save the
-          strongest home for last, and lands on the AI Showing Plan card.
+          Pick the saved homes worth seeing. Each is looked up in this brokerage&apos;s property
+          source, then ordered by the same tour route optimizer the tour lane runs — real
+          coordinates, straight-line drive estimates, nothing invented for a home it cannot
+          place. The shortlist lands on the AI Showing Plan card below, where it can become a
+          real tour.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -249,7 +291,7 @@ export function ShowingRoutePlanner({ contactId }: { contactId: string }) {
           </ul>
         )}
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div className="space-y-1.5">
             <Label htmlFor="showing-route-date" className="text-xs">Tour date</Label>
             <Input
@@ -258,6 +300,16 @@ export function ShowingRoutePlanner({ contactId }: { contactId: string }) {
               value={date}
               disabled={isPending}
               onChange={(e) => setDate(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="showing-route-time" className="text-xs">Start time</Label>
+            <Input
+              id="showing-route-time"
+              type="time"
+              value={startTime}
+              disabled={isPending}
+              onChange={(e) => setStartTime(e.target.value)}
             />
           </div>
           <div className="space-y-1.5">
@@ -294,9 +346,80 @@ export function ShowingRoutePlanner({ contactId }: { contactId: string }) {
 
         <Button size="sm" onClick={build} disabled={isPending || !homes || homes.length === 0}>
           {isPending && <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />}
-          Build the route
+          Build the shortlist
         </Button>
       </CardContent>
     </Card>
+  )
+}
+
+/**
+ * THE ONE DOOR OUT OF THE RECOMMENDATION AND INTO THE TOUR LANE.
+ *
+ * The card above produces a recommendation; this turns it into the real thing.
+ * app/actions/tour-planner.ts:createTourFromShowingRecommendation writes the
+ * tour, its stops and its showings through `createTourPlan` — every gate intact
+ * (session tenant, agent seat, buyer financially verified) — and then runs
+ * lib/kernel/tour-optimizer.ts over the SAVED tour, which is what stamps
+ * tours.total_drive_time_minutes and the showing_routes audit row.
+ *
+ * WHY A BUTTON AND NOT A SECOND PLANNER: the tour lane already owns scheduling,
+ * confirmation, the day-of run and the buyer portal. Rebuilding any of that here
+ * is the exact drift this wave was sent to collapse — so the agent lands IN that
+ * lane (/crm/contacts/[contactId]/tours) rather than in a parallel copy of it.
+ *
+ * A REFUSAL IS SHOWN, NOT SWALLOWED. "The buyer is not financially verified" and
+ * "the plan was saved" must never render as the same screen.
+ */
+export function ShowingPlanTourHandoff({
+  contactId,
+  recommendationId,
+}: {
+  contactId: string
+  recommendationId: string
+}) {
+  const router = useRouter()
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [isPending, startTransition] = useTransition()
+
+  function plan() {
+    setError(null)
+    setNotice(null)
+    startTransition(async () => {
+      try {
+        const res = await createTourFromShowingRecommendation({ recommendationId })
+        if (!res.success || !res.tourId) {
+          setError(res.error ?? "The tour could not be created from this plan.")
+          return
+        }
+        setNotice(
+          `Tour created — ${res.stopCount} stop${res.stopCount === 1 ? "" : "s"}. ${res.optimized ?? ""} Opening the tour lane…`,
+        )
+        router.push(`/crm/contacts/${contactId}/tours?tab=confirm`)
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : "The tour could not be created from this plan.")
+      }
+    })
+  }
+
+  return (
+    <div className="space-y-2 pt-1">
+      <Button size="sm" variant="outline" onClick={plan} disabled={isPending}>
+        {isPending ? (
+          <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />
+        ) : (
+          <CalendarPlus className="h-3.5 w-3.5 mr-2" />
+        )}
+        Plan this as a tour
+      </Button>
+      <p className="text-xs text-muted-foreground">
+        Creates the tour, its stops and its showings in the tour lane, then re-runs the same
+        route optimizer over the saved tour. Scheduling, confirmations and the day-of run
+        happen there.
+      </p>
+      {error && <p className="text-xs text-destructive">{error}</p>}
+      {notice && <p className="text-xs text-emerald-700">{notice}</p>}
+    </div>
   )
 }
