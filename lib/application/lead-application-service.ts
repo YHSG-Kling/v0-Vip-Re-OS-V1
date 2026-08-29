@@ -4,6 +4,7 @@ import { ZenrowsClient, BatchDataClient, PeopleDataClient } from "@/lib/external
 import { calculateLeadScore } from "@/lib/services/lead-management.service"
 import { NotFoundError } from "@/lib/errors"
 import { resolveAgentForContact } from "@/lib/lead-assignment/contact-assignment"
+import { statusForNewContact } from "@/lib/contact-promotion/qualification"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LEAD APPLICATION SERVICE — business model
@@ -386,6 +387,31 @@ export async function serviceImportLeads(
 
     const incomingStatus = (lead.status ?? "new").toString().toLowerCase()
     const aiIsaEnabled = !RESTRICTED_STATUSES.has(incomingStatus)
+
+    // OWNER RULING, verbatim: "invitation from a lead converting to a contact makes
+    // sense for status qualified but any other new contacts coming in from forms,
+    // lead magnets, other real estate sites, etc. haven't been qualified yet."
+    //
+    // AN IMPORT IS ONE OF THOSE DOORS, and this is the door where the claim is
+    // cheapest to forge: `lead.status` is caller-supplied all the way from
+    // app/actions/lead-management.ts:209 `importLeads`, which is a "use server"
+    // export and therefore a PUBLIC HTTP ENDPOINT (CLAUDE.md §4). Before this line,
+    // an uploaded row that simply said `status: "qualified"` was believed, and a
+    // brokerage could import ten thousand contacts pre-marked as qualified.
+    //
+    // `contacts.status = 'qualified'` is EARNED by the lead→contact CONVERSION path
+    // alone, and is stamped in exactly one place —
+    // lib/portal/portal-invite-core.ts:77 stampQualifiedIfLeadConverted — off the
+    // `leads.contact_id` conversion marker, i.e. off the RECORD.
+    //
+    // NARROWED, NOT REPLACED: only the qualified spelling is refused, and only for
+    // what gets STORED. `aiIsaEnabled` above still reads the RAW incoming status on
+    // purpose — that gate is about active-relationship suppression, it does not list
+    // 'qualified', and re-pointing it here would be a silent change to a different
+    // ruling. Every other imported status is carried through untouched, and the
+    // fallback passed in is this path's OWN prior default, so nothing else moves.
+    const storedStatus = statusForNewContact(incomingStatus, "new")
+
     const sourceLabel = lead.source ?? "admin_import"
 
     // Resolve the owner agent (agents.id) per the precedence in
@@ -419,7 +445,7 @@ export async function serviceImportLeads(
       source: sourceLabel,
       source_family: "contact_direct",
       contact_type: "lead",
-      status: incomingStatus || "new",
+      status: storedStatus,
       // Lane B: consent was captured at source. Stamp it explicitly.
       tcpa_consent: true,
       tcpa_consent_at: new Date().toISOString(),

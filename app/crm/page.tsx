@@ -3669,9 +3669,22 @@ export default function CRMPage() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
+                    {/* OWNER RULING: "invitation from a lead converting to a
+                        contact makes sense for status qualified but any other new
+                        contacts coming in from forms, lead magnets, other real
+                        estate sites, etc. haven't been qualified yet."
+                        This is the MANUAL ADD door — "any other new contact" — so
+                        `Qualified` is REMOVED from the create form. Qualification is
+                        earned, not typed in: the one writer is
+                        lib/portal/portal-invite-core.ts:77
+                        (stampQualifiedIfLeadConverted), which fires only when
+                        `leads.contact_id` shows a lead actually converted into the
+                        contact. An agent can still qualify a contact LATER through
+                        the edit path (app/actions/contacts.ts:330 updateContact,
+                        which accepts `status`); what is gone is claiming it at the
+                        moment the person is first typed in. */}
                     <SelectItem value="new">New</SelectItem>
                     <SelectItem value="contacted">Contacted</SelectItem>
-                    <SelectItem value="qualified">Qualified</SelectItem>
                     <SelectItem value="nurture">Nurture</SelectItem>
                     <SelectItem value="active">Active</SelectItem>
                   </SelectContent>

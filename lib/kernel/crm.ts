@@ -30,6 +30,7 @@
 "use server"
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { statusForNewContact } from "@/lib/contact-promotion/qualification"
 import { KernelEvent } from "@/lib/kernel/events"
 import { emitKernelEvent } from "@/lib/kernel/emit"
 
@@ -277,7 +278,11 @@ export async function createOrUpdateContactFromDirectIntake(
         email: params.email ?? undefined,
         phone: params.phone ?? undefined,
         contact_type: params.contact_type,
-        status: params.status,
+        // Direct intake that deduped onto an EXISTING contact. A forged 'qualified'
+        // is refused here too (owner ruling — see the insert below); `undefined` is
+        // what this path already meant by "no status supplied", so the refusal
+        // leaves the existing contact's status untouched rather than overwriting it.
+        status: statusForNewContact(params.status, undefined),
         source: params.source?.source,
         source_family: params.source?.source_family,
         source_channel: params.source?.source_channel,
@@ -307,7 +312,18 @@ export async function createOrUpdateContactFromDirectIntake(
       state:                   params.state ?? null,
       zip_code:                params.zip_code ?? null,
       contact_type:            params.contact_type ?? "buyer",
-      status:                  params.status ?? "new",
+      // OWNER RULING, verbatim: "invitation from a lead converting to a contact
+      // makes sense for status qualified but any other new contacts coming in from
+      // forms, lead magnets, other real estate sites, etc. haven't been qualified
+      // yet." THIS IS THE "any other" DOOR — direct intake and the CRM manual add
+      // both land here, and `params.status` is caller-supplied through a
+      // "use server" export, i.e. a public HTTP endpoint (§4). Removing "Qualified"
+      // from the add dialog's dropdown (app/crm/page.tsx) hides the handle; this
+      // closes the door. 'qualified' is earned by the lead→contact CONVERSION alone
+      // and stamped in exactly one place, lib/portal/portal-invite-core.ts:77
+      // stampQualifiedIfLeadConverted, off the `leads.contact_id` marker. The
+      // fallback is this path's OWN prior default, so no other status moves.
+      status:                  statusForNewContact(params.status, "new"),
       contact_persona:         params.contact_persona ?? null,
       notes:                   params.notes ?? null,
       preferred_channel:       params.preferred_channel ?? null,
