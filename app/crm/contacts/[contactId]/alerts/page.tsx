@@ -92,7 +92,14 @@ export default function BuyerAlertsPage() {
   // Derived from URL — brokerage_id pulled from first alert or contact
   const [brokerageId, setBrokerageId] = useState<string>("")
   const [alerts, setAlerts]           = useState<AlertRecord[]>([])
-  const [idxStatus, setIdxStatus]     = useState<"checking" | "configured" | "not_configured">("checking")
+  // WHICH SOURCE ANSWERS THIS TENANT'S ALERTS — not "is IDX configured".
+  // This banner read an IDX-only probe and said "IDX Not Configured" whenever a
+  // brokerage had no IDX Broker account. Alerts are now served by the platform's
+  // property provider for exactly those brokerages, so that wording told an
+  // agent their alerts were broken while they ran. The state carries the source
+  // the sweep itself resolves, plus the sentence explaining it.
+  const [sourceStatus, setSourceStatus] = useState<"checking" | "idx" | "rentcast" | "none" | "unreadable">("checking")
+  const [sourceDetail, setSourceDetail] = useState<string>("")
   const [isAdmin, setIsAdmin]         = useState(false)
   const [loading, setLoading]         = useState(true)
 
@@ -138,12 +145,22 @@ export default function BuyerAlertsPage() {
 
   useEffect(() => { loadAlerts() }, [loadAlerts])
 
-  // IDX status check
+  // Listing-source status check
   useEffect(() => {
     if (!brokerageId) return
-    import("@/app/actions/property-alerts/alert-actions").then(({ testIdxConnection }) => {
-      testIdxConnection(brokerageId).then(r => {
-        setIdxStatus(r.success && r.configured ? "configured" : "not_configured")
+    import("@/app/actions/property-alerts/alert-actions").then(({ resolveAlertListingSourceStatus }) => {
+      resolveAlertListingSourceStatus(brokerageId).then(r => {
+        // A FAILED READ IS NOT "NO SOURCE". The action already distinguishes an
+        // unreadable connection check from an absent one; a thrown/refused call
+        // lands on the same honest "we could not tell" rather than accusing the
+        // brokerage of having nothing connected.
+        if (!r.success) {
+          setSourceStatus("unreadable")
+          setSourceDetail(r.error ?? "The listing source could not be resolved.")
+          return
+        }
+        setSourceStatus((r.source ?? "none") as "idx" | "rentcast" | "none" | "unreadable")
+        setSourceDetail(r.detail ?? "")
       })
     })
   }, [brokerageId])
@@ -356,30 +373,50 @@ export default function BuyerAlertsPage() {
   return (
     <div className="flex flex-col gap-6 p-6 max-w-4xl mx-auto">
 
-      {/* IDX Status Banner */}
-      <div className={`flex items-center gap-3 rounded-lg border px-4 py-3 text-sm font-medium
-        ${idxStatus === "configured"
+      {/* Listing-source banner — which source answers these saved searches */}
+      <div className={`flex items-start gap-3 rounded-lg border px-4 py-3 text-sm font-medium
+        ${sourceStatus === "idx" || sourceStatus === "rentcast"
           ? "border-green-200 bg-green-50 text-green-800"
-          : idxStatus === "not_configured"
+          : sourceStatus === "none" || sourceStatus === "unreadable"
           ? "border-amber-200 bg-amber-50 text-amber-800"
           : "border-border bg-muted/30 text-muted-foreground"}`}>
-        {idxStatus === "configured" && (
+        {sourceStatus === "idx" && (
           <>
-            <span className="h-2 w-2 rounded-full bg-green-500" />
-            Connected to IDX Broker
+            <span className="h-2 w-2 rounded-full bg-green-500 mt-1.5" />
+            <span>
+              Searching IDX Broker
+              {sourceDetail && <span className="block font-normal opacity-80">{sourceDetail}</span>}
+            </span>
           </>
         )}
-        {idxStatus === "not_configured" && (
+        {sourceStatus === "rentcast" && (
           <>
-            <span className="h-2 w-2 rounded-full bg-amber-400" />
-            IDX Not Configured —{" "}
-            {isAdmin
-              ? <a href="/dashboard/settings/integrations/idx-broker" className="underline font-semibold ml-1">Configure Now &rarr;</a>
-              : "Ask your admin to configure IDX Broker"
-            }
+            <span className="h-2 w-2 rounded-full bg-green-500 mt-1.5" />
+            <span>
+              Searching the platform property feed
+              {sourceDetail && <span className="block font-normal opacity-80">{sourceDetail}</span>}
+              {isAdmin && (
+                <a href="/dashboard/settings/integrations/idx-broker" className="underline font-semibold block mt-1">
+                  Connect your own IDX Broker feed &rarr;
+                </a>
+              )}
+            </span>
           </>
         )}
-        {idxStatus === "checking" && "Checking IDX connection..."}
+        {(sourceStatus === "none" || sourceStatus === "unreadable") && (
+          <>
+            <span className="h-2 w-2 rounded-full bg-amber-400 mt-1.5" />
+            <span>
+              {sourceStatus === "none" ? "No property source — these searches cannot run" : "The property source could not be determined"}
+              {sourceDetail && <span className="block font-normal opacity-80">{sourceDetail}</span>}
+              {isAdmin
+                ? <a href="/dashboard/settings/integrations/idx-broker" className="underline font-semibold block mt-1">Configure IDX Broker &rarr;</a>
+                : <span className="block font-normal">Ask your admin to configure a listing source.</span>
+              }
+            </span>
+          </>
+        )}
+        {sourceStatus === "checking" && "Checking which property source answers these searches..."}
       </div>
 
       {/* Header */}

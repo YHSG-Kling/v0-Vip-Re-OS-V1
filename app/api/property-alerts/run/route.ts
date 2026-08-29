@@ -39,6 +39,14 @@ export async function POST(req: NextRequest) {
 
   const stats = await runAllActiveAlerts(frequency, brokerageId)
 
+  // WHICH SOURCE ANSWERED, AND HOW MANY ALERTS COULD NOT BE EVALUATED, are part
+  // of the sweep's own record — `stats` carries `bySource`, `unevaluated` and
+  // `unevaluatedReasons`. A cron whose response said only succeeded/failed could
+  // not distinguish "every buyer's market was quiet" from "no provider answered
+  // for anyone", and on an alert rail those are opposite facts: the second one
+  // means every buyer on the platform was told, silently, that nothing is for
+  // sale. `ok` is the transport result, not a verdict on the sweep — a run with
+  // `unevaluated > 0` did NOT cover those alerts.
   return NextResponse.json({ ok: true, frequency, ...stats })
 }
 

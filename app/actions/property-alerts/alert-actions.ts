@@ -5,6 +5,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { runAlert } from "@/lib/property-alerts/alert-engine"
 import { ensureSmsFirstChannels } from "@/app/actions/instant-property-alerts"
 import { IDXBrokerClient } from "@/lib/idxbroker-client"
+import { RENTCAST_ALERT_KEY_PREFIX } from "@/lib/property-alerts/idx-alert-search"
 
 // ── Auth helpers ─────────────────────────────────────────────────────────────
 //
@@ -21,19 +22,23 @@ import { IDXBrokerClient } from "@/lib/idxbroker-client"
 // contactId, which is an IDOR vulnerability.
 
 async function requireAgent(): Promise<
-  | { ok: true; userId: string; brokerageId: string }
+  | { ok: true; userId: string; brokerageId: string; teamId: string | null }
   | { ok: false; error: string }
 > {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { ok: false, error: "unauthenticated" }
+  // `team_id` is new on this select. It is the middle tier of the IDX ownership
+  // cascade (agent → team → brokerage → platform): a gate asked only at
+  // brokerage scope cannot see a credential filed at team scope, and would then
+  // spend the platform's RentCast on a tenant who owns a feed.
   const { data: u } = await supabase
     .from("users")
-    .select("brokerage_id")
+    .select("brokerage_id, team_id")
     .eq("id", user.id)
     .maybeSingle()
   if (!u?.brokerage_id) return { ok: false, error: "unauthenticated" }
-  return { ok: true, userId: user.id, brokerageId: u.brokerage_id }
+  return { ok: true, userId: user.id, brokerageId: u.brokerage_id, teamId: (u.team_id as string | null) ?? null }
 }
 
 // Verify the caller can access the named alert: either the agent (same
@@ -395,13 +400,29 @@ export async function runAlertNow(alertId: string) {
 }
 
 // ── testIdxConnection ─────────────────────────────────────────────────────────
+//
+// KEPT, AND NARROWED TO ITS ONE HONEST CALLER. This is the "Test connection"
+// button on app/dashboard/settings/integrations/idx-broker/page.tsx: an admin who
+// just entered an IDX Broker key is asking whether THAT key works, so a live IDX
+// call is the whole point and RentCast is irrelevant to the question.
+//
+// It is no longer what the ALERTS screen asks. That screen needs "which source
+// answers these saved searches", which is a different question with a different
+// answer — see resolveAlertListingSourceStatus below.
 export async function testIdxConnection(brokerageId?: string) {
   const auth = await requireAgent()
   if (!auth.ok) return { success: false, error: auth.error }
 
   // Ignore caller-supplied brokerageId — always use session's
   try {
-    const client = await IDXBrokerClient.forBrokerage(auth.brokerageId)
+    // Asked at the FULLEST scope this caller holds, so the test exercises the
+    // same credential the search will actually resolve (agent → team →
+    // brokerage → platform). Testing at brokerage scope while the search runs on
+    // an agent-scope key is a green test over an untested credential.
+    const client = await IDXBrokerClient.forBrokerage(auth.brokerageId, {
+      agentUserId: auth.userId,
+      teamId: auth.teamId,
+    })
     if (!client.isConfigured()) {
       return { success: false, error: "No API key configured for this brokerage" }
     }
@@ -409,6 +430,79 @@ export async function testIdxConnection(brokerageId?: string) {
     return { success: true, configured: true, resultCount: Array.isArray(results) ? results.length : 0 }
   } catch (err: any) {
     return { success: false, error: err?.message ?? "Connection failed" }
+  }
+}
+
+// ── resolveAlertListingSourceStatus ──────────────────────────────────────────
+//
+// THE ALERTS SCREEN'S STATUS, WHICH USED TO BE `testIdxConnection`'s. That probe
+// asked exactly one question — "is IDX Broker configured for this brokerage?" —
+// and drove a banner reading "IDX Not Configured". That was the whole truth
+// while this lane was IDX-only. It is a LIE now: property alerts are served by
+// the platform's RentCast for every tenant that has not connected an IDX Broker
+// account, so the screen would tell an agent their alerts are broken while they
+// run perfectly.
+//
+// It asks the SAME gate and the SAME selector the search itself asks
+// (lib/property/rentcast-eligibility.ts, lib/property/listing-source.ts), so the
+// banner and the sweep can never disagree about which source answers.
+//
+// NO PROVIDER CALL IS MADE. The IDX probe issues a live search; the eligibility
+// gate is a credential read and an env read, so this status costs no vendor
+// spend and cannot be metered against the tenant.
+export async function resolveAlertListingSourceStatus(brokerageId?: string) {
+  const auth = await requireAgent()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  // Ignore caller-supplied brokerageId — always use the session's (§4).
+  try {
+    const { resolveRentcastEligibility } = await import("@/lib/property/rentcast-eligibility")
+    const { resolveListingSource } = await import("@/lib/property/listing-source")
+    const eligibility = await resolveRentcastEligibility({
+      brokerageId: auth.brokerageId,
+      agentUserId: auth.userId,
+      teamId: auth.teamId,
+    })
+
+    // FAIL CLOSED, AND SAY SO. "We could not read the connection" is not
+    // "nothing is connected"; the sweep refuses in this state, so the banner
+    // must not show a working lane.
+    if (eligibility.idx.status === "unreadable") {
+      return { success: true, source: "unreadable" as const, detail: eligibility.detail }
+    }
+
+    let source = resolveListingSource({
+      hasIdx: eligibility.idx.status === "connected",
+      hasRentcast: eligibility.eligible,
+    })
+    let idxCredentialTier: "tenant" | "platform_floor" | null =
+      source === "idx" ? "tenant" : null
+
+    // The platform IDX floor, consulted exactly where the search module consults
+    // it: only when the answer would otherwise be "no source".
+    if (source === "none") {
+      const client = await IDXBrokerClient.forBrokerage(auth.brokerageId, {
+        agentUserId: auth.userId,
+        teamId: auth.teamId,
+      })
+      if (client.isConfigured()) {
+        source = "idx"
+        idxCredentialTier = "platform_floor"
+      }
+    }
+
+    const detail =
+      source === "idx" && idxCredentialTier === "tenant"
+        ? "Property alerts search this brokerage's own IDX Broker feed."
+        : source === "idx"
+        ? "Property alerts search the platform's IDX Broker account. Connecting your own IDX Broker credentials switches them to your board."
+        : source === "rentcast"
+        ? "Property alerts are served by the platform's property data provider. Connecting your own IDX Broker credentials switches them to your board."
+        : `No property source can answer alerts for this brokerage right now. ${eligibility.detail}`
+
+    return { success: true, source, idxCredentialTier, detail }
+  } catch (err: any) {
+    return { success: false, error: err?.message ?? "Could not resolve the listing source" }
   }
 }
 
@@ -423,10 +517,37 @@ export async function previewAlertCriteria(
   try {
     const { searchIDXForAlert } = await import("@/lib/property-alerts/idx-alert-search")
     const { scorePropertyForAlert } = await import("@/lib/property-alerts/alert-matcher")
-    // Always use session brokerage
-    const result = await searchIDXForAlert("preview", criteria, auth.brokerageId)
+
+    // The saved search has no state column and RentCast cannot search a city
+    // without one, so the tenant's own state is resolved here — the same source
+    // the engine uses. The error is read: an unreadable brokerage row must not
+    // silently become "this tenant has no state".
+    const svc = createServiceClient()
+    const { data: brokerage, error: brokerageErr } = await svc
+      .from("brokerages").select("state").eq("id", auth.brokerageId).maybeSingle()
+    if (brokerageErr) {
+      console.error(`[alerts] preview: brokerage state read refused (${brokerageErr.message})`)
+    }
+
+    // Always use the session's brokerage, and ask the gate at the FULLEST scope
+    // this caller holds so an agent's own IDX connection is seen.
+    const result = await searchIDXForAlert("preview", criteria, {
+      brokerageId: auth.brokerageId,
+      agentUserId: auth.userId,
+      teamId: auth.teamId,
+      state: (brokerage?.state as string | null | undefined) ?? null,
+    })
+
+    // A REFUSAL IS NOT A PREVIEW OF ZERO. An agent tuning a saved search must
+    // not read "0 matches" when nothing was searched — that is the same lie the
+    // cron sweep used to tell the buyer, on the screen where the search is
+    // written.
+    if (result.refusal) {
+      return { success: false, matchCount: 0, source: result.source, error: result.error ?? result.refusal }
+    }
+
     const matched = result.results.filter(p => scorePropertyForAlert(p, criteria).qualifies).length
-    return { success: true, matchCount: matched, configured: result.api_called, error: result.error }
+    return { success: true, matchCount: matched, source: result.source, configured: result.api_called, error: result.error }
   } catch (err: any) {
     return { success: false, matchCount: 0, error: err?.message }
   }
@@ -467,9 +588,23 @@ export async function prefillFromProfile(contactId: string) {
 // worse, silently attach a buyer to the wrong property.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** PURE-ish: the property identity for a result row, in the form the kernel wants. */
+/** PURE-ish: the property identity for a result row, in the form the kernel wants.
+ *
+ *  THE SOURCE IS PART OF THE IDENTITY. `recordBuyerPropertyAction` parses
+ *  `ext_<source>_<id>` and files `<source>` in `saved_properties.source`, so a
+ *  handle is not just a key — it is the attribution of the buyer's save. Since
+ *  the alert rail gained the platform's RentCast tier beside IDX
+ *  (lib/property-alerts/idx-alert-search.ts), a bare `ext_idx_` on every outside
+ *  match would record every RentCast save as an IDX save, and split it from the
+ *  `rentcast`-sourced row the market-watch lane writes for the same home
+ *  (lib/buyer-search/external-match.ts). property_alert_results carries no
+ *  source column, so the source travels in the key's namespace instead — see
+ *  RENTCAST_ALERT_KEY_PREFIX for why that namespace exists. */
 function resultPropertyId(row: { listing_id: string | null; mls_number: string | null }): string | null {
   if (row.listing_id) return row.listing_id          // ours — a real listings.id
+  if (row.mls_number?.startsWith(RENTCAST_ALERT_KEY_PREFIX)) {
+    return `ext_rentcast_${row.mls_number.slice(RENTCAST_ALERT_KEY_PREFIX.length)}`
+  }
   if (row.mls_number) return `ext_idx_${row.mls_number}` // outside — the IDX feed's id
   return null
 }
