@@ -181,3 +181,63 @@ export async function POST(request: NextRequest) {
     softWarning: cap.soft_warning ? cap.message : undefined,
   })
 }
+
+/**
+ * PATCH /api/agent-assistant/session — CLOSE a voice-assistant session.
+ *
+ * `agent_assistant_sessions.ended_at` was READ BY CODE AND WRITTEN BY NOBODY
+ * (census 1b). The tool-call webhook reads it twice — `.is("ended_at", null)` on
+ * the conversation lookup and again on the unattributed-session fallback
+ * (app/api/agent-assistant/tool-call/route.ts:90,106) — so with no writer, every
+ * session this route has ever opened is still OPEN.
+ *
+ * That is not a cosmetic ledger gap. The fallback picks "the most-recent
+ * unattributed open session" with NO tenant and NO user predicate — ElevenLabs
+ * does not pass our session id, so recency is the only attribution there is. An
+ * open-forever backlog is exactly the set that fallback searches, so a session
+ * abandoned days ago by another user was a candidate owner for today's first
+ * tool call.
+ *
+ * Closing is not an egress and mints nothing, but it still writes a row, so it
+ * is gated the same way the open is and scoped to the caller's OWN session: the
+ * id is caller-supplied into an authenticated route, so the predicate carries
+ * `user_id` from the SESSION (§4) and never trusts the body for whose session
+ * this is. `ended_at IS NULL` makes a double-fire (the SDK teardown and the
+ * unmount cleanup both run) idempotent rather than overwriting the real end
+ * time with a later one.
+ */
+export async function PATCH(request: NextRequest) {
+  const ctx = await resolveWriteContextForTenant()
+  if (!ctx.ok) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
+  const body = (await request.json().catch(() => ({}))) as { sessionId?: string | null }
+  const sessionId = typeof body.sessionId === "string" ? body.sessionId : null
+  if (!sessionId) {
+    return NextResponse.json({ error: "sessionId required" }, { status: 400 })
+  }
+
+  const supabase = createServiceClient()
+  // `.select()` the update and COUNT it: an UPDATE that matches NOTHING also
+  // resolves with error null and empty data, byte-identical to one that worked
+  // (§3), and here a zero-row result means the tenant/owner predicate refused —
+  // somebody else's session id — which the caller must not read as "closed".
+  const { data: closed, error } = await supabase
+    .from("agent_assistant_sessions")
+    .update({ ended_at: new Date().toISOString() })
+    .eq("id", sessionId)
+    .eq("user_id", ctx.userId)
+    .is("ended_at", null)
+    .select("id")
+
+  if (error) {
+    console.error("[agent-assistant] session close REFUSED — the session stays open to the attribution fallback:", error.message)
+    return NextResponse.json({ error: "Could not close the session" }, { status: 500 })
+  }
+
+  // Zero rows is the ALREADY-CLOSED case as often as it is the wrong-owner case,
+  // and the browser cannot tell them apart or act on either, so it is reported
+  // as a non-error with the count rather than as a failure.
+  return NextResponse.json({ ok: true, closed: (closed ?? []).length })
+}

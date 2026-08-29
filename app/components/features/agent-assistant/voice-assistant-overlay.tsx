@@ -19,7 +19,14 @@
  * Lifecycle:
  *   open → POST /session → start Conv-AI session → contextual update
  *        → user talks → conversation messages stream into the transcript
- *   close → endSession() → component unmounts
+ *   close → endSession() → PATCH /session (stamp ended_at) → component unmounts
+ *
+ * THE CLOSE HALF USED TO BE MISSING. `agent_assistant_sessions.ended_at` was
+ * read by the tool-call webhook and written by nobody, so every session this
+ * overlay opened stayed open forever — and the webhook's unattributed-session
+ * fallback attributes an incoming ElevenLabs conversation to "the most recent
+ * OPEN session", with no user predicate available to it. An ever-growing pile of
+ * never-closed sessions is precisely the pile that fallback searches.
  */
 
 import { useEffect, useRef, useState, useCallback } from "react"
@@ -44,12 +51,37 @@ interface TranscriptLine {
 
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
 
+/** Stamp `ended_at` on the assistant session row. Fire-and-forget on purpose:
+ *  the user has already closed the overlay and there is nothing to tell them,
+ *  and it runs on unmount, where an unresolved promise would be dropped by the
+ *  browser — `keepalive` is what lets it survive the teardown (and a page
+ *  navigation) long enough to land. Idempotent server-side, so the two teardown
+ *  paths firing together is safe. */
+function closeAssistantSession(sessionId: string | null) {
+  if (!sessionId) return
+  try {
+    void fetch("/api/agent-assistant/session", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId }),
+      keepalive: true,
+    }).catch(() => {})
+  } catch {
+    // The conversation is already torn down; a failed close is recoverable by
+    // the session's own staleness bound in the tool-call webhook.
+  }
+}
+
 export function VoiceAssistantOverlay() {
   const { voiceOverlayOpen, setVoiceOverlayOpen } = useShell()
   const pathname = usePathname()
   const searchParams = useSearchParams()
 
   const conversationRef = useRef<Awaited<ReturnType<typeof Conversation.startSession>> | null>(null)
+  /** The agent_assistant_sessions row this overlay opened, so teardown can close
+   *  it. A ref, not state: the cleanup function must see the id without the
+   *  effect re-running (which would restart the voice session). */
+  const sessionIdRef = useRef<string | null>(null)
   const [status, setStatus] = useState<"idle" | "connecting" | "connected" | "ended" | "error">("idle")
   const [error, setError] = useState<string | null>(null)
   const [softWarning, setSoftWarning] = useState<string | null>(null)
@@ -60,9 +92,11 @@ export function VoiceAssistantOverlay() {
   // ── Open / close lifecycle ───────────────────────────────────────────────
   useEffect(() => {
     if (!voiceOverlayOpen) {
-      // Closing: tear down any active conversation.
+      // Closing: tear down any active conversation AND close the ledger row.
       conversationRef.current?.endSession().catch(() => {})
       conversationRef.current = null
+      closeAssistantSession(sessionIdRef.current)
+      sessionIdRef.current = null
       setStatus("idle")
       setTranscript([])
       setError(null)
@@ -91,7 +125,15 @@ export function VoiceAssistantOverlay() {
           return
         }
         const session = (await res.json()) as SessionResult
-        if (cancelled) return
+        if (cancelled) {
+          // The overlay closed while the session was minting. The row exists on
+          // the server whether or not this component still wants it, so it is
+          // closed here rather than left open for the webhook's recency-based
+          // attribution fallback to find.
+          closeAssistantSession(session.sessionId)
+          return
+        }
+        sessionIdRef.current = session.sessionId
         if (session.softWarning) setSoftWarning(session.softWarning)
 
         const conversation = await Conversation.startSession({
@@ -157,6 +199,8 @@ export function VoiceAssistantOverlay() {
       cancelled = true
       conversationRef.current?.endSession().catch(() => {})
       conversationRef.current = null
+      closeAssistantSession(sessionIdRef.current)
+      sessionIdRef.current = null
     }
     // We intentionally don't depend on pathname/searchParams here — the user
     // opened the overlay on a specific page; navigation while the overlay is

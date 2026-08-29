@@ -308,9 +308,26 @@ export async function loadUniversalInbox(
     // ── 5. messages (sms, email, ai, chat) ────────────────────────────────────
     const fetchMessages = !skipContactLanes && (channel === "all" || ["sms", "email", "ai", "chat"].includes(channel))
     if (fetchMessages) {
+      // TOMBSTONE — `messages.sentiment` removed from this select.
+      //
+      // It was READ BY CODE AND WRITTEN BY NOBODY (census 1b): no writer in the
+      // tree ever names that column, so `sentiment` on every messages-lane row
+      // of this feed was permanently null while the VOICE lane below (step 6)
+      // filled the same field from `voice_calls.sentiment`, which IS written.
+      // A reader comparing the two lanes would have concluded that text threads
+      // are never analysed for sentiment — the opposite of the truth.
+      //
+      // SURVIVOR: sentiment on a text thread is measured at the THREAD level, not
+      // per message — `conversation_insights.overall_sentiment`, written for
+      // every analysed conversation at lib/intelligence/conversation-insights.ts:429
+      // (insert) and :459 (update), and rendered on the inbox slideout and the
+      // communications-intelligence board. Stamping a thread-level reading onto
+      // each individual message would be a second, wrong spelling of it (§6),
+      // so this lane leaves the field unset rather than filling it with a value
+      // that is not about this message.
       let q = supabase
         .from("messages")
-        .select("id, contact_id, type, direction, body, created_at, status, sentiment, agent_id")
+        .select("id, contact_id, type, direction, body, created_at, status, agent_id")
         .order("created_at", { ascending: false })
         .limit(limit)
       if (contactIds) q = q.in("contact_id", contactIds)
@@ -329,7 +346,8 @@ export async function loadUniversalInbox(
           created_at: m.created_at,
           read: m.status !== "unread",
           source_table: "messages",
-          sentiment: m.sentiment,
+          // `sentiment` deliberately unset — see the tombstone on this lane's
+          // select. Thread sentiment lives on conversation_insights.overall_sentiment.
         })
       }
     }

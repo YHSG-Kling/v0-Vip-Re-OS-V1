@@ -23,6 +23,17 @@ export const VoiceIntelSchema = z.object({
   urgencyScore: z.number().min(0).max(100).describe("How soon this person intends to act (0=no timeline, 100=this week)"),
   coachingScore: z.number().min(0).max(100).describe("How well the conversation served the caller (clarity, next step secured)"),
   intentPrimary: z.string().describe("One phrase: what the caller wanted (e.g. book showing, price question, sell home, support)"),
+  // SECOND INTENT + NEXT ACTION. Both columns were READ BY CODE AND WRITTEN BY
+  // NOBODY (census 1b): app/dashboard/isa/page.tsx:227 selects
+  // `intent_secondary` on every ISA call row and
+  // app/dashboard/communications/handoffs/page.tsx:77 selects
+  // `suggested_next_action` on every contact's calls — so the ISA console's
+  // second-intent column and the handoff queue's "what to do next" both
+  // rendered a dash on every row, which reads as "the AI had no suggestion"
+  // rather than "nobody ever asked it for one". The extractor already reads the
+  // whole transcript; asking for these two costs no extra call.
+  intentSecondary: z.string().nullable().describe("A SECOND thing the caller wanted, one phrase, or null if the call had only one intent — do not restate the primary"),
+  suggestedNextAction: z.string().describe("The single most useful thing the agent should do next, phrased as an instruction (e.g. 'Send the Maple St disclosure and call back Thursday')"),
   keyTopics: z.array(z.string()).max(6),
 })
 
@@ -54,7 +65,7 @@ DIRECTION: ${direction ?? "unknown"}
 TRANSCRIPT:
 ${transcription.slice(0, 12_000)}
 
-Extract: a 2-sentence summary; overall caller sentiment; the caller's objections/concerns (short phrases, empty if none); urgency 0-100 (how soon they intend to act); a coaching score 0-100 (did the conversation serve the caller — clarity, questions answered, a next step secured); the caller's primary intent in one phrase; up to 6 key topics.`,
+Extract: a 2-sentence summary; overall caller sentiment; the caller's objections/concerns (short phrases, empty if none); urgency 0-100 (how soon they intend to act); a coaching score 0-100 (did the conversation serve the caller — clarity, questions answered, a next step secured); the caller's primary intent in one phrase; a SECOND intent in one phrase if the call genuinely had one, otherwise null; the single most useful next action for the agent, phrased as an instruction; up to 6 key topics.`,
   })
   return object
 }
@@ -82,7 +93,7 @@ export async function analyzeVoiceCallRow(svc: any, call: {
 
     const object = await extractVoiceIntel(call.transcription, call.direction)
 
-    const { error } = await svc.from("call_analyses").insert({
+    const { data: analysisRow, error } = await svc.from("call_analyses").insert({
       voice_call_id: call.id,
       brokerage_id: call.brokerage_id,
       contact_id: call.contact_id,
@@ -96,11 +107,47 @@ export async function analyzeVoiceCallRow(svc: any, call: {
       urgency_score: Math.round(object.urgencyScore),
       coaching_score: Math.round(object.coachingScore),
       intent_primary: object.intentPrimary.slice(0, 120),
+      // The two columns the ISA console and the handoff queue read and nobody
+      // wrote — see VoiceIntelSchema above. A single-intent call stores NULL
+      // rather than a repeat of the primary: the console renders a dash for
+      // "there was only one intent", which is true, where a duplicate would be
+      // a fabricated second one.
+      intent_secondary: (object.intentSecondary ?? "").trim() ? object.intentSecondary!.trim().slice(0, 120) : null,
+      suggested_next_action: object.suggestedNextAction.slice(0, 600),
       key_topics: object.keyTopics,
       analyzed_at: new Date().toISOString(),
       analyzed_by: provenance,
     })
+      // The row id is needed to hang the coaching insights off this analysis —
+      // call_coaching_insights.call_analysis_id is NOT NULL.
+      .select("id")
+      .maybeSingle()
     if (error) return { ok: false, error: error.message }
+
+    // COACHING WRITTEN WHERE THE FACT BECOMES KNOWN. call_coaching_insights had
+    // six readers and no writer, so every coaching surface in the OS rendered
+    // "nothing to improve" permanently. The projection is pure and grounded in
+    // the analysis just written — see lib/voice/call-coaching.ts. Best-effort:
+    // a coaching write that fails must not undo a stored analysis, but it is
+    // never silent.
+    const analysisId = (analysisRow as { id?: string } | null)?.id ?? null
+    if (analysisId) {
+      const { writeCallCoachingInsights } = await import("@/lib/voice/call-coaching")
+      const coached = await writeCallCoachingInsights(svc, {
+        callAnalysisId: analysisId,
+        brokerageId: call.brokerage_id,
+        agentId: call.agent_id, // agents.id — the class every coaching reader filters on
+        facts: {
+          objections: object.objections,
+          coachingScore: Math.round(object.coachingScore),
+          sentiment: object.sentiment,
+          urgencyScore: Math.round(object.urgencyScore),
+          suggestedNextAction: object.suggestedNextAction,
+        },
+      })
+      if (coached.error) console.error("[voice-intel] coaching insights NOT written:", coached.error)
+    }
+
     return { ok: true, intel: { urgencyScore: Math.round(object.urgencyScore), intentPrimary: object.intentPrimary, summary: object.summary } }
   } catch (e: any) {
     return { ok: false, error: e?.message ?? "analysis failed" }

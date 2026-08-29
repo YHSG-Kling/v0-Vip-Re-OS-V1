@@ -233,6 +233,36 @@ Return a JSON object:
 
     return { success: true, extracted, confidence, analysisType }
   } catch (error) {
+    // ── THE FAILURE HALF OF THE EXTRACTION LOG ──────────────────────────────
+    //
+    // `document_extraction_log.error_message` was READ BY CODE AND WRITTEN BY
+    // NOBODY (census 1b) — app/portal/[contactId]/documents/page.tsx:68 selects
+    // it on every extraction the client can see. It had no writer because BOTH
+    // writers of this table (here and app/actions/documents.ts:201) only ever
+    // logged the SUCCESS path, hardcoding processing_status 'completed'. A
+    // document the AI could not read produced no row at all, so the extraction
+    // ledger recorded only extractions that worked — the one shape of audit
+    // trail that cannot be audited.
+    //
+    // 'failed' is a live value of the processing_status CHECK
+    // (scripts/check-vocabularies.ts:662), so this needs no migration.
+    //
+    // The message is the thrown error's own text, truncated. It is written for
+    // the agent and the audit trail; the client portal shows it as "we could not
+    // read this document", never a raw stack.
+    const message = error instanceof Error ? error.message : String(error ?? "extraction failed")
+    const { error: failLogErr } = await supabase.from("document_extraction_log").insert({
+      transaction_doc_id: params.documentId,
+      transaction_id: params.transactionId,
+      brokerage_id: wc.brokerageId,
+      extraction_method: "ai_claude",
+      processing_status: "failed",
+      error_message: message.slice(0, 2000),
+      processed_at: new Date().toISOString(),
+    })
+    if (failLogErr) {
+      console.error("[analyzeTransactionDocument] FAILURE row not written either — this extraction failure is unrecorded:", failLogErr.message)
+    }
     return handleError(error, "analyzeTransactionDocument")
   }
 }

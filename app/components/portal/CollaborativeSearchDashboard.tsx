@@ -65,6 +65,7 @@ import {
   getConsensus,
   markAsFinalist,
   trackPortalActivity,
+  closeCollaborativeSearch,
 } from "@/app/actions/collaborative-search"
 
 export interface SavedPropertyOption {
@@ -176,6 +177,32 @@ export function CollaborativeSearchDashboard({
     setSearches((prev) =>
       prev.map((s) => (s.id === freshSearch.id ? { ...s, ...freshSearch } : s)),
     )
+  }
+
+  /**
+   * Close the active search. Until this existed, `collaborative_searches.status`
+   * had a reader (`getCollaborativeSearches` filters status='active') and no
+   * writer at all, so a finished family search stayed at the top of this
+   * dashboard forever — there was no way to say "we bought it" or "we stopped
+   * looking".
+   */
+  async function handleCloseSearch(status: "completed" | "archived") {
+    if (!activeSearch) return
+    setError(null)
+    setBusy(true)
+    try {
+      const result = await closeCollaborativeSearch(activeSearch.id, status)
+      if (result.error) {
+        setError(result.error)
+        return
+      }
+      // The closed search drops out of the active list, so the selection has to
+      // be rebuilt rather than kept — reload rather than patching state.
+      setActiveSearch(null)
+      await loadSearches()
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function handleCreateSearch() {
@@ -457,6 +484,34 @@ export function CollaborativeSearchDashboard({
             <SlidersHorizontal className="h-4 w-4 mr-2" />
             {showCriteria ? "Hide criteria" : "Criteria"}
           </Button>
+          {/* CLOSING A SEARCH — the writer `collaborative_searches.status` never
+              had. The list above filters status='active', so until now a search
+              could only ever be created, and a family that had already bought
+              still saw their old hunt at the top of the portal. Both terminal
+              states are real values of the live CHECK. */}
+          {activeSearch && (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busy}
+                onClick={() => handleCloseSearch("completed")}
+                title="We found our home — close this search"
+              >
+                <Trophy className="h-4 w-4 mr-2" />
+                We found it
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={busy}
+                onClick={() => handleCloseSearch("archived")}
+                title="Stop showing this search — nothing is deleted"
+              >
+                Archive
+              </Button>
+            </>
+          )}
         </div>
 
         <Dialog open={showInviteDialog} onOpenChange={setShowInviteDialog}>

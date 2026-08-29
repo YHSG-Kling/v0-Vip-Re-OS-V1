@@ -61,8 +61,13 @@ interface Conversation {
   unread_count: number
   last_message_at: string
   last_message_preview: string | null
-  sentiment: string | null
-  urgency_score: number | null
+  /** conversation_insights.escalation_urgency — low | medium | high | critical.
+   *  Replaces `conversations.urgency_score`, which nothing writes; see the note
+   *  on the inbox query. */
+  escalation_urgency: string | null
+  /** conversation_insights.escalation_recommended — the analyser's own call that
+   *  this thread needs a human. */
+  escalation_recommended: boolean
   contact: {
     id: string
     first_name: string | null
@@ -178,15 +183,43 @@ export function UnifiedInboxSlideOut({ open, onOpenChange }: Props) {
       const supabase = createClient()
       // conversations has no `channel` (modeled as `type`) or `last_message_preview`
       // (derived from the joined messages) — mirrors the canonical inbox hub.
-      const { data } = await supabase
+      // ── THE URGENCY BADGE READ A COLUMN NOBODY WRITES ──────────────────────
+      //
+      // This query selected `conversations.sentiment` and
+      // `conversations.urgency_score`. Both were READ BY CODE AND WRITTEN BY
+      // NOBODY (census 1b) — the only writers of a conversations row
+      // (lib/kernel/conversation-thread.ts:63, app/api/webhooks/meta-dm/route.ts)
+      // name neither. The "urgent" badge below therefore never appeared, and
+      // it could not have appeared even with data: `urgency_score` is an
+      // INTEGER column and the test was `>= 0.7`, a 0-1 scale.
+      //
+      // `sentiment` was worse than dead — it was selected, carried through this
+      // mapper into component state, and never rendered anywhere.
+      //
+      // SURVIVOR: `conversation_insights`, which is genuinely written for every
+      // analysed thread by lib/intelligence/conversation-insights.ts:429/459 —
+      // `overall_sentiment` for the sentiment reading and `escalation_urgency` /
+      // `escalation_recommended` for urgency, both DERIVED there from the
+      // thread's own messages. The embed is unambiguous: conversation_insights
+      // has exactly one FK to conversations (conversation_insights_conversation_id_fkey),
+      // so this cannot hit PGRST201.
+      const { data, error } = await supabase
         .from("conversations")
         .select(
-          "id, type, unread_count, last_message_at, sentiment, urgency_score, " +
+          "id, type, unread_count, last_message_at, " +
+            "conversation_insights(escalation_urgency, escalation_recommended), " +
             "contacts(id, first_name, last_name), messages!messages_conversation_id_fkey(body, created_at)"
         )
         .order("last_message_at", { ascending: false })
         .limit(20)
 
+      // supabase-js RESOLVES a refused read, so without reading `error` an RLS
+      // refusal and an empty inbox are the same blank panel.
+      if (error) {
+        console.error("[inbox] conversations read refused:", error.message)
+        setConversations([])
+        return
+      }
       if (!data) {
         setConversations([])
         return
@@ -197,14 +230,16 @@ export function UnifiedInboxSlideOut({ open, onOpenChange }: Props) {
           type: string
           unread_count: number
           last_message_at: string
-          sentiment: string | null
-          urgency_score: number | null
+          conversation_insights: { escalation_urgency: string | null; escalation_recommended: boolean | null }[] | null
           contacts: { id: string; first_name: string | null; last_name: string | null } | null
           messages: { body: string | null; created_at: string }[] | null
         }>).map((row) => {
           const latest = (row.messages ?? [])
             .slice()
             .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0]
+          // One insight row per conversation, but PostgREST returns the embed as
+          // an array; an unanalysed thread has none and is honestly not urgent.
+          const insight = (row.conversation_insights ?? [])[0] ?? null
           return {
             id: row.id,
             type: row.type,
@@ -212,8 +247,8 @@ export function UnifiedInboxSlideOut({ open, onOpenChange }: Props) {
             unread_count: row.unread_count ?? 0,
             last_message_at: row.last_message_at,
             last_message_preview: latest?.body ?? null,
-            sentiment: row.sentiment,
-            urgency_score: row.urgency_score,
+            escalation_urgency: insight?.escalation_urgency ?? null,
+            escalation_recommended: insight?.escalation_recommended ?? false,
             contact: row.contacts,
           }
         })
@@ -550,7 +585,16 @@ export function UnifiedInboxSlideOut({ open, onOpenChange }: Props) {
                               <span className={`text-sm truncate ${c.unread_count > 0 ? "font-semibold" : "font-medium"}`}>
                                 {name}
                               </span>
-                              {c.urgency_score != null && c.urgency_score >= 0.7 && (
+                              {/* The urgency the thread ANALYSER recorded, not a
+                                  numeric column nothing writes. `high` and
+                                  `critical` are two of the four live values of
+                                  conversation_insights.escalation_urgency; an
+                                  explicit escalation_recommended also counts,
+                                  because that is the analyser saying outright
+                                  that a human is needed. */}
+                              {(c.escalation_recommended ||
+                                c.escalation_urgency === "high" ||
+                                c.escalation_urgency === "critical") && (
                                 <Badge variant="outline" className="text-[10px] text-red-600">
                                   urgent
                                 </Badge>

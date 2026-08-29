@@ -46,6 +46,13 @@ interface ToolCallBody {
   args?: Record<string, unknown>
 }
 
+/** How far back the unattributed-session fallback may reach. The session row is
+ *  created inside the same click that starts the Conv-AI conversation, so the
+ *  first tool call follows it by seconds; this is generous enough for a slow
+ *  provider handshake and short enough that a session left open by a crashed
+ *  tab is never mistaken for the live one. */
+const SESSION_ATTRIBUTION_WINDOW_MS = 15 * 60 * 1000
+
 type SessionRow = {
   id: string
   brokerage_id: string
@@ -102,11 +109,22 @@ export async function POST(request: NextRequest) {
     // tool call). This is best-effort — a defensive secondary match would
     // tie the conversation to the user via cookie/jwt if we had one, but the
     // webhook is unauthenticated by design.
+    // AGE BOUND. `ended_at` now has a writer (the overlay PATCHes
+    // /api/agent-assistant/session on teardown), but a crashed tab or a killed
+    // browser still leaves a row open, and "the most recent open session" with
+    // no user predicate is the whole attribution here. A session older than the
+    // window below cannot be the one whose first tool call is arriving now —
+    // sessions are created SECONDS before it — so an abandoned row is no longer
+    // a candidate owner for somebody else's conversation. Better to fail to
+    // attribute (the caller is told to re-open the assistant) than to attribute
+    // to the wrong staff user.
+    const attributionFloor = new Date(Date.now() - SESSION_ATTRIBUTION_WINDOW_MS).toISOString()
     const { data: pending } = await supabase
       .from("agent_assistant_sessions")
       .select("id, brokerage_id, agent_id, user_id, conversation_id, tool_call_count")
       .is("conversation_id", null)
       .is("ended_at", null)
+      .gte("started_at", attributionFloor)
       .order("started_at", { ascending: false })
       .limit(1)
       .maybeSingle()

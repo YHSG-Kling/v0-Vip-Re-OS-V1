@@ -154,6 +154,89 @@ export async function getCollaborativeSearchById(searchId: string) {
   return data
 }
 
+/**
+ * CLOSE a collaborative search — the terminal half this feature never had.
+ *
+ * `collaborative_searches.status` was READ BY CODE AND WRITTEN BY NOBODY
+ * (census 1b): `getCollaborativeSearches` filters `.eq("status", "active")`
+ * (line ~116) and the only writer of a search row —
+ * `createCollaborativeSearch` above — never names the column, so every search
+ * ever created took the DDL default `'active'` and STAYED active for the life of
+ * the account. A family that bought a house six months ago still had their old
+ * search sitting at the top of their portal, and the filter that exists to hide
+ * finished searches could never hide one.
+ *
+ * The vocabulary is not invented here: the live CHECK admits exactly
+ * `active | archived | completed` (scripts/check-vocabularies.ts:455), so the
+ * database has been expecting this transition all along.
+ *
+ *   completed — they found the home. The happy terminal state.
+ *   archived  — they stopped looking. Hidden, not deleted; the ratings and the
+ *               consensus history stay on the row.
+ *
+ * GATED exactly like the create: `requireContactAccess` proves the caller is
+ * that contact or staff in the contact's brokerage BEFORE anything is written,
+ * and the tenant comes from the gate, never from an argument (§4). The service
+ * client is used for the same reason the create documents — a portal contact's
+ * own `current_user_brokerage_id()` need not be the contact's — and the UPDATE
+ * is re-scoped by the gate's brokerage so the bypass can only touch the tenant
+ * the gate proved.
+ */
+export async function closeCollaborativeSearch(
+  searchId: string,
+  status: "completed" | "archived",
+): Promise<{ success?: true; error?: string }> {
+  if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not yet available." }
+  if (status !== "completed" && status !== "archived") {
+    // Fail closed on a value outside the live CHECK rather than letting the
+    // database refuse the whole statement (23514) and reporting success.
+    return { error: "A search can only be completed or archived." }
+  }
+
+  const { createServiceClient } = await import("@/lib/supabase/service")
+  const svc = createServiceClient()
+
+  // Resolve the search's OWNING contact from the row, then gate on THAT — the
+  // searchId is caller-supplied, so the contact it belongs to is read from the
+  // database and never taken from the caller.
+  const { data: search, error: readError } = await svc
+    .from("collaborative_searches")
+    .select("id, contact_id, brokerage_id, status")
+    .eq("id", searchId)
+    .maybeSingle()
+  if (readError) return { error: readError.message }
+  if (!search?.contact_id) return { error: "Search not found." }
+
+  const { requireContactAccess } = await import("@/lib/portal/require-contact-access")
+  const access = await requireContactAccess(search.contact_id as string)
+  if (!access.ok) return { error: access.error }
+  if (search.brokerage_id && search.brokerage_id !== access.brokerageId) {
+    return { error: "Forbidden" }
+  }
+
+  // `.select()` the UPDATE and COUNT it. An update matching nothing resolves
+  // with error null and empty data, byte-identical to one that worked (§3) —
+  // and here zero rows means the search was already closed by somebody else,
+  // which the caller needs to know rather than be told "done".
+  const { data: updated, error } = await svc
+    .from("collaborative_searches")
+    .update({ status, updated_at: new Date().toISOString() })
+    .eq("id", searchId)
+    .eq("brokerage_id", access.brokerageId)
+    .eq("status", "active")
+    .select("id")
+  if (error) {
+    console.error("[v0] Error closing collaborative search:", error.message)
+    return { error: error.message }
+  }
+  if ((updated ?? []).length === 0) {
+    return { error: "That search is no longer active." }
+  }
+
+  revalidatePath(`/portal/${search.contact_id}`)
+  return { success: true }
+}
+
 export async function updateSearchCriteria(searchId: string, criteria: Record<string, any>) {
   if (!COLLAB_SEARCH_AVAILABLE) return { error: "Collaborative search is not yet available." }
   const supabase = await createClient()

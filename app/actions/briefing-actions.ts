@@ -33,14 +33,28 @@ export async function getTodaysBriefing(): Promise<{
       return { briefing: null }
     }
 
-    const { agentId, brokerageId } = context
     const supabase = await createClient()
     const today = new Date().toISOString().split("T")[0]
 
+    // THE BRIEFING IS KEYED ON users.id, NOT agents.id.
+    //
+    // This read filtered `agent_id`, and the generator — the ONLY writer of a
+    // briefing row — has never written that column. It says so at
+    // lib/intelligence/daily-briefing-generator.ts:802-806: "user_id (FK→users.id)
+    // is the briefing key. The legacy agent_id column has FK→agents.id — writing
+    // users.id there violated the FK, the upsert THREW, and briefings never
+    // cached". `markBriefingOpened` (same file, :922-936) and the quarterly
+    // review loader (lib/intelligence/quarterly-review-loader.ts:155) both key on
+    // user_id too. So this card asked for a row under a key nothing writes and
+    // rendered its clean "No briefing for today" empty state seconds after a
+    // briefing had been generated and cached.
+    //
+    // The two id spaces are DISJOINT (§3), so this is not a cosmetic rename:
+    // agentId would never match a briefing and userId always will.
     const { data: existing, error } = await supabase
       .from("ai_daily_briefings")
       .select("*")
-      .eq("agent_id", agentId)
+      .eq("user_id", context.userId)
       .eq("briefing_date", today)
       .maybeSingle()
 

@@ -69,7 +69,16 @@ export default async function DocumentsPage({ params }: { params: Promise<{ cont
         .select(`id, transaction_doc_id, extraction_method, extracted_fields,
                  confidence_score, processing_status, processed_at, error_message`)
         .in("transaction_doc_id", txDocIds)
-        .eq("processing_status", "completed")
+        // FAILED extractions belong on this list too. This filter was
+        // `.eq("processing_status", "completed")` while the select asks for
+        // `error_message` — a completed extraction has no error by definition,
+        // so the column could not have been non-null on a single row this query
+        // returns. (It was doubly dead until now: neither writer of this table
+        // logged a failure at all — see the catch block at
+        // app/actions/ai-transaction-documents.ts, which now does.) A client
+        // whose document could not be read was shown nothing, which reads as
+        // "still processing" forever.
+        .in("processing_status", ["completed", "failed"])
         .order("processed_at", { ascending: false })
     : { data: [] }
 

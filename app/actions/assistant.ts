@@ -625,45 +625,71 @@ async function getDashboardSuggestions(agentId: string) {
   return suggestions
 }
 
+/**
+ * The last 7 days of call coaching, as tips for /dashboard/coaching.
+ *
+ * TWO DEFECTS CLOSED HERE, and they compounded:
+ *
+ *  1. `call_coaching_insights` had no writer at all (census 1b — every column),
+ *     so this read was always empty and the coaching card always said nothing.
+ *     The writer now exists: lib/voice/call-coaching.ts, called the moment a
+ *     call analysis completes on both analyser lanes.
+ *
+ *  2. Even with rows, this function could never have produced a tip. It scored
+ *     `c.them_first_score` and `c.talk_listen_ratio` — NEITHER IS A COLUMN ON
+ *     THIS TABLE. The live shape is agent_id / brokerage_id / call_analysis_id /
+ *     content / created_at / dismissed / id / insight_type / priority
+ *     (scripts/schema-snapshot.ts:171). `undefined || 0` made the them-first
+ *     average exactly 0, which passed `< 0.6`, so the empathy tip was the one
+ *     branch that would have fired — a hardcoded sentence dressed as a
+ *     measurement — and `undefined || 0.5` made the talk-ratio average exactly
+ *     0.5, which fails `> 0.6`, so the listening tip could never fire at all.
+ *
+ * The insight rows carry their own agent-facing sentence, type and priority, so
+ * nothing needs re-deriving here: the tips ARE the undismissed insights.
+ *
+ * `agentId` is AGENTS-class — the caller states it at
+ * app/dashboard/coaching/page.tsx:78 and the column FKs agents(id).
+ */
 export async function getCoachingTips(agentId: string) {
   const supabase = await createServerClient()
 
-  // Get recent call coaching insights
-  const { data: recentCalls } = await supabase
+  // Only the columns that exist, and only insights the agent has not dismissed —
+  // a dismissed insight reappearing as a "tip" is the same note twice.
+  const { data: recentInsights, error } = await supabase
     .from("call_coaching_insights")
-    .select("*")
+    .select("id, insight_type, priority, content, created_at")
     .eq("agent_id", agentId)
+    .eq("dismissed", false)
     .gte("created_at", new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
     .order("created_at", { ascending: false })
     .limit(5)
 
-  const tips = []
-
-  if (recentCalls && recentCalls.length > 0) {
-    const avgThemFirstScore =
-      recentCalls.reduce((sum: number, c: any) => sum + (c.them_first_score || 0), 0) / recentCalls.length
-
-    if (avgThemFirstScore < 0.6) {
-      tips.push({
-        category: "communication",
-        priority: "high",
-        tip: 'Focus on "Them First" approach - lead with empathy before solutions',
-        improvement_area: "Increase empathy moments in conversations",
-      })
-    }
-
-    const avgTalkRatio =
-      recentCalls.reduce((sum: number, c: any) => sum + (c.talk_listen_ratio || 0.5), 0) / recentCalls.length
-
-    if (avgTalkRatio > 0.6) {
-      tips.push({
-        category: "communication",
-        priority: "medium",
-        tip: "You're talking more than listening - aim for 40/60 ratio",
-        improvement_area: "Ask more open-ended questions",
-      })
-    }
+  // supabase-js RESOLVES a refused read, so without this an RLS refusal and a
+  // genuinely quiet week are the same empty card. The card has no error surface,
+  // so the refusal is logged rather than rendered as "nothing to improve".
+  if (error) {
+    console.error("[assistant] call coaching insights read refused:", error.message)
+    return { tips: [] }
   }
 
+  const tips = (recentInsights ?? []).map((i: any) => ({
+    category: i.insight_type ?? "communication",
+    priority: i.priority ?? "medium",
+    tip: i.content as string,
+    improvement_area: COACHING_AREA_LABEL[i.insight_type as string] ?? "Call performance",
+  }))
+
   return { tips }
+}
+
+/** insight_type → the "improvement area" label the coaching card shows beside
+ *  the tip. Keys are the live CHECK vocabulary (scripts/check-vocabularies.ts:386);
+ *  an unlisted type falls back rather than rendering a raw enum at an agent. */
+const COACHING_AREA_LABEL: Record<string, string> = {
+  objection_handling: "Handling objections",
+  improvement: "Conversation quality",
+  rapport: "Rapport and empathy",
+  closing: "Securing the next step",
+  strength: "What is working",
 }

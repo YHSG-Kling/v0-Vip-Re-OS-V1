@@ -55,24 +55,34 @@ export default async function MobileAssistantPage() {
 
   const agentFirstName = user?.first_name || "Agent"
 
+  // THE BRIEFING IS KEYED ON users.id, NOT agents.id — the same defect fixed at
+  // app/actions/briefing-actions.ts:41. The only writer of a briefing row
+  // (lib/intelligence/daily-briefing-generator.ts:806) stores `user_id` and has
+  // never written `agent_id`, and the two spaces are DISJOINT (§3), so this
+  // mobile card asked under a key nothing writes and always showed the "no
+  // briefing yet" state. `agent.user_id` is already loaded above for the name.
+  const briefingUserId = agent?.user_id ?? null
+
   // Fetch today's briefing
-  const { data: briefing } = await supabase
-    .from("ai_daily_briefings")
-    .select("*")
-    .eq("agent_id", agentId)
-    .eq("briefing_date", today)
-    .single()
+  const { data: briefing } = briefingUserId
+    ? await supabase
+        .from("ai_daily_briefings")
+        .select("*")
+        .eq("user_id", briefingUserId)
+        .eq("briefing_date", today)
+        .maybeSingle()
+    : { data: null }
 
   // Fetch last briefing date if no briefing today
   let lastBriefingDate: string | undefined
-  if (!briefing) {
+  if (!briefing && briefingUserId) {
     const { data: lastBriefing } = await supabase
       .from("ai_daily_briefings")
       .select("briefing_date")
-      .eq("agent_id", agentId)
+      .eq("user_id", briefingUserId)
       .order("briefing_date", { ascending: false })
       .limit(1)
-      .single()
+      .maybeSingle()
     lastBriefingDate = lastBriefing?.briefing_date
   }
 

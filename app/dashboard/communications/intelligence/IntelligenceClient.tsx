@@ -39,18 +39,19 @@ interface AgentInsight {
   conversation_count: number
 }
 
+/** Mirrors VoiceTab's own VoiceInsight — see the note there for why the three
+ *  conversation_insights voice columns are gone and what replaced them. This tab
+ *  now reads the dialled-call ledger (voice_calls + call_analyses); the id IS
+ *  the voice_calls row, so there is no separate conversation id to carry. */
 interface VoiceInsight {
   id: string
-  conversation_id: string
   contact_name: string
   agent_name: string
-  voice_quality_score: number | null
-  interruption_count: number | null
-  silence_duration_seconds: number | null
+  /** call_analyses.coaching_score, 0-100. */
+  coaching_score: number | null
+  /** voice_calls.outcome, falling back to voice_calls.status. */
   call_completion_status: string | null
   overall_sentiment: string | null
-  /** voice_calls.id — the key the authenticated playback proxy takes. Distinct
-   *  from `id`, which is the conversation_insights row. */
   voice_call_id: string | null
   recording_url: string | null
   transcript: string | null

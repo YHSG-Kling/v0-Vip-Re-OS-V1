@@ -1132,7 +1132,19 @@ export async function loadContactWorkspace(params: {
       .limit(50),
     supabase
       .from("conversations")
-      .select("id, type, status, last_message_at, unread_count, sentiment, message_count")
+      // TOMBSTONE — `conversations.sentiment` removed from this select.
+      // It was READ BY CODE AND WRITTEN BY NOBODY (census 1b): neither writer of
+      // a conversations row (lib/kernel/conversation-thread.ts:63,
+      // app/api/webhooks/meta-dm/route.ts) has ever named the column, so this
+      // packet handed its consumer a null sentiment on every thread.
+      // SURVIVOR: `conversation_insights.overall_sentiment`, written for every
+      // analysed thread at lib/intelligence/conversation-insights.ts:429/459 and
+      // reached in this same shape by lib/kernel/conversation-memory.ts:230 —
+      // the contact-memory builder that actually reasons about mood. This packet
+      // is a thread LIST (type, unread, last message); it does not reason about
+      // sentiment, so it stops asking for a value that was never there rather
+      // than growing a second embed for a field nothing here reads.
+      .select("id, type, status, last_message_at, unread_count, message_count")
       .eq("contact_id", params.contactId)
       .eq("brokerage_id", params.brokerageId)
       .order("last_message_at", { ascending: false })

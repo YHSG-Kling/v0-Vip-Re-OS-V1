@@ -22,6 +22,9 @@ import { dispatchEmail, dispatchVideo, dispatchDirectMail } from "@/lib/provider
 import { KernelEvent } from "@/lib/kernel/events"
 import { buildActorContext } from "@/lib/kernel/actor-context"
 import { evaluateKernelOutbound } from "@/lib/kernel/adapters/compliance"
+// The touch cap lives beside the governor that enforces it, so the writer and
+// the reader can never disagree about the bounds or the default (§6).
+import { clampMaxTouches } from "@/lib/ai-isa/isa-outreach-logger"
 
 /**
  * AI Inside Sales Agent (ISA) System
@@ -311,6 +314,8 @@ export async function createISACampaign(params: {
   campaignType: CampaignType
   channels: string[]
   targetSegment?: Record<string, unknown>
+  /** The per-entity touch cap this campaign enforces. See MAX_TOUCHES below. */
+  maxTouches?: number
 }): Promise<{ success: boolean; campaignId?: string; error?: string }> {
   const auth = await requireCaller()
   if (!auth.ok) return { success: false, error: auth.error }
@@ -329,6 +334,21 @@ export async function createISACampaign(params: {
       campaign_type:  params.campaignType.toLowerCase() as CampaignType,
       channels:       cleanChannels,
       target_segment: params.targetSegment ?? {},
+      // ── MAX_TOUCHES: TWO SPELLINGS OF ONE CAP, AND THE GOVERNOR READ THE
+      // ── OTHER ONE (§6).
+      // The create drawer has had a "Max Touches" slider since it was built
+      // (app/dashboard/isa/campaigns/components/CreateCampaignDrawer.tsx) and
+      // sent the broker's choice into `target_segment.max_touches` — a jsonb
+      // blob nothing reads. The touch GOVERNOR
+      // (lib/ai-isa/isa-outreach-logger.ts:175, checkMaxTouches) selects the
+      // `max_touches` COLUMN, which no writer in the tree had ever named, so it
+      // always found the DDL default of 5 and fell back to its own literal 5.
+      // A broker who dragged that slider to 2 to protect a cold list, or to 9
+      // for a nurture sequence, changed nothing at all.
+      // The COLUMN is the survivor — it is what the governor enforces. Clamped
+      // to a sane range so a caller-supplied 0 (silently suppressing the whole
+      // campaign) or 500 (a harassment cap) cannot be stored.
+      max_touches:    clampMaxTouches(params.maxTouches),
       status:         "draft",
       // is_active mirrors status — merged from the deleted legacy launcher
       // (lane E2 2026-08-28), which was this column's only writer while the

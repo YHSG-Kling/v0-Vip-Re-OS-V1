@@ -8,6 +8,60 @@ import { generateAIJSON } from "@/lib/ai"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { LIFETIME_CONTACT_TYPES } from "@/lib/contact-types"
 
+// ─────────────────────────────────────────────────────────────────────────────
+// WHOSE INSIGHT IS THIS?
+//
+// `ai_insights.agent_id` was READ BY CODE AND WRITTEN BY NOBODY (census 1b).
+// This file holds ELEVEN inserts into that table and not one of them ever named
+// the column — measured live on 2026-08-29: 64 rows, `count(agent_id)` = 0.
+//
+// The agent dashboard reads it as
+//     .or(`agent_id.eq.${agentRow.id},agent_id.is.null`)
+//     (app/dashboard/agent/page.tsx:343-346)
+// so the feed still rendered — by falling entirely through to the untenanted
+// half of that OR. Every agent in a brokerage saw the same desk-wide list, and
+// an insight about ONE agent's own contact was indistinguishable from a market
+// note addressed to nobody. The `agent_id.eq` branch could never match a row.
+//
+// The reader's own comment states the product rule this helper implements: an
+// insight about a transaction or a market shift belongs to the DESK, so those
+// stay unattributed by design. A CONTACT's or a LEAD's insight belongs to the
+// person who owns that relationship, and that owner is already recorded on the
+// entity row.
+//
+// CLASS: `ai_insights.agent_id` FKs **agents(id)** (ai_insights_agent_id_fkey,
+// verified live), and `contacts.agent_id` / `leads.agent_id` are both that same
+// agents class — so this is a straight carry, never a users.id. A users.id here
+// would be 23503, and because supabase-js RESOLVES a refusal the ENTIRE insight
+// row would be lost, not just the attribution (§3, PGRST/FK trap).
+//
+// FAILS TO NULL, NOT TO A GUESS: an unreadable or unowned entity yields null,
+// which is exactly the desk-wide behaviour every row has today. Attribution
+// improves; nothing regresses.
+// ─────────────────────────────────────────────────────────────────────────────
+async function resolveInsightOwnerAgentId(
+  supabase: any,
+  entityType: "contact" | "lead" | "transaction" | "property",
+  entityId: string | null | undefined,
+): Promise<string | null> {
+  if (!entityId) return null
+  // Transactions and properties are desk-level facts — see above.
+  if (entityType !== "contact" && entityType !== "lead") return null
+  const table = entityType === "contact" ? "contacts" : "leads"
+  const { data, error } = await supabase
+    .from(table)
+    .select("agent_id")
+    .eq("id", entityId)
+    .maybeSingle()
+  if (error) {
+    // A REFUSED read is not "this entity has no agent". Say so, and leave the
+    // insight desk-wide rather than pinning it to a guess.
+    console.error(`[ai-predictions] owner lookup refused on ${table} — insight stays unattributed:`, error.message)
+    return null
+  }
+  return (data as { agent_id?: string | null } | null)?.agent_id ?? null
+}
+
 // ============================================
 // PREDICTIVE LEAD CONVERSION ENGINE
 // ============================================
@@ -1359,6 +1413,7 @@ Provide ACTIONABLE coaching. Respond with JSON:
           insight_type: "opportunity",
           entity_type: "lead",
           entity_id: data.leadId,
+          agent_id: await resolveInsightOwnerAgentId(supabase, "lead", data.leadId),
           insight_title: "🚨 Take Action NOW",
           insight_description: result.nextSteps.immediate.join("\n"),
           actionable_steps: result.nextSteps.immediate,
@@ -1777,6 +1832,7 @@ Generate PERFECT search criteria based on learned behavior:
         insight_type: "learned_preferences",
         entity_type: "contact",
         entity_id: contactId,
+        agent_id: await resolveInsightOwnerAgentId(supabase, "contact", contactId),
         insight_title: "AI Property Match Preferences Learned",
         insight_description: aiMatch.whyThisWillWork,
         actionable_steps: [`Show properties matching learned criteria`, `Focus on: ${aiMatch.learnedPreferences?.hiddenMustHaves?.join(", ")}`],
@@ -2054,6 +2110,7 @@ export async function massGenerateCMAs(_ignoredAgentId?: string) {
       insight_type: "opportunity",
       entity_type: "contact",
       entity_id: gain.contactId,
+      agent_id: await resolveInsightOwnerAgentId(supabase, "contact", gain.contactId),
       insight_title: "Significant Equity Growth Detected",
       insight_description: `${gain.leadName}'s home at ${gain.propertyAddress} has gained $${gain.equityGain.toLocaleString()} in equity. This could be a selling opportunity.`,
       actionable_steps: [
@@ -2548,6 +2605,7 @@ Predict for next 90 days:
           insight_type: "opportunity",
           entity_type: "lead",
           entity_id: lead.id,
+          agent_id: await resolveInsightOwnerAgentId(supabase, "lead", lead.id),
           insight_title: "Market Shift Detected - Act Now",
           insight_description: `AI predicts ${data.city} market shifting in ${prediction.data.prediction?.timeframe}.`,
           actionable_steps: prediction.data.actionableIntelligence?.forSellers || [],
@@ -2791,6 +2849,7 @@ condition or renovation need — nothing above reports it.
           insight_type: "opportunity",
           entity_type: "lead",
           entity_id: investor.id,
+          agent_id: await resolveInsightOwnerAgentId(supabase, "lead", investor.id),
           insight_title: `${arbitrage.opportunities?.length || 0} Investment Opportunities in ${data.city}`,
           insight_description: `Found ${arbitrage.opportunities?.length || 0} underpriced properties perfect for investors`,
           actionable_steps: [
@@ -2938,6 +2997,7 @@ Detect churn risk and provide save strategy:
           insight_type: "risk",
           entity_type: "lead",
           entity_id: leadId,
+          agent_id: await resolveInsightOwnerAgentId(supabase, "lead", leadId),
           insight_title: "CLIENT CHURN RISK - Act Now",
           insight_description: `${resolvedLead?.first_name ?? "Client"} showing signs of disengagement. ${result.timeToChurn} to potential churn.`,
           actionable_steps: result.saveStrategy?.immediate || [],
@@ -3596,6 +3656,7 @@ Find opportunities:
           insight_type: "opportunity",
           entity_type: "lead",
           entity_id: opp.leadId,
+          agent_id: await resolveInsightOwnerAgentId(supabase, "lead", opp.leadId),
           insight_title: opp.type.replace(/_/g, " ").toUpperCase(),
           insight_description: opp.reason,
           actionable_steps: [opp.recommendedAction],
@@ -3731,6 +3792,7 @@ Output example:{
           insight_type: "opportunity",
           entity_type: "lead",
           entity_id: opp.source_client_id,
+          agent_id: await resolveInsightOwnerAgentId(supabase, "lead", opp.source_client_id),
           insight_title: opp.opportunity_type.replace("_", " ").toUpperCase(),
           insight_description: opp.reason,
           actionable_steps: [opp.approach],

@@ -54,7 +54,7 @@ export async function persistQualificationSignals(
   // Step 1: Persist qualification record with current signals
   const { data: lead, error: leadError } = await supabase
     .from('leads')
-    .select('brokerage_id, first_name, last_name, email, phone, source, lead_score, agent_id')
+    .select('brokerage_id, first_name, last_name, email, phone, source, lead_score, agent_id, contact_id')
     .eq('id', leadId)
     .single()
 
@@ -70,6 +70,14 @@ export async function persistQualificationSignals(
     .from('ai_isa_qualifications')
     .insert({
       lead_id: leadId,
+      // THE CONTACT SIDE OF THE QUALIFICATION. `contact_id` was read by code and
+      // written by nobody (census 1b): app/actions/ai-isa.ts:676 selects it AND
+      // embeds `contacts (first_name, last_name)` off it, so the Qualification
+      // Outcomes tab listed every outcome with a BLANK NAME, and
+      // app/dashboard/isa/page.tsx:259 built its handoff queue off the same
+      // embed. A lead that has already been converted carries `leads.contact_id`;
+      // one that has not is honestly null (the lead_id side still identifies it).
+      contact_id: (lead as { contact_id?: string | null }).contact_id ?? null,
       brokerage_id: lead.brokerage_id,
       qualification_score: qualificationScore,
       stage: signals.readinessForAgent ? 'qualified' : signals.confirmedIntent ? 'in_progress' : 'initial',
@@ -162,6 +170,31 @@ export async function persistQualificationSignals(
           assignResult.agentId,
         )
       }
+      // THE OUTCOME IN WORDS. `notes` was read by code and written by nobody
+      // (census 1b) — app/actions/ai-isa.ts:676 renders it as the outcome's
+      // explanation column and app/dashboard/admin/lead-lineage/page.tsx:35
+      // reads it on the lineage detail, so both showed a permanently empty cell
+      // where the reason for the handoff belongs. Everything below is a fact
+      // this function already holds: the score, the signals that fired, and
+      // Engine 2's own assignment reason. Nothing is generated.
+      const notes = [
+        `Qualified at ${qualificationScore}/100 after ${signals.conversationCount} exchange${signals.conversationCount === 1 ? '' : 's'}.`,
+        `Intent ${signals.confirmedIntent ? 'confirmed' : 'not confirmed'}; urgency ${signals.urgency}; engagement ${signals.engagementLevel}.`,
+        assignResult.assigned
+          ? `Assigned: ${assignResult.reason ?? 'assignment engine'}.`
+          : `Not assigned: ${assignResult.reason ?? 'no eligible agent'}.`,
+      ].join(' ')
+
+      // A CONVERTED lead has a contact by now even if it did not at insert time —
+      // handleLeadAssigned creates it on the success path — so the contact side
+      // is re-read here rather than left null forever on the row the outcomes
+      // tab actually renders.
+      const { data: leadNow } = await supabase
+        .from('leads')
+        .select('contact_id')
+        .eq('id', leadId)
+        .maybeSingle()
+
       const { error: outcomeErr } = await supabase
         .from('ai_isa_qualifications')
         .update({
@@ -171,6 +204,10 @@ export async function persistQualificationSignals(
           assigned_at: assignResult.assigned && recipient.userId ? new Date().toISOString() : null,
           qualified_at: new Date().toISOString(),
           qualification_result: 'qualified',
+          contact_id: (leadNow as { contact_id?: string | null } | null)?.contact_id
+            ?? (lead as { contact_id?: string | null }).contact_id
+            ?? null,
+          notes: notes.slice(0, 2000),
         })
         .eq('id', qualRecord.id)
       if (outcomeErr) {

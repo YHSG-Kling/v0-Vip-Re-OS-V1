@@ -1623,27 +1623,58 @@ export async function calculateComplianceRiskScore(agentId: string) {
         .gte("created_at", thirtyDaysAgo.toISOString()),
     ])
 
-  // conversations.them_first_score does not exist — use urgency_score as proxy
-  const { data: conversationsData } = await supabase
-    .from("conversations")
-    .select("urgency_score")
+  // ── THE THIRD OF THIS SCORE WAS A CONSTANT ──────────────────────────────
+  //
+  // This read was `conversations.urgency_score`, chosen because
+  // `conversations.them_first_score` does not exist. Neither does a WRITER for
+  // urgency_score: it was READ BY CODE AND WRITTEN BY NOBODY (census 1b), so
+  // `s.urgency_score || 0` summed to zero on every row, `avgUrgency` was always
+  // 0, and `avgThemFirst = 100 - 0` was a hardcoded 100 — a full 30% of a
+  // compliance RISK score that could never move, in either direction, for any
+  // agent. An agent with a genuinely poor conversation record scored the same
+  // 30 points as the best one.
+  //
+  // SURVIVOR: `conversation_insights.health_score`, which is genuinely written
+  // for every analysed thread (lib/intelligence/conversation-insights.ts:434/464)
+  // and is DERIVED there from the thread itself — reply gaps, unanswered
+  // questions, objections, sentiment. It is stored on a 0..1 scale, enforced by
+  // the live CHECK (`health_score >= 0 AND <= 1`), so it is scaled to the 0-100
+  // this function's arithmetic works in.
+  //
+  // `conversation_insights.agent_id` is the same AGENTS class this function's
+  // other predicates use (conversation_insights_agent_id_fkey → agents, and the
+  // writer carries it straight off the conversation row).
+  const { data: conversationsData, error: convHealthError } = await supabase
+    .from("conversation_insights")
+    .select("health_score")
     .eq("agent_id", agentId)
+    .not("health_score", "is", null)
     .gte("created_at", thirtyDaysAgo.toISOString())
+
+  // supabase-js RESOLVES a refusal. A refused read here must not be scored as
+  // "this agent has no conversation history" — that is worth 30 points.
+  if (convHealthError) {
+    console.error("[multi-persona] conversation health read refused — compliance risk score is incomplete:", convHealthError.message)
+  }
 
   const violationScore = Math.max(0, 100 - (violations?.length || 0) * 10)
   const contentScore = Math.max(
     0,
     100 - (unapprovedContent?.length || 0) * 5
   )
-  const avgUrgency =
-    conversationsData && conversationsData.length > 0
-      ? conversationsData.reduce(
-          (sum, s) => sum + (s.urgency_score || 0),
-          0
-        ) / conversationsData.length
-      : 0
-  // Invert urgency: high urgency = lower compliance score proxy
-  const avgThemFirst = Math.max(0, 100 - avgUrgency)
+  // health_score is 0..1 (live CHECK) — scaled to the 0-100 this file scores in.
+  // An agent with NO analysed conversations has no reading, and a missing
+  // measurement must not be scored as a perfect one: the neutral 50 says
+  // "unmeasured" rather than awarding the full 30 points to someone we have
+  // never looked at, which is what the old constant did.
+  const UNMEASURED_CONVERSATION_HEALTH = 50
+  const healthScores = (conversationsData ?? [])
+    .map((r: any) => (typeof r.health_score === "number" ? r.health_score * 100 : null))
+    .filter((n): n is number => n != null)
+  const avgThemFirst =
+    healthScores.length > 0
+      ? Math.max(0, Math.min(100, healthScores.reduce((a, b) => a + b, 0) / healthScores.length))
+      : UNMEASURED_CONVERSATION_HEALTH
 
   const overallScore = (
     violationScore * 0.4 +

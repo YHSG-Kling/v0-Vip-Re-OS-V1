@@ -215,8 +215,19 @@ export async function loadContactInteractions(
 ): Promise<InteractionRow[]> {
   const limit = opts.limit ?? 20
   const [convs, acts, isa] = await Promise.all([
+    // SENTIMENT COMES FROM THE THREAD ANALYSER, NOT FROM `conversations`.
+    // `conversations.sentiment` was READ BY CODE AND WRITTEN BY NOBODY (census
+    // 1b) — neither writer of a conversations row
+    // (lib/kernel/conversation-thread.ts:63, app/api/webhooks/meta-dm/route.ts)
+    // names it — so every conversation-sourced interaction row below carried a
+    // null sentiment, and the contact memory this feeds concluded that no thread
+    // had ever had a mood.
+    // SURVIVOR: `conversation_insights.overall_sentiment`, written for every
+    // analysed thread at lib/intelligence/conversation-insights.ts:429 (insert)
+    // and :459 (update). The embed is unambiguous — conversation_insights has
+    // exactly one FK to conversations — so it cannot hit PGRST201.
     supabase.from("conversations")
-      .select("last_message_at, updated_at, type, sentiment, intent_primary, last_ai_context_summary")
+      .select("last_message_at, updated_at, type, intent_primary, last_ai_context_summary, conversation_insights(overall_sentiment)")
       .eq("contact_id", contactId).order("updated_at", { ascending: false }).limit(limit),
     supabase.from("activities")
       .select("created_at, completed_at, activity_type, title, description, channel, outcome")
@@ -230,8 +241,11 @@ export async function loadContactInteractions(
   for (const c of (convs.data ?? []) as any[]) {
     const at = c.last_message_at ?? c.updated_at
     if (!at) continue
+    // PostgREST returns the embed as an array even for a one-row relation; an
+    // unanalysed thread has none, and null is the honest reading for it.
+    const insight = Array.isArray(c.conversation_insights) ? c.conversation_insights[0] : c.conversation_insights
     rows.push({
-      at, source: "conversation", channel: c.type ?? null, sentiment: c.sentiment ?? null,
+      at, source: "conversation", channel: c.type ?? null, sentiment: insight?.overall_sentiment ?? null,
       text: (c.last_ai_context_summary ?? c.intent_primary ?? c.type ?? null) || null,
     })
   }

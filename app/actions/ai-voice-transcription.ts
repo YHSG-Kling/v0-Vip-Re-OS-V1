@@ -199,6 +199,35 @@ Extract:
       .select()
       .single()
 
+    // ── COACHING INSIGHTS — the projection this analysis never had ───────────
+    // `coaching_opportunities` above is a jsonb blob on the analysis row, and
+    // the ONLY thing that ever read it back is this file's own summary prompt
+    // (line ~394). Every coaching SURFACE in the OS reads `call_coaching_insights`
+    // instead — six readers, and until now zero writers, so those panels showed
+    // an agent "nothing to improve" while the notes sat in a blob nobody opened.
+    // The same projection the autonomous sweep uses runs here, so a
+    // human-clicked analysis and the hourly sweep speak one vocabulary (§6).
+    // `params.agentId` is AGENTS-class — the caller resolves it that way in
+    // capitals (app/crm/page.tsx:1017-1024) and call_coaching_insights.agent_id
+    // FKs agents(id), the same class every coaching reader filters on.
+    if (savedAnalysis?.id) {
+      const { writeCallCoachingInsights } = await import("@/lib/voice/call-coaching")
+      const coached = await writeCallCoachingInsights(supabase, {
+        callAnalysisId: savedAnalysis.id,
+        brokerageId: contact.brokerage_id,
+        agentId: params.agentId,
+        facts: {
+          // The caller's own concerns ARE the objections on this schema.
+          objections: analysis.clientConcerns,
+          sentiment: sentimentForDb,
+          coachingOpportunities: analysis.coachingOpportunities,
+        },
+      })
+      if (coached.error) {
+        console.error("[ai-voice-transcription] coaching insights NOT written — the coaching panels stay empty for this call:", coached.error)
+      }
+    }
+
     // Create tasks from action items
     const agentTasks = analysis.actionItems.filter(a => a.assignedTo === "agent")
     if (agentTasks.length > 0) {

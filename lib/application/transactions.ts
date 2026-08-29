@@ -2381,6 +2381,45 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
   // additionally honours a closed/funded deal, which this copy could not.
   const progressPercent = calculateOverallProgress(transaction, milestones)
   
+  // ── THE READ RECEIPT NOBODY WAS WRITING ─────────────────────────────────
+  //
+  // `client_friendly_updates.read_at` was selected by this loader (the query
+  // above names it) and READ BY NOBODY DOWNSTREAM, and — the census finding —
+  // WRITTEN BY NOBODY ANYWHERE. Its three writers (this file at :1747 and
+  // :2213, lib/kernel/transactions.ts:1623) all insert the update and none ever
+  // marks it seen, so an agent had no way to tell an update the client had read
+  // from one they had never opened.
+  //
+  // THIS is the moment it is seen: a CLIENT is loading their own transaction
+  // dashboard and these updates are about to render. `contactId` present is what
+  // makes the viewer a client — the staff preview path calls this loader without
+  // one, and a staff preview must never mark a client's mail as read.
+  //
+  // The unread flag is computed BEFORE the stamp so the very load that marks
+  // them read still shows them as new; after that they are not.
+  const isClientView = Boolean(contactId)
+  const updateWasUnread = new Set(
+    clientFriendlyUpdates.filter((u: any) => u.read_at == null).map((u: any) => u.id as string),
+  )
+  if (isClientView && updateWasUnread.size > 0) {
+    // Gate-then-write: the contact was proven a party to this transaction at the
+    // top of this function, so the predicate is the transaction plus "not
+    // already read" — never anything the caller supplied about which rows to
+    // touch. `.select()` the update and COUNT it: an UPDATE that matches nothing
+    // resolves exactly like one that worked (§3).
+    const { data: stamped, error: readErr } = await supabase
+      .from("client_friendly_updates")
+      .update({ read_at: new Date().toISOString() })
+      .eq("transaction_id", transactionId)
+      .is("read_at", null)
+      .select("id")
+    if (readErr) {
+      console.error("[client-dashboard] read receipts NOT stamped — updates will keep reading as unopened:", readErr.message)
+    } else if ((stamped ?? []).length === 0) {
+      console.warn("[client-dashboard] read receipt matched 0 rows for transaction", transactionId, "— the client saw updates the agent will still see as unread")
+    }
+  }
+
   // Combine updates from multiple sources
   const combinedUpdates = [
     ...clientFriendlyUpdates.map((u: any) => ({
@@ -2390,6 +2429,9 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
       timestamp: u.created_at,
       icon: getUpdateIcon(u.update_type),
       source: "friendly_update",
+      /** Unread as of the moment this page was opened — see the read-receipt
+       *  note above. Lets the portal badge genuinely-new updates. */
+      is_new: updateWasUnread.has(u.id),
     })),
     ...transparencyUpdates.map((u: any) => ({
       id: u.id,

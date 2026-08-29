@@ -99,7 +99,14 @@ export function CreateCampaignDrawer({
         name:          name.trim(),
         campaignType,
         channels:      buildChannels(),
-        targetSegment: { score_threshold: scoreThreshold, max_touches: maxTouches, touch_interval_days: touchInterval },
+        // THE SLIDER NOW REACHES THE GOVERNOR. `max_touches` stayed in
+        // target_segment (a jsonb blob nothing reads) while the touch governor
+        // (lib/ai-isa/isa-outreach-logger.ts:175) selects the max_touches
+        // COLUMN — so every campaign was capped at the DDL default of 5 no
+        // matter where this slider sat. It rides its own field now; the blob
+        // keeps the two settings that have no column of their own.
+        maxTouches:    maxTouches,
+        targetSegment: { score_threshold: scoreThreshold, touch_interval_days: touchInterval },
       })
       if (!result.success) {
         setError(result.error ?? "Failed to create campaign.")
