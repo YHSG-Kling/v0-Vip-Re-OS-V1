@@ -45,6 +45,7 @@
     "app/actions/video/create-video-project.ts": 5,
     "app/actions/video-repurposing.ts": 3,
     "app/actions/workflows.ts": 1,
+    "app/components/command-palette-items.ts": 3,
     "app/components/portal/FitBadge.tsx": 1,
     "app/dashboard/intelligence-report/trust-receipts-card.tsx": 1,
     "app/dashboard/videos/components/BackgroundPicker.tsx": 1,
@@ -215,7 +216,6 @@
     "lib/geo/video-landing.ts": 1,
     "lib/integrations/integration-status.ts": 1,
     "lib/integrations/providers/catalog.ts": 1,
-    "lib/intelligence/agent-scorecard.ts": 1,
     "lib/intelligence/appointment-whisper.ts": 1,
     "lib/intelligence/brokerage-pnl.ts": 2,
     "lib/intelligence/career-architect.ts": 4,
@@ -260,6 +260,7 @@
     "lib/kernel/billing.ts": 1,
     "lib/kernel/board-packet-reel.ts": 1,
     "lib/kernel/board-packet.ts": 1,
+    "lib/kernel/calendar-sync.ts": 1,
     "lib/kernel/call-intelligence.ts": 2,
     "lib/kernel/campaign-center.ts": 1,
     "lib/kernel/capacity-guardian-runner.ts": 1,
@@ -267,6 +268,7 @@
     "lib/kernel/client-story-drafts.ts": 14,
     "lib/kernel/client-welcome.ts": 1,
     "lib/kernel/closing-war-room.ts": 2,
+    "lib/kernel/command-center.ts": 1,
     "lib/kernel/commission-forecaster.ts": 6,
     "lib/kernel/compliance-ledger.ts": 2,
     "lib/kernel/consent-recovery.ts": 2,
@@ -574,7 +576,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9405,
+  "census": 9422,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -636,7 +638,7 @@
     "app/actions/ai-closing-workflow.ts": 5,
     "app/actions/ai-cma.ts": 4,
     "app/actions/ai-communication-hub.ts": 9,
-    "app/actions/ai-content-generation.tsx": 42,
+    "app/actions/ai-content-generation.tsx": 43,
     "app/actions/ai-contract-review.ts": 6,
     "app/actions/ai-direct-mail.ts": 11,
     "app/actions/ai-document-intelligence.ts": 7,
@@ -869,7 +871,7 @@
     "app/actions/listing-dates.ts": 1,
     "app/actions/listing-documents.ts": 1,
     "app/actions/listing-health-actions.ts": 2,
-    "app/actions/listing-landing.ts": 8,
+    "app/actions/listing-landing.ts": 9,
     "app/actions/listing-lifecycle-core.ts": 10,
     "app/actions/listing-lifecycle.ts": 16,
     "app/actions/listing-media.ts": 16,
@@ -935,7 +937,7 @@
     "app/actions/pattern-actions.ts": 7,
     "app/actions/phone-connect.ts": 3,
     "app/actions/phone-provisioning.ts": 7,
-    "app/actions/photo-management.ts": 12,
+    "app/actions/photo-management.ts": 13,
     "app/actions/pl-truth-engine.ts": 3,
     "app/actions/podcast-generation.ts": 25,
     "app/actions/portal-buyer-financial.ts": 4,
@@ -1136,7 +1138,7 @@
     "app/actions/voice-assistant/handle-voice-command.ts": 1,
     "app/actions/voice-assistant.ts": 5,
     "app/actions/voice-avatar-settings.ts": 4,
-    "app/actions/voice-call-bridge.ts": 3,
+    "app/actions/voice-call-bridge.ts": 2,
     "app/actions/voice-dial-batch.ts": 3,
     "app/actions/voice-tenancy.ts": 3,
     "app/actions/walkthrough-outcome.ts": 1,
@@ -1576,6 +1578,7 @@
     "app/components/brokerage/agent-list.tsx": 1,
     "app/components/campaigns/step-fields-editor.tsx": 1,
     "app/components/campaigns/step-type-select.tsx": 3,
+    "app/components/command-palette-items.ts": 4,
     "app/components/command-palette.tsx": 1,
     "app/components/compliance/FairHousingScanner.tsx": 1,
     "app/components/compliance/transaction-compliance-tab.tsx": 1,
@@ -2652,6 +2655,7 @@
     "app/workflows/components/os/workflow-command-strip.tsx": 1,
     "app/workflows/components/os/workflow-health-radar.tsx": 1,
     "app/workflows/workflows-content.tsx": 1,
+    "constants/crm-standards.ts": 2,
     "contexts/AuthContext.tsx": 2,
     "hooks/use-click-outside.ts": 1,
     "hooks/use-debounce.ts": 1,
@@ -3045,7 +3049,7 @@
     "lib/contact-promotion/promote-lead-to-contact.ts": 1,
     "lib/contact-promotion/promotion-eligibility.ts": 1,
     "lib/contact-promotion/promotion-logger.ts": 1,
-    "lib/contact-promotion/qualification.ts": 1,
+    "lib/contact-promotion/qualification.ts": 2,
     "lib/contact-promotion/welcome-avatar-video.ts": 1,
     "lib/contact-promotion/welcome-situation.ts": 2,
     "lib/contact-types.ts": 4,
@@ -3187,7 +3191,7 @@
     "lib/external/osint-neighborhood.ts": 3,
     "lib/external/peopledata-client.ts": 2,
     "lib/external/permit-signals.ts": 15,
-    "lib/external/rentcast-typed.ts": 1,
+    "lib/external/rentcast-typed.ts": 2,
     "lib/external/socrata-client.ts": 4,
     "lib/external/socrata-market-registry.ts": 7,
     "lib/external/tavily-client.ts": 2,
@@ -3402,7 +3406,7 @@
     "lib/kernel/calendar-deadline-watcher.ts": 1,
     "lib/kernel/calendar-engine.ts": 1,
     "lib/kernel/calendar-sync-orchestrator.ts": 1,
-    "lib/kernel/calendar-sync.ts": 5,
+    "lib/kernel/calendar-sync.ts": 6,
     "lib/kernel/call-intelligence.ts": 6,
     "lib/kernel/campaign-center.ts": 4,
     "lib/kernel/capacity-guardian-runner.ts": 1,
@@ -3413,7 +3417,7 @@
     "lib/kernel/client-story-drafts.ts": 16,
     "lib/kernel/client-welcome.ts": 4,
     "lib/kernel/closing-war-room.ts": 8,
-    "lib/kernel/command-center.ts": 2,
+    "lib/kernel/command-center.ts": 3,
     "lib/kernel/commission-forecaster.ts": 11,
     "lib/kernel/communication-compliance-helpers.ts": 2,
     "lib/kernel/communication-compliance.ts": 3,
@@ -3688,7 +3692,7 @@
     "lib/learning-router/milestone-gated-modules.ts": 1,
     "lib/learning-router/resolve-agent-learning-context.ts": 1,
     "lib/learning-router/resolve-staff-learning-context.ts": 1,
-    "lib/lifecycle/offer-lifecycle.ts": 3,
+    "lib/lifecycle/offer-lifecycle.ts": 2,
     "lib/lifetime-customer-npv/current.ts": 4,
     "lib/lifetime-customer-npv/scorer.ts": 2,
     "lib/listing-health/health-scorer.ts": 1,
@@ -3837,7 +3841,7 @@
     "lib/permissions/offer-permissions.ts": 5,
     "lib/platform/acting-context.ts": 5,
     "lib/platform/affiliate-ref-capture.ts": 2,
-    "lib/platform/affiliates.ts": 9,
+    "lib/platform/affiliates.ts": 10,
     "lib/platform/ai-ops.ts": 3,
     "lib/platform/capability-overrides.ts": 2,
     "lib/platform/changelog.ts": 2,
@@ -3847,7 +3851,7 @@
     "lib/platform/deal-room-demo.ts": 13,
     "lib/platform/demo-tenant.ts": 5,
     "lib/platform/disposition-route.ts": 1,
-    "lib/platform/distribution-engine.ts": 2,
+    "lib/platform/distribution-engine.ts": 3,
     "lib/platform/engagement-risk.ts": 2,
     "lib/platform/expansion-advisor.ts": 1,
     "lib/platform/go-live-readiness.ts": 2,
@@ -3861,9 +3865,9 @@
     "lib/platform/platform-providers.ts": 3,
     "lib/platform/platform-sentinel.ts": 8,
     "lib/platform/platform-social.ts": 12,
-    "lib/platform/platform-staff-roster.ts": 9,
+    "lib/platform/platform-staff-roster.ts": 10,
     "lib/platform/product-brand.ts": 5,
-    "lib/platform/product-content.ts": 5,
+    "lib/platform/product-content.ts": 6,
     "lib/platform/prospect-conversion.ts": 1,
     "lib/platform/prospect-followup.ts": 1,
     "lib/platform/prospect-sourcer.ts": 4,
@@ -4073,7 +4077,7 @@
     "lib/support/support-sla.ts": 4,
     "lib/support/support-thread.ts": 3,
     "lib/support/ticket-constants.ts": 2,
-    "lib/teams/membership.ts": 3,
+    "lib/teams/membership.ts": 4,
     "lib/teams/team-scope.ts": 2,
     "lib/territory/metrics-aggregator.ts": 3,
     "lib/testimonials/testimonial-policy.ts": 1,
@@ -4238,6 +4242,7 @@
     "lib/voice/voice-report-format.ts": 2,
     "lib/voice/voice-resolver.ts": 2,
     "lib/voice/warm-transfer.ts": 7,
+    "lib/voice/whisper-bridge-status.ts": 1,
     "lib/voice-admin/kernel-command-surface.ts": 4,
     "lib/voice-admin/plan-voice-command.ts": 2,
     "lib/voice-distiller/per-agent-voice.ts": 1,
@@ -4691,6 +4696,7 @@
       "getComparableProperties",
       "enhancedGenerateListingDescription",
       "logGenerationCost",
+      "getRecentContentGenerations",
       "getMonthlyAICosts",
       "getContentPerformanceMetrics",
       "trackContentUsage",
@@ -6251,6 +6257,7 @@
       "getNeighborhoodData",
       "getSimilarListings",
       "logLandingSession",
+      "getLandingSourceBreakdown",
       "trackCtaClick",
       "submitShowingRequest"
     ],
@@ -6703,6 +6710,7 @@
       "getListingPhotoSet",
       "optimizePhotoOrder",
       "processVendorPhotos",
+      "getPhotoEnhancementHistory",
       "validatePhotoQuality",
       "savePhotoOrderingRule",
       "getPhotoOrderingRules",
@@ -8056,7 +8064,6 @@
     ],
     "app/actions/voice-call-bridge.ts": [
       "initiateWhisperBridge",
-      "updateWhisperBridgeStatus",
       "triggerAiVoiceCall"
     ],
     "app/actions/voice-dial-batch.ts": [
@@ -9443,6 +9450,12 @@
       "stepIcon",
       "StepTypeSelect",
       "StepTypeDescription"
+    ],
+    "app/components/command-palette-items.ts": [
+      "pathnameOf",
+      "isPathAdmitted",
+      "collectReachablePaths",
+      "visiblePaletteItems"
     ],
     "app/components/command-palette.tsx": [
       "CommandPalette"
@@ -12746,6 +12759,10 @@
     "app/workflows/workflows-content.tsx": [
       "WorkflowsContent"
     ],
+    "constants/crm-standards.ts": [
+      "personaLabel",
+      "timelineLabel"
+    ],
     "contexts/AuthContext.tsx": [
       "AuthProvider",
       "useAuth"
@@ -14804,6 +14821,7 @@
       "logPromotionActivity"
     ],
     "lib/contact-promotion/qualification.ts": [
+      "canonicalContactStatus",
       "statusForNewContact"
     ],
     "lib/contact-promotion/welcome-avatar-video.ts": [
@@ -15507,7 +15525,8 @@
       "ingestPermitSignals"
     ],
     "lib/external/rentcast-typed.ts": [
-      "callRentcastGet"
+      "callRentcastGet",
+      "callRentcastGetById"
     ],
     "lib/external/socrata-client.ts": [
       "socrataQuery",
@@ -16478,6 +16497,7 @@
       "syncCalendarEventToProvider"
     ],
     "lib/kernel/calendar-sync.ts": [
+      "resolveCalendarSyncAdapter",
       "linkCalendarProvider",
       "pushCalendarEventToProvider",
       "pullCalendarEventsFromProvider",
@@ -16555,6 +16575,7 @@
       "loadBrokerageClosingWarRooms"
     ],
     "lib/kernel/command-center.ts": [
+      "isManagerSessionStatus",
       "extractProposalCopy",
       "loadCommandCenter"
     ],
@@ -18125,7 +18146,6 @@
       "resolveStaffLearningContext"
     ],
     "lib/lifecycle/offer-lifecycle.ts": [
-      "promoteLeadToContact",
       "createOfferDraft",
       "createInitialOfferVersion"
     ],
@@ -18889,6 +18909,7 @@
       "refCaptureRedirect"
     ],
     "lib/platform/affiliates.ts": [
+      "isAffiliateStatus",
       "normalizeAffiliateCode",
       "validateAffiliateInput",
       "commissionFor",
@@ -18966,6 +18987,7 @@
     ],
     "lib/platform/distribution-engine.ts": [
       "distributePlatformLead",
+      "loadRecentPlatformDistributions",
       "distributePendingPlatformLeads"
     ],
     "lib/platform/engagement-risk.ts": [
@@ -19064,6 +19086,7 @@
       "isAiIsaSystemIdentity",
       "isPlatformSuperadminIdentity",
       "resolvePlatformRoleIdentity",
+      "isOverridablePlatformRole",
       "platformStaffCan",
       "validateStaffInput"
     ],
@@ -19077,6 +19100,7 @@
     "lib/platform/product-content.ts": [
       "composeProductPost",
       "buildWeeklyProductCalendar",
+      "isDraftStatus",
       "canTransitionDraft",
       "videoProofBeats",
       "composeProductVideoSpec"
@@ -20100,6 +20124,7 @@
     ],
     "lib/teams/membership.ts": [
       "isSourceOfFunds",
+      "isTeamRole",
       "validateTeamMember",
       "agentFundedTotal"
     ],
@@ -20915,6 +20940,9 @@
       "whisperToken",
       "conferenceNameFor",
       "startWarmBridge"
+    ],
+    "lib/voice/whisper-bridge-status.ts": [
+      "updateWhisperBridgeStatus"
     ],
     "lib/voice-admin/kernel-command-surface.ts": [
       "voiceCapabilities",
