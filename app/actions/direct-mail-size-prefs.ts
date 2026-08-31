@@ -55,7 +55,7 @@ const USE_KINDS: DirectMailUseKind[] = ["farm_mail", "welcome_kit", "sphere_outr
 const PERSONAS:  Persona[] = [
   "first_time", "relocated", "luxury", "fsbo", "probate",
   "upsize", "downsize", "military", "divorce", "senior",
-  "expired", "foreclosure", "other",
+  "expired", "foreclosure", "investor", "other",
 ]
 
 export async function getSizePrefsMatrix(args: {

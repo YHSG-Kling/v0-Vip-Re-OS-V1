@@ -49,7 +49,9 @@
 // OPERATION":
 //
 //   · a persona used to INCLUDE people and choose their wording  → ALLOWED,
-//     all thirteen minus the catch-all, per the ruling;
+//     every canonical persona minus the catch-all, per the ruling (fourteen
+//     since m589 added `investor` — "investor is a persona and not a contact
+//     type", owner, 2026-08-31);
 //   · a persona that is a PROTECTED CHARACTERISTIC used to EXCLUDE or SUPPRESS
 //     an audience                                                → REFUSED.
 //     Excluding `senior` from a housing ad is withholding housing from the
@@ -131,7 +133,7 @@ export interface PersonaAdsEligibility {
   persona: CampaignPersona
   /** Which operation this verdict was reached for. A persona is not "eligible"
    *  in the abstract — it is eligible to INCLUDE, or to EXCLUDE, and those two
-   *  now answer differently for four of the thirteen. */
+   *  now answer differently for four of the fourteen. */
   use: AudienceUse
   /** True when this persona may be the basis of an audience used THIS way. */
   eligible: boolean

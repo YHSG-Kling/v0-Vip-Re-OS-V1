@@ -333,8 +333,12 @@ const AXIS_CATCH_ALL = "other"
 check("the two axes do not overlap, apart from the shared catch-all `other`",
   CAMPAIGN_PERSONAS.every((p) => p === AXIS_CATCH_ALL || !(CONTACT_TYPES as readonly string[]).includes(p)),
   CAMPAIGN_PERSONAS.filter((p) => p !== AXIS_CATCH_ALL && (CONTACT_TYPES as readonly string[]).includes(p)).join(",") || "—")
+// The control runs on a SYNTHETIC list, not on [...CAMPAIGN_PERSONAS, "sphere"]
+// (§2 — that spelling derived the expected count from the live rosters, so any
+// real overlap the assertion above reports also broke the control, and a broken
+// control reads as a broken finder). The finder is proven on fixed input.
 check("POSITIVE CONTROL — that overlap scanner catches a contact TYPE wearing a persona label",
-  ([...CAMPAIGN_PERSONAS, "sphere"] as readonly string[])
+  (["first_time", "sphere", AXIS_CATCH_ALL] as readonly string[])
     .filter((p) => p !== AXIS_CATCH_ALL && (CONTACT_TYPES as readonly string[]).includes(p)).length === 1)
 
 // ─── 5. the four subscription tiers ──────────────────────────────────────────

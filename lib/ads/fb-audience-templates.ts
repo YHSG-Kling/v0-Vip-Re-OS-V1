@@ -155,6 +155,16 @@ const PERSONA_TEMPLATE_COPY: Record<
     recommendedFor: ["VA loan explainers", "PCS relocation timelines", "Base-proximity neighbourhood guides"],
     size: "~5–100",
   },
+  // The fourteenth persona (owner ruling 2026-08-31: "investor is a persona and
+  // not a contact type"; m589). Copy carried over from the retired
+  // `investor_contacts` lifecycle template this entry SUPERSEDES — see the
+  // tombstone below the catalog.
+  investor: {
+    name: "Investors",
+    situation: "Contacts buying for investment — portfolio, rental income or a flip. ROI-focused content, multi-family deals, off-market opportunities.",
+    recommendedFor: ["Off-market deals", "Cash-flow analysis", "1031 exchange info"],
+    size: "~5–50",
+  },
 }
 
 /**
@@ -340,20 +350,17 @@ export const FB_AUDIENCE_TEMPLATES: AudienceTemplate[] = [
     recommendedFor: ["Featured listings", "Personal videos", "Event invites"],
     estimatedSizeLabel: "~30–300",
   },
-  {
-    id: "investor_contacts",
-    name: "Investors",
-    description: "Investor-type contacts only. ROI-focused content, multi-family deals, off-market opportunities.",
-    category: "lifecycle",
-    audienceType: "custom",
-    sourceRule: {
-      type: "investor_contacts",
-      filters: {},
-    },
-    consentBasis: "Existing contacts with consent",
-    recommendedFor: ["Off-market deals", "Cash-flow analysis", "1031 exchange info"],
-    estimatedSizeLabel: "~5–50",
-  },
+  // TOMBSTONE (§1.1, 2026-08-31): the `investor_contacts` template stood here —
+  // "Investor-type contacts only", selecting contact_type='investor'. The owner
+  // ruled that value out of contact_type ("investor is a persona and not a
+  // contact type"), which made this a DUPLICATE of the derived persona template.
+  // SURVIVOR: `persona_investor` in PERSONA_BASIS_TEMPLATES above (its copy —
+  // ROI-focused content, off-market deals, 1031 — was merged onto
+  // PERSONA_TEMPLATE_COPY.investor first). The `investor_contacts` SOURCE RULE
+  // TYPE itself survives in lib/ads/audience-source-rules.ts, repointed onto
+  // contact_persona='investor', because the live jsonb CHECK
+  // (facebook_custom_audiences_source_rule_type_check, m532) still admits the
+  // type and a stored audience naming it must keep resolving.
 
   // ─── GEO ─────────────────────────────────────────────────────────────────
   {

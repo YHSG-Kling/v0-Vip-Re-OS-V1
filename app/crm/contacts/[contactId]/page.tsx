@@ -530,8 +530,10 @@ export default async function ContactDetailPage({ params }: PageProps) {
       )}
 
       {/* Investor off-market deal finder — buyer-side match against our scraped off-market inventory.
-          Regular buyers get MLS matches; investors get off-market. Shown only for investor contacts. */}
-      {contact.contact_type === "investor" && (
+          Regular buyers get MLS matches; investors get off-market. Shown only for investor contacts —
+          keyed on contact_persona since the owner ruling ("investor is a persona and not a contact
+          type", m589); the contact_type arm is the tolerant read of a pre-m593 legacy row. */}
+      {(contact.contact_persona === "investor" || contact.contact_type === "investor") && (
         <div className="px-4 pt-3">
           <InvestorDealsPanel contactId={contactId} />
         </div>

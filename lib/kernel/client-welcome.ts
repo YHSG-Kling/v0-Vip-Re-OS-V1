@@ -556,6 +556,10 @@ export function resolveWelcomeManagers(contactType: string | null | undefined): 
   // in this file's header for the full consequence.
   if (isLifetimeCustomerType(type)) return []
   if (type === "both") return ["listing_concierge", "shopping_agent"]
+  // Tolerant READER of a pre-m593 row: 'investor' left the contact_type
+  // vocabulary 2026-08-31 (owner: "investor is a persona and not a contact
+  // type") — new investors are contact_type='buyer' + contact_persona='investor'
+  // and reach shopping_agent through the buyer arm below. Same destination.
   if (type === "investor") return ["shopping_agent"]
   if (type.includes("seller")) return ["listing_concierge"]
   if (type.includes("buyer")) return ["shopping_agent"]

@@ -53,10 +53,14 @@ export type StandardCRMStatus = (typeof STANDARD_CRM_STATUSES)[number]
 // never drift apart again. The two copies had acquitted each other on the
 // orphan census exactly as the STANDARD_SOURCES note below records.
 
+// `investor` REMOVED (2026-08-31) — owner ruling, verbatim: "investor is a
+// persona and not a contact type." An imported "investor" is a BUYER whose
+// SITUATION is an investment purchase: mapContactType now lands them on 'buyer'
+// and the persona mapper (mapPersona / fallbackMapPersona) carries the
+// 'investor' persona, which m589 added to contacts_contact_persona_check.
 export const STANDARD_CONTACT_TYPES = [
   "buyer",
   "seller",
-  "investor",
   "lender",
   "commercial",
   "other",
@@ -206,9 +210,8 @@ Return ONLY the exact persona keyword (e.g., "first_time"), nothing else.`,
 External type: "${externalType}"
 
 Standard contact types (choose ONLY from these):
-- buyer: Looking to purchase property
+- buyer: Looking to purchase property (including investors — an investor is a buyer; the investment focus is captured as a persona, not a type)
 - seller: Looking to sell property
-- investor: Investment property focus
 - lender: Loan officer/mortgage lender
 - commercial: Commercial property
 - agent: Real estate agent (partner)
@@ -313,6 +316,13 @@ function fallbackMapPersona(externalPersona: string): StandardContactPersona {
   // Matchers target the LIVE persona vocabulary (constants/crm-standards.ts — the rekey note
   // there records the merge). The old 16-value spellings arrive here as EXTERNAL input now:
   // "first_time_buyer" → first_time, "empty_nester" → downsize, "upsizers" → upsize, etc.
+  // `motivated_seller` (and bare "motivated"/"urgent") deliberately has NO
+  // matcher here and falls to "other" — the mapper's no-persona answer. The
+  // persona says the SITUATION (probate/divorce/foreclosure/expired/fsbo/senior
+  // already name the why), lead_temperature says the urgency, and the scraping
+  // pipeline's motivation facts (motivated_seller_signals, motivation_type)
+  // keep the fact. Mapping it onto a distress persona would be a guess.
+  if (lower.includes("invest") || lower.includes("landlord") || lower.includes("flip")) return "investor"
   if (lower.includes("first") && (lower.includes("buy") || lower.includes("sell") || lower.includes("time"))) return "first_time"
   if (lower.includes("luxury") || lower.includes("high-end") || lower.includes("high end")) return "luxury"
   if (lower.includes("relocat") || lower.includes("transfer") || lower.includes("moving")) return "relocated"
@@ -341,7 +351,8 @@ function fallbackMapContactType(externalType: string): StandardContactType {
 
   if (lower.includes("buy") || lower.includes("purchas")) return "buyer"
   if (lower.includes("sell") || lower.includes("list")) return "seller"
-  if (lower.includes("invest")) return "investor"
+  // Owner ruling: an investor is a BUYER (the investing is the persona).
+  if (lower.includes("invest")) return "buyer"
   if (lower.includes("lend") || lower.includes("loan") || lower.includes("mortgage")) return "lender"
   if (lower.includes("commercial") || lower.includes("business")) return "commercial"
   if (lower.includes("agent") || lower.includes("broker") || lower.includes("realtor")) return "agent"

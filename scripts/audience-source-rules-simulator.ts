@@ -80,7 +80,10 @@ const CONTACTS: Array<Record<string, unknown>> = [
   { id: "c2", contact_type: "seller",            status: "active", buyer_stage: null,                    engagement_score: 92, contact_persona: "listing_seller",   last_contacted_at: daysAgo(2),   zip_code: "78704", tags: ["farm"] },
   { id: "c3", contact_type: "buyer",             status: "active", buyer_stage: "BUYER_UNDER_CONTRACT",  engagement_score: 78, contact_persona: "luxury_buyer",     last_contacted_at: daysAgo(1),   zip_code: "78730", tags: ["hot-lead", "luxury"] },
   { id: "c4", contact_type: "both",              status: "active", buyer_stage: null,                    engagement_score: 65, contact_persona: "past_client",      last_contacted_at: daysAgo(200), zip_code: "78702", tags: [] },
-  { id: "c5", contact_type: "investor",          status: "active", buyer_stage: null,                    engagement_score: 40, contact_persona: null,               last_contacted_at: daysAgo(10),  zip_code: "78745", tags: [] },
+  // c5 REKEYED (owner ruling 2026-08-31: "investor is a persona and not a contact
+  // type") — the investing moved from contact_type onto contact_persona (m589),
+  // and the investor_contacts rule now narrows on the persona.
+  { id: "c5", contact_type: "buyer",             status: "active", buyer_stage: "BUYER_ON_HOLD",         engagement_score: 40, contact_persona: "investor",         last_contacted_at: daysAgo(10),  zip_code: "78745", tags: [] },
   { id: "c6", contact_type: "lifetime_customer", status: "active", buyer_stage: "BUYER_CLOSED",          engagement_score: 55, contact_persona: null,               last_contacted_at: daysAgo(400), zip_code: "78701", tags: [] },
   { id: "c7", contact_type: "lifetime_customer", status: "inactive", buyer_stage: null,                  engagement_score: 20, contact_persona: null,               last_contacted_at: daysAgo(900), zip_code: "78704", tags: [] },
   { id: "c8", contact_type: "lead",              status: "new",    buyer_stage: null,                    engagement_score: 5,  contact_persona: "downsizer",        last_contacted_at: daysAgo(5),   zip_code: "78660", tags: [] },
@@ -507,9 +510,10 @@ function main() {
   console.log("       Undercounts — the fail-closed direction. Fixture row 3 pins it.")
   console.log("     · leads.lead_stage has NO CHECK; 'qualified' is pinned to its two writers.")
   console.log("       A writer that changes spelling makes that audience empty, not wide.")
-  console.log("     · contacts.contact_persona has NO CHECK and has drifted; the persona rule")
-  console.log("       queries raw spellings via the ONE alias map. m531 (written, NOT applied)")
-  console.log("       normalises it.")
+  console.log("     · contacts.contact_persona IS CHECK-constrained now (14 values incl. 'investor'")
+  console.log("       since m589 — measured in scripts/check-vocabularies.ts); pre-CHECK drifted")
+  console.log("       spellings still read forward through the ONE alias map, so the persona rule")
+  console.log("       queries raw spellings too. This line used to claim NO CHECK — stale.")
   console.log("     · contacts.zip_code is NULL on all 4 live rows, so zip narrowing resolves")
   console.log("       to zero live contacts today. Proven on fixtures instead.")
   check("the walk-in blind spot is real and pinned (a null contact_id attendee is excluded)",

@@ -53,7 +53,10 @@ export type FunnelStage = "pending" | "promoted" | "rejected" | "error"
 import { REJECTION_STATUSES } from "@/lib/lead-pipeline/processing-status"
 export { REJECTION_STATUSES }
 
-export type RejectionStatus = (typeof REJECTION_STATUSES)[number]
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): derived type `RejectionStatus`
+// deleted — never named by any consumer; readers use the re-exported
+// REJECTION_STATUSES list (and lib/lead-pipeline/processing-status owns the
+// vocabulary). Re-derive there when a typed consumer arrives.
 
 /** The in-flight statuses — the row entered the pipeline but hasn't reached a terminal
  *  (promoted / rejected / error) state yet. */

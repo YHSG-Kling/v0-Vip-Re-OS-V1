@@ -181,7 +181,11 @@ export interface KernelContact {
   phone?: string
 
   // Classification
-  contact_type: "buyer" | "seller" | "both" | "investor" | "vendor" | "lender"
+  // `investor` removed from this union 2026-08-31 — the other half of the owner
+  // ruling above the Persona union ("…and not a contact type"): an investor is a
+  // buyer whose contact_persona is 'investor'. m593 (written, not applied)
+  // retires it from contacts_contact_type_check; live rows carrying it: zero.
+  contact_type: "buyer" | "seller" | "both" | "vendor" | "lender"
   persona?: Persona
 
   // State & Lifecycle

@@ -38,7 +38,9 @@
  *   home_value + seller   → the seller-specific drip
  *   home_value + buyer    → still the seller drip (a home-value lead IS a seller)
  *   home_value + lifetime → falls back to the persona-agnostic drip
- *   persona 'investor'    → refused by the CHECK
+ *   persona 'investor'    → refused by the CHECK at the time of that live run;
+ *                           ADMITTED since m589 (owner: "investor is a persona
+ *                           and not a contact type")
  *   an active enrolment blocks a second; a COMPLETED one does not
  */
 import { readFileSync } from "node:fs"
@@ -118,16 +120,27 @@ console.log("\n── TWO axes, not one (m294 corrects m293) ──")
   // m293 shipped `persona` with a CHECK of buyer|seller|both|lifetime. That is
   // CONTACT_TYPE. Persona is the SITUATION that brought them to the market.
   const liveType = CHECK_VOCABULARIES.campaign_sequences?.contact_type ?? []
-  const livePersona = CHECK_VOCABULARIES.campaign_sequences?.persona ?? []
+  // The persona vocabulary anchor is contacts.contact_persona — the column the
+  // enrolment input actually carries (AutoEnrollInput.contactPersona) — which
+  // m589 (APPLIED) widened to fourteen values including 'investor' (owner
+  // ruling: "investor is a persona and not a contact type"). The
+  // campaign_sequences.persona CHECK must stay the SAME vocabulary; m591
+  // (written, not applied) widens it, and the check below stays honestly red
+  // until the integrator lands it. This block previously pinned `13` — a
+  // waypoint count (§2); the rule is roster ≡ live CHECK, whatever the number.
+  const livePersona = CHECK_VOCABULARIES.contacts?.contact_persona ?? []
+  const liveSeqPersona = CHECK_VOCABULARIES.campaign_sequences?.persona ?? []
 
   check(`contact_type has 4 values (${liveType.join(", ")})`, liveType.length === 4)
   check("the module declares exactly them",
     CAMPAIGN_CONTACT_TYPES.length === 4 && CAMPAIGN_CONTACT_TYPES.every((t) => liveType.includes(t)))
   check("'first_time' is NOT a contact_type", !isCampaignContactType("first_time"))
 
-  check(`persona has 13 values (${livePersona.length})`, livePersona.length === 13)
-  check("the module declares exactly them",
+  check(`the live contacts.contact_persona CHECK is non-empty (${livePersona.length} values)`, livePersona.length > 0)
+  check("the module declares exactly the live contacts.contact_persona vocabulary",
     CAMPAIGN_PERSONAS.length === livePersona.length && CAMPAIGN_PERSONAS.every((p) => livePersona.includes(p)))
+  check(`campaign_sequences.persona is the SAME vocabulary — m591 widens it with 'investor'; red until applied (contacts=${livePersona.length}, sequences=${liveSeqPersona.length})`,
+    livePersona.length === liveSeqPersona.length && livePersona.every((p) => liveSeqPersona.includes(p)))
   check("'seller' is NOT a persona — that was the m293 error",
     !isCampaignPersona("seller") && !isCampaignPersona("buyer"))
   for (const p of ["first_time", "divorce", "probate", "expired", "fsbo", "downsize", "senior"]) {
@@ -137,7 +150,7 @@ console.log("\n── TWO axes, not one (m294 corrects m293) ──")
   // The persona vocabulary must stay identical to lib/kernel/types.ts `Persona`,
   // which lib/agents/campaign-orchestrator.ts already composes campaigns by.
   const kernelPersonas: Persona[] = ["first_time", "relocated", "luxury", "fsbo", "probate", "upsize",
-    "downsize", "military", "divorce", "senior", "expired", "foreclosure", "other"]
+    "downsize", "military", "divorce", "senior", "expired", "foreclosure", "investor", "other"]
   check("the persona set is IDENTICAL to the kernel Persona union",
     kernelPersonas.length === CAMPAIGN_PERSONAS.length &&
     kernelPersonas.every((p) => (CAMPAIGN_PERSONAS as readonly string[]).includes(p)))

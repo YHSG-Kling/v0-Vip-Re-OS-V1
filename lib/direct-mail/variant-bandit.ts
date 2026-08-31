@@ -105,7 +105,7 @@ const PLATFORM_CATALOG: Array<{
 const ALL_PERSONAS: Persona[] = [
   "first_time", "relocated", "luxury", "fsbo", "probate",
   "upsize", "downsize", "military", "divorce", "senior",
-  "expired", "foreclosure", "other",
+  "expired", "foreclosure", "investor", "other",
 ]
 
 /** Sample one number from Beta(α, β) using the gamma-ratio trick.

@@ -100,14 +100,20 @@ function throws(fn: () => unknown): string | null {
   try { fn(); return null } catch (e) { return e instanceof Error ? e.message : String(e) }
 }
 
-/** The persona names the LIVE DB CHECK `campaign_sequences_persona_check` admits,
- *  read from the database on 2026-08-22 and pinned here so the TS roster cannot
- *  drift from the database silently. Regenerate with:
+/** The persona names the LIVE DB CHECK `contacts_contact_persona_check` admits —
+ *  the column the ads lane actually selects an audience from — read from the
+ *  database on 2026-08-31 (after m589 added `investor` on the owner ruling
+ *  "investor is a persona and not a contact type") and pinned here so the TS
+ *  roster cannot drift from the database silently. Regenerate with:
  *    SELECT pg_get_constraintdef(oid) FROM pg_constraint
- *     WHERE conname = 'campaign_sequences_persona_check'; */
+ *     WHERE conname = 'contacts_contact_persona_check';
+ *  NOTE for the integrator: `campaign_sequences_persona_check` (the previous
+ *  anchor of this pin) still lists THIRTEEN — m591 (written, not applied)
+ *  widens it; scripts/contact-vocabulary-guard.ts holds the two columns equal
+ *  and is honestly red until it lands. */
 const LIVE_CHECK_PERSONAS = [
   "first_time", "relocated", "luxury", "fsbo", "probate", "upsize", "downsize",
-  "military", "divorce", "senior", "expired", "foreclosure", "other",
+  "military", "divorce", "senior", "expired", "foreclosure", "investor", "other",
 ]
 
 function main() {
@@ -118,7 +124,7 @@ function main() {
   // ───────────────────────────────────────────────────────────────────────────
   console.log("\n[1 · ONE persona vocabulary — the TS union, the roster and the live CHECK agree]")
 
-  check("the runtime roster IS the live campaign_sequences_persona_check vocabulary (same members)",
+  check("the runtime roster IS the live contacts_contact_persona_check vocabulary (same members)",
     JSON.stringify([...CAMPAIGN_PERSONAS].sort()) === JSON.stringify([...LIVE_CHECK_PERSONAS].sort()),
     `roster=${CAMPAIGN_PERSONAS.join(",")}`)
 
@@ -132,8 +138,11 @@ function main() {
   check("the `Persona` TS union at lib/kernel/types.ts has exactly the same members",
     JSON.stringify(unionMembers.slice().sort()) === JSON.stringify([...LIVE_CHECK_PERSONAS].sort()),
     `union=${unionMembers.join(",")}`)
+  // THE RULE, NOT THE NUMBER (§2 — this read `=== 13`, a waypoint that broke the
+  // day the owner added the fourteenth member): the scanner must find exactly as
+  // many members as the runtime roster declares, and more than zero.
   check("POSITIVE CONTROL — the union scanner actually found members (a broken scan would report agreement by finding nothing)",
-    unionMembers.length === 13)
+    unionMembers.length > 0 && unionMembers.length === CAMPAIGN_PERSONAS.length)
 
   // ───────────────────────────────────────────────────────────────────────────
   console.log("\n[2 · the split is by OPERATION now, and both halves are DERIVED, never hand-listed]")
@@ -152,7 +161,7 @@ function main() {
   check("ADS_INELIGIBLE_PERSONAS (inclusion) is exactly the null basis — the four are IN, per the ruling",
     JSON.stringify([...ADS_INELIGIBLE_PERSONAS]) === JSON.stringify([UNRESOLVED_PERSONA]),
     `ineligible=${ADS_INELIGIBLE_PERSONAS.join(",")}`)
-  check("ADS_ELIGIBLE_PERSONAS is every canonical persona EXCEPT the catch-all (12 of 13)",
+  check("ADS_ELIGIBLE_PERSONAS is every canonical persona EXCEPT the catch-all (all but one)",
     ADS_ELIGIBLE_PERSONAS.length === CAMPAIGN_PERSONAS.length - 1
     && independentlyProtected.every((p) => (ADS_ELIGIBLE_PERSONAS as readonly string[]).includes(p)),
     `eligible=${ADS_ELIGIBLE_PERSONAS.join(",")}`)
@@ -519,14 +528,12 @@ function main() {
     !new RegExp(`\\n\\s*no_such_category:\\s*\\{\\s*label:`).test(dashboard))
 
   // ───────────────────────────────────────────────────────────────────────────
-  console.log("\n[11 · PERSONA vs CONTACT TYPE — the 13 audited against the owner's definition]")
+  console.log("\n[11 · PERSONA vs CONTACT TYPE — the 14 audited against the owner's definition]")
   //
   // OWNER, VERBATIM: "lifetime and active seller are contact type not persona.
   // persona is more the situation that the contact or lead is in."
-  //
-  // The union is NOT changed here. `campaign_sequences_persona_check` pins these
-  // same 13 values live and another lane owns the DATA; this block AUDITS and
-  // REPORTS, which is the honest half a lane can do without moving a live CHECK.
+  // And 2026-08-31: "investor is a persona and not a contact type" — the ruling
+  // that added the fourteenth member (m589) and moved investor OFF contact_type.
 
   const contactTypeVocabulary = new Set<string>([
     ...CAMPAIGN_CONTACT_TYPES, ...LIFETIME_CONTACT_TYPES,
@@ -548,6 +555,7 @@ function main() {
     downsize:    "SITUATION — deliberately moving smaller. A stated INTENT, not an inference about age.",
     expired:     "SITUATION — listing expired unsold.",
     foreclosure: "SITUATION — facing foreclosure; sourced from public filings on the parcel.",
+    investor:    "SITUATION — buying for investment (portfolio, rental, flip). Owner-ruled a persona 2026-08-31 ('investor is a persona and not a contact type'); NOT a protected class, so eligible on BOTH operations.",
     probate:     "SITUATION — settling an estate that includes a property. (Owner-ruled ads-eligible 2026-08-23.)",
     divorce:     "SITUATION — dividing a marital home. (Owner-ruled ads-eligible 2026-08-23.)",
     senior:      "FLAG — the LABEL is an age band, a characteristic; the SITUATION it stands for is a later-life move. Owner ruled it a situation persona and the template copy names the transition, not the age. Recorded, not changed: renaming it is a live-CHECK migration another lane owns.",
@@ -559,8 +567,8 @@ function main() {
   check("every canonical persona has an audit verdict (nothing was skipped over quietly)",
     CAMPAIGN_PERSONAS.every((p) => (AUDIT[p] ?? "").length > 0))
   console.log("     [not asserted] 'luxury' is reported as the one member that is neither a situation")
-  console.log("     nor a contact type. The union is UNCHANGED by this lane; campaign_sequences_persona_check")
-  console.log("     pins the same 13 values live and the DATA belongs to another lane.")
+  console.log("     nor a contact type. contacts_contact_persona_check pins these same 14 values live")
+  console.log("     (m589); campaign_sequences_persona_check still lists 13 until m591 is applied.")
 
   console.log("\n──────────────────────────────────────────────────")
   console.log(` RESULT: ${passed} passed, ${failed} failed`)
@@ -569,7 +577,7 @@ function main() {
     for (const f of failures) console.log(`   - ${f}`)
     process.exit(1)
   }
-  console.log(" ✅ AUDIENCE_PERSONA_BASIS_PASS — an audience is segmented on persona; all 13 minus")
+  console.log(" ✅ AUDIENCE_PERSONA_BASIS_PASS — an audience is segmented on persona; all 14 minus")
   console.log("    the catch-all may INCLUDE and choose wording; a protected-characteristic persona")
   console.log("    may not SUPPRESS an audience; raw demographic attributes stay refused on the ads lane.")
 }

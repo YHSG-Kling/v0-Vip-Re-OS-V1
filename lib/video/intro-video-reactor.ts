@@ -303,12 +303,14 @@ function normalizePersona(p: string | null | undefined): Persona {
   if (!p) return "other"
   const known: Persona[] = [
     "first_time", "relocated", "luxury", "fsbo", "probate", "upsize",
-    "downsize", "military", "divorce", "senior", "expired", "foreclosure", "other",
+    "downsize", "military", "divorce", "senior", "expired", "foreclosure",
+    "investor", "other",
   ]
-  // Common contacts.contact_persona aliases.
+  // Common contacts.contact_persona aliases. `investor: "other"` was REMOVED
+  // 2026-08-31 — the owner ruled investor a canonical persona (m589), so the
+  // spelling now passes through `known` above instead of being flattened.
   const alias: Record<string, Persona> = {
     first_time_buyer: "first_time",
-    investor:         "other",
     seller_only:      "other",
     move_up:          "upsize",
     empty_nester:     "downsize",

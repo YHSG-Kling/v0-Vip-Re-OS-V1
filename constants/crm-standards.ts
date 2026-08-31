@@ -18,17 +18,18 @@ export const STANDARD_CRM_STATUSES = [
 export type StandardCRMStatus = (typeof STANDARD_CRM_STATUSES)[number]
 
 // ─────────────────────────────────────────────────────────────────────────────
-// THE ONE PERSONA VOCABULARY — REKEYED ONTO THE LIVE CHECK (2026-08-31, §3/§6).
+// THE ONE PERSONA VOCABULARY — REKEYED ONTO THE LIVE CHECK (2026-08-31, §3/§6),
+// then WIDENED BY OWNER RULING the same day: `investor` is the fourteenth member.
 //
 // This list used to be a 16-member roster (first_time_buyer, luxury_buyer,
 // luxury_seller, motivated_seller, empty_nester, remote_seller, upsizers,
-// relocating, investor, …) that the LIVE DATABASE REFUSES: the
-// contacts_contact_persona_check and campaign_sequences persona CHECK
-// (scripts/check-vocabularies.ts:537/:406, measured 2026-08-31) admit exactly the
-// thirteen values below, and NOT ONE of the nine spellings named above. Two
-// tombstones (types.ts:42, services/aiMappingService.ts) pointed here as THE
-// canonical persona labels while the map could not label a single storable row —
-// and services/aiMappingService.ts mapPersona was actively normalizing imported
+// relocating, investor, …) that the LIVE DATABASE REFUSED: the
+// contacts_contact_persona_check (scripts/check-vocabularies.ts:537, regenerated
+// 2026-08-31 after m589) then admitted thirteen values, and NOT ONE of the nine
+// spellings named above. Two tombstones (types.ts:42,
+// services/aiMappingService.ts) pointed here as THE canonical persona labels
+// while the map could not label a single storable row — and
+// services/aiMappingService.ts mapPersona was actively normalizing imported
 // personas ONTO the refused 16-member set, so any contact import carrying a
 // persona was handed a value Postgres rejects (23514), killing the whole row
 // (§3: a CHECK refusal is refused ENTIRELY).
@@ -38,11 +39,26 @@ export type StandardCRMStatus = (typeof STANDARD_CRM_STATUSES)[number]
 // live CHECK fuses or renames the idea (first_time ⊃ first_time_buyer +
 // first_time_seller; luxury ⊃ luxury_buyer + luxury_seller; relocated ≈
 // relocating; upsize ≈ upsizers; downsize ≈ empty_nester's downsizing idea).
-// DROPPED with nowhere to land, stated rather than guessed around: `investor`
-// (lives on contact_type, which the CHECK admits it in — never a persona),
-// `motivated_seller` (an urgency fact — lead_temperature/timeline territory, not
-// a persona the column admits) and `remote_seller` (no live equivalent).
 // `foreclosure` and `military` are live CHECK members the old roster lacked.
+//
+// `investor` — the rekey dropped it, recording "lives on contact_type — never a
+// persona". THE OWNER OVERRULED THAT, verbatim: "one thing to note that investor
+// is a persona and not a contact type." An investment purchase is a SITUATION —
+// it selects the wording, the lessons, the campaigns — not a transaction side
+// (an investor is a buyer). m589 (APPLIED) widened contacts_contact_persona_check
+// to fourteen values including 'investor'; the code half is restored here and
+// across every Record<Persona, …> consumer.
+//
+// `motivated_seller` STAYS OUT, with the owner's invitation to suggest better
+// taken up ("motivated seller i belive we use for lead scrapping … but if there
+// is a better way that you suggest, then we can go with your suggestions"): the
+// persona says the SITUATION (probate / divorce / foreclosure / expired / fsbo /
+// senior already name the why), lead_temperature says the urgency, and the
+// scraping pipeline's motivation facts (motivated_seller_signals,
+// motivation_type — FENCED, untouched) keep the fact. A 'motivated_seller'
+// persona would flatten five existing personas into one label. Where a mapper
+// meets that spelling it maps to NO persona, never onto a distress persona by
+// guess. `remote_seller` stays dropped (no live equivalent).
 export const STANDARD_CONTACT_PERSONAS = [
   "first_time",
   "luxury",
@@ -56,15 +72,24 @@ export const STANDARD_CONTACT_PERSONAS = [
   "senior",
   "expired",
   "fsbo",
+  "investor",
   "other",
 ] as const satisfies readonly import("@/lib/kernel/types").Persona[]
 
 export type StandardContactPersona = (typeof STANDARD_CONTACT_PERSONAS)[number]
 
+// `investor` REMOVED from this roster (2026-08-31) on the same owner ruling that
+// added it to the personas above: "investor is a persona and not a contact
+// type." An investor is a BUYER whose situation is an investment purchase —
+// contact_type says the transaction side, contact_persona says the situation.
+// Live census at removal time: ZERO contacts rows carried
+// contact_type='investor' (buyer:2, lifetime_customer:1, seller:1), so nothing
+// strands. The DB half — retiring 'investor' from contacts_contact_type_check —
+// is m593 (WRITTEN, awaiting the integrator); until it applies,
+// lib/contact-types.ts CONTACT_TYPES (the live-CHECK mirror) still lists it.
 export const STANDARD_CONTACT_TYPES = [
   "buyer",
   "seller",
-  "investor",
   "lender",
   "commercial",
   "other",
@@ -206,13 +231,15 @@ export const PERSONA_LABELS: Record<StandardContactPersona, string> = {
   senior: "Senior",
   expired: "Expired Listing",
   fsbo: "FSBO",
+  investor: "Investor",
   other: "Other",
 }
 
+// `investor` label moved to PERSONA_LABELS above (owner ruling — see
+// STANDARD_CONTACT_TYPES).
 export const CONTACT_TYPE_LABELS: Record<StandardContactType, string> = {
   buyer: "Buyer",
   seller: "Seller",
-  investor: "Investor",
   lender: "Lender",
   commercial: "Commercial",
   other: "Other",
@@ -251,6 +278,8 @@ export const PERSONA_DESCRIPTIONS: Record<StandardContactPersona, string> = {
   senior: "Senior citizen with age-specific needs",
   expired: "Previous listing expired, needs new strategy",
   fsbo: "For Sale By Owner, considering agent representation",
+  investor:
+    "Investment purchase — building or expanding a portfolio (rental income, flip, 1031 exchange); ROI- and numbers-driven rather than a home to live in",
   other: "Other type of contact",
 }
 

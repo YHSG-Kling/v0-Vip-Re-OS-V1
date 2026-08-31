@@ -216,7 +216,9 @@ export async function createContact(contactData: {
   city?: string
   state?: string
   zip_code?: string
-  contact_type?: "buyer" | "seller" | "both" | "investor"
+  // `investor` removed 2026-08-31 (owner: "investor is a persona and not a
+  // contact type") — file investors as buyer + contact_persona='investor' (m589).
+  contact_type?: "buyer" | "seller" | "both"
   status?: string
   contact_persona?: string
   notes?: string

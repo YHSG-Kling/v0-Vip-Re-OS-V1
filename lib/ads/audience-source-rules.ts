@@ -297,7 +297,17 @@ export type SourceRuleNarrowing = SourceRuleNarrowingOk | SourceRuleNarrowingRef
  */
 const BUYER_CONTACT_TYPES = ["buyer", "both"] as const
 const SELLER_CONTACT_TYPES = ["seller", "both"] as const
-const INVESTOR_CONTACT_TYPE = "investor"
+/**
+ * REPOINTED (2026-08-31) from contact_type onto contact_persona. Owner ruling,
+ * verbatim: "investor is a persona and not a contact type." The rule always
+ * MEANT the persona — its template copy read "ROI-focused content, multi-family
+ * deals, off-market opportunities", a SITUATION, not a transaction side — and
+ * m589 (APPLIED) made 'investor' a storable contacts.contact_persona value.
+ * Live rows carrying contact_type='investor' at repoint time: ZERO, so no
+ * audience membership changed. m593 (written, not applied) retires 'investor'
+ * from contacts_contact_type_check.
+ */
+const INVESTOR_PERSONA = "investor"
 
 /**
  * `contacts_buyer_stage_check` — the stages that mean a buyer is NO LONGER an
@@ -565,9 +575,9 @@ const NARROWERS: Record<SourceRuleType, Narrower> = {
   investor_contacts: () => ({
     ok: true,
     ruleType: "investor_contacts",
-    label: `contacts whose contact_type is “${INVESTOR_CONTACT_TYPE}”`,
+    label: `contacts whose contact_persona is “${INVESTOR_PERSONA}”`,
     predicates: [
-      { column: "contact_type", op: "eq", value: INVESTOR_CONTACT_TYPE, says: "contact_type = investor" },
+      { column: "contact_persona", op: "eq", value: INVESTOR_PERSONA, says: "contact_persona = investor" },
     ],
     join: null,
     uploadsContacts: true,

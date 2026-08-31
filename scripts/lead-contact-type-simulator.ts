@@ -63,7 +63,16 @@ function pureLayer(): void {
   check("('motivated_seller','unknown') → 'seller' (motivation wins)", resolveContactType("motivated_seller", "unknown") === "seller")
   check("('fsbo_seller',null) → 'seller'", resolveContactType("fsbo_seller", null) === "seller")
   check("('relocation_buyer',null) → 'buyer'", resolveContactType("relocation_buyer", null) === "buyer")
-  check("('investor_landlord',null) → 'investor'", resolveContactType("investor_landlord", null) === "investor")
+  // REKEYED 2026-08-31 (owner ruling: "investor is a persona and not a contact
+  // type"): 'investor' left the contact_type vocabulary (m590, written). An
+  // investor_landlord motivation comes off a RENTAL LISTING — a landlord is an
+  // owner sourced as a potential SELLER (source-intent-map: "landlord/investor
+  // SELLER signal") — so the side is 'seller' and the investing lands on
+  // contact_persona='investor' (contact-creator derives it from the motivation).
+  check("('investor_landlord',null) → 'seller' (the landlord owns what we'd list; investing is the persona)",
+    resolveContactType("investor_landlord", null) === "seller")
+  check("a bare 'investor' motivation → 'buyer' (the buy-box side; persona carries the investing)",
+    resolveContactType("investor", null) === "buyer")
   check("(null,'buyer') → 'buyer' (lead_type fallback)", resolveContactType(null, "buyer") === "buyer")
   check("(null,'seller') → 'seller'", resolveContactType(null, "seller") === "seller")
   check("motivationToContactType returns null OR a canonical type",

@@ -385,6 +385,12 @@ const CRM_PERSONA_TO_LIBRARY: Record<string, { buyer?: string; seller?: string; 
   probate:    { either: "estate-sale" },
   divorce:    { either: "divorce" },
   fsbo:       { either: "fsbo" },
+  // Owner ruling 2026-08-31: "investor is a persona and not a contact type" —
+  // m589 made 'investor' a CHECK member, so the persona now reaches the
+  // authored investor-buyer arc through THIS map; the contact_type carve-out in
+  // empathyGuidanceForCrmPersona below is kept only as the tolerant read of a
+  // pre-m593 row.
+  investor:   { either: "investor-buyer" },
 }
 
 /**

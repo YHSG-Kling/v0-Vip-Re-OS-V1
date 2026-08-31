@@ -59,6 +59,9 @@ const PERSONA_COLORS: Record<string, string> = {
   relocated: "bg-orange-100 text-orange-800",
   luxury: "bg-amber-100 text-amber-800",
   military: "bg-emerald-100 text-emerald-800",
+  // Owner ruling 2026-08-31: "investor is a persona and not a contact type" —
+  // m589 made it a storable contact_persona, so the badge needs a color.
+  investor: "bg-violet-100 text-violet-800",
 }
 
 const STAGE_COLORS: Record<string, string> = {

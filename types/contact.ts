@@ -1,10 +1,13 @@
 import type { StandardTimeline, StandardContactPersona } from "@/constants/crm-standards"
 import type { ContactStatus as CanonicalContactStatus } from "@/lib/contact-promotion/qualification"
 
+// `investor` removed 2026-08-31 — owner ruling, verbatim: "investor is a persona
+// and not a contact type." It is the fourteenth ContactPersona below (m589); an
+// investor's transaction side is 'buyer'. m593 (written, not applied) retires it
+// from contacts_contact_type_check.
 export type ContactType =
   | "buyer"
   | "seller"
-  | "investor"
   | "lender"
   | "commercial"
   | "other"
@@ -14,9 +17,11 @@ export type ContactType =
 
 // REPOINTED (§6, 2026-08-31) onto the ONE persona vocabulary — constants/crm-standards.ts
 // STANDARD_CONTACT_PERSONAS, rekeyed there onto the live contacts_contact_persona_check
-// (13 values: first_time, luxury, relocated, upsize, downsize, military, foreclosure,
-// divorce, probate, senior, expired, fsbo, other — the same set as the kernel `Persona`
-// union and lib/campaigns/contact-sources.ts CAMPAIGN_PERSONAS). The 16-member union that
+// (14 values since m589: first_time, luxury, relocated, upsize, downsize, military,
+// foreclosure, divorce, probate, senior, expired, fsbo, investor, other — the same set as
+// the kernel `Persona` union and lib/campaigns/contact-sources.ts CAMPAIGN_PERSONAS,
+// 'investor' by the owner ruling "investor is a persona and not a contact type").
+// The 16-member union that
 // stood here (first_time_buyer, luxury_buyer, motivated_seller, empty_nester, remote_seller,
 // upsizers, …) named values the live CHECK refuses, so a Contact typed with it could never
 // round-trip through the database.

@@ -94,9 +94,15 @@ export function isCampaignContactType(v: string | null | undefined): v is Campai
  * lib/kernel/types.ts exactly — one vocabulary, two places that must agree, and
  * scripts/campaign-auto-enroll-simulator.ts pins them together.
  */
+// `investor` is the fourteenth member — OWNER RULING (2026-08-31), verbatim:
+// "investor is a persona and not a contact type." m589 (APPLIED) widened
+// contacts_contact_persona_check to admit it. NOTE for the integrator: the
+// campaign_sequences persona CHECK still lists thirteen — m591 (WRITTEN, not
+// applied) widens it so the two columns stay one vocabulary.
 export const CAMPAIGN_PERSONAS = [
   "first_time", "relocated", "luxury", "fsbo", "probate", "upsize",
-  "downsize", "military", "divorce", "senior", "expired", "foreclosure", "other",
+  "downsize", "military", "divorce", "senior", "expired", "foreclosure",
+  "investor", "other",
 ] as const
 export type CampaignPersona = (typeof CAMPAIGN_PERSONAS)[number]
 
@@ -154,6 +160,15 @@ export function contactTypeForSource(
  * situation (listing_seller, past_client) has no persona and returns null, so it
  * is never mistaken for one.
  */
+// `motivated_seller` is DELIBERATELY NOT A KEY here (owner invited a better
+// treatment than the old motivated_seller persona, and this is it): it names
+// URGENCY, not a situation, so it maps to NULL persona — no persona-specific
+// campaign — never onto a distress persona by guess. The persona says the
+// SITUATION (probate / divorce / foreclosure / expired / fsbo / senior already
+// name the why), lead_temperature says the urgency, and the scraping pipeline's
+// signal record (motivated_seller_signals, motivation_type — FENCED) keeps the
+// fact. `investor` needs no alias: it is canonical since m589 and
+// normalizeContactPersona passes it through via isCampaignPersona.
 const PERSONA_ALIASES: Record<string, CampaignPersona> = {
   first_time_buyer: "first_time",
   firsttime: "first_time",

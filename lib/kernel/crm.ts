@@ -63,7 +63,9 @@ export interface CreateContactParams {
   city?: string | null
   state?: string | null
   zip_code?: string | null
-  contact_type?: "buyer" | "seller" | "both" | "investor" | "vendor" | "lender"
+  // `investor` removed 2026-08-31 (owner: "investor is a persona and not a
+  // contact type") — an investor is a buyer with contact_persona='investor'.
+  contact_type?: "buyer" | "seller" | "both" | "vendor" | "lender"
   status?: string
   contact_persona?: string
   notes?: string
@@ -556,17 +558,25 @@ export async function convertLeadToContact(params: {
     }
   }
 
-  // Map lead_type → a VALID contacts.contact_type (CHECK: buyer|seller|both|
-  // investor|vendor|lender). A raw cast of lead_type (e.g. "motivated_seller")
-  // would violate the CHECK. Derive persona from motivation_type.
+  // Map lead_type → a VALID contacts.contact_type. A raw cast of lead_type
+  // (e.g. "motivated_seller") would violate the CHECK. Derive persona from
+  // motivation_type. An 'investor' lead is a BUYER whose persona is 'investor'
+  // (owner ruling 2026-08-31: "investor is a persona and not a contact type";
+  // m589 admits the persona, m593 retires the type).
   const lt = (lead.lead_type ?? "").toLowerCase()
-  const contactType: "buyer" | "seller" | "both" | "investor" =
-    lt.includes("seller") ? "seller" : lt === "investor" ? "investor" : lt === "both" ? "both" : "buyer"
+  const contactType: "buyer" | "seller" | "both" =
+    lt.includes("seller") ? "seller" : lt === "both" ? "both" : "buyer"
   const mt = (lead.motivation_type ?? "").toLowerCase()
+  // NOTE the foreclosure arm: this used to write 'motivated_seller', a value
+  // contacts_contact_persona_check has NEVER admitted — Postgres refused the
+  // whole row (23514, §3) for every foreclosure-motivated conversion. The
+  // persona names the SITUATION; 'foreclosure' is that situation. Urgency lives
+  // on lead_temperature and the scraped signal record, never in the persona.
   const contactPersona =
-    mt === "probate" ? "probate"
+    lt === "investor" ? "investor"
+    : mt === "probate" ? "probate"
     : mt === "divorce" ? "divorce"
-    : (mt === "foreclosure" || mt === "pre_foreclosure") ? "motivated_seller"
+    : (mt === "foreclosure" || mt === "pre_foreclosure") ? "foreclosure"
     : mt === "fsbo" ? "fsbo"
     : undefined
 

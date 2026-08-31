@@ -6,7 +6,9 @@
  *                                                 scraped OFF-MARKET / motivated-seller inventory
  *   - getInvestorDealMatchAction({ contactId }) — read the persisted match for display
  *
- * Only for contact_type='investor' (regular buyers are matched to MLS inventory by the retail matchers).
+ * Only for contact_persona='investor' (regular buyers are matched to MLS inventory by the retail
+ * matchers). Repointed from contact_type on the owner ruling: "investor is a persona and not a
+ * contact type" (m589).
  * Nothing auto-sends — the ranked off-market deals are intelligence the agent reviews before acting.
  */
 
@@ -75,7 +77,7 @@ export async function findInvestorDealsAction(params: {
 
   if (!result.ok) {
     const why: Record<string, string> = {
-      not_investor: "Off-market deal matching is for investor buyers. Set this contact's type to Investor to use it.",
+      not_investor: "Off-market deal matching is for investor buyers. Set this contact's persona to Investor to use it.",
       no_box: "This investor has no saved buy-box yet. Capture their criteria (target markets, price) first.",
       no_geography: "The investor's buy-box has no target markets — add cities or ZIP codes to match on.",
       no_inventory: "No off-market properties in the investor's markets yet. New matches appear as we scrape more.",

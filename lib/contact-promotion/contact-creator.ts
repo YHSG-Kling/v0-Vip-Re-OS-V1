@@ -16,6 +16,7 @@
 import { peopleDataProfileToContactColumns } from '@/lib/lead-pipeline/enrichment-column-map'
 import { ENUM_VOCABULARIES, normalizeEnumValue } from '@/lib/data-steward/value-normalizer'
 import { canonicalContactType, isStorableContactType } from "@/lib/contact-types"
+import { normalizeContactPersona } from "@/lib/campaigns/contact-sources"
 // NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
 // not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
 // `server-only` (it holds the service client and the paid PeopleData/OSINT
@@ -36,13 +37,22 @@ export interface ContactCreationData {
 
 /**
  * The ISA qualified the lead by intent; that intent IS the contact type going
- * forward (canonical contact_type vocabulary): buyer/seller/investor; 'both'
- * maps to buyer with persona 'both'.
+ * forward (canonical contact_type vocabulary): buyer/seller; 'both' maps to
+ * buyer. 'investor' maps to BUYER too — owner ruling 2026-08-31, verbatim:
+ * "investor is a persona and not a contact type" — the investing lands on
+ * contact_persona='investor' (m589) via resolveContactPersona below, and m593
+ * (written, not applied) retires 'investor' from contacts_contact_type_check.
  */
 export function motivationToContactType(m: string | null | undefined): string | null {
   if (!m) return null
   const lower = m.toLowerCase()
-  if (lower.includes('investor')) return 'investor'
+  // 'investor_landlord' is the scraped rental-listing motivation — a LANDLORD
+  // is an owner the pipeline sourced as a potential SELLER of their rental
+  // (lib/lead-pipeline/source-intent-map.ts: "landlord/investor SELLER
+  // signal"). The old 'investor' contact_type flattened that side away; now the
+  // side is seller and the investing rides contact_persona.
+  if (lower.includes('landlord')) return 'seller'
+  if (lower.includes('investor')) return 'buyer'
   if (lower.includes('seller')) return 'seller'
   if (lower.includes('both')) return 'buyer'
   if (lower.includes('buyer')) return 'buyer'
@@ -184,10 +194,22 @@ export async function createContactFromLead(
       // resolveContactType guarantees a CANONICAL value (the CHECK constraint rejects
       // anything else, which would silently fail the whole insert).
       contact_type: resolveContactType(data.lead.motivation_type, data.lead.lead_type),
+      // The persona must be CANONICAL too — contacts_contact_persona_check (14
+      // values since m589) refuses anything else and kills the WHOLE insert
+      // (23514, §3). This used to write 'both' (a contact_type, never a persona)
+      // and raw lead spellings ('motivated_seller', 'first_time_buyer') straight
+      // through, every one a refused row. normalizeContactPersona maps drifted
+      // spellings forward and answers NULL for a value that names no situation —
+      // 'motivated_seller' included, deliberately: the persona says the
+      // SITUATION (probate/divorce/foreclosure/expired/fsbo/senior name the
+      // why), lead_temperature says the urgency, and the scraped signal record
+      // keeps the fact. An 'investor'-intent lead gets the investor persona
+      // (owner ruling — see motivationToContactType above).
       contact_persona:
-        (data.lead.motivation_type ?? '').toLowerCase().includes('both')
-          ? 'both'
-          : (data.lead.contact_persona ?? data.lead.persona ?? null),
+        (data.lead.motivation_type ?? '').toLowerCase().includes('investor')
+        || (data.lead.lead_type ?? '').toLowerCase() === 'investor'
+          ? 'investor'
+          : normalizeContactPersona(data.lead.contact_persona ?? data.lead.persona ?? null),
 
       // Intent indicators (if available). NOTE: `leads` has NO intent_score column
       // (verified against scripts/schema-snapshot.ts) — this read is always undefined

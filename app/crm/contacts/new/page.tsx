@@ -52,9 +52,14 @@ const CONTACT_TYPE_LABELS: Record<ContactType, string> = {
 }
 
 // The order agents actually pick in, filtered to what the column admits.
+// `investor` is deliberately NOT offered (owner ruling 2026-08-31: "investor is
+// a persona and not a contact type") even while the live CHECK still admits it —
+// an investor is filed as a Buyer with contact_persona='investor' (m589). Once
+// m593 retires the value and lib/contact-types.ts drops it, the label entry
+// above becomes a compile error and goes too.
 const CONTACT_TYPE_ORDER: readonly ContactType[] = [
   "buyer", "seller", "both", "lead", "prospect",
-  "investor", "referral_partner", "vendor", "sphere", "lifetime_customer", "other",
+  "referral_partner", "vendor", "sphere", "lifetime_customer", "other",
 ]
 
 const CONTACT_TYPES = CONTACT_TYPE_ORDER

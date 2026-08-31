@@ -255,6 +255,17 @@ export const PROTECTED_CLASS_TOKENS: readonly string[] = [
   "income", "worth", "networth", "millionaire", "education", "occupation",
   // Veteran / military status (state-protected in several of our markets).
   "veteran", "veterans", "military",
+  // `investor` is DELIBERATELY ABSENT (recorded 2026-08-31, when the owner made
+  // it the fourteenth canonical persona — "investor is a persona and not a
+  // contact type"). Investing is NOT a protected class: it is a transaction
+  // posture — a fact about what someone is doing in the market, like `fsbo` or
+  // `expired`, not a characteristic of the person under the Fair Housing Act or
+  // any state statute this vocabulary tracks. `protectedClassReasonFor("investor")`
+  // therefore returns null, which places the persona correctly downstream: it is
+  // an eligible ad-audience INCLUSION basis like the other situation personas,
+  // AND — unlike senior/probate/divorce/military — an eligible EXCLUSION basis,
+  // because suppressing investors from a housing ad withholds nothing from a
+  // protected group.
 ]
 
 /**

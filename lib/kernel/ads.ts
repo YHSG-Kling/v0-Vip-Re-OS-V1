@@ -358,12 +358,11 @@ export interface CreateAudienceSegmentInput {
   adCampaignId?: string
 }
 
-export interface LoadAdPerformanceInput {
-  ctx: AdsActorContext
-  campaignId?: string
-  dateFrom?: string
-  dateTo?: string
-}
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): `LoadAdPerformanceInput` deleted —
+// the input shape of a per-campaign performance command that was never built.
+// The capability lives in loadAdsWorkspace below, which loads campaigns +
+// performance summary in one read for the ads dashboard; a future filtered
+// performance query should define its input WITH the command.
 
 // ─── COMMAND 1: loadAdsWorkspace ──────────────────────────────────────────────
 // Loads all campaigns, audiences, performance summary, and account connection status

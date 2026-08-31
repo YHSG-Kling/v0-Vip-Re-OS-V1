@@ -89,10 +89,14 @@ export interface Lead {
 // CONTACT
 // ============================================
 
+// `investor` REMOVED (2026-08-31) — owner ruling, verbatim: "investor is a
+// persona and not a contact type." It moved to ContactPersona below (m589,
+// APPLIED, admits it on contacts.contact_persona); an investor's transaction
+// side is 'buyer'. Live census at removal: zero rows carried
+// contact_type='investor'. DB half: m593 (WRITTEN, not applied).
 export type ContactType =
   | "buyer"
   | "seller"
-  | "investor"
   | "lender"
   | "commercial"
   | "agent"
@@ -121,6 +125,9 @@ export type ContactPersona =
   | "senior"
   | "expired"
   | "fsbo"
+  // Owner ruling 2026-08-31: "investor is a persona and not a contact type."
+  // m589 (APPLIED) made it the fourteenth member of contacts_contact_persona_check.
+  | "investor"
   | "other"
 
 /**
@@ -475,12 +482,12 @@ export interface OfferCreationResult {
   error?: string
 }
 
-/**
- * Represents the result of sending an offer to Dotloop
- */
-export interface DotloopSyncResult {
-  success: boolean
-  dotloop_loop_id?: string
-  dotloop_status?: string
-  error?: string
-}
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): interface `DotloopSyncResult` deleted.
+// Scaffolding-era return type for "send an offer to Dotloop" that the live
+// integration never adopted: the real sender is app/actions/ai-offer-creation.ts
+// (per-brokerage credential via the dotloop connector, returning its own inline
+// { success, loopUrl, ... } shape), document sync is app/actions/
+// dotloop-integration.ts, and transactions carry the generic
+// external_provider_source / external_provider_transaction_id columns (m106,
+// lib/transactions/offer-bridge.ts) rather than dotloop_status. No importer
+// anywhere; no capability lost.
