@@ -8,7 +8,7 @@
 import { getAgentContext } from "@/lib/identity"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
-import { validateTeamMember, agentFundedTotal, isSourceOfFunds, type SourceOfFunds } from "@/lib/teams/membership"
+import { validateTeamMember, agentFundedTotal, isSourceOfFunds, isTeamRole, type SourceOfFunds, type TeamRole } from "@/lib/teams/membership"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { resolveLedTeamId } from "@/lib/teams/team-scope"
 
@@ -49,13 +49,17 @@ export async function listTeamMembers(teamId: string): Promise<{ ok: true; rows:
 export async function addTeamMember(input: {
   teamId: string
   agentId: string
-  role: string
+  /** Tightened string → TeamRole (2026-08-31): the UI picker already renders from TEAM_ROLES,
+   *  so only a hand-crafted request could send anything else — and this is a public endpoint,
+   *  so the isTeamRole runtime check below is the real gate; the type is its compile-time echo. */
+  role: TeamRole
   splitPercent: number
   sourceOfFunds: SourceOfFunds
 }): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated || !ctx.brokerageId) return { ok: false, error: "Unauthorized" }
   if (!isSourceOfFunds(input.sourceOfFunds)) return { ok: false, error: "Invalid source of funds" }
+  if (!isTeamRole(input.role)) return { ok: false, error: "Invalid team role" }
 
   const svc = createServiceClient()
   // ROSTER + MEMBER SPLIT are the team's terms (m473, owner ruling: the lead

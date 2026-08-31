@@ -17,24 +17,47 @@ export const STANDARD_CRM_STATUSES = [
 
 export type StandardCRMStatus = (typeof STANDARD_CRM_STATUSES)[number]
 
+// ─────────────────────────────────────────────────────────────────────────────
+// THE ONE PERSONA VOCABULARY — REKEYED ONTO THE LIVE CHECK (2026-08-31, §3/§6).
+//
+// This list used to be a 16-member roster (first_time_buyer, luxury_buyer,
+// luxury_seller, motivated_seller, empty_nester, remote_seller, upsizers,
+// relocating, investor, …) that the LIVE DATABASE REFUSES: the
+// contacts_contact_persona_check and campaign_sequences persona CHECK
+// (scripts/check-vocabularies.ts:537/:406, measured 2026-08-31) admit exactly the
+// thirteen values below, and NOT ONE of the nine spellings named above. Two
+// tombstones (types.ts:42, services/aiMappingService.ts) pointed here as THE
+// canonical persona labels while the map could not label a single storable row —
+// and services/aiMappingService.ts mapPersona was actively normalizing imported
+// personas ONTO the refused 16-member set, so any contact import carrying a
+// persona was handed a value Postgres rejects (23514), killing the whole row
+// (§3: a CHECK refusal is refused ENTIRELY).
+//
+// The rekey is a MERGE, not a rewrite — wording carried over where the value
+// survived (divorce, probate, senior, expired, fsbo, other), adapted where the
+// live CHECK fuses or renames the idea (first_time ⊃ first_time_buyer +
+// first_time_seller; luxury ⊃ luxury_buyer + luxury_seller; relocated ≈
+// relocating; upsize ≈ upsizers; downsize ≈ empty_nester's downsizing idea).
+// DROPPED with nowhere to land, stated rather than guessed around: `investor`
+// (lives on contact_type, which the CHECK admits it in — never a persona),
+// `motivated_seller` (an urgency fact — lead_temperature/timeline territory, not
+// a persona the column admits) and `remote_seller` (no live equivalent).
+// `foreclosure` and `military` are live CHECK members the old roster lacked.
 export const STANDARD_CONTACT_PERSONAS = [
-  "first_time_buyer",
-  "luxury_buyer",
-  "luxury_seller",
-  "investor",
-  "first_time_seller",
-  "motivated_seller",
-  "relocating",
-  "empty_nester",
-  "probate",
-  "remote_seller",
+  "first_time",
+  "luxury",
+  "relocated",
+  "upsize",
+  "downsize",
+  "military",
+  "foreclosure",
   "divorce",
-  "upsizers",
+  "probate",
   "senior",
   "expired",
   "fsbo",
   "other",
-] as const
+] as const satisfies readonly import("@/lib/kernel/types").Persona[]
 
 export type StandardContactPersona = (typeof STANDARD_CONTACT_PERSONAS)[number]
 
@@ -169,19 +192,17 @@ export const STATUS_LABELS: Record<StandardCRMStatus, string> = {
   lifetime_customer: "Lifetime Customer",
 }
 
+// Keyed on the LIVE persona vocabulary (see the rekey note above STANDARD_CONTACT_PERSONAS).
 export const PERSONA_LABELS: Record<StandardContactPersona, string> = {
-  first_time_buyer: "First Time Buyer",
-  luxury_buyer: "Luxury Buyer",
-  luxury_seller: "Luxury Seller",
-  investor: "Investor",
-  first_time_seller: "First Time Seller",
-  motivated_seller: "Motivated Seller",
-  relocating: "Relocating",
-  empty_nester: "Empty Nester",
-  probate: "Probate",
-  remote_seller: "Remote Seller",
+  first_time: "First-Timer",
+  luxury: "Luxury",
+  relocated: "Relocating",
+  upsize: "Upsizing",
+  downsize: "Downsizing",
+  military: "Military",
+  foreclosure: "Foreclosure",
   divorce: "Divorce",
-  upsizers: "Upsizer",
+  probate: "Probate",
   senior: "Senior",
   expired: "Expired Listing",
   fsbo: "FSBO",
@@ -213,23 +234,48 @@ export const TIMELINE_LABELS: Record<StandardTimeline, string> = {
 // now LEAD_SOURCE_LABELS at lib/constants/index.ts:174; see the tombstone above
 // STATUS_LABELS in this file for the full merge record.
 
+// Keyed on the LIVE persona vocabulary; wording carried over from the old roster wherever the
+// value survived the rekey. Also the ONE source the AI import mapper's prompt is built from
+// (services/aiMappingService.ts mapPersona), so the mapper's target set and these descriptions
+// cannot drift apart again.
 export const PERSONA_DESCRIPTIONS: Record<StandardContactPersona, string> = {
-  first_time_buyer: "Never owned before, needs education and guidance",
-  luxury_buyer: "High-end purchase, expects premium service",
-  luxury_seller: "High-end property sale, sophisticated needs",
-  investor: "Investment focused, ROI driven",
-  first_time_seller: "First time selling, needs process guidance",
-  motivated_seller: "Needs to sell quickly, time-sensitive",
-  relocating: "Moving for job/life change, dual market needs",
-  empty_nester: "Downsizing after children leave",
-  probate: "Inherited property, legal complexities",
-  remote_seller: "Selling from distance, remote management",
+  first_time: "Never bought or sold before, needs education and guidance",
+  luxury: "High-end property, expects premium service",
+  relocated: "Moving for job/life change, dual market needs",
+  upsize: "Buying larger property, growing family",
+  downsize: "Downsizing — smaller home, empty nest or simplifying",
+  military: "Military move — PCS timelines, VA financing",
+  foreclosure: "Facing foreclosure, time-critical and sensitive",
   divorce: "Divorce-related sale, sensitive situation",
-  upsizers: "Buying larger property, growing family",
+  probate: "Inherited property, legal complexities",
   senior: "Senior citizen with age-specific needs",
   expired: "Previous listing expired, needs new strategy",
   fsbo: "For Sale By Owner, considering agent representation",
   other: "Other type of contact",
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE ONE PERSONA / TIMELINE RENDERERS (§6, 2026-08-31). Every surface that
+// showed a persona or timeline value wrote its own string transform instead of
+// reading the label maps above — `.replace(/_/g, " ")` in one card,
+// `.replace(/-/g, " ")` (the WRONG separator — live values are snake_case, so it
+// changed nothing) in another, and three surfaces rendering the raw DB value
+// ("1-3_months") to the user. These two helpers are the door: known values get
+// the canonical label; an unknown/historical value falls back to a readable
+// de-snaked spelling rather than lying or vanishing.
+
+/** Canonical display label for a contact persona value; null in → null out. */
+export function personaLabel(v: string | null | undefined): string | null {
+  if (!v) return null
+  return (PERSONA_LABELS as Record<string, string>)[v] ?? v.replace(/_/g, " ")
+}
+
+/** Canonical display label for a timeline value; null in → null out.
+ *  Timeline stays in BUCKETS (1-3 / 3-6 / 6-12) — never 30/60/90 (owner ruling;
+ *  see the OWNER QUESTION note above STANDARD_TIMELINES). */
+export function timelineLabel(v: string | null | undefined): string | null {
+  if (!v) return null
+  return (TIMELINE_LABELS as Record<string, string>)[v] ?? v.replace(/_/g, " ")
 }
 
 // `lib/contact-utils.ts` — WHOLE FILE DELETED (orphan burn-down, category C).

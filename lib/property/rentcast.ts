@@ -24,7 +24,20 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
-import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { canonicalPropertyType, type PropertyType } from "@/lib/constants"
+import {
+  callRentcastGet,
+  callRentcastGetById,
+  type RentcastSaleListingsQuery,
+  type RentcastSaleListing as RentcastSaleListingRow,
+  type RentcastSaleListingResponse,
+  type RentcastRentalListingsQuery,
+  type RentcastRentalListing as RentcastRentalListingRow,
+  type RentcastAvmValueQuery,
+  type RentcastAvmValueResponse,
+  type RentcastMarketsQuery,
+  type RentcastMarketsResponse,
+} from "@/lib/external/rentcast-typed"
 import {
   resolveRentcastEligibility,
   type RentcastEligibility,
@@ -39,15 +52,59 @@ import {
 
 export { normalizeRentcastMarketStats, normalizeRentcastComps, type RentcastMarketStats, type RentcastComp }
 
-const RENTCAST_BASE = "https://api.rentcast.io/v1"
+// TOMBSTONE (2026-08-31): the private untyped `rentcastGet(apiKey, path, URLSearchParams)`
+// transport that lived here was a duplicate of the typed façade this module now consumes —
+// survivor: `callRentcastGet` at lib/external/rentcast-typed.ts:84 (static paths) and
+// `callRentcastGetById` at lib/external/rentcast-typed.ts:123 (`{id}` paths). The façade was
+// written FOR these readers ("drop them into the existing lib/property/rentcast.ts callsite
+// signatures") and never adopted; the untyped copy is what let a renamed query param or a
+// drifted response shape reach production as a 4xx or an empty map instead of a compile error.
 
-/** RentCast GET through the connector-gateway (X-Api-Key header). */
-async function rentcastGet(apiKey: string, path: string, qs: URLSearchParams): Promise<{ ok: boolean; status: number; data: any }> {
-  const res = await callConnector<any>({
-    connector: "rentcast", baseUrl: RENTCAST_BASE, path, method: "GET",
-    query: Object.fromEntries(qs), auth: { style: "header", name: "X-Api-Key", value: apiKey },
-  })
-  return { ok: res.ok, status: res.status ?? 0, data: res.data }
+/**
+ * Fields observed on live RentCast /listings responses that the published OpenAPI spec does not
+ * declare (the spec is the source of lib/external/_generated/rentcast-openapi.ts). The row
+ * mappers below have always read them defensively (`?? null` / optional chains); typing them
+ * here keeps that read legal without casting the whole row back to `any`. If regeneration ever
+ * adds these to the spec, delete this and let the generated type carry them.
+ */
+type RentcastListingRowExtras = {
+  /** Some feeds spell the asking price `listPrice`; the spec only declares `price`. */
+  listPrice?: number
+  /** Listing photo URLs — absent from the spec; kept because photoUrl is display-only and
+   *  already null-tolerant everywhere it is shown. */
+  photos?: string[]
+}
+
+/** RentCast's own property-type vocabulary, as the generated query type spells it. */
+type RentcastQueryPropertyType = NonNullable<NonNullable<RentcastSaleListingsQuery>["propertyType"]>
+
+/**
+ * OUR canonical property-type spellings → RENTCAST's (§6 — two vocabularies, one translator).
+ *
+ * The defect this closes was already named at lib/property-alerts/idx-alert-search.ts:343: an
+ * untranslated canonical value ("single_family") sent as a provider filter returns an empty page
+ * indistinguishable from "no homes". That lane's answer was to stop sending the filter; the other
+ * callers (external-listings-search, rent-estimate) kept sending the untranslated string. Now the
+ * query object is TYPED to RentCast's union, so the translation is forced to happen — here, at
+ * the vendor boundary, never as a cast.
+ *
+ * `commercial` and `other` are deliberately absent: RentCast has no equivalent filter value, and
+ * a wrong guess narrows the search to the wrong homes. Absent → the filter is OMITTED, which is
+ * the same honest fallback idx-alert-search chose.
+ */
+const RENTCAST_PROPERTY_TYPE: Partial<Record<PropertyType, RentcastQueryPropertyType>> = {
+  single_family: "Single Family",
+  condo:         "Condo",
+  townhouse:     "Townhouse",
+  multi_family:  "Multi-Family",
+  land:          "Land",
+}
+
+/** Narrow ANY caller-held property-type string to RentCast's vocabulary, or undefined (= omit
+ *  the filter). Accepts display spellings too — canonicalPropertyType absorbs those first. */
+function toRentcastPropertyType(raw: string | null | undefined): RentcastQueryPropertyType | undefined {
+  const canonical = canonicalPropertyType(raw)
+  return canonical ? RENTCAST_PROPERTY_TYPE[canonical] : undefined
 }
 
 // Approximate per-call costs at Rentcast's standard tier ($49/mo / 250 calls = $0.196).
@@ -157,8 +214,11 @@ export interface RentcastSearchFilters {
   priceMax?: number
   propertyType?: string
   limit?: number
-  /** Listing status filter (RentCast): 'Active' (default) | 'Inactive' (off-market/expired). */
-  status?: string
+  /** Listing status filter — RentCast's spec vocabulary: 'Active' (default) | 'Inactive'
+   *  (off-market/expired). Was `string`; no caller in the tree ever passed one, so tightening
+   *  to the generated query type's own union broke nobody and stops a junk status from riding
+   *  to the vendor as a silently-ignored parameter. */
+  status?: "Active" | "Inactive"
 }
 
 export interface RentcastListing {
@@ -316,7 +376,6 @@ export async function searchRentcastSaleListings(
     }
   }
 
-  const qs = new URLSearchParams()
   const f = params.filters
   // A SINGLE-HOME LOOKUP IS ITS OWN QUERY MODE, not one more filter.
   // RentCast's search-queries reference (checked against the live docs
@@ -330,27 +389,32 @@ export async function searchRentcastSaleListings(
   // homes rather than reporting the one it could not resolve. Sent on BOTH
   // readers: an accepted-and-dropped filter is the exact defect this file's
   // rental reader was corrected for.
+  //
+  // The query object is TYPED (RentcastSaleListingsQuery, from the OpenAPI spec): the range
+  // params below (`bedrooms`, `bathrooms`, `price`) are `string` on the spec precisely because
+  // they carry range syntax, so a numeric exact-match regression now fails to compile.
+  let q: NonNullable<RentcastSaleListingsQuery>
   if (f.address) {
-    qs.set("address", f.address)
+    q = { address: f.address }
   } else {
-    if (f.city) qs.set("city", f.city)
-    if (f.state) qs.set("state", f.state)
-    if (f.zipCode) qs.set("zipCode", f.zipCode)
+    q = { status: f.status ?? "Active", limit: f.limit ?? 30 }
+    if (f.city) q.city = f.city
+    if (f.state) q.state = f.state
+    if (f.zipCode) q.zipCode = f.zipCode
     // MCP-verified contract: bedrooms/bathrooms/price are RANGE params — a plain
     // "3" means EXACTLY 3 (a 3+ buyer would silently lose 4-bed homes); the min-
     // only form is "3:*". Price has no minPrice/maxPrice — one `price=min:max`.
-    if (f.bedroomsMin != null && f.bedroomsMax != null) qs.set("bedrooms", `${f.bedroomsMin}:${f.bedroomsMax}`)
-    else if (f.bedroomsMin != null) qs.set("bedrooms", `${f.bedroomsMin}:*`)
-    if (f.bathroomsMin != null) qs.set("bathrooms", `${f.bathroomsMin}:*`)
-    if (f.priceMin != null && f.priceMax != null) qs.set("price", `${f.priceMin}:${f.priceMax}`)
-    else if (f.priceMin != null) qs.set("price", `${f.priceMin}:*`)
-    else if (f.priceMax != null) qs.set("price", `*:${f.priceMax}`)
-    if (f.propertyType) qs.set("propertyType", f.propertyType)
-    qs.set("status", f.status ?? "Active")
-    qs.set("limit", String(f.limit ?? 30))
+    if (f.bedroomsMin != null && f.bedroomsMax != null) q.bedrooms = `${f.bedroomsMin}:${f.bedroomsMax}`
+    else if (f.bedroomsMin != null) q.bedrooms = `${f.bedroomsMin}:*`
+    if (f.bathroomsMin != null) q.bathrooms = `${f.bathroomsMin}:*`
+    if (f.priceMin != null && f.priceMax != null) q.price = `${f.priceMin}:${f.priceMax}`
+    else if (f.priceMin != null) q.price = `${f.priceMin}:*`
+    else if (f.priceMax != null) q.price = `*:${f.priceMax}`
+    const pt = toRentcastPropertyType(f.propertyType)
+    if (pt) q.propertyType = pt
   }
   try {
-    const res = await rentcastGet(apiKey, "/listings/sale", qs)
+    const res = await callRentcastGet("/listings/sale", q, apiKey)
     meterCall({
       brokerageId: params.brokerageId,
       usageType: "api_call",
@@ -361,10 +425,10 @@ export async function searchRentcastSaleListings(
       metadata: { ok: res.ok, status: res.status },
     })
     if (!res.ok) {
-      return { success: false, listings: [], error: `Rentcast returned ${res.status}` }
+      return { success: false, listings: [], error: `Rentcast returned ${res.status ?? 0}` }
     }
     const data = res.data
-    const arr: any[] = Array.isArray(data) ? data : []
+    const arr: Array<RentcastSaleListingRow & RentcastListingRowExtras> = Array.isArray(data) ? data : []
 
     // Belt-and-braces re-filter (the server-side price/bedrooms ranges above are
     // the MCP-verified contract; this keeps bedroomsMax exact + guards nulls)
@@ -425,7 +489,7 @@ export async function getRentcastListingStatus(
   const { apiKey } = await gateRentcast(params)
   if (!apiKey || !params.externalId) return null
   try {
-    const res = await rentcastGet(apiKey, `/listings/sale/${encodeURIComponent(params.externalId)}`, new URLSearchParams())
+    const res = await callRentcastGetById("/listings/sale/{id}", params.externalId, apiKey)
     meterCall({
       brokerageId: params.brokerageId,
       usageType: "api_call",
@@ -440,7 +504,10 @@ export async function getRentcastListingStatus(
     // terminal state, so it maps to off_market rather than to "sold".
     if (res.status === 404) return "off_market"
     if (!res.ok) return null
-    const row: any = Array.isArray(res.data) ? res.data[0] : res.data
+    // The by-id endpoint's 200 body is `unknown` on the spec (RentcastSaleListingResponse) —
+    // the alias states that honestly; the shape is then narrowed defensively as it always was.
+    const payload: RentcastSaleListingResponse | null = res.data
+    const row: any = Array.isArray(payload) ? payload[0] : payload
     const { normalizeVendorStatus } = await import("./resolve-property-facts")
     return normalizeVendorStatus(row?.status ?? null)
   } catch {
@@ -487,7 +554,6 @@ export async function searchRentcastRentalListings(
     }
   }
 
-  const qs = new URLSearchParams()
   const f = params.filters
   // Same single-home lookup the for-sale reader sends. Honoured here rather than
   // silently dropped: this reader has already been through one round of
@@ -504,28 +570,35 @@ export async function searchRentcastRentalListings(
   // homes rather than reporting the one it could not resolve. Sent on BOTH
   // readers: an accepted-and-dropped filter is the exact defect this file's
   // rental reader was corrected for.
+  //
+  // Typed as the RENTAL endpoint's own query (RentcastRentalListingsQuery), which is the sale
+  // query minus "Land" on propertyType — the compiler now holds the two builders to their own
+  // endpoints instead of one URLSearchParams shape pretending to fit both.
+  let q: NonNullable<RentcastRentalListingsQuery>
   if (f.address) {
-    qs.set("address", f.address)
+    q = { address: f.address }
   } else {
-    if (f.city) qs.set("city", f.city)
-    if (f.state) qs.set("state", f.state)
-    if (f.zipCode) qs.set("zipCode", f.zipCode)
+    q = { status: f.status ?? "Active", limit: f.limit ?? 20 }
+    if (f.city) q.city = f.city
+    if (f.state) q.state = f.state
+    if (f.zipCode) q.zipCode = f.zipCode
     // Same MCP-verified range contract as the for-sale search: a bare "3" means
     // EXACTLY 3, so a min-only filter must be written "3:*". `price` here is the
     // monthly rent range, which is the same query parameter on this endpoint.
-    if (f.bedroomsMin != null && f.bedroomsMax != null) qs.set("bedrooms", `${f.bedroomsMin}:${f.bedroomsMax}`)
-    else if (f.bedroomsMin != null) qs.set("bedrooms", `${f.bedroomsMin}:*`)
-    else if (f.bedroomsMax != null) qs.set("bedrooms", `*:${f.bedroomsMax}`)
-    if (f.bathroomsMin != null) qs.set("bathrooms", `${f.bathroomsMin}:*`)
-    if (f.priceMin != null && f.priceMax != null) qs.set("price", `${f.priceMin}:${f.priceMax}`)
-    else if (f.priceMin != null) qs.set("price", `${f.priceMin}:*`)
-    else if (f.priceMax != null) qs.set("price", `*:${f.priceMax}`)
-    if (f.propertyType) qs.set("propertyType", f.propertyType)
-    qs.set("status", f.status ?? "Active")
-    qs.set("limit", String(f.limit ?? 20))
+    if (f.bedroomsMin != null && f.bedroomsMax != null) q.bedrooms = `${f.bedroomsMin}:${f.bedroomsMax}`
+    else if (f.bedroomsMin != null) q.bedrooms = `${f.bedroomsMin}:*`
+    else if (f.bedroomsMax != null) q.bedrooms = `*:${f.bedroomsMax}`
+    if (f.bathroomsMin != null) q.bathrooms = `${f.bathroomsMin}:*`
+    if (f.priceMin != null && f.priceMax != null) q.price = `${f.priceMin}:${f.priceMax}`
+    else if (f.priceMin != null) q.price = `${f.priceMin}:*`
+    else if (f.priceMax != null) q.price = `*:${f.priceMax}`
+    const pt = toRentcastPropertyType(f.propertyType)
+    // "Land" is a valid SALE filter but not a rental one (there is no such thing as a long-term
+    // land rental on this endpoint) — omitted rather than guessed into a different type.
+    if (pt && pt !== "Land") q.propertyType = pt
   }
   try {
-    const res = await rentcastGet(apiKey, "/listings/rental/long-term", qs)
+    const res = await callRentcastGet("/listings/rental/long-term", q, apiKey)
     meterCall({
       brokerageId: params.brokerageId,
       usageType: "api_call",
@@ -536,10 +609,10 @@ export async function searchRentcastRentalListings(
       metadata: { ok: res.ok, status: res.status },
     })
     if (!res.ok) {
-      return { success: false, listings: [], error: `Rentcast returned ${res.status}` }
+      return { success: false, listings: [], error: `Rentcast returned ${res.status ?? 0}` }
     }
     const data = res.data
-    const arr: any[] = Array.isArray(data) ? data : []
+    const arr: Array<RentcastRentalListingRow & RentcastListingRowExtras> = Array.isArray(data) ? data : []
     // Belt-and-braces re-filter, matching the for-sale search: the server-side
     // ranges above are the contract, this keeps bedroomsMax exact and stops a
     // row with NO rent at all from satisfying a rent filter.
@@ -593,8 +666,10 @@ export async function searchRentcastRentalListings(
  * provider that answered "zero" are different facts, and this lane's whole
  * purpose is that a missing estimate reads as missing.
  */
-function parseAvmValue(data: any): { value: number | null; rangeLow: number | null; rangeHigh: number | null } {
-  const num = (v: any): number | null => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null)
+function parseAvmValue(data: RentcastAvmValueResponse | null): { value: number | null; rangeLow: number | null; rangeHigh: number | null } {
+  // The spec declares price/priceRangeLow/priceRangeHigh as REQUIRED numbers with @default 0 —
+  // i.e. "no estimate" arrives as 0, which is exactly why the >0 guard maps it to null here.
+  const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null)
   return {
     value: num(data?.price),
     rangeLow: num(data?.priceRangeLow),
@@ -609,8 +684,8 @@ export async function getRentcastAVM(
   if (!apiKey) return { value: null, rangeLow: null, rangeHigh: null }
 
   try {
-    const qs = new URLSearchParams({ address: params.address })
-    const res = await rentcastGet(apiKey, "/avm/value", qs)
+    const q: RentcastAvmValueQuery = { address: params.address }
+    const res = await callRentcastGet("/avm/value", q, apiKey)
     meterCall({
       brokerageId: params.brokerageId,
       usageType: "avm_lookup",
@@ -644,8 +719,8 @@ export async function getRentcastMarketStats(
   if (!apiKey || !params.zipCode) return null
 
   try {
-    const qs = new URLSearchParams({ zipCode: params.zipCode, dataType: "Sale", historyRange: "12" })
-    const res = await rentcastGet(apiKey, "/markets", qs)
+    const q: RentcastMarketsQuery = { zipCode: params.zipCode, dataType: "Sale", historyRange: 12 }
+    const res = await callRentcastGet("/markets", q, apiKey)
     meterCall({
       brokerageId: params.brokerageId,
       usageType: "market_stats",
@@ -656,7 +731,9 @@ export async function getRentcastMarketStats(
       metadata: { ok: res.ok, status: res.status, zip: params.zipCode },
     })
     if (!res.ok) return null
-    const data = res.data
+    // The alias makes the read explicit: `saleData` is a spec-promised member, so a renamed
+    // field in a regenerated spec fails HERE at compile time instead of as a silent null stats.
+    const data: RentcastMarketsResponse | null = res.data
     return normalizeRentcastMarketStats(data?.saleData)
   } catch {
     return null
@@ -725,8 +802,8 @@ export async function getRentcastAvmAndComps(
   if (!params.address) return empty("no_address", eligibility)
 
   try {
-    const qs = new URLSearchParams({ address: params.address, compCount: String(params.limit ?? 10) })
-    const res = await rentcastGet(apiKey, "/avm/value", qs)
+    const q: RentcastAvmValueQuery = { address: params.address, compCount: params.limit ?? 10 }
+    const res = await callRentcastGet("/avm/value", q, apiKey)
     meterCall({
       brokerageId: params.brokerageId,
       usageType: "comps_lookup",
@@ -738,16 +815,17 @@ export async function getRentcastAvmAndComps(
     })
     if (!res.ok) return empty("provider_error", eligibility)
     const data = res.data
-    const comps = normalizeRentcastComps(data?.comparables)
+    const comparables = data?.comparables
+    const comps = normalizeRentcastComps(comparables)
     // PULL-DRIFT SENTINEL: RentCast returned comparables but the normalizer
     // kept none → the response shape drifted (a renamed `price` would silently
     // empty every CMA). Quarantines one sample + ledgers, never throws.
-    const received = Array.isArray(data?.comparables) ? data.comparables.length : 0
-    if (received > 0 && comps.length === 0) {
+    const received = Array.isArray(comparables) ? comparables.length : 0
+    if (received > 0 && comps.length === 0 && comparables) {
       const { reportPullDrift } = await import("@/lib/kernel/ingress-continuity")
       await reportPullDrift(createServiceClient() as any, {
         connector: "rentcast", source: "rentcast_avm_comps",
-        received, kept: 0, sample: data.comparables[0],
+        received, kept: 0, sample: comparables[0],
       })
     }
 

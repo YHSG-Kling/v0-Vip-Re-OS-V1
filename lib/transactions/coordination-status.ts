@@ -123,14 +123,18 @@ export const CONTRACT_ESIGN_STATUSES = [
 export type ContractEsignStatus = (typeof CONTRACT_ESIGN_STATUSES)[number]
 
 /** The envelope is complete. Was a file-local const in closing-war-room.ts. */
-export const CONTRACT_ESIGN_DONE_STATUSES = ["fully_signed"] as const
+// The derived sets below are `satisfies`-checked against their ladder's type (2026-08-31): the
+// two Esign vocabularies had no consumer while their subsets were hand-spelled, which is exactly
+// how the portal's phantom 'out_for_signature' (documented below) survived — a subset value
+// outside the ladder now fails to compile instead of silently matching nothing.
+export const CONTRACT_ESIGN_DONE_STATUSES = ["fully_signed"] as const satisfies readonly ContractEsignStatus[]
 
 /**
  * OUT WITH A SIGNER and not back — the set lib/kernel/signature-chase.ts
  * chases. Deliberately excludes 'pending', which means the envelope was never
  * sent: there is nothing to chase, and nudging on it would be a lie.
  */
-export const CONTRACT_ESIGN_SENT_AWAITING_STATUSES = ["sent", "viewed", "agent_signed"] as const
+export const CONTRACT_ESIGN_SENT_AWAITING_STATUSES = ["sent", "viewed", "agent_signed"] as const satisfies readonly ContractEsignStatus[]
 
 /**
  * EVERYTHING still awaiting a signature, including the not-yet-sent envelope —
@@ -145,7 +149,7 @@ export const CONTRACT_ESIGN_SENT_AWAITING_STATUSES = ["sent", "viewed", "agent_s
  */
 export const CONTRACT_ESIGN_AWAITING_STATUSES = [
   "pending", ...CONTRACT_ESIGN_SENT_AWAITING_STATUSES,
-] as const
+] as const satisfies readonly ContractEsignStatus[]
 
 // ── E-sign: listing_agreements (a DIFFERENT ladder — do not cross the two) ───
 
@@ -163,4 +167,4 @@ export type ListingAgreementEsignStatus = (typeof LISTING_AGREEMENT_ESIGN_STATUS
  * row already writes 'fully_signed' (lib/esign-webhooks/finalize-packet.ts), so
  * this is the value the rest of the system agreed on.
  */
-export const LISTING_AGREEMENT_EXECUTED_STATUS = "fully_signed" as const
+export const LISTING_AGREEMENT_EXECUTED_STATUS = "fully_signed" as const satisfies ListingAgreementEsignStatus

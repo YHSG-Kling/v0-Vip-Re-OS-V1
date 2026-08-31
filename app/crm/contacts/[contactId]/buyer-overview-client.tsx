@@ -21,6 +21,7 @@ import { Users, Calendar, AlertTriangle, Zap, Loader2, FileText, Home } from "lu
 import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot, aiPropertyMatchGenius } from "@/app/actions/ai-predictions"
 import { upsertFinancialProfile }             from "@/app/actions/buyer-financial"
 import { toast }                              from "sonner"
+import { timelineLabel }                      from "@/constants/crm-standards"
 
 // ─── GATE MODAL ───────────────────────────────────────────────────────────────
 
@@ -288,7 +289,7 @@ export function BuyerOverviewClient({
               {contact.email && <span>{contact.email}</span>}
               {contact.phone && <span>{contact.phone}</span>}
               {contact.status && <span className="capitalize">{contact.status}</span>}
-              {contact.timeline && <span>{contact.timeline}</span>}
+              {contact.timeline && <span>{timelineLabel(contact.timeline)}</span>}
             </div>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
@@ -881,7 +882,7 @@ export function BuyerOverviewClient({
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground">Timeline</p>
-                  <p className="font-medium">{contact.timeline ?? "—"}</p>
+                  <p className="font-medium">{timelineLabel(contact.timeline) ?? "—"}</p>
                 </div>
                 {profile && (
                   <>

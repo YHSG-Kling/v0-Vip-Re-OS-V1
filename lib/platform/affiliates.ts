@@ -41,8 +41,20 @@ export const AFFILIATE_CODE_RE = /^[A-Za-z0-9_-]{3,32}$/
 /** Mirrors the affiliate_commission_events.period format ('YYYY-MM'). */
 export const PERIOD_RE = /^\d{4}-(0[1-9]|1[0-2])$/
 
+/** Mirrors the platform_affiliates.status CHECK. */
 export type AffiliateStatus = "active" | "paused" | "ended"
+/** Mirrors the affiliate_commission_events.status CHECK. NOT the agent-commission ladder in
+ *  app/actions/financials.ts — same word, different capability (affiliate payout accrual vs an
+ *  agent's deal commission); do not cross the two. */
 export type CommissionStatus = "accrued" | "paid" | "void"
+
+const AFFILIATE_STATUSES: readonly AffiliateStatus[] = ["active", "paused", "ended"]
+
+/** Boundary narrower for AffiliateStatus — the door untrusted input (the superadmin form's
+ *  request body) walks through before a status may be stored. */
+export function isAffiliateStatus(v: unknown): v is AffiliateStatus {
+  return typeof v === "string" && (AFFILIATE_STATUSES as readonly string[]).includes(v)
+}
 
 // ── Pure: normalization + validation ─────────────────────────────────────────
 

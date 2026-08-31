@@ -93,8 +93,13 @@ export interface LeadRowLite {
   notes: string | null
 }
 
-/** The funnel counts across the four stages plus the rejection breakdown. */
-export interface FunnelCounts {
+/** The funnel counts across the four stages plus the rejection breakdown.
+ *
+ *  `extends Record<FunnelStage, number>` ties the counters to the FunnelStage vocabulary
+ *  declared above (2026-08-31 — the type previously had no consumer): add a fifth stage and
+ *  computeFunnel's initializer stops compiling until it counts it, instead of the new stage
+ *  silently folding into 'pending'. */
+export interface FunnelCounts extends Record<FunnelStage, number> {
   /** Total raw rows scanned. */
   rawTotal: number
   /** Still in-flight (pending/processing/enriching/queued). */

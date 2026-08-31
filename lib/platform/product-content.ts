@@ -121,8 +121,19 @@ export function buildWeeklyProductCalendar(
 export const DRAFT_STATUSES = ["draft", "approved", "posted", "discarded"] as const
 export type DraftStatus = (typeof DRAFT_STATUSES)[number]
 
-/** PURE: legal status transitions — posted requires a permalink; posted/discarded are terminal. */
-export function canTransitionDraft(from: string, to: string, permalink?: string | null): { ok: boolean; reason?: string } {
+/** Boundary narrower for DraftStatus — the door an untrusted string (request input, a DB row)
+ *  walks through before it may reach canTransitionDraft. */
+export function isDraftStatus(v: unknown): v is DraftStatus {
+  return typeof v === "string" && (DRAFT_STATUSES as readonly string[]).includes(v)
+}
+
+/** PURE: legal status transitions — posted requires a permalink; posted/discarded are terminal.
+ *  SIGNATURE TIGHTENED to the module's own vocabulary (2026-08-31): it took `string`/`string`,
+ *  refusing to use the DRAFT_STATUSES roster four lines up, so a caller could ask about a
+ *  transition that does not exist and only find out at runtime. Callers holding untrusted
+ *  strings narrow through isDraftStatus first. The runtime `to` check stays as the backstop
+ *  for any path that casts. */
+export function canTransitionDraft(from: DraftStatus, to: DraftStatus, permalink?: string | null): { ok: boolean; reason?: string } {
   if (!(DRAFT_STATUSES as readonly string[]).includes(to)) return { ok: false, reason: "unknown status" }
   if (from === "posted" || from === "discarded") return { ok: false, reason: `${from} is terminal` }
   if (to === "posted" && from !== "approved") return { ok: false, reason: "approve before posting" }

@@ -30,6 +30,16 @@ export type { ApprovalSlaLevel }
 
 export type ManagerSessionStatus = "running" | "idle" | "terminated" | "error"
 
+// Mirrors the managed_agent_sessions.status CHECK (scripts/check-vocabularies.ts:901).
+const MANAGER_SESSION_STATUSES: readonly ManagerSessionStatus[] = ["running", "idle", "terminated", "error"]
+
+/** Boundary narrower for ManagerSessionStatus — the door a DB-row status walks through before it
+ *  may sit on a CommandCenterSession. The CHECK guarantees membership; a miss means the cache and
+ *  database have drifted. */
+export function isManagerSessionStatus(v: unknown): v is ManagerSessionStatus {
+  return typeof v === "string" && (MANAGER_SESSION_STATUSES as readonly string[]).includes(v)
+}
+
 /** Outbound CLIENT-FACING copy queues — broadcast/message content the Compliance Officer
  *  pre-flights for Fair Housing (no single-recipient consent to block on, so advisory-only).
  *  client_message is handled separately (it carries per-recipient consent → can hard-block). */
@@ -51,8 +61,9 @@ export interface CommandCenterSession {
   id:          string
   agentKind:   string | null
   entityType:  string
-  entityId:    string
-  status:      string
+  /** Tightened string → ManagerSessionStatus (2026-08-31): the vocabulary sat unused directly
+   *  above while this field took anything. DB rows narrow through isManagerSessionStatus. */
+  status:      ManagerSessionStatus
   createdAt:   string
   lastEventAt: string | null
   endedAt:     string | null
@@ -415,7 +426,10 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     agentKind:   s.managed_agents?.agent_kind ?? null,
     entityType:  s.entity_type,
     entityId:    s.entity_id,
-    status:      s.status,
+    // The CHECK admits exactly the four ManagerSessionStatus values; a row outside them can only
+    // mean vocabulary drift, and a session whose state cannot be read IS in an error state —
+    // shown as such rather than dropped from the board or crashing it.
+    status:      isManagerSessionStatus(s.status) ? s.status : "error",
     createdAt:   s.created_at,
     lastEventAt: s.last_event_at ?? null,
     endedAt:     s.ended_at ?? null,

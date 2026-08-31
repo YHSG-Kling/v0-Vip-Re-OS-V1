@@ -15,7 +15,13 @@ import type {
   WorkflowStep,
   WorkflowRunContext,
   WorkflowRunStatus,
+  WorkflowStepStatus,
 } from "./types"
+
+/** Every workflow_run_steps.status write below is `satisfies`-checked against this shape, so a
+ *  status outside WorkflowStepStatus (the vocabulary types.ts declares, previously enforced by
+ *  nothing) cannot be written — a typo'd status used to compile and silently strand the run. */
+type StepStatusWrite = { status: WorkflowStepStatus }
 
 interface StartRunInput {
   chainKey: string
@@ -102,7 +108,7 @@ export async function startRun(input: StartRunInput): Promise<RunResult> {
     step_index: i,
     step_key: s.key,
     step_label: s.label,
-    status: "pending" as const,
+    status: "pending" satisfies WorkflowStepStatus,
   }))
   await svc.from("workflow_run_steps").insert(stepRows)
 
@@ -154,7 +160,7 @@ export async function advanceRun(runId: string): Promise<RunResult> {
   // Mark step running
   await svc
     .from("workflow_run_steps")
-    .update({ status: "running", started_at: new Date().toISOString() })
+    .update({ status: "running", started_at: new Date().toISOString() } satisfies StepStatusWrite & Record<string, unknown>)
     .eq("run_id", runId)
     .eq("step_index", stepIndex)
 
@@ -210,7 +216,7 @@ export async function advanceRun(runId: string): Promise<RunResult> {
         status: "failed",
         error_message: lastError ?? "Unknown error",
         completed_at: new Date().toISOString(),
-      })
+      } satisfies StepStatusWrite & Record<string, unknown>)
       .eq("run_id", runId)
       .eq("step_index", stepIndex)
 
@@ -239,7 +245,7 @@ export async function advanceRun(runId: string): Promise<RunResult> {
         status: "needs_approval",
         output: result.output ?? {},
         completed_at: new Date().toISOString(),
-      })
+      } satisfies StepStatusWrite & Record<string, unknown>)
       .eq("run_id", runId)
       .eq("step_index", stepIndex)
 
@@ -261,7 +267,7 @@ export async function advanceRun(runId: string): Promise<RunResult> {
       status: "done",
       output: result.output ?? {},
       completed_at: new Date().toISOString(),
-    })
+    } satisfies StepStatusWrite & Record<string, unknown>)
     .eq("run_id", runId)
     .eq("step_index", stepIndex)
 
@@ -306,7 +312,7 @@ export async function approveStep(params: {
 
   await svc
     .from("workflow_run_steps")
-    .update({ status: "done" })
+    .update({ status: "done" } satisfies StepStatusWrite)
     .eq("run_id", params.runId)
     .eq("step_index", step.step_index)
 

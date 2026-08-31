@@ -5,12 +5,17 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createCalendarEvent, updateCalendarEvent } from "@/lib/providers/calendar"
-import type { CalendarProviderName } from "@/lib/providers/calendar/types"
+import type { CalendarProviderType } from "@/lib/kernel/calendar-sync"
 
 export async function syncCalendarEventToProvider(params: {
   brokerageId: string
   userId: string
-  provider: CalendarProviderName
+  /** Which provider the caller believes it is syncing to. Converged (§6, 2026-08-31) onto the
+   *  CHECK-backed CalendarProviderType — the deleted `CalendarProviderName` ("google"|"outlook"|
+   *  "ical") was a second spelling; see lib/providers/calendar/types.ts. NOTE: the body below
+   *  never reads this — the real provider is resolved from the agent's connected account — so
+   *  it is documentation of intent, not routing. */
+  provider: CalendarProviderType
   calendarEventId: string
 }): Promise<void> {
   const { userId, calendarEventId } = params

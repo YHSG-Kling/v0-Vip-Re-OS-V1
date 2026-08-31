@@ -12,6 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Brain, TrendingUp, Home, MapPin, RefreshCw, Loader2, DollarSign, Calendar } from "lucide-react"
 import { enrichLeadData } from "@/app/actions/lead-intelligence"
 import { useToast } from "@/hooks/use-toast"
+import { timelineLabel } from "@/constants/crm-standards"
 
 export default function LeadIntelligencePanel({ leadId, initialData }: { leadId: string; initialData?: any }) {
   const [intelligence, setIntelligence] = useState<any>(initialData || null)
@@ -152,7 +153,9 @@ export default function LeadIntelligencePanel({ leadId, initialData }: { leadId:
                     <Calendar className="w-4 h-4 text-blue-600" />
                     Timeline
                   </h4>
-                  <Badge>{intelligence.timeline || "Unknown"}</Badge>
+                  {/* Canonical bucket label (constants/crm-standards.ts TIMELINE_LABELS) —
+                      the raw value ("1-3_months") was rendered verbatim before. */}
+                  <Badge>{timelineLabel(intelligence.timeline) || "Unknown"}</Badge>
                 </div>
               </div>
 

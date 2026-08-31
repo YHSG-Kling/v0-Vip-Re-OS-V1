@@ -16,6 +16,7 @@ import Link from "next/link"
 import { processOptOut } from "@/app/actions/ai-isa/process-opt-out"
 import { createClient } from "@/lib/supabase/client"
 import { logActivity } from "@/app/actions/activities"
+import { personaLabel } from "@/constants/crm-standards"
 
 interface ContactCommandStripProps {
   contact: {
@@ -47,13 +48,17 @@ interface ContactCommandStripProps {
   loading?: boolean
 }
 
+// Keyed on the LIVE contact_persona vocabulary (constants/crm-standards.ts
+// STANDARD_CONTACT_PERSONAS — the contacts_contact_persona_check values). The previous keys
+// ("first-time-buyer", "move-up-buyer", "downsizer", "relocator", "investor") were a
+// dash-spelled set no live row can carry, so every persona badge fell to the gray fallback.
 const PERSONA_COLORS: Record<string, string> = {
-  "first-time-buyer": "bg-blue-100 text-blue-800",
-  "move-up-buyer": "bg-indigo-100 text-indigo-800",
-  "investor": "bg-purple-100 text-purple-800",
-  "downsizer": "bg-teal-100 text-teal-800",
-  "relocator": "bg-orange-100 text-orange-800",
-  "luxury": "bg-amber-100 text-amber-800",
+  first_time: "bg-blue-100 text-blue-800",
+  upsize: "bg-indigo-100 text-indigo-800",
+  downsize: "bg-teal-100 text-teal-800",
+  relocated: "bg-orange-100 text-orange-800",
+  luxury: "bg-amber-100 text-amber-800",
+  military: "bg-emerald-100 text-emerald-800",
 }
 
 const STAGE_COLORS: Record<string, string> = {
@@ -111,7 +116,10 @@ export function ContactCommandStrip({
           </h2>
           {contact.contact_persona && (
             <Badge className={PERSONA_COLORS[contact.contact_persona] || "bg-gray-100 text-gray-700"}>
-              {contact.contact_persona.replace(/-/g, " ")}
+              {/* Canonical label (constants/crm-standards.ts PERSONA_LABELS). The inline
+                  `.replace(/-/g, " ")` this replaces used the WRONG separator — live persona
+                  values are snake_case, so it rendered the raw DB value untouched. */}
+              {personaLabel(contact.contact_persona)}
             </Badge>
           )}
           {contact.buyer_stage && (

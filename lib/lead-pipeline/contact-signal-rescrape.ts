@@ -107,7 +107,9 @@ export async function triggerSignalRescrape(params: {
       const apiKey = process.env.RENTCAST_API_KEY
       if (apiKey) {
         const { callRentcastGet } = await import("@/lib/external/rentcast-typed")
-        const avm = await callRentcastGet("/avm/value", { address: addr } as any, apiKey)
+        // No cast: `{ address }` IS the /avm/value query contract (rentcast-typed.ts) — the
+        // `as any` that sat here defeated the exact drift-detection the façade exists for.
+        const avm = await callRentcastGet("/avm/value", { address: addr }, apiKey)
         out.tasks.push({ name: "rentcast_avm_refresh", ok: avm.ok, cost: 0.01 })
         out.totalCost += 0.01
       } else {

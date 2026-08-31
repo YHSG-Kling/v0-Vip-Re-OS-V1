@@ -12,6 +12,8 @@
 //   3. assignment_rules in priority order 4. load-balance fallback
 // This module owns step 3's matching + agent-pick semantics only.
 
+import type { LeadLifecycleState } from "@/lib/lead-pipeline/lead-lifecycle"
+
 /**
  * The methods a broker can choose from. All five are admitted by
  * assignment_rules.rule_type; 'manual' was admitted and offered by no picker.
@@ -93,20 +95,24 @@ export function isRuleType(v: string | null | undefined): v is RuleType {
 //                     is precisely the state that must not reach an agent.
 //   long_term_nurture ✗ The ISA wound them down after silence. The opposite of positive.
 
-/** leads.lifecycle_state values that record a POSITIVE signal FROM the person. */
+/** leads.lifecycle_state values that record a POSITIVE signal FROM the person.
+ *  `satisfies` ties this subset to the canonical LeadLifecycleState roster
+ *  (lib/lead-pipeline/lead-lifecycle.ts) so a renamed state cannot silently sever the
+ *  assignment gate from the vocabulary it filters. */
 export const POSITIVE_INTENT_LIFECYCLE_STATES = [
   'consented',
   'appointment',
   'representation',
   'assigned',
-] as const
+] as const satisfies readonly LeadLifecycleState[]
 
 export type PositiveIntentLifecycleState = (typeof POSITIVE_INTENT_LIFECYCLE_STATES)[number]
 
 /** PURE — does this lifecycle_state record positive intent from the lead?
  *  NOT exported: `evaluateAssignmentEligibility` below is the ONE door, so no
- *  caller can gate on half the rule. */
-function leadHasPositiveIntent(lifecycleState: string | null | undefined): boolean {
+ *  caller can gate on half the rule. Takes the untyped DB string BY DESIGN
+ *  (it IS the boundary narrower) and names what it narrows to. */
+function leadHasPositiveIntent(lifecycleState: string | null | undefined): lifecycleState is PositiveIntentLifecycleState {
   return !!lifecycleState &&
     (POSITIVE_INTENT_LIFECYCLE_STATES as readonly string[]).includes(lifecycleState)
 }
@@ -116,6 +122,10 @@ export interface AssignmentEligibility {
   ok: boolean
   /** WHICH arm of the OR opened the gate — null when it stayed shut. */
   via: 'qualified' | 'positive_intent' | null
+  /** WHICH positive-intent state opened the gate when via='positive_intent' — the typed fact,
+   *  not just its interpolation into `reason` (2026-08-31: the derived type finally sits on
+   *  the enforcer's own result instead of existing beside it unused). Null otherwise. */
+  positiveState: PositiveIntentLifecycleState | null
   /** Why, in words a surface can show the admin verbatim. */
   reason: string
 }
@@ -143,6 +153,7 @@ export function evaluateAssignmentEligibility(
     return {
       ok: true,
       via: 'qualified',
+      positiveState: positive ? lifecycleState : null,
       reason: `lead_stage='qualified' — the AI ISA qualified this lead`,
     }
   }
@@ -150,12 +161,14 @@ export function evaluateAssignmentEligibility(
     return {
       ok: true,
       via: 'positive_intent',
+      positiveState: lifecycleState,
       reason: `lifecycle_state='${lifecycleState}' — the lead gave a positive signal`,
     }
   }
   return {
     ok: false,
     via: null,
+    positiveState: null,
     reason:
       "Assignment requires lead_stage='qualified' OR a positive-intent lifecycle_state " +
       `(${POSITIVE_INTENT_LIFECYCLE_STATES.join('|')}). ` +

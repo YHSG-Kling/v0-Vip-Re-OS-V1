@@ -10,7 +10,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { headers } from "next/headers"
 import { revalidatePath } from "next/cache"
-import { buildWeeklyProductCalendar, canTransitionDraft, composeProductVideoSpec, type ProductVideoFormat } from "@/lib/platform/product-content"
+import { buildWeeklyProductCalendar, canTransitionDraft, isDraftStatus, composeProductVideoSpec, type ProductVideoFormat } from "@/lib/platform/product-content"
 import { platformStaffCan, resolvePlatformRoleIdentity } from "@/lib/platform/platform-staff-roster"
 import { loadProductBrand } from "@/lib/platform/product-brand"
 
@@ -82,10 +82,18 @@ export async function listProductDraftsAction(): Promise<{ ok: true; drafts: any
 export async function transitionProductDraftAction(input: { id: string; to: string; permalink?: string }): Promise<{ ok: boolean; error?: string }> {
   const auth = await requireMarketing()
   if (!auth.ok) return auth
+  // BOUNDARY NARROWING (2026-08-31): canTransitionDraft is typed to DraftStatus now, so the
+  // request's `to` and the DB row's `status` — both untrusted strings — go through isDraftStatus
+  // instead of an `as` cast. A junk `to` was already refused inside the enforcer ("unknown
+  // status" — message preserved); a junk stored status used to sail THROUGH it (anything
+  // non-terminal was transitionable), which fail-open no longer happens.
+  if (!isDraftStatus(input.to)) return { ok: false, error: "unknown status" }
   const svc = createServiceClient()
   const { data: draft } = await svc.from("platform_social_drafts").select("id, status, media_type, video_url").eq("id", input.id).maybeSingle()
   if (!draft) return { ok: false, error: "Draft not found" }
-  const check = canTransitionDraft((draft as any).status, input.to, input.permalink)
+  const fromStatus: unknown = (draft as any).status
+  if (!isDraftStatus(fromStatus)) return { ok: false, error: `Draft has unrecognized status '${String(fromStatus)}'` }
+  const check = canTransitionDraft(fromStatus, input.to, input.permalink)
   if (!check.ok) return { ok: false, error: check.reason }
   // A VIDEO draft can only be posted once the rendered file is attached.
   if (input.to === "posted" && (draft as any).media_type === "video" && !((draft as any).video_url ?? "").trim()) {

@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createHash } from "crypto"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import type { CalendarProvider } from "@/lib/providers/calendar/types"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -104,6 +105,27 @@ async function assertCanAccessAccount(params: {
   if (!isAdminOrBroker({ user_type: params.userType })) {
     throw new Error("Forbidden: insufficient permissions")
   }
+}
+
+// ─── THE ADAPTER SEAM ─────────────────────────────────────────────────────────
+//
+// This module's push/pull paths are stubs that log 'partial' with "Provider adapter not
+// enabled" — and the do-not-fix note below (calendar_sync_mappings) records that the missing
+// half is the ADAPTER, whose contract is the CalendarProvider port at
+// lib/providers/calendar/types.ts (upsertEvent returns the provider's event id — the one fact a
+// mapping row cannot exist without). This registry is where an implementer of that port plugs
+// in. NO adapter is built yet, so it is empty and resolveCalendarSyncAdapter answers null for
+// every provider: the push path's consultation of it below changes nothing today, but the day
+// an adapter registers without the push wiring being built, the path REFUSES loudly instead of
+// logging 'partial' as if the adapter were still absent — "nobody checked" must never render as
+// "checked and fine" (CLAUDE.md §4).
+const CALENDAR_SYNC_ADAPTERS: Partial<Record<CalendarProviderType, CalendarProvider>> = {
+  // deliberately empty — see the note above and lib/providers/calendar/types.ts
+}
+
+/** Resolve the sync adapter for a provider, or null while none is built/registered. */
+export function resolveCalendarSyncAdapter(providerType: CalendarProviderType): CalendarProvider | null {
+  return CALENDAR_SYNC_ADAPTERS[providerType] ?? null
 }
 
 // ─── EXPORTS ──────────────────────────────────────────────────────────────────
@@ -220,6 +242,31 @@ export async function pushCalendarEventToProvider(params: {
     if (updateError) {
       throw new Error(`Failed to update sync mapping: ${updateError.message}`)
     }
+  }
+
+  // THE ADAPTER SEAM, consulted (see resolveCalendarSyncAdapter above). Today it resolves null
+  // for every provider, so this path always falls through to the 'partial' log below — exactly
+  // the behavior the do-not-fix note above documents. If an adapter is ever registered without
+  // the push wiring being built, refusing here beats logging a 'partial' that reads as "adapter
+  // still absent". The error on the account read is CHECKED (§3): a refused read must not be
+  // reported as a completed partial push.
+  const { data: accountRow, error: accountReadError } = await supabase
+    .from("calendar_provider_accounts")
+    .select("provider_type")
+    .eq("id", params.providerAccountId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  if (accountReadError) {
+    throw new Error(`Failed to read provider account: ${accountReadError.message}`)
+  }
+  const adapter = accountRow
+    ? resolveCalendarSyncAdapter(accountRow.provider_type as CalendarProviderType)
+    : null
+  if (adapter) {
+    throw new Error(
+      `Calendar adapter '${adapter.name}' is registered but the push wiring is not built — ` +
+        `wire the mapping write at the point the adapter returns its event id before enabling it`,
+    )
   }
 
   // Log the push attempt — provider adapter not yet enabled

@@ -22,7 +22,7 @@
  */
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
-import { resolvePolicyScopeAccess, type PolicyScopeAccess } from "@/lib/identity/policy-scope"
+import { resolvePolicyScopeAccess, type PolicyScopeAccess, type PolicyScopeTier } from "@/lib/identity/policy-scope"
 import { revalidatePath } from "next/cache"
 
 export type BundleChannel =
@@ -62,7 +62,10 @@ export interface BundleRow {
   id:           string
   name:         string
   description:  string | null
-  scope_type:   "agent" | "team" | "brokerage"
+  /** Was an inline `"agent" | "team" | "brokerage"` copy (×5 in this file, §6) — now the
+   *  canonical PolicyScopeTier from lib/identity/policy-scope.ts, whose resolver already
+   *  gates every write here. */
+  scope_type:   PolicyScopeTier
   scope_id:     string
   is_active:    boolean
   created_at:   string
@@ -76,7 +79,7 @@ export interface BundleRow {
 export interface PresetOption {
   id:         string
   name:       string
-  scope_type: "agent" | "team" | "brokerage"
+  scope_type: PolicyScopeTier
   scope_id:   string
   /** Channel-specific summary the builder UI shows in the picker. */
   summary:    string
@@ -314,7 +317,7 @@ export interface UpsertBundleInput {
   id?:          string
   name:         string
   description?: string | null
-  scope_type?:  "agent" | "team" | "brokerage"
+  scope_type?:  PolicyScopeTier
   scope_id?:    string
   items:        Array<{
     channel:            BundleChannel
@@ -329,8 +332,8 @@ export interface UpsertBundleInput {
  *  guard runs across all preset/bundle CRUD. */
 function resolveTargetScope(
   access: PolicyScopeAccess,
-  requested: { scope_type?: "agent" | "team" | "brokerage"; scope_id?: string },
-): { ok: true; scope_type: "agent" | "team" | "brokerage"; scope_id: string } | { ok: false; error: string } {
+  requested: { scope_type?: PolicyScopeTier; scope_id?: string },
+): { ok: true; scope_type: PolicyScopeTier; scope_id: string } | { ok: false; error: string } {
   const tier = requested.scope_type ?? (
     access.canEditBrokerage ? "brokerage" :
     access.canEditTeam      ? "team"      :

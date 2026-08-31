@@ -36,6 +36,7 @@ import {
 } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { logActivity } from "@/app/actions/activities"
+import { personaLabel } from "@/constants/crm-standards"
 import { AIPilotControl } from "@/app/crm/components/ai-pilot-control"
 import { ReassignContactDialog } from "@/app/crm/components/reassign-contact-dialog"
 import { MergeContactsDialog } from "@/app/crm/components/merge-contacts-dialog"
@@ -193,7 +194,9 @@ export function ContactHeaderCard({
             {/* Persona / buyer-stage subtle line */}
             {(contact.contact_persona || contact.buyer_stage) && (
               <p className="text-xs text-muted-foreground capitalize">
-                {[contact.contact_persona?.replace(/_/g, " "), contact.buyer_stage?.replace(/[_-]/g, " ")]
+                {/* Persona through the canonical label map (constants/crm-standards.ts) instead
+                    of an inline de-snake; buyer_stage keeps its own transform (different vocab). */}
+                {[personaLabel(contact.contact_persona), contact.buyer_stage?.replace(/[_-]/g, " ")]
                   .filter(Boolean).join(" · ")}
               </p>
             )}

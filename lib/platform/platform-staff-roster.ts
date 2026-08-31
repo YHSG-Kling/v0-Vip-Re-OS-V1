@@ -237,6 +237,14 @@ export type PlatformCapability = (typeof PLATFORM_CAPABILITIES)[number]
 export const OVERRIDABLE_PLATFORM_ROLES = ["admin", "marketing", "support"] as const
 export type OverridablePlatformRole = (typeof OVERRIDABLE_PLATFORM_ROLES)[number]
 
+/** Boundary narrower for OverridablePlatformRole — the door untrusted input (the matrix editor's
+ *  request body) walks through before an override may be stored. Refuses 'superadmin' by
+ *  construction (it is not in the roster), which is one of the three places that hard rule is
+ *  enforced. */
+export function isOverridablePlatformRole(v: unknown): v is OverridablePlatformRole {
+  return typeof v === "string" && (OVERRIDABLE_PLATFORM_ROLES as readonly string[]).includes(v)
+}
+
 const CAPS: Record<PlatformStaffRole, PlatformCapability[] | "*"> = {
   superadmin: "*",
   admin: ["plans", "billing", "providers", "marketing", "support", "tenants", "ai_ops", "sentinel", "impersonate", "announcements"],
