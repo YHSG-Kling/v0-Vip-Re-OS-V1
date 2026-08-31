@@ -8,6 +8,15 @@
  * - attachOpenHouseSourceAttribution()
  * - notifyAssignedAgentForOpenHouseLead()
  * - generateOpenHouseFollowupNextAction()
+ *
+ * TOMBSTONE (§1.3 + §2, 2026-08-31, lane M4): lib/kernel/OPEN-HOUSE-PATCH-DOCS.ts
+ * deleted. It was a prose status report wearing a .ts extension — 291 lines of
+ * comment plus one waypoint const (IMPLEMENTATION_COMPLETE = true) that nothing
+ * imported and no guard asserted. §2 forbids pinning to a waypoint: "complete"
+ * was a statement about one 2026 patch session, permanently stale the moment the
+ * code moved on. The capability it described survives as THIS module plus
+ * app/actions/open-house-kernel.ts, proven by test:open-house-consolidation and
+ * test:open-house-lead-routing — running guards, not a self-declared checklist.
  */
 
 import { createServiceClient } from "@/lib/supabase/service"

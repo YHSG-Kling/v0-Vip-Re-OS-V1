@@ -69,7 +69,11 @@ export type { ScoredComp } from "./comp-types"
 export const PERPLEXITY_COMP_SEARCH_COST_USD = 0.01
 
 /** Which comp slots a caller may ask this finder for. */
-export type PerplexityCompSlot = "closed" | "pending" | "active"
+// TOMBSTONE (§1.3 + §6, 2026-08-31, lane M4): `PerplexityCompSlot` deleted —
+// a second spelling of the slot vocabulary that PerplexityCompSlotRequest
+// below already carries as its keys (the shape every caller actually uses).
+// Need the union? `keyof PerplexityCompSlotRequest` derives it from the one
+// live source.
 
 /** How many rows the caller needs per slot. Omitted/0 → that slot is not asked for. */
 export interface PerplexityCompSlotRequest {

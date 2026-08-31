@@ -33,6 +33,7 @@ import {
   attachOpenHouseSourceAttribution,
   notifyAssignedAgentForOpenHouseLead,
   generateOpenHouseFollowupNextAction,
+  type OpenHouseCheckInInput,
 } from "@/lib/kernel/open-house"
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -270,19 +271,10 @@ async function normaliseAgentId(
   }
 }
 
-export async function completeOpenHouseCheckInAction(input: {
-  brokerage_id: string
-  agent_id: string
-  open_house_id: string
-  property_id?: string
-  first_name: string
-  last_name?: string
-  email?: string
-  phone?: string
-  check_in_method?: string
-  interest_level?: number
-  notes?: string
-}): Promise<{
+// Typed by the kernel's own contract (§6, 2026-08-31, lane M4): this signature
+// used to respell OpenHouseCheckInInput field-for-field inline, leaving the
+// exported contract type with no reader and this copy free to drift from it.
+export async function completeOpenHouseCheckInAction(input: OpenHouseCheckInInput): Promise<{
   success: boolean
   attendee_id?: string
   contact_id?: string

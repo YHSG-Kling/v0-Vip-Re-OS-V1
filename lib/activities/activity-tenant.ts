@@ -86,6 +86,11 @@
  */
 export type TenantReadClient = { from: (table: string) => any }
 
+/** Spelled on the three exported resolvers below (§1.2, 2026-08-31, lane M4):
+ *  the union was exported while every public signature left it inferred, so no
+ *  declaration named it and the census read it as orphaned. The refusal arm
+ *  (`ok:false` ≠ "no brokerage") is the load-bearing part of the contract —
+ *  callers must not collapse the two. */
 export type ActivityTenantResult =
   /** The read succeeded. `brokerageId` may still be null: that record has no tenant. */
   | { ok: true; brokerageId: string | null }
@@ -115,7 +120,7 @@ async function readBrokerageId(
  * activity is a BRANCH GAP and is refused 23502 unless the writer stamps.
  * `leads.brokerage_id` is itself NOT NULL, so a resolved lead always answers.
  */
-export function resolveLeadBrokerageId(client: TenantReadClient, leadId: string | null | undefined) {
+export function resolveLeadBrokerageId(client: TenantReadClient, leadId: string | null | undefined): Promise<ActivityTenantResult> {
   return readBrokerageId(client, "leads", leadId)
 }
 
@@ -132,7 +137,7 @@ export function resolveLeadBrokerageId(client: TenantReadClient, leadId: string 
  * answers — and it is the same value `app/dashboard/admin/brand/page.tsx:47`
  * compares when it renders the brand compliance history.
  */
-export function resolveBrandTemplateBrokerageId(client: TenantReadClient, templateId: string | null | undefined) {
+export function resolveBrandTemplateBrokerageId(client: TenantReadClient, templateId: string | null | undefined): Promise<ActivityTenantResult> {
   return readBrokerageId(client, "brand_templates", templateId)
 }
 
@@ -158,7 +163,7 @@ export function resolveBrandTemplateBrokerageId(client: TenantReadClient, templa
  * The id passed here is a **users.id** (`auth.uid()` / `users.id`), never an
  * `agents.id`. Those are disjoint spaces; this resolver reads exactly one table.
  */
-export function resolveUserBrokerageId(client: TenantReadClient, userId: string | null | undefined) {
+export function resolveUserBrokerageId(client: TenantReadClient, userId: string | null | undefined): Promise<ActivityTenantResult> {
   return readBrokerageId(client, "users", userId)
 }
 

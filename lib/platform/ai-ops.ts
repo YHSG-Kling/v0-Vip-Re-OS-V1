@@ -56,7 +56,11 @@ export function cronHealth(row: { last_status: string | null; last_run_at: strin
 
 export interface ManagerThroughput { manager: string; consumed: number; published: number }
 export interface StuckSignalRow { id: string; brokerageId: string | null; fromManager: string; toManager: string; signalType: string; ageHours: number; createdAt: string }
-export interface HeldActionRow { managerKind: string; brokerageId: string | null; count: number; oldestHours: number }
+/** `stale` is computed HERE against STALE_HELD_HOURS (§1.1, 2026-08-31, lane
+ *  M4): the ai-ops console used to respell the threshold as a literal `>= 72`
+ *  in its className — a second copy of the number the constant above already
+ *  owned, free to drift. The console now reads this flag. */
+export interface HeldActionRow { managerKind: string; brokerageId: string | null; count: number; oldestHours: number; stale: boolean }
 export interface FailedSendRow { id: string; brokerageId: string | null; managerKind: string; error: string; createdAt: string }
 export interface AutomationErrorRow { id: string; brokerageId: string | null; workflow: string; severity: string; error: string; createdAt: string }
 export interface CronHealthRow { cronName: string; health: CronHealth; lastRunAt: string | null; failure7d: number; lastError: string | null }
@@ -116,7 +120,7 @@ export async function loadAiOps(client?: Svc, now: Date = new Date(), windowHour
   }
   const heldActions: HeldActionRow[] = [...heldMap.entries()].map(([key, v]) => {
     const [managerKind, brokerageId] = key.split("::")
-    return { managerKind, brokerageId: brokerageId === "null" ? null : brokerageId, count: v.count, oldestHours: v.oldest }
+    return { managerKind, brokerageId: brokerageId === "null" ? null : brokerageId, count: v.count, oldestHours: v.oldest, stale: v.oldest >= STALE_HELD_HOURS }
   }).sort((a, b) => b.oldestHours - a.oldestHours)
 
   const failedSends: FailedSendRow[] = ((failedR.data ?? []) as any[]).map((f) => ({ id: f.id, brokerageId: f.brokerage_id, managerKind: f.agent_kind, error: String(f.send_error ?? f.status ?? "failed").slice(0, 300), createdAt: f.created_at }))

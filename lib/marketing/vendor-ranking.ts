@@ -134,7 +134,10 @@ export const UNMEASURED_RANKING_INPUTS = [
   "completion_rate",   // no per-vendor completion aggregate wired to this bench
 ] as const
 
-export type UnmeasuredRankingInput = (typeof UNMEASURED_RANKING_INPUTS)[number]
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): derived type `UnmeasuredRankingInput`
+// deleted — never named by any consumer; VendorScore.unmeasured is string[]
+// by design (it mixes this permanent set with per-row null field names).
+// Re-derive from UNMEASURED_RANKING_INPUTS when a typed consumer arrives.
 
 export interface VendorScore {
   /** Composite score. Higher wins. Range is unbounded by design — only the ORDER is meaningful. */

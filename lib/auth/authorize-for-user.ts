@@ -1,5 +1,4 @@
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
-import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 // lib/auth/authorize-for-user.ts
 //
 // "Are you this user, or someone entitled to act for them?"
@@ -23,14 +22,17 @@ import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 // `users.role` is RETIRED — 19 of 23 live rows are NULL and the rest are title-cased, so any
 // filter on it matches nobody. Authority is read from `user_type`.
 
-// DERIVED from the ONE tenant-admin roster (lib/auth/resolve-user-role.ts), not
-// retyped beside it. `superadmin` is added EXPLICITLY and only here — it is a
-// PLATFORM identity, deliberately absent from the tenant roster, and acting for
-// another user is a lane platform staff are meant to have.
-export const ACT_FOR_OTHERS_ROLES = new Set([
-  ...TENANT_ADMIN_USER_TYPES,
-  "superadmin",
-])
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): `ACT_FOR_OTHERS_ROLES` deleted. It
+// was built to be the gate's roster and the gate below never consulted it —
+// authorizeForUser answers through isAdminOrBroker, i.e. the ONE tenant-admin
+// roster (TENANT_ADMIN_USER_TYPES) directly. Its single distinctive member was
+// "superadmin" AS A user_type, and platform staff live in the platform_role
+// COLUMN — user_type='superadmin' matches no live row (CLAUDE.md §4 roles), so
+// the entry was inert: the same matches-nobody defect this module's own header
+// records for the retired `role` column. Platform staff acting on a user's
+// behalf is a different, deliberately narrower lane — the impersonation /
+// act-as seam (test:act-as-seam), where a grant walks the account and never
+// exceeds it — not a blanket set membership here.
 
 export type AuthorizeForUserResult =
   | { ok: true; callerUserId: string }

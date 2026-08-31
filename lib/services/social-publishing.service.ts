@@ -3,7 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
 import { handleError, ValidationError, NotFoundError } from "@/lib/errors"
-import { SOCIAL_PLATFORMS } from "@/lib/constants"
+import { SOCIAL_PLATFORMS, type SocialPlatform } from "@/lib/constants"
 
 /**
  * Consolidated Social Media Publishing Service
@@ -62,8 +62,13 @@ export async function publishToSocialMedia(params: PublishPostParams): Promise<{
     if (unknown.length > 0) {
       throw new ValidationError(`Unsupported social platform(s): ${unknown.join(", ")}`)
     }
+    // Past the vocabulary gate, every entry IS a SocialPlatform — the derived
+    // type of the list just consulted. Narrowed here (§1.2, 2026-08-31, lane
+    // M4: the type existed with no consumer; this gate is its reader) so the
+    // per-platform loop carries the proof instead of a bare string.
+    const validPlatforms = platforms as SocialPlatform[]
 
-    for (const platform of platforms) {
+    for (const platform of validPlatforms) {
       const result = await publishToPlatform({
         post,
         platform,

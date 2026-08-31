@@ -7,6 +7,7 @@ import {
 } from '@/lib/kernel/newsletter/section-types'
 import {
   TEMPLATE_BLUEPRINT_FORMAT,
+  type TemplateBlueprintEnvelope,
   type TemplateSectionBlueprint,
 } from '@/lib/kernel/newsletter/template-blueprint'
 
@@ -127,10 +128,14 @@ export async function createTemplate(input: CreateTemplateInput) {
       approval_status: 'draft',
       status: 'draft',
       template_tags: input.templateTags || [],
+      // `satisfies` ties the WRITER to the same envelope the parser checks
+      // (§1.2, 2026-08-31, lane M4: TemplateBlueprintEnvelope existed with no
+      // reader while this literal restated its shape untyped — a drift here
+      // would have produced blueprints parseTemplateBlueprint returns null on).
       content: JSON.stringify({
         format: TEMPLATE_BLUEPRINT_FORMAT,
         sections,
-      }),
+      } satisfies TemplateBlueprintEnvelope),
     })
     .select('id')
 

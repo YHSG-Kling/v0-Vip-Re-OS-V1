@@ -37,6 +37,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** call_coaching_insights.insight_type CHECK (live, scripts/check-vocabularies.ts:386). */
+// The two derived unions below are UN-EXPORTED with DerivedCoachingInsight
+// (§1.1, 2026-08-31, lane M4): all their readers live in this file; see the
+// un-export note further down.
 export const COACHING_INSIGHT_TYPES = [
   "closing",
   "improvement",
@@ -44,13 +47,13 @@ export const COACHING_INSIGHT_TYPES = [
   "rapport",
   "strength",
 ] as const
-export type CoachingInsightType = (typeof COACHING_INSIGHT_TYPES)[number]
+type CoachingInsightType = (typeof COACHING_INSIGHT_TYPES)[number]
 
 /** call_coaching_insights.priority CHECK (live, scripts/check-vocabularies.ts:387). */
 export const COACHING_PRIORITIES = ["high", "medium", "low"] as const
-export type CoachingPriority = (typeof COACHING_PRIORITIES)[number]
+type CoachingPriority = (typeof COACHING_PRIORITIES)[number]
 
-export interface DerivedCoachingInsight {
+interface DerivedCoachingInsight {
   insight_type: CoachingInsightType
   priority: CoachingPriority
   /** The agent-facing sentence. Grounded in the analysis — never invented. */
@@ -75,17 +78,23 @@ export interface CoachingSourceFacts {
   coachingOpportunities?: string[] | null
 }
 
+// UN-EXPORTED (§1.1, 2026-08-31, lane M4): DerivedCoachingInsight and the four
+// tuning constants below lost their `export` keyword — their only reader is
+// deriveCoachingInsights in this file, and this module's own rule (the NOT
+// EXPORTED note on that function) already says a second public entry point
+// stands as an IOU until a proof imports it. Same ruling applied here: if a
+// simulator is ever written for these branches, re-export them WITH the proof.
 /** A conversation scoring at or below this served the caller poorly enough that
  *  the improvement note leads the agent's list. Same 0-100 scale the analyser
  *  writes (lib/voice/call-analysis.ts VoiceIntelSchema.coachingScore). */
-export const COACHING_SCORE_POOR = 60
+const COACHING_SCORE_POOR = 60
 /** At or above this the call is worth naming as a STRENGTH — coaching that only
  *  ever criticises stops being read. */
-export const COACHING_SCORE_STRONG = 85
+const COACHING_SCORE_STRONG = 85
 /** A caller this urgent makes securing the next step the coaching point. */
-export const COACHING_URGENCY_CLOSING = 70
+const COACHING_URGENCY_CLOSING = 70
 /** Cap per analysis. A wall of notes is the same non-signal as an empty panel. */
-export const MAX_INSIGHTS_PER_ANALYSIS = 5
+const MAX_INSIGHTS_PER_ANALYSIS = 5
 
 function clean(s: unknown): string {
   return typeof s === "string" ? s.trim() : ""

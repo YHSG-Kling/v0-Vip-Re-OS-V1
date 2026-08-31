@@ -112,7 +112,11 @@ async function recordRevision(opts: {
 // split is 100 once cap_paid_to_date ≥ cap_amount. A BLOCKER-level mismatch must be
 // resolved (or manually overridden, same as the signature gate) before approval.
 
-export interface CdaContractVerdict {
+// UN-EXPORTED (§1.1, 2026-08-31, lane M4): only the private
+// loadCdaContractVerdict below names it; the export claimed an entry point no
+// file used. (Types may be exported from a "use server" file — this is about
+// the reader, not the rule.)
+interface CdaContractVerdict {
   passed: boolean
   discrepancies: CdaDiscrepancy[]
   contractSplitPct: number | null

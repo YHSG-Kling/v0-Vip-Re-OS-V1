@@ -23,7 +23,10 @@
 
 /** Parties whose signature AND initials a listing agreement requires. */
 export const LISTING_AGREEMENT_PARTIES = ["agent", "seller"] as const
-export type ListingAgreementParty = (typeof LISTING_AGREEMENT_PARTIES)[number]
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): derived type `ListingAgreementParty`
+// deleted — never named by any consumer; the checker below iterates
+// LISTING_AGREEMENT_PARTIES (the live const) directly. Re-derive when a typed
+// consumer arrives.
 
 export interface SignatureEntry {
   signer_role?: string | null

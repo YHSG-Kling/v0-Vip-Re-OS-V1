@@ -171,7 +171,8 @@ export async function scheduleNewsletter(input: ScheduleNewsletterInput) {
       // (marketing-studio-client.tsx:2525) — reads scheduled_time. So rows
       // scheduled HERE were invisible to the channel-ROI window forever.
       // Converged onto the read column; scheduled_send_time is now a
-      // writer-less orphan for the integrator to drop.
+      // writer-less orphan — its drop is WRITTEN (not applied) as
+      // supabase/migrations/m590, evidence in that header.
       scheduled_time: scheduleTime.iso!,
       send_status: 'scheduled',
       recipient_segment: input.recipientSegment,

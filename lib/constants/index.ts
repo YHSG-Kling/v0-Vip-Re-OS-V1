@@ -103,16 +103,17 @@ export const FEATURES = {
 export const TRANSACTION_TYPES = ["listing", "buyer", "referral", "rental"] as const
 export type TransactionType = (typeof TRANSACTION_TYPES)[number]
 
-export const TRANSACTION_STATUSES = [
-  "lead",
-  "active",
-  "under_contract",
-  "pending",
-  "closed",
-  "withdrawn",
-  "expired",
-] as const
-export type TransactionStatus = (typeof TRANSACTION_STATUSES)[number]
+// TOMBSTONE (§1.1 + §6, 2026-08-31, lane M4): `TRANSACTION_STATUSES` and its
+// derived `TransactionStatus` type deleted — a stale second spelling of the
+// deal-status vocabulary. SURVIVOR: lib/transactions/transaction-status.ts,
+// the m291 CHECK-backed list (lead, qualifying, active, under_contract,
+// pending, clear_to_close, closed, funded, lost, archived). The one importer,
+// lib/services/transaction-management.service.ts, is repointed onto it.
+// NOTHING MERGED, deliberately: the two values only this copy had —
+// "withdrawn" and "expired" — are LISTING-inventory words (a listing is
+// withdrawn; a deal is lost or archived); the DB CHECK refuses them, so
+// carrying them into the survivor would re-open the very hole the validator
+// exists to close. Recorded here per the differing-value rule.
 
 // ============================================
 // CONTACT/LEAD TYPES
@@ -532,11 +533,22 @@ export type SocialPlatform = (typeof SOCIAL_PLATFORMS)[number]
 // CAMPAIGN TYPES
 // ============================================
 
-export const CAMPAIGN_TYPES = ["one_time", "recurring", "drip_sequence", "triggered"] as const
-export type CampaignType = (typeof CAMPAIGN_TYPES)[number]
-
-export const CAMPAIGN_STATUSES = ["draft", "scheduled", "running", "paused", "completed", "archived"] as const
-export type CampaignStatus = (typeof CAMPAIGN_STATUSES)[number]
+// TOMBSTONE (§1.3 + §6, 2026-08-31, lane M4): `CAMPAIGN_TYPES`/`CampaignType`
+// and `CAMPAIGN_STATUSES`/`CampaignStatus` deleted — scaffolding vocabularies
+// that never became canonical. No file imported any of the four, and each live
+// campaign domain deliberately carries its OWN CHECK-backed or module-owned
+// vocabulary, none of which matches what stood here:
+//   · ISA campaigns    ai_isa_campaigns.campaign_type (buyer_match, divorce,
+//                      foreclosure, fsbo, ghost_recovery, search_intent,
+//                      social_intent) + status (active, archived, completed,
+//                      draft, paused) — scripts/check-vocabularies.ts
+//   · email campaigns  email_campaigns.campaign_format (drip, event_triggered,
+//                      one_off, segmented, transactional) + its own status list
+//   · ad campaigns     app/actions/marketing-studio.ts:CampaignStatus (draft,
+//                      pending_approval, approved, live, paused, ended)
+// An ISA prospecting campaign, an email drip and a paid ad flight are different
+// business processes; one fused "campaign" vocabulary was the defect the
+// per-domain CHECKs already fixed. Values differ BY DECISION — not equalized.
 
 // ============================================
 // ERROR MESSAGES
@@ -586,36 +598,39 @@ export const ERROR_MESSAGES = {
 // SUCCESS MESSAGES
 // ============================================
 
-export const SUCCESS_MESSAGES = {
-  CREATED: "Successfully created.",
-  UPDATED: "Successfully updated.",
-  DELETED: "Successfully deleted.",
-  SENT: "Successfully sent.",
-  PUBLISHED: "Successfully published.",
-  SCHEDULED: "Successfully scheduled.",
-  SAVED: "Successfully saved.",
-  SYNCED: "Successfully synced.",
-} as const
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): `SUCCESS_MESSAGES` deleted —
+// scaffolding that never became canonical. Zero importers ever; unlike its
+// sibling ERROR_MESSAGES above (live: lib/errors/index.ts consumes it as
+// default messages for the error classes), no surface ever wanted a generic
+// "Successfully created." — live success copy is written per-surface, inline
+// at each toast/return site, naming what actually happened ("Synced 3
+// documents", not "Successfully synced."). That per-surface specificity is a
+// decision, not drift; a shared table of shrugs is not the missing half of
+// anything.
 
 // ============================================
 // LIMITS & PAGINATION
 // ============================================
 
-export const PAGINATION = {
-  DEFAULT_PAGE_SIZE: 20,
-  MAX_PAGE_SIZE: 100,
-  MIN_PAGE_SIZE: 1,
-} as const
-
-export const CONTENT_LIMITS = {
-  EMAIL_SUBJECT_MAX: 150,
-  EMAIL_BODY_MAX: 10000,
-  DESCRIPTION_SHORT: 500,
-  DESCRIPTION_STANDARD: 2000,
-  DESCRIPTION_EXTENDED: 5000,
-  HASHTAGS_MAX: 30,
-  HASHTAG_LENGTH_MAX: 50,
-} as const
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): `PAGINATION` and the remainder of
+// `CONTENT_LIMITS` deleted — v0 scaffolding, zero importers ever, and NOT the
+// canonical source of any live number. Adjudicated against the live
+// per-module counterparts rather than assumed:
+//   · page sizes are PER-SURFACE DECISIONS with different reasons:
+//     lib/crm/import-pull.ts PAGE_SIZE=100 (provider pull batch),
+//     lib/external/arcgis-permits.ts ARCGIS_PAGE_SIZE=1000 (provider max),
+//     app/notifications/page.tsx PAGE_SIZE=20 (a screenful). Repointing a CRM
+//     batch and a notification list onto one DEFAULT_PAGE_SIZE would fuse
+//     different decisions to make a barrel look adopted.
+//   · CONTENT_LIMITS' only live family — the social-post character caps —
+//     was already merged out to SOCIAL_POST_CHAR_LIMITS below (the 2026-08-29
+//     merge note there). The leftover email/description/hashtag caps
+//     (EMAIL_SUBJECT_MAX 150 etc.) are enforced by NO validator, zod schema
+//     or writer anywhere; they were invented numbers awaiting a consumer that
+//     eleven months of product never wanted. Values recorded here so none is
+//     silently lost: EMAIL_SUBJECT_MAX 150, EMAIL_BODY_MAX 10000,
+//     DESCRIPTION_SHORT/STANDARD/EXTENDED 500/2000/5000, HASHTAGS_MAX 30,
+//     HASHTAG_LENGTH_MAX 50.
 
 /**
  * PLATFORM CHARACTER LIMITS — keyed by the platform string the callers already
@@ -681,20 +696,21 @@ export { FILE_LIMITS } from "@/lib/storage/file-limits"
 // TIME CONSTANTS
 // ============================================
 
-export const TIME = {
-  SECOND: 1000,
-  MINUTE: 60 * 1000,
-  HOUR: 60 * 60 * 1000,
-  DAY: 24 * 60 * 60 * 1000,
-  WEEK: 7 * 24 * 60 * 60 * 1000,
-} as const
-
-export const CACHE_TTL = {
-  SHORT: 5 * TIME.MINUTE,
-  MEDIUM: 30 * TIME.MINUTE,
-  LONG: 2 * TIME.HOUR,
-  VERY_LONG: 24 * TIME.HOUR,
-} as const
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): `CACHE_TTL` (SHORT 5m / MEDIUM 30m /
+// LONG 2h / VERY_LONG 24h) and `TIME` (its only reader — ms-per-unit
+// scaffolding) deleted. Zero importers ever; NOT the canonical source of any
+// live TTL. Every live cache owns its number next to its cache, with local
+// semantics no abstract SHORT/MEDIUM can carry:
+//   lib/compliance-rules/state-fair-housing.ts CACHE_TTL_MS (5m),
+//   lib/ai/pipeline.ts PERSONA_CACHE_TTL_MS (5m) + BRAND_VOICE_CACHE_TTL_MS
+//   (10m — deliberately longer, brand voice changes rarely),
+//   lib/auth/isa-actor.ts CACHE_TTL_MS (5m),
+//   lib/managers/accuracy-gate.ts VERDICT_TTL_MS (5m — "accuracy moves at
+//   closing speed"), lib/platform/platform-controls.ts HALT_TTL_MS (20s) and
+//   lib/managers/autonomy-gate.ts TENANT_HALT_TTL_MS (20s — a halt must be
+//   seen fast). Those differing values are decisions; a barrel of four named
+//   buckets nobody adopted was not the canon, and repointing a 20-second halt
+//   onto "SHORT" would have erased the reasoning that picked 20 seconds.
 
 // TOMBSTONE (orphan burn-down, lane BC, 2026-08-26): AI_LIMITS and AI_CONFIG are
 // DELETED. Neither was imported by any file — the only occurrences of either name

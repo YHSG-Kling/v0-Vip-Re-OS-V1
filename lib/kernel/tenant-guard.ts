@@ -43,8 +43,7 @@
  * its `GuardedQuery = unknown` return erased the PostgrestFilterBuilder type,
  * so every adopting call site would have had to cast, which is why none did.
  *
- * WHAT REMAINS HERE is the half that IS wired: TenantViolationError (the named
- * error type for a cross-tenant refusal) and logTenantFinding, the best-effort
+ * WHAT REMAINS HERE is the half that IS wired: logTenantFinding, the best-effort
  * writer for tenant_safety_findings, called by the tenant-safety-scan cron
  * (app/api/cron/tenant-safety-scan/route.ts) and surfaced at
  * /dashboard/admin/tenant-safety.
@@ -53,36 +52,21 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 
-// ─── Error class ─────────────────────────────────────────────────────────────
-
-export class TenantViolationError extends Error {
-  readonly code = "TENANT_VIOLATION" as const
-  readonly expected: string
-  readonly actual: string | null | undefined
-  readonly context: string
-
-  constructor(args: {
-    expected: string
-    actual: string | null | undefined
-    context: string
-    message?: string
-  }) {
-    super(
-      args.message ??
-        `Tenant violation in ${args.context}: expected brokerage_id=${args.expected}, got ${args.actual ?? "null"}`,
-    )
-    this.name = "TenantViolationError"
-    this.expected = args.expected
-    this.actual = args.actual
-    this.context = args.context
-  }
-}
+// ─── Error class — DELETED ──────────────────────────────────────────────────
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): class `TenantViolationError` deleted.
+// Constructed by nothing and caught by nothing, ever — the header's old claim
+// that it "IS wired" described the intent, not a single call site. The live
+// cross-tenant refusal is RETURNED, not thrown: gates return
+// { success:false, error:"Forbidden: … not in your brokerage" } at the action
+// boundary (the §4 gate-first pattern, e.g. app/actions/dotloop-integration.ts),
+// and systemic findings are recorded through logTenantFinding below by the
+// tenant-safety-scan cron. A thrown error type nobody raises reads as a guard
+// and guards nothing — worse than its absence (§2).
 
 // ─── Best-effort audit-log write ─────────────────────────────────────────────
 
 /**
- * Records a finding in tenant_safety_findings. Called by the scan cron and
- * by catch handlers anywhere TenantViolationError surfaces in production.
+ * Records a finding in tenant_safety_findings. Called by the scan cron.
  * Idempotency-friendly: callers pass a stable scanRunId so re-runs don't
  * duplicate rows for the same problem on the same scan.
  */

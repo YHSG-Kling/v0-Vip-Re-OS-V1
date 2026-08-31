@@ -5,6 +5,15 @@
  * being retired; new code MUST NOT read or write it. This helper accepts
  * the legacy field on the input shape only to absorb in-flight callers
  * — it is ignored.
+ *
+ * TOMBSTONE (§1.3, 2026-08-31, lane M4): types/user.ts (interface `UserRow`)
+ * deleted — a documented "canonical users-row shape" that no file ever
+ * imported. Every rule its doc-comment carried already lives at the enforcing
+ * site: user_type-not-role is stated above and in lib/security/types.ts
+ * (toCanonicalRole/toCanonicalRoleOrDefault); permission checks go through the
+ * named predicates in THIS module, never string comparison. Live code selects
+ * the users columns it reads rather than casting rows to a struct nothing
+ * checked — a row type asserted by nobody was documentation wearing a type.
  */
 
 // The roster is defined ONCE, in lib/platform/platform-staff-roster.ts. This module
@@ -202,10 +211,11 @@ export function isPlatformStaffIdentity(
 // hand-typed, so it follows the roster instead of a snapshot of it.
 /**
  * EXPORTED so that a surface needing a Set (rather than the predicate) DERIVES it
- * instead of restating it — see lib/vendors/vendor-scope.ts and
- * lib/auth/authorize-for-user.ts, which spread this and add their own explicit,
- * documented extras. Deriving keeps ONE definition; retyping the five is the
- * duplication the ruling forbids.
+ * instead of restating it — see lib/vendors/vendor-scope.ts, which spreads this
+ * and adds its own explicit, documented extras. Deriving keeps ONE definition;
+ * retyping the five is the duplication the ruling forbids. (lib/auth/
+ * authorize-for-user.ts used to derive a set here too; that set was never
+ * consulted and is deleted — see its tombstone.)
  */
 export const TENANT_ADMIN_USER_TYPES = new Set([
   "admin",

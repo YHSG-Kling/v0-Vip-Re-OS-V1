@@ -47,6 +47,12 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { walkTs, rootRuntimeFiles } from "./runtime-roots"
 import { stripComments } from "./strip-comments"
+// ROUTE_ALIASES' first reader (2026-08-31, lane M4). Lane K4 re-measured the
+// map against the thin redirect pages, ruled it stays as documentation, and
+// named the missing half: "nothing holds this map and those pages in
+// agreement, so the next drift is silent again." This sweep is that guard —
+// see aliasAgreement() below.
+import { ROUTE_ALIASES } from "../app/routes-compatibility"
 
 const ROOT = process.cwd()
 const BASELINE = join(ROOT, "scripts/dangling-link-baseline.json")
@@ -143,14 +149,69 @@ function redirectMatches(sourcePattern: string, refSegs: string[]): boolean {
   return refSegs.length === segs.length
 }
 
+/**
+ * ROUTE_ALIASES ↔ redirect-page agreement (the guard lane K4 named as missing).
+ * For every alias entry the map documents:
+ *   1. the DESTINATION must resolve to a real route (else the map sends
+ *      navigation to a 404);
+ *   2. the ALIAS path must actually be served — a thin redirect page at
+ *      app/<alias>/page.tsx whose comment-stripped source literally
+ *      redirect()s to the mapped destination, or a next.config redirect
+ *      covering it. A map entry no page implements, or a page that redirects
+ *      somewhere the map does not say, is the silent drift §2 warns about.
+ * Returns human-readable failures; empty = the map and the tree agree.
+ */
+export function aliasAgreement(
+  aliases: Record<string, string>,
+  routes: string[][],
+  routeFiles: Map<string, string>,
+  redirects: string[],
+  readPage: (file: string) => string | null,
+): string[] {
+  const out: string[] = []
+  for (const [alias, dest] of Object.entries(aliases)) {
+    const destSegs = dest.split("/").filter(Boolean)
+    if (!routes.some((r) => refMatchesRoute(destSegs, r))) {
+      out.push(`${alias} → ${dest}: destination is NOT a real route`)
+      continue
+    }
+    const aliasKey = "/" + alias.split("/").filter(Boolean).join("/")
+    const pageFile = routeFiles.get(aliasKey)
+    if (!pageFile) {
+      if (!redirects.some((s) => redirectMatches(s, alias.split("/").filter(Boolean)))) {
+        out.push(`${alias} → ${dest}: no redirect page and no config redirect serves the alias`)
+      }
+      continue
+    }
+    const src = readPage(pageFile)
+    if (src === null) { out.push(`${alias} → ${dest}: page file unreadable (${pageFile})`); continue }
+    const targets: string[] = []
+    const re = /\bredirect\(\s*["'`](\/[^"'`]*)["'`]/g
+    let m: RegExpExecArray | null
+    while ((m = re.exec(src))) targets.push(m[1])
+    // The auth bounce to /login may legitimately come first (K4's lesson:
+    // two live pages were misread as drifted because of it) — so the check is
+    // membership, not first-redirect.
+    if (!targets.includes(dest)) {
+      out.push(`${alias} → ${dest}: page redirects to [${targets.join(", ") || "nothing literal"}], not the mapped destination`)
+    }
+  }
+  return out
+}
+
 function main() {
   const files = [...walkTs(join(ROOT, "app")), ...walkTs(join(ROOT, "lib")), ...rootRuntimeFiles()]
   const uniq = Array.from(new Set(files))
 
   const routes: string[][] = []
+  const routeFiles = new Map<string, string>()
   for (const f of uniq) {
     const route = routeFromPage(rel(f))
-    if (route) routes.push(route.split("/").filter(Boolean))
+    if (route) {
+      routes.push(route.split("/").filter(Boolean))
+      // page.tsx wins over route.ts for the same path (aliases are pages)
+      if (!routeFiles.has(route) || f.endsWith("/page.tsx")) routeFiles.set(route, f)
+    }
   }
   const redirects = configRedirectSources()
 
@@ -196,6 +257,20 @@ function main() {
     routeFromPage("app/dashboard/superadmin/usage-reports/export/route.ts") === "/dashboard/superadmin/usage-reports/export"])
   controls.push(["CONTROL an /api route.ts is still left to opposite-missing",
     routeFromPage("app/api/contacts/analytics/route.ts") === null])
+  // Alias-agreement finder controls: prove it catches each defect class before
+  // trusting its zero on the real map.
+  const readPage = (file: string): string | null => {
+    try { return stripComments(readFileSync(file, "utf8")) } catch { return null }
+  }
+  controls.push(["CONTROL an alias to a fake destination is caught",
+    aliasAgreement({ "/x": "/definitely-not-a-route-xyz" }, routes, routeFiles, redirects, readPage).length === 1])
+  controls.push(["CONTROL an alias no page or config redirect serves is caught",
+    aliasAgreement({ "/definitely-not-an-alias-xyz": "/dashboard" }, routes, routeFiles, redirects, readPage).length === 1])
+  controls.push(["CONTROL a page redirecting AWAY from the mapped destination is caught",
+    aliasAgreement({ "/calendar": "/dashboard" }, routes, routeFiles, redirects,
+      () => `redirect("/dashboard/calendar")`).length === 1])
+
+  const aliasFailures = aliasAgreement(ROUTE_ALIASES, routes, routeFiles, redirects, readPage)
 
   const failedControls = controls.filter(([, ok]) => !ok)
   console.log("══════════════════════════════════════════════════")
@@ -210,6 +285,17 @@ function main() {
     console.log("\n ❌ DANGLING_LINK_FAIL — a positive control failed; the count below is not evidence")
     process.exit(1)
   }
+
+  console.log(`\n  ROUTE_ALIASES agreement: ${Object.keys(ROUTE_ALIASES).length} aliases checked against pages + config redirects`)
+  if (aliasFailures.length) {
+    console.log(`  ✗ ${aliasFailures.length} alias(es) disagree with the tree:`)
+    for (const f of aliasFailures) console.log(`     ${f}`)
+    console.log("\n  Fix the map OR the page so they agree — the map is documentation,")
+    console.log("  and documentation that disagrees with the code reads as checked (§2).")
+    console.log(" ❌ DANGLING_LINK_FAIL")
+    process.exit(1)
+  }
+  console.log("  ✓ every alias is served and lands where the map says")
 
   const found2 = [...dangling.keys()].sort()
   if (process.env.DANGLING_LINK_BASELINE === "1") {

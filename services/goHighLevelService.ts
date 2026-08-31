@@ -187,11 +187,13 @@ export async function syncContactToGHL(contact: GHLContact, credentialOverride?:
 // SMS MESSAGING (via GHL)
 // =====================================================
 
-export interface GHLMessage {
-  contactId: string
-  message: string
-  type: "SMS" | "Email" | "Call" | "WhatsApp" | "GMB" | "FB" | "IG"
-}
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): interface `GHLMessage` deleted. It was
+// the payload shape for `syncMessageToGHL` / `sendComplianceApprovedEmail`,
+// both deleted in an earlier wave (see the header tombstone) under the standing
+// ruling that GHL is SYNC-OUT ONLY for contact data — not a message transport.
+// A payload type whose senders were removed by ruling is the orphaned half of a
+// capability this product does not have. Outbound messages ride the one sender,
+// lib/providers/outbound-sender.ts (guard: test:outbound-sender).
 
 // =====================================================
 // EMAIL (via GHL)
@@ -239,13 +241,11 @@ export interface GHLMessage {
 // SOCIAL MEDIA POSTING (via GHL Social Planner)
 // =====================================================
 
-export interface GHLSocialPost {
-  content: string
-  platforms: Array<"facebook" | "instagram" | "linkedin" | "twitter" | "tiktok" | "google">
-  mediaUrls?: string[]
-  scheduledTime?: string // ISO date string
-  locationId?: string
-}
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): interface `GHLSocialPost` deleted. The
+// GHL Social Planner poster it described was never built, and social publishing
+// lives elsewhere by design: lib/social/publisher.ts (PublishParams →
+// publishToSocialPlatform, all platforms through the connector gateway). GHL's
+// live half here is contact sync-out, call logging and notes only.
 
 // =====================================================
 // CALENDAR & APPOINTMENTS

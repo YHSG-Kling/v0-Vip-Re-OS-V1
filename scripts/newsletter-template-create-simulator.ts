@@ -418,7 +418,10 @@ const MUTATIONS: Mutation[] = [
     id: 'drop-sections-from-payload',
     target: 'action',
     describe: 'silently discards the authored sections',
-    apply: s => s.replace(/content: JSON\.stringify\(\{[\s\S]*?\}\),/, 'content: null,'),
+    // The payload literal may carry a `satisfies TemplateBlueprintEnvelope`
+    // clause (added 2026-08-31, lane M4 — the writer is typed against the same
+    // envelope the parser checks); the mutation must strip either form.
+    apply: s => s.replace(/content: JSON\.stringify\(\{[\s\S]*?\}(?: satisfies \w+)?\),/, 'content: null,'),
   },
   {
     id: 'split-into-two-writes',

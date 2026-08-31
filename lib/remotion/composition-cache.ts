@@ -41,8 +41,15 @@
 
 import { createHash } from "node:crypto"
 
-/** How wide a cache is allowed to reach. Never across tenants — see below. */
-export const CACHE_SCOPE = "brokerage" as const
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): `CACHE_SCOPE = "brokerage"` deleted —
+// a policy LABEL no code or guard ever read. The policy itself is enforced
+// where the cache is queried (every artifact/narration lookup carries
+// .eq("brokerage_id", brokerageId)) and PROVEN by
+// scripts/render-cache-simulator.ts ("the artifact lookup is scoped by
+// brokerage" / "the narration lookup is scoped by brokerage"). A constant
+// restating what the guard already asserts was a second spelling of the rule
+// with no enforcement of its own. The rule stands: cache reach is
+// per-brokerage, never across tenants.
 
 /**
  * Props that describe the FINISH pass, not the frames.

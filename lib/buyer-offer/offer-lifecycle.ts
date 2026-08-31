@@ -137,7 +137,11 @@ export const OFFER_AUDIT_EVENT = {
   TERMINAL:                   "buyer.offer.terminal",
 } as const
 
-export type OfferAuditEvent = typeof OFFER_AUDIT_EVENT[keyof typeof OFFER_AUDIT_EVENT]
+// UN-EXPORTED (§1.1, 2026-08-31, lane M4): its one reader is the disjointness
+// assertion just below; external consumers pick named members of
+// OFFER_AUDIT_EVENT directly (transaction-creation-gate, offer-flag-resolution,
+// kernel/transactions), never the union.
+type OfferAuditEvent = typeof OFFER_AUDIT_EVENT[keyof typeof OFFER_AUDIT_EVENT]
 
 /**
  * THE TWO VOCABULARIES ARE DISJOINT, AND THE COMPILER ENFORCES IT.
@@ -152,11 +156,15 @@ type _AuditIsNeverALifecycleEvent =
 const _auditVocabularyIsDisjoint: _AuditIsNeverALifecycleEvent = true
 void _auditVocabularyIsDisjoint
 
-/** Every name this lane writes, for a reader that must recognise all of them. */
-export const OFFER_ALL_EVENT_TYPES: readonly string[] = [
-  ...Object.values(OFFER_EVENT),
-  ...Object.values(OFFER_AUDIT_EVENT),
-]
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): `OFFER_ALL_EVENT_TYPES` deleted —
+// built "for a reader that must recognise all of them", and no such reader
+// ever existed: every live consumer reads a NAMED member of OFFER_EVENT or
+// OFFER_AUDIT_EVENT (e.g. transaction-creation-gate.ts:244 keys on
+// COMPLIANCE_PASSED; offer-flag-resolution.ts on COMPLIANCE_FLAGGED /
+// COMPLIANCE_RESOLVED), because recognising an event means acting on it, and
+// nothing acts on "any of the twenty". A future exhaustive reader should
+// spread the two vocabularies at its own call site, where the compiler ties it
+// to them.
 
 /**
  * Event → state.

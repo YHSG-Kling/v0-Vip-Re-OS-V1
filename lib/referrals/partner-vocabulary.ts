@@ -78,9 +78,15 @@ export const REFERRAL_AGREEMENT_TYPES: Array<{ value: ReferralAgreementType; lab
   { value: "informal",   label: "Informal — no standing arrangement" },
 ]
 
-/** The safe default when a caller has no opinion: a partner record with no claim attached. */
-export const DEFAULT_REFERRAL_PARTNER_TYPE: ReferralPartnerType = "other"
-export const DEFAULT_REFERRAL_AGREEMENT_TYPE: ReferralAgreementType = "informal"
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): `DEFAULT_REFERRAL_PARTNER_TYPE`
+// ("other") and `DEFAULT_REFERRAL_AGREEMENT_TYPE` ("informal") deleted. They
+// promised a "caller has no opinion" default, and the live creation path
+// decided the OPPOSITE contract: app/actions/referrals/referral-actions.ts
+// requires both fields and REFUSES unstorable values through
+// isReferralPartnerType / isReferralAgreementType below (after real 23514s
+// from invented values — see its comment). A default that silently files a
+// partner as "other/informal" is how a vocabulary rots; the refusal is the
+// kept behavior, so the defaults had no caller and no future one.
 
 export function isReferralPartnerType(v: string): v is ReferralPartnerType {
   return REFERRAL_PARTNER_TYPES.some((t) => t.value === v)

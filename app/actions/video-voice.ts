@@ -15,6 +15,7 @@ import type {
   VoiceTrainingJobStatus,
   VoiceProfileTrainingStatus,
   SampleManifest,
+  VoiceProfile,
   VoiceTrainingJob,
   GenerationVoiceOption,
 } from "./video-voice.types"
@@ -81,7 +82,12 @@ async function upsertDraftManifest(
  * Get all voice profiles for an agent
  * CRITICAL: agent_id references agents.id, not users.id
  */
-export async function getVoiceProfiles(agentId: string) {
+// Return typed by the module's own row contract (§1.2, 2026-08-31, lane M4):
+// VoiceProfile existed with no reader while this read returned `any[]`; the
+// embed carries the training columns the select names.
+export async function getVoiceProfiles(agentId: string): Promise<
+  Array<VoiceProfile & { voice_clone_training: Array<Pick<VoiceTrainingJob, "id" | "status" | "sample_manifest" | "started_at" | "completed_at" | "error_message">> }>
+> {
   if (!isValidUUID(agentId)) return []
 
   const supabase = await createClient()
@@ -101,7 +107,7 @@ export async function getVoiceProfiles(agentId: string) {
     return []
   }
 
-  return data || []
+  return (data ?? []) as Awaited<ReturnType<typeof getVoiceProfiles>>
 }
 
 // getVoiceProfileById(profileId) was REMOVED (slice-3 orphan burn-down).

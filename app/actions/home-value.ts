@@ -78,7 +78,10 @@ interface HomeValueFormData {
 }
 
 /** A comparable sale as the seller-facing result page renders it. */
-export interface SellerComp {
+// UN-EXPORTED (§1.1, 2026-08-31, lane M4): its readers are the private
+// AIValuationResponse and the comp mapping in this file; the seller result
+// page consumes the action's inferred return shape, never this name.
+interface SellerComp {
   address: string
   sale_price: number
   beds: number

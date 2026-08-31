@@ -7,7 +7,13 @@ import { handleError, ValidationError, NotFoundError } from "@/lib/errors"
 // updates, reads and archives, so it never sees a type. Its live reader is
 // lib/validations/index.ts (validateTransaction), which is where the type
 // vocabulary is now enforced.
-import { TRANSACTION_STATUSES } from "@/lib/constants"
+// Repointed (§6, 2026-08-31, lane M4): this used to validate against the
+// scaffolding copy in lib/constants/index.ts (7 values: it refused the live
+// states qualifying/clear_to_close/funded/lost/archived and admitted
+// withdrawn/expired, which the DB CHECK refuses — every such update would
+// validate here and then die at the column). THE vocabulary is the m291
+// CHECK-backed list below; the constants copy is deleted with a tombstone.
+import { TRANSACTION_STATUSES } from "@/lib/transactions/transaction-status"
 import { revalidatePath } from "next/cache"
 
 /**
@@ -54,8 +60,8 @@ export async function updateTransaction(params: UpdateTransactionParams) {
     // via the `...params.updates` spread below, so a typo — or a caller using
     // the transaction STAGE vocabulary by mistake — silently parked the row in
     // a status no reader matches and no pipeline view lists. TRANSACTION_STATUSES
-    // (lib/constants/index.ts:80) is the list every one of those readers filters
-    // on; it was imported here and never consulted.
+    // (lib/transactions/transaction-status.ts) is the CHECK-backed list every
+    // one of those readers filters on.
     if (
       params.updates.status !== undefined &&
       !(TRANSACTION_STATUSES as readonly string[]).includes(params.updates.status)

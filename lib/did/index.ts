@@ -100,8 +100,10 @@ export interface GenerateVideoResult {
   /** Permanent video (mp4) or audio (mp3) URL — null if still processing */
   videoUrl: string | null
   /** Which D-ID engine rendered it — RECORDED at submit (talks = V2 photo,
-   *  expressives = V4). Pollers key off this; never guess from id shapes. */
-  engine?: "talks" | "expressives"
+   *  expressives = V4). Pollers key off this; never guess from id shapes.
+   *  Typed as DidEngine (§6, 2026-08-31, lane M4): this field used to respell
+   *  the union inline, leaving the named type below with no reader. */
+  engine?: DidEngine
   /** D-ID talk/clip job ID for later polling */
   videoId: string
   /** Processing status at return time */

@@ -97,21 +97,30 @@ export class ValidationError extends AppError {
   }
 }
 
-export class AuthenticationError extends AppError {
-  constructor(message: string = ERROR_MESSAGES.NOT_AUTHENTICATED) {
-    super(message, "AUTHENTICATION_ERROR", 401)
-    this.name = "AuthenticationError"
-    Object.setPrototypeOf(this, AuthenticationError.prototype)
-  }
-}
-
-export class AuthorizationError extends AppError {
-  constructor(message: string = ERROR_MESSAGES.UNAUTHORIZED) {
-    super(message, "AUTHORIZATION_ERROR", 403)
-    this.name = "AuthorizationError"
-    Object.setPrototypeOf(this, AuthorizationError.prototype)
-  }
-}
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): SIX unadopted AppError subclasses
+// deleted — AuthenticationError, AuthorizationError, ConflictError,
+// IntegrationError, RateLimitError, DemoModeError. Exported since the v0
+// scaffold, constructed by NOBODY, ever. The same audit that removed the
+// throwIf* helpers (header above) already named why: this codebase RETURNS
+// refusals rather than throwing them, and each category these classes covered
+// has a live return-style home —
+//   · auth/authz     the gate-first pattern (§4): session checks `return
+//                    { success:false, error:"Unauthorized" }` at the action
+//                    boundary (e.g. app/actions/dotloop-integration.ts) —
+//                    never a thrown 401/403;
+//   · conflict       already-exists refusals are returned with the field named
+//                    by the kernel command that detected them;
+//   · integration    provider failures are CLASSIFIED, not thrown generic:
+//                    lib/did/contract.ts classifyDidError and the
+//                    connector-gateway's error typing carry
+//                    retryable/terminal, which a bare 502 class cannot;
+//   · rate limit     the gateway + retryAsync (below) handle 429 as a
+//                    retryable classification, not an exception type;
+//   · demo mode      no live demo-mode write path constructs a refusal.
+// SURVIVORS: AppError, ValidationError, NotFoundError, DatabaseError — the
+// four with real constructors in the tree. (The D-ID strings
+// "AuthorizationError"/"RateLimitError" in lib/did/contract.ts are the
+// PROVIDER's error-kind vocabulary, not references to these classes.)
 
 export class NotFoundError extends AppError {
   constructor(resource: string = "Resource") {
@@ -121,13 +130,6 @@ export class NotFoundError extends AppError {
   }
 }
 
-export class ConflictError extends AppError {
-  constructor(message: string = ERROR_MESSAGES.ALREADY_EXISTS) {
-    super(message, "CONFLICT_ERROR", 409)
-    this.name = "ConflictError"
-    Object.setPrototypeOf(this, ConflictError.prototype)
-  }
-}
 
 export class DatabaseError extends AppError {
   constructor(message: string = ERROR_MESSAGES.DATABASE_ERROR, details?: any) {
@@ -137,29 +139,8 @@ export class DatabaseError extends AppError {
   }
 }
 
-export class IntegrationError extends AppError {
-  constructor(service: string, message: string = ERROR_MESSAGES.INTEGRATION_ERROR, details?: any) {
-    super(`${service}: ${message}`, "INTEGRATION_ERROR", 502, details)
-    this.name = "IntegrationError"
-    Object.setPrototypeOf(this, IntegrationError.prototype)
-  }
-}
 
-export class RateLimitError extends AppError {
-  constructor(message: string = ERROR_MESSAGES.RATE_LIMIT_EXCEEDED) {
-    super(message, "RATE_LIMIT_ERROR", 429)
-    this.name = "RateLimitError"
-    Object.setPrototypeOf(this, RateLimitError.prototype)
-  }
-}
 
-export class DemoModeError extends AppError {
-  constructor(message: string = ERROR_MESSAGES.DEMO_MODE_RESTRICTION) {
-    super(message, "DEMO_MODE_ERROR", 403)
-    this.name = "DemoModeError"
-    Object.setPrototypeOf(this, DemoModeError.prototype)
-  }
-}
 
 // ============================================
 // ERROR LOGGING UTILITY

@@ -3,6 +3,20 @@
  * All legacy / alias paths map to their canonical destination.
  * Used by: thin redirect pages, middleware, voice assistant, and any
  * programmatic navigation that may receive an old route.
+ *
+ * GUARDED (2026-08-31, lane M4): scripts/dangling-link-sweep.ts imports this
+ * map and fails the build when an alias is served by no page/config redirect,
+ * when a destination is not a real route, or when a redirect page disagrees
+ * with the map — the "half still missing" the K4 note below named.
+ *
+ * TOMBSTONE (§1.3, 2026-08-31, lane M4): lib/routes.ts (ROUTES + AppRoute)
+ * deleted — a v0 scaffold of named route constants that nothing ever imported
+ * (its only mentions were as a specimen NAME inside the census's own positive
+ * controls, which read an index, not the file). This codebase addresses pages
+ * by literal path — 2000+ literal refs, held honest by the dangling-link sweep
+ * and orphan-route sweep — with role landing routes in
+ * lib/kernel/role-routes.ts and alias documentation HERE. A parallel constants
+ * map nobody consulted was a second spelling of the routing table (§6).
  */
 // ── RE-MEASURED AGAINST THE PAGES IT CLAIMS TO MIRROR (2026-08-29) ───────────
 //

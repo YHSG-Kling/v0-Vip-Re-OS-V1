@@ -14,7 +14,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
-import { rankPoints, partitionByTeam, isoWeekLabel, monthLabel, type LedgerRow } from "../lib/recruiting/leaderboard"
+import { rankPoints, partitionByTeam, isoWeekLabel, monthLabel, POPULATED_METRICS, CLOSED_STATES_ARE_REAL, type LedgerRow } from "../lib/recruiting/leaderboard"
 import { LEADERBOARD_SCOPES, LEADERBOARD_METRICS, periodWindows, isCanonicalPeriodLabel } from "../lib/gamification/leaderboard-vocabulary"
 import { tierForPoints, nextTierForPoints } from "../lib/gamification/tiers"
 import { computeRetentionScore, type RetentionSignals } from "../lib/recruiting/retention-score"
@@ -58,6 +58,13 @@ function pureLayer() {
   check("every period the UI may offer is one the populator writes",
     periodWindows(NOW).every((w) => isCanonicalPeriodLabel(w.value, NOW)) && periodWindows(NOW).length === 3)
   check("a display label is never a stored value", !isCanonicalPeriodLabel("This Month", NOW))
+  // §2: these two invariants were computed and exported by the populator but asserted by
+  // NOBODY — a proof nobody runs. This guard is their reader (wired 2026-08-31, lane M4).
+  check("every metric the vocabulary admits is one the populator writes (POPULATED_METRICS)",
+    LEADERBOARD_METRICS.every((m) => POPULATED_METRICS.includes(m)) &&
+    POPULATED_METRICS.every((m) => (LEADERBOARD_METRICS as readonly string[]).includes(m)))
+  check("CLOSED_STATES_ARE_REAL — every closed state is in the live transactions.status vocabulary",
+    CLOSED_STATES_ARE_REAL === true)
 
   console.log("\n[one tier ladder · pure]")
   check("the server ladder wins: 500/2500/10000/25000",

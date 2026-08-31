@@ -31,38 +31,43 @@
  * and this file never could.
  */
 
-export const migrationStatus = {
-  /** Schema facts live in the generated cache — see the header. */
-  supabaseSchema: {
-    status: "complete",
-    source: "scripts/live-tables.ts (LIVE_TABLES) — machine-written, npm run schema:regen",
-  },
-  supabaseService: {
-    status: "complete",
-    description: "services/supabaseService.ts carries the CRUD surface for contacts, leads, listings and the rest.",
-  },
-  apiRoutes: {
-    status: "complete",
-    description: "API routes query Supabase directly; no route reads Airtable.",
-  },
-  serverActions: {
-    status: "complete",
-    description: "n8n workflows replaced by native Server Actions on the Vercel AI SDK.",
-  },
-  components: {
-    status: "complete",
-    description: "Pages and components read supabaseService; airtableService is gone.",
-  },
-  airtableService: {
-    status: "removed",
-    action:
-      "services/airtableService.ts no longer exists. All reads/writes go through services/supabaseService.ts. The only surviving mentions are in scripts/complete-migration.ts, the codemod that performed the rewrite.",
-  },
-  n8nService: {
-    status: "removed",
-    action:
-      "services/workflowService.ts (which also exported the n8nService alias) has been DELETED. The named survivor is app/actions/workflows.ts — every non-stub method on the shim was a lossy 1:1 pass-through to the same-named export there (triggerCMAPackage dropped beds/baths/sqft/upgrades; several hardcoded the actor as \"system\"), and the remainder returned fabricated constants.",
-    knownGap:
-      "verifyVendorInsurance was the one capability with no real implementation anywhere — the shim returned complianceScore 100 / isCompliant true unconditionally. Nothing was ported because a function returning constants has no implementation to preserve. Vendor insurance verification is an open product gap.",
-  },
-} as const
+// DE-CODED (§1.3 + §2, 2026-08-31, lane M4): `export const migrationStatus`
+// is now the PROSE below. Both of its readers are prose pointers at this FILE
+// (app/dashboard/superadmin/engagement/page.tsx:37, scripts/
+// complete-migration.ts:11); no code ever imported the const, so the object
+// literal was documentation wearing an export — the exact shape K4's header
+// ruling stripped the counts from. Every fact it carried survives verbatim:
+//
+//   supabaseSchema   COMPLETE. Schema facts live in the generated cache —
+//                    scripts/live-tables.ts (LIVE_TABLES), machine-written,
+//                    `npm run schema:regen`.
+//   supabaseService  COMPLETE. services/supabaseService.ts carries the CRUD
+//                    surface for contacts, leads, listings and the rest.
+//   apiRoutes        COMPLETE. API routes query Supabase directly; no route
+//                    reads Airtable.
+//   serverActions    COMPLETE. n8n workflows replaced by native Server
+//                    Actions on the Vercel AI SDK.
+//   components       COMPLETE. Pages and components read supabaseService;
+//                    airtableService is gone.
+//   airtableService  REMOVED. services/airtableService.ts no longer exists.
+//                    All reads/writes go through services/supabaseService.ts.
+//                    The only surviving mentions are in
+//                    scripts/complete-migration.ts, the codemod that performed
+//                    the rewrite.
+//   n8nService       REMOVED. services/workflowService.ts (which also exported
+//                    the n8nService alias) has been DELETED. The named
+//                    survivor is app/actions/workflows.ts — every non-stub
+//                    method on the shim was a lossy 1:1 pass-through to the
+//                    same-named export there (triggerCMAPackage dropped
+//                    beds/baths/sqft/upgrades; several hardcoded the actor as
+//                    "system"), and the remainder returned fabricated
+//                    constants.
+//                    KNOWN GAP: verifyVendorInsurance was the one capability
+//                    with no real implementation anywhere — the shim returned
+//                    complianceScore 100 / isCompliant true unconditionally.
+//                    Nothing was ported because a function returning constants
+//                    has no implementation to preserve. Vendor insurance
+//                    verification is an OPEN PRODUCT GAP.
+//
+// This file intentionally exports nothing.
+export {}

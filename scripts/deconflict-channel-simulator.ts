@@ -68,7 +68,7 @@ import {
   BUYER_STAGES, BUYER_ACTIVE_STAGES, BUYER_INACTIVE_STAGES,
   BUYER_SHOWING_FEEDBACK_STAGE, isBuyerStage,
 } from "../lib/contacts/buyer-stage"
-import { AD_CAMPAIGN_STATUSES, AD_CAMPAIGN_RUNNING_STATUSES } from "../lib/integrations/ad-campaign-vocabulary"
+import { AD_CAMPAIGN_STATUSES, AD_CAMPAIGN_RUNNING_STATUSES, AD_CAMPAIGN_PLATFORMS } from "../lib/integrations/ad-campaign-vocabulary"
 import { stripComments } from "./strip-comments"
 
 let pass = 0, fail = 0
@@ -203,6 +203,13 @@ console.log("\n── ad_campaigns.status: the dead 'active' rider ──")
   check("the ladder is the eight declared statuses",
     live.length === AD_CAMPAIGN_STATUSES.length && AD_CAMPAIGN_STATUSES.every((s) => live.includes(s)))
   check("'active' is NOT one of them", !live.includes("active"))
+  // §2 (wired 2026-08-31, lane M4): the platform list was declared beside the
+  // ladder and asserted by nobody — this holds it member-for-member against
+  // the live ad_campaigns.platform CHECK, same as the status ladder above.
+  const livePlatforms = CHECK_VOCABULARIES.ad_campaigns?.platform ?? []
+  check("the platform vocabulary matches the live CHECK member-for-member",
+    livePlatforms.length === AD_CAMPAIGN_PLATFORMS.length &&
+    AD_CAMPAIGN_PLATFORMS.every((p) => livePlatforms.includes(p)))
   check("the running set is admitted", AD_CAMPAIGN_RUNNING_STATUSES.every((s) => live.includes(s)))
   check("…and includes 'launching' — committed spend the managers must see",
     (AD_CAMPAIGN_RUNNING_STATUSES as readonly string[]).includes("launching"))

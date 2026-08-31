@@ -391,7 +391,9 @@ Return the JSON now.`
 
 /** Preferred brand-kit frame composition; falls back to the registered
  *  AgentExplainerReel when the m274 registry row hasn't been applied yet. */
-export const TEAMMATE_EXPLAINER_COMPOSITION_ID = "TeammateExplainerReel"
+// UN-EXPORTED (§1.1, 2026-08-31, lane M4): only pickCompositionId below reads
+// it; the export claimed an entry point no file used.
+const TEAMMATE_EXPLAINER_COMPOSITION_ID = "TeammateExplainerReel"
 const FALLBACK_COMPOSITION_ID = "AgentExplainerReel"
 
 async function pickCompositionId(): Promise<string> {

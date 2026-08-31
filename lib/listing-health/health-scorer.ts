@@ -64,13 +64,24 @@ export interface ListingHealthResult {
   daysOnMarket:     number | null
 }
 
-export const CATEGORY_WEIGHTS: Record<ListingHealthCategory, number> = {
+// UN-EXPORTED (§1.1, 2026-08-31, lane M4): every reader is a component scorer
+// in this file; the `export` keyword claimed an entry point nothing used.
+const CATEGORY_WEIGHTS: Record<ListingHealthCategory, number> = {
   DOM:        0.30,
   SHOWINGS:   0.20,
   FEEDBACK:   0.15,
   OPEN_HOUSE: 0.10,
   PRICE:      0.15,
   ACTIVITY:   0.10,
+}
+// §2 invariant, asserted where the number is born: a weighted average only
+// means "out of 100" if the weights cover the whole. Static values, so this
+// throws at import time in any environment the moment an edit breaks the sum.
+{
+  const sum = Object.values(CATEGORY_WEIGHTS).reduce((a, b) => a + b, 0)
+  if (Math.abs(sum - 1) > 1e-9) {
+    throw new Error(`[health-scorer] CATEGORY_WEIGHTS must sum to 1, got ${sum}`)
+  }
 }
 
 // ─── Component Scorers ──────────────────────────────────────────────────────

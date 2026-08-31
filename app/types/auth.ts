@@ -44,34 +44,16 @@
  *     the VOCABULARY inside it was the half worth keeping, and it is now live.
  */
 
-export type AuthStatus = 'idle' | 'loading' | 'success' | 'error' | 'checking'
-
-export interface AuthError {
-  message: string
-  code?: string
-  details?: string
-}
-
-export interface SessionData {
-  user: {
-    id: string
-    email: string
-    created_at: string
-  }
-  session: {
-    access_token: string
-    refresh_token: string
-    expires_at: number
-  }
-}
-
-export interface AuthState {
-  status: AuthStatus
-  user: SessionData['user'] | null
-  session: SessionData['session'] | null
-  error: AuthError | null
-  isAuthenticated: boolean
-}
+// TOMBSTONE (§1.1, 2026-08-31, lane M4): interface `AuthState` deleted — a
+// dead duplicate of the LIVE AuthState in lib/auth/useAuth.ts:29, the shape
+// contexts/AuthContext.tsx actually provides (user + canonical role +
+// userContext + loading). This copy modeled raw Supabase session plumbing
+// (access/refresh tokens) that no consumer ever read. Nothing merged: the
+// survivor's consumers get session state from the Supabase client itself, not
+// from a stored token struct. Its supporting cast — `AuthStatus`, `AuthError`,
+// `SessionData` — had AuthState as their only reader and went with it; the
+// live status/error handling is the login page's own useState hooks plus
+// AuthActionResult (app/actions/auth.ts), per the MagicLinkState ruling above.
 
 // ── MAGIC-LINK MESSAGE VOCABULARY ───────────────────────────────────────────
 // The only spelling of a magic-link outcome. Writers put one of these in

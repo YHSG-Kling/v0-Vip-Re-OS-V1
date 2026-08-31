@@ -16,6 +16,11 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { voiceSignalFor, signalScore, signalTemperature } from "../lib/ai-isa/qualification-core"
 import { detectOptOutIntent } from "../lib/ai-isa/opt-out-utils"
+// §2 (wired 2026-08-31, lane M4): the coaching-insight writer's vocabularies
+// were declared beside the writer and asserted by nobody — held here against
+// the live call_coaching_insights CHECKs, member-for-member.
+import { COACHING_INSIGHT_TYPES, COACHING_PRIORITIES } from "../lib/voice/call-coaching"
+import { CHECK_VOCABULARIES } from "./check-vocabularies"
 
 let pass = 0, fail = 0
 const fails: string[] = []
@@ -37,6 +42,16 @@ console.log("\n── SOURCE: the automatic post-call brain is wired into BOTH c
   check("lead conversion still runs alongside (routeLeadCallIntent kept)", status.includes("routeLeadCallIntent") && turn.includes("routeLeadCallIntent"))
   const inbound = src("app/api/voice/twilio/inbound/route.ts")
   check("inbound creates the ai_isa_calls scoring row (lifecycle)", /from\("ai_isa_calls"\)\s*\n?\s*\.insert|from\("ai_isa_calls"\)\.insert/.test(inbound) || inbound.includes('from("ai_isa_calls")'))
+}
+
+console.log("\n── VOCABULARY: coaching insights write only what the CHECKs admit ──")
+{
+  const liveTypes = CHECK_VOCABULARIES.call_coaching_insights?.insight_type ?? []
+  const livePrio = CHECK_VOCABULARIES.call_coaching_insights?.priority ?? []
+  check("insight_type vocabulary matches the live CHECK member-for-member",
+    liveTypes.length === COACHING_INSIGHT_TYPES.length && COACHING_INSIGHT_TYPES.every((t) => (liveTypes as readonly string[]).includes(t)))
+  check("priority vocabulary matches the live CHECK member-for-member",
+    livePrio.length === COACHING_PRIORITIES.length && COACHING_PRIORITIES.every((p) => (livePrio as readonly string[]).includes(p)))
 }
 
 console.log("\n── SOURCE: contact-side routing + the compliance posture ──")

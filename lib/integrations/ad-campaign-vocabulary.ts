@@ -17,7 +17,10 @@
 export const AD_CAMPAIGN_PLATFORMS = [
   "facebook", "instagram", "google", "linkedin", "tiktok", "vibe_ctv",
 ] as const
-export type AdCampaignPlatform = (typeof AD_CAMPAIGN_PLATFORMS)[number]
+// TOMBSTONE (§1.3, 2026-08-31, lane M4): derived type `AdCampaignPlatform`
+// deleted — never named by any consumer (validators call the type-guard /
+// membership check on AD_CAMPAIGN_PLATFORMS, the live const). Re-derive when
+// a typed consumer arrives.
 
 /** ad_campaigns.status — the full ladder. */
 export const AD_CAMPAIGN_STATUSES = [

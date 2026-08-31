@@ -193,7 +193,10 @@ async function proposeUrgentCallback(svc: any, call: {
  *  extraction must be high-confidence with at least this many distinct
  *  concrete signals (location+price, beds+location, …). The agent approves in
  *  /approvals — nothing self-activates. */
-export const SPOKEN_ALERT_MIN_SIGNALS = 2
+// UN-EXPORTED (§1.1, 2026-08-31, lane M4): the keyword claimed a public entry
+// point no file used; the only reader is proposeSpokenCriteriaAlert below.
+// Re-export WITH a proof if a simulator is ever written for this gate.
+const SPOKEN_ALERT_MIN_SIGNALS = 2
 
 async function proposeSpokenCriteriaAlert(svc: any, call: {
   id: string; brokerage_id: string; contact_id: string | null; agent_id: string | null; transcription: string

@@ -96,12 +96,14 @@ async function logLifecycleActivity(
  * lifecycle cards) keep compiling, but the values USED are the resolved ones —
  * a caller cannot widen its own scope by passing a different id.
  */
-export interface ListingActionScope {
+// UN-EXPORTED (§1.1, 2026-08-31, lane M4): both halves of the gate result are
+// named only by the private authorizeListingAction below.
+interface ListingActionScope {
   ok: true
   userId: string
   brokerageId: string
 }
-export interface ListingActionDenied {
+interface ListingActionDenied {
   ok: false
   error: string
 }
