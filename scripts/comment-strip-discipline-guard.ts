@@ -181,6 +181,16 @@ const ALLOW: { file: string; must: string; why: string }[] = [
       "asserts that NO comment survived its own code() — the pattern is a DETECTOR " +
       "run over already-stripped text, and the comment is the thing being looked for",
   },
+  {
+    file: "deletion-audit-guard.ts",
+    must: "([\\w\\-./[\\]]+" + "\\" + SLASH + ")\\r?\\n",
+    why:
+      "joinWrappedPaths fuses a survivor path wrapped across two comment lines so " +
+      "PATH_RE can see it whole; it runs ONLY on tombstone-block text that " +
+      "extractBlocks already reduced to comment lines — the comment is the subject " +
+      "being read (the credential-cascade / team-lead-split class), not source code " +
+      "where a desynchronising quote could shift the parse",
+  },
 ]
 
 const allowKey = (f: string, text: string) =>
