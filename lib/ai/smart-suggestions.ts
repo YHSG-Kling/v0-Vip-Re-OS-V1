@@ -96,7 +96,12 @@ export async function generateSmartSuggestions(
         "Schedule posts at optimal times",
       ],
       manualSteps: ["Review generated content", "Approve posting schedule"],
-      actionPayload: { contentType: "social", count: 5 },
+      // "social_post" is the canonical spelling (lib/constants CONTENT_TYPES).
+      // This payload used to say "social" — the last legacy spelling in the
+      // tree, surviving only because nothing consumes actionPayload yet. If a
+      // consumer is ever built, generateContent REFUSES non-canonical values
+      // outright, so the legacy word would have failed on first use.
+      actionPayload: { contentType: "social_post", count: 5 },
       createdAt: new Date(),
     })
   }

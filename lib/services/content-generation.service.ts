@@ -13,6 +13,25 @@ import { calculateThemFirstScore } from "@/lib/compliance-rules/rule-evaluators"
 // UNIFIED CONTENT GENERATION SERVICE
 // Consolidates all AI content generation across the app
 // Replaces duplicates in: ai-content-generation.tsx, social-publishing.ts, link-to-video.ts
+//
+// TOMBSTONE (§1.3) — lib/kernel/adapters/content-generation.ts is DELETED and
+// THIS service is where the capability lives (live path:
+// app/actions/ai-content-generation.tsx → lib/services/content-generation.service).
+// That adapter was one wrapper written twice: its twin,
+// lib/kernel/content-generation-boundary.ts, was merged onto it and deleted a
+// wave earlier, after the census's reachability fix caught the pair mutually
+// acquitting each other while NOTHING imported either. The merged survivor then
+// stood as the single "referenced NOWHERE" entry on the orphan-export list, and
+// the owner ruled on it. The one thing it held that this service does not — a
+// normalizeContentType() folding four legacy spellings (social, socialPost,
+// listing, email_campaign) onto the canonical vocabulary — was RETIRED WITH IT,
+// on evidence, not convenience: ai_generated_content holds ZERO rows in any
+// spelling (measured live on hrvaqgvukzxfskkcrwbt, 2026-08-31), no caller in the
+// tree passes a legacy spelling, and every UI picker offers canonical values
+// only. An input that exists nowhere needs a refusal, not a translator: the
+// CONTENT_TYPES gate below throws ValidationError on anything outside the
+// vocabulary, which is the §4 fail-closed behaviour — a translator would quietly
+// accept a vocabulary the product retired.
 // ============================================
 
 export interface ContentGenerationParams {
