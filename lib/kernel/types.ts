@@ -153,6 +153,12 @@ export type Persona =
   | "senior"
   | "expired"
   | "foreclosure"
+  // Owner ruling, wave 20, verbatim: "investor is a persona and not a contact
+  // type." An investor is a SITUATION — how you speak to them, which lessons and
+  // copy fit — not which side of a transaction they stand on. m589 widened the
+  // live CHECK to match; every Record<Persona, …> map below and beside this
+  // union owes the member a key, which is exactly how the compiler found them.
+  | "investor"
   | "other"
 
 // ─── EDUCATION FORMAT ─────────────────────────────────────────────────────────

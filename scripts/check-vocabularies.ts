@@ -20,7 +20,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-08-31
  * source: public.live_check_constraints_json()
- * body-sha256: cdfdaaf02242186e10cf5f8d3a1334ec5151576d9bb15bc3f57f0b128aadc5e4
+ * body-sha256: 833340a214ee98e480935ecf980a4231dde06c368d376986efd1df6c425bcd82
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -534,7 +534,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   contacts: {
     ai_autopilot_level: ["aggressive", "conservative", "moderate", "off"],
     buyer_stage: ["BUYER_CLOSED", "BUYER_CONTACT_CREATED", "BUYER_DISENGAGED", "BUYER_FINANCIALLY_VERIFIED", "BUYER_LIFETIME", "BUYER_OFFER_ELIGIBLE", "BUYER_OFFER_SUBMITTED", "BUYER_ON_HOLD", "BUYER_SEARCHING", "BUYER_SEARCH_CONFIGURED", "BUYER_TOURING", "BUYER_TOUR_ELIGIBLE", "BUYER_UNDER_CONTRACT"],
-    contact_persona: ["divorce", "downsize", "expired", "first_time", "foreclosure", "fsbo", "luxury", "military", "other", "probate", "relocated", "senior", "upsize"],
+    contact_persona: ["divorce", "downsize", "expired", "first_time", "foreclosure", "fsbo", "investor", "luxury", "military", "other", "probate", "relocated", "senior", "upsize"],
     contact_type: ["both", "buyer", "investor", "lead", "lifetime_customer", "other", "prospect", "referral_partner", "seller", "sphere", "vendor"],
     lead_temperature: ["cold", "hot", "warm"],
     lender_status: ["cash", "needs_pre_approval", "pre_approved", "unknown"],
