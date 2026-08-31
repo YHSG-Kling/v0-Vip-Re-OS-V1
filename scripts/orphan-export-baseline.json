@@ -576,7 +576,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9422,
+  "census": 9424,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -757,7 +757,7 @@
     "app/actions/compliance-bridge-actions.ts": 3,
     "app/actions/compliance-monitoring.ts": 16,
     "app/actions/compliance-phrases.ts": 4,
-    "app/actions/composition-library.ts": 1,
+    "app/actions/composition-library.ts": 2,
     "app/actions/connection-health.ts": 2,
     "app/actions/connections/connection-center.ts": 4,
     "app/actions/contact-details.ts": 7,
@@ -770,7 +770,7 @@
     "app/actions/contacts/segment-membership.ts": 1,
     "app/actions/contacts/update-addressing.ts": 1,
     "app/actions/contacts/update-channel-controls.ts": 2,
-    "app/actions/contacts.ts": 6,
+    "app/actions/contacts.ts": 7,
     "app/actions/content-approval-workflow.ts": 9,
     "app/actions/content-compliance.ts": 7,
     "app/actions/content-generation-engine.ts": 9,
@@ -896,7 +896,7 @@
     "app/actions/multi-persona.ts": 28,
     "app/actions/negotiation-copilot.ts": 2,
     "app/actions/negotiation-strategy.ts": 6,
-    "app/actions/neighbor-notifications.ts": 4,
+    "app/actions/neighbor-notifications.ts": 5,
     "app/actions/neighborhood-reports.ts": 3,
     "app/actions/newsletter/approve-template.ts": 4,
     "app/actions/newsletter/create-template.ts": 1,
@@ -953,7 +953,7 @@
     "app/actions/portal-settings.ts": 3,
     "app/actions/portal-stream.ts": 5,
     "app/actions/portal-tours.ts": 1,
-    "app/actions/predictive-listing.ts": 5,
+    "app/actions/predictive-listing.ts": 6,
     "app/actions/predictive-surfaces.ts": 2,
     "app/actions/presentations-list.ts": 1,
     "app/actions/price-reduction-campaign.ts": 1,
@@ -1098,7 +1098,7 @@
     "app/actions/usage-overview.ts": 1,
     "app/actions/user-profile.ts": 5,
     "app/actions/vendor-billing.ts": 3,
-    "app/actions/vendor-budget.ts": 5,
+    "app/actions/vendor-budget.ts": 6,
     "app/actions/vendor-contact-access.ts": 4,
     "app/actions/vendor-documents.ts": 1,
     "app/actions/vendor-invite.ts": 3,
@@ -1189,7 +1189,6 @@
     "app/api/approvals/pending/route.ts": 1,
     "app/api/approvals/reject/route.ts": 1,
     "app/api/auth/reset-password/route.ts": 1,
-    "app/api/behavior/signal/route.ts": 1,
     "app/api/billing/webhook/route.ts": 1,
     "app/api/blog/track-share/route.ts": 1,
     "app/api/blog/track-view/route.ts": 1,
@@ -1441,7 +1440,6 @@
     "app/api/leads/raw/route.ts": 2,
     "app/api/leads/route.ts": 1,
     "app/api/listings/[listingId]/upload-document/route.ts": 1,
-    "app/api/listings/create/route.ts": 1,
     "app/api/listings/mls-check/route.ts": 1,
     "app/api/meetings/sdk-signature/route.ts": 1,
     "app/api/migrate/verify/route.ts": 1,
@@ -1452,13 +1450,11 @@
     "app/api/offers/upload/route.ts": 1,
     "app/api/onboarding/assistant/route.ts": 1,
     "app/api/onboarding/brand/generate-sample/route.ts": 1,
-    "app/api/onboarding/integrations/test/route.ts": 1,
     "app/api/onboarding/license/route.ts": 1,
     "app/api/onboarding/performance-report/route.ts": 2,
     "app/api/onboarding/training/progress/route.ts": 1,
     "app/api/open-house/attend/route.ts": 1,
     "app/api/open-house/convert-attendee/route.ts": 1,
-    "app/api/open-house/request-feedback/route.ts": 1,
     "app/api/podcast/widget/route.ts": 1,
     "app/api/portal/[contactId]/calendar.ics/route.ts": 1,
     "app/api/portal/[contactId]/modules/route.ts": 1,
@@ -1493,7 +1489,6 @@
     "app/api/twiml/whisper-bridge/route.ts": 2,
     "app/api/unsubscribe/route.ts": 1,
     "app/api/unsubscribe/token/route.ts": 2,
-    "app/api/vendor-costs/route.ts": 1,
     "app/api/video/engagement/route.ts": 2,
     "app/api/video/projects/[projectId]/generate/route.ts": 2,
     "app/api/video/projects/[projectId]/preview/route.ts": 1,
@@ -2247,6 +2242,7 @@
     "app/dashboard/marketing/review/review-client.tsx": 1,
     "app/dashboard/marketing/seo/citation-share-card.tsx": 1,
     "app/dashboard/marketing/seo/components/market-trends-panel.tsx": 1,
+    "app/dashboard/marketing/seo/landing-citation-card.tsx": 1,
     "app/dashboard/marketing/seo/seo-keywords-client.tsx": 1,
     "app/dashboard/marketing/studio/brand-voice/brand-voice-editor.tsx": 1,
     "app/dashboard/marketing/studio/components/ad-os/ad-os-actions.ts": 10,
@@ -4136,7 +4132,7 @@
     "lib/validations/index.ts": 8,
     "lib/vendor/assignment-access.ts": 3,
     "lib/vendor-governance/attribution.ts": 2,
-    "lib/vendor-governance/budget-eval.ts": 3,
+    "lib/vendor-governance/budget-eval.ts": 4,
     "lib/vendor-governance/budget-gate.ts": 4,
     "lib/vendor-governance/budget-visibility.ts": 2,
     "lib/vendor-governance/cost-normalizer.ts": 3,
@@ -5514,7 +5510,8 @@
       "deleteCompliancePhrase"
     ],
     "app/actions/composition-library.ts": [
-      "getCompositionLibrarySnapshot"
+      "getCompositionLibrarySnapshot",
+      "getCompositionRenderHistory"
     ],
     "app/actions/connection-health.ts": [
       "getMyConnectionHealth",
@@ -5579,6 +5576,7 @@
       "getContactById",
       "createContact",
       "updateContact",
+      "setContactDormancy",
       "archiveContact",
       "addContactNote"
     ],
@@ -6477,7 +6475,8 @@
       "createNeighborNotificationCampaign",
       "grantSellerPermission",
       "launchNeighborNotification",
-      "listNeighborCampaignsForListing"
+      "listNeighborCampaignsForListing",
+      "listNeighborRecipientsForCampaign"
     ],
     "app/actions/neighborhood-reports.ts": [
       "getNeighborhoodReport",
@@ -6829,6 +6828,7 @@
     "app/actions/predictive-listing.ts": [
       "getTopPredictiveSellers",
       "dismissPredictiveSeller",
+      "listDismissedPredictiveSellers",
       "markPredictiveAction",
       "cancelQueuedAutoTouch",
       "listQueuedAutoTouches"
@@ -7804,6 +7804,7 @@
       "getBudgetBlockedSendCount30d",
       "getPlatformVendorBudget",
       "getPlatformVendorSpendOverview",
+      "getPlatformVendorBreakdown",
       "setBrokerageBudgetWarningVisibility"
     ],
     "app/actions/vendor-contact-access.ts": [
@@ -8245,9 +8246,6 @@
       "POST"
     ],
     "app/api/auth/reset-password/route.ts": [
-      "POST"
-    ],
-    "app/api/behavior/signal/route.ts": [
       "POST"
     ],
     "app/api/billing/webhook/route.ts": [
@@ -9022,9 +9020,6 @@
     "app/api/listings/[listingId]/upload-document/route.ts": [
       "POST"
     ],
-    "app/api/listings/create/route.ts": [
-      "POST"
-    ],
     "app/api/listings/mls-check/route.ts": [
       "POST"
     ],
@@ -9055,9 +9050,6 @@
     "app/api/onboarding/brand/generate-sample/route.ts": [
       "POST"
     ],
-    "app/api/onboarding/integrations/test/route.ts": [
-      "POST"
-    ],
     "app/api/onboarding/license/route.ts": [
       "GET"
     ],
@@ -9072,9 +9064,6 @@
       "POST"
     ],
     "app/api/open-house/convert-attendee/route.ts": [
-      "POST"
-    ],
-    "app/api/open-house/request-feedback/route.ts": [
       "POST"
     ],
     "app/api/podcast/widget/route.ts": [
@@ -9181,9 +9170,6 @@
     "app/api/unsubscribe/token/route.ts": [
       "GET",
       "POST"
-    ],
-    "app/api/vendor-costs/route.ts": [
-      "GET"
     ],
     "app/api/video/engagement/route.ts": [
       "GET",
@@ -11483,6 +11469,9 @@
     ],
     "app/dashboard/marketing/seo/components/market-trends-panel.tsx": [
       "MarketTrendsPanel"
+    ],
+    "app/dashboard/marketing/seo/landing-citation-card.tsx": [
+      "LandingCitationCard"
     ],
     "app/dashboard/marketing/seo/seo-keywords-client.tsx": [
       "SeoKeywordsDashboardClient"
@@ -20379,7 +20368,8 @@
     "lib/vendor-governance/budget-eval.ts": [
       "evaluateVendorBudget",
       "vendorBudgetForTier",
-      "aggregateBrokerageSpend"
+      "aggregateBrokerageSpend",
+      "aggregateVendorBreakdown"
     ],
     "lib/vendor-governance/budget-gate.ts": [
       "checkVendorBudget",
