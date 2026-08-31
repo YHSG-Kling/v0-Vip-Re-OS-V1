@@ -100,6 +100,15 @@ interface StepExecution {
   status: string
   channel: string
   sent_at: string | null
+  /** m302 one-ledger columns — the timing/provider/output facts ported off the
+   *  dropped workflow_step_runs duplicate, rendered by the analytics tab. */
+  enrollment_id: string | null
+  provider_key: string | null
+  started_at: string | null
+  finished_at: string | null
+  duration_ms: number | null
+  step_output: unknown
+  output_variable_name: string | null
 }
 
 interface Props {
@@ -405,18 +414,52 @@ export default function SequenceBuilderClient({
     const piData = Object.entries(statusCounts).map(([name, value]) => ({ name, value }))
 
     const stepRows = steps.map(s => {
-      const sent      = executions.filter(e => e.step_id === s.id && e.status === "sent").length
+      const stepExecs = executions.filter(e => e.step_id === s.id)
+      const sent      = stepExecs.filter(e => e.status === "sent").length
       const openRate  = sent > 0 ? Math.round((s.open_count / sent) * 100) : 0
       const clickRate = sent > 0 ? Math.round((s.click_count / sent) * 100) : 0
       const replyRate = sent > 0 ? Math.round((s.reply_count / sent) * 100) : 0
-      return { ...s, sentForStep: sent, openRate, clickRate, replyRate }
+      // Dispatch latency, from the m302 ledger: duration_ms where recorded,
+      // else derived from the started_at → finished_at pair the executor stamps.
+      const durations = stepExecs
+        .map(e => e.duration_ms ?? (e.started_at && e.finished_at
+          ? new Date(e.finished_at).getTime() - new Date(e.started_at).getTime()
+          : null))
+        .filter((d): d is number => typeof d === "number" && d >= 0)
+      const avgDurationMs = durations.length > 0
+        ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length)
+        : null
+      // The provider that actually carried this step's sends (gate keys like
+      // compliance_gate/deconflict_gate identify refusals, not carriers).
+      const providerCounts: Record<string, number> = {}
+      for (const e of stepExecs) {
+        if (e.provider_key) providerCounts[e.provider_key] = (providerCounts[e.provider_key] ?? 0) + 1
+      }
+      const topProvider = Object.entries(providerCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
+      return { ...s, sentForStep: sent, openRate, clickRate, replyRate, avgDurationMs, topProvider }
     })
+
+    // Recent NAMED step outputs — what an output-producing step (e.g. an AI
+    // asset step) actually produced, per enrollment. Written on every dispatch
+    // since m302; unreadable anywhere until this list.
+    const recentOutputs = executions
+      .filter(e => e.output_variable_name && e.step_output != null)
+      .slice(0, 8)
+      .map(e => ({
+        key: `${e.enrollment_id ?? "?"}-${e.step_id}-${e.finished_at ?? e.sent_at ?? ""}`,
+        enrollmentId: e.enrollment_id,
+        variable: e.output_variable_name as string,
+        preview: typeof e.step_output === "string"
+          ? e.step_output.slice(0, 160)
+          : JSON.stringify(e.step_output).slice(0, 160),
+        at: e.finished_at ?? e.sent_at,
+      }))
 
     // A/B analytics
     const variantA = enrollments.filter(e => e.ab_variant === "A")
     const variantB = enrollments.filter(e => e.ab_variant === "B")
 
-    return { funnelData, piData, stepRows, variantA, variantB, totalReplied }
+    return { funnelData, piData, stepRows, recentOutputs, variantA, variantB, totalReplied }
   }, [steps, enrollments, executions, sequence])
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -608,7 +651,7 @@ export default function SequenceBuilderClient({
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
                   <tr>
-                    {["Step #", "Name", "Channel", "Sent", "Open Rate", "Click Rate", "Reply Rate"].map(h => (
+                    {["Step #", "Name", "Channel", "Provider", "Sent", "Open Rate", "Click Rate", "Reply Rate", "Avg Dispatch"].map(h => (
                       <th key={h} className="text-left px-4 py-2 text-xs font-medium text-muted-foreground">{h}</th>
                     ))}
                   </tr>
@@ -616,7 +659,7 @@ export default function SequenceBuilderClient({
                 <tbody className="divide-y divide-border">
                   {analyticsData.stepRows.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="text-center py-8 text-muted-foreground text-xs">
+                      <td colSpan={9} className="text-center py-8 text-muted-foreground text-xs">
                         No steps yet.
                       </td>
                     </tr>
@@ -631,10 +674,16 @@ export default function SequenceBuilderClient({
                             <Icon className="h-3.5 w-3.5" /> {s.channel}
                           </span>
                         </td>
+                        <td className="px-4 py-2.5 text-muted-foreground font-mono text-xs">{s.topProvider ?? "—"}</td>
                         <td className="px-4 py-2.5 text-foreground">{s.sentForStep}</td>
                         <td className="px-4 py-2.5 text-foreground">{s.openRate}%</td>
                         <td className="px-4 py-2.5 text-foreground">{s.clickRate}%</td>
                         <td className="px-4 py-2.5 text-foreground">{s.replyRate}%</td>
+                        <td className="px-4 py-2.5 text-muted-foreground">
+                          {s.avgDurationMs != null
+                            ? s.avgDurationMs < 1000 ? `${s.avgDurationMs}ms` : `${(s.avgDurationMs / 1000).toFixed(1)}s`
+                            : "—"}
+                        </td>
                       </tr>
                     )
                   })}
@@ -642,6 +691,29 @@ export default function SequenceBuilderClient({
               </table>
             </div>
           </section>
+
+          {/* Recent step outputs — the m302 ledger's step_output under its
+              output_variable_name, per enrollment. What an output-producing
+              step actually produced, visible for the first time. */}
+          {analyticsData.recentOutputs.length > 0 && (
+            <section>
+              <h2 className="text-sm font-semibold text-foreground mb-4">Recent Step Outputs</h2>
+              <div className="rounded-lg border border-border divide-y divide-border">
+                {analyticsData.recentOutputs.map(o => (
+                  <div key={o.key} className="px-4 py-2.5 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-mono font-medium text-foreground">{o.variable}</span>
+                      <span className="text-muted-foreground">
+                        {o.enrollmentId ? `enrollment ${o.enrollmentId.slice(0, 8)}` : ""}
+                        {o.at ? ` · ${new Date(o.at).toLocaleString()}` : ""}
+                      </span>
+                    </div>
+                    <p className="text-muted-foreground mt-0.5 break-all">{o.preview}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           {/* A/B Test results */}
           {sequence.is_ab_test && (

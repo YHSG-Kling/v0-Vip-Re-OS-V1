@@ -510,6 +510,108 @@ export async function logLandingSession(params: {
   }
 }
 
+/**
+ * The landing page's traffic ledger, read back per source — the READER half of
+ * `smart_landing_sessions`.
+ *
+ * logLandingSession writes every visit with its attribution (utm_source /
+ * utm_medium / utm_campaign / qr_source), and trackCtaClick / submitShowingRequest
+ * flip cta_clicked / showing_requested on the SAME row — a real in-row
+ * visit→conversion linkage. Until this action only utm_source='seller-share'
+ * was ever read (the monthly intelligence report), so the QR codes an agent
+ * prints and the campaigns they tag were attributed into rows nobody could
+ * see. This is the agent-facing answer to "which of my share channels is
+ * actually driving visits and showings for this listing".
+ *
+ * TENANCY: caller's brokerage from the SESSION, checked against the listing's
+ * own brokerage before the service client reads the (publicly-written)
+ * session rows.
+ */
+export async function getLandingSourceBreakdown(listingId: string): Promise<
+  | {
+      success: true
+      totals: { sessions: number; ctaClicks: number; showingRequests: number; avgTimeOnPageSeconds: number | null; pagesViewed: number }
+      bySource: Array<{
+        source: string
+        medium: string | null
+        campaign: string | null
+        sessions: number
+        ctaClicks: number
+        showingRequests: number
+      }>
+    }
+  | { success: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Not authenticated" }
+
+  const { data: profile, error: profileError } = await supabase
+    .from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+  if (profileError) return { success: false, error: profileError.message }
+  if (!profile?.brokerage_id) return { success: false, error: "No brokerage on this account" }
+
+  const { data: listing, error: listingError } = await supabase
+    .from("listings").select("id, brokerage_id").eq("id", listingId).maybeSingle()
+  if (listingError) return { success: false, error: listingError.message }
+  if (!listing || listing.brokerage_id !== profile.brokerage_id) {
+    return { success: false, error: "Listing not found" }
+  }
+
+  // Gate above, service client below: session rows are written by anonymous
+  // public visitors, and the listing_id pin plus the ownership check keep this
+  // read inside the caller's own listing.
+  const svc = createServiceClient()
+  const { data: sessions, error: sessionsError } = await svc
+    .from("smart_landing_sessions")
+    .select("listing_id, utm_source, utm_medium, utm_campaign, qr_source, pages_viewed, time_on_page_seconds, cta_clicked, showing_requested")
+    .eq("listing_id", listingId)
+    .limit(5000)
+  // supabase-js RESOLVES a refused read — report it, never render "no visits".
+  if (sessionsError) {
+    console.error("[getLandingSourceBreakdown] session read failed:", sessionsError.message)
+    return { success: false, error: sessionsError.message }
+  }
+
+  const rows = sessions ?? []
+  const bySourceMap = new Map<string, { source: string; medium: string | null; campaign: string | null; sessions: number; ctaClicks: number; showingRequests: number }>()
+  let ctaClicks = 0
+  let showingRequests = 0
+  let pagesViewed = 0
+  let timeSum = 0
+  let timeCount = 0
+  for (const s of rows) {
+    // QR scans carry qr_source; tagged links carry utm_*; everything else is direct.
+    const source = s.qr_source ? `QR: ${s.qr_source}` : (s.utm_source || "direct")
+    const key = `${source}|${s.utm_medium ?? ""}|${s.utm_campaign ?? ""}`
+    const entry = bySourceMap.get(key) ?? {
+      source, medium: s.utm_medium ?? null, campaign: s.utm_campaign ?? null,
+      sessions: 0, ctaClicks: 0, showingRequests: 0,
+    }
+    entry.sessions++
+    if (s.cta_clicked) { entry.ctaClicks++; ctaClicks++ }
+    if (s.showing_requested) { entry.showingRequests++; showingRequests++ }
+    pagesViewed += s.pages_viewed ?? 0
+    if (typeof s.time_on_page_seconds === "number" && s.time_on_page_seconds > 0) {
+      timeSum += s.time_on_page_seconds
+      timeCount++
+    }
+    bySourceMap.set(key, entry)
+  }
+
+  return {
+    success: true,
+    totals: {
+      sessions: rows.length,
+      ctaClicks,
+      showingRequests,
+      avgTimeOnPageSeconds: timeCount > 0 ? Math.round(timeSum / timeCount) : null,
+      pagesViewed,
+    },
+    bySource: [...bySourceMap.values()].sort((a, b) => b.sessions - a.sessions),
+  }
+}
+
 export async function trackCtaClick(listingId: string, sessionToken: string) {
   try {
     const supabase = await createClient()

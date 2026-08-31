@@ -25,6 +25,23 @@ interface UsageRow {
   alerts_run: number
   properties_matched: number
   emails_sent: number
+  /** Sum of property_alert_delivery_log.properties_checked — the denominator behind "Matched". */
+  properties_checked: number
+  /** Mean idx_response_time_ms over rows where the IDX API was actually called. */
+  avg_response_ms: number | null
+}
+
+/** A delivery-log row that recorded a provider/delivery error — the failure
+ *  half of the ledger the alert engine writes on every run. */
+interface FailureRow {
+  id: string
+  created_at: string
+  alert_id: string | null
+  contact_id: string | null
+  batch_id: string | null
+  run_triggered_by: string | null
+  channels_used: string[] | null
+  error_message: string
 }
 
 const DEFAULT_DEFAULTS = {
@@ -53,7 +70,7 @@ export default function IDXBrokerSettingsPage() {
   const [defaults, setDefaults]   = useState(DEFAULT_DEFAULTS)
   const [savingDefaults, setSavingDefaults] = useState(false)
 
-  const [usage, setUsage]         = useState<{ activeAlerts: number; todayApiCalls: number; monthSent: number; rows: UsageRow[] } | null>(null)
+  const [usage, setUsage]         = useState<{ activeAlerts: number; todayApiCalls: number; monthSent: number; rows: UsageRow[]; failures: FailureRow[] } | null>(null)
   const [loadingUsage, setLoadingUsage] = useState(false)
 
   useEffect(() => {
@@ -129,30 +146,64 @@ export default function IDXBrokerSettingsPage() {
 
     const monthSent = (monthRows ?? []).reduce((s: number, r: any) => s + (r.properties_sent ?? 0), 0)
 
-    // 7-day rows
+    // 7-day rows — the full delivery ledger the alert engine writes: how many
+    // properties each run CHECKED (the denominator behind "Matched"), how the
+    // IDX API responded (idx_response_time_ms), which channels carried the
+    // delivery, what triggered the run, and — for failures — the error plus
+    // the alert/contact/batch it belongs to. The card's own footer has always
+    // said "if you see API errors in the delivery log"; this read is what makes
+    // those errors visible anywhere.
     const sevenDaysAgo = new Date(); sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
-    const { data: logRows } = await supabase
+    const { data: logRows, error: logError } = await supabase
       .from("property_alert_delivery_log")
-      .select("created_at, properties_matched, properties_sent, idx_api_called")
+      .select("id, created_at, properties_checked, properties_matched, properties_sent, idx_api_called, idx_response_time_ms, channels_used, run_triggered_by, alert_id, contact_id, batch_id, error_message")
       .eq("brokerage_id", bid)
       .gte("created_at", sevenDaysAgo.toISOString())
       .order("created_at", { ascending: false })
+    // supabase-js RESOLVES a refused read — surface it instead of "no activity".
+    if (logError) console.error("[idx-broker] delivery log read failed:", logError.message)
 
-    const dayMap = new Map<string, UsageRow>()
+    const dayMap = new Map<string, UsageRow & { _responseTimes: number[] }>()
+    const failures: FailureRow[] = []
     for (const row of logRows ?? []) {
       const d = row.created_at.slice(0, 10)
-      const existing = dayMap.get(d) ?? { date: d, alerts_run: 0, properties_matched: 0, emails_sent: 0 }
+      const existing = dayMap.get(d) ?? {
+        date: d, alerts_run: 0, properties_matched: 0, emails_sent: 0,
+        properties_checked: 0, avg_response_ms: null, _responseTimes: [] as number[],
+      }
       existing.alerts_run++
       existing.properties_matched += row.properties_matched ?? 0
       existing.emails_sent        += row.properties_sent    ?? 0
+      existing.properties_checked += row.properties_checked ?? 0
+      if (row.idx_api_called && typeof row.idx_response_time_ms === "number") {
+        existing._responseTimes.push(row.idx_response_time_ms)
+      }
       dayMap.set(d, existing)
+      if (row.error_message) {
+        failures.push({
+          id: row.id,
+          created_at: row.created_at,
+          alert_id: row.alert_id ?? null,
+          contact_id: row.contact_id ?? null,
+          batch_id: row.batch_id ?? null,
+          run_triggered_by: row.run_triggered_by ?? null,
+          channels_used: Array.isArray(row.channels_used) ? row.channels_used : null,
+          error_message: row.error_message,
+        })
+      }
     }
 
     setUsage({
       activeAlerts:  activeAlerts ?? 0,
       todayApiCalls: todayApiCalls ?? 0,
       monthSent,
-      rows: Array.from(dayMap.values()),
+      rows: Array.from(dayMap.values()).map(({ _responseTimes, ...row }) => ({
+        ...row,
+        avg_response_ms: _responseTimes.length > 0
+          ? Math.round(_responseTimes.reduce((a, b) => a + b, 0) / _responseTimes.length)
+          : null,
+      })),
+      failures: failures.slice(0, 10),
     })
     setLoadingUsage(false)
   }
@@ -448,8 +499,10 @@ export default function IDXBrokerSettingsPage() {
                       <tr className="text-left text-xs text-muted-foreground border-b">
                         <th className="py-1.5 pr-4">Date</th>
                         <th className="py-1.5 pr-4">Alerts Run</th>
+                        <th className="py-1.5 pr-4">Checked</th>
                         <th className="py-1.5 pr-4">Matched</th>
-                        <th className="py-1.5">Emails Sent</th>
+                        <th className="py-1.5 pr-4">Emails Sent</th>
+                        <th className="py-1.5">Avg IDX Response</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -457,8 +510,10 @@ export default function IDXBrokerSettingsPage() {
                         <tr key={row.date} className="border-b last:border-0">
                           <td className="py-1.5 pr-4 font-mono text-xs">{row.date}</td>
                           <td className="py-1.5 pr-4">{row.alerts_run}</td>
+                          <td className="py-1.5 pr-4">{row.properties_checked}</td>
                           <td className="py-1.5 pr-4">{row.properties_matched}</td>
-                          <td className="py-1.5">{row.emails_sent}</td>
+                          <td className="py-1.5 pr-4">{row.emails_sent}</td>
+                          <td className="py-1.5">{row.avg_response_ms != null ? `${row.avg_response_ms}ms` : "—"}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -466,8 +521,32 @@ export default function IDXBrokerSettingsPage() {
                 )}
               </div>
 
+              {/* The delivery log's ERRORS — the rows the footer note has always
+                  pointed at. Each failure names its alert, contact and batch so
+                  a support conversation can cite the exact run. */}
+              {usage.failures.length > 0 && (
+                <div>
+                  <p className="text-sm font-medium mb-2">Recent delivery errors</p>
+                  <ul className="space-y-2">
+                    {usage.failures.map(f => (
+                      <li key={f.id} className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs">
+                        <p className="text-destructive">{f.error_message}</p>
+                        <p className="text-muted-foreground mt-0.5 font-mono">
+                          {new Date(f.created_at).toLocaleString()}
+                          {f.run_triggered_by ? ` · via ${f.run_triggered_by}` : ""}
+                          {f.channels_used?.length ? ` · channels ${f.channels_used.join(", ")}` : ""}
+                          {f.alert_id ? ` · alert ${f.alert_id.slice(0, 8)}` : ""}
+                          {f.contact_id ? ` · contact ${f.contact_id.slice(0, 8)}` : ""}
+                          {f.batch_id ? ` · batch ${f.batch_id.slice(0, 8)}` : ""}
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               <div className="rounded-md bg-muted/40 border px-3 py-2 text-xs text-muted-foreground">
-                IDX Broker rate limits vary by tier. Contact IDX Broker support if you see API errors in the delivery log.
+                IDX Broker rate limits vary by tier. Contact IDX Broker support if you see API errors above.
               </div>
             </>
           ) : null}

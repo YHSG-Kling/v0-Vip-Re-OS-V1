@@ -15,6 +15,7 @@ import {
   Loader2, Home, Sparkles,
 } from "lucide-react"
 import { pushListingToSellerPortal } from "@/app/actions/push-listing-to-seller-portal"
+import { getLandingSourceBreakdown } from "@/app/actions/listing-landing"
 import { toast } from "sonner"
 import Image from "next/image"
 
@@ -83,6 +84,10 @@ export default function ListingSharePage() {
   const [isPushing, startPushing] = useTransition()
   const [userId, setUserId] = useState<string | null>(null)
   const [marketingContent, setMarketingContent] = useState<MarketingContentRow[]>([])
+  /** smart_landing_sessions read back per source — which share channel (QR /
+   *  tagged link / direct) is actually driving visits, CTA clicks and showing
+   *  requests for THIS listing's landing page. */
+  const [traffic, setTraffic] = useState<Awaited<ReturnType<typeof getLandingSourceBreakdown>> | null>(null)
 
   useEffect(() => {
     const supabase = createClient()
@@ -143,6 +148,9 @@ export default function ListingSharePage() {
         .order("generated_at", { ascending: false })
 
       setMarketingContent((marketing as MarketingContentRow[] | null) ?? [])
+
+      // Landing traffic by source — server action (tenancy checked server-side).
+      setTraffic(await getLandingSourceBreakdown(listingId))
     }
 
     load()
@@ -255,6 +263,64 @@ export default function ListingSharePage() {
           )}
         </CardContent>
       </Card>
+
+      {/* LANDING TRAFFIC BY SOURCE — the smart_landing_sessions ledger this
+          page's own share channels write into, read back: every visit lands
+          with its qr_source / utm attribution, and CTA clicks + showing
+          requests flip on the same session row. */}
+      {traffic && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Sparkles className="h-4 w-4" />
+              Landing Page Traffic
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {!traffic.success ? (
+              <p className="text-xs text-destructive">Traffic unavailable: {traffic.error}</p>
+            ) : traffic.totals.sessions === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                No visits recorded yet — share the link or QR code above to start tracking.
+              </p>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-xs text-muted-foreground">
+                  {traffic.totals.sessions} visit{traffic.totals.sessions === 1 ? "" : "s"} ·{" "}
+                  {traffic.totals.pagesViewed} page view{traffic.totals.pagesViewed === 1 ? "" : "s"} ·{" "}
+                  {traffic.totals.ctaClicks} CTA click{traffic.totals.ctaClicks === 1 ? "" : "s"} ·{" "}
+                  {traffic.totals.showingRequests} showing request{traffic.totals.showingRequests === 1 ? "" : "s"}
+                  {traffic.totals.avgTimeOnPageSeconds != null && ` · avg ${traffic.totals.avgTimeOnPageSeconds}s on page`}
+                </p>
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-left text-muted-foreground border-b">
+                      <th className="py-1.5 pr-3 font-medium">Source</th>
+                      <th className="py-1.5 pr-3 font-medium">Medium</th>
+                      <th className="py-1.5 pr-3 font-medium">Campaign</th>
+                      <th className="py-1.5 pr-3 font-medium">Visits</th>
+                      <th className="py-1.5 pr-3 font-medium">CTA</th>
+                      <th className="py-1.5 font-medium">Showings</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {traffic.bySource.map((s) => (
+                      <tr key={`${s.source}|${s.medium ?? ""}|${s.campaign ?? ""}`} className="border-b last:border-0">
+                        <td className="py-1.5 pr-3">{s.source}</td>
+                        <td className="py-1.5 pr-3 text-muted-foreground">{s.medium ?? "—"}</td>
+                        <td className="py-1.5 pr-3 text-muted-foreground">{s.campaign ?? "—"}</td>
+                        <td className="py-1.5 pr-3">{s.sessions}</td>
+                        <td className="py-1.5 pr-3">{s.ctaClicks}</td>
+                        <td className="py-1.5">{s.showingRequests}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* QR Code */}
       <Card>

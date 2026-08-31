@@ -3568,6 +3568,68 @@ export async function logGenerationCost(params: {
 }
 
 /**
+ * The agent's recent per-artifact generation history — the READER half of the
+ * `content_generation_logs` telemetry lane.
+ *
+ * logGenerationCost writes model_used, the three token counts, cost_usd,
+ * error_message, content_id and the m386-ported prompt on every generation, but
+ * until this action nothing ever read those columns back: the only reader
+ * (getContentPerformanceMetrics) selects timing/type/success alone, so a failed
+ * generation's error, the model that produced a piece, and the audit prompt
+ * were written into rows nobody could see. This is the surface the audit trail
+ * exists for — "what did I generate, with what, at what cost, and why did the
+ * failed ones fail" — rendered on the Content OS performance panel.
+ *
+ * cost_usd here is the PER-ROW telemetry figure (same figure ai_tool_usage
+ * holds for the call when the caller passed it through), NOT the billing
+ * total — the spend card reads ai_tool_usage and that stays true.
+ */
+export async function getRecentContentGenerations(limit = 20): Promise<
+  | {
+      success: true
+      generations: Array<{
+        id: string
+        content_id: string | null
+        content_type: string | null
+        model_used: string | null
+        prompt_tokens: number | null
+        completion_tokens: number | null
+        total_tokens: number | null
+        cost_usd: number | null
+        generation_time_ms: number | null
+        success: boolean
+        error_message: string | null
+        /** First 500 chars, truncated at write time (m386). Audit display only. */
+        prompt: string | null
+        generated_at: string | null
+      }>
+    }
+  | { success: false; error: string }
+> {
+  const auth = await requireContentActor()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from("content_generation_logs")
+    .select(
+      "id, content_id, content_type, model_used, prompt_tokens, completion_tokens, total_tokens, cost_usd, generation_time_ms, success, error_message, prompt, generated_at"
+    )
+    .eq("agent_id", auth.actor.agentId)
+    .order("generated_at", { ascending: false })
+    .limit(Math.min(Math.max(limit, 1), 100))
+
+  // supabase-js RESOLVES a refused read — without this an RLS rejection would
+  // render as "no generations yet".
+  if (error) {
+    console.error("[getRecentContentGenerations] Query failed:", error)
+    return { success: false, error: error.message }
+  }
+
+  return { success: true, generations: (data ?? []) as any }
+}
+
+/**
  * Content AI spend for one calendar month, read from THE ONE LEDGER.
  *
  * ── WHY ai_tool_usage AND NOT content_generation_logs ────────────────────────

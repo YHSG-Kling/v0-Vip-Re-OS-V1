@@ -14,6 +14,7 @@ import {
   getContentPerformanceMetrics,
   getContentInsights,
   getMonthlyAICosts,
+  getRecentContentGenerations,
   trackContentPerformance,
   logGenerationCost,
 } from "@/app/actions/ai-content-generation"
@@ -42,6 +43,7 @@ export function PerformanceCostsPanel({ drafts }: { drafts: any[] }) {
   const [metrics, setMetrics] = useState<any>(null)
   const [insights, setInsights] = useState<any>(null)
   const [costs, setCosts] = useState<any>(null)
+  const [generations, setGenerations] = useState<any[]>([])
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [isPending, startTransition] = useTransition()
 
@@ -59,11 +61,12 @@ export function PerformanceCostsPanel({ drafts }: { drafts: any[] }) {
   const [completionTokens, setCompletionTokens] = useState("")
 
   const reload = useCallback(async () => {
-    const [statsRes, metricsRes, insightsRes, costsRes] = await Promise.all([
+    const [statsRes, metricsRes, insightsRes, costsRes, generationsRes] = await Promise.all([
       getContentPerformanceStats(),
       getContentPerformanceMetrics(),
       getContentInsights(),
       getMonthlyAICosts(),
+      getRecentContentGenerations(),
     ])
 
     const nextErrors: Record<string, string> = {}
@@ -75,6 +78,8 @@ export function PerformanceCostsPanel({ drafts }: { drafts: any[] }) {
     else nextErrors.insights = insightsRes.error
     if (costsRes.success) setCosts(costsRes.costs)
     else nextErrors.costs = costsRes.error
+    if (generationsRes.success) setGenerations(generationsRes.generations)
+    else nextErrors.generations = generationsRes.error
     setErrors(nextErrors)
   }, [])
 
@@ -250,6 +255,59 @@ export function PerformanceCostsPanel({ drafts }: { drafts: any[] }) {
               />
             </div>
           ) : null}
+        </CardContent>
+      </Card>
+
+      {/* ── GENERATION HISTORY — the content_generation_logs audit trail ──
+          Every row logGenerationCost writes: which model produced which piece,
+          the real token counts and per-row cost, and — for failures — the
+          error and the audit prompt (first 500 chars, truncated at write
+          time). Until this list, those columns were written and never read. */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm">Recent generations</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {errors.generations ? (
+            <p className="text-xs text-destructive">{errors.generations}</p>
+          ) : generations.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No generations logged yet.</p>
+          ) : (
+            <div className="divide-y">
+              {generations.map((g: any) => (
+                <div key={g.id} className="py-2 text-xs space-y-0.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="flex items-center gap-1.5 min-w-0">
+                      <Badge variant={g.success ? "outline" : "destructive"} className="text-[10px] shrink-0">
+                        {g.success ? "ok" : "failed"}
+                      </Badge>
+                      <span className="truncate">
+                        {g.content_type ?? "content"}
+                        {g.model_used && <span className="font-mono text-muted-foreground"> · {g.model_used}</span>}
+                        {g.content_id && <span className="text-muted-foreground"> · piece {String(g.content_id).slice(0, 8)}</span>}
+                      </span>
+                    </span>
+                    <span className="text-muted-foreground shrink-0">
+                      {g.generated_at ? new Date(g.generated_at).toLocaleString() : "—"}
+                    </span>
+                  </div>
+                  <p className="text-muted-foreground">
+                    {(g.total_tokens ?? 0).toLocaleString()} tok ({(g.prompt_tokens ?? 0).toLocaleString()} in / {(g.completion_tokens ?? 0).toLocaleString()} out)
+                    {typeof g.cost_usd === "number" && ` · $${Number(g.cost_usd).toFixed(4)}`}
+                    {g.generation_time_ms != null && ` · ${g.generation_time_ms}ms`}
+                  </p>
+                  {!g.success && g.error_message && (
+                    <p className="text-destructive">{g.error_message}</p>
+                  )}
+                  {g.prompt && (
+                    <p className="text-muted-foreground italic truncate" title={g.prompt}>
+                      &ldquo;{g.prompt}&rdquo;
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
 

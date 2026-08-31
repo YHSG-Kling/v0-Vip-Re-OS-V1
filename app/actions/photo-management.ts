@@ -591,6 +591,145 @@ export async function processVendorPhotos(params: {
 }
 
 // ============================================
+// PHOTO ENHANCEMENT HISTORY — the job ledger, read back
+// ============================================
+
+/**
+ * The enhancement/staging job trail for one listing's photos — the READER half
+ * of `photo_enhancement_jobs`.
+ *
+ * Every enhance/stage/twilight run opens a job row carrying the fact this
+ * surface exists for: `original_url` is the ONLY place the pre-enhancement
+ * photo survives once enhanceListingPhoto swaps listing_media.file_url to the
+ * enhanced JPEG, and `error_message` is the only record of why a run that
+ * spent a real image call produced nothing. Until this action nothing read any
+ * of it back — the before/after pair, the failure reasons and the audit of who
+ * ran what were written into rows no surface could show.
+ *
+ * SCOPE: jobs are joined through the listing's own listing_media photo ids and
+ * additionally pinned to the caller's brokerage, behind callerOwnsListing.
+ * Staging jobs opened without a photo id (direct-URL edits) carry no listing
+ * linkage on the job row and are out of this listing-scoped view by design.
+ *
+ * `agent_id` is agents-class (NOT users) — the runner's name is resolved via
+ * agents.user_id, never by handing an agents.id to the users table (disjoint
+ * id spaces, 23503).
+ */
+export async function getPhotoEnhancementHistory(listingId: string): Promise<{
+  success: boolean
+  error?: string
+  jobs: Array<{
+    id: string
+    photo_id: string | null
+    enhancement_type: string | null
+    status: string | null
+    original_url: string | null
+    enhanced_url: string | null
+    error_message: string | null
+    started_at: string | null
+    completed_at: string | null
+    ran_by: string | null
+  }>
+}> {
+  if (!isValidUUID(listingId)) {
+    return { success: false, error: "Invalid listing ID", jobs: [] }
+  }
+  const ctx = await callerContext()
+  if (!ctx) return { success: false, error: "Not authenticated", jobs: [] }
+  if (!(await callerOwnsListing(ctx.supabase, listingId, ctx.brokerageId))) {
+    return { success: false, error: "Listing not found", jobs: [] }
+  }
+
+  // RLS-scoped: the photo ids of THIS listing, in the caller's tenant.
+  const { data: photos, error: photosError } = await ctx.supabase
+    .from("listing_media")
+    .select("id")
+    .eq("listing_id", listingId)
+    .eq("media_type", PHOTO_MEDIA_TYPE)
+  if (photosError) {
+    console.error("[photo-management] photo id read failed:", photosError.message)
+    return { success: false, error: photosError.message, jobs: [] }
+  }
+  const photoIds = (photos ?? []).map((p) => (p as { id: string }).id)
+  if (photoIds.length === 0) return { success: true, jobs: [] }
+
+  // Gate above, service client below (the manager-registry pattern): the job
+  // rows were written by the service client, and the brokerage pin plus the
+  // listing's own photo ids keep this read inside the caller's tenant.
+  const svc = createServiceClient()
+  const { data: jobs, error: jobsError } = await svc
+    .from("photo_enhancement_jobs")
+    .select(
+      "id, photo_id, agent_id, enhancement_type, status, original_url, enhanced_url, error_message, started_at, completed_at"
+    )
+    .eq("brokerage_id", ctx.brokerageId)
+    .in("photo_id", photoIds)
+    .order("started_at", { ascending: false })
+    .limit(50)
+  // A refused read RESOLVES — report it rather than rendering an empty history.
+  if (jobsError) {
+    console.error("[photo-management] enhancement job read failed:", jobsError.message)
+    return { success: false, error: jobsError.message, jobs: [] }
+  }
+
+  const jobRows = (jobs ?? []) as Array<{
+    id: string
+    photo_id: string | null
+    agent_id: string | null
+    enhancement_type: string | null
+    status: string | null
+    original_url: string | null
+    enhanced_url: string | null
+    error_message: string | null
+    started_at: string | null
+    completed_at: string | null
+  }>
+
+  // Resolve runner names: agents.id → agents.user_id → users. Best-effort —
+  // a failed name lookup degrades to null, never hides the job row.
+  const agentIds = [...new Set(jobRows.map((j) => j.agent_id).filter((a): a is string => !!a))]
+  const namesByAgentId = new Map<string, string>()
+  if (agentIds.length > 0) {
+    const { data: agents, error: agentsError } = await svc
+      .from("agents")
+      .select("id, user_id")
+      .in("id", agentIds)
+    if (agentsError) {
+      console.error("[photo-management] agent resolve failed:", agentsError.message)
+    } else {
+      const userIds = [...new Set((agents ?? []).map((a: any) => a.user_id).filter(Boolean))]
+      const namesByUserId = new Map<string, string>()
+      if (userIds.length > 0) {
+        const { data: users, error: usersError } = await svc
+          .from("users")
+          .select("id, first_name, last_name")
+          .in("id", userIds)
+        if (usersError) {
+          console.error("[photo-management] user resolve failed:", usersError.message)
+        } else {
+          for (const u of users ?? []) {
+            const name = [u.first_name, u.last_name].filter(Boolean).join(" ").trim()
+            if (name) namesByUserId.set(u.id as string, name)
+          }
+        }
+      }
+      for (const a of agents ?? []) {
+        const name = a.user_id ? namesByUserId.get(a.user_id as string) : undefined
+        if (name) namesByAgentId.set(a.id as string, name)
+      }
+    }
+  }
+
+  return {
+    success: true,
+    jobs: jobRows.map(({ agent_id, ...j }) => ({
+      ...j,
+      ran_by: agent_id ? (namesByAgentId.get(agent_id) ?? null) : null,
+    })),
+  }
+}
+
+// ============================================
 // PHOTO QUALITY VALIDATION
 // ============================================
 

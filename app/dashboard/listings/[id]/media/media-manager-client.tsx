@@ -15,6 +15,7 @@ import {
   twilightListingPhoto,
   enhancePhoto,
   getListingPhotoSet,
+  getPhotoEnhancementHistory,
   processVendorPhotos,
   optimizePhotoOrder,
   batchEnhancePhotos,
@@ -84,31 +85,42 @@ export function MediaManagerClient({
   const [photoSetLoading, setPhotoSetLoading] = useState(true)
   const [photoStats, setPhotoStats] = useState<any>(null)
   const [photoQuality, setPhotoQuality] = useState<any>(null)
+  /** The photo_enhancement_jobs ledger for this listing — before/after URLs,
+   *  status and failure reasons. `original_url` on these rows is the only
+   *  surviving copy of a photo once enhancement swaps file_url. */
+  const [enhancementJobs, setEnhancementJobs] = useState<any[]>([])
+  const [enhancementJobsError, setEnhancementJobsError] = useState<string | null>(null)
 
   const refreshPhotoSet = async () => {
-    const [setResult, stats, quality] = await Promise.all([
+    const [setResult, stats, quality, history] = await Promise.all([
       getListingPhotoSet(listingId),
       getPhotoPerformanceStats(listingId),
       validatePhotoQuality(listingId),
+      getPhotoEnhancementHistory(listingId),
     ])
     setPhotoSet(setResult.success ? setResult.photos : [])
     setPhotoStats(stats)
     setPhotoQuality(quality)
+    setEnhancementJobs(history.success ? history.jobs : [])
+    setEnhancementJobsError(history.success ? null : (history.error ?? "Could not load enhancement history"))
     setPhotoSetLoading(false)
   }
 
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      const [setResult, stats, quality] = await Promise.all([
+      const [setResult, stats, quality, history] = await Promise.all([
         getListingPhotoSet(listingId),
         getPhotoPerformanceStats(listingId),
         validatePhotoQuality(listingId),
+        getPhotoEnhancementHistory(listingId),
       ])
       if (cancelled) return
       setPhotoSet(setResult.success ? setResult.photos : [])
       setPhotoStats(stats)
       setPhotoQuality(quality)
+      setEnhancementJobs(history.success ? history.jobs : [])
+      setEnhancementJobsError(history.success ? null : (history.error ?? "Could not load enhancement history"))
       setPhotoSetLoading(false)
     })()
     return () => { cancelled = true }
@@ -322,6 +334,52 @@ export function MediaManagerClient({
 
             {/* The rule "Optimize order" applies — savable at last (see card). */}
             <PhotoOrderingRulesCard />
+
+            {/* ENHANCEMENT HISTORY — the job ledger read back. Before/after
+                links (original_url is the only copy of the pre-enhancement
+                photo), what ran, who ran it, and why failures failed. */}
+            {(enhancementJobsError || enhancementJobs.length > 0) && (
+              <div className="mt-3 rounded border bg-muted/40 p-3 text-xs">
+                <p className="font-medium flex items-center gap-1.5">
+                  <Wand2 className="h-3.5 w-3.5 text-primary" /> Enhancement history
+                </p>
+                {enhancementJobsError ? (
+                  <p className="mt-1.5 text-destructive">{enhancementJobsError}</p>
+                ) : (
+                  <ul className="mt-1.5 space-y-1">
+                    {enhancementJobs.slice(0, 8).map((job: any) => (
+                      <li key={job.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                        <Badge
+                          variant={job.status === "failed" ? "destructive" : "outline"}
+                          className="text-[10px] px-1.5 py-0 capitalize"
+                        >
+                          {job.status ?? "unknown"}
+                        </Badge>
+                        <span className="capitalize">{(job.enhancement_type ?? "enhancement").replace(/[_,]/g, " ")}</span>
+                        {job.ran_by && <span className="text-muted-foreground">by {job.ran_by}</span>}
+                        <span className="text-muted-foreground">
+                          {job.started_at ? new Date(job.started_at).toLocaleString() : ""}
+                          {job.completed_at ? ` → ${new Date(job.completed_at).toLocaleTimeString()}` : ""}
+                        </span>
+                        {job.original_url && (
+                          <a href={job.original_url} target="_blank" rel="noreferrer" className="underline text-muted-foreground">
+                            original
+                          </a>
+                        )}
+                        {job.enhanced_url && (
+                          <a href={job.enhanced_url} target="_blank" rel="noreferrer" className="underline text-muted-foreground">
+                            enhanced
+                          </a>
+                        )}
+                        {job.status === "failed" && job.error_message && (
+                          <span className="text-destructive w-full">{job.error_message}</span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
 
             {photoQuality && photoSet.length > 0 && (
               <div className="mt-3 rounded border bg-muted/40 p-3 text-xs">

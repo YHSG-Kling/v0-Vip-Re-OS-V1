@@ -131,10 +131,16 @@ export default async function SuperadminPlatformPage() {
   // stance over the awaiting-subscriber population (leads.brokerage_id IS NULL):
   // tiered honest counts + the superadmin-only anonymized stale archival.
   const { loadParkedRetention } = await import("@/lib/lead-pipeline/parked-retention")
-  const [{ board: coverageBoard, error: coverageError }, { report: territoryRoi, error: territoryRoiError }, { report: parkedRetention, error: parkedRetentionError }] = await Promise.all([
+  // + DISTRIBUTION LEDGER — platform_lead_distributions read back: which lead
+  // Engine 1 handed to which subscriber, when, at which rotation slot, and the
+  // lead's source_family/motivation/urgency. Written on every placement; until
+  // this board nothing rendered it, so rotation fairness was unverifiable.
+  const { loadRecentPlatformDistributions } = await import("@/lib/platform/distribution-engine")
+  const [{ board: coverageBoard, error: coverageError }, { report: territoryRoi, error: territoryRoiError }, { report: parkedRetention, error: parkedRetentionError }, distributionLedger] = await Promise.all([
     loadCoverageBoard(createServiceClient() as any),
     loadTerritoryRoi(createServiceClient() as any),
     loadParkedRetention(createServiceClient() as any),
+    loadRecentPlatformDistributions(50),
   ])
 
   // PLATFORM BOOKS — the company's own accounting connection (exact owner match on
@@ -390,6 +396,59 @@ export default async function SuperadminPlatformPage() {
         retention={parkedRetention}
         retentionError={parkedRetentionError}
       />
+
+      {/* RECENT PLATFORM LEAD DISTRIBUTIONS — Engine 1's placement ledger,
+          rendered. Rotation position is the fairness proof: within one zip the
+          positions should walk the subscriber roster in order. */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Activity className="h-4 w-4 text-primary" />
+            Recent platform lead distributions
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {!distributionLedger.ok ? (
+            <p className="text-xs text-red-600">Distribution ledger unavailable: {distributionLedger.error}</p>
+          ) : distributionLedger.entries.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No platform leads have been distributed yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-muted-foreground border-b">
+                    <th className="py-1.5 pr-3 font-medium">When</th>
+                    <th className="py-1.5 pr-3 font-medium">Zip</th>
+                    <th className="py-1.5 pr-3 font-medium">To subscriber</th>
+                    <th className="py-1.5 pr-3 font-medium">Rotation</th>
+                    <th className="py-1.5 pr-3 font-medium">Source family</th>
+                    <th className="py-1.5 pr-3 font-medium">Motivation</th>
+                    <th className="py-1.5 pr-3 font-medium">Urgency</th>
+                    <th className="py-1.5 font-medium">Lead</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {distributionLedger.entries.map((d) => (
+                    <tr key={d.id} className="border-b last:border-0">
+                      <td className="py-1.5 pr-3 whitespace-nowrap">{fmtAgo(d.distributed_at)}</td>
+                      <td className="py-1.5 pr-3 font-mono">{d.zip_code ?? "—"}</td>
+                      <td className="py-1.5 pr-3">{d.brokerage_name ?? d.brokerage_id}</td>
+                      <td className="py-1.5 pr-3">#{d.rotation_position ?? "—"}</td>
+                      <td className="py-1.5 pr-3">{d.source_family ?? "—"}</td>
+                      <td className="py-1.5 pr-3">{d.motivation_type ?? "—"}</td>
+                      <td className="py-1.5 pr-3">{d.urgency_level ?? "—"}</td>
+                      <td className="py-1.5 font-mono text-muted-foreground">
+                        {d.lead_id ? d.lead_id.slice(0, 8) : "—"}
+                        {d.raw_lead_id ? ` (raw ${d.raw_lead_id.slice(0, 8)})` : ""}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Losing money / margin-at-risk alert */}
       {losing_money.length > 0 && (
