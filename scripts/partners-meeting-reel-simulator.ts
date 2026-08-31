@@ -525,8 +525,15 @@ console.log("\n[20 · ONE PERSONA EVERYWHERE — the portal wears the AGENT'S fa
 console.log("\n[21 · THE EXPRESSIVE LOOP, CLOSED — engine recorded, never guessed]")
 {
   const did = src("lib/did/index.ts")
+  // The result field is asserted through the NAMED union, not the inline
+  // spelling: the original pin — `engine?: "talks" | "expressives"` — was a §2
+  // waypoint that went red the day lane M4 finished the §6 merge onto
+  // DidEngine (the named type had no reader while the field respelled it).
+  // Assert the rule: the field rides DidEngine, and DidEngine still carries
+  // exactly the two engines the recorders below write.
   check("generateVideo RECORDS the engine on every return path (talks = V2 photo, expressives = V4)",
-    did.includes('engine?: "talks" | "expressives"')
+    did.includes("engine?: DidEngine")
+    && did.includes('DidEngine = "talks" | "expressives"')
     && (did.match(/engine: isV4Expressive \? "expressives" : "talks"/g) ?? []).length >= 3)
   check("the director render stamps provider_metadata.mode='expressive' from the RECORDED engine; the poll cron keys off the record (prefix survives only for legacy rows)",
     src("app/api/cron/director-reel-render/route.ts").includes('r.engine === "expressives" ? "expressive"')
