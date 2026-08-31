@@ -582,9 +582,11 @@ async function publishCampaign(svc: ReturnType<typeof createServiceClient>, c: C
   // newsletter_campaigns and `c` is the campaign this run just published inside
   // its own tenant, so the id IS the tenancy anchor. Adding
   // `.eq("brokerage_id", …)` would look stricter and be worse: one of the two
-  // schedulers (lib/kernel/marketing.ts:385) inserts its ledger row with NO
-  // brokerage_id, and those rows would then never close — a filter that reads
-  // as tenancy while quietly excluding half the ledger.
+  // schedulers (lib/kernel/marketing.ts scheduleNewsletterSend) historically
+  // inserted its ledger row with NO brokerage_id — that writer now carries the
+  // tenant, but the rows it wrote before the fix are permanently untenanted,
+  // and a brokerage predicate here would leave them open forever — a filter
+  // that reads as tenancy while quietly excluding half the ledger.
   const { data: closedLedger, error: ledgerError } = await svc
     .from("newsletter_scheduled_sends")
     .update({ send_status: "sent", sent_time: new Date().toISOString() })

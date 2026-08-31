@@ -58,6 +58,12 @@ export interface NewsletterGenerationParams {
   includeMarketData?: boolean
   includeListings?: boolean
   customSections?: string[]
+  /** Optional umbrella marketing_campaigns id. Passed THROUGH to the canonical
+   *  createNewsletterCampaign, which verifies it against the session brokerage
+   *  before writing — this action never touches the column itself. The AI
+   *  Newsletter dialog offers it from the campaigns already loaded on the
+   *  studio page. */
+  marketingCampaignId?: string
 }
 
 export interface NewsletterResult {
@@ -249,6 +255,9 @@ Return JSON:
       template: "ai_generated",
       content: sections,
       audienceSegment: params.audienceSegment,
+      // The umbrella link — the canonical writer verifies the id belongs to
+      // the session's brokerage before writing it (never trusted from here).
+      marketingCampaignId: params.marketingCampaignId,
     })
 
     if (!saveResult.success || !(saveResult as { newsletter?: { id: string } }).newsletter) {

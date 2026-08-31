@@ -22,6 +22,11 @@ export interface ScheduleNewsletterInput {
   htmlContent?: string
   /** Primary keyword to score keyword density against (defaults to subject). */
   primaryKeyword?: string
+  /** Optional umbrella marketing_campaigns id, from the wizard's Step 1 picker —
+   *  this action creates the newsletter_campaigns row the cron drains, so it is
+   *  a creation door for the umbrella link too. Verified below to belong to the
+   *  caller's brokerage before it is written (§4). */
+  marketingCampaignId?: string
 }
 
 export async function scheduleNewsletter(input: ScheduleNewsletterInput) {
@@ -105,6 +110,22 @@ export async function scheduleNewsletter(input: ScheduleNewsletterInput) {
     throw new Error('Your account has no agent profile yet, so the newsletter cannot be attributed to a sender. Finish agent setup first.')
   }
 
+  // THE UMBRELLA MUST BE ONE OF OURS — the id is body data even on a session
+  // client, and an unverified id would file this issue under another tenant's
+  // ROI rollup. Same gate as createNewsletterCampaign / createEmailCampaign.
+  let marketingCampaignId: string | null = null
+  if (input.marketingCampaignId) {
+    const { data: umbrella, error: umbrellaError } = await supabase
+      .from('marketing_campaigns')
+      .select('id')
+      .eq('id', input.marketingCampaignId)
+      .eq('brokerage_id', userData.brokerage_id)
+      .maybeSingle()
+    if (umbrellaError) throw new Error(`Could not verify that campaign: ${umbrellaError.message}`)
+    if (!umbrella) throw new Error('That campaign is not on your brokerage.')
+    marketingCampaignId = umbrella.id as string
+  }
+
   const { data: campaign, error: campaignError } = await supabase
     .from('newsletter_campaigns')
     .insert({
@@ -117,6 +138,7 @@ export async function scheduleNewsletter(input: ScheduleNewsletterInput) {
       approval_status: 'approved',
       status: 'scheduled',
       send_date: scheduleTime.iso!,
+      marketing_campaign_id: marketingCampaignId, // verified above, never the raw body id
     })
     .select('id')
     .single()
@@ -138,7 +160,16 @@ export async function scheduleNewsletter(input: ScheduleNewsletterInput) {
       agent_id: agentRecordId,
       subject_line: input.subjectLine,
       preview_text: input.previewText,
-      scheduled_send_time: scheduleTime.iso!,
+      // `scheduled_time` — NOT scheduled_send_time. The table carried both
+      // spellings with one writer each (§6 split): this action wrote
+      // scheduled_send_time, the kernel sibling wrote scheduled_time, and every
+      // READER — the ROI calculator's window filter
+      // (lib/campaigns/roi-calculator.ts:365) and the studio's send list
+      // (marketing-studio-client.tsx:2525) — reads scheduled_time. So rows
+      // scheduled HERE were invisible to the channel-ROI window forever.
+      // Converged onto the read column; scheduled_send_time is now a
+      // writer-less orphan for the integrator to drop.
+      scheduled_time: scheduleTime.iso!,
       send_status: 'scheduled',
       recipient_segment: input.recipientSegment,
       recipient_count: recipientCount,
@@ -289,7 +320,9 @@ export async function scheduleExistingNewsletter(input: {
       newsletter_id: campaign.id,
       agent_id: agentRecordId,
       subject_line: subjectLine,
-      scheduled_send_time: scheduleTime.iso,
+      // Same §6 convergence as scheduleNewsletter above — scheduled_time is the
+      // column the readers use; scheduled_send_time is the retired spelling.
+      scheduled_time: scheduleTime.iso,
       send_status: 'scheduled',
     })
 

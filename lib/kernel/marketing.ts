@@ -15,7 +15,10 @@
  * Column contracts (live schema — verified against Supabase):
  *   newsletter_campaigns:    campaign_name, subject_line, content, status, send_date, brokerage_id, agent_id, approval_status, open_rate, click_rate, unsubscribe_rate, brand_compliance_passed
  *   newsletter_subscribers:  email, first_name, last_name, status, brokerage_id, agent_id, contact_id
- *   newsletter_scheduled_sends: newsletter_id, scheduled_time, sent_time, recipient_count
+ *   newsletter_scheduled_sends: newsletter_id, brokerage_id, scheduled_time, sent_time, recipient_count
+ *     (scheduled_time is the surviving schedule column — scheduled_send_time is
+ *      a writer-less orphan awaiting the integrator's DROP, see §6 note at the
+ *      insert site below)
  *   blog_posts:              title, slug, excerpt, content, publish_status (NOT status), brokerage_id, agent_user_id, created_by, seo_score, featured_image_url, wordpress_post_id
  *   ai_video_projects:       title, status, script_content, video_type, agent_id, listing_id, brokerage_id, provider_status, video_url
  *   podcast_episodes:        title, description, script, status, brokerage_id, agent_id, source_video_project_id, publish_channels, published_at, audio_url
@@ -218,7 +221,7 @@ export async function loadMarketingWorkspace(
 // 2. createNewsletterCampaign
 //
 // Creates a newsletter campaign in draft status.
-// Input:  brokerageId, agentId, campaignName, subjectLine, content?
+// Input:  brokerageId, agentId, campaignName, subjectLine, content?, marketingCampaignId?
 // Output: { campaignId }
 // Tables write: newsletter_campaigns
 // Rules:  canAccessFeature('email_campaigns'); content passes applyBrandVoice
@@ -229,6 +232,12 @@ export interface CreateNewsletterCampaignInput {
   campaignName: string
   subjectLine: string
   content?: string
+  /** Optional umbrella marketing_campaigns id — same linkage createBlogDraft
+   *  below already writes onto blog_posts.marketing_campaign_id. Verified
+   *  against ctx.brokerageId before writing: the id is caller data even when
+   *  the ctx is session-derived, and an unverified id would file this tenant's
+   *  issue under another tenant's ROI rollup. */
+  marketingCampaignId?: string
 }
 
 export async function createNewsletterCampaign(
@@ -252,6 +261,23 @@ export async function createNewsletterCampaign(
   })
 
   const supabase = await createServiceClient()
+
+  // Gate first, then use the service client (§4): this runs on the service
+  // role, so the brokerage predicate below is the ONLY thing standing between
+  // this insert and a cross-tenant campaign link.
+  let marketingCampaignId: string | null = null
+  if (input.marketingCampaignId) {
+    const { data: umbrella, error: umbrellaError } = await supabase
+      .from("marketing_campaigns")
+      .select("id")
+      .eq("id", input.marketingCampaignId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+    if (umbrellaError) return { success: false, error: `Could not verify that campaign: ${umbrellaError.message}` }
+    if (!umbrella) return { success: false, error: "That campaign is not on your brokerage." }
+    marketingCampaignId = umbrella.id as string
+  }
+
   const { data, error } = await supabase
     .from("newsletter_campaigns")
     .insert({
@@ -264,6 +290,10 @@ export async function createNewsletterCampaign(
       status:         "draft",
       approval_status: "pending_review",
       brand_compliance_passed: false,
+      // The umbrella link the ROI measurer reads — verified above, never the
+      // raw input id. Same shape as createBlogDraft's
+      // blog_posts.marketing_campaign_id write later in this file.
+      marketing_campaign_id: marketingCampaignId,
       created_at:     new Date().toISOString(),
     })
     .select("id")
@@ -335,6 +365,18 @@ export async function scheduleNewsletterSend(params: {
   userId: string
   agentId?: string
 }): Promise<KernelMarketingResult<{ scheduleId: string }>> {
+  // FAIL CLOSED ON A MISSING TENANT (§4). An empty brokerageId used to slide
+  // through here: the campaign read below matched nothing (so the caller got
+  // "Campaign not found" — closed by accident), but the real defect was the
+  // INSERT further down, which wrote the ledger row with NO brokerage_id at
+  // all — an untenanted row on a tenanted table, invisible to every
+  // brokerage-scoped read of the ledger. The row now carries the same tenant
+  // the campaign was verified against, and a caller with no tenant is refused
+  // outright instead of by coincidence.
+  if (!params.brokerageId) {
+    return { success: false, error: "No brokerage in the caller's context — refusing to schedule an untenanted send." }
+  }
+
   const supabase = await createServiceClient()
 
   const { data: campaign } = await supabase
@@ -385,6 +427,20 @@ export async function scheduleNewsletterSend(params: {
       .from("newsletter_scheduled_sends")
       .insert({
         newsletter_id:   params.campaignId,
+        // The tenant the campaign read above was verified against — this insert
+        // used to carry NO brokerage_id, which is why the publish-newsletters
+        // cron's ledger-close deliberately matches on newsletter_id alone
+        // (app/api/cron/publish-newsletters/route.ts:588). New rows are
+        // tenanted; the cron's match stays id-anchored so the old untenanted
+        // rows still close.
+        brokerage_id:    params.brokerageId,
+        // `scheduled_time` is the SURVIVING spelling (§6). The table carries
+        // both scheduled_time and scheduled_send_time; every reader —
+        // lib/campaigns/roi-calculator.ts:365's window filter and the studio's
+        // send list fallback (marketing-studio-client.tsx:2525) — reads
+        // scheduled_time, and nothing reads scheduled_send_time. The sibling
+        // writer (app/actions/newsletter/schedule-newsletter.ts) converged
+        // onto this column in the same change.
         scheduled_time:  params.scheduledTime,
         recipient_count: recipientCount ?? 0,
         created_at:      new Date().toISOString(),

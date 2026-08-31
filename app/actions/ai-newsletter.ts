@@ -816,6 +816,15 @@ export async function createNewsletterCampaign(params: {
    *  produced this newsletter. The aggregator reads open/click rates back
    *  per topic and bumps its performance_score for the picker. */
   seedTopicIds?: string[]
+  /** newsletter_campaigns.marketing_campaign_id — the umbrella marketing
+   *  campaign this issue belongs to. The column is read by the campaign ROI
+   *  measurer (lib/marketing/campaign-measurer.ts:28) and by the fan-out that
+   *  embeds a finished campaign render into every asset under the same
+   *  campaign, and was written by NOBODY — no producer knew both the
+   *  newsletter and its umbrella. Optional: most newsletters are standalone
+   *  recurring issues; a campaign is a different business process that an
+   *  issue can be filed under, never a synonym for one. */
+  marketingCampaignId?: string
 }) {
   try {
     const ctx = await getAgentContext()
@@ -845,6 +854,30 @@ export async function createNewsletterCampaign(params: {
       agentsTableId = agentRow?.id ?? null
     }
 
+    // STEP 1b: THE UMBRELLA MUST BE ONE OF OURS. The FK proves a
+    // marketing_campaigns row exists; it never proves the row belongs to the
+    // caller's brokerage, and filing this tenant's newsletter under another
+    // tenant's campaign would feed their ROI rollup and pull their campaign's
+    // renders into this issue. Same gate, same wording as
+    // app/actions/email-campaigns.ts:183 where this pattern already stands.
+    let marketingCampaignId: string | null = null
+    if (params.marketingCampaignId) {
+      if (!isValidUUID(params.marketingCampaignId)) {
+        return { success: false, error: "Invalid campaign ID" }
+      }
+      const { data: umbrella, error: umbrellaError } = await supabase
+        .from("marketing_campaigns")
+        .select("id")
+        .eq("id", params.marketingCampaignId)
+        .eq("brokerage_id", sessionBrokerageId)
+        .maybeSingle()
+      if (umbrellaError) {
+        return { success: false, error: `Could not verify that campaign: ${umbrellaError.message}` }
+      }
+      if (!umbrella) return { success: false, error: "That campaign is not on your brokerage." }
+      marketingCampaignId = umbrella.id as string
+    }
+
     // STEP 2: Fix the insert payload with correct field names and values
     const { data: newsletter, error } = await supabase
       .from("newsletter_campaigns")
@@ -857,6 +890,7 @@ export async function createNewsletterCampaign(params: {
         brokerage_id: sessionBrokerageId, // session-derived
         agent_id: agentsTableId, // agents.id NOT users.id
         created_by: sessionUserId, // users.id
+        marketing_campaign_id: marketingCampaignId, // verified above, never the raw body id
       })
       .select()
       .maybeSingle()
@@ -1172,29 +1206,87 @@ export async function getNewsletterAnalytics(params: { newsletterId: string; age
       return { success: false, error: "Forbidden" }
     }
 
-    const { data: send } = await supabase
+    // THE METRICS COME FROM THE DELIVERY LEDGER, NOT THE SCHEDULE.
+    //
+    // This used to read opened_count / delivered_count / clicked_count /
+    // bounced_count / unsubscribed_count off newsletter_scheduled_sends — five
+    // columns that DO NOT EXIST on that table (verified live). Because the read
+    // was a select("*"), nothing refused: every metric came back undefined,
+    // `|| 0`-ed into a zero, and this surface reported 0% opens on every
+    // newsletter forever, invisibly.
+    //
+    // newsletter_scheduled_sends is the SCHEDULE — one row per scheduled issue,
+    // carrying the audience estimate made at schedule time. The per-recipient
+    // truth lives in `newsletter_sends` — one row per recipient, written by the
+    // publish cron and stamped opened_at/clicked_at (+ status promotion) by the
+    // SendGrid fan-out (lib/outcomes/provider-event-fanout.ts). Counted here
+    // the same way the engagement rollup counts it
+    // (lib/marketing/engagement-rollup.ts::newsletterSendRates); the five
+    // columns are NOT added to the schedule table, which would duplicate the
+    // ledger (§6).
+    const sendsBase = () =>
+      supabase
+        .from("newsletter_sends")
+        .select("id", { count: "exact", head: true })
+        .eq("campaign_id", params.newsletterId)
+        .eq("brokerage_id", sessionBrokerageId)
+
+    // Every count is destructured and a refusal ABORTS — a refused read folded
+    // into `?? 0` would render as "nobody opened it" (§3).
+    const [total, delivered, opened, clicked, bounced] = await Promise.all([
+      sendsBase(),
+      sendsBase().not("sent_at", "is", null),
+      sendsBase().not("opened_at", "is", null),
+      sendsBase().not("clicked_at", "is", null),
+      sendsBase().eq("status", "bounced"),
+    ])
+    for (const r of [total, delivered, opened, clicked, bounced]) {
+      if (r.error) return { success: false, error: `Could not read the send ledger: ${r.error.message}` }
+    }
+    const totalSends = total.count ?? 0
+    const deliveredCount = delivered.count ?? 0
+    const openedCount = opened.count ?? 0
+    const clickedCount = clicked.count ?? 0
+    const bouncedCount = bounced.count ?? 0
+
+    // The schedule row still contributes what only IT knows: the audience size
+    // estimated when the issue was scheduled. A campaign sent straight from the
+    // studio has no schedule row — that is not "not sent"; the ledger decides.
+    const { data: schedule, error: scheduleError } = await supabase
       .from("newsletter_scheduled_sends")
-      .select("*")
+      .select("recipient_count, sent_time")
       .eq("newsletter_id", params.newsletterId)
       .order("sent_time", { ascending: false })
       .limit(1)
       .maybeSingle()
+    if (scheduleError) {
+      return { success: false, error: `Could not read the schedule: ${scheduleError.message}` }
+    }
 
-    if (!send) {
+    if (totalSends === 0 && !schedule) {
       return { success: true, analytics: null, message: "Newsletter not yet sent" }
     }
 
-    // Calculate metrics
+    // Denominator: recipients the ledger actually processed, falling back to
+    // the schedule-time estimate only when no per-recipient row exists yet.
+    const recipientCount = totalSends > 0 ? totalSends : (schedule?.recipient_count ?? 0)
+
     const analytics = {
-      recipientCount: send.recipient_count,
-      delivered: send.delivered_count || 0,
-      opened: send.opened_count || 0,
-      clicked: send.clicked_count || 0,
-      bounced: send.bounced_count || 0,
-      unsubscribed: send.unsubscribed_count || 0,
-      openRate: send.recipient_count > 0 ? ((send.opened_count || 0) / send.recipient_count) * 100 : 0,
-      clickRate: send.opened_count > 0 ? ((send.clicked_count || 0) / send.opened_count) * 100 : 0,
-      bounceRate: send.recipient_count > 0 ? ((send.bounced_count || 0) / send.recipient_count) * 100 : 0,
+      recipientCount,
+      delivered: deliveredCount,
+      opened: openedCount,
+      clicked: clickedCount,
+      bounced: bouncedCount,
+      // There is NO per-campaign unsubscribe ledger in this schema —
+      // newsletter_subscribers.status flips to 'unsubscribed' globally, with no
+      // record of which issue prompted it. null, not a fabricated 0: the UI
+      // renders it as "—" rather than claiming nobody unsubscribed.
+      unsubscribed: null as number | null,
+      // Rates over DELIVERED sends, same denominator rule as the engagement
+      // rollup — dividing opens by suppressed recipients flatters the campaign.
+      openRate: deliveredCount > 0 ? (openedCount / deliveredCount) * 100 : 0,
+      clickRate: openedCount > 0 ? (clickedCount / openedCount) * 100 : 0,
+      bounceRate: recipientCount > 0 ? (bouncedCount / recipientCount) * 100 : 0,
     }
 
     return { success: true, analytics }

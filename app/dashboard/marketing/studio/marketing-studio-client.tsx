@@ -367,12 +367,16 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
     tone: "professional" | "friendly" | "educational" | "urgent"
     includeMarketData: boolean
     includeListings: boolean
+    /** Umbrella marketing_campaigns id ("" = standalone issue). Server-verified
+     *  against the session brokerage inside createNewsletterCampaign. */
+    marketingCampaignId: string
   }>({
     topic: "",
     audienceSegment: "all",
     tone: "friendly",
     includeMarketData: true,
     includeListings: true,
+    marketingCampaignId: "",
   })
   const [isGeneratingNewsletter, setIsGeneratingNewsletter] = useState(false)
   const [aiNewsletterError, setAiNewsletterError] = useState<string | null>(null)
@@ -864,6 +868,7 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
         tone: aiNewsletter.tone,
         includeMarketData: aiNewsletter.includeMarketData,
         includeListings: aiNewsletter.includeListings,
+        marketingCampaignId: aiNewsletter.marketingCampaignId || undefined,
       })
       if (!res.success) {
         // The server's refusal, verbatim — no optimistic success.
@@ -4063,6 +4068,34 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                     </SelectContent>
                   </Select>
                 </div>
+              </div>
+
+              {/* ★ THE UMBRELLA LINK ★ newsletter_campaigns.marketing_campaign_id.
+                  Read by the campaign ROI measurer and the render fan-out, and
+                  written by NOBODY until this wave — an AI-drafted issue could
+                  never be measured with its campaign. Same control the email
+                  campaign dialog above already carries; the campaigns list is
+                  already in state on this page. */}
+              <div className="space-y-1.5">
+                <Label htmlFor="ain-campaign">Part of a campaign (optional)</Label>
+                <Select
+                  value={aiNewsletter.marketingCampaignId || "none"}
+                  onValueChange={(v) =>
+                    setAiNewsletter((p) => ({ ...p, marketingCampaignId: v === "none" ? "" : v }))
+                  }
+                >
+                  <SelectTrigger id="ain-campaign">
+                    <SelectValue placeholder="Standalone newsletter" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Standalone newsletter</SelectItem>
+                    {campaigns.map((c) => (
+                      <SelectItem key={c.id} value={c.id}>
+                        {c.campaign_name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
               <div className="flex flex-wrap gap-4 text-sm">
