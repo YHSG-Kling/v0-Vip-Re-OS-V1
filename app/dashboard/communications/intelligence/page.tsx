@@ -50,6 +50,7 @@ export default async function IntelligencePage() {
     auditFlagsRes,
     agentInsightsRes,
     voiceInsightsRes,
+    voiceChartRes,
   ] = await Promise.all([
     // 1. avg health_score from conversation_insights (joined to conversations scoped by brokerage)
     service
@@ -78,10 +79,17 @@ export default async function IntelligencePage() {
       .eq("escalation_recommended", true)
       .gte("updated_at", sevenDaysAgo),
 
-    // 5. chart data — last 30 days health scores grouped by date + voice flag
+    // 5. chart data, TEXT series — last 30 days of health scores by date.
+    //    This read no longer selects `is_voice_conversation`: the ONE writer of
+    //    this table stamps it false on both of its paths (it analyzes message
+    //    threads — lib/intelligence/conversation-insights.ts:205-214, a ruling
+    //    that stands), so splitting these rows on that flag put every row in
+    //    the text bucket and rendered the chart's voice line as a PERMANENT
+    //    FABRICATED 0. The voice series now comes from the dialled-call ledger
+    //    (query 10 below), the same re-sourcing the Voice tab got (query 9).
     service
       .from("conversation_insights")
-      .select("health_score, is_voice_conversation, updated_at, conversations!inner(brokerage_id)")
+      .select("health_score, updated_at, conversations!inner(brokerage_id)")
       .eq("conversations.brokerage_id", brokerageId)
       .gte("updated_at", thirtyDaysAgo),
 
@@ -211,6 +219,28 @@ export default async function IntelligencePage() {
       .eq("brokerage_id", brokerageId)
       .order("started_at", { ascending: false })
       .limit(50),
+
+    // ── 10. chart data, VOICE series — ALSO FROM THE CALL LEDGER ────────────
+    //
+    // The chart's voice_score used to be computed from conversation_insights
+    // rows where `is_voice_conversation = true` — a filter that can never
+    // match, for the reason documented on query 5: that table's one writer is
+    // the TEXT-conversation analyser and stamps the flag false, by ruling
+    // ("conversation_insights = TEXT conversations; voice_calls/call_analyses
+    // = actual dialled calls"). So the Voice line sat at 0 on every tenant,
+    // forever — a written-but-constant column no census category could raise.
+    //
+    // A voice conversation's health reading lives on the call ledger:
+    // call_analyses.coaching_score, the 0-100 "did this conversation serve the
+    // caller" score written on every analysed call (lib/voice/call-analysis.ts)
+    // — the SAME reading the Voice tab shows per call since the query-9
+    // re-sourcing. Analysed calls only (inner embed): an unanalysed call has no
+    // quality reading, and a day with none has NO point rather than a zero.
+    service
+      .from("voice_calls")
+      .select("started_at, call_analyses!inner(coaching_score, analyzed_at)")
+      .eq("brokerage_id", brokerageId)
+      .gte("started_at", thirtyDaysAgo),
   ])
 
   // ── Contacts for the Fair-Housing Review card (lane F2 2026-08-28) ─────────
@@ -243,26 +273,53 @@ export default async function IntelligencePage() {
   const escalationsLast7Days    = escalationsRes.count ?? 0
 
   // ── Build chart data (bucket by day) ────────────────────────────────────────
+  // Two honest sources, one chart: text from conversation_insights.health_score
+  // (0-1, the thread analyser), voice from call_analyses.coaching_score (0-100,
+  // the call ledger — see query 10). Both render on the chart's 0-100 axis.
   const chartRaw = chartRawRes.data ?? []
+  const dayKeyOf = (iso: string) => {
+    const d = new Date(iso)
+    return `${d.getMonth() + 1}/${d.getDate()}`
+  }
   const dayMap = new Map<string, { text: number[]; voice: number[] }>()
-
-  for (const row of chartRaw) {
-    const d = new Date(row.updated_at)
-    const key = `${d.getMonth() + 1}/${d.getDate()}`
+  const dayBucket = (key: string) => {
     if (!dayMap.has(key)) dayMap.set(key, { text: [], voice: [] })
-    const bucket = dayMap.get(key)!
-    if (row.is_voice_conversation) bucket.voice.push(row.health_score ?? 0)
-    else bucket.text.push(row.health_score ?? 0)
+    return dayMap.get(key)!
   }
 
-  const avg = (arr: number[]) => arr.length > 0 ? Math.round((arr.reduce((a, b) => a + b, 0) / arr.length) * 100) : 0
+  for (const row of chartRaw) {
+    // health_score is 0-1 in the DB; scale to the chart's 0-100 axis here.
+    dayBucket(dayKeyOf(row.updated_at)).text.push((row.health_score ?? 0) * 100)
+  }
+
+  // §3: a refused read must not render as "no voice calls happened".
+  if (voiceChartRes.error) {
+    console.error("[intelligence] voice chart ledger read refused — the chart's Voice series will show no points:", voiceChartRes.error.message)
+  }
+  for (const call of (voiceChartRes.data ?? []) as any[]) {
+    // Inner embed comes back as an array; the newest analysis is the current
+    // reading of the call (same convention as the Voice tab mapping below).
+    const analyses = Array.isArray(call.call_analyses) ? call.call_analyses : call.call_analyses ? [call.call_analyses] : []
+    const newest = analyses
+      .slice()
+      .sort((a: any, b: any) => new Date(b.analyzed_at ?? 0).getTime() - new Date(a.analyzed_at ?? 0).getTime())[0]
+    if (typeof newest?.coaching_score === "number" && call.started_at) {
+      dayBucket(dayKeyOf(call.started_at)).voice.push(newest.coaching_score)
+    }
+  }
+
+  // A day with no readings on a series gets NULL, not 0 — recharts leaves a gap
+  // where nothing was measured. The old avg() returned 0 for an empty bucket,
+  // which is how an unfed series rendered as a flat line pinned to zero.
+  const avgOrNull = (arr: number[]) =>
+    arr.length > 0 ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null
 
   const chartData = Array.from(dayMap.entries())
     .sort(([a], [b]) => new Date(`2024/${a}`).getTime() - new Date(`2024/${b}`).getTime())
     .map(([date, { text, voice }]) => ({
       date,
-      text_score: avg(text),
-      voice_score: avg(voice),
+      text_score: avgOrNull(text),
+      voice_score: avgOrNull(voice),
     }))
 
   // ── Shape health table rows ──────────────────────────────────────────────────

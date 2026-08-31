@@ -212,6 +212,18 @@ const insightSchema = z.object({
 // (call_transcriptions.speaker_turns is written as [] —
 // app/actions/ai-voice-transcription.ts:545), so silence/interruption/quality
 // cannot be computed without inventing numbers.
+//
+// RESOLVED DOWNSTREAM (2026-08-31): nothing waits on this flag ever turning
+// true any more. The intelligence chart's voice series — the last reader that
+// filtered on is_voice_conversation, and therefore rendered a permanent 0 —
+// now reads the dialled-call ledger directly (voice_calls +
+// call_analyses.coaching_score; query 10 in
+// app/dashboard/communications/intelligence/page.tsx), the same re-sourcing
+// the Voice tab got. conversation_insights is text-only end to end, per the
+// ruling: conversation_insights = TEXT conversations; voice_calls /
+// call_analyses = actual dialled calls. The constant-false stamp below stays:
+// it is the true fact about every row this writer produces, and it keeps the
+// column from lying if a real voice writer ever does appear.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** The subset of a messages row the derivation needs, in CHRONOLOGICAL order. */

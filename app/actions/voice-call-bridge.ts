@@ -153,69 +153,22 @@ export async function initiateWhisperBridge(params: {
   }
 }
 
-// Update whisper bridge call status (webhook handler)
-// NOTE: this is invoked from the Twilio status callback endpoint, which should
-// verify the upstream Twilio signature. We additionally require an authenticated
-// session here so that direct RPC from a client cannot mutate arbitrary call
-// records. Webhook routes that need to call this server-side should use the
-// service client directly against `call_whisper_logs`.
-export async function updateWhisperBridgeStatus(params: {
-  callSid: string
-  status: string
-  duration?: number
-  outcome?: string
-}) {
-  const ctx = await getAgentContext()
-  if (!ctx.isAuthenticated || !ctx.brokerageId) {
-    return { success: false, error: "Unauthorized" }
-  }
-
-  const svc = createServiceClient()
-  try {
-    // Verify the call record belongs to this brokerage (via contact)
-    const { data: callRow } = await svc
-      .from("voice_calls")
-      .select("id, contact_id")
-      .eq("vendor_call_id", params.callSid)
-      .maybeSingle()
-    if (!callRow) {
-      return { success: false, error: "Call not found" }
-    }
-    if (callRow.contact_id) {
-      const { data: contact } = await svc
-        .from("contacts")
-        .select("brokerage_id")
-        .eq("id", callRow.contact_id)
-        .maybeSingle()
-      if (!contact || contact.brokerage_id !== ctx.brokerageId) {
-        return { success: false, error: "Forbidden" }
-      }
-    }
-
-    // voice_calls.status + outcome are enum-constrained; map provider values to the allowed sets.
-    const VALID_STATUS = ["initiated","ringing","in_progress","completed","failed","no_answer","voicemail","blocked"]
-    const VALID_OUTCOME = ["appointment_set","callback_requested","not_interested","voicemail_left","no_answer","transferred","completed","authority_blocked"]
-    const voiceUpdate: Record<string, unknown> = {
-      status: VALID_STATUS.includes(params.status) ? params.status : "in_progress",
-      duration_seconds: params.duration ?? null,
-    }
-    if (params.outcome && VALID_OUTCOME.includes(params.outcome)) voiceUpdate.outcome = params.outcome
-    const { error } = await svc
-      .from("voice_calls")
-      .update(voiceUpdate)
-      .eq("id", callRow.id)
-
-    if (error) {
-      console.error("[Whisper Bridge] Failed to update status:", error)
-      return { success: false, error: error.message }
-    }
-
-    return { success: true }
-  } catch (error: any) {
-    console.error("[Whisper Bridge] Update error:", error)
-    return { success: false, error: error.message }
-  }
-}
+// TOMBSTONE (§1.3, lane L4 2026-08-31) — `updateWhisperBridgeStatus` moved to
+// lib/voice/whisper-bridge-status.ts:updateWhisperBridgeStatus (SURVIVOR),
+// invoked from its ONLY caller, the Twilio status callback
+// (app/api/twiml/whisper-bridge/route.ts POST).
+// WHAT WAS BROKEN: the export lived here gated on getAgentContext(), but a
+// provider webhook carries no user session, so the gate refused EVERY real
+// invocation with { success: false, error: "Unauthorized" } — and the route
+// never read the resolved refusal, so voice_calls.status was never once
+// updated from the whisper bridge. A repo-wide census (stripped source) found
+// no importer besides that route, so there is no session-gated half to keep:
+// the webhook half authenticates as a WEBHOOK (verified Twilio signature →
+// service client → tenant resolved from the voice_calls row that
+// initiateWhisperBridge above keys by vendor_call_id), the same pattern the
+// route's agent_heard stamp already rides. In a "use server" file every
+// export is a public HTTP endpoint, which is why the ungated version could
+// not simply stay here.
 
 // Trigger the AI voice call for hot leads (Twilio-native lane)
 export async function triggerAiVoiceCall(params: {

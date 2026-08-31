@@ -65,7 +65,11 @@ interface IntelligenceClientProps {
     fairHousingPending: number
     escalationsLast7Days: number
   }
-  chartData: { date: string; text_score: number; voice_score: number }[]
+  // null = no readings that day on that series — the chart gaps instead of
+  // drawing a fabricated zero. voice_score is avg call_analyses.coaching_score
+  // (0-100, the dialled-call ledger); text_score is avg
+  // conversation_insights.health_score scaled to 0-100.
+  chartData: { date: string; text_score: number | null; voice_score: number | null }[]
   healthInsights: {
     id: string
     contact_name: string

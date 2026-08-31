@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import crypto from "crypto"
+import { updateWhisperBridgeStatus } from "@/lib/voice/whisper-bridge-status"
 
 /**
  * TwiML Whisper Bridge Endpoint
@@ -78,13 +79,27 @@ export async function POST(req: NextRequest) {
   const callDuration = params["CallDuration"]
 
   if (callSid && callStatus) {
-    const { updateWhisperBridgeStatus } = await import("@/app/actions/voice-call-bridge")
-    await updateWhisperBridgeStatus({
+    // ── voice_calls STATUS WRITEBACK ────────────────────────────────────────
+    //
+    // This used to call app/actions/voice-call-bridge.ts:updateWhisperBridgeStatus,
+    // a "use server" export that gated on getAgentContext() — and a provider
+    // webhook carries no user session, so that gate refused EVERY invocation
+    // with { success: false, error: "Unauthorized" }. The refusal RESOLVED
+    // (the §3 shape), the result was never read, and voice_calls.status stayed
+    // "initiated" forever on every whispered call. The write now lives at
+    // lib/voice/whisper-bridge-status.ts on this route's own authorization —
+    // the Twilio signature verified above, service client, tenant resolved
+    // from the call record — exactly the pattern the agent_heard stamp below
+    // was built around the dead gate to use.
+    const writeback = await updateWhisperBridgeStatus({
       callSid,
       status: callStatus,
       duration: callDuration ? parseInt(callDuration) : undefined,
       outcome: callStatus,
     })
+    if (!writeback.success) {
+      console.error("[whisper-bridge] status writeback refused — voice_calls keeps its last status:", writeback.error)
+    }
 
     // ── DID THE AGENT ACTUALLY HEAR THE WHISPER? ────────────────────────────
     //
@@ -101,12 +116,13 @@ export async function POST(req: NextRequest) {
     // `<Dial>`s the contact, so the briefing is heard if and only if the agent
     // leg was ANSWERED. Twilio reports that in the terminal call status.
     //
-    // WHY NOT IN `updateWhisperBridgeStatus`: that action gates on
-    // `getAgentContext()`, and a provider webhook carries no session — its own
-    // note says so and directs webhook callers to "use the service client
-    // directly against call_whisper_logs". The Twilio signature verified above
-    // is this request's authorization, and it is a stronger one than a session
-    // for a caller that is not a browser.
+    // AUTHORIZATION: the Twilio signature verified above is this request's
+    // credential — stronger than a session for a caller that is not a browser.
+    // This stamp was originally built AROUND the session-gated action this
+    // route once called for the status writeback (that gate refused every
+    // webhook invocation); both writes now ride the same
+    // signature-then-service-client lane, the status half via
+    // lib/voice/whisper-bridge-status.ts.
     const heard = agentAnsweredWhisper(callStatus, callDuration)
     if (heard !== null) {
       try {

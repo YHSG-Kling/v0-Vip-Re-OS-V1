@@ -16,8 +16,13 @@ import Link from "next/link"
 
 interface DayPoint {
   date: string        // "MM/DD"
-  text_score: number  // 0-100
-  voice_score: number // 0-100
+  // null = nothing was measured on that series that day; the line gaps rather
+  // than drawing a zero. (The voice series was a permanent fabricated 0 while
+  // it was fed from conversation_insights.is_voice_conversation — a filter the
+  // text analyser's constant-false stamp guaranteed could never match. It now
+  // reads the dialled-call ledger: avg call_analyses.coaching_score per day.)
+  text_score: number | null  // 0-100 — conversation_insights.health_score × 100
+  voice_score: number | null // 0-100 — call_analyses.coaching_score
 }
 
 interface InsightRow {
@@ -116,10 +121,13 @@ export default function HealthTab({ chartData, insights }: HealthTabProps) {
                 dot={false}
                 strokeWidth={2}
               />
+              {/* A different instrument than the text line, and labeled as such:
+                  this is the call ledger's coaching score, not a health_score
+                  sibling — conversation_insights carries no voice rows by ruling. */}
               <Line
                 type="monotone"
                 dataKey="voice_score"
-                name="Voice"
+                name="Voice (call coaching)"
                 stroke="hsl(var(--chart-2))"
                 dot={false}
                 strokeWidth={2}
