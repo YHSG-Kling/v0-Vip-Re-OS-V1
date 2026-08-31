@@ -435,17 +435,20 @@ const POLICY_OR_AUDIT_CONSUMED = new Set([
   "vendor_review_flags.flagged_by",
 
   // WHY THIS ONE. `podcast_auto_runs.iso_week` is written by the one weekly
-  // producer (lib/podcast/auto-producer.ts:94) and its READER IS THE DATABASE:
+  // producer (lib/podcast/auto-producer.ts) and its READER IS THE DATABASE:
   // the insert IS the idempotency ledger, and the producer's very next branch
   // reads the constraint's refusal by SQLSTATE — `if (error.code === "23505")
-  // return { status: "already_run" }` (auto-producer.ts:101). Verified live
-  // against hrvaqgvukzxfskkcrwbt on 2026-08-29, pg_indexes:
-  // uq_podcast_auto_runs_brokerage_week UNIQUE (brokerage_id, iso_week). A
-  // re-run of the weekly cron is caught by the index and by nothing else; an
-  // app reader would be a second, racier opinion about a question the database
-  // already answers atomically. Reporting it as a one-sided write invites
-  // deleting the column and producing the same episode every time the cron
-  // retries.
+  // return { status: "already_run" }`. Verified live against hrvaqgvukzxfskkcrwbt,
+  // re-measured 2026-08-31 after m588, pg_indexes:
+  // uq_podcast_auto_runs_brokerage_week UNIQUE (brokerage_id, iso_week)
+  // WHERE (status <> 'failed') — PARTIAL since m588, so a completed, queued or
+  // skipped run holds the week while a FAILED one releases the slot and the
+  // retry's insert succeeds (before m588 the unique was plain and a failed row
+  // blocked its week forever, every retry told "already_run"). A re-run of the
+  // weekly cron is caught by the index and by nothing else; an app reader would
+  // be a second, racier opinion about a question the database already answers
+  // atomically. Reporting it as a one-sided write invites deleting the column
+  // and producing the same episode every time the cron retries.
   "podcast_auto_runs.iso_week",
 
   // WHY THIS ONE. `ai_search_landing_citation_observations.platform` is written

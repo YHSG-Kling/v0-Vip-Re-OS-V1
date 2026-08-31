@@ -90,7 +90,21 @@ export async function runAutoPodcast(input: RunInput): Promise<RunResult> {
     return { ok: false, status: "failed", reason: "host has no agent profile in this brokerage" }
   }
 
-  // 1. Idempotency ledger.
+  // 1. Idempotency ledger. The insert IS the ledger, and the database is its
+  //    reader: uq_podcast_auto_runs_brokerage_week is a PARTIAL unique on
+  //    (brokerage_id, iso_week) WHERE status <> 'failed' (m588, verified live).
+  //    So 23505 below means a COMPLETED, QUEUED or SKIPPED run already holds
+  //    this week — while a week whose only row is status='failed' does NOT
+  //    conflict, and this insert succeeds, which is the retry working. Before
+  //    m588 the unique was plain and a failed row blocked the week forever,
+  //    every retry being told "already_run": a failure masquerading as
+  //    idempotency.
+  //    The stale failed row is deliberately LEFT AS HISTORY — the settings
+  //    card renders its error_message, and every "latest run" read orders by
+  //    created_at DESC, so the retry's row wins the top slot with the failure
+  //    visible beneath it. 'skipped' keeps the slot on purpose: a skip is a
+  //    decision about this week (host has no voice id), and retrying it each
+  //    tick would burn model spend on the same refusal.
   const ledgerIns = await svc.from("podcast_auto_runs").insert({
     brokerage_id:  input.brokerageId,
     agent_id:      hostAgentRecordId,
@@ -99,7 +113,7 @@ export async function runAutoPodcast(input: RunInput): Promise<RunResult> {
   }).select("id").maybeSingle()
   if (ledgerIns.error) {
     if ((ledgerIns.error as { code?: string }).code === "23505") {
-      return { ok: true, status: "already_run", reason: "duplicate (brokerage, iso_week)" }
+      return { ok: true, status: "already_run", reason: "a non-failed run already holds (brokerage, iso_week)" }
     }
     return { ok: false, status: "failed", reason: `ledger insert: ${ledgerIns.error.message}` }
   }

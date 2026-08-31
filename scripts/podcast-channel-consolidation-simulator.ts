@@ -14,7 +14,7 @@
  * list now includes PUBLISHED episodes (not just completed), so an episode sent
  * via "Send to Omnipresence" actually shows up.
  */
-import { readFileSync } from "node:fs"
+import { readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 
 let pass = 0, fail = 0
@@ -63,6 +63,50 @@ console.log("\n── the 'Send to Omnipresence' deep-link is honored (no more d
     client.includes("setSelectedPipeline") && client.includes("setSelectedSource"))
   check("with no pipeline yet it pre-seeds pipeline creation with the source type",
     /setNewPipeline\(\(prev\)\s*=>\s*\(\{\s*\.\.\.prev,\s*sourceType: type/.test(client))
+}
+
+console.log("\n── a FAILED weekly auto-run releases its week's slot (m588) ──")
+{
+  // THE DEFECT THIS PINS. The auto-producer's insert into podcast_auto_runs is
+  // its idempotency ledger, read back as a 23505. Until m588 the unique behind
+  // it was PLAIN on (brokerage_id, iso_week), so one status='failed' row
+  // blocked that brokerage's episode for the rest of the ISO week and every
+  // retry was told "already_run" — a failure masquerading as idempotency.
+  // The retry semantics live in the INDEX, so the assertion reads the LATEST
+  // definition of uq_podcast_auto_runs_brokerage_week across the migration
+  // ledger (not a pinned filename — §2, a later migration must be able to
+  // supersede m588 by redefining it, and this check will judge the newest).
+  const dir = join(process.cwd(), "supabase/migrations")
+  const defs: Array<{ file: string; def: string }> = []
+  for (const f of readdirSync(dir).sort()) {
+    if (!f.endsWith(".sql")) continue
+    const body = readFileSync(join(dir, f), "utf8")
+    // strip SQL comments so a header QUOTING the old plain shape (m588's does)
+    // cannot be mistaken for a definition — a tombstone is not a call site (§2)
+    const code = body.replace(/--[^\n]*/g, "")
+    const m = code.match(/CREATE\s+UNIQUE\s+INDEX\s+uq_podcast_auto_runs_brokerage_week[\s\S]*?;/gi)
+    if (m) defs.push({ file: f, def: m[m.length - 1] })
+  }
+  const latest = defs[defs.length - 1]
+  check("some migration defines uq_podcast_auto_runs_brokerage_week at all", !!latest)
+  check("…and the LATEST definition is PARTIAL: WHERE status <> 'failed'",
+    !!latest && /WHERE\s*\(?\s*status\s*<>\s*'failed'/i.test(latest.def))
+
+  // POSITIVE CONTROL (§2): the same finder over m127's plain shape must detect
+  // the defect — a checker that cannot see the plain unique proves nothing.
+  const plainSpecimen = "CREATE UNIQUE INDEX uq_podcast_auto_runs_brokerage_week ON public.podcast_auto_runs (brokerage_id, iso_week);"
+  check("CONTROL the finder goes red on the pre-m588 PLAIN unique",
+    !/WHERE\s*\(?\s*status\s*<>\s*'failed'/i.test(plainSpecimen))
+
+  // The producer's half of the contract: it reads the refusal by SQLSTATE and
+  // leaves the failed row as history for the settings card, whose "latest run"
+  // read must order by created_at so the retry's row wins the top slot.
+  const producer = src("lib/podcast/auto-producer.ts")
+  check("the producer still reads the ledger's refusal by SQLSTATE 23505",
+    producer.includes('"23505"') && producer.includes("already_run"))
+  const card = src("app/dashboard/settings/podcast-channels/page.tsx")
+  check("the run-ledger card orders by created_at DESC, so a retry's row outranks the failure it replaces",
+    /podcast_auto_runs[\s\S]*?\.order\("created_at",\s*\{\s*ascending:\s*false\s*\}\)/.test(card))
 }
 
 console.log(`\n RESULT: ${pass} passed, ${fail} failed`)
