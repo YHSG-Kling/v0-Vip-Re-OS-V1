@@ -61,8 +61,12 @@ export interface CommandCenterSession {
   id:          string
   agentKind:   string | null
   entityType:  string
+  entityId:    string
   /** Tightened string → ManagerSessionStatus (2026-08-31): the vocabulary sat unused directly
-   *  above while this field took anything. DB rows narrow through isManagerSessionStatus. */
+   *  above while this field took anything. DB rows narrow through isManagerSessionStatus.
+   *  (`entityId` above was dropped by accident in the same edit — the loader
+   *  maps it at :428 and the session row renders it; the full tsc caught what
+   *  the lane's scoped config could not, because the CLIENT is the importer.) */
   status:      ManagerSessionStatus
   createdAt:   string
   lastEventAt: string | null
