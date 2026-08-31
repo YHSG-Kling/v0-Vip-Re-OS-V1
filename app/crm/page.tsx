@@ -98,6 +98,8 @@ import {
   DollarSign,
   CheckSquare,
   Trash2,
+  ThumbsUp,
+  ThumbsDown,
 } from "lucide-react"
 import Link from "next/link"
 import { format, formatDistanceToNow } from "date-fns"
@@ -254,6 +256,42 @@ export default function CRMPage() {
   const [contactTransactions, setContactTransactions] = useState<any[]>([])
   const [contactActivityTimeline, setContactActivityTimeline] = useState<any[]>([])
   const [copilotSuggestions, setCopilotSuggestions] = useState<any[]>([])
+  // Which suggestion ids have been rated this session (id → 1 | -1), so the
+  // thumbs render as a recorded verdict instead of re-submittable buttons.
+  const [ratedSuggestions, setRatedSuggestions] = useState<Record<string, 1 | -1>>({})
+
+  /**
+   * Thumbs on a copilot suggestion → POST /api/intelligence/feedback.
+   *
+   * That route is the ONE writer of agent-side ratings into ai_feedback_log
+   * (read back by lib/intelligence/feedback-aggregator, the AI-quality page and
+   * the weekly-ai-metrics cron) and it also stamps the rating onto the
+   * smart_assistant_suggestions row itself. The learning loop had readers and a
+   * writer but no PRODUCER: nothing in the tree ever addressed the route, so
+   * every aggregate it feeds could only read zero (opposite-missing census 6b —
+   * this button is the missing caller, built rather than deleted per §1.2).
+   */
+  const rateCopilotSuggestion = useCallback(async (sug: any, rating: 1 | -1) => {
+    try {
+      const res = await fetch("/api/intelligence/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceSystem: (sug.source_system as string | null) ?? "smart_assistant",
+          sourceRecordId: sug.id,
+          sourceRecordType: "smart_assistant_suggestions",
+          rating,
+          aiOutputSnapshot: [sug.title, sug.description].filter(Boolean).join(" — "),
+        }),
+      })
+      const data = await res.json().catch(() => null)
+      if (!res.ok || !data?.ok) throw new Error(data?.error ?? "Failed to record feedback")
+      setRatedSuggestions((prev) => ({ ...prev, [sug.id]: rating }))
+      toast.success(rating === 1 ? "Marked helpful — the assistant learns from this" : "Marked not helpful — the assistant learns from this")
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to record feedback")
+    }
+  }, [])
   const [contactIntelligence, setContactIntelligence] = useState<ContactIntelligence | null>(null)
   const [unifiedLeadProfile, setUnifiedLeadProfile] = useState<any>(null)
   const [unifiedProfileLoaded, setUnifiedProfileLoaded] = useState(false)
@@ -848,7 +886,10 @@ export default function CRMPage() {
     city: "",
     state: "",
     zip_code: "",
-    contact_type: "buyer" as "buyer" | "seller" | "both" | "investor",
+    // `investor` removed from this writer's options 2026-08-31 (owner: "investor
+    // is a persona and not a contact type") — an investor is filed as a Buyer;
+    // the persona lives on contact_persona (m589).
+    contact_type: "buyer" as "buyer" | "seller" | "both",
     status: "new",
   })
   const [addFormError, setAddFormError] = useState<string | null>(null)
@@ -1201,6 +1242,12 @@ export default function CRMPage() {
                                                 "direct_mail_opt_out"
                   await supabase.from("contacts").update({ [col]: optOut }).eq("id", selectedContactId)
                   if (selectedContactId) loadContactDetail(selectedContactId)
+                }}
+                // Mark dormant / Reactivate landed — refresh the detail (status
+                // badge) and the list (its status chip) so both stay honest.
+                onStatusChanged={() => {
+                  if (selectedContactId) loadContactDetail(selectedContactId)
+                  loadContacts()
                 }}
               />
             </div>
@@ -2178,14 +2225,45 @@ export default function CRMPage() {
                         <CardContent className="space-y-2">
                           {copilotSuggestions.map((sug: any) => (
                             <div key={sug.id} className="rounded-lg border p-2.5">
-                              <p className="text-sm font-medium">
-                                {sug.title ?? sug.suggestion_type ?? "Suggestion"}
-                              </p>
-                              {sug.description && (
-                                <p className="text-xs text-muted-foreground mt-0.5">
-                                  {sug.description}
-                                </p>
-                              )}
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <p className="text-sm font-medium">
+                                    {sug.title ?? sug.suggestion_type ?? "Suggestion"}
+                                  </p>
+                                  {sug.description && (
+                                    <p className="text-xs text-muted-foreground mt-0.5">
+                                      {sug.description}
+                                    </p>
+                                  )}
+                                </div>
+                                {/* Feedback loop: POSTs /api/intelligence/feedback (ai_feedback_log
+                                    + the suggestion row's own rating) — see rateCopilotSuggestion. */}
+                                {ratedSuggestions[sug.id] ? (
+                                  <span className="shrink-0 text-xs text-muted-foreground flex items-center gap-1">
+                                    {ratedSuggestions[sug.id] === 1
+                                      ? <ThumbsUp className="h-3.5 w-3.5 text-green-600" />
+                                      : <ThumbsDown className="h-3.5 w-3.5 text-red-500" />}
+                                    Recorded
+                                  </span>
+                                ) : (
+                                  <div className="shrink-0 flex items-center gap-1">
+                                    <Button
+                                      variant="ghost" size="icon" className="h-6 w-6"
+                                      aria-label="This suggestion was helpful"
+                                      onClick={() => rateCopilotSuggestion(sug, 1)}
+                                    >
+                                      <ThumbsUp className="h-3.5 w-3.5" />
+                                    </Button>
+                                    <Button
+                                      variant="ghost" size="icon" className="h-6 w-6"
+                                      aria-label="This suggestion was not helpful"
+                                      onClick={() => rateCopilotSuggestion(sug, -1)}
+                                    >
+                                      <ThumbsDown className="h-3.5 w-3.5" />
+                                    </Button>
+                                  </div>
+                                )}
+                              </div>
                             </div>
                           ))}
                         </CardContent>
@@ -3655,7 +3733,6 @@ export default function CRMPage() {
                     <SelectItem value="buyer">Buyer</SelectItem>
                     <SelectItem value="seller">Seller</SelectItem>
                     <SelectItem value="both">Buyer &amp; Seller</SelectItem>
-                    <SelectItem value="investor">Investor</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

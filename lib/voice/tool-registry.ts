@@ -1,4 +1,5 @@
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { CONTACT_STATUSES } from "@/lib/contact-promotion/qualification"
 /**
  * Voice tool registry — single source of truth for which tools the voice
  * cockpit (ElevenLabs Conv AI + browser STT in internal-ai-assistant.tsx)
@@ -577,7 +578,12 @@ export const voiceTools: Record<string, VoiceTool> = {
     is_outbound: false,
     is_telco_initiating: false,
     is_nar_regulated: false,
-    description: "Advance a contact's pipeline status by voice — 'move Sarah to under contract'. Internal CRM state change; nothing leaves the platform.",
+    // Wording DERIVES from CONTACT_STATUSES (lib/contact-promotion/
+    // qualification.ts) so the registry cannot re-drift onto values the
+    // dispatcher's canonicalContactStatus gate refuses. The old text coached
+    // 'move Sarah to under contract' — a DEAL fact (transactions/buyer_stage),
+    // not a contacts.status member.
+    description: `Change a contact's lifecycle status by voice — 'mark Sarah inactive'. Valid values are the canonical contacts.status vocabulary (${CONTACT_STATUSES.join(", ")}); the dispatcher refuses anything else. Internal CRM state change; nothing leaves the platform.`,
   },
   stage_newsletter_draft: {
     name: "stage_newsletter_draft",

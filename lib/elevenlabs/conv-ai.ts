@@ -26,6 +26,7 @@
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { CONTACT_STATUSES } from "@/lib/contact-promotion/qualification"
 
 const ELEVENLABS_API_BASE = "https://api.elevenlabs.io"
 
@@ -539,13 +540,19 @@ function buildToolsConfig() {
     {
       type: "webhook",
       name: "update_contact_status",
-      description: "Change a contact's status field (e.g., 'active', 'cold', 'closed', 'unsubscribed'). Confirm with the user before invoking.",
+      // The examples DERIVE from the canonical vocabulary (CONTACT_STATUSES,
+      // lib/contact-promotion/qualification.ts) so this advertisement cannot
+      // drift from what the server accepts. It used to offer 'cold', 'closed'
+      // and 'unsubscribed' — values canonicalContactStatus refuses and the
+      // m587 CHECK cannot store, so the model was being coached to compose
+      // calls that could only fail (or worse, silently no-op pre-gate).
+      description: `Change a contact's lifecycle status. The only valid values are: ${CONTACT_STATUSES.map((s) => `'${s}'`).join(", ")} — the server refuses anything else. Confirm with the user before invoking.`,
       url: webhookUrl,
       method: "POST",
       auth,
       parameters: {
         contact_id: { type: "string", description: "Contact UUID" },
-        status: { type: "string", description: "New status value" },
+        status: { type: "string", description: `New status — one of: ${CONTACT_STATUSES.join(", ")}` },
       },
       required: ["contact_id", "status"],
     },

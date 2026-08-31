@@ -23,6 +23,7 @@ import { createClient } from '@/lib/supabase/client'
 import { isSupabaseConfigured } from '@/services/supabase'
 import { toCanonicalRoleOrDefault } from '@/lib/security'
 import type { UserContext, UserRole } from '@/lib/security'
+import { resolvePlatformRoleIdentity } from '@/lib/platform/platform-staff-roster'
 import type { User } from '@/types'
 
 export interface AuthState {
@@ -85,8 +86,12 @@ export function useAuth(): AuthState {
       // Use maybeSingle() so a missing `users` row returns null (no PGRST116 throw).
       // Source priority: users.user_type > role_assignments.role > agents row > auth metadata > 'agent'
       const [{ data: userData }, { data: rolesData }] = await Promise.all([
+        // platform_role: the ONLY column that identifies platform staff on the
+        // live database (CLAUDE.md §4 — user_type='superadmin' has no live row).
+        // Without it the client could never tell staff from the tenant seat
+        // they were created as; L3's upstream flag, wave 18-19.
         client.from('users')
-          .select('id, first_name, last_name, brokerage_id, user_type, team_id')
+          .select('id, first_name, last_name, brokerage_id, user_type, platform_role, team_id')
           .eq('id', authUser.id)
           .maybeSingle(),
         client.from('user_role_assignments')
@@ -143,6 +148,17 @@ export function useAuth(): AuthState {
       )
       const resolvedRoles = Array.from(new Set([canonicalRole, ...grantRoles]))
 
+      // Platform staff identity — ADDITIVE, beside roles, never inside them.
+      // Same resolver as the server gates (lib/auth/platform-guard.ts →
+      // resolvePlatformRoleIdentity), so client and server can never disagree
+      // about who is staff. Deliberately NOT folded into resolvedRoles: role
+      // resolution (and therefore sidebar/palette) is unchanged — the live
+      // superadmin holds user_type='admin' and keeps the admin workspace.
+      const platformRole = resolvePlatformRoleIdentity(
+        (userData as { user_type?: string | null } | null)?.user_type ?? null,
+        (userData as { platform_role?: string | null } | null)?.platform_role ?? null,
+      )
+
       const ctx: UserContext = {
         id: authUser.id,
         email: authUser.email ?? '',
@@ -153,6 +169,7 @@ export function useAuth(): AuthState {
         teamId: rolesData?.[0]?.team_id ?? userData?.team_id,
         agentId: rolesData?.[0]?.agent_id ?? agentFallback?.id ?? undefined,
         vendorId: rolesData?.[0]?.vendor_id ?? undefined,
+        platformRole,
       }
 
       const domainUser: User = {

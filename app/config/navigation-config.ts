@@ -104,6 +104,16 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'listings', label: 'My Listings', href: '/dashboard/listings', icon: 'Home' },
       { id: 'listing-health', label: 'Listing Health', href: '/dashboard/listings/health', icon: 'ShieldCheck' },
       { id: 'open-houses', label: 'Open Houses', href: '/dashboard/open-houses', icon: 'CalendarDays' },
+      // Calendar OS: unified working-day schedule (showings, tours, transaction
+      // milestones, open houses — CalendarShell with per-domain role filters).
+      // Was the last deliberate nav orphan from L3's sweep: the page existed,
+      // three palette "Today's …" entries deep-linked it, and NO role's nav
+      // carried it — so the role-filtered palette correctly hid all three
+      // (same fail-closed collision as Content OS, commit 0e932214). The nav
+      // entry is the fix; the palette inherits it, zero palette-local change.
+      // Working-day roles only (agent / broker / team_lead — the page anchors
+      // on the caller's agents row and redirects to onboarding without one).
+      { id: 'calendar', label: 'Calendar', href: '/dashboard/calendar', icon: 'Calendar' },
       { id: 'showing-prep', label: 'Showing Prep', href: '/dashboard/showings/prep', icon: 'Sparkles' },
       { id: 'transactions', label: 'Transactions', href: '/dashboard/transactions', icon: 'FileText' },
       // Orphan-route sweep (lane G): the STAGE BOARD (TransactionPipelineView —
@@ -365,6 +375,10 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'lead-funnel', label: 'Lead Funnel', href: '/dashboard/admin/lead-intake', icon: 'Filter' },
       { id: 'acquisition', label: 'Lead Acquisition', href: '/dashboard/acquisition', icon: 'Zap' },
       { id: 'analytics', label: 'Analytics', href: '/analytics', icon: 'BarChart3' },
+      // Calendar OS — working-day surface (see the agent block's entry for the
+      // orphan history). A broker runs a day too; the page anchors on their
+      // agents row and self-gates (redirects to onboarding without one).
+      { id: 'calendar', label: 'Calendar', href: '/dashboard/calendar', icon: 'Calendar' },
       { id: 'transactions', label: 'All Transactions', href: '/dashboard/transactions', icon: 'FileText' },
       { id: 'documents', label: 'Document Center', href: '/dashboard/documents', icon: 'FolderOpen' },
       { id: 'overdue', label: 'Overdue', href: '/dashboard/overdue', icon: 'AlertCircle' },
@@ -1085,6 +1099,9 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       // scopeId=teams.team_id, with the brokerage profile shown as the parent).
       // Its gate demands a team_id, so this sidebar is the only one it belongs in.
       { id: 'team-ai-identity', label: 'Team AI Identity', href: '/dashboard/team/ai-identity', icon: 'Bot' },
+      // Calendar OS — working-day surface (see the agent block's entry for the
+      // orphan history). Team leads produce as agents; same self-gating page.
+      { id: 'calendar', label: 'Calendar', href: '/dashboard/calendar', icon: 'Calendar' },
       { id: 'team-heatmap', label: 'Team Heatmap', href: '/dashboard/team-heatmap', icon: 'Map' },
       { id: 'leaderboard', label: 'Leaderboard', href: '/dashboard/motivation', icon: 'Award' },
       { id: 'approvals', label: 'Approvals', href: '/approvals', icon: 'CheckSquare' },

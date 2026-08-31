@@ -126,9 +126,10 @@ export const PALETTE_ITEMS: readonly PaletteItem[] = [
 
   // ── Today — segmented dashboards / queues ──────────────────────────────────
   { label: "Today's gameplan", href: "/dashboard/briefing", icon: "Sparkles", group: "Today" },
-  // NOTE: /dashboard/calendar has a page but is linked from NO role's
-  // navigation, so the three calendar entries are visible to nobody until a
-  // nav entry exists (fail closed — same rule as Content OS above).
+  // /dashboard/calendar got its nav home 2026-08-31 (agent / broker /
+  // team_lead sidebars in navigation-config.ts — the working-day roles), so
+  // these three entries are now visible to exactly those roles via the same
+  // nav-inheritance that fixed Content OS. Zero palette-local role logic.
   { label: "Today's showings", href: "/dashboard/calendar?filter=showings&day=today", icon: "Calendar", group: "Today" },
   { label: "Today's appointments", href: "/dashboard/calendar?day=today", icon: "CalendarDays", group: "Today" },
   { label: "Today's tours", href: "/dashboard/calendar?filter=tours&day=today", icon: "MapPin", group: "Today" },

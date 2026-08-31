@@ -328,6 +328,22 @@ export interface UserContext {
   teamId?: string
   agentId?: string
   vendorId?: string
+  /**
+   * The caller's EFFECTIVE platform staff role, or null for tenant users —
+   * resolved by lib/platform/platform-staff-roster.ts:resolvePlatformRoleIdentity
+   * from users.platform_role (+ the legacy user_type='superadmin' marker, which
+   * no live row carries; CLAUDE.md §4: platform staff live in platform_role).
+   *
+   * ADDITIVE, deliberately: this does NOT participate in `roles` or in
+   * navigation/role resolution — the live superadmin's users row is
+   * (user_type='admin', platform_role='superadmin'), and their workspace nav
+   * comes from the 'admin' seat exactly as before. Client code that needs
+   * "is this person platform staff?" reads THIS field instead of hunting for a
+   * 'superadmin' string in `roles`, which can never appear there for any live
+   * account. Optional so demo/fallback contexts stay valid; absent means
+   * "not platform staff" (fail closed).
+   */
+  platformRole?: import('@/lib/platform/platform-staff-roster').PlatformStaffRole | null
 }
 
 // Permission groups (functional areas)

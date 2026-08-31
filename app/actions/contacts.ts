@@ -69,6 +69,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
+import type { ContactStatus } from "@/lib/contact-promotion/qualification"
 // ★ ACT-AS WRITE SEAM ★ — every WRITE below gates through resolveWriteContext():
 // it re-validates any impersonation grant at call time, REFUSES 'read_only'
 // grants (the kernel's service-client writes would otherwise let a read-only
@@ -363,6 +364,70 @@ export async function updateContact(contactId: string, updates: Partial<{
     if (!result.success) {
       return { success: false, error: result.error }
     }
+
+    return { success: true, contact: result.contact }
+  } catch (error: any) {
+    return { success: false, error: error.message }
+  }
+}
+
+// ─── setContactDormancy ───────────────────────────────────────────────────────
+
+/**
+ * THE dedicated 'inactive' setter — and its counterpart.
+ *
+ * 'inactive' (dormancy: automation stops, contact stays visible) had READERS —
+ * lib/ai-isa/reengagement-policy.ts NON_ENGAGEABLE_CONTACT_STATUSES,
+ * lib/lead-pipeline/reactivation-enroller.ts, stale-preapproval-reengage-runner —
+ * but NO dedicated writer: the only way to park a contact was the free-form
+ * status field on the edit dialog. Per the orphan doctrine (§1.2) the missing
+ * half is BUILT: one verb pair, spelled from the canonical vocabulary.
+ *
+ * The two literals below are pinned to the vocabulary with `satisfies
+ * ContactStatus` (lib/contact-promotion/qualification.ts CONTACT_STATUSES), so
+ * if either member ever leaves the vocabulary this file stops compiling instead
+ * of silently writing a retired spelling (§6).
+ *
+ * Tenancy comes from the SESSION via resolveWriteContext (§4) — never from the
+ * body. The write delegates to lib/kernel/crm.ts:updateContactRecord, which
+ * puts brokerage_id (and, for agents, agent_id) on the UPDATE predicate, then
+ * `.select().maybeSingle()`s the result — so a wrong-tenant, not-owned or
+ * already-deleted row is a COUNTED zero-row update reported as failure, never a
+ * silent success (§3: a DELETE/UPDATE that matches nothing also resolves).
+ */
+export async function setContactDormancy(contactId: string, dormant: boolean) {
+  const DORMANT_STATUS = "inactive" satisfies ContactStatus
+  const REACTIVATED_STATUS = "active" satisfies ContactStatus
+  try {
+    // ACT-AS WRITE SEAM — see createContact.
+    const ctx = await resolveWriteContext()
+    if (!ctx.ok) return { success: false, error: ctx.error }
+    const { agentId, brokerageId, userType } = ctx
+
+    if (!brokerageId) {
+      return { success: false, error: "No brokerage context" }
+    }
+    if (!contactId) {
+      return { success: false, error: "contactId required" }
+    }
+
+    const result = await updateContactRecord({
+      contactId,
+      brokerageId,
+      agentId: agentId ?? undefined,
+      userType: userType ?? undefined,
+      // lifecycle_events.actor_user_id — the REAL actor (staff when acting-as).
+      actorUserId: ctx.actorUserId,
+      updates: { status: dormant ? DORMANT_STATUS : REACTIVATED_STATUS },
+    })
+
+    if (!result.success) {
+      return { success: false, error: result.error }
+    }
+
+    // The dormant contact stays on CRM lists (dormancy is visible, unlike
+    // archive) — revalidate so the status badge is honest without a reload.
+    revalidatePath("/crm")
 
     return { success: true, contact: result.contact }
   } catch (error: any) {

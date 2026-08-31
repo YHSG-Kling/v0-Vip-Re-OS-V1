@@ -1331,9 +1331,19 @@ export async function aiAnalyzeNewsletterPerformance(params: { agentId?: string 
     // a missing agents row.
     let sends: Array<Record<string, unknown>> | null = null
     if (sessionAgentId) {
+      // LITERAL columns, not "*" (both sides of the embed). The census cannot
+      // see through a star, and this exact table is where the sibling defect
+      // lived: getNewsletterAnalytics read five phantom columns
+      // (opened_count/delivered_count/…) through a select("*") that refused
+      // nothing — every metric came back undefined and rendered as 0% forever
+      // (see the tombstone at the METRICS block above, ~:1209). Every column
+      // named here exists live per scripts/schema-snapshot.ts
+      // (newsletter_scheduled_sends :443, newsletter_campaigns :441).
       const { data, error: sendsErr } = await supabase
         .from("newsletter_scheduled_sends")
-        .select("*, newsletter:newsletter_campaigns!inner(*)")
+        .select(
+          "subject_line, preview_text, sent_time, scheduled_time, send_status, recipient_segment, recipient_count, ab_test_variant, newsletter:newsletter_campaigns!inner(campaign_name, subject_line, open_rate, click_rate, unsubscribe_rate, status, send_date)"
+        )
         .eq("newsletter.agent_id", sessionAgentId)
         .eq("newsletter.brokerage_id", sessionBrokerageId)
         .order("sent_time", { ascending: false })
