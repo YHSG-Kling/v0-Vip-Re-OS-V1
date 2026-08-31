@@ -71,6 +71,8 @@ const MARKETING_GROUP: NavItem = {
   icon: 'Palette',
   children: [
     { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
+    // Content OS: the AI content workspace (drafts, SEO, experiments, plan). Was a nav orphan — the page existed, the palette deep-linked it (guarded by test:ai-content-wiring), and NO role's navigation carried it, so the role-filtered palette correctly hid it from everyone. The nav entry is the fix; the palette inherits it.
+    { id: 'content-os', label: 'Content OS', href: '/dashboard/content' },
     { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },
     { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
     { id: 'newsletter-templates', label: 'Newsletter Templates', href: '/newsletters' },
@@ -144,6 +146,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         icon: 'Palette',
         children: [
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
+          { id: 'content-os', label: 'Content OS', href: '/dashboard/content' },
           { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },
           { id: 'brand-voice', label: 'BrandVoice Profile', href: '/dashboard/marketing/studio/brand-voice' },
           { id: 'newsletter-templates', label: 'Newsletter Templates', href: '/newsletters' },
@@ -410,6 +413,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         icon: 'Palette',
         children: [
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
+          { id: 'content-os', label: 'Content OS', href: '/dashboard/content' },
           { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
           // Nav-parity: the QR manager was in the AGENT sidebar only, so a broker
@@ -671,6 +675,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         icon: 'Palette',
         children: [
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
+          { id: 'content-os', label: 'Content OS', href: '/dashboard/content' },
           { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
           { id: 'newsletter-templates', label: 'Newsletter Templates', href: '/newsletters' },
@@ -1108,6 +1113,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         icon: 'Palette',
         children: [
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
+          { id: 'content-os', label: 'Content OS', href: '/dashboard/content' },
           // Nav-parity: these marketing pages exist and are open to the team tier,
           // but were unreachable from the team_lead sidebar.
           { id: 'marketing-review', label: 'Review Queue', href: '/dashboard/marketing/review' },

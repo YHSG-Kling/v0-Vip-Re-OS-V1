@@ -63,10 +63,11 @@ export const PALETTE_ITEMS: readonly PaletteItem[] = [
   { label: "Goals Dashboard", href: "/dashboard/goals", icon: "Activity", group: "Navigation" },
   { label: "Education Library", href: "/dashboard/education", icon: "GraduationCap", group: "Navigation" },
   { label: "Referrals & Reviews", href: "/lifetime-customers?tab=referrals", icon: "Users", group: "Navigation" },
-  // NOTE: /dashboard/content (Content OS) is linked from NO role's navigation,
-  // so its entries below are currently visible to nobody (fail closed). If the
-  // owner wants Content OS in the palette, the fix is a nav entry for it —
-  // never a palette-local role list.
+  // /dashboard/content (Content OS) is carried by the content groups of agent,
+  // broker, admin, team_lead and the shared MARKETING_GROUP (tc + compliance
+  // officer) since wave 19 — it had been a nav orphan, and the role filter
+  // correctly hid it from everyone until test:ai-content-wiring made the
+  // collision visible. Its sub-pages (approvals) ride the prefix rule.
   { label: "Content OS", href: "/dashboard/content", icon: "Sparkles", group: "Navigation" },
   { label: "Content Approvals", href: "/dashboard/content/approvals", icon: "Shield", group: "Admin" },
   { label: "Data Health", href: "/dashboard/admin/data-health", icon: "Activity", group: "Admin" },

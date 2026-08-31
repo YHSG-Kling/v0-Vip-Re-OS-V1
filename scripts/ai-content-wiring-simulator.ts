@@ -204,7 +204,12 @@ const PLAN_PANEL = "app/dashboard/content/panels/content-plan-panel.tsx"
 const APPROVAL_PANEL = "app/dashboard/content/approvals/approval-tools-panel.tsx"
 const APPROVALS_PAGE = "app/dashboard/content/approvals/page.tsx"
 const CONTENT_PAGE = "app/dashboard/content/page.tsx"
-const PALETTE = "app/components/command-palette.tsx"
+// The roster moved when the palette became role-filtered (wave 19): entries now
+// live in the pure module the palette AND its role simulator both read. The
+// component file holds no hrefs any more, so pointing there would make every
+// wire.nav assertion fail against the wrong file — or worse, pass vacuously if
+// a stray string ever landed in it.
+const PALETTE = "app/components/command-palette-items.ts"
 
 const UI_FILES = [OS_CLIENT, SEO_PANEL, AB_PANEL, PERF_PANEL, PLAN_PANEL, APPROVAL_PANEL]
 
