@@ -17,7 +17,7 @@ import {
   getBudgetBlockedSendCount,
 } from "@/lib/vendor-governance/budget-gate"
 import { redactBudgetForActor, type BudgetView } from "@/lib/vendor-governance/budget-visibility"
-import { aggregateBrokerageSpend, type BrokerageSpendRow } from "@/lib/vendor-governance/budget-eval"
+import { aggregateBrokerageSpend, aggregateVendorBreakdown, type BrokerageSpendRow, type VendorBreakdownRow } from "@/lib/vendor-governance/budget-eval"
 
 /**
  * `platform_role` IS SELECTED HERE, AND ITS ABSENCE WAS THE BUG.
@@ -124,6 +124,32 @@ export async function getPlatformVendorSpendOverview(): Promise<
   if (usageError) return { ok: false, error: usageError.message }
   if (brokeragesError) return { ok: false, error: brokeragesError.message }
   return { ok: true, rows: aggregateBrokerageSpend(usage ?? [], brokerages ?? []) }
+}
+
+/**
+ * Month-to-date spend per (vendor, usage_type) — the reader usage_type,
+ * units_used, cost_per_unit and agent_id never had (census 1a; the ledger's
+ * writer at lib/vendor-governance/usage-logger.ts:106 has always stamped all
+ * four, and the only thing that ever LOOKED like a reader was a dead route's
+ * select("*")). Same platform-staff gate and same fail-closed error handling
+ * as the overview above: this is the cost ledger, and a refusal rendered as
+ * "no spend" is a false all-clear on an invoice-feeding surface (§3/§5).
+ */
+export async function getPlatformVendorBreakdown(): Promise<
+  { ok: true; rows: VendorBreakdownRow[] } | { ok: false; error: string }
+> {
+  const actor = await resolveActor()
+  if (!actor) return { ok: false, error: "Unauthenticated" }
+  if (!isPlatformStaffIdentity(actor.userType, actor.platformRole)) return { ok: false, error: "Platform staff access required" }
+
+  const svc = createServiceClient()
+  const startOfMonth = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1)).toISOString()
+  const { data, error } = await svc
+    .from("vendor_usage_tracking")
+    .select("vendor_name, usage_type, units_used, cost_per_unit, total_cost, agent_id")
+    .gte("created_at", startOfMonth)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true, rows: aggregateVendorBreakdown(data ?? []) }
 }
 
 /**

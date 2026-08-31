@@ -122,3 +122,69 @@ export function aggregateBrokerageSpend(
     })
     .sort((a, b) => b.percent - a.percent)
 }
+
+export interface VendorBreakdownRow {
+  vendorName: string
+  usageType: string
+  units: number
+  totalCost: number
+  /** Weighted average: totalCost / units — never an average of per-row averages. */
+  avgCostPerUnit: number
+  /** Distinct agents the spend was attributed to. agent_id is an agents.id
+   *  (FK, disjoint from users.id — §3); COUNTING avoids the cross-class name
+   *  join entirely, which is all this surface needs. */
+  attributedAgents: number
+  /** Rows with NO agent attribution — spend nobody's book carries. */
+  unattributedRows: number
+}
+
+/**
+ * Pure: month-to-date usage rows → per-(vendor, usage_type) breakdown.
+ *
+ * THE READER usage_type / units_used / cost_per_unit / agent_id NEVER HAD.
+ * The usage logger has always written all four (usage-logger.ts:106) and, until
+ * the dead /api/vendor-costs route was deleted, a select("*") there was the
+ * only thing making them look read — the census's category 1a surfaced them
+ * the honest way the moment it went. This is the cost ledger (§5: a wrong
+ * number here is a wrong invoice), so the missing half is a REVIEW surface:
+ * the platform staffer challenging a month's spend needs to see WHAT was
+ * bought (usage_type), HOW MUCH of it (units), at WHAT RATE (weighted
+ * avg cost/unit — recomputed from totals, never averaged from the per-row
+ * column, so a mis-written cost_per_unit is VISIBLE against total/units
+ * rather than laundered), and WHOSE work it was attributed to.
+ */
+export function aggregateVendorBreakdown(
+  usageRows: Array<{
+    vendor_name: string | null
+    usage_type: string | null
+    units_used: number | string | null
+    cost_per_unit: number | string | null
+    total_cost: number | string | null
+    agent_id: string | null
+  }>,
+): VendorBreakdownRow[] {
+  const byKey = new Map<string, { units: number; cost: number; agents: Set<string>; unattributed: number }>()
+  for (const r of usageRows) {
+    const key = JSON.stringify([r.vendor_name ?? "unknown", r.usage_type ?? "unknown"])
+    const acc = byKey.get(key) ?? { units: 0, cost: 0, agents: new Set<string>(), unattributed: 0 }
+    acc.units += Number(r.units_used) || 0
+    acc.cost += Number(r.total_cost) || 0
+    if (r.agent_id) acc.agents.add(r.agent_id)
+    else acc.unattributed++
+    byKey.set(key, acc)
+  }
+  return [...byKey.entries()]
+    .map(([key, a]) => {
+      const [vendorName, usageType] = JSON.parse(key) as [string, string]
+      return {
+        vendorName,
+        usageType,
+        units: a.units,
+        totalCost: Math.round(a.cost * 100) / 100,
+        avgCostPerUnit: a.units > 0 ? Math.round((a.cost / a.units) * 10000) / 10000 : 0,
+        attributedAgents: a.agents.size,
+        unattributedRows: a.unattributed,
+      }
+    })
+    .sort((x, y) => y.totalCost - x.totalCost)
+}
