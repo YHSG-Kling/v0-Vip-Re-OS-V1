@@ -202,6 +202,23 @@ export function isPlatformSuperadminIdentity(
 }
 
 /**
+ * Total control, asked of an ALREADY-RESOLVED staff role — the output of
+ * resolvePlatformRoleIdentity below (e.g. userContext.platformRole on the
+ * client, which useAuth populates through that resolver). Client components
+ * hold only the resolved role, never the raw identity columns, so their
+ * spelling of the total-control test lives HERE — the one file the
+ * platform-discriminator guard exempts — instead of being re-spelled per
+ * site (§6). Safe as a bare comparison only BECAUSE the input is resolved:
+ * the resolver already refused ai_isa_system (fails closed to null) and
+ * already honoured the legacy user_type marker. Never call this with a raw
+ * users.platform_role value — that is what isPlatformSuperadminIdentity is
+ * for.
+ */
+export function isResolvedPlatformSuperadmin(role: string | null | undefined): boolean {
+  return role === "superadmin"
+}
+
+/**
  * THE ONE derivation of a caller's EFFECTIVE platform role: `platform_role` wins;
  * the legacy `user_type='superadmin'` marker still counts as superadmin.
  *

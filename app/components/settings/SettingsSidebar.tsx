@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/auth/client';
+import { isResolvedPlatformSuperadmin } from '@/lib/platform/platform-staff-roster';
 
 // personal: every tier (solo agents too); brokerage: admin/broker/superadmin only.
 const menuItems: Array<{ label: string; href: string; personal: boolean }> = [
@@ -28,12 +29,13 @@ export function SettingsSidebar() {
   const { userContext } = useAuth();
   // 'superadmin' via roles was a DEAD ARM: platform staff live in
   // users.platform_role (CLAUDE.md §4) — no live row carries the 'superadmin'
-  // user_type, so that string can never appear in roles. The platform check now
-  // prefers userContext.platformRole (populated by useAuth from the same
-  // resolver the server gates use); tenant admin/broker still pass via roles.
+  // user_type, so that string can never appear in roles. The platform check
+  // reads userContext.platformRole (populated by useAuth from the same
+  // resolver the server gates use) through the roster's ONE resolved-role
+  // spelling; tenant admin/broker still pass via roles.
   const isBrokerageRole =
     !!userContext?.roles.some((r) => ['admin', 'broker'].includes(r)) ||
-    userContext?.platformRole === 'superadmin';
+    isResolvedPlatformSuperadmin(userContext?.platformRole);
   // Developers is principal-gated SERVER-side (isTenancyPrincipal: a solo-tier
   // agent IS their own principal) — the client can't compute tier/lead
   // membership, so it must not pre-empt the server: always show the link and
