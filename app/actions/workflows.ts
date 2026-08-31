@@ -464,35 +464,19 @@ export async function sendMessage(
 // market_position: "neutral") and returned them without persisting anything.
 // Nothing merged.
 
-/**
- * Trigger CMA package generation.
- */
-export async function triggerCMAPackage(
-  propertyId: string,
-  _agentId?: string // ignored — derived from session
-): Promise<{ success: boolean; packageId?: string; error?: string }> {
-  try {
-    const supabase = await createClient()
-    const ctx = await getAgentContext()
-
-    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
-    if (!ctx.brokerageId) return { success: false, error: "No brokerage context" }
-    const brokerageId = ctx.brokerageId
-    const agentId = ctx.agentId
-
-    // Verify property/listing ownership (CMA packages target listings)
-    const own = await assertOwnership("listings", propertyId, brokerageId)
-    if (!own.ok) return { success: false, error: own.error }
-
-    // NOTE: cma_reports is the canonical CMA content table (read across the app).
-    // The old cma_packages insert here created a status:'generating' row that was
-    // never updated or read anywhere — dead write removed (keep-one sweep).
-
-    return { success: true }
-  } catch (error: any) {
-    return { success: false, error: error?.message ?? "Failed to trigger CMA" }
-  }
-}
+// TOMBSTONE (§1, 2026-08-31) — `triggerCMAPackage` deleted. SURVIVOR:
+// app/actions/ai-cma.ts:generateAICMA — the live CMA engine, wired at
+// app/components/dashboard/listings/cma-history-sheet.tsx and
+// app/dashboard/listings/[id]/cma/tabs/cma-report-tab.tsx, writing the
+// canonical cma_reports table. This function's only real effect (a
+// cma_packages status:'generating' row nothing updated or read) was already
+// removed by an earlier keep-one sweep, leaving auth checks and an
+// unconditional `{ success: true }` — a trigger that triggered nothing and
+// REPORTED SUCCESS anyway, which is the "checked and fine" shape §4 forbids.
+// Its callers went with the n8n shim (see lib/migration-status.ts); the one
+// thing keeping it off the orphan census was its own name inside the old
+// migrationStatus prose STRING, which the caller scan counted as a reference
+// until M4 de-coded that file to comments. Nothing merged.
 
 // TOMBSTONE (§1 keep-one, lane E2 2026-08-28) — `grantPortalAccess` deleted.
 // SURVIVOR: app/actions/portal-invites.ts:createPortalInviteForContact (wired

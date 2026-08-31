@@ -44,7 +44,6 @@
     "app/actions/vendor-verification.ts": 1,
     "app/actions/video/create-video-project.ts": 5,
     "app/actions/video-repurposing.ts": 3,
-    "app/actions/workflows.ts": 1,
     "app/components/command-palette-items.ts": 3,
     "app/components/portal/FitBadge.tsx": 1,
     "app/dashboard/intelligence-report/trust-receipts-card.tsx": 1,
@@ -576,7 +575,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9424,
+  "census": 9423,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -1148,7 +1147,7 @@
     "app/actions/workflow-monitoring.ts": 4,
     "app/actions/workflow-orchestrator.ts": 7,
     "app/actions/workflow-reports.ts": 1,
-    "app/actions/workflows.ts": 10,
+    "app/actions/workflows.ts": 9,
     "app/api/accounting/sync/route.ts": 1,
     "app/api/admin/agents/sessions/route.ts": 1,
     "app/api/admin/audit-events/route.ts": 1,
@@ -8113,7 +8112,6 @@
       "generateCopilotPlan",
       "startSmartDrip",
       "sendMessage",
-      "triggerCMAPackage",
       "generateScriptContent",
       "savePrivateScript",
       "retryFailedWorkflow",
