@@ -3162,7 +3162,74 @@ const QUALIFIED_EXTERNAL_ROUTES = new Map<string, string>([
   // signal and the one an exemption would have suppressed.
 
   ["/api/showings/showingtime-webhook", "ShowingTime provider callback — HMAC-SHA256 over the raw body vs SHOWINGTIME_WEBHOOK_SECRET, timing-safe, fails closed 503/401 (route.ts:59-76); no getUser() anywhere in the file, so an in-tree caller cannot exist. Outbound leg: app/actions/dispatch-showing.ts:138 (channel='showingtime')"],
+
+  // ── THE VOICE LANE'S TWO OUT-OF-PROCESS DOORS (lane M3 2026-08-31) ────────
+  // Both authenticate on RELAY_SHARED_SECRET with crypto.timingSafeEqual and
+  // FAIL CLOSED when it is unset — no session is read in either file, so an
+  // in-tree caller is impossible, not merely absent.
+  ["/api/voice/relay/plan", "ConversationRelay PLAN — the brain endpoint the out-of-process relay companion POSTs every caller utterance to. The outbound leg IS IN THE TREE but outside the runtime corpus: tools/relay-companion/server.mjs:52 fetches `${APP_URL}/api/voice/relay/plan` with the x-relay-secret header (tools/ is a deploy-elsewhere host — docs/PHONE-SYSTEM-SETUP.md:102-109 — which is exactly why 6b cannot see the caller). Auth: RELAY_SHARED_SECRET, timing-safe, fails closed 401 when unset (route.ts:23-27). Wire-shape held by scripts/voice-lane-simulator.ts:381, which asserts the companion carries the header, the path, and NO Twilio credentials"],
+  ["/api/voice/twilio/intelligence", "Twilio Conversational Intelligence transcript webhook — registered in the TWILIO CONSOLE with ?token=<RELAY_SHARED_SECRET> (runbook docs/PHONE-SYSTEM-SETUP.md:153-155 names the exact URL). Timing-safe token gate, fails closed 404-silent on unset or mismatch (route.ts:23-27). Outbound leg: app/api/voice/twilio/inbound/route.ts:17 attaches TWILIO_INTELLIGENCE_SERVICE_SID to the relay TwiML, which is what makes Twilio transcribe and then call back here"],
+
+  // ── THE INTERNAL_API_SECRET INTAKE FAMILY (lane M3 2026-08-31) ────────────
+  // Same class as /api/errors/collect above, whose entry records the ruling:
+  // these authorize on INTERNAL_API_SECRET — a server-side secret no browser
+  // holds — so the expected caller is OUT OF PROCESS, and nothing in this repo
+  // can disprove one (CLAUDE.md §1's "unresolved means leave it"). Each entry
+  // names its fail-closed shape and its in-process sibling where one exists;
+  // none reads a session, so none can be a loop.
+  ["/api/intelligence/classify",     "service-to-service intent classification onto lib/intelligence/intent-classifier.ts:classifyIntent (no other door: the classifier has no in-process caller). Auth: x-internal-secret vs INTERNAL_API_SECRET; an unset secret can never equal a header string, so it fails closed (route.ts:6-9)"],
+  ["/api/intelligence/coordinate",   "service-to-service agent coordination onto lib/intelligence/multi-agent-router.ts (routeToAgent/escalateToHuman/endAgentSession) — the same implementation the coordination dashboard and agent-health-check cron reach in-process, kept as the out-of-process door. Auth: Bearer INTERNAL_API_SECRET, now failing CLOSED when unset (route.ts:16-25; the old template-interpolated compare accepted the literal 'Bearer undefined')"],
+  ["/api/intelligence/memory/update", "service-to-service door onto lib/intelligence/conversation-insights.ts:updateConversationMemory. The IN-TREE trigger for the same writer is app/api/cron/conversation-insights-refresh (its header records the adjudication: 'one code path, two doors'). Auth: Bearer INTERNAL_API_SECRET, explicit 500 when unset (route.ts:12-26)"],
+  ["/api/intelligence/kb/embed",     "service-to-service KB embedding onto lib/intelligence/kb-search.ts:embedAndStore — the admin UI embeds IN-PROCESS through app/actions/knowledge/search.ts:embedNow (its header records the repoint away from this route, which a browser could never authenticate to), leaving this as the out-of-process bulk/backfill door. Auth: Bearer INTERNAL_API_SECRET, fails closed 401 when unset (route.ts:6-10)"],
+
+  // ── THE WIDGET'S PUBLIC CAPTURE TWIN (lane M3 2026-08-31) ─────────────────
+  // Adjudicated, NOT deleted, and the difference from the five session-authed
+  // loops deleted this wave is the CREDENTIAL: this door takes a server-minted
+  // widget_session_token, not a Supabase session, and /api/widget/session mints
+  // that token to ANY visitor of a public slug — so an off-repo integration
+  // POSTing here cannot be disproved from this repo (§1: public endpoints are
+  // unreferenced by design; unresolved means leave it). The in-repo widget
+  // clients use the sibling /api/widget/capture-lead (app/widget/[brokerageSlug]/
+  // widget-chat-client.tsx:138), and per §1.1 the halves this twin had that the
+  // WIRED sibling lacked — the consent audit row, the CONTACT_CAPTURED
+  // lifecycle event, the fail-closed session read — were MERGED ONTO
+  // capture-lead first (app/api/widget/capture-lead/route.ts), so whichever
+  // door a caller enters, the ledger comes out the same.
+  ["/api/widget/capture", "public widget capture intake gated by a server-minted widget_session_token proven against the slug's own brokerage (route.ts:74-93, fails closed 503 on a refused read); no Supabase session anywhere in the file, and the token is minted to anonymous visitors by /api/widget/session — an off-repo caller cannot be disproved. In-repo widget clients use /api/widget/capture-lead, onto which this twin's missing halves were merged (§1.1) before this entry was written"],
 ])
+
+// ─── TOMBSTONES: five session-authed loops DELETED (lane M3, 2026-08-31) ─────
+// Census category 6b listed each of these as "route handler nothing in the tree
+// addresses". All five authenticated on a Supabase SESSION (getUser/requireAuth/
+// getAgentContext) — so no out-of-tree caller could exist (the "loop, not a
+// door" test recorded above for /api/agentic-os/voice) — and each duplicated a
+// WIRED survivor that was compared end-to-end before deletion (§1.1/§1.3;
+// owner's methodology ruling: capability compared, not names):
+//   · /api/onboarding/integrations/test → app/api/integrations/test/[provider]/
+//     route.ts:15 (wired at app/dashboard/onboarding/tech-stack/tech-stack-client.tsx:239).
+//     Byte-similar twin: same testIntegration(), same two status writes, same
+//     kernel events; the survivor's optional-brokerage shape is a superset.
+//     Tombstone in the survivor's header.
+//   · /api/behavior/signal → lib/kernel/forms.ts:914 + app/actions/smart-insights.ts:807
+//     (signal ingestion) and app/actions/buyer-insights.ts:152 (prediction
+//     regen). Tombstone at lib/behavior-learning/preference-updater.ts:5.
+//   · /api/listings/create → app/actions/listings-kernel.ts:143
+//     createListingWithSellerContact (the canonical creation door, wired at
+//     app/components/form-wizard/FormWizard.tsx:510; three earlier createListing
+//     variants were already folded onto it — see the tombstones at
+//     app/actions/ai-listing-intake.ts:958). The route's only unshared behavior
+//     was an unvalidated `...body` spread into the insert.
+//   · /api/open-house/request-feedback → app/actions/seller-open-house.ts:936
+//     requestFeedbackFromAttendee, wired at app/dashboard/listings/[id]/
+//     components/open-house-post-event-panel.tsx:118, whose comment records the
+//     repoint AND the reason: the route never proved the attendee belonged to
+//     the caller's tenant; the survivor does, then delegates to the same sender.
+//   · /api/vendor-costs → app/actions/vendor-budget.ts (getBrokerageBudgetWarning
+//     :59 for the tenant-redacted branch, wired at app/components/shell/
+//     budget-warning-banner.tsx; getPlatformVendorBudget :89 +
+//     getPlatformVendorSpendOverview :107 for the platform-staff branch, wired
+//     at app/dashboard/support/page.tsx). Both of the route's audiences read
+//     the same checkVendorBudget + redactBudgetForActor pair there.
 
 for (const r of routesWithNoCaller) {
   const qualified = QUALIFIED_EXTERNAL_ROUTES.get(r.path)

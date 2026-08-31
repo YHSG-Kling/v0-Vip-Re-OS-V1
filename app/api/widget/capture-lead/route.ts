@@ -8,6 +8,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { captureContact } from '@/lib/contact-pipeline/contact-capture'
 import { bestEffort } from "@/lib/db/best-effort"
+import { KernelEvent } from '@/lib/kernel/events'
+import { persistContactConsent } from '@/lib/kernel/compliance/require-contact-consent'
 
 export async function POST(req: NextRequest) {
   try {
@@ -43,12 +45,26 @@ export async function POST(req: NextRequest) {
     const supabase = createServiceClient()
 
     // ── Validate session ──────────────────────────────────────────────────
-    const { data: session } = await supabase
+    // MERGED FROM THE SIBLING DOOR (§1.1 — /api/widget/capture, the unaddressed
+    // twin of this wired route): read the ERROR before reading the absence.
+    // supabase-js RESOLVES a refused read (CLAUDE.md §3), so without this a DB
+    // refusal was byte-identical to "made-up token" and answered 403 for what
+    // is really an outage. The twin also carried the consent audit row and the
+    // CONTACT_CAPTURED lifecycle event this route was missing — both merged
+    // below, so the wired door is no longer the poorer of the two.
+    const { data: session, error: sessionError } = await supabase
       .from('chat_sessions')
       .select('id, brokerage_id, agent_id, status')
       .eq('widget_session_token', session_token)
-      .single()
+      .maybeSingle()
 
+    if (sessionError) {
+      console.error('[Widget/capture-lead] session lookup failed:', sessionError.message)
+      return NextResponse.json(
+        { error: 'Capture is temporarily unavailable' },
+        { status: 503 },
+      )
+    }
     if (!session || session.status === 'closed') {
       return NextResponse.json({ error: 'Invalid or closed session' }, { status: 403 })
     }
@@ -73,6 +89,26 @@ export async function POST(req: NextRequest) {
       rawPayload: { session_token, intent_type, notes },
     })
 
+    // ── Persist consent audit record (merged from /api/widget/capture) ────
+    // The TCPA disclosure the widget shows is only worth what the ledger can
+    // prove later; the wired door recorded the consented phone but never the
+    // consent EVENT. Best-effort: the contact is already written above and a
+    // refused audit row must not turn a captured lead into a visitor-facing 500.
+    if (consentGiven) {
+      const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null
+      const userAgent = req.headers.get('user-agent') ?? null
+      await persistContactConsent({
+        brokerageId: session.brokerage_id,
+        agentId: session.agent_id ?? null,
+        contactId,
+        consentText: 'Widget chat consent — TCPA disclosure accepted in chat widget',
+        consentSource: '/api/widget/capture-lead',
+        consented: true,
+        ipAddress: ip,
+        userAgent,
+      }).catch(() => {})
+    }
+
     // ── Update session with contact_id and capture state ─────────────────
     await supabase
       .from('chat_sessions')
@@ -82,6 +118,20 @@ export async function POST(req: NextRequest) {
         updated_at: new Date().toISOString(),
       })
       .eq('id', session.id)
+
+    // ── Emit lifecycle event (merged from /api/widget/capture) ────────────
+    // The kernel's CONTACT_CAPTURED consumers (notification engine, timeline)
+    // saw captures from every other intake but not from the wired widget door.
+    await bestEffort(
+      supabase.from('lifecycle_events').insert({
+        brokerage_id: session.brokerage_id,
+        entity_type: 'contact',
+        entity_id: contactId,
+        event_type: KernelEvent.CONTACT_CAPTURED,
+        metadata: { source: 'website_widget', action },
+      }),
+      'the contact and its session link are already written; a lifecycle row must not turn a captured lead into a 500 the visitor sees',
+    )
 
     // ── Log activity note if provided ─────────────────────────────────────
     if (notes) {
