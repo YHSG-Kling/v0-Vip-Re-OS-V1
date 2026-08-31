@@ -105,7 +105,14 @@ export async function callRentcastGet<P extends RentcastGetPath>(
   const res = await callConnector<RentcastGetResult<P>>({
     connector: "rentcast",
     baseUrl:   "https://api.rentcast.io/v1",
-    path:      path.replace(/^\//, ""),
+    // The path goes to the gateway VERBATIM, leading slash and all. The gateway
+    // normalises the slash itself when building the URL — but it logs `req.path`
+    // AS PASSED into the vendor-usage ledger (connector-gateway.ts:191), so a
+    // pre-stripped path here silently changes the endpoint vocabulary every
+    // ledger reader and the rent-lane simulator key on ("/listings/rental/
+    // long-term" became "listings/rental/long-term" and twenty assertions went
+    // red). Normalisation is the gateway's job; the caller's job is fidelity.
+    path,
     method:    "GET",
     query:     q,
     auth:      { style: "header", name: "X-Api-Key", value: apiKey },
@@ -137,7 +144,9 @@ export async function callRentcastGetById<P extends RentcastByIdPath>(
   const res = await callConnector<RentcastGetResult<P>>({
     connector: "rentcast",
     baseUrl:   "https://api.rentcast.io/v1",
-    path:      pathTemplate.replace(/^\//, "").replace("{id}", encodeURIComponent(id)),
+    // Verbatim path, same reason as callRentcastGet above — the gateway logs
+    // req.path as passed, so the ledger's endpoint vocabulary keeps its slash.
+    path:      pathTemplate.replace("{id}", encodeURIComponent(id)),
     method:    "GET",
     query:     {},
     auth:      { style: "header", name: "X-Api-Key", value: apiKey },
