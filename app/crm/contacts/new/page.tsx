@@ -44,7 +44,12 @@ const CONTACT_TYPE_LABELS: Record<ContactType, string> = {
   sphere:            "Sphere",
   vendor:            "Vendor",
   referral_partner:  "Referral Partner",
-  investor:          "Investor",
+  // TOMBSTONE (§1): `investor: "Investor"` stood here. Removed with m593 — the
+  // owner ruled investor a PERSONA, not a contact type; the persona picker on
+  // this same form carries it now (survivor: PERSONA_LABELS.investor,
+  // constants/crm-standards.ts), and the tombstone one comment up already
+  // listed "Investor" among the sides a client picks — that sentence aged out
+  // with the ruling too.
   buyer:             "Buyer",
   seller:            "Seller",
   both:              "Buyer & Seller",

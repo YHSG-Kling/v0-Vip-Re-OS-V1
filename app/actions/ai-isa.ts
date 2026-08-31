@@ -62,7 +62,12 @@ async function runAiIsaComplianceCheck(params: {
   messageType: "email" | "sms" | "phone"
   content: string
   contactId: string
-  contactType?: "buyer" | "seller" | "both" | "investor" | "vendor" | "lender"
+  // 'investor' left this union with m593 — it is a PERSONA now (owner ruling),
+  // and a caller describing an investor passes contactType 'buyer' with the
+  // situation on contact_persona. 'lender' predates the live CHECK and is kept
+  // only because this is an INPUT shape; the compliance contact object below
+  // narrows to what the gate admits.
+  contactType?: "buyer" | "seller" | "both" | "vendor" | "lender"
   status?: string
   dncStatus?: boolean
   tcpaConsent?: boolean
