@@ -1342,7 +1342,14 @@ export async function aiAnalyzeNewsletterPerformance(params: { agentId?: string 
       const { data, error: sendsErr } = await supabase
         .from("newsletter_scheduled_sends")
         .select(
-          "subject_line, preview_text, sent_time, scheduled_time, send_status, recipient_segment, recipient_count, ab_test_variant, newsletter:newsletter_campaigns!inner(campaign_name, subject_line, open_rate, click_rate, unsubscribe_rate, status, send_date)"
+          // unsubscribe_rate is DELIBERATELY absent from the embed: nothing
+          // writes it — the engagement rollup stamps only open_rate/click_rate,
+          // and this file's own getNewsletterAnalytics already returns
+          // unsubscribed as an honest NULL because no per-campaign unsubscribe
+          // fact exists in this schema (newsletter_subscribers.status flips
+          // globally). Selecting a column no writer fills hands the model a
+          // permanent zero dressed as a measurement (census 1b).
+          "subject_line, preview_text, sent_time, scheduled_time, send_status, recipient_segment, recipient_count, ab_test_variant, newsletter:newsletter_campaigns!inner(campaign_name, subject_line, open_rate, click_rate, status, send_date)"
         )
         .eq("newsletter.agent_id", sessionAgentId)
         .eq("newsletter.brokerage_id", sessionBrokerageId)
