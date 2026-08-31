@@ -203,7 +203,10 @@ export function AppShell({ children }: AppShellProps) {
           />
         )}
 
-        {/* Cmd+K Command Palette — available to all authenticated users */}
+        {/* Cmd+K Command Palette — entries are role-filtered inside the
+            component via visiblePaletteItems (the same getNavigationForRole
+            the sidebar uses); it reads roles from useAuth itself and fails
+            closed to an empty list until they resolve. */}
         <CommandPalette />
 
         {/* Universal Shell — unified inbox slide-out (press U or click header inbox button) */}
