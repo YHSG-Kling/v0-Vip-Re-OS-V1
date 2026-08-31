@@ -6,7 +6,7 @@
  * the "code references a column the table doesn't have → query silently errors" bug class (which
  * broke buyer matching, lead-magnet capture, and the agents-identity selects) can't come back.
  *
- * COVERAGE: 706 tables — those the code queries AND the live schema has. Tables
+ * COVERAGE: 704 tables — those the code queries AND the live schema has. Tables
  * referenced in code but ABSENT from the live schema (RPC names / phantom tables) go to
  * scripts/schema-drift-unguarded-baseline.json instead, which the guard ratchets.
  *
@@ -15,9 +15,9 @@
  * it is committed.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-08-28
+ * generated: 2026-08-31
  * source: public.live_schema_json()
- * body-sha256: 1cd8d777f1bb90564fd6be7472e0ab5d2935f27e716f2cb4948e41554d19d38a
+ * body-sha256: 8830601b821037fb486f62d5f5009fde8a650cb83ada7463c0bfe6d99b4b4836
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -64,8 +64,6 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   agent_mentor_relationships: ["brokerage_id", "created_at", "end_date", "id", "mentee_agent_id", "mentor_agent_id", "notes", "start_date", "status"],
   agent_monthly_earnings: ["agent_id", "brokerage_id", "created_at", "gross_total", "id", "metadata", "month_year", "net_total", "transaction_count", "updated_at"],
   agent_onboarding: ["additional_data", "additional_settings", "agent_id", "brokerage_id", "certification_achieved", "certified_at", "completion_percentage", "created_at", "current_day", "id", "start_date", "status", "updated_at", "user_id"],
-  agent_onboarding_sessions: ["actual_completion_date", "agent_id", "ai_recommendations", "ai_risk_factors", "ai_success_prediction", "assigned_mentor_id", "brokerage_id", "certification_achieved", "certified_at", "checklist", "completed_at", "created_at", "current_step", "duration_minutes", "facilitator_user_id", "id", "mentor_match_reason", "mentor_match_score", "progress_percentage", "recruit_id", "scheduled_at", "session_data", "session_notes", "session_type", "start_date", "started_at", "status", "target_completion_date", "updated_at"],
-  agent_onboarding_steps: ["agent_id", "ai_generated", "attachments", "brokerage_id", "completed_at", "completed_by", "created_at", "due_date", "id", "notes", "session_id", "status", "step_description", "step_order", "step_title", "step_type", "updated_at"],
   agent_outcome_evaluations: ["anthropic_outcome_id", "brokerage_id", "cache_read_input_tokens", "evaluated_at", "explanation", "id", "input_tokens", "iteration", "managed_agent_session_id", "output_tokens", "result"],
   agent_performance_reports: ["agent_id", "ai_summary", "brokerage_id", "created_at", "generated_at", "id", "metrics", "period_end", "period_start", "recommendations", "report_type"],
   agent_pl_snapshot: ["agent_id", "agent_payout", "ai_cost_cents", "brokerage_gross", "brokerage_id", "computed_at", "fee_income_cents", "gci_gross", "id", "marketing_spend_cents", "month_year", "net_brokerage_margin", "roi_multiple", "transaction_count"],
@@ -233,7 +231,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   contact_memory: ["archived_at", "brokerage_id", "content", "created_at", "embedding", "entity_id", "entity_type", "id", "memory_kind", "metadata", "source_id", "source_table"],
   contact_notes: ["author_user_id", "body", "brokerage_id", "contact_id", "created_at", "id", "is_private", "updated_at"],
   contact_portal_modules: ["brokerage_id", "contact_id", "enabled_at", "enabled_by_agent_id", "id", "is_enabled", "module_key"],
-  contact_portal_preferences: ["brokerage_id", "contact_id", "created_at", "id", "milestone_overrides", "notification_settings", "updated_at"],
+  contact_portal_preferences: ["brokerage_id", "contact_id", "created_at", "id", "milestone_overrides", "updated_at"],
   contact_property_insights: ["brokerage_id", "commute_insights", "contact_id", "created_at", "expires_at", "generated_at", "id", "investment_insights", "match_concerns", "match_reasons", "match_score", "neighborhood_insights", "property_id", "school_insights"],
   contact_segments: ["added_at", "brokerage_id", "contact_id", "created_at", "id", "removed_at", "segment_id"],
   contact_suppression_list: ["brokerage_id", "channel", "contact_id", "created_at", "email", "id", "mailing_address_key", "phone", "source", "suppression_reason"],
@@ -440,7 +438,7 @@ export const SCHEMA_SNAPSHOT: Record<string, string[]> = {
   newsletter_cadence_policy: ["brokerage_id", "cadence", "fire_day", "id", "preferred_categories", "preferred_persona", "scope_id", "scope_type", "skipped_until", "updated_at", "updated_by"],
   newsletter_campaigns: ["agent_id", "approval_status", "brand_compliance_passed", "brokerage_id", "campaign_name", "click_rate", "content", "created_at", "created_by", "defer_reason", "id", "is_ai_generated", "kernel_event_id", "marketing_campaign_id", "open_rate", "send_date", "status", "subject_line", "unsubscribe_rate"],
   newsletter_local_content: ["brokerage_id", "content", "created_at", "id", "included_in_last_newsletter", "local_news_source_id", "newsletter_id", "relevance_score", "zip_code"],
-  newsletter_scheduled_sends: ["ab_test_variant", "agent_id", "brokerage_id", "created_at", "id", "newsletter_id", "personalization_variables", "preview_text", "recipient_count", "recipient_segment", "scheduled_send_time", "scheduled_time", "sections_included", "send_status", "sent_time", "subject_line", "template_id"],
+  newsletter_scheduled_sends: ["ab_test_variant", "agent_id", "brokerage_id", "created_at", "id", "newsletter_id", "personalization_variables", "preview_text", "recipient_count", "recipient_segment", "scheduled_time", "sections_included", "send_status", "sent_time", "subject_line", "template_id"],
   newsletter_sections: ["brokerage_id", "content", "created_at", "id", "newsletter_id", "order_index", "section_type", "target_locations", "target_personas", "title"],
   newsletter_sends: ["brokerage_id", "campaign_id", "clicked_at", "contact_id", "id", "opened_at", "provider_message_id", "queued_at", "sent_at", "status", "subject", "template_id"],
   newsletter_seo_scores: ["analyzed_at", "created_at", "h1_present", "id", "keyword_count", "keyword_density", "overall_seo_score", "primary_keyword", "readability_score", "scheduled_send_id", "word_count"],

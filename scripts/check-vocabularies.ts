@@ -20,7 +20,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-08-31
  * source: public.live_check_constraints_json()
- * body-sha256: 833340a214ee98e480935ecf980a4231dde06c368d376986efd1df6c425bcd82
+ * body-sha256: 0f92305618d9490b5433d4e53c4835a4c204e15e4b7aae43a2721fee996af22c
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -403,7 +403,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   campaign_sequences: {
     contact_type: ["both", "buyer", "lifetime_customer", "seller"],
-    persona: ["divorce", "downsize", "expired", "first_time", "foreclosure", "fsbo", "luxury", "military", "other", "probate", "relocated", "senior", "upsize"],
+    persona: ["divorce", "downsize", "expired", "first_time", "foreclosure", "fsbo", "investor", "luxury", "military", "other", "probate", "relocated", "senior", "upsize"],
     sequence_type: ["drip", "nurture", "post_close", "re_engagement", "transaction"],
     trigger_event: ["anniversary_triggered", "appraisal_ordered", "buyer_financially_verified", "buyer_verified", "cda_approved", "coming_soon_sent", "contact_captured", "contact_created", "contact_email_opened", "contact_link_clicked", "contract_signed", "deal_closed", "ghl_contact_tag_added", "ghost_lead_detected", "idx_saved_search_match", "isa_qualified_lead", "lead_assigned", "lead_captured", "lead_scored", "lifetime_customer", "listing_cancelled", "listing_created", "listing_expired", "listing_published", "listing_under_contract", "manual", "new_lead", "offer_accepted", "offer_counter_sent", "offer_rejected", "offer_submitted", "open_house_scheduled", "property_match_found", "qr_scan", "reengagement_started", "review_received", "showing_completed", "showing_feedback_received", "tour_scheduled", "transaction_closed"],
   },
@@ -535,7 +535,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     ai_autopilot_level: ["aggressive", "conservative", "moderate", "off"],
     buyer_stage: ["BUYER_CLOSED", "BUYER_CONTACT_CREATED", "BUYER_DISENGAGED", "BUYER_FINANCIALLY_VERIFIED", "BUYER_LIFETIME", "BUYER_OFFER_ELIGIBLE", "BUYER_OFFER_SUBMITTED", "BUYER_ON_HOLD", "BUYER_SEARCHING", "BUYER_SEARCH_CONFIGURED", "BUYER_TOURING", "BUYER_TOUR_ELIGIBLE", "BUYER_UNDER_CONTRACT"],
     contact_persona: ["divorce", "downsize", "expired", "first_time", "foreclosure", "fsbo", "investor", "luxury", "military", "other", "probate", "relocated", "senior", "upsize"],
-    contact_type: ["both", "buyer", "investor", "lead", "lifetime_customer", "other", "prospect", "referral_partner", "seller", "sphere", "vendor"],
+    contact_type: ["both", "buyer", "lead", "lifetime_customer", "other", "prospect", "referral_partner", "seller", "sphere", "vendor"],
     lead_temperature: ["cold", "hot", "warm"],
     lender_status: ["cash", "needs_pre_approval", "pre_approved", "unknown"],
     lifetime_segment: ["local_owner", "relocated"],

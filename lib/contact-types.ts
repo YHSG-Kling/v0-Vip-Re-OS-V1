@@ -61,7 +61,11 @@ export const CONTACT_TYPES = [
   "sphere",
   "vendor",
   "referral_partner",
-  "investor",
+  // TOMBSTONE (§1/§6): 'investor' stood here and was RETIRED by m593 on the
+  // owner ruling "investor is a persona and not a contact type". SURVIVOR for
+  // the situation: contacts.contact_persona = 'investor' (m589); the SIDE a
+  // legacy investor-typed row belonged to is 'buyer' (m593's backfill), which
+  // is what RETIRED_CONTACT_TYPES maps the spelling to below.
   "buyer",
   "seller",
   "both",
@@ -108,6 +112,10 @@ export const RETIRED_CONTACT_TYPES: Readonly<Record<string, ContactType>> = Obje
   lifetime: LIFETIME_CUSTOMER_TYPE,
   past_client: LIFETIME_CUSTOMER_TYPE,
   past_seller: LIFETIME_CUSTOMER_TYPE,
+  // m593: the retired investor TYPE maps to its side; the situation it really
+  // named lives on contact_persona='investor' (m589) and is written by the
+  // creators — the tolerant reader only decides the side.
+  investor: "buyer",
 })
 
 /**

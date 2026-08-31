@@ -1,7 +1,12 @@
 -- m590 — newsletter_scheduled_sends: drop scheduled_send_time, the schedule
 --        column that lost both its writers and never had a reader
 -- ─────────────────────────────────────────────────────────────────────────────
--- STATUS: WRITTEN, NOT APPLIED. Lanes write migrations; only the integrator
+-- STATUS: APPLIED to hrvaqgvukzxfskkcrwbt by the integrator, 2026-08-31. Its
+-- verify-first body found 0 non-null rows and the DROP ran; verified after:
+-- the column is gone from information_schema and schema-snapshot was
+-- regenerated from a fresh live extract the same session (§3). This line does
+-- not keep reading WRITTEN-NOT-APPLIED: §2 names that string a waypoint no
+-- file may keep asserting once false. Lanes write migrations; only the integrator
 -- applies them (CLAUDE.md §3). Written by lane M5, 2026-08-31, finishing the
 -- loop L2 flagged when it converged the writers.
 --
