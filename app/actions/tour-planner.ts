@@ -1098,10 +1098,28 @@ export async function rateTourStop(params: RateStopParams) {
   // Canonical learner vocabulary (matches preference-updater SIGNAL_WEIGHTS); legacy 'no' → not_for_us.
   const signalWeights: Record<string, number> = { love_it: 10, like_it: 3, maybe: 1, not_for_us: -5 }
   const canonicalSignal = interestLevel === 'no' ? 'not_for_us' : interestLevel
-  await supabase.from('buyer_behavior_log').insert({
+
+  // buyer_behavior_log.agent_id FKs to agents(id), and agents.id / users.id are
+  // DISJOINT (§3) — this insert used to write the caller's users.id straight in,
+  // so Postgres refused it with 23503 whenever that id had no agents twin. And
+  // the result was not destructured, so the refusal RESOLVED silently (§3) and
+  // every day-of tour reaction — love_it / like_it / maybe / not_for_us, the
+  // highest-value behavior signals in the product — was lost to the preference
+  // learner while the UI reported success. completeTour below had already been
+  // fixed for the identical class; this is its sibling, now on the same shape.
+  const { data: actorAgent, error: actorErr } = await supabase
+    .from('agents')
+    .select('id')
+    .eq('user_id', agentUserId)
+    .eq('brokerage_id', brokerageId)
+    .maybeSingle()
+  if (actorErr) console.error('[rateTourStop] agents resolution refused:', actorErr.message)
+  const actorAgentId = (actorAgent as { id: string } | null)?.id ?? null
+
+  const { error: logErr } = await supabase.from('buyer_behavior_log').insert({
     brokerage_id:     brokerageId,
     contact_id:       contactId,
-    agent_id:         agentUserId,
+    agent_id:         actorAgentId,
     signal_type:      canonicalSignal,
     listing_id:       listingId ?? null,
     property_address: propertyAddress,
@@ -1112,6 +1130,12 @@ export async function rateTourStop(params: RateStopParams) {
     source:           'agent_dashboard',
     metadata:         { note, tour_stop_id: tourStopId },
   })
+  if (logErr) {
+    // The stop rating itself saved above; a lost learner signal must not fail
+    // the rating — but it must never be silent, because a swallowed refusal
+    // here is exactly how this signal went missing for its whole life.
+    console.error('[rateTourStop] buyer_behavior_log insert refused — preference signal lost:', logErr.message)
+  }
 
   return { success: true }
 }
@@ -1134,8 +1158,12 @@ export async function completeTour(params: CompleteTourParams) {
 
   // buyer_behavior_log.agent_id FKs to agents(id) — resolve the caller's
   // agents row once (LIVE-FK class fix; users.id here failed the insert).
-  const { data: actorAgent } = await supabase
-    .from('agents').select('id').eq('user_id', agentUserId).maybeSingle()
+  // Brokerage-scoped and error-read since the rateTourStop sibling fix: a
+  // multi-brokerage user must resolve to THIS tenant's agents row, and a
+  // refused read must not silently become "no agent" (§3).
+  const { data: actorAgent, error: actorErr } = await supabase
+    .from('agents').select('id').eq('user_id', agentUserId).eq('brokerage_id', brokerageId).maybeSingle()
+  if (actorErr) console.error('[completeTour] agents resolution refused:', actorErr.message)
   const actorAgentId = (actorAgent as { id: string } | null)?.id ?? null
 
   // Verify tour belongs to caller's brokerage and contact
@@ -1196,7 +1224,13 @@ export async function completeTour(params: CompleteTourParams) {
       metadata:         { tour_id: tourId, note: r.note },
     }
   })
-  await supabase.from('buyer_behavior_log').insert(logInserts)
+  // Destructured since the rateTourStop sibling fix: supabase-js RESOLVES a
+  // refused insert (§3), and a silent refusal here loses the whole tour's
+  // reaction batch to the preference learner while the tour still completes.
+  const { error: batchLogErr } = await supabase.from('buyer_behavior_log').insert(logInserts)
+  if (batchLogErr) {
+    console.error('[completeTour] buyer_behavior_log batch insert refused — tour preference signals lost:', batchLogErr.message)
+  }
 
   // Update preference model from new signals
   await updateBuyerPreferences(contactId, brokerageId).catch(() => {})
