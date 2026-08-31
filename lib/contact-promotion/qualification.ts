@@ -45,10 +45,157 @@
  * here, so nothing downstream refuses a forged 'qualified' — it simply becomes
  * true. No lane may collapse the spellings below into one without an owner ruling
  * naming the survivor, so they are enumerated and REPORTED rather than merged.
+ *
+ * UPDATE 2026-08-31: the owner ruled — fix by building and normalizing. The
+ * spellings ARE now collapsed (survivors below), supabase/migrations/m587 puts a
+ * CHECK behind the column (WRITTEN, not applied — lanes write, the integrator
+ * applies, §3), and this file is the single code-side source of the vocabulary.
+ * After m587 is applied the integrator regenerates scripts/check-vocabularies.ts
+ * so `contacts.status` appears in the generated cache alongside this list.
  */
 
 /** The one earned status. Never spell it inline. */
 export const QUALIFIED_CONTACT_STATUS = "qualified"
+
+/**
+ * THE `contacts.status` VOCABULARY — one spelling per lifecycle idea (§6).
+ * Mirrors the CHECK written in supabase/migrations/m587 (pending apply). Every
+ * member has a live writer AND a live reader, measured on stripped source
+ * (scripts/strip-comments.ts, §2) 2026-08-31:
+ *
+ *   'new'       DEFAULT; app/actions/seller-open-house.ts:770,
+ *               app/api/open-house/attend/route.ts:94, lib/kernel/crm.ts:326,
+ *               lib/application/lead-application-service.ts:437 (import fallback),
+ *               lib/kernel/lead-magnets.ts:439 (was 'lead' — merged, see below)
+ *   'contacted' CRM manual-add dialog (app/crm/page.tsx) via the crm.ts create
+ *               path; read at app/dashboard/isa/calling/page.tsx:79,
+ *               app/actions/ai-lead-nurturing.ts:442
+ *   'active'    lib/contact-promotion/contact-creator.ts:319 (lead conversion),
+ *               app/api/widget/intake/route.ts:202, lib/kernel/listings.ts:332,
+ *               lib/kernel/open-house.ts:203,
+ *               lib/services/contact-management.service.ts:143
+ *   'nurture'   CRM manual-add dialog; read at app/actions/briefing-actions.ts,
+ *               app/actions/property-buyer-matching.ts:95
+ *   'qualified' EARNED — stamped in one place, lib/portal/portal-invite-core.ts
+ *               (header above); an agent may also set it later through the edit
+ *               path (app/actions/contacts.ts updateContact), never at create
+ *   'inactive'  dormancy: automation stops, contact stays visible. Writer: the
+ *               edit path (caller-chosen); readers lib/ai-isa/reengagement-policy.ts
+ *               NON_ENGAGEABLE_CONTACT_STATUSES, lib/lead-pipeline/
+ *               reactivation-enroller.ts:61, stale-preapproval-reengage-runner.ts:66,
+ *               lib/kernel/communication-compliance.ts (soft warn)
+ *   'archived'  the agent-departure book archive — automation stops AND the row
+ *               leaves working lists, history preserved. Writer:
+ *               lib/agents/agent-deactivation.ts:263; readers
+ *               app/dashboard/team/page.tsx, lib/intelligence/health-prioritizer-runner.ts,
+ *               lib/lead-pipeline/persona-drift-runner.ts, reengagement-policy
+ *   'deleted'   soft delete, paired with `deleted_at`. Writer:
+ *               lib/services/contact-management.service.ts:310; readers
+ *               app/actions/crm.ts:369, lib/agents/seller-conversion-nurture.ts:49
+ *
+ * 'inactive', 'archived' and 'deleted' are three DIFFERENT capabilities
+ * (dormancy / departure-archive / soft delete) — do not fold them (owner
+ * methodology ruling: same-sounding is not same-capability).
+ *
+ * MERGED SPELLINGS (each a §6 defect, each with its survivor):
+ *   'lead'          → 'new'      a lead-magnet capture is a NEW contact; leads
+ *                                belong to the brokerage (§5) and are a different
+ *                                entity. Writer fixed at lib/kernel/lead-magnets.ts:439.
+ *   'nurturing'     → 'nurture'  spelling drift; reader fixed at
+ *                                app/actions/ai-lead-nurturing.ts:442
+ *   'active_client' → 'active'   phantom (no writer ever); reader repointed at
+ *                                app/actions/copilot.ts:874
+ *   'hot'/'hot_lead'→ lead_temperature='hot' — a TEMPERATURE, not a status;
+ *                                contacts.lead_temperature carries a live CHECK
+ *                                (cold/hot/warm). Readers repointed at
+ *                                app/actions/ai-auto-response.ts,
+ *                                lib/intelligence/daily-briefing-generator.ts,
+ *                                lib/intelligence/user-type-briefs/team-lead.ts,
+ *                                app/actions/copilot.ts
+ *   'closed'        → the terminal set; reader fixed at
+ *                                app/api/cron/pattern-scan/route.ts:52
+ *   'do_not_contact'→ dnc_status boolean (the real DNC rail; compliance already
+ *                                hard-blocks on it). Phantom status member removed
+ *                                from lib/ai-isa/reengagement-policy.ts and
+ *                                lib/kernel/communication-compliance*.ts
+ *   'appointment_booked' + the journey ladder (signed_agreement, pre_listing,
+ *   active_listing, contingent, pending, sold, lifetime_customer)
+ *                   → these are DEAL/JOURNEY facts living on buyer_stage,
+ *                     listings.status, transactions and contact_type
+ *                     ('lifetime_customer'), not contact lifecycle. They existed
+ *                     only in the caller-less aiMappingService/supabaseService
+ *                     import path and two type copies; all retargeted here.
+ */
+export const CONTACT_STATUSES = [
+  "new",
+  "contacted",
+  "active",
+  "nurture",
+  "qualified",
+  "inactive",
+  "archived",
+  "deleted",
+] as const
+
+export type ContactStatus = (typeof CONTACT_STATUSES)[number]
+
+/** UI labels for the vocabulary — dropdowns render from this, never inline. */
+export const CONTACT_STATUS_LABELS: Record<ContactStatus, string> = {
+  new: "New",
+  contacted: "Contacted",
+  active: "Active",
+  nurture: "Nurture",
+  qualified: "Qualified",
+  inactive: "Inactive",
+  archived: "Archived",
+  deleted: "Deleted",
+}
+
+/**
+ * Statuses after which a contact is out of every working surface: dormant
+ * ('inactive'), archived with a departing agent ('archived'), or soft-deleted
+ * ('deleted'). Pipeline scans exclude these; see app/api/cron/pattern-scan and
+ * lib/ai-isa/reengagement-policy.ts (which excludes the first two but not
+ * 'deleted', because its callers already gate on `deleted_at`).
+ */
+export const TERMINAL_CONTACT_STATUSES: readonly ContactStatus[] = [
+  "inactive",
+  "archived",
+  "deleted",
+]
+
+/**
+ * Tolerant READER for the retired spellings — the exact mapping m587's backfill
+ * applies (keep the two in lockstep). Returns the canonical member for a known
+ * value or a retired alias, and null for anything else — the caller decides
+ * whether null is a refusal (a writer must refuse; see the asymmetry documented
+ * in scripts/contact-vocabulary-guard.ts: readers stay tolerant, writers do not).
+ * Case- and whitespace-insensitive, since these arrive from CSV cells, request
+ * bodies and voice-tool arguments.
+ */
+export function canonicalContactStatus(raw: string | null | undefined): ContactStatus | null {
+  const key = (raw ?? "").toString().trim().toLowerCase()
+  if (!key) return null
+  if ((CONTACT_STATUSES as readonly string[]).includes(key)) return key as ContactStatus
+  const alias: Record<string, ContactStatus> = {
+    lead: "new",
+    nurturing: "nurture",
+    active_client: "active",
+    hot_lead: "active",
+    hot: "active",
+    closed: "inactive",
+    do_not_contact: "inactive", // the DNC fact itself lives on dnc_status
+    appointment_booked: "active",
+    signed_agreement: "active",
+    pre_listing: "active",
+    active_listing: "active",
+    contingent: "active",
+    pending: "active",
+    sold: "inactive", // the working pipeline ended; the relationship lives on contact_type='lifetime_customer'
+    lifetime_customer: "active",
+  }
+  return alias[key] ?? null
+}
 
 /**
  * `contacts.status` values that mean "nothing has qualified this contact yet" —
@@ -57,27 +204,31 @@ export const QUALIFIED_CONTACT_STATUS = "qualified"
  * (§2), with its writer named so a future lane can audit the membership rather
  * than trust it:
  *
- *   'new'       the column DEFAULT, plus app/actions/seller-open-house.ts:779,
- *               app/api/open-house/attend/route.ts:102, lib/kernel/crm.ts:326,
- *               lib/application/lead-application-service.ts:448 (import fallback)
- *   'active'    lib/contact-promotion/contact-creator.ts:320 (the conversion path
+ *   'new'       the column DEFAULT, plus app/actions/seller-open-house.ts:770,
+ *               app/api/open-house/attend/route.ts:94, lib/kernel/crm.ts:326,
+ *               lib/application/lead-application-service.ts:437 (import fallback),
+ *               and lib/kernel/lead-magnets.ts:439 (wrote 'lead' until 2026-08-31;
+ *               merged onto 'new' — a lead-magnet capture is a NEW contact, and
+ *               'lead' the status made those contacts invisible to every reader
+ *               that lists workable contacts, e.g. app/dashboard/isa/calling)
+ *   'active'    lib/contact-promotion/contact-creator.ts:319 (the conversion path
  *               itself), app/api/widget/intake/route.ts:202,
  *               lib/kernel/listings.ts:332, lib/kernel/open-house.ts:203,
  *               lib/services/contact-management.service.ts:143
- *   'lead'      lib/kernel/lead-magnets.ts:439
  *   'contacted' offered by the CRM manual-add dialog (app/crm/page.tsx)
  *   'nurture'   offered by the same dialog; read back at
- *               app/actions/briefing-actions.ts:470
+ *               app/actions/briefing-actions.ts:484
  *
- * FIVE SPELLINGS OF ONE IDEA IS A §6 DEFECT and it is reported, not silently
- * collapsed — see the header. What this list is NOT is a waypoint (§2): it asserts
- * the RULE "still pre-qualification", and anything outside it means something later
- * already claimed the row, so an invite must not walk it backwards.
+ * ('lead', the fifth spelling this list once carried, was merged onto 'new' when
+ * the owner ruled the vocabulary be collapsed — see CONTACT_STATUSES above.)
+ *
+ * What this list is NOT is a waypoint (§2): it asserts the RULE "still
+ * pre-qualification", and anything outside it means something later already
+ * claimed the row, so an invite must not walk it backwards.
  */
 export const PRE_QUALIFICATION_CONTACT_STATUSES: readonly string[] = [
   "new",
   "active",
-  "lead",
   "contacted",
   "nurture",
 ]

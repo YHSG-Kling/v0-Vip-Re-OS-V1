@@ -1979,7 +1979,7 @@ export const supabaseService = {
     try {
       // Extract all unique statuses and personas for batch mapping
       const statuses = contacts.map((c) => c.status).filter(Boolean) as string[]
-      const personas = contacts.map((c) => (c as any).persona).filter(Boolean) as string[]
+      const personas = [...new Set(contacts.map((c) => (c as any).persona).filter(Boolean) as string[])]
 
       // Batch map using AI
       console.log(`[Supabase Service] Batch mapping ${statuses.length} statuses and ${personas.length} personas...`)
@@ -1991,14 +1991,33 @@ export const supabaseService = {
         statusMap.set(original, mappedStatuses[i])
       })
 
-      // Apply mapped values to contacts
-      const normalizedContacts = contacts.map((contact) => ({
-        ...contact,
-        status: contact.status ? statusMap.get(contact.status) || contact.status : "new",
-        persona: (contact as any).persona || "first_time_buyer",
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      }))
+      // Persona lookup map — one mapPersona call per UNIQUE external value, landing on the
+      // live contact_persona vocabulary (constants/crm-standards.ts).
+      const personaMap = new Map<string, string>()
+      for (const original of personas) {
+        personaMap.set(original, await aiMappingService.mapPersona(original))
+      }
+
+      // Apply mapped values to contacts.
+      //
+      // `persona` USED TO BE WRITTEN HERE AS A COLUMN (`persona: (contact as any).persona ||
+      // "first_time_buyer"`). contacts has NO `persona` column (contact_persona is the column —
+      // scripts/schema-snapshot.ts:241), so under PGRST204 EVERY batch insert this function ever
+      // issued was refused entirely — the import could not succeed at all. And the default it
+      // fabricated ("first_time_buyer") is not a value the contact_persona CHECK admits either.
+      // The mapped persona now lands on contact_persona, only when the import actually carried
+      // one — an absent persona stays absent rather than being invented.
+      const normalizedContacts = contacts.map((contact) => {
+        const rawPersona = (contact as any).persona as string | undefined
+        const { persona: _dropUnknownColumn, ...rest } = contact as Record<string, unknown>
+        return {
+          ...rest,
+          status: contact.status ? statusMap.get(contact.status) || contact.status : "new",
+          ...(rawPersona ? { contact_persona: personaMap.get(rawPersona) ?? "other" } : {}),
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }
+      })
 
       // Insert in batches of 100
       const batchSize = 100

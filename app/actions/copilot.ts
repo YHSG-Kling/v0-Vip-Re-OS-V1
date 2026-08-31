@@ -871,7 +871,13 @@ export async function suggestNextActions(agentId: string) {
     .select("*")
     .eq("agent_id", agentsId)
     .eq("brokerage_id", profile.brokerage_id)
-    .in("status", ["active_client", "hot_lead"])
+    // 'active_client'/'hot_lead' were PHANTOMS (no writer has ever stored either
+    // on contacts.status), so this stale-contact check-in suggestion has never
+    // matched a row. What the read MEANT: contacts being actively worked
+    // (status 'active') or running hot — and heat is a TEMPERATURE, carried by
+    // contacts.lead_temperature (live CHECK: cold/hot/warm), not a status.
+    // Vocabulary: lib/contact-promotion/qualification.ts CONTACT_STATUSES.
+    .or("status.eq.active,lead_temperature.eq.hot")
     .lt("last_contacted_at", new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString())
     .limit(5)
 

@@ -7,6 +7,7 @@ import {
   recordCronSuccessAction,
   recordCronFailureAction,
 } from "@/app/actions/cron-kernel"
+import { TERMINAL_CONTACT_STATUSES } from "@/lib/contact-promotion/qualification"
 
 // Schedule: every 4 hours (0 */4 * * *)
 // Batch limit: 50 contacts + 50 listings per run to control AI costs
@@ -44,12 +45,17 @@ export async function GET(request: Request) {
   }
 
   try {
-    // 1. Fetch active contacts with buyer stage (buyers)
+    // 1. Fetch active contacts with buyer stage (buyers).
+    // Was `.neq("status", "closed")` — 'closed' has never been a contacts.status
+    // value (no writer, ever), so that filter matched EVERY row and the scan
+    // burned AI budget on dormant/archived/soft-deleted contacts. The real
+    // terminal set is TERMINAL_CONTACT_STATUSES; direction of the count change:
+    // fewer contacts scanned, because the old filter was blind (§2).
     const { data: contacts, error: contactsError } = await supabase
       .from("contacts")
       .select("id, brokerage_id")
       .not("buyer_stage", "is", null)
-      .neq("status", "closed")
+      .not("status", "in", `(${TERMINAL_CONTACT_STATUSES.join(",")})`)
       .limit(50)
 
     if (contactsError) {

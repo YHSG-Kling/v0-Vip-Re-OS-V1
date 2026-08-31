@@ -210,12 +210,14 @@ export async function generateDailyBriefing(
       .order("start_at", { ascending: true })
       .limit(10),
 
-    // Contacts: hot status
+    // Contacts running hot. 'hot' is a TEMPERATURE, not a status — no writer has
+    // ever stored it on contacts.status, so this briefing line was permanently
+    // empty; the flag lives on contacts.lead_temperature (live CHECK: cold/hot/warm).
     supabase
       .from("contacts")
       .select("id, first_name, last_name, status, intent_score, last_scored_at")
       .eq("agent_id", agentsId)
-      .eq("status", "hot")
+      .eq("lead_temperature", "hot")
       .limit(5),
   ])
 

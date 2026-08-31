@@ -436,7 +436,13 @@ export async function captureFormSubmission(
         source_channel: "online_form",
         brokerage_id: input.brokerageId,
         agent_id:   form.agent_id,
-        status:     "lead",
+        // 'lead' → 'new' (§6 merge, 2026-08-31): a lead-magnet capture is a NEW
+        // contact — leads are a different entity that belongs to the brokerage
+        // (CLAUDE.md §5). 'lead' was this file's private spelling: no reader
+        // matched it, so these contacts were invisible to every workable-contact
+        // list (e.g. app/dashboard/isa/calling filters new/contacted/active).
+        // Vocabulary: lib/contact-promotion/qualification.ts CONTACT_STATUSES.
+        status:     "new",
       }
       if (intentRouting.contactType) newRow.contact_type = intentRouting.contactType
       capturedContactType = (intentRouting.contactType as string | null) ?? null

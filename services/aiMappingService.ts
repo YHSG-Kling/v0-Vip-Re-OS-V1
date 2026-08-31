@@ -2,43 +2,56 @@
 
 import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
+import type { ContactStatus } from "@/lib/contact-promotion/qualification"
+import {
+  STANDARD_CONTACT_PERSONAS,
+  PERSONA_DESCRIPTIONS,
+  type StandardContactPersona,
+} from "@/constants/crm-standards"
 
+/**
+ * REPOINTED (2026-08-31) onto the one `contacts.status` vocabulary —
+ * lib/contact-promotion/qualification.ts CONTACT_STATUSES, the list the m587
+ * CHECK enforces (same treatment as the STANDARD_TIMELINES / STANDARD_SOURCES
+ * repoints recorded above). The eleven-member journey ladder that stood here
+ * (appointment_booked … lifetime_customer) named DEAL/JOURNEY facts carried by
+ * buyer_stage, listings.status, transactions and contact_type — no writer ever
+ * stored any of them on contacts.status, and once the CHECK is applied an
+ * import mapped onto them would be REFUSED ENTIRELY by Postgres (23514), which
+ * supabase-js resolves (§3): the row would simply be lost.
+ *
+ * The mapper's TARGET set is deliberately narrower than the full vocabulary:
+ * 'qualified' is EARNED (owner ruling — see qualification.ts; an import cannot
+ * confer it, so an external "qualified" lands on 'active'), and
+ * 'archived'/'deleted' are outcomes of in-app flows (agent departure, soft
+ * delete with deleted_at), never of a CSV cell.
+ */
 export const STANDARD_CRM_STATUSES = [
   "new",
   "contacted",
-  "qualified",
-  "appointment_booked",
-  "signed_agreement",
-  "pre_listing",
-  "active_listing",
-  "contingent",
-  "pending",
-  "sold",
-  "lifetime_customer",
-] as const
+  "active",
+  "nurture",
+  "inactive",
+] as const satisfies readonly ContactStatus[]
 
 export type StandardCRMStatus = (typeof STANDARD_CRM_STATUSES)[number]
 
-export const STANDARD_CONTACT_PERSONAS = [
-  "first_time_buyer",
-  "luxury_buyer",
-  "luxury_seller",
-  "investor",
-  "first_time_seller",
-  "motivated_seller",
-  "relocating",
-  "empty_nester",
-  "probate",
-  "remote_seller",
-  "divorce",
-  "upsizers",
-  "senior",
-  "expired",
-  "fsbo",
-  "other",
-] as const
-
-export type StandardContactPersona = (typeof STANDARD_CONTACT_PERSONAS)[number]
+// `STANDARD_CONTACT_PERSONAS` / `StandardContactPersona` — LOCAL COPY DELETED
+// (§1.1 / §6, 2026-08-31). SURVIVOR: constants/crm-standards.ts
+// STANDARD_CONTACT_PERSONAS + PERSONA_LABELS + PERSONA_DESCRIPTIONS, imported
+// above — REKEYED THERE onto the live contacts_contact_persona_check vocabulary
+// (13 values: first_time, luxury, relocated, upsize, downsize, military,
+// foreclosure, divorce, probate, senior, expired, fsbo, other).
+//
+// The copy that stood here was 16 members (first_time_buyer, luxury_buyer,
+// motivated_seller, empty_nester, remote_seller, upsizers, …) and mapPersona
+// below normalized every imported persona ONTO it — values the live CHECK
+// REFUSES, so createContact/updateContact (services/supabaseService.ts:236/268)
+// handed Postgres a 23514 on any import that carried a persona, and §3 says
+// that refusal kills the whole row. The mapper now targets the survivor's
+// vocabulary, with its prompt built from PERSONA_DESCRIPTIONS so the two can
+// never drift apart again. The two copies had acquitted each other on the
+// orphan census exactly as the STANDARD_SOURCES note below records.
 
 export const STANDARD_CONTACT_TYPES = [
   "buyer",
@@ -118,17 +131,11 @@ External status: "${externalStatus}"
 Standard CRM statuses (choose ONLY from these - these are the EXACT values we use):
 - new: Brand new contact, not yet contacted
 - contacted: Initial contact made, awaiting response
-- qualified: Vetted and qualified as a serious lead
-- appointment_booked: Has scheduled appointment to meet
-- signed_agreement: Signed buyer/seller agreement
-- pre_listing: Seller preparing to list
-- active_listing: Property actively listed on market
-- contingent: Under contract with contingencies
-- pending: Under contract, pending close
-- sold: Successfully closed transaction
-- lifetime_customer: Past client, now lifetime relationship
+- active: Actively being worked (engaged, qualified externally, in a deal, appointment set)
+- nurture: Long-term nurture / not ready yet / cold but keep in touch
+- inactive: Dormant, lost, dead, unresponsive, or otherwise done for now
 
-Return ONLY the exact status keyword (e.g., "qualified"), nothing else.`,
+Return ONLY the exact status keyword (e.g., "active"), nothing else.`,
         temperature: 0.1, // Low temperature for consistency
       })
 
@@ -157,29 +164,18 @@ Return ONLY the exact status keyword (e.g., "qualified"), nothing else.`,
     try {
       const { text } = await generateText({
         model: resolveModel("openai/gpt-4o-mini"),
+        // The persona list is BUILT from the canonical roster + descriptions
+        // (constants/crm-standards.ts) — the same vocabulary the live
+        // contacts_contact_persona_check enforces — so this prompt can never
+        // again offer the model a value Postgres refuses.
         prompt: `You are a CRM data normalization expert for a real estate platform. Map the following external contact persona to the CLOSEST matching standard persona.
 
 External persona: "${externalPersona}"
 
 Standard contact personas (choose ONLY from these - these are the EXACT values we use):
-- first_time_buyer: First-time home buyer
-- luxury_buyer: Luxury/high-end property buyer
-- luxury_seller: Luxury/high-end property seller
-- investor: Real estate investor
-- first_time_seller: First time selling a property
-- motivated_seller: Needs to sell quickly/urgently
-- relocating: Moving to new area for job/life change
-- empty_nester: Downsizing after kids leave
-- probate: Inherited property, probate sale
-- remote_seller: Selling from distance/remotely
-- divorce: Divorce-related property sale
-- upsizers: Buying larger property, moving up
-- senior: Senior citizen with age-specific needs
-- expired: Expired listing owner
-- fsbo: For Sale By Owner (selling without agent)
-- other: Other/unclassified
+${STANDARD_CONTACT_PERSONAS.map((p) => `- ${p}: ${PERSONA_DESCRIPTIONS[p]}`).join("\n")}
 
-Return ONLY the exact persona keyword (e.g., "first_time_buyer"), nothing else.`,
+Return ONLY the exact persona keyword (e.g., "first_time"), nothing else.`,
         temperature: 0.1,
       })
 
@@ -285,21 +281,20 @@ function fallbackMapStatus(externalStatus: string): StandardCRMStatus {
     return lower as StandardCRMStatus
   }
 
-  // Common variations mapped to specification statuses
-  if (lower.includes("active") || lower.includes("working") || lower.includes("hot")) return "qualified"
-  if (lower.includes("cold") || lower.includes("nurture") || lower.includes("long")) return "new"
-  if (lower.includes("appointment") || lower.includes("scheduled") || lower.includes("meeting"))
-    return "appointment_booked"
-  if (lower.includes("agreement") || lower.includes("signed") || lower.includes("contract signed"))
-    return "signed_agreement"
-  if (lower.includes("pre") && lower.includes("list")) return "pre_listing"
-  if (lower.includes("listing") || lower.includes("listed")) return "active_listing"
-  if (lower.includes("contingent")) return "contingent"
-  if (lower.includes("pending") || lower.includes("under contract")) return "pending"
-  if (lower.includes("sold") || lower.includes("closed") || lower.includes("won")) return "sold"
-  if (lower.includes("lifetime") || lower.includes("past client")) return "lifetime_customer"
+  // Common variations mapped onto the canonical vocabulary (the journey-ladder
+  // targets that stood here — appointment_booked, signed_agreement, …, sold —
+  // named deal facts contacts.status never carried; see STANDARD_CRM_STATUSES).
+  if (lower.includes("qualified")) return "active" // earned in-app, never by import
+  if (lower.includes("active") || lower.includes("working") || lower.includes("hot")) return "active"
+  if (lower.includes("cold") || lower.includes("nurture") || lower.includes("long")) return "nurture"
+  if (lower.includes("appointment") || lower.includes("scheduled") || lower.includes("meeting")) return "active"
+  if (lower.includes("agreement") || lower.includes("signed") || lower.includes("contract")) return "active"
+  if (lower.includes("listing") || lower.includes("listed")) return "active"
+  if (lower.includes("contingent") || lower.includes("pending")) return "active"
+  if (lower.includes("sold") || lower.includes("closed") || lower.includes("won")) return "inactive"
+  if (lower.includes("lifetime") || lower.includes("past client")) return "active"
   if (lower.includes("contact") || lower.includes("touch") || lower.includes("reached")) return "contacted"
-  if (lower.includes("lost") || lower.includes("dead") || lower.includes("unresponsive")) return "new" // Reset to new
+  if (lower.includes("lost") || lower.includes("dead") || lower.includes("unresponsive")) return "inactive"
 
   // Default to new for unknown statuses
   return "new"
@@ -315,18 +310,18 @@ function fallbackMapPersona(externalPersona: string): StandardContactPersona {
     return lower as StandardContactPersona
   }
 
-  if (lower.includes("first") && lower.includes("buy")) return "first_time_buyer"
-  if (lower.includes("first") && lower.includes("sell")) return "first_time_seller"
-  if (lower.includes("luxury") && lower.includes("buy")) return "luxury_buyer"
-  if (lower.includes("luxury") && lower.includes("sell")) return "luxury_seller"
-  if (lower.includes("investor") || lower.includes("investment")) return "investor"
-  if (lower.includes("motivat") || lower.includes("urgent") || lower.includes("quick")) return "motivated_seller"
-  if (lower.includes("relocat") || lower.includes("transfer") || lower.includes("moving")) return "relocating"
-  if (lower.includes("empty") || lower.includes("downsize") || lower.includes("nest")) return "empty_nester"
+  // Matchers target the LIVE persona vocabulary (constants/crm-standards.ts — the rekey note
+  // there records the merge). The old 16-value spellings arrive here as EXTERNAL input now:
+  // "first_time_buyer" → first_time, "empty_nester" → downsize, "upsizers" → upsize, etc.
+  if (lower.includes("first") && (lower.includes("buy") || lower.includes("sell") || lower.includes("time"))) return "first_time"
+  if (lower.includes("luxury") || lower.includes("high-end") || lower.includes("high end")) return "luxury"
+  if (lower.includes("relocat") || lower.includes("transfer") || lower.includes("moving")) return "relocated"
+  if (lower.includes("empty") || lower.includes("downsiz") || lower.includes("nest")) return "downsize"
+  if (lower.includes("upsize") || lower.includes("upgrade") || lower.includes("move up")) return "upsize"
+  if (lower.includes("military") || lower.includes("pcs") || lower.includes("veteran")) return "military"
+  if (lower.includes("foreclos") || lower.includes("pre-foreclos") || lower.includes("short sale")) return "foreclosure"
   if (lower.includes("probate") || lower.includes("estate") || lower.includes("inherit")) return "probate"
-  if (lower.includes("remote") || lower.includes("distance") || lower.includes("out of state")) return "remote_seller"
   if (lower.includes("divorce") || lower.includes("separation")) return "divorce"
-  if (lower.includes("upsize") || lower.includes("upgrade") || lower.includes("move up")) return "upsizers"
   if (lower.includes("senior") || lower.includes("retire") || lower.includes("55+")) return "senior"
   if (lower.includes("expired") || lower.includes("relisting")) return "expired"
   if (lower.includes("fsbo") || lower.includes("for sale by owner") || lower.includes("owner sell")) return "fsbo"

@@ -38,7 +38,10 @@ const RESTRICTED_STATES = new Set([
 export function isEligibleForOutbound(contact: ContactData): boolean {
   if (contact.dnc_status) return false
   if (contact.call_stop_flag) return false
-  if (contact.status === "do_not_contact") return false
+  // status === "do_not_contact" check removed 2026-08-31: no writer has ever
+  // stored that value on contacts.status (the DNC fact lives on dnc_status,
+  // checked above), and m587's CHECK does not admit it. Vocabulary:
+  // lib/contact-promotion/qualification.ts CONTACT_STATUSES.
   if (RESTRICTED_STATES.has(contact.state ?? "") && !contact.tcpa_consent) return false
   return true
 }
@@ -49,7 +52,9 @@ export function getSuppressionReasons(contact: ContactData): string[] {
   if (contact.call_stop_flag) reasons.push("Call Stop Flag")
   if (contact.email_opt_out) reasons.push("Email Opt-Out")
   if (contact.sms_opt_out) reasons.push("SMS Opt-Out")
-  if (contact.status === "do_not_contact") reasons.push("Marked Do Not Contact")
+  // "Marked Do Not Contact" via status removed 2026-08-31 — the DNC fact lives
+  // on dnc_status (reported above); 'do_not_contact' was never a contacts.status
+  // value and m587's CHECK does not admit it.
   if (RESTRICTED_STATES.has(contact.state ?? "") && !contact.tcpa_consent) {
     reasons.push(`Restricted State (${contact.state}) - No TCPA Consent`)
   }

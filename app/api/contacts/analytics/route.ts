@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { QUALIFIED_CONTACT_STATUS } from "@/lib/contact-promotion/qualification"
 
 // TOMBSTONE — this handler took the framework's Request object and read NOTHING
 // from it: no query string, no body, no header. Every input it uses comes from the
@@ -55,18 +56,13 @@ export async function GET() {
         analytics.by_timeline[contact.timeline] = (analytics.by_timeline[contact.timeline] || 0) + 1
     })
 
-    const qualifiedStatuses = [
-      "qualified",
-      "appointment_booked",
-      "signed_agreement",
-      "pre_listing",
-      "active_listing",
-      "contingent",
-      "pending",
-      "sold",
-      "lifetime_customer",
-    ]
-    const qualifiedCount = contacts?.filter((c) => qualifiedStatuses.includes(c.status)).length || 0
+    // 2026-08-31: was 'qualified' plus eight journey-ladder spellings
+    // (appointment_booked … lifetime_customer) that no writer has ever stored on
+    // contacts.status and that the m587 CHECK does not admit — dead members that
+    // could only ever inflate this rate if bad data crept in. 'qualified' is the
+    // EARNED status (lib/contact-promotion/qualification.ts) and is the whole
+    // conversion fact this metric measures. Count unchanged on real data.
+    const qualifiedCount = contacts?.filter((c) => c.status === QUALIFIED_CONTACT_STATUS).length || 0
     analytics.conversion_rate = analytics.total > 0 ? (qualifiedCount / analytics.total) * 100 : 0
 
     return NextResponse.json({ success: true, analytics })

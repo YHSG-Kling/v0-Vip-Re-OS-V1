@@ -1,4 +1,5 @@
-import type { StandardTimeline } from "@/constants/crm-standards"
+import type { StandardTimeline, StandardContactPersona } from "@/constants/crm-standards"
+import type { ContactStatus as CanonicalContactStatus } from "@/lib/contact-promotion/qualification"
 
 export type ContactType =
   | "buyer"
@@ -11,36 +12,26 @@ export type ContactType =
   | "vendor"
   | "TC"
 
-export type ContactPersona =
-  | "first_time_buyer"
-  | "luxury_buyer"
-  | "luxury_seller"
-  | "investor"
-  | "first_time_seller"
-  | "motivated_seller"
-  | "relocating"
-  | "empty_nester"
-  | "probate"
-  | "remote_seller"
-  | "divorce"
-  | "upsizers"
-  | "senior"
-  | "expired"
-  | "fsbo"
-  | "other"
+// REPOINTED (§6, 2026-08-31) onto the ONE persona vocabulary — constants/crm-standards.ts
+// STANDARD_CONTACT_PERSONAS, rekeyed there onto the live contacts_contact_persona_check
+// (13 values: first_time, luxury, relocated, upsize, downsize, military, foreclosure,
+// divorce, probate, senior, expired, fsbo, other — the same set as the kernel `Persona`
+// union and lib/campaigns/contact-sources.ts CAMPAIGN_PERSONAS). The 16-member union that
+// stood here (first_time_buyer, luxury_buyer, motivated_seller, empty_nester, remote_seller,
+// upsizers, …) named values the live CHECK refuses, so a Contact typed with it could never
+// round-trip through the database.
+export type ContactPersona = StandardContactPersona
 
-export type ContactStatus =
-  | "new"
-  | "contacted"
-  | "qualified"
-  | "appointment_booked"
-  | "signed_agreement"
-  | "pre_listing"
-  | "active_listing"
-  | "contingent"
-  | "pending"
-  | "sold"
-  | "lifetime_customer"
+/**
+ * REPOINTED (2026-08-31) to the one `contacts.status` vocabulary —
+ * lib/contact-promotion/qualification.ts CONTACT_STATUSES, the list the m587
+ * CHECK enforces — exactly as ContactTimeline below is an alias of
+ * STANDARD_TIMELINES rather than a copy. The eleven-member journey ladder that
+ * stood here (appointment_booked … lifetime_customer) named DEAL/JOURNEY facts
+ * carried by buyer_stage, listings.status, transactions and contact_type; no
+ * writer ever stored any of them on contacts.status.
+ */
+export type ContactStatus = CanonicalContactStatus
 
 /**
  * REPOINTED to the one timeline vocabulary — constants/crm-standards.ts:STANDARD_TIMELINES.

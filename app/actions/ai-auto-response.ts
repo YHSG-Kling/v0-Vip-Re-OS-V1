@@ -378,7 +378,10 @@ export async function getHotLeads(limit = 50) {
       .select("id, first_name, last_name, email, phone, contact_type, source, lead_score, lead_temperature, created_at")
       .eq("agent_id", agentId)
       .eq("brokerage_id", brokerageId)
-      .or(`lead_score.gte.${HOT_LEAD_SCORE},status.eq.hot`)
+      // 'hot' is a TEMPERATURE, not a status — no writer has ever stored it on
+      // contacts.status (the phantom clause matched nothing); the hot flag lives
+      // on contacts.lead_temperature (live CHECK: cold/hot/warm).
+      .or(`lead_score.gte.${HOT_LEAD_SCORE},lead_temperature.eq.hot`)
       .order("lead_score", { ascending: false, nullsFirst: false })
       .limit(limit)
 

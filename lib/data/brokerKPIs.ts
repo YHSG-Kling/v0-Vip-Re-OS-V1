@@ -38,13 +38,17 @@ export async function getBrokerKPIs(brokerageId: string, timeRange = "7d"): Prom
     .eq("brokerage_id", brokerageId)
     .gte("created_at", startDate.toISOString())
 
-  // Query appointments (contacts with status = 'appointment_booked')
-  const { data: appointments, error: apptError } = await supabase
-    .from("contacts")
-    .select("id")
-    .eq("brokerage_id", brokerageId)
-    .eq("status", "appointment_booked")
-    .gte("updated_at", startDate.toISOString())
+  // Appointments KPI — UNRESOLVED SOURCE (2026-08-31, honest 0 instead of a
+  // blind query). This counted contacts with status='appointment_booked', a
+  // value NO writer has ever stored on contacts.status (its only would-be
+  // writer, the aiMappingService import path, has zero call sites) and one the
+  // m587 CHECK does not admit — so the count was permanently 0 while reading as
+  // a live measurement. Appointment facts live elsewhere (a live `appointments`
+  // table exists but no code queries it and it is absent from
+  // scripts/schema-snapshot.ts, so a query against unverified columns would be
+  // the schema-drift defect §2 exists to stop). Whoever wires this KPI up must
+  // pick the real source; until then the 0 says what it is.
+  const appointments: { id: string }[] = []
 
   // Query signed listings
   const { data: signedListings, error: signedError } = await supabase

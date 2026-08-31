@@ -431,7 +431,11 @@ export async function getBuyerMatchCount(): Promise<{
       .select("id", { count: "exact", head: true })
       .eq("agent_id", agentId)
       .in("contact_type", ["buyer"])
-      .in("status", ["active", "hot", "nurture"])
+      // 'hot' removed 2026-08-31: it is a TEMPERATURE (contacts.lead_temperature,
+      // live CHECK cold/hot/warm), never a contacts.status value — the member
+      // matched nothing, so removing it changes no count. Vocabulary:
+      // lib/contact-promotion/qualification.ts CONTACT_STATUSES.
+      .in("status", ["active", "nurture"])
       .or("budget_min.not.is.null,budget_max.not.is.null")
 
     if (error) {

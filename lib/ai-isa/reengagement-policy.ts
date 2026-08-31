@@ -314,8 +314,20 @@ export function shouldSendGhostOutreach(input: CadenceInput): CadenceDecision {
  *
  * Exported so the detector can pre-filter at the query for efficiency and still
  * be checked against the SAME list post-fetch — one vocabulary, two uses.
+ *
+ * 'do_not_contact' REMOVED 2026-08-31 (§1.1 merge — SURVIVOR: the dnc_status
+ * boolean, which staleContactEligibility below already hard-stops on BEFORE this
+ * list is consulted, and which every writer of the DNC fact actually sets).
+ * No writer has ever stored 'do_not_contact' on contacts.status — the member
+ * matched nothing — and m587 (pending apply) puts a CHECK behind the column
+ * that does not admit it, so keeping it would be a permanently-dead spelling.
+ * Not folded into 'inactive' here: this list is the STATUS half of the gate,
+ * and DNC is a compliance rail, not a lifecycle state. Vocabulary:
+ * lib/contact-promotion/qualification.ts CONTACT_STATUSES / TERMINAL_CONTACT_STATUSES
+ * ('deleted' is deliberately absent from THIS list because both detectors
+ * already gate on `deleted_at`).
  */
-export const NON_ENGAGEABLE_CONTACT_STATUSES = ["do_not_contact", "archived", "inactive"] as const
+export const NON_ENGAGEABLE_CONTACT_STATUSES = ["archived", "inactive"] as const
 
 export interface StaleEligibilityInput {
   last_contacted_at: string | null

@@ -29,6 +29,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { QUALIFIED_CONTACT_STATUS } from "@/lib/contact-promotion/qualification"
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -137,8 +138,17 @@ export async function mineResponseTime(input: MinerInput): Promise<MinerInsight 
       const dt = (new Date(firstAt).getTime() - new Date(c.created_at).getTime()) / 60000
       if (dt >= 0) stats.minutes.push(dt)
     }
-    // Define conversion: contact moved out of 'lead'/'prospect' to engaged
-    if (c.status && !["lead", "prospect", "unqualified"].includes(c.status)) stats.converted++
+    // CONVERSION IS THE EARNED STATUS, NOT "anything but three ghosts".
+    // This line used to count status NOT IN ('lead','prospect','unqualified')
+    // — three values contacts.status has NEVER legitimately held and, since
+    // m587's CHECK, can never hold. Every non-null status therefore counted as
+    // a conversion, the per-agent conversion rate sat at ~100% for everyone,
+    // and the lift this miner exists to surface could not move. 'qualified' is
+    // the one EARNED status (stamped only when a lead conversion stands behind
+    // the contact — lib/contact-promotion/qualification.ts), so it is the only
+    // honest numerator. Direction of the count: DOWN, from a constant to a
+    // measurement (§2).
+    if (c.status === QUALIFIED_CONTACT_STATUS) stats.converted++
     perAgent.set(c.agent_id, stats)
   }
 
@@ -212,8 +222,12 @@ export async function mineAiIsaLift(input: MinerInput): Promise<MinerInsight | n
   const isaOff = list.filter((c) => c.ai_isa_enabled !== true)
   if (isaOn.length < 10 || isaOff.length < 10) return null
 
+  // Same ghost-vocabulary defect as mineResponseTime above (see the note
+  // there): the old exclusion list named values the column can never hold, so
+  // BOTH arms of the ISA lift measured ~100% and the comparison was a
+  // tautology. 'qualified' — the earned status — is the numerator on both arms.
   const convertedShare = (rows: typeof list): number =>
-    rows.filter((c) => c.status && !["lead", "prospect", "unqualified"].includes(c.status)).length / Math.max(rows.length, 1) * 100
+    rows.filter((c) => c.status === QUALIFIED_CONTACT_STATUS).length / Math.max(rows.length, 1) * 100
 
   const onConv = convertedShare(isaOn)
   const offConv = convertedShare(isaOff)

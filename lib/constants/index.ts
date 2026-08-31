@@ -252,8 +252,14 @@ export function normalizeLeadSource(raw: string | null | undefined): LeadSource 
   return LEAD_SOURCE_ALIASES[key] ?? null
 }
 
-export const CONTACT_STATUSES = ["active", "archived", "deleted", "do_not_contact"] as const
-export type ContactStatus = (typeof CONTACT_STATUSES)[number]
+// TOMBSTONE (orphan doctrine §1.1, 2026-08-31) — `CONTACT_STATUSES` /
+// `ContactStatus` deleted from this file. Imported by NOTHING (grepped on
+// stripped source), and its four members were a fragment of the real roster
+// (it lacked 'new'/'contacted'/'nurture'/'qualified' — the values live writers
+// actually store — and carried 'do_not_contact', which no writer ever stored;
+// the DNC fact is the dnc_status column). SURVIVOR:
+// lib/contact-promotion/qualification.ts CONTACT_STATUSES — the vocabulary the
+// m587 CHECK enforces.
 
 // ============================================
 // PROPERTY TYPES

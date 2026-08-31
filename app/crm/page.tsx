@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState, useCallback, useTransition, useRef } from "react"
+import { PRE_QUALIFICATION_CONTACT_STATUSES, CONTACT_STATUS_LABELS, type ContactStatus } from "@/lib/contact-promotion/qualification"
 import { useAuth } from "@/lib/auth/client"
 import { useSearchParams, useRouter } from "next/navigation"
 import { getContacts, getContactById, createContact, addContactNote, archiveContact } from "@/app/actions/contacts"
@@ -3682,11 +3683,14 @@ export default function CRMPage() {
                         contact. An agent can still qualify a contact LATER through
                         the edit path (app/actions/contacts.ts:330 updateContact,
                         which accepts `status`); what is gone is claiming it at the
-                        moment the person is first typed in. */}
-                    <SelectItem value="new">New</SelectItem>
-                    <SelectItem value="contacted">Contacted</SelectItem>
-                    <SelectItem value="nurture">Nurture</SelectItem>
-                    <SelectItem value="active">Active</SelectItem>
+                        moment the person is first typed in.
+                        The options render FROM the vocabulary
+                        (lib/contact-promotion/qualification.ts) rather than
+                        inline strings, so the dropdown cannot drift from the
+                        m587 CHECK. */}
+                    {PRE_QUALIFICATION_CONTACT_STATUSES.map((s) => (
+                      <SelectItem key={s} value={s}>{CONTACT_STATUS_LABELS[s as ContactStatus]}</SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>

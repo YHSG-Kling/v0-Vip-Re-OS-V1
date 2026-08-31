@@ -82,7 +82,10 @@ export async function generateTeamLeadBrief(params: {
         .from("contacts")
         .select("id", { count: "exact", head: true })
         .in("agent_id", teamAgentIds)
-        .eq("status", "hot"),
+        // 'hot' is a TEMPERATURE, not a status — nothing ever wrote it to
+        // contacts.status, so this team count was permanently 0; the flag lives
+        // on contacts.lead_temperature (live CHECK: cold/hot/warm).
+        .eq("lead_temperature", "hot"),
       // AI ISA manager: overnight qualified handoffs INTO this team (tier-scoped).
       supabase
         .from("assignment_log")

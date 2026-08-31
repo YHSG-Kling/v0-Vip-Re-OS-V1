@@ -89,13 +89,17 @@ export function canCreateOffer(params: CanCreateOfferParams): PermissionCheckRes
       }
     }
 
-    // Contact should be at appropriate stage (optional check - can be made stricter)
+    // Contact should be at appropriate stage (optional check - can be made stricter).
+    // 2026-08-31: 'appointment_booked'/'signed_agreement'/'active_listing'/
+    // 'contingent' removed — journey-ladder spellings no writer ever stored on
+    // contacts.status and the m587 CHECK does not admit, so with them in the
+    // list this advisory would have warned on EVERY legitimately 'active'
+    // contact. Deal readiness is buyer_stage/transactions territory; the status
+    // half of "appropriate" is: being worked or earned-qualified. Vocabulary:
+    // lib/contact-promotion/qualification.ts CONTACT_STATUSES.
     const validStatuses: string[] = [
       "qualified",
-      "appointment_booked",
-      "signed_agreement",
-      "active_listing",
-      "contingent",
+      "active",
     ]
     
     if (!validStatuses.includes(contact.status)) {

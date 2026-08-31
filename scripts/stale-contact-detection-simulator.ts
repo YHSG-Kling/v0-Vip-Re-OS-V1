@@ -128,9 +128,19 @@ function pureLayer() {
     check(`status='${s}' is a hard stop (eligible and dormant both false)`,
       r.eligible === false && r.dormant === false && r.reason === "do_not_contact_status")
   }
-  check("the merged status list still contains all three, so neither copy's exclusion was dropped",
-    (["do_not_contact", "archived", "inactive"] as const).every((s) =>
+  // 2026-08-31: was "still contains all three" — a §2 WAYPOINT PIN that failed
+  // the moment the vocabulary work finished. The two inline copies' exclusions
+  // ('archived', 'inactive') are what the merge had to preserve and still must;
+  // 'do_not_contact' was the predicate's own member, never a value any writer
+  // stored on contacts.status, and the m587 CHECK does not admit it — the DNC
+  // capability it stood for is the dnc_status hard stop asserted above. So the
+  // RULE is: both inline exclusions survive, and the retired spelling is GONE
+  // (keeping it in a DB filter would name a value the column can never hold).
+  check("the merged status list keeps BOTH inline copies' exclusions (archived, inactive)",
+    (["archived", "inactive"] as const).every((s) =>
       (NON_ENGAGEABLE_CONTACT_STATUSES as readonly string[]).includes(s)))
+  check("the retired 'do_not_contact' spelling is OFF the status list (survivor: the dnc_status hard stop)",
+    !(NON_ENGAGEABLE_CONTACT_STATUSES as readonly string[]).includes("do_not_contact"))
   check("an ordinary status is NOT swept up by that list",
     ev({ status: "active" }).eligible === true && ev({ status: "new" }).eligible === true)
 

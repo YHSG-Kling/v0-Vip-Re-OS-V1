@@ -439,7 +439,11 @@ export async function aiBatchReengagement(params: {
       .eq("agent_id", params.agentId)
       .eq("brokerage_id", auth.brokerageId)
       .lt("last_contacted_at", inactiveDate)
-      .in("status", ["contacted", "qualified", "nurturing"])
+      // 'nurturing' → 'nurture' (§6, 2026-08-31): spelling drift — no writer has
+      // ever stored 'nurturing' on contacts.status, so that member matched
+      // nothing and nurture-status contacts were invisible to this re-engagement
+      // scan. Vocabulary: lib/contact-promotion/qualification.ts CONTACT_STATUSES.
+      .in("status", ["contacted", "qualified", "nurture"])
       .limit(maxLeads)
 
     if (!coldLeads?.length) {

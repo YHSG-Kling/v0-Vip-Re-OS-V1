@@ -33,6 +33,7 @@ import { timingSafeEqual } from "node:crypto"
 import { createServiceClient } from "@/lib/supabase/service"
 import { bestEffort } from "@/lib/db/best-effort"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
+import { CONTACT_STATUSES, canonicalContactStatus } from "@/lib/contact-promotion/qualification"
 
 export const runtime = "nodejs"
 
@@ -1783,9 +1784,23 @@ async function updateContactStatus(
 ) {
   if (!contactId || !status) return { error: "contact_id + status required" }
 
+  // VOCABULARY GATE (2026-08-31). This status arrives from a model-composed
+  // tool call (the ElevenLabs tool description even suggests 'cold'/'closed'/
+  // 'unsubscribed', none of which contacts.status carries). The m587 CHECK
+  // refuses out-of-vocabulary writes at the database, and supabase-js RESOLVES
+  // that refusal (§3) — so without this gate the voice agent would tell the
+  // user "done" while nothing moved. canonicalContactStatus is the tolerant
+  // reader (maps retired spellings like 'nurturing'/'hot_lead' onto their
+  // survivors); an unmappable value is refused WITH the vocabulary named, so
+  // the agent can re-ask instead of guessing.
+  const canonicalStatus = canonicalContactStatus(status)
+  if (!canonicalStatus) {
+    return { error: `"${status}" is not a contact status. Valid statuses: ${CONTACT_STATUSES.join(", ")}.` }
+  }
+
   const { data, error } = await supabase
     .from("contacts")
-    .update({ status, updated_at: new Date().toISOString() })
+    .update({ status: canonicalStatus, updated_at: new Date().toISOString() })
     .eq("id", contactId)
     .eq("brokerage_id", session.brokerage_id)
     .select("id, first_name, last_name, status")

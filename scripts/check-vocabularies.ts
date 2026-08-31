@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 436 tables, 767 columns.
+ * MEASURED AT GENERATION: 436 tables, 768 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-08-28
+ * generated: 2026-08-31
  * source: public.live_check_constraints_json()
- * body-sha256: a5c339ee7180dc2fee07672ddd3ea91c867171adbc3893675b93a6780a89ff85
+ * body-sha256: cdfdaaf02242186e10cf5f8d3a1334ec5151576d9bb15bc3f57f0b128aadc5e4
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -541,6 +541,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     lifetime_segment: ["local_owner", "relocated"],
     phone_status: ["invalid", "reassigned", "unknown", "valid"],
     referral_potential: ["high", "low", "medium"],
+    status: ["active", "archived", "contacted", "deleted", "inactive", "new", "nurture", "qualified"],
     timeline: ["1-3_months", "12+_months", "3-6_months", "6-12_months", "immediate", "researching"],
   },
   content_ab_tests: {

@@ -6,6 +6,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { hasActiveRepresentation } from "@/lib/kernel/compliance/active-representation"
+import type { ContactStatus } from "@/lib/contact-promotion/qualification"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONTRACTS: Explicit normalized data contracts
@@ -23,7 +24,10 @@ export interface ContactData {
   call_stop_flag?: boolean
   tcpa_consent?: boolean
   opt_out_channels?: string[]
-  status?: "active" | "inactive" | "do_not_contact"
+  /** contacts.status — canonical vocabulary in
+   *  lib/contact-promotion/qualification.ts CONTACT_STATUSES. Only 'inactive'
+   *  matters to compliance (soft warn); the DNC fact lives on dnc_status. */
+  status?: ContactStatus
   state?: string | null
 }
 
@@ -184,10 +188,13 @@ export async function evaluateOutboundCompliance(
     }
 
     // ─── RULE 8: Contact Status (SOFT WARN if inactive) ────────────────────
-    if (contact.status === "inactive" || contact.status === "do_not_contact") {
+    // ('do_not_contact' removed 2026-08-31: never a contacts.status value — the
+    // DNC fact is dnc_status, HARD-blocked at RULE 1; m587's CHECK does not
+    // admit it. Vocabulary: lib/contact-promotion/qualification.ts.)
+    if (contact.status === "inactive") {
       violations.push({
         code: "lifecycle_stage_inactive",
-        message: "Contact marked as inactive or do-not-contact",
+        message: "Contact marked as inactive",
         severity: "soft_warn",
       })
     }
@@ -287,7 +294,8 @@ export async function evaluateOutboundCompliance(
 export function isEligibleForOutbound(contact: ContactData): boolean {
   if (contact.dnc_status || contact.call_stop_flag) return false
   if (contact.email_opt_out || contact.sms_opt_out) return false
-  if (contact.status === "do_not_contact") return false
+  // status === "do_not_contact" removed 2026-08-31 — never a contacts.status
+  // value; the DNC fact is dnc_status, checked above.
   return true
 }
 
@@ -301,7 +309,8 @@ export function getSuppressionReasons(contact: ContactData): string[] {
   if (contact.call_stop_flag) reasons.push("Call Stop Flag")
   if (contact.email_opt_out) reasons.push("Email Opt-Out")
   if (contact.sms_opt_out) reasons.push("SMS Opt-Out")
-  if (contact.status === "do_not_contact") reasons.push("Marked Do Not Contact")
+  // "Marked Do Not Contact" via status removed 2026-08-31 — dnc_status (above)
+  // is the DNC rail; 'do_not_contact' was never a contacts.status value.
   if (RESTRICTED_STATES.has(contact.state ?? "") && !contact.tcpa_consent) {
     reasons.push(`Restricted State (${contact.state}) - No TCPA Consent`)
   }
