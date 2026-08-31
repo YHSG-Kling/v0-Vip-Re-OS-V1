@@ -70,3 +70,32 @@ export const BUYER_ACTIVE_STAGES = BUYER_STAGES.filter(
  * Was the literal 'toured', which the column has never admitted.
  */
 export const BUYER_SHOWING_FEEDBACK_STAGE = "BUYER_TOURING" as const
+
+/**
+ * Human wording for each ladder state — THE one place a surface gets it.
+ *
+ * Added when the CRM buyer-match panel turned out to render its own seven-value
+ * stage dropdown (new / nurturing / active / qualified / under_contract /
+ * closed / lost) and write the choice to contacts.buyer_stage — where the CHECK
+ * admits only the thirteen BUYER_* tokens above, so Postgres refused EVERY save
+ * that dropdown ever attempted (23514; the panel toasted "Failed to update
+ * stage" each time). A third consumer failing on invented spellings is exactly
+ * why this module's header says a shared, guarded roster is the only thing that
+ * makes drift visible. Keyed Record<BuyerStage, string>, so adding a ladder
+ * state without wording fails to compile.
+ */
+export const BUYER_STAGE_LABELS: Record<BuyerStage, string> = {
+  BUYER_CONTACT_CREATED:    "New buyer",
+  BUYER_FINANCIALLY_VERIFIED: "Financially verified",
+  BUYER_SEARCH_CONFIGURED:  "Search configured",
+  BUYER_SEARCHING:          "Searching",
+  BUYER_TOUR_ELIGIBLE:      "Ready to tour",
+  BUYER_TOURING:            "Touring",
+  BUYER_OFFER_ELIGIBLE:     "Ready to offer",
+  BUYER_OFFER_SUBMITTED:    "Offer submitted",
+  BUYER_UNDER_CONTRACT:     "Under contract",
+  BUYER_ON_HOLD:            "On hold",
+  BUYER_DISENGAGED:         "Disengaged",
+  BUYER_CLOSED:             "Closed",
+  BUYER_LIFETIME:           "Lifetime client",
+}
