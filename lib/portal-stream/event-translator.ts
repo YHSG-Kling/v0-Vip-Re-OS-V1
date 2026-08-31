@@ -20,27 +20,36 @@
  * automatically — the translator only declares whether an action is owed.
  */
 
-/** Mirrors lib/buyer-search/persona-inference.BuyerPersona plus the seller
- *  persona values used in lib/kernel/brand-voice.ts. We widen to plain
- *  string because contact_persona is `text` in the live schema and can
- *  hold either family of values (or a custom one). */
+/** The LIVE contacts.contact_persona vocabulary — the thirteen values the
+ *  contacts_contact_persona_check admits (scripts/check-vocabularies.ts),
+ *  because that is the only place the projector cron reads a persona from.
+ *  This union USED to mirror a retired 16-value spelling set
+ *  (first_time_buyer, move_up_buyer, downsizer, luxury_buyer, bargain_hunter,
+ *  relocation, investor, …) and every byPersona() table below keyed its copy
+ *  on those spellings — values the CHECK refuses, so the persona-tuned copy
+ *  this module exists for could never fire: every contact fell through to the
+ *  neutral fallback. Five keys mapped forward (first_time_buyer→first_time,
+ *  luxury_buyer→luxury, downsizer→downsize, relocation→relocated,
+ *  move_up_buyer→upsize); `investor` and `bargain_hunter` have NO live
+ *  equivalent — the roster rekey dropped investor deliberately — so their
+ *  branches were removed rather than left as unreachable copy; the neutral
+ *  fallback covers those contacts, and re-adding an investor persona is a
+ *  vocabulary migration, not a translator key. Still widened by `| string`
+ *  so a null/legacy row degrades to the fallback instead of a type error. */
 export type ContactPersona =
-  // Buyer personas
-  | "first_time_buyer"
-  | "move_up_buyer"
-  | "investor"
-  | "relocation"
-  | "downsizer"
-  | "luxury_buyer"
-  | "bargain_hunter"
-  // Seller personas
-  | "expired"
-  | "fsbo"
+  | "first_time"
+  | "luxury"
+  | "relocated"
+  | "upsize"
+  | "downsize"
+  | "military"
+  | "foreclosure"
   | "divorce"
   | "probate"
-  | "foreclosure"
-  | "military"
-  // Catch-all
+  | "senior"
+  | "expired"
+  | "fsbo"
+  | "other"
   | "undetermined"
   | string
 
@@ -89,10 +98,9 @@ const TRANSLATIONS: Record<string, Builder> = {
     const addrStr  = propertyAddress ? ` on ${propertyAddress}` : ""
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: `📤 Your first-home offer${priceStr} was submitted${addrStr}. Take a breath — we'll hear back soon and walk you through every step.`,
-        investor:         `📤 Offer${priceStr} submitted${addrStr}. Listing agent acknowledgment pending; due-diligence window queued.`,
-        downsizer:        `📤 Your offer${priceStr} on ${propertyAddress ?? "the property"} is in. We'll keep you posted as the response comes back.`,
-        luxury_buyer:     `📤 Offer${priceStr} delivered${addrStr}. Listing agent will respond shortly.`,
+        first_time: `📤 Your first-home offer${priceStr} was submitted${addrStr}. Take a breath — we'll hear back soon and walk you through every step.`,
+        downsize:        `📤 Your offer${priceStr} on ${propertyAddress ?? "the property"} is in. We'll keep you posted as the response comes back.`,
+        luxury:     `📤 Offer${priceStr} delivered${addrStr}. Listing agent will respond shortly.`,
       }, `📤 Your offer${priceStr} was submitted${addrStr}. Listing agent will respond.`),
       customerIcon:        "📤",
       agentCopy:           `Offer submitted${priceStr} — listing agent will respond`,
@@ -107,9 +115,7 @@ const TRANSLATIONS: Record<string, Builder> = {
     const addrStr = propertyAddress ? ` on ${propertyAddress}` : ""
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: `📩 The seller sent back a counter${counter}${addrStr}. Don't worry — this is normal. Your agent is preparing your response and will explain the options before you decide.`,
-        investor:         `📩 Counter received${counter}${addrStr}. Negotiation Co-Pilot will model the trade-off before reply.`,
-        bargain_hunter:   `📩 Seller countered${counter}${addrStr}. Your agent will look for room to push back.`,
+        first_time: `📩 The seller sent back a counter${counter}${addrStr}. Don't worry — this is normal. Your agent is preparing your response and will explain the options before you decide.`,
       }, `📩 Seller countered your offer${addrStr}${counter}. Your agent is preparing a response.`),
       customerIcon:        "📩",
       agentCopy:           `Counter received — Negotiation Co-Pilot will draft a response`,
@@ -123,11 +129,10 @@ const TRANSLATIONS: Record<string, Builder> = {
     const addrStr = propertyAddress ? ` on ${propertyAddress}` : ""
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: `🎉 They said yes! Your offer was accepted${addrStr}. Welcome to the under-contract phase — we'll guide you through inspection, appraisal, and closing day, step by step.`,
-        investor:         `🎉 Acquisition secured${addrStr}. Under contract — due-diligence period now active.`,
-        downsizer:        `🎉 Offer accepted${addrStr}! Time to plan the transition from your current home.`,
-        luxury_buyer:     `🎉 Offer accepted${addrStr}. Moving to contract.`,
-        relocation:       `🎉 Offer accepted${addrStr} — perfect timing for your move. Closing schedule will lock in soon.`,
+        first_time: `🎉 They said yes! Your offer was accepted${addrStr}. Welcome to the under-contract phase — we'll guide you through inspection, appraisal, and closing day, step by step.`,
+        downsize:        `🎉 Offer accepted${addrStr}! Time to plan the transition from your current home.`,
+        luxury:     `🎉 Offer accepted${addrStr}. Moving to contract.`,
+        relocated:       `🎉 Offer accepted${addrStr} — perfect timing for your move. Closing schedule will lock in soon.`,
         military:         `🎉 Offer accepted${addrStr}. We'll align the closing timeline with your orders.`,
       }, `🎉 Your offer was accepted${addrStr}! Going under contract.`),
       customerIcon:        "🎉",
@@ -142,9 +147,7 @@ const TRANSLATIONS: Record<string, Builder> = {
     const addrStr = propertyAddress ? ` on ${propertyAddress}` : ""
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: `Heads up — this offer didn't land${addrStr}. That happens, and it's not a setback. Your agent is already lining up the next options that fit you better.`,
-        investor:         `Offer didn't clear${addrStr}. Pipeline review queued — your agent will surface the next deal.`,
-        bargain_hunter:   `Offer rejected${addrStr}. Your agent is hunting the next undervalued opportunity.`,
+        first_time: `Heads up — this offer didn't land${addrStr}. That happens, and it's not a setback. Your agent is already lining up the next options that fit you better.`,
       }, `Heads up — your offer wasn't accepted${addrStr}. Your agent is looking at next steps.`),
       customerIcon:        "💬",
       agentCopy:           `Offer rejected — review alternative properties with the buyer`,
@@ -159,9 +162,8 @@ const TRANSLATIONS: Record<string, Builder> = {
     const addrStr = propertyAddress ? ` on ${propertyAddress}` : ""
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: `📋 You're officially under contract${addrStr}! Big step. Inspection and appraisal are next — your agent will set up everything and explain what each one means.`,
-        investor:         `📋 Under contract${addrStr}. Inspection + appraisal windows opened.`,
-        downsizer:        `📋 Under contract${addrStr}! Now we coordinate your current-home timing with this purchase.`,
+        first_time: `📋 You're officially under contract${addrStr}! Big step. Inspection and appraisal are next — your agent will set up everything and explain what each one means.`,
+        downsize:        `📋 Under contract${addrStr}! Now we coordinate your current-home timing with this purchase.`,
       }, `📋 You're under contract${addrStr}! Inspection + appraisal coming up.`),
       customerIcon:        "📋",
       agentCopy:           `Under contract — start closing prep workflow`,
@@ -175,8 +177,7 @@ const TRANSLATIONS: Record<string, Builder> = {
     const date = metadata?.scheduled_date ? ` for ${new Date(String(metadata.scheduled_date)).toLocaleDateString()}` : ""
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: `🔍 Inspection scheduled${date}. The inspector will check everything top-to-bottom; your agent will translate the report into what actually matters.`,
-        investor:         `🔍 Inspection scheduled${date}. Findings review ~2 business days post-inspection.`,
+        first_time: `🔍 Inspection scheduled${date}. The inspector will check everything top-to-bottom; your agent will translate the report into what actually matters.`,
       }, `🔍 Inspection scheduled${date}. Typical findings review takes 2–3 days.`),
       customerIcon:        "🔍",
       agentCopy:           `Inspection scheduled — prep findings review`,
@@ -188,8 +189,7 @@ const TRANSLATIONS: Record<string, Builder> = {
 
   "inspection.completed": ({ persona }) => ({
     customerCopy: byPersona(persona, {
-      first_time_buyer: `✅ Inspection done — your agent has the report and will walk you through everything that came back. Anything that needs a conversation, we'll have it together.`,
-      investor:         `✅ Inspection complete. Repair Co-Pilot ready for line-item negotiation.`,
+      first_time: `✅ Inspection done — your agent has the report and will walk you through everything that came back. Anything that needs a conversation, we'll have it together.`,
     }, `✅ Inspection complete — your agent is reviewing the report and will discuss findings.`),
     customerIcon:        "✅",
     agentCopy:           `Inspection complete — Repair Co-Pilot ready when you are`,
@@ -212,12 +212,9 @@ const TRANSLATIONS: Record<string, Builder> = {
     const valStr = val ? `$${Math.round(val).toLocaleString()}` : ""
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: val
+        first_time: val
           ? `✅ Appraisal came back at ${valStr}. Your agent will explain what this means — most of the time it's good news.`
           : `✅ Appraisal came back. Your agent will explain what this means.`,
-        investor: val
-          ? `✅ Appraisal returned ${valStr}. ARV impact + lender position review queued.`
-          : `✅ Appraisal returned. Lender position review queued.`,
       }, val
         ? `✅ Appraisal completed at ${valStr}. Your agent will explain what this means for your deal.`
         : `✅ Appraisal completed. Your agent will explain what this means for your deal.`),
@@ -231,8 +228,7 @@ const TRANSLATIONS: Record<string, Builder> = {
 
   "financing.cleared": ({ persona }) => ({
     customerCopy: byPersona(persona, {
-      first_time_buyer: `✅ Your loan is officially cleared to close. The biggest hurdle is now behind you — you're moving toward signing day!`,
-      investor:         `✅ Clear to close. Final walkthrough + settlement next.`,
+      first_time: `✅ Your loan is officially cleared to close. The biggest hurdle is now behind you — you're moving toward signing day!`,
     }, `✅ Financing cleared! One major hurdle behind you.`),
     customerIcon:        "✅",
     agentCopy:           `Loan clear-to-close — final walkthrough next`,
@@ -245,9 +241,8 @@ const TRANSLATIONS: Record<string, Builder> = {
     const date = metadata?.closing_date ? ` for ${new Date(String(metadata.closing_date)).toLocaleDateString()}` : ""
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: `🗓 Closing scheduled${date}! Your agent will set up the final walkthrough and let you know exactly what to bring on signing day.`,
-        investor:         `🗓 Settlement scheduled${date}. Final walkthrough + wire instructions inbound.`,
-        downsizer:        `🗓 Closing scheduled${date}. Let's also lock the move-out timing for your current home.`,
+        first_time: `🗓 Closing scheduled${date}! Your agent will set up the final walkthrough and let you know exactly what to bring on signing day.`,
+        downsize:        `🗓 Closing scheduled${date}. Let's also lock the move-out timing for your current home.`,
       }, `🗓 Closing scheduled${date}. Final walkthrough + paperwork prep coming.`),
       customerIcon:        "🗓",
       agentCopy:           `Closing scheduled — confirm with title + walkthrough`,
@@ -261,11 +256,10 @@ const TRANSLATIONS: Record<string, Builder> = {
     const addrStr = propertyAddress ? ` on ${propertyAddress}` : ""
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: `🎉 You're a homeowner! Congratulations${addrStr}. This portal stays open for you — it'll track your equity, alert you to refinance moments, and keep you connected to your agent for the long haul.`,
-        investor:         `🎉 Acquisition closed${addrStr}. Asset live in your portal — equity + cash-flow tracking on.`,
-        downsizer:        `🎉 Closed${addrStr}. New chapter begins. Your portal will help with the transition and stay with you long-term.`,
-        luxury_buyer:     `🎉 Closing complete${addrStr}. Welcome to your new property — your concierge portal is now active.`,
-        relocation:       `🎉 Closed${addrStr} — welcome to your new city. The portal will keep you connected to your agent here.`,
+        first_time: `🎉 You're a homeowner! Congratulations${addrStr}. This portal stays open for you — it'll track your equity, alert you to refinance moments, and keep you connected to your agent for the long haul.`,
+        downsize:        `🎉 Closed${addrStr}. New chapter begins. Your portal will help with the transition and stay with you long-term.`,
+        luxury:     `🎉 Closing complete${addrStr}. Welcome to your new property — your concierge portal is now active.`,
+        relocated:       `🎉 Closed${addrStr} — welcome to your new city. The portal will keep you connected to your agent here.`,
         military:         `🎉 Closed${addrStr}. Stationed in your new home — your portal moves with you wherever orders take you next.`,
       }, `🎉 Congratulations — you're closed${addrStr}! Welcome to your new home. Your portal stays open forever.`),
       customerIcon:        "🎉",
@@ -284,7 +278,7 @@ const TRANSLATIONS: Record<string, Builder> = {
         expired:   `🏠 Your home${addrStr} is live again — this time with the marketing plan we built together.`,
         fsbo:      `🏠 Your home${addrStr} is live on MLS with full agent representation. Showings start now.`,
         divorce:   `🏠 Your listing${addrStr} is live. Discreet showings only — your privacy preferences are locked in.`,
-        downsizer: `🏠 Your listing${addrStr} is live! Showings begin now — we'll keep the schedule manageable.`,
+        downsize: `🏠 Your listing${addrStr} is live! Showings begin now — we'll keep the schedule manageable.`,
       }, `🏠 Your listing${addrStr} is live on MLS! Showings start now.`),
       customerIcon:        "🏠",
       agentCopy:           `Listing went live — open house + marketing campaigns trigger`,
@@ -325,13 +319,10 @@ const TRANSLATIONS: Record<string, Builder> = {
     const savingsStr = savings ? `~$${Math.round(savings).toLocaleString()}/mo` : ""
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: savings
+        first_time: savings
           ? `💡 Mortgage rates moved — you might save ${savingsStr} every month by refinancing. No pressure; want me to walk you through it?`
           : `💡 Mortgage rates moved — there may be a refinance worth talking about. No pressure.`,
-        investor:         savings
-          ? `💡 Refinance opportunity: ${savingsStr} on this asset. Cash-out scenarios available.`
-          : `💡 Refinance opportunity on this asset. Cash-out scenarios available.`,
-        downsizer:        savings
+        downsize:        savings
           ? `💡 Rates dropped — there may be a refinance worth exploring (~${savingsStr}). Happy to model it if helpful.`
           : `💡 Rates dropped — refinance worth a look. Happy to model it.`,
       }, savings
@@ -350,9 +341,8 @@ const TRANSLATIONS: Record<string, Builder> = {
     const equityStr = equity ? `past $${Math.round(equity).toLocaleString()}` : "to a new milestone"
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: `📈 Big moment — your home equity grew ${equityStr}. That's real wealth you've built. Want to talk through what's possible?`,
-        investor:         `📈 Equity milestone ${equityStr}. Cash-out + 1031 + portfolio-balance scenarios available.`,
-        downsizer:        `📈 Your equity ${equityStr}. Good moment to chat options — sell, downsize, or hold.`,
+        first_time: `📈 Big moment — your home equity grew ${equityStr}. That's real wealth you've built. Want to talk through what's possible?`,
+        downsize:        `📈 Your equity ${equityStr}. Good moment to chat options — sell, downsize, or hold.`,
       }, `📈 Your home equity grew ${equityStr}!`),
       customerIcon:        "📈",
       agentCopy:           `Equity milestone for contact — perfect referral-ask moment`,
@@ -367,16 +357,13 @@ const TRANSLATIONS: Record<string, Builder> = {
     const yearStr = years ? `${years}-year` : ""
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: years
+        first_time: years
           ? `🎉 Happy ${yearStr} anniversary in your first home! Thinking of you — your agent reached out personally.`
           : `🎉 Happy anniversary in your first home! Thinking of you.`,
-        investor:         years
-          ? `🎉 ${yearStr} anniversary on this property. Performance snapshot enclosed.`
-          : `🎉 Anniversary on this property. Performance snapshot enclosed.`,
-        downsizer:        years
+        downsize:        years
           ? `🎉 Happy ${yearStr} in your new place! Hope it's still feeling like home.`
           : `🎉 Happy anniversary in your new place!`,
-        luxury_buyer:     years
+        luxury:     years
           ? `🎉 ${yearStr} anniversary at your residence. A personal note from your agent.`
           : `🎉 Anniversary at your residence. A personal note from your agent.`,
       }, years
@@ -427,12 +414,10 @@ const TRANSLATIONS: Record<string, Builder> = {
     :                                          "with a thoughtful next step"
     return {
       customerCopy: byPersona(persona, {
-        first_time_buyer: `🧠 Your agent prepared a plain-language analysis of where this stands and recommends ${actionWord}${winPct != null ? ` — ${winPct}% likelihood` : ""}. Read it on your portal.`,
-        investor:         `🧠 Negotiation analysis ready — agent recommends ${actionWord}${winPct != null ? `; ${winPct}% confidence` : ""}.`,
-        downsizer:        `🧠 Your agent has prepared a clear summary of the negotiation and a recommendation${winPct != null ? ` (${winPct}% likelihood)` : ""} for you to review.`,
-        luxury_buyer:     `🧠 Strategy analysis ready${winPct != null ? ` (${winPct}% probability)` : ""} — your agent recommends ${actionWord}.`,
-        bargain_hunter:   `🧠 We modeled the trade — agent recommends ${actionWord}${winPct != null ? `; ${winPct}% to close at this position` : ""}.`,
-        relocation:       `🧠 Negotiation plan ready — your agent recommends ${actionWord}, aligned with your timeline.`,
+        first_time: `🧠 Your agent prepared a plain-language analysis of where this stands and recommends ${actionWord}${winPct != null ? ` — ${winPct}% likelihood` : ""}. Read it on your portal.`,
+        downsize:        `🧠 Your agent has prepared a clear summary of the negotiation and a recommendation${winPct != null ? ` (${winPct}% likelihood)` : ""} for you to review.`,
+        luxury:     `🧠 Strategy analysis ready${winPct != null ? ` (${winPct}% probability)` : ""} — your agent recommends ${actionWord}.`,
+        relocated:       `🧠 Negotiation plan ready — your agent recommends ${actionWord}, aligned with your timeline.`,
       }, `🧠 Your agent has prepared a negotiation analysis — read the recommendation on your portal.`),
       customerIcon:        "🧠",
       agentCopy:           `Co-Pilot strategy ready: ${action ?? "review"}${winPct != null ? ` (${winPct}% win)` : ""}`,

@@ -7,6 +7,7 @@
  */
 
 import type { StandardTimeline } from "@/constants/crm-standards"
+import type { ContactStatus as CanonicalContactStatus } from "@/lib/contact-promotion/qualification"
 
 // ============================================
 // LEAD
@@ -99,36 +100,39 @@ export type ContactType =
   | "tc"
   | "other"
 
+// REKEYED (§6, 2026-08-31) — this union used to spell the RETIRED 16-value
+// persona set (first_time_buyer, motivated_seller, upsizers, remote_seller, …),
+// none of which the live contacts_contact_persona_check admits: any write typed
+// by it was a 23514 that rejected the whole row (§3). Its last literal producer
+// was offer-lifecycle's dead promotion path, deleted the same day (see the
+// tombstone there naming promoteLeadToContactService as the survivor). Now the
+// thirteen values the CHECK admits, kept in lockstep with the canonical kernel
+// Persona union and constants/crm-standards.ts — the CHECK is the authority.
 export type ContactPersona =
-  | "first_time_buyer"
-  | "luxury_buyer"
-  | "luxury_seller"
-  | "investor"
-  | "first_time_seller"
-  | "motivated_seller"
-  | "relocating"
-  | "empty_nester"
-  | "probate"
-  | "remote_seller"
+  | "first_time"
+  | "luxury"
+  | "relocated"
+  | "upsize"
+  | "downsize"
+  | "military"
+  | "foreclosure"
   | "divorce"
-  | "upsizers"
+  | "probate"
   | "senior"
   | "expired"
   | "fsbo"
   | "other"
 
-export type ContactStatus =
-  | "new"
-  | "contacted"
-  | "qualified"
-  | "appointment_booked"
-  | "signed_agreement"
-  | "pre_listing"
-  | "active_listing"
-  | "contingent"
-  | "pending"
-  | "sold"
-  | "lifetime_customer"
+/**
+ * REPOINTED (2026-08-31) to the one `contacts.status` vocabulary —
+ * lib/contact-promotion/qualification.ts CONTACT_STATUSES, the list the m587
+ * CHECK enforces. The eleven-member journey ladder that stood here
+ * (appointment_booked … lifetime_customer) described DEAL/JOURNEY facts that
+ * live on buyer_stage, listings.status, transactions and contact_type — no
+ * writer ever stored any of them on contacts.status. Same repoint as
+ * ContactTimeline below: an alias of a single exported list, never a copy.
+ */
+export type ContactStatus = CanonicalContactStatus
 
 /**
  * REPOINTED to the one timeline vocabulary — constants/crm-standards.ts:STANDARD_TIMELINES.
