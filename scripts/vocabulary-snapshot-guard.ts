@@ -44,21 +44,24 @@
  *   · cause 1 retires by RECONCILING (regenerate the cache; the DB was right)
  *   · cause 2 retires by APPLYING (run the migration; the FILE was right)
  *
- *   contacts.contact_persona — declared by
- *   m531-contact-persona-is-free-text-and-has-drifted-off-the-canon…sql, which
- *   pins the column to the 13-member canonical Persona union so an audience
- *   basis can be trusted (owner ruling: "audience should be segmented on
- *   persona"). It normalises every known alias and then REFUSES rather than
- *   inventing a persona for the residue. The residue is two live rows:
- *     Robert  contact_type='seller' contact_persona='listing_seller'
- *             — the persona merely restates the type; clearing it loses nothing
- *     James   contact_type='both'   contact_persona='past_client'
- *             — and lifecycle_state on that SAME row is 'new', so the record
- *               says he is a past client and a new contact at once
- *   Neither names a transaction SITUATION, which is what a persona is. Deciding
- *   whether they become contact_type and clear, or whether the union widens, is
- *   a product call, not a cleanup — so the migration waits rather than guessing,
- *   and this entry says WHY instead of the guard going quiet.
+ *   RETIRED 2026-08-31 — contacts.contact_persona, the cause-2 entry this
+ *   paragraph existed for. It retired by a THIRD route neither cause listed: a
+ *   SUCCESSOR migration. m589 (APPLIED) put the CHECK on the live column with
+ *   the owner's ruling resolved ("investor is a persona and not a contact
+ *   type" — fourteen values), m531's residue rows were normalised along the
+ *   way, and the regenerated snapshot agrees with m589 — so the disagreement
+ *   dissolved rather than being reconciled or applied as originally framed.
+ *   Kept here because the two-cause taxonomy above is incomplete without it.
+ *
+ * BASELINED 2026-08-31, cause 1 — users.platform_role. Visible only since the
+ * parser learned the IN(…) spelling (036 was invisible before that): 036
+ * declares ('superadmin','ai_isa_system'), the live CHECK holds five —
+ * 'admin', 'marketing' and 'support' are the platform-staff tiers (the same
+ * trio platform_role_capability_overrides.role enforces) and were widened onto
+ * the column outside the migrations directory. The DB is right; the snapshot
+ * carries all five; the newest in-repo declaration is simply older than the
+ * live constraint. Retires the day a migration re-declares the five-member
+ * list.
  *
  * DO NOT re-run UPDATE_VOCAB_SNAPSHOT_BASELINE=1 to absorb a cause-2 entry
  * without recording it here. A baseline that cannot tell "we accepted this" from
@@ -113,9 +116,57 @@ export interface CheckDeclaration {
  */
 
 /**
- * PURE — every `ADD CONSTRAINT … CHECK (<col> = ANY (ARRAY[…]))` in one migration,
- * with the table resolved from the nearest preceding ALTER TABLE.
+ * PURE — every `ADD CONSTRAINT … CHECK (<col> = ANY (ARRAY[…]))` AND every
+ * `ADD CONSTRAINT … CHECK (<col> IN (…))` in one migration, with the table
+ * resolved from the nearest preceding ALTER TABLE.
+ *
+ * THE IN(…) FORM IS NOT OPTIONAL. Postgres itself normalises `col IN ('a','b')`
+ * to `col = ANY (ARRAY['a','b'])` — they are the SAME declaration — but this
+ * parser only knew the ANY spelling, so any migration written in the IN spelling
+ * was INVISIBLE to it. The failure that exposed it (2026-08-31): m589 and m591
+ * widened contact_persona/persona to fourteen values using `IN (…)`; the parser
+ * skipped both files, kept m531/m294 as the "latest" declarations, and accused
+ * the freshly-regenerated snapshot of drift ("extra [investor]") — a §2 guard
+ * blind to the code it judges, going red BECAUSE the work was done correctly.
+ * Twenty-six migrations in this repo use the IN spelling.
+ *
+ * AND THE SCAN IS BOUNDED TO THE CHECK'S OWN PARENTHESES. The first draft of
+ * the IN widening searched lazily forward from `CHECK (` with no bound, so an
+ * `ADD CONSTRAINT … CHECK (…)` whose body contained neither form let the scan
+ * run PAST the closing paren into unrelated SQL — m484's `conname in ('…')`
+ * (a pg_constraint verification query inside a DO block) and m573's inline
+ * `check (status in ('posted','received','void'))` on a CREATE TABLE both got
+ * reported as ALTER-TABLE vocabulary declarations for the wrong table. The
+ * parser now extracts the balanced paren group after CHECK (quote-aware) and
+ * searches only inside it.
+ *
+ * Known residuals: (1) the IN value list inside a CHECK is read up to the
+ * expression's own parens, so a vocabulary VALUE containing a close-paren
+ * would still truncate — no CHECK vocabulary in this repo has one, and the
+ * positive controls below would fail the day one appears. (2) Inline
+ * `check (col in (…))` column constraints on CREATE TABLE are OUT OF SCOPE by
+ * design — this guard reads ALTER TABLE … ADD CONSTRAINT declarations, the
+ * form every vocabulary migration here uses; a new table's inline vocabulary
+ * reaches the snapshot through regeneration, not through this parser.
  */
+/** Balanced paren group starting at sql[open] === "(", respecting '…' strings. */
+function balancedParen(sql: string, open: number): string | null {
+  let depth = 0, inString = false
+  for (let i = open; i < sql.length; i++) {
+    const ch = sql[i]
+    if (inString) {
+      if (ch === "'") {
+        if (sql[i + 1] === "'") { i++; continue } // escaped '' stays inside the string
+        inString = false
+      }
+      continue
+    }
+    if (ch === "'") inString = true
+    else if (ch === "(") depth++
+    else if (ch === ")") { depth--; if (depth === 0) return sql.slice(open + 1, i) }
+  }
+  return null
+}
 export function parseCheckDeclarations(rawSql: string, migration: string): CheckDeclaration[] {
   const sql = stripSqlComments(rawSql)
   const out: CheckDeclaration[] = []
@@ -127,11 +178,27 @@ export function parseCheckDeclarations(rawSql: string, migration: string): Check
     const start = alters[i].index! + alters[i][0].length
     const end = i + 1 < alters.length ? alters[i + 1].index! : sql.length
     const body = sql.slice(start, end)
-    for (const m of body.matchAll(
-      /ADD\s+CONSTRAINT\s+[\w"]+\s+CHECK\s*\([\s\S]*?["]?(\w+)["]?\s*=\s*ANY\s*\(\s*ARRAY\s*\[([\s\S]*?)\]/gi,
-    )) {
-      const column = m[1]
-      const values = [...m[2].matchAll(/'((?:[^']|'')*)'/g)].map((v) => v[1].replace(/''/g, "'"))
+    for (const m of body.matchAll(/ADD\s+CONSTRAINT\s+[\w"]+\s+CHECK\s*(?=\()/gi)) {
+      const expr = balancedParen(body, m.index! + m[0].length)
+      if (expr === null) continue
+      // A CHECK declares a vocabulary only when its WHOLE expression is the
+      // membership test, optionally prefixed by `col IS NULL OR`. Matching the
+      // membership test anywhere INSIDE the expression mis-read m498's compound
+      // coherence constraint — `… OR (status IN ('pending','active') AND
+      // price_basis = 'list_price' …)` — as a later, narrower re-declaration of
+      // cma_comparables.status, and accused the snapshot of the very value
+      // ('closed') the real vocabulary CHECK two statements earlier declares.
+      // Conditional membership inside a compound expression constrains a
+      // COMBINATION of columns; it does not declare what the column may hold.
+      const hit = expr.match(
+        /^\s*\(*\s*(?:["]?(\w+)["]?\s+IS\s+NULL\s*\)?\s+OR\s+\(*\s*)?["]?(\w+)["]?\s*(?:\)\s*)?(?:::\w+\s*)?(?:=\s*ANY\s*\(\s*ARRAY\s*\[([\s\S]*?)\]\s*(?:::\w+(?:\[\])?\s*)?\)|IN\s*\(([\s\S]*?)\))\s*\)*\s*$/i,
+      )
+      if (!hit) continue
+      const column = hit[2]
+      // The IS-NULL prefix, when present, must guard the SAME column — a
+      // `a IS NULL OR b IN (…)` cross-column implication is not a vocabulary.
+      if (hit[1] && hit[1].toLowerCase() !== column.toLowerCase()) continue
+      const values = [...(hit[3] ?? hit[4]).matchAll(/'((?:[^']|'')*)'/g)].map((v) => v[1].replace(/''/g, "'"))
       if (values.length) out.push({ table, column, values, migration })
     }
   }
@@ -184,6 +251,37 @@ console.log("\n[pure — the SQL parser]")
   check("a commented-out CHECK is not a declaration",
     parseCheckDeclarations("-- ALTER TABLE public.x ADD CONSTRAINT c CHECK (y = ANY (ARRAY['z']))", "m.sql").length === 0)
 
+  // The IN(…) spelling — the form m589/m591 used and this parser was blind to.
+  const inForm = parseCheckDeclarations(`
+    ALTER TABLE public.contacts
+      ADD CONSTRAINT contacts_contact_persona_check
+      CHECK (contact_persona IS NULL OR contact_persona IN (
+        'first_time', 'investor', 'other'
+      ));
+  `, "m589.sql")
+  check("reads the IN(…) form, through an IS NULL OR prefix",
+    inForm.length === 1 && inForm[0].table === "contacts" && inForm[0].column === "contact_persona" &&
+    JSON.stringify(inForm[0].values) === JSON.stringify(["first_time", "investor", "other"]))
+  check("a NOT IN exclusion list is not a vocabulary declaration",
+    parseCheckDeclarations(
+      `ALTER TABLE public.x ADD CONSTRAINT c CHECK (y NOT IN ('banned','words'))`, "m.sql").length === 0)
+  // The m484/m573 shape: an IN list AFTER the CHECK's closing paren (a DO-block
+  // verification query, an inline CREATE TABLE check) must not be attributed to
+  // the ALTER TABLE. This is the bounded-scan control.
+  check("SQL after the CHECK's closing paren is not scanned",
+    parseCheckDeclarations(`
+      ALTER TABLE public.x ADD CONSTRAINT c CHECK (y > 0);
+      do $$ begin
+        perform 1 from pg_constraint where conname in ('c_check','d_check');
+      end $$;
+    `, "m.sql").length === 0)
+  const mixed = latestDeclarations([
+    { name: "m001.sql", sql: `ALTER TABLE public.widgets ADD CONSTRAINT c CHECK (kind = ANY (ARRAY['a']))` },
+    { name: "m002.sql", sql: `ALTER TABLE public.widgets ADD CONSTRAINT c CHECK (kind IN ('a','b'))` },
+  ])
+  check("a later IN-form migration supersedes an earlier ANY-form one",
+    JSON.stringify(mixed.get("widgets.kind")?.values) === JSON.stringify(["a", "b"]))
+
   const later = latestDeclarations([
     { name: "m002.sql", sql: `ALTER TABLE public.widgets ADD CONSTRAINT c CHECK (kind = ANY (ARRAY['a','b']))` },
     { name: "m001.sql", sql: `ALTER TABLE public.widgets ADD CONSTRAINT c CHECK (kind = ANY (ARRAY['a']))` },
@@ -203,6 +301,14 @@ const files = existsSync(MIGRATIONS)
   : []
 const declared = latestDeclarations(files)
 console.log(`  · ${files.length} migrations · ${declared.size} table.column vocabularies declared in SQL`)
+
+// Debug affordance: dump the attribution map so a parser change can be diffed
+// key-by-key instead of judged from the count alone (§2: a count that moves is
+// the finding — this shows WHICH keys moved).
+if (process.env.VOCAB_DECLS_OUT) {
+  writeFileSync(process.env.VOCAB_DECLS_OUT,
+    [...declared.entries()].sort().map(([k, d]) => `${k} <- ${d.migration}`).join("\n") + "\n")
+}
 
 const disagreements: string[] = []
 for (const [key, decl] of [...declared.entries()].sort()) {
