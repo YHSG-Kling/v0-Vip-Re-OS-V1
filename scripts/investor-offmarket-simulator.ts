@@ -90,10 +90,14 @@ function sourceLayer() {
   console.log("\n[wiring — investor-gated, reuses the canonical box, owned by shopping_agent]")
   const runner = src("lib/buyer-search/investor-offmarket-runner.ts")
   // Repointed 2026-08-31 — owner ruling: "investor is a persona and not a contact
-  // type". The gate keys on contact_persona (m589); the contact_type arm is the
-  // tolerant read of a pre-m590 legacy row.
+  // type". The gate keys on contact_persona (m589). Re-pinned the same day: the
+  // transitional "tolerant contact_type read for pre-m590 rows" arm was a §2
+  // waypoint — m593 APPLIED backfilled every contact_type='investor' row
+  // (0 lived) and the CHECK now refuses the value, so a legacy row is
+  // IMPOSSIBLE and the runner dropped the arm. Assert the rule both ways:
+  // persona is the gate, and no contact_type read of the retired value remains.
   check("runner gates to contact_persona='investor' (regular buyers use the MLS path)", /contact_persona === "investor"[\s\S]*?not_investor/.test(runner))
-  check("…with a tolerant contact_type read for pre-m590 rows (reader only, never a write)", /contact_type === "investor"/.test(runner))
+  check("…and no retired contact_type='investor' read remains (m593: the value is impossible)", !/contact_type === "investor"/.test(runner))
   check("reads the buy-box via the canonical loadBuyerCriteria (no parallel reader)", /loadBuyerCriteria\(svc, params\.contactId\)/.test(runner))
   check("LINEAGE: matches ACTIVE motivated-seller leads (not-yet-promoted)", /from\("leads"\)[\s\S]*?not\("motivation_type", "is", null\)[\s\S]*?not\("is_active", "is", false\)/.test(runner))
   check("LINEAGE: ALSO matches motivated-seller CONTACTS (the promoted single source of truth)", /from\("contacts"\)[\s\S]*?not\("motivation_type", "is", null\)/.test(runner))

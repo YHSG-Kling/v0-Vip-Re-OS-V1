@@ -41,7 +41,7 @@ export interface ContactCreationData {
  * buyer. 'investor' maps to BUYER too — owner ruling 2026-08-31, verbatim:
  * "investor is a persona and not a contact type" — the investing lands on
  * contact_persona='investor' (m589) via resolveContactPersona below, and m593
- * (written, not applied) retires 'investor' from contacts_contact_type_check.
+ * (APPLIED 2026-08-31) retired 'investor' from contacts_contact_type_check.
  */
 export function motivationToContactType(m: string | null | undefined): string | null {
   if (!m) return null

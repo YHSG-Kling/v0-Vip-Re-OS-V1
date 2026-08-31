@@ -73,7 +73,21 @@ export const ENUM_VOCABULARIES: Record<string, EnumVocabulary> = {
       'home seller': 'seller', 'homeowner selling': 'seller', 'selling': 'seller',
       'listing client': 'seller', 'fsbo': 'seller',
       'buyer and seller': 'both', 'buyer/seller': 'both', 'buy and sell': 'both',
-      'real estate investor': 'investor', 'flipper': 'investor', 'landlord': 'investor',
+      // RE-POINTED 2026-08-31 (owner ruling: "investor is a persona and not a
+      // contact type"; m593 retired 'investor' from contacts_contact_type_check,
+      // so these three had become synonyms pointing at a value the DATABASE
+      // REFUSES — the same silent-row-drop shape the 'client' tombstone above
+      // records). Unlike the 'client' trio, the ruling gives these determinate
+      // targets, so they are re-pointed rather than deleted: an investor BUYS
+      // (side = buyer; m593's own backfill maps investor→buyer), and a landlord
+      // is an owner sourced as a potential SELLER of their rental
+      // (lib/lead-pipeline/source-intent-map.ts, quoted at
+      // lib/contact-promotion/contact-creator.ts:motivationToContactType).
+      // RESIDUAL, recorded: the investing FACT survives on
+      // contact_persona='investor' (m589), which a single-field contact_type
+      // synonym cannot set — an import path that wants the persona carried must
+      // map it separately.
+      'real estate investor': 'buyer', 'flipper': 'buyer', 'landlord': 'seller',
       'referral': 'referral_partner', 'referral source': 'referral_partner', 'partner': 'referral_partner',
       'contractor': 'vendor', 'service provider': 'vendor',
     },

@@ -135,7 +135,26 @@ interface Mention {
   exists: boolean
 }
 
-function classifyMentions(text: string): Mention[] {
+/**
+ * Comments in this repo wrap at ~80 columns, so a long path legally splits
+ * mid-segment: "app/dashboard/listings/[id]/" at one line's end,
+ * "components/open-house-post-event-panel.tsx:118" behind the next line's
+ * comment prefix. PATH_RE then sees only the tail fragment — which, when it
+ * happens to start with a root dir like `components/`, resolves nowhere and
+ * gets accused of rot (found live 2026-08-31: the guard flagged an m3
+ * tombstone whose survivor exists at the full, wrapped path). Fuse a line
+ * ending mid-path (a "/" tail) with a continuation whose first word carries
+ * on the path (a further "/" or a file extension) before extracting.
+ */
+function joinWrappedPaths(text: string): string {
+  return text.replace(
+    /([\w\-./[\]]+\/)\r?\n\s*(?:\/\/|\*)?\s*(?=[\w\-.[\]]+(?:\/|\.(?:tsx|ts|json|jsx|js|mjs|sql)\b))/g,
+    "$1",
+  )
+}
+
+function classifyMentions(rawText: string): Mention[] {
+  const text = joinWrappedPaths(rawText)
   const out: Mention[] = []
   const seen = new Set<string>()
   let m: RegExpExecArray | null
@@ -217,6 +236,22 @@ function runControls(): string[] {
   const okSurvivor = ok.find((x) => x.kind === "survivor" && x.path === "lib/kernel/communications.ts")
   if (!okSurvivor || !okSurvivor.exists) {
     failures.push("CONTROL FAILED: a real existing survivor path was not recognized as an existing survivor.")
+  }
+  // The 80-column wrap: a survivor path split across two comment lines must be
+  // reassembled and found to exist — and the orphaned tail fragment must NOT be
+  // extracted as a path of its own (that fragment is what got a live survivor
+  // accused of rot).
+  const plantedWrapped = [
+    "// TOMBSTONE (§1.1): `x` DELETED. SURVIVOR: wired at app/dashboard/listings/[id]/",
+    "//     components/open-house-post-event-panel.tsx, the one true home.",
+  ].join("\n")
+  const wrapped = classifyMentions(plantedWrapped)
+  const fused = wrapped.find((x) => x.path === "app/dashboard/listings/[id]/components/open-house-post-event-panel.tsx")
+  const fragment = wrapped.find((x) => x.path === "components/open-house-post-event-panel.tsx")
+  if (!fused || !fused.exists || fragment) {
+    failures.push(
+      "CONTROL FAILED: a survivor path wrapped across two comment lines was not reassembled (or its tail fragment leaked as a path) — wrapped tombstones would be accused of rot.",
+    )
   }
   return failures
 }

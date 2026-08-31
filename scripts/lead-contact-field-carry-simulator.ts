@@ -334,13 +334,19 @@ async function main(): Promise<void> {
       ex.granted === false && ex.reason === "excluded_contact_type")
   }
 
-  for (const t of ["buyer", "seller", "investor", "prospect", "both"]) {
+  // 'investor' left this roster with m593 (owner ruling: it is a persona) —
+  // an investor lead promotes as 'buyer' and reaches the portal through that.
+  for (const t of ["buyer", "seller", "prospect", "both"]) {
     check(`contact_type '${t}' is NOT excluded from the portal`,
       !PORTAL_EXCLUDED_CONTACT_TYPES.includes(t))
   }
 
+  // Re-pinned 2026-08-31: expecting 'investor' back was a §2 waypoint. The
+  // canonical resolution now rides canonicalContactType's RETIRED map
+  // (investor→buyer, m593); the persona survives separately on
+  // contact_persona='investor' (m589).
   check("resolveContactType feeds the portal gate a CANONICAL type (never a raw lead_type)",
-    resolveContactType("investor", "motivated_seller") === "investor" &&
+    resolveContactType("investor", "motivated_seller") === "buyer" &&
     resolveContactType(null, "unknown") === "prospect")
 
   console.log("\n──────────────────────────────────────────────────")
