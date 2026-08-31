@@ -349,7 +349,7 @@ export type StaleIneligibleReason =
   | "dnc"
   | "outreach_paused"
   | "reengage_disallowed"
-  | "do_not_contact_status"
+  | "non_engageable_status"
   | "deleted"
   | "active_transaction"
   | "unassigned"
@@ -406,7 +406,12 @@ export function staleContactEligibility(
 
   if (c.dnc_status === true) return hard("dnc")
   if ((NON_ENGAGEABLE_CONTACT_STATUSES as readonly string[]).includes(String(c.status ?? ""))) {
-    return hard("do_not_contact_status")
+    // Reason renamed from "non_engageable_status" (2026-08-31): the statuses in
+    // this set are archived/inactive — dormancy and departure, not DNC. The DNC
+    // fact lives on dnc_status and reports its own reason "dnc" above; a reason
+    // that said do_not_contact for an archived row was blaming a suppression
+    // that was never recorded.
+    return hard("non_engageable_status")
   }
   if (c.deleted_at !== null) return hard("deleted")
   if (c.hasActiveTransaction) return hard("active_transaction")

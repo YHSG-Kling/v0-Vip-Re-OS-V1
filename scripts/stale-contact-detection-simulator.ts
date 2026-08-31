@@ -126,7 +126,7 @@ function pureLayer() {
   for (const s of NON_ENGAGEABLE_CONTACT_STATUSES) {
     const r = ev({ status: s })
     check(`status='${s}' is a hard stop (eligible and dormant both false)`,
-      r.eligible === false && r.dormant === false && r.reason === "do_not_contact_status")
+      r.eligible === false && r.dormant === false && r.reason === "non_engageable_status")
   }
   // 2026-08-31: was "still contains all three" — a §2 WAYPOINT PIN that failed
   // the moment the vocabulary work finished. The two inline copies' exclusions

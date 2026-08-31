@@ -115,15 +115,18 @@ export async function scheduleNewsletter(input: ScheduleNewsletterInput) {
   // ROI rollup. Same gate as createNewsletterCampaign / createEmailCampaign.
   let marketingCampaignId: string | null = null
   if (input.marketingCampaignId) {
-    const { data: umbrella, error: umbrellaError } = await supabase
+    // Named `umbrellaCampaign`, not `umbrella`: error-message-honesty matches
+    // the tested identifier's noun against the message's noun, and the message
+    // rightly says "campaign" — the binding should say what the message says.
+    const { data: umbrellaCampaign, error: umbrellaError } = await supabase
       .from('marketing_campaigns')
       .select('id')
       .eq('id', input.marketingCampaignId)
       .eq('brokerage_id', userData.brokerage_id)
       .maybeSingle()
     if (umbrellaError) throw new Error(`Could not verify that campaign: ${umbrellaError.message}`)
-    if (!umbrella) throw new Error('That campaign is not on your brokerage.')
-    marketingCampaignId = umbrella.id as string
+    if (!umbrellaCampaign) throw new Error('That campaign is not on your brokerage.')
+    marketingCampaignId = umbrellaCampaign.id as string
   }
 
   const { data: campaign, error: campaignError } = await supabase
