@@ -1318,6 +1318,27 @@ stage("C1 columns")
   const commented = probe(`// await supabase.from("contacts").select("id, first_name")\nconst x = 1`)
   control("C1 does NOT read a query that only exists in a comment",
     commented.read.length === 0 && commented.write.length === 0)
+
+  // ── THE `function_name` CHAIN BREAK (2026-08-31) ──────────────────────────
+  // contiguousChain ended a chain when a call argument contained the bare
+  // substring "function" — so a select list naming a COLUMN that contains the
+  // word (`function_name` on error_stack_traces) ended the chain AT the select,
+  // and every .eq()/.order() after it went unread. Measured in the wild: a
+  // reader filtered .eq("error_id", …) and this census still accused
+  // error_stack_traces.error_id of being read-by-nobody, forcing the lane to
+  // name error_id in the select as a workaround. The keyword now needs a word
+  // boundary. BOTH directions pinned, because widening the break test and
+  // blinding it are one edit apart:
+  const fnColChain = probe(
+    `await supabase.from("contacts").select("stack_trace, function_name, error_hash").eq("last_name", g).order("created_at")`,
+  )
+  control("C1 a select naming a column CONTAINING 'function' does not end the chain — the filter after it is still a read",
+    fnColChain.read.includes("last_name") && fnColChain.read.includes("created_at"), fnColChain.read.join(","))
+  const realFnCallback = probe(
+    `await supabase.from("contacts").select("id").then(function (r) { return r.data.map((z) => q.from("leads").order("first_name")) })`,
+  )
+  control("C1 …and a REAL `function () {}` callback still breaks the chain — its inner order is not attributed here",
+    !realFnCallback.read.includes("first_name"), realFnCallback.read.join(","))
   const opaque = probe(`await supabase.from("contacts").update({ ...base, phone: b })`)
   control("C1 marks a spread write object OPAQUE rather than assuming its key set",
     opaque.write.includes("phone") && opaque.opaque)

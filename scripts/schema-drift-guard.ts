@@ -348,7 +348,24 @@ export function contiguousChain(src: string, startIdx: number): string {
     // A callback / nested-query argument (`.then(r => …)`, `.map(…)`) opens a DIFFERENT
     // table scope — stop before it so its inner filters/orders aren't attributed to THIS
     // from() (that re-attributed home_value_estimates.order("generated_at") to cma_reports).
-    if (args.includes("=>") || args.includes("function") || args.includes(".from(")) break
+    //
+    // THE `function` TEST NEEDS A WORD BOUNDARY (2026-08-31). It was a bare
+    // substring match, so a select list naming a COLUMN that merely contains the
+    // word — `.select("stack_trace, function_name, error_hash")` on
+    // error_stack_traces — ended the chain AT the select, and every `.eq()` /
+    // `.order()` after it went invisible to the census's filter-column reads.
+    // Observed in the wild: getErrorGroupDetails filtered
+    // `.eq("error_id", groupId)` and the census still reported
+    // error_stack_traces.error_id as read-by-nobody (§2 — a guard that cannot
+    // see the code it judges files a false accusation). The keyword only breaks
+    // a chain when it appears as an actual `function` keyword (followed by a
+    // name, `(`, or `*`), never as an identifier fragment. `=>` and `.from(`
+    // keep their substring semantics: `=` and `>` cannot appear inside an
+    // identifier, and `.from(` carries its own punctuation — but both CAN
+    // appear inside quoted string arguments, which is a residual blind spot
+    // recorded here rather than half-fixed: masking strings first would need
+    // blankStrings and this function receives pre-sliced raw args.
+    if (args.includes("=>") || /\bfunction\b\s*[*(A-Za-z_$]/.test(args) || args.includes(".from(")) break
     i = close + 1
   }
   return src.slice(startIdx, i)
