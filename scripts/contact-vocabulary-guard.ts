@@ -137,15 +137,27 @@ check("canonicalContactType returns null for a value that is not a contact_type 
   canonicalContactType("tenant") === null && canonicalContactType("") === null && canonicalContactType(null) === null)
 check("isStorableContactType REFUSES a retired spelling (this is the write-side rule)",
   retired.every((r) => !isStorableContactType(r)))
-check("isLifetimeCustomerType is true for the survivor AND for every retired spelling",
-  isLifetimeCustomerType(LIFETIME_CUSTOMER_TYPE) && retired.every(isLifetimeCustomerType))
+// REWRITTEN 2026-08-31 (§2): this used to assert every retired spelling reads
+// as lifetime — true only while the RETIRED map had one destination. m593 added
+// `investor: "buyer"` (the owner's persona ruling: the retired TYPE maps to its
+// SIDE), so the assertion now states the RULE: each retired spelling reads as
+// lifetime exactly when its mapping says lifetime, and never otherwise. The old
+// waypoint form would have gone red because the vocabulary work SUCCEEDED.
+check("isLifetimeCustomerType agrees with each retired spelling's OWN mapping",
+  isLifetimeCustomerType(LIFETIME_CUSTOMER_TYPE) && retired.every((r) =>
+    isLifetimeCustomerType(r) === (RETIRED_CONTACT_TYPES[r] === LIFETIME_CUSTOMER_TYPE)))
 check("isLifetimeCustomerType is false for a buyer/seller",
   !isLifetimeCustomerType("buyer") && !isLifetimeCustomerType("seller") && !isLifetimeCustomerType(null))
 check("isLifetimeRelationshipType covers the whole roster, and no more",
   LIFETIME_CONTACT_TYPES.every(isLifetimeRelationshipType)
   && !isLifetimeRelationshipType("buyer") && !isLifetimeRelationshipType("lead"))
-check("a retired spelling still resolves as a lifetime RELATIONSHIP (a legacy row is not orphaned)",
-  retired.every(isLifetimeRelationshipType))
+// Same §2 rewrite as above: a legacy row is not orphaned means each retired
+// spelling resolves as a lifetime relationship IFF its survivor is one — an
+// investor-typed legacy row resolves as a buyer, which is not orphaned either,
+// it is simply not a lifetime relationship.
+check("a retired spelling resolves as a lifetime RELATIONSHIP exactly when its survivor is one",
+  retired.every((r) =>
+    isLifetimeRelationshipType(r) === isLifetimeRelationshipType(RETIRED_CONTACT_TYPES[r])))
 
 // ─── 2. the repo scan ────────────────────────────────────────────────────────
 console.log("\n[2 · repo scan — no retired spelling may reach Postgres]")
