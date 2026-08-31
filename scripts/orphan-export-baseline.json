@@ -246,7 +246,6 @@
     "lib/intelligence/skill-freshness-board.ts": 1,
     "lib/intelligence/steer-my-day.ts": 1,
     "lib/intelligence/time-to-value-radar.ts": 1,
-    "lib/kernel/adapters/content-generation.ts": 1,
     "lib/kernel/agent-coaching.ts": 4,
     "lib/kernel/agent-identity.ts": 1,
     "lib/kernel/ai-search-citation-monitor.ts": 8,
@@ -575,7 +574,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9406,
+  "census": 9405,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -3369,7 +3368,6 @@
     "lib/kernel/actor-context.ts": 1,
     "lib/kernel/adapters/brand-voice.ts": 2,
     "lib/kernel/adapters/compliance.ts": 3,
-    "lib/kernel/adapters/content-generation.ts": 1,
     "lib/kernel/adapters/financial.ts": 1,
     "lib/kernel/addressing.ts": 1,
     "lib/kernel/ads.ts": 7,
@@ -16274,9 +16272,6 @@
       "isComplianceBlocked",
       "getComplianceReason"
     ],
-    "lib/kernel/adapters/content-generation.ts": [
-      "generateKernelContent"
-    ],
     "lib/kernel/adapters/financial.ts": [
       "resolveCommissionStructure"
     ],
@@ -21215,5 +21210,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 1
+  "trulyDead": 0
 }
