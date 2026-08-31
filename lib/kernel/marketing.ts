@@ -814,6 +814,30 @@ Return valid JSON: {"title":"...","slug":"...","excerpt":"...","content":"..."}`
   }
 
   const supabase = await createServiceClient()
+
+  // Gate first, then use the service client (§4) — the same block
+  // createNewsletterCampaign carries above, because it is the same hole: this
+  // runs on the service role, so nothing but this predicate stands between the
+  // insert and a cross-tenant campaign link. The FK proves a
+  // marketing_campaigns row EXISTS; it never proves it is OURS, and an
+  // attacker-supplied or stale campaignId would file this tenant's post under
+  // another tenant's campaign — feeding THEIR ROI rollup
+  // (lib/marketing/campaign-measurer.ts reads blog_posts by
+  // marketing_campaign_id). The raw input id is never written; only the
+  // verified one is.
+  let marketingCampaignId: string | null = null
+  if (input.campaignId) {
+    const { data: umbrella, error: umbrellaError } = await supabase
+      .from("marketing_campaigns")
+      .select("id")
+      .eq("id", input.campaignId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
+    if (umbrellaError) return { success: false, error: `Could not verify that campaign: ${umbrellaError.message}` }
+    if (!umbrella) return { success: false, error: "That campaign is not on your brokerage." }
+    marketingCampaignId = umbrella.id as string
+  }
+
   const { data, error } = await supabase
     .from("blog_posts")
     .insert({
@@ -825,7 +849,7 @@ Return valid JSON: {"title":"...","slug":"...","excerpt":"...","content":"..."}`
       excerpt,
       content,
       publish_status:        "draft",
-      marketing_campaign_id: input.campaignId ?? null,
+      marketing_campaign_id: marketingCampaignId,
       seo_score:             0,
       created_at:            new Date().toISOString(),
       updated_at:            new Date().toISOString(),
