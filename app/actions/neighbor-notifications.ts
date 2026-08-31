@@ -347,6 +347,98 @@ export async function listNeighborCampaignsForListing(
   }))
 }
 
+/**
+ * The roster behind "N neighbors identified" (lane M2).
+ *
+ * The identify step writes a full scoring record per candidate —
+ * knows_buyer_score, proximity_meters, owner_tenure_years,
+ * owner_estimated_age, life_stage_match and the scoring_signals breakdown —
+ * and nothing ever read any of it: the card asked a seller to authorise mail
+ * to 50 households it could not show, and asked the agent to launch it on a
+ * bare count. This read is the review surface that permission step implies.
+ *
+ * The scoring facts are shown for ACCOUNTABILITY — so the human approving
+ * the send can see and challenge what the heuristic recorded about their
+ * neighbors — not as targeting levers; the heuristic itself lives in
+ * identifyNeighborCandidates below.
+ *
+ * Gated + tenant-scoped like listNeighborCampaignsForListing above: session
+ * context, and the campaign is proven to belong to the caller's brokerage
+ * before its recipients are read.
+ */
+export async function listNeighborRecipientsForCampaign(campaignId: string): Promise<
+  Array<{
+    id: string
+    propertyAddress: string
+    ownerName: string | null
+    status: string | null
+    knowsBuyerScore: number | null
+    proximityMeters: number | null
+    ownerTenureYears: number | null
+    ownerEstimatedAge: number | null
+    lifeStageMatch: string | null
+    scoringSignals: Record<string, unknown> | null
+  }>
+> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return []
+
+  const supabase = await createClient()
+
+  // Prove the campaign is the caller's before reading its roster. §3: the
+  // error is read; a refused or missing campaign yields an empty roster.
+  const { data: campaign, error: campaignErr } = await supabase
+    .from("neighbor_notification_campaigns")
+    .select("id")
+    .eq("id", campaignId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
+  if (campaignErr) {
+    console.error("[neighbor-notifications] campaign ownership read refused:", campaignErr.message)
+    return []
+  }
+  if (!campaign) return []
+
+  const { data, error } = await supabase
+    .from("neighbor_notification_recipients")
+    .select(
+      "id, property_address, owner_name, status, knows_buyer_score, proximity_meters, owner_tenure_years, owner_estimated_age, life_stage_match, scoring_signals"
+    )
+    .eq("campaign_id", campaignId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .order("knows_buyer_score", { ascending: false })
+    .limit(100)
+
+  if (error) {
+    console.error("[neighbor-notifications] recipient roster read refused:", error.message)
+    return []
+  }
+
+  return ((data ?? []) as Array<{
+    id: string
+    property_address: string
+    owner_name: string | null
+    status: string | null
+    knows_buyer_score: number | null
+    proximity_meters: number | null
+    owner_tenure_years: number | null
+    owner_estimated_age: number | null
+    life_stage_match: string | null
+    scoring_signals: Record<string, unknown> | null
+  }>).map((r) => ({
+    id: r.id,
+    propertyAddress: r.property_address,
+    ownerName: r.owner_name,
+    status: r.status,
+    knowsBuyerScore: r.knows_buyer_score != null ? Number(r.knows_buyer_score) : null,
+    proximityMeters: r.proximity_meters != null ? Number(r.proximity_meters) : null,
+    ownerTenureYears: r.owner_tenure_years != null ? Number(r.owner_tenure_years) : null,
+    ownerEstimatedAge: r.owner_estimated_age != null ? Number(r.owner_estimated_age) : null,
+    lifeStageMatch: r.life_stage_match,
+    scoringSignals: r.scoring_signals,
+  }))
+}
+
 // ─── Internal: Candidate identification ──────────────────────────────────────
 
 interface NeighborCandidate {

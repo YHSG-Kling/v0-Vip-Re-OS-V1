@@ -392,16 +392,54 @@ export async function loadNoteHistoryAction(contactId: string): Promise<{
   if (!actor) return { success: false, error: "Not authenticated." }
 
   const service = createServiceClient()
+  // Lane M2 — the history the send dialog shows before the agent writes the
+  // NEXT note now includes what the previous notes actually SAID (body), how
+  // they came to exist (ai_generated / source / template_id), and what they
+  // thanked for (transaction_id). All six were written by sendThankYouNoteAction
+  // above and read by nothing; an agent could re-send last month's note word
+  // for word and the dialog could not warn them.
   const { data, error } = await service
     .from("thank_you_notes")
-    .select("id, occasion, channel, subject, status, sent_at, created_at")
+    .select("id, occasion, channel, subject, body, status, sent_at, created_at, ai_generated, source, template_id, transaction_id, email_queue_id")
     .eq("contact_id", contactId)
     .eq("agent_id",   actor.agentId)
     .order("created_at", { ascending: false })
     .limit(10)
 
   if (error) return { success: false, error: error.message }
-  return { success: true, notes: data ?? [] }
+  const notes = (data ?? []) as Array<Record<string, unknown> & { email_queue_id: string | null }>
+
+  // email_queue_id is the note's delivery linkage: the email branch stamps the
+  // note 'sent' the moment the QUEUE row exists, so the queue row's own status
+  // is the delivery truth — a note showing "sent" whose queue row still says
+  // 'pending' or 'failed' never reached the contact. Best-effort attach; the
+  // error is read (§3) and a refusal degrades to no delivery detail, never to
+  // a fabricated one.
+  const queueIds = notes
+    .map((n) => n.email_queue_id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0)
+  const deliveryById = new Map<string, string | null>()
+  if (queueIds.length > 0) {
+    const { data: queueRows, error: queueErr } = await service
+      .from("email_queue")
+      .select("id, status")
+      .in("id", queueIds)
+    if (queueErr) {
+      console.error("[reputation-kernel] email_queue delivery read refused:", queueErr.message)
+    } else {
+      for (const q of (queueRows ?? []) as Array<{ id: string; status: string | null }>) {
+        deliveryById.set(q.id, q.status ?? null)
+      }
+    }
+  }
+
+  return {
+    success: true,
+    notes: notes.map((n) => ({
+      ...n,
+      delivery_status: n.email_queue_id ? (deliveryById.get(n.email_queue_id) ?? null) : null,
+    })),
+  }
 }
 
 // ─── GIFT ACTIONS ─────────────────────────────────────────────────────────────

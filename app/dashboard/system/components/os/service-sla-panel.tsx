@@ -267,6 +267,54 @@ export function ServiceSLAPanel({ brokerageId }: ServiceSLAPanelProps) {
                   the rate above understates failures.
                 </p>
               )}
+              {/* The failures behind the count — error_message, channel/direction,
+                  what the provider's webhook reported (provider_event), and the
+                  recipient/subject envelope the writers stamp into provider_response.
+                  Until this list "N failed" was a bare number with no inspectable rows. */}
+              {delivery.read.data.recentFailures.length > 0 && (
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-muted-foreground">Recent failures</p>
+                  {delivery.read.data.recentFailures.map((f, i) => {
+                    const env = (f.provider_response ?? {}) as Record<string, unknown>
+                    const recipient = typeof env.recipient === 'string' ? env.recipient : null
+                    const subject = typeof env.subject === 'string' ? env.subject : null
+                    return (
+                      <div
+                        key={`${f.message_id ?? f.outreach_log_id ?? 'row'}-${i}`}
+                        className="rounded-lg border border-red-200 bg-red-50 p-2 text-xs dark:border-red-900 dark:bg-red-950/20"
+                      >
+                        <div className="flex flex-wrap items-center gap-x-2 text-red-800 dark:text-red-200">
+                          <span className="font-medium">{f.provider_key}</span>
+                          <span>{f.channel ?? '?'} · {f.direction ?? 'outbound'}</span>
+                          {f.provider_event && <span>event: {f.provider_event}</span>}
+                          {(f.event_at ?? f.sent_at) && (
+                            <span className="text-red-600 dark:text-red-300">
+                              {new Date((f.event_at ?? f.sent_at) as string).toLocaleString()}
+                            </span>
+                          )}
+                        </div>
+                        {(recipient || subject) && (
+                          <p className="truncate text-red-700 dark:text-red-300">
+                            {recipient ?? ''}{recipient && subject ? ' · ' : ''}{subject ?? ''}
+                          </p>
+                        )}
+                        {f.error_message && (
+                          <p className="truncate font-mono text-red-700 dark:text-red-300" title={f.error_message}>
+                            {f.error_message}
+                          </p>
+                        )}
+                        {(f.message_id || f.outreach_log_id) && (
+                          <p className="text-[10px] text-red-600/80 dark:text-red-300/80">
+                            {f.message_id ? `message ${f.message_id.slice(0, 8)}` : ''}
+                            {f.message_id && f.outreach_log_id ? ' · ' : ''}
+                            {f.outreach_log_id ? `outreach ${f.outreach_log_id.slice(0, 8)}` : ''}
+                          </p>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
             </div>
           )}
           {delivery.phase === 'done' && <ReadVerdict read={delivery.read} />}

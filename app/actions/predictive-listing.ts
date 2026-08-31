@@ -22,6 +22,12 @@ export interface PredictiveSellerRow {
   lastActionAt: string | null
   lastActionType: string | null
   scoredAt: string
+  /** The AVM the scorer recorded (contacts.home_value_estimate today) and where it came from. */
+  avmValue: number | null
+  avmSource: string | null
+  /** Evidence depth behind the score: how many signals fired and their summed motivation boost. */
+  signalsFired: number | null
+  motivationTotal: number | null
 }
 
 export async function getTopPredictiveSellers(params: {
@@ -34,10 +40,17 @@ export async function getTopPredictiveSellers(params: {
   const minScore = params.minScore ?? 60
   const limit = params.limit ?? 10
 
+  // Lane M2 — avm_value/avm_source (the home-value estimate the scorer
+  // recorded and where it came from) and signals_fired/
+  // contributing_motivation_total (the evidence depth behind the score) were
+  // written by every nightly scoring pass and read by nothing: the card showed
+  // a bare score with no dollar context and no way to tell a 4-signal 78 from
+  // a 1-signal 78.
   let query = supabase
     .from("predictive_listing_scores")
     .select(
       "contact_id, pls_score, confidence, top_signals, last_action_at, last_action_type, scored_at, suppressed_until, " +
+        "avm_value, avm_source, signals_fired, contributing_motivation_total, " +
         "contacts!inner(first_name, last_name, agent_id)"
     )
     .gte("pls_score", minScore)
@@ -60,6 +73,10 @@ export async function getTopPredictiveSellers(params: {
     last_action_type: string | null
     scored_at: string
     suppressed_until: string | null
+    avm_value: number | null
+    avm_source: string | null
+    signals_fired: number | null
+    contributing_motivation_total: number | null
     contacts: { first_name: string | null; last_name: string | null }
   }>)
     .filter((row) => !row.suppressed_until || new Date(row.suppressed_until) < now)
@@ -73,6 +90,11 @@ export async function getTopPredictiveSellers(params: {
       lastActionAt: row.last_action_at,
       lastActionType: row.last_action_type,
       scoredAt: row.scored_at,
+      avmValue: row.avm_value != null ? Number(row.avm_value) : null,
+      avmSource: row.avm_source,
+      signalsFired: row.signals_fired != null ? Number(row.signals_fired) : null,
+      motivationTotal:
+        row.contributing_motivation_total != null ? Number(row.contributing_motivation_total) : null,
     }))
 }
 
@@ -117,6 +139,90 @@ export async function dismissPredictiveSeller(params: {
 
   revalidatePath("/dashboard/agent")
   return { success: true }
+}
+
+/**
+ * The dismissals ledger (lane M2). dismissPredictiveSeller stamps WHO hid a
+ * contact (suppressed_by_user_id), WHY (suppression_reason) and until when —
+ * and nothing ever read any of it: a dismissed contact simply vanished, and a
+ * team could not tell a deliberate "not for me" from a mis-click, nor undo
+ * either. Tenant comes from the SESSION (§4), not from a parameter — this is
+ * the shape the sibling actions in this file should also converge on.
+ *
+ * suppressed_by_user_id carries a users.id (the card passes the page's
+ * auth user id) — names resolve against users, never agents (§3: the id
+ * spaces are disjoint).
+ */
+export async function listDismissedPredictiveSellers(): Promise<Array<{
+  contactId: string
+  contactName: string
+  suppressionReason: string | null
+  suppressedUntil: string | null
+  suppressedByName: string | null
+}>> {
+  const supabase = await createClient()
+  const { getAgentContext } = await import("@/lib/identity")
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) return []
+
+  const now = new Date().toISOString()
+  const { data, error } = await supabase
+    .from("predictive_listing_scores")
+    .select(
+      "contact_id, suppression_reason, suppressed_by_user_id, suppressed_until, " +
+        "contacts!inner(first_name, last_name)"
+    )
+    .eq("brokerage_id", ctx.brokerageId)
+    .gt("suppressed_until", now)
+    .order("suppressed_until", { ascending: false })
+    .limit(20)
+
+  // §3: the error is read; a refused read returns an empty ledger, never throws
+  // into the dashboard.
+  if (error) {
+    console.error("[predictive-listing] dismissals read refused:", error.message)
+    return []
+  }
+
+  const rows = (data ?? []) as unknown as Array<{
+    contact_id: string
+    suppression_reason: string | null
+    suppressed_by_user_id: string | null
+    suppressed_until: string | null
+    contacts: { first_name: string | null; last_name: string | null }
+  }>
+
+  // Resolve dismisser names in one read against USERS (the id class written).
+  const userIds = [
+    ...new Set(rows.map((r) => r.suppressed_by_user_id).filter((id): id is string => !!id)),
+  ]
+  const nameById = new Map<string, string>()
+  if (userIds.length > 0) {
+    const { data: users, error: usersErr } = await supabase
+      .from("users")
+      .select("id, first_name, last_name")
+      .eq("brokerage_id", ctx.brokerageId)
+      .in("id", userIds)
+    if (usersErr) {
+      console.error("[predictive-listing] dismisser name read refused:", usersErr.message)
+    } else {
+      for (const u of (users ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null }>) {
+        const name = `${u.first_name ?? ""} ${u.last_name ?? ""}`.trim()
+        if (name) nameById.set(u.id, name)
+      }
+    }
+  }
+
+  return rows.map((r) => ({
+    contactId: r.contact_id,
+    contactName:
+      `${r.contacts?.first_name ?? ""} ${r.contacts?.last_name ?? ""}`.trim() || "Contact",
+    suppressionReason: r.suppression_reason,
+    suppressedUntil: r.suppressed_until,
+    suppressedByName: r.suppressed_by_user_id
+      ? (nameById.get(r.suppressed_by_user_id) ?? null)
+      : null,
+  }))
 }
 
 /**

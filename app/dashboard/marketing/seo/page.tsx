@@ -14,6 +14,7 @@ import {
   type CitationObservationRow,
 } from "@/app/dashboard/intelligence/components/ai-citation-visibility-card"
 import { CitationShareCard } from "./citation-share-card"
+import { LandingCitationCard, type LandingCitationRow } from "./landing-citation-card"
 import type { ShareObservationRow } from "@/lib/geo/citation-share"
 import {
   allowedScopes, resolveScope, emptyScopeMessage, type CitationScope,
@@ -217,6 +218,41 @@ async function GeoTab({
     ? []
     : ((citationRows ?? []) as CitationObservationRow[])
 
+  // THE LANDING RAIL'S OBSERVATIONS (lane M2). runLandingPageCitationMonitor
+  // records the same daily pass for lead-magnet / FAQ landing pages into its
+  // OWN table (ai_search_landing_citation_observations — FK'd to
+  // lead_capture_forms, deliberately not merged with the reels table above:
+  // same-sounding, different capability), and until this read the only
+  // consumer was the geo-gap runner's outcome counts. The query the AI was
+  // asked, the provider, the cited URL, the agent/team attribution (m335) and
+  // the competitor share (m328) had no reader at all. Same scope discipline as
+  // the reels read: the tenant filter ALWAYS applies; the scope filter narrows
+  // within it, spelled as literal branches so the columns stay visible to
+  // every static scanner in this repo.
+  let landingQuery = supabase
+    .from("ai_search_landing_citation_observations")
+    .select(
+      "id, platform, outcome, query, cited_url, provider, public_slug, observed_at, competitors_cited, agent_id, team_id",
+    )
+    .eq("brokerage_id", brokerageId)
+  if (active.column === "agent_id" && active.value) {
+    landingQuery = landingQuery.eq("agent_id", active.value)
+  } else if (active.column === "team_id" && active.value) {
+    landingQuery = landingQuery.eq("team_id", active.value)
+  }
+  const { data: landingRows, error: landingErr } = await landingQuery
+    .gte("observed_at", citationSince)
+    .order("observed_at", { ascending: false })
+    .limit(60)
+  // §3: the error is read; a refused read renders as no card, never as a crash
+  // or a fabricated zero-visibility claim.
+  if (landingErr) {
+    console.error("[seo/geo] landing citation observations read refused:", landingErr.message)
+  }
+  const landingObservations: LandingCitationRow[] = landingErr
+    ? []
+    : ((landingRows ?? []) as LandingCitationRow[])
+
   const scopeBar =
     choices.length > 1 ? (
       <div className="flex gap-1">
@@ -236,7 +272,10 @@ async function GeoTab({
       </div>
     ) : null
 
-  if (observations.length === 0) {
+  // The empty state only claims "nothing citable" when BOTH rails are empty —
+  // a brokerage whose reels were never checked may still have landing-page
+  // observations, and hiding them behind the reels empty state re-orphans them.
+  if (observations.length === 0 && landingObservations.length === 0) {
     return (
       <div className="space-y-4">
         {scopeBar}
@@ -278,6 +317,7 @@ async function GeoTab({
       {scopeBar}
       <CitationShareCard rows={shareRows} />
       <AiCitationVisibilityCard observations={observations} />
+      <LandingCitationCard observations={landingObservations} />
     </div>
   )
 }

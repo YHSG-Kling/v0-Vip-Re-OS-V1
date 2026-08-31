@@ -88,9 +88,36 @@ export type MessageProviderStats = {
   delivery_rate: number
 }
 
+/**
+ * One failed dispatch, with everything the writers recorded about WHY (lane
+ * M2 — these columns had five writers and no reader): the provider's
+ * error_message, the channel and direction, what the provider later reported
+ * back through the webhook fanout (provider_event, and the provider_response
+ * envelope that names the recipient/subject), and the source rows the send
+ * came from (message_id → messages, outreach_log_id → isa_outreach_log).
+ */
+export type MessageProviderFailure = {
+  channel: string | null
+  direction: string | null
+  provider_key: string
+  error_message: string | null
+  provider_event: string | null
+  provider_response: Record<string, unknown> | null
+  message_id: string | null
+  outreach_log_id: string | null
+  sent_at: string | null
+  event_at: string | null
+}
+
 export type MessageProviderSummary = {
   windowHours: number
   providers: MessageProviderStats[]
+  /**
+   * The most recent failed/errored/bounced dispatches in the window — the
+   * rows behind error_count, so "3 failed" is inspectable instead of a bare
+   * number. Empty when everything delivered.
+   */
+  recentFailures: MessageProviderFailure[]
   /**
    * Rows in message_provider_logs that carry NEITHER sent_at NOR event_at and
    * are therefore invisible to ANY time-windowed aggregate. Failed sends from
@@ -602,7 +629,42 @@ export async function getMessageProviderStats(
     delivery_rate: ((s.sent - s.errors) / s.sent) * 100,
   }))
 
-  return { status: "ok", data: { windowHours: hours, providers, undatedExcluded } }
+  // THE FAILURES BEHIND THE COUNT (lane M2). The aggregate above says "N
+  // failed" and, until this read, nothing anywhere showed WHICH sends failed
+  // or what the provider said — error_message, channel, direction, the
+  // webhook-reported provider_event, the provider_response envelope (which
+  // carries the recipient and subject/excerpt the writers stamp), and the
+  // message_id / outreach_log_id linking back to the source rows were written
+  // by five inserters and read by nobody. Deliberately NOT windowed on the
+  // timestamps: failed sends from communication.service carry sent_at NULL
+  // (and no webhook ever stamps event_at on them), so the aggregate's OR
+  // window excludes exactly the rows this list exists for — the same rows the
+  // undatedExcluded caveat above counts. The table has no created_at, so
+  // there is no honest chronology for those rows either; this orders webhook-
+  // stamped failures (bounces) newest-first and surfaces the undatable ones
+  // ahead of them rather than pretending to a recency the schema cannot back.
+  const { data: failureRows, error: failuresError } = await supabase
+    .from("message_provider_logs")
+    .select(
+      "channel, direction, provider_key, error_message, provider_event, provider_response, message_id, outreach_log_id, sent_at, event_at",
+    )
+    .eq("brokerage_id", ctx.brokerageId)
+    .in("provider_status", ["failed", "error", "bounced"])
+    .order("event_at", { ascending: false, nullsFirst: true })
+    .limit(10)
+
+  if (failuresError) {
+    console.error("Error fetching message provider failures:", failuresError)
+    return {
+      status: "unavailable",
+      reason: "query_failed",
+      detail: `message_provider_logs failure detail read was refused: ${failuresError.message}`,
+    }
+  }
+
+  const recentFailures = (failureRows ?? []) as MessageProviderFailure[]
+
+  return { status: "ok", data: { windowHours: hours, providers, recentFailures, undatedExcluded } }
 }
 
 export type SLARow = {

@@ -206,6 +206,42 @@ export function ErrorDetailsPanel({
           </div>
         </div>
 
+        {/* Where it threw — the stack trace collectError filed (error_stack_traces).
+            The collector parsed file/line/function out of the stack so the triager
+            would not have to; occurrences counts rows sharing this error_hash, the
+            grouping identity that previously grouped nothing because nobody read it. */}
+        {details.stack && (
+          <div className="pt-4 space-y-2 border-t">
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Where it threw</p>
+            {details.stack.filePath && (
+              <p className="text-xs font-mono break-all">
+                {details.stack.filePath}
+                {details.stack.lineNumber != null ? `:${details.stack.lineNumber}` : ""}
+                {details.stack.functionName ? ` — ${details.stack.functionName}()` : ""}
+              </p>
+            )}
+            {details.stack.occurrences != null && details.stack.occurrences > 1 && (
+              <p className="text-xs text-amber-700">
+                Seen {details.stack.occurrences} times in your brokerage (same error signature).
+              </p>
+            )}
+            <details>
+              <summary className="text-xs text-muted-foreground cursor-pointer">Full stack trace</summary>
+              <pre className="mt-1 p-2 bg-muted rounded text-[10px] leading-4 overflow-x-auto max-h-48 overflow-y-auto whitespace-pre-wrap break-all">
+                {details.stack.stackTrace}
+              </pre>
+            </details>
+            {details.stack.runtimeContext && Object.keys(details.stack.runtimeContext).length > 0 && (
+              <details>
+                <summary className="text-xs text-muted-foreground cursor-pointer">Runtime context</summary>
+                <pre className="mt-1 p-2 bg-muted rounded text-[10px] leading-4 overflow-x-auto max-h-32 overflow-y-auto whitespace-pre-wrap break-all">
+                  {JSON.stringify(details.stack.runtimeContext, null, 2)}
+                </pre>
+              </details>
+            )}
+          </div>
+        )}
+
         {/* Auto-retry state — attached by getErrorGroupDetails from the retry
             engine's own ledger (error_resolution_log). Shows what the engine has
             actually done with this error instead of leaving Retry a black box. */}

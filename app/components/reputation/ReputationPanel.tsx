@@ -1140,14 +1140,40 @@ export function ReputationPanel({
                 <AccordionContent>
                   <div className="space-y-1.5">
                     {noteHistory.map(n => (
-                      <div key={n.id} className="flex items-center justify-between p-2 rounded border text-sm">
+                      <div key={n.id} className="flex items-start justify-between gap-2 p-2 rounded border text-sm">
                         <div className="min-w-0">
-                          <p className="font-medium truncate capitalize">{n.occasion}</p>
+                          <p className="font-medium truncate capitalize">
+                            {n.occasion}
+                            {/* Provenance the table always recorded and never showed:
+                                AI-written vs typed, which template, which surface. */}
+                            {n.ai_generated && (
+                              <Badge variant="outline" className="ml-1.5 text-[10px] align-middle">AI</Badge>
+                            )}
+                            {n.template_id && (
+                              <Badge variant="outline" className="ml-1 text-[10px] align-middle">template</Badge>
+                            )}
+                          </p>
+                          {/* What was actually said — so the agent does not send the
+                              same note twice. Title carries the full body on hover. */}
+                          {n.body && (
+                            <p className="text-xs text-muted-foreground truncate" title={n.body}>
+                              {n.body}
+                            </p>
+                          )}
                           <p className="text-xs text-muted-foreground">
                             {n.channel} &middot; {new Date(n.created_at).toLocaleDateString()}
+                            {n.source ? <> &middot; {String(n.source).replace(/_/g, " ")}</> : null}
+                            {n.transaction_id ? <> &middot; for a transaction</> : null}
                           </p>
                         </div>
-                        <Badge variant="outline" className={`text-xs ${statusBadge(n.status)}`}>{n.status}</Badge>
+                        <div className="flex flex-col items-end gap-1 shrink-0">
+                          <Badge variant="outline" className={`text-xs ${statusBadge(n.status)}`}>{n.status}</Badge>
+                          {/* The queue row is the delivery truth for email notes —
+                              the note is stamped 'sent' when it is merely queued. */}
+                          {n.delivery_status && n.delivery_status !== "sent" && (
+                            <span className="text-[10px] text-amber-600">email {n.delivery_status}</span>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>

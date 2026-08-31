@@ -17,6 +17,7 @@ import {
   grantSellerPermission,
   launchNeighborNotification,
   listNeighborCampaignsForListing,
+  listNeighborRecipientsForCampaign,
   type NeighborNotificationCampaign,
 } from "@/app/actions/neighbor-notifications"
 
@@ -62,6 +63,24 @@ export function NeighborNotificationCard({
   const [campaignId, setCampaignId] = useState<string | null>(null)
   const [identified, setIdentified] = useState<number | null>(null)
   const [sent, setSent] = useState<number | null>(null)
+
+  // The roster behind the count — what the identify step actually recorded
+  // about each neighbor (knows_buyer_score, proximity, tenure, life stage,
+  // scoring signals). Loaded on demand so the review happens BEFORE the
+  // seller authorises and the agent launches, instead of never.
+  type RecipientRow = Awaited<ReturnType<typeof listNeighborRecipientsForCampaign>>[number]
+  const [rosterOpen, setRosterOpen] = useState(false)
+  const [roster, setRoster] = useState<RecipientRow[] | null>(null)
+
+  function toggleRoster() {
+    const opening = !rosterOpen
+    setRosterOpen(opening)
+    if (opening && roster === null && campaignId) {
+      listNeighborRecipientsForCampaign(campaignId)
+        .then(setRoster)
+        .catch(() => setRoster([]))
+    }
+  }
 
   // The phase used to live ONLY in React state, so a reload showed "Not
   // started" over a campaign that was mid-flight (or already sent) and the
@@ -197,7 +216,62 @@ export function NeighborNotificationCard({
                 for mailing
               </>
             )}
+            {campaignId && (
+              <>
+                {" · "}
+                <button
+                  type="button"
+                  className="text-blue-600 hover:underline"
+                  onClick={toggleRoster}
+                >
+                  {rosterOpen ? "hide list" : "review list"}
+                </button>
+              </>
+            )}
           </p>
+        )}
+
+        {/* Recipient roster — what the scoring heuristic recorded per neighbor,
+            shown so the humans authorising this mail can see and challenge it. */}
+        {rosterOpen && (
+          roster === null ? (
+            <p className="text-xs text-muted-foreground">Loading neighbors…</p>
+          ) : roster.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No recipients recorded for this campaign.</p>
+          ) : (
+            <div className="max-h-56 overflow-y-auto rounded border divide-y">
+              {roster.map((r) => (
+                <div key={r.id} className="p-2 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium truncate">
+                      {r.ownerName ?? "Owner unknown"} · {r.propertyAddress}
+                    </span>
+                    {r.knowsBuyerScore != null && (
+                      <Badge variant="outline" className="text-[10px] shrink-0">
+                        {Math.round(r.knowsBuyerScore * 100)}% likely to know a buyer
+                      </Badge>
+                    )}
+                  </div>
+                  <p className="text-muted-foreground mt-0.5">
+                    {[
+                      r.proximityMeters != null ? `${Math.round(r.proximityMeters)}m away` : null,
+                      r.ownerTenureYears != null ? `${r.ownerTenureYears}y in the home` : null,
+                      r.ownerEstimatedAge != null ? `est. age ${r.ownerEstimatedAge}` : null,
+                      r.lifeStageMatch ? r.lifeStageMatch.replace(/_/g, " ") : null,
+                      r.status ?? null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </p>
+                  {r.scoringSignals && Object.keys(r.scoringSignals).length > 0 && (
+                    <p className="text-[10px] text-muted-foreground/80 truncate" title={JSON.stringify(r.scoringSignals)}>
+                      signals: {Object.entries(r.scoringSignals).map(([k, v]) => `${k.replace(/_/g, " ")}: ${String(v)}`).join(", ")}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )
         )}
 
         {/* Step 1 */}

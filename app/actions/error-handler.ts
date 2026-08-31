@@ -99,7 +99,76 @@ export async function getErrorGroupDetails(groupId: string) {
   const { getRetryStatus } = await import("@/lib/errors/auto-retry")
   const retry = await getRetryStatus(groupId)
 
-  return { ...data, retry }
+  // THE STACK TRACE THE COLLECTOR FILED AND NOBODY COULD SEE (lane M2).
+  // collectError (lib/errors/collect-error.ts) writes one error_stack_traces
+  // row per reported error — stack_trace, the frame it parsed out of it
+  // (file_path / line_number / function_name), the runtime_context the caller
+  // supplied, and error_hash, THE one grouping identity in this system — and
+  // no surface ever read any of it back: the person triaging an error saw the
+  // message alone and had to reproduce the failure to learn where it threw.
+  // Attached AFTER the tenant-scoped automation_errors read above proved the
+  // row belongs to the caller's brokerage; the read itself is tenant-filtered
+  // too, so an untenanted stack row is never widened into a tenant's panel.
+  // Best-effort: a refusal is reported and the details still render.
+  let stack: {
+    stackTrace: string
+    filePath: string | null
+    lineNumber: number | null
+    functionName: string | null
+    runtimeContext: Record<string, unknown> | null
+    errorHash: string | null
+    occurrences: number | null
+  } | null = null
+  const { data: stackRow, error: stackErr } = await supabase
+    .from("error_stack_traces")
+    .select("error_id, stack_trace, file_path, line_number, function_name, runtime_context, error_hash")
+    .eq("error_id", groupId)
+    .eq("brokerage_id", brokerageId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (stackErr) {
+    // §3: a refused read is a fact worth logging, never a silent null.
+    console.error("[error-handler] error_stack_traces read refused:", stackErr.message)
+  } else if (stackRow && (stackRow as { error_id: string }).error_id === groupId) {
+    // The error_id equality is the linkage this attach depends on — asserted
+    // on the value read back, not assumed from the filter that requested it.
+    const row = stackRow as {
+      error_id: string
+      stack_trace: string
+      file_path: string | null
+      line_number: number | null
+      function_name: string | null
+      runtime_context: Record<string, unknown> | null
+      error_hash: string | null
+    }
+    // How often THIS defect (same error_hash) has been filed for this tenant —
+    // the question error_hash was built to answer and nothing ever asked.
+    let occurrences: number | null = null
+    if (row.error_hash) {
+      const { count, error: countErr } = await supabase
+        .from("error_stack_traces")
+        .select("id", { count: "exact", head: true })
+        .eq("brokerage_id", brokerageId)
+        .eq("error_hash", row.error_hash)
+      if (countErr) {
+        console.error("[error-handler] error_hash occurrence count refused:", countErr.message)
+      } else {
+        occurrences = count ?? null
+      }
+    }
+    stack = {
+      stackTrace: row.stack_trace,
+      filePath: row.file_path,
+      lineNumber: row.line_number,
+      functionName: row.function_name,
+      runtimeContext: row.runtime_context,
+      errorHash: row.error_hash,
+      occurrences,
+    }
+  }
+
+  return { ...data, retry, stack }
 }
 
 export async function dismissErrorGroup(groupId: string, reason: string) {

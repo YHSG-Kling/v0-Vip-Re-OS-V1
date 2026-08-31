@@ -2,6 +2,27 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 
+// ─── TOMBSTONE (orphan doctrine §1.3, lane M3 2026-08-31) ────────────────────
+// POST /api/behavior/signal (app/api/behavior/signal/route.ts) DELETED. It was
+// an HTTP door onto updatePreferencesFromSignal below + an every-10th-signal
+// generateBuyerPredictions kick, authenticated on a Supabase SESSION with an
+// agents-profile gate — so the only possible caller was this app's own UI, and
+// nothing in the tree ever addressed it (opposite-missing census 6b; the same
+// "loop, not a door" test the census records for /api/agentic-os/voice). The
+// FUNCTIONALITY LIVES ELSEWHERE, in the in-process writers that closed the
+// buyer-graph loop:
+//   · lib/kernel/forms.ts:914  — recordBuyerPropertyAction feeds the buyer's own
+//     portal save/favorite/dismiss through interestLevelToLearningSignal into
+//     updatePreferencesFromSignal (lib/behavior-learning/signal-mapping.ts
+//     records that THIS is the strongest signal lane);
+//   · app/actions/smart-insights.ts:807 — post-tour showing feedback, same writer;
+//   · app/actions/buyer-insights.ts:152 — regenerates predictions on demand when
+//     the agent opens buyer insights (the route's every-10th-signal cadence was
+//     a producer-side guess; regeneration keyed to the READER is the survivor).
+// A raw "viewed" emitter was the route's only unshared capability, and
+// signal-mapping.ts rules that raw views are "too weak to act on here" — so no
+// half was left unbuilt by the deletion.
+
 // Signal weights — exact per spec
 const SIGNAL_WEIGHTS: Record<string, number> = {
   saved:      5,
@@ -73,10 +94,14 @@ export async function updatePreferencesFromSignal(
     .eq("brokerage_id", brokerageId)
     .maybeSingle()
 
-  // Step 3 — Load all signals for this contact to compute running averages
+  // Step 3 — Load all signals for this contact to compute running averages.
+  // `zip` included (lane M2): the tour-feedback writer records the zip of
+  // every property the buyer reacted to, property_preferences.inferred_zip_codes
+  // is read by the portal search, SmartSearchWidget and the buyer criteria
+  // reader — and the learner between them never carried the value across.
   const { data: allLogs, error: logsErr } = await supabase
     .from("buyer_behavior_log")
-    .select("signal_type, list_price, bedrooms, bathrooms, city, property_type, property_snapshot:metadata")
+    .select("signal_type, list_price, bedrooms, bathrooms, city, zip, property_type, property_snapshot:metadata")
     .eq("contact_id", contactId)
     .eq("brokerage_id", brokerageId)
     .order("created_at", { ascending: false })
@@ -94,6 +119,7 @@ export async function updatePreferencesFromSignal(
 
   // Frequency maps for categoricals
   const cityMap:    Record<string, number>    = {}
+  const zipMap:     Record<string, number>    = {}
   const typeMap:    Record<string, number>    = {}
   const featureMap: Record<string, number>    = {}
 
@@ -108,6 +134,7 @@ export async function updatePreferencesFromSignal(
     if (log.bathrooms)       bathsWeightedSum += Number(log.bathrooms)  * w
 
     if (log.city)            cityMap[log.city]          = (cityMap[log.city]          ?? 0) + w
+    if (log.zip)             zipMap[log.zip]            = (zipMap[log.zip]            ?? 0) + w
     if (log.property_type)   typeMap[log.property_type] = (typeMap[log.property_type] ?? 0) + w
 
     // Features from property_snapshot
@@ -137,6 +164,12 @@ export async function updatePreferencesFromSignal(
       .map(([k]) => k)
 
   const preferred_cities   = topN(cityMap, 5)
+  // Only the tour-feedback writer stamps zip today, so an all-portal history
+  // yields no zips; falling back to the CURRENT value keeps the zips the
+  // AI-ISA intent converter wrote (convert-buyer-lead-on-intent) instead of
+  // blanking them on every re-learn. The KEY stays literal either way — only
+  // the value is conditional (the opaque-write trap is in conditional keys).
+  const preferred_zips     = topN(zipMap, 5)
   const preferred_features = topN(featureMap, 10)
 
   // Confidence = min(1.0, total_positive_signals / 50)
@@ -161,6 +194,7 @@ export async function updatePreferencesFromSignal(
         inferred_beds_min:       avgBeds  > 0 ? avgBeds  : null,
         inferred_baths_min:      avgBaths > 0 ? avgBaths : null,
         inferred_cities:         preferred_cities,
+        inferred_zip_codes:      preferred_zips.length > 0 ? preferred_zips : (current?.inferred_zip_codes ?? null),
         inferred_property_types: topN(typeMap, 3),
         inferred_must_have_features: preferred_features,
         confidence_score:        confidenceScore,

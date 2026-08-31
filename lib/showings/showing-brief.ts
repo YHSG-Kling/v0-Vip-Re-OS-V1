@@ -171,7 +171,7 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
       ? svc.from("buyer_behavior_predictions").select("predicted_next_action, predicted_ready_to_offer, predicted_price_max, predicted_timeline_days, engagement_score, ai_reasoning").eq("contact_id", showing.contact_id).order("generated_at", { ascending: false }).limit(1).maybeSingle()
       : Promise.resolve({ data: null }),
     showing.contact_id
-      ? svc.from("buyer_behavior_log").select("signal_type, signal_value, property_address, bedrooms, bathrooms, list_price, created_at").eq("contact_id", showing.contact_id).gte("created_at", new Date(Date.now() - 14 * 86_400_000).toISOString()).order("created_at", { ascending: false }).limit(30)
+      ? svc.from("buyer_behavior_log").select("signal_type, signal_value, property_address, bedrooms, bathrooms, sqft, list_price, created_at").eq("contact_id", showing.contact_id).gte("created_at", new Date(Date.now() - 14 * 86_400_000).toISOString()).order("created_at", { ascending: false }).limit(30)
       : Promise.resolve({ data: [] }),
     svc.from("buyer_stage_coaching").select("buyer_stage, suggested_talking_points, common_objections, success_signals, risk_signals").eq("is_active", true).limit(5),
     // Buyer-side property cache lookup. Match strategy (any one):
@@ -382,6 +382,15 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
   if (recentPrices.length > 2) {
     const avg = Math.round(recentPrices.reduce((a, b) => a + b, 0) / recentPrices.length)
     signals.push(`Recent viewing avg ${dollars(avg)}`)
+  }
+  // Size trend (lane M2): buyer_behavior_log.sqft is stamped by the learner's
+  // signal writer and was read by nothing — yet "are they trending bigger or
+  // smaller than this house" is a live showing question. Same >2 floor as the
+  // price average: two data points are an anecdote, not a trend.
+  const recentSqft = beh.map(b => b.sqft).filter((s): s is number => typeof s === "number" && s > 0)
+  if (recentSqft.length > 2) {
+    const avgSqft = Math.round(recentSqft.reduce((a, b) => a + b, 0) / recentSqft.length)
+    signals.push(`Recent viewing avg ${avgSqft.toLocaleString()} sqft`)
   }
 
   const predictedNextAction = prediction?.predicted_next_action ?? null
