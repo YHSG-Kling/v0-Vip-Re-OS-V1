@@ -39,7 +39,6 @@
     "app/actions/social-media-automation.ts": 1,
     "app/actions/social-publishing.ts": 1,
     "app/actions/superadmin/parked-retention.ts": 1,
-    "app/actions/vendor-marketplace.ts": 2,
     "app/actions/vendor-payments.ts": 1,
     "app/actions/vendor-verification.ts": 1,
     "app/actions/video/create-video-project.ts": 5,
@@ -577,7 +576,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9445,
+  "census": 9452,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -811,7 +810,7 @@
     "app/actions/document-center.ts": 2,
     "app/actions/document-extractions.ts": 2,
     "app/actions/document-field-audit.ts": 1,
-    "app/actions/document-kernel-review.ts": 6,
+    "app/actions/document-kernel-review.ts": 7,
     "app/actions/documents.ts": 11,
     "app/actions/dotloop-integration.ts": 13,
     "app/actions/education-kernel.ts": 5,
@@ -828,6 +827,7 @@
     "app/actions/gamification.ts": 7,
     "app/actions/generate-marketing-image.ts": 1,
     "app/actions/generate-page-insight.ts": 1,
+    "app/actions/generated-documents.ts": 1,
     "app/actions/gift-studio.ts": 2,
     "app/actions/home-value-lead.ts": 1,
     "app/actions/home-value.ts": 9,
@@ -1044,6 +1044,7 @@
     "app/actions/superadmin/coupons.ts": 9,
     "app/actions/superadmin/deal-room-demo.ts": 3,
     "app/actions/superadmin/demo-tenant.ts": 2,
+    "app/actions/superadmin/feature-sunset.ts": 1,
     "app/actions/superadmin/go-live-readiness.ts": 2,
     "app/actions/superadmin/impersonation.ts": 3,
     "app/actions/superadmin/manual-subscriber.ts": 1,
@@ -1106,7 +1107,7 @@
     "app/actions/vendor-contact-access.ts": 4,
     "app/actions/vendor-documents.ts": 1,
     "app/actions/vendor-invite.ts": 3,
-    "app/actions/vendor-marketplace.ts": 24,
+    "app/actions/vendor-marketplace.ts": 22,
     "app/actions/vendor-messages.ts": 3,
     "app/actions/vendor-payments.ts": 14,
     "app/actions/vendor-portal.ts": 8,
@@ -1140,6 +1141,7 @@
     "app/actions/voice-assistant/draft-listing-from-voice.ts": 1,
     "app/actions/voice-assistant/draft-offer-from-voice.ts": 1,
     "app/actions/voice-assistant/handle-voice-command.ts": 1,
+    "app/actions/voice-assistant/list-resumable-intake-sessions.ts": 1,
     "app/actions/voice-assistant.ts": 5,
     "app/actions/voice-avatar-settings.ts": 4,
     "app/actions/voice-call-bridge.ts": 2,
@@ -1168,7 +1170,7 @@
     "app/api/admin/transaction-forms/route.ts": 4,
     "app/api/admin/usage/export-csv/route.ts": 1,
     "app/api/agent/update-video-profile/route.ts": 1,
-    "app/api/agent-assistant/session/route.ts": 2,
+    "app/api/agent-assistant/session/route.ts": 3,
     "app/api/agent-assistant/tool-call/route.ts": 1,
     "app/api/agentic-os/actions/[capability]/invoke/route.ts": 1,
     "app/api/agentic-os/actions/[capability]/route.ts": 1,
@@ -1878,6 +1880,7 @@
     "app/dashboard/admin/command-center/earned-autonomy-panel.tsx": 1,
     "app/dashboard/admin/command-center/manager-activity-feed.tsx": 1,
     "app/dashboard/admin/command-center/manager-talk-feed.tsx": 1,
+    "app/dashboard/admin/command-center/policy-decisions-panel.tsx": 1,
     "app/dashboard/admin/command-center/quarterly-review-card.tsx": 1,
     "app/dashboard/admin/command-center/scope-switcher.tsx": 1,
     "app/dashboard/admin/command-center/team-announcement-composer.tsx": 1,
@@ -1978,6 +1981,7 @@
     "app/dashboard/agent/components/nps-survey-card.tsx": 1,
     "app/dashboard/agent/components/open-actions-card.tsx": 1,
     "app/dashboard/agent/components/predictive-listing-card.tsx": 1,
+    "app/dashboard/agent/components/resume-intake-card.tsx": 1,
     "app/dashboard/agent/components/revenue-protection-hero.tsx": 1,
     "app/dashboard/agent/components/time-to-value-card.tsx": 1,
     "app/dashboard/agent/components/weekly-plan-widget.tsx": 1,
@@ -2092,6 +2096,7 @@
     "app/dashboard/documents/document-actions-dialog.tsx": 1,
     "app/dashboard/documents/document-center-client.tsx": 1,
     "app/dashboard/documents/document-workspace-panel.tsx": 1,
+    "app/dashboard/documents/library/generated-library-client.tsx": 1,
     "app/dashboard/documents/share-document-dialog.tsx": 1,
     "app/dashboard/education/client-learning-panel.tsx": 1,
     "app/dashboard/financials/agent/agent-financials-client.tsx": 1,
@@ -2403,6 +2408,7 @@
     "app/dashboard/superadmin/platform/status-notice-panel.tsx": 1,
     "app/dashboard/superadmin/platform/territory-coverage-board.tsx": 1,
     "app/dashboard/superadmin/rollout/cohort-drill.tsx": 1,
+    "app/dashboard/superadmin/rollout/sunset-control.tsx": 1,
     "app/dashboard/superadmin/sentinel/os-sentinel-board.tsx": 1,
     "app/dashboard/superadmin/sentinel/sentinel-action-queue.tsx": 1,
     "app/dashboard/superadmin/staff/capability-matrix.tsx": 1,
@@ -5817,6 +5823,7 @@
       "dismissStageCandidateAction",
       "resolveAutonomyRatchetAction",
       "listEarnedAutonomyAction",
+      "listPolicyDecisionsAction",
       "revokeAutonomyGrantAction"
     ],
     "app/actions/documents.ts": [
@@ -5959,6 +5966,9 @@
     ],
     "app/actions/generate-page-insight.ts": [
       "generatePageInsight"
+    ],
+    "app/actions/generated-documents.ts": [
+      "getGeneratedDocumentLibrary"
     ],
     "app/actions/gift-studio.ts": [
       "getGiftStudioAction",
@@ -7393,6 +7403,9 @@
       "getDemoTenantStatusAction",
       "createOrResetDemoTenantAction"
     ],
+    "app/actions/superadmin/feature-sunset.ts": [
+      "setFeatureSunsetDateAction"
+    ],
     "app/actions/superadmin/go-live-readiness.ts": [
       "getGoLiveReadinessAction",
       "queueRenderPipelineProbeAction"
@@ -7853,11 +7866,9 @@
       "getCompletedBookingsForRating",
       "markBookingComplete",
       "rateVendorBooking",
-      "recalculateVendorRatings",
       "getVendorReviews",
       "getMyVendorReviews",
       "getVendorReviewModerationQueue",
-      "recomputeVendorReviewStats",
       "submitVendorReview",
       "respondToVendorReview",
       "flagVendorReview",
@@ -8072,6 +8083,9 @@
     "app/actions/voice-assistant/handle-voice-command.ts": [
       "handleVoiceCommand"
     ],
+    "app/actions/voice-assistant/list-resumable-intake-sessions.ts": [
+      "listResumableIntakeSessions"
+    ],
     "app/actions/voice-assistant.ts": [
       "processVoiceCommand",
       "startVoiceSession",
@@ -8194,6 +8208,7 @@
     ],
     "app/api/agent-assistant/session/route.ts": [
       "POST",
+      "GET",
       "PATCH"
     ],
     "app/api/agent-assistant/tool-call/route.ts": [
@@ -10374,6 +10389,9 @@
     "app/dashboard/admin/command-center/manager-talk-feed.tsx": [
       "ManagerTalkFeed"
     ],
+    "app/dashboard/admin/command-center/policy-decisions-panel.tsx": [
+      "PolicyDecisionsPanel"
+    ],
     "app/dashboard/admin/command-center/quarterly-review-card.tsx": [
       "QuarterlyReviewCard"
     ],
@@ -10674,6 +10692,9 @@
     ],
     "app/dashboard/agent/components/predictive-listing-card.tsx": [
       "PredictiveListingCard"
+    ],
+    "app/dashboard/agent/components/resume-intake-card.tsx": [
+      "ResumeIntakeCard"
     ],
     "app/dashboard/agent/components/revenue-protection-hero.tsx": [
       "RevenueProtectionHero"
@@ -11016,6 +11037,9 @@
     ],
     "app/dashboard/documents/document-workspace-panel.tsx": [
       "DocumentWorkspacePanel"
+    ],
+    "app/dashboard/documents/library/generated-library-client.tsx": [
+      "GeneratedLibraryClient"
     ],
     "app/dashboard/documents/share-document-dialog.tsx": [
       "ShareDocumentDialog"
@@ -11997,6 +12021,9 @@
     ],
     "app/dashboard/superadmin/rollout/cohort-drill.tsx": [
       "CohortDrill"
+    ],
+    "app/dashboard/superadmin/rollout/sunset-control.tsx": [
+      "SunsetControl"
     ],
     "app/dashboard/superadmin/sentinel/os-sentinel-board.tsx": [
       "OsSentinelBoard"
