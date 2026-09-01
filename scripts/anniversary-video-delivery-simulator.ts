@@ -415,8 +415,15 @@ function layer5_noOrphanTrigger() {
   const portal = src(PORTAL)
   check("the portal feed plays a clip off the equity_report card's own metadata key",
     /equity_report:\s*\{[\s\S]{0,200}anniversary_video_url/.test(portal))
+  // Re-pinned 2026-09-01: the original assertion counted literal `<video` tags
+  // in the feed and required exactly one — an implementation pin that went red
+  // when playback moved into the shared CardVideoPlayer client component (so
+  // engagement events could be emitted). The §6 rule survives strengthened:
+  // ONE player component, used by every card, and no bare <video> in the feed.
   check("...through ONE player shared with the welcome card, not a second one (§6)",
-    (portal.match(/<video\b/g) ?? []).length === 1)
+    (portal.match(/<CardVideoPlayer\b/g) ?? []).length >= 1
+    && (portal.match(/<video\b/g) ?? []).length === 0
+    && (src("app/portal/[contactId]/components/CardVideoPlayer.tsx").match(/<video\b/g) ?? []).length === 1)
   check("...and the key the cron writes is the key the portal reads",
     cron.includes("anniversary_video_url") && portal.includes("anniversary_video_url"))
   check("CONTROL: a key mismatch would be visible to that matcher",
