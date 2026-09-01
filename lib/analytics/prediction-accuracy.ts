@@ -91,6 +91,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { medianOf, type AccuracyLine, type ClosingCostSide } from "@/lib/offers/closing-cost-accuracy"
 import { MATERIAL_ABS, MATERIAL_PCT } from "@/lib/net-sheet/net-sheet-reconciler"
+import { applyTenantScope, platformScope, tenantScope, type TenantScope } from "@/lib/kernel/tenant-scope"
 
 type Svc = SupabaseClient<any, any, any>
 
@@ -132,6 +133,18 @@ export interface RailBreakdownRow {
   withinRate: number | null
   /** same unit as the rail's medianError */
   medianError: number | null
+  /** ADDITIVE: how to READ medianError on THIS row. Absent = "usd", which is
+   *  what every breakdown row meant before the content rail gained rows in
+   *  score points and percentage points (the panel hardcoded a `±$` prefix, so
+   *  a rate would have rendered as dollars). Deliberately a breakdown-local
+   *  union and NOT a member of RailMedianError["unit"]: the accuracy gate
+   *  (lib/managers/accuracy-gate.ts fmtMetric) switches exhaustively over that
+   *  union with no default, and this rail's HEADLINE unit must stay
+   *  "score_points" or the marketing_content autonomy bar stops matching. */
+  unit?: "usd" | "score_points" | "pct_points"
+  /** ADDITIVE: rows this group covers that have no outcome yet. Rendered as
+   *  "not yet measured" — never as a zero. */
+  pending?: number
 }
 
 export interface RailAccuracy {
@@ -943,9 +956,34 @@ async function patternAdapter(svc: Svc, brokerageId?: string): Promise<RailAccur
 
 // ─── Rail 8: CONTENT PERFORMANCE (predicted vs actual engagement score) ──────
 
+// THE READER USED TO DISCARD THREE OF THE WRITER'S FOUR MEASUREMENTS.
+// lib/content/performance-predictor.ts:313-326 writes actual_score, actual_ctr,
+// actual_engagement_rate AND prediction_id into prediction_accuracy_log; this
+// adapter selected `delta_score, logged_at` and nothing else, so the panel could
+// report exactly ONE abstract number (median |Δ score|) and could not say WHICH
+// call it graded. This rail gates EARNED AUTONOMY (lib/managers/accuracy-gate.ts
+// → app/dashboard/admin/manager-trust), so what it shows has to be complete.
+//
+// The headline metric is UNCHANGED on purpose: the accuracy gate's
+// marketing_content bar is "median engagement-score miss ≤ 15 score_points".
+// The recovered measurements arrive as BREAKDOWN rows beside it.
 export interface ContentAccuracyRow {
   delta_score: number | null
   logged_at: string | null
+  // ── the three recorded measurements the reader used to drop ────────────────
+  /** 0–100 engagement score actually observed. NULL until reconciliation lands
+   *  — honest-NULL by design; it is "not yet measured", never zero. */
+  actual_score?: number | null
+  /** clicks / impressions, 0..1 (same scale the predictor writes predicted_ctr on) */
+  actual_ctr?: number | null
+  /** (likes+comments+shares) / impressions, 0..1 */
+  actual_engagement_rate?: number | null
+  /** FK → content_performance_predictions.id: WHICH prediction made the call */
+  prediction_id?: string | null
+  // ── resolved from content_performance_predictions (second, tenant-anchored read) ──
+  predicted_score?: number | null
+  predicted_ctr?: number | null
+  predicted_engagement_rate?: number | null
 }
 
 const CONTENT_BASE = {
@@ -959,15 +997,85 @@ const CONTENT_BASE = {
   detailHref: "/dashboard/marketing/studio",
 }
 
-/** PURE: content rail — median |delta_score| over logged outcomes. */
+/** PURE: median |predicted − actual| over rows where BOTH sides are present.
+ *  Returns null (never 0) when no row has both — absent is absent. */
+function pairedMedianAbs(
+  rows: ContentAccuracyRow[],
+  predicted: (r: ContentAccuracyRow) => number | null,
+  actual: (r: ContentAccuracyRow) => number | null,
+): { median: number | null; observations: number } {
+  const deltas: number[] = []
+  for (const r of rows) {
+    const p = predicted(r)
+    const a = actual(r)
+    if (p == null || a == null) continue
+    deltas.push(Math.abs(p - a))
+  }
+  return { median: deltas.length > 0 ? fractionalMedian(deltas) : null, observations: deltas.length }
+}
+
+/** PURE: content rail — median |delta_score| over logged outcomes, PLUS the
+ *  predicted-vs-actual CTR and engagement-rate comparisons the log already
+ *  carries, PLUS an explicit count of rows whose outcome has not landed yet. */
 export function summarizeContentRows(rows: ContentAccuracyRow[]): RailAccuracy {
   const graded = rows.filter((r) => num(r.delta_score) != null)
+
+  // A logged row with NO actual_* at all is a prediction awaiting
+  // reconciliation, not a miss of zero (§ honest-NULL).
+  const awaitingOutcome = rows.filter(
+    (r) => num(r.actual_score) == null && num(r.actual_ctr) == null && num(r.actual_engagement_rate) == null,
+  ).length
+  const unlinked = rows.filter((r) => !r.prediction_id).length
+  const linkedButUnresolved = rows.filter(
+    (r) => !!r.prediction_id && r.predicted_score == null && r.predicted_ctr == null && r.predicted_engagement_rate == null,
+  ).length
+
   if (graded.length === 0) {
-    return unavailable(CONTENT_BASE,
-      "No published content has its actual engagement logged against a prediction yet.")
+    const why = rows.length === 0
+      ? "No published content has its actual engagement logged against a prediction yet."
+      : `${rows.length} prediction${rows.length === 1 ? " is" : "s are"} logged but none carries a graded score delta yet — ${awaitingOutcome} still awaiting reconciliation.`
+    return unavailable(CONTENT_BASE, why)
   }
+
+  const ctr = pairedMedianAbs(rows, (r) => num(r.predicted_ctr), (r) => num(r.actual_ctr))
+  const eng = pairedMedianAbs(rows, (r) => num(r.predicted_engagement_rate), (r) => num(r.actual_engagement_rate))
+
+  const breakdown: RailBreakdownRow[] = [
+    {
+      group: "Click-through rate — predicted vs actual",
+      observations: ctr.observations,
+      withinRate: null,
+      // stored 0..1 on BOTH sides (predictor writes predicted_ctr = score/2000,
+      // logger writes actual_ctr = clicks/impressions) → ×100 = percentage points
+      medianError: ctr.median == null ? null : round2(ctr.median * 100),
+      unit: "pct_points",
+      pending: rows.length - ctr.observations,
+    },
+    {
+      group: "Engagement rate — predicted vs actual",
+      observations: eng.observations,
+      withinRate: null,
+      medianError: eng.median == null ? null : round2(eng.median * 100),
+      unit: "pct_points",
+      pending: rows.length - eng.observations,
+    },
+  ]
+
+  const honestNotes = [
+    ...CONTENT_BASE.honestNotes,
+    `CTR and engagement rate are compared only where the prediction row still resolves and the outcome has landed — ${ctr.observations} and ${eng.observations} of ${rows.length} logged rows respectively.`,
+    `${awaitingOutcome} logged prediction${awaitingOutcome === 1 ? "" : "s"} carr${awaitingOutcome === 1 ? "ies" : "y"} no recorded outcome yet — shown as "not yet measured", never as a zero miss.`,
+    ...(unlinked > 0
+      ? [`${unlinked} log row${unlinked === 1 ? "" : "s"} name${unlinked === 1 ? "s" : ""} no prediction_id, so the call behind ${unlinked === 1 ? "it" : "them"} cannot be identified.`]
+      : []),
+    ...(linkedButUnresolved > 0
+      ? [`${linkedButUnresolved} log row${linkedButUnresolved === 1 ? "" : "s"} name a prediction_id that did not resolve in this tenant scope — excluded from the rate comparisons.`]
+      : []),
+  ]
+
   return {
     ...CONTENT_BASE,
+    honestNotes,
     available: true,
     why: null,
     observations: graded.length,
@@ -978,18 +1086,93 @@ export function summarizeContentRows(rows: ContentAccuracyRow[]): RailAccuracy {
     },
     withinRate: null,
     period: periodOf(graded.map((r) => r.logged_at)),
+    breakdown,
   }
+}
+
+/** `.in()` travels in the query STRING — 2000 uuids is a 414, not a result. */
+function chunk<T>(xs: T[], size: number): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < xs.length; i += size) out.push(xs.slice(i, i + size))
+  return out
 }
 
 async function contentAdapter(svc: Svc, brokerageId?: string): Promise<RailAccuracy> {
   let q = svc.from("prediction_accuracy_log")
-    .select("delta_score, logged_at")
+    // Every column the writer records. `actual_*` is honest-NULL until
+    // reconciliation lands; `prediction_id` names the call being graded.
+    .select("delta_score, logged_at, actual_score, actual_ctr, actual_engagement_rate, prediction_id")
     .order("logged_at", { ascending: false })
     .limit(2000)
   if (brokerageId) q = q.eq("brokerage_id", brokerageId)
   const { data, error } = await q
   if (error) return unavailable(CONTENT_BASE, `ledger unreadable: ${error.message}`)
-  return summarizeContentRows((data ?? []) as ContentAccuracyRow[])
+
+  const rows = (data ?? []) as ContentAccuracyRow[]
+
+  // ── Resolve the PREDICTION side ─────────────────────────────────────────────
+  // prediction_accuracy_log.prediction_id → content_performance_predictions is
+  // the pair's ONLY FK (scripts/schema-fk-map.ts:591), so an embed would be
+  // PGRST201-safe — but a second read is used anyway so the join is
+  // TENANT-ANCHORED ON ITS OWN ROW (content_performance_predictions carries its
+  // own brokerage_id) rather than inherited through the parent.
+  const predictionIds = [...new Set(
+    rows.map((r) => r.prediction_id).filter((v): v is string => typeof v === "string" && v.length > 0),
+  )]
+  const predicted = new Map<string, { predicted_score: number | null; predicted_ctr: number | null; predicted_engagement_rate: number | null }>()
+  let predictionSideRefusal: string | null = null
+
+  // The prediction side is scoped through lib/kernel/tenant-scope rather than
+  // the `if (brokerageId) q = q.eq(…)` shape the rest of this module still
+  // carries: a missing tenant id must not decay into "every tenant". Platform
+  // scope here is the SAME decision the log read above made, said out loud.
+  const predictionScope: TenantScope = brokerageId
+    ? tenantScope(brokerageId, "prediction accuracy · content rail (prediction side)")
+    : platformScope("cross-tenant accuracy report — the superadmin platform analytics mount passes no brokerageId, and this read is the prediction half of the log rows already read at that same scope")
+
+  for (const ids of chunk(predictionIds, 100)) {
+    const pq = svc.from("content_performance_predictions")
+      .select("id, predicted_score, predicted_ctr, predicted_engagement_rate")
+      .in("id", ids)
+    // Mutating form (as lib/kernel/command-center.ts:358 uses it): the builder is
+    // filtered in place, so the deeply-generic PostgREST return type is never
+    // re-inferred through applyTenantScope's own type parameter (TS2589).
+    interface EqOnly { eq(column: string, value: string): EqOnly }
+    applyTenantScope(pq as unknown as EqOnly, predictionScope)
+    const { data: preds, error: predError } = await pq
+    if (predError) {
+      // DELIBERATELY NOT FATAL, and said out loud. The headline metric is
+      // computed from delta_score, which the LOG carries on its own row — that
+      // number is still fully evidenced. Only the CTR / engagement-rate
+      // comparisons need the prediction side, and they degrade to "not yet
+      // measured" with the refusal named in the notes. Refusing the whole rail
+      // here would black out an autonomy gate over a secondary read.
+      predictionSideRefusal = predError.message
+      console.error("[PredictionAccuracy] content prediction-side read refused:", predError.message)
+      break
+    }
+    for (const p of (preds ?? []) as any[]) {
+      predicted.set(p.id as string, {
+        predicted_score: p.predicted_score ?? null,
+        predicted_ctr: p.predicted_ctr ?? null,
+        predicted_engagement_rate: p.predicted_engagement_rate ?? null,
+      })
+    }
+  }
+
+  const joined: ContentAccuracyRow[] = rows.map((r) => {
+    const p = r.prediction_id ? predicted.get(r.prediction_id) : undefined
+    return { ...r, ...(p ?? {}) }
+  })
+
+  const rail = summarizeContentRows(joined)
+  if (predictionSideRefusal && rail.available) {
+    rail.honestNotes = [
+      ...rail.honestNotes,
+      `Prediction-side read refused (${predictionSideRefusal}) — the score miss above still stands on the log's own delta_score; the rate comparisons are incomplete.`,
+    ]
+  }
+  return rail
 }
 
 // ─── Rail 9: DEAL OUTCOME (frozen probability calls vs the terminal event) ───

@@ -145,14 +145,67 @@ export async function recalculateCampaignROI(
 
     // === DIRECT_MAIL campaigns ===
     if (campaignType === "direct_mail") {
-      // Count responses that indicate conversion
-      const { data: mailResponses } = await supabase
-        .from("mail_response_tracking")
-        .select("response_type")
+      // THE FABRICATED NUMBER (fixed 2026-09-01). Every other arm scopes to the
+      // campaign it claims to measure — social on marketing_campaign_id, ad on
+      // ad_campaign_id — but this one read mail_response_tracking with NOTHING
+      // but `.eq("brokerage_id", …)`. No campaign predicate at all. So EVERY
+      // direct-mail campaign in a brokerage reported the SAME lead and
+      // conversion count, cost_per_lead was total_spend divided by a
+      // brokerage-wide response count, and any spend decision made on it was
+      // made on a number that could not vary between campaigns.
+      //
+      // The join path is real and confirmed against scripts/schema-fk-map.ts:
+      //   mail_response_tracking.campaign_id      → direct_mail_campaigns.id
+      //   direct_mail_campaigns.marketing_campaign_id → marketing_campaigns.id
+      // Resolved in TWO reads, not a bare embed: the resolve is tenant-anchored
+      // on its own row, and both errors are DESTRUCTURED AND READ (§3 —
+      // supabase-js RESOLVES refusals, so a discarded error degrades silently).
+      const { data: mailCampaigns, error: mailCampaignsError } = await supabase
+        .from("direct_mail_campaigns")
+        .select("id")
+        .eq("marketing_campaign_id", marketingCampaignId)
         .eq("brokerage_id", brokerageId)
 
-      if (mailResponses) {
-        for (const r of mailResponses) {
+      if (mailCampaignsError) {
+        // FAIL CLOSED (§4). A refused resolve must NEVER degrade back to the
+        // brokerage-wide count — that is the exact defect this fix removes, and
+        // "nobody checked" must not render as "checked and fine". Refusing here
+        // also means the UPSERT below never lands a number nobody can stand
+        // behind: the previous campaign_roi row survives, stale but honest.
+        console.error(
+          "[ROI Calculator] direct_mail campaign resolve refused:",
+          mailCampaignsError.message
+        )
+        return {
+          success: false,
+          error: `direct_mail campaign resolve refused: ${mailCampaignsError.message}`,
+        }
+      }
+
+      const mailCampaignIds = (mailCampaigns ?? []).map((c) => c.id)
+
+      // No direct-mail children → an HONEST ZERO. Not a brokerage-wide total.
+      // (Skipping the read also avoids `.in("campaign_id", [])`, whose PostgREST
+      // rendering is not worth relying on.)
+      if (mailCampaignIds.length > 0) {
+        const { data: mailResponses, error: mailResponsesError } = await supabase
+          .from("mail_response_tracking")
+          .select("response_type")
+          .eq("brokerage_id", brokerageId)
+          .in("campaign_id", mailCampaignIds)
+
+        if (mailResponsesError) {
+          console.error(
+            "[ROI Calculator] mail_response_tracking read refused:",
+            mailResponsesError.message
+          )
+          return {
+            success: false,
+            error: `mail_response_tracking read refused: ${mailResponsesError.message}`,
+          }
+        }
+
+        for (const r of mailResponses ?? []) {
           totalLeads++
           if (["call", "form_submit", "appointment"].includes(r.response_type)) {
             totalConversions++
@@ -366,19 +419,76 @@ export async function recalculateChannelPerformance(
       }
 
       if (channelType === "direct_mail") {
-        const { data: mailResponses } = await supabase
+        // Same unscoped SHAPE as the campaign arm above, at a different
+        // altitude. Here brokerage-wide IS the right denominator — this is a
+        // CHANNEL rollup, not a campaign one — so the fix is not a campaign
+        // predicate. It is the other two halves the campaign arm was missing:
+        //   (a) ANCHOR ACROSS THE JOIN. A response row is counted only when its
+        //       campaign_id resolves to a direct_mail_campaigns row owned by
+        //       THIS brokerage, so a mis-stamped or cross-tenant
+        //       mail_response_tracking.brokerage_id cannot inflate the channel.
+        //   (b) READ THE ERRORS. Both reads used to discard theirs, and a
+        //       refused read is byte-identical to a real zero — the channel
+        //       would have reported "0 direct-mail leads" as a fact.
+        // Blind spot published beside the number (§2): responses whose
+        // campaign_id names no campaign of this brokerage are EXCLUDED and
+        // counted. Both live writers (app/actions/direct-mail.ts:652,
+        // app/api/qr/scan/route.ts:170) always stamp a real campaign_id, so
+        // this count is expected to be 0 — a non-zero one is a finding.
+        const { data: mailCampaigns, error: mailCampaignsError } = await supabase
+          .from("direct_mail_campaigns")
+          .select("id")
+          .eq("brokerage_id", brokerageId)
+
+        if (mailCampaignsError) {
+          // FAIL CLOSED (§4): refuse rather than upsert a channel row derived
+          // from an unanchored count. Channels already written this pass are
+          // independent rows and stay correct.
+          console.error(
+            "[ROI Calculator] direct_mail campaign resolve refused:",
+            mailCampaignsError.message
+          )
+          return {
+            success: false,
+            error: `direct_mail campaign resolve refused: ${mailCampaignsError.message}`,
+          }
+        }
+
+        const ownedMailCampaignIds = new Set((mailCampaigns ?? []).map((c) => c.id as string))
+
+        const { data: mailResponses, error: mailResponsesError } = await supabase
           .from("mail_response_tracking")
-          .select("response_type")
+          .select("response_type, campaign_id")
           .eq("brokerage_id", brokerageId)
           .gte("created_at", windowStart)
           .lte("created_at", windowEnd)
 
-        if (mailResponses) {
-          leads += mailResponses.length
-          conversions += mailResponses.filter((r) =>
-            ["call", "form_submit", "appointment"].includes(r.response_type)
-          ).length
+        if (mailResponsesError) {
+          console.error(
+            "[ROI Calculator] mail_response_tracking read refused:",
+            mailResponsesError.message
+          )
+          return {
+            success: false,
+            error: `mail_response_tracking read refused: ${mailResponsesError.message}`,
+          }
         }
+
+        const rows = mailResponses ?? []
+        const owned = rows.filter(
+          (r) => r.campaign_id != null && ownedMailCampaignIds.has(r.campaign_id as string)
+        )
+        const orphaned = rows.length - owned.length
+        if (orphaned > 0) {
+          console.warn(
+            `[ROI Calculator] direct_mail channel: ${orphaned} of ${rows.length} response rows in ${windowStart}..${windowEnd} name no direct_mail_campaigns row of brokerage ${brokerageId} — EXCLUDED from the channel count.`
+          )
+        }
+
+        leads += owned.length
+        conversions += owned.filter((r) =>
+          ["call", "form_submit", "appointment"].includes(r.response_type)
+        ).length
       }
 
       if (channelType === "newsletter") {
