@@ -923,11 +923,8 @@ async function getListingCampaignRecipients(
   // `buyer_behavior_log` — the live twin, written by the preference learner and the
   // portal/CRM telemetry — which both reads below now query.
   //
-  // The SIX surviving property_interactions readers are a SEPARATE future lane, NOT
-  // repointed here: app/actions/copilot.ts:522 and :727, app/actions/assistant.ts:358,
-  // lib/services/lead-management.service.ts:136,
-  // lib/services/contact-management.service.ts:372 (and the merge re-key at :588),
-  // and the lib/kernel/listing-archive.ts:291 cascade entry.
+  // The six other readers were repointed in wave 23 and the table was DROPPED
+  // (m598, applied 2026-09-01) — buyer_behavior_log is the only home now.
   if (campaignType === "open_house" || campaignType === "price_drop") {
     const isOpenHouse = campaignType === "open_house"
 

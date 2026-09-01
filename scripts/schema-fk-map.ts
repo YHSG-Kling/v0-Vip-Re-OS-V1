@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1689 of 1747 pairs) — storing them would be
+ * overwhelming majority (1686 of 1744 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 1822 edges across 708 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1747 unordered
+ * MEASURED AT GENERATION: 1819 edges across 707 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1744 unordered
  * table pairs carry at least one FK; 58
  * carry more than one and are listed below. 12 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -86,7 +86,7 @@
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-09-01
  * source: public.live_foreign_keys_json()
- * body-sha256: 84ccb2679cfdeb7f3f01d1c242f7818d7fefeed34826281990180f76a8d7a0a6
+ * body-sha256: b4cf2b48977c1c3455af40943d735185481be35a419d39d797c58fbc419da913
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -606,7 +606,6 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "property_family_ratings": { "collaborative_search_id": "collaborative_searches" },
   "property_feedback": { "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings" },
   "property_intelligence": { "brokerage_id": "brokerages", "contact_id": "contacts" },
-  "property_interactions": { "brokerage_id": "brokerages", "contact_id": "contacts", "listing_id": "listings" },
   "property_interests": { "agent_user_id": "users", "brokerage_id": "brokerages", "contact_id": "contacts" },
   "property_matches": { "brokerage_id": "brokerages", "contact_id": "contacts" },
   "property_preferences": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts" },

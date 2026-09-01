@@ -1951,7 +1951,8 @@ export const TABLE_MANAGER: Record<string, ManagerKey> = {
   property_family_ratings: "shopping_agent",
   property_feedback: "shopping_agent",
   property_intelligence: "shopping_agent",
-  property_interactions: "shopping_agent",
+  // TOMBSTONE (m598, 2026-09-01): property_interactions dropped — zero writers;
+  // its readers repointed onto buyer_behavior_log (owned below by shopping_agent).
   property_interests: "shopping_agent",
   property_search_log: "shopping_agent",
   property_smart_insights: "shopping_agent",

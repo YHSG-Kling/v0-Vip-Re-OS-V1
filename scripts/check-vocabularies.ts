@@ -15,12 +15,12 @@
  * sweep filtering lifecycle_stage="active" and status="closed" — neither of which exists — so it
  * matched zero rows on every run since it shipped.
  *
- * MEASURED AT GENERATION: 436 tables, 768 columns.
+ * MEASURED AT GENERATION: 435 tables, 767 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
  * generated: 2026-09-01
  * source: public.live_check_constraints_json()
- * body-sha256: ccb89cd082f4d9c48cf1f00f65dc7b0b5fa30cb4f1550974d2c50aa6fcdebd28
+ * body-sha256: 9aff2e03c8f15db7f37311daee1160bae4ffa7507ceb98c1678db2504fd64df8
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -1241,9 +1241,6 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
     frequency: ["daily", "instant", "paused", "twice_daily", "weekly"],
     paused_by: ["agent", "buyer", "system"],
     source: ["agent_created", "buyer_adjusted", "system_generated", "text_conversation", "voice_conversation"],
-  },
-  property_interactions: {
-    interaction_type: ["favorite", "inquiry", "offer", "price_alert_click", "save", "share", "tour_request", "view"],
   },
   property_interests: {
     alert_frequency: ["daily", "instant", "paused", "twice_daily", "weekly"],

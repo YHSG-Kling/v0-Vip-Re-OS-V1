@@ -406,7 +406,7 @@ export const CONTACT_FK_TABLES: string[] = [
   "property_alerts",
   "property_feedback",
   "property_intelligence",
-  "property_interactions",
+  // property_interactions dropped by m598 (zero writers; readers repointed onto buyer_behavior_log)
   "property_interests",
   "property_matches",
   "property_preferences",

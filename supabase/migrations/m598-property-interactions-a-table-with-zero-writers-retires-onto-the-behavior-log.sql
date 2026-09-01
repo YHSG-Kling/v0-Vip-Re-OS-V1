@@ -1,8 +1,17 @@
 -- m598 — property_interactions: a table with zero writers retires onto the behavior log
 -- ─────────────────────────────────────────────────────────────────────────────
--- STATUS: WRITTEN, NOT APPLIED. Lanes write migrations; only the integrator
--- applies them (CLAUDE.md §3). The integrator's post-apply checklist is at the
--- bottom of this header and is part of the migration, not a suggestion.
+-- STATUS: APPLIED 2026-09-01 (integrator, MCP execute_sql, hrvaqgvukzxfskkcrwbt).
+-- Measured at apply: preflight found exactly the inventory this file predicted —
+-- 0 rows, 4 policies, 1 trigger, 0 inbound FKs. Post-apply:
+-- to_regclass('public.property_interactions') IS NULL, the trigger function is
+-- gone, and lead_idx_property_interactions is intact.
+-- APPLY-TIME MEASUREMENT (§2 — a count that moves is the finding): the
+-- name-collision fence below lists TWO must-not-touch tables, but only ONE is
+-- live — information_schema shows lead_idx_property_interactions and no
+-- idx_property_interactions. The 062:186-192 note names a table that was never
+-- created on the live DB. The fence was still correct to exist; it fenced one
+-- real table and one phantom.
+-- Post-apply checklist: all six steps executed in order, same wave.
 --
 -- WHAT. Drop public.property_interactions and its named dependents, after
 -- proving the table is empty. Every surviving reader has already been

@@ -288,7 +288,12 @@ export const LISTING_CHILD_RULES: readonly ChildRule[] = [
   { table: "ai_video_projects", column: "listing_id", disposition: "cascade" },
   { table: "closing_gifts", column: "listing_id", disposition: "cascade" },
   { table: "neighbor_notification_campaigns", column: "listing_id", disposition: "cascade" },
-  { table: "property_interactions", column: "listing_id", disposition: "cascade" },
+  // TOMBSTONE (2026-09-01, m598): property_interactions dropped — zero writers,
+  // every reader repointed onto buyer_behavior_log, whose listing_id keeps the
+  // behavior trail reachable from a listing. buyer_behavior_log is NOT in this
+  // manifest because behavior rows are the CONTACT's history, not the listing's
+  // children. Entry removed only after the drop was applied and the schema
+  // caches regenerated, per the ordering law at :255-260.
   { table: "seller_share_feed", column: "listing_id", disposition: "cascade" },
   { table: "seller_updates", column: "listing_id", disposition: "cascade" },
   { table: "seller_weekly_reports", column: "listing_id", disposition: "cascade" },
