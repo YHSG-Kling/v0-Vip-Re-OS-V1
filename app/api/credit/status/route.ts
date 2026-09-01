@@ -4,7 +4,8 @@ import { requireAuth } from "@/lib/kernel/api-auth"
 import { supabaseService } from "@/services/supabaseService"
 
 /**
- * GET /api/credit/status?leadId=<contacts.id>
+ * GET /api/credit/status?contactId=<contacts.id>
+ * (legacy spelling ?leadId= is still accepted for one release — see below)
  *
  * The ONLY reader of the credit lane (credit_status has no other reader in the
  * tree). KEPT for that reason — building this route a caller is another lane's
@@ -28,28 +29,36 @@ export async function GET(request: Request) {
     }
 
     const { searchParams } = new URL(request.url)
-    const leadId = searchParams.get("leadId")
+    // IDENTITY CLASS (lane W3 2026-09-01, owner ruling: "a file names contact as
+    // leadid not contactid"): this value has ALWAYS been a contacts.id — every
+    // sink is contacts-class (getContactById reads `contacts`, getCreditStatus's
+    // own parameter is named contactId, and credit_status has no lead_id column).
+    // The canonical spelling is now ?contactId=. The legacy ?leadId= spelling is
+    // accepted for ONE RELEASE because an off-repo caller of this public route
+    // cannot be disproved; remove the fallback after that window.
+    const contactId = searchParams.get("contactId") ?? searchParams.get("leadId")
 
-    if (!leadId) {
-      return NextResponse.json({ success: false, error: "leadId is required" }, { status: 400 })
+    if (!contactId) {
+      return NextResponse.json({ success: false, error: "contactId is required" }, { status: 400 })
     }
 
     // Tenant-scoped point read — proves the contact belongs to the caller's
     // brokerage before the credit file or activity log is touched.
-    const contact = await supabaseService.getContactById(leadId, auth.brokerageId)
+    const contact = await supabaseService.getContactById(contactId, auth.brokerageId)
     if (!contact) {
       // Fail closed: a foreign, deleted, or unknown id is the same answer.
       return NextResponse.json({ success: false, error: "Contact not found" }, { status: 404 })
     }
 
-    const creditStatus = await supabaseService.getCreditStatus(leadId, auth.brokerageId)
+    const creditStatus = await supabaseService.getCreditStatus(contactId, auth.brokerageId)
     // Safe only AFTER the tenant check above — getContactActivities itself has
     // no tenant predicate, and the contact has just been proven to be ours.
-    const interactionHistory = await supabaseService.getContactActivities(leadId)
+    const interactionHistory = await supabaseService.getContactActivities(contactId)
 
     return NextResponse.json({
       success: true,
-      lead: contact,
+      // Renamed from `lead:` — the payload is and always was a contacts row.
+      contact,
       creditStatus,
       // `activity_type` on the live activities table — the old `interaction_type` came
       // from a table that never existed, so this filter could only ever match nothing.

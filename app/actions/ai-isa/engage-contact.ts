@@ -283,6 +283,57 @@ export async function engageContact(
   }
 }
 
+// ── Property interest, resolved from a REAL source ─────────────────────────
+//
+// contacts has NO property_interest column (scripts/schema-snapshot.ts:239) —
+// it is a LEADS column. The SMS branch used to read
+// `(contact as any).property_interest ?? null`: the `as any` defeated tsc and
+// the `?? null` swallowed the miss, so SMS personalization silently lost the
+// fact on every send. For a CONTACT the fact lives in two places, tried in
+// order:
+//   1. the lead lineage — leads.contact_id (stamped by
+//      lib/contact-promotion/history-carry.ts:241) carries the
+//      property_interest captured at lead time, the same field the lead-side
+//      path reads directly (initiate-engagement.ts:403);
+//   2. the property_interests child table (contact_id FK,
+//      scripts/schema-snapshot.ts:531) — property_type from the contact's
+//      saved preferences.
+// Best-effort with {error} READ (§3): a refused read logs and returns null —
+// personalization then simply omits the fact, which is what already happened
+// silently; now it happens honestly.
+async function resolveContactPropertyInterest(
+  supabase: ReturnType<typeof createServiceClient>,
+  contactId: string,
+  brokerageId: string,
+): Promise<string | null> {
+  const { data: leadRows, error: leadError } = await supabase
+    .from('leads')
+    .select('property_interest')
+    .eq('contact_id', contactId)
+    .eq('brokerage_id', brokerageId)
+    .not('property_interest', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(1)
+  if (leadError) {
+    console.error('[engageContact] lead-lineage property_interest read refused:', leadError.message)
+  }
+  const fromLead = (leadRows?.[0]?.property_interest as string | null)?.trim()
+  if (fromLead) return fromLead
+
+  const { data: interestRows, error: interestError } = await supabase
+    .from('property_interests')
+    .select('property_type')
+    .eq('contact_id', contactId)
+    .eq('brokerage_id', brokerageId)
+    .not('property_type', 'is', null)
+    .order('updated_at', { ascending: false })
+    .limit(1)
+  if (interestError) {
+    console.error('[engageContact] property_interests read refused:', interestError.message)
+  }
+  return (interestRows?.[0]?.property_type as string | null)?.trim() || null
+}
+
 // ── Dispatch ───────────────────────────────────────────────────────────────
 
 async function dispatchContactChannel(
@@ -496,17 +547,28 @@ async function dispatchContactChannel(
       'recency stamp after the ISA email already went out — the send is the fact, ai_isa_activities is its ledger; a lost stamp only makes the contact look staler than it is (the next sweep re-engages), never less consented',
     )
 
-    // Trigger direct mail if eligible
-    const shouldSendMail = await shouldTriggerDirectMail(contact.id)
+    // Trigger direct mail if eligible.
+    //
+    // contactId, NOT leadId (lane W3 2026-09-01): `contact.id` is a contacts.id
+    // and the trigger's leads arm read it against `leads`, matched nothing, and
+    // answered false forever — this supplemental piece never went out. The
+    // trigger is dual-class now; the contacts arm resolves the VERIFIED mailing
+    // address off the contacts row itself. The result is read: a refusal is
+    // logged, never recorded as a send (the email above is this branch's
+    // outcome either way).
+    const shouldSendMail = await shouldTriggerDirectMail({ contactId: contact.id })
     if (shouldSendMail && !contact.direct_mail_opt_out) {
-      await triggerDirectMailCampaign({
-        leadId: contact.id,
+      const mailResult = await triggerDirectMailCampaign({
+        contactId: contact.id,
         brokerageId,
         firstName: contact.first_name || '',
         lastName: contact.last_name || '',
         motivation_type: contact.buyer_stage ?? undefined,
         property_interest: undefined,
       })
+      if (!mailResult.success) {
+        console.error('[engageContact] supplemental direct mail refused:', mailResult.error)
+      }
     }
 
     return { success: true, channel: 'email' }
@@ -518,12 +580,17 @@ async function dispatchContactChannel(
       return await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
     }
 
-    // Micro-personalized SMS — never a hardcoded fixed string
+    // Micro-personalized SMS — never a hardcoded fixed string.
+    // property_interest is resolved from its REAL sources (lead lineage /
+    // property_interests) — see resolveContactPropertyInterest above; it is
+    // not a contacts column and the old `(contact as any).property_interest`
+    // read was always undefined.
+    const propertyInterest = await resolveContactPropertyInterest(supabase, contact.id, brokerageId)
     const smsFacts = buildPersonalizationFacts({
       first_name:        contact.first_name,
       city:              (contact as any).city ?? (contact as any).mailing_city ?? null,
       motivation_type:   (contact as any).motivation_type ?? contact.buyer_stage ?? null,
-      property_interest: (contact as any).property_interest ?? null,
+      property_interest: propertyInterest,
       enrichment_profile: (contact as any).enrichment_profile ?? null,
       occupation:        (contact as any).occupation ?? null,
       household_income:  (contact as any).household_income ?? null,
@@ -625,14 +692,31 @@ async function dispatchContactChannel(
       return await dispatchContactChannel('email', contact, brokerageId, reason, actorId, supabase)
     }
 
-    await triggerDirectMailCampaign({
-      leadId: contact.id,
+    // contactId, NOT leadId (lane W3 2026-09-01). `contact.id` is a contacts.id;
+    // the trigger's leads arm read it against `leads`, found nothing, and
+    // refused — while this branch DISCARDED that result and logged outreach,
+    // wrote ai_isa_activities outcome:'sent', emitted CONTACT_MAIL_SENT and
+    // returned success anyway. The ledger recorded mail that was never sent.
+    // The trigger is dual-class now, and its result is the branch's result:
+    // nothing below runs unless a piece actually dispatched (mirrors how the
+    // email/SMS branches return a stop reason instead of logging on refusal).
+    const mailResult = await triggerDirectMailCampaign({
+      contactId: contact.id,
       brokerageId,
       firstName: contact.first_name || '',
       lastName: contact.last_name || '',
       motivation_type: contact.buyer_stage ?? undefined,
       property_interest: undefined,
     })
+
+    if (!mailResult.success) {
+      return {
+        success: false,
+        channel: 'direct_mail',
+        reason: 'stop:direct_mail_refused',
+        error: mailResult.error,
+      }
+    }
 
     await logISAOutreach({
       brokerageId,

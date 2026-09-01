@@ -815,6 +815,8 @@ export async function enrichLeadData(leadId: string) {
     //    actually ran against a resolved tenant's IDX account — an unreachable
     //    credential must not be filed as a consulted source, which is how an
     //    outage becomes "we looked and this lead has done nothing".
+    // The value handed over is a contacts.id (this entry point resolved it
+    // against `contacts` above) — the callee's parameter is named contactId.
     const idxSync = await syncIDXBrokerActivity(leadId, lead)
     if (idxSync.synced) dataSources.push("idx_broker")
     else console.error("[v0] enrichLeadData: IDX Broker source not recorded:", idxSync.reason)
@@ -1107,11 +1109,16 @@ async function searchRealEstateSites(leadId: string, lead: any, brokerageId: str
  * "idx_broker" data source, and an unreachable tenant, an unconfigured cascade or
  * an absent storage lane must not be recorded as a source that produced data.
  */
-// KEEP-WITH-REASON (inert-param census exemption): `leadId` is unread by design —
+// KEEP-WITH-REASON (inert-param census exemption): `contactId` is unread by design —
 // the write that consumed it is gone (see "THE WRITE IS GONE" block below) and the
 // contacts-keyed IDX interaction lane it would key is the documented unbuilt half.
+//
+// RENAMED leadId → contactId (lane W3 2026-09-01, owner ruling on lead/contact
+// naming): the block below has always proven the value is a contacts.id, so the
+// old name stated the wrong identity class. Behavior unchanged — the function is
+// a documented no-op with respect to this id.
 async function syncIDXBrokerActivity(
-  leadId: string,
+  contactId: string,
   lead: any,
 ): Promise<{ synced: boolean; reason?: string }> {
   const ownerBrokerageId = (lead?.brokerage_id as string | null | undefined) ?? null
@@ -1130,7 +1137,7 @@ async function syncIDXBrokerActivity(
 
   // ── THE WRITE IS GONE, AND NOTHING REPLACES IT. STATED PLAINLY. ────────────
   //
-  // This function's caller PROVES, before it is ever reached, that `leadId` is a
+  // This function's caller PROVES, before it is ever reached, that `contactId` is a
   // contacts.id: the enrichment entry point resolves the id against the contacts
   // table and throws when it is absent, so nothing of the other class survives to
   // get here. The row this used to write set `lead_id` to that value.

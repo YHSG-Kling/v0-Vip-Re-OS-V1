@@ -24,16 +24,35 @@ export async function evaluateLeadQualification(leadId: string): Promise<Qualifi
     throw new Error(`Lead not found: ${leadId}`)
   }
 
-  // Get conversation data
-  const { data: messages } = await supabase
-    .from('messages')
-    .select('*')
-    .eq('contact_id', leadId)
-    .order('created_at', { ascending: false })
+  // Get conversation data.
+  //
+  // IDENTITY CLASS (lane W3 2026-09-01): `leadId` is a leads.id — proven by the
+  // load just above — and `messages.contact_id` FKs contacts(id), a DISJOINT id
+  // space. This used to filter messages.contact_id with the leads.id, so the
+  // filter matched NOTHING: conversationCount was always 0 and messageText
+  // always "", and the ISA's qualification verdict had never seen a single
+  // conversation. The crossing is the lead's own `leads.contact_id` — the same
+  // join persistQualificationSignals below already reads.
+  const linkedContactId = (lead as { contact_id?: string | null }).contact_id ?? null
 
-  const conversationCount = messages?.length || 0
-  const recentMessages = messages?.slice(0, 5) || []
-  const messageText = recentMessages.map(m => m.body).join(' ')
+  let conversationCount = 0
+  let messageText = ''
+  if (linkedContactId) {
+    const { data: messages, error: messagesError } = await supabase
+      .from('messages')
+      .select('*')
+      .eq('contact_id', linkedContactId)
+      .order('created_at', { ascending: false })
+    if (messagesError) {
+      // Say so rather than scoring a refused read as "no conversations".
+      console.error('[AI ISA] qualification message read refused:', messagesError.message)
+    }
+    conversationCount = messages?.length || 0
+    messageText = (messages?.slice(0, 5) || []).map(m => m.body).join(' ')
+  }
+  // else: the lead has NO linked contact yet, so there is no messages row that
+  // could belong to it — zero here means "no linked contact", which is honest,
+  // and is a different fact from "a contact exists and has no messages".
 
   // Decision logic lives in qualification-core (shared with the ISA conversation
   // tool + regression simulator) — this function owns only the DB loading.

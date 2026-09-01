@@ -670,14 +670,32 @@ export async function estimateMovingCosts(data: {
   }
 }
 
-// Get all calculator results for a lead (store history)
-export async function getCalculatorHistory(leadId: string) {
+// UUID shape check — `id` below is interpolated into a PostgREST .or() filter
+// string, so it must be proven to be a bare UUID first (a crafted value could
+// otherwise smuggle extra filter clauses into the expression).
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+// Get all calculator results for one person (store history).
+//
+// IDENTITY CLASS (lane W3 2026-09-01): `contacts.id` and `leads.id` are DISJOINT
+// id spaces, and calculator_history carries BOTH columns (lead_id FKs leads,
+// contact_id FKs contacts — scripts/schema-snapshot.ts:162). The only live
+// caller is the portal (app/portal/[contactId]/resources/page.tsx), which holds
+// a contacts.id; this used to filter lead_id only, so a contact's saved history
+// could never come back. Read on BOTH columns so either identity class finds its
+// own rows.
+export async function getCalculatorHistory(id: string) {
   const supabase = await createClient()
+
+  if (!UUID_RE.test(id)) {
+    console.error("[v0] getCalculatorHistory: id is not a UUID — refusing the read")
+    return []
+  }
 
   const { data, error } = await supabase
     .from("calculator_history")
     .select("*")
-    .eq("lead_id", leadId)
+    .or(`lead_id.eq.${id},contact_id.eq.${id}`)
     .order("created_at", { ascending: false })
     .limit(20)
 
@@ -689,17 +707,36 @@ export async function getCalculatorHistory(leadId: string) {
   return data || []
 }
 
-// Save calculator results for lead tracking
+// Save calculator results for follow-up tracking.
+//
+// IDENTITY CLASS (lane W3 2026-09-01): callers pass EXACTLY ONE of leadId /
+// contactId, and the matching column is written. This used to take only leadId
+// and write only calculator_history.lead_id — which FKs leads(id) — so the
+// portal (whose identity is a contacts.id) had EVERY save refused by the FK and
+// surfaced "Estimate not saved" on every calculator. contact_id already exists
+// on the table (scripts/schema-snapshot.ts:162); a contacts.id belongs there,
+// never in the leads FK.
 export async function saveCalculatorResult(data: {
-  leadId: string
+  /** leads.id — for lead-side callers only. Mutually exclusive with contactId. */
+  leadId?: string
+  /** contacts.id — the portal's identity class. Mutually exclusive with leadId. */
+  contactId?: string
   calculatorType: "seller_net" | "mortgage_comparison" | "neighborhood_compare" | "investment_analyzer" | "moving_cost"
   inputs: any
   results: any
 }) {
   const supabase = await createClient()
 
+  // Exactly one identity — a row with both would misattribute, a row with
+  // neither is unreadable by anyone. Refuse rather than guess (§4 fail closed).
+  if ((data.leadId ? 1 : 0) + (data.contactId ? 1 : 0) !== 1) {
+    console.error("[v0] saveCalculatorResult: exactly one of leadId/contactId is required")
+    return { success: false }
+  }
+
   const { error } = await supabase.from("calculator_history").insert({
-    lead_id: data.leadId,
+    lead_id: data.leadId ?? null,
+    contact_id: data.contactId ?? null,
     calculator_type: data.calculatorType,
     inputs: data.inputs,
     results: data.results,

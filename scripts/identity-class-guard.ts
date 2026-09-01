@@ -1189,6 +1189,127 @@ console.log("\n═══ 8b. NOT CLOSED — two agent_user_id columns FK auth.us
   console.log("     unresolved: deliberate or drift. Reported, not migrated — see the comment.")
 }
 
+console.log("\n═══ 9. contacts ⊥ leads — the OTHER disjoint pair (lane W3, 2026-09-01) ═══")
+{
+  // The agents/users discipline above has a twin this guard never watched:
+  // `contacts.id` and `leads.id` are DISJOINT id spaces (same 23503 physics),
+  // and SIX live sites were caught passing one class into the other's slot in
+  // one sweep — an owner ruling ("a file names contact as leadid") found the
+  // first, and the class scan found five more. The two worst shapes:
+  //
+  //   · lib/property-alerts/alert-notifier.ts passed `alert.contact_id` as
+  //     dispatchEmail's `leadId`. dispatch picks its compliance lookup with
+  //     `params.contactId ? "contacts" : "leads"`, so the contacts.id was
+  //     looked up in LEADS, matched nothing, and evaluateOutboundCompliance
+  //     silently never ran — the EXACT defect the tombstone at
+  //     app/actions/communications.ts:69-76 records fixing in that file.
+  //   · the portal calculators passed contactId as `leadId` into an insert on
+  //     calculator_history.lead_id, an FK to leads(id) — every portal save was
+  //     refused, forever, and surfaced only as a toast.
+  //
+  // 9a. THE RULE, LIKE §8's: THE PROPERTY NAME STATES THE CLASS. A value spelled
+  // `<x>.contact_id` is a contacts.id wherever it was read from — even
+  // leads.contact_id FKs contacts — so feeding it into a `leadId:` slot is a
+  // self-contradiction that needs no provenance guessing; mirror for
+  // `<x>.lead_id` into `contactId:`. Scanned over STRIPPED source (§2: a
+  // tombstone naming the old shape must not count as a call site).
+  const CROSSED_LEAD_SLOT    = /\bleadId:\s*[A-Za-z_$][\w$]*\.contact_id\b/g
+  const CROSSED_CONTACT_SLOT = /\bcontactId:\s*[A-Za-z_$][\w$]*\.lead_id\b/g
+  const crossings: string[] = []
+  for (const file of [...walkTs("app"), ...walkTs("lib"), ...rootRuntimeFiles(".")]) {
+    const c = code(file)
+    if (!c.includes("leadId") && !c.includes("contactId")) continue
+    for (const m of c.matchAll(CROSSED_LEAD_SLOT))    crossings.push(`${file}: ${m[0]}`)
+    for (const m of c.matchAll(CROSSED_CONTACT_SLOT)) crossings.push(`${file}: ${m[0]}`)
+  }
+  ok("no `leadId:` slot anywhere is fed a value spelled `.contact_id`, and no\n    `contactId:` slot a `.lead_id` — the property name states the class, and\n    crossing them is how the compliance gate got skipped",
+    crossings.length === 0, crossings.slice(0, 4).join(" | "))
+
+  // POSITIVE CONTROLS (§2) — the finder still sees the two pre-fix shapes, and
+  // does not flag the correct ones. Fixtures, not the live tree.
+  const crossedIn = (s: string) =>
+    [...stripComments(s).matchAll(CROSSED_LEAD_SLOT)].length +
+    [...stripComments(s).matchAll(CROSSED_CONTACT_SLOT)].length
+  ok("...the finder catches the alert-notifier pre-fix shape (leadId: alert.contact_id)",
+    crossedIn(`await dispatchEmail({ brokerageId, leadId: alert.contact_id, to })`) === 1)
+  ok("...and the mirror (contactId: row.lead_id)",
+    crossedIn(`await dispatchSms({ contactId: row.lead_id, to })`) === 1)
+  ok("...and does NOT flag the fixed shape or a genuine lead pass-through",
+    crossedIn(`await dispatchEmail({ contactId: alert.contact_id })`) === 0 &&
+    crossedIn(`await trigger({ leadId: context.leadId, contactId: row.contact_id })`) === 0)
+  ok("...and reads STRIPPED source, so the tombstone describing the old shape\n    cannot re-accuse the fixed file",
+    crossedIn(`// this used to pass leadId: alert.contact_id\nawait dispatchEmail({ contactId: alert.contact_id })`) === 0)
+
+  // 9b. THE SIX SITES STAY FIXED — pinned to the construct, not to counts.
+  const alertNotifier = code("lib/property-alerts/alert-notifier.ts")
+  ok("alert-notifier hands dispatchEmail its recipient as contactId — the\n    contacts.id it just loaded from `contacts` — so the compliance path can\n    actually find the person it is gating",
+    /contactId:\s+alert\.contact_id/.test(alertNotifier) &&
+    !/leadId:\s+alert\.contact_id/.test(alertNotifier),
+    "lib/property-alerts/alert-notifier.ts")
+  ok("...and the SMS path names contactId too",
+    /dispatchSms\(\{[\s\S]{0,300}?contactId: alert\.contact_id/.test(alertNotifier))
+
+  const calc = code("app/actions/calculators.ts")
+  ok("saveCalculatorResult carries BOTH identity classes and writes the matching\n    column — calculator_history.lead_id FKs leads, contact_id FKs contacts, and\n    the portal's contacts.id used to be FK-refused on every save",
+    /lead_id: data\.leadId \?\? null/.test(calc) &&
+    /contact_id: data\.contactId \?\? null/.test(calc),
+    "app/actions/calculators.ts")
+  ok("...refusing a caller that names both classes or neither",
+    /!== 1/.test(calc.slice(calc.indexOf("export async function saveCalculatorResult"),
+                            calc.indexOf("export async function saveCalculatorResult") + 2000)))
+  ok("...and getCalculatorHistory reads on BOTH columns, so either class finds\n    its own rows",
+    /\.or\(`lead_id\.eq\.\$\{id\},contact_id\.eq\.\$\{id\}`\)/.test(calc))
+  ok("...while the portal passes its identity as contactId, not leadId",
+    /contactId,/.test(code("app/portal/[contactId]/resources/portal-financial-tools.tsx")) &&
+    !/leadId: contactId/.test(code("app/portal/[contactId]/resources/portal-financial-tools.tsx")),
+    "app/portal/[contactId]/resources/portal-financial-tools.tsx")
+
+  const qual = code("lib/ai-isa/qualification-evaluator.ts")
+  ok("the ISA qualification evaluator filters messages by the lead's RESOLVED\n    contact_id — filtering messages.contact_id by a leads.id matched nothing,\n    so every verdict was made over zero conversations",
+    /const linkedContactId = /.test(qual) &&
+    /\.eq\('contact_id', linkedContactId\)/.test(qual) &&
+    !/\.eq\('contact_id', leadId\)/.test(qual),
+    "lib/ai-isa/qualification-evaluator.ts")
+
+  const dmt = code("lib/ai-isa/direct-mail-trigger.ts")
+  ok("the direct-mail trigger is DUAL-CLASS: exactly one of leadId/contactId,\n    refused otherwise — not a rename; lead callers keep their arm",
+    /leadId\?: string/.test(dmt) && /contactId\?: string/.test(dmt) &&
+    /!== 1\) return null/.test(dmt),
+    "lib/ai-isa/direct-mail-trigger.ts")
+  ok("...and its campaign insert writes the column that matches the class",
+    /lead_id:\s+who\.cls === 'lead' \? who\.id : null/.test(dmt) &&
+    /contact_id:\s+who\.cls === 'contact' \? who\.id : null/.test(dmt))
+
+  const engage = code("app/actions/ai-isa/engage-contact.ts")
+  ok("engage-contact (a CONTACTS lane end to end) passes contactId into the\n    direct-mail trigger — its contacts.id used to ride the leadId slot into a\n    leads-only read that answered false forever",
+    (engage.match(/triggerDirectMailCampaign\(\{\s*\n\s*contactId: contact\.id/g) ?? []).length === 2 &&
+    !/triggerDirectMailCampaign\(\{\s*\n\s*leadId: contact\.id/.test(engage),
+    "app/actions/ai-isa/engage-contact.ts")
+  ok("...and the direct_mail branch READS the trigger's result — on refusal it\n    returns the failure instead of logging outreach + outcome:'sent' + a\n    CONTACT_MAIL_SENT event for mail that never existed",
+    /const mailResult = await triggerDirectMailCampaign/.test(engage) &&
+    /if \(!mailResult\.success\)/.test(engage) &&
+    /stop:direct_mail_refused/.test(engage))
+
+  const credit = code("app/api/credit/status/route.ts")
+  ok("the credit-status route names its identity contactId (the owner's literal\n    file) — legacy ?leadId= is still read for one release, but the sink names\n    are contacts-class throughout",
+    /searchParams\.get\("contactId"\) \?\? searchParams\.get\("leadId"\)/.test(credit) &&
+    /getContactById\(contactId,/.test(credit),
+    "app/api/credit/status/route.ts")
+
+  const li = code("app/actions/lead-intelligence.ts")
+  ok("syncIDXBrokerActivity's parameter is named contactId — its own doc block\n    proves the value is a contacts.id, and the old name stated the wrong class",
+    /async function syncIDXBrokerActivity\(\s*\n\s*contactId: string/.test(li),
+    "app/actions/lead-intelligence.ts")
+
+  // BLIND SPOT, PUBLISHED (§2): 9a only sees a crossing SPELLED as a
+  // `.contact_id` / `.lead_id` property in the slot. A crossing routed through
+  // a local (`const id = alert.contact_id; … leadId: id`) or across a call
+  // boundary is invisible to it — that is what the site assertions above and
+  // scripts/dispatch-recipient-identity-simulator.ts (which bans
+  // `leadId: *.contactId` spellings in the comms files) are for. The two
+  // detectors overlap on purpose; neither alone covers the class.
+}
+
 console.log(`\n${"═".repeat(70)}`)
 console.log(`IDENTITY CLASS — ${pass} passed, ${fail} failed`)
 if (fail > 0) {

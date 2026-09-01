@@ -83,12 +83,16 @@ export function PortalFinancialTools({ contactId, calcHistory }: PortalFinancial
       if (res.success) {
         setMovingResult(res)
         toast({ title: "Moving cost estimate ready" })
-        // contactId is the truth — passed as leadId because the action param name predates
-        // the portal contact model, but the underlying column accepts any UUID identity
         // The estimate above is real and already shown. This SAVE is what the
         // contact expects to find later, and its failure was silent.
+        //
+        // contactId → contact_id (lane W3 2026-09-01). This used to pass
+        // `leadId: contactId`, which wrote calculator_history.lead_id — an FK to
+        // leads(id), a DISJOINT id space — so every portal save was refused and
+        // the toast below fired on every use. (A prior comment here claimed "the
+        // underlying column accepts any UUID identity"; it does not — it FKs leads.)
         const saved = await saveCalculatorResult({
-          leadId: contactId,
+          contactId,
           calculatorType: "moving_cost",
           inputs: { currentCity, currentState, newCity, newState, homeSize, distanceMiles, moveDate },
           results: res,

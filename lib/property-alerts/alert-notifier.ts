@@ -101,7 +101,14 @@ export async function deliverAlertResults(
         await dispatchEmail({
           brokerageId,
           agentId:      contact.agent_id ?? undefined,
-          leadId:       alert.contact_id,
+          // contactId, NOT leadId — same defect and same fix as the tombstone at
+          // app/actions/communications.ts:69-76. `alert.contact_id` is a
+          // contacts.id (loaded from `contacts` above); dispatchEmail picks its
+          // compliance lookup with `params.contactId ? "contacts" : "leads"`, so
+          // passing it as leadId sent it looking for a contacts.id in LEADS,
+          // found nothing, and evaluateOutboundCompliance was silently skipped
+          // for every alert email. That file was fixed; this one was missed.
+          contactId:    alert.contact_id,
           systemSource: "property_alert",
           from:         `${fromName} <${fromEmail}>`,
           to:           contact.email,

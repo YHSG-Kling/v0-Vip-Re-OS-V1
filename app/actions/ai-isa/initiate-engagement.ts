@@ -518,7 +518,9 @@ async function dispatchToChannel(
       await handleISAQualificationStarted({ leadId, brokerageId: lead.brokerage_id })
     }
 
-    const shouldSendMail = await shouldTriggerDirectMail(leadId)
+    // The trigger is dual-class since lane W3 2026-09-01 ({ leadId } | { contactId });
+    // this caller genuinely holds a leads.id, so the leadId arm is unchanged.
+    const shouldSendMail = await shouldTriggerDirectMail({ leadId })
     if (shouldSendMail) {
       // Welcome kit = the long-form intro LETTER. The POSTCARD is no longer a static
       // Lob-template piece here — it's the BRAND-VOICED persona postcard the Asset
