@@ -21,9 +21,9 @@
  * MEASURED AT GENERATION: 213 agents(id) columns across 204 tables, 33 agent-ish users(id) columns across 31 tables, 161 contact_id tables.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-08-28
+ * generated: 2026-09-01
  * source: public.live_foreign_keys_json()
- * body-sha256: 4e60302ae9348c37e0d2e6512a1ce26eee576725a288e035d3f92155b6c9b841
+ * body-sha256: b394c608b588e3464380ee286b2b654a4a654e6b6a7f39c183663efece1f2023
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -342,6 +342,7 @@ export const CONTACT_FK_TABLES: string[] = [
   "credit_status",
   "data_health_logs",
   "deconflict_suppression_log",
+  "direct_mail_campaigns",
   "direct_mail_recipients",
   "direct_mail_responses",
   "document_requests",
@@ -406,7 +407,6 @@ export const CONTACT_FK_TABLES: string[] = [
   "property_alerts",
   "property_feedback",
   "property_intelligence",
-  // property_interactions dropped by m598 (zero writers; readers repointed onto buyer_behavior_log)
   "property_interests",
   "property_matches",
   "property_preferences",
