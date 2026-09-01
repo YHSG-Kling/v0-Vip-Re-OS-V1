@@ -3,9 +3,6 @@
     "app/actions/ai-agent-goals.ts": [
       "shim:generateObject"
     ],
-    "app/actions/ai-agent-onboarding.ts": [
-      "shim:generateObject"
-    ],
     "app/actions/ai-calendar-management.ts": [
       "shim:generateObject"
     ],
@@ -96,9 +93,6 @@
     "app/api/internal/voice-command/route.ts": [
       "raw:generateText"
     ],
-    "app/api/referrals/thank-you-draft/route.ts": [
-      "raw:generateText"
-    ],
     "app/dashboard/marketing/studio/components/ad-os/ad-os-actions.ts": [
       "raw:generateText"
     ],
@@ -106,12 +100,6 @@
       "raw:generateText"
     ],
     "lib/ads/ad-monitor.ts": [
-      "raw:generateText"
-    ],
-    "lib/ai-isa/inbound-intent-classifier.ts": [
-      "guarded:guardedGenerateText"
-    ],
-    "lib/application/compliance-monitoring.ts": [
       "raw:generateText"
     ],
     "lib/fatigue/fatigue-calculator.ts": [
@@ -126,20 +114,12 @@
     "lib/listing-presentation/generate-ai-presentation.ts": [
       "shim:generateObject"
     ],
-    "lib/onboarding/license-verifier.ts": [
-      "guarded:guardedGenerateText"
-    ],
     "lib/property/enrichment-chain.ts": [
       "shim:generateObject"
-    ],
-    "lib/them-first/validator.ts": [
-      "guarded:guardedGenerateText"
     ],
     "services/aiMappingService.ts": [
       "raw:generateText"
     ]
   },
-  "routedWithoutTenant": {
-    "app/actions/ai-financial-management.ts": 2
-  }
+  "routedWithoutTenant": {}
 }

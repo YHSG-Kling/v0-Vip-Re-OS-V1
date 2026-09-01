@@ -47,7 +47,6 @@
     "app/components/command-palette-items.ts": 3,
     "app/components/portal/FitBadge.tsx": 1,
     "app/dashboard/intelligence-report/trust-receipts-card.tsx": 1,
-    "app/dashboard/videos/components/BackgroundPicker.tsx": 1,
     "app/settings/email-templates/template-preview.tsx": 1,
     "hooks/use-toast.ts": 1,
     "lib/ads/ad-creative-engine.ts": 3,
@@ -136,7 +135,7 @@
     "lib/campaigns/channels.ts": 1,
     "lib/campaigns/contact-sources.ts": 2,
     "lib/charts/cma-reel-data.ts": 1,
-    "lib/charts/explainer-diagram.ts": 3,
+    "lib/charts/explainer-diagram.ts": 2,
     "lib/charts/geometry.ts": 3,
     "lib/cma/customer-facing-guard.ts": 3,
     "lib/commission/cda-discrepancy.ts": 3,
@@ -269,6 +268,7 @@
     "lib/kernel/closing-war-room.ts": 2,
     "lib/kernel/command-center.ts": 1,
     "lib/kernel/commission-forecaster.ts": 6,
+    "lib/kernel/communication-compliance.ts": 2,
     "lib/kernel/compliance-ledger.ts": 2,
     "lib/kernel/consent-recovery.ts": 2,
     "lib/kernel/consistency-guardian.ts": 3,
@@ -575,7 +575,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9423,
+  "census": 9418,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -610,7 +610,7 @@
     "app/actions/admin/lead-routing-settings.ts": 2,
     "app/actions/admin/license-tracking.ts": 7,
     "app/actions/admin/locations.ts": 6,
-    "app/actions/admin/manager-evals.ts": 9,
+    "app/actions/admin/manager-evals.ts": 10,
     "app/actions/admin/onboarding-steps.ts": 3,
     "app/actions/admin/referral-earnings.ts": 2,
     "app/actions/admin/run-scrape-test.ts": 1,
@@ -760,7 +760,7 @@
     "app/actions/connection-health.ts": 2,
     "app/actions/connections/connection-center.ts": 4,
     "app/actions/contact-details.ts": 7,
-    "app/actions/contact-enrichment.ts": 8,
+    "app/actions/contact-enrichment.ts": 9,
     "app/actions/contact-intelligence.ts": 2,
     "app/actions/contact-quick-actions.ts": 3,
     "app/actions/contact-reassignment.ts": 2,
@@ -795,6 +795,7 @@
     "app/actions/deal-play.ts": 1,
     "app/actions/deal-risk-agent.ts": 1,
     "app/actions/deal-shaky.ts": 2,
+    "app/actions/deconflict-cockpit.ts": 1,
     "app/actions/demo-auth.ts": 2,
     "app/actions/direct-mail-performance.ts": 1,
     "app/actions/direct-mail-presets.ts": 3,
@@ -892,6 +893,7 @@
     "app/actions/marketing-ops.ts": 2,
     "app/actions/marketing-package-automation.ts": 10,
     "app/actions/marketing-studio.ts": 19,
+    "app/actions/mls-check.ts": 1,
     "app/actions/multi-persona.ts": 28,
     "app/actions/negotiation-copilot.ts": 2,
     "app/actions/negotiation-strategy.ts": 6,
@@ -927,7 +929,7 @@
     "app/actions/onboarding/training.ts": 4,
     "app/actions/onboarding-decisions.ts": 2,
     "app/actions/open-house-automation.ts": 18,
-    "app/actions/open-house-kernel.ts": 6,
+    "app/actions/open-house-kernel.ts": 7,
     "app/actions/open-house.ts": 7,
     "app/actions/orchestrator.ts": 2,
     "app/actions/outside-agent-showing.ts": 1,
@@ -967,7 +969,7 @@
     "app/actions/quarterly-review.ts": 1,
     "app/actions/recruiting-roi.ts": 6,
     "app/actions/referrals/agent-referral-actions.ts": 2,
-    "app/actions/referrals/referral-actions.ts": 6,
+    "app/actions/referrals/referral-actions.ts": 7,
     "app/actions/referrals/referral-appreciation.ts": 3,
     "app/actions/repair-negotiation-copilot.ts": 2,
     "app/actions/reporting-kernel.ts": 10,
@@ -1149,19 +1151,16 @@
     "app/actions/workflow-reports.ts": 1,
     "app/actions/workflows.ts": 9,
     "app/api/accounting/sync/route.ts": 1,
-    "app/api/admin/agents/sessions/route.ts": 1,
     "app/api/admin/audit-events/route.ts": 1,
     "app/api/admin/billing/dashboard/route.ts": 1,
     "app/api/admin/billing/entitlements/[brokerageId]/route.ts": 2,
     "app/api/admin/billing/subscriptions/[brokerageId]/route.ts": 2,
     "app/api/admin/compliance/ai-disclosures/export/route.ts": 1,
-    "app/api/admin/deconflict/route.ts": 1,
     "app/api/admin/forms/[id]/route.ts": 1,
     "app/api/admin/forms/route.ts": 1,
     "app/api/admin/health-status/route.ts": 1,
     "app/api/admin/qr-codes/route.ts": 2,
     "app/api/admin/scrape-test/route.ts": 1,
-    "app/api/admin/seed-feature-flags/route.ts": 1,
     "app/api/admin/system/providers/test/route.ts": 1,
     "app/api/admin/transaction-forms/route.ts": 4,
     "app/api/admin/usage/export-csv/route.ts": 1,
@@ -1175,13 +1174,8 @@
     "app/api/agentic-os/mcp/route.ts": 1,
     "app/api/agentic-os/resolve-capability/route.ts": 2,
     "app/api/agentic-os/voice/route.ts": 1,
-    "app/api/ai/content-suggestions/route.ts": 1,
-    "app/api/ai/generate-content/route.ts": 1,
     "app/api/ai/generate-module-content/route.ts": 1,
     "app/api/ai/generate-sequence/route.ts": 1,
-    "app/api/ai/insider-edit-generate/route.ts": 1,
-    "app/api/ai/insider-edit-rewrite-section/route.ts": 1,
-    "app/api/ai/insider-edit-save/route.ts": 1,
     "app/api/ai/video-recommendations/route.ts": 1,
     "app/api/approvals/approve/route.ts": 1,
     "app/api/approvals/counter/route.ts": 1,
@@ -1409,13 +1403,10 @@
     "app/api/external-portal/documents/download/route.ts": 1,
     "app/api/fatigue/calculate/route.ts": 1,
     "app/api/fatigue/cron/route.ts": 1,
-    "app/api/financial/expenses/route.ts": 2,
     "app/api/form-wizard/resolve-provider/route.ts": 1,
     "app/api/forms/provider-library/route.ts": 1,
     "app/api/forms/submit/route.ts": 1,
     "app/api/forms/templates/route.ts": 1,
-    "app/api/generate/newsletter/route.ts": 1,
-    "app/api/generate/social/route.ts": 1,
     "app/api/integrations/oauth/[provider]/route.ts": 1,
     "app/api/integrations/test/[provider]/route.ts": 1,
     "app/api/intelligence/classify/route.ts": 1,
@@ -1439,7 +1430,6 @@
     "app/api/leads/raw/route.ts": 2,
     "app/api/leads/route.ts": 1,
     "app/api/listings/[listingId]/upload-document/route.ts": 1,
-    "app/api/listings/mls-check/route.ts": 1,
     "app/api/meetings/sdk-signature/route.ts": 1,
     "app/api/migrate/verify/route.ts": 1,
     "app/api/objection-training/voice-session/route.ts": 1,
@@ -1472,7 +1462,6 @@
     "app/api/recruiting/advance-stage/route.ts": 1,
     "app/api/recruiting/provision-agent/route.ts": 1,
     "app/api/ref/route.ts": 1,
-    "app/api/referrals/thank-you-draft/route.ts": 1,
     "app/api/search/buyer-smart-search/route.ts": 1,
     "app/api/seed/users/route.ts": 1,
     "app/api/showings/feedback/[token]/route.ts": 1,
@@ -2188,6 +2177,7 @@
     "app/dashboard/listings/[id]/components/launch/open-house-readiness-card.tsx": 1,
     "app/dashboard/listings/[id]/components/launch/publish-readiness-card.tsx": 1,
     "app/dashboard/listings/[id]/components/launch/seller-update-readiness-card.tsx": 1,
+    "app/dashboard/listings/[id]/components/mls-check-panel.tsx": 1,
     "app/dashboard/listings/[id]/components/neighbor-notification-card.tsx": 1,
     "app/dashboard/listings/[id]/components/open-house-post-event-panel.tsx": 1,
     "app/dashboard/listings/[id]/components/price-reduction-sheet.tsx": 1,
@@ -2201,7 +2191,6 @@
     "app/dashboard/listings/[id]/offers/components/ai-recommendation-banner.tsx": 1,
     "app/dashboard/listings/[id]/offers/components/compliance-bridge-panel.tsx": 1,
     "app/dashboard/listings/[id]/offers/components/counter-offer-slide-over.tsx": 1,
-    "app/dashboard/listings/[id]/offers/components/decision-history-panel.tsx": 1,
     "app/dashboard/listings/[id]/offers/components/intelligence/negotiation-recommendation-card.tsx": 1,
     "app/dashboard/listings/[id]/offers/components/intelligence/seller-meaning-card.tsx": 1,
     "app/dashboard/listings/[id]/offers/components/intelligence/seller-net-sheet-card.tsx": 1,
@@ -2420,6 +2409,7 @@
     "app/dashboard/support/vendor-breakdown-row.tsx": 1,
     "app/dashboard/system/components/os/agent-capability-panel.tsx": 1,
     "app/dashboard/system/components/os/ai-quality-panel.tsx": 1,
+    "app/dashboard/system/components/os/deconflict-panel.tsx": 1,
     "app/dashboard/system/components/os/living-video-panel.tsx": 1,
     "app/dashboard/system/components/os/observability-panel.tsx": 1,
     "app/dashboard/system/components/os/operational-impact-panel.tsx": 1,
@@ -2467,7 +2457,6 @@
     "app/dashboard/vendors/vendor-portal-invite-panel.tsx": 1,
     "app/dashboard/videos/board/video-recommendations-card.tsx": 1,
     "app/dashboard/videos/board/video-studio-dialog.tsx": 1,
-    "app/dashboard/videos/components/BackgroundPicker.tsx": 1,
     "app/dashboard/videos/components/BrollPicker.tsx": 1,
     "app/dashboard/videos/components/business-context/listing-video-mode-card.tsx": 1,
     "app/dashboard/videos/components/business-context/repurpose-destinations-card.tsx": 1,
@@ -2537,6 +2526,7 @@
     "app/p/[agentSlug]/profile-lead-capture-form.tsx": 1,
     "app/portal/[contactId]/alerts/[alertId]/alert-match-list.tsx": 1,
     "app/portal/[contactId]/assistant/buyer-assistant-client.tsx": 1,
+    "app/portal/[contactId]/components/ClientActionCard.tsx": 1,
     "app/portal/[contactId]/components/DualDependencyBanner.tsx": 1,
     "app/portal/[contactId]/components/DualJourneyTabs.tsx": 1,
     "app/portal/[contactId]/components/LifetimeMilestoneLine.tsx": 1,
@@ -2590,6 +2580,7 @@
     "app/recruiting/[brokerageSlug]/page.tsx": 1,
     "app/recruiting/[brokerageSlug]/recruiting-client.tsx": 1,
     "app/referrals/pipeline/appreciation-panel.tsx": 1,
+    "app/referrals/pipeline/draft-thank-you-button.tsx": 1,
     "app/referrals/pipeline/pipeline-os-client.tsx": 1,
     "app/referrals/referrals-os-client.tsx": 1,
     "app/seed/seed-page-client.tsx": 1,
@@ -3412,9 +3403,8 @@
     "lib/kernel/client-story-drafts.ts": 16,
     "lib/kernel/client-welcome.ts": 4,
     "lib/kernel/closing-war-room.ts": 8,
-    "lib/kernel/command-center.ts": 3,
+    "lib/kernel/command-center.ts": 4,
     "lib/kernel/commission-forecaster.ts": 11,
-    "lib/kernel/communication-compliance-helpers.ts": 2,
     "lib/kernel/communication-compliance.ts": 3,
     "lib/kernel/communications/assemble-email.ts": 1,
     "lib/kernel/communications.ts": 3,
@@ -3789,6 +3779,7 @@
     "lib/negotiation/strategy-writer.ts": 1,
     "lib/net-sheet/net-sheet-guard-runner.ts": 2,
     "lib/net-sheet/net-sheet-reconciler.ts": 4,
+    "lib/newsletter/insider-edit.ts": 1,
     "lib/newsletter/schedule-time.ts": 1,
     "lib/newsletter/seo-score.ts": 3,
     "lib/notifications/brokerage-admins.ts": 2,
@@ -3860,7 +3851,7 @@
     "lib/platform/platform-providers.ts": 3,
     "lib/platform/platform-sentinel.ts": 8,
     "lib/platform/platform-social.ts": 12,
-    "lib/platform/platform-staff-roster.ts": 10,
+    "lib/platform/platform-staff-roster.ts": 11,
     "lib/platform/product-brand.ts": 5,
     "lib/platform/product-content.ts": 6,
     "lib/platform/prospect-conversion.ts": 1,
@@ -4478,6 +4469,7 @@
     ],
     "app/actions/admin/manager-evals.ts": [
       "getManagerTrustScorecard",
+      "getManagerSessionDetail",
       "setManagerAutonomy",
       "getLearnedAdjustmentsForBrokerage",
       "vetoLearnedAdjustment",
@@ -5537,6 +5529,7 @@
       "checkContactLifeChanges",
       "getUnenrichedContacts",
       "getContactsNeedingLifeChangeCheck",
+      "getEnrichmentQueueHealth",
       "getRecentLifeChanges",
       "markLifeChangeNotified",
       "getContactInsights"
@@ -5736,6 +5729,9 @@
     "app/actions/deal-shaky.ts": [
       "getDealShakyAction",
       "setDealShakyAction"
+    ],
+    "app/actions/deconflict-cockpit.ts": [
+      "getDeconflictActivity"
     ],
     "app/actions/demo-auth.ts": [
       "demoSignIn",
@@ -6428,6 +6424,9 @@
       "renderQrImageAction",
       "getMarketingStudioDashboard"
     ],
+    "app/actions/mls-check.ts": [
+      "runMlsRuleCheck"
+    ],
     "app/actions/multi-persona.ts": [
       "getBrokerageDashboard",
       "assignTransactionCoordinator",
@@ -6649,7 +6648,8 @@
       "attachOpenHouseSourceAttributionAction",
       "notifyAssignedAgentForOpenHouseLeadAction",
       "generateOpenHouseFollowupNextActionAction",
-      "completeOpenHouseCheckInAction"
+      "completeOpenHouseCheckInAction",
+      "resolveAutopilotActionStatus"
     ],
     "app/actions/open-house.ts": [
       "createOpenHouse",
@@ -6910,6 +6910,7 @@
     "app/actions/referrals/referral-actions.ts": [
       "createReferral",
       "updateReferralStatus",
+      "draftReferralThankYou",
       "sendReferralThankYou",
       "createPartner",
       "deletePartner",
@@ -8121,9 +8122,6 @@
     "app/api/accounting/sync/route.ts": [
       "POST"
     ],
-    "app/api/admin/agents/sessions/route.ts": [
-      "GET"
-    ],
     "app/api/admin/audit-events/route.ts": [
       "GET"
     ],
@@ -8141,9 +8139,6 @@
     "app/api/admin/compliance/ai-disclosures/export/route.ts": [
       "GET"
     ],
-    "app/api/admin/deconflict/route.ts": [
-      "GET"
-    ],
     "app/api/admin/forms/[id]/route.ts": [
       "PATCH"
     ],
@@ -8159,9 +8154,6 @@
     ],
     "app/api/admin/scrape-test/route.ts": [
       "GET"
-    ],
-    "app/api/admin/seed-feature-flags/route.ts": [
-      "POST"
     ],
     "app/api/admin/system/providers/test/route.ts": [
       "POST"
@@ -8207,25 +8199,10 @@
     "app/api/agentic-os/voice/route.ts": [
       "POST"
     ],
-    "app/api/ai/content-suggestions/route.ts": [
-      "POST"
-    ],
-    "app/api/ai/generate-content/route.ts": [
-      "POST"
-    ],
     "app/api/ai/generate-module-content/route.ts": [
       "POST"
     ],
     "app/api/ai/generate-sequence/route.ts": [
-      "POST"
-    ],
-    "app/api/ai/insider-edit-generate/route.ts": [
-      "POST"
-    ],
-    "app/api/ai/insider-edit-rewrite-section/route.ts": [
-      "POST"
-    ],
-    "app/api/ai/insider-edit-save/route.ts": [
       "POST"
     ],
     "app/api/ai/video-recommendations/route.ts": [
@@ -8926,10 +8903,6 @@
     "app/api/fatigue/cron/route.ts": [
       "GET"
     ],
-    "app/api/financial/expenses/route.ts": [
-      "GET",
-      "POST"
-    ],
     "app/api/form-wizard/resolve-provider/route.ts": [
       "GET"
     ],
@@ -8941,12 +8914,6 @@
     ],
     "app/api/forms/templates/route.ts": [
       "GET"
-    ],
-    "app/api/generate/newsletter/route.ts": [
-      "POST"
-    ],
-    "app/api/generate/social/route.ts": [
-      "POST"
     ],
     "app/api/integrations/oauth/[provider]/route.ts": [
       "GET"
@@ -9016,9 +8983,6 @@
       "GET"
     ],
     "app/api/listings/[listingId]/upload-document/route.ts": [
-      "POST"
-    ],
-    "app/api/listings/mls-check/route.ts": [
       "POST"
     ],
     "app/api/meetings/sdk-signature/route.ts": [
@@ -9118,9 +9082,6 @@
     ],
     "app/api/ref/route.ts": [
       "GET"
-    ],
-    "app/api/referrals/thank-you-draft/route.ts": [
-      "POST"
     ],
     "app/api/search/buyer-smart-search/route.ts": [
       "GET"
@@ -11304,6 +11265,9 @@
     "app/dashboard/listings/[id]/components/launch/seller-update-readiness-card.tsx": [
       "SellerUpdateReadinessCard"
     ],
+    "app/dashboard/listings/[id]/components/mls-check-panel.tsx": [
+      "MlsCheckPanel"
+    ],
     "app/dashboard/listings/[id]/components/neighbor-notification-card.tsx": [
       "NeighborNotificationCard"
     ],
@@ -11342,9 +11306,6 @@
     ],
     "app/dashboard/listings/[id]/offers/components/counter-offer-slide-over.tsx": [
       "CounterOfferSlideOver"
-    ],
-    "app/dashboard/listings/[id]/offers/components/decision-history-panel.tsx": [
-      "DecisionHistoryPanel"
     ],
     "app/dashboard/listings/[id]/offers/components/intelligence/negotiation-recommendation-card.tsx": [
       "NegotiationRecommendationCard"
@@ -12043,6 +12004,9 @@
     "app/dashboard/system/components/os/ai-quality-panel.tsx": [
       "AIQualityPanel"
     ],
+    "app/dashboard/system/components/os/deconflict-panel.tsx": [
+      "DeconflictPanel"
+    ],
     "app/dashboard/system/components/os/living-video-panel.tsx": [
       "LivingVideoPanel"
     ],
@@ -12187,9 +12151,6 @@
     ],
     "app/dashboard/videos/board/video-studio-dialog.tsx": [
       "VideoStudioDialog"
-    ],
-    "app/dashboard/videos/components/BackgroundPicker.tsx": [
-      "BackgroundPicker"
     ],
     "app/dashboard/videos/components/BrollPicker.tsx": [
       "BrollPicker"
@@ -12406,6 +12367,9 @@
     "app/portal/[contactId]/assistant/buyer-assistant-client.tsx": [
       "BuyerAssistantClient"
     ],
+    "app/portal/[contactId]/components/ClientActionCard.tsx": [
+      "ClientActionCard"
+    ],
     "app/portal/[contactId]/components/DualDependencyBanner.tsx": [
       "DualDependencyBanner"
     ],
@@ -12564,6 +12528,9 @@
     ],
     "app/referrals/pipeline/appreciation-panel.tsx": [
       "ReferralAppreciationPanel"
+    ],
+    "app/referrals/pipeline/draft-thank-you-button.tsx": [
+      "DraftThankYouButton"
     ],
     "app/referrals/pipeline/pipeline-os-client.tsx": [
       "PipelineOsClient"
@@ -16564,7 +16531,8 @@
     "lib/kernel/command-center.ts": [
       "isManagerSessionStatus",
       "extractProposalCopy",
-      "loadCommandCenter"
+      "loadCommandCenter",
+      "loadManagerSessionDetail"
     ],
     "lib/kernel/commission-forecaster.ts": [
       "stageWinProbability",
@@ -16578,10 +16546,6 @@
       "toPipeline",
       "runCommissionForecaster",
       "isoWeekTag"
-    ],
-    "lib/kernel/communication-compliance-helpers.ts": [
-      "isEligibleForOutbound",
-      "getSuppressionReasons"
     ],
     "lib/kernel/communication-compliance.ts": [
       "evaluateOutboundCompliance",
@@ -18654,6 +18618,9 @@
       "composeSurpriseFallback",
       "actualSignature"
     ],
+    "lib/newsletter/insider-edit.ts": [
+      "enforceInsiderTone"
+    ],
     "lib/newsletter/schedule-time.ts": [
       "validateScheduleTime"
     ],
@@ -19072,6 +19039,7 @@
       "platformActorKind",
       "isAiIsaSystemIdentity",
       "isPlatformSuperadminIdentity",
+      "isResolvedPlatformSuperadmin",
       "resolvePlatformRoleIdentity",
       "isOverridablePlatformRole",
       "platformStaffCan",
@@ -21226,5 +21194,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 0
+  "trulyDead": 2
 }
