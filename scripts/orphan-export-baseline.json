@@ -127,6 +127,7 @@
     "lib/branding/resolve-brokerage-brand.ts": 1,
     "lib/brokerage-intelligence/miners.ts": 6,
     "lib/brokerage-intelligence/offer-term-outcomes.ts": 3,
+    "lib/buyer-consultation/consultation-narration.ts": 2,
     "lib/buyer-search/external-match.ts": 2,
     "lib/buyer-search/fair-housing.ts": 3,
     "lib/buyer-search/investor-offmarket-match.ts": 3,
@@ -169,6 +170,7 @@
     "lib/documents/contact-legal-writeback.ts": 1,
     "lib/documents/deadline-derivation.ts": 2,
     "lib/documents/listing-brochure.ts": 1,
+    "lib/documents/listing-packet-pdf.ts": 2,
     "lib/documents/stage-candidates.ts": 1,
     "lib/education/agent-guide.ts": 2,
     "lib/education/book-authority-program.ts": 2,
@@ -298,7 +300,7 @@
     "lib/kernel/intent-campaign.ts": 4,
     "lib/kernel/launch-war-room.ts": 2,
     "lib/kernel/lead-intake-cockpit.ts": 4,
-    "lib/kernel/lead-magnets.ts": 1,
+    "lib/kernel/lead-magnets.ts": 2,
     "lib/kernel/listing-archive.ts": 1,
     "lib/kernel/listing-inventory-radar.ts": 5,
     "lib/kernel/listing-marketing-week.ts": 1,
@@ -575,7 +577,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9418,
+  "census": 9445,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -764,7 +766,7 @@
     "app/actions/contact-intelligence.ts": 2,
     "app/actions/contact-quick-actions.ts": 3,
     "app/actions/contact-reassignment.ts": 2,
-    "app/actions/contact-vendor-booking.ts": 1,
+    "app/actions/contact-vendor-booking.ts": 2,
     "app/actions/contacts/last-promise.ts": 1,
     "app/actions/contacts/segment-membership.ts": 1,
     "app/actions/contacts/update-addressing.ts": 1,
@@ -791,6 +793,7 @@
     "app/actions/ctv-ads.ts": 3,
     "app/actions/custom-domains.ts": 4,
     "app/actions/data-health.ts": 4,
+    "app/actions/deal-autopsies.ts": 1,
     "app/actions/deal-health-actions.ts": 2,
     "app/actions/deal-play.ts": 1,
     "app/actions/deal-risk-agent.ts": 1,
@@ -859,7 +862,7 @@
     "app/actions/lead-signal-ingest.ts": 5,
     "app/actions/leads.ts": 11,
     "app/actions/learning-modules-approvals.ts": 3,
-    "app/actions/learning-modules.ts": 5,
+    "app/actions/learning-modules.ts": 6,
     "app/actions/lender-portal-actions.ts": 5,
     "app/actions/lender-status-request.ts": 1,
     "app/actions/lifecycle-promo-policy.ts": 4,
@@ -1093,7 +1096,7 @@
     "app/actions/transaction-stage-machine.ts": 3,
     "app/actions/transaction-tasks.ts": 1,
     "app/actions/transaction-transparency.ts": 3,
-    "app/actions/transactions.ts": 58,
+    "app/actions/transactions.ts": 60,
     "app/actions/twin-studio-upload.ts": 3,
     "app/actions/twin-studio.ts": 11,
     "app/actions/usage-overview.ts": 1,
@@ -1216,6 +1219,7 @@
     "app/api/cron/brokerage-intelligence-mine/route.ts": 2,
     "app/api/cron/brokerage-pl-rollup/route.ts": 1,
     "app/api/cron/bundle-attribution-rollup/route.ts": 1,
+    "app/api/cron/buyer-consultation-prep/route.ts": 1,
     "app/api/cron/buyer-market-watch/route.ts": 1,
     "app/api/cron/buyer-reel-deliver/route.ts": 1,
     "app/api/cron/calendar-sync/route.ts": 1,
@@ -1472,6 +1476,7 @@
     "app/api/storage/upload-temp/route.ts": 1,
     "app/api/superadmin/tenant-export/[brokerageId]/route.ts": 1,
     "app/api/system/schema-readiness/route.ts": 1,
+    "app/api/track/dwell/route.ts": 1,
     "app/api/track/identify/route.ts": 1,
     "app/api/track/pixel/route.ts": 1,
     "app/api/twiml/whisper-bridge/route.ts": 2,
@@ -2441,11 +2446,13 @@
     "app/dashboard/transactions/[id]/lender-status-request-button.tsx": 1,
     "app/dashboard/transactions/[id]/milestone-deadlines-button.tsx": 1,
     "app/dashboard/transactions/[id]/milestones/add-milestone-form.tsx": 1,
+    "app/dashboard/transactions/[id]/smart-checklist-panel.tsx": 1,
     "app/dashboard/transactions/[id]/transaction-detail-client.tsx": 1,
     "app/dashboard/transactions/closing-concierge/actions.ts": 5,
     "app/dashboard/transactions/closing-concierge/concierge-client.tsx": 1,
     "app/dashboard/transactions/components/create-transaction-sheet.tsx": 1,
     "app/dashboard/transactions/components/transaction-command-strip.tsx": 1,
+    "app/dashboard/transactions/deals-lost-board.tsx": 1,
     "app/dashboard/transactions/portfolio-risk-scan.tsx": 1,
     "app/dashboard/vendors/bench-coverage-panel.tsx": 1,
     "app/dashboard/vendors/premium-placement-panel.tsx": 1,
@@ -2526,6 +2533,7 @@
     "app/p/[agentSlug]/profile-lead-capture-form.tsx": 1,
     "app/portal/[contactId]/alerts/[alertId]/alert-match-list.tsx": 1,
     "app/portal/[contactId]/assistant/buyer-assistant-client.tsx": 1,
+    "app/portal/[contactId]/components/CardVideoPlayer.tsx": 1,
     "app/portal/[contactId]/components/ClientActionCard.tsx": 1,
     "app/portal/[contactId]/components/DualDependencyBanner.tsx": 1,
     "app/portal/[contactId]/components/DualJourneyTabs.tsx": 1,
@@ -2563,6 +2571,7 @@
     "app/portal/[contactId]/showings/components/buyer-tour-card.tsx": 1,
     "app/portal/[contactId]/transaction/[transactionId]/client-feedback-widget.tsx": 1,
     "app/portal/[contactId]/transaction/[transactionId]/loan-checklist-card.tsx": 1,
+    "app/portal/[contactId]/vendors/rate-booking-stars.tsx": 1,
     "app/portal/[contactId]/vendors/request-booking-button.tsx": 1,
     "app/portal/[contactId]/vendors/respa-ack-gate.tsx": 1,
     "app/portal/lender/[transactionId]/document-upload.tsx": 1,
@@ -2826,7 +2835,7 @@
     "lib/application/lead-application-service.ts": 5,
     "lib/application/listing-lifecycle.ts": 16,
     "lib/application/listings.ts": 2,
-    "lib/application/transactions.ts": 53,
+    "lib/application/transactions.ts": 55,
     "lib/approval-workflow/approval-engine.ts": 6,
     "lib/approval-workflow/approval-logger.ts": 5,
     "lib/audiences/audience-sync.ts": 2,
@@ -2877,6 +2886,9 @@
     "lib/brokerage-intelligence/miners.ts": 7,
     "lib/brokerage-intelligence/offer-term-outcomes.ts": 4,
     "lib/buyer-broker/gate.ts": 1,
+    "lib/buyer-consultation/consultation-narration.ts": 3,
+    "lib/buyer-consultation/consultation-prep.ts": 1,
+    "lib/buyer-consultation/consultation-render.ts": 1,
     "lib/buyer-execution/buyer-execution-engine.ts": 4,
     "lib/buyer-execution/governance-guards.ts": 5,
     "lib/buyer-execution/multi-party-updates.ts": 6,
@@ -3047,6 +3059,7 @@
     "lib/contacts/persona-builder.ts": 6,
     "lib/contacts/provenance-receipt.ts": 4,
     "lib/contacts/resolve-mailing-address.ts": 1,
+    "lib/contacts/transaction-rollup.ts": 2,
     "lib/contacts/twin-provenance.ts": 2,
     "lib/contacts/voice-note-parser.ts": 1,
     "lib/content/newsletter-enrollment.ts": 2,
@@ -3114,6 +3127,7 @@
     "lib/documents/kernel-review-core.ts": 6,
     "lib/documents/listing-agreement-gate.ts": 1,
     "lib/documents/listing-brochure.ts": 2,
+    "lib/documents/listing-packet-pdf.ts": 3,
     "lib/documents/ocr-pdf.ts": 1,
     "lib/documents/policy-decisions.ts": 2,
     "lib/documents/scan-uploaded-document.ts": 1,
@@ -3468,7 +3482,7 @@
     "lib/kernel/launch-war-room.ts": 3,
     "lib/kernel/lead-acquisition-handlers.ts": 7,
     "lib/kernel/lead-intake-cockpit.ts": 6,
-    "lib/kernel/lead-magnets.ts": 8,
+    "lib/kernel/lead-magnets.ts": 9,
     "lib/kernel/lender-linkage.ts": 6,
     "lib/kernel/lifecycle-promo-policy.ts": 2,
     "lib/kernel/lifecycle.ts": 1,
@@ -3864,7 +3878,7 @@
     "lib/platform/revenue-analytics.ts": 2,
     "lib/platform/save-offer.ts": 2,
     "lib/platform/self-audit-rollup.ts": 2,
-    "lib/platform/service-catalogue-scope.ts": 1,
+    "lib/platform/service-catalogue-scope.ts": 2,
     "lib/platform/site-url.ts": 1,
     "lib/platform/staff-action-gate.ts": 2,
     "lib/platform/status-notice.ts": 10,
@@ -4131,6 +4145,7 @@
     "lib/vendor-governance/usage-logger.ts": 1,
     "lib/vendor-governance/vendor-policy.ts": 2,
     "lib/vendor-marketplace/resolve-contact-vendors.ts": 2,
+    "lib/vendor-marketplace/vendor-ratings.ts": 1,
     "lib/vendor-tracking.ts": 1,
     "lib/vendors/appraiser-independence.ts": 1,
     "lib/vendors/insurance-posture.ts": 2,
@@ -4148,7 +4163,7 @@
     "lib/video/assistant-faces.ts": 1,
     "lib/video/assistant-options.ts": 1,
     "lib/video/avatar-explainer.ts": 4,
-    "lib/video/avatar-render-orchestrator.ts": 7,
+    "lib/video/avatar-render-orchestrator.ts": 8,
     "lib/video/broll-picker.ts": 2,
     "lib/video/caption-plan.ts": 2,
     "lib/video/chapter-video-generator.ts": 1,
@@ -5548,7 +5563,8 @@
       "reassignContactAction"
     ],
     "app/actions/contact-vendor-booking.ts": [
-      "requestContactVendorBooking"
+      "requestContactVendorBooking",
+      "rateVendorBookingAsClient"
     ],
     "app/actions/contacts/last-promise.ts": [
       "setLastPromiseAction"
@@ -5715,6 +5731,9 @@
       "getDataHealthStats",
       "runDataHygieneScan",
       "purgeInvalidContacts"
+    ],
+    "app/actions/deal-autopsies.ts": [
+      "getDealAutopsiesAction"
     ],
     "app/actions/deal-health-actions.ts": [
       "resolveInterventionAction",
@@ -6171,6 +6190,7 @@
       "updateLearningModuleAction",
       "publishLearningModuleAction",
       "listLearningModulesForBrokerageAction",
+      "getModulePublicationsAction",
       "getLearningAssignmentsForActorAction"
     ],
     "app/actions/lender-portal-actions.ts": [
@@ -7754,6 +7774,8 @@
       "generateCostBreakdown",
       "generateStatusUpdate",
       "generateSmartChecklist",
+      "getSmartChecklists",
+      "setTaskItemCompleted",
       "detectTransactionIssues",
       "deliverEducationalContent",
       "monitorTransactionHealth",
@@ -8325,6 +8347,9 @@
       "GET"
     ],
     "app/api/cron/bundle-attribution-rollup/route.ts": [
+      "GET"
+    ],
+    "app/api/cron/buyer-consultation-prep/route.ts": [
       "GET"
     ],
     "app/api/cron/buyer-market-watch/route.ts": [
@@ -9112,6 +9137,9 @@
     ],
     "app/api/system/schema-readiness/route.ts": [
       "GET"
+    ],
+    "app/api/track/dwell/route.ts": [
+      "POST"
     ],
     "app/api/track/identify/route.ts": [
       "POST"
@@ -12100,6 +12128,9 @@
     "app/dashboard/transactions/[id]/milestones/add-milestone-form.tsx": [
       "AddMilestoneForm"
     ],
+    "app/dashboard/transactions/[id]/smart-checklist-panel.tsx": [
+      "SmartChecklistPanel"
+    ],
     "app/dashboard/transactions/[id]/transaction-detail-client.tsx": [
       "TransactionDetailClient"
     ],
@@ -12118,6 +12149,9 @@
     ],
     "app/dashboard/transactions/components/transaction-command-strip.tsx": [
       "TransactionCommandStrip"
+    ],
+    "app/dashboard/transactions/deals-lost-board.tsx": [
+      "DealsLostBoard"
     ],
     "app/dashboard/transactions/portfolio-risk-scan.tsx": [
       "PortfolioRiskScan"
@@ -12367,6 +12401,9 @@
     "app/portal/[contactId]/assistant/buyer-assistant-client.tsx": [
       "BuyerAssistantClient"
     ],
+    "app/portal/[contactId]/components/CardVideoPlayer.tsx": [
+      "CardVideoPlayer"
+    ],
     "app/portal/[contactId]/components/ClientActionCard.tsx": [
       "ClientActionCard"
     ],
@@ -12477,6 +12514,9 @@
     ],
     "app/portal/[contactId]/transaction/[transactionId]/loan-checklist-card.tsx": [
       "LoanChecklistCard"
+    ],
+    "app/portal/[contactId]/vendors/rate-booking-stars.tsx": [
+      "RateBookingStars"
     ],
     "app/portal/[contactId]/vendors/request-booking-button.tsx": [
       "RequestBookingButton"
@@ -13650,6 +13690,8 @@
       "generateCostBreakdown",
       "generateStatusUpdate",
       "generateSmartChecklist",
+      "getSmartChecklists",
+      "setTaskItemCompleted",
       "detectTransactionIssues",
       "deliverEducationalContent",
       "monitorTransactionHealth",
@@ -13949,6 +13991,17 @@
     ],
     "lib/buyer-broker/gate.ts": [
       "requireActiveBBA"
+    ],
+    "lib/buyer-consultation/consultation-narration.ts": [
+      "buyerSlideNarrationBudget",
+      "buildBuyerSlideNarration",
+      "generateBuyerSlideNarration"
+    ],
+    "lib/buyer-consultation/consultation-prep.ts": [
+      "composeBuyerConsultationDeck"
+    ],
+    "lib/buyer-consultation/consultation-render.ts": [
+      "renderBuyerConsultationSlides"
     ],
     "lib/buyer-execution/buyer-execution-engine.ts": [
       "getBuyerJourneyStatus",
@@ -14826,6 +14879,10 @@
     "lib/contacts/resolve-mailing-address.ts": [
       "resolveMailingAddressForContact"
     ],
+    "lib/contacts/transaction-rollup.ts": [
+      "threeSidedContactTransactionFilter",
+      "deriveTransactionRollup"
+    ],
     "lib/contacts/twin-provenance.ts": [
       "classifyTwinFields",
       "composeProvenanceNote"
@@ -15126,6 +15183,11 @@
     "lib/documents/listing-brochure.ts": [
       "listingBrochureSpec",
       "runListingBrochures"
+    ],
+    "lib/documents/listing-packet-pdf.ts": [
+      "titleCase",
+      "objectToSections",
+      "listingPacketSpec"
     ],
     "lib/documents/ocr-pdf.ts": [
       "ocrDocumentFromUrl"
@@ -16951,6 +17013,7 @@
       "leadMagnetQrLabel",
       "createLeadMagnet",
       "publishLeadMagnet",
+      "enqueueLeadMagnetCard",
       "captureFormSubmission",
       "generateQRCode",
       "trackMagnetEvent",
@@ -19118,7 +19181,8 @@
       "computeSelfAuditRollup"
     ],
     "lib/platform/service-catalogue-scope.ts": [
-      "serviceCatalogueScope"
+      "serviceCatalogueScope",
+      "rollupServiceStatuses"
     ],
     "lib/platform/site-url.ts": [
       "siteUrl"
@@ -20371,6 +20435,9 @@
       "resolveContactVendors",
       "buildVendorAudienceTags"
     ],
+    "lib/vendor-marketplace/vendor-ratings.ts": [
+      "recalculateVendorRatingsCore"
+    ],
     "lib/vendor-tracking.ts": [
       "trackVendorUsage"
     ],
@@ -20458,6 +20525,7 @@
       "enqueueAvatarCompositionForProject",
       "buildIntroCompositionRequest",
       "describeIntroCompositionGap",
+      "buildBuyerSlideCompositionRequest",
       "declaresAvatarComposition",
       "classifyAnniversaryPortalDelivery",
       "resolveAvatarCompositeState"
