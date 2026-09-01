@@ -250,6 +250,14 @@ export interface SectionEmailInput {
   reel:            { videoUrl: string; thumbnailUrl: string | null; reviewPending?: boolean } | null
   /** Seller-safe note from the section body (e.g. the CMA valuation deferral). */
   note?:           string | null
+  /**
+   * listing_presentations.presentation_type — 'buyer_consultation' switches the
+   * framing copy to the buyer's home-buying plan ahead of their consultation
+   * (a buyer deck has no property address and no listing appointment, so the
+   * seller copy would make wrong claims to a client). Absent/anything else ⇒
+   * the seller copy, unchanged.
+   */
+  presentationType?: string | null
 }
 
 /**
@@ -263,14 +271,20 @@ export interface SectionEmailInput {
  * price is ever composed in — the number is the agent's to give at the meeting.
  */
 export function composeSectionEmail(input: SectionEmailInput): ComposedSectionEmail {
-  const addr = redactPriceAmounts(input.propertyAddress || "your home")
-  const title = redactPriceAmounts(input.sectionTitle || "Your listing plan").trim() || "Your listing plan"
+  const buyer = input.presentationType === "buyer_consultation"
+  // A buyer deck has no subject property — "about" their plan, never an address.
+  const addr = buyer
+    ? "your home-buying plan"
+    : redactPriceAmounts(input.propertyAddress || "your home")
+  const fallbackTitle = buyer ? "Your home-buying plan" : "Your listing plan"
+  const title = redactPriceAmounts(input.sectionTitle || fallbackTitle).trim() || fallbackTitle
   const note = input.note ? redactPriceAmounts(input.note) : null
+  const meeting = buyer ? "our consultation" : "our listing appointment"
 
-  const subject = `${title} — ${addr}`
+  const subject = buyer ? `${title} — your home-buying plan` : `${title} — ${addr}`
   const previewText = input.reel
-    ? `A short video from ${input.agentName} before we meet about ${addr}.`
-    : `${input.agentName} on ${title.toLowerCase()}, before we meet about ${addr}.`
+    ? `A short video from ${input.agentName} before ${meeting}.`
+    : `${input.agentName} on ${title.toLowerCase()}, before ${meeting}.`
 
   // HOW THE REEL TRAVELS — the owner's ruling, in two parts.
   //
@@ -293,28 +307,29 @@ export function composeSectionEmail(input: SectionEmailInput): ComposedSectionEm
       ? `<p style="margin:16px 0"><a href="${escapeAttr(input.reel.videoUrl)}" style="color:#0F172A;font-weight:600">▶ Watch the short video on ${escapeHtml(title.toLowerCase())}</a></p>`
       : videoThumbnailEmbed(input.reel.videoUrl, input.reel.thumbnailUrl)
     : ""
+  const approach = buyer ? "your home search" : addr
   const lede = input.reel
-    ? `I recorded a short video on <strong>${escapeHtml(title.toLowerCase())}</strong> so you can see how I'll approach ${escapeHtml(addr)} before we ever sit down together.`
-    : `Here's the next piece of the plan for ${escapeHtml(addr)}: <strong>${escapeHtml(title.toLowerCase())}</strong>.`
+    ? `I recorded a short video on <strong>${escapeHtml(title.toLowerCase())}</strong> so you can see how I'll approach ${escapeHtml(approach)} before we ever sit down together.`
+    : `Here's the next piece of ${buyer ? "your plan" : `the plan for ${escapeHtml(addr)}`}: <strong>${escapeHtml(title.toLowerCase())}</strong>.`
 
   const html = `<!doctype html><html><body style="font-family:Helvetica,Arial,sans-serif;color:#0F172A;line-height:1.5">
-  <p style="color:#64748B;font-size:13px;margin:0 0 12px">Part ${input.step} of ${input.totalSteps} · before our listing appointment</p>
+  <p style="color:#64748B;font-size:13px;margin:0 0 12px">Part ${input.step} of ${input.totalSteps} · before ${meeting}</p>
   <p>Hi,</p>
   <p>${lede}</p>${embed}
   ${note ? `<p style="background:#F8FAFC;border-left:3px solid #F59E0B;padding:10px 14px;margin:16px 0">${escapeHtml(note)}</p>` : ""}
-  <p><a href="${escapeAttr(input.portalUrl)}" style="display:inline-block;background:#F59E0B;color:#0F172A;padding:10px 18px;border-radius:6px;text-decoration:none;font-weight:600">See the full plan</a></p>
+  <p><a href="${escapeAttr(input.portalUrl)}" style="display:inline-block;background:#F59E0B;color:#0F172A;padding:10px 18px;border-radius:6px;text-decoration:none;font-weight:600">${buyer ? "See your plan" : "See the full plan"}</a></p>
   <p>More on the way before we meet.</p>
   <p>— ${escapeHtml(input.agentName)}<br/>${escapeHtml(input.brokerageName)}</p>
   </body></html>`
 
   const text =
-    `Part ${input.step} of ${input.totalSteps} — before our listing appointment\n\n` +
+    `Part ${input.step} of ${input.totalSteps} — before ${meeting}\n\n` +
     `Hi,\n\n` +
     (input.reel
-      ? `I recorded a short video on ${title.toLowerCase()} so you can see how I'll approach ${addr} before we ever sit down together.\n\nWatch it: ${input.reel.videoUrl}\n`
-      : `Here's the next piece of the plan for ${addr}: ${title.toLowerCase()}.\n`) +
+      ? `I recorded a short video on ${title.toLowerCase()} so you can see how I'll approach ${approach} before we ever sit down together.\n\nWatch it: ${input.reel.videoUrl}\n`
+      : `Here's the next piece of ${buyer ? "your plan" : `the plan for ${addr}`}: ${title.toLowerCase()}.\n`) +
     (note ? `\n${note}\n` : "") +
-    `\nSee the full plan: ${input.portalUrl}\n\nMore on the way before we meet.\n\n— ${input.agentName}\n${input.brokerageName}`
+    `\n${buyer ? "See your plan" : "See the full plan"}: ${input.portalUrl}\n\nMore on the way before we meet.\n\n— ${input.agentName}\n${input.brokerageName}`
 
   return { subject, previewText, html, text }
 }
@@ -327,13 +342,31 @@ function escapeAttr(s: string): string { return escapeHtml(s) }
 export interface MaterializeResult { ok: boolean; inserted: number; error?: string }
 
 /**
- * Read a listing_presentations row, plan its seller-safe sections, and insert
- * them. Idempotent on (presentation_id, section_key). Schedules against the
+ * Which deck a materialization is building. EXTENDED, NOT FORKED (§6): the
+ * buyer-consultation lane rides the same planner, the same
+ * presentation_sections table, the same Gate 2, and the same deliverer — it
+ * differs only in WHICH section sequence is planned and WHICH producer renders
+ * the sections, so those two facts are parameters rather than a second
+ * materializer.
+ */
+export interface MaterializeOpts {
+  /** Section sequence to plan. Defaults to the seller-facing SECTION_SEQUENCE. */
+  sections?: SectionSpec[]
+  /** 'buyer_consultation' routes rendering to the BuyerConsultationSlide
+   *  producer (lib/buyer-consultation/consultation-render); anything else (or
+   *  absent) keeps the listing lane's CMAReel + ListingSectionReel path. */
+  presentationType?: string | null
+}
+
+/**
+ * Read a listing_presentations row, plan its sections, and insert them.
+ * Idempotent on (presentation_id, section_key). Schedules against the
  * presentation's appointment_at (falls back to a 5-day window from now).
  */
 export async function materializePresentationSections(
   presentationId: string,
   client?: ReturnType<typeof createServiceClient>,
+  opts: MaterializeOpts = {},
 ): Promise<MaterializeResult> {
   const supabase = client ?? createServiceClient()
 
@@ -351,6 +384,7 @@ export async function materializePresentationSections(
     brokerageId:     pres.brokerage_id,
     contactId:       pres.contact_id ?? null,
     appointmentAt,
+    sections:        opts.sections,
     marketNarrative: pres.cma_narrative ?? null,
   })
 
@@ -360,18 +394,28 @@ export async function materializePresentationSections(
     .select("id")
   if (insErr) return { ok: false, inserted: 0, error: insErr.message }
 
-  // Best-effort: render EVERY section as an animated video — the CMA section as
-  // a seller-safe CMAReel data video, the others as branded ListingSectionReel
-  // slides ("why this brokerage/agent/team"). A render failure must not fail
-  // section materialization — the section still drips (as a card until rendered).
+  // Best-effort: render EVERY section as an animated video. Which producer
+  // depends on the deck (see MaterializeOpts) — buyer decks render each section
+  // as a BuyerConsultationSlide; listing decks keep the CMA section as a
+  // seller-safe CMAReel and the rest as branded ListingSectionReel slides. A
+  // render failure must not fail section materialization — the section still
+  // drips (as a card until rendered).
   try {
-    const { renderSectionsForPresentation } = await import("./section-render")
-    await renderSectionsForPresentation(presentationId, supabase)
-    // Then narrate: the agent's cloned voice (+ avatar when available) over each
-    // section. Degrades gracefully — no clone → on-screen copy only; the video
-    // still renders. Best-effort; never blocks materialization.
-    const { narratePresentationSections } = await import("./section-narration-orchestrator")
-    await narratePresentationSections(presentationId, supabase)
+    if (opts.presentationType === "buyer_consultation") {
+      // The buyer producer handles its own narration (script + avatar request
+      // per slide) — the listing narration orchestrator would size scripts and
+      // spend TTS against a composition these renders don't play.
+      const { renderBuyerConsultationSlides } = await import("@/lib/buyer-consultation/consultation-render")
+      await renderBuyerConsultationSlides(presentationId, supabase)
+    } else {
+      const { renderSectionsForPresentation } = await import("./section-render")
+      await renderSectionsForPresentation(presentationId, supabase)
+      // Then narrate: the agent's cloned voice (+ avatar when available) over each
+      // section. Degrades gracefully — no clone → on-screen copy only; the video
+      // still renders. Best-effort; never blocks materialization.
+      const { narratePresentationSections } = await import("./section-narration-orchestrator")
+      await narratePresentationSections(presentationId, supabase)
+    }
   } catch { /* section render + narration are best-effort */ }
 
   return { ok: true, inserted: inserted?.length ?? 0 }
@@ -608,6 +652,9 @@ interface PresentationContext {
   fromEmail:       string | null
   brokerageName:   string
   sectionCount:    number
+  /** listing_presentations.presentation_type — 'buyer_consultation' switches
+   *  the email framing + portal link to the buyer's journey. */
+  presentationType: string | null
 }
 
 /**
@@ -774,7 +821,7 @@ async function loadPresentationContext(
 ): Promise<PresentationContext | null> {
   const { data: pres, error } = await supabase
     .from("listing_presentations")
-    .select("id, brokerage_id, agent_user_id, property_address")
+    .select("id, brokerage_id, agent_user_id, property_address, presentation_type")
     .eq("id", presentationId)
     .maybeSingle()
   if (error) { console.error(`[section-drip] presentation ${presentationId} unreadable: ${error.message}`); return null }
@@ -810,6 +857,7 @@ async function loadPresentationContext(
     fromEmail,
     brokerageName:   (brk as { name?: string | null } | null)?.name ?? "Your Brokerage",
     sectionCount:    count ?? 0,
+    presentationType: (pres as { presentation_type?: string | null }).presentation_type ?? null,
   }
 }
 
@@ -832,7 +880,12 @@ async function sendSectionEmail(
   if (!appUrl) {
     return { ok: false, to, error: "NEXT_PUBLIC_APP_URL is not configured — refusing to email a portal link that resolves nowhere" }
   }
-  const portalUrl = `${appUrl.replace(/\/$/, "")}/portal/listing-plan/${s.presentation_id}`
+  const isBuyerDeck = ctx.presentationType === "buyer_consultation"
+  // A buyer deck's "plan" lives on the buyer's own journey portal, not the
+  // seller's listing-plan page.
+  const portalUrl = isBuyerDeck
+    ? `${appUrl.replace(/\/$/, "")}/portal/${s.contact_id}/journey`
+    : `${appUrl.replace(/\/$/, "")}/portal/listing-plan/${s.presentation_id}`
 
   const bodyNote = typeof (s.body ?? {})["note"] === "string" ? String((s.body as Record<string, unknown>).note) : null
   const email = composeSectionEmail({
@@ -847,6 +900,7 @@ async function sendSectionEmail(
       ? { videoUrl: reel.videoUrl, thumbnailUrl: reel.thumbnailUrl, reviewPending: reel.reviewPending }
       : null,
     note:            bodyNote,
+    presentationType: ctx.presentationType,
   })
 
   try {

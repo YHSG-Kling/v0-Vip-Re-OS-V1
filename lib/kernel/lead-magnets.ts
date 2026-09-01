@@ -301,6 +301,7 @@ export async function publishLeadMagnet(
   const publishedAt = new Date().toISOString()
   let qrCodeId: string | undefined
   let qrImageUrl: string | undefined
+  let shareCardUrl: string | undefined
 
   // Activate the form
   await supabase
@@ -331,6 +332,42 @@ export async function publishLeadMagnet(
     }
   }
 
+  // OG/share card — best-effort, structurally the QR branch's sibling:
+  // conditional on real data, logs the refusal, never fakes success. A magnet
+  // with no landing_content gets NO card (enqueueLeadMagnetCard refuses by
+  // prop name via missingContentProps — Root.tsx's defaults would otherwise
+  // fabricate an offer on an ad card). The render is async; the finished PNG is
+  // read back at render time by /lm/[slug] generateMetadata and by the next
+  // publish call below.
+  {
+    const cardResult = await enqueueLeadMagnetCard(input.magnetId, input.brokerageId, supabase)
+    if (!cardResult.ok) {
+      console.error("[publishLeadMagnet] share card was NOT enqueued:", cardResult.skipped)
+    }
+  }
+
+  // urls.share UPGRADE: this used to repeat the landing URL. Once a LeadMagnetCard
+  // render has completed for this magnet (a prior publish enqueued it), share
+  // becomes the finished 1200×630 card image — the artifact a social/ad share
+  // actually wants. First publish (nothing rendered yet) and any refused read
+  // keep the honest landing-URL fallback.
+  {
+    const { data: card, error: cardErr } = await supabase
+      .from("remotion_composition_renders")
+      .select("output_url")
+      .eq("brokerage_id", input.brokerageId)
+      .eq("entity_type", "lead_capture_form")
+      .eq("entity_id", input.magnetId)
+      .eq("composition_id", "LeadMagnetCard")
+      .eq("render_status", "succeeded")
+      .not("output_url", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (cardErr) console.error("[publishLeadMagnet] share-card read refused:", cardErr.message)
+    else if (card?.output_url) shareCardUrl = card.output_url as string
+  }
+
   // Log lifecycle event
   await supabase.from("lifecycle_events").insert({
     entity_type: "lead_capture_form",
@@ -346,11 +383,174 @@ export async function publishLeadMagnet(
     urls: {
       landing: landingUrl,
       qr: qrImageUrl,
-      share: landingUrl,
+      share: shareCardUrl ?? landingUrl,
     },
     qrCodeId,
     publishedAt,
   }
+}
+
+// ============================================================================
+// KERNEL COMMAND 2b: enqueueLeadMagnetCard — the LeadMagnetCard producer
+// ============================================================================
+
+export interface EnqueueLeadMagnetCardResult {
+  ok: boolean
+  renderId?: string
+  /** Why no render was queued — a refusal names its reason, never fakes success. */
+  skipped?: string
+}
+
+/** Cosmetic eyebrow per magnet type (contract-cosmetic — a default here cannot
+ *  state a wrong fact; the OFFER itself is headline/subhead, which REFUSE). */
+function cardEyebrowForMagnetType(magnetType: string | null | undefined): string {
+  switch (magnetType) {
+    case "home_valuation": return "FREE HOME VALUE"
+    case "buyer_guide":    return "FREE BUYER GUIDE"
+    case "seller_guide":   return "FREE SELLER GUIDE"
+    case "market_report":  return "MARKET REPORT"
+    case "listing_alert":  return "LISTING ALERTS"
+    case "open_house":     return "OPEN HOUSE"
+    default:               return "FREE GUIDE"
+  }
+}
+
+/**
+ * Enqueue the 1200×630 LeadMagnetCard still for one magnet — the producer the
+ * registered composition never had (remotion/Root.tsx used to carry the
+ * "NO producer stages this composition" tombstone).
+ *
+ * REFUSAL, NOT DEFAULTS: headline/subhead are the contract-required props
+ * (lib/remotion/content-contract.ts LeadMagnetCard — "the offer a lead hands
+ * over their contact details for") and come ONLY from the form's own
+ * lead_capture_forms.landing_content. missingContentProps is asked BEFORE the
+ * insert, so a magnet with no AI-built landing copy gets NO card rather than
+ * Root.tsx's sample offer on an ad surface. This is the same predicate that
+ * already drives noindex on /lm/[slug] (no landing copy ⇒ noindex, and ⇒ no
+ * card) — one condition, two enforcement points.
+ *
+ * DEDUPE is keyed on the magnet's IDENTITY (entity_id = magnetId — the same
+ * ruling as leadMagnetQrLabel: the landing URL moves, the magnet does; see the
+ * generateQRCode header). A card already queued/rendering, or already succeeded
+ * with the SAME copy, is not re-enqueued; changed copy renders a fresh card.
+ */
+export async function enqueueLeadMagnetCard(
+  magnetId: string,
+  brokerageId: string,
+  client?: ReturnType<typeof createServiceClient>,
+): Promise<EnqueueLeadMagnetCardResult> {
+  if (!magnetId || !brokerageId) return { ok: false, skipped: "missing magnetId/brokerageId" }
+  const supabase = client ?? createServiceClient()
+
+  const { data: form, error: formErr } = await supabase
+    .from("lead_capture_forms")
+    .select("id, name, agent_id, magnet_type, landing_content")
+    .eq("id", magnetId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  if (formErr) return { ok: false, skipped: `form unreadable: ${formErr.message}` }
+  if (!form) return { ok: false, skipped: "magnet not found" }
+
+  const lc = (((form as any).landing_content ?? {}) as Record<string, unknown>)
+  const headline = typeof lc.headline === "string" ? lc.headline.trim() : ""
+  const subhead  = typeof lc.subhead  === "string" ? lc.subhead.trim()  : ""
+  const ctaLabel = (typeof lc.cta === "string" && lc.cta.trim()) || "Get started"
+  const eyebrow  = cardEyebrowForMagnetType((form as any).magnet_type)
+
+  // Brokerage brand — resolved the way section-render.ts:143-153 does.
+  const { data: brk, error: brkErr } = await supabase
+    .from("brokerages")
+    .select("name, logo_url, license_number, license_state")
+    .eq("id", brokerageId)
+    .maybeSingle()
+  if (brkErr) return { ok: false, skipped: `brokerage unreadable: ${brkErr.message}` }
+  const brand = {
+    primaryColor:  "#0F172A",
+    accentColor:   "#F59E0B",
+    brokerageName: (brk as any)?.name ?? "Your Brokerage",
+    logoUrl:       (brk as any)?.logo_url ?? undefined,
+    licenseLine:   [(brk as any)?.license_number, (brk as any)?.license_state].filter(Boolean).join(" · ") || undefined,
+    showEhoMark:   true,
+  }
+
+  const inputProps: Record<string, unknown> = {
+    eyebrow,
+    headline,
+    subhead,
+    ctaLabel,
+    // No fabricated hero — the composition collapses to the centered text card.
+    heroImageUrl: null,
+    brand,
+  }
+  const { missingContentProps, describeMissingContent } = await import("@/lib/remotion/content-contract")
+  const missing = missingContentProps("LeadMagnetCard", inputProps)
+  if (missing.length > 0) {
+    return { ok: false, skipped: describeMissingContent("LeadMagnetCard", missing) }
+  }
+
+  // Dedupe on the magnet's identity, not the URL (see the header).
+  const { data: prior, error: priorErr } = await supabase
+    .from("remotion_composition_renders")
+    .select("id, render_status, input_props")
+    .eq("brokerage_id", brokerageId)
+    .eq("entity_type", "lead_capture_form")
+    .eq("entity_id", magnetId)
+    .eq("composition_id", "LeadMagnetCard")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (priorErr) {
+    // A refused dedupe read must not silently double-enqueue — report it.
+    return { ok: false, skipped: `dedupe read refused: ${priorErr.message}` }
+  }
+  if (prior) {
+    const p = prior as { id: string; render_status: string | null; input_props: Record<string, unknown> | null }
+    if (p.render_status === "queued" || p.render_status === "rendering") {
+      return { ok: true, renderId: p.id, skipped: "card render already in flight" }
+    }
+    const prev = (p.input_props ?? {}) as Record<string, unknown>
+    const sameCopy = prev.headline === headline && prev.subhead === subhead
+      && prev.eyebrow === eyebrow && prev.ctaLabel === ctaLabel
+    if (p.render_status === "succeeded" && sameCopy) {
+      return { ok: true, renderId: p.id, skipped: "current copy already rendered" }
+    }
+  }
+
+  // agent attribution: lead_capture_forms.agent_id is AGENTS-class;
+  // remotion_composition_renders.agent_user_id is USERS-class (§3 — disjoint).
+  let agentUserId: string | null = null
+  if ((form as any).agent_id) {
+    const { resolveUserIdForAgentRecord } = await import("@/lib/kernel/agent-identity")
+    agentUserId = await resolveUserIdForAgentRecord(supabase, (form as any).agent_id)
+  }
+
+  const { data: render, error: insErr } = await supabase
+    .from("remotion_composition_renders")
+    .insert({
+      brokerage_id:    brokerageId,
+      composition_id:  "LeadMagnetCard",
+      agent_user_id:   agentUserId,
+      entity_type:     "lead_capture_form",
+      entity_id:       magnetId,
+      used_did_avatar: false,
+      used_voiceover:  false,
+      render_status:   "queued",
+      input_props:     inputProps,
+      // Brokerage-scoped: a magnet's share card is tenant marketing collateral,
+      // not a per-agent avatar piece.
+      scope_type:      "brokerage",
+      scope_id:        brokerageId,
+      // 'api' is on the requested_via allowlist (check-vocabularies:
+      // remotion_composition_renders.requested_via; the allowlist is also noted
+      // at avatar-render-orchestrator.ts:86-88) — this enqueue rides the
+      // publishLeadMagnet command, not a cron tick.
+      requested_via:   "api",
+      is_published:    false,
+    })
+    .select("id")
+    .single()
+  if (insErr || !render) return { ok: false, skipped: `render insert refused: ${insErr?.message ?? "no row returned"}` }
+  return { ok: true, renderId: (render as { id: string }).id }
 }
 
 // ============================================================================

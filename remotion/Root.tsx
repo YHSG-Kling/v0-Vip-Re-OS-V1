@@ -764,16 +764,15 @@ export const RemotionRoot: React.FC = () => {
       />
       {/* Wave 39 — 1200×630 Open-Graph lead-magnet card. Static
           composition; renderStill() emits the PNG.
-          PRODUCER STATUS (verified 2026-09-01): NO producer stages this
-          composition yet. This comment used to claim "used by the W40 ad
-          creator", which was never true — lib/ads/* touches no Remotion
-          composition (listing-ad-producer sources listing photos and
-          'CarouselSlide'-kind creatives, not OG cards), and nothing writes
-          composition_id: "LeadMagnetCard". The registration stays (§1: a
-          wanted capability's built half — the live lead-magnet lane in
-          lib/kernel/lead-magnets.ts ships guides + QR codes with no share
-          imagery at all); the missing half is the producer that renders
-          this card for a magnet's landing/ad surfaces. */}
+          PRODUCER (built 2026-09-01, closing the §1.2 gap the previous
+          tombstone recorded): lib/kernel/lead-magnets.ts
+          enqueueLeadMagnetCard — fired from publishLeadMagnet beside the QR
+          branch, staging headline/subhead from the form's own
+          lead_capture_forms.landing_content (missingContentProps refuses a
+          magnet with no landing copy, so these defaults never ship as a real
+          offer). READER: app/lm/[slug]/page.tsx generateMetadata sets
+          openGraph.images to the newest succeeded render, and
+          publishLeadMagnet threads the same PNG into urls.share. */}
       <Composition
         id="LeadMagnetCard"
         component={LeadMagnetCard as unknown as React.FC<Record<string, unknown>>}

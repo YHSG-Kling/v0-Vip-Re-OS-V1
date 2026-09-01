@@ -48,6 +48,10 @@
  */
 import { createServiceClient } from "@/lib/supabase/service"
 import { missingContentProps } from "@/lib/remotion/content-contract"
+// ONE spelling of the buyer-slide composition id (§6) — the same constant the
+// narration budget derives from. Not server-only; no cycle (consultation-*
+// modules import THIS file only via dynamic import at call sites).
+import { BUYER_SLIDE_COMPOSITION } from "@/lib/buyer-consultation/consultation-narration"
 
 export interface AvatarRenderRowParams {
   brokerageId:      string
@@ -147,6 +151,75 @@ export async function enqueueAvatarCompositionForProject(
   const avatarVideoUrl = pickAvatarTrackUrl(meta, project.video_url)
   if (!avatarVideoUrl) return { ok: false, skipped: "no avatar video URL on completed project" }
 
+  // ── THE `target_render_id` READER (built 2026-09-01; §1.2) ────────────────
+  // Both presentation lanes (section-narration-orchestrator + the buyer
+  // consultation-render) stage a photo-PIP render FIRST — the guaranteed
+  // deliverable — and stamp its id here when they request the avatar track.
+  // Until this reader existed the key was a writer with no reader: this
+  // function always inserted a NEW render row, presentation_sections.render_id
+  // kept pointing at the avatar-less one, and the avatar-led cut was an orphan
+  // the drip never delivered.
+  //
+  // SHAPE CHOSEN: merge-into-the-staged-row when it is still 'queued' (no
+  // duplicate row, the section already points at it, the queue renders it once
+  // WITH the avatar); when the staged row has moved past 'queued' (rendering /
+  // terminal — its props are already baked), fall through to the existing
+  // new-row insert SEEDED WITH THE STAGED ROW'S OWN input_props (an empty
+  // extraInputProps would stage the Studio sample data and be cancelled by the
+  // content contract), then REPOINT the section at the avatar-led render.
+  // Both writes are counted (§3): an UPDATE that matches nothing also resolves.
+  const targetRenderId =
+    typeof meta.target_render_id === "string" && meta.target_render_id.trim().length > 0
+      ? (meta.target_render_id as string)
+      : null
+  let staged: { id: string; render_status: string | null; input_props: Record<string, unknown> | null } | null = null
+  if (targetRenderId) {
+    const { data: stagedRow, error: stagedErr } = await supabase
+      .from("remotion_composition_renders")
+      .select("id, render_status, input_props")
+      .eq("id", targetRenderId)
+      .eq("brokerage_id", project.brokerage_id)
+      .maybeSingle()
+    if (stagedErr) {
+      // A refused read is not "no staged render" — say so and take the
+      // new-row path, which cannot lose the avatar.
+      console.warn(`[avatar-render-orchestrator] staged render ${targetRenderId} unreadable (${stagedErr.message}) — falling back to a fresh avatar-led render`)
+    } else {
+      staged = (stagedRow as typeof staged) ?? null
+    }
+
+    if (staged && staged.render_status === "queued") {
+      const voiceover = (meta.voiceover_url as string | null) ?? null
+      const mergedProps: Record<string, unknown> = {
+        ...(staged.input_props ?? {}),
+        avatarVideoUrl,
+        // Never blank a voiceover the staging lane already synthesized onto
+        // the row — merge ours only when the request actually carried one.
+        ...(voiceover ? { voiceoverUrl: voiceover } : {}),
+      }
+      const { data: updated, error: updErr } = await supabase
+        .from("remotion_composition_renders")
+        .update({
+          input_props:     mergedProps,
+          used_did_avatar: true,
+          ...(voiceover ? { used_voiceover: true } : {}),
+        })
+        .eq("id", staged.id)
+        // Atomic guard: if the queue claimed the row between the read above
+        // and this write, its props are already being rendered — do not
+        // retouch it; the fallthrough repoints instead.
+        .eq("render_status", "queued")
+        .select("id")
+      if (!updErr && (updated?.length ?? 0) === 1) {
+        return { ok: true, renderId: staged.id }
+      }
+      if (updErr) {
+        console.warn(`[avatar-render-orchestrator] avatar merge onto staged render ${staged.id} refused (${updErr.message}) — falling back to a fresh avatar-led render`)
+      }
+      // zero rows = the queue raced us past 'queued' — fall through.
+    }
+  }
+
   // buildAvatarRenderRow fills remotion_composition_renders.agent_user_id (and
   // scope_id), which is users-class — /v/[slug] reads it straight into a users
   // lookup for the public page's agent attribution. ai_video_projects.agent_id is
@@ -165,8 +238,15 @@ export async function enqueueAvatarCompositionForProject(
     agentId:         agentUserId,
     compositionId,
     avatarVideoUrl,
-    voiceoverUrl:    (meta.voiceover_url as string | null) ?? null,
-    extraInputProps: (meta.input_props as Record<string, unknown>) ?? {},
+    // buildAvatarRenderRow writes voiceoverUrl unconditionally, so a null here
+    // would BLANK a voiceover the staging lane already synthesized onto the
+    // staged row — prefer the request's, then the staged row's own.
+    voiceoverUrl:    (meta.voiceover_url as string | null)
+      ?? ((staged?.input_props?.voiceoverUrl as string | undefined) ?? null),
+    // The staged render's own props win over meta.input_props: they are the
+    // slide as it was actually staged (title/body/brand/…), which the
+    // replacement row must carry or the content contract cancels it.
+    extraInputProps: staged?.input_props ?? (meta.input_props as Record<string, unknown>) ?? {},
     entityType:      (meta.entity_type as string | null) ?? null,
     entityId:        (meta.entity_id as string | null) ?? null,
   })
@@ -177,8 +257,28 @@ export async function enqueueAvatarCompositionForProject(
     .select("id")
     .single()
   if (error || !inserted) return { ok: false, skipped: `insert failed: ${error?.message ?? "unknown"}` }
+  const newRenderId = (inserted as { id: string }).id
 
-  return { ok: true, renderId: (inserted as { id: string }).id }
+  // Second half of the reader: the staged row could not take the avatar, so the
+  // SECTION must follow the avatar-led render or the drip delivers the
+  // photo-PIP cut forever. Counted (§3) — and zero matches is a legitimate
+  // outcome, not a failure: a target render without a section (or one whose
+  // section was already repointed by a retry) has nothing to move.
+  if (targetRenderId) {
+    const { data: repointed, error: repErr } = await supabase
+      .from("presentation_sections")
+      .update({ render_id: newRenderId })
+      .eq("render_id", targetRenderId)
+      .eq("brokerage_id", project.brokerage_id)
+      .select("id")
+    if (repErr) {
+      console.warn(`[avatar-render-orchestrator] section repoint ${targetRenderId} → ${newRenderId} refused: ${repErr.message}`)
+    } else if ((repointed?.length ?? 0) === 0) {
+      console.warn(`[avatar-render-orchestrator] section repoint matched no rows for staged render ${targetRenderId} (no section carries it, or already repointed)`)
+    }
+  }
+
+  return { ok: true, renderId: newRenderId }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -344,6 +444,52 @@ export function describeIntroCompositionGap(p: IntroCompositionParams): string[]
     agentName: (p.agentName ?? "").trim(),
     caption:   captionFromScript(p.script ?? ""),
   })
+}
+
+/** What a buyer-consultation slide producer merges into
+ *  `ai_video_projects.provider_metadata`. */
+export interface BuyerSlideCompositionRequest {
+  target_composition_id: string
+  input_props: Record<string, unknown>
+  /** The buyer deck's presentation row — buildAvatarRenderRow copies these onto
+   *  the render, so the avatar-led cut stays discoverable per presentation.
+   *  Deliberately NOT 'video_project': runPostRenderCoordination's write-back
+   *  onto ai_video_projects.video_url is the intro lane's contract, not this
+   *  one's. */
+  entity_type: "listing_presentation"
+  entity_id: string
+}
+
+/**
+ * The composition request for ONE BuyerConsultationSlide avatar track — the
+ * thin builder beside buildIntroCompositionRequest, for the same reason it
+ * exists: producers must not hand-roll `target_composition_id` writes (the
+ * request side of the contract lives HERE, beside the read that consumes it —
+ * see the module header). The finish spec classifies BuyerConsultationSlide as
+ * AVATAR_LED circle_pip (lib/video/finish-spec.ts), so the avatar arrives as a
+ * PIP inside the slide, not as the frame.
+ *
+ * NULL when the render would be refused anyway: the same missingContentProps
+ * question render-composition asks, asked before a D-ID render is paid for.
+ * The caller passes the FULL slide input_props (kind/title/body/agentName/…)
+ * so the completion-side render assembled by enqueueAvatarCompositionForProject
+ * is the complete slide with `avatarVideoUrl` merged over it — an empty
+ * extraInputProps here would stage the composition's Studio sample data.
+ *
+ * PURE.
+ */
+export function buildBuyerSlideCompositionRequest(p: {
+  presentationId: string
+  inputProps: Record<string, unknown>
+}): BuyerSlideCompositionRequest | null {
+  if (!p.presentationId) return null
+  if (missingContentProps(BUYER_SLIDE_COMPOSITION, p.inputProps).length > 0) return null
+  return {
+    target_composition_id: BUYER_SLIDE_COMPOSITION,
+    input_props: p.inputProps,
+    entity_type: "listing_presentation",
+    entity_id:   p.presentationId,
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

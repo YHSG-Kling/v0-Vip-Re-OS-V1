@@ -32,6 +32,18 @@ export interface AgentNarrationAssets {
   voiceId: string | null
   /** D-ID avatar id from the agent's DEFAULT, READY avatar asset, or null. */
   avatarSource: string | null
+  /**
+   * The AGENTS-class id behind the user (agents.id — the row the two asset
+   * lookups above are keyed by). Returned because the avatar request write
+   * needs it: ai_video_projects.agent_id FKs agents(id)
+   * (scripts/schema-fk-map.ts), and this function is the one place the
+   * users→agents cross is already performed — a caller re-deriving it is the
+   * §6 defect, and a caller writing the users-class id instead is a 23503
+   * (the exact dormant bug fixed 2026-09-01: the insert below wrote
+   * `agent_user_id` into that FK and only never fired because
+   * agent_avatar_assets held zero live rows).
+   */
+  agentRecordId: string | null
 }
 
 /**
@@ -55,7 +67,7 @@ export async function resolveAgentNarrationAssets(
   supabase: ReturnType<typeof createServiceClient>,
   agentUserId: string | null | undefined,
 ): Promise<AgentNarrationAssets> {
-  const none: AgentNarrationAssets = { voiceId: null, avatarSource: null }
+  const none: AgentNarrationAssets = { voiceId: null, avatarSource: null, agentRecordId: null }
   if (!agentUserId) return none
 
   const { data: agentRow, error: agentError } = await supabase
@@ -80,6 +92,7 @@ export async function resolveAgentNarrationAssets(
   return {
     voiceId:      (vp.data as { elevenlabs_voice_id?: string | null } | null)?.elevenlabs_voice_id ?? null,
     avatarSource: (av.data as { did_avatar_id?: string | null } | null)?.did_avatar_id ?? null,
+    agentRecordId: agentId,
   }
 }
 
@@ -133,7 +146,7 @@ export async function narratePresentationSections(
   // from the USERS class to agents.id, and the reason it is mandatory, live in
   // resolveAgentNarrationAssets above — ONE spelling, shared with the
   // marketing-system resolver (§6).
-  const { voiceId, avatarSource } = await resolveAgentNarrationAssets(supabase, pres.agent_user_id)
+  const { voiceId, avatarSource, agentRecordId } = await resolveAgentNarrationAssets(supabase, pres.agent_user_id)
 
   // Queued section renders carry the narration script in input_props.
   const { data: renders } = await supabase
@@ -192,13 +205,25 @@ export async function narratePresentationSections(
       } catch { /* voice synth is best-effort → falls back to on-screen */ }
     }
 
-    if (plan.avatar && avatarSource) {
+    if (plan.avatar && avatarSource && agentRecordId) {
       // Request the D-ID talking head via the existing handoff: a project whose
       // provider_metadata.target_composition_id routes the finished avatar into
-      // THIS render's input_props on completion. Best-effort.
+      // THIS render's input_props on completion — enqueueAvatarCompositionForProject
+      // reads target_render_id and merges the avatar into the STAGED row (or
+      // repoints the section at a fresh avatar-led render when the staged one is
+      // already terminal). Best-effort, and the {error} is READ: a refused
+      // request degrading to voice_only silently is how the whole avatar lane
+      // stayed dark.
       try {
-        await supabase.from("ai_video_projects").insert({
-          agent_id:    r.agent_user_id ?? pres.agent_user_id,
+        const { error: reqErr } = await supabase.from("ai_video_projects").insert({
+          // AGENTS-class id (ai_video_projects.agent_id → agents.id,
+          // scripts/schema-fk-map.ts). WAS `r.agent_user_id ?? pres.agent_user_id`
+          // — a USERS-class id, disjoint from agents.id (§3), so the moment any
+          // agent had a ready avatar every request here would have been refused
+          // with 23503. resolveAgentNarrationAssets already performs the
+          // users→agents cross for its asset lookups; agentRecordId is that
+          // same answer, returned instead of re-derived.
+          agent_id:    agentRecordId,
           brokerage_id: pres.brokerage_id,
           title:       `Section narration ${r.composition_id}`,
           status:      "draft",
@@ -206,8 +231,10 @@ export async function narratePresentationSections(
             provider: "did", target_composition_id: r.composition_id,
             target_render_id: r.id, voiceover_url: voiceoverUrl, voice_id: voiceId,
             narration_script: script, did_avatar_id: avatarSource,
+            entity_type: "listing_presentation", entity_id: presentationId,
           },
         })
+        if (reqErr) console.warn(`[section-narration-orchestrator] avatar request refused for render ${r.id}: ${reqErr.message}`)
       } catch { /* avatar request best-effort → voice_only / on_screen */ }
     }
 

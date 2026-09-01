@@ -33,6 +33,10 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/generate-brokerage-fee-charges", schedule: "0 6 * * *" },    // documented
   { path: "/api/cron/listing-presentation-prep",      schedule: "0 17 * * *" },   // documented
   { path: "/api/cron/listing-presentation-prep?phase=deliver", schedule: "0 19 * * *" },
+  // Buyer twin of listing-presentation-prep — builds the buyer-consultation
+  // deck (BuyerConsultationSlide producer) for booked buyer consultations.
+  // Staggered half an hour after the listing prep tick (documented in route).
+  { path: "/api/cron/buyer-consultation-prep",        schedule: "30 17 * * *" },
   { path: "/api/cron/retry-errors",                   schedule: "*/30 * * * *" }, // documented (every 30 min)
   { path: "/api/cron/ad-performance-sync",            schedule: "0 */6 * * *" },
   { path: "/api/cron/ads-manager-sweep",              schedule: "0 12 * * *" },

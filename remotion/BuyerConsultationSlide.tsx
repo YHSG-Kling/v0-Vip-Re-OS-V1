@@ -332,11 +332,13 @@ const OfferStrategyBody: React.FC<{
       ))}
     </div>
     <div style={{ width: "60%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
-      {children ?? (
-        <div style={{ color: "#9CA3AF", fontSize: 22, fontStyle: "italic" }}>
-          Strategy diagram loaded by the composer
-        </div>
-      )}
+      {/* No placeholder fallback: `bodyContent` is a ReactNode and cannot travel
+          through input_props JSON, so the live producer
+          (lib/buyer-consultation/consultation-render.ts) can never supply it —
+          a "loaded by the composer" placeholder here would ship in every
+          client-facing render. Absent children, the left column carries the
+          slide (title + body) and this panel stays clean. */}
+      {children ?? null}
     </div>
   </div>
 )
