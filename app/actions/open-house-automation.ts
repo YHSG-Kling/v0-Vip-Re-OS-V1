@@ -358,7 +358,18 @@ OUTPUT FORMAT (JSON):
 // MATCH SCORING
 // ============================================
 
-export async function calculateMatchScore(contactId: string, propertyId: string): Promise<number> {
+/**
+ * ── NOT EXPORTED (CLAUDE.md §4, 2026-09-01) ─────────────────────────────────
+ * This file is `"use server"`, so an export here is a PUBLIC HTTP ENDPOINT.
+ * This one had NO auth gate and NO tenant predicate: it read `contacts` and
+ * `listings` by raw caller-supplied id and returned a number derived from both.
+ * That is a cross-tenant INFERENCE ORACLE — the score is a side channel that
+ * leaks another brokerage's contact preferences and another brokerage's listing
+ * attributes to anyone who can guess or enumerate two uuids, without ever
+ * returning a row. It was never meant to be a door: both call sites (:~486 and
+ * :~617) are in THIS file. Lowered to module-private; the callers are unchanged.
+ */
+async function calculateMatchScore(contactId: string, propertyId: string): Promise<number> {
   if (!isValidUUID(contactId) || !isValidUUID(propertyId)) {
     return 0
   }

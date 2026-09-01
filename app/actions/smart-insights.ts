@@ -652,8 +652,18 @@ export async function removeCommuteDestination(
   return { success: true, destinations: next, commute }
 }
 
-/** Recompute ONLY the commute column for one property+contact (cheap, no full-insight invalidation). */
-export async function regeneratePropertyCommute(
+/**
+ * Recompute ONLY the commute column for one property+contact (cheap, no
+ * full-insight invalidation).
+ *
+ * ── NOT EXPORTED (CLAUDE.md §4, 2026-09-01) ─────────────────────────────────
+ * This file is `"use server"`, so an export here is a PUBLIC HTTP ENDPOINT.
+ * This one is a recompute step, not a door: both call sites (:~627 and :~651)
+ * are in THIS file, inside the destination add/remove actions that own the
+ * gate, and it writes `contact_property_insights` for a caller-supplied
+ * contact+property pair. Lowered to module-private; the callers are unchanged.
+ */
+async function regeneratePropertyCommute(
   propertyId: string,
   contactId: string,
   propertyData: Record<string, any>,

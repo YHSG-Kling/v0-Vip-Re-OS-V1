@@ -61,87 +61,29 @@ async function resolveAdsActor(): Promise<
   return { ok: true, ctx }
 }
 
-// ─── createFacebookAudience ───────────────────────────────────────────────────
-
-export async function createFacebookAudience(
-  _userId: string,
-  params: CreateAudienceParams
-): Promise<{ success: boolean; audienceId?: string; error?: string }> {
-  // ── 0. Session gate — tenant comes from the session, never the caller ───────
-  const actor = await resolveAdsActor()
-  if (!actor.ok) return { success: false, error: actor.error }
-  const ctx = actor.ctx
-  const userId = ctx.userId
-
-  // ── 1. Feature gate ─────────────────────────────────────────────────────────
-  const accessCheck = await canAccessFeature(userId, "ads_audiences")
-  if (!accessCheck.allowed) {
-    return { success: false, error: accessCheck.reason || "Feature access denied" }
-  }
-
-  // ── 2. Delegate to kernel createAudienceSegment ──────────────────────────────
-  const result = await createAudienceSegment({
-    ctx,
-    audienceName: params.audienceName,
-    audienceType: params.audienceType,
-    sourceRule: params.sourceRule,
-    consentBasis: params.consentBasis,
-    adCampaignId: params.adCampaignId,
-  })
-
-  if (!result.success) {
-    return { success: false, error: result.error }
-  }
-
-  // ── 3. Increment usage ──────────────────────────────────────────────────────
-  await incrementFeatureUsage(userId, "ads_audiences")
-
-  return { success: true, audienceId: result.audienceId }
-}
-
-// ─── syncFacebookAudience ─────────────────────────────────────────────────────
-
-export async function syncFacebookAudience(
-  _userId: string,
-  params: SyncAudienceParams
-): Promise<{
-  success: boolean
-  syncRunId?: string
-  recordsSynced?: number
-  recordsRejected?: number
-  error?: string
-}> {
-  // ── 0. Session gate — this uploads consented contact PII to an ad platform ──
-  const actor = await resolveAdsActor()
-  if (!actor.ok) return { success: false, error: actor.error }
-  const ctx = actor.ctx
-  const userId = ctx.userId
-
-  // ── 1. Feature gate ─────────────────────────────────────────────────────────
-  const accessCheck = await canAccessFeature(userId, "ads_audiences")
-  if (!accessCheck.allowed) {
-    return { success: false, error: accessCheck.reason || "Feature access denied" }
-  }
-
-  // ── 2. Delegate to kernel syncAudience ───────────────────────────────────────
-  const result = await kernelSyncAudience({
-    ctx,
-    audienceId: params.audienceId,
-  })
-
-  if (!result.success) {
-    return { success: false, error: result.error }
-  }
-
-  const syncRun = result.syncRun
-
-  return {
-    success: true,
-    syncRunId: result.syncRunId,
-    recordsSynced: syncRun?.records_synced ?? 0,
-    recordsRejected: syncRun?.records_rejected ?? 0,
-  }
-}
+// ─── createFacebookAudience / syncFacebookAudience — DELETED ─────────────────
+//
+// TOMBSTONE (orphan doctrine §1.1, CLAUDE.md §4, 2026-09-01).
+// SURVIVORS: `createAudience` at lib/ads/facebook-audience-sync.ts:153 and
+// `syncAudience` at lib/ads/facebook-audience-sync.ts:197 — the two names this
+// file's own header already called "the canonical function names the UI layer
+// imports" (app/dashboard/campaigns/ads/ads-dashboard-client.tsx:79-80, called
+// at :698 and :744). The FULL BODIES were MOVED onto those survivors, unchanged
+// — session gate, feature gate, kernel delegation, usage increment and all.
+// Nothing was lost and nothing was re-derived.
+//
+// WHY THEY HAD TO GO RATHER THAN STAY AS PRIVATE HELPERS: line 1 of this file is
+// `"use server"`, so EVERY export here is a public HTTP endpoint (§4) — there is
+// no such thing as a private helper in one. These two were a second, separately
+// addressable door onto the exact same privileged operation as the canonical
+// pair, and `syncFacebookAudience` in particular uploads a tenant's consented
+// contact PII (email + phone) to Meta. The file's own note at :~124 below,
+// written when `loadFacebookAudiences` was deleted, already made the ruling
+// explicit: removing the extra export "closes a public endpoint". Two exports
+// for one operation is also the §6 defect — one vocabulary per function.
+//
+// No external caller existed: a whole-tree grep for both names returned only the
+// definitions here and the two aliases that called them.
 
 // ─── previewAudienceReach ─────────────────────────────────────────────────────
 //
@@ -201,29 +143,97 @@ export async function previewAudienceReach(
 // directly to the underlying implementations above.
 
 /**
- * createAudience — canonical alias for createFacebookAudience.
- * Input: userId string, params CreateAudienceParams
+ * createAudience — THE audience-creation endpoint (§1.1 survivor; the duplicate
+ * export `createFacebookAudience` was deleted 2026-09-01, see the tombstone at
+ * the top of this file). Body moved here verbatim; it was never an "alias".
+ * Input: userId string (IGNORED — tenant and actor come from the session), params CreateAudienceParams
  * Output: { success, audienceId?, error? }
  * Table written: facebook_custom_audiences
  */
 export async function createAudience(
-  userId: string,
+  _userId: string,
   params: CreateAudienceParams
-): ReturnType<typeof createFacebookAudience> {
-  return createFacebookAudience(userId, params)
+): Promise<{ success: boolean; audienceId?: string; error?: string }> {
+  // ── 0. Session gate — tenant comes from the session, never the caller ───────
+  const actor = await resolveAdsActor()
+  if (!actor.ok) return { success: false, error: actor.error }
+  const ctx = actor.ctx
+  const userId = ctx.userId
+
+  // ── 1. Feature gate ─────────────────────────────────────────────────────────
+  const accessCheck = await canAccessFeature(userId, "ads_audiences")
+  if (!accessCheck.allowed) {
+    return { success: false, error: accessCheck.reason || "Feature access denied" }
+  }
+
+  // ── 2. Delegate to kernel createAudienceSegment ──────────────────────────────
+  const result = await createAudienceSegment({
+    ctx,
+    audienceName: params.audienceName,
+    audienceType: params.audienceType,
+    sourceRule: params.sourceRule,
+    consentBasis: params.consentBasis,
+    adCampaignId: params.adCampaignId,
+  })
+
+  if (!result.success) {
+    return { success: false, error: result.error }
+  }
+
+  // ── 3. Increment usage ──────────────────────────────────────────────────────
+  await incrementFeatureUsage(userId, "ads_audiences")
+
+  return { success: true, audienceId: result.audienceId }
 }
 
 /**
- * syncAudience — canonical alias for syncFacebookAudience.
- * Input: userId string, params SyncAudienceParams
+ * syncAudience — THE audience-sync endpoint (§1.1 survivor; the duplicate export
+ * `syncFacebookAudience` was deleted 2026-09-01, see the tombstone at the top of
+ * this file). Body moved here verbatim; it was never an "alias".
+ * Input: userId string (IGNORED — tenant and actor come from the session), params SyncAudienceParams
  * Output: { success, syncRunId?, recordsSynced?, recordsRejected?, error? }
  * Tables written: audience_sync_runs
  */
 export async function syncAudience(
-  userId: string,
+  _userId: string,
   params: SyncAudienceParams
-): ReturnType<typeof syncFacebookAudience> {
-  return syncFacebookAudience(userId, params)
+): Promise<{
+  success: boolean
+  syncRunId?: string
+  recordsSynced?: number
+  recordsRejected?: number
+  error?: string
+}> {
+  // ── 0. Session gate — this uploads consented contact PII to an ad platform ──
+  const actor = await resolveAdsActor()
+  if (!actor.ok) return { success: false, error: actor.error }
+  const ctx = actor.ctx
+  const userId = ctx.userId
+
+  // ── 1. Feature gate ─────────────────────────────────────────────────────────
+  const accessCheck = await canAccessFeature(userId, "ads_audiences")
+  if (!accessCheck.allowed) {
+    return { success: false, error: accessCheck.reason || "Feature access denied" }
+  }
+
+  // ── 2. Delegate to kernel syncAudience ───────────────────────────────────────
+  const result = await kernelSyncAudience({
+    ctx,
+    audienceId: params.audienceId,
+  })
+
+  if (!result.success) {
+    return { success: false, error: result.error }
+  }
+
+  const syncRun = result.syncRun
+
+  return {
+    success: true,
+    syncRunId: result.syncRunId,
+    recordsSynced: syncRun?.records_synced ?? 0,
+    recordsRejected: syncRun?.records_rejected ?? 0,
+  }
 }
 
 /**

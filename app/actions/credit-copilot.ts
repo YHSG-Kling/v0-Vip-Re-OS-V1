@@ -732,13 +732,53 @@ async function triggerCreditFlowActions(accountId: string, stage: string, accoun
   }
 }
 
-export async function trackCreditUsage(agentId: string, amount: number) {
+/**
+ * THE CREDIT SPEND LEDGER WRITER — `agent_credit_budgets`.
+ *
+ * ── NOT EXPORTED (CLAUDE.md §4, 2026-09-01) ─────────────────────────────────
+ * This file is `"use server"`, so an export here is a PUBLIC HTTP ENDPOINT. This
+ * one authenticated (getUser, below) but then took the caller-supplied
+ * `agentId` and upserted a SPEND row against it with no ownership check at all —
+ * body-supplied identity on a service-shaped write, the IDOR shape §4 names.
+ * Exported, it let any authenticated user in any tenant inflate (or, via the
+ * upsert's `credit_budget_limit` default, reset) another agent's credit budget
+ * and fire that agent's budget-alert notification. Its only call site is
+ * `createCreditAccount` (:~940) in THIS file, which already resolves the agent
+ * from the SESSION (`agentIdForUser(supabase, user.id)`).
+ *
+ * The tenant check below is the second half of the same ruling: the parameter is
+ * kept (the caller genuinely holds a resolved agents.id, and translating
+ * users.id → agents.id is that caller's job), but it is now VERIFIED against the
+ * brokerage the session resolves, not trusted. Fail closed — a check that cannot
+ * run refuses.
+ */
+async function trackCreditUsage(agentId: string, amount: number) {
   const supabase = await createServerClient()
 
   const {
     data: { user },
   } = await supabase.auth.getUser()
   if (!user) throw new Error("Not authenticated")
+
+  // ── THE SPEND TARGET MUST BE IN THE CALLER'S TENANT (§4) ──────────────────
+  // Tenant from the SESSION, never from the argument. supabase-js resolves
+  // refusals, so the error is read and an unreadable check is a refusal, not a
+  // pass ("nobody checked" must never render as "checked and fine").
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) throw new Error("Not authenticated")
+  if (!ctx.brokerageId) throw new Error("Your account is not linked to a brokerage yet.")
+  const { data: budgetAgent, error: budgetAgentErr } = await supabase
+    .from("agents")
+    .select("id")
+    .eq("id", agentId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
+  if (budgetAgentErr) {
+    throw new Error(`Could not verify the credit budget owner: ${budgetAgentErr.message}`)
+  }
+  if (!budgetAgent) {
+    throw new Error("That agent's credit budget is not in your brokerage.")
+  }
 
   // Get current month's usage. agentId must be an agents.id (FK target); callers
   // passing a users.id must translate via agentIdForUser (see createCreditAccount).
@@ -876,6 +916,12 @@ export async function createCreditAccount(params: {
   if (error) throw error
 
   // Track credit usage. trackCreditUsage keys on agents.id; we hold a users.id here.
+  // It is module-private (§4 — it was a public endpoint that upserted a spend row
+  // against a caller-supplied agent id) and it now REFUSES, loudly, if that agent
+  // is not in the session's brokerage. The throw is deliberate and is not
+  // swallowed here: a credit spend that cannot be attributed must surface, not
+  // vanish — a missing ledger row is a wrong number on a budget someone bills
+  // against.
   const creditAgentId = await agentIdForUser(supabase, user.id)
   if (creditAgentId) {
     await trackCreditUsage(creditAgentId, params.credit_amount)

@@ -3031,7 +3031,18 @@ export async function generateAllListingDescriptions(): Promise<
 // ENHANCED LISTING DESCRIPTION WITH SEO & NEIGHBORHOOD DATA
 // ============================================
 
-export async function generateSEOKeywords(property: any, neighborhoodData?: any) {
+// ── NOT EXPORTED (CLAUDE.md §4, 2026-09-01) ──────────────────────────────────
+// This file is `"use server"`, so an export here is a PUBLIC HTTP ENDPOINT.
+// `generateSEOKeywords`, `detectTargetBuyer` and `getComparableProperties` were
+// all exported and NONE of them had an auth check, a role gate or a tenant
+// resolution — three unauthenticated doors taking `property: any` straight from
+// the caller. `getComparableProperties` reads `listings` by a caller-supplied id
+// with no tenant predicate (a cross-tenant comp oracle), and all three feed the
+// enhanced-description path that makes billed model calls (§5 — `ai_tool_usage`
+// is the cost ledger). None was meant to be a door: every call site is inside
+// THIS file, in generateEnhancedListingDescription (:~3304-3310 below).
+// Lowered to module-private; the in-file callers are unchanged.
+async function generateSEOKeywords(property: any, neighborhoodData?: any) {
   const keywords = []
 
   // Location keywords
@@ -3138,7 +3149,8 @@ Return this exact JSON structure:
   }
 }
 
-export async function detectTargetBuyer(property: any) {
+// NOT EXPORTED — see the §4 note above generateSEOKeywords.
+async function detectTargetBuyer(property: any) {
   const bedrooms = property.bedrooms || 0
   const sqft = property.sqft || property.square_feet || property.square_footage || 0
   const price = property.list_price || property.price || property.listing_price || 0
@@ -3172,7 +3184,8 @@ export async function detectTargetBuyer(property: any) {
   return 'General buyers'
 }
 
-export async function getComparableProperties(property: any) {
+// NOT EXPORTED — see the §4 note above generateSEOKeywords.
+async function getComparableProperties(property: any) {
   if (!isValidUUID(property.id || '')) {
     return []
   }

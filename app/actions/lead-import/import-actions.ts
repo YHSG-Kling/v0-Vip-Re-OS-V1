@@ -39,8 +39,17 @@ const IMPORT_FIELD_ALIASES: Record<string, string> = {
 }
 
 // ─── processImportRows ────────────────────────────────────────────────────────
-
-export async function processImportRows(params: {
+//
+// ── NOT EXPORTED (CLAUDE.md §4, 2026-09-01) ──────────────────────────────────
+// This file is `'use server'`, so an export here is a PUBLIC HTTP ENDPOINT. This
+// is the internal bulk worker, not a door: its ONE call site is :~275 in THIS
+// file, the gated import action that owns the auth check. Its own signature
+// still shows why it should never have been exported — `brokerageId` and
+// `agentUserId` are accepted and DELIBERATELY IGNORED because they used to be
+// trusted, which let any signed-in user bulk-create contacts in any brokerage
+// (§4: tenant from the SESSION). Lowered to module-private so the parameters
+// cannot be re-trusted by a future caller that is not this file.
+async function processImportRows(params: {
   brokerageId?: string  // ignored — derived from session
   agentUserId?: string | null  // ignored — derived from session
   importId: string

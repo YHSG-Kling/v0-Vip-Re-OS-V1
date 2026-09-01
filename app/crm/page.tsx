@@ -2,6 +2,10 @@
 
 import { useEffect, useState, useCallback, useTransition, useRef } from "react"
 import { PRE_QUALIFICATION_CONTACT_STATUSES, CONTACT_STATUS_LABELS, type ContactStatus } from "@/lib/contact-promotion/qualification"
+// The ONE outbound suppression predicate (CLAUDE.md §6). Imported from the pure
+// leaf, NOT from @/lib/kernel/communication-compliance — that module's first
+// import is createServiceClient, and this is a "use client" file.
+import { isEligibleForOutbound, getSuppressionReasons } from "@/lib/kernel/compliance/outbound-predicates"
 import { useAuth } from "@/lib/auth/client"
 import { useSearchParams, useRouter } from "next/navigation"
 import { getContacts, getContactById, createContact, addContactNote, archiveContact } from "@/app/actions/contacts"
@@ -149,6 +153,15 @@ interface Contact {
   sms_opt_out?: boolean | null
   phone_opt_out?: boolean | null
   direct_mail_opt_out?: boolean | null
+  // The remaining three arms of the kernel suppression predicate
+  // (lib/kernel/compliance/outbound-predicates.ts). NOT in the getContacts list
+  // projection — they arrive only on the DETAIL row, which getContactById loads
+  // with select("*"). Present here because the portal-invite button feeds
+  // `selectedContact` (the detail row) to isEligibleForOutbound; a list row would
+  // read these as undefined and the predicate would fail open.
+  call_stop_flag?: boolean | null
+  opt_out_channels?: string[] | null
+  tcpa_consent?: boolean | null
   source?: string | null
   source_family?: string | null
 }
@@ -1383,12 +1396,34 @@ export default function CRMPage() {
                       className="w-full gap-1.5 text-xs justify-start"
                       onClick={async () => {
                         if (!selectedContactId || !brokerageId || !user) return
-                        // Suppression check — do not send magic link to opted-out or DNC contacts
-                        if (
-                          selectedContact?.dnc_status ||
-                          selectedContact?.email_opt_out
-                        ) {
-                          toast.error("Cannot send portal invite: contact has opted out or is on the Do Not Contact list")
+                        // Suppression check — ONE predicate, the kernel's.
+                        //
+                        // This used to be a hand-rolled two-arm copy
+                        // (`dnc_status || email_opt_out`) of the kernel rule, which
+                        // has six arms. It let four kinds of suppressed contact
+                        // through: a contact who had texted STOP (call_stop_flag),
+                        // one who had opted out of SMS, one with a per-channel
+                        // entry in opt_out_channels, and one in a restricted state
+                        // with no TCPA consent — every one of them got a portal
+                        // magic link. The copy existed only because
+                        // lib/kernel/communication-compliance.ts imports
+                        // createServiceClient and cannot be pulled into a
+                        // "use client" bundle; the predicate now lives in the pure
+                        // leaf below, which imports nothing but a type.
+                        //
+                        // FAIL CLOSED (§4): the fields feeding the predicate come
+                        // from getContactById, which is `select("*")` — the whole
+                        // row. Never re-point this at a narrow list projection
+                        // (getContacts selects no call_stop_flag / opt_out_channels
+                        // / tcpa_consent): an unselected column is indistinguishable
+                        // from `false` and the check would silently fail OPEN again.
+                        if (!selectedContact || !isEligibleForOutbound(selectedContact)) {
+                          const reasons = selectedContact ? getSuppressionReasons(selectedContact) : []
+                          toast.error(
+                            reasons.length > 0
+                              ? `Cannot send portal invite — ${reasons.join("; ")}`
+                              : "Cannot send portal invite: contact not loaded"
+                          )
                           return
                         }
                         const result = await createPortalInviteForContact({

@@ -6,8 +6,21 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { redirect } from "next/navigation"
 import { ConsentPanel, type MissingConsentContact } from "./consent-panel"
 import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
+// The ONE outbound suppression predicate (CLAUDE.md §6) — see the note on the
+// missing-consent query below for why this board uses the hasRecordedOptOut arm
+// rather than the full isEligibleForOutbound union.
+import { hasRecordedOptOut } from "@/lib/kernel/compliance/outbound-predicates"
 
 export const dynamic = "force-dynamic"
+
+/** Rows shown in the actionable missing-consent list. */
+const MISSING_CONSENT_SHOWN = 50
+/**
+ * Rows fetched before the suppression predicate removes the opted-out ones.
+ * Wider than MISSING_CONSENT_SHOWN because the filtering happens in JS, after
+ * the fetch — see the query comment below.
+ */
+const MISSING_CONSENT_FETCH_WINDOW = 300
 
 function channelIcon(c: string) {
   if (c === "sms")   return <MessageSquare className="h-3.5 w-3.5" />
@@ -99,16 +112,30 @@ export default async function TCPAComplianceDashboard() {
       .eq("brokerage_id", profile.brokerage_id).eq("sms_opt_out", true),
     svc.from("contacts").select("*", { count: "exact", head: true })
       .eq("brokerage_id", profile.brokerage_id).not("phone", "is", null).neq("tcpa_consent", true),
-    // Actionable set: phone-reachable, no consent, not on DNC / opted-out.
+    // Actionable set: phone-reachable, no consent, and NOT already suppressed.
+    //
+    // "Not already suppressed" used to be spelled here, a THIRD time, as a
+    // PostgREST filter chain — `.not("dnc_status","is",true).not("sms_opt_out","is",true)`
+    // — which is 2 of the 5 opt-out arms the kernel actually has: it was blind to
+    // call_stop_flag, email_opt_out and opt_out_channels, so a contact who had
+    // texted STOP appeared on a "go call these people for consent" worklist.
+    // The rule now comes from the one predicate (§6). It cannot be expressed as a
+    // PostgREST filter without re-spelling it, so the DB does only the cheap
+    // narrowing it can do honestly (tenant + phone-reachable + no consent) and
+    // hasRecordedOptOut() decides suppression in JS.
+    //
+    // Over-fetch then slice: the suppressed rows are removed AFTER the fetch, so
+    // the window must be wider than the 50 shown or a tenant with many
+    // suppressed contacts would render a short list and look "done".
     svc.from("contacts")
-      .select("id, first_name, last_name, phone")
+      // The predicate reads seven columns; select all seven. Anything it needs
+      // that is not selected reads as `false` and the check FAILS OPEN (§4).
+      .select("id, first_name, last_name, phone, dnc_status, email_opt_out, sms_opt_out, call_stop_flag, opt_out_channels, tcpa_consent, state")
       .eq("brokerage_id", profile.brokerage_id)
       .not("phone", "is", null)
       .neq("tcpa_consent", true)
-      .not("dnc_status", "is", true)
-      .not("sms_opt_out", "is", true)
       .order("created_at", { ascending: false })
-      .limit(50),
+      .limit(MISSING_CONSENT_FETCH_WINDOW),
     svc.from("contact_consent_events")
       .select("id, contact_id, consented, consent_source, created_at, contact:contacts(first_name, last_name)")
       .eq("brokerage_id", profile.brokerage_id)
@@ -116,11 +143,20 @@ export default async function TCPAComplianceDashboard() {
       .limit(25),
   ])
 
-  const missingConsent: MissingConsentContact[] = (missingRows ?? []).map((c: any) => ({
-    id: c.id,
-    name: [c.first_name, c.last_name].filter(Boolean).join(" "),
-    phone: c.phone ?? null,
-  }))
+  // The one suppression predicate — NOT needsConsentInRestrictedState/
+  // isEligibleForOutbound. Lacking consent is the whole point of this list, so
+  // filtering it on full outbound eligibility would hide exactly the
+  // restricted-state contacts a broker most needs to go collect consent from.
+  // hasRecordedOptOut is the arm that asks the right question here: "did this
+  // person already tell us to stop?"
+  const missingConsent: MissingConsentContact[] = (missingRows ?? [])
+    .filter((c: any) => !hasRecordedOptOut(c))
+    .slice(0, MISSING_CONSENT_SHOWN)
+    .map((c: any) => ({
+      id: c.id,
+      name: [c.first_name, c.last_name].filter(Boolean).join(" "),
+      phone: c.phone ?? null,
+    }))
   const events = consentEvents ?? []
 
   // Group by block reason

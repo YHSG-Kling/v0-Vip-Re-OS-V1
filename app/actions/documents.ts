@@ -431,8 +431,22 @@ export async function uploadDocument(
  * REFUSED BEFORE the paid call rather than after it — `ai_tool_usage` is the cost
  * ledger (§5), and a call that could not have worked is a wrong invoice as well as a
  * wrong answer.
+ *
+ * ── NOT EXPORTED (CLAUDE.md §4, 2026-09-01) ─────────────────────────────────
+ * This file is `"use server"`, so an export here is a PUBLIC HTTP ENDPOINT, and
+ * this one was never meant to be a door: its ONE call site is the fire-and-forget
+ * hand-off at :410 in THIS file, immediately after the upload that produced the
+ * URL. As an export it took a caller-supplied `fileUrl` and handed it to three
+ * PAID model calls billed to `spendActor.brokerageId` — which is two separate
+ * problems at once:
+ *   · §5, the invoice. `ai_tool_usage` is the cost ledger; an arbitrary caller
+ *     could spend a tenant's AI budget on documents that tenant never uploaded,
+ *     and a wrong number there is a wrong invoice.
+ *   · SSRF. A URL the caller controls, fetched (by us or by the provider on our
+ *     behalf) from the server side, with no origin check.
+ * Lowered to module-private; the in-file caller is unchanged.
  */
-export async function processDocumentWithAI(documentId: string, fileUrl: string, fileType: string) {
+async function processDocumentWithAI(documentId: string, fileUrl: string, fileType: string) {
   // Tenant for the AI cost ledger — SESSION (§4). Three model calls below.
   const spendActor = await getAgentContext()
   const supabase = await createClient()

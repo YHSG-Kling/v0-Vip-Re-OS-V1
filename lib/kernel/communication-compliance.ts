@@ -6,7 +6,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { hasActiveRepresentation } from "@/lib/kernel/compliance/active-representation"
-import type { ContactStatus } from "@/lib/contact-promotion/qualification"
+import { RESTRICTED_STATES, type ContactData } from "@/lib/kernel/compliance/outbound-predicates"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONTRACTS: Explicit normalized data contracts
@@ -14,22 +14,13 @@ import type { ContactStatus } from "@/lib/contact-promotion/qualification"
 
 export type CommunicationChannel = "email" | "sms" | "phone" | "voicemail" | "direct_mail" | "social_dm"
 
-export interface ContactData {
-  id: string
-  email?: string | null
-  phone?: string | null
-  dnc_status?: boolean
-  email_opt_out?: boolean
-  sms_opt_out?: boolean
-  call_stop_flag?: boolean
-  tcpa_consent?: boolean
-  opt_out_channels?: string[]
-  /** contacts.status — canonical vocabulary in
-   *  lib/contact-promotion/qualification.ts CONTACT_STATUSES. Only 'inactive'
-   *  matters to compliance (soft warn); the DNC fact lives on dnc_status. */
-  status?: ContactStatus
-  state?: string | null
-}
+// ContactData, RESTRICTED_STATES, isEligibleForOutbound and getSuppressionReasons
+// now LIVE in the pure leaf lib/kernel/compliance/outbound-predicates.ts and are
+// re-exported from here (see the re-export block at the bottom of this file), so
+// every name this module has ever published still resolves at this path — the
+// tombstone below names these as the survivors of a §1.1 merge and that naming
+// has to stay true. Moved, not copied: there is exactly one definition of each.
+export type { ContactData }
 
 export interface EvaluateOutboundInput {
   contact: ContactData
@@ -68,14 +59,32 @@ export interface EvaluateOutboundOutput {
 // COMPLIANCE RULES ENGINE
 // ─────────────────────────────────────────────────────────────────────────────
 
-const RESTRICTED_STATES = new Set([
-  "CA", // California (CCPA strong)
-  "NY", // New York
-  "DC", // Washington DC
-])
-
-const HARD_BLOCKS = ["dnc", "call_stop_flag", "email_opt_out", "sms_opt_out", "opt_out_channel", "restricted_state_no_consent", "no_tcpa_consent"]
-const SOFT_WARNS = ["lifecycle_stage_inactive"]
+// RESTRICTED_STATES moved to lib/kernel/compliance/outbound-predicates.ts:88
+// (imported above). RULE 6 and the needsConsentCheck below read it from there.
+//
+// TOMBSTONE (orphan doctrine §1.1/§6, 2026-09-01): the module-private arrays
+//   HARD_BLOCKS = ["dnc","call_stop_flag","email_opt_out","sms_opt_out",
+//                  "opt_out_channel","restricted_state_no_consent","no_tcpa_consent"]
+//   SOFT_WARNS  = ["lifecycle_stage_inactive"]
+// are deleted. They were a SECOND home for a fact whose only live home is the
+// inline `severity:` literal on each rule below — RULE 1 (:~93), RULE 2 (:~102),
+// RULE 3 (:~114), RULE 4 (:~123), RULE 5 (:~132), RULE 6 (:~158), RULE 7 (:~178)
+// all carry `severity: "hard_block"`, and RULE 8 (:~189) carries
+// `severity: "soft_warn"`. SURVIVOR: those eight inline literals, in
+// evaluateOutboundCompliance() in THIS file.
+//
+// Evidence for deleting rather than deriving severity from the arrays:
+//   1. Zero readers. `grep -rn "HARD_BLOCKS\|SOFT_WARNS"` over the whole tree
+//      (excluding node_modules) returned exactly these two declaration lines and
+//      nothing else — for the arrays' entire life. They never governed anything;
+//      the decision at "DETERMINE DECISION" below reads `v.severity`, never them.
+//   2. Deriving would have BROKEN a guard outside this lane.
+//      scripts/dispatch-recipient-identity-simulator.ts:83 asserts the literal
+//      pairing `/code: "no_tcpa_consent"[\s\S]{0,120}?severity: "hard_block"/`
+//      against this file's stripped source. The inline form is therefore
+//      load-bearing and externally observed; the arrays were observed by no one.
+// Adding a rule? Put its severity inline like its seven neighbours. One fact,
+// one home (§6).
 
 /**
  * KERNEL MASTER FUNCTION: Evaluate outbound eligibility
@@ -293,45 +302,43 @@ export async function evaluateOutboundCompliance(
 // the opt_out_channels arm that NEITHER twin checked but the master gate
 // evaluateOutboundCompliance() hard-blocks (RULE 5 above). If a client-safe pure split is
 // ever actually needed, re-extract from these survivors — do not resurrect the twin.
-
-/**
- * HELPER: Check if contact is eligible for ANY outbound
- * (Used for quick checks before queuing work)
- *
- * Union of every per-channel HARD block the master gate can raise: a contact
- * this returns true for can still be blocked per-channel (RULE 2-4/7 are
- * channel-scoped and RULE 6 consults active representation, a DB lookup this
- * pure predicate cannot make) — but it never passes a contact the master gate
- * would hard-block on every channel. Strictly conservative: any recorded
- * opt-out on any channel fails the quick check.
- */
-export function isEligibleForOutbound(contact: ContactData): boolean {
-  if (contact.dnc_status || contact.call_stop_flag) return false
-  if (contact.email_opt_out || contact.sms_opt_out) return false
-  if ((contact.opt_out_channels?.length ?? 0) > 0) return false
-  if (RESTRICTED_STATES.has(contact.state ?? "") && !contact.tcpa_consent) return false
-  // status === "do_not_contact" removed 2026-08-31 — never a contacts.status
-  // value; the DNC fact is dnc_status, checked above.
-  return true
-}
-
-/**
- * HELPER: Get all suppression reasons for a contact
- * (Used for UI display)
- */
-export function getSuppressionReasons(contact: ContactData): string[] {
-  const reasons: string[] = []
-  if (contact.dnc_status) reasons.push("Do Not Call Registry")
-  if (contact.call_stop_flag) reasons.push("Call Stop Flag")
-  if (contact.email_opt_out) reasons.push("Email Opt-Out")
-  if (contact.sms_opt_out) reasons.push("SMS Opt-Out")
-  for (const channel of contact.opt_out_channels ?? []) {
-    reasons.push(`Channel Opt-Out (${channel})`)
-  }
-  // "Marked Do Not Contact" via status removed 2026-08-31 — dnc_status (above)
-  // is the DNC rail; 'do_not_contact' was never a contacts.status value.
-  if (RESTRICTED_STATES.has(contact.state ?? "") && !contact.tcpa_consent) {
-    reasons.push(`Restricted State (${contact.state}) - No TCPA Consent`)
-  }
-  return reasons
-}
+//
+// ── 2026-09-01, LATER THE SAME DAY: the split WAS actually needed, and this is
+// the re-extraction the paragraph above authorised. Two client/server-boundary
+// re-spellings of this rule were found LIVE, both weaker than the survivors:
+//
+//   app/crm/page.tsx:1386-1392   the portal magic-link button, a "use client"
+//                                file, checked 2 of the 6 arms — so a contact
+//                                who had texted STOP (call_stop_flag), opted
+//                                out of SMS, opted out of a specific channel
+//                                (opt_out_channels), or lived in a restricted
+//                                state with no TCPA consent STILL RECEIVED A
+//                                PORTAL INVITE. Proven by positive control
+//                                before the fix; all four now refuse by name.
+//   app/dashboard/admin/compliance/tcpa/page.tsx:104-111
+//                                spelled the same rule a THIRD way, as a
+//                                PostgREST filter chain (.not dnc_status /
+//                                .not sms_opt_out), blind to call_stop_flag,
+//                                email_opt_out and opt_out_channels.
+//
+// The cause was mechanical, not careless: line 6 of this file imports
+// createServiceClient, so importing the predicate from a client component drags
+// the service-role kernel into the browser bundle. Per the ruling above, the
+// bodies were RE-EXTRACTED FROM THESE SURVIVORS (moved verbatim, not re-derived)
+// into the pure leaf lib/kernel/compliance/outbound-predicates.ts, which imports
+// nothing but a type. Both re-spellings now call the one predicate.
+// SURVIVOR NAMES ARE UNCHANGED AT THIS PATH — the re-export below keeps
+// `isEligibleForOutbound` / `getSuppressionReasons` importable from
+// "@/lib/kernel/communication-compliance" exactly as before, so the tombstone
+// above stays true and no existing importer moves.
+export {
+  isEligibleForOutbound,
+  getSuppressionReasons,
+  // The two named arms isEligibleForOutbound is composed of. hasRecordedOptOut
+  // ("they told us to stop") is the half the TCPA board needs alone: its
+  // actionable list is people who have NOT consented yet, so filtering that list
+  // on full eligibility would hide exactly the contacts it exists to surface.
+  hasRecordedOptOut,
+  needsConsentInRestrictedState,
+  RESTRICTED_STATES,
+} from "@/lib/kernel/compliance/outbound-predicates"

@@ -504,8 +504,17 @@ export async function getBuyerActiveOffers(
 
 /**
  * Emit multi-offer event (for orchestration/alerts)
+ *
+ * ── NOT EXPORTED (CLAUDE.md §4, 2026-09-01) ─────────────────────────────────
+ * This file is `"use server"`, so an export here is a PUBLIC HTTP ENDPOINT, and
+ * this one let any caller MINT multi-offer events — approaching_limit, at_limit,
+ * duplicate_attempted — for an arbitrary contact id, with arbitrary metadata,
+ * straight into the orchestration/alert stream that other systems act on. The
+ * events are meant to be a RECORD of what the two in-file paths observed
+ * (:~255 in the limit check and :~404 in the duplicate check, both in THIS
+ * file), never a fact a caller can assert. Lowered to module-private.
  */
-export async function emitMultiOfferEvent(
+async function emitMultiOfferEvent(
   contactId: string,
   eventType: "approaching_limit" | "at_limit" | "duplicate_attempted",
   metadata: any

@@ -488,8 +488,50 @@ export async function createAgent(agentData: {
  *     duplicate reward ledger it wrote to (see the note below); badges are the one
  *     survivor, and `addPoints` in app/actions/gamification.ts is the path that
  *     checks them.
+ *
+ * ── NOT EXPORTED (CLAUDE.md §4, 2026-09-01) ─────────────────────────────────
+ * This file is `"use server"`, so every export is a PUBLIC HTTP ENDPOINT. This
+ * one had NO auth check of any kind — no getUser, no role gate, no tenant
+ * resolution — and took `agentId` and `points` straight from its caller. As an
+ * export that is an unauthenticated door for writing arbitrary point totals to
+ * an arbitrary agent in any tenant, which then triggers threshold badge awards.
+ * It was never meant to be a door: both call sites (:~735 recordCommission,
+ * :~1300 assignAgentToContact) are in THIS file and both run their own gate
+ * first. The checked PUBLIC path for awarding points is `addPoints` in
+ * app/actions/gamification.ts, as the doc block above already said.
+ *
+ * The gate below is defence in depth, not a substitute for the callers' gates:
+ * a module-private function still deserves to refuse when it cannot tell who is
+ * asking (§4 fail closed). It also closes a real gap the callers do NOT close —
+ * neither of them verifies that the TARGET agent belongs to the caller's
+ * brokerage before crediting them.
  */
-export async function awardPoints(agentId: string, points: number, reason: string, category: string) {
+async function awardPoints(agentId: string, points: number, reason: string, category: string) {
+  // ── GATE FIRST (§4) ───────────────────────────────────────────────────────
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { error: "Not authenticated" }
+  if (!ctx.brokerageId) return { error: "Your account is not linked to a brokerage yet." }
+  if (!isValidUUID(agentId)) return { error: "Invalid agent id." }
+
+  // The target agent must be in the CALLER'S tenant. Service client is used only
+  // AFTER the session has produced the brokerage to check against — never to
+  // widen the question. `.maybeSingle()` on an id+brokerage predicate: no row
+  // means either "no such agent" or "not your agent", and both are the same
+  // refusal from here.
+  const { data: targetAgent, error: targetErr } = await createServiceClient()
+    .from("agents")
+    .select("id")
+    .eq("id", agentId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
+  // supabase-js RESOLVES refusals — read the error, and treat "cannot tell" as
+  // "no" rather than letting an unreadable check render as a passed one.
+  if (targetErr) {
+    console.error("[awardPoints] tenant check could not run — refusing:", targetErr.message)
+    return { error: "Could not verify that agent belongs to your brokerage." }
+  }
+  if (!targetAgent) return { error: "That agent was not found in your brokerage." }
+
   const supabase = await createClient()
   const { awardAgentPoints } = await import("@/lib/gamification/award-points")
 
