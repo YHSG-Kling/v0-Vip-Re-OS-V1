@@ -2,9 +2,8 @@
   "files": {
     "app/actions/accounting-sync.ts": 1,
     "app/actions/admin/commission-agreement.ts": 1,
-    "app/actions/agents.ts": 6,
+    "app/actions/agents.ts": 5,
     "app/actions/ai-auto-response.ts": 1,
-    "app/actions/ai-content-generation.tsx": 3,
     "app/actions/ai-contract-review.ts": 1,
     "app/actions/ai-document-intelligence.ts": 1,
     "app/actions/ai-marketing-automation.ts": 4,
@@ -12,29 +11,23 @@
     "app/actions/ai-showing-management.ts": 1,
     "app/actions/ai-transaction-coordinator.ts": 2,
     "app/actions/ai-voice-transcription.ts": 1,
+    "app/actions/assistant.ts": 1,
     "app/actions/billing.ts": 3,
-    "app/actions/brokerage-cda-setup.ts": 1,
     "app/actions/buyer-financial.ts": 1,
-    "app/actions/buyer-offer/handle-multi-offer.ts": 1,
     "app/actions/calculators.ts": 1,
     "app/actions/cda-portal.ts": 3,
-    "app/actions/credit-copilot.ts": 1,
-    "app/actions/documents.ts": 1,
     "app/actions/dotloop-integration.ts": 1,
     "app/actions/email-campaigns.ts": 1,
     "app/actions/fb-audience-templates.ts": 1,
     "app/actions/forms-kernel.ts": 1,
     "app/actions/journey-tasks.ts": 1,
-    "app/actions/lead-import/import-actions.ts": 1,
     "app/actions/lead-intelligence.ts": 6,
     "app/actions/listings-kernel.ts": 3,
     "app/actions/multi-persona.ts": 2,
     "app/actions/onboarding/mentor-session.ts": 1,
-    "app/actions/open-house-automation.ts": 1,
     "app/actions/privacy/data-subject-requests.ts": 1,
     "app/actions/property-buyer-matching.ts": 1,
     "app/actions/reputation-kernel.ts": 3,
-    "app/actions/smart-insights.ts": 1,
     "app/actions/social/generate-social-post.ts": 1,
     "app/actions/social-media-automation.ts": 1,
     "app/actions/social-publishing.ts": 1,
@@ -61,7 +54,6 @@
     "lib/ads/connectors/pii.ts": 3,
     "lib/ads/creative-fatigue-runner.ts": 2,
     "lib/ads/ctv-campaign.ts": 3,
-    "lib/ads/facebook-audience-sync.ts": 2,
     "lib/agentic-os/agent-credentials.ts": 2,
     "lib/agentic-os/app-capability-registry.ts": 1,
     "lib/agentic-os/capability-ownership.ts": 1,
@@ -226,7 +218,7 @@
     "lib/intelligence/dry-run-cockpit.ts": 1,
     "lib/intelligence/dual-transaction-timing-runner.ts": 1,
     "lib/intelligence/loan-milestone-sync-runner.ts": 1,
-    "lib/intelligence/manager-touch-provenance.ts": 2,
+    "lib/intelligence/manager-touch-provenance.ts": 1,
     "lib/intelligence/manager-weekly-exec-plan.ts": 5,
     "lib/intelligence/negotiation-bands.ts": 2,
     "lib/intelligence/offer-property-prefill-runner.ts": 1,
@@ -269,7 +261,6 @@
     "lib/kernel/closing-war-room.ts": 2,
     "lib/kernel/command-center.ts": 1,
     "lib/kernel/commission-forecaster.ts": 6,
-    "lib/kernel/communication-compliance.ts": 2,
     "lib/kernel/compliance-ledger.ts": 2,
     "lib/kernel/consent-recovery.ts": 2,
     "lib/kernel/consistency-guardian.ts": 3,
@@ -496,7 +487,6 @@
     "lib/referrals/referral-reciprocity.ts": 1,
     "lib/remotion/code-revision.ts": 1,
     "lib/remotion/composition-cache.ts": 1,
-    "lib/remotion/content-contract.ts": 1,
     "lib/remotion/render-cache.ts": 1,
     "lib/remotion/render-decision.ts": 4,
     "lib/remotion/voiceover-mixer.ts": 1,
@@ -576,7 +566,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9452,
+  "census": 9447,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -611,7 +601,7 @@
     "app/actions/admin/lead-routing-settings.ts": 2,
     "app/actions/admin/license-tracking.ts": 7,
     "app/actions/admin/locations.ts": 6,
-    "app/actions/admin/manager-evals.ts": 10,
+    "app/actions/admin/manager-evals.ts": 11,
     "app/actions/admin/onboarding-steps.ts": 3,
     "app/actions/admin/referral-earnings.ts": 2,
     "app/actions/admin/run-scrape-test.ts": 1,
@@ -626,7 +616,7 @@
     "app/actions/agent-public-profile.ts": 1,
     "app/actions/agent-settings.ts": 2,
     "app/actions/agentic-tokens.ts": 3,
-    "app/actions/agents.ts": 16,
+    "app/actions/agents.ts": 15,
     "app/actions/ai-agent-goals.ts": 6,
     "app/actions/ai-agent-onboarding.ts": 3,
     "app/actions/ai-auto-response.ts": 6,
@@ -638,7 +628,7 @@
     "app/actions/ai-closing-workflow.ts": 5,
     "app/actions/ai-cma.ts": 4,
     "app/actions/ai-communication-hub.ts": 9,
-    "app/actions/ai-content-generation.tsx": 43,
+    "app/actions/ai-content-generation.tsx": 40,
     "app/actions/ai-contract-review.ts": 6,
     "app/actions/ai-direct-mail.ts": 11,
     "app/actions/ai-document-intelligence.ts": 7,
@@ -713,7 +703,7 @@
     "app/actions/buyer-offer/convert-to-transaction.ts": 2,
     "app/actions/buyer-offer/esign-anchor-plan.ts": 1,
     "app/actions/buyer-offer/flag-compliance.ts": 1,
-    "app/actions/buyer-offer/handle-multi-offer.ts": 4,
+    "app/actions/buyer-offer/handle-multi-offer.ts": 3,
     "app/actions/buyer-offer/prefill-offer.ts": 1,
     "app/actions/buyer-offer/prefill-storage-form.ts": 1,
     "app/actions/buyer-offer/record-seller-response.ts": 1,
@@ -784,7 +774,7 @@
     "app/actions/counter-offer-diff.ts": 1,
     "app/actions/coverage-mode.ts": 1,
     "app/actions/creative-playbooks.ts": 2,
-    "app/actions/credit-copilot.ts": 9,
+    "app/actions/credit-copilot.ts": 8,
     "app/actions/critical-setup.ts": 1,
     "app/actions/crm-connect.ts": 4,
     "app/actions/crm.ts": 10,
@@ -811,7 +801,7 @@
     "app/actions/document-extractions.ts": 2,
     "app/actions/document-field-audit.ts": 1,
     "app/actions/document-kernel-review.ts": 7,
-    "app/actions/documents.ts": 11,
+    "app/actions/documents.ts": 10,
     "app/actions/dotloop-integration.ts": 13,
     "app/actions/education-kernel.ts": 5,
     "app/actions/education-tutor.ts": 1,
@@ -849,7 +839,7 @@
     "app/actions/lead-governance/govern-lead.ts": 1,
     "app/actions/lead-handoff/pending-handoffs.ts": 1,
     "app/actions/lead-import/crm-pull-actions.ts": 3,
-    "app/actions/lead-import/import-actions.ts": 4,
+    "app/actions/lead-import/import-actions.ts": 3,
     "app/actions/lead-intelligence.ts": 17,
     "app/actions/lead-lifecycle.ts": 2,
     "app/actions/lead-magnet-capture.ts": 1,
@@ -931,7 +921,7 @@
     "app/actions/onboarding/tech-stack.ts": 5,
     "app/actions/onboarding/training.ts": 4,
     "app/actions/onboarding-decisions.ts": 2,
-    "app/actions/open-house-automation.ts": 18,
+    "app/actions/open-house-automation.ts": 17,
     "app/actions/open-house-kernel.ts": 7,
     "app/actions/open-house.ts": 7,
     "app/actions/orchestrator.ts": 2,
@@ -1021,7 +1011,7 @@
     "app/actions/settings/update-notification-rules.ts": 1,
     "app/actions/setup-readiness.ts": 1,
     "app/actions/showings.ts": 6,
-    "app/actions/smart-insights.ts": 13,
+    "app/actions/smart-insights.ts": 12,
     "app/actions/smart-queue.ts": 1,
     "app/actions/smarter-this-week.ts": 1,
     "app/actions/social/generate-social-post.ts": 5,
@@ -2686,7 +2676,7 @@
     "lib/ads/connectors/types.ts": 1,
     "lib/ads/creative-fatigue-runner.ts": 2,
     "lib/ads/ctv-campaign.ts": 4,
-    "lib/ads/facebook-audience-sync.ts": 8,
+    "lib/ads/facebook-audience-sync.ts": 6,
     "lib/ads/fb-audience-templates.ts": 2,
     "lib/ads/launch-assembler.ts": 2,
     "lib/ads/listing-ad-producer.ts": 2,
@@ -3425,11 +3415,12 @@
     "lib/kernel/closing-war-room.ts": 8,
     "lib/kernel/command-center.ts": 4,
     "lib/kernel/commission-forecaster.ts": 11,
-    "lib/kernel/communication-compliance.ts": 3,
+    "lib/kernel/communication-compliance.ts": 1,
     "lib/kernel/communications/assemble-email.ts": 1,
     "lib/kernel/communications.ts": 3,
     "lib/kernel/compliance/active-representation.ts": 1,
     "lib/kernel/compliance/check-suppression.ts": 2,
+    "lib/kernel/compliance/outbound-predicates.ts": 4,
     "lib/kernel/compliance/require-contact-consent.ts": 2,
     "lib/kernel/compliance-ledger.ts": 5,
     "lib/kernel/compliance-redraft.ts": 1,
@@ -4170,6 +4161,7 @@
     "lib/video/assistant-options.ts": 1,
     "lib/video/avatar-explainer.ts": 4,
     "lib/video/avatar-render-orchestrator.ts": 8,
+    "lib/video/avatar-track-submit.ts": 1,
     "lib/video/broll-picker.ts": 2,
     "lib/video/caption-plan.ts": 2,
     "lib/video/chapter-video-generator.ts": 1,
@@ -4199,8 +4191,8 @@
     "lib/video/reel-brand.ts": 2,
     "lib/video/reel-voiceover.ts": 2,
     "lib/video/repurpose-planner.ts": 3,
-    "lib/video/script-compliance.ts": 10,
-    "lib/video/script-structure.ts": 9,
+    "lib/video/script-compliance.ts": 11,
+    "lib/video/script-structure.ts": 11,
     "lib/video/verbal-disclosure.ts": 1,
     "lib/video/video-director.ts": 11,
     "lib/video/video-identity.ts": 1,
@@ -4492,6 +4484,7 @@
       "getManagerTrustScorecard",
       "getManagerSessionDetail",
       "setManagerAutonomy",
+      "setManagerRetired",
       "getLearnedAdjustmentsForBrokerage",
       "vetoLearnedAdjustment",
       "getCrossManagerReferrals",
@@ -4556,7 +4549,6 @@
     "app/actions/agents.ts": [
       "getAgents",
       "createAgent",
-      "awardPoints",
       "getAgentAchievements",
       "getAgentCommissions",
       "addAgentCommission",
@@ -4698,10 +4690,7 @@
       "analyzeABTest",
       "bulkGenerateContent",
       "generateAllListingDescriptions",
-      "generateSEOKeywords",
       "getNeighborhoodData",
-      "detectTargetBuyer",
-      "getComparableProperties",
       "enhancedGenerateListingDescription",
       "logGenerationCost",
       "getRecentContentGenerations",
@@ -5245,8 +5234,7 @@
     "app/actions/buyer-offer/handle-multi-offer.ts": [
       "checkPendingOfferLimit",
       "checkDuplicateOffer",
-      "getBuyerActiveOffers",
-      "emitMultiOfferEvent"
+      "getBuyerActiveOffers"
     ],
     "app/actions/buyer-offer/prefill-offer.ts": [
       "fillPropertyDataWithAI"
@@ -5690,7 +5678,6 @@
       "handlePartnerReferral",
       "getCreditPipelineStats",
       "advanceCreditFlow",
-      "trackCreditUsage",
       "createCreditAccount"
     ],
     "app/actions/critical-setup.ts": [
@@ -5831,7 +5818,6 @@
       "deleteDocument",
       "analyzeDocument",
       "uploadDocument",
-      "processDocumentWithAI",
       "getContactDocuments",
       "getDocumentWithAnalysis",
       "checkStateCompliance",
@@ -6094,7 +6080,6 @@
       "getCrmImportStatusAction"
     ],
     "app/actions/lead-import/import-actions.ts": [
-      "processImportRows",
       "createImportRecord",
       "runImport",
       "listImports"
@@ -6657,7 +6642,6 @@
       "getOpenHouseVisitors",
       "recordVisitor",
       "optimizeOpenHouseTiming",
-      "calculateMatchScore",
       "generatePersonalizedInvite",
       "sendOpenHouseInvitations",
       "handleRSVP",
@@ -7254,7 +7238,6 @@
       "getCommuteDestinations",
       "saveCommuteDestination",
       "removeCommuteDestination",
-      "regeneratePropertyCommute",
       "getSmartInsights",
       "requestShowing",
       "getShowingRequests",
@@ -12927,8 +12910,6 @@
       "stageCtvCampaign"
     ],
     "lib/ads/facebook-audience-sync.ts": [
-      "createFacebookAudience",
-      "syncFacebookAudience",
       "previewAudienceReach",
       "createAudience",
       "syncAudience",
@@ -16637,9 +16618,7 @@
       "isoWeekTag"
     ],
     "lib/kernel/communication-compliance.ts": [
-      "evaluateOutboundCompliance",
-      "isEligibleForOutbound",
-      "getSuppressionReasons"
+      "evaluateOutboundCompliance"
     ],
     "lib/kernel/communications/assemble-email.ts": [
       "assembleEmail"
@@ -16655,6 +16634,12 @@
     "lib/kernel/compliance/check-suppression.ts": [
       "checkSuppression",
       "addSuppression"
+    ],
+    "lib/kernel/compliance/outbound-predicates.ts": [
+      "hasRecordedOptOut",
+      "needsConsentInRestrictedState",
+      "isEligibleForOutbound",
+      "getSuppressionReasons"
     ],
     "lib/kernel/compliance/require-contact-consent.ts": [
       "buildConsentText",
@@ -20557,6 +20542,9 @@
       "classifyAnniversaryPortalDelivery",
       "resolveAvatarCompositeState"
     ],
+    "lib/video/avatar-track-submit.ts": [
+      "submitAvatarTrack"
+    ],
     "lib/video/broll-picker.ts": [
       "selectBrollPlan",
       "pickBrollClips"
@@ -20705,6 +20693,7 @@
       "repurposeDiscriminator"
     ],
     "lib/video/script-compliance.ts": [
+      "proveActorTenancy",
       "detectFairHousingRedFlags",
       "loadProhibitedPhraseCatalogue",
       "buildProhibitedPhraseBlock",
@@ -20724,6 +20713,8 @@
       "spokenWords",
       "spokenSentences",
       "fitNarrationToBudget",
+      "fitNarrationWithOneRedraft",
+      "narrationOverrunRedraftDirective",
       "narrationMaxTokens",
       "narrationLengthDirective"
     ],
@@ -21289,5 +21280,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 2
+  "trulyDead": 1
 }

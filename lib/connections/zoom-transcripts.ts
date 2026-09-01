@@ -144,6 +144,21 @@ export async function processZoomRecordingEvent(
       insights = null // transcript still attaches; enrichment is best-effort
     }
 
+    // ── ADJUDICATION (2026-09-01) — why these columns read as one-sided ────────
+    // The wave that deleted a phantom `communications(*)` embed (it joined on
+    // contact_id, which this writer sets NULL by design, so it could only ever
+    // return []) made this table's columns surface as writer-with-no-reader.
+    // They are NOT unread. Their reader is the TENANT DATA EXPORT —
+    // lib/platform/tenant-export.ts:54 does `.from(table).select("*")` over
+    // TENANT_EXPORT_TABLES, which names "communications" at :18. That is a
+    // whole-row read through a LOOP VARIABLE table name, so it is invisible to a
+    // column-level census twice over: it names no columns, and the table name is
+    // not a literal at the call site. Hence "GDPR-exported" in the header above.
+    // §1 is satisfied — the write has a reader, and the departing or auditing
+    // tenant is who reads it.
+    // NOT a defect, and NOT to be "fixed" by deleting columns: what does not
+    // exist is an in-product surface that shows a meeting transcript back to the
+    // agent. That is a feature decision, not a broken wire.
     const { error } = await svc.from("communications").insert({
       brokerage_id: target.brokerageId,
       contact_id: null,
