@@ -757,11 +757,27 @@ export async function mergeContacts(params: { primaryContactId: string; duplicat
     //
     // Zero matched rows is NOT a failure on any arm (a duplicate may own no deals
     // at all, and most deals name the contact on exactly one side); a refusal is.
+    //
+    // TENANT-SCOPED (§4): both contacts are already gated on agent_id above, but a
+    // re-key on `transactions` must carry the brokerage predicate on its own — CI
+    // holds that cross-tenant writes are impossible BY THE PREDICATE, not by the
+    // diligence of an upstream gate. A contact with no brokerage_id REFUSES rather
+    // than running the re-key unscoped: an unscoped merge is exactly the shape §4
+    // exists to forbid, and a duplicate whose deals cannot be moved must not be
+    // soft-deleted below.
+    const mergeBrokerageId = (primary as Record<string, unknown>).brokerage_id as string | null
+    if (!mergeBrokerageId) {
+      throw new DatabaseError(
+        "Cannot merge: the surviving contact carries no brokerage_id, so the transaction re-key cannot be tenant-scoped (fail closed)",
+        { message: "missing brokerage_id on primary contact" },
+      )
+    }
     for (const column of ["contact_id", "buyer_contact_id", "seller_contact_id"] as const) {
       const { error: txRekeyError } = await supabase
         .from("transactions")
         .update({ [column]: params.primaryContactId })
         .eq(column, params.duplicateContactId)
+        .eq("brokerage_id", mergeBrokerageId)
       if (txRekeyError) {
         throw new DatabaseError(
           `Failed to move the duplicate's transactions onto the primary (${column})`,

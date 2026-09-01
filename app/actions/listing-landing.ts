@@ -480,25 +480,56 @@ export async function logLandingSession(params: {
       showing_requested: false,
     })
 
+    // unique_visitors is DERIVED, not incremented. It used to be written as the
+    // literal 1 on the day's first view and never touched again, so it read 1
+    // forever no matter how many people visited — a permanently wrong number that
+    // looked like a real one. Incrementing it alongside total_views would have
+    // been wrong the other way: that is a view count, not a visitor count.
+    // The session ledger written just above is the honest source — distinct
+    // session_token for this listing on this date. Volume is one row per landing
+    // view per listing per day, so the distinct-count is done here rather than in
+    // SQL; supabase-js cannot express COUNT(DISTINCT ...) through PostgREST.
+    const { data: todaySessions, error: sessionCountError } = await supabase
+      .from("smart_landing_sessions")
+      .select("session_token")
+      .eq("listing_id", params.listingId)
+      .gte("created_at", `${today}T00:00:00.000Z`)
+      .lt("created_at", `${today}T23:59:59.999Z`)
+
+    // §3: a refused count must not silently become a smaller visitor number.
+    // Leave the column alone rather than writing a figure we could not derive.
+    const uniqueVisitors =
+      sessionCountError || !todaySessions
+        ? null
+        : new Set(todaySessions.map((s) => s.session_token).filter(Boolean)).size
+
     // Upsert analytics for today
     const { data: existing } = await supabase
       .from("listing_page_analytics")
       .select("id, total_views")
       .eq("listing_id", params.listingId)
       .eq("date", today)
-      .single()
+      .maybeSingle()
 
     if (existing) {
       await supabase
         .from("listing_page_analytics")
-        .update({ total_views: existing.total_views + 1 })
+        .update({
+          total_views: existing.total_views + 1,
+          ...(uniqueVisitors !== null ? { unique_visitors: uniqueVisitors } : {}),
+        })
         .eq("id", existing.id)
     } else {
       await supabase.from("listing_page_analytics").insert({
         listing_id: params.listingId,
+        // The tenant column exists on this table and was being left null, exactly
+        // as smart_landing_sessions.brokerage_id was until the comment above fixed
+        // it. The brokerage is already resolved for the session row — stamping it
+        // here costs nothing and makes the day's traffic row tenant-attributable.
+        brokerage_id: listingRow?.brokerage_id ?? null,
         date: today,
         total_views: 1,
-        unique_visitors: 1,
+        unique_visitors: uniqueVisitors ?? 1,
         cta_clicks: 0,
         showing_requests: 0,
         lead_captures: 0,
