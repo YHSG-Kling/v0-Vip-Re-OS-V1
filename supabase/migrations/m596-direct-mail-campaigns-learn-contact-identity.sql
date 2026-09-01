@@ -1,6 +1,8 @@
 -- m596 — direct_mail_campaigns learns a first-class CONTACT identity
 -- ─────────────────────────────────────────────────────────────────────────────
--- STATUS: WRITTEN, NOT APPLIED. Lanes write migrations; only the integrator
+-- STATUS: APPLIED to hrvaqgvukzxfskkcrwbt by the integrator, 2026-09-01. Preflights
+-- passed (0 rows carrying both identities, 0 orphan contact_ids); verified after:
+-- both constraints present (contact_id_fkey + one_identity_check). Lanes write; only the integrator
 -- applies them (CLAUDE.md §3). After applying: regenerate the schema caches
 -- (schema-snapshot / schema-fk-map) and, because a CHECK is added, the
 -- vocabulary cache regeneration rule applies to the cache chain as well.

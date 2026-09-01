@@ -3280,6 +3280,8 @@ const EXTERNALLY_ADDRESSED = /\/(cron|webhooks?|callback|oauth|auth|health|og|rs
  * reading as enforced (§2 — do not pin an assertion to a waypoint).
  */
 const QUALIFIED_EXTERNAL_ROUTES = new Map<string, string>([
+  // ── Ops poller door (lane W8, integrator 2026-09-01) ──
+  ["/api/admin/health-status", "external ops poller: a token CAN now get in — x-internal-api-secret (INTERNAL_API_SECRET) is checked AHEAD of the session fallback (route.ts:63-66, mirroring /api/errors/collect's shape); the secret path reads the platform catalogue only (brokerage_id IS NULL) and rolls up through the ONE shared rollup (lib/platform/service-catalogue-scope.ts:rollupServiceStatuses), so no tenant row reaches an infrastructure monitor"],
   // ── Lead-magnet public doors (qualified by lane N3b's evidence, integrator 2026-09-01) ──
   ["/api/lead-magnets/qr/[magnetId]",  "external QR-scan door: the anonymous-scan arm is deliberately ungated (a scan comes from a stranger's phone — route.ts:104's split gates the RECORD behind a session whose users.brokerage_id must equal the brokerage asked about, fail-closed on a refused users read) and an out-of-tree scan reporter cannot be disproved from this repo — §1 unresolved means leave it"],
   ["/api/lead-magnets/submissions",    "public form-submission intake (Auth: NOT required — the submitter is the lead): enforces TCPA consent on valuation forms (:23-29) and stamps real IP/UA from request headers (:32-36) before the ONE kernel command captureFormSubmission; the in-repo twin app/actions/lead-magnet-capture.ts:22 calls the same kernel command for /lm/[slug], so this door exists for embeds OUTSIDE the app"],

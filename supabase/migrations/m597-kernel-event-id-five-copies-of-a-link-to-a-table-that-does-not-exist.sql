@@ -1,7 +1,12 @@
 -- m597 — kernel_event_id: five copies of a link to a table that does not exist
 -- ─────────────────────────────────────────────────────────────────────────────
--- STATUS: WRITTEN, NOT APPLIED. Lane W4 writes migrations; only the integrator
--- applies them (CLAUDE.md §3 — a .sql file is not the database).
+-- STATUS: APPLIED to hrvaqgvukzxfskkcrwbt by the integrator, 2026-09-01 — and the
+-- count MOVED at apply time (§2: the finding): information_schema showed EIGHT
+-- carriers, not five. listing_agreements, marketing_campaigns and
+-- podcast_episodes carried the same dead column (zero code references —
+-- re-grepped before dropping) and were dropped in the same pass; the three
+-- extra ALTERs are appended below. Verified after: zero kernel_event_id
+-- columns remain in public.
 --
 -- WHAT. Drop the `kernel_event_id` column from all five tables that carry it:
 -- social_posts, ad_campaigns, blog_posts, email_campaigns, newsletter_campaigns.
@@ -62,3 +67,8 @@ COMMIT;
 -- VERIFY (expect zero rows):
 --   select table_name from information_schema.columns
 --    where table_schema = 'public' and column_name = 'kernel_event_id';
+
+-- APPLY-TIME ADDITION (2026-09-01): the census undercounted — three more carriers found and dropped.
+ALTER TABLE public.listing_agreements   DROP COLUMN IF EXISTS kernel_event_id;
+ALTER TABLE public.marketing_campaigns  DROP COLUMN IF EXISTS kernel_event_id;
+ALTER TABLE public.podcast_episodes     DROP COLUMN IF EXISTS kernel_event_id;

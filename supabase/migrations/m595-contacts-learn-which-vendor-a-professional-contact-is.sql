@@ -1,6 +1,7 @@
 -- m595 — contacts learn WHICH vendor a professional contact is
 -- ─────────────────────────────────────────────────────────────────────────────
--- STATUS: WRITTEN, NOT APPLIED — integrator applies (§3: files are not the
+-- STATUS: APPLIED to hrvaqgvukzxfskkcrwbt by the integrator, 2026-09-01.
+-- Verified after applying: contacts.vendor_id present (count=1). (§3: files are not the
 -- database; lanes write migrations, only the integrator applies them).
 --
 -- WHY. contact_type legitimately admits 'vendor' and 'referral_partner'

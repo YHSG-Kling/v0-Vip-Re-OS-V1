@@ -842,5 +842,8 @@ export type {
   ContactTimeline,
   ContactSource,
   ContactFilters,
-  PropertyInterest,
+  // `PropertyInterest` left this list 2026-09-01 — the interface was deleted
+  // from types/contact.ts with its tombstone (zero importers; the fact lives
+  // on leads.property_interest + the property_interests child table). The
+  // BuyerPropertyInterest family in lib/kernel/forms is a different subject.
 } from "./types/contact"

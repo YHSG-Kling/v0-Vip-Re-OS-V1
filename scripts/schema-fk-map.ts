@@ -45,7 +45,7 @@
  * separator: every relname in this schema matches /^[a-z0-9_]+$/.
  *
  * ONLY PAIRS ABOVE ONE ARE STORED. A pair with exactly one FK is unambiguous and is the
- * overwhelming majority (1687 of 1745 pairs) — storing them would be
+ * overwhelming majority (1689 of 1747 pairs) — storing them would be
  * many times the bytes to encode "nothing to see here". An absent key therefore means "one FK or
  * none", i.e. NOT ambiguous. A self-referential pair (a === b) is stored under "t|t" and is
  * included: two self-FKs on one table are ambiguous exactly like two FKs between different
@@ -75,8 +75,8 @@
  * nothing, which the SAFETY PROPERTY above turns into a skipped embed rather than a wrong answer.
  * 1 column is in that state.
  *
- * MEASURED AT GENERATION: 1820 edges across 708 source tables — one target per
- * (table, column), every ambiguous column excluded and listed separately. 1745 unordered
+ * MEASURED AT GENERATION: 1822 edges across 708 source tables — one target per
+ * (table, column), every ambiguous column excluded and listed separately. 1747 unordered
  * table pairs carry at least one FK; 58
  * carry more than one and are listed below. 12 of the constraints are self-referential.
  * THE PAIR COUNT COUNTS CONSTRAINTS, NOT COLUMNS: a composite FK is ONE relationship to PostgREST
@@ -84,9 +84,9 @@
  * unambiguous pair as ambiguous.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-08-28
+ * generated: 2026-09-01
  * source: public.live_foreign_keys_json()
- * body-sha256: 019e35e38cd7d8698c3b91125a414b399970786beb7fdeda4b8793fccdc21829
+ * body-sha256: 84ccb2679cfdeb7f3f01d1c242f7818d7fefeed34826281990180f76a8d7a0a6
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -314,7 +314,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "contact_segments": { "brokerage_id": "brokerages", "contact_id": "contacts" },
   "contact_suppression_list": { "brokerage_id": "brokerages", "contact_id": "contacts" },
   "contact_vendors": { "agent_id": "agents", "brokerage_id": "brokerages", "contact_id": "contacts", "transaction_id": "transactions", "vendor_id": "vendors" },
-  "contacts": { "agent_id": "agents", "brokerage_id": "brokerages", "campaign_attribution_id": "marketing_campaigns", "compliance_officer_id": "users", "embed_widget_id": "embed_widgets", "isa_reengage_marked_by": "users", "location_id": "locations", "source_agent_id": "users", "tc_user_id": "users", "tcpa_marked_by": "users", "team_id": "teams", "user_id": "users" },
+  "contacts": { "agent_id": "agents", "brokerage_id": "brokerages", "campaign_attribution_id": "marketing_campaigns", "compliance_officer_id": "users", "embed_widget_id": "embed_widgets", "isa_reengage_marked_by": "users", "location_id": "locations", "source_agent_id": "users", "tc_user_id": "users", "tcpa_marked_by": "users", "team_id": "teams", "user_id": "users", "vendor_id": "vendors" },
   "content_ab_tests": { "agent_id": "agents", "brokerage_id": "brokerages", "variant_a_id": "ai_generated_content", "variant_b_id": "ai_generated_content", "winner_id": "ai_generated_content" },
   "content_asset_persona_performance": { "topic_id": "content_topic_bank" },
   "content_calendar": { "agent_id": "agents", "brokerage_id": "brokerages" },
@@ -352,7 +352,7 @@ export const SCHEMA_FK_MAP: Record<string, Record<string, string>> = {
   "deal_team_members": { "brokerage_id": "brokerages", "transaction_id": "transactions" },
   "deconflict_suppression_log": { "brokerage_id": "brokerages", "contact_id": "contacts" },
   "deposits": { "agent_id": "agents", "brokerage_id": "brokerages", "created_by": "users", "transaction_id": "transactions" },
-  "direct_mail_campaigns": { "agent_id": "agents", "brokerage_id": "brokerages", "bundle_dispatch_id": "campaign_bundle_dispatches", "compliance_event_id": "compliance_events", "created_by": "users", "lead_id": "leads", "marketing_campaign_id": "marketing_campaigns", "preset_id": "direct_mail_presets", "qr_code_id": "qr_codes", "variant_id": "direct_mail_variants" },
+  "direct_mail_campaigns": { "agent_id": "agents", "brokerage_id": "brokerages", "bundle_dispatch_id": "campaign_bundle_dispatches", "compliance_event_id": "compliance_events", "contact_id": "contacts", "created_by": "users", "lead_id": "leads", "marketing_campaign_id": "marketing_campaigns", "preset_id": "direct_mail_presets", "qr_code_id": "qr_codes", "variant_id": "direct_mail_variants" },
   "direct_mail_presets": { "brokerage_id": "brokerages", "compliance_event_id": "compliance_events" },
   "direct_mail_recipients": { "brokerage_id": "brokerages", "campaign_id": "direct_mail_campaigns", "contact_id": "contacts", "lead_id": "leads" },
   "direct_mail_responses": { "brokerage_id": "brokerages", "campaign_id": "direct_mail_campaigns", "contact_id": "contacts", "lead_id": "leads", "recipient_id": "direct_mail_recipients" },
