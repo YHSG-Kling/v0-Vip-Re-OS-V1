@@ -1876,7 +1876,10 @@ async function main() {
         // buyer_fatigue_scores CHECK rejected); the surviving calculator carries the
         // same corrected onConflict target.
         && src("lib/fatigue/fatigue-calculator.ts").includes('onConflict: "contact_id"')
-        && src("app/actions/vendor-marketplace.ts").includes('onConflict: "vendor_id"')
+        // The vendor_ratings rollup (and its corrected onConflict) moved to the
+        // ONE shared module when the client-rating door landed (§6, 2026-09-01);
+        // vendor-marketplace.ts delegates to it. Pin the construct at its home.
+        && src("lib/vendor-marketplace/vendor-ratings.ts").includes('onConflict: "vendor_id"')
         && src("app/actions/social-publishing.ts").includes('onConflict: "brokerage_id,platform,account_id"')
         && src("app/api/social/oauth/[platform]/route.ts").includes('onConflict: "brokerage_id,platform,account_id"')
         && src("app/dashboard/settings/integrations/idx-broker/page.tsx").includes('onConflict: "owner_id,owner_type,platform"')
