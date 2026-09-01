@@ -73,8 +73,13 @@ export function canCreateOffer(params: CanCreateOfferParams): PermissionCheckRes
 
   // If contact provided, verify ownership
   if (contact) {
-    // Contact must belong to this agent
-    if (contact.agent_id !== agent_id && contact.assigned_agent_id !== agent_id) {
+    // Contact must belong to this agent. `contacts.agent_id` is the ONE
+    // assignment column; the `|| contact.assigned_agent_id === agent_id` escape
+    // that stood here compared against a PHANTOM (no such column on live
+    // contacts — tombstone at lib/domain/types.ts Contact, survivor
+    // contacts.agent_id), so it was always `undefined !== agent_id` and never
+    // admitted anyone. Removing it changes no verdict.
+    if (contact.agent_id !== agent_id) {
       return {
         allowed: false,
         reason: "Cannot create offer for contact assigned to another agent",

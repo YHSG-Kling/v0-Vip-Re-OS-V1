@@ -74,21 +74,49 @@ export interface Contact {
   timeline: ContactTimeline
   source: ContactSource
   notes?: string
-  property_interest?: PropertyInterest
+  // TOMBSTONE (§1, 2026-09-01): `property_interest?: PropertyInterest` and the
+  // PropertyInterest interface deleted — PHANTOM: live contacts carries no such
+  // column (scripts/schema-snapshot.ts:239). SURVIVORS: leads.property_interest
+  // (text, scripts/schema-snapshot.ts:369 — reached from a contact through its
+  // lead lineage, leads.contact_id, stamped by
+  // lib/contact-promotion/history-carry.ts:241) and the property_interests
+  // child table (contact_id FK → contacts.id, scripts/schema-snapshot.ts:531)
+  // with typed preference columns. Same deletion in lib/domain/types.ts.
   created_at: string
   updated_at: string
-  last_contacted?: string
+  /** LIVE column contacts.last_contacted_at (writer: markContactTouched,
+   *  app/dashboard/stale/actions.ts:315, guard-enforced; readers include the
+   *  stale detector). Was spelled `last_contacted` — a name no live column has;
+   *  that exact confusion once left a cron filtering on created_at "as
+   *  fallback" while the real column existed all along
+   *  (lib/ai-isa/stale-contact-detector.ts:15-23). */
+  last_contacted_at?: string | null
   contact_user_id?: string
   has_login: boolean
   login_created_at?: string
   deleted_at?: string
-  assigned_agent_id?: string
-  assigned_agent_name?: string
-  is_referral_source?: boolean
-  referred_by_contact_id?: string
-  referred_by_name?: string
+  // TOMBSTONE (§1, 2026-09-01): `assigned_agent_id`, `assigned_agent_name`
+  // deleted — PHANTOMS (unapplied scripts/250-add-contact-agent-referral-tracking.sql;
+  // absent from live contacts, scripts/schema-snapshot.ts:239). SURVIVORS:
+  // contacts.agent_id IS the assignment column (app/actions/seller-coaching.ts:49
+  // records this exact phantom breaking a query); the display name is
+  // JOIN-DERIVED at read time — the app/actions/ai-isa.ts:730 pattern — never
+  // stored. Same deletion in lib/domain/types.ts.
+  // TOMBSTONE (§1, 2026-09-01): `is_referral_source`, `referred_by_contact_id`,
+  // `referred_by_name`, `referral_notes` deleted — PHANTOMS minted by the same
+  // unapplied script 250; none exists on live contacts
+  // (scripts/schema-snapshot.ts:239). SURVIVOR: the referrals table
+  // (scripts/schema-snapshot.ts:552) at the correct grain —
+  //   is_referral_source     → EXISTS referrals row, referrer_contact_id = contacts.id
+  //   referred_by_contact_id → referrals.referrer_contact_id (row whose
+  //                            referred_contact_id is this contact)
+  //   referred_by_name       → referrals.source_contact_name / referrals.referred_by
+  //   referral_notes         → referrals.notes
+  // `referral_count` survives below as a DERIVED count of those rows.
+  /** DERIVED, never stored — count of referrals rows with
+   *  referrer_contact_id = contacts.id (the writerless-gate guard exists to
+   *  catch stored aggregates nothing updates). */
   referral_count?: number
-  referral_notes?: string
   // TOMBSTONE (§1, 2026-09-01): `vendor_type`, `lender_company`, `lender_nmls`
   // deleted — PHANTOM fields: none exists on live contacts (verified against the
   // generated scripts/schema-snapshot.ts contacts column list; a reader of a
@@ -98,38 +126,34 @@ export interface Contact {
   // lender_company / lender_nmls → live columns on the lender-portal ledger
   // tables, written at app/actions/lender-portal-actions.ts:255/339/393 — never
   // columns of contacts.
-  service_area?: string
-  rating?: number
-  total_transactions?: number
-  last_transaction_date?: string
-}
-
-export interface PropertyInterest {
-  // Buyer fields
-  budget_min?: number
-  budget_max?: number
-  desired_neighborhoods?: string[]
-  move_in_timeline?: string
-  property_type_preference?: string[]
-
-  // Seller fields
-  current_home_value?: number
-  timeline_to_sell?: string
-  reason_for_selling?: string
-  property_condition?: string
-
-  // Investor fields
-  investment_type?: string
-  target_roi?: number
-  experience_level?: string
-
-  // Lender fields
-  company?: string
-  loan_programs?: string[]
-  contact_info?: string
-
-  // Other custom fields
-  [key: string]: any
+  // TOMBSTONE (§1/§6, 2026-09-01): `service_area?: string` deleted — a free-TEXT
+  // service area is the third geographic vocabulary the measured ruling at
+  // lib/vendors/vendor-service-area.ts:44-70 forbids (grain is state + zip_code,
+  // matching subscriber_service_areas). SURVIVOR: vendor_service_areas
+  // (scripts/schema-snapshot.ts:707) via contacts.vendor_id (m595, WRITTEN NOT
+  // APPLIED) → vendors.platform_vendor_id — the two-hop
+  // lib/vendors/vendor-service-area.ts + app/actions/vendor-service-areas.ts
+  // already implement. The derived shape is `service_areas` below.
+  /** DERIVED, never stored: contacts.vendor_id (m595, WRITTEN NOT APPLIED —
+   *  integrator applies) → vendors.rating (rollups in vendor_ratings). */
+  rating?: number | null
+  /** DERIVED, never stored: contacts.vendor_id → vendors.platform_vendor_id →
+   *  vendor_service_areas rows (state + zip_code grain). */
+  service_areas?: Array<{ state: string; zip_code: string | null; trade_category: string; status: string }>
+  // TOMBSTONE (§1, 2026-09-01): `total_transactions`, `last_transaction_date`
+  // deleted — PHANTOM stored aggregates from the unapplied script 250, absent
+  // from live contacts (scripts/schema-snapshot.ts:239), with no writer to keep
+  // them true. SURVIVORS: the DERIVED `transaction_count` / `last_closed_at`
+  // below — computed from transactions rows at read time, three-sided grain in
+  // lib/contacts/transaction-rollup.ts, filled by
+  // lib/services/contact-management.service.ts getContact.
+  /** DERIVED, never stored — count of transactions rows naming this contact on
+   *  ANY of buyer_contact_id / seller_contact_id / contact_id
+   *  (lib/contacts/transaction-rollup.ts). */
+  transaction_count?: number
+  /** DERIVED, never stored — max close_date across this contact's CLOSED
+   *  transactions (lib/contacts/transaction-rollup.ts). */
+  last_closed_at?: string | null
 }
 
 // ── TOMBSTONE · ContactFormData ─────────────────────────────────────────────

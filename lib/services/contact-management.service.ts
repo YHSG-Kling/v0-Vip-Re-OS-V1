@@ -12,6 +12,10 @@ import { LEAD_SOURCES, normalizeLeadSource } from "@/lib/constants"
 import { handleError, ValidationError, NotFoundError, DatabaseError } from "@/lib/errors"
 import { calculateLeadScore } from "./lead-management.service"
 import { statusForNewContact } from "@/lib/contact-promotion/qualification"
+import {
+  threeSidedContactTransactionFilter,
+  deriveTransactionRollup,
+} from "@/lib/contacts/transaction-rollup"
 // NOTE: `queueContactEnrichment` is imported DYNAMICALLY at its call site below,
 // not statically at module scope. lib/enrichment/contact-enrichment-core.ts is
 // `server-only` (it holds the service client and the paid PeopleData/OSINT
@@ -395,7 +399,131 @@ export async function getContact(contactId: string, agentId: string) {
       throw new NotFoundError("Contact not found")
     }
 
-    return { success: true, contact }
+    // ── DERIVED FIELDS — computed at read time, never stored ─────────────────
+    // transaction_count / last_closed_at / referral_count / rating /
+    // service_areas exist on the Contact type as DERIVED read-only fields (see
+    // the tombstones in types/contact.ts and lib/domain/types.ts). Live
+    // contacts stores none of them; a stored aggregate with no writer is
+    // exactly what the writerless-gate guard exists to refuse.
+
+    // Transactions — THREE-SIDED grain (lib/contacts/transaction-rollup.ts):
+    // the constraint-named embed above rides ONE relationship
+    // (transactions_contact_id_fkey — the deals this contact is the client on),
+    // but "total transactions with us" counts the contact on ANY of the three
+    // contact FKs (buyer_contact_id | seller_contact_id | contact_id), the
+    // definition seller-lifetime-overview has always used. PostgREST cannot
+    // express that union as one embed (an embed rides exactly one named
+    // relationship — same PGRST201 fact the header above records), so it is a
+    // second query. Tenant scope: same brokerage as the contact row.
+    const brokerageId = (contact as Record<string, unknown>).brokerage_id as string | null
+    let txQuery = supabase
+      .from("transactions")
+      .select("id, status, close_date")
+      .or(threeSidedContactTransactionFilter(contactId))
+    if (brokerageId) txQuery = txQuery.eq("brokerage_id", brokerageId)
+    const [txRes, refRes] = await Promise.all([
+      txQuery,
+      // referral_count — count of referrals rows naming this contact as the
+      // REFERRER (referrals.referrer_contact_id, the FK
+      // lib/kernel/referral-appreciation.ts walks; derivation precedent
+      // app/actions/analytics.ts:308 `referrals?.length || 0`). A head-count
+      // avoids the embed entirely: referrals carries TWO FKs to contacts
+      // (referrer_contact_id and referred_contact_id), so a bare `referrals(…)`
+      // embed here would be the PGRST201 ambiguity the header above warns about.
+      supabase
+        .from("referrals")
+        .select("id", { count: "exact", head: true })
+        .eq("referrer_contact_id", contactId),
+    ])
+
+    let transaction_count: number | undefined
+    let last_closed_at: string | null | undefined
+    if (txRes.error) {
+      // Degrade to the single-sided embed already on the row — an undercount
+      // that says so, NEVER a silent 0 (a refusal rendered as "no deals" is the
+      // exact bug class the header above documents).
+      console.error(
+        "[getContact] three-sided transactions read refused — falling back to the single-sided transactions_contact_id_fkey embed (may undercount buyer/seller-side deals):",
+        txRes.error.message,
+      )
+      const embedded = Array.isArray((contact as Record<string, unknown>).transactions)
+        ? ((contact as Record<string, unknown>).transactions as Array<{ status?: string | null; close_date?: string | null }>)
+        : []
+      const fallback = deriveTransactionRollup(embedded)
+      transaction_count = fallback.transaction_count
+      last_closed_at = fallback.last_closed_at
+    } else {
+      const rollup = deriveTransactionRollup(txRes.data ?? [])
+      transaction_count = rollup.transaction_count
+      last_closed_at = rollup.last_closed_at
+    }
+
+    let referral_count: number | undefined
+    if (refRes.error) {
+      // A refused count is ABSENT, not zero — leave the field undefined so a
+      // consumer can tell "could not compute" from "has never referred".
+      console.error("[getContact] referrals count refused — referral_count omitted:", refRes.error.message)
+    } else {
+      referral_count = refRes.count ?? 0
+    }
+
+    // Vendor bridge — rating / service_areas (m595, WRITTEN NOT APPLIED — the
+    // integrator applies it). contacts.vendor_id does not exist in this
+    // environment yet; because the main read selects `*`, the column simply
+    // arrives absent until the migration lands, and this block no-ops. Written
+    // to be safe BOTH before and after apply: the vendor join is a separate
+    // best-effort query with its {error} read, so an unknown-column/refused
+    // read degrades to absent fields and can never kill the main contact read.
+    let rating: number | null | undefined
+    let service_areas:
+      | Array<{ state: string; zip_code: string | null; trade_category: string; status: string }>
+      | undefined
+    const vendorId = (contact as Record<string, unknown>).vendor_id
+    if (typeof vendorId === "string" && vendorId) {
+      const { data: vendorRow, error: vendorError } = await supabase
+        .from("vendors")
+        .select("rating, platform_vendor_id")
+        .eq("id", vendorId)
+        .maybeSingle()
+      if (vendorError) {
+        console.error("[getContact] vendor bridge read refused — rating/service_areas omitted:", vendorError.message)
+      } else if (vendorRow) {
+        rating = (vendorRow.rating as number | null) ?? null
+        // Coverage hangs off the GLOBAL identity (vendors.platform_vendor_id →
+        // vendor_service_areas.platform_vendor_id) — the two-hop
+        // lib/vendors/vendor-service-area.ts documents and
+        // app/actions/vendor-service-areas.ts:394 implements. A local-only
+        // bench row (no platform_vendor_id) has no declared coverage.
+        if (vendorRow.platform_vendor_id) {
+          const { data: areaRows, error: areaError } = await supabase
+            .from("vendor_service_areas")
+            .select("state, zip_code, trade_category, status")
+            .eq("platform_vendor_id", vendorRow.platform_vendor_id)
+          if (areaError) {
+            console.error("[getContact] vendor_service_areas read refused — service_areas omitted:", areaError.message)
+          } else {
+            service_areas = (areaRows ?? []) as Array<{
+              state: string
+              zip_code: string | null
+              trade_category: string
+              status: string
+            }>
+          }
+        }
+      }
+    }
+
+    return {
+      success: true,
+      contact: {
+        ...contact,
+        transaction_count,
+        last_closed_at,
+        referral_count,
+        ...(rating !== undefined ? { rating } : {}),
+        ...(service_areas !== undefined ? { service_areas } : {}),
+      },
+    }
   } catch (error) {
     return handleError(error, "getContact")
   }

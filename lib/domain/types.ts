@@ -114,56 +114,60 @@ export type ContactTimeline = StandardTimeline
  */
 export interface Contact {
   id: string
-  
+
   // Identity
   agent_id: string
+  /** LIVE column and the tenant predicate on every contacts read/write (§4).
+   *  Was missing here while types/contact.ts:66 carried it — the opposite drift
+   *  of the phantom fields removed below (a real column the type hid). */
+  brokerage_id?: string | null
   first_name: string
   last_name: string
   email: string
   phone?: string
-  
+
   // Classification
   contact_type: ContactType
   contact_persona: ContactPersona
   status: ContactStatus
   timeline: ContactTimeline
   source: string
-  
-  // Property interest
-  property_interest?: {
-    // Buyer fields
-    budget_min?: number
-    budget_max?: number
-    desired_neighborhoods?: string[]
-    move_in_timeline?: string
-    property_type_preference?: string[]
-    
-    // Seller fields
-    current_home_value?: number
-    timeline_to_sell?: string
-    reason_for_selling?: string
-    property_condition?: string
-    
-    // Investor fields
-    investment_type?: string
-    target_roi?: number
-    experience_level?: string
-    
-    [key: string]: any
-  }
-  
+
+  // TOMBSTONE (§1, 2026-09-01): the inline `property_interest` object deleted —
+  // PHANTOM: live contacts carries no such column (generated
+  // scripts/schema-snapshot.ts:239 contacts column list). The capability is not
+  // lost; the fact lives in two REAL places:
+  //   · leads.property_interest (text — scripts/schema-snapshot.ts:369), read by
+  //     the lead-side personalization (app/actions/ai-isa/initiate-engagement.ts:403);
+  //     a contact reaches it through its lead lineage, leads.contact_id
+  //     (stamped by lib/contact-promotion/history-carry.ts:241)
+  //   · property_interests — the per-contact preferences child table
+  //     (contact_id FK → contacts.id, scripts/schema-snapshot.ts:531) with
+  //     typed columns (property_type, min/max_price, preferred_locations, …)
+  //     instead of an untyped bag.
+  // Same deletion made in types/contact.ts the same day.
+
   // Portal access
   contact_user_id?: string
   has_login: boolean
   login_created_at?: string
-  
-  // Referral tracking
-  is_referral_source?: boolean
-  referred_by_contact_id?: string
-  referred_by_name?: string
-  referral_count?: number
-  referral_notes?: string
-  
+
+  // TOMBSTONE (§1, 2026-09-01): `is_referral_source`, `referred_by_contact_id`,
+  // `referred_by_name`, `referral_notes` deleted — PHANTOMS minted by the
+  // UNAPPLIED scripts/250-add-contact-agent-referral-tracking.sql (the same
+  // script whose vendor_type/lender_* trio is tombstoned below); none exists on
+  // live contacts (scripts/schema-snapshot.ts:239). SURVIVOR: the referrals
+  // table (scripts/schema-snapshot.ts:552), which already stores each fact at
+  // the correct grain (one row per referral, not a flag per contact):
+  //   is_referral_source     → EXISTS referrals row with referrer_contact_id = contacts.id
+  //   referred_by_contact_id → referrals.referrer_contact_id on the row whose
+  //                            referred_contact_id is this contact
+  //   referred_by_name       → referrals.source_contact_name / referrals.referred_by
+  //   referral_notes         → referrals.notes
+  // `referral_count` survives below as a DERIVED count of those rows — never a
+  // stored aggregate (the writerless-gate guard exists to catch aggregates
+  // nothing updates).
+
   // TOMBSTONE (§1, 2026-09-01): `vendor_type`, `lender_company`, `lender_nmls`
   // deleted — PHANTOM fields, absent from live contacts (generated
   // scripts/schema-snapshot.ts contacts column list). SURVIVORS: vendor_type →
@@ -171,27 +175,72 @@ export interface Contact {
   // lender_company / lender_nmls → the lender-portal ledger tables
   // (app/actions/lender-portal-actions.ts:255/339/393). Same deletion made in
   // types/contact.ts the same day.
-  service_area?: string
-  rating?: number
-  
+
+  // TOMBSTONE (§1/§6, 2026-09-01): `service_area?: string` deleted — a free-TEXT
+  // service area is the third geographic vocabulary the measured grain ruling at
+  // lib/vendors/vendor-service-area.ts:44-70 forbids (the repo's grain is
+  // state + zip_code, matching subscriber_service_areas). SURVIVOR:
+  // vendor_service_areas (scripts/schema-snapshot.ts:707), reached two-hop via
+  // contacts.vendor_id (m595, WRITTEN NOT APPLIED) → vendors.platform_vendor_id —
+  // the hop lib/vendors/vendor-service-area.ts + app/actions/vendor-service-areas.ts
+  // already implement. The derived shape is `service_areas` below.
+  /** DERIVED, never stored: contacts.vendor_id (m595, WRITTEN NOT APPLIED —
+   *  integrator applies) → vendors.rating (per-tenant bench rating; rollups in
+   *  vendor_ratings). Populated by getContact when the bridge row exists;
+   *  null/absent otherwise. */
+  rating?: number | null
+  /** DERIVED, never stored: contacts.vendor_id → vendors.platform_vendor_id →
+   *  vendor_service_areas rows (state + zip_code grain,
+   *  lib/vendors/vendor-service-area.ts:44-70). */
+  service_areas?: Array<{ state: string; zip_code: string | null; trade_category: string; status: string }>
+
   // History
-  total_transactions?: number
-  last_transaction_date?: string
-  last_contacted?: string
+  // TOMBSTONE (§1, 2026-09-01): `total_transactions`, `last_transaction_date`
+  // deleted — PHANTOM stored aggregates from the unapplied script 250, absent
+  // from live contacts (scripts/schema-snapshot.ts:239) and with no writer that
+  // could ever have kept them true. SURVIVORS: the DERIVED `transaction_count` /
+  // `last_closed_at` below, computed at read time from transactions rows —
+  // three-sided grain (buyer_contact_id | seller_contact_id | contact_id) in
+  // lib/contacts/transaction-rollup.ts, filled by
+  // lib/services/contact-management.service.ts getContact.
+  /** DERIVED, never stored — count of transactions rows naming this contact on
+   *  ANY of the three contact FKs (lib/contacts/transaction-rollup.ts). */
+  transaction_count?: number
+  /** DERIVED, never stored — max close_date across this contact's CLOSED
+   *  transactions (lib/contacts/transaction-rollup.ts), ISO string or null. */
+  last_closed_at?: string | null
+  /** DERIVED, never stored — count of referrals rows with
+   *  referrer_contact_id = contacts.id (see referral tombstone above). */
+  referral_count?: number
+  /** LIVE column contacts.last_contacted_at (writer: markContactTouched,
+   *  app/dashboard/stale/actions.ts:315; readers: the stale detector and its
+   *  guard chain). This field was spelled `last_contacted` here — a name no
+   *  live column has; the same spelling confusion once left a cron filtering on
+   *  created_at "as fallback" while the column existed all along
+   *  (lib/ai-isa/stale-contact-detector.ts:15-23). */
+  last_contacted_at?: string | null
   notes?: string
-  
+
   // Metadata
   created_at: string
   updated_at: string
   deleted_at?: string
-  
-  // Assignment
-  assigned_agent_id?: string
-  assigned_agent_name?: string
-  
-  // Lead conversion tracking
-  promoted_from_lead_id?: string
-  promoted_at?: string
+
+  // TOMBSTONE (§1, 2026-09-01): `assigned_agent_id`, `assigned_agent_name`
+  // deleted — PHANTOMS (unapplied script 250; absent from live contacts,
+  // scripts/schema-snapshot.ts:239). SURVIVORS: the assignment column IS
+  // contacts.agent_id (app/actions/seller-coaching.ts:49 records this exact
+  // phantom having broken a query against listings); the display name is
+  // JOIN-DERIVED where needed — the app/actions/ai-isa.ts:730 pattern
+  // (`assigned_agent:users!… (first_name, last_name)` composed at read time) —
+  // never stored on the row.
+
+  // TOMBSTONE (§1, 2026-09-01): `promoted_from_lead_id`, `promoted_at` deleted —
+  // PHANTOMS: live contacts carries neither (scripts/schema-snapshot.ts:239).
+  // The lineage is stored in the INVERSE direction, on the lead:
+  // leads.contact_id + leads.converted_at (scripts/schema-snapshot.ts:369),
+  // stamped by lib/contact-promotion/history-carry.ts:241. Walk contact→lead by
+  // querying leads where contact_id = contacts.id.
 }
 
 // ============================================

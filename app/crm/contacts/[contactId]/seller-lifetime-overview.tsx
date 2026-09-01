@@ -20,6 +20,10 @@ import {
   type SellerDictatedSegment,
 } from "@/lib/video/memory-video-gate"
 import { MEMORY_VIDEO_OFFER_TAG } from "@/lib/video/memory-video"
+import {
+  threeSidedContactTransactionFilter,
+  deriveTransactionRollup,
+} from "@/lib/contacts/transaction-rollup"
 
 interface Props {
   contactId:    string
@@ -47,11 +51,13 @@ export async function SellerLifetimeOverview({ contactId, contact, brokerageId }
        .order("created_at", { ascending: false })
        .limit(5),
     // Transactions where this contact is buyer OR seller — both sides because lifetime contacts
-    // may have been on either side of past deals.
+    // may have been on either side of past deals. The three-sided filter is the ONE shared
+    // definition (lib/contacts/transaction-rollup.ts), also used by getContact's derived
+    // transaction_count / last_closed_at.
     svc.from("transactions")
        .select("id, deal_name, property_address, stage, status, purchase_price, close_date, created_at")
        .eq("brokerage_id", brokerageId)
-       .or(`buyer_contact_id.eq.${contactId},seller_contact_id.eq.${contactId},contact_id.eq.${contactId}`)
+       .or(threeSidedContactTransactionFilter(contactId))
        .order("created_at", { ascending: false })
        .limit(5),
     // Last 10 activities
@@ -100,12 +106,17 @@ export async function SellerLifetimeOverview({ contactId, contact, brokerageId }
   // CLOSED transaction already loaded above. Neither available → verdict refuses
   // → the card is not rendered at all. There is deliberately no disabled teaser:
   // an affordance for a service this family cannot be offered is worse than none.
-  const priorClose = (transactions as Array<{ status?: string | null; close_date?: string | null }>)
-    .filter((t) => t.status === "closed" && t.close_date)
-    .map((t) => new Date(t.close_date as string).getTime())
-    .sort((a, b) => b - a)[0]
-  const tenureFromClose = priorClose
-    ? (Date.now() - priorClose) / (365.25 * 24 * 60 * 60 * 1000)
+  // "Most recent close" comes from the ONE shared derivation
+  // (lib/contacts/transaction-rollup.ts — same predicate getContact's derived
+  // last_closed_at uses). RESIDUAL, recorded: this view derives off the 5-row
+  // display window loaded above, so a contact with >5 deals could miss an older
+  // close — irrelevant here because only the MOST RECENT close feeds tenure and
+  // the window is newest-first.
+  const txRollup = deriveTransactionRollup(
+    transactions as Array<{ status?: string | null; close_date?: string | null }>,
+  )
+  const tenureFromClose = txRollup.last_closed_at
+    ? (Date.now() - new Date(txRollup.last_closed_at).getTime()) / (365.25 * 24 * 60 * 60 * 1000)
     : null
   const memoryVideoVerdict = assessMemoryVideoTenure(
     parseLengthOfResidence(contact.length_of_residence as string | null) ?? tenureFromClose,
