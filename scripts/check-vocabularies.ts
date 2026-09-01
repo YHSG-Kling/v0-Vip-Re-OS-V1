@@ -18,9 +18,9 @@
  * MEASURED AT GENERATION: 436 tables, 768 columns.
  *
  * ── PROVENANCE — this file is MACHINE-WRITTEN. Do not hand-edit it. ──────────
- * generated: 2026-08-31
+ * generated: 2026-09-01
  * source: public.live_check_constraints_json()
- * body-sha256: 0f92305618d9490b5433d4e53c4835a4c204e15e4b7aae43a2721fee996af22c
+ * body-sha256: ccb89cd082f4d9c48cf1f00f65dc7b0b5fa30cb4f1550974d2c50aa6fcdebd28
  *
  * scripts/schema-cache-drift-guard.ts recomputes body-sha256 from the bytes below and compares
  * this file against the LIVE database. A hand-edit fails the first check even with no credentials;
@@ -1025,7 +1025,7 @@ export const CHECK_VOCABULARIES: Record<string, Record<string, string[]>> = {
   },
   notification_rules: {
     notification_type: ["email", "push", "sms"],
-    recipient_role: ["TC", "admin", "agent", "broker", "closing_attorney", "compliance_officer", "title_agent"],
+    recipient_role: ["TC", "admin", "agent", "broker", "compliance_officer"],
     trigger_event: ["appraisal_due", "authority_blocked", "business_card_approved", "business_card_uploaded", "buyer_disengaged", "buyer_verified", "cd_due", "cd_received", "closing_scheduled", "compliance_violation", "consent_received", "contact_captured", "contact_created", "contact_dedup_merged", "contact_enrichment_completed", "contact_enrichment_failed", "contact_enrichment_queued", "contact_scored", "contract_signed", "deal_closed", "deal_on_hold", "decision_pending", "document_received", "document_requested", "enrichment_completed", "enrichment_failed", "financing_due", "form_submission_received", "ghost_lead_detected", "inspection_due", "isa_appointment_scheduled", "isa_max_touches_reached", "isa_outreach_paused", "isa_outreach_sent", "isa_qualification_started", "isa_qualified_lead", "isa_reply_received", "lead_assigned", "lead_assignment_failed", "lead_captured", "lead_claimed", "lead_converted_to_contact", "lead_import_completed", "lead_ready_for_assignment", "lead_scored", "lead_sla_breached", "lifetime_customer", "listing_published", "message_from_contact", "message_needs_response", "new_lead", "offer_eligible", "offer_received", "offer_submitted", "price_determined", "qr_scan_received", "raw_lead_viability_failed", "raw_lead_viability_passed", "ready_to_close", "reengagement_completed", "reengagement_started", "referral_received", "showing_completed", "showing_scheduled", "stale_lead_alert", "task_assigned", "task_completed", "task_due", "task_overdue", "tour_eligible", "tour_scheduled", "walkthrough_due", "website_visitor_identified"],
   },
   notifications: {
