@@ -177,7 +177,20 @@ export const NeighborhoodSpotlightReel: React.FC<NeighborhoodSpotlightReelProps>
               overflow: "hidden", backgroundColor: brand.primaryColor,
             }}>
               {avatarVideoUrl ? (
-                <Video src={avatarVideoUrl} objectFit="cover" trimBefore={COVER} trimAfter={COVER + BODY}
+                // trimBefore counts SOURCE frames, and the enclosing
+                // <Sequence from={COVER}> has already offset this child's clock —
+                // so trimBefore={COVER} here skipped the clip's first 3s TWICE.
+                // The D-ID pipeline's clips start speaking at source frame 0
+                // (the convention AgentTalkingHeadReel.tsx models with
+                // trimBefore={0} trimAfter={BODY}); no producer authors a
+                // full-reel-spanning avatar mp4 for this composition
+                // (remotion_compositions.requires_did_avatar=false, and every
+                // producer stages avatarVideoUrl:null). MarketUpdateReel /
+                // ExplainerAnimReel legitimately differ: they slice ONE
+                // continuous narration track across consecutive sequences by
+                // absolute frame ranges, which is why their PIPs trim by
+                // startFrame/endFrame and this one must not.
+                <Video src={avatarVideoUrl} objectFit="cover" trimBefore={0} trimAfter={BODY}
                   style={{ width: "100%", height: "100%" }} />
               ) : (
                 <Img src={agentPhotoUrl as string} style={{ width: "100%", height: "100%", objectFit: "cover" }} />

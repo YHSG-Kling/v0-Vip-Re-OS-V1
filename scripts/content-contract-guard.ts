@@ -31,6 +31,7 @@ import { readFileSync } from "node:fs"
 import { LIVE_TABLES } from "./live-tables"
 import { blankComments, stripComments } from "./strip-comments"
 import { CONTENT_CONTRACT, isSupplied, missingContentProps, describeMissingContent } from "../lib/remotion/content-contract"
+import { explainerDiagramSpec } from "../lib/charts/explainer-diagram"
 import {
   listingReelProps, justSoldProps, comingSoonProps, openHouseProps,
   marketUpdateProps, neighborhoodProps, testimonialProps, equityProps,
@@ -430,6 +431,8 @@ console.log("\n═══ 9. The Director resolves from ROWS, never from inventio
   ok("a failed read returns the base props so the CONTRACT refuses, rather than\n    substituting anything", /catch\s*\{\s*return base/.test(dc.replace(/\s+/g, " ").replace(/ /g, "")) || dc.includes("return base"))
   ok("the explainer copy comes from the one gated author, not a canned fallback",
     dc.includes("authorExplainerContent(") && dc.includes("if (!authored.ok) return"))
+  ok("the ANIMATED explainer's diagram comes from the one deterministic spec module\n    (lib/charts/explainer-diagram), not a second implementation",
+    dc.includes("explainerDiagramSpec("))
 }
 
 console.log("\n═══ 10. The sample contact details are gone from the print pieces ═══")
@@ -484,6 +487,7 @@ console.log("\n═══ 11. The Director's OLD payload is refused by every comp
     "OpenHouseAnnounceReel", "ComingSoonReel", "MarketUpdateReel",
     "NeighborhoodSpotlightReel", "TestimonialReel", "EquityReportReel",
     "PhotoWalkthroughReel", "AgentExplainerReel", "AgentTalkingHeadReel",
+    "ExplainerAnimReel",
   ]
   const rendered = served.filter((c) => missingContentProps(c, OLD_DIRECTOR_PAYLOAD).length === 0)
   ok(`all ${served.length} compositions the Director commissions now refuse the\n    chrome-only payload that used to render sample data as a client's facts`,
@@ -563,6 +567,41 @@ console.log("\n═══ 13. The equity reel — the case that started this ═�
   ok("a commission whose valuation could NOT be established is refused", missing.length > 0)
   ok("...naming the numbers, so a human knows what to establish",
     missing.includes("estimatedValue") && missing.includes("purchasePrice"), missing.join(","))
+}
+
+console.log("\n═══ 13b. The animated explainer — the spec's payload satisfies the contract ═══")
+{
+  // The Director's ExplainerAnimReel case (lib/video/director-content.ts) stages
+  // exactly this shape: title/caption/hasData from the spec, diagram from
+  // spec.data, agentName from the identity. Proven here PURELY — the same
+  // mapping, no DB — so the case and the contract cannot drift apart silently.
+  const spec = explainerDiagramSpec(undefined, {
+    topic: "equity_over_time", purchasePrice: "$500,000", downPaymentPct: "20", rate: "6.5%",
+  })
+  const p = {
+    ...chrome, agentName: identity.agentName,
+    title: spec.title, caption: spec.caption, hasData: spec.hasData,
+    ...(spec.hasData && spec.data ? { diagram: spec.data } : {}),
+  }
+  ok("ExplainerAnimReel passes on a spec computed from the caller's own facts",
+    missingContentProps("ExplainerAnimReel", p).length === 0,
+    missingContentProps("ExplainerAnimReel", p).join(","))
+  ok("...and the diagram is the spec's real amortization, not the Studio sample",
+    (p as { diagram?: { kind?: string; startLoan?: number } }).diagram?.kind === "equity_over_time"
+    && (p as { diagram?: { startLoan?: number } }).diagram?.startLoan === 400000)
+
+  // The HONEST no-data path: the spec refuses to compute, the case leaves
+  // `diagram` absent, and the contract refuses the commission naming it.
+  const thinSpec = explainerDiagramSpec(undefined, { topic: "equity_over_time" })
+  ok("a topic whose facts cannot support the math comes back hasData:false with a reason",
+    thinSpec.hasData === false && !!thinSpec.reason)
+  const thin = {
+    ...chrome, agentName: identity.agentName,
+    title: thinSpec.title, caption: thinSpec.caption, hasData: thinSpec.hasData,
+  }
+  const missingThin = missingContentProps("ExplainerAnimReel", thin)
+  ok("...and the commission is refused naming `diagram` — never rendered from\n    the sample equity curve", missingThin.length === 1 && missingThin[0] === "diagram",
+    missingThin.join(","))
 }
 
 console.log("\n═══ 14. Time and money formatting cannot guess ═══")

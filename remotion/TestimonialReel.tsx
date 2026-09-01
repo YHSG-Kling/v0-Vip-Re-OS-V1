@@ -193,11 +193,22 @@ export const TestimonialReel: React.FC<TestimonialReelProps> = ({
               marginBottom: 28,
             }}>
               {avatarVideoUrl ? (
+                // trimBefore counts SOURCE frames, and the enclosing
+                // <Sequence from={COVER + QUOTE}> already offsets this child's
+                // clock — trimBefore={COVER + QUOTE} therefore skipped 9s of a
+                // reaction clip that is itself only ~3s. The avatar prop is a
+                // short reaction CLIP whose content starts at source frame 0
+                // (the D-ID convention AgentTalkingHeadReel.tsx models with
+                // trimBefore={0}); no producer authors a full-reel-spanning
+                // avatar for this composition (requires_did_avatar=false in the
+                // registry). MarketUpdateReel / ExplainerAnimReel differ on
+                // purpose — they slice one continuous narration track across
+                // consecutive sequences by absolute ranges.
                 <Video
                   objectFit="cover"
                   src={avatarVideoUrl}
-                  trimBefore={COVER + QUOTE}
-                  trimAfter={COVER + QUOTE + REACT}
+                  trimBefore={0}
+                  trimAfter={REACT}
                   style={{ width: "100%", height: "100%" }}
                 />
               ) : (

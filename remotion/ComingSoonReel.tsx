@@ -213,8 +213,19 @@ export const ComingSoonReel: React.FC<ComingSoonReelProps> = ({
               overflow: "hidden", backgroundColor: brand.primaryColor,
             }}>
               {avatarVideoUrl ? (
+                // trimBefore counts SOURCE frames, and the enclosing
+                // <Sequence from={COVER + BODY}> already offsets this child's
+                // clock — trimBefore={COVER + BODY} therefore skipped 10s of an
+                // opt-in PIP clip whose content starts at source frame 0 (the
+                // D-ID convention AgentTalkingHeadReel.tsx models with
+                // trimBefore={0}); no producer authors a full-reel-spanning
+                // avatar for this composition (requires_did_avatar=false in the
+                // registry; promo-composition stages avatarVideoUrl:null).
+                // MarketUpdateReel / ExplainerAnimReel differ on purpose — they
+                // slice one continuous narration track across consecutive
+                // sequences by absolute frame ranges.
                 <Video src={avatarVideoUrl} objectFit="cover"
-                  trimBefore={COVER + BODY} trimAfter={COVER + BODY + CTA}
+                  trimBefore={0} trimAfter={CTA}
                   style={{ width: "100%", height: "100%" }} />
               ) : (
                 <Img src={agentPhotoUrl as string} style={{ width: "100%", height: "100%", objectFit: "cover" }} />

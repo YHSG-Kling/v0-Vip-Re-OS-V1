@@ -297,6 +297,138 @@ console.log("\n═══ 4. Every composition is renderable as configured ══
   ok("every composition declares real dimensions, fps and duration", bad.length === 0, bad.slice(0, 5).join(" | "))
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n═══ 4b. Each component's INTERNAL storyboard sums to its registered duration ═══")
+// Sections 2-3 prove Root.tsx, the mirror and the live table agree about
+// durationInFrames. None of them look INSIDE the component: most moving
+// compositions carry a hand-written frame storyboard (`const FPS = 30`,
+// `const TOTAL = COVER + BODY + CTA`, or a `const FRAMES = {...}` table whose
+// last *_END is the total), and NOTHING forced that sum to equal the number the
+// composition registers. A drift here is the worst of section 3's failure
+// shapes moved one level down: the render still succeeds, but the storyboard
+// either stops early (frozen last frame under live narration) or overruns
+// (sequences cut off mid-beat) — and every registry-level check stays green.
+//
+// THE RULE IS DERIVED, NOT A LIST (§2): the storyboard total is evaluated from
+// each component file's own top-level consts, so a composition that changes its
+// beats moves the derived number with it. Components with no derivable
+// storyboard (duration comes from useVideoConfig(), or a still card with no
+// storyboard at all) are SKIPPED WITH A PRINTED REASON — a skip must never read
+// as a pass, and the skip list is published beside the count (§2 blind spots).
+{
+  /**
+   * Evaluate one storyboard expression against previously-bound consts.
+   * Accepts numbers, bound identifiers, + - * / and parens; anything else
+   * (Easing.bezier(...), object literals, unbound names) returns null and the
+   * declaration is simply not bound — never a crash, never a guess.
+   */
+  const evalStoryboardExpr = (expr: string, env: Record<string, number>): number | null => {
+    const substituted = expr
+      .replace(/\s+as\s+const\s*$/, "")
+      .trim()
+      .replace(/[A-Za-z_][A-Za-z0-9_]*/g, (name) => (env[name] !== undefined ? String(env[name]) : name))
+    // Math.round/floor/ceil are the one function family a storyboard uses
+    // (TeammateExplainerReel: Math.round(2.5 * FPS)); everything else stays
+    // unevaluable on purpose.
+    const validation = substituted.replace(/Math\.(round|floor|ceil)/g, "")
+    if (!/^[\d+\-*/ ().]+$/.test(validation) || validation.trim() === "") return null
+    try {
+      const v = Function(`"use strict"; return (${substituted})`)() as unknown
+      return typeof v === "number" && Number.isFinite(v) ? v : null
+    } catch { return null }
+  }
+
+  type Storyboard = { total: number; how: string } | { total: null; reason: string }
+
+  /**
+   * Derive a component file's storyboard total from COMMENT-STRIPPED,
+   * STRING-BLANKED source (§2: a tombstone naming `const TOTAL` in prose, or a
+   * fixture inside a template literal, must not read as a storyboard).
+   */
+  const deriveStoryboardTotal = (rawSrc: string): Storyboard => {
+    const src = blankStrings(stripComments(rawSrc))
+    // Top-level const bindings, in declaration order, so TOTAL sees its parts.
+    const env: Record<string, number> = {}
+    for (const m of src.matchAll(/^const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^\n]+)$/gm)) {
+      const v = evalStoryboardExpr(m[2], env)
+      if (v !== null) env[m[1]] = v
+    }
+    if (env.TOTAL !== undefined) return { total: env.TOTAL, how: "const TOTAL" }
+    // FRAMES table: the storyboard is absolute frame offsets; the total is the
+    // largest value (the final *_END).
+    const frames = src.match(/^const\s+FRAMES\s*=\s*\{([\s\S]*?)\}/m)
+    if (frames) {
+      const values = [...frames[1].matchAll(/:\s*(\d+)/g)].map((m) => Number(m[1]))
+      if (values.length > 0) return { total: Math.max(...values), how: "FRAMES table max" }
+    }
+    if (/useVideoConfig\(\)/.test(src)) {
+      return { total: null, reason: "duration derives from useVideoConfig() — nothing internal to assert" }
+    }
+    return { total: null, reason: "no derivable const storyboard (TOTAL / FRAMES) — timing is inline or prop-driven" }
+  }
+
+  // ── POSITIVE CONTROLS (§2) — a blind deriver and a clean tree both report zero ──
+  ok("the deriver evaluates a TOTAL sum with precedence (COVER + STAT * 3 + CTA)",
+    (() => {
+      const d = deriveStoryboardTotal("const FPS = 30\nconst COVER = 2 * FPS\nconst STAT = 4 * FPS\nconst CTA = 2 * FPS\nconst TOTAL = COVER + STAT * 3 + CTA\n")
+      return d.total === 480
+    })())
+  ok("...and a FRAMES table by its largest offset",
+    deriveStoryboardTotal("const FRAMES = {\n  COVER_END: 60,\n  CTA_START: 660,\n  CTA_END: 750,\n} as const\n").total === 750)
+  ok("...and a Math.round beat (TeammateExplainerReel's 2.5s intro)",
+    deriveStoryboardTotal("const FPS = 30\nconst INTRO = Math.round(2.5 * FPS)\nconst BODY = Math.round(24.5 * FPS)\nconst OUTRO = 3 * FPS\nconst TOTAL = INTRO + BODY + OUTRO\n").total === 900)
+  ok("...and a DESYNCED storyboard is actually caught — a component summing 510\n    against a 540-frame registration reads as 510, not as fine",
+    (() => {
+      const d = deriveStoryboardTotal("const FPS = 30\nconst COVER = 3 * FPS\nconst DIAGRAM = 11 * FPS\nconst CTA = 3 * FPS\nconst TOTAL = COVER + DIAGRAM + CTA\n")
+      return d.total === 510 && d.total !== 540
+    })())
+  ok("...and it read STRIPPED source — a comment or a string naming const TOTAL is\n    not a storyboard",
+    deriveStoryboardTotal("// const TOTAL = 300\nconst s = `const TOTAL = 300`\n").total === null)
+  ok("...and an unbound name never evaluates to a guess (Easing consts are skipped)",
+    (() => {
+      const d = deriveStoryboardTotal("const ENTER = Easing.bezier(0.16, 1, 0.3, 1)\nconst TOTAL = ENTER + 1\n")
+      return d.total === null
+    })())
+
+  // ── composition id → component file, via Root.tsx's own imports ────────────
+  const importMap: Record<string, string> = {}
+  for (const m of blankComments(rootSrc).matchAll(/import\s*\{([^}]+)\}\s*from\s*["']\.\/([^"']+)["']/g)) {
+    for (const piece of m[1].split(",")) {
+      const name = piece.trim().split(/\s+as\s+/).pop()!.trim()
+      if (name) importMap[name] = `remotion/${m[2]}.tsx`
+    }
+  }
+  const componentOf: Record<string, string> = {}
+  for (const block of blankComments(rootSrc).split(/<Composition/).slice(1)) {
+    const id = block.match(/id="([A-Za-z0-9_]+)"/)?.[1]
+    const comp = block.match(/component=\{\s*([A-Za-z0-9_]+)/)?.[1]
+    if (id && comp) componentOf[id] = comp
+  }
+  ok("every registered composition names a resolvable component file",
+    Object.keys(root).every((id) => !!importMap[componentOf[id] ?? ""]),
+    Object.keys(root).filter((id) => !importMap[componentOf[id] ?? ""]).join(", "))
+
+  // ── the assertion ──────────────────────────────────────────────────────────
+  const mismatched: string[] = []
+  const skipped: string[] = []
+  let asserted = 0
+  for (const [id, g] of Object.entries(root)) {
+    if (g.duration_frames <= 1) { skipped.push(`${id}: still card — no storyboard to sum`); continue }
+    const file = importMap[componentOf[id] ?? ""]
+    if (!file) { mismatched.push(`${id}: component file unresolvable`); continue }
+    const sb = deriveStoryboardTotal(readFileSync(file, "utf8"))
+    if (sb.total === null) { skipped.push(`${id}: ${sb.reason}`); continue }
+    asserted++
+    if (sb.total !== g.duration_frames) {
+      mismatched.push(`${id}: storyboard (${sb.how}) sums to ${sb.total}, Root registers ${g.duration_frames}`)
+    }
+  }
+  for (const s of skipped) console.log(`    ⏭  ${s}`)
+  ok(`the deriver found a real number of storyboards to assert (${asserted} asserted,\n    ${skipped.length} skipped with reasons above)`, asserted >= 16, `asserted=${asserted}`)
+  ok("every derivable internal storyboard sums EXACTLY to the registered\n    durationInFrames — a drift freezes the last frame or cuts a beat, silently",
+    mismatched.length === 0, mismatched.slice(0, 6).join(" | "))
+}
+
 console.log("\n═══ 5. The rules that silently do not render ═══")
 {
   // Remotion animates via useCurrentFrame; CSS transitions and Tailwind

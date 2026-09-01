@@ -532,12 +532,43 @@ export async function resolveDirectorContentProps(
       case "AgentTalkingHeadReel":
         return { ...base, agentName: id.agentName, hook: args.hookLine, caption: args.hookLine }
 
+      case "ExplainerAnimReel": {
+        // The DRAWN explainer (concept_animation). Its entire fact set is the
+        // deterministic diagram spec from lib/charts/explainer-diagram.ts —
+        // the in-stack Manim. The topic rides on situation.facts
+        // (explainerDiagramSpec itself reads facts.topic / facts.explainerTopic),
+        // and every number in the diagram is computed from the caller's own
+        // facts (purchase price, rate, loan amount, monthly budget). Nothing
+        // is invented: an unknown topic falls back to the always-teachable
+        // closing timeline, and a topic whose facts cannot support the math
+        // comes back hasData:false with a reason.
+        const { explainerDiagramSpec } = await import("../charts/explainer-diagram")
+        const spec = explainerDiagramSpec(undefined, facts)
+        const out: Record<string, unknown> = {
+          ...base,
+          agentName: id.agentName,
+          title: spec.title,
+          caption: spec.caption,
+          hasData: spec.hasData,
+        }
+        if (spec.hasData && spec.data) out.diagram = spec.data
+        // HONEST REFUSAL: when the spec has no data (spec.reason names why —
+        // e.g. "no purchase price / home value in facts"), `diagram` is
+        // deliberately left ABSENT rather than staged as {} or the sample
+        // curve. The contract requires it (lib/remotion/content-contract.ts,
+        // ExplainerAnimReel.required), so missingContentProps refuses the
+        // commission naming `diagram` — the manager reads "could not
+        // establish the diagram" instead of a client receiving the Studio
+        // sample equity curve as their own numbers.
+        return out
+      }
+
       default:
-        // CMAReel, ExplainerAnimReel, the presentation slides and the print
-        // stills all have dedicated producers that already resolve their own
-        // data (cma-reel-orchestrator, explainer-diagram, section-render,
-        // video-plays). The Director does not re-derive them badly — it stages
-        // what it has and the contract refuses if that is not enough.
+        // CMAReel, the presentation slides and the print stills all have
+        // dedicated producers that already resolve their own data
+        // (cma-reel-orchestrator, section-render, video-plays). The Director
+        // does not re-derive them badly — it stages what it has and the
+        // contract refuses if that is not enough.
         return base
     }
   } catch {
