@@ -12,6 +12,7 @@
  */
 import { createServiceClient } from "@/lib/supabase/service"
 import { sanitizeProperNoun } from "@/lib/compliance/client-text-guard"
+import { missingContentProps, describeMissingContent } from "@/lib/remotion/content-contract"
 import type { PropertyFacts } from "@/lib/property/resolve-property-facts"
 
 export interface BuyerMatchReelResult { queued: boolean; renderId?: string; reason?: string }
@@ -140,10 +141,20 @@ export async function produceBuyerMatchReel(
   if (!contact || contact.brokerage_id !== brokerageId) return { queued: false, reason: "contact not in brokerage" }
 
   // Idempotent — skip if a reel for this buyer was queued/rendered within the cooldown.
+  //
+  // A CANCELLED ROW IS NOT A REEL. Every render this producer staged without an
+  // agent phone was cancelled by the content-contract backstop (agentPhone is
+  // required on AffordabilitySnapshotReel), and this probe — which had no status
+  // filter — then read that cancelled row as "already produced" and suppressed
+  // every retry for REEL_COOLDOWN_DAYS. The refusal added below writes nothing
+  // at all, so it cannot re-arm the cooldown; this excludes the rows the OLD
+  // behaviour already left behind, so a buyer whose agent adds a phone number
+  // gets a reel on the next tick instead of never.
   const sinceIso = new Date(Date.now() - REEL_COOLDOWN_DAYS * 24 * 60 * 60 * 1000).toISOString()
   const { data: recent } = await supabase.from("remotion_composition_renders")
     .select("id").eq("brokerage_id", brokerageId).eq("composition_id", COMPOSITION_ID)
     .eq("entity_type", "contact").eq("entity_id", contactId)
+    .neq("render_status", "cancelled")
     .gte("created_at", sinceIso).limit(1).maybeSingle()
   if (recent && !opts.force) return { queued: false, reason: "reel already produced this week" }
 
@@ -183,6 +194,27 @@ export async function produceBuyerMatchReel(
 
   const inputProps = buildBuyerMatchReelProps(facts, { agentName, agentPhone, brokerageName })
   if (!inputProps) return { queued: false, reason: "no renderable matches" }
+
+  // ── REFUSE BEFORE THE QR IS MINTED ──────────────────────────────────────────
+  // `agentPhone` initialises to "" and stays "" when the buyer's agent has no
+  // phone on their users row, and AffordabilitySnapshotReel REQUIRES it — so
+  // render-composition's backstop cancelled the whole reel. That cancellation
+  // happened AFTER this producer had minted a tracked QR code and written a
+  // queue row, and the cooldown probe above then read that row and suppressed
+  // every retry for a week: the buyer silently never got a reel, and a qr_codes
+  // slug existed for a video that does not.
+  //
+  // So the same question the renderer will ask is asked HERE, before anything is
+  // created — the house pattern (video-director.ts step 6c,
+  // consultation-render.ts, lead-magnets.ts). Nothing is written on a refusal,
+  // so the cooldown is not re-armed and the next tick tries again the moment the
+  // missing fact exists.
+  const missing = missingContentProps(COMPOSITION_ID, inputProps)
+  if (missing.length > 0) {
+    const why = describeMissingContent(COMPOSITION_ID, missing)
+    console.warn(`[buyer-match-reel] contact ${contactId} refused: ${why}`)
+    return { queued: false, reason: why }
+  }
 
   // TRACKED QR on the outro (owner rule: QR on every non-selfie video) — the
   // buyer scans to book; idempotent per contact via the shared tracked-QR core.

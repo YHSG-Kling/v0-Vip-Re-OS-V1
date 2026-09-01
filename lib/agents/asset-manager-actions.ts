@@ -308,6 +308,28 @@ async function runHandler(
       if (!composition) return { status: "failed", result: { error: "composition_not_registered" } }
       if (!composition.is_active) return { status: "skipped", result: { reason: "composition_inactive" } }
 
+      // ── FAIL CLOSED (§4) ────────────────────────────────────────────────────
+      // `input_props` defaults to {} above, and Remotion MERGES input props over
+      // each composition's Studio defaultProps — so a render staged with {} does
+      // not come out blank, it comes out confidently wrong, and
+      // render-composition's backstop CANCELS it. This handler nonetheless
+      // returned status:"succeeded" with the note "the cron drains it on the
+      // next tick", so an autonomous manager was told a render it can never get
+      // had been claimed, with no reason it could surface or act on.
+      // Same question the renderer will ask, asked here, named by prop.
+      const { missingContentProps, describeMissingContent } = await import("@/lib/remotion/content-contract")
+      const missingProps = missingContentProps(compositionId, inputProps)
+      if (missingProps.length > 0) {
+        return {
+          status: "failed",
+          result: {
+            error: describeMissingContent(compositionId, missingProps),
+            composition_id: compositionId,
+            missing_content_props: missingProps,
+          },
+        }
+      }
+
       const queued = await recordRenderQueued({
         brokerageId, compositionId,
         agentUserId, entityType, entityId,
@@ -358,6 +380,28 @@ async function runHandler(
       const composition = await getComposition(o.composition_id)
       if (!composition) return { status: "failed", result: { error: "composition_not_registered" } }
 
+      // A RESTART OF A DOOMED ROW IS STILL DOOMED. `o.input_props ?? {}` carries
+      // the original props forward — including the case where they were never
+      // sufficient, which is one of the ways the original reached 'failed' in
+      // the first place. Re-queueing it would burn another render slot and hand
+      // the manager a second "succeeded". Refuse by name instead, so the Asset
+      // Manager learns WHICH facts have to be established before a retry can
+      // work (§4 — a gate that cannot pass must refuse, not pass).
+      const carriedProps = o.input_props ?? {}
+      const { missingContentProps, describeMissingContent } = await import("@/lib/remotion/content-contract")
+      const missingProps = missingContentProps(o.composition_id, carriedProps)
+      if (missingProps.length > 0) {
+        return {
+          status: "failed",
+          result: {
+            error: describeMissingContent(o.composition_id, missingProps),
+            composition_id: o.composition_id,
+            original_render_id: renderId,
+            missing_content_props: missingProps,
+          },
+        }
+      }
+
       // Carry the original render's props + scope forward so the retry
       // reproduces the SAME branded piece, not a defaults sample.
       const queued = await recordRenderQueued({
@@ -368,7 +412,7 @@ async function runHandler(
         entityId:      o.entity_id,
         usedDidAvatar: composition.requires_did_avatar,
         usedVoiceover: composition.requires_voiceover,
-        inputProps:    o.input_props ?? {},
+        inputProps:    carriedProps,
         scopeType:     o.scope_type ?? "brokerage",
         scopeId:       o.scope_id ?? brokerageId,
         requestedVia:  "asset_manager",
