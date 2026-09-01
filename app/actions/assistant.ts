@@ -351,17 +351,31 @@ export async function generateAssistantSuggestions(
 async function getContactSuggestions(contactId: string, spendActor: AgentContext) {
   const supabase = await createServerClient()
 
-  // The `communications(*)` embed is a single-FK pair (communications_contact_id_fkey),
-  // so it is not ambiguous and needs no constraint hint. The error is still checked:
-  // supabase-js RESOLVES a failed query, so an unchecked read hands back an absence
-  // indistinguishable from a contact with nothing to suggest.
-  // NOTE: `communications` is itself a writer-less legacy table (the burn-down round-6
-  // repoint moved copilot.ts onto `messages`) — a SIBLING finding recorded for its own
-  // lane, not fixed here. `property_interactions(*)` was removed in the m598 retirement;
-  // the recent-views suggestion below reads the live twin, buyer_behavior_log.
+  // The error is checked: supabase-js RESOLVES a failed query, so an unchecked read hands
+  // back an absence indistinguishable from a contact with nothing to suggest.
+  //
+  // TOMBSTONE — the `, communications(*)` embed was REMOVED here. Per-contact message
+  // history is read at app/actions/copilot.ts:537 and app/actions/copilot.ts:742
+  // (`.from("messages")`, direction-filtered to inbound); that is the survivor, and this
+  // embed had no reader at all — `contact.communications` was dereferenced nowhere in
+  // this file.
+  //
+  // CORRECTING A STALE PREMISE that stood here and still stands at copilot.ts:740:
+  // `communications` is NOT a writer-less legacy table. It is LIVE and narrowly scoped —
+  // lib/connections/zoom-transcripts.ts:147 inserts a platform-hosted Zoom meeting
+  // transcript into it (error read at :164) and the DB trigger
+  // `communications_set_brokerage_trg` (supabase/migrations/062-long-tail-batch-3.sql:506-517)
+  // stamps brokerage_id on insert. What makes a CONTACT-keyed embed against it structurally
+  // empty is the shape of that sole writer, not an absent one: it writes `contact_id: null`
+  // deliberately, because a tenant Zoom transcript attaches to the TENANT, not to a contact.
+  // So the embed's join on communications_contact_id_fkey could only ever return [].
+  // Anyone chasing a missing writer here will not find one — there is nothing to build.
+  //
+  // `property_interactions(*)` was likewise removed in the m598 retirement; the recent-views
+  // suggestion below reads the live twin, buyer_behavior_log.
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
-    .select("*, communications(*)")
+    .select("*")
     .eq("id", contactId)
     .single()
 

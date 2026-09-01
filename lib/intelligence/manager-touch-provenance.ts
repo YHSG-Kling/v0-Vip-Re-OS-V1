@@ -91,15 +91,27 @@ export function aggregateTouchProvenance(rows: TouchRow[]): ManagerTouchSummary[
     .sort((a, b) => b.touchCount - a.touchCount)
 }
 
-/** Load + aggregate the last `sinceDays` of touches with provenance for a brokerage. Best-effort. */
-export async function summarizeManagerTouches(svc: Svc, brokerageId: string, sinceDays = 7): Promise<ManagerTouchSummary[]> {
+/**
+ * Load + aggregate the last `sinceDays` of touches with provenance for a brokerage.
+ *
+ * Returns NULL when the read was REFUSED, and `[]` only when the ledger genuinely
+ * held nothing. supabase-js RESOLVES a refusal (§3), so a swallowed error would hand
+ * back an absence byte-identical to "this brokerage sent nothing" — and the standup
+ * would then print zero touches as a FACT. The two outcomes are different receipts,
+ * so they get different return values; the caller decides what to render.
+ */
+export async function summarizeManagerTouches(svc: Svc, brokerageId: string, sinceDays = 7): Promise<ManagerTouchSummary[] | null> {
   const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString()
-  const { data } = await svc
+  const { data, error } = await svc
     .from("marketing_campaign_touchpoints")
     .select("channel, metadata, source, sequence_id, external_table, external_id")
     .eq("brokerage_id", brokerageId)
     .eq("status", "sent")
     .gte("sent_at", since)
     .limit(2000)
+  if (error) {
+    console.error("[manager-touch-provenance] touchpoint read refused:", error)
+    return null
+  }
   return aggregateTouchProvenance((data ?? []) as TouchRow[])
 }
