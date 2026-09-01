@@ -229,7 +229,30 @@ export async function resolveIntervention(
   if (!user) return { success: false, error: "Not authenticated" }
 
   const svc = createServiceClient()
-  const { error } = await svc
+
+  // GATE FIRST, THEN THE SERVICE CLIENT (§4). This update previously matched on
+  // `interventionId` alone: service client, so RLS does not save it, and no
+  // brokerage or agent predicate — a caller who knew (or guessed) an id could
+  // resolve ANOTHER TENANT'S intervention, and §3 says an UPDATE matching
+  // nothing also resolves, so the wrong-tenant attempt reported success. The
+  // resolution is now auditable to a real person (resolved_by is read by the
+  // listing lifecycle history), which makes a forged one worse than useless.
+  //
+  // Same anchor the read paths in this file use at :79 — the caller's own agents
+  // row. A caller with no agents row cannot resolve anything.
+  const { data: agentRow, error: agentErr } = await svc
+    .from("agents")
+    .select("brokerage_id")
+    .eq("user_id", user.id)
+    .maybeSingle()
+  if (agentErr) return { success: false, error: "Could not verify your brokerage — nothing was resolved." }
+  if (!agentRow?.brokerage_id) return { success: false, error: "Your account is not linked to a brokerage." }
+
+  // COUNTED (§3): with the tenant predicate in place, zero matched rows is a
+  // refusal — wrong tenant, unknown id, or already resolved — not a silent
+  // success. All three are the same answer to the caller and none of them may
+  // render as "resolved".
+  const { data: updated, error } = await svc
     .from("listing_health_interventions")
     .update({
       resolved:        true,
@@ -239,7 +262,12 @@ export async function resolveIntervention(
     })
     .eq("id", interventionId)
     .eq("resolved", false)
+    .eq("brokerage_id", agentRow.brokerage_id)
+    .select("id")
   if (error) return { success: false, error: error.message }
+  if (!updated || updated.length === 0) {
+    return { success: false, error: "That intervention was not found in your brokerage, or it was already resolved." }
+  }
   return { success: true }
 }
 
