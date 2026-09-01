@@ -134,14 +134,16 @@ export async function getOpenHouseDashboard(listingId: string) {
 
   // Latest completed listing packet for this listing. Two honesty fixes:
   //   1. This used to filter job_type='open_house_booklet' — a vocabulary
-  //      value NO writer produces (the panel writes 'full_packet' via
-  //      app/actions/ai-listing-packet.ts; the stage automation writes
-  //      'mls_packet' via app/actions/listing-lifecycle.ts), so packetJob was
-  //      structurally null forever. Any completed packet is the binder the
+  //      value NO writer produces (every real packet is 'full_packet' via
+  //      app/actions/ai-listing-packet.ts; the stage automation's stuck
+  //      'mls_packet' insert was retired — see the tombstone in
+  //      app/actions/listing-lifecycle.ts fireStageAutomations), so packetJob
+  //      was structurally null forever. Any completed packet is the binder the
   //      agent brings to the open house — read what exists.
-  //   2. output_url is NULL by design today (the packet is content in
-  //      config.content, not a hosted file) — the event-day tab now links to
-  //      the packet panel instead of gating on a download URL.
+  //   2. output_url now carries the hosted printable binder PDF when the
+  //      render succeeded (lib/documents/listing-packet-pdf.ts rail); it is
+  //      null for older packets and failed renders, so the event-day tab
+  //      still links to the packet panel rather than gating on the URL.
   const { data: packetJobs, error: packetJobsError } = await supabase
     .from("listing_packet_jobs")
     .select("id, job_type, status, output_url, completed_at")

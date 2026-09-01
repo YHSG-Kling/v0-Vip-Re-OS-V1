@@ -268,56 +268,46 @@ async function fireStageAutomations(listingId: string, toStage: string, actorUse
         })
       }
     } else if (automation === "mls_packet") {
-      // Queue the MLS listing packet on go-live (idempotent — skip if one already exists). Restored
-      // here on the canonical stage after the retired markListingLiveService (the legacy
-      // triggerStageActions "mls_active" case is dead).
-      // THE LISTING IS THE JOB'S TENANT. listing_packet_jobs.listing_id FKs
-      // listings, so the packet belongs to whichever brokerage owns the listing —
-      // not to actorUserId, which is a users.id and not a tenant at all. The
-      // panel's own queueing path (app/actions/ai-listing-packet.ts) stamps
-      // auth.brokerageId, and BOTH readers there narrow on it:
-      // getListingPacketStatus filters `.eq("brokerage_id", auth.brokerageId)`
-      // and aiPacketQualityCheck refuses on `packet.brokerage_id !== …`. An
-      // untenanted job is therefore queued, never listed, and rejected as
-      // Forbidden by the quality check — invisible work.
-      const { data: packetListing, error: packetListingError } = await svc
-        .from("listings")
-        .select("brokerage_id")
-        .eq("id", listingId)
-        .maybeSingle()
-      if (packetListingError) {
-        console.error("[fireStageAutomations] could not read listing tenant for the MLS packet:", packetListingError.message)
-        return
-      }
-      if (!packetListing?.brokerage_id) {
-        console.error(`[fireStageAutomations] listing ${listingId} has no brokerage — refusing to queue an MLS packet no tenant can read`)
-        return
-      }
-
+      // TOMBSTONE — the bare `listing_packet_jobs` INSERT (job_type 'mls_packet',
+      // status 'pending', config of include* flags, NO content) that used to live
+      // here is GONE. Nothing in the tree ever processed a 'pending' packet job,
+      // so every row this queued was permanently stuck: never generated, never
+      // rendered, never downloadable. The survivor is the REAL generator —
+      // autoGeneratePacketOnLive → generateListingPacket
+      // (app/actions/ai-listing-packet.ts), the same one launchListingAction
+      // dispatches at go-live (app/actions/listings-kernel.ts:697-698). This is
+      // NOT a duplicate of that kernel dispatch: the stage pipeline
+      // (stage-pipeline.tsx → advanceListingStage → here) reaches MLS_ACTIVE
+      // without ever passing through launchListingAction, so this path must fire
+      // the generator itself. The two paths are idempotent against each other via
+      // the same existing-full_packet guard the kernel uses; generateListingPacket's
+      // own MLS-live gate passes because advanceListingStageService writes
+      // status='active' for MLS_ACTIVE in the same update (statusForStage,
+      // lib/application/listing-lifecycle.ts:470). Tenant comes from the SESSION
+      // inside generateListingPacket (requireCaller + listing-ownership check) —
+      // no tenant stamping needed here anymore.
       const { data: existing, error: existingError } = await svc
         .from("listing_packet_jobs")
         .select("id")
         .eq("listing_id", listingId)
-        .eq("job_type", "mls_packet")
+        .eq("job_type", "full_packet")
         .limit(1)
         .maybeSingle()
-      // A refused read is not "no job yet" — treating it as one queues a duplicate.
+      // A refused read is not "no packet yet" — treating it as one re-spends six
+      // GPT-4o generations.
       if (existingError) {
-        console.error("[fireStageAutomations] could not check for an existing MLS packet:", existingError.message)
+        console.error("[fireStageAutomations] could not check for an existing listing packet:", existingError.message)
         return
       }
       if (!existing) {
-        const { error: packetInsertError } = await svc.from("listing_packet_jobs").insert({
-          listing_id: listingId,
-          brokerage_id: packetListing.brokerage_id,
-          agent_user_id: actorUserId, // FK → users.id
-          job_type: "mls_packet",
-          status: "pending",
-          config: { includeFlyer: true, includeDisclosures: true, includePropertyReports: true, includeBinderCopies: true },
+        // DISPATCHED, not awaited — same pattern as the kernel's go-live call:
+        // the stage advance must not wait on six document generations.
+        const { autoGeneratePacketOnLive } = await import("@/app/actions/ai-listing-packet")
+        void autoGeneratePacketOnLive(listingId, actorUserId).then((r) => {
+          if (!r?.success) {
+            console.error("[fireStageAutomations] listing packet NOT generated:", r?.error)
+          }
         })
-        if (packetInsertError) {
-          console.error("[fireStageAutomations] failed to queue the MLS packet:", packetInsertError.message)
-        }
       }
     }
   } catch (err) {

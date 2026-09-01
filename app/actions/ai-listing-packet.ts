@@ -207,20 +207,58 @@ export async function generateListingPacket(config: ListingPacketConfig) {
       materialName: listing.address ?? undefined,
     })
 
+    // PRINTABLE BINDER (owner ruling: "the listing packets need to take the
+    // content and make it printable material for the listing"). The assembled
+    // PacketDocuments are rendered through the client-PDF rail — pure spec
+    // builder (lib/documents/listing-packet-pdf.ts) → produceClientDocument
+    // (render → host on Supabase storage → generated_documents ledger row).
+    // Best-effort per the producer's never-throws contract: a failed render
+    // must NOT fail the packet — the content in config.content is still real.
+    // The failure is RECORDED (config.print_error) and output_url stays null.
+    let printedPdfUrl: string | null = null
+    let printError: string | null = null
+    try {
+      const { listingPacketSpec } = await import("@/lib/documents/listing-packet-pdf")
+      const { resolvePdfBrand, produceClientDocument } = await import("@/lib/documents/client-document-producer")
+      const brand = await resolvePdfBrand(service, {
+        brokerageId: auth.brokerageId,
+        agentUserId: packetAgentUserId,
+      })
+      const dateLabel = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
+      const spec = listingPacketSpec(
+        documents,
+        { address: listing.address, city: listing.city, state: listing.state, list_price: listing.list_price },
+        brand,
+        packetQr ? { scanUrl: packetQr.scanUrl, qrCodeDataUrl: packetQr.qrCodeDataUrl } : null,
+        dateLabel,
+      )
+      const produced = await produceClientDocument(service, {
+        brokerageId: auth.brokerageId,
+        agentUserId: packetAgentUserId,
+        listingId: config.listingId,
+        documentType: "listing_packet",
+        spec,
+        metadata: { packetId: packet.id, sections: documents.map(d => d.type) },
+      })
+      if (produced.ok && produced.pdfUrl) printedPdfUrl = produced.pdfUrl
+      else printError = produced.error ?? "PDF production failed"
+    } catch (err) {
+      printError = err instanceof Error ? err.message : String(err)
+    }
+    if (printError) console.error("[generateListingPacket] printable packet NOT produced:", printError)
+
     // Update packet job with generated content stored in config jsonb.
     // completed_at is stamped here because readers key off it (the open-house
-    // dashboard shows when the packet was built). output_url stays NULL on
-    // purpose: this packet is CONTENT, not a hosted file — the documents live
-    // in config.content and are rendered by ListingPacketPanel on the listing
-    // lifecycle page. Open item: if the booklet ever gets a rendered/hosted
-    // PDF artifact, stamp its URL here; until then no reader may gate on
-    // output_url (app/actions/seller-open-house.ts now links to the panel
-    // instead of a phantom download).
-    await supabase
+    // dashboard shows when the packet was built). output_url now carries the
+    // hosted printable binder PDF when production succeeded — ONE update sets
+    // status/completed_at/config/output_url in a single round trip. On a
+    // failed produce, output_url is null and config.print_error says why.
+    const { error: completeError } = await supabase
       .from("listing_packet_jobs")
       .update({
         status: "completed",
         completed_at: new Date().toISOString(),
+        output_url: printedPdfUrl,
         config: {
           ...config,
           sections: documents.map(d => d.type),
@@ -228,9 +266,13 @@ export async function generateListingPacket(config: ListingPacketConfig) {
           qr: packetQr
             ? { scanUrl: packetQr.scanUrl, qrCodeDataUrl: packetQr.qrCodeDataUrl, destinationType: packetQr.destinationType }
             : null,
+          ...(printError ? { print_error: printError } : {}),
         },
       })
       .eq("id", packet.id)
+    // supabase-js RESOLVES refusals — a swallowed error here would leave the job
+    // stuck "queued" while reporting success to the caller.
+    if (completeError) throw completeError
 
     revalidatePath(`/listings/${config.listingId}`)
     return {
@@ -443,7 +485,18 @@ Create a comprehensive utilities information form that sellers typically fill ou
 7. Property tax information
 8. Any special assessments
 
-Return as JSON with form fields and any pre-filled information based on the location.`,
+Return as JSON with exactly this shape (pre-fill values you can infer from the
+location; use "" where the seller must fill it in):
+{
+  "electric": { "provider": "...", "avgMonthlyCost": "..." },
+  "gas": { "provider": "...", "avgMonthlyCost": "..." },
+  "waterSewer": { "provider": "...", "avgMonthlyCost": "..." },
+  "trashService": { "provider": "..." },
+  "internetCableProviders": ["...", "..."],
+  "hoa": { "applicable": "...", "name": "...", "monthlyDues": "..." },
+  "propertyTax": "...",
+  "specialAssessments": "..."
+}`,
     })
 
     const formData = JSON.parse(utilitiesContent)
@@ -494,7 +547,17 @@ Include typical GIS report information:
 7. Environmental considerations
 8. Nearby amenities distances
 
-Return as JSON with sections for each category.`,
+Return as JSON with exactly this shape:
+{
+  "parcelBoundaries": "...",
+  "zoningClassification": "...",
+  "floodZoneStatus": "...",
+  "schoolDistrict": "...",
+  "utilitiesAvailability": "...",
+  "easements": "...",
+  "environmentalConsiderations": "...",
+  "nearbyAmenities": ["...", "..."]
+}`,
     })
 
     const gisData = JSON.parse(gisContent)
@@ -548,7 +611,17 @@ Include typical tax record information:
 7. School taxes breakdown
 8. Special district taxes
 
-Return as JSON.`,
+Return as JSON with exactly this shape:
+{
+  "assessedValue": "...",
+  "annualPropertyTaxEstimate": "...",
+  "taxRate": "...",
+  "paymentSchedule": "...",
+  "possibleExemptions": ["...", "..."],
+  "assessmentHistory": "...",
+  "schoolTaxes": "...",
+  "specialDistrictTaxes": "..."
+}`,
     })
 
     const taxData = JSON.parse(taxContent)
@@ -606,7 +679,16 @@ Generate report sections:
 6. Value indicators
 7. Special considerations
 
-Return as JSON with professional appraiser report formatting.`,
+Return as JSON with exactly this shape (professional appraiser-report tone):
+{
+  "propertyIdentification": "...",
+  "siteAnalysis": "...",
+  "improvementsDescription": "...",
+  "comparableConsiderations": "...",
+  "marketConditions": "...",
+  "valueIndicators": ["...", "..."],
+  "specialConsiderations": "..."
+}`,
     })
 
     const appraiserData = JSON.parse(appraiserContent)
@@ -822,17 +904,64 @@ export async function regeneratePacketDocument(params: {
       doc.type === params.documentType ? newDocument : doc
     )
 
-    await supabase
+    // RE-RENDER THE PRINTABLE BINDER — the download must never serve a binder
+    // that predates the document it just replaced. Same rail and same failure
+    // semantics as generateListingPacket: a failed produce never fails the
+    // regeneration; it is recorded in config.print_error and output_url goes
+    // null so no reader hands out the stale PDF.
+    let printedPdfUrl: string | null = null
+    let printError: string | null = null
+    try {
+      const { listingPacketSpec } = await import("@/lib/documents/listing-packet-pdf")
+      const { resolvePdfBrand, produceClientDocument } = await import("@/lib/documents/client-document-producer")
+      const service = createServiceClient()
+      const brand = await resolvePdfBrand(service, {
+        brokerageId: auth.brokerageId,
+        agentUserId: packet.agent_user_id ?? null,
+      })
+      const dateLabel = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
+      const l = packet.listings ?? {}
+      const spec = listingPacketSpec(
+        updatedDocs,
+        { address: l.address, city: l.city, state: l.state, list_price: l.list_price },
+        brand,
+        packet.config?.qr ?? null,
+        dateLabel,
+      )
+      const produced = await produceClientDocument(service, {
+        brokerageId: auth.brokerageId,
+        agentUserId: packet.agent_user_id ?? null,
+        listingId: packet.listing_id ?? null,
+        documentType: "listing_packet",
+        spec,
+        metadata: { packetId: params.packetId, sections: updatedDocs.map((d: PacketDocument) => d.type), regenerated: params.documentType },
+      })
+      if (produced.ok && produced.pdfUrl) printedPdfUrl = produced.pdfUrl
+      else printError = produced.error ?? "PDF production failed"
+    } catch (err) {
+      printError = err instanceof Error ? err.message : String(err)
+    }
+    if (printError) console.error("[regeneratePacketDocument] printable packet NOT re-produced:", printError)
+
+    const nextConfig: Record<string, unknown> = {
+      ...packet.config,
+      content: updatedDocs,
+      sections: updatedDocs.map((d: PacketDocument) => d.type),
+    }
+    if (printError) nextConfig.print_error = printError
+    else delete nextConfig.print_error // a successful re-render clears the stale failure note
+
+    const { error: regenUpdateError } = await supabase
       .from("listing_packet_jobs")
       .update({
-        config: {
-          ...packet.config,
-          content: updatedDocs,
-          sections: updatedDocs.map((d: PacketDocument) => d.type),
-        },
+        output_url: printedPdfUrl,
+        config: nextConfig,
       })
       .eq("id", params.packetId)
       .eq("brokerage_id", auth.brokerageId)
+    // supabase-js resolves refusals — an unread error here reports a regeneration
+    // that never landed.
+    if (regenUpdateError) throw regenUpdateError
 
     return { success: true, document: newDocument }
   } catch (error) {

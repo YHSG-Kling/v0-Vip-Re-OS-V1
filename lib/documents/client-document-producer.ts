@@ -77,7 +77,7 @@ export async function produceClientDocument(
     agentUserId?: string | null
     contactId?: string | null
     listingId?: string | null
-    documentType: "cma" | "net_sheet" | "buyer_guide" | "seller_guide" | "listing_presentation" | "listing_brochure" | "recruiting_pitch"
+    documentType: "cma" | "net_sheet" | "buyer_guide" | "seller_guide" | "listing_presentation" | "listing_brochure" | "listing_packet" | "recruiting_pitch"
     spec: ClientPdfSpec
     metadata?: Record<string, unknown>
   },
