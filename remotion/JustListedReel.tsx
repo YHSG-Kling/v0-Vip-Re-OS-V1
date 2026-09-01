@@ -172,7 +172,7 @@ const PropertyImages: React.FC<{ images: string[] }> = ({ images }) => {
           width: "100%",
           height: "100%",
           objectFit: "cover",
-          transform: `scale(${scale})`,
+          scale,
           opacity,
         }}
       />
@@ -197,7 +197,7 @@ const FactCards: React.FC<JustListedReelProps> = ({ price, bedrooms, bathrooms, 
         display: "grid",
         gridTemplateColumns: `repeat(${Math.min(cards.length, 4)}, 1fr)`,
         gap: 32,
-        transform: `translateY(${enter}px)`,
+        translate: `0 ${enter}px`,
         opacity,
       }}>
         {cards.map((c) => (

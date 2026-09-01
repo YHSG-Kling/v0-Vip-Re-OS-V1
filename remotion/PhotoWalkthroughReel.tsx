@@ -172,7 +172,7 @@ const CoverFrame: React.FC<PhotoWalkthroughReelProps> = ({ hook, address, citySt
           flexDirection: "column",
           justifyContent: "center",
           height: "100%",
-          transform: `translateY(${rise}px)`,
+          translate: `0 ${rise}px`,
         }}
       >
         {brand.logoUrl && (
@@ -266,6 +266,28 @@ const KenBurnsPhoto: React.FC<{ clip: KenBurnsClip; brand: PhotoWalkthroughReelP
           width: "100%",
           height: "100%",
           objectFit: "cover",
+          // TWO transform functions on ONE element, so the individual `scale` /
+          // `translate` properties are NOT equivalent here and the Ken Burns pan
+          // would render at the wrong amplitude.
+          //
+          // `transform: scale(s) translate(t)` composes as the matrix S·T, i.e. the
+          // translation is expressed in the ALREADY-SCALED coordinate system — a 6%
+          // pan at scale 1.12 moves 6.72% of the frame. The individual properties
+          // compose in the fixed order translate → rotate → scale (T·S), which
+          // applies the pan in UNSCALED coordinates: the same numbers, a different
+          // picture, on every frame of every walkthrough. Percentage translate also
+          // resolves against the element's own border box, which is the <Img>'s
+          // pre-scale box in both spellings — so the difference is purely the
+          // composition order, and it is real.
+          //
+          // The skill's rule (remotion-markup/REFERENCE.md:50) is about EDITABILITY
+          // in Studio, not correctness; it does not license a render change. Left as
+          // a transform string deliberately. kenBurnsPlan (lib/video/ken-burns-plan.ts)
+          // is the pure producer of `scale` + `panFromXY`/`panToXY`, and its numbers
+          // were chosen against S·T.
+          //
+          // remotion-transform-string: two functions compose in a different order
+          // under the individual properties — converting would change the render.
           transform: `scale(${scale}) translate(${panX}%, ${panY}%)`,
         }}
       />

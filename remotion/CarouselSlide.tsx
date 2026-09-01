@@ -67,8 +67,8 @@ export const CarouselSlide: React.FC<CarouselSlideProps> = ({
       {/* LAYER 1 — brand wash: two soft radial glows so the field never reads flat */}
       <div style={{ position: "absolute", inset: 0, background: `radial-gradient(120% 90% at 15% 0%, ${accent}26 0%, transparent 55%), radial-gradient(110% 80% at 100% 100%, ${accent}1f 0%, transparent 50%)` }} />
       {/* LAYER 2 — rotated accent geometry */}
-      <div style={{ position: "absolute", top: -180, right: -180, width: 460, height: 460, border: `3px solid ${accent}55`, transform: "rotate(18deg)" }} />
-      <div style={{ position: "absolute", bottom: -220, left: -140, width: 420, height: 420, backgroundColor: `${accent}12`, transform: "rotate(-12deg)" }} />
+      <div style={{ position: "absolute", top: -180, right: -180, width: 460, height: 460, border: `3px solid ${accent}55`, rotate: "18deg" }} />
+      <div style={{ position: "absolute", bottom: -220, left: -140, width: 420, height: 420, backgroundColor: `${accent}12`, rotate: "-12deg" }} />
 
       {/* PHOTO field (photo + hook slides): full-bleed with a duotone press */}
       {photoUrl && (role === "photo" || role === "hook") && (

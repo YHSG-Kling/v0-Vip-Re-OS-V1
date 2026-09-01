@@ -113,7 +113,7 @@ const IntroCard: React.FC<{
         style={{
           fontSize: 66, fontWeight: 800, color: "#fff", lineHeight: 1.1, maxWidth: 880,
           opacity: interpolate(frame, [10, 32], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
-          transform: `translateY(${interpolate(frame, [10, 32], [24, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })}px)`,
+          translate: `0 ${interpolate(frame, [10, 32], [24, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })}px`,
         }}
       >
         {title}
@@ -133,7 +133,7 @@ const LowerThird: React.FC<{
   const frame = useCurrentFrame()
   const slideIn = interpolate(frame, [0, 16], [-560, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
   return (
-    <div style={{ position: "absolute", left: 0, bottom: 168, transform: `translateX(${slideIn}px)` }}>
+    <div style={{ position: "absolute", left: 0, bottom: 168, translate: `${slideIn}px` }}>
       <div
         style={{
           display: "flex", alignItems: "stretch",
@@ -233,7 +233,7 @@ const OutroCard: React.FC<{
         style={{
           fontSize: 76, fontWeight: 800, lineHeight: 1.05, marginBottom: 24, maxWidth: 900,
           opacity: interpolate(frame, [4, 20], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
-          transform: `translateY(${interpolate(frame, [4, 20], [20, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })}px)`,
+          translate: `0 ${interpolate(frame, [4, 20], [20, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })}px`,
         }}
       >
         {ctaLabel}

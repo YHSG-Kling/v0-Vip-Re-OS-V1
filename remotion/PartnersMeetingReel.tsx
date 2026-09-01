@@ -58,7 +58,7 @@ const KIND_TAG: Record<ReelCardKind, string> = {
 const EASE = Easing.bezier(0.16, 1, 0.3, 1)
 const fadeUp = (frame: number, from: number, to: number) => ({
   opacity: interpolate(frame, [from, to], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: EASE }),
-  transform: `translateY(${interpolate(frame, [from, to], [28, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: EASE })}px)`,
+  translate: `0 ${interpolate(frame, [from, to], [28, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: EASE })}px`,
 })
 
 /** Layered depth: brand-color base, accent glow top-right, cool glow bottom-left,

@@ -93,7 +93,7 @@ const PhotoFrame: React.FC<{ url: string; span: number }> = ({ url, span }) => {
     <AbsoluteFill style={{ overflow: "hidden" }}>
       <Img src={url} style={{
         width: "100%", height: "100%", objectFit: "cover",
-        transform: `scale(${scale})`, transformOrigin: "center center",
+        scale, transformOrigin: "center center",
       }} />
     </AbsoluteFill>
   )

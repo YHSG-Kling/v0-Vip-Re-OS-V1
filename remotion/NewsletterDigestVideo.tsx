@@ -112,7 +112,7 @@ const MarketBeat: React.FC<NewsletterDigestVideoProps> = ({ marketBeat, brand })
         backgroundColor: brand.primaryColor,
         padding: 64,
         borderRadius: 24,
-        transform: `translateY(${enter}px)`,
+        translate: `0 ${enter}px`,
         opacity,
       }}>
         <p style={{ color: brand.accentColor, fontSize: 32, fontWeight: 700, marginBottom: 24, textTransform: "uppercase", letterSpacing: 2 }}>

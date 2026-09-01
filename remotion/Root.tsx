@@ -350,7 +350,58 @@ export const RemotionRoot: React.FC = () => {
           tablet or TV viewing experience reads correctly. The slide
           duration is set per-slide by the composer at chain time —
           this Composition registers at a 6s default purely so the
-          studio preview renders without zero-frame errors. */}
+          studio preview renders without zero-frame errors.
+
+          ── ADJUDICATION (§1, 2026-09-01): KEPT. THE MANUAL/AGENT PATH
+             IS THE PRODUCER, AND IT IS THE ONLY ONE. ───────────────────
+
+          MEASURED: this is the ONE registered composition of the 33 that
+          NO producer stages input_props for. That is not a claim here —
+          scripts/remotion-setup-guard.ts §7 scans comment-stripped
+          lib/** + app/** for every composition id (literal or via its
+          named constant) beside a render-staging site and PRINTS the
+          compositions with an empty list; today that list is exactly
+          [ListingPresentationSlide], and the assertion is derived, so a
+          producer appearing later moves the number rather than aging
+          this comment into a lie.
+
+          NOT A DUPLICATE, so §1.1 does not apply and nothing merges:
+          remotion/ListingSectionReel.tsx:18 imports ListingPresentationSlide
+          as a React COMPONENT and renders it (:64). The section reel is the
+          WRAPPER — slide + <Audio> narration + QR outro — not a rival
+          implementation. Deleting the registration would leave the component
+          exactly where it is; deleting the component would break the reel.
+          The buyer-side twin (BuyerConsultationSlide) has the same shape and
+          DOES have a producer (lib/buyer-consultation/consultation-render.ts
+          via buildBuyerSlideAvatarRequest), which is the asymmetry that made
+          this look orphaned.
+
+          REACHABLE, so "unreferenced is not dead" applies and it is NOT
+          deleted. Three live paths accept ANY registered, active
+          composition id and stage a render for it:
+            · lib/agents/asset-manager-actions.ts `start_render` — the Asset
+              Manager's own action; getComposition(id) + the content contract
+              are the only gates, and this composition IS registered, active
+              and contract-classified (required: title, body, agentName).
+            · app/api/did/generate-video/route.ts — target_composition_id
+              straight off the request body.
+            · lib/video/avatar-render-orchestrator.ts — whatever
+              provider_metadata.target_composition_id names.
+          Finish-spec'd for that path too: lib/video/finish-spec.ts:82 gives
+          it AVATAR_LED + circle_pip + no b-roll + no music ("music fights
+          the voice"), which is the shape a hand-driven slide render wants.
+
+          UNRESOLVED, and recorded rather than guessed: whether the per-slide
+          CHAIN this comment describes ("the composer chains 5-12 of these")
+          was ever meant to exist ALONGSIDE the section wrapper, or whether
+          ListingSectionReel superseded it. The listing-presentation composer
+          that shipped (lib/listing-presentation/section-render.ts:254) queues
+          ListingSectionReel per section, not this slide per slide. Nothing in
+          the tree answers that, so nothing here pretends to. If the answer is
+          "superseded", the survivor is ListingSectionReel and this
+          registration retires with a tombstone naming it; if the answer is
+          "both", the missing half is a chain producer (§1.2). Until then the
+          manual path above is the producer of record. */}
       <Composition
         id="ListingPresentationSlide"
         component={ListingPresentationSlide as unknown as React.FC<Record<string, unknown>>}

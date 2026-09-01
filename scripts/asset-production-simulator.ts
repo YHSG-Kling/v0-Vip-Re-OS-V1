@@ -316,9 +316,22 @@ async function main() {
     rootSrc.includes('id="CarouselSlide"') && rootSrc.includes("width={1080}") && rootSrc.includes("height={1350}")
     && !!VIDEO_FINISH_SPEC.CarouselSlide && !VIDEO_FINISH_SPEC.CarouselSlide.bookends)
   const slideSrc = src("remotion/CarouselSlide.tsx")
+  // The accent geometry is asserted by the RULE (the slide rotates something),
+  // not by one SPELLING of it. It used to be `slideSrc.includes("rotate(")`,
+  // which pinned a waypoint (§2): the vendored Remotion skill tells authors to
+  // prefer the `rotate` CSS PROPERTY over a `transform: rotate(...)` string
+  // (remotion-markup/REFERENCE.md:50), remotion-setup-guard §5 now enforces that,
+  // and the moment CarouselSlide.tsx complied the assertion went red BECAUSE the
+  // work landed. Both spellings are the same rotation; either satisfies it.
+  const ROTATES = /\brotate\s*(?:\(|:)/
   check("the slide is RICH by design (brand washes, accent geometry, duotone photo press, dots, swipe cue, EHO closer)",
-    slideSrc.includes("radial-gradient") && slideSrc.includes("rotate(") && slideSrc.includes("SWIPE")
+    slideSrc.includes("radial-gradient") && ROTATES.test(slideSrc) && slideSrc.includes("SWIPE")
     && slideSrc.includes("Equal Housing Opportunity") && slideSrc.includes("slideIndex"))
+  // POSITIVE CONTROL (§2): a broken matcher and a slide with no geometry both
+  // report the same "not rich".
+  check("...and the rotation finder sees BOTH spellings, and NOT a slide with neither",
+    ROTATES.test(`transform: "rotate(18deg)"`) && ROTATES.test(`rotate: "18deg"`)
+    && !ROTATES.test(`transformOrigin: "center"`))
 
   // ───────────────────────────────────────────────────────────────────────────
   console.log("\n[12 · LISTING BROCHURE — multi-page, photo-forward, autonomous]")

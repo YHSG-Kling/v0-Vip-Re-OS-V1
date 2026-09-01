@@ -109,6 +109,7 @@
  */
 import { readFileSync, readdirSync, existsSync, statSync } from "node:fs"
 import { join, relative } from "node:path"
+import { createRequire } from "node:module"
 import { stripComments, blankComments, blankStrings } from "./strip-comments"
 // TOMBSTONE (2026-08-26): the `REGISTRY` geometry snapshot used to be DECLARED
 // in this file. Survivor: lib/remotion/composition-geometry.ts
@@ -138,6 +139,10 @@ import { promoNarrationBudget } from "../lib/video/promo-composition"
 import { sectionNarrationBudget, SECTION_NARRATION_COMPOSITION } from "../lib/listing-presentation/section-narration"
 import { FINISH_PROP_KEYS } from "../lib/remotion/composition-cache"
 import { paddingSecondsFor } from "../lib/remotion/voiceover-mixer"
+// The live CHECK snapshot (§3: generated, never hand-edited). Section 7 derives
+// the promo narration set from listing_promo_videos.event_type rather than
+// retyping the event vocabulary here, so a new event type moves the number.
+import { CHECK_VOCABULARIES } from "./check-vocabularies"
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -458,6 +463,84 @@ console.log("\n═══ 5. The rules that silently do not render ═══")
   ok(`scanned ${files.length} composition files`, files.length >= 33)
   ok("no CSS transition/animation or Tailwind animate- class — these render as a\n    STATIC frame and the render still reports success",
     offenders.length === 0, offenders.slice(0, 5).join(" | "))
+
+  // ── `scale` / `translate` / `rotate`, NOT A `transform` STRING ─────────────
+  //
+  // The vendored skill is explicit
+  // (.claude/skills/remotion-best-practices/remotion-markup/REFERENCE.md:50):
+  // «Use `scale`, `translate`, `rotate` CSS properties over `transform`», with
+  // the 👎 example being exactly `transform: \`scale(${scale})\``. The reason is
+  // STUDIO EDITABILITY, not rendering: Remotion Studio can read and write back an
+  // individual transform property, while a transform STRING is an opaque
+  // template literal it cannot offer to edit. 23 sites in remotion/ were the 👎
+  // shape; 22 were converted on 2026-09-01 and this keeps them converted.
+  //
+  // THIS IS NOT A BLANKET BAN, AND MUST NOT BECOME ONE. The two spellings are
+  // NOT universally equivalent: individual properties compose in the fixed order
+  // translate → rotate → scale, whereas a transform string composes left to
+  // right, so ANY element combining two functions renders differently under the
+  // conversion. remotion/PhotoWalkthroughReel.tsx's Ken Burns pan is exactly
+  // that case and is deliberately left alone. An exemption is taken by writing
+  //
+  //     // remotion-transform-string: <why the conversion is not equivalent>
+  //
+  // in the twelve lines above the site. The marker is read from RAW source
+  // (it is a comment) while the hit is found in comment- AND string-blanked
+  // source, which is why both offset-preserving views are used together — the
+  // same technique the wrong-source finder below records paying for.
+  const TRANSFORM_STRING = /\btransform\s*:/g
+  const ALLOW_MARKER = /remotion-transform-string\s*:/
+  type TransformHit = { file: string; line: number; allowed: boolean }
+  const transformHits = (file: string, raw: string): TransformHit[] => {
+    const masked = blankStrings(blankComments(raw))   // both keep length + offsets
+    const rawLines = raw.split("\n")
+    const out: TransformHit[] = []
+    for (const m of masked.matchAll(TRANSFORM_STRING)) {
+      const line = masked.slice(0, m.index).split("\n").length          // 1-based
+      const window = rawLines.slice(Math.max(0, line - 13), line).join("\n")
+      out.push({ file, line, allowed: ALLOW_MARKER.test(window) })
+    }
+    return out
+  }
+  // POSITIVE CONTROLS (§2) — a broken regex and a clean tree both report zero.
+  ok("the transform-string finder recognises both 👎 shapes the skill names",
+    transformHits("<c>", "style={{ transform: `scale(${s})` }}").length === 1
+    && transformHits("<c>", 'style={{ transform: "rotate(18deg)" }}').length === 1)
+  ok("...and does NOT fire on transformOrigin, textTransform, or the properties we\n    converted TO",
+    transformHits("<c>", "style={{ scale, transformOrigin: 'center center', textTransform: 'uppercase' }}").length === 0
+    && transformHits("<c>", "style={{ translate: `0 ${y}px`, rotate: '18deg' }}").length === 0)
+  ok("...nor on a COMMENT or a STRING that merely names transform: (stripped source)",
+    transformHits("<c>", "// transform: `scale(2)` was here\nconst s = `text-transform:uppercase`").length === 0)
+  ok("...and the exemption marker suppresses a real hit, but only within its window",
+    transformHits("<c>", "// remotion-transform-string: two functions\ntransform: `a b`").every((h) => h.allowed)
+    && transformHits("<c>", "// remotion-transform-string: stale\n" + "\n".repeat(20) + "transform: `a b`").every((h) => !h.allowed))
+
+  const transformAll = files.flatMap((f) => transformHits(f, readFileSync(f, "utf8")))
+  const transformBare = transformAll.filter((h) => !h.allowed)
+  const transformExempt = transformAll.filter((h) => h.allowed)
+  ok(`no style in remotion/ builds a \`transform\` STRING — ${transformAll.length} site(s) scanned across\n    ${files.length} files, ${transformExempt.length} exempt with an in-tree reason (the skill's rule at\n    remotion-markup/REFERENCE.md:50)`,
+    transformBare.length === 0,
+    transformBare.slice(0, 8).map((h) => `${h.file}:${h.line}`).join(", "))
+  // A STALE EXEMPTION IS ALSO A DEFECT: a marker left behind after its site was
+  // converted reads as a standing licence nobody re-earned. Every marker in the
+  // tree must sit above a real hit.
+  {
+    let markers = 0
+    const orphanMarkers: string[] = []
+    for (const f of files) {
+      const raw = readFileSync(f, "utf8")
+      const hitLines = new Set(transformHits(f, raw).filter((h) => h.allowed).map((h) => h.line))
+      raw.split("\n").forEach((ln, i) => {
+        if (!ALLOW_MARKER.test(ln)) return
+        markers++
+        // the marker is live if some allowed hit sits within the 12 lines below it
+        const live = [...hitLines].some((h) => h > i && h <= i + 13)
+        if (!live) orphanMarkers.push(`${f}:${i + 1}`)
+      })
+    }
+    ok(`every transform-string exemption is LIVE (${markers} marker line(s)) — a marker left\n    behind after its site was converted is a licence nobody re-earned`,
+      orphanMarkers.length === 0, orphanMarkers.slice(0, 5).join(", "))
+  }
 
   // ── ONE SPELLING FOR TRIMMING A MEDIA CLIP (§6) ────────────────────────────
   // Remotion renamed `startFrom`→`trimBefore` and `endAt`→`trimAfter`. Both
@@ -828,6 +911,104 @@ console.log("\n═══ 6. ONE vendored Remotion skill, and it matches upstream
     !!version && /^\d+\.\d+\.\d+$/.test(version), `version=${version ?? "absent"}`)
   ok("...and the router names itself remotion-best-practices (§6, one spelling)",
     /^name:\s*remotion-best-practices\s*$/m.test(skillMd.split(/^---\s*$/m)[1] ?? ""))
+
+  // ── THE VERSION THE SKILL DECLARES IS NOT A FACT ABOUT THIS REPO ──────────
+  //
+  // The assertion above proves the vendored skill DECLARES an upstream version.
+  // It cannot prove that version is the one INSTALLED, and on 2026-09-01 it was
+  // not: the skill declares 4.0.517 while package.json pins `remotion ^4.0.471`
+  // and node_modules holds 4.0.473. That gap is not cosmetic — the skill's
+  // PRIMARY markup pattern is `<Interactive.Div>`, and `Interactive` is not
+  // exported by 4.0.473 at all, so an agent following the skill verbatim writes
+  // a component that does not compile. Nothing could see it: a declared version
+  // and an installed version are two numbers nobody compared.
+  //
+  // COMPARING THE NUMBERS WOULD BE THE WEAK FORM (§2: do not pin an assertion to
+  // a waypoint — a version string is exactly that, and semver skew between a
+  // skill snapshot and a caret range is normal and mostly harmless). THE STRICT
+  // AND CHEAP FORM IS THE ONE THAT MATTERS: every symbol the skill's REFERENCE.md
+  // routers tell an agent to import from "remotion" must actually RESOLVE in the
+  // installed package. That is derived from node_modules, like the renamed-media
+  // derivation in section 5, and it names the offending symbol so the reader
+  // knows which side to fix — bump the dependency, or re-vendor the skill.
+  //
+  // BLIND SPOTS, published beside the number (§2): only REFERENCE.md files are
+  // scanned (the routers an agent loads first), not the ~60 leaf .md rules or
+  // the .tsx specimens; only `from "remotion"` is checked, not `@remotion/*`;
+  // and `import { type X }` specifiers are skipped because a type is not a
+  // runtime export and `in` cannot see one.
+  {
+    const referenceDocs: string[] = []
+    const walkDocs = (dir: string) => {
+      let entries
+      try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+      for (const e of entries) {
+        const full = join(dir, e.name)
+        if (e.isDirectory()) walkDocs(full)
+        else if (e.name === "REFERENCE.md") referenceDocs.push(full)
+      }
+    }
+    walkDocs(SURVIVOR)
+
+    const REMOTION_IMPORT = /import\s+(?:type\s+)?\{([^}]*)\}\s*from\s*["']remotion["']/g
+    /** Value symbols a doc tells an agent to import from "remotion". */
+    const importedValueNames = (src: string): string[] => {
+      const out: string[] = []
+      for (const m of src.matchAll(REMOTION_IMPORT)) {
+        for (const raw of m[1].split(",")) {
+          const piece = raw.trim()
+          if (!piece || /^type\s/.test(piece)) continue   // a type is not a runtime export
+          const name = piece.split(/\s+as\s+/)[0].trim()
+          if (/^[A-Za-z_$][\w$]*$/.test(name)) out.push(name)
+        }
+      }
+      return out
+    }
+
+    // FAIL CLOSED (§4): a gate that cannot load the package it judges must
+    // refuse, not report a clean bill of health.
+    let installed: Record<string, unknown> | null = null
+    let installedVersion = "unreadable"
+    try {
+      const req = createRequire(join(process.cwd(), "package.json"))
+      installed = req("remotion") as Record<string, unknown>
+      installedVersion = (req("remotion/package.json") as { version: string }).version
+    } catch (e) {
+      installed = null
+      installedVersion = `unreadable (${(e as Error).message})`
+    }
+    ok(`the INSTALLED remotion package loaded, so its export list is a fact and not\n    an assumption (${installedVersion})`,
+      !!installed && Object.keys(installed).length > 0)
+
+    const wanted = new Map<string, string[]>()
+    for (const doc of referenceDocs) {
+      for (const name of importedValueNames(readFileSync(doc, "utf8"))) {
+        if (!wanted.has(name)) wanted.set(name, [])
+        if (!wanted.get(name)!.includes(doc)) wanted.get(name)!.push(doc)
+      }
+    }
+    // POSITIVE CONTROLS (§2): a broken import parser and a skill that imports
+    // nothing report the same zero.
+    ok("the import finder reads a symbol list out of a REFERENCE.md code fence",
+      JSON.stringify(importedValueNames(`import { useCurrentFrame, Easing, interpolate, Interactive } from "remotion";`))
+        === JSON.stringify(["useCurrentFrame", "Easing", "interpolate", "Interactive"]))
+    ok("...and does NOT claim a runtime export for a type-only specifier, nor for a\n    sibling package",
+      importedValueNames(`import {createEffect, type InteractivitySchema} from 'remotion';`).join() === "createEffect"
+      && importedValueNames(`import { Audio, Video } from "@remotion/media";`).length === 0)
+    ok(`the scan really read the routers (${referenceDocs.length} REFERENCE.md files, ${wanted.size} distinct\n    symbols imported from "remotion")`,
+      referenceDocs.length >= 10 && wanted.size >= 5)
+
+    const unresolved = [...wanted.keys()].filter((n) => !installed || !(n in installed)).sort()
+    // A CONTROL ON THE RESOLVER ITSELF: a name the package really does export
+    // must resolve, and an invented one must not — otherwise "0 unresolved" and
+    // "the resolver is broken" look identical.
+    ok("the resolver agrees with the package on a name it DOES export, and on one it\n    does not",
+      !!installed && "useCurrentFrame" in installed && !("NoSuchRemotionExport" in installed))
+    ok(`every symbol the vendored skill imports from "remotion" resolves in the\n    INSTALLED package — the skill declares ${version ?? "?"}, node_modules holds ${installedVersion};\n    a symbol that does not exist makes the skill's own example uncompilable`,
+      unresolved.length === 0,
+      unresolved.map((n) => `${n} — imported by ${(wanted.get(n) ?? []).join(", ")} but NOT exported by remotion@${installedVersion}`
+        + ` (fix ONE side: bump the remotion dependency to a version that exports it, or re-vendor the skill from the upstream snapshot that matches ${installedVersion})`).join(" | "))
+  }
 }
 
 console.log("\n═══ 7. NARRATION IS CAPPED AT GENERATION, per composition ═══")
@@ -869,10 +1050,145 @@ console.log("\n═══ 7. NARRATION IS CAPPED AT GENERATION, per composition �
     return Math.round((words / WORDS_PER_MINUTE) * 60)
   }
 
+  // ── WHO PRODUCES WHAT — DERIVED, NOT ASSERTED IN PROSE ────────────────────
+  //
+  // TOMBSTONE (2026-09-01): THE CENSUS WAS RIGHT AND ITS EVIDENCE WAS FALSE.
+  // NO_LIVE_PRODUCER used to be a hand-written map whose VALUE was a per-entry
+  // prose reason, and FIVE of the eight reasons were factually wrong on the day
+  // they were read:
+  //
+  //   AffordabilitySnapshotReel  "no producer writes input_props" — but
+  //                              lib/agents/buyer-match-reel-producer.ts is one.
+  //   TestimonialReel            "no producer writes input_props" — but
+  //   NeighborhoodSpotlightReel   lib/video/video-director.ts commissions all
+  //   PhotoWalkthroughReel        four (selectVideoFormat → commissionVideo →
+  //   JustListedReelHorizontal    provider_metadata.input_props).
+  //
+  // The classification was still CORRECT — none of the five gets a narration
+  // SCRIPT — so every assertion stayed green while the stated reason told the
+  // next reader the composition had no producer at all. That is §2's "a guard
+  // that reports the right number for the wrong reason": the number cannot
+  // protect the sentence beside it.
+  //
+  // SO THE DISTINCTION IS NOW DERIVED. Two independent questions are answered
+  // separately, and the classification falls out of the second:
+  //
+  //   (a) does any producer stage input_props for this composition?
+  //       → scanned out of comment-stripped lib/** + app/** source below, and
+  //         PRINTED beside every entry. A composition with a props producer can
+  //         never again read as having none.
+  //   (b) does any producer stage a NARRATION for it?
+  //       → derived by RUNNING the one narration contract (promoNarrationBudget
+  //         over the live listing_promo event vocabulary, sectionNarrationBudget,
+  //         and the newsletter route's own composition constant). A composition
+  //         a producer sizes a script for is PRODUCED; one nobody sizes a script
+  //         for is what "no live producer" has always meant here.
+  //
+  // (a) AND (b) ARE NOT THE SAME QUESTION, and the whole defect was reading them
+  // as one. The D-ID handoff (lib/video/avatar-render-orchestrator.ts) shows up
+  // in (a) for all fourteen camel-key compositions because it stages whatever
+  // provider_metadata.target_composition_id names — but it FORWARDS a voiceover
+  // URL somebody else synthesized and sizes no script, which is asserted below
+  // rather than claimed.
+  const producerFiles: string[] = []
+  {
+    const walk = (dir: string, depth = 0) => {
+      if (depth > 10) return
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        if (e.name.startsWith(".") || e.name === "node_modules") continue
+        const full = `${dir}/${e.name}`
+        if (e.isDirectory()) walk(full, depth + 1)
+        else if (/\.tsx?$/.test(e.name)) producerFiles.push(full)
+      }
+    }
+    walk("lib"); walk("app")
+  }
+  // Comment-stripped but NOT string-masked: a composition id IS a string
+  // literal, and blankStrings would blank exactly the text being looked for —
+  // the same hazard the wrong-source finder in section 5 records paying for.
+  const producerSrc = new Map(producerFiles.map((f) => [f, stripComments(readFileSync(f, "utf8"))]))
+  // A producer names its composition either as a literal or through a named
+  // constant (§6, one spelling: SECTION_NARRATION_COMPOSITION, COMPOSITION_ID,
+  // NEWSLETTER_VIDEO_COMPOSITION…). Both are resolved, so a file that imported
+  // the constant is not read as naming nothing.
+  const aliasOfComposition = new Map<string, string>()
+  for (const src of producerSrc.values()) {
+    for (const m of src.matchAll(/\bconst\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["']([A-Za-z0-9_]+)["']/g)) {
+      if (REGISTRY[m[2]]) aliasOfComposition.set(m[1], m[2])
+    }
+  }
+  const idPattern = new Map(Object.keys(REGISTRY).map((id) => [id, new RegExp(`["'\`]${id}["'\`]`)]))
+  const aliasPattern = new Map([...aliasOfComposition].map(([a, id]) => [a, { re: new RegExp(`\\b${a}\\b`), id }]))
+  /** Every composition id this source names, by literal or by constant. */
+  const compositionsNamedIn = (src: string): Set<string> => {
+    const out = new Set<string>()
+    for (const [id, re] of idPattern) if (re.test(src)) out.add(id)
+    for (const [, { re, id }] of aliasPattern) if (re.test(src)) out.add(id)
+    return out
+  }
+  /** Does this source stage a Remotion render at all? */
+  const STAGES_RENDER = /\binput_props\s*:|\binputProps\b|queue_composition_render/
+  const propsStagers: Record<string, string[]> = Object.fromEntries(Object.keys(REGISTRY).map((id) => [id, [] as string[]]))
+  for (const [f, src] of producerSrc) {
+    if (!STAGES_RENDER.test(src)) continue
+    for (const id of compositionsNamedIn(src)) propsStagers[id].push(f)
+  }
+
+  // ── POSITIVE CONTROLS (§2) — a blind scanner and a clean tree both find zero ──
+  ok(`the producer scan really read the tree (${producerFiles.length} files under lib/ + app/,\n    ${aliasOfComposition.size} composition-id constants resolved)`,
+    producerFiles.length >= 500 && aliasOfComposition.size >= 5)
+  ok("the props finder recognises a staging site, by literal AND by constant",
+    compositionsNamedIn(`const r = { composition_id: "TestimonialReel", input_props: p }`).has("TestimonialReel")
+    && STAGES_RENDER.test(`const r = { composition_id: "TestimonialReel", input_props: p }`)
+    && compositionsNamedIn(`const X = "CMAReel"\ninsert({ composition_id: X, input_props: p })`).has("CMAReel"))
+  ok("...and does NOT fire on a COMMENT naming a composition, nor on a file that\n    names one without staging anything",
+    !compositionsNamedIn(stripComments(`// stages "TestimonialReel" input_props one day`)).has("TestimonialReel")
+    && !STAGES_RENDER.test(stripComments(`const id = "TestimonialReel"`)))
+  ok("...and it found the producers this pass was written over — the five entries\n    that used to read \"no producer writes input_props\" all have one",
+    ["AffordabilitySnapshotReel", "TestimonialReel", "NeighborhoodSpotlightReel", "PhotoWalkthroughReel", "JustListedReelHorizontal"]
+      .every((id) => propsStagers[id].length > 0),
+    ["AffordabilitySnapshotReel", "TestimonialReel", "NeighborhoodSpotlightReel", "PhotoWalkthroughReel", "JustListedReelHorizontal"]
+      .filter((id) => propsStagers[id].length === 0).join(", "))
+  // THE OTHER DIRECTION, and it is the control the classification rests on: a
+  // composition NOTHING stages must come back EMPTY. ListingPresentationSlide is
+  // that composition today (adjudicated in remotion/Root.tsx beside its
+  // registration) — registered, geometry-mirrored, contract-classified, and
+  // reachable only through the manual/agent start_render path. Derived, not
+  // pinned: whichever registered compositions have no props producer are listed.
+  const unstaged = Object.keys(REGISTRY).filter((id) => propsStagers[id].length === 0).sort()
+  ok(`the finder can still say NO — ${unstaged.length} registered composition(s) have no\n    props producer at all: ${unstaged.join(", ") || "none"}`,
+    unstaged.length > 0 && !propsStagers.NoSuchCompositionAtAll)
+
+  // ── (b) THE NARRATION SET, DERIVED BY RUNNING THE CONTRACT ────────────────
+  // The promo event vocabulary is the LIVE CHECK on listing_promo_videos.event_type,
+  // not a list retyped here — a new event type that routes to a fifth composition
+  // therefore moves this set on its own (§2: assert the rule, derive the number).
+  const promoEventTypes = CHECK_VOCABULARIES.listing_promo_videos?.event_type ?? []
+  ok(`the promo event vocabulary came from the live CHECK cache (${promoEventTypes.length} event types)`,
+    promoEventTypes.length >= 6)
+  const promoBudgets = promoEventTypes.map((e) => ({ eventType: e, budget: promoNarrationBudget(e) }))
+  // The newsletter route's composition is read from the route's OWN constant, so
+  // a rename there moves this rather than leaving the guard asserting a ghost.
+  const newsletterRoute = "app/api/internal/remotion/render-newsletter-video/route.ts"
+  const newsletterComposition = stripComments(readFileSync(newsletterRoute, "utf8"))
+    .match(/\bconst\s+NEWSLETTER_VIDEO_COMPOSITION\s*=\s*["']([A-Za-z0-9_]+)["']/)?.[1]
+  ok(`the newsletter producer names its own composition (${newsletterComposition ?? "NOT FOUND"}) and it is registered`,
+    !!newsletterComposition && !!REGISTRY[newsletterComposition])
+  const newsletterBudget = narrationBudget(newsletterComposition ?? "", compositionSeconds(REGISTRY[newsletterComposition ?? ""] ?? { duration_frames: 0, fps: 30 }))
+  const sectionBudget = sectionNarrationBudget()
+
   // ── THE CENSUS, as a checked fact ─────────────────────────────────────────
   // Every composition rendering the camel key, and what produces its script.
   // A composition that appears in Root.tsx and in neither list fails below —
   // "nobody classified this one" must not read as "this one is fine".
+  const narrationStaged = new Set<string>([
+    ...promoBudgets.map((p) => p.budget.compositionId),
+    newsletterBudget.compositionId,
+    sectionBudget.compositionId,
+  ])
+  /** Which producer sizes this composition's script. Display only: the KEY SET
+   *  is asserted against `narrationStaged` below, so it cannot drift into a
+   *  second classification. */
   const PRODUCED: Record<string, string> = {
     // composition            → the producer that writes its narration
     JustListedReel:           "app/api/internal/remotion/render-just-listed/route.ts draftAndClearScript",
@@ -882,19 +1198,24 @@ console.log("\n═══ 7. NARRATION IS CAPPED AT GENERATION, per composition �
     NewsletterDigestVideo:    "app/api/internal/remotion/render-newsletter-video/route.ts draft()",
     ListingSectionReel:       "lib/listing-presentation/section-narration.ts generateSectionNarration",
   }
-  /** Declares + renders voiceoverUrl, but NOTHING in this repo generates a
-   *  script for it — the prop is only ever null or supplied from outside.
-   *  Listed, not ignored: each is a capability with no producer (§1), and if one
-   *  gains a producer it must be capped and moved into PRODUCED above. */
-  const NO_LIVE_PRODUCER: Record<string, string> = {
+  ok(`the PRODUCED table is the DERIVED narration set, not a second opinion (${narrationStaged.size})`,
+    JSON.stringify(Object.keys(PRODUCED).sort()) === JSON.stringify([...narrationStaged].sort()),
+    `derived-only: ${[...narrationStaged].filter((i) => !PRODUCED[i]).join(", ") || "none"} | `
+    + `table-only: ${Object.keys(PRODUCED).filter((i) => !narrationStaged.has(i)).join(", ") || "none"}`)
+
+  /** Extra colour on a composition NOBODY sizes a script for — the part that is
+   *  genuinely not derivable. NEVER the classification (that is derived above)
+   *  and never a claim about input_props: the props column is printed from the
+   *  scan, and the assertion below refuses any note that contradicts it. */
+  const NO_PRODUCER_NOTE: Record<string, string> = {
     CMAReel:                   "enqueueCmaReelRender takes voiceoverUrl; its only live caller (section-render.ts:179) passes null",
     AgentTalkingHeadReel:      "buildIntroCompositionRequest sets no voiceover_url — the D-ID avatar track carries its own audio",
-    PhotoWalkthroughReel:      "no producer writes input_props for this composition",
-    AffordabilitySnapshotReel: "no producer writes input_props for this composition",
-    NeighborhoodSpotlightReel: "no producer writes input_props for this composition",
-    TestimonialReel:           "no producer writes input_props for this composition",
     JustListedReelSquare:      "the Director's PAID cut; the organic render path routes just_listed to JustListedReel",
-    JustListedReelHorizontal:  "no producer writes input_props for this composition",
+    PhotoWalkthroughReel:      "the Director commissions the visual (photo_walkthrough → kenBurnsPlan); the photos ARE the video, so no script is sized",
+    AffordabilitySnapshotReel: "buyer-match-reel-producer stages the facts; the reel speaks on-screen copy, not a generated script",
+    NeighborhoodSpotlightReel: "the Director commissions it; the narration would have to come from a producer that does not exist yet",
+    TestimonialReel:           "the Director commissions it; the CLIENT's own clip carries the audio, so no script is sized",
+    JustListedReelHorizontal:  "the Director's 16:9 YouTube/Facebook cut; the organic promo path never routes here",
   }
 
   const compFiles: string[] = []
@@ -918,19 +1239,51 @@ console.log("\n═══ 7. NARRATION IS CAPPED AT GENERATION, per composition �
     .map((f) => f.replace(/^remotion\//, "").replace(/\.tsx?$/, ""))
     .filter((id) => !!REGISTRY[id])
     .sort()
-  const classified = [...Object.keys(PRODUCED), ...Object.keys(NO_LIVE_PRODUCER)].sort()
+  const noLiveProducer = declaring.filter((id) => !narrationStaged.has(id)).sort()
+  const classified = [...Object.keys(PRODUCED), ...Object.keys(NO_PRODUCER_NOTE)].sort()
   ok(`the camel-key census covers every composition that renders voiceoverUrl (${declaring.length})`,
     JSON.stringify(declaring) === JSON.stringify(classified),
     `unclassified: ${declaring.filter((d) => !classified.includes(d)).join(", ") || "none"} | `
     + `stale: ${classified.filter((c) => !declaring.includes(c)).join(", ") || "none"}`)
   ok("...and the census finder really read the tree (not zero files)",
     compFiles.length >= 33 && declaring.length >= 10)
+  ok(`...and the NO-LIVE-PRODUCER half is DERIVED (declares the prop, no producer\n    sizes a script): ${noLiveProducer.length} of ${declaring.length}`,
+    JSON.stringify(noLiveProducer) === JSON.stringify(Object.keys(NO_PRODUCER_NOTE).sort()),
+    `derived-only: ${noLiveProducer.filter((i) => !NO_PRODUCER_NOTE[i]).join(", ") || "none"} | `
+    + `note-only: ${Object.keys(NO_PRODUCER_NOTE).filter((i) => !noLiveProducer.includes(i)).join(", ") || "none"}`)
+
+  // ── THE EVIDENCE, PRINTED — and no note may contradict it ─────────────────
+  console.log("    composition                no narration script sized; input_props staged by")
+  for (const id of noLiveProducer) {
+    console.log(`    ${id.padEnd(26)} ${propsStagers[id].length ? propsStagers[id].join(", ") : "NOBODY"}`)
+    console.log(`    ${" ".repeat(26)} note: ${NO_PRODUCER_NOTE[id] ?? "(none)"}`)
+  }
+  // THE ASSERTION THIS WHOLE PASS EXISTS FOR. A note may not claim an absence
+  // the scan contradicts — that is the exact sentence five entries carried.
+  const CLAIMS_NO_PRODUCER = /\bno\s+producer\b|\bnothing\s+(?:writes|stages)\b|\bno\s+(?:one|body)\s+(?:writes|stages)\b/i
+  const contradicted = noLiveProducer.filter(
+    (id) => CLAIMS_NO_PRODUCER.test(NO_PRODUCER_NOTE[id] ?? "") && propsStagers[id].length > 0)
+  ok("the contradiction finder recognises the sentence it was written for",
+    CLAIMS_NO_PRODUCER.test("no producer writes input_props for this composition")
+    && !CLAIMS_NO_PRODUCER.test("the Director's PAID cut; the organic render path routes elsewhere"))
+  ok("no note claims an absence the props scan contradicts — a composition WITH a\n    props producer may never be described as having none (§2: the number cannot\n    protect the sentence beside it)",
+    contradicted.length === 0,
+    contradicted.map((id) => `${id}: "${NO_PRODUCER_NOTE[id]}" vs ${propsStagers[id].join(", ")}`).join(" | "))
+
+  // The D-ID handoff appears beside every camel-key composition in the props
+  // column. It is NOT a narration producer, and that is DERIVED rather than
+  // asserted: it calls none of the narration-contract functions, so it cannot be
+  // sizing a script — it forwards provider_metadata.voiceover_url unchanged.
+  {
+    const didHandoff = stripComments(readFileSync("lib/video/avatar-render-orchestrator.ts", "utf8"))
+    const sizesAScript = /\b(narrationBudget|promoNarrationBudget|sectionNarrationBudget|narrationLengthDirective|fitNarrationToBudget|narrationMaxTokens)\s*\(/
+    ok("the D-ID handoff FORWARDS a voiceover it never sizes — it calls no narration\n    contract function, so its name in the props column is not a narration producer",
+      !sizesAScript.test(didHandoff) && /\bvoiceoverUrl\s*:/.test(didHandoff))
+    ok("...and that finder would notice one that DOES size a script (control: the\n    section producer)",
+      sizesAScript.test(stripComments(readFileSync("lib/listing-presentation/section-narration.ts", "utf8"))))
+  }
 
   // ── EVERY PRODUCED COMPOSITION'S BUDGET FITS IT ───────────────────────────
-  const promoBudgets = ["just_listed", "just_sold", "open_house_announce", "coming_soon", "price_reduction", "under_contract"]
-    .map((e) => ({ eventType: e, budget: promoNarrationBudget(e) }))
-  const newsletterBudget = narrationBudget("NewsletterDigestVideo", compositionSeconds(REGISTRY.NewsletterDigestVideo))
-  const sectionBudget = sectionNarrationBudget()
   // The producer and the queue must name the SAME composition (§6): section-render
   // inserts a composition_id, and the cap is derived from whatever
   // SECTION_NARRATION_COMPOSITION says. If those two drift, the script is sized

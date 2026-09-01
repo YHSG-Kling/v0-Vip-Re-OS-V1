@@ -125,7 +125,7 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
             color: brand.primaryColor,
             fontSize: 64, fontWeight: 900, letterSpacing: 6,
             borderRadius: 8,
-            transform: `scale(${interpolate(frame, [0, 15], [0.8, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })})`,
+            scale: interpolate(frame, [0, 15], [0.8, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
             opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             SOLD
@@ -267,7 +267,7 @@ const SoldPhotoFrame: React.FC<{ url: string; span: number }> = ({ url, span }) 
         src={url}
         style={{
           width: "100%", height: "100%", objectFit: "cover",
-          transform: `scale(${scale})`, transformOrigin: "center center",
+          scale, transformOrigin: "center center",
         }}
       />
     </AbsoluteFill>

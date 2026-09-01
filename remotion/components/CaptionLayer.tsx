@@ -114,7 +114,7 @@ export const CaptionLayer: React.FC<CaptionLayerProps> = (props) => {
           alignItems: "center",
           padding: "0 8%",
           opacity,
-          transform: `scale(${enterScale})`,
+          scale: enterScale,
         }}
       >
         <div

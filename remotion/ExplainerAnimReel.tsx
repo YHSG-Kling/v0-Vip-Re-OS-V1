@@ -358,7 +358,7 @@ export const ExplainerAnimReel: React.FC<ExplainerAnimReelProps> = ({
           <div style={{
             fontSize: 64, fontWeight: 800, color: "#fff", lineHeight: 1.1, maxWidth: 840,
             opacity: interpolate(frame, [12, 36], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
-            transform: `translateY(${interpolate(frame, [12, 36], [16, 0], { easing: ENTER, extrapolateLeft: "clamp", extrapolateRight: "clamp" })}px)`,
+            translate: `0 ${interpolate(frame, [12, 36], [16, 0], { easing: ENTER, extrapolateLeft: "clamp", extrapolateRight: "clamp" })}px`,
           }}>
             {title}
           </div>
