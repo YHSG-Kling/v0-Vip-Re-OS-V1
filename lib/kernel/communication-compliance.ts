@@ -67,11 +67,13 @@ export interface EvaluateOutboundOutput {
 //                  "opt_out_channel","restricted_state_no_consent","no_tcpa_consent"]
 //   SOFT_WARNS  = ["lifecycle_stage_inactive"]
 // are deleted. They were a SECOND home for a fact whose only live home is the
-// inline `severity:` literal on each rule below — RULE 1 (:~93), RULE 2 (:~102),
-// RULE 3 (:~114), RULE 4 (:~123), RULE 5 (:~132), RULE 6 (:~158), RULE 7 (:~178)
-// all carry `severity: "hard_block"`, and RULE 8 (:~189) carries
-// `severity: "soft_warn"`. SURVIVOR: those eight inline literals, in
-// evaluateOutboundCompliance() in THIS file.
+// inline `severity:` literal carried by EVERY rule in evaluateOutboundCompliance()
+// below — every RULE except the lifecycle-status one is `severity: "hard_block"`,
+// and RULE 8 (contact inactive) is the single `severity: "soft_warn"`.
+// SURVIVOR: those inline literals, in evaluateOutboundCompliance() in THIS file.
+// (Stated as the RULE, not as a line list or a count — §2 forbids pinning to a
+// waypoint. RULE 4b was added on 2026-09-01 and a hardcoded tally would already
+// be wrong.)
 //
 // Evidence for deleting rather than deriving severity from the arrays:
 //   1. Zero readers. `grep -rn "HARD_BLOCKS\|SOFT_WARNS"` over the whole tree
@@ -83,8 +85,8 @@ export interface EvaluateOutboundOutput {
 //      pairing `/code: "no_tcpa_consent"[\s\S]{0,120}?severity: "hard_block"/`
 //      against this file's stripped source. The inline form is therefore
 //      load-bearing and externally observed; the arrays were observed by no one.
-// Adding a rule? Put its severity inline like its seven neighbours. One fact,
-// one home (§6).
+// Adding a rule? Put its severity inline like its neighbours. One fact, one
+// home (§6).
 
 /**
  * KERNEL MASTER FUNCTION: Evaluate outbound eligibility
@@ -113,10 +115,21 @@ export async function evaluateOutboundCompliance(
       })
     }
 
-    // ─── RULE 2: Call Stop Flag (HARD BLOCK for phone/voicemail) ───────────
+    // ─── RULE 2: Phone Opt-Out (HARD BLOCK for phone/voicemail) ────────────
+    // TWO COLUMNS, ONE FACT (§6). This rule read `call_stop_flag` alone until
+    // 2026-09-01. `contacts.phone_opt_out` is the SAME fact under a second name,
+    // and the two are not kept in sync: `addSuppression`
+    // (lib/kernel/compliance/check-suppression.ts:~322) writes call_stop_flag +
+    // dnc_status + phone_opt_out together, but the CRM header-card channel
+    // toggle writes phone_opt_out ALONE. So a contact switched off there passed
+    // this gate while lib/kernel/compliance.ts:177 — the kernel CONTENT gate,
+    // which this rule set is documented as mirroring — blocked them. Two gates
+    // disagreeing about one contact is the defect; the union is the fix.
+    // Column list comes from CHANNEL_OPT_OUT_COLUMNS in the pure leaf, so this
+    // gate and the quick predicates cannot drift apart again.
     if (
       (channel === "phone" || channel === "voicemail") &&
-      contact.call_stop_flag === true
+      (contact.call_stop_flag === true || contact.phone_opt_out === true)
     ) {
       violations.push({
         code: "call_stop_flag",
@@ -139,6 +152,22 @@ export async function evaluateOutboundCompliance(
       violations.push({
         code: "sms_opt_out",
         message: "Contact has opted out of SMS",
+        severity: "hard_block",
+      })
+    }
+
+    // ─── RULE 4b: Direct Mail Opt-Out (HARD BLOCK for direct_mail) ─────────
+    // Added 2026-09-01. This gate had NO mail arm, so `direct_mail_opt_out` —
+    // the flag the live mail senders all gate on (lib/providers/dispatch.ts:848,
+    // lib/farm-mail/dispatch-farm-mail.ts:171, the direct-mail reactors) and
+    // which lib/kernel/compliance.ts:180 blocks on — was invisible here. Numbered
+    // 4b rather than renumbering RULES 5-8: the codes below are referenced by
+    // compliance_events rows already written, and by
+    // scripts/dispatch-recipient-identity-simulator.ts.
+    if (channel === "direct_mail" && contact.direct_mail_opt_out === true) {
+      violations.push({
+        code: "direct_mail_opt_out",
+        message: "Contact has opted out of direct mail",
         severity: "hard_block",
       })
     }
@@ -341,4 +370,9 @@ export {
   hasRecordedOptOut,
   needsConsentInRestrictedState,
   RESTRICTED_STATES,
+  // The read-side survivor for "which column means opted out of channel X"
+  // (§6), plus the select list that keeps a caller's row honest.
+  CHANNEL_OPT_OUT_COLUMNS,
+  SUPPRESSION_COLUMNS,
 } from "@/lib/kernel/compliance/outbound-predicates"
+export type { OutboundChannel, OutboundSuppressionFields } from "@/lib/kernel/compliance/outbound-predicates"

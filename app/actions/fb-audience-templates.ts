@@ -36,7 +36,13 @@ export async function listAudienceTemplates(): Promise<AudienceTemplate[]> {
 
 /**
  * Resolve a template id to its create-audience parameters, ready for
- * `createFacebookAudience`. Caller passes the resolved params on through.
+ * `createAudience` (lib/ads/facebook-audience-sync.ts). Caller passes the
+ * resolved params on through.
+ *
+ * Was `createFacebookAudience` until 2026-09-01, when that duplicate export was
+ * deleted onto its survivor — the tombstone naming it is at the top of
+ * lib/ads/facebook-audience-sync.ts. A comment naming a function that no longer
+ * exists sends the next reader looking for a door that was deliberately closed.
  */
 export async function resolveAudienceTemplate(templateId: string): Promise<{
   audienceName: string

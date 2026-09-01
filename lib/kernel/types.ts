@@ -225,11 +225,19 @@ export interface KernelContact {
 // ContactStopStatus are no longer exported here. Each was a field-for-field documentary slice
 // of KernelContact (above, this file — the survivor carrying every one of those fields), and
 // the "compliance checks" they announced themselves for run on their own deliberately-partial
-// contracts instead: the ContactData interface in lib/kernel/communication-compliance.ts:17
-// (the client twin lib/kernel/communication-compliance-helpers.ts was deleted 2026-09-01,
-// merged onto that survivor — see the tombstone there), which accepts a
-// partially-loaded row — a shape these required-boolean slices could not describe. Nothing was
-// merged because the survivors already carry everything; nothing imported the three names.
+// contracts instead: the ContactData interface in
+// lib/kernel/compliance/outbound-predicates.ts (with OutboundSuppressionFields, the
+// narrower shape the pure predicates take), which accepts a partially-loaded row — a
+// shape these required-boolean slices could not describe. Nothing was merged because
+// the survivors already carry everything; nothing imported the three names.
+//
+// (Moved 2026-09-01: ContactData used to be declared at
+// lib/kernel/communication-compliance.ts:17 and is still importable from that path via
+// a re-export, but the declaration now lives in the pure leaf so a "use client" file
+// can use the predicates without dragging createServiceClient into the browser bundle.
+// The client twin lib/kernel/communication-compliance-helpers.ts was deleted the same
+// day — its tombstone is in communication-compliance.ts. A line number is cited nowhere
+// here on purpose; §2 forbids pinning to a waypoint.)
 
 // ─── ACTOR CONTEXT ────────────────────────────────────────────────────────────
 

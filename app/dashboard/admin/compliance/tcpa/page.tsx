@@ -9,7 +9,7 @@ import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 // The ONE outbound suppression predicate (CLAUDE.md §6) — see the note on the
 // missing-consent query below for why this board uses the hasRecordedOptOut arm
 // rather than the full isEligibleForOutbound union.
-import { hasRecordedOptOut } from "@/lib/kernel/compliance/outbound-predicates"
+import { hasRecordedOptOut, SUPPRESSION_COLUMNS } from "@/lib/kernel/compliance/outbound-predicates"
 
 export const dynamic = "force-dynamic"
 
@@ -110,8 +110,23 @@ export default async function TCPAComplianceDashboard() {
       .eq("brokerage_id", profile.brokerage_id).eq("dnc_status", true),
     svc.from("contacts").select("*", { count: "exact", head: true })
       .eq("brokerage_id", profile.brokerage_id).eq("sms_opt_out", true),
+    // ── NOT `.neq("tcpa_consent", true)` — that count was WRONG, and wrong in
+    //    the direction that HIDES WORK ────────────────────────────────────────
+    // `contacts.tcpa_consent` is nullable (no NOT NULL / DEFAULT on it in any
+    // migration; lib/contact-pipeline/contact-capture.ts:367 writes
+    // `params.tcpa_consent ? true : existing?.tcpa_consent`, which persists NULL
+    // for a contact nobody has ever asked). In PostgREST `tcpa_consent=neq.true`
+    // becomes SQL `tcpa_consent <> true`, which evaluates NULL — not TRUE — for a
+    // NULL column, so the row is DROPPED. The never-asked cohort is precisely the
+    // group this board exists to go collect consent from, and it was invisible
+    // here while the tile read "Phone contacts w/o consent".
+    // Same defect, same fix, already recorded in this repo at
+    // lib/kernel/flow-integrity.ts:514: `.or("status.is.null,status.neq.signed")
+    // // NULL status is also "not signed" — a bare neq would drop those rows`.
+    // Expect this number to GO UP. That rise is the finding, not a regression.
     svc.from("contacts").select("*", { count: "exact", head: true })
-      .eq("brokerage_id", profile.brokerage_id).not("phone", "is", null).neq("tcpa_consent", true),
+      .eq("brokerage_id", profile.brokerage_id).not("phone", "is", null)
+      .or("tcpa_consent.is.null,tcpa_consent.eq.false"),
     // Actionable set: phone-reachable, no consent, and NOT already suppressed.
     //
     // "Not already suppressed" used to be spelled here, a THIRD time, as a
@@ -127,13 +142,18 @@ export default async function TCPAComplianceDashboard() {
     // Over-fetch then slice: the suppressed rows are removed AFTER the fetch, so
     // the window must be wider than the 50 shown or a tenant with many
     // suppressed contacts would render a short list and look "done".
+    //
+    // The no-consent predicate is the SAME `.or()` as the count above — a bare
+    // `.neq("tcpa_consent", true)` dropped every never-asked contact here too.
     svc.from("contacts")
-      // The predicate reads seven columns; select all seven. Anything it needs
-      // that is not selected reads as `false` and the check FAILS OPEN (§4).
-      .select("id, first_name, last_name, phone, dnc_status, email_opt_out, sms_opt_out, call_stop_flag, opt_out_channels, tcpa_consent, state")
+      // Every column the predicate reads, named explicitly. Anything it needs
+      // that is not selected reads as `false` and the check FAILS OPEN (§4), so
+      // the list comes from SUPPRESSION_COLUMNS — the leaf's own select list,
+      // which changes in the same edit as the predicate.
+      .select(`id, first_name, last_name, phone, ${SUPPRESSION_COLUMNS}`)
       .eq("brokerage_id", profile.brokerage_id)
       .not("phone", "is", null)
-      .neq("tcpa_consent", true)
+      .or("tcpa_consent.is.null,tcpa_consent.eq.false")
       .order("created_at", { ascending: false })
       .limit(MISSING_CONSENT_FETCH_WINDOW),
     svc.from("contact_consent_events")
@@ -149,14 +169,42 @@ export default async function TCPAComplianceDashboard() {
   // restricted-state contacts a broker most needs to go collect consent from.
   // hasRecordedOptOut is the arm that asks the right question here: "did this
   // person already tell us to stop?"
-  const missingConsent: MissingConsentContact[] = (missingRows ?? [])
-    .filter((c: any) => !hasRecordedOptOut(c))
+  //
+  // SCOPED TO "phone" (2026-09-01), because this call site genuinely knows the
+  // channel: the tile says "Phone contacts w/o consent", the query filters on
+  // `phone is not null`, the panel renders phone numbers, and the work it asks
+  // for is a phone call. That changes the list in BOTH directions and both are
+  // corrections:
+  //   · REMOVES contacts carrying `phone_opt_out` or `call_stop_flag` or an
+  //     opt_out_channels 'phone' entry. `phone_opt_out` in particular was NEVER
+  //     checked here — the CRM header-card toggle writes that column alone, so a
+  //     contact whose agent had switched phone OFF was still being listed as
+  //     someone to ring for consent. That is the same defect class as the portal
+  //     invite hole closed earlier today.
+  //   · RESTORES contacts who opted out of EMAIL or SMS but never objected to a
+  //     phone call. An email opt-out is not a reason to leave someone off a
+  //     phone-consent worklist, and the channel-agnostic form was hiding them.
+  const actionableRows = (missingRows ?? []).filter((c: any) => !hasRecordedOptOut(c, "phone"))
+  const missingConsent: MissingConsentContact[] = actionableRows
     .slice(0, MISSING_CONSENT_SHOWN)
     .map((c: any) => ({
       id: c.id,
       name: [c.first_name, c.last_name].filter(Boolean).join(" "),
       phone: c.phone ?? null,
     }))
+  // PUBLISH THE DENOMINATOR AND THE BLIND SPOT (§2). Three different numbers are
+  // in play and the board used to show only the first, which reads as "this is
+  // the whole job":
+  //   missingConsentCount — every phone contact without consent, INCLUDING ones
+  //                         already suppressed, tenant-wide and uncapped.
+  //   actionableRows      — those minus phone-suppressed, but only within the
+  //                         MISSING_CONSENT_FETCH_WINDOW most recent rows.
+  //   missingConsent      — the first MISSING_CONSENT_SHOWN of those, rendered.
+  // `windowTruncated` is the honest caveat: past the fetch window we do not know,
+  // so the caption says "at least".
+  const actionableCount = actionableRows.length
+  const windowTruncated = (missingRows ?? []).length >= MISSING_CONSENT_FETCH_WINDOW
+  const suppressedFromWindow = (missingRows ?? []).length - actionableCount
   const events = consentEvents ?? []
 
   // Group by block reason
@@ -191,13 +239,30 @@ export default async function TCPAComplianceDashboard() {
           <p className="text-3xl font-bold">{smsOptOutCount ?? 0}</p>
         </CardContent></Card>
         <Card className={(missingConsentCount ?? 0) > 0 ? "border-amber-200 bg-amber-50/30" : ""}><CardContent className="pt-4">
+          {/* Label says "never asked or declined" because that is what the query
+              now counts: consent NULL (nobody ever asked) OR false. It used to
+              silently exclude the NULL half. */}
           <p className="text-xs text-muted-foreground">Phone contacts w/o consent</p>
           <p className="text-3xl font-bold text-amber-700">{missingConsentCount ?? 0}</p>
+          <p className="text-[11px] text-muted-foreground mt-1">never asked or declined</p>
         </CardContent></Card>
       </div>
 
-      {/* Actionable: record express consent for phone-reachable contacts */}
+      {/* Actionable: record express consent for phone-reachable contacts.
+          The caption below is the denominator the panel itself cannot show — it
+          takes only the rendered slice as a prop. Without it, 50 rows out of a
+          few thousand read as the whole job. */}
       <ConsentPanel initialMissing={missingConsent} />
+      <p className="text-xs text-muted-foreground -mt-3 px-1">
+        Showing {missingConsent.length} of {windowTruncated ? "at least " : ""}
+        {actionableCount} contact{actionableCount === 1 ? "" : "s"} who can still be called
+        {suppressedFromWindow > 0 && (
+          <> · {suppressedFromWindow} more {suppressedFromWindow === 1 ? "is" : "are"} phone-suppressed and deliberately not listed</>
+        )}
+        {windowTruncated && (
+          <> · only the {MISSING_CONSENT_FETCH_WINDOW} most recent of the {missingConsentCount ?? 0} were examined</>
+        )}
+      </p>
 
       {/* Consent audit trail */}
       <Card>

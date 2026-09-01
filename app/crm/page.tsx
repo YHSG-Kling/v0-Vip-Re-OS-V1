@@ -153,12 +153,18 @@ interface Contact {
   sms_opt_out?: boolean | null
   phone_opt_out?: boolean | null
   direct_mail_opt_out?: boolean | null
-  // The remaining three arms of the kernel suppression predicate
+  // The remaining arms of the kernel suppression predicate
   // (lib/kernel/compliance/outbound-predicates.ts). NOT in the getContacts list
   // projection — they arrive only on the DETAIL row, which getContactById loads
   // with select("*"). Present here because the portal-invite button feeds
   // `selectedContact` (the detail row) to isEligibleForOutbound; a list row would
   // read these as undefined and the predicate would fail open.
+  //
+  // phone_opt_out and direct_mail_opt_out are declared ABOVE, next to the other
+  // channel toggles — the toggle at onChannelToggle writes them, and as of
+  // 2026-09-01 the predicate reads them too (it did not before, so a contact this
+  // very page had switched off for phone or mail was still eligible for outbound
+  // by the predicate's own reckoning).
   call_stop_flag?: boolean | null
   opt_out_channels?: string[] | null
   tcpa_consent?: boolean | null
@@ -1417,6 +1423,15 @@ export default function CRMPage() {
                         // (getContacts selects no call_stop_flag / opt_out_channels
                         // / tcpa_consent): an unselected column is indistinguishable
                         // from `false` and the check would silently fail OPEN again.
+                        //
+                        // NO CHANNEL ARGUMENT, DELIBERATELY. The predicate takes an
+                        // optional channel and narrows to it; omitting it is the
+                        // WIDER refusal — any recorded opt-out on any channel blocks.
+                        // A portal invite is not one message: it is a magic link that
+                        // opens a standing account we will then message through. A
+                        // contact who has switched off every channel we have has not
+                        // asked for that, so the strict union is the right question
+                        // and passing "email" here would quietly relax it.
                         if (!selectedContact || !isEligibleForOutbound(selectedContact)) {
                           const reasons = selectedContact ? getSuppressionReasons(selectedContact) : []
                           toast.error(
