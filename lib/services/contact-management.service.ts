@@ -415,12 +415,23 @@ export async function getContact(contactId: string, agentId: string) {
     // express that union as one embed (an embed rides exactly one named
     // relationship — same PGRST201 fact the header above records), so it is a
     // second query. Tenant scope: same brokerage as the contact row.
+    // §4 fail closed: a contact row with NO brokerage_id gives this read no
+    // tenant to run under, and dropping the predicate would decay the query to
+    // 'every tenant' (the exact shape the conditional-tenant-predicate guard
+    // refuses). Such a row never runs the three-sided query at all — it takes
+    // the single-sided embed fallback below, which is anchored to the FK and
+    // says it may undercount.
     const brokerageId = (contact as Record<string, unknown>).brokerage_id as string | null
-    let txQuery = supabase
-      .from("transactions")
-      .select("id, status, close_date")
-      .or(threeSidedContactTransactionFilter(contactId))
-    if (brokerageId) txQuery = txQuery.eq("brokerage_id", brokerageId)
+    const txQuery = brokerageId
+      ? supabase
+          .from("transactions")
+          .select("id, status, close_date")
+          .or(threeSidedContactTransactionFilter(contactId))
+          .eq("brokerage_id", brokerageId)
+      : Promise.resolve({
+          data: null,
+          error: { message: "contact row carries no brokerage_id — three-sided read refused (fail closed), using the FK-anchored embed fallback" },
+        } as { data: null; error: { message: string } })
     const [txRes, refRes] = await Promise.all([
       txQuery,
       // referral_count — count of referrals rows naming this contact as the
