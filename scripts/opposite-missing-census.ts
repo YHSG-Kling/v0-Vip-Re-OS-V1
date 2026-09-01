@@ -3120,6 +3120,9 @@ const EXTERNALLY_ADDRESSED = /\/(cron|webhooks?|callback|oauth|auth|health|og|rs
  * reading as enforced (§2 — do not pin an assertion to a waypoint).
  */
 const QUALIFIED_EXTERNAL_ROUTES = new Map<string, string>([
+  // ── Lead-magnet public doors (qualified by lane N3b's evidence, integrator 2026-09-01) ──
+  ["/api/lead-magnets/qr/[magnetId]",  "external QR-scan door: the anonymous-scan arm is deliberately ungated (a scan comes from a stranger's phone — route.ts:104's split gates the RECORD behind a session whose users.brokerage_id must equal the brokerage asked about, fail-closed on a refused users read) and an out-of-tree scan reporter cannot be disproved from this repo — §1 unresolved means leave it"],
+  ["/api/lead-magnets/submissions",    "public form-submission intake (Auth: NOT required — the submitter is the lead): enforces TCPA consent on valuation forms (:23-29) and stamps real IP/UA from request headers (:32-36) before the ONE kernel command captureFormSubmission; the in-repo twin app/actions/lead-magnet-capture.ts:22 calls the same kernel command for /lm/[slug], so this door exists for embeds OUTSIDE the app"],
   ["/api/video/projects",                       "second HTTP door onto app/actions/video/create-video-project.ts; app/actions/video.ts:68 + scripts/video-project-consolidation-simulator.ts"],
   ["/api/video/projects/[projectId]/script",    "second HTTP door onto app/actions/video.ts:generateVideoScriptAction; app/actions/video.ts:51-69 + scripts/video-generation-lane-simulator.ts"],
   ["/api/video/projects/[projectId]/generate",  "second HTTP door onto app/actions/video.ts:submitVideoGenerationJobAction/loadVideoGenerationStateAction; same ruling"],
@@ -3375,6 +3378,32 @@ const QUALIFIED_EXTERNAL_ROUTES = new Map<string, string>([
 // STILL 6b BY DESIGN, fixed not deleted the same day: /api/credit/status keeps
 // its entry — it is the only reader of the credit lane and now resolves its
 // tenant from the session (see the route header and services/supabaseService.ts).
+
+// ─── TOMBSTONES: three routes superseded by BUILT surfaces (integrator, 2026-09-01)
+// Lane N3b built the missing halves these routes were waiting for, comparing
+// capability-by-capability first (§1.1); the integrator merged each remainder
+// and deleted the files:
+//   app/api/admin/deconflict/route.ts → app/actions/deconflict-cockpit.ts
+//     getDeconflictActivity, rendered by app/dashboard/system/components/os/
+//     deconflict-panel.tsx (the broker cockpit the engine promised at
+//     lib/kernel/deconflict/index.ts:36). The route's one extra — the
+//     platform-staff cross-tenant view — was merged onto the action (both
+//     identity columns via isPlatformStaffIdentity; refused identity read
+//     fails closed to tenant scope) before deletion. Its ?outcome/?channel
+//     server filters were NOT carried: the action returns the full window and
+//     the panel rolls up client-side over the same 500-row cap.
+//   app/api/listings/mls-check/route.ts → app/actions/mls-check.ts
+//     runMlsRuleCheck, rendered by the MLS-check panel on the listing
+//     lifecycle page — the fixHint UI lib/listings/mls-rule-check.ts:19-21
+//     promised. The action reads public_remarks/property_type/year_built from
+//     the real listings columns instead of caller-supplied overrides.
+//   app/api/admin/agents/sessions/route.ts → lib/kernel/command-center.ts
+//     loadManagerSessionDetail + app/actions/admin/manager-evals.ts
+//     getManagerSessionDetail, rendered by the command-center session drawer.
+//     All five route-only capabilities merged: last-message preview, rubric
+//     rows, single-session detail, status filter, and the platform-staff
+//     cross-tenant view (resolveTenantScope/platformScope with a written
+//     reason).
 
 for (const r of routesWithNoCaller) {
   const qualified = QUALIFIED_EXTERNAL_ROUTES.get(r.path)

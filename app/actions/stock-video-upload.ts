@@ -3,8 +3,9 @@
 /**
  * Stock video clip uploader — lets agents and team leads add their own
  * intros, outros, b-roll, and avatar backgrounds into video_assets so the
- * BrollPicker / BackgroundPicker can offer them as one-click choices in
- * the video wizard.
+ * BrollPicker / the wizard's background step can offer them as one-click
+ * choices in the video wizard. (BackgroundPicker deleted 2026-09-01 —
+ * survivor: app/dashboard/videos/create/video-create-client.tsx.)
  *
  * Scope choices:
  *   - 'agent'      → visible only to the uploading agent

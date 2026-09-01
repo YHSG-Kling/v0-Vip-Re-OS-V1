@@ -442,7 +442,8 @@ export async function runWeeklyAIAudit() {
 // SURVIVOR: the direct conversation_audit_flags read (same
 // `conversation:conversation_logs(...)` embed, same risk_score ordering) at
 // app/dashboard/communications/intelligence/page.tsx:115-135, rendered by
-// AuditFlagsTab/ComplianceTab, where reviewAuditFlag (below) closes the loop.
+// ComplianceTab (its never-imported twin AuditFlagsTab was deleted 2026-09-01),
+// where reviewAuditFlag (below) closes the loop.
 // A stripped-source census found zero callers outside the
 // the actions barrel (app/actions/index, deleted this wave) barrel, which itself has zero importers.
 
