@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
+import { SEQUENCE_TYPES } from "@/lib/campaigns/sequence-constants"
 import {
   buildComplianceSystemBlocks,
   precheckBriefForFairHousing,
@@ -314,11 +315,17 @@ export async function startSmartDrip(
     const own = await assertOwnership("contacts", contactId, brokerageId)
     if (!own.ok) return { success: false, error: own.error }
 
-    const SEQUENCE_TYPES = ["drip", "nurture", "re_engagement", "transaction", "post_close"]
-    if (!SEQUENCE_TYPES.includes(drip_type)) {
+    // The five values are NOT spelled out here any more: they are the live
+    // `campaign_sequences.sequence_type` CHECK, held once in
+    // lib/campaigns/sequence-constants.ts and shared with the sequences UI's
+    // picker, so a type the picker can create is a type this drain can service.
+    // Imported, never re-exported — this is a "use server" file, where every
+    // export is a public HTTP endpoint (§4).
+    const sequenceTypeValues = SEQUENCE_TYPES.map((t) => t.value)
+    if (!sequenceTypeValues.includes(drip_type)) {
       return {
         success: false,
-        error: `'${drip_type}' is not a sequence type the drip drain can service (one of: ${SEQUENCE_TYPES.join(", ")})`,
+        error: `'${drip_type}' is not a sequence type the drip drain can service (one of: ${sequenceTypeValues.join(", ")})`,
       }
     }
 

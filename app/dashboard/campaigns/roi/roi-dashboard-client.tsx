@@ -46,12 +46,71 @@ import {
   Award,
   ArrowUpRight,
   ArrowDownRight,
+  ArrowUp,
+  ArrowDown,
+  ArrowUpDown,
   Filter,
   RefreshCw,
   AlertCircle,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { formatDistanceToNow } from "date-fns"
+
+// ─── Campaign table sorting ───────────────────────────────────────────────────
+//
+// `sortBy` / `sortOrder` were READ by the sort below and by the memo's dep array
+// but neither setter was ever called, so the table was frozen at
+// `roi_percentage desc` and no column header could change it. These are the
+// missing half: one column list drives both the headers and the comparator, so a
+// header can never offer an ordering the comparator does not implement.
+const ROI_COLUMNS: Array<{ key: string; label: string; numeric: boolean }> = [
+  { key: "campaign_name",       label: "Campaign",    numeric: false },
+  { key: "campaign_type",       label: "Type",        numeric: false },
+  { key: "total_spend",         label: "Spend",       numeric: true },
+  { key: "total_leads",         label: "Leads",       numeric: true },
+  { key: "total_conversions",   label: "Conversions", numeric: true },
+  { key: "cost_per_lead",       label: "CPL",         numeric: true },
+  { key: "cost_per_conversion", label: "CPC",         numeric: true },
+  { key: "roi_percentage",      label: "ROI %",       numeric: true },
+  { key: "calculated_at",       label: "Updated",     numeric: true },
+]
+
+/** The value a row sorts by for a column — nested and date fields included. */
+function roiSortValue(row: any, key: string): number | string | null {
+  switch (key) {
+    case "campaign_name":
+      return row.marketing_campaigns?.campaign_name ?? ""
+    case "campaign_type":
+      return row.marketing_campaigns?.campaign_type ?? ""
+    case "calculated_at":
+      return row.calculated_at ? new Date(row.calculated_at).getTime() : null
+    default: {
+      const v = row[key]
+      return typeof v === "number" ? v : v == null ? null : Number(v)
+    }
+  }
+}
+
+function compareRoiRows(a: any, b: any, key: string, order: "asc" | "desc"): number {
+  const av = roiSortValue(a, key)
+  const bv = roiSortValue(b, key)
+
+  if (typeof av === "string" || typeof bv === "string") {
+    const cmp = String(av ?? "").localeCompare(String(bv ?? ""))
+    return order === "desc" ? -cmp : cmp
+  }
+
+  // MISSING NUMBERS SORT LAST IN BOTH DIRECTIONS. The old comparator coerced
+  // null to -Infinity, which read as "the worst campaign" descending and "the
+  // best" ascending — a campaign with no CPL yet is not the cheapest lead in the
+  // brokerage. Descending (the only order previously reachable) is unchanged:
+  // absent values stayed at the bottom then and stay there now.
+  const an = av as number | null
+  const bn = bv as number | null
+  if (an == null || Number.isNaN(an)) return bn == null || Number.isNaN(bn) ? 0 : 1
+  if (bn == null || Number.isNaN(bn)) return -1
+  return order === "desc" ? bn - an : an - bn
+}
 
 interface ROIDashboardClientProps {
   userId: string
@@ -118,14 +177,21 @@ export function ROIDashboardClient({
     }
 
     // Sort
-    result.sort((a, b) => {
-      const aVal = a[sortBy] ?? -Infinity
-      const bVal = b[sortBy] ?? -Infinity
-      return sortOrder === "desc" ? bVal - aVal : aVal - bVal
-    })
+    result.sort((a, b) => compareRoiRows(a, b, sortBy, sortOrder))
 
     return result
   }, [campaigns, selectedCampaignType, selectedStatus, selectedAgent, sortBy, sortOrder])
+
+  // Click a header: same column flips direction, a new column starts at desc
+  // (highest first, which is what every metric in this table is read for).
+  const toggleSort = (key: string) => {
+    if (sortBy === key) {
+      setSortOrder((o) => (o === "desc" ? "asc" : "desc"))
+    } else {
+      setSortBy(key)
+      setSortOrder("desc")
+    }
+  }
 
   // Channel chart data
   const channelChartData = useMemo(() => {
@@ -397,21 +463,45 @@ export function ROIDashboardClient({
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Campaign</TableHead>
-                    <TableHead>Type</TableHead>
-                    <TableHead className="text-right">Spend</TableHead>
-                    <TableHead className="text-right">Leads</TableHead>
-                    <TableHead className="text-right">Conversions</TableHead>
-                    <TableHead className="text-right">CPL</TableHead>
-                    <TableHead className="text-right">CPC</TableHead>
-                    <TableHead className="text-right">ROI %</TableHead>
-                    <TableHead className="text-right">Updated</TableHead>
+                    {ROI_COLUMNS.map((col) => {
+                      const active = sortBy === col.key
+                      const Arrow = !active ? ArrowUpDown : sortOrder === "desc" ? ArrowDown : ArrowUp
+                      return (
+                        <TableHead
+                          key={col.key}
+                          className={col.numeric ? "text-right" : undefined}
+                          aria-sort={
+                            active ? (sortOrder === "desc" ? "descending" : "ascending") : "none"
+                          }
+                        >
+                          <button
+                            type="button"
+                            onClick={() => toggleSort(col.key)}
+                            title={
+                              active && sortOrder === "desc"
+                                ? `Sort by ${col.label} ascending`
+                                : `Sort by ${col.label} descending`
+                            }
+                            className={cn(
+                              "inline-flex items-center gap-1 transition-colors hover:text-foreground",
+                              col.numeric && "flex-row-reverse",
+                              active ? "font-semibold text-foreground" : "text-muted-foreground",
+                            )}
+                          >
+                            {col.label}
+                            <Arrow
+                              className={cn("h-3.5 w-3.5", active ? "opacity-100" : "opacity-40")}
+                            />
+                          </button>
+                        </TableHead>
+                      )
+                    })}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filteredCampaigns.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={9} className="text-center py-8">
+                      <TableCell colSpan={ROI_COLUMNS.length} className="text-center py-8">
                         <p className="text-muted-foreground">
                           No campaigns found matching filters
                         </p>

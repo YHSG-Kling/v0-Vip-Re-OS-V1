@@ -343,8 +343,16 @@ export function AdsDashboardClient({
     }
   }, [searchParams])
 
-  // Campaign state
-  const [campaigns, setCampaigns] = useState(initialCampaigns)
+  // Campaign state — the SERVER PROP IS THE STATE. This was
+  // `useState(initialCampaigns)` with no setter call anywhere and no effect
+  // re-syncing the prop, so `useState` kept the mount-time array forever: every
+  // mutation below calls router.refresh(), the server tree re-rendered with a
+  // fresh `campaigns` prop, and this component ignored it. Approving, pausing
+  // or launching a campaign left the list, the tab counts and the filter counts
+  // showing pre-mutation data until a hard reload. Nothing here mutates the
+  // list locally, so rendering the prop directly is the whole fix and it makes
+  // router.refresh() do what it promises.
+  const campaigns = initialCampaigns
   const [isCreateCampaignOpen, setIsCreateCampaignOpen] = useState(false)
   const [isGeneratingCreatives, setIsGeneratingCreatives] = useState(false)
   const [selectedCampaignForCreatives, setSelectedCampaignForCreatives] = useState<string | null>(null)

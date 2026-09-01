@@ -89,6 +89,28 @@ interface Props {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
+// NOT A COPY OF THE SEQUENCES TRIGGER CATALOG — RECORDED WITH REASON, NOT MERGED.
+//
+// lib/workflow/triggers.ts:WORKFLOW_TRIGGERS is the canonical trigger catalog
+// (KernelEvent-derived), and both sequence surfaces already derive from it
+// (SequencesListClient.tsx:71, SequenceBuilderClient.tsx:158). This list was
+// checked against it before being left alone, and it is not the same vocabulary
+// wearing a different coat:
+//
+//   · ZERO overlap. Not one of these seven values appears in WORKFLOW_TRIGGERS,
+//     and none appears anywhere else in the repo — `new_lead_arrives` occurs in
+//     exactly two places, both in this file (here and TRIGGER_BADGE_COLORS).
+//     So nothing emits them and nothing dispatches on them.
+//   · Different column. These are stored on `workflow_automations.trigger_event`
+//     (no CHECK constraint), which nothing routes: executeWorkflow
+//     (app/actions/multi-persona.ts:580) runs an automation BY ID, from the
+//     Execute button. WORKFLOW_TRIGGERS feeds `campaign_sequences.trigger_event`,
+//     which does have a CHECK and is dispatched.
+//
+// Repointing this picker at WORKFLOW_TRIGGERS would therefore not merge two
+// spellings of one idea — it would silently orphan the trigger_event value on
+// every automation row a broker has already saved, which is a data migration and
+// a product decision, not a constant edit. Left as the finding.
 const TRIGGER_EVENTS = [
   { value: "new_lead_arrives",        label: "New Lead Arrives" },
   { value: "lead_qualified",          label: "Lead Qualified" },

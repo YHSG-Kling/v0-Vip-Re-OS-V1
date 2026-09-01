@@ -5,18 +5,39 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
-import { MessageSquare, Mail, Phone, Globe, Loader2, Sparkles, Send } from "lucide-react"
+import { MessageSquare, Mail, Phone, Globe, Loader2, Sparkles, Send, type LucideIcon } from "lucide-react"
 import { formatDistanceToNow } from "date-fns"
 import { sendPortalMessage } from "@/app/actions/portal-messages"
 import { toast } from "sonner"
 
 interface Conversation {
   id: string
-  last_message: string
   last_message_at: string
-  channel: string
   unread_count: number
   sentiment?: string | null
+  // THE ROW AS THE TABLE ACTUALLY STORES IT. app/crm/page.tsx:668 feeds this
+  // panel `select("*")` straight off `conversations`, and that table has no
+  // `channel` and no `last_message` column: the channel is `type` (e.g. "sms",
+  // "social_dm") and the preview text is written into `context_data.last_message`
+  // (app/api/webhooks/meta-dm/route.ts:259 and :271). Both were declared
+  // REQUIRED here and read unguarded, so `conv.last_message.slice(...)` threw a
+  // TypeError on every real row and `CHANNEL_ICONS[conv.channel]` could never
+  // hit. Both spellings are accepted so a caller that maps the row first still
+  // works.
+  channel?: string | null
+  type?: string | null
+  last_message?: string | null
+  context_data?: { last_message?: string | null } | null
+}
+
+/** The channel spelling this row carries, whichever writer produced it. */
+function conversationChannel(conv: Conversation): string {
+  return conv.channel ?? conv.type ?? "unknown"
+}
+
+/** The preview line this row carries, whichever writer produced it. */
+function conversationPreview(conv: Conversation): string {
+  return conv.last_message ?? conv.context_data?.last_message ?? ""
 }
 
 interface CommunicationHealthPanelProps {
@@ -30,12 +51,32 @@ interface CommunicationHealthPanelProps {
   onDraftConsumed?: () => void
 }
 
-const CHANNEL_ICONS: Record<string, React.ReactNode> = {
-  sms: <MessageSquare className="h-3.5 w-3.5" />,
-  email: <Mail className="h-3.5 w-3.5" />,
-  phone: <Phone className="h-3.5 w-3.5" />,
-  voice: <Phone className="h-3.5 w-3.5" />,
-  portal: <Globe className="h-3.5 w-3.5" />,
+/**
+ * THE ONE MAP FOR THE CONVERSATION-CHANNEL VOCABULARY — and it is deliberately
+ * NOT merged with the sequence-step channel icons.
+ *
+ * These keys are `conversations.type` values (sms, email, phone, voice, portal,
+ * plus whatever a webhook writes — meta-dm writes "social_dm"). The other
+ * channel→icon lookups in this repo answer a DIFFERENT column,
+ * `campaign_sequence_steps.channel`, whose live CHECK spells voice `voice_drop`
+ * and has no `phone`, no `portal` and no `social_dm` at all. That vocabulary
+ * already has one palette-driven resolver — app/components/campaigns/
+ * step-type-select.tsx:47 `stepIcon()`, which reads the icon name off
+ * lib/workflow/step-palette.ts and therefore answers for all 25 live step
+ * channels rather than a hand-picked six. Pointing this badge at it would
+ * resolve every conversation type to the fallback icon, so the two stay
+ * separate: one map per vocabulary, not one map per idea-that-looks-similar.
+ *
+ * Values are icon COMPONENTS. They used to be pre-rendered ReactNodes with
+ * h-3.5/w-3.5 baked in, which is one reason no other surface could ever reuse
+ * this map; the size now lives at the single render site below.
+ */
+const CHANNEL_ICONS: Record<string, LucideIcon> = {
+  sms: MessageSquare,
+  email: Mail,
+  phone: Phone,
+  voice: Phone,
+  portal: Globe,
 }
 
 const CHANNEL_COLORS: Record<string, string> = {
@@ -124,23 +165,27 @@ export function CommunicationHealthPanel({
           </div>
         ) : (
           <div className="space-y-2">
-            {sorted.slice(0, 3).map((conv) => (
+            {sorted.slice(0, 3).map((conv) => {
+              const channel = conversationChannel(conv)
+              const preview = conversationPreview(conv)
+              const ChannelIcon = CHANNEL_ICONS[channel] ?? MessageSquare
+              return (
               <div
                 key={conv.id}
                 className="flex items-start gap-3 p-3 bg-gray-50 rounded-lg"
               >
                 <Badge
                   className={`flex items-center gap-1 shrink-0 ${
-                    CHANNEL_COLORS[conv.channel] || "bg-gray-100 text-gray-600"
+                    CHANNEL_COLORS[channel] || "bg-gray-100 text-gray-600"
                   }`}
                 >
-                  {CHANNEL_ICONS[conv.channel] || <MessageSquare className="h-3.5 w-3.5" />}
-                  {conv.channel.toUpperCase()}
+                  <ChannelIcon className="h-3.5 w-3.5" />
+                  {channel.toUpperCase()}
                 </Badge>
                 <div className="flex-1 min-w-0">
                   <p className="text-sm text-gray-700 truncate">
-                    {conv.last_message.slice(0, 80)}
-                    {conv.last_message.length > 80 && "..."}
+                    {preview.slice(0, 80)}
+                    {preview.length > 80 && "..."}
                   </p>
                   <div className="flex items-center gap-2 mt-1">
                     <span className="text-xs text-muted-foreground">
@@ -162,7 +207,8 @@ export function CommunicationHealthPanel({
                   </div>
                 </div>
               </div>
-            ))}
+              )
+            })}
 
             {/* Optimistic sent messages */}
             {sentMessages.map((m, i) => (

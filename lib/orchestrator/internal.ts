@@ -37,79 +37,170 @@ interface ProcessingResult {
 }
 
 // =====================================================
-// EVENT HANDLER REGISTRY — ⚠️ NOT CURRENTLY DISPATCHED.
+// EVENT HANDLER REGISTRY — CONSULTED BY orchestrateEvent().
 // =====================================================
-// orchestrateEvent() routes via the type-safe `switch (EVENT_TYPES.X)` below, NOT this map. This map
-// is the INTENDED wiring for BUILT-BUT-UNWIRED feature modules, and is the ONLY importer keeping them
-// referenced (so they're not flagged as orphans). DO NOT delete it or the modules — they are real
-// features awaiting wiring, not dead code:
-//   · @/app/actions/journey-tasks  → the CLIENT-PORTAL journey system (completeTask + submitTaskForm
-//     + getStageProgress + getTaskFormFields; emits journey.task_completed). Distinct from the general
-//     app/actions/tasks.ts. WIRING GAP: the portal journey UI doesn't yet call completeTask, so
-//     journey.task_completed is never emitted and handleTaskCompletedEvent never runs.
-//   · @/app/actions/video-content  → the VIDEO LIFECYCLE (generateVideoScript / createShortClip /
-//     handleVideoPublished / handleHighEngagement). video.generated is dispatched by the LOCAL
-//     handleVideoGenerated; video.script_approved/published/high_engagement are not yet emitted.
-// To activate: emit these events from the live flows (portal task UI; video publish/engagement) AND
-// dispatch them — either add cases to the switch or make orchestrateEvent consult this map.
+// WHAT CHANGED, AND WHY IT WAS CHANGED. This map used to say of itself "⚠️ NOT
+// CURRENTLY DISPATCHED": it existed only so that 24 handler modules would not read as
+// orphans, and its own header named the two exits — "either add cases to the switch or
+// make orchestrateEvent consult this map". A comment holding a wire open is exactly the
+// shape the orphan doctrine forbids, so BOTH exits were taken at once: the switch below
+// now has a `case` for every event type this map can actually service, and each of those
+// cases dispatches THROUGH the map (dispatchRegistered). The map is a wiring again, not a
+// reference — and the switch stays the place the routed set is declared, which is what
+// scripts/event-dispatch-invariant-guard.ts reads to know which types must be emitted
+// with the DISPATCHING emitter.
+//
+// THE PREMISE THAT TURNED OUT TO BE FALSE. This was expected to need a vocabulary
+// reconciliation first — dotted keys here vs an "underscore EVENT_TYPES" in the switch.
+// There is no such drift: EVENT_TYPES is dotted too (lib/events/types.ts:29 —
+// `LISTING_SIGNED: "listing.signed"`). Only the CONSTANT NAMES are SCREAMING_SNAKE; the
+// values are byte-identical to these keys. 21 of the 24 keys below are exactly an
+// EVENT_TYPES value. Nothing was renamed and no migration was needed.
+//
+// THE VALUE SHAPE IS AN INVOKER, NOT A FUNCTION REFERENCE. Each entry used to resolve to
+// the handler itself, which quietly assumed every handler takes one `payload`. Two do
+// not, and dispatching them that way would have failed silently:
+//   · scheduleClosingGift(listingId: string) — lib/application/listing-lifecycle.ts:491
+//     takes a LISTING ID, not a payload object. Handed the payload it would have queried
+//     `.eq("id", {…})` and matched nothing, which supabase-js reports as success (§3).
+//   · generateAssistantSuggestions(agentId, { page, entity_id, entity_type }) —
+//     app/actions/assistant.ts:307 takes TWO arguments including a UI page context.
+// Each entry now adapts its own handler, so a signature change breaks the build here
+// instead of dropping an orchestration at runtime.
+//
+// WHAT IS RECORDED BUT NOT DISPATCHED, AND WHY (a key with no `case` below never fires):
+//   · The 8 keys the switch already services with a LOCAL handler — lead.created,
+//     lead.tagged_hot, listing.appointment_set, listing.signed, listing.live,
+//     transaction.milestone_overdue, credit.status_updated, video.generated. For these the
+//     local handler in this file IS the wiring in force, and the mapped module is a SECOND,
+//     different implementation of the same event (e.g. this file's handleListingLive mints
+//     the tracked QR; listing-lifecycle's handleListingLive does not). Running both would
+//     double-fire. Consolidating the two implementations is a separate piece of work in
+//     app/actions/listing-lifecycle.ts + app/actions/video-content.ts, not something this
+//     dispatch can decide.
+//   · lead.engaged → generateAssistantSuggestions. No `page` value can be derived from a
+//     lead.engaged payload without inventing one, and nothing in the repo emits
+//     lead.engaged, so a guess would buy nothing and could mis-route. Refused explicitly
+//     below rather than guessed.
+//   · journey.task_completed / journey.stage_completed / journey.all_tasks_done. These
+//     three are the only keys with NO EVENT_TYPES member at all, so they cannot be given a
+//     type-safe `case`. They are also not emitted: the portal journey UI does not yet call
+//     completeTask (@/app/actions/journey-tasks), so the events never exist. Adding the
+//     EVENT_TYPES members belongs with the emitter, in lib/events/types.ts.
 //
 // ─── ASKED AND ANSWERED: the six copilot/assistant "handlers" do NOT belong here ─────
 // app/actions/copilot.ts (handleSuggestionAccepted, handleCoachingSessionBooked,
 // handleMorningKickoff) and app/actions/assistant.ts (handleAssistantQuery,
 // handleTaskDelegated, handleAutomationTriggered) were repeatedly proposed for this map.
-// They are not being added, and no internal-caller seam is being built for them, because
-// registering them cannot make them fire:
-//   · This map is not consulted. `orchestrateEvent` switches on `event.event_type` (below),
-//     so an entry here is a reference, not a wiring.
-//   · There is no event. `lib/events/types.ts:29-54` is the whole EVENT_TYPES vocabulary
-//     and it has no member for any of the six; the nearest, `AI_SUGGESTION_ACTIONED`, is
-//     emitted by nothing in the repo.
-//   · The blocker people kept naming — `emitEventFromCron` carries a SERVICE credential and
-//     no session, so the `authorizeForUser` gates in those files refuse every unattended
-//     dispatch — is true, and it is the SECOND reason not to wire them, not the first. Even
-//     with a seam that handed each handler an explicit identity, the dispatch count stays
-//     zero. A seam is worth building the day an emitter exists; today it would only make
-//     six functions look connected.
+// They are still not being added, and no internal-caller seam is being built for them.
+// One of the two reasons has changed and the other has not:
+//   · "This map is not consulted" is NO LONGER TRUE — it is now the dispatch path for the
+//     cases below. That reason is retired. (Note that app/actions/copilot.ts:24,
+//     app/actions/assistant.ts:24 and app/actions/social-publishing.ts:54 still state it;
+//     those files belong to other owners and their notes want the same correction.)
+//   · There is still no event, and that alone is decisive. `lib/events/types.ts:29-54` is
+//     the whole EVENT_TYPES vocabulary and it has no member for any of the six; the
+//     nearest, `AI_SUGGESTION_ACTIONED`, is emitted by nothing in the repo. Registering a
+//     handler for an event that is never written cannot make it fire.
+//   · The credential blocker people kept naming — `emitEventFromCron` carries a SERVICE
+//     credential and no session, so session-gated handlers refuse every unattended
+//     dispatch — is true and unchanged. Note it applies to the wired handlers too: they
+//     use `createServerClient()` (RLS-bound), the same client this file's own local
+//     handlers and markEventProcessed/logProcessingResults already use, so cron-context
+//     dispatch is bounded by RLS exactly as it was before. That is the pre-existing
+//     property of this module, not something the wiring introduces.
 // Their real dispositions (user actions, telemetry, one duplicate of the daily-briefing
 // cron) are recorded per-function in those two files.
 // =====================================================
 
-const EVENT_HANDLERS = {
+/** One dispatch contract for every registered handler, whatever its own signature is. */
+type EventHandlerInvoker = (event: Event) => Promise<unknown>
+
+/**
+ * The three keys that point at `generateAssistantSuggestions(agentId, { page, … })`.
+ * FAILS CLOSED (§4): if a `case` is ever added for one of these without deciding what
+ * page context the event carries, the dispatch reports a failure into
+ * event_processing_log instead of calling the handler with a wrong shape.
+ */
+const assistantSuggestionsNotWired: EventHandlerInvoker = async (event) => {
+  throw new Error(
+    `${event.event_type} maps to app/actions/assistant.ts:generateAssistantSuggestions(agentId, { page, entity_id, entity_type }) — ` +
+      `a UI page context this event does not carry. Recorded, not guessed; decide the mapping before adding a case.`,
+  )
+}
+
+const EVENT_HANDLERS: Record<string, EventHandlerInvoker> = {
   // Lead events
-  "lead.created": () => import("@/app/actions/copilot").then((m) => m.generate7DayPlan),
-  "lead.tagged_hot": () => import("@/app/actions/assistant").then((m) => m.generateAssistantSuggestions),
-  "lead.engaged": () => import("@/app/actions/assistant").then((m) => m.generateAssistantSuggestions),
+  "lead.created": async (e) => (await import("@/app/actions/copilot")).generate7DayPlan(e.payload),
+  "lead.tagged_hot": assistantSuggestionsNotWired,
+  "lead.engaged": assistantSuggestionsNotWired,
 
   // Listing events
-  "listing.appointment_set": () => import("@/app/actions/listing-lifecycle").then((m) => m.handleListingAppointmentBooked),
-  "listing.signed": () => import("@/app/actions/listing-lifecycle").then((m) => m.handleListingAgreementSigned),
-  "listing.live": () => import("@/app/actions/listing-lifecycle").then((m) => m.handleListingLive),
-  "listing.price_reduction": () => import("@/app/actions/listing-lifecycle").then((m) => m.handlePriceReduction),
-  "listing.offer_received": () => import("@/app/actions/listing-lifecycle").then((m) => m.handleOfferReceived),
+  "listing.appointment_set": async (e) => (await import("@/app/actions/listing-lifecycle")).handleListingAppointmentBooked(e.payload),
+  "listing.signed": async (e) => (await import("@/app/actions/listing-lifecycle")).handleListingAgreementSigned(e.payload),
+  "listing.live": async (e) => (await import("@/app/actions/listing-lifecycle")).handleListingLive(e.payload),
+  "listing.price_reduction": async (e) => (await import("@/app/actions/listing-lifecycle")).handlePriceReduction(e.payload),
+  "listing.offer_received": async (e) => (await import("@/app/actions/listing-lifecycle")).handleOfferReceived(e.payload),
 
   // Transaction events
-  "transaction.milestone_overdue": () => import("@/app/actions/assistant").then((m) => m.generateAssistantSuggestions),
-  "transaction.contingency_cleared": () => import("@/app/actions/listing-lifecycle").then((m) => m.handleContingencyCleared),
-  "transaction.close_approaching": () => import("@/app/actions/listing-lifecycle").then((m) => m.handleClosingApproaching),
-  "transaction.closing_soon": () => import("@/app/actions/listing-lifecycle").then((m) => m.scheduleClosingGift),
-  "transaction.closed": () => import("@/app/actions/listing-lifecycle").then((m) => m.triggerReviewSequence),
+  "transaction.milestone_overdue": assistantSuggestionsNotWired,
+  "transaction.contingency_cleared": async (e) => (await import("@/app/actions/listing-lifecycle")).handleContingencyCleared(e.payload),
+  "transaction.close_approaching": async (e) => (await import("@/app/actions/listing-lifecycle")).handleClosingApproaching(e.payload),
+  // scheduleClosingGift takes a listings.id, not a payload — see the header.
+  "transaction.closing_soon": async (e) => {
+    const listingId = (e.payload as Record<string, any>)?.listing_id
+    if (!listingId) throw new Error("transaction.closing_soon payload carries no listing_id — scheduleClosingGift needs one")
+    return (await import("@/app/actions/listing-lifecycle")).scheduleClosingGift(String(listingId))
+  },
+  "transaction.closed": async (e) => (await import("@/app/actions/listing-lifecycle")).triggerReviewSequence(e.payload),
 
   // Credit events
-  "credit.status_updated": () => import("@/app/actions/credit-copilot").then((m) => m.handlePartnerStatusUpdate),
-  "credit.target_reached": () => import("@/app/actions/credit-copilot").then((m) => m.handleTargetReached),
-  "credit.partner_referred": () => import("@/app/actions/credit-copilot").then((m) => m.handlePartnerReferral),
+  "credit.status_updated": async (e) => (await import("@/app/actions/credit-copilot")).handlePartnerStatusUpdate(e.payload),
+  "credit.target_reached": async (e) => (await import("@/app/actions/credit-copilot")).handleTargetReached(e.payload),
+  "credit.partner_referred": async (e) => (await import("@/app/actions/credit-copilot")).handlePartnerReferral(e.payload),
 
   // Video events
-  "video.generated": () => import("@/app/actions/video-content").then((m) => m.handleVideoGenerated),
-  "video.script_approved": () => import("@/app/actions/video-content").then((m) => m.approveAndGenerateVideo),
-  "video.published": () => import("@/app/actions/video-content").then((m) => m.handleVideoPublished),
-  "video.high_engagement": () => import("@/app/actions/video-content").then((m) => m.handleHighEngagement),
+  "video.generated": async (e) => (await import("@/app/actions/video-content")).handleVideoGenerated(e.payload),
+  "video.script_approved": async (e) => (await import("@/app/actions/video-content")).approveAndGenerateVideo(e.payload),
+  "video.published": async (e) => (await import("@/app/actions/video-content")).handleVideoPublished(e.payload),
+  "video.high_engagement": async (e) => (await import("@/app/actions/video-content")).handleHighEngagement(e.payload),
 
-  // Journey/Portal events
-  "journey.task_completed": () => import("@/app/actions/journey-tasks").then((m) => m.handleTaskCompletedEvent),
-  "journey.stage_completed": () => import("@/app/actions/journey-tasks").then((m) => m.handleStageCompletedEvent),
-  "journey.all_tasks_done": () => import("@/app/actions/journey-tasks").then((m) => m.handleAllTasksCompletedEvent),
-} as const
+  // Journey/Portal events — no EVENT_TYPES member and no emitter yet; see the header.
+  "journey.task_completed": async (e) => (await import("@/app/actions/journey-tasks")).handleTaskCompletedEvent(e.payload),
+  "journey.stage_completed": async (e) => (await import("@/app/actions/journey-tasks")).handleStageCompletedEvent(e.payload),
+  "journey.all_tasks_done": async (e) => (await import("@/app/actions/journey-tasks")).handleAllTasksCompletedEvent(e.payload),
+}
+
+/**
+ * Dispatch one event through EVENT_HANDLERS and report the outcome the way every other
+ * handler in this file does, so event_processing_log records it. A missing entry is a
+ * FAILURE, not a silent skip: a `case` below can only reach this for a type the map is
+ * supposed to service, so "no entry" means the two lists drifted apart.
+ */
+async function dispatchRegistered(event: Event): Promise<ProcessingResult> {
+  const startTime = Date.now()
+  const handler = `registry:${event.event_type}`
+  const invoke = EVENT_HANDLERS[event.event_type]
+  if (!invoke) {
+    return {
+      success: false,
+      handler,
+      error: `no EVENT_HANDLERS entry for ${event.event_type} — the switch routes it but the registry does not service it`,
+      processing_time_ms: Date.now() - startTime,
+    }
+  }
+  try {
+    await invoke(event)
+    return { success: true, handler, processing_time_ms: Date.now() - startTime }
+  } catch (error) {
+    return {
+      success: false,
+      handler,
+      error: error instanceof Error ? error.message : "Unknown error",
+      processing_time_ms: Date.now() - startTime,
+    }
+  }
+}
 export async function emitEventFromCron(input: EventInput): Promise<{ success: boolean; eventId?: string; error?: string }> {
   try {
     const { createServiceClient: svcCreate } = await import("@/lib/supabase/service")
@@ -209,6 +300,30 @@ export async function orchestrateEvent(event: Event): Promise<void> {
 
       case EVENT_TYPES.IMAGE_GENERATED:
         results.push(await handleImageGenerated(event))
+        break
+
+      // ─── Routed THROUGH the registry (EVENT_HANDLERS, above) ──────────────
+      // Every case here previously fell to `default:` and logged "No handler",
+      // which is why the modules behind them read as built-but-unwired. None of
+      // these types is emitted anywhere in the repo today, so wiring them
+      // changes no current behaviour — it means the day an emitter is added the
+      // handler runs instead of the event landing in the table and stopping.
+      // They stay `case EVENT_TYPES.X:` rather than a map lookup in `default:`
+      // so the routed set remains readable to
+      // scripts/event-dispatch-invariant-guard.ts, which derives it from these
+      // case labels.
+      case EVENT_TYPES.LISTING_PRICE_REDUCTION:
+      case EVENT_TYPES.LISTING_OFFER_RECEIVED:
+      case EVENT_TYPES.TRANSACTION_CONTINGENCY_CLEARED:
+      case EVENT_TYPES.TRANSACTION_CLOSE_APPROACHING:
+      case EVENT_TYPES.TRANSACTION_CLOSING_SOON:
+      case EVENT_TYPES.TRANSACTION_CLOSED:
+      case EVENT_TYPES.CREDIT_TARGET_REACHED:
+      case EVENT_TYPES.CREDIT_PARTNER_REFERRED:
+      case EVENT_TYPES.VIDEO_SCRIPT_APPROVED:
+      case EVENT_TYPES.VIDEO_PUBLISHED:
+      case EVENT_TYPES.VIDEO_HIGH_ENGAGEMENT:
+        results.push(await dispatchRegistered(event))
         break
 
       default:

@@ -21,7 +21,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Search, Heart, Grid3x3, List, MapPin, Bed, Bath, Maximize } from "lucide-react"
+import { Search, Heart, Grid3x3, List, MapPin, Bed, Bath, Maximize, SlidersHorizontal } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import Link from "next/link"
 
@@ -33,6 +33,11 @@ export default function PropertySearchContent() {
   const [properties, setProperties] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid")
+  // Mobile filter-panel collapse. The `hidden lg:block` arm below was
+  // unreachable: nothing ever called setShowFilters, so the sidebar was
+  // permanently expanded on phones and pushed every result below the fold. The
+  // missing half is the toggle button rendered above the two-column layout
+  // (hidden at `lg`, where the sidebar is always visible anyway).
   const [showFilters, setShowFilters] = useState(true)
   const [filters, setFilters] = useState({
     minPrice: 0,
@@ -288,8 +293,26 @@ export default function PropertySearchContent() {
       </div>
 
       <div className="max-w-7xl mx-auto">
+        {/* Mobile-only filter toggle — the control that makes the aside's
+            "hidden lg:block" arm reachable. At `lg` the sidebar is always
+            shown, so the button is hidden there. */}
+        <div className="lg:hidden mb-4">
+          <Button
+            variant="outline"
+            onClick={() => setShowFilters((v) => !v)}
+            aria-expanded={showFilters}
+            aria-controls="property-search-filters"
+          >
+            <SlidersHorizontal className="mr-2 h-4 w-4" />
+            {showFilters ? "Hide Filters" : "Show Filters"}
+          </Button>
+        </div>
+
         <div className="flex flex-col lg:flex-row gap-6">
-          <aside className={`lg:w-80 ${showFilters ? "block" : "hidden lg:block"}`}>
+          <aside
+            id="property-search-filters"
+            className={`lg:w-80 ${showFilters ? "block" : "hidden lg:block"}`}
+          >
             <Card>
               <CardContent className="p-6 space-y-6">
                 <div className="flex items-center justify-between mb-4">

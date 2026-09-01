@@ -277,7 +277,13 @@ export default function VideoCreatePage() {
   const [scriptBeforeImprove, setScriptBeforeImprove] = useState<string | null>(null)
 
   // Step 2: Avatar & Voice
-  const [selectedAvatar, setSelectedAvatar] = useState<string>("")
+  // TOMBSTONE (orphan doctrine §1.3) — `selectedAvatar` / `setSelectedAvatar`
+  // stood here and were never set and never read: one occurrence each in the
+  // whole file. SURVIVOR: `selectedDidAssetId` (video-create-client.tsx:302) is
+  // what the avatar picker that actually runs writes and reads — the picker
+  // itself is the "Ready library avatars" grid at video-create-client.tsx:1671,
+  // which maps over `readyAssets`. Nothing merged: the deleted pair carried no
+  // value the D-ID asset-row selection does not.
   const [selectedVoice, setSelectedVoice] = useState<string>("")
   // D-ID-specific selections
   const [selectedElevenLabsVoiceId, setSelectedElevenLabsVoiceId] = useState<string | null>(null)
@@ -339,7 +345,12 @@ export default function VideoCreatePage() {
 
   // Data from DB
   const [scripts, setScripts] = useState<any[]>([])
-  const [avatars, setAvatars] = useState<any[]>([])
+  // TOMBSTONE (orphan doctrine §1.3) — `avatars` / `setAvatars` stood here,
+  // never filled and never rendered (one occurrence each in the file). SURVIVOR:
+  // `didAvatarAssets` (loaded from agent_avatar_assets) and the `readyAssets`
+  // slice of it the picker renders at video-create-client.tsx:1671; selection
+  // lands in `selectedDidAssetId` (video-create-client.tsx:302). Nothing merged
+  // — this list was never populated, so it held nothing to carry over.
   // Every voice the agent can present with — their own clones AND the curated
   // ElevenLabs assistant voices. Both are real ElevenLabs voice ids down the
   // same TTS path, so having no clone yet is not a reason to be locked out.

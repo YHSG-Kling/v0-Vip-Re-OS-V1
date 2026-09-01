@@ -30,10 +30,6 @@ import {
 import {
   Plus,
   Sparkles,
-  Mail,
-  MessageSquare,
-  Phone,
-  Send,
   FlaskConical,
   BarChart2,
   Copy,
@@ -50,7 +46,7 @@ import {
   updateCampaignSequence,
   deleteCampaignSequence,
 } from "@/app/actions/campaign-sequences"
-import type { CampaignSequence } from "@/lib/campaigns/sequence-constants"
+import { SEQUENCE_TYPES, type CampaignSequence } from "@/lib/campaigns/sequence-constants"
 import { precheckSequenceCompliance, type SequenceStepCheck } from "@/app/actions/sequence-step-ai"
 import { AlertTriangle, ShieldCheck } from "lucide-react"
 import { WORKFLOW_TRIGGERS, groupedTriggers, toTriggerSelectValue, fromTriggerSelectValue } from "@/lib/workflow/triggers"
@@ -71,22 +67,23 @@ interface Props {
 const TRIGGER_EVENTS = WORKFLOW_TRIGGERS.map(t => ({ value: t.value, label: t.label }))
 const GROUPED_TRIGGERS = groupedTriggers()
 
-const SEQUENCE_TYPES = [
-  { value: "drip",           label: "Drip" },
-  { value: "nurture",        label: "Nurture" },
-  { value: "re_engagement",  label: "Re-engagement" },
-  { value: "transaction",    label: "Transaction" },
-  { value: "post_close",     label: "Post-Close" },
-]
-
-const CHANNEL_ICONS: Record<string, React.ElementType> = {
-  email:       Mail,
-  sms:         MessageSquare,
-  voice:       Phone,
-  direct_mail: Send,
-  in_app:      Layers,
-  video:       BarChart2,
-}
+// SEQUENCE_TYPES moved to lib/campaigns/sequence-constants.ts (imported above)
+// — same five values, now shared with app/actions/workflows.ts's drip-drain
+// validator instead of being spelled out twice.
+//
+// TOMBSTONE (orphan doctrine §1.1) — the local CHANNEL_ICONS map that stood here
+// is DELETED. It occurred exactly twice in this file: this declaration and the
+// re-export at the bottom, commented "so builder can reuse them". It was never
+// read in this file, and no file ever imported it — the builder it was written
+// for hand-rolled its own six-key copy instead.
+//
+// SURVIVOR: app/components/campaigns/step-type-select.tsx:47 `stepIcon(channel)`,
+// which resolves the icon NAME off lib/workflow/step-palette.ts — the same
+// palette saveSequenceSteps uses as its allow-list. Nothing merged, because the
+// survivor is strictly more complete: it answers for all 25 live
+// `campaign_sequence_steps.channel` CHECK values, where this map held six, and
+// one of those six (`voice`) was not a live value at all — the column spells it
+// `voice_drop`, so that entry could never have been hit by a stored step.
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -847,5 +844,13 @@ function SequenceCard({
   )
 }
 
-// Re-export constants so builder can reuse them
-export { TRIGGER_EVENTS, SEQUENCE_TYPES, CHANNEL_ICONS }
+// TOMBSTONE (orphan doctrine §1.1) — this file used to end with
+// `export { TRIGGER_EVENTS, SEQUENCE_TYPES, CHANNEL_ICONS }`, commented
+// "Re-export constants so builder can reuse them". Nothing ever imported any of
+// the three: the only importer of this module (../sequences/page.tsx:5) takes
+// the default export only, and the builder it was written for hand-rolled its
+// own copies. Each name now has one home, and the builder can import from there:
+//   · TRIGGER_EVENTS  → derived from WORKFLOW_TRIGGERS, lib/workflow/triggers.ts
+//                       (already the canonical catalog; this file just maps it)
+//   · SEQUENCE_TYPES  → lib/campaigns/sequence-constants.ts
+//   · CHANNEL_ICONS   → app/components/campaigns/step-type-select.tsx:47 stepIcon()

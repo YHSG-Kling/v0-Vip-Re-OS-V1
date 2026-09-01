@@ -1,6 +1,10 @@
 // CANONICAL — always import LeadIntelligencePanel from this path.
-// The duplicate at app/components/features/intelligence/LeadIntelligencePanel.tsx
-// re-exports from here and exists only for backwards-compat during migration.
+// The backwards-compat re-export that used to sit at
+// app/components/features/intelligence/LeadIntelligencePanel.tsx is GONE (the
+// directory no longer exists; verified 2026-09-01 — the only surviving mention
+// of that path in the tree was this comment, and the one importer is
+// app/leads/page.tsx:94, which already points here). Kept as a tombstone so the
+// path is not re-created.
 "use client"
 
 import { useState } from "react"
@@ -19,14 +23,42 @@ export default function LeadIntelligencePanel({ leadId, initialData }: { leadId:
   const [isEnriching, setIsEnriching] = useState(false)
   const { toast } = useToast()
 
+  // Enrichment CONSUMES ITS RESULT instead of reloading the page.
+  //
+  // What was here: `window.location.reload()`. On the one page that renders this
+  // panel (app/leads/page.tsx:1832) the panel is shown only while
+  // `selectedLeadId` is set — client state — so a full reload did not "reload
+  // intelligence data" at all: it threw away the selection and CLOSED the panel,
+  // along with every filter, tab and scroll position on the page.
+  //
+  // What it can consume, and what it cannot. `enrichLeadData` (app/actions/
+  // lead-intelligence.ts:758) returns `{ success: true, dataSources }` or
+  // `{ success: false, error }` — `dataSources` is exactly the list rendered as
+  // the "Data Sources" badges below, so that half is fed straight back into
+  // state. It returns NO refreshed profile, and there is no reader anywhere in
+  // the tree that returns this panel's shape (a `lead_intelligence` row with its
+  // lead_engagement_scores / lead_property_ownership / motivated_seller_signals
+  // children), so the recomputed scores cannot be pulled without BUILDING that
+  // reader — a change inside app/actions/lead-intelligence.ts, which this lane
+  // does not own. Until it exists the honest thing is to say the scores land on
+  // the next load rather than silently show stale numbers under a success toast.
   const handleEnrich = async () => {
     setIsEnriching(true)
     try {
       const result = await enrichLeadData(leadId)
       if (result.success) {
-        toast({ title: "Lead data enriched successfully" })
-        // Reload intelligence data
-        window.location.reload()
+        const dataSources = (result as { dataSources?: string[] }).dataSources ?? []
+        setIntelligence((prev: any) => ({
+          ...(prev ?? {}),
+          data_sources: dataSources,
+          last_enriched_at: new Date().toISOString(),
+        }))
+        toast({
+          title: "Lead data enriched",
+          description: dataSources.length
+            ? `Consulted: ${dataSources.join(", ")}. Updated scores appear on the next load.`
+            : "No external source returned data for this lead.",
+        })
       } else {
         toast({ title: "Enrichment failed", description: result.error, variant: "destructive" })
       }
