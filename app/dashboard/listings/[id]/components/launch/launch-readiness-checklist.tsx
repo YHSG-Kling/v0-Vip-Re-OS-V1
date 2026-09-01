@@ -79,6 +79,26 @@ interface LaunchReadinessChecklistProps {
    *  engine's document/signature audit passed at execution time. NULL when no
    *  agreement exists. FALSE covers legacy rows executed before the gate. */
   agreementCompliancePassed?: boolean | null
+  /** listing_agreements.document_name / .effective_date — OPTIONAL intake on the
+   *  markAgreementSigned card. NULL is "NOT RECORDED" (every agreement written
+   *  before the intake existed, plus any where the agent left the field blank)
+   *  and renders as ABSENCE: the clause is omitted entirely. A fabricated
+   *  effective date on a listing agreement is a legal misstatement, so there is
+   *  no default and no placeholder date anywhere below. */
+  agreementDocumentName?: string | null
+  agreementEffectiveDate?: string | null
+  /** listing_agreements.document_url — when present, the EXECUTED row links to
+   *  the document instead of back to /forms, which is a "go send it" destination
+   *  on a row already marked complete. */
+  agreementDocumentUrl?: string | null
+  /** Which side has actually signed. Turns the generic "Sent — awaiting
+   *  signatures" into the one fact the agent needs: who is holding it up. */
+  agreementSellerSignedAt?: string | null
+  agreementAgentSignedAt?: string | null
+  /** TRUE when the agreement query was REFUSED rather than empty. "No agreement"
+   *  and "we could not read the agreement" are different statements about a legal
+   *  document and this row must never make the first one about the second. */
+  agreementReadFailed?: boolean
   // MLS — the kernel's launch gate blocks on mls_number, so it belongs on the
   // checklist that claims to say whether the listing can launch.
   mlsNumber: string | null
@@ -130,6 +150,12 @@ export function LaunchReadinessChecklist(props: LaunchReadinessChecklistProps) {
     hasListingAgreement,
     agreementFullyExecuted,
     agreementCompliancePassed,
+    agreementDocumentName,
+    agreementEffectiveDate,
+    agreementDocumentUrl,
+    agreementSellerSignedAt,
+    agreementAgentSignedAt,
+    agreementReadFailed,
     mlsNumber,
     mlsLink,
     listingAddress,
@@ -154,22 +180,70 @@ export function LaunchReadinessChecklist(props: LaunchReadinessChecklistProps) {
   const fieldsMissing = requiredFields.filter(f => !f.complete)
   const fieldsComplete = requiredFields.length - fieldsMissing.length
 
+  // ── THE AGREEMENT ROW'S DETAIL ─────────────────────────────────────────────
+  // Built from clauses that only exist when the underlying column does. A NULL
+  // column contributes NOTHING — no "unknown", no placeholder, and above all no
+  // invented date on a legal instrument. With both document_name and
+  // effective_date NULL the executed detail falls back verbatim to the string
+  // this row has always shown.
+  const agreementDoc = (agreementDocumentName ?? "").trim() || null
+  const effectiveDate = (() => {
+    if (!agreementEffectiveDate) return null
+    const d = new Date(agreementEffectiveDate)
+    return Number.isFinite(d.getTime())
+      ? d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
+      : null
+  })()
+  const executedDetail = [
+    agreementDoc,
+    effectiveDate ? `effective ${effectiveDate}` : null,
+    agreementCompliancePassed
+      ? "compliance audit passed"
+      : "executed before the compliance gate — re-verify documents",
+  ].filter(Boolean).join(" · ")
+  // Which side is holding an unexecuted agreement up. Falls back to the generic
+  // string when neither stamp is recorded.
+  // Only a value that is actually navigable becomes an href. document_url has
+  // historically held both full URLs and bare storage paths; a bare path would
+  // produce a dead link that LOOKS like the document is one click away.
+  const executedDocHref = (() => {
+    const raw = (agreementDocumentUrl ?? "").trim()
+    if (!raw) return null
+    return /^https?:\/\//i.test(raw) || raw.startsWith("/") ? raw : null
+  })()
+  const inProgressDetail =
+    agreementSellerSignedAt && !agreementAgentSignedAt ? "Seller signed — awaiting your signature"
+    : agreementAgentSignedAt && !agreementSellerSignedAt ? "You signed — awaiting the seller"
+    : agreementSellerSignedAt && agreementAgentSignedAt ? "Both parties signed — awaiting execution"
+    : "Sent — awaiting signatures"
+
   const rows: ChecklistRow[] = ([
     // 1. Listing agreement
     {
       key: "agreement",
       label: "Listing Agreement",
       icon: FileSignature,
-      status: agreementFullyExecuted ? "complete" : hasListingAgreement ? "in_progress" : "pending",
-      detail: agreementFullyExecuted
-        ? agreementCompliancePassed
-          ? "Fully executed · compliance audit passed"
-          : "Fully executed · executed before the compliance gate — re-verify documents"
+      // A REFUSED read is not an absent agreement. It holds the row at
+      // in_progress and says so, rather than asserting "Not yet sent" about a
+      // legal document nobody managed to look at.
+      status: agreementReadFailed
+        ? "in_progress"
+        : agreementFullyExecuted ? "complete" : hasListingAgreement ? "in_progress" : "pending",
+      detail: agreementReadFailed
+        ? "Could not read the agreement record — status unknown, verify before launching"
+        : agreementFullyExecuted
+        ? `Fully executed · ${executedDetail}`
         : hasListingAgreement
-        ? "Sent — awaiting signatures"
+        ? inProgressDetail
         : "Not yet sent",
-      href: `/dashboard/listings/${listingId}/forms`,
-      cta: hasListingAgreement ? undefined : "Send agreement",
+      // The executed row points at the executed document when one is on file;
+      // otherwise /forms, which is where an unsent agreement is sent from.
+      href: agreementFullyExecuted && executedDocHref
+        ? executedDocHref
+        : `/dashboard/listings/${listingId}/forms`,
+      cta: agreementFullyExecuted && executedDocHref
+        ? "Open document"
+        : hasListingAgreement ? undefined : "Send agreement",
     },
     // 2. Media
     {

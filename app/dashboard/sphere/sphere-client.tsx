@@ -207,6 +207,11 @@ function SphereCard({ row, onRefresh }: { row: SphereRow; onRefresh: () => void 
               {row.contactPhone && <span className="flex items-center gap-0.5"><Phone className="h-3 w-3" /> {row.contactPhone}</span>}
               <span>· detected {fmtRelative(row.createdAt)}</span>
               {sourceLabel && <span>· via {sourceLabel}</span>}
+              {/* A touch already approved (status 'queued') is waiting to send —
+                  say whose approval is carrying it, not just that it is queued. */}
+              {row.reviewedAt && (
+                <span>· approved {fmtRelative(row.reviewedAt)}{actorSuffix(row.reviewedByUserId, row.reviewedByName)}</span>
+              )}
             </p>
           </div>
           {row.scheduledSendAt && row.actionType === "auto_touch" && !row.isSensitive && (
@@ -309,6 +314,24 @@ function SphereCard({ row, onRefresh }: { row: SphereRow; onRefresh: () => void 
   )
 }
 
+/**
+ * WHO made the call. `reviewed_by_user_id` / `cancelled_by_user_id` are stamped on
+ * every approve and every dismiss and were read by nothing, so on a shared desk
+ * this row said "dismissed 2d ago (wrong contact)" with no name on it.
+ *
+ * Three distinct states, never collapsed into one:
+ *   · id + resolved name  → "by Dana Reyes"
+ *   · id, name unresolved → "by an account outside this brokerage" (the name-map
+ *                            is tenant-anchored; we do not reach across tenants)
+ *   · no id at all        → "actor not recorded" — an older row, or a status the
+ *                            cron moved without a human. NEVER "by the system".
+ */
+function actorSuffix(userId: string | null, name: string | null): string {
+  if (name) return ` by ${name}`
+  if (userId) return " by an account outside this brokerage"
+  return " · actor not recorded"
+}
+
 function HistoryRow({ row }: { row: SphereRow }) {
   return (
     <div className="py-2 flex items-center justify-between gap-3 text-sm">
@@ -316,9 +339,15 @@ function HistoryRow({ row }: { row: SphereRow }) {
         <p className="truncate font-medium">{row.contactName}</p>
         <p className="text-[10px] text-muted-foreground">
           {row.primarySignal?.label ?? "Life event"} ·{" "}
-          {row.status === "sent" ? `sent ${fmtRelative(row.sentAt ?? row.createdAt)}` :
-           row.status === "cancelled" ? `dismissed ${fmtRelative(row.cancelledAt ?? row.createdAt)}${row.cancelReason ? ` (${row.cancelReason})` : ""}` :
-           row.status}
+          {row.status === "sent"
+            ? `sent ${fmtRelative(row.sentAt ?? row.createdAt)}${
+                row.reviewedAt ? `, approved${actorSuffix(row.reviewedByUserId, row.reviewedByName)}` : ""
+              }`
+            : row.status === "cancelled"
+            ? `dismissed ${fmtRelative(row.cancelledAt ?? row.createdAt)}${actorSuffix(row.cancelledByUserId, row.cancelledByName)}${
+                row.cancelReason ? ` (${row.cancelReason})` : ""
+              }`
+            : row.status}
         </p>
       </div>
       <Badge variant="outline" className="text-[9px] shrink-0">{row.status}</Badge>

@@ -144,7 +144,16 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
     }))
 
   // Fetch listing agreement esign status (most recent agreement for this listing)
-  const { data: listingAgreement } = await supabase
+  //
+  // The error is READ (§3). Destructuring `{ data }` alone made a REFUSED query
+  // byte-identical to "this listing has no agreement", and the checklist then
+  // stated "Not yet sent" about a legal document it had simply failed to read.
+  // A refusal now renders as an honest unknown on the checklist row
+  // (agreementReadFailed below) instead of a false negative. NOTE: it is not
+  // promoted to a launch blocker — agreement state has never gated launch here
+  // (see `blockers` below: media, fields, MLS number, compliance, tier), and
+  // inventing a new stop condition is the broker's call, not this read's.
+  const { data: listingAgreement, error: listingAgreementError } = await supabase
     .from("listing_agreements")
     // compliance_passed is only ever written TRUE after the execution engine's
     // real document/signature audit (execution-engine.ts §2.5 gate) — it was
@@ -159,6 +168,10 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()
+  const agreementReadFailed = !!listingAgreementError
+  if (listingAgreementError) {
+    console.error("[listing lifecycle] listing_agreements read failed:", listingAgreementError.message)
+  }
 
   // Coming soon state — media approved gate + transaction ID for email campaigns
   const [mediaApprovedResult, recordedEventsResult, transactionResult] = await Promise.all([
@@ -210,8 +223,25 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   }
 
   // Listing Health Radar data — runs in parallel with the launch-readiness
-  // fetches below. All three queries are gated by RLS to this brokerage.
-  const [healthScoreRes, openInterventionsRes, scoreHistoryRes] = await Promise.all([
+  // fetches below. All four queries are gated by RLS to this brokerage.
+  //
+  // RESOLVED HISTORY (4th query). resolveListingInterventionAction stamps
+  // resolved / resolved_at / resolved_by / resolution_note
+  // (app/actions/listing-health-actions.ts:88) and EVERY reader in the product
+  // filtered those rows out with `.eq("resolved", false)` — here, on
+  // /dashboard/listings/health, and in the risk agent. So a broker could never
+  // audit who cleared a seller_impacted flag. The open list below is deliberately
+  // left open-only; this is a SECOND, bounded read beside it.
+  //
+  // BOUNDS, chosen and stated: newest 10, resolved within the last 180 days.
+  // 180d covers a full listing term plus a renewal (the panel sits on an ACTIVE
+  // listing, and the longest-lived thing it can be auditing is that listing's own
+  // run); 10 matches the open-list limit directly above so neither half of the
+  // panel can dominate the other. The panel prints both numbers beside the list.
+  const RESOLVED_HISTORY_LIMIT = 10
+  const RESOLVED_HISTORY_WINDOW_DAYS = 180
+  const resolvedSince = new Date(Date.now() - RESOLVED_HISTORY_WINDOW_DAYS * 86_400_000).toISOString()
+  const [healthScoreRes, openInterventionsRes, scoreHistoryRes, resolvedInterventionsRes] = await Promise.all([
     supabase
       .from("listing_health_scores")
       .select("id, overall_score, risk_level, flags, ai_narrative, previous_score, score_delta, days_on_market, scored_at, recommended_actions")
@@ -232,10 +262,60 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
       .eq("listing_id", listingId)
       .order("scored_at", { ascending: false })
       .limit(7),
+    supabase
+      .from("listing_health_interventions")
+      .select("id, issue_detected, severity, ai_recommendation, category, created_at, seller_impacted, resolved_at, resolved_by, resolution_note")
+      .eq("listing_id", listingId)
+      .eq("resolved", true)
+      .gte("resolved_at", resolvedSince)
+      .order("resolved_at", { ascending: false })
+      .limit(RESOLVED_HISTORY_LIMIT),
   ])
   const healthScore = healthScoreRes.data ?? null
   const openInterventions = openInterventionsRes.data ?? []
   const scoreHistory = scoreHistoryRes.data ?? []
+  if (resolvedInterventionsRes.error) {
+    // §3: supabase-js RESOLVES refusals. A swallowed error here would render the
+    // audit trail as "nothing has ever been cleared", which is the opposite of
+    // the truth this section exists to tell.
+    console.error("[listing lifecycle] resolved-intervention history read failed:", resolvedInterventionsRes.error.message)
+  }
+  const resolvedInterventionRows = (resolvedInterventionsRes.data ?? []) as Array<{
+    id: string; issue_detected: string; severity: string; ai_recommendation: string | null
+    category: string | null; created_at: string; seller_impacted: boolean | null
+    resolved_at: string | null; resolved_by: string | null; resolution_note: string | null
+  }>
+
+  // WHO CLEARED IT. `listing_health_interventions.resolved_by` FKs users(id)
+  // (scripts/schema-fk-map.ts:458) — a USERS-class id; agents.id and users.id are
+  // disjoint, so this never resolves against `agents`. One batched `.in()`,
+  // anchored to the caller's brokerage (resolved from the SESSION above, §4), so
+  // a foreign id stays unresolved rather than borrowing a name from another
+  // tenant. Gate first, service client second: the listing was already proven to
+  // belong to userRow.brokerage_id by the query at :80-94.
+  const resolverNames = new Map<string, string>()
+  const resolverIds = Array.from(new Set(
+    resolvedInterventionRows.map((r) => r.resolved_by).filter((v): v is string => !!v),
+  ))
+  if (resolverIds.length > 0) {
+    const { createServiceClient } = await import("@/lib/supabase/service")
+    const { data: resolvers, error: resolverErr } = await createServiceClient()
+      .from("users")
+      .select("id, first_name, last_name, email")
+      .in("id", resolverIds)
+      .eq("brokerage_id", userRow.brokerage_id)
+    if (resolverErr) {
+      console.error("[listing lifecycle] resolver name lookup failed:", resolverErr.message)
+    }
+    for (const u of (resolvers ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null; email: string | null }>) {
+      const full = [u.first_name, u.last_name].filter(Boolean).join(" ").trim()
+      resolverNames.set(u.id, full || u.email || "Teammate")
+    }
+  }
+  const resolvedInterventions = resolvedInterventionRows.map((r) => ({
+    ...r,
+    resolvedByName: r.resolved_by ? (resolverNames.get(r.resolved_by) ?? null) : null,
+  }))
 
   // Parallel fetch for launch readiness data
   const [mediaResult, videosResult, openHouseResult, tierResult, neighborhoodResult, packetResult] =
@@ -601,6 +681,9 @@ const { data: listingVendorBookings } = await supabase
             healthScore={healthScore as unknown as Parameters<typeof ListingHealthRadarPanel>[0]["healthScore"]}
             openInterventions={openInterventions as unknown as Parameters<typeof ListingHealthRadarPanel>[0]["openInterventions"]}
             scoreHistory={scoreHistory as unknown as Parameters<typeof ListingHealthRadarPanel>[0]["scoreHistory"]}
+            resolvedInterventions={resolvedInterventions as unknown as Parameters<typeof ListingHealthRadarPanel>[0]["resolvedInterventions"]}
+            resolvedWindowDays={RESOLVED_HISTORY_WINDOW_DAYS}
+            resolvedLimit={RESOLVED_HISTORY_LIMIT}
           />
         </div>
 
@@ -622,7 +705,35 @@ const { data: listingVendorBookings } = await supabase
           <MlsCheckPanel listingId={listingId} />
         </div>
 
-        {/* Consolidated Launch Readiness Checklist (replaces strip + 6 cards) */}
+        {/* Consolidated Launch Readiness Checklist (replaces strip + 6 cards).
+
+            CARRIED LOOP CLOSED (orphan tranche X4 → W2). The listing_agreements
+            select at :152 projects TWELVE columns and only three ever reached a
+            prop — existence, fully_executed_at, compliance_passed. document_name
+            and effective_date are written end-to-end by the markAgreementSigned
+            intake and surfaced NOWHERE, so the checklist said "Fully executed"
+            about a document it could not name. document_url makes the executed
+            row link to the document itself rather than back to /forms ("go send
+            it", on a row already complete); seller_signed_at / agent_signed_at
+            turn the generic "awaiting signatures" into which side is holding it
+            up. All of these are NULL on pre-intake rows and wherever the agent
+            left the field blank: the checklist renders NULL as ABSENCE and never
+            manufactures a filename or a date.
+
+            STILL NOT SURFACED, deliberately, and why (an inert projection is
+            noise, so each one is accounted for rather than left dangling):
+              · id            — the row key; used to fetch, never displayed.
+              · agreement_type— the checklist row is already labelled "Listing
+                                Agreement"; this page only ever loads the listing's
+                                own agreement, so the type would restate the label.
+              · esign_status  — the provider's internal state string. The signature
+                                stamps now passed down say the same thing in the
+                                agent's vocabulary (§6: one spelling per idea);
+                                showing both invites the two to disagree on screen.
+              · provider_name /
+                provider_ref  — vendor plumbing for support, not agent-facing
+                                readiness. They belong on a support surface, not on
+                                the "can I launch?" checklist. */}
         <div className="mb-6">
           <LaunchReadinessChecklist
             listingId={listingId}
@@ -646,6 +757,12 @@ const { data: listingVendorBookings } = await supabase
             hasListingAgreement={!!listingAgreement}
             agreementFullyExecuted={!!listingAgreement?.fully_executed_at}
             agreementCompliancePassed={listingAgreement ? listingAgreement.compliance_passed === true : null}
+            agreementDocumentName={listingAgreement?.document_name ?? null}
+            agreementEffectiveDate={listingAgreement?.effective_date ?? null}
+            agreementDocumentUrl={listingAgreement?.document_url ?? null}
+            agreementSellerSignedAt={listingAgreement?.seller_signed_at ?? null}
+            agreementAgentSignedAt={listingAgreement?.agent_signed_at ?? null}
+            agreementReadFailed={agreementReadFailed}
             mlsNumber={mlsNumber}
             mlsLink={mlsLink}
             listingAddress={`${listing.address}${listing.city ? `, ${listing.city}` : ""}`}

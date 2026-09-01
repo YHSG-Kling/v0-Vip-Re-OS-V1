@@ -41,6 +41,23 @@ export interface SphereRow {
   cancelledAt:       string | null
   cancelReason:      string | null
   createdAt:         string
+  /** WHO approved / WHO dismissed. `predictive_listing_actions.reviewed_by_user_id`
+   *  and `.cancelled_by_user_id` are stamped by approveSphereTouch / dismissSphereTouch
+   *  below and were selected by nobody, so on a shared desk the history row read
+   *  "dismissed 2d ago (wrong contact)" with no name attached to the call.
+   *
+   *  IDENTITY CLASS: both columns hold a **users.id** (the writers stamp
+   *  `user.id` from the session — see :139 and :196). `agents.id` and `users.id`
+   *  are DISJOINT, so these resolve against `users`, never `agents`.
+   *
+   *  `…ByName` is null in two DIFFERENT situations and the UI must not conflate
+   *  them: the id is null (nobody recorded) vs the id is set but did not resolve
+   *  inside this brokerage (an actor outside the tenant, or a deleted seat). The
+   *  id is carried alongside so the card can tell those apart. */
+  reviewedByUserId:  string | null
+  reviewedByName:    string | null
+  cancelledByUserId: string | null
+  cancelledByName:   string | null
   /** The publish gate's verdict (fair housing / tone / channel). FALSE means the
    *  auto-send cron BLOCKED this touch; `complianceViolations` says why. Both
    *  columns were written by lib/predictive-listing/auto-send.ts and read by
@@ -56,7 +73,7 @@ export interface SphereLoad {
   cancelled:      SphereRow[]   // dismissed / cancelled by agent
 }
 
-function rowToView(row: any): SphereRow {
+function rowToView(row: any, actorNames: Map<string, string>): SphereRow {
   const contact = row.contact ?? {}
   const signals = Array.isArray(row.triggering_signals) ? (row.triggering_signals as SphereSignal[]) : []
   const primarySignal = signals[0] ?? null
@@ -79,6 +96,10 @@ function rowToView(row: any): SphereRow {
     cancelledAt:      row.cancelled_at ?? null,
     cancelReason:     row.cancel_reason ?? null,
     createdAt:        row.created_at,
+    reviewedByUserId:  row.reviewed_by_user_id ?? null,
+    reviewedByName:    row.reviewed_by_user_id ? (actorNames.get(row.reviewed_by_user_id) ?? null) : null,
+    cancelledByUserId: row.cancelled_by_user_id ?? null,
+    cancelledByName:   row.cancelled_by_user_id ? (actorNames.get(row.cancelled_by_user_id) ?? null) : null,
     compliancePassed: typeof row.compliance_check_passed === "boolean" ? row.compliance_check_passed : null,
     complianceViolations: row.compliance_violations ?? null,
   }
@@ -90,17 +111,22 @@ export async function loadSphereResonance(): Promise<{ data: SphereLoad } | { er
   if (!user) return { error: "Not authenticated" }
 
   const svc = createServiceClient()
-  const { data: agentRow } = await svc.from("agents").select("id").eq("user_id", user.id).maybeSingle()
+  // brokerage_id comes with the agent record because the actor name-map below is
+  // TENANT-ANCHORED on it — never on a parameter (§4).
+  const { data: agentRow, error: agentErr } = await svc
+    .from("agents").select("id, brokerage_id").eq("user_id", user.id).maybeSingle()
+  if (agentErr) return { error: `Could not resolve your agent profile: ${agentErr.message}` }
   if (!agentRow?.id) return { error: "No agent profile" }
 
   // Only rows seeded by sphere-resonance (no PLS score attached).
   const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
-  const { data: rows } = await svc
+  const { data: rows, error: rowsErr } = await svc
     .from("predictive_listing_actions")
     .select(`
       id, contact_id, agent_id, action_type, channel, triggering_signals,
       status, message_subject, message_body, scheduled_send_at,
-      reviewed_at, cancelled_at, cancel_reason, sent_at, created_at,
+      reviewed_at, reviewed_by_user_id, cancelled_at, cancelled_by_user_id,
+      cancel_reason, sent_at, created_at,
       compliance_check_passed, compliance_violations,
       contact:contact_id (first_name, last_name, email, phone)
     `)
@@ -109,10 +135,43 @@ export async function loadSphereResonance(): Promise<{ data: SphereLoad } | { er
     .gte("created_at", since)
     .order("created_at", { ascending: false })
     .limit(300)
+  // A refused read must not render as "no sphere signals" (§3 — supabase-js
+  // RESOLVES refusals; a swallowed error reads as an empty sphere).
+  if (rowsErr) return { error: `Could not load your sphere queue: ${rowsErr.message}` }
+
+  // ── WHO REVIEWED / WHO CANCELLED ────────────────────────────────────────────
+  // One batched `.in()` against `users` (the command-center name-map pattern,
+  // app/dashboard/admin/command-center/page.tsx:276-279), anchored to the
+  // caller's brokerage. An id that does not resolve inside the tenant stays
+  // unresolved on purpose — the card says "outside this brokerage" rather than
+  // borrowing a name from another tenant.
+  const actorIds = Array.from(new Set(
+    ((rows ?? []) as any[])
+      .flatMap((r) => [r.reviewed_by_user_id, r.cancelled_by_user_id])
+      .filter((v): v is string => typeof v === "string" && v.length > 0),
+  ))
+  const actorNames = new Map<string, string>()
+  if (actorIds.length > 0 && agentRow.brokerage_id) {
+    const { data: actors, error: actorErr } = await svc
+      .from("users")
+      .select("id, first_name, last_name, email")
+      .in("id", actorIds)
+      .eq("brokerage_id", agentRow.brokerage_id)
+    if (actorErr) {
+      // Names are additive; the queue itself is not. Log and fall through with an
+      // empty map — every actor then renders as "name not resolved", never as
+      // "nobody did this".
+      console.error("[sphere] actor name resolution failed:", actorErr.message)
+    }
+    for (const u of (actors ?? []) as any[]) {
+      const name = [u.first_name, u.last_name].filter(Boolean).join(" ").trim()
+      actorNames.set(u.id, name || u.email || "Teammate")
+    }
+  }
 
   const data: SphereLoad = { pendingAuto: [], needsAction: [], sent: [], cancelled: [] }
   for (const r of (rows ?? []) as any[]) {
-    const v = rowToView(r)
+    const v = rowToView(r, actorNames)
     if (v.status === "sent") data.sent.push(v)
     else if (v.status === "cancelled") data.cancelled.push(v)
     else if (v.actionType === "auto_touch" && !v.isSensitive) data.pendingAuto.push(v)

@@ -147,6 +147,14 @@ export function SubscriptionContractsManager({
 
       <section className="space-y-3">
         <h2 className="text-lg font-semibold">Tenant signatures</h2>
+        <p className="text-xs text-muted-foreground max-w-3xl">
+          A typed name is not an attestation. &ldquo;Typed name&rdquo; is the string the signer keyed
+          in; <span className="font-medium">Account</span> is the server-resolved session that
+          executed the agreement (<code>signed_by</code>) and <span className="font-medium">Method</span>{" "}
+          is what the stored <code>signature</code> record says about HOW it was executed. Anything the
+          record does not carry reads as <span className="font-medium">not recorded</span> — never as
+          verified.
+        </p>
         {initialSignatures.length === 0 ? (
           <p className="text-sm text-muted-foreground">No tenant has signed yet.</p>
         ) : (
@@ -155,16 +163,56 @@ export function SubscriptionContractsManager({
               <thead>
                 <tr className="text-left border-b">
                   <th className="py-2 pr-4">Brokerage</th>
-                  <th className="py-2 pr-4">Signed by</th>
+                  <th className="py-2 pr-4">Typed name</th>
+                  <th className="py-2 pr-4">Account (signed_by)</th>
+                  <th className="py-2 pr-4">Method</th>
                   <th className="py-2 pr-4">Template version</th>
                   <th className="py-2">Signed at</th>
                 </tr>
               </thead>
               <tbody>
                 {initialSignatures.map((s) => (
-                  <tr key={s.id} className="border-b last:border-0">
+                  <tr key={s.id} className="border-b last:border-0 align-top">
                     <td className="py-2 pr-4">{s.brokerage_name ?? s.brokerage_id}</td>
                     <td className="py-2 pr-4">{s.signed_name}</td>
+                    <td className="py-2 pr-4">
+                      {s.signed_by ? (
+                        <span className="flex flex-col">
+                          <span>{s.signer_name ?? s.signer_email ?? "account no longer on the roster"}</span>
+                          {s.signer_name && s.signer_email && (
+                            <span className="text-xs text-muted-foreground">{s.signer_email}</span>
+                          )}
+                          <span className="text-[10px] text-muted-foreground font-mono">{s.signed_by.slice(0, 8)}</span>
+                        </span>
+                      ) : (
+                        <Badge variant="outline" className="text-xs">account not recorded</Badge>
+                      )}
+                    </td>
+                    <td className="py-2 pr-4">
+                      {s.attestation_method ? (
+                        <span className="flex flex-col">
+                          <Badge variant="secondary" className="text-xs w-fit">
+                            {s.attestation_method.replace(/_/g, " ")}
+                          </Badge>
+                          {s.attestation_signed_at && (
+                            <span className="text-[10px] text-muted-foreground">
+                              attested {new Date(s.attestation_signed_at).toLocaleString()}
+                            </span>
+                          )}
+                          {s.attestation_typed_name && s.attestation_typed_name !== s.signed_name && (
+                            <span className="text-[10px] text-amber-700">
+                              attestation name differs: {s.attestation_typed_name}
+                            </span>
+                          )}
+                        </span>
+                      ) : s.attestation_malformed ? (
+                        <Badge variant="outline" className="text-xs text-amber-700">
+                          attestation unreadable
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-xs">method not recorded</Badge>
+                      )}
+                    </td>
                     <td className="py-2 pr-4">{s.template_version ?? "—"}</td>
                     <td className="py-2">{new Date(s.signed_at).toLocaleString()}</td>
                   </tr>
