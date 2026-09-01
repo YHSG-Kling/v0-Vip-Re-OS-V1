@@ -149,7 +149,12 @@ const EVENT_HANDLERS: Record<string, EventHandlerInvoker> = {
   // scheduleClosingGift takes a listings.id, not a payload — see the header.
   "transaction.closing_soon": async (e) => {
     const listingId = (e.payload as Record<string, any>)?.listing_id
-    if (!listingId) throw new Error("transaction.closing_soon payload carries no listing_id — scheduleClosingGift needs one")
+    // Leads with the MISSING THING, not with the event name: a message that opens
+    // "transaction.closing_soon …" reads, to error-message-honesty-guard, as a
+    // claim about `transaction` (primaryClaim splits on the first period), so a
+    // message naming exactly what it tested still scored as naming a different
+    // noun. It is also plainly better for the person reading the throw.
+    if (!listingId) throw new Error("No listingId on the transaction.closing_soon payload — scheduleClosingGift needs one (payload key: listing_id)")
     return (await import("@/app/actions/listing-lifecycle")).scheduleClosingGift(String(listingId))
   },
   "transaction.closed": async (e) => (await import("@/app/actions/listing-lifecycle")).triggerReviewSequence(e.payload),
