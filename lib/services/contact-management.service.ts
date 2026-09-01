@@ -733,9 +733,7 @@ export async function mergeContacts(params: { primaryContactId: string; duplicat
     // merge stranded the duplicate's behavior history on a soft-deleted contact.
     // The error is READ and a failure ABORTS before the soft delete below, per
     // this function's own standard on the field merge above — a duplicate whose
-    // history didn't move must not be deleted. (The sibling `transactions` line
-    // below still discards its error — a pre-existing defect recorded for its own
-    // lane, not widened here.)
+    // history didn't move must not be deleted.
     const { error: behaviorRekeyError } = await supabase
       .from("buyer_behavior_log")
       .update({ contact_id: params.primaryContactId })
@@ -744,7 +742,19 @@ export async function mergeContacts(params: { primaryContactId: string; duplicat
       throw new DatabaseError("Failed to move the duplicate's behavior log onto the primary", behaviorRekeyError)
     }
 
-    await supabase.from("transactions").update({ contact_id: params.primaryContactId }).eq("contact_id", params.duplicateContactId)
+    // Same standard as the two writes above, applied to the re-key that had been
+    // discarding its error: supabase-js RESOLVES a refusal (§3), so a refused
+    // transactions re-key looked identical to a successful one — and the soft
+    // delete below then ran anyway, stranding the duplicate's DEALS on a deleted
+    // contact. Zero matched rows is NOT a failure here (a duplicate may own no
+    // transactions); a refusal is.
+    const { error: txRekeyError } = await supabase
+      .from("transactions")
+      .update({ contact_id: params.primaryContactId })
+      .eq("contact_id", params.duplicateContactId)
+    if (txRekeyError) {
+      throw new DatabaseError("Failed to move the duplicate's transactions onto the primary", txRekeyError)
+    }
 
     // Soft delete duplicate
     await deleteContact(params.duplicateContactId, params.agentId)
