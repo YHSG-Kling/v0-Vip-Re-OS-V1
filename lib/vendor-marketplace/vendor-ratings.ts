@@ -2,7 +2,9 @@
 //
 // The ONE vendor_ratings booking-rollup recompute (§6, extracted 2026-09-01).
 // This logic lived as the body of app/actions/vendor-marketplace.ts ::
-// recalculateVendorRatings (which now delegates here) and was needed by a
+// recalculateVendorRatings (deleted 2026-09-01 — it was an ungated public
+// endpoint taking its tenant from a parameter, §4; its one caller,
+// rateVendorBooking, now calls this Core directly) and was needed by a
 // second caller with a DIFFERENT client: the portal client-rating action
 // (app/actions/contact-vendor-booking.ts :: rateVendorBookingAsClient) runs on
 // the SERVICE client — a portal contact's session client cannot read every

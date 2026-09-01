@@ -894,9 +894,34 @@ export async function submitPropertyFeedback(params: {
   const INTEREST: Record<string, number> = { love: 5, like: 4, neutral: 3, dislike: 2, pass: 1 }
 
   const supabase = createServiceClient()
+
+  // Prove the voted id against the brokerage's own listings so listing_id can be
+  // stamped. This portal is an in-house inventory surface, but its cards can also
+  // hold non-listings rows (external search results), so the proof is conditional
+  // rather than a refusal: an unproven id keeps listing_id NULL and the vote still
+  // records, same as before. Scoped to access.brokerageId — a foreign tenant's
+  // listing id must not be stamped into this brokerage's feedback (§4).
+  // With listing_id stamped, the agent-side preference learner's `listings(*)`
+  // embed (app/actions/ai-property-matching.ts) finally resolves for portal votes
+  // — the brain gets the house with the vote instead of "- loved: undefined".
+  // property_id stays: a "property_id" holding a listings.id is not a property id
+  // (m542 precedent) and now has zero readers — a future-drop candidate for a
+  // migration, not an application-code decision.
+  const { data: provenListing, error: listingProofError } = await supabase
+    .from("listings")
+    .select("id")
+    .eq("id", params.propertyId)
+    .eq("brokerage_id", access.brokerageId)
+    .maybeSingle()
+  if (listingProofError) {
+    // §3: a refused read resolves — log it; the vote still records, unstamped.
+    console.error("[portal-lifetime] submitPropertyFeedback: listings proof refused:", listingProofError.message)
+  }
+
   const { error } = await supabase.from("property_feedback").insert({
     contact_id: params.contactId,
     property_id: params.propertyId,
+    listing_id: provenListing ? params.propertyId : null,
     brokerage_id: access.brokerageId,
     feedback_type: params.vote,
     interest_level: INTEREST[params.vote] ?? 3,

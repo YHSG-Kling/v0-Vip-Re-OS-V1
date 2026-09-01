@@ -3478,8 +3478,11 @@ function main(): void {
       "the ai_autopilot_plans insert loses brokerage_id",
       {
         file: WRITERS,
-        find: "        brokerage_id: autopilotBrokerageId,\n        lead_id: data.leadId,",
-        replace: "        lead_id: data.leadId,",
+        // The insert stamps the FK the anchor lookup proved (lead_id: planLeadId /
+        // contact_id: planContactId since 2026-09-01 — before that, an
+        // unconditional `lead_id: data.leadId`); the find-string tracks that shape.
+        find: "        brokerage_id: autopilotBrokerageId,\n        lead_id: planLeadId,",
+        replace: "        lead_id: planLeadId,",
       },
       assertEveryTenantTableInsertStampsTenant,
     )

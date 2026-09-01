@@ -699,8 +699,14 @@ export async function enableAIPilot(data: {
   // cannot read the anchor row. Resolving in the application is what makes the
   // tenant a decision this code made rather than one it happened to inherit.
   let autopilotBrokerageId: string | null = null
+  // The branch decision is CARRIED to the insert below: data.leadId proved to be
+  // EITHER a leads.id or a contacts.id (disjoint spaces) — exactly one of these
+  // is set, and it decides which FK column the plan row is filed under.
+  let planLeadId: string | null = null
+  let planContactId: string | null = null
   if (lead) {
     autopilotBrokerageId = (lead.brokerage_id as string | null) ?? null
+    planLeadId = data.leadId
   } else {
     // Fallback to contacts table
     const { data: contact, error: contactLookupError } = await supabase
@@ -715,6 +721,7 @@ export async function enableAIPilot(data: {
       return { success: false, error: "Lead not found" }
     }
     autopilotBrokerageId = (contact.brokerage_id as string | null) ?? null
+    planContactId = data.leadId
   }
 
   // Get additional intelligence data
@@ -823,11 +830,22 @@ Respond with JSON matching this structure:
       return { success: false, error: "Failed to save nurture plan" }
     }
 
+    // Stamp the FK column the anchor lookup above actually PROVED. This insert
+    // used to write `lead_id: data.leadId` unconditionally, so on the contacts
+    // branch a contacts.id went into the leads(id) FK — 23503, the whole row
+    // refused — and every contact-keyed enable returned "Failed to save nurture
+    // plan". Which means the AI-ISA badge/button on the buyer overview
+    // (app/crm/contacts/[contactId]/buyer-overview-client.tsx, activePlan match
+    // `p.contact_id === buyerId || p.lead_id === buyerId`) has NEVER worked in
+    // either direction: the contact_id arm had no writer, and the lead_id arm
+    // never held a contacts.id because the FK refused the row before it existed.
+    // Stamping contact_id here is what makes that match reachable.
     const { data: savedPlan, error: saveError } = await supabase
       .from("ai_autopilot_plans")
       .insert({
         brokerage_id: autopilotBrokerageId,
-        lead_id: data.leadId,
+        lead_id: planLeadId,
+        contact_id: planContactId,
         agent_id: data.agentId,
         autopilot_level: data.autopilotLevel,
         nurture_plan: aiResponse,

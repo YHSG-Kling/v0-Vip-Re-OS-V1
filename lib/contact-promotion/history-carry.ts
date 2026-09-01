@@ -178,11 +178,14 @@ export const CONVERSION_CARRY_OMISSIONS: Record<string, string> = {
     "never by person, so an uncarried forward reference costs no reader anything.",
   ai_autopilot_plans:
     "NOTHING EXECUTES THE PLAN. The only three touches are in app/actions/ai-predictions.ts " +
-    "— insert (:752, writes lead_id only, never contact_id), list-by-agent (:789) and " +
-    "toggle-by-plan-id (:808). No cron or reactor acts on next_action_at, so an uncarried " +
-    "plan produces no lead-keyed action and the conversion ruling is not violated. The " +
-    "missing half here is the EXECUTOR, not the carry; carrying it first would make an " +
-    "inert row look live. Reported to the one-sided census rather than papered over here.",
+    "— insert (enableAIPilot, which since 2026-09-01 stamps lead_id OR contact_id to match " +
+    "which table the anchor id proved to live in; before that it wrote lead_id " +
+    "unconditionally and the contacts branch was FK-refused), list-by-agent " +
+    "(getActiveAutoPilotPlans) and toggle-by-plan-id (toggleAutoPilot). No cron or reactor " +
+    "acts on next_action_at, so an uncarried plan produces no lead-keyed action and the " +
+    "conversion ruling is not violated. The missing half here is the EXECUTOR, not the " +
+    "carry; carrying it first would make an inert row look live. Reported to the one-sided " +
+    "census rather than papered over here.",
   // TOMBSTONE — `message_threads` had an omission entry here until m536 was APPLIED
   // (2026-08-23) and DROPPED the table. Its two halves survive under their real names and
   // are already accounted for above and in REPOINTED_HISTORY_TABLES: the CONTACT-side

@@ -1,7 +1,7 @@
 // lib/kernel/vendor-rating-governance.ts
 //
 // VENDOR RATING GOVERNANCE (deal_coordinator) — the marketplace's QUALITY gate, the VendorInsightManager
-// concept. The bench already rolls up ratings (recalculateVendorRatings → vendor_ratings), but NOTHING
+// concept. The bench already rolls up ratings (recalculateVendorRatingsCore → vendor_ratings), but NOTHING
 // consumed them: a vendor could slide to two stars and still be auto-proposed to agents and clients. This
 // turns the rollup into governance:
 //   · a vendor averaging below SUPPRESS_BELOW (with enough sample) is SUPPRESSED — never auto-picked by the

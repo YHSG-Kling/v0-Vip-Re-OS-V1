@@ -403,14 +403,31 @@ export async function learnFromBuyerFeedback(params: {
 
     // Save feedback
     // property_feedback real columns: feedback_type (not feedback), disliked_features (not reasons)
-    await supabase.from("property_feedback").insert({
+    //
+    // listing_id is stamped with params.propertyId because the guard above just
+    // PROVED it against listings (same brokerage) — this id IS a listings.id.
+    // Stamping it is what makes the `listings(*)` embed in the preference read
+    // below resolve: unstamped, every row rendered "- loved: undefined" into the
+    // learning prompt and the brain never got the house with the vote.
+    // property_id stays in place: a "property_id" that points at listings is not
+    // a property id (m542 precedent), and with listing_id stamped the column now
+    // has ZERO readers — dropping it is a migration decision, recorded here as a
+    // future-drop candidate rather than taken in application code.
+    // §3: supabase-js RESOLVES refusals — a swallowed insert error would report
+    // feedbackSaved: true for a vote that was never recorded.
+    const { error: feedbackError } = await supabase.from("property_feedback").insert({
       contact_id: params.contactId,
       property_id: params.propertyId,
+      listing_id: params.propertyId,
       brokerage_id: ctx.brokerageId,
       feedback_type: params.feedback,
       disliked_features: params.reasons,
       created_at: new Date().toISOString(),
     })
+    if (feedbackError) {
+      console.error("[ai-property-matching] learnFromBuyerFeedback: insert refused:", feedbackError.message)
+      return { success: false, error: "Failed to save feedback" }
+    }
 
     // Update preferences based on feedback patterns
     const { data: allFeedback } = await supabase

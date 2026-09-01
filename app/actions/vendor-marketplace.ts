@@ -601,7 +601,12 @@ export async function rateVendorBooking(data: {
   if (reviewError) throw reviewError
 
   // Recalculate vendor_ratings aggregate (booking rollup) + the weighted review rollup.
-  await recalculateVendorRatings(booking.vendor_id, booking.brokerage_id)
+  // Tenant (booking.brokerage_id) is already PROVEN above: the booking row was read
+  // scoped to the caller's own brokerage. Same two lines as
+  // app/actions/contact-vendor-booking.ts :: rateVendorBookingAsClient — §6, one
+  // shared aggregate computation.
+  const { recalculateVendorRatingsCore } = await import("@/lib/vendor-marketplace/vendor-ratings")
+  await recalculateVendorRatingsCore(supabase, booking.vendor_id, booking.brokerage_id)
   await recomputeVendorReviewStats(booking.vendor_id, booking.brokerage_id)
 
   // Revalidate inside function to avoid module-level server dependency
@@ -610,17 +615,14 @@ export async function rateVendorBooking(data: {
   return { success: true }
 }
 
-export async function recalculateVendorRatings(vendorId: string, brokerageId: string) {
-  // §6, extracted 2026-09-01: the rollup body moved to
-  // lib/vendor-marketplace/vendor-ratings.ts :: recalculateVendorRatingsCore so
-  // the portal client-rating action (app/actions/contact-vendor-booking.ts ::
-  // rateVendorBookingAsClient, which runs on the SERVICE client) shares ONE
-  // aggregate computation instead of spelling a second one. This export keeps
-  // its session-client behavior for the agent-side callers above.
-  const supabase = await createClient()
-  const { recalculateVendorRatingsCore } = await import("@/lib/vendor-marketplace/vendor-ratings")
-  await recalculateVendorRatingsCore(supabase, vendorId, brokerageId)
-}
+// TOMBSTONE (2026-09-01) — `recalculateVendorRatings(vendorId, brokerageId)` export
+// DELETED. In a "use server" file every export is a public HTTP endpoint (§4), and
+// this one took its tenant from a PARAMETER with no gate — the exact IDOR shape §4
+// names — so any authenticated caller could recompute any brokerage's vendor
+// aggregate. Its only real caller was rateVendorBooking above, which now calls the
+// survivor directly: lib/vendor-marketplace/vendor-ratings.ts ::
+// recalculateVendorRatingsCore, with the tenant it already proved (mirroring
+// app/actions/contact-vendor-booking.ts :: rateVendorBookingAsClient).
 
 export async function getVendorReviews(vendorId: string) {
   const supabase = await createClient()
@@ -814,8 +816,18 @@ export async function getVendorReviewModerationQueue(): Promise<Array<{
  * Recompute the WEIGHTED review rollup for a vendor (verified reviews at 1.5×) over its APPROVED reviews,
  * and write review_avg / review_count / verified_review_count onto vendor_ratings. Runs after any review
  * insert / moderation decision. Uses the service client so it isn't blocked by the reviewer's RLS scope.
+ *
+ * UN-EXPORTED (2026-09-01): this was a public HTTP endpoint (§4 — every export in a
+ * "use server" file is one) that took its tenant from a PARAMETER and wrote
+ * vendor_ratings on the SERVICE client, RLS bypassed — any authenticated caller
+ * could overwrite any brokerage's aggregates. Those aggregates are LOAD-BEARING:
+ * lib/kernel/vendor-rating-governance.ts suppresses vendors off vendor_ratings, so
+ * a forged rollup silently benches or un-benches a vendor. Now a module-private
+ * helper; its three callers (rateVendorBooking, submitVendorReview,
+ * moderateVendorReview) each pass a vendorId/brokerageId they PROVED from the
+ * session-derived profile or a brokerage-scoped row read, behind their own gates.
  */
-export async function recomputeVendorReviewStats(vendorId: string, brokerageId: string) {
+async function recomputeVendorReviewStats(vendorId: string, brokerageId: string) {
   const { createServiceClient } = await import("@/lib/supabase/service")
   const svc = createServiceClient()
   const { weightedReviewAverage } = await import("@/lib/kernel/vendor-review-moderation")

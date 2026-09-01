@@ -220,6 +220,10 @@ export async function proposePrelistingDeliveryWhenReady(
         presentation_id: presentationId,
         appointment_at:  pres.appointment_at ?? null,
         property_address: pres.property_address ?? null,
+        // Same key the email composer takes ("audience", not presentation_type) —
+        // the Command Center reads it to label a buyer-consultation release as
+        // such instead of showing seller wording for both deck types.
+        audience:        buyerDeck ? "buyer" : "seller",
         video_renders:   readiness.videos,
         email:           { subject: email.subject, preview_text: email.previewText, preview_html: email.html },
       },

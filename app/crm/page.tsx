@@ -21,7 +21,7 @@ import { ListingConsultationScheduler } from "@/app/crm/components/listing-consu
 import { ClosingWorkflowTab } from "@/app/crm/components/closing-workflow-tab"
 import { AIPilotControl } from "@/app/crm/components/ai-pilot-control"
 import { ContactHeaderCard } from "@/app/crm/components/contact-header-card"
-import { getActiveAutoPilotPlans, detectClientChurn, getConversationIntelligence } from "@/app/actions/ai-predictions"
+import { detectClientChurn, getConversationIntelligence } from "@/app/actions/ai-predictions"
 import { generateContactInsights, draftSmartEmail } from "@/app/actions/ai-insights"
 import type { ContactInsight } from "@/app/actions/ai-insights"
 import { aiSuggestFollowUp } from "@/app/actions/ai-lead-nurturing"
@@ -232,7 +232,14 @@ export default function CRMPage() {
 
   // Contact OS data
   const [churnRisk, setChurnRisk] = useState<any>(null)
-  const [autopilotPlans, setAutopilotPlans] = useState<any[]>([])
+  // TOMBSTONE (2026-09-01) — `autopilotPlans` state + its getActiveAutoPilotPlans
+  // load were deleted here: set on every contact select, read NOWHERE in this
+  // page. This CRM's AI-engagement display moved to contacts.ai_autopilot_level
+  // (single source of truth) — see the note below beginning "legacy
+  // handleEnableAutopilot / handleToggleAutopilot were removed". The
+  // ai_autopilot_plans read surface survives on the buyer overview,
+  // app/crm/contacts/[contactId]/buyer-overview-client.tsx, which loads plans via
+  // getActiveAutoPilotPlans and matches p.contact_id / p.lead_id.
   const [copilotPlan, setCopilotPlan] = useState<any>(null)
   const [loadingPlan, setLoadingPlan] = useState(false)
   const [conversationIntelligence, setConversationIntelligence] = useState<any>(null)
@@ -458,11 +465,10 @@ export default function CRMPage() {
       setBuyerInsights(null)
       setFatigueData(null)
       try {
-        // Core data loads — contact + churn + autopilot + followup + conv intel + tab data in parallel
+        // Core data loads — contact + churn + followup + conv intel + tab data in parallel
         const [
           contactResult,
           churnResult,
-          autopilotResult,
           followUpResult,
           convIntelResult,
           creditResult,
@@ -473,7 +479,6 @@ export default function CRMPage() {
         ] = await Promise.all([
           getContactById(contactId),
           detectClientChurn(contactId).catch(() => null),
-          getActiveAutoPilotPlans(agentId ?? "").catch(() => []),
           aiSuggestFollowUp({ contactId, agentId: agentId ?? "" }).catch(() => ({ suggestions: [] })),
           getConversationIntelligence(contactId).catch(() => null),
           getContactCreditAccounts(contactId).catch(() => ({ accounts: [] })),
@@ -548,7 +553,6 @@ export default function CRMPage() {
           .catch(() => {/* non-blocking */})
 
         setChurnRisk(churnResult)
-        setAutopilotPlans(Array.isArray(autopilotResult) ? autopilotResult : [])
         setSuggestedActions(followUpResult?.suggestions || [])
         setConversationIntelligence(Array.isArray(convIntelResult) && convIntelResult.length > 0 ? convIntelResult[0] : null)
       } catch (err) {

@@ -769,10 +769,15 @@ function DeliveryPreview({ input }: { input: Record<string, unknown> }) {
   const videos = Array.isArray(input.video_renders) ? (input.video_renders as Array<{ section_key: string; title: string; output_url: string; thumbnail_url: string | null }>) : []
   const email = (input.email ?? {}) as { subject?: string; preview_text?: string; preview_html?: string }
   const appt = input.appointment_at as string | null
+  // "audience" is the proposer's own key (lib/listing-presentation/prelisting-delivery.ts,
+  // same name the email composer takes). Rows proposed before the key existed have no
+  // `audience` and fall through to the seller wording — the pre-existing behaviour, so
+  // no back-fill migration is needed.
+  const buyer = input.audience === "buyer"
 
   return (
     <div className="mt-3 rounded-md border bg-muted/30 p-3 space-y-3">
-      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Review before releasing to the seller</div>
+      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Review before releasing to the {buyer ? "buyer" : "seller"}</div>
 
       {videos.length > 0 && (
         <div>
@@ -811,7 +816,7 @@ function DeliveryPreview({ input }: { input: Record<string, unknown> }) {
         </div>
       )}
 
-      {appt && <div className="text-[11px] text-muted-foreground">Seller appointment: {new Date(appt).toLocaleString()}</div>}
+      {appt && <div className="text-[11px] text-muted-foreground">{buyer ? "Buyer consultation" : "Seller appointment"}: {new Date(appt).toLocaleString()}</div>}
     </div>
   )
 }
@@ -1030,6 +1035,16 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
   const isClientMsg = action.queue === "client_message"
   const [editedBody, setEditedBody] = useState<string>(isClientMsg ? String(action.actionInput.body ?? "") : "")
 
+  // Display label for the action type (AdActionPreview precedent: a per-type label
+  // map). approve_prelisting_delivery is ONE action type serving two audiences —
+  // the label reads the proposer's `audience` key from action_input, never
+  // action.queue. A row without the key (proposed before the key existed) falls
+  // through to the seller wording, the pre-existing behaviour — no migration.
+  const actionTypeLabel =
+    action.actionType === "approve_prelisting_delivery"
+      ? (action.actionInput.audience === "buyer" ? "Release buyer-consultation deck" : "Release pre-listing presentation")
+      : action.actionType.replace(/_/g, " ")
+
   function run(kind: "approve" | "reject") {
     setError(null)
     startTransition(async () => {
@@ -1052,7 +1067,7 @@ function ActionRow({ action, onResolved }: { action: CommandCenterAction; onReso
             <Badge className={QUEUE_BADGE[action.queue] ?? "bg-slate-100 text-slate-700"}>
               {QUEUE_LABEL[action.queue] ?? action.queue}
             </Badge>
-            <span className="font-medium">{action.actionType.replace(/_/g, " ")}</span>
+            <span className="font-medium">{actionTypeLabel}</span>
             {action.slaLevel === "breached" && (
               <Badge className="bg-red-100 text-red-800">SLA breached · {Math.round(action.ageHours)}h</Badge>
             )}
