@@ -174,13 +174,22 @@ export async function updateCdaTemplateAction(input: {
   if (input.transactionType !== undefined) updates.transaction_type = input.transactionType ?? null
   if (input.isActive !== undefined)        updates.is_active        = input.isActive
 
-  const { error } = await supabase
+  // COUNTED (§3): an UPDATE that matches nothing also resolves — `error` is null
+  // and the call is byte-identical to one that worked. Without the .select() a
+  // wrong-tenant id, or an id that no longer exists, reported "Template updated"
+  // to a broker while nothing changed. The tenant predicate above is what makes
+  // zero rows meaningful here: this table's rows always belong to one brokerage,
+  // so a matched-nothing update is a refusal, not a legitimate no-op.
+  const { data: updated, error } = await supabase
     .from("brokerage_cda_templates")
     .update(updates)
     .eq("id", input.id)
     .eq("brokerage_id", auth.brokerageId)
+    .select("id")
 
   if (error) return { success: false as const, error: error.message }
+  if (!updated || updated.length === 0) return { success: false as const, error: "template_not_found" }
+  revalidatePath("/dashboard/admin")
   return { success: true as const }
 }
 
