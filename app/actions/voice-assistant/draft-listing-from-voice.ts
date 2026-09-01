@@ -77,7 +77,14 @@ export async function voiceDraftListing(req: VoiceDraftListingRequest): Promise<
   const brokerageId = userRow?.brokerage_id
   if (!brokerageId) return { kind: "error", error: "No brokerage on user" }
 
-  // Load any prior session
+  // Load any prior session — OWNER-SCOPED (§4). `sessionId` is caller-supplied,
+  // and without the `agent_user_id` predicate any authenticated user could
+  // resume ANOTHER user's intake — reading their contact linkage and the whole
+  // prior conversation — by guessing or replaying a session id. Identity comes
+  // from the SESSION, never the request. A miss (not found OR not yours —
+  // deliberately indistinguishable) starts a NEW session: req.sessionId is
+  // cleared so the persist below inserts rather than updating a row this
+  // caller does not own.
   let priorIntake: ListingIntake | undefined
   let priorConversation: Array<{ role: string; content: string; ts: string }> = []
   if (req.sessionId) {
@@ -85,11 +92,14 @@ export async function voiceDraftListing(req: VoiceDraftListingRequest): Promise<
       .from("workflow_intake_sessions")
       .select("current_intake, conversation, contact_id")
       .eq("id", req.sessionId)
+      .eq("agent_user_id", user.id)
       .maybeSingle()
     if (session) {
       priorIntake = session.current_intake as ListingIntake
       priorConversation = (session.conversation as any[]) || []
       if (!req.contactId && session.contact_id) req.contactId = session.contact_id
+    } else {
+      req.sessionId = undefined
     }
   }
 

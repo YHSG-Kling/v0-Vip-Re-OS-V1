@@ -51,6 +51,28 @@ interface TranscriptLine {
 
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
 
+/** One row of GET /api/agent-assistant/session — the caller's own history. */
+interface RecentSession {
+  id: string
+  startedAt: string
+  endedAt: string | null
+  toolCallCount: number
+  contextUrl: string | null
+  contextContactId: string | null
+  contextListingId: string | null
+  contextTransactionId: string | null
+  contextLabel: string | null
+}
+
+/** Where a recent session's context lives. Rows with no context at all are
+ *  skipped by the caller — a link to nowhere is not a shortcut. */
+function recentSessionHref(s: RecentSession): string | null {
+  if (s.contextContactId) return `/crm/contacts/${s.contextContactId}`
+  if (s.contextListingId) return `/dashboard/listings/${s.contextListingId}`
+  if (s.contextTransactionId) return `/dashboard/transactions/${s.contextTransactionId}`
+  return s.contextUrl
+}
+
 /** Stamp `ended_at` on the assistant session row. Fire-and-forget on purpose:
  *  the user has already closed the overlay and there is nothing to tell them,
  *  and it runs on unmount, where an unresolved promise would be dropped by the
@@ -88,6 +110,28 @@ export function VoiceAssistantOverlay() {
   const [muted, setMuted] = useState(false)
   const [transcript, setTranscript] = useState<TranscriptLine[]>([])
   const [agentSpeaking, setAgentSpeaking] = useState(false)
+
+  // "Recent" panel — the caller's own last sessions (GET is user+tenant scoped
+  // server-side). null = not loaded / load refused; the panel simply doesn't
+  // render then — a refused read must not paint as "no recent sessions".
+  const [recent, setRecent] = useState<RecentSession[] | null>(null)
+  const [recentOpen, setRecentOpen] = useState(false)
+
+  useEffect(() => {
+    if (!voiceOverlayOpen) return
+    let cancelled = false
+    fetch("/api/agent-assistant/session")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body) => {
+        if (!cancelled && body && Array.isArray(body.sessions)) {
+          setRecent(body.sessions as RecentSession[])
+        }
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [voiceOverlayOpen])
 
   // ── Open / close lifecycle ───────────────────────────────────────────────
   useEffect(() => {
@@ -319,6 +363,53 @@ export function VoiceAssistantOverlay() {
             )}
           </div>
         )}
+
+        {/* Recent sessions — collapsed by default, only while there is nothing
+            live to show (idle/ended, empty transcript). Rows with NO context at
+            all are skipped — nothing to jump back to. Raw Tailwind on the
+            overlay's own palette; ui/card stays out of this component. */}
+        {(status === "idle" || status === "ended") &&
+          transcript.length === 0 &&
+          recent !== null &&
+          recent.filter((s) => recentSessionHref(s) !== null).length > 0 && (
+            <div className="mt-4 border-t border-gray-200 pt-3">
+              <button
+                onClick={() => setRecentOpen((v) => !v)}
+                className="w-full flex items-center justify-between text-xs font-medium text-gray-600 hover:text-purple-600"
+              >
+                <span>Recent</span>
+                <span className="text-gray-400">{recentOpen ? "Hide" : "Show"}</span>
+              </button>
+              {recentOpen && (
+                <ul className="mt-2 space-y-1.5">
+                  {recent
+                    .filter((s) => recentSessionHref(s) !== null)
+                    .map((s) => (
+                      <li key={s.id}>
+                        <a
+                          href={recentSessionHref(s)!}
+                          className="flex items-center justify-between gap-2 rounded-lg bg-white border border-gray-200 px-3 py-1.5 text-sm hover:border-purple-600"
+                        >
+                          <span className="truncate text-gray-900">
+                            {s.contextLabel ?? "Page context"}
+                          </span>
+                          <span className="flex items-center gap-1.5 shrink-0">
+                            {s.toolCallCount > 0 && (
+                              <span className="rounded-full bg-purple-100 text-purple-900 px-2 py-0.5 text-[10px]">
+                                {s.toolCallCount} action{s.toolCallCount === 1 ? "" : "s"}
+                              </span>
+                            )}
+                            <span className="text-[10px] text-gray-500">
+                              {new Date(s.startedAt).toLocaleDateString()}
+                            </span>
+                          </span>
+                        </a>
+                      </li>
+                    ))}
+                </ul>
+              )}
+            </div>
+          )}
       </div>
 
       {/* Footer controls */}

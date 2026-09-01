@@ -18,7 +18,8 @@ import { TeamAnnouncementComposer } from "./team-announcement-composer"
 import { AutonomyHaltBanner } from "./autonomy-halt-banner"
 import { CriticalSetupMeter } from "@/app/components/onboarding/critical-setup-meter"
 import { loadTenantAutonomyHalt } from "@/lib/managers/autonomy-gate"
-import { listEarnedAutonomyAction } from "@/app/actions/document-kernel-review"
+import { listEarnedAutonomyAction, listPolicyDecisionsAction } from "@/app/actions/document-kernel-review"
+import { PolicyDecisionsPanel } from "./policy-decisions-panel"
 import { getQuarterlyReviewAction } from "@/app/actions/quarterly-review"
 import { listAiTeammatesAction } from "@/app/actions/ai-teammates"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
@@ -201,6 +202,13 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
     ? await listEarnedAutonomyAction().catch(() => null)
     : null
 
+  // POLICY DECISIONS — the amber/red verdict ledger beside the earned block
+  // (REVIEW_ROLES inside the action — the TC named as approver sees their own
+  // queue). Read-only: resolution lives on the signals feed (manager_signals).
+  const policyDecisions = brokerageId && !isSuperadmin
+    ? await listPolicyDecisionsAction().catch(() => null)
+    : null
+
   // AUTONOMY-ACCURACY GLANCE — the governance mirror: autonomy is EARNED by
   // measured prediction accuracy, not toggled. The full per-domain report lives
   // on Manager Trust; this compact glance puts it on the operator's one screen.
@@ -320,6 +328,11 @@ export default async function CommandCenterPage({ searchParams }: { searchParams
       {earned?.ok && earned.grants && (
         <div className="mx-6 mt-4">
           <EarnedAutonomyPanel grants={earned.grants} />
+        </div>
+      )}
+      {policyDecisions?.ok && policyDecisions.groups && (
+        <div className="mx-6 mt-4">
+          <PolicyDecisionsPanel groups={policyDecisions.groups} />
         </div>
       )}
       {autonomyAccuracy && (

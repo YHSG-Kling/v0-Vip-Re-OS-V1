@@ -181,6 +181,114 @@ export async function listEarnedAutonomyAction(): Promise<{
   }
 }
 
+// ── THE POLICY-DECISION LEDGER — every amber/red verdict the kernel recorded,
+//    grouped by deal, with the reasons and who has to approve. READ-ONLY on
+//    purpose: resolve buttons live on the Command Center signals feed, which is
+//    keyed by manager_signals ids — a policy_decisions.id is a ledger entry,
+//    not a resolvable signal, so a button here would have nothing to act on. ──
+
+export interface PolicyDecisionRow {
+  id: string
+  createdAt: string
+  transactionId: string | null
+  documentId: string | null
+  targetType: string
+  targetId: string
+  decision: string
+  reasons: string[]
+  recommendedAction: string | null
+  /** null renders "No approval required" — only 'tc'/'agent' are ever written. */
+  requiredApproverRole: string | null
+  /** batched resolution — documents(document_type, created_at). */
+  documentType: string | null
+  documentCreatedAt: string | null
+}
+
+export interface PolicyDecisionGroup {
+  /** null = the unattached / marketing & policy bucket (newsletter /
+   *  social_post / autonomy_grant / ai_identity rows carry no transaction). */
+  transactionId: string | null
+  label: string
+  rows: PolicyDecisionRow[]
+}
+
+export async function listPolicyDecisionsAction(): Promise<{
+  ok: boolean
+  groups?: PolicyDecisionGroup[]
+  error?: string
+}> {
+  // REVIEW_ROLES, not GRANT_ROLES: the TC named in required_approver_role must
+  // be able to see their own queue, and 'tc' is only in the review set.
+  const actor = await loadActor(REVIEW_ROLES)
+  if (!actor.ok) return { ok: false, error: actor.error }
+  const svc = createServiceClient()
+
+  const { data: rows, error } = await svc
+    .from("policy_decisions")
+    .select("id, created_at, transaction_id, document_id, target_type, target_id, decision, reasons_json, recommended_action, required_approver_role")
+    .eq("brokerage_id", actor.brokerageId)
+    .in("decision", ["amber", "red"])
+    .order("created_at", { ascending: false })
+    .limit(100)
+  // §3 — a refused read is a refusal, never an empty ledger.
+  if (error) return { ok: false, error: error.message }
+
+  const list = (rows ?? []) as any[]
+
+  // Batched, tenant-anchored resolution (the command-center name-map pattern).
+  const txIds = Array.from(new Set(list.map((r) => r.transaction_id).filter(Boolean)))
+  const docIds = Array.from(new Set(list.map((r) => r.document_id).filter(Boolean)))
+  const [{ data: txs }, { data: docs }] = await Promise.all([
+    txIds.length > 0
+      ? svc.from("transactions").select("id, property_address").eq("brokerage_id", actor.brokerageId).in("id", txIds)
+      : Promise.resolve({ data: [] as any[] }),
+    docIds.length > 0
+      ? svc.from("documents").select("id, document_type, created_at").eq("brokerage_id", actor.brokerageId).in("id", docIds)
+      : Promise.resolve({ data: [] as any[] }),
+  ])
+  const txAddr = new Map(((txs ?? []) as any[]).map((t) => [t.id, t.property_address ?? null]))
+  const docById = new Map(((docs ?? []) as any[]).map((d) => [d.id, d]))
+
+  const toRow = (r: any): PolicyDecisionRow => {
+    const doc = r.document_id ? docById.get(r.document_id) : null
+    return {
+      id: r.id,
+      createdAt: r.created_at,
+      transactionId: r.transaction_id ?? null,
+      documentId: r.document_id ?? null,
+      targetType: String(r.target_type ?? ""),
+      targetId: String(r.target_id ?? ""),
+      decision: String(r.decision ?? ""),
+      // reasons_json is jsonb holding a FLAT string[] — coerce before mapping,
+      // a scalar or object there must not crash the ledger.
+      reasons: Array.isArray(r.reasons_json) ? r.reasons_json.map((x: unknown) => String(x)) : [],
+      recommendedAction: r.recommended_action ?? null,
+      requiredApproverRole: r.required_approver_role ?? null,
+      documentType: doc?.document_type ?? null,
+      documentCreatedAt: doc?.created_at ?? null,
+    }
+  }
+
+  // Group by transaction, newest-first within the group order of arrival;
+  // no-transaction rows share one bucket.
+  const groupMap = new Map<string, PolicyDecisionGroup>()
+  for (const r of list) {
+    const key = r.transaction_id ?? "__unattached__"
+    if (!groupMap.has(key)) {
+      groupMap.set(key, {
+        transactionId: r.transaction_id ?? null,
+        label: r.transaction_id
+          ? txAddr.get(r.transaction_id) ?? "Transaction"
+          : "Unattached — marketing & policy",
+        rows: [],
+      })
+    }
+    groupMap.get(key)!.rows.push(toRow(r))
+  }
+
+  return { ok: true, groups: Array.from(groupMap.values()) }
+}
+
 export async function revokeAutonomyGrantAction(input: {
   shape: string
 }): Promise<{ ok: boolean; message?: string; error?: string }> {

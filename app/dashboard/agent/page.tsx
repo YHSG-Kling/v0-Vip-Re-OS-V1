@@ -62,6 +62,7 @@ import { getAgentRevenueProtection, type AgentRevenueProtection } from "@/app/ac
 import { IncomeForecastCard } from "./components/income-forecast-card"
 import { getAgentIncomeForecast, type AgentIncomeForecast } from "@/app/actions/lifetime-npv"
 import { OpenActionsCard } from "./components/open-actions-card"
+import { ResumeIntakeCard } from "./components/resume-intake-card"
 import { AgentActionQueueCard } from "./components/agent-action-queue-card"
 import { TimeToValueCard } from "./components/time-to-value-card"
 import { ConnectionHealthCard } from "./components/connection-health-card"
@@ -667,6 +668,9 @@ export default function AgentDashboard() {
             <LicenseComplianceWidget agentId={agentId} />
             <AgentCareerTierCard agentId={agentId} />
             <OnboardingJourneyCard agentId={agentId} />
+            {/* Unfinished voice intakes — identity is session-derived inside the
+                action; hides itself when there is nothing to resume. */}
+            <ResumeIntakeCard />
           </div>
         )}
 

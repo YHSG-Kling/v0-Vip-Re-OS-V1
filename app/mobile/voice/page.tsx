@@ -18,7 +18,11 @@ export const metadata = {
   description: "Voice commands and calls",
 }
 
-export default async function MobileVoicePage() {
+export default async function MobileVoicePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ resume?: string; mode?: string }>
+}) {
   const supabase = await createClient()
 
   let agentContext
@@ -29,6 +33,31 @@ export default async function MobileVoicePage() {
   }
 
   const { agentId, brokerageId, userId } = agentContext
+  const { resume } = await searchParams
+
+  // ── Resume deep link (?resume=<id>&mode=<intake_type>) ────────────────────
+  // The id arrives from the URL, so ownership is RE-VERIFIED here before it is
+  // threaded anywhere: the row is loaded WITH `.eq("agent_user_id", userId)` —
+  // §4, identity from the session, never from the request. A mismatch, a
+  // finished/expired session, or a refused read all degrade silently to
+  // no-resume rather than threading a session id this user does not own.
+  // The mode passed down is the ROW's own intake_type, not the ?mode= param —
+  // the param is only a hint and is never trusted over the row.
+  let resumeSessionId: string | null = null
+  let resumeMode: "offer" | "listing" | null = null
+  if (resume) {
+    const { data: resumeRow } = await supabase
+      .from("workflow_intake_sessions")
+      .select("id, intake_type, status")
+      .eq("id", resume)
+      .eq("agent_user_id", userId)
+      .in("status", ["in_progress", "ready_to_draft"])
+      .maybeSingle()
+    if (resumeRow && (resumeRow.intake_type === "offer" || resumeRow.intake_type === "listing")) {
+      resumeSessionId = resumeRow.id
+      resumeMode = resumeRow.intake_type
+    }
+  }
 
   // QuickContactPanel sat below QuickDialSearch with a hardcoded [] — the
   // search box worked, the recents list under it was permanently empty. They
@@ -238,6 +267,8 @@ export default async function MobileVoicePage() {
             agentId={agentId ?? ""}
             hasActiveSession={!!activeSession}
             isConfigured={!!voiceConfig}
+            resumeSessionId={resumeSessionId}
+            resumeMode={resumeMode}
           />
         </section>
 

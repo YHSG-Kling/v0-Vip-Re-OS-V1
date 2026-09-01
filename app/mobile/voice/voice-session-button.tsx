@@ -32,6 +32,12 @@ interface VoiceSessionButtonProps {
   agentId: string
   hasActiveSession: boolean
   isConfigured: boolean
+  /** A resumable workflow_intake_sessions id — OWNERSHIP ALREADY RE-VERIFIED
+   *  server-side by the page (agent_user_id = session user) before it reaches
+   *  this prop. Seeds the draft session so the next utterance continues the
+   *  prior conversation instead of starting over. */
+  resumeSessionId?: string | null
+  resumeMode?: "offer" | "listing" | null
 }
 
 type DraftMode = "offer" | "listing" | null
@@ -41,6 +47,8 @@ export function VoiceSessionButton({
   agentId,
   hasActiveSession,
   isConfigured,
+  resumeSessionId = null,
+  resumeMode = null,
 }: VoiceSessionButtonProps) {
   const [isListening, setIsListening] = useState(false)
   const [transcript, setTranscript] = useState("")
@@ -48,9 +56,10 @@ export function VoiceSessionButton({
   const [error, setError] = useState("")
 
   // Draft modes — when set, the recognized transcript is sent to the
-  // matching server action instead of just being displayed.
-  const [draftMode, setDraftMode] = useState<DraftMode>(null)
-  const [sessionId, setSessionId] = useState<string | null>(null)
+  // matching server action instead of just being displayed. Seeded from the
+  // resume deep link when the page verified one.
+  const [draftMode, setDraftMode] = useState<DraftMode>(resumeMode ?? null)
+  const [sessionId, setSessionId] = useState<string | null>(resumeSessionId ?? null)
   const [draftResponse, setDraftResponse] = useState<DraftResponse | null>(null)
   const [processingDraft, setProcessingDraft] = useState(false)
 
@@ -243,7 +252,9 @@ export function VoiceSessionButton({
 
       {draftMode && (
         <p className="text-xs text-center text-muted-foreground">
-          Tap the mic, then speak the {draftMode} details. The assistant will ask for anything missing.
+          {sessionId && sessionId === resumeSessionId
+            ? `Resuming your ${draftMode} intake — tap the mic to continue where you left off.`
+            : `Tap the mic, then speak the ${draftMode} details. The assistant will ask for anything missing.`}
         </p>
       )}
 

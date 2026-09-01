@@ -78,6 +78,17 @@ export function DocumentCenterClient({
             Every document across your contacts, transactions, and listings — organized and scanned for compliance.
           </p>
         </div>
+        <div className="flex items-center gap-3 text-sm">
+          {/* Sibling rails: the produced-PDF library (generated_documents) and
+              the external-download audit (document_downloads — its page
+              re-enforces the elevated ladder server-side). */}
+          <Link href="/dashboard/documents/library" className="text-primary hover:underline">
+            Generated library
+          </Link>
+          <Link href="/dashboard/documents/downloads" className="text-primary hover:underline">
+            Download audit
+          </Link>
+        </div>
       </div>
 
       {/* Top stats */}
