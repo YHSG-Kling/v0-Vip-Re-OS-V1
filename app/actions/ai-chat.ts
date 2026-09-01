@@ -246,6 +246,18 @@ export async function sendChatMessage(data: {
   senderType: "agent" | "client"
   messageContent: string
   requestAiResponse?: boolean
+  /**
+   * A reply the caller ALREADY STREAMED through /api/chat/stream (which by
+   * design persists no messages — see that route's header and the owner's
+   * 2026-09-01 "both stay" ruling). When present with requestAiResponse, the
+   * assistant row is persisted from THIS text instead of generateAiResponse
+   * running a second, different generation — the streamed tokens the agent
+   * watched and the stored transcript stay the same words, and the AI spend
+   * is not doubled. This action remains the ONE persistence door either way;
+   * the tenant/ownership gate above and every compliance analysis on the
+   * agent's own message run unchanged.
+   */
+  precomposedAiReply?: string
 }) {
   const identity = await callerAgentIdentity()
   if (!identity.ok) throw new Error(identity.error)
@@ -340,13 +352,25 @@ export async function sendChatMessage(data: {
     .eq("id", data.sessionId)
   if (activityError) console.error("[v0] Chat session activity update failed:", activityError)
 
-  // Generate AI response if requested
+  // Generate AI response if requested — or persist the one the caller already
+  // streamed. The precomposed branch deliberately produces NO suggestions:
+  // /api/chat/stream has already written its own ai_suggestions row for the
+  // same text, and a second one here would be the double-write this parameter
+  // exists to prevent.
   let assistantMessage: Record<string, unknown> | null = null
   if (data.requestAiResponse) {
-    const aiResponse = await generateAiResponse(data.sessionId, data.messageContent, {
-      brokerageId: identity.brokerageId,
-      userId: identity.userId,
-    })
+    const precomposed = data.precomposedAiReply?.trim()
+    const aiResponse = precomposed
+      ? {
+          message: precomposed,
+          type: "suggestion",
+          metadata: { source: "agent_chat_stream", streamed: true },
+          suggestions: [] as unknown[],
+        }
+      : await generateAiResponse(data.sessionId, data.messageContent, {
+          brokerageId: identity.brokerageId,
+          userId: identity.userId,
+        })
 
     const { data: aiRow, error: aiInsertError } = await supabase
       .from("messages")

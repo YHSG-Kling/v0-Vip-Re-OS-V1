@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { requireAuth } from "@/lib/kernel/api-auth"
+import { requireContactAccess } from "@/lib/portal/require-contact-access"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 
@@ -42,14 +44,15 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
 //      · app/portal/[contactId]/components/RecentUpdatesFeed.tsx — a client
 //        watching their agent's clip, which is the exact event this ledger was
 //        built for (it carries contact_id, and app/actions/contact-details.ts
-//        reads it back per contact). It cannot call this yet either: the card
-//        carries only a metadata URL, with no video_asset_id or project id to
-//        attribute the event to.
-//    OWNER DECISION: wiring the portal player means plumbing the video's id
-//    onto the transparency_updates card. That is a data-shape change on a
-//    client-facing surface, not a refactor, so it is raised rather than taken.
-//    Deleting this route instead would remove the strictest of the three
-//    writers and the only HTTP door — deleting to move a number.
+//        reads it back per contact).
+//    RESOLVED (lane W8, 2026-09-01): the portal player IS now the producer.
+//    The card writers already stamped the ai_video_projects id onto the card
+//    metadata (welcome_video_project_id / anniversary_video_project_id), the
+//    feed reads it, and CardVideoPlayer POSTs view/complete/pause/cta_click
+//    here with that id — gated through requireContactAccess for the contact
+//    session (see WHO MAY POST on the handler below). Deleting this route
+//    would have removed the strictest of the three writers and the only HTTP
+//    door — deleting to move a number.
 
 // Supported event types for video_engagement_events
 const VALID_EVENT_TYPES = [
@@ -193,32 +196,83 @@ export async function GET(request: NextRequest) {
 // primitive into any tenant on the platform.
 //
 // Three things close it, and all three are needed:
-//   1. requireAuth on the POST path (not merely imported for GET's benefit).
-//   2. The tenant comes from auth.brokerageId. A body that still carries one is
-//      REFUSED with 400 rather than silently ignored — a caller that thinks it
-//      is choosing a tenant must be told it is not, and a silent ignore is
-//      indistinguishable from the old behaviour in a test.
+//   1. A real auth gate on the POST path (not merely imported for GET's
+//      benefit) — see WHO MAY POST below.
+//   2. The tenant comes from the gate's resolution. A body that still carries
+//      one is REFUSED with 400 rather than silently ignored — a caller that
+//      thinks it is choosing a tenant must be told it is not, and a silent
+//      ignore is indistinguishable from the old behaviour in a test.
 //   3. The NAMED VIDEO is verified into that tenant before anything is written.
 //      Without (3), (1) and (2) only move the lie: a caller in brokerage A
 //      could stamp its own tenant onto engagement for brokerage B's video and
 //      corrupt both ledgers at once.
+//
+// ── WHO MAY POST (lane W8, 2026-09-01 — the PRODUCER this route was waiting
+// for) ────────────────────────────────────────────────────────────────────────
+// The adjudication above (lane G1) named the portal player —
+// app/portal/[contactId]/components/RecentUpdatesFeed.tsx, a CLIENT watching
+// their agent's clip — as "the exact event this ledger was built for", and
+// named the reason it could not call here: requireAuth resolves the caller
+// through users.brokerage_id, which a portal contact does not have. So the POST
+// now admits, in order:
+//
+//   1. requireAuth — staff/agent sessions, exactly as before, writing under
+//      their own RLS (unchanged).
+//   2. requireContactAccess(body.contactId) — the SAME shared portal gate every
+//      other portal fetch uses (app/api/portal/client-action et al.): it admits
+//      the contact themselves (linked user id / matching email / accepted
+//      unexpired invite) or same-brokerage staff, resolves the TENANT FROM THE
+//      CONTACT ROW (never from the body), and fails closed on a refused read.
+//      This path runs on the service client — gate first, then service client
+//      (the lib/kernel/manager-registry.ts pattern) — because a portal contact
+//      has no RLS grants on these tables. The event's contact_id is forced to
+//      the PROVEN contact id, so a contact can only ever attribute engagement
+//      to themselves.
+//
+// The merged tenant checks below (assertVideoBelongsToTenant + the tenant-
+// scoped aggregate lookup) run UNCHANGED on both paths: a contact session can
+// still only touch a video that belongs to the brokerage their own contact row
+// names.
 export async function POST(request: Request) {
   const supabase = await createClient()
-  const auth = await requireAuth(supabase)
-  if (!auth.ok) return auth.response
-
-  // Session-resolved tenant. Never read from the request body.
-  const brokerageId = auth.brokerageId
 
   try {
     const body = await request.json()
     const {
       videoAssetId,
       videoProjectId,
-      contactId,
       eventType,
       watchDurationSeconds,
     } = body
+    const contactId: string | null = typeof body.contactId === "string" && body.contactId ? body.contactId : null
+
+    // ── The gate (see WHO MAY POST above) ───────────────────────────────────
+    let brokerageId: string
+    // `db` is the client every write below runs on: the caller's own session
+    // client for staff (RLS backstop intact), the service client for a gated
+    // portal contact (who has no RLS grants here).
+    let db: any = supabase
+    const auth = await requireAuth(supabase)
+    if (auth.ok) {
+      brokerageId = auth.brokerageId
+    } else if (contactId) {
+      const access = await requireContactAccess(contactId)
+      if (!access.ok) {
+        const status =
+          access.error === "Unauthorized" ? 401
+          : access.error === "Contact not found" ? 404
+          : access.error === "Forbidden" ? 403
+          : 500
+        return NextResponse.json({ success: false, error: access.error }, { status })
+      }
+      // Tenant from the CONTACT ROW the gate proved; writes via the service
+      // client, only after the gate (§4). contactId is already the proven one —
+      // it is the very id the gate authorized.
+      brokerageId = access.brokerageId
+      db = createServiceClient()
+    } else {
+      return auth.response
+    }
 
     // A caller-supplied tenant is refused outright, not quietly dropped.
     if (body && Object.prototype.hasOwnProperty.call(body, "brokerageId")) {
@@ -253,7 +307,7 @@ export async function POST(request: Request) {
     // brokerage_id, so this is an equality test against a resolved value — not
     // an FK, which would only prove the row exists somewhere.
     const owned = await assertVideoBelongsToTenant(
-      supabase,
+      db,
       videoAssetId || null,
       videoProjectId || null,
       brokerageId
@@ -274,7 +328,7 @@ export async function POST(request: Request) {
       timestamp: new Date().toISOString(),
     }
 
-    const { data: insertedEvent, error: eventError } = await supabase
+    const { data: insertedEvent, error: eventError } = await db
       .from("video_engagement_events")
       .insert(eventRecord)
       .select()
@@ -287,7 +341,7 @@ export async function POST(request: Request) {
 
     // 2. Aggregate metrics into video_performance_tracking
     const trackingResult = await aggregateVideoPerformance(
-      supabase,
+      db,
       videoAssetId,
       videoProjectId,
       brokerageId,
@@ -297,7 +351,7 @@ export async function POST(request: Request) {
 
     // 3. Check thresholds and fire kernel events
     if (trackingResult) {
-      await checkPerformanceThresholds(supabase, trackingResult, brokerageId)
+      await checkPerformanceThresholds(db, trackingResult, brokerageId)
     }
 
     return NextResponse.json({

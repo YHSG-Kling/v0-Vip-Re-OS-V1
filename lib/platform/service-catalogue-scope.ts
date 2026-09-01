@@ -54,3 +54,72 @@
 export function serviceCatalogueScope(brokerageId: string): string {
   return `brokerage_id.is.null,brokerage_id.eq.${brokerageId}`
 }
+
+// ─── THE ONE ROLLUP ──────────────────────────────────────────────────────────
+//
+// Extracted VERBATIM from app/actions/system-health.ts:getServiceStatuses
+// (the §1.1 survivor of the /api/admin/health-status duplicate) so the
+// INTERNAL_API_SECRET path of that route — which has no cookie session and
+// therefore cannot call the "use server" action without hitting its
+// redirect() gates — computes the SAME verdict from the same rules instead of
+// growing a third copy. The action now delegates here too: one rollup, two
+// callers, zero drift.
+//
+// The rules it encodes (each was a measured defect in the retired duplicate):
+//   · a critical service down        → "critical"
+//   · anything degraded/down         → "degraded"
+//   · rows exist but nothing has ever been CHECKED → "unknown" (registered is
+//     not the same as measured — never a green tick over an absence)
+//   · EMPTY input is the CALLER's problem: this function refuses to answer on
+//     zero rows (returns "unknown") rather than seeding "operational" and
+//     only ever downgrading, which is how the deleted copy manufactured a
+//     green platform out of an empty read.
+
+/** The columns the rollup actually reads — structural, so both the "use server"
+ *  action and the route can pass their own row types. */
+export interface ServiceStatusRollupRow {
+  is_critical: boolean | null
+  current_status: string | null
+  last_checked_at: string | null
+}
+
+export interface ServiceStatusRollup<T extends ServiceStatusRollupRow> {
+  overallStatus: "operational" | "critical" | "degraded" | "unknown"
+  criticalIssues: T[]
+  lastCheckedAt: string | null
+}
+
+export function rollupServiceStatuses<T extends ServiceStatusRollupRow>(
+  services: T[],
+): ServiceStatusRollup<T> {
+  const criticalDown = services.filter(
+    (s) => s.is_critical && s.current_status === "down",
+  )
+  const anyDegraded = services.some(
+    (s) => s.current_status === "degraded" || s.current_status === "down",
+  )
+
+  let overallStatus: ServiceStatusRollup<T>["overallStatus"] = "operational"
+  if (services.length === 0) {
+    // No rows is an absence of measurement, never an operational platform.
+    overallStatus = "unknown"
+  } else if (criticalDown.length > 0) {
+    overallStatus = "critical"
+  } else if (anyDegraded) {
+    overallStatus = "degraded"
+  } else if (services.every((s) => s.current_status === "unknown" || !s.last_checked_at)) {
+    // Rows exist but no check has ever landed on any of them. Registered is
+    // not the same as measured.
+    overallStatus = "unknown"
+  }
+
+  const lastCheckedAt = services.reduce((latest, s) => {
+    if (!s.last_checked_at) return latest
+    if (!latest) return s.last_checked_at
+    return new Date(s.last_checked_at) > new Date(latest)
+      ? s.last_checked_at
+      : latest
+  }, null as string | null)
+
+  return { overallStatus, criticalIssues: criticalDown, lastCheckedAt }
+}

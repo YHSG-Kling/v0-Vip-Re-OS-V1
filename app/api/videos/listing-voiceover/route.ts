@@ -23,22 +23,46 @@
  *     (lib/video/video-status.ts:126 records exactly that phase; the reaper
  *     covers it — scripts/video-pipeline-reaper-simulator.ts:40).
  *
- * WHY IT IS NOT DELETED AS "the functionality lives elsewhere". The nearest
- * survivor candidate is the Ken Burns walkthrough rail — commissionVideo →
- * lib/video/video-director.ts:309 (situation photo_walkthrough) →
- * remotion/PhotoWalkthroughReel.tsx → Lambda render → publish, wired from
- * lib/video/video-plays.ts:131 and lib/kernel/jobs.ts:85. Same OUTCOME (listing
- * photos + narration → a video) but NOT the same business process:
- *   · that rail sources photos from listing_media and the script from the
- *     Director, and passes a compliance gate + finish-spec before it renders;
- *   · this route takes CALLER-SUPPLIED photo urls, a CALLER-SUPPLIED script and
- *     a CALLER-CHOSEN ElevenLabs voice, and gates none of it.
+ * ── EXIT (a) EVALUATED AND REFUSED (lane W8, 2026-09-01) ─────────────────────
+ * The owner's option (a) — retire onto the walkthrough rail — was compared
+ * capability by capability against what commissionVideo actually accepts
+ * today, and RETIREMENT IS BLOCKED: three of this route's inputs have no door
+ * on that rail, so deleting it would delete capability, not duplication (§1.3
+ * requires "the functionality already lives elsewhere"; it does not).
+ *
+ *   · "my photos" — commissionVideo's CommissionOpts carries listingId /
+ *     contactId / leadId / campaignId and NO photo input; PhotoWalkthroughReel
+ *     sources photos exclusively from listing_media (m221: "Photos are
+ *     listing_media (file_url, sort_order asc, media_type=image)"). Arbitrary
+ *     caller-supplied property_image_urls — photos not attached to any
+ *     listing — cannot ride.
+ *   · "my script" — commissionVideo has no script parameter: the only prose it
+ *     drafts is the 8-word hook line (generatePersonaCopy + compliance gate),
+ *     and PhotoWalkthroughReel's content props are listingReelProps(listing,
+ *     hookLine) (lib/video/director-content.ts:466) — no narration-script
+ *     input. The compliance-gated agent-script door exists
+ *     (app/actions/workflows.ts:savePrivateScript → the fused
+ *     gateAndStorePrivateScript), but NOTHING routes a `scripts` row into a
+ *     walkthrough render's narration, so a saved private script still cannot
+ *     reach this rail.
+ *   · "my voice" — commissionVideo has no voice parameter; the render path
+ *     resolves the narration voice from the agent → team → brokerage
+ *     voice-profile cascade (lib/video/video-identity.ts →
+ *     prepareReelVoiceover), i.e. the agent's own configured clone. A
+ *     caller-chosen elevenlabs_voice_id cannot ride.
+ *
  * Per the owner's 2026-08-28 methodology ruling — a shared outcome is not a
  * shared capability — those are two processes, and deleting this one would be
- * deleting to move a number. OWNER DECISION: either (a) retire this route in
- * favour of the walkthrough rail and give the "my photos, my script" case a door
- * onto commissionVideo, or (b) finish this rail with a real renderer. Until then
- * it stays, hardened (see the tenant gate below, which it did not have).
+ * deleting to move a number. The route therefore STAYS, still owed either its
+ * missing renderer (option b) or a commissionVideo surface that accepts
+ * photos/script/voice (which would reopen option a). What did NOT survive the
+ * evaluation is the §5 bypass: a CALLER-SUPPLIED script was synthesized and
+ * attached with no fair-housing gate at all, on the one video lane whose text
+ * is written by the caller. The POST now runs the SAME pure red-flag gate the
+ * private-script door uses (lib/video/script-compliance.ts:
+ * detectFairHousingRedFlags — deterministic, synchronous, fails closed on a
+ * protected-class/steering hit) BEFORE any TTS spend, and refuses with the
+ * findings rather than laundering them into audio.
  */
 
 import { type NextRequest, NextResponse } from "next/server"
@@ -94,6 +118,26 @@ export async function POST(request: NextRequest) {
     }
     if (project.brokerage_id !== auth.brokerageId) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 })
+    }
+
+    // ── §5 GATE ON THE CALLER'S OWN WORDS, BEFORE ANY TTS SPEND ──────────────
+    // This is the one video lane whose script is written BY THE CALLER, and it
+    // used to synthesize that text ungated. Same hard line as the private-
+    // script door (app/actions/workflows.ts:gateAndStorePrivateScript): a
+    // deterministic fair-housing red flag — protected-class reference or
+    // high-severity steering — REFUSES the request outright; the check is pure
+    // and synchronous, so an outage can never make a hit read as clean. A
+    // listing voiceover speaks to the seller side (scriptJourneyType's rule).
+    const { detectFairHousingRedFlags } = await import("@/lib/video/script-compliance")
+    const redFlags = detectFairHousingRedFlags(String(script), "seller")
+    if (redFlags.length > 0) {
+      return NextResponse.json(
+        {
+          error: "Script refused — hard fair-housing flag. Nothing was generated.",
+          violations: redFlags,
+        },
+        { status: 422 }
+      )
     }
 
     // Generate ElevenLabs TTS and upload to storage

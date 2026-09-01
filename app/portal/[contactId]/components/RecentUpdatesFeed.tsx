@@ -12,6 +12,7 @@ import { Badge } from "@/app/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
 import { Button } from "@/app/components/ui/button"
 import { Bell, ArrowRight, MessageSquare, CheckCircle2, Share2, Video } from "lucide-react"
+import { CardVideoPlayer } from "./CardVideoPlayer"
 
 // Marketing-receipt card types whose content the SELLER can re-share from the
 // "Share My Home" surface (published posts only). The nudge deep-links to the
@@ -48,28 +49,43 @@ const WELCOME_UPDATE_TYPE = "client_welcome"
 //
 // ONE PLAYER, TWO CARDS (§6): the card kinds and the metadata keys are one
 // table, so a third avatar lane adds a row here instead of a second player.
-const CARD_VIDEO_KEYS: Record<string, { url: string; poster: string; caption: string }> = {
+//
+// `projectId` (lane W8, 2026-09-01) is the ATTRIBUTION half the engagement
+// producer needed: both card writers already stamp the ai_video_projects id
+// onto the card (welcome_video_project_id —
+// lib/kernel/client-welcome.ts:writePortalWelcomeCard;
+// anniversary_video_project_id — the intro-video-email-backfill cron's
+// anniversary sweep), and reading it here is what lets CardVideoPlayer POST
+// view/complete/pause/cta_click to /api/video/engagement against a real
+// project. A card without the stamp (written before the id existed) plays
+// untracked rather than fabricating an id.
+const CARD_VIDEO_KEYS: Record<string, { url: string; poster: string; projectId: string; caption: string }> = {
   [WELCOME_UPDATE_TYPE]: {
-    url:     "welcome_video_url",
-    poster:  "welcome_video_thumbnail_url",
-    caption: "A personal hello from your agent",
+    url:       "welcome_video_url",
+    poster:    "welcome_video_thumbnail_url",
+    projectId: "welcome_video_project_id",
+    caption:   "A personal hello from your agent",
   },
   equity_report: {
-    url:     "anniversary_video_url",
-    poster:  "anniversary_video_thumbnail_url",
-    caption: "A personal note from your agent",
+    url:       "anniversary_video_url",
+    poster:    "anniversary_video_thumbnail_url",
+    projectId: "anniversary_video_project_id",
+    caption:   "A personal note from your agent",
   },
 }
 
 /** The playable clip on a card's metadata, or null — never a "coming soon". */
-function cardVideo(u: RecentUpdate): { url: string; poster?: string; caption: string } | null {
+function cardVideo(
+  u: RecentUpdate,
+): { url: string; poster?: string; videoProjectId: string | null; caption: string } | null {
   const spec = CARD_VIDEO_KEYS[u.update_type ?? ""]
   if (!spec) return null
   const m = u.metadata as Record<string, unknown> | null | undefined
   const url = m && typeof m[spec.url] === "string" ? (m[spec.url] as string).trim() : ""
   if (!url) return null
   const poster = m && typeof m[spec.poster] === "string" ? (m[spec.poster] as string) : undefined
-  return { url, poster, caption: spec.caption }
+  const projectIdRaw = m && typeof m[spec.projectId] === "string" ? (m[spec.projectId] as string).trim() : ""
+  return { url, poster, videoProjectId: projectIdRaw || null, caption: spec.caption }
 }
 
 export interface RecentUpdate {
@@ -99,23 +115,20 @@ interface Props {
   hideWhenEmpty?: boolean
 }
 
-/** The clip block for one card, or nothing at all when there is no clip. */
-function CardVideoBlock({ update }: { update: RecentUpdate }) {
+/** The clip block for one card, or nothing at all when there is no clip.
+ *  Rendering moved into CardVideoPlayer (client component) so playback emits
+ *  the view/complete/pause/cta_click engagement events — see its header. */
+function CardVideoBlock({ contactId, update }: { contactId: string; update: RecentUpdate }) {
   const clip = cardVideo(update)
   if (!clip) return null
   return (
-    <div className="pt-2">
-      <video controls poster={clip.poster} className="w-full max-w-md rounded-lg border">
-        <source src={clip.url} type="video/mp4" />
-        <a href={clip.url} className="text-blue-700 hover:underline">
-          Watch the video from your agent
-        </a>
-      </video>
-      <p className="text-[11px] text-muted-foreground pt-1 flex items-center gap-1">
-        <Video className="h-3 w-3" />
-        {clip.caption}
-      </p>
-    </div>
+    <CardVideoPlayer
+      contactId={contactId}
+      videoProjectId={clip.videoProjectId}
+      url={clip.url}
+      poster={clip.poster}
+      caption={clip.caption}
+    />
   )
 }
 
@@ -176,7 +189,7 @@ export function RecentUpdatesFeed({ contactId, updates, limit = 4, hideWhenEmpty
             {/* The agent's personal clip — rendered only when a real playable
                 URL exists on the card. Never a "coming soon" tile: that would
                 imply a recording the agent has not made. */}
-            <CardVideoBlock update={u} />
+            <CardVideoBlock contactId={contactId} update={u} />
             {u.next_step && (
               <div className="text-xs flex items-center gap-1 pt-1">
                 <ArrowRight className="h-3 w-3 text-blue-500" />

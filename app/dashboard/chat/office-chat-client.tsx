@@ -112,6 +112,98 @@ const RELATIONSHIP_PROMPTS = [
   "What's the best next step with {name}?",
 ]
 
+/**
+ * STREAM FIRST, PERSIST THROUGH THE ONE DOOR (lane W8, 2026-09-01).
+ *
+ * /api/chat/stream is the OTHER half of the owner's "both chat lanes stay"
+ * ruling: it streams tokens (SSE, fair-use pre-flight, post-stream
+ * ai_suggestions) and by design persists no messages; sendChatMessage persists
+ * and analyses without streaming. Until now this surface called only the
+ * action, so the streaming lane had no caller at all — a live-token capability
+ * nothing could reach. The send flow is now:
+ *
+ *   1. POST /api/chat/stream — tokens render progressively as they arrive
+ *      (the `data: {text, done}` SSE frames; the done frame carries the
+ *      them-first score).
+ *   2. On stream completion, sendChatMessage persists the thread with the
+ *      STREAMED text passed as `precomposedAiReply`, so the action — still the
+ *      ONE persistence door, with its tenant gate and compliance analysis
+ *      intact — stores exactly the words the agent watched instead of
+ *      generating a second, different reply.
+ *   3. On ANY stream failure (HTTP error, `{error}` frame, network drop), the
+ *      message is NOT lost: it goes through sendChatMessage's own
+ *      non-streaming generation exactly as before, and the agent is told the
+ *      live stream fell back.
+ *
+ * Reads each SSE frame's {error} — a fair-use refusal (429) or mid-stream
+ * error surfaces as a thrown reason, never as a silently empty reply.
+ */
+async function streamAssistantReply(args: {
+  sessionId: string
+  message: string
+  contactId: string | null
+  onToken: (accumulated: string) => void
+}): Promise<{ text: string; themFirstScore: number | null }> {
+  const res = await fetch("/api/chat/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sessionId: args.sessionId,
+      message: args.message,
+      ...(args.contactId ? { contactId: args.contactId } : {}),
+    }),
+  })
+
+  if (!res.ok || !res.body) {
+    // The route answers failures as JSON {error} with a status — read it so a
+    // fair-use refusal is reported in its own words, not as "stream failed".
+    let reason = `stream failed (${res.status})`
+    try {
+      const body = await res.json()
+      if (body?.error) reason = String(body.error)
+    } catch { /* non-JSON failure body — keep the status-derived reason */ }
+    throw new Error(reason)
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+  let full = ""
+  let themFirstScore: number | null = null
+
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    // SSE frames are `data: {json}` separated by blank lines.
+    const frames = buffer.split("\n\n")
+    buffer = frames.pop() ?? ""
+    for (const frame of frames) {
+      const line = frame.split("\n").find((l) => l.startsWith("data: "))
+      if (!line) continue
+      let payload: any
+      try {
+        payload = JSON.parse(line.slice(6))
+      } catch {
+        continue
+      }
+      if (payload?.error) throw new Error(String(payload.error))
+      if (typeof payload?.text === "string" && payload.text) {
+        full += payload.text
+        args.onToken(full)
+      }
+      if (payload?.done) {
+        if (typeof payload.them_first_score === "number") {
+          themFirstScore = payload.them_first_score
+        }
+      }
+    }
+  }
+
+  if (!full.trim()) throw new Error("The stream ended without any reply text")
+  return { text: full, themFirstScore }
+}
+
 /** messages rows → the shape this transcript renders. */
 function toMessage(row: any): Message {
   return {
@@ -343,18 +435,64 @@ export function OfficeChatClient({
         setActiveSessionId(sessionId)
       }
 
+      // ── STREAM FIRST (live tokens), THEN PERSIST (the one action door) ──
+      // See streamAssistantReply's header for the flow. A failed stream falls
+      // back to the action's own generation so the message is never lost.
+      const streamingId = `streaming-${Date.now()}`
+      let streamedReply: string | null = null
+      try {
+        const streamed = await streamAssistantReply({
+          sessionId: sessionId!,
+          message: text,
+          contactId: mode === "relationship" ? selectedContactId : null,
+          onToken: (accumulated) => {
+            setMessages((prev) => {
+              const existing = prev.find((m) => m.id === streamingId)
+              if (existing) {
+                return prev.map((m) =>
+                  m.id === streamingId ? { ...m, content: accumulated } : m,
+                )
+              }
+              return [
+                ...prev,
+                {
+                  id: streamingId,
+                  role: "assistant" as const,
+                  content: accumulated,
+                  timestamp: new Date(),
+                },
+              ]
+            })
+          },
+        })
+        streamedReply = streamed.text
+      } catch (streamError: any) {
+        // The stream lane refused or broke — say so, drop the partial bubble,
+        // and send the message through the non-streaming action instead.
+        console.error("[chat] stream failed, falling back to sendChatMessage:", streamError)
+        setMessages((prev) => prev.filter((m) => m.id !== streamingId))
+        toast.info("Live streaming was unavailable — your message was sent the standard way.")
+      }
+
       // senderType is STATED. The action used to infer it from the sender id
       // and got it wrong for every uuid, filing the agent's own words as the
       // client's and scoring the lead's temperature from them.
+      //
+      // With a streamed reply in hand, the SAME action persists it verbatim
+      // (precomposedAiReply) instead of generating a second one; without one,
+      // this call IS the generation — the pre-streaming behavior, unchanged.
       const result: any = await sendChatMessage({
         sessionId: sessionId!,
         senderType: "agent",
         messageContent: text,
         requestAiResponse: true,
+        ...(streamedReply ? { precomposedAiReply: streamedReply } : {}),
       })
 
       setMessages((prev) => {
-        const withoutPending = prev.filter((m) => m.id !== optimistic.id)
+        const withoutPending = prev.filter(
+          (m) => m.id !== optimistic.id && m.id !== streamingId,
+        )
         const next = [...withoutPending]
         if (result?.message) next.push(toMessage(result.message))
         if (result?.assistantMessage) next.push(toMessage(result.assistantMessage))
@@ -364,7 +502,12 @@ export function OfficeChatClient({
       await refreshSessions()
     } catch (error: any) {
       console.error("Error generating response:", error)
-      setMessages((prev) => prev.filter((m) => m.id !== optimistic.id))
+      // A failed PERSIST rolls back the optimistic bubble AND any streamed
+      // reply bubble — a reply that was never stored must not sit in the
+      // transcript looking saved. The typed text goes back into the input.
+      setMessages((prev) =>
+        prev.filter((m) => m.id !== optimistic.id && !m.id.startsWith("streaming-")),
+      )
       setInput(text)
       toast.error(error?.message ?? "Failed to generate response")
     } finally {

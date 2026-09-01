@@ -158,7 +158,7 @@ export type HealthRead<T> =
 // ["superadmin","admin","broker"] literals were dead on 'superadmin': 0 live
 // rows store that users.user_type.
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
-import { serviceCatalogueScope } from "@/lib/platform/service-catalogue-scope"
+import { serviceCatalogueScope, rollupServiceStatuses } from "@/lib/platform/service-catalogue-scope"
 
 // ============================================================================
 // Server Actions
@@ -244,33 +244,13 @@ export async function getServiceStatuses(): Promise<{
     }
   }
 
-  // Determine overall status
-  const criticalDown = typedServices.filter(
-    (s) => s.is_critical && s.current_status === "down"
-  )
-  const anyDegraded = typedServices.some(
-    (s) => s.current_status === "degraded" || s.current_status === "down"
-  )
-
-  let overallStatus: "operational" | "critical" | "degraded" | "unknown" = "operational"
-  if (criticalDown.length > 0) {
-    overallStatus = "critical"
-  } else if (anyDegraded) {
-    overallStatus = "degraded"
-  } else if (typedServices.every((s) => s.current_status === "unknown" || !s.last_checked_at)) {
-    // Rows exist but no check has ever landed on any of them. Registered is
-    // not the same as measured.
-    overallStatus = "unknown"
-  }
-
-  // Get last checked timestamp
-  const lastCheckedAt = typedServices.reduce((latest, s) => {
-    if (!s.last_checked_at) return latest
-    if (!latest) return s.last_checked_at
-    return new Date(s.last_checked_at) > new Date(latest)
-      ? s.last_checked_at
-      : latest
-  }, null as string | null)
+  // Determine overall status — the ONE rollup, shared with the
+  // INTERNAL_API_SECRET path of /api/admin/health-status (which has no cookie
+  // session and cannot come through this action's redirect gates). Extracted
+  // to lib/platform/service-catalogue-scope.ts:rollupServiceStatuses so the
+  // two callers cannot drift; the rules are unchanged.
+  const { overallStatus, criticalIssues: criticalDown, lastCheckedAt } =
+    rollupServiceStatuses(typedServices)
 
   return {
     services: typedServices,
