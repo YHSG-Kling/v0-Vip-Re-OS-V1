@@ -53,23 +53,30 @@ export type StandardCRMStatus = (typeof STANDARD_CRM_STATUSES)[number]
 // never drift apart again. The two copies had acquitted each other on the
 // orphan census exactly as the STANDARD_SOURCES note below records.
 
-// `investor` REMOVED (2026-08-31) — owner ruling, verbatim: "investor is a
-// persona and not a contact type." An imported "investor" is a BUYER whose
-// SITUATION is an investment purchase: mapContactType now lands them on 'buyer'
-// and the persona mapper (mapPersona / fallbackMapPersona) carries the
-// 'investor' persona, which m589 added to contacts_contact_persona_check.
-export const STANDARD_CONTACT_TYPES = [
-  "buyer",
-  "seller",
-  "lender",
-  "commercial",
-  "other",
-  "agent",
-  "vendor",
-  "TC",
-] as const
-
-export type StandardContactType = (typeof STANDARD_CONTACT_TYPES)[number]
+// ── TOMBSTONE (§1, 2026-09-01): `STANDARD_CONTACT_TYPES` / `StandardContactType`
+// / `mapContactType` / `fallbackMapContactType` — DELETED, all four DEAD.
+// SURVIVORS: lib/contact-types.ts CONTACT_TYPES (the live
+// contacts_contact_type_check roster — m593 applied: lead, prospect,
+// lifetime_customer, sphere, vendor, referral_partner, buyer, seller, both,
+// other) and lib/data-steward/value-normalizer.ts ENUM_VOCABULARIES.contact_type
+// — the import-normalization path that IS wired.
+//
+// The roster here declared FOUR values the live CHECK refuses — lender,
+// commercial, agent, TC — yet this never produced a live 23514, because
+// `mapContactType` had ZERO callers tree-wide (grep: only its definition and a
+// comment; supabaseService consumes only mapStatus/mapPersona). A mapper whose
+// target set the database refuses is worse than no mapper, so it goes rather
+// than gets repointed. Where each refused concept actually lives:
+//   lender     → vendors.category='lender' / users.user_type='lender' /
+//                referral_partners.partner_type='mortgage_broker' /
+//                lender_applications (FK to vendors)
+//   commercial → contacts.property_type='commercial' — a property attribute,
+//                not a transaction side
+//   agent      → contacts.contact_type='referral_partner' as a contact;
+//                internal agents are agents-table rows
+//   TC         → users.user_type='tc' (m036 retired the Title-Case spelling) +
+//                contacts.tc_user_id
+// NOT TOUCHED: mapStatus/mapPersona and their lists — live (see the note below).
 
 // `STANDARD_TIMELINES` / `StandardTimeline` — DELETED HERE.
 // SURVIVOR: constants/crm-standards.ts:119 (`STANDARD_TIMELINES`), with labels
@@ -89,8 +96,9 @@ export type StandardContactType = (typeof STANDARD_CONTACT_TYPES)[number]
 //
 // NOT TOUCHED, because they ARE live: mapStatus and mapPersona below, called by
 // services/supabaseService.ts at 154, 157, 184, 189 and 1834, together with the
-// `STANDARD_CRM_STATUSES` / `STANDARD_CONTACT_PERSONAS` / `STANDARD_CONTACT_TYPES`
-// lists they validate against and their fallback matchers.
+// `STANDARD_CRM_STATUSES` / `STANDARD_CONTACT_PERSONAS` lists they validate
+// against and their fallback matchers. (`STANDARD_CONTACT_TYPES` and its
+// mapContactType were dead and are deleted — tombstone above.)
 
 // `STANDARD_SOURCES` / `StandardSource` — DELETED HERE (2026-08-29), the same
 // way and for the same reason as the timeline pair above it.
@@ -198,45 +206,10 @@ Return ONLY the exact persona keyword (e.g., "first_time"), nothing else.`,
     }
   },
 
-  /**
-   * Maps any external contact type to standardized contact type
-   */
-  async mapContactType(externalType: string): Promise<StandardContactType> {
-    try {
-      const { text } = await generateText({
-        model: resolveModel("openai/gpt-4o-mini"),
-        prompt: `You are a CRM data normalization expert for a real estate platform. Map the following external contact type to the CLOSEST matching standard type.
-
-External type: "${externalType}"
-
-Standard contact types (choose ONLY from these):
-- buyer: Looking to purchase property (including investors — an investor is a buyer; the investment focus is captured as a persona, not a type)
-- seller: Looking to sell property
-- lender: Loan officer/mortgage lender
-- commercial: Commercial property
-- agent: Real estate agent (partner)
-- vendor: Service vendor (photographer, stager, etc)
-- TC: Transaction Coordinator
-- other: Unclassified
-
-Return ONLY the exact type keyword (e.g., "buyer"), nothing else.`,
-        temperature: 0.1,
-      })
-
-      const mapped = text.trim().toLowerCase()
-
-      if (STANDARD_CONTACT_TYPES.includes(mapped as StandardContactType)) {
-        console.log(`[AI Mapping] Mapped type "${externalType}" → "${mapped}"`)
-        return mapped as StandardContactType
-      }
-
-      console.warn(`[AI Mapping] Invalid type response "${mapped}", defaulting to "other"`)
-      return "other"
-    } catch (error) {
-      console.error("[AI Mapping] Error mapping contact type:", error)
-      return fallbackMapContactType(externalType)
-    }
-  },
+  // `mapContactType` stood here — DELETED with its roster; tombstone above
+  // STANDARD_CRM_STATUSES' sibling note (SURVIVORS: lib/contact-types.ts
+  // CONTACT_TYPES + lib/data-steward/value-normalizer.ts
+  // ENUM_VOCABULARIES.contact_type).
 
   /**
    * Batch map multiple contacts' statuses at once (for imports)
@@ -339,25 +312,9 @@ function fallbackMapPersona(externalPersona: string): StandardContactPersona {
   return "other"
 }
 
-/**
- * Fallback contact type mapping (no AI)
- */
-function fallbackMapContactType(externalType: string): StandardContactType {
-  const lower = externalType.toLowerCase().trim()
-
-  if (STANDARD_CONTACT_TYPES.includes(lower as StandardContactType)) {
-    return lower as StandardContactType
-  }
-
-  if (lower.includes("buy") || lower.includes("purchas")) return "buyer"
-  if (lower.includes("sell") || lower.includes("list")) return "seller"
-  // Owner ruling: an investor is a BUYER (the investing is the persona).
-  if (lower.includes("invest")) return "buyer"
-  if (lower.includes("lend") || lower.includes("loan") || lower.includes("mortgage")) return "lender"
-  if (lower.includes("commercial") || lower.includes("business")) return "commercial"
-  if (lower.includes("agent") || lower.includes("broker") || lower.includes("realtor")) return "agent"
-  if (lower.includes("vendor") || lower.includes("service") || lower.includes("contractor")) return "vendor"
-  if (lower.includes("tc") || lower.includes("transaction") || lower.includes("coordinator")) return "TC"
-
-  return "other"
-}
+// `fallbackMapContactType` stood here — DELETED with `mapContactType` (its only
+// caller) and the STANDARD_CONTACT_TYPES roster; see the tombstone at the top of
+// this file. Its matchers targeted lender / commercial / agent / TC — values the
+// live contacts_contact_type_check refuses (SURVIVOR roster:
+// lib/contact-types.ts CONTACT_TYPES; wired normalizer:
+// lib/data-steward/value-normalizer.ts ENUM_VOCABULARIES.contact_type).

@@ -1,19 +1,29 @@
 import type { StandardTimeline, StandardContactPersona } from "@/constants/crm-standards"
 import type { ContactStatus as CanonicalContactStatus } from "@/lib/contact-promotion/qualification"
+import type { ContactType as CanonicalContactType } from "@/lib/contact-types"
 
-// `investor` removed 2026-08-31 — owner ruling, verbatim: "investor is a persona
-// and not a contact type." It is the fourteenth ContactPersona below (m589); an
-// investor's transaction side is 'buyer'. m593 (written, not applied) retires it
-// from contacts_contact_type_check.
-export type ContactType =
-  | "buyer"
-  | "seller"
-  | "lender"
-  | "commercial"
-  | "other"
-  | "agent"
-  | "vendor"
-  | "TC"
+/**
+ * REPOINTED (§1/§6, 2026-09-01) onto the ONE contact_type vocabulary —
+ * lib/contact-types.ts CONTACT_TYPES / ContactType, the roster the live
+ * contacts_contact_type_check enforces (m593, APPLIED: lead, prospect,
+ * lifetime_customer, sphere, vendor, referral_partner, buyer, seller, both,
+ * other) — the same alias treatment ContactPersona / ContactStatus /
+ * ContactTimeline below already have.
+ *
+ * The eight-member union that stood here (buyer | seller | lender | commercial |
+ * other | agent | vendor | TC) named FOUR values the database REFUSES on write
+ * (23514, silently resolved by supabase-js — §3): lender, commercial, agent, TC.
+ * A Contact typed with it could never round-trip. Where each refused concept
+ * actually lives:
+ *   lender     → vendors.category='lender' / users.user_type='lender' /
+ *                referral_partners.partner_type='mortgage_broker'
+ *   commercial → contacts.property_type='commercial' (a property attribute,
+ *                not a transaction side)
+ *   agent      → contacts.contact_type='referral_partner' as a contact;
+ *                internal agents are agents-table rows
+ *   TC         → users.user_type='tc' (m036) + contacts.tc_user_id
+ */
+export type ContactType = CanonicalContactType
 
 // REPOINTED (§6, 2026-08-31) onto the ONE persona vocabulary — constants/crm-standards.ts
 // STANDARD_CONTACT_PERSONAS, rekeyed there onto the live contacts_contact_persona_check
@@ -79,9 +89,15 @@ export interface Contact {
   referred_by_name?: string
   referral_count?: number
   referral_notes?: string
-  vendor_type?: string
-  lender_company?: string
-  lender_nmls?: string
+  // TOMBSTONE (§1, 2026-09-01): `vendor_type`, `lender_company`, `lender_nmls`
+  // deleted — PHANTOM fields: none exists on live contacts (verified against the
+  // generated scripts/schema-snapshot.ts contacts column list; a reader of a
+  // phantom field renders nothing, a writer is refused wholesale — PGRST204, §3).
+  // SURVIVORS: vendor_type → vendors.category (the portal surfaces already alias
+  // it: app/actions/portal-seller.ts:828 `vendor_type:category`);
+  // lender_company / lender_nmls → live columns on the lender-portal ledger
+  // tables, written at app/actions/lender-portal-actions.ts:255/339/393 — never
+  // columns of contacts.
   service_area?: string
   rating?: number
   total_transactions?: number

@@ -8,6 +8,7 @@
 
 import type { StandardTimeline } from "@/constants/crm-standards"
 import type { ContactStatus as CanonicalContactStatus } from "@/lib/contact-promotion/qualification"
+import type { ContactType as CanonicalContactType } from "@/lib/contact-types"
 
 // ============================================
 // LEAD
@@ -89,20 +90,21 @@ export interface Lead {
 // CONTACT
 // ============================================
 
-// `investor` REMOVED (2026-08-31) — owner ruling, verbatim: "investor is a
-// persona and not a contact type." It moved to ContactPersona below (m589,
-// APPLIED, admits it on contacts.contact_persona); an investor's transaction
-// side is 'buyer'. Live census at removal: zero rows carried
-// contact_type='investor'. DB half: m593 (WRITTEN, not applied).
-export type ContactType =
-  | "buyer"
-  | "seller"
-  | "lender"
-  | "commercial"
-  | "agent"
-  | "vendor"
-  | "tc"
-  | "other"
+/**
+ * REPOINTED (§1/§6, 2026-09-01) onto the ONE contact_type vocabulary —
+ * lib/contact-types.ts CONTACT_TYPES / ContactType, the roster the live
+ * contacts_contact_type_check enforces (m593 APPLIED: lead, prospect,
+ * lifetime_customer, sphere, vendor, referral_partner, buyer, seller, both,
+ * other) — the same alias treatment ContactStatus / ContactTimeline in this
+ * file already have, and the same repoint made to types/contact.ts the same
+ * day. The eight-member union that stood here named FOUR values the database
+ * refuses on write (23514, silently resolved — §3): lender, commercial, agent,
+ * tc. Where each lives instead: lender → vendors.category='lender' /
+ * users.user_type='lender'; commercial → contacts.property_type='commercial';
+ * agent → contact_type='referral_partner' (internal agents are agents-table
+ * rows); tc → users.user_type='tc' + contacts.tc_user_id.
+ */
+export type ContactType = CanonicalContactType
 
 // REKEYED (§6, 2026-08-31) — this union used to spell the RETIRED 16-value
 // persona set (first_time_buyer, motivated_seller, upsizers, remote_seller, …),
@@ -209,10 +211,13 @@ export interface Contact {
   referral_count?: number
   referral_notes?: string
   
-  // Professional contacts (lender, vendor, etc.)
-  vendor_type?: string
-  lender_company?: string
-  lender_nmls?: string
+  // TOMBSTONE (§1, 2026-09-01): `vendor_type`, `lender_company`, `lender_nmls`
+  // deleted — PHANTOM fields, absent from live contacts (generated
+  // scripts/schema-snapshot.ts contacts column list). SURVIVORS: vendor_type →
+  // vendors.category (aliased at app/actions/portal-seller.ts:828);
+  // lender_company / lender_nmls → the lender-portal ledger tables
+  // (app/actions/lender-portal-actions.ts:255/339/393). Same deletion made in
+  // types/contact.ts the same day.
   service_area?: string
   rating?: number
   

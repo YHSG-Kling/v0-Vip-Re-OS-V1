@@ -202,7 +202,9 @@ export default async function CoordinatorDashboard({
 
   // Today's AI brief — closings, at-risk deals, missing docs, interventions
   const tcBrief = await generateUserTypeBrief({
-    userType: "TC",
+    // "tc" is the live users.user_type spelling (m036 retired "TC"); the
+    // generator's switch tolerates the old casing, but writers name the survivor.
+    userType: "tc",
     userId: user.id,
     brokerageId: brokerageId ?? null,
   })

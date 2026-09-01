@@ -104,7 +104,14 @@ export async function generateBriefing(
 // are server components and call generateUserTypeBrief inline.
 
 export async function getUserTypeBrief(input?: {
-  userType?: "agent" | "broker" | "TC" | "compliance" | "lender" | "vendor" | "superadmin"
+  // Union normalized 2026-09-01 onto the LIVE users.user_type spellings
+  // (scripts/check-vocabularies.ts users.user_type): "TC" → "tc" (m036 retired
+  // the Title-Case spelling) and "compliance" → "compliance_officer". "TC"
+  // happened to work only because generateUserTypeBrief's switch tolerates it;
+  // "compliance" matched NO case at all and fell to the default empty brief —
+  // a compliance officer calling this action would silently get nothing.
+  // Sole current caller passes "agent" (app/dashboard/agent/page.tsx:378/569).
+  userType?: "agent" | "broker" | "tc" | "compliance_officer" | "lender" | "vendor" | "superadmin"
 }): Promise<{ brief: UserTypeBrief | null; error?: string }> {
   try {
     const context = await getAgentContext()

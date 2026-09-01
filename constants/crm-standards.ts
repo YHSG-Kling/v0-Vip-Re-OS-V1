@@ -1,21 +1,26 @@
 // Standard CRM field values - THE source of truth for all CRM data
 // These values are used across the entire application for workflows, automations, and data normalization
 
-export const STANDARD_CRM_STATUSES = [
-  "new",
-  "contacted",
-  "qualified",
-  "appointment_booked",
-  "signed_agreement",
-  "pre_listing",
-  "active_listing",
-  "contingent",
-  "pending",
-  "sold",
-  "lifetime_customer",
-] as const
-
-export type StandardCRMStatus = (typeof STANDARD_CRM_STATUSES)[number]
+// ── TOMBSTONE (§1.1/§6, 2026-09-01): `STANDARD_CRM_STATUSES` /
+// `StandardCRMStatus` — DELETED. SURVIVOR: lib/contact-promotion/qualification.ts
+// CONTACT_STATUSES (+ CONTACT_STATUS_LABELS), the list the live contacts.status
+// CHECK (m587) enforces: new, contacted, active, nurture, qualified, inactive,
+// archived, deleted.
+//
+// The 11-member journey ladder that stood here (new, contacted, qualified,
+// appointment_booked, signed_agreement, pre_listing, active_listing, contingent,
+// pending, sold, lifetime_customer) named EIGHT values Postgres refuses on
+// contacts.status (23514, resolved silently — §3): they are DEAL/JOURNEY facts
+// carried by buyer_stage, listings.status, transactions and contact_type
+// ('lifetime_customer' is a contact_type, not a status). The twin roster in
+// services/aiMappingService.ts:29 was already repointed onto the survivor
+// (`satisfies readonly ContactStatus[]`); this copy was left behind. Checked
+// before deleting: zero importers — `grep -rn "STANDARD_CRM_STATUSES\|
+// StandardCRMStatus\|STATUS_LABELS"` matched only this file, aiMappingService's
+// own repointed declaration, and unrelated same-named local maps (app/offers/
+// page.tsx:21, app/dashboard/campaigns/mail/components/recipients-tab.tsx:55,
+// campaigns-tab.tsx:61, and portal/referral/video panels — different
+// vocabularies wearing the same name; untouched).
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THE ONE PERSONA VOCABULARY — REKEYED ONTO THE LIVE CHECK (2026-08-31, §3/§6),
@@ -78,27 +83,24 @@ export const STANDARD_CONTACT_PERSONAS = [
 
 export type StandardContactPersona = (typeof STANDARD_CONTACT_PERSONAS)[number]
 
-// `investor` REMOVED from this roster (2026-08-31) on the same owner ruling that
-// added it to the personas above: "investor is a persona and not a contact
-// type." An investor is a BUYER whose situation is an investment purchase —
-// contact_type says the transaction side, contact_persona says the situation.
-// Live census at removal time: ZERO contacts rows carried
-// contact_type='investor' (buyer:2, lifetime_customer:1, seller:1), so nothing
-// strands. The DB half — retiring 'investor' from contacts_contact_type_check —
-// is m593 (WRITTEN, awaiting the integrator); until it applies,
-// lib/contact-types.ts CONTACT_TYPES (the live-CHECK mirror) still lists it.
-export const STANDARD_CONTACT_TYPES = [
-  "buyer",
-  "seller",
-  "lender",
-  "commercial",
-  "other",
-  "agent",
-  "vendor",
-  "TC",
-] as const
-
-export type StandardContactType = (typeof STANDARD_CONTACT_TYPES)[number]
+// ── TOMBSTONE (§1/§6, 2026-09-01): `STANDARD_CONTACT_TYPES` /
+// `StandardContactType` — DELETED. SURVIVOR: lib/contact-types.ts CONTACT_TYPES
+// / ContactType, the live contacts_contact_type_check roster (m593 APPLIED:
+// lead, prospect, lifetime_customer, sphere, vendor, referral_partner, buyer,
+// seller, both, other).
+//
+// This was a verbatim second copy of the roster in services/aiMappingService.ts
+// (deleted the same day — the two copies acquitted each other on the orphan
+// census exactly as the STANDARD_SOURCES note below records), and it declared
+// FOUR values the database refuses on write (23514, resolved silently — §3):
+// lender, commercial, agent, TC. Checked before deleting: zero importers —
+// `grep -rn "STANDARD_CONTACT_TYPES\|StandardContactType"` matched only this
+// file, the aiMappingService copy, and comments; types/contact.ts ContactType is
+// now an alias of the survivor. Where each refused concept lives:
+// lender → vendors.category='lender' / users.user_type='lender'; commercial →
+// contacts.property_type='commercial'; agent → contact_type='referral_partner'
+// (internal agents are agents-table rows); TC → users.user_type='tc' +
+// contacts.tc_user_id.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THE ONE TIMELINE VOCABULARY. Six spellings collapsed into this list.
@@ -202,20 +204,11 @@ export type StandardTimeline = (typeof STANDARD_TIMELINES)[number]
 // survivor is the one with `normalizeLeadSource` and this one had to go, rather
 // than the other way round.
 
-// Human-readable labels for display
-export const STATUS_LABELS: Record<StandardCRMStatus, string> = {
-  new: "New",
-  contacted: "Contacted",
-  qualified: "Qualified",
-  appointment_booked: "Appointment Booked",
-  signed_agreement: "Signed Agreement",
-  pre_listing: "Pre-Listing",
-  active_listing: "Active Listing",
-  contingent: "Contingent",
-  pending: "Pending",
-  sold: "Sold",
-  lifetime_customer: "Lifetime Customer",
-}
+// `STATUS_LABELS` stood here — DELETED with the STANDARD_CRM_STATUSES roster it
+// labelled (tombstone at the top of this file). SURVIVOR:
+// lib/contact-promotion/qualification.ts CONTACT_STATUS_LABELS, keyed on the
+// live contacts.status vocabulary. Eight of its eleven labels named values the
+// CHECK refuses, so no storable row could ever be labelled by them.
 
 // Keyed on the LIVE persona vocabulary (see the rekey note above STANDARD_CONTACT_PERSONAS).
 export const PERSONA_LABELS: Record<StandardContactPersona, string> = {
@@ -235,18 +228,13 @@ export const PERSONA_LABELS: Record<StandardContactPersona, string> = {
   other: "Other",
 }
 
-// `investor` label moved to PERSONA_LABELS above (owner ruling — see
-// STANDARD_CONTACT_TYPES).
-export const CONTACT_TYPE_LABELS: Record<StandardContactType, string> = {
-  buyer: "Buyer",
-  seller: "Seller",
-  lender: "Lender",
-  commercial: "Commercial",
-  other: "Other",
-  agent: "Agent",
-  vendor: "Vendor",
-  TC: "Transaction Coordinator",
-}
+// `CONTACT_TYPE_LABELS` stood here — DELETED with the STANDARD_CONTACT_TYPES
+// roster it labelled (tombstone above). Half its keys (lender, commercial,
+// agent, TC) named values the live contacts_contact_type_check refuses, so no
+// storable row could ever be labelled by them. SURVIVORS: the vocabulary is
+// lib/contact-types.ts CONTACT_TYPES; the one live label map keyed on it is the
+// local CONTACT_TYPE_LABELS at app/crm/contacts/new/page.tsx:37 (typed
+// Record<ContactType, string> against the canonical union, so it cannot drift).
 
 export const TIMELINE_LABELS: Record<StandardTimeline, string> = {
   immediate: "Immediate",

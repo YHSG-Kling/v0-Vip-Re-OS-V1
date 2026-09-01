@@ -89,7 +89,31 @@ export const ENUM_VOCABULARIES: Record<string, EnumVocabulary> = {
       // map it separately.
       'real estate investor': 'buyer', 'flipper': 'buyer', 'landlord': 'seller',
       'referral': 'referral_partner', 'referral source': 'referral_partner', 'partner': 'referral_partner',
+      // ADDED 2026-09-01: an external real-estate agent in a contact book is a
+      // referral partner (the roster's own concept for "agent as a contact").
+      // CAVEAT, recorded: an INTERNAL agent must never arrive through a CSV
+      // import — those are agents-table rows, not contacts. If one is
+      // mislabelled in an import it lands as a harmless referral_partner
+      // contact, which beats a silent unresolved.
+      'agent': 'referral_partner', 'realtor': 'referral_partner',
+      'broker': 'referral_partner', 'real estate agent': 'referral_partner',
       'contractor': 'vendor', 'service provider': 'vendor',
+      // DELIBERATELY NO SYNONYMS for three spellings the old dead mapper
+      // (services/aiMappingService.ts STANDARD_CONTACT_TYPES, deleted — survivor
+      // lib/contact-types.ts CONTACT_TYPES) used to admit. Each refuses for the
+      // same reason the 'client' tombstone above records — the honest outcome is
+      // normalizeEnumValue → {value:null} → unresolved + notes:
+      //   'lender'     — a settlement-service counterparty the RESPA gate
+      //                  classifies on the vendor/partner ledgers
+      //                  (vendors.category='lender' /
+      //                  referral_partners.partner_type='mortgage_broker');
+      //                  folding onto 'vendor' would lose that distinction.
+      //   'commercial' — a property attribute, belongs on
+      //                  contacts.property_type='commercial'; a single-field
+      //                  contact_type mapping cannot set a second column — the
+      //                  same residual the investor re-point above records.
+      //   'tc'         — a staff role: users.user_type='tc' +
+      //                  contacts.tc_user_id, never a contact_type.
     },
   },
   lead_temperature: {

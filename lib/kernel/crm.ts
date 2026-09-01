@@ -65,7 +65,15 @@ export interface CreateContactParams {
   zip_code?: string | null
   // `investor` removed 2026-08-31 (owner: "investor is a persona and not a
   // contact type") — an investor is a buyer with contact_persona='investor'.
-  contact_type?: "buyer" | "seller" | "both" | "vendor" | "lender"
+  // `lender` removed 2026-09-01: the live contacts_contact_type_check refuses
+  // it (23514, which supabase-js resolves silently — the insert at createContact
+  // below would just lose the row). No caller passed it (app/actions/contacts.ts,
+  // app/actions/transactions.ts, app/api/widget/live-agent-request all narrow
+  // further), but this type is exported through the kernel barrel
+  // (lib/kernel/index.ts), so leaving it invited the next caller to write a row
+  // Postgres kills. A lender is vendors.category='lender' /
+  // users.user_type='lender', never a contact_type.
+  contact_type?: "buyer" | "seller" | "both" | "vendor"
   status?: string
   contact_persona?: string
   notes?: string
