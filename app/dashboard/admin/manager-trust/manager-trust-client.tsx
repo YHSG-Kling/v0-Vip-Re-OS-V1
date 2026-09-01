@@ -6,10 +6,10 @@ import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Button } from "@/components/ui/button"
-import { ShieldCheck, Eye, AlertTriangle, HelpCircle, Bot, Lock, Brain, Undo2, Ban, ArrowRightLeft, CalendarClock, CheckCircle2, Scale, Trophy, Handshake, MessageSquareWarning, Gavel, Quote } from "lucide-react"
+import { ShieldCheck, Eye, AlertTriangle, HelpCircle, Bot, Lock, Brain, Undo2, Ban, ArrowRightLeft, CalendarClock, CheckCircle2, Scale, Trophy, Handshake, MessageSquareWarning, Gavel, Quote, Archive, RotateCcw } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import {
-  setManagerAutonomy, vetoLearnedAdjustment, completeRegionalConventionReview, overrideDeliberationWinner,
+  setManagerAutonomy, setManagerRetired, vetoLearnedAdjustment, completeRegionalConventionReview, overrideDeliberationWinner,
   type ManagerTrustRow, type CrossManagerReferralView, type StandingReviewView,
 } from "@/app/actions/admin/manager-evals"
 import type { LearnedAdjustmentView } from "@/lib/managers/learning-loop"
@@ -64,6 +64,9 @@ export function ManagerTrustClient({
   const [referralRows, setReferralRows] = useState<CrossManagerReferralView[]>(referrals)
   const [saving, setSaving] = useState<string | null>(null)
   const [vetoing, setVetoing] = useState<string | null>(null)
+  /** Which manager's RETIRE confirmation is open (retirement is never one click). */
+  const [confirmRetire, setConfirmRetire] = useState<string | null>(null)
+  const [retiring, setRetiring] = useState<string | null>(null)
   const [completingReview, setCompletingReview] = useState<string | null>(null)
   const hasData = team.total > 0
 
@@ -91,6 +94,44 @@ export function ManagerTrustClient({
     setVetoing(null)
     if (!r.ok) { setLearned(prev); toast({ title: "Could not update", description: r.error, variant: "destructive" }) }
     else { toast({ title: vetoed ? "Learned behavior vetoed" : "Veto cleared", description: vetoed ? "This adjustment no longer affects any manager." : "This adjustment is active again." }) }
+  }
+
+  /**
+   * RETIRE / RESTORE a manager (lane W3). The action writes managed_agents.archived_at,
+   * counted and audited; this only mirrors the result onto the board. On success the row
+   * stays visible and is LABELLED retired — a governance surface that silently drops a
+   * manager is how a retirement goes unnoticed — and its policy control goes dead,
+   * because an archived row is invisible to every `.is("archived_at", null)` reader,
+   * including the one setManagerAutonomy writes through.
+   */
+  async function changeRetired(m: ManagerTrustRow, retired: boolean) {
+    setRetiring(m.agentKind)
+    const r = await setManagerRetired(m.agentKind, retired)
+    setRetiring(null)
+    setConfirmRetire(null)
+    if (!r.ok) {
+      toast({ title: retired ? "Could not retire this manager" : "Could not restore this manager", description: r.error, variant: "destructive" })
+      return
+    }
+    const nowIso = new Date().toISOString()
+    setManagers((cur) => cur.map((x) => (x.agentKind === m.agentKind
+      ? {
+          ...x,
+          isActive: !retired,
+          isRetired: retired,
+          retiredAt: retired ? nowIso : null,
+          // The broker override lived on the row that has just been archived; it is no
+          // longer the policy of record, so the board must stop showing one.
+          overrideAutonomy: retired ? null : x.overrideAutonomy,
+          effectiveAutonomy: retired ? x.score.autonomy : x.effectiveAutonomy,
+        }
+      : x)))
+    toast({
+      title: retired ? `${m.label} retired` : `${m.label} restored`,
+      description: retired
+        ? "Its identity row is archived and its stored policy is no longer in force. This is not a stop switch — use the tenant autonomy halt if sends must stop."
+        : "Its archived row is live again, with the policy it carried.",
+    })
   }
 
   async function changeAutonomy(m: ManagerTrustRow, value: string) {
@@ -230,7 +271,7 @@ export function ManagerTrustClient({
             const meta = TIER_META[m.score.tier]
             const TierIcon = meta.icon
             return (
-              <div key={m.agentKind} className="p-3 rounded-lg border space-y-2">
+              <div key={m.agentKind} className={`p-3 rounded-lg border space-y-2 ${m.isRetired ? "opacity-60 bg-muted/40" : ""}`}>
                 <div className="flex items-start justify-between gap-3 flex-wrap">
                   <div>
                     <p className="font-medium flex items-center gap-2">
@@ -239,6 +280,12 @@ export function ManagerTrustClient({
                     <p className="text-xs text-muted-foreground mt-1">{m.domain}</p>
                   </div>
                   <div className="flex items-center gap-2 flex-wrap justify-end">
+                    {m.isRetired && (
+                      <Badge className="bg-gray-200 text-gray-700 border-gray-300 text-[11px] gap-1">
+                        <Archive className="h-3 w-3" />
+                        retired{m.retiredAt ? ` ${new Date(m.retiredAt).toLocaleDateString()}` : ""}
+                      </Badge>
+                    )}
                     <Badge className={`${meta.className} gap-1`}><TierIcon className="h-3 w-3" />{meta.label}</Badge>
                     <Badge variant={m.overrideAutonomy ? "default" : "outline"} className="text-xs gap-1">
                       {m.overrideAutonomy && <Lock className="h-3 w-3" />}
@@ -246,6 +293,54 @@ export function ManagerTrustClient({
                     </Badge>
                   </div>
                 </div>
+
+                {/* RETIRE / RESTORE (lane W3) — the writer managed_agents.archived_at never had.
+                    Retirement is never one click: the confirm below states what it does AND
+                    what it does not do, because an archived manager's autonomy posture reads
+                    as absent, and absent fails OPEN at the dispatch gate. */}
+                {(m.isActive || m.isRetired) && (
+                  <div className="pt-1">
+                    {m.isRetired ? (
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-xs text-muted-foreground">
+                          Retired — its stored policy is out of force, and a dispatch of this kind would spawn a fresh manager.
+                        </span>
+                        <Button size="sm" variant="outline" className="h-7 text-xs" disabled={retiring === m.agentKind}
+                          onClick={() => changeRetired(m, false)}>
+                          <RotateCcw className="h-3.5 w-3.5 mr-1" />Restore
+                        </Button>
+                      </div>
+                    ) : confirmRetire === m.agentKind ? (
+                      <div className="rounded-md border border-amber-200 bg-amber-50/50 p-2 space-y-2">
+                        <p className="text-xs text-amber-900">
+                          <strong>Retire {m.label}?</strong> Its identity row is archived, it leaves this board&apos;s
+                          active roster, and the broker policy stored on it stops being the policy of record.
+                        </p>
+                        <p className="text-[11px] text-amber-900">
+                          <strong>This is not a stop switch.</strong> A retired manager has no stored posture, and the
+                          dispatch gate reads an absent posture as <em>allowed</em> — and the next dispatch of this kind
+                          would spawn a brand-new manager with no policy at all. If sends must STOP, use the tenant
+                          autonomy halt instead. Work already running is protected: retirement is refused while any
+                          session of this manager is running or idle.
+                        </p>
+                        <div className="flex justify-end gap-2">
+                          <Button size="sm" variant="ghost" onClick={() => setConfirmRetire(null)} disabled={retiring === m.agentKind}>Cancel</Button>
+                          <Button size="sm" variant="destructive" disabled={retiring === m.agentKind}
+                            onClick={() => changeRetired(m, true)}>
+                            <Archive className="h-3.5 w-3.5 mr-1" />Yes, retire this manager
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex justify-end">
+                        <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive"
+                          onClick={() => setConfirmRetire(m.agentKind)}>
+                          <Archive className="h-3.5 w-3.5 mr-1" />Retire this manager
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Broker governance: override the autonomy posture (policy of record) */}
                 <div className="flex items-center justify-between gap-3 pt-1">

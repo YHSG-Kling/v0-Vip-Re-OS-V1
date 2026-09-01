@@ -3570,14 +3570,103 @@ const QUALIFIED_EXTERNAL_ROUTES = new Map<string, string>([
 //     cross-tenant view (resolveTenantScope/platformScope with a written
 //     reason).
 
+/**
+ * PROVEN ADDRESSED FROM OUTSIDE, versus MERELY UNRESOLVED (lane W3, 2026-09-01).
+ *
+ * Until now every route this census could not find an in-tree caller for, but
+ * which the name test or the qualified map kept, was reported under ONE label:
+ * "6c. route handler addressed only from OUTSIDE (cron/webhook/callback)". That
+ * sentence states a FACT — somebody outside calls this — and for eight of the
+ * twenty-two doors nobody had established it. Five of them are the video lane,
+ * whose own ruling says the opposite in its own words
+ * (app/actions/video.ts:65-67):
+ *
+ *     "any external consumer sees no change" … "Nothing in this repo can prove
+ *      no such consumer exists. UNRESOLVED, and unresolved means leave it."
+ *
+ * A census that upgrades "unresolved" to "addressed from OUTSIDE" is asserting
+ * more than its evidence supports, in the direction that reads as settled — the
+ * same class of defect as a guard that cannot see the code it judges (§2).
+ *
+ * THE TEST, DERIVED FROM THE HANDLER, NOT HAND-TAGGED. A door is proven only
+ * when its handler admits a caller a browser SESSION cannot be: a shared secret,
+ * a bearer credential, an HMAC over the raw body. That is the one property this
+ * repo can establish offline, it is exactly the distinction the two buckets are
+ * about, and deriving it means an entry cannot sit in the strong bucket on the
+ * strength of its own prose. Everything else — public/anonymous intake, a
+ * session-authed second door, a widget token any visitor can mint — is
+ * UNRESOLVED: no caller found, and no proof either way.
+ *
+ * Nothing is exempted or suppressed by this split. Both buckets are findings,
+ * both are on the wire list, and the ratchet diffs every route category as ONE
+ * key set (see ROUTE_CATS), so reclassifying a door is a move, never an arrival
+ * and never a burn-down.
+ */
+type DoorEvidence = "non_session_credential" | "unresolved"
+
+/**
+ * The credential MECHANISMS a browser session cannot produce, as they are
+ * actually spelled in this tree's handlers. A hardcoded list of names is exactly
+ * what §2 warns about, so it is self-checked below: every mechanism here must be
+ * used by at least one route file, or the control goes red rather than the entry
+ * sitting there reading as enforced.
+ */
+const NON_SESSION_CREDENTIALS: Array<{ mechanism: string; re: RegExp }> = [
+  // A named shared secret read from the server environment: INTERNAL_API_SECRET,
+  // RELAY_SHARED_SECRET, WORKFLOW_WEBHOOK_SECRET, SHOWINGTIME_WEBHOOK_SECRET.
+  { mechanism: "*_SECRET env credential", re: /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_SECRET\b/ },
+  // An HMAC/secret comparison — the shape a provider callback authenticates with.
+  { mechanism: "crypto.timingSafeEqual", re: /\btimingSafeEqual\b/ },
+  // The service-to-service header, read off the request by name.
+  { mechanism: "x-internal[-api]-secret header", re: /x-internal(?:-api)?-secret/ },
+  // The agentic-OS bearer resolver (vos_… tokens minted for third parties).
+  { mechanism: "resolveAgenticCaller (vos_ bearer)", re: /\bresolveAgenticCaller\b/ },
+]
+
+/**
+ * The handler's own source, COMMENTS BLANKED (§2 — a tombstone is not a call
+ * site, and every one of these files explains its auth in prose above the code
+ * that performs it). String CONTENTS are deliberately kept: `headers.get(
+ * "x-internal-api-secret")` is the credential read, and masking it would blind
+ * this classifier to the very evidence it exists to find.
+ */
+function handlerCode(file: string): string {
+  const cached = codeOf.get(file)
+  if (cached !== undefined) return cached
+  try { return blankComments(readFileSync(join(root, file), "utf8")) } catch { return "" }
+}
+
+function doorEvidenceOf(file: string): { kind: DoorEvidence; mechanism: string | null } {
+  const src = handlerCode(file)
+  for (const c of NON_SESSION_CREDENTIALS) {
+    if (c.re.test(src)) return { kind: "non_session_credential", mechanism: c.mechanism }
+  }
+  return { kind: "unresolved", mechanism: null }
+}
+
+let doorsProvenExternal = 0
+let doorsUnresolved = 0
 for (const r of routesWithNoCaller) {
   const qualified = QUALIFIED_EXTERNAL_ROUTES.get(r.path)
-  const external = qualified !== undefined || EXTERNALLY_ADDRESSED.test(r.path)
+  const kept = qualified !== undefined || EXTERNALLY_ADDRESSED.test(r.path)
+  if (!kept) {
+    add("route-no-caller", r.path, `${r.file}:1`,
+      `${r.methods.join("/")} exported; no string in the tree addresses it`)
+    continue
+  }
+  const evidence = doorEvidenceOf(r.file)
   const why = qualified !== undefined
-    ? ` (external door kept BY RULING — ${qualified})`
-    : external ? " (external caller expected — classify, do not delete)" : ""
-  add(external ? "route-external-caller" : "route-no-caller", r.path, `${r.file}:1`,
-    `${r.methods.join("/")} exported; no string in the tree addresses it${why}`)
+    ? ` (door kept BY RULING — ${qualified})`
+    : " (external caller expected from the path NAME — a name is not proof; classify, do not delete)"
+  if (evidence.kind === "non_session_credential") {
+    doorsProvenExternal++
+    add("route-external-caller", r.path, `${r.file}:1`,
+      `${r.methods.join("/")} exported; no string in the tree addresses it, and the handler admits a NON-SESSION credential (${evidence.mechanism}) — an out-of-process caller is the only caller it can have${why}`)
+  } else {
+    doorsUnresolved++
+    add("route-unresolved-door", r.path, `${r.file}:1`,
+      `${r.methods.join("/")} exported; no string in the tree addresses it AND no non-session credential gates it — UNRESOLVED: nothing here proves an external caller exists, and nothing disproves one (§1 — leave it)${why}`)
+  }
 }
 // A qualified entry that no longer names a live route is a stale exemption, and a
 // stale exemption is indistinguishable from an enforced one until it is reported.
@@ -3610,7 +3699,7 @@ for (const f of fetchesWithNoRoute) add("fetch-no-route", f.path, `${f.file}:${f
   // depends on what the OTHER twelve are doing.
   control("C6 the qualified exemption reclassifies ONLY the paths it names",
     [...QUALIFIED_EXTERNAL_ROUTES.keys()].every((p) =>
-      findings.some((f) => f.cat === "route-external-caller" && f.key === p) ||
+      findings.some((f) => (f.cat === "route-external-caller" || f.cat === "route-unresolved-door") && f.key === p) ||
       !routesWithNoCaller.some((r) => r.path === p)),
     `${QUALIFIED_EXTERNAL_ROUTES.size} qualified door(s); a named door that gains an in-tree caller drops out of C6 entirely, which also satisfies this — per path, so one door being adjudicated cannot fail the others`)
   control("C6 NEGATIVE — an unnamed sibling under the SAME prefix is still a 6b finding",
@@ -3762,6 +3851,41 @@ for (const f of fetchesWithNoRoute) add("fetch-no-route", f.path, `${f.file}:${f
     const consistent = routesWithNoCaller.every((r) => !fetchRefs.some((f) => routeMatches(r.path, f.path)))
     return unaddressed && unexempt && consistent
   })(), "6b would still form the accusation — and every route it did report is re-derived here")
+  // ── THE DOOR CLASSIFIER (lane W3): proven-external vs UNRESOLVED ───────────
+  // A classifier that answered "credential" for everything would silently restore
+  // the very over-claim this split exists to end, and one that answered
+  // "unresolved" for everything would throw away real evidence. Both directions
+  // are proved, on synthetic handlers, plus the comment blindness §2 requires.
+  {
+    const classify = (src: string) => {
+      const key = "<control-door>"
+      codeOf.set(key, blankComments(src))
+      const got = doorEvidenceOf(key)
+      codeOf.delete(key)
+      return got
+    }
+    control("C6d classifier SEES a shared-secret gate (proven: a session cannot mint it)",
+      classify('const ok = req.headers.get("authorization") === `Bearer ${process.env.CONTROL_PROBE_SECRET}`').kind === "non_session_credential")
+    control("C6d classifier SEES an HMAC compare", classify("if (!timingSafeEqual(a, b)) return new Response(null, { status: 401 })").kind === "non_session_credential")
+    control("C6d NEGATIVE — a SESSION-only handler is UNRESOLVED, never 'addressed from OUTSIDE'",
+      classify("const ctx = await getAgentContext()\nif (!ctx.isAuthenticated) return json401()").kind === "unresolved")
+    control("C6d NEGATIVE — a secret named only in a COMMENT does not make a door proven (§2: a tombstone is not a call site)",
+      classify("// authenticated with CONTROL_PROBE_SECRET, once upon a time\nconst ctx = await getAgentContext()").kind === "unresolved",
+      "comments are blanked before the classifier reads a byte")
+    // Every mechanism in the list must still be used by a real handler. A stale
+    // entry would sit here reading as enforced while matching nothing (§2).
+    const unusedMechanisms = NON_SESSION_CREDENTIALS
+      .filter((c) => !routeDefs.some((r) => c.re.test(handlerCode(r.file))))
+      .map((c) => c.mechanism)
+    control("C6d every credential MECHANISM in the list is used by at least one route handler",
+      unusedMechanisms.length === 0, unusedMechanisms.join(", ") || "all in use")
+    // The two buckets must account for every kept door — a third state would
+    // vanish silently.
+    control("C6d the two door buckets sum to every kept door (no route falls between them)",
+      doorsProvenExternal + doorsUnresolved ===
+        routesWithNoCaller.filter((r) => QUALIFIED_EXTERNAL_ROUTES.has(r.path) || EXTERNALLY_ADDRESSED.test(r.path)).length,
+      `${doorsProvenExternal} proven + ${doorsUnresolved} unresolved`)
+  }
   control("C6 does NOT read a middleware PREFIX table entry as a request", (() => {
     const before = fetchRefs.length
     collectFetchRefs("<control>", `const PUBLIC_PREFIXES = ["/api/auth", "/api/public"]`)
@@ -3785,7 +3909,8 @@ const CATEGORIES = [
   ["dynamic-import-missing-export", "5b. await import() of a name the target does not export"],
   ["fetch-no-route", "6a. fetch(\"/api/…\") with NO route file — a runtime 404"],
   ["route-no-caller", "6b. route handler nothing in the tree addresses"],
-  ["route-external-caller", "6c. route handler addressed only from OUTSIDE (cron/webhook/callback)"],
+  ["route-external-caller", "6c. route handler PROVEN external — no in-tree caller, gated by a NON-SESSION credential"],
+  ["route-unresolved-door", "6d. route handler UNRESOLVED — no in-tree caller, no non-session credential, no proof either way"],
 ] as const
 
 const counts: Record<string, number> = {}
@@ -3811,8 +3936,16 @@ for (const [c] of CATEGORIES) counts[c] = findings.filter((f) => f.cat === c).le
  * Deliberately narrow — the column categories (1a/1b) are NOT merged this way.
  * A column moving from written-never-read to read-never-written means its
  * writer disappeared, which is a real event and must stay visible.
+ *
+ * 6d (lane W3) joins the same key set for the same reason and one more: it exists
+ * SO THAT a door can be honestly downgraded from "proven external" to
+ * "unresolved". If that move counted as an arrival, the ratchet would go red
+ * because somebody told the truth about the evidence — §2's accusing direction
+ * again. A control below asserts that EVERY `route-*` category is in this set, so
+ * a future sixth route bucket cannot quietly diff on its own and re-create the
+ * reclassification-reads-as-an-arrival defect this ruling exists to end.
  */
-const ROUTE_CATS = new Set(["route-no-caller", "route-external-caller"])
+const ROUTE_CATS = new Set(["route-no-caller", "route-external-caller", "route-unresolved-door"])
 function diffKeySets(had: Set<string>, now: Set<string>): { fresh: string[]; burned: string[] } {
   const fresh: string[] = []
   const burned: string[] = []
@@ -3825,6 +3958,9 @@ control("C6c a route present under EITHER route baseline key is a reclassificati
 control("C6c CONTROL — a route in NEITHER route baseline key is still reported as NEW",
   diffKeySets(new Set(["/api/a"]), new Set(["/api/a", "/api/brand-new"])).fresh.join() === "/api/brand-new",
   "the merge must not swallow a genuinely new unaddressed route")
+control("C6c every route category is diffed as ONE key set (a reclassification is not an arrival)",
+  CATEGORIES.filter(([c]) => c.startsWith("route-")).every(([c]) => ROUTE_CATS.has(c)),
+  `${[...ROUTE_CATS].join(", ")} — derived check over the category list, so a future 6e cannot diff on its own`)
 
 console.log("══════════════════════════════════════════════════")
 console.log(" OPPOSITE-MISSING CENSUS — halves built without their other half")
@@ -3905,6 +4041,13 @@ console.log(`  C4 params    · ${paramsExamined} plain params in ${functionsExam
 console.log(`  C5 dynimport · ${dynImports} sites · ${dynNamedChecked} named-export checks · ${dynExternal} bare package specifiers skipped · ${dynUnresolvedSpecifier} interpolated · ${dynNamedUnresolvable} behind an \`export *\``)
 console.log(`  C6 routes    · ${routeDefs.length} route files with a method export · ${fetchRefs.length} /api/ literals (${fetchRefs.filter((f) => f.isRequest).length} handed to a request)`)
 console.log(`               · ${unroutedNonRequestLiterals} unrouted /api/ literal(s) that are NOT requests (middleware prefix tables, robots rules) — counted, never accused`)
+// THE TWO NUMBERS PRINTED SIDE BY SIDE (lane W3), because "addressed from
+// OUTSIDE" and "no caller found, no proof either way" are opposite epistemic
+// states and one label used to cover both. The denominator is every door the
+// name test or the qualified map keeps out of 6b; the split is DERIVED from each
+// handler's own auth, not from the entry's prose.
+console.log(`               · ${doorsProvenExternal + doorsUnresolved} route(s) with NO in-tree caller kept as doors: ${doorsProvenExternal} PROVEN external (a non-session credential — bearer/shared secret/HMAC — so an out-of-process caller is the only caller it can have) · ${doorsUnresolved} UNRESOLVED (session-authed, public/anonymous, or a visitor-mintable token: no proof of an external caller and none against one)`)
+console.log(`               · BLIND SPOT: "proven" here means the handler ADMITS a caller a session cannot be — it is not a sighting of one. A door with a credential and no live consumer is indistinguishable from one with a hundred, and neither bucket is a delete list (§1)`)
 
 console.log("\n[findings]")
 for (const [cat, label] of CATEGORIES) console.log(`  ${String(counts[cat]).padStart(5)}  ${label}`)
@@ -3958,8 +4101,10 @@ for (const [cat, label] of CATEGORIES) {
 }
 // The route pair, as ONE set — see the ruling above diffKeySets.
 {
+  // Derived from ROUTE_CATS, never re-spelled: a new route bucket joins the union
+  // by being declared, not by somebody remembering to add it here too.
   const unionOf = (src: Record<string, string[]> | undefined) =>
-    new Set([...(src?.["route-no-caller"] ?? []), ...(src?.["route-external-caller"] ?? [])])
+    new Set([...ROUTE_CATS].flatMap((c) => src?.[c] ?? []))
   const d = diffKeySets(unionOf(base.keys), unionOf(keysByCat))
   for (const k of d.fresh) fresh.push(`6b/6c ${k}`)
   for (const k of d.burned) burned.push(`6b/6c ${k}`)

@@ -34,6 +34,19 @@ export interface SubscriptionAgreementView {
     signed_name: string
     signed_at: string
     template_version: number | null
+    /** The attestation record itself — `{ method, typed_name, signed_at }`, written
+     *  by signSubscriptionAgreementAction below. Projected because the tenant card
+     *  already reads it structurally and asked for it in writing
+     *  (app/dashboard/admin/billing/subscription-agreement-card.tsx, the SEAM note
+     *  above readAttestationMethod): a typed name is what the signer keyed in, this
+     *  is how the agreement was EXECUTED, and the tenant is entitled to their own
+     *  record of it. Unknown shapes render as no method, never as "verified".
+     *  OPTIONAL on purpose: the card builds an optimistic signature object of its
+     *  own the moment a signer submits, and that one has no stored jsonb yet —
+     *  making the field required would break that construction (measured: tsc
+     *  TS2345 at subscription-agreement-card.tsx:72). Absent and null both mean
+     *  "no attestation record to show", which is what the card already renders. */
+    signature?: Record<string, unknown> | null
   } | null
   /** True when an active agreement exists and this brokerage has not signed it. */
   awaitingSignature: boolean
@@ -58,6 +71,27 @@ export async function getSubscriptionAgreementAction(): Promise<
 
   // The ACTIVE subscription agreement (RLS lets any signed-in tenant seat read
   // active templates — a tenant must be able to read what they are asked to sign).
+  //
+  // ── KEEP, WITH THE REASON (lane W3, 2026-09-01) ────────────────────────────
+  // `body_storage_path` reaches NO PIXEL: the tenant card renders
+  // `template.body_text` only (app/dashboard/admin/billing/
+  // subscription-agreement-card.tsx:131-134). It is kept anyway, and it is not an
+  // inert projection, because it is READ — by the signing gate below.
+  //
+  // THE RULING. m481 gives this table two body arms and requires exactly that at
+  // least one is present:
+  //     check (body_text is not null or body_storage_path is not null)
+  // In-app authoring writes the body_text arm and only that arm
+  // (app/actions/superadmin/subscription-contracts.ts:127-135 update, :144-153
+  // insert), so a NULL here is not a missing value — it is the ordinary state of
+  // a contract that was typed rather than uploaded. The storage-path arm exists
+  // for a future uploaded-document lane, and until that lane also brings a
+  // renderer, a document-only template is a contract this surface CANNOT SHOW.
+  // Selecting the column is what lets `signSubscriptionAgreementAction` tell that
+  // case apart and refuse instead of collecting a signature on a blank screen —
+  // see the fail-closed branch there. Live evidence 2026-09-01
+  // (hrvaqgvukzxfskkcrwbt): `platform_contract_templates` holds zero rows, so no
+  // signing flow in production changes shape.
   const { data: template, error: tplErr } = await supabase
     .from("platform_contract_templates")
     .select("id, name, body_text, body_storage_path, version")
@@ -75,7 +109,7 @@ export async function getSubscriptionAgreementAction(): Promise<
 
   const { data: signature, error: sigErr } = await supabase
     .from("tenant_contract_signatures")
-    .select("id, signed_name, signed_at, template_version")
+    .select("id, signed_name, signed_at, template_version, signature")
     .eq("brokerage_id", caller.brokerage_id)
     .eq("template_id", (template as { id: string }).id)
     .maybeSingle()
@@ -123,15 +157,36 @@ export async function signSubscriptionAgreementAction(input: {
   }
 
   // The template must be the ACTIVE agreement — a retired version is not on offer.
+  // The two body arms are read as well: a signature is an attestation that the
+  // signer READ the contract, so what is on screen is part of the gate.
   const { data: template, error: tplErr } = await supabase
     .from("platform_contract_templates")
-    .select("id, version, is_active")
+    .select("id, version, is_active, body_text, body_storage_path")
     .eq("id", input.templateId)
     .eq("contract_type", "subscription_agreement")
     .maybeSingle()
   if (tplErr) return { ok: false, error: `Could not load the agreement: ${tplErr.message}` }
   if (!template || !(template as { is_active: boolean }).is_active) {
     return { ok: false, error: "This agreement is no longer the active version — reload and sign the current one" }
+  }
+
+  // ── A DOCUMENT NOBODY CAN READ IS NOT SIGNABLE HERE (lane W3, 2026-09-01) ───
+  // m481 admits a template whose body is a STORAGE PATH rather than inline text,
+  // and this surface has no renderer for one: the tenant card shows `body_text`
+  // and nothing else, so a document-only template would put the "Type your full
+  // legal name to sign" box under a BLANK contract. The in-app record rail's
+  // whole honesty claim is that the signer read what is on screen (see this
+  // file's header), so this refuses rather than collecting an attestation to
+  // something never displayed. Fail closed (§4): when the storage-path arm
+  // finally gets its renderer, this branch is what tells that lane it is done.
+  const body = template as { body_text: string | null; body_storage_path: string | null }
+  if (!body.body_text?.trim()) {
+    return {
+      ok: false,
+      error: body.body_storage_path
+        ? "This agreement is a stored document, and this screen can only display an inline agreement — it cannot be signed here until the document is shown to you. Contact platform support."
+        : "This agreement has no readable body yet — nothing can be signed until the platform publishes its text.",
+    }
   }
 
   // Already signed? The record is immutable — say so instead of failing on the

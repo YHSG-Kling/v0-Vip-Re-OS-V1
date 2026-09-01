@@ -136,9 +136,13 @@ export async function ingestProviderTruth(input: {
 }): Promise<IngestTruthResult> {
   try {
     const svc = createServiceClient()
+    // `provider_reported_at` is read here, not merely written: see the out-of-order
+    // guard below. Correlating on (channel, provider_ref) tells us WHICH claim this
+    // is; the stored provider timestamp tells us whether this report is the
+    // provider's LATEST word or one that has been overtaken.
     const { data: existing } = await svc
       .from("outcome_reconciliations")
-      .select("id, brokerage_id, claimed_status, claimed_at, verdict, escalated_at, claimed_by_manager, entity_type, entity_id, contact_id")
+      .select("id, brokerage_id, claimed_status, claimed_at, verdict, escalated_at, claimed_by_manager, entity_type, entity_id, contact_id, provider_reported_at")
       .eq("channel", input.channel)
       .eq("provider_ref", input.providerRef)
       .maybeSingle()
@@ -151,6 +155,7 @@ export async function ingestProviderTruth(input: {
       verdict: ReconciliationVerdict; escalated_at: string | null
       claimed_by_manager: string | null; entity_type: string | null
       entity_id: string | null; contact_id: string | null
+      provider_reported_at: string | null
     }
 
     const result = reconcile(
@@ -169,6 +174,29 @@ export async function ingestProviderTruth(input: {
     const terminal = row.verdict === "confirmed" || row.verdict === "contradicted"
     if (terminal && result.verdict === "pending") {
       return { ok: true, verdict: row.verdict, escalated: false, reason: "already terminal — late in-flight event ignored" }
+    }
+
+    // ── AND NEVER OVERWRITE THE PROVIDER'S LATEST WORD WITH AN OLDER ONE ──────
+    // The guard above is about the VERDICT walking backwards. This one is about
+    // the RECORD walking backwards: webhooks arrive out of order, and the row
+    // holds one provider_status / provider_reported_at / provider_detail triple,
+    // so a delayed earlier event would overwrite the newer report with a stale
+    // status and a stale detail — the ledger would then quote the provider saying
+    // something the provider has since superseded, on a board whose entire
+    // purpose is to be the provider's word rather than ours.
+    // STRICTLY older only, and only when BOTH timestamps parse: equal stamps and
+    // an unparseable one both fall through and are recorded, because refusing on
+    // an unknown is how a real contradiction would get silently dropped.
+    const priorAt = Date.parse(row.provider_reported_at ?? "")
+    const incomingAt = Date.parse(input.truth.at ?? "")
+    if (Number.isFinite(priorAt) && Number.isFinite(incomingAt) && incomingAt < priorAt) {
+      return {
+        ok: true,
+        verdict: row.verdict,
+        escalated: false,
+        brokerageId: row.brokerage_id,
+        reason: `out-of-order provider event ignored — this report is stamped ${input.truth.at} and the ledger already holds one stamped ${row.provider_reported_at}`,
+      }
     }
 
     await svc.from("outcome_reconciliations").update({
@@ -224,7 +252,17 @@ export async function ingestProviderTruth(input: {
   }
 }
 
-/** Read side: the brokerage's reconciliation board. Never throws. */
+/**
+ * Read side: the brokerage's reconciliation board. Never throws.
+ *
+ * THE PROVIDER'S OWN WORDS TRAVEL WITH THE VERDICT (lane W3, 2026-09-01).
+ * `provider_detail` and `provider_reported_at` were written by ingestProviderTruth
+ * above and read by NOTHING, so the one board that exists to say "the provider
+ * contradicted us" could show only OUR sentence about it (`explanation`) and a
+ * one-word status. On a disputed claim the provider's own detail — Twilio's error
+ * text, Lob's rejection reason — is the evidence, and WHEN the provider said it is
+ * what separates a stale report from the current one. Both now ride along.
+ */
 export async function loadReconciliations(
   brokerageId: string,
   opts: { limit?: number; verdict?: ReconciliationVerdict } = {},
@@ -232,11 +270,16 @@ export async function loadReconciliations(
   id: string; channel: OutcomeChannel; verdict: ReconciliationVerdict
   claimedStatus: string; providerStatus: string | null; claimedAt: string
   explanation: string | null; truthSource: string | null; claimedByManager: string | null
+  /** The provider's own words about this touch — the jsonb payload ProviderTruth
+   *  carried (`detail`), verbatim. Null until a provider reports. */
+  providerDetail: Record<string, unknown> | null
+  /** When the provider said it — not when we recorded it. */
+  providerReportedAt: string | null
 }>> {
   try {
     const svc = createServiceClient()
     let q = svc.from("outcome_reconciliations")
-      .select("id, channel, verdict, claimed_status, provider_status, claimed_at, explanation, truth_source, claimed_by_manager")
+      .select("id, channel, verdict, claimed_status, provider_status, claimed_at, explanation, truth_source, claimed_by_manager, provider_detail, provider_reported_at")
       .eq("brokerage_id", brokerageId)
       .order("claimed_at", { ascending: false })
       .limit(opts.limit ?? 100)
@@ -247,6 +290,8 @@ export async function loadReconciliations(
       claimedStatus: r.claimed_status, providerStatus: r.provider_status,
       claimedAt: r.claimed_at, explanation: r.explanation,
       truthSource: r.truth_source, claimedByManager: r.claimed_by_manager,
+      providerDetail: r.provider_detail ?? null,
+      providerReportedAt: r.provider_reported_at ?? null,
     }))
   } catch {
     return []

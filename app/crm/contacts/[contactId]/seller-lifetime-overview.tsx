@@ -70,8 +70,13 @@ export async function SellerLifetimeOverview({ contactId, contact, brokerageId }
     // Inbound call classifications — written by the Twilio-native reception lane
     // (app/api/voice/twilio/inbound) when it resolves a caller, keyed to this
     // contact via resulting_contact_id. Merged into the activity feed as calls.
+    // WHO the call was handed to travels with WHY (lane W3, 2026-09-01):
+    // transferred_to_user_id is stamped by the same update that stamps
+    // transfer_reason (app/api/voice/twilio/turn/route.ts:253) and had no reader,
+    // so the timeline could say a call was handed off and never say to whom —
+    // on a contact record whose whole job is "who talked to this person".
     svc.from("inbound_call_classifications")
-       .select("id, classification, transfer_reason, ai_handled, classified_at")
+       .select("id, classification, transfer_reason, transferred_to_user_id, ai_handled, classified_at")
        .eq("brokerage_id", brokerageId)
        .eq("resulting_contact_id", contactId)
        .order("classified_at", { ascending: false })
@@ -82,6 +87,40 @@ export async function SellerLifetimeOverview({ contactId, contact, brokerageId }
   const transactions = transactionsRes.data ?? []
   const activities   = activitiesRes.data ?? []
   const callClassifications = callClassificationsRes.error ? [] : (callClassificationsRes.data ?? [])
+
+  // ── WHO THE CALL WENT TO ────────────────────────────────────────────────────
+  // transferred_to_user_id is a USERS.id, not an agents.id — the two are DISJOINT
+  // id spaces here. Both of the writer's sources agree: ctx.agentUserId comes off
+  // phone_numbers.agent_user_id, and lib/voice/call-analysis.ts:88-91 derives the
+  // same value by crossing agents.user_id. There is no FK on the column (checked
+  // live, 2026-09-01: inbound_call_classifications has exactly one FK, on
+  // brokerage_id), so nothing in scripts/agent-fk-columns.ts constrains it and the
+  // class had to be established from the writers — looking the id up in `agents`
+  // would return nothing, forever, and read as "no name on file".
+  // Tenant-scoped: only users of THIS brokerage are resolved, so a stale id from
+  // another tenant renders as no name rather than leaking one. The error is read
+  // (§3) and a refused read degrades to "a teammate", never to a wrong name.
+  const transferUserIds = Array.from(new Set(
+    callClassifications
+      .map((c: any) => c.transferred_to_user_id as string | null)
+      .filter((id: string | null): id is string => typeof id === "string" && id.length > 0),
+  ))
+  const transferNameById = new Map<string, string>()
+  if (transferUserIds.length > 0) {
+    const { data: transferUsers, error: transferErr } = await svc
+      .from("users")
+      .select("id, first_name, last_name")
+      .eq("brokerage_id", brokerageId)
+      .in("id", transferUserIds)
+    if (transferErr) {
+      console.error("[seller-lifetime-overview] transfer recipient read refused:", transferErr.message)
+    } else {
+      for (const u of transferUsers ?? []) {
+        const name = [(u as any).first_name, (u as any).last_name].filter(Boolean).join(" ").trim()
+        if (name) transferNameById.set((u as any).id as string, name)
+      }
+    }
+  }
 
   // Merge activities + classified inbound calls into one newest-first timeline
   const timeline = [
@@ -273,6 +312,15 @@ export async function SellerLifetimeOverview({ contactId, contact, brokerageId }
                         <Badge variant="secondary" className="text-[10px] capitalize">
                           {String(item.entry.transfer_reason).replace(/_/g, " ")}
                         </Badge>
+                      )}
+                      {/* WHO it went to. Rendered only when the call was actually
+                          transferred; the name falls back to "a teammate" when the
+                          id resolves to nobody in this brokerage, which is honest
+                          about an unresolvable id instead of inventing a person. */}
+                      {item.entry.transferred_to_user_id && (
+                        <span className="text-[11px] text-muted-foreground">
+                          → transferred to {transferNameById.get(String(item.entry.transferred_to_user_id)) ?? "a teammate"}
+                        </span>
                       )}
                       {item.entry.ai_handled && (
                         <Badge variant="outline" className="text-[10px]">AI handled</Badge>

@@ -58,11 +58,36 @@
  *     real file, THE PATCH IS VERIFIED TO HAVE APPLIED (a find-string that
  *     silently no longer matches is theatre, not a control), the check is
  *     required to flip RED, and the file is restored and re-verified by sha256.
+ *   · ONE assertion reads a VALUE rather than source text, and it is the one that
+ *     had to (lane W3, 2026-09-01). `RENTCAST_ELIGIBILITY_REASONS` carries a
+ *     keep-with-reason at rentcast-eligibility.ts:149-150 — "Exported so a proof
+ *     can assert the vocabulary exists" — and this proof did not import it. E1
+ *     tested `/export\s+const\s+RENTCAST_ELIGIBILITY_REASONS/` against the source
+ *     and E1's reachability list was a HARDCODED copy of the five reasons, so the
+ *     export could have been emptied to `[]`, or a member renamed, and both
+ *     assertions would still have passed: the declaration was still spelled that
+ *     way, and the private copy still listed what the code no longer said. §2's
+ *     "true and useless" shape, and a second copy of a vocabulary besides (§6).
+ *     E1c now LOADS the module and compares the array's CONTENTS against the
+ *     `RentcastEligibilityReason` union parsed out of the declaration — neither
+ *     side a member list this file keeps — and the reachability scan below runs
+ *     over the loaded array, so gutting the vocabulary turns this proof red
+ *     instead of leaving it green and vacuous.
+ *
+ *     The load is a cache-busted dynamic import, on purpose: a static import
+ *     binds ONCE, so the negative controls below — which patch the real file and
+ *     re-run the check — would go on reading the vocabulary as it was at startup
+ *     and "prove" the control fired when nothing had been re-read.
  */
 import { readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
+import { pathToFileURL } from "node:url"
 import { createHash } from "node:crypto"
 import { stripComments } from "./strip-comments"
+// Type-only: the union is a compile-time fact, and importing it here is what makes
+// a rename of the type itself a BUILD failure in this proof rather than a silent
+// drift the runtime comparison below would have to discover.
+import type { RentcastEligibilityReason } from "../lib/property/rentcast-eligibility"
 
 const ROOT = process.cwd()
 const RUN_NEGATIVE = !process.argv.includes("--no-negative")
@@ -139,28 +164,96 @@ function bodyAfterParams(region: string): string {
 // ─────────────────────────────────────────────────────────────────────────────
 // E1 — one resolver, discriminated answer, every reason reachable
 // ─────────────────────────────────────────────────────────────────────────────
-const REASONS = ["tenant_has_idx", "idx_check_unreadable", "no_platform_key", "budget_exhausted", "eligible"]
 
-function assertDiscriminated(): boolean {
+/**
+ * The vocabulary AS A VALUE, re-loaded from disk on every call.
+ *
+ * `?v=n` defeats the ESM module cache so a negative control that patches the real
+ * file is actually re-read. Without it the second load returns the first load's
+ * frozen array and the control would report "went RED as required" on the
+ * strength of nothing at all.
+ */
+let vocabLoads = 0
+async function loadReasonVocabulary(): Promise<readonly string[] | null> {
+  const href = `${pathToFileURL(resolve(ROOT, F.gate)).href}?v=${vocabLoads++}`
+  try {
+    const mod = (await import(href)) as { RENTCAST_ELIGIBILITY_REASONS?: unknown }
+    const v = mod.RENTCAST_ELIGIBILITY_REASONS
+    if (!Array.isArray(v) || v.some((x) => typeof x !== "string")) return null
+    return v as readonly string[]
+  } catch {
+    // A module that will not load is NOT a pass. Returning null makes every
+    // assertion below fail loudly rather than skip.
+    return null
+  }
+}
+
+/**
+ * The members of the `RentcastEligibilityReason` UNION, read out of its
+ * declaration on comment-stripped source.
+ *
+ * Deliberately NOT a list this file keeps: a hardcoded copy is a second spelling
+ * of the same vocabulary (§6) and a waypoint (§2) — it passes for as long as
+ * nobody edits it, which is the opposite of what an assertion is for. The union
+ * is terminated at the first line that is not a `| "member"` continuation, so the
+ * `RENTCAST_ELIGIBILITY_REASONS` declaration that follows it cannot leak in and
+ * make the two sides agree by construction.
+ */
+function unionMembersFromSource(): string[] {
+  const m = /export\s+type\s+RentcastEligibilityReason\s*=([\s\S]*?)(?:\n\s*\n|\nexport\s)/.exec(code(F.gate))
+  if (!m) return []
+  const out: string[] = []
+  for (const a of m[1].matchAll(/\|\s*"([a-z0-9_]+)"/gi)) if (!out.includes(a[1])) out.push(a[1])
+  return out
+}
+
+/**
+ * E1c — THE BINDING. The exported array and the union declare the SAME set.
+ *
+ * Both sides are derived: one from the loaded module, one from the declaration.
+ * The emptiness check is load-bearing — a gutted const and a gutted union agree
+ * perfectly at zero members, which is precisely the "true and useless" pass this
+ * assertion replaced.
+ */
+async function assertVocabularyMatchesTheUnion(): Promise<boolean> {
+  const vocab = await loadReasonVocabulary()
+  const union = unionMembersFromSource()
+  const inVocab = new Set(vocab ?? [])
+  const inUnion = new Set(union)
+  const missing = union.filter((r) => !inVocab.has(r))
+  const extra = [...inVocab].filter((r) => !inUnion.has(r))
+  return check(
+    "E1c the EXPORTED vocabulary is the union itself — asserted on the loaded VALUE, not on the spelling of its declaration",
+    vocab !== null && vocab.length > 0 && union.length > 0 && missing.length === 0 && extra.length === 0,
+    `loaded=${vocab === null ? "FAILED TO LOAD" : `[${vocab}]`} union=[${union}] missingFromExport=[${missing}] notInUnion=[${extra}]`,
+  )
+}
+
+async function assertDiscriminated(): Promise<boolean> {
   const src = code(F.gate)
-  // The vocabulary is exported as data (so it can be asserted, not spelled), and
-  // every member is actually RETURNED — a reason that exists only in the type is
-  // a reason no caller can ever observe.
-  const vocabExported = /export\s+const\s+RENTCAST_ELIGIBILITY_REASONS/.test(src)
+  // The vocabulary is exported as DATA and read here as data — a member this
+  // proof does not know about is still tested, and a member deleted from the
+  // export stops being tested, which is what makes E1c above compulsory.
+  const vocab = await loadReasonVocabulary()
   // The TYPE UNION declares every reason, so testing the whole file would report
   // a reason as reachable when only its type survives. Strip the union first and
   // look at what is actually RETURNED — a reason no caller can observe is not a
   // reason, it is a comment with a colon in it.
   const returns = src.replace(/export\s+type\s+RentcastEligibility\s*=[\s\S]*?\n\n/, "")
-  const unreachable = REASONS.filter((r) => !new RegExp(`reason:\\s*"${r}"`).test(returns))
+  const unreachable = (vocab ?? []).filter((r) => !new RegExp(`reason:\\s*"${r}"`).test(returns))
   // …and the answer carries the underlying FACTS, not just a verdict.
   const carriesFacts = /idx\s*[,:]/.test(src) && /platformKeyPresent/.test(src) && /budget\s*[,:]/.test(src)
   return check(
-    "E1  the gate returns a DISCRIMINATED reason (not a boolean), and every reason is reachable",
-    vocabExported && unreachable.length === 0 && carriesFacts,
-    `vocabExported=${vocabExported} carriesFacts=${carriesFacts} unreturned=[${unreachable}]`,
+    "E1  the gate returns a DISCRIMINATED reason (not a boolean), and every reason in the EXPORTED vocabulary is reachable",
+    vocab !== null && vocab.length > 0 && unreachable.length === 0 && carriesFacts,
+    `vocabLoaded=${vocab === null ? "no" : `${vocab.length} reasons`} carriesFacts=${carriesFacts} unreturned=[${unreachable}]`,
   )
 }
+
+/** Compile-time use of the imported type — the union is a fact this proof is
+ *  bound to, so renaming it breaks the build here instead of drifting silently. */
+const REASON_TYPE_WITNESS: RentcastEligibilityReason = "eligible"
+void REASON_TYPE_WITNESS
 
 function assertFailsClosedOnUnreadableIdx(): boolean {
   const src = code(F.gate)
@@ -373,7 +466,7 @@ function assertNoTenantRentcastCredentialRead(): boolean {
 // ─────────────────────────────────────────────────────────────────────────────
 interface Control { file: string; find: string; replace: string }
 
-function controlled(label: string, c: Control, fn: () => boolean): void {
+async function controlled(label: string, c: Control, fn: () => boolean | Promise<boolean>): Promise<void> {
   const before = raw(c.file)
   const beforeSha = sha(c.file)
   const after = before.replace(c.find, c.replace)
@@ -386,7 +479,7 @@ function controlled(label: string, c: Control, fn: () => boolean): void {
   let wentRed = false
   try {
     const mark = failures.length
-    wentRed = !fn()
+    wentRed = !(await fn())
     while (failures.length > mark) failures.pop()
   } finally {
     writeFileSync(resolve(ROOT, c.file), before)
@@ -404,10 +497,11 @@ function controlled(label: string, c: Control, fn: () => boolean): void {
   if (!wentRed) failures.push(`negative control stayed green: ${label}`)
 }
 
-function main(): void {
+async function main(): Promise<void> {
   console.log("RENTCAST ELIGIBILITY — THE ONE GATE\n")
   console.log("ASSERTIONS")
-  assertDiscriminated()
+  await assertVocabularyMatchesTheUnion()
+  await assertDiscriminated()
   assertFailsClosedOnUnreadableIdx()
   assertPlatformTierIsNotTheTenant()
   assertGateUsesTheClientsResolver()
@@ -421,7 +515,7 @@ function main(): void {
 
     // 1. THE headline regression: a platform-tier IDX row counts as the tenant's,
     //    which would suppress RentCast for every tenant on the system.
-    controlled(
+    await controlled(
       "a PLATFORM-tier IDX credential counted as the tenant's own",
       {
         file: F.gate,
@@ -432,7 +526,7 @@ function main(): void {
     )
 
     // 2. The unreadable branch made eligible — spending on an unprovable answer.
-    controlled(
+    await controlled(
       "an unreadable IDX check made ELIGIBLE instead of failing closed",
       {
         file: F.gate,
@@ -444,7 +538,7 @@ function main(): void {
 
     // 3. A reason that exists in the type but is never returned — a verdict no
     //    caller can ever observe.
-    controlled(
+    await controlled(
       "a reason that is declared but never returned",
       {
         file: F.gate,
@@ -455,7 +549,7 @@ function main(): void {
     )
 
     // 4. One export spends before it checks — the comp-provider defect, moved.
-    controlled(
+    await controlled(
       "a RentCast export reaching the network before the gate",
       {
         file: F.readers,
@@ -466,7 +560,7 @@ function main(): void {
     )
 
     // 5. comp-provider decides after it has already spent — the original defect.
-    controlled(
+    await controlled(
       "comp-provider resolving eligibility AFTER costCents has moved",
       {
         file: F.comps,
@@ -478,7 +572,7 @@ function main(): void {
 
     // 6. The result-count rule restored — the wrong rule, which is the one that
     //    was actually in the tree.
-    controlled(
+    await controlled(
       "the old result-count precedence put back",
       {
         file: F.source,
@@ -490,7 +584,7 @@ function main(): void {
 
     // 7. A per-tenant RentCast credential read reintroduced — the wave-17
     //    invariant regressing while wave 18 narrows the same gate.
-    controlled(
+    await controlled(
       "a per-tenant RentCast credential read reintroduced",
       {
         file: F.gate,
@@ -502,7 +596,7 @@ function main(): void {
 
     // 8. The gate opening a RIVAL IDX lookup instead of the client's resolver —
     //    the two would then be free to disagree about "has IDX".
-    controlled(
+    await controlled(
       "the gate resolving IDX through a rival read instead of the client's resolver",
       {
         file: F.gate,
@@ -510,6 +604,43 @@ function main(): void {
         replace: `    const anySvc: any = null; resolved = await anySvc.from("platform_credentials").select("*"); void ((x: any) => x)({`,
       },
       assertGateUsesTheClientsResolver,
+    )
+
+    // ── 9-11. THE VOCABULARY BINDING (lane W3) ────────────────────────────────
+    // These three are the controls the OLD assertion could not have: it tested
+    // `/export const RENTCAST_ELIGIBILITY_REASONS/` against the source, so it
+    // stayed GREEN through every one of them — the export is still spelled that
+    // way in all three. Each patches the ARRAY only (the `"member",` form with a
+    // trailing comma appears nowhere else; the union writes `| "member"`), so the
+    // union is left untouched and it is genuinely the disagreement that is caught.
+    await controlled(
+      "a member REMOVED from the exported vocabulary while the union still declares it",
+      {
+        file: F.gate,
+        find: `  "budget_exhausted",\n  "eligible",\n] as const`,
+        replace: `  "eligible",\n] as const`,
+      },
+      assertVocabularyMatchesTheUnion,
+    )
+
+    await controlled(
+      "a member RENAMED in the exported vocabulary (the union keeps the real spelling)",
+      {
+        file: F.gate,
+        find: `  "idx_check_unreadable",\n  "no_platform_key",`,
+        replace: `  "idx_check_unreadable_v2",\n  "no_platform_key",`,
+      },
+      assertVocabularyMatchesTheUnion,
+    )
+
+    await controlled(
+      "the vocabulary GUTTED to an empty array — the shape a text assertion cannot see at all",
+      {
+        file: F.gate,
+        find: `  "tenant_has_idx",\n  "idx_check_unreadable",\n  "no_platform_key",\n  "budget_exhausted",\n  "eligible",\n] as const`,
+        replace: `] as const`,
+      },
+      assertVocabularyMatchesTheUnion,
     )
   }
 
@@ -524,4 +655,10 @@ function main(): void {
   )
 }
 
-main()
+// A rejection here must not read as a pass: an unhandled promise rejection can
+// leave the exit code at 0, which is exactly the "nobody checked renders as
+// checked and fine" shape this proof exists to prevent (§4 fail closed).
+main().catch((e) => {
+  console.error(e)
+  process.exit(1)
+})

@@ -45,6 +45,13 @@ export interface ManagerTrustRow {
   effectiveAutonomy: AutonomyPosture
   /** Whether this manager has an instantiated managed_agents row (override is settable only then). */
   isActive: boolean
+  /** RETIRED — this kind has NO live row and at least one archived one, i.e. a
+   *  broker retired it (managed_agents.archived_at). A retired manager is shown
+   *  and labelled rather than hidden: a governance board that silently drops a
+   *  manager is how a retirement goes unnoticed. */
+  isRetired: boolean
+  /** When the most recent retirement happened (null unless isRetired). */
+  retiredAt: string | null
   /** CLOSED LEARNING LOOP — 0–100 real-world decision effectiveness (outcomes attributed
    *  back to this manager's decisions), sitting alongside the rubric pass-rate. */
   outcomeEffectiveness: number
@@ -121,6 +128,23 @@ export async function getManagerTrustScorecard(): Promise<
   let agentRowQ = svc.from("managed_agents").select("id, agent_kind, config").is("archived_at", null)
   if (!isPlatform) agentRowQ = agentRowQ.eq("brokerage_id", ctx.brokerageId as string)
   const { data: agentRows } = await agentRowQ
+  // RETIRED KINDS — a SEPARATE read, deliberately. The `.is("archived_at", null)`
+  // filter above keeps its exact meaning (live rows, and only those, decide the
+  // override and the active flag); this one only answers "was this kind retired?"
+  // so the board can SAY SO instead of rendering a retired manager as one that
+  // was never instantiated. §3: the error is read, and an unreadable answer
+  // degrades to "not retired" on the board rather than taking the scorecard down.
+  let archivedQ = svc.from("managed_agents").select("agent_kind, archived_at").not("archived_at", "is", null)
+  if (!isPlatform) archivedQ = archivedQ.eq("brokerage_id", ctx.brokerageId as string)
+  const { data: archivedRows, error: archivedErr } = await archivedQ
+  if (archivedErr) console.error("[manager-evals] archived managed_agents read refused:", archivedErr.message)
+  const retiredAtByKind = new Map<string, string>()
+  for (const a of archivedRows ?? []) {
+    const kind = a.agent_kind as string
+    const at = a.archived_at as string
+    const prev = retiredAtByKind.get(kind)
+    if (!prev || at > prev) retiredAtByKind.set(kind, at)
+  }
   const overrideByKind = new Map<string, AutonomyPosture | null>()
   const activeKinds = new Set<string>()
   for (const a of agentRows ?? []) {
@@ -197,6 +221,10 @@ export async function getManagerTrustScorecard(): Promise<
         overrideAutonomy: override,
         effectiveAutonomy: effectiveAutonomy(score.autonomy, override),
         isActive: activeKinds.has(kind),
+        // Retired = archived AND not live. A kind that was retired and later
+        // respawned has a live row again and is simply active.
+        isRetired: !activeKinds.has(kind) && retiredAtByKind.has(kind),
+        retiredAt: (!activeKinds.has(kind) && retiredAtByKind.get(kind)) || null,
       }
     })
     .sort((a, b) => b.score.total - a.score.total || a.label.localeCompare(b.label))
@@ -310,6 +338,187 @@ export async function setManagerAutonomy(
   }
   revalidatePath("/dashboard/admin/manager-trust")
   return { ok: true, updated }
+}
+
+// ── RETIRE / RESTORE A MANAGER (lane W3, 2026-09-01) ─────────────────────────────────────────
+//
+// THE HALF THAT WAS MISSING. `managed_agents.archived_at` was READ in four places —
+// this file at :121 and in setManagerAutonomy, lib/managers/autonomy-gate.ts:239,
+// lib/onboarding/critical-setup.ts:451, lib/agents/spawn-helper.ts:160 — always as the
+// filter `.is("archived_at", null)`, and WRITTEN BY NOBODY. Verified against the live
+// database (hrvaqgvukzxfskkcrwbt, 2026-09-01): the column is `timestamptz`, nullable,
+// no default, and the table carries NO trigger at all — so none of §3's three invisible
+// writers (backfill / .rpc() / trigger) applies. The filter was inert: a manager could
+// be spawned and never retired.
+//
+// THE SCHEMA WAS BUILT FOR THIS AND WAS WAITING FOR IT. The uniqueness rule is
+// PARTIAL — `uq_managed_agents_brokerage_kind UNIQUE (brokerage_id, agent_kind) WHERE
+// (archived_at IS NULL)` — which only makes sense if archiving is expected to FREE the
+// slot for a future row of the same kind. A plain unique would have made retirement
+// impossible to follow with a respawn.
+//
+// ── WHAT RETIREMENT IS, AND THE ONE THING IT IS NOT ──────────────────────────────────
+// It retires the manager's IDENTITY ROW and with it the broker's stored policy for that
+// kind. It is NOT a kill switch, and saying so is the whole reason this comment exists:
+// lib/managers/autonomy-gate.ts:234-246 resolves posture from the live row and FAILS
+// OPEN (`absence ⇒ null ⇒ allow`), so an archived manager's dispatch reads as
+// unrestricted, not as stopped — and lib/agents/spawn-helper.ts:155-216 would create a
+// FRESH row (config `{}`) the next time that kind is dispatched, because the partial
+// index has freed the slot. A broker who needs sends to STOP wants the halt, not the
+// retirement: `setTenantAutonomyHaltAction` (app/actions/superadmin/tenant-entitlements.ts:305,
+// consumed at autonomy-gate.ts:222-225) holds every manager in the tenant to the
+// approval queue. The confirm text on the trust board says this in the broker's words.
+//
+// ── AND IT REFUSES TO STRAND IN-FLIGHT WORK ──────────────────────────────────────────
+// `managed_agent_sessions` hangs off this row (lib/kernel/command-center.ts:355 reads
+// sessions through it, and the webhook routes events back by it). Retiring a kind whose
+// session is still `running`/`idle` would leave live work pointing at a row every
+// governance surface filters out. So the sessions are counted FIRST, in the same status
+// vocabulary spawn-helper uses (§6), and a busy manager is refused with the count.
+
+export async function setManagerRetired(
+  agentKind: string,
+  retired: boolean,
+): Promise<{ ok: true; updated: number } | { ok: false; error: string }> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  // Retiring a manager is the same class of decision as setting its autonomy policy:
+  // broker/admin, never team_lead. Gate first, then the service client (§4).
+  if (!isAdminOrBroker({ user_type: ctx.userType })) {
+    return { ok: false, error: "Forbidden — only a broker or admin can retire or restore a manager" }
+  }
+  if (!agentKind?.trim()) return { ok: false, error: "Missing manager kind" }
+  if (!(agentKind in MANAGERS)) return { ok: false, error: "Unknown manager kind" }
+  // TENANT FROM THE SESSION. Platform staff read cross-tenant on the scorecard, but a
+  // retirement is a tenant's own governance act and is written only inside a brokerage.
+  if (!ctx.brokerageId) return { ok: false, error: "Brokerage not configured" }
+
+  const svc = createServiceClient()
+  const nowIso = new Date().toISOString()
+
+  if (retired) {
+    const { data: rows, error: readErr } = await svc
+      .from("managed_agents")
+      .select("id, config")
+      .eq("brokerage_id", ctx.brokerageId)
+      .eq("agent_kind", agentKind)
+      .is("archived_at", null)
+    if (readErr) return { ok: false, error: readErr.message }
+    if (!rows || rows.length === 0) {
+      return { ok: false, error: "This manager has no active row to retire — it has never run for your brokerage." }
+    }
+
+    // IN-FLIGHT WORK FIRST. Same status vocabulary as lib/agents/spawn-helper.ts:142.
+    const { count: busy, error: busyErr } = await svc
+      .from("managed_agent_sessions")
+      .select("id", { count: "exact", head: true })
+      .in("managed_agent_id", rows.map((r) => r.id as string))
+      .in("status", ["running", "idle"])
+    // Fail CLOSED (§4): if the session count cannot be read we do not know whether work
+    // is in flight, and "nobody checked" must never render as "checked and fine".
+    if (busyErr) {
+      return { ok: false, error: `Could not check for work still in flight — nothing was retired (${busyErr.message})` }
+    }
+    if ((busy ?? 0) > 0) {
+      return {
+        ok: false,
+        error: `${MANAGERS[agentKind as ManagerKey].label} still has ${busy} session${busy === 1 ? "" : "s"} running or idle. Let them finish (or end them in the Command Center) before retiring it — retiring now would leave live work pointing at a row every governance surface filters out.`,
+      }
+    }
+
+    const { data: archived, error: archErr } = await svc
+      .from("managed_agents")
+      .update({ archived_at: nowIso, updated_at: nowIso })
+      .eq("brokerage_id", ctx.brokerageId)
+      .eq("agent_kind", agentKind)
+      .is("archived_at", null)
+      .select("id")
+    if (archErr) return { ok: false, error: archErr.message }
+    // COUNTED (§3): an UPDATE that matched nothing resolves exactly like one that
+    // worked. Zero rows here means the tenant predicate refused or another writer got
+    // there first — a failure the broker must be told about, not a silent success.
+    if (!archived || archived.length === 0) {
+      return { ok: false, error: "Nothing was retired — the manager may have been retired already, or the write was refused." }
+    }
+    await auditManagerLifecycle(svc, ctx, archived, agentKind, { archived_at: null }, { archived_at: nowIso }, "manager.retired")
+    revalidatePath("/dashboard/admin/manager-trust")
+    return { ok: true, updated: archived.length }
+  }
+
+  // RESTORE. The partial unique index means a live row of the same kind blocks this —
+  // and it can genuinely exist, because a dispatch after the retirement respawns the
+  // kind. Checked first so the broker gets a sentence instead of a 23505, and the
+  // write's own error is still read in case the race lands between the two.
+  const { data: live, error: liveErr } = await svc
+    .from("managed_agents")
+    .select("id")
+    .eq("brokerage_id", ctx.brokerageId)
+    .eq("agent_kind", agentKind)
+    .is("archived_at", null)
+    .limit(1)
+  if (liveErr) return { ok: false, error: liveErr.message }
+  if (live && live.length > 0) {
+    return { ok: false, error: "This manager is already running again — it was respawned after it was retired, so there is nothing to restore." }
+  }
+
+  // Only the MOST RECENTLY archived row comes back: restoring several at once would
+  // put two live rows of one kind under a partial unique index that forbids exactly that.
+  const { data: newest, error: newestErr } = await svc
+    .from("managed_agents")
+    .select("id, archived_at")
+    .eq("brokerage_id", ctx.brokerageId)
+    .eq("agent_kind", agentKind)
+    .not("archived_at", "is", null)
+    .order("archived_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (newestErr) return { ok: false, error: newestErr.message }
+  if (!newest) return { ok: false, error: "There is no retired row for this manager to restore." }
+
+  const { data: restored, error: restoreErr } = await svc
+    .from("managed_agents")
+    .update({ archived_at: null, updated_at: nowIso })
+    .eq("id", (newest as { id: string }).id)
+    .eq("brokerage_id", ctx.brokerageId)
+    .select("id")
+  if (restoreErr) return { ok: false, error: restoreErr.message }
+  if (!restored || restored.length === 0) {
+    return { ok: false, error: "Nothing was restored — the row may have been restored already, or the write was refused." }
+  }
+  await auditManagerLifecycle(
+    svc, ctx, restored, agentKind,
+    { archived_at: (newest as { archived_at: string }).archived_at }, { archived_at: null }, "manager.restored",
+  )
+  revalidatePath("/dashboard/admin/manager-trust")
+  return { ok: true, updated: restored.length }
+}
+
+/**
+ * The audit row for a retirement or a restore — the same audit_log idiom
+ * completeRegionalConventionReview uses below, through sentinelWrite, because a
+ * LOST governance row is exactly the kind of write that must not fail silently.
+ * Never blocks the operation: the flip already landed and was counted.
+ */
+async function auditManagerLifecycle(
+  svc: ReturnType<typeof createServiceClient>,
+  ctx: Awaited<ReturnType<typeof getAgentContext>>,
+  rows: Array<{ id: unknown }>,
+  agentKind: string,
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+  action: "manager.retired" | "manager.restored",
+): Promise<void> {
+  const { sentinelWrite } = await import("@/lib/kernel/write-sentinel")
+  for (const r of rows) {
+    await sentinelWrite(svc, svc.from("audit_log").insert({
+      user_id: ctx.userId,
+      action,
+      entity_type: "managed_agent",
+      entity_id: r.id as string,
+      before,
+      after: { ...after, agent_kind: agentKind, brokerage_id: ctx.brokerageId, compliance_relevant: true },
+    }), { table: "audit_log", flow: "manager_lifecycle", brokerageId: ctx.brokerageId ?? null })
+  }
 }
 
 // ── LEARNED ADJUSTMENTS — human oversight of what the managers LEARNED ───────────────────────

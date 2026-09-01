@@ -332,7 +332,21 @@ export async function sendThankYouNoteAction(input: {
 
 // ─── THANK YOU NOTE TEMPLATES ─────────────────────────────────────────────────
 
-export async function loadThankYouTemplatesAction(occasion?: string): Promise<{
+/**
+ * The tenant's usable templates.
+ *
+ * `includeRetired` exists so RETIREMENT IS NOT A ONE-WAY DOOR: a template that
+ * `saveThankYouTemplateAction` has deactivated disappears from the default list
+ * by design, and without a way to see it again nothing could ever hand its id
+ * back to the restore path. The tenant conjunct is NOT optional and is applied on
+ * both branches — m398/m399's ruling is that `is_active` alone must never decide
+ * who sees a row (`scripts/…`/supabase/migrations/m399: "if any PERMISSIVE SELECT
+ * policy on a table carrying a `brokerage_id` column decides visibility from
+ * `is_active` WITHOUT ever consulting `brokerage_id`, this FAILS"). Relaxing the
+ * ACTIVE flag here is exactly the case that ruling anticipates, so the brokerage
+ * predicate stays put and only the flag moves.
+ */
+export async function loadThankYouTemplatesAction(occasion?: string, includeRetired = false): Promise<{
   success: boolean
   templates?: any[]
   error?: string
@@ -344,10 +358,10 @@ export async function loadThankYouTemplatesAction(occasion?: string): Promise<{
   let query = service
     .from("thank_you_note_templates")
     .select("*")
-    .eq("is_active", true)
     .or(`brokerage_id.eq.${actor.brokerageId},is_global.eq.true`)
     .order("use_count", { ascending: false })
 
+  if (!includeRetired) query = query.eq("is_active", true)
   if (occasion) query = query.eq("occasion", occasion)
 
   const { data, error } = await query
@@ -355,18 +369,84 @@ export async function loadThankYouTemplatesAction(occasion?: string): Promise<{
   return { success: true, templates: data ?? [] }
 }
 
-export async function saveThankYouTemplateAction(input: {
-  name: string
-  occasion: string
-  channel: string
-  subject?: string
-  body: string
-  isGlobal?: boolean
-}): Promise<{ success: boolean; templateId?: string; error?: string }> {
+/** Create a template, or RETIRE/RESTORE one that already exists. */
+export type SaveThankYouTemplateInput =
+  | {
+      name: string
+      occasion: string
+      channel: string
+      subject?: string
+      body: string
+      isGlobal?: boolean
+    }
+  /** The retirement half (lane W3) — flip an existing template's is_active. */
+  | { templateId: string; isActive: boolean }
+
+/**
+ * ── THE RETIREMENT HALF (lane W3, 2026-09-01) ────────────────────────────────
+ * `thank_you_note_templates.is_active` was READ by loadThankYouTemplatesAction
+ * and written by NOBODY. The insert below never names the column and the live
+ * default is `boolean NOT NULL DEFAULT true`, so the filter matched every row
+ * that had ever been created: a template was PERMANENT once written, and an
+ * agent who typed the wrong body had no way to take it out of the picker.
+ *
+ * Retirement lives on this action rather than beside it on purpose — it is the
+ * same operation's other end (write a template / stop offering it), and the one
+ * caller already imports this symbol, so the half arrives WIRED instead of
+ * arriving as a fresh export nothing addresses.
+ *
+ * ── THE SECOND CONDITION m398/m399 IMPOSE, HONORED HERE ─────────────────────
+ * That wave's ruling is "`is_active` ALONE must not publish": a row's visibility
+ * may never turn on the flag without the tenant predicate riding along. It is
+ * about READS, and this is a WRITE — but the mirror obligation is the sharper
+ * one on a SERVICE client, which bypasses RLS entirely. The live UPDATE policy
+ * (`tyn_templates_owner_update`, read from pg_policy on hrvaqgvukzxfskkcrwbt,
+ * 2026-09-01) is:
+ *     USING/WITH CHECK (is_platform_staff() OR brokerage_id = <caller's agent's
+ *                       brokerage>)
+ * so a tenant may flip its OWN template and NOTHING else — a GLOBAL template
+ * (brokerage_id IS NULL, is_global true) is platform property and is refused.
+ * The service client would happily ignore all of that, so the predicate is
+ * restated in userland below, from the SESSION (§4 — never from the caller's
+ * input), and the update is COUNTED (§3 — an UPDATE that matches nothing
+ * resolves exactly like one that worked, so "not yours" would otherwise report
+ * success). A tenant retiring the platform's global template for every other
+ * brokerage on the system is the failure this predicate exists to prevent.
+ */
+export async function saveThankYouTemplateAction(
+  input: SaveThankYouTemplateInput,
+): Promise<{ success: boolean; templateId?: string; error?: string }> {
   const actor = await resolveActor()
   if (!actor) return { success: false, error: "Not authenticated." }
 
   const service = createServiceClient()
+
+  if ("templateId" in input) {
+    if (!input.templateId?.trim()) return { success: false, error: "Missing template id." }
+    const { data: flipped, error: flipErr } = await service
+      .from("thank_you_note_templates")
+      .update({ is_active: input.isActive, updated_at: new Date().toISOString() })
+      .eq("id", input.templateId)
+      // TENANT FROM THE SESSION, never from the input. A global row carries
+      // brokerage_id NULL, so this alone already refuses it; `is_global` is
+      // named too because the refusal must survive a future global row that
+      // also carries a brokerage.
+      .eq("brokerage_id", actor.brokerageId)
+      .eq("is_global", false)
+      .select("id")
+    if (flipErr) return { success: false, error: flipErr.message }
+    // COUNTED (§3): zero rows here is a FAILURE, not an already-done. It means
+    // the id is unknown, belongs to another brokerage, or is the platform's
+    // global template — and nobody would otherwise be told.
+    if (!flipped || flipped.length === 0) {
+      return {
+        success: false,
+        error: "That template could not be updated — it is not one of your brokerage's own templates (global templates are the platform's).",
+      }
+    }
+    return { success: true, templateId: (flipped[0] as { id: string }).id }
+  }
+
   const { data, error } = await service.from("thank_you_note_templates").insert({
     brokerage_id: actor.brokerageId,
     agent_id:     actor.agentId,
