@@ -172,7 +172,11 @@ export async function enqueueAvatarCompositionForProject(
     typeof meta.target_render_id === "string" && meta.target_render_id.trim().length > 0
       ? (meta.target_render_id as string)
       : null
-  let staged: { id: string; render_status: string | null; input_props: Record<string, unknown> | null } | null = null
+  // Named type on purpose: `stagedRow as typeof staged` would cast against the
+  // control-flow-NARROWED type (null at that point, since only null had been
+  // assigned), collapsing every later property access to `never`.
+  type StagedRender = { id: string; render_status: string | null; input_props: Record<string, unknown> | null }
+  let staged: StagedRender | null = null
   if (targetRenderId) {
     const { data: stagedRow, error: stagedErr } = await supabase
       .from("remotion_composition_renders")
@@ -185,7 +189,7 @@ export async function enqueueAvatarCompositionForProject(
       // new-row path, which cannot lose the avatar.
       console.warn(`[avatar-render-orchestrator] staged render ${targetRenderId} unreadable (${stagedErr.message}) — falling back to a fresh avatar-led render`)
     } else {
-      staged = (stagedRow as typeof staged) ?? null
+      staged = (stagedRow as StagedRender | null) ?? null
     }
 
     if (staged && staged.render_status === "queued") {
