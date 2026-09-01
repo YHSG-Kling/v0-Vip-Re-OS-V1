@@ -1,5 +1,14 @@
 "use client"
 
+// TOMBSTONE (orphan doctrine §1.1, 2026-09-01): the sibling AuditFlagsTab.tsx
+// (same directory) was deleted — a never-imported earlier twin of THIS tab.
+// Everything it did (list conversation_audit_flags; mark reviewed / escalate /
+// dismiss via reviewAuditFlag with resolution notes) this tab already does,
+// with more: per-flag status select, bulk actions, runWeeklyAIAudit, and the
+// Fair-Housing review card. Its one behavioral difference — notes were
+// OPTIONAL on dismiss/review — was superseded laxity, not capability
+// (this tab requires notes deliberately), so nothing was merged.
+
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { reviewAuditFlag, runWeeklyAIAudit } from "@/app/actions/conversation-analytics"

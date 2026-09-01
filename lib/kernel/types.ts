@@ -225,8 +225,9 @@ export interface KernelContact {
 // ContactStopStatus are no longer exported here. Each was a field-for-field documentary slice
 // of KernelContact (above, this file — the survivor carrying every one of those fields), and
 // the "compliance checks" they announced themselves for run on their own deliberately-partial
-// contracts instead: the ContactData interfaces in lib/kernel/communication-compliance.ts:17
-// (server) and lib/kernel/communication-compliance-helpers.ts:15 (client), which accept a
+// contracts instead: the ContactData interface in lib/kernel/communication-compliance.ts:17
+// (the client twin lib/kernel/communication-compliance-helpers.ts was deleted 2026-09-01,
+// merged onto that survivor — see the tombstone there), which accepts a
 // partially-loaded row — a shape these required-boolean slices could not describe. Nothing was
 // merged because the survivors already carry everything; nothing imported the three names.
 

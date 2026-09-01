@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Clock, ChevronDown, ChevronUp, User, Cpu, CheckCircle2, Circle } from "lucide-react"
+import { Clock, ChevronDown, ChevronUp, User, Cpu, CheckCircle2, Circle, RefreshCw } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -17,6 +17,15 @@ import { formatDistanceToNow } from "date-fns"
 interface DecisionHistoryPanelProps {
   listingId: string
 }
+
+// TOMBSTONE (orphan doctrine §1.1, 2026-09-01): the duplicate
+// app/dashboard/listings/[id]/offers/components/decision-history-panel.tsx was
+// deleted — an earlier, poorer twin of THIS panel (no state-catalog labels, no
+// milestone ladder, wrong response field: it read `.decisions` where the action
+// returns `.data`) that nothing imported; both its render sites import this
+// file. The one capability it had that this survivor lacked — a manual Refresh
+// button — was merged here (the reloadKey state + header button below) before
+// the twin was deleted.
 
 /**
  * The rows come back from queryDecisionHistory as raw activity rows —
@@ -66,6 +75,8 @@ export function DecisionHistoryPanel({ listingId }: DecisionHistoryPanelProps) {
   const [milestones, setMilestones] = useState<StateDef[]>([])
   /** The definition of the state this listing is CURRENTLY in. */
   const [currentDef, setCurrentDef] = useState<StateDef | null>(null)
+  /** Bumped by the Refresh button — re-runs the load effect (merged from the deleted twin). */
+  const [reloadKey, setReloadKey] = useState(0)
 
   useEffect(() => {
     let cancelled = false
@@ -99,9 +110,10 @@ export function DecisionHistoryPanel({ listingId }: DecisionHistoryPanelProps) {
       if (!cancelled) setLoading(false)
     }
 
+    setLoading(true)
     load().catch(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [listingId])
+  }, [listingId, reloadKey])
 
   const visible = expanded ? history : history.slice(0, 10)
   const hasMore = history.length > 10
@@ -117,10 +129,22 @@ export function DecisionHistoryPanel({ listingId }: DecisionHistoryPanelProps) {
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-sm font-semibold flex items-center gap-2">
-          <Clock className="h-4 w-4 text-muted-foreground" />
-          Decision History
-        </CardTitle>
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-sm font-semibold flex items-center gap-2">
+            <Clock className="h-4 w-4 text-muted-foreground" />
+            Decision History
+          </CardTitle>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 p-0"
+            onClick={() => setReloadKey((k) => k + 1)}
+            disabled={loading}
+            title="Refresh"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+          </Button>
+        </div>
       </CardHeader>
       <CardContent>
         {loading ? (

@@ -283,17 +283,33 @@ export async function evaluateOutboundCompliance(
   }
 }
 
+// TOMBSTONE (orphan doctrine §1.1, 2026-09-01): lib/kernel/communication-compliance-helpers.ts
+// deleted. It was a byte-near twin of the two helpers below, split out so client components
+// could import pure predicates without dragging in createServiceClient — a split no client
+// component ever exercised (zero importers, static or dynamic, for the module's whole life).
+// Survivors: isEligibleForOutbound / getSuppressionReasons in THIS file (below). The one
+// check only the twin carried — restricted-state-without-TCPA-consent in the eligibility
+// predicate — was merged onto the survivor before deletion, and both helpers now also cover
+// the opt_out_channels arm that NEITHER twin checked but the master gate
+// evaluateOutboundCompliance() hard-blocks (RULE 5 above). If a client-safe pure split is
+// ever actually needed, re-extract from these survivors — do not resurrect the twin.
+
 /**
  * HELPER: Check if contact is eligible for ANY outbound
  * (Used for quick checks before queuing work)
+ *
+ * Union of every per-channel HARD block the master gate can raise: a contact
+ * this returns true for can still be blocked per-channel (RULE 2-4/7 are
+ * channel-scoped and RULE 6 consults active representation, a DB lookup this
+ * pure predicate cannot make) — but it never passes a contact the master gate
+ * would hard-block on every channel. Strictly conservative: any recorded
+ * opt-out on any channel fails the quick check.
  */
-// Client components: import the pure versions from
-// @/lib/kernel/communication-compliance-helpers — this file pulls in
-// createServiceClient and Turbopack walks the graph into server-only
-// modules.
 export function isEligibleForOutbound(contact: ContactData): boolean {
   if (contact.dnc_status || contact.call_stop_flag) return false
   if (contact.email_opt_out || contact.sms_opt_out) return false
+  if ((contact.opt_out_channels?.length ?? 0) > 0) return false
+  if (RESTRICTED_STATES.has(contact.state ?? "") && !contact.tcpa_consent) return false
   // status === "do_not_contact" removed 2026-08-31 — never a contacts.status
   // value; the DNC fact is dnc_status, checked above.
   return true
@@ -309,6 +325,9 @@ export function getSuppressionReasons(contact: ContactData): string[] {
   if (contact.call_stop_flag) reasons.push("Call Stop Flag")
   if (contact.email_opt_out) reasons.push("Email Opt-Out")
   if (contact.sms_opt_out) reasons.push("SMS Opt-Out")
+  for (const channel of contact.opt_out_channels ?? []) {
+    reasons.push(`Channel Opt-Out (${channel})`)
+  }
   // "Marked Do Not Contact" via status removed 2026-08-31 — dnc_status (above)
   // is the DNC rail; 'do_not_contact' was never a contacts.status value.
   if (RESTRICTED_STATES.has(contact.state ?? "") && !contact.tcpa_consent) {

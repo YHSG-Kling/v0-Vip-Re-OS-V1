@@ -26,7 +26,7 @@
 // answer more precisely as buyer / seller / both / investor. So it was a second
 // spelling with the side thrown away. THE REPRESENTATION FACT IS NOT LOST: it
 // lives on contacts.STATUS ('representation' / 'active_transaction' /
-// 'under_contract' — the vocabulary lib/kernel/compliance.ts::RESTRICTED_STATES
+// 'under_contract' — the vocabulary lib/kernel/compliance.ts::REPRESENTATION_LOCK_STATES
 // gates outbound messaging on) and on contacts.LIFECYCLE_STATE. Neither moved.
 //
 // Before m539 the CHECK also admitted 'lifetime' and 'past_client' — THREE spellings of

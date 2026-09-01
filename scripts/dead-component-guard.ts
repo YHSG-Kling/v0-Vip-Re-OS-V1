@@ -3,8 +3,10 @@
  * scripts/dead-component-guard.ts  (npm run test:no-dead-components) — pure, no DB.
  *
  * DRIFT RATCHET — no orphaned React component may re-accumulate. After a 226-component dead-code
- * sweep, this freezes the win: every file under app/components must be imported by at least ONE other
- * file (any form — @/components, @/lib, @/ alias, relative, dynamic import, or a barrel re-export).
+ * sweep, this freezes the win: every .tsx under app/components AND under any co-located
+ * "components" directory in app/ (dashboard/x/components, crm/components, portal components …)
+ * must be imported by at least ONE other file (any form — @/components, @/lib, @/ alias, relative,
+ * dynamic import, or a barrel re-export). Next.js convention files (page/layout/route/…) are exempt.
  * A component imported by NOTHING is dead drift and FAILS CI until it's wired up or deleted.
  *
  * Zero false positives by design: "imported by nothing" is a hard fact (unlike full reachability,
@@ -57,10 +59,21 @@ for (const f of all) {
   }
 }
 
-const orphans = all.filter((f) => f.startsWith("app/components/") && f.endsWith(".tsx") && !used.has(f))
+// ACCUSATION SET (§2 blind-spot fix, 2026-09-01): the original predicate accused
+// only app/components/** while the corpus walked ALL of app/ + lib/ — so a dead
+// component in a CO-LOCATED components dir (app/dashboard/*/components/,
+// app/crm/components/, portal components) could never be accused. That is exactly
+// how app/dashboard/videos/components/BackgroundPicker.tsx sat dead for its whole
+// life. Now: every .tsx under ANY */components/ directory within app/ is in scope.
+// Next.js convention files stay exempt (routed by the framework, not by import).
+const NEXT_CONVENTION = /\/(page|layout|route|loading|error|not-found|template|default|global-error)\.tsx$/
+const accusable = (f: string) =>
+  /^app\/(.*\/)?components\//.test(f) && f.endsWith(".tsx") && !NEXT_CONVENTION.test(f)
+
+const orphans = all.filter((f) => accusable(f) && !used.has(f))
 
 console.log("\n[dead-component guard — every component must be imported by something]")
-const total = all.filter((f) => f.startsWith("app/components/") && f.endsWith(".tsx")).length
+const total = all.filter(accusable).length
 if (orphans.length === 0) {
   console.log(`  ✓ all ${total} components are wired (zero orphans)`)
   console.log("\n──────────────────────────────────────────────────")

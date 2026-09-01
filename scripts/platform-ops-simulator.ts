@@ -7,7 +7,7 @@
 //   3. SUPPORT SLA/CSAT: pure deadline/breach/at-risk/rating matrix + queue
 //      and cron wiring + live rating round-trip on a seeded ticket.
 //   4. IMAGE LIBRARY: pure Pexels normalize/validate + platform-scope gating
-//      wiring + BackgroundPicker de-hardcode + live platform-scoped asset
+//      wiring + video-create background de-hardcode + live platform-scoped asset
 //      round-trip (insert brokerage_id NULL → listed → cleanup==0).
 // Layers: pure (always), source (readFileSync), live (SUPABASE_SERVICE_ROLE_KEY-
 // gated; seeds real rows on real tables and cleans to count==0).
@@ -115,8 +115,12 @@ console.log("\n── SOURCE: wiring ──")
   const libActions = src("app/actions/marketing/image-library.ts")
   check("platform-scope library writes gated to marketing capability", libActions.includes("platformStaffCan") && libActions.includes('"Forbidden — platform marketing staff only"'))
   check("library list unions platform + tenant scope", libActions.includes("visibility_scope.eq.platform"))
-  const picker = src("app/dashboard/videos/components/BackgroundPicker.tsx")
-  check("BackgroundPicker de-hardcoded (no unsplash demo URLs; loads library)", !picker.includes("images.unsplash.com") && picker.includes("listImageLibraryAction"))
+  // Was asserted against app/dashboard/videos/components/BackgroundPicker.tsx —
+  // a component nothing ever rendered. Deleted 2026-09-01 (§1.1); the library
+  // loading it carried was merged into the LIVE video create wizard, which is
+  // what this assertion must hold to.
+  const videoCreate = src("app/dashboard/videos/create/video-create-client.tsx")
+  check("video create wizard de-hardcoded (no unsplash demo URLs; loads library)", !videoCreate.includes("images.unsplash.com") && videoCreate.includes("listImageLibraryAction"))
   const growthPage = src("app/dashboard/superadmin/growth/page.tsx")
   check("platform library card mounted on the growth board", growthPage.includes("ImageLibraryCard"))
   const exportLib = src("lib/platform/tenant-export.ts")

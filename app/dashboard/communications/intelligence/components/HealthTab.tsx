@@ -1,5 +1,14 @@
 "use client"
 
+// TOMBSTONE (orphan doctrine §1.3, 2026-09-01): the sibling InsightsTab.tsx
+// (same directory) was deleted — never imported by IntelligenceClient, and
+// written against columns conversation_insights does not have (top_topics,
+// key_questions, next_best_action do not exist; the live table carries
+// key_topics / unresolved_questions). Its live functionality already lives
+// elsewhere: the per-conversation sentiment/health/escalation list is THIS
+// tab's insights table, and topic display is CoachingTab's topicFrequency
+// chart (fed from key_topics in page.tsx). Nothing renderable was lost.
+
 import { useMemo, useState } from "react"
 import {
   LineChart,

@@ -14,77 +14,30 @@ import type { ContactType as CanonicalContactType } from "@/lib/contact-types"
 // LEAD
 // ============================================
 
-export type LeadStatus = 
-  | "new"
-  | "contacted"
-  | "qualified"
-  | "nurturing"
-  | "converted"
-  | "disqualified"
-  | "unresponsive"
-
-export type LeadSource = 
-  | "zillow"
-  | "realtor_com"
-  | "facebook"
-  | "google"
-  | "referral"
-  | "website"
-  | "cold_call"
-  | "email_campaign"
-  | "open_house"
-  | "sphere"
-  | "other"
-
-export type LeadIntent = 
-  | "buy"
-  | "sell"
-  | "invest"
-  | "rent"
-  | "research"
-  | "unknown"
-
-/**
- * Lead represents an external prospect that has not yet been assigned
- * to an agent. Leads are typically enriched from external sources like
- * Zillow, Realtor.com, or lead generation platforms.
- */
-export interface Lead {
-  id: string
-  
-  // Identity
-  first_name?: string
-  last_name?: string
-  email?: string
-  phone?: string
-  
-  // Classification
-  status: LeadStatus
-  source: LeadSource
-  intent: LeadIntent
-  
-  // Enrichment data
-  lead_score?: number
-  urgency_score?: number
-  budget_min?: number
-  budget_max?: number
-  timeline?: string
-  location?: string
-  property_type?: string[]
-  
-  // Metadata
-  enriched_data?: Record<string, any>
-  external_id?: string
-  created_at: string
-  updated_at: string
-  last_activity_at?: string
-  
-  // Assignment tracking
-  assigned_to_agent_id?: string
-  assigned_at?: string
-  converted_to_contact_id?: string
-  converted_at?: string
-}
+// TOMBSTONE (orphan doctrine §1.1, 2026-09-01): interface `Lead` and its
+// LeadStatus / LeadSource / LeadIntent unions deleted — zero importers (the
+// only names imported from this module are Contact / Offer / OfferStatus /
+// OfferVersion / OfferCreationResult, verified repo-wide). SURVIVOR:
+// app/types/lead-management.ts:11 `Lead` (imported by
+// app/actions/lead-management.ts), onto which the real-column
+// enrichment/conversion fields were merged first (lead_score, budget_min/max,
+// timeline, property_type, updated_at, last_activity_at, converted_at,
+// contact_id).
+//
+// VOCABULARY DECISION (§6 — recorded, deliberately NOT equalized): the two
+// Lead shapes carried DIFFERENT unions and leads.status has NO live CHECK, so
+// neither spelling is database-proven. This file said
+//   status: new|contacted|qualified|nurturing|converted|disqualified|unresponsive
+//   source: zillow|realtor_com|facebook|google|referral|website|cold_call|email_campaign|open_house|sphere|other
+//   intent: buy|sell|invest|rent|research|unknown
+// while the survivor says
+//   status: new|enriched|qualified|converted|rejected
+//   source: scraped|website_form|ghl|manual
+//   intent: buying|selling|distress|investor.
+// Merging the value sets here would have been the exact §6 bleed the timeline
+// merge precedent warns about (a scorer matching writers across two
+// spellings): pick one vocabulary against live row values + writers, in its
+// own change, before any CHECK is added.
 
 // ============================================
 // CONTACT
@@ -467,15 +420,15 @@ export interface OfferVersion {
 // HELPER TYPES
 // ============================================
 
-/**
- * Represents the result of a lead-to-contact promotion
- */
-export interface LeadPromotionResult {
-  success: boolean
-  contact_id?: string
-  contact?: Contact
-  error?: string
-}
+// TOMBSTONE (orphan doctrine §1.1, 2026-09-01): interface `LeadPromotionResult`
+// deleted — zero importers, and the THIRD spelling of the promotion-result
+// idea. SURVIVOR: lib/contact-promotion/promote-lead-to-contact.ts:15
+// `PromotionResult` (re-exported via lib/contact-promotion/index.ts:13), the
+// return type of the live promotion door promoteLeadToContactService — the
+// same survivor the deleted promoteLeadToContact half of
+// lib/lifecycle/offer-lifecycle.ts already points to. Nothing merged: the
+// survivor carries success/message/contactId (+ best-effort warnings) and the
+// real promotion history.
 
 /**
  * Represents the result of creating an offer draft

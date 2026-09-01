@@ -517,22 +517,19 @@ export interface UserContext {
 // row is direct_mail_campaigns, written/read by app/actions/direct-mail.ts (and the
 // QR + approval lanes), shape held by scripts/schema-snapshot.ts.
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'Prospect'" in CRM.tsx
- */
-export interface Prospect {
-  id: string
-  name: string
-  score: number
-}
+// TOMBSTONE (§1.3, 2026-09-01, lane N4): `Prospect` deleted — a three-field
+// compile stub added only to satisfy the since-deleted CRM.tsx ("Added to
+// fix … has no exported member 'Prospect'"), referenced by nothing. The name
+// lives on for a DIFFERENT subject: the platform growth funnel's prospect row
+// (app/dashboard/superadmin/growth/platform-growth-board.tsx:19, a local
+// interface over platform_prospects) — same word, unrelated shape; do not
+// merge them.
 
-/**
- * Added to fix "Module '"../../types"' has no exported member 'ScrapeJob'" in CRM.tsx
- */
-export interface ScrapeJob {
-  id: string
-  status: string
-}
+// TOMBSTONE (§1.3, 2026-09-01, lane N4): `ScrapeJob` deleted — a two-field
+// compile stub for the same deleted CRM.tsx, referenced by nothing. Scraping
+// job records are the scraping lane's own: app/actions/lead-scraping-config.ts
+// (createScrapingJob / updateScrapingJob over the scraping-jobs rail) owns
+// that shape.
 
 // TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `SearchActivityLog` deleted —
 // scaffolding for the deleted CRM.tsx, referenced by nothing. Search telemetry
@@ -818,52 +815,23 @@ export interface ScrapeJob {
 // counterpart projects agent taxes; if the product wants that capability it is
 // a decision to make, not a type to keep.
 
-export type InsiderEditVibe = "family" | "bachelor" | "investment" | "luxury" | "first_time"
-
-export interface InsiderEditInput {
-  zipCode: string
-  city: string
-  vibe: InsiderEditVibe
-  listingUrl: string
-  pressureTestHighlights: string[] // 3 required non-MLS highlights
-  agentPastToneContext?: string // For RAG/tone matching
-}
-
-export interface InsiderEditSection {
-  sectionType: "hook" | "events" | "civic" | "deal" | "eats"
-  title: string
-  content: string
-  editableContent: string
-  aiPrompt?: string // Stores the prompt used for this section
-}
-
-export interface InsiderEditNewsletter {
-  id: string
-  title: string
-  listingAddress?: string
-  listingUrl?: string
-  vibe: InsiderEditVibe
-  zipCode: string
-  city: string
-  sections: InsiderEditSection[]
-  pressureTestHighlights: string[]
-  emailHtml: string
-  emailPreviewText: string
-  status: "draft" | "preview" | "ready" | "sent"
-  tone: "curator" | "custom"
-  createdByUserId: string
-  createdAt: string
-  updatedAt?: string
-  sentAt?: string
-  sentToCount?: number
-  openRate?: number
-}
+// TOMBSTONE (§1.1/§1.3, 2026-09-01, lane N3a): `InsiderEditVibe` /
+// `InsiderEditInput` / `InsiderEditSection` / `InsiderEditNewsletter` deleted —
+// their ONLY consumers were the app/api/ai/insider-edit-{generate,rewrite-
+// section,save} route trio, deleted the same day (no UI ever addressed them).
+// SURVIVORS for the capability: the curator voice + section direction + tone
+// pass live in lib/newsletter/insider-edit.ts, selected as the "insider"
+// template of app/actions/ai-newsletter.ts:aiWriteNewsletterContent, whose
+// NewsletterSection/generateObject schema is the one section shape (§6 — two
+// section vocabularies for one newsletter lane was the defect); the save half
+// is createNewsletterCampaign in the same file, which now carries the trio's
+// upsert-by-id edit semantics.
 
 // TOMBSTONE (§1.3, 2026-08-28, lane CD census tranche): `ListingAnalysis` deleted —
-// referenced by nothing. The live insider-edit lane types (InsiderEditInput /
-// InsiderEditNewsletter, this file) are consumed by
-// app/api/ai/insider-edit-generate/route.ts; listing scoring lives on
-// lib/listing-health (health-scorer) and app/actions/predictive-listing.ts.
+// referenced by nothing. (Its tombstone used to name the insider-edit route as
+// the live consumer of the InsiderEdit* types; both the route trio and those
+// types are gone as of 2026-09-01 — see the tombstone above.) Listing scoring
+// lives on lib/listing-health (health-scorer) and app/actions/predictive-listing.ts.
 
 
 export type {

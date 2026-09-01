@@ -73,15 +73,24 @@ const THEM_FIRST_PROHIBITED: Array<{ phrase: string; category: string }> = [
  * tunes one word list and not the other.
  */
 
-// ─── RESTRICTED CONTACT STATES ────────────────────────────────────────────────
-// States where non-ISA actors are blocked from outbound messaging.
+// ─── REPRESENTATION-LOCKED CONTACT STATES ─────────────────────────────────────
+// contacts.status values where non-ISA actors are blocked from outbound
+// messaging because the contact is under active representation.
+//
+// Renamed from RESTRICTED_STATES 2026-09-01 (§6 one-vocabulary): the kernel's
+// other module, lib/kernel/communication-compliance.ts:71, exports a
+// RESTRICTED_STATES that is a DIFFERENT subject entirely — US geographic
+// states ("CA"/"NY"/"DC") requiring TCPA consent, tested against
+// contact.state. This set is representation LIFECYCLE states tested against
+// contact.status. Same identifier over two subjects invited an accidental
+// merge; the rename makes that impossible.
 
 // Stored lower-case only; callers MUST normalize contact.status with
 // .toLowerCase() before checking. A previous version listed mixed-case
 // variants but exact-case Set.has() still failed open for any casing not
 // explicitly enumerated (e.g. title-case "Representation" from a UI picker),
 // silently allowing outreach to a represented contact — a compliance breach.
-const RESTRICTED_STATES = new Set([
+const REPRESENTATION_LOCK_STATES = new Set([
   "representation",
   "active_transaction",
   "under_contract",
@@ -180,7 +189,7 @@ export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<
   if (contact) {
     const contactStatus: string = (contact.status ?? "").toLowerCase()
 
-    if (RESTRICTED_STATES.has(contactStatus)) {
+    if (REPRESENTATION_LOCK_STATES.has(contactStatus)) {
       if (actorContext.role === "isa") {
         const isaReengageAllowed = contact.isa_reengage_allowed === true
         if (!isaReengageAllowed) {

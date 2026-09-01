@@ -1,8 +1,5 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { ZenrowsClient, BatchDataClient, PeopleDataClient } from "@/lib/external"
-import { calculateLeadScore } from "@/lib/services/lead-management.service"
-import { NotFoundError } from "@/lib/errors"
 import { resolveAgentForContact } from "@/lib/lead-assignment/contact-assignment"
 import { statusForNewContact } from "@/lib/contact-promotion/qualification"
 
@@ -333,7 +330,7 @@ export async function serviceImportLeads(
   if (!leads?.length) return { imported: 0, deduped: 0, unassigned: 0 }
 
   // Statuses where AI-ISA outreach must NOT auto-enable (active relationship).
-  // Matches RESTRICTED_STATES in the Vapi webhook + compliance authority gate.
+  // Matches REPRESENTATION_LOCK_STATES (lib/kernel/compliance.ts authority gate).
   const RESTRICTED_STATUSES = new Set([
     "representation",
     "active_transaction",

@@ -591,6 +591,10 @@ export async function scrapeSocialSignalsWithZenRows(location: {
  */
 const NEXTDOOR_PARSER_IMPLEMENTED = false
 
+// KEEP-WITH-REASON (inert-param census exemption): `html` and `location` are unread
+// by design — this is the documented UNBUILT parser half (NEXTDOOR_PARSER_IMPLEMENTED
+// above gates the paid fetch until it reads them); the signature is the contract the
+// real parser must fill.
 function parseNextdoorPosts(html: string, location: { city: string; state: string }): any[] {
   // Simplified parser - in production would use cheerio or similar
   const posts: any[] = []
@@ -1103,6 +1107,9 @@ async function searchRealEstateSites(leadId: string, lead: any, brokerageId: str
  * "idx_broker" data source, and an unreachable tenant, an unconfigured cascade or
  * an absent storage lane must not be recorded as a source that produced data.
  */
+// KEEP-WITH-REASON (inert-param census exemption): `leadId` is unread by design —
+// the write that consumed it is gone (see "THE WRITE IS GONE" block below) and the
+// contacts-keyed IDX interaction lane it would key is the documented unbuilt half.
 async function syncIDXBrokerActivity(
   leadId: string,
   lead: any,

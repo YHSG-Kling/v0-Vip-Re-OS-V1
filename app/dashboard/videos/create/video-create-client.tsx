@@ -59,6 +59,7 @@ import { getVoiceOptionsForGeneration } from "@/app/actions/video-voice"
 import type { GenerationVoiceOption } from "@/app/actions/video-voice.types"
 import { toLibraryScriptType } from "@/app/types/video-generation"
 import { BrollPicker } from "../components/BrollPicker"
+import { listImageLibraryAction, type LibraryAssetRow } from "@/app/actions/marketing/image-library"
 import { getAgentSettings } from "@/app/actions/agent-settings"
 import { TeammateExplainerCard } from "./teammate-explainer-card"
 
@@ -308,6 +309,16 @@ export default function VideoCreatePage() {
     bRollUrls:     string[]
   }>({ introVideoUrl: null, outroVideoUrl: null, bRollUrls: [] })
   const [brandingPresetId, setBrandingPresetId] = useState<string>("")
+
+  // Step 3: Shared image library backgrounds (platform-curated marketing_assets
+  // + this tenant's saved images). Selecting one sets backgroundStyle="library"
+  // + libraryBgUrl. Merged here 2026-09-01 from the deleted BackgroundPicker
+  // (see tombstone at the Background Style section below).
+  const [bgLibrary, setBgLibrary] = useState<LibraryAssetRow[] | null>(null)
+  const [libraryBgUrl, setLibraryBgUrl] = useState<string>("")
+  useEffect(() => {
+    listImageLibraryAction().then((r) => setBgLibrary(r.ok ? r.assets : []))
+  }, [])
 
   // Step 3: Custom background upload / webcam capture
   const [customBgUrl, setCustomBgUrl] = useState<string>("")
@@ -600,6 +611,8 @@ export default function VideoCreatePage() {
       // for any preset whose color isn't a usable hex or http(s) URL.
       const didBackground = backgroundStyle === "custom" && customBgUrl
         ? { type: "image" as const, value: customBgUrl }
+        : backgroundStyle === "library" && libraryBgUrl
+        ? { type: "image" as const, value: libraryBgUrl }
         : (() => {
             const bgPreset = BACKGROUND_STYLES.find(b => b.id === backgroundStyle)
             const bgColorValue = bgPreset?.color
@@ -717,7 +730,8 @@ export default function VideoCreatePage() {
       }
       case 3:
         return !!backgroundStyle && !!qualityPreset && !!outputOrientation &&
-          (backgroundStyle !== "custom" || !!customBgUrl)
+          (backgroundStyle !== "custom" || !!customBgUrl) &&
+          (backgroundStyle !== "library" || !!libraryBgUrl)
       default:
         return true
     }
@@ -1888,13 +1902,25 @@ export default function VideoCreatePage() {
                 </div>
 
                 {/* Background Style */}
+                {/* TOMBSTONE (orphan doctrine §1.1, 2026-09-01):
+                    app/dashboard/videos/components/BackgroundPicker.tsx (+ its
+                    BackgroundValue type) deleted — it was never imported by any
+                    rendered surface. Its one capability the live flow lacked,
+                    loading virtual backgrounds from the SHARED IMAGE LIBRARY
+                    (listImageLibraryAction: platform-curated marketing_assets +
+                    the tenant's own saved images), was merged HERE first: the
+                    bgLibrary state above, the "From your image library" grid
+                    below, the "library" arm of didBackground, and the step-3
+                    validation. Its solid-color swatches and upload lane already
+                    existed here (BACKGROUND_STYLES presets + the custom
+                    upload/webcam lane below), so nothing else moved. */}
                 <div className="space-y-3">
                   <Label>Background Style</Label>
                   <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
                     {BACKGROUND_STYLES.map((bg) => (
                       <div
                         key={bg.id}
-                        onClick={() => { if (bg.id !== "custom") stopWebcam(); setBackgroundStyle(bg.id) }}
+                        onClick={() => { if (bg.id !== "custom") stopWebcam(); setLibraryBgUrl(""); setBackgroundStyle(bg.id) }}
                         className={cn(
                           "p-3 rounded-lg border-2 cursor-pointer transition-all text-center",
                           backgroundStyle === bg.id
@@ -1910,6 +1936,44 @@ export default function VideoCreatePage() {
                       </div>
                     ))}
                   </div>
+
+                  {/* Virtual backgrounds from the shared image library */}
+                  {bgLibrary !== null && bgLibrary.length > 0 && (
+                    <div className="space-y-2 pt-1">
+                      <Label className="text-sm font-normal text-muted-foreground">
+                        From your image library
+                      </Label>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                        {bgLibrary.map((bg) => (
+                          <div
+                            key={bg.id}
+                            onClick={() => { stopWebcam(); setBackgroundStyle("library"); setLibraryBgUrl(bg.url) }}
+                            className={cn(
+                              "relative overflow-hidden rounded-lg border-2 aspect-video cursor-pointer transition-all",
+                              backgroundStyle === "library" && libraryBgUrl === bg.url
+                                ? "border-primary"
+                                : "border-border hover:border-primary/50"
+                            )}
+                          >
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                              src={bg.thumbnailUrl ?? bg.url}
+                              alt={bg.name}
+                              className="h-full w-full object-cover"
+                            />
+                            <div className="absolute bottom-0 left-0 right-0 bg-black/50 px-2 py-1 text-xs text-white truncate">
+                              {bg.name}
+                            </div>
+                            {backgroundStyle === "library" && libraryBgUrl === bg.url && (
+                              <div className="absolute top-1 right-1 rounded-full bg-primary p-0.5">
+                                <Check className="h-3 w-3 text-primary-foreground" />
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Custom Background Upload (shown when "Custom Upload" is selected) */}
@@ -2168,7 +2232,9 @@ export default function VideoCreatePage() {
                     </CardHeader>
                     <CardContent>
                       <p className="text-sm">
-                        <strong>Background:</strong> {BACKGROUND_STYLES.find(b => b.id === backgroundStyle)?.label}
+                        <strong>Background:</strong> {backgroundStyle === "library"
+                          ? (bgLibrary?.find(b => b.url === libraryBgUrl)?.name ?? "Library Image")
+                          : BACKGROUND_STYLES.find(b => b.id === backgroundStyle)?.label}
                       </p>
                       <p className="text-sm">
                         <strong>Orientation:</strong> {OUTPUT_ORIENTATIONS.find(o => o.id === outputOrientation)?.label} ({OUTPUT_ORIENTATIONS.find(o => o.id === outputOrientation)?.aspect})

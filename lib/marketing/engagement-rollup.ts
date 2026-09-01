@@ -40,7 +40,8 @@ import "server-only"
 
 type Svc = { from: (table: string) => any }
 
-export interface CampaignRateRollup {
+// Un-exported 2026-09-01: named only by this module's private functions; both exported functions return RollupSummary.
+interface CampaignRateRollup {
   campaignId: string
   sent: number
   opened: number

@@ -478,7 +478,8 @@ async function runReactor(input: ReactorInput): Promise<ReactorResult> {
   //    assigned to the contact (they own the relationship outright), and
   //    the anniversary fires for past clients (no ISA representation
   //    question applies). Authority Rule was previously flagging these
-  //    sends spuriously when contact.status landed in RESTRICTED_STATES.
+  //    sends spuriously when contact.status landed in REPRESENTATION_LOCK_STATES
+  //    (lib/kernel/compliance.ts).
   //    Per-channel opt-outs + TCPA still get checked at send time by
   //    dispatchEmail / dispatchVideo, so nothing slips through there.
   //    The four broadcast-relevant gates still run: Brand voice (brokerage
