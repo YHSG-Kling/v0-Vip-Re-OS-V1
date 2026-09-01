@@ -30,6 +30,10 @@ import {
 import type { StandardTimeline } from "@/constants/crm-standards"
 import { countStrongSellerSignals } from "@/lib/lead-governance/seller-signal-strength"
 import { readPreApproval } from "@/lib/leads/pre-approval"
+// The buyer_behavior_log signal families — imported from the vocabulary owner (§6:
+// lib/behavior-learning/signal-mapping.ts), never re-spelled locally. A reader that
+// filters on one spelling family silently halves its data.
+import { VIEW_SIGNALS, SAVE_SIGNALS } from "@/lib/behavior-learning/signal-mapping"
 
 /** Points contributed by `lead_intelligence.timeline` to the intent score (0-40). */
 const TIMELINE_INTENT_POINTS: Record<StandardTimeline, number> = {
@@ -125,15 +129,19 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
       //   · `lead_intelligence(*)` — keyed on lead_id, declares NO foreign key to
       //     contacts (pg_constraint carries brokerage_id only), exactly like its
       //     sibling lead_behavioral_data. Fetched below by the link that does exist.
-      // property_interactions IS a declared relationship (contact_id -> contacts.id)
-      // and stays. Every embed names its columns — never `*` inside an embed, which
+      // The `property_interactions(id, interaction_type)` embed is GONE (m598
+      // retirement): that table has ZERO writers, so views/saves/tour_request were
+      // structurally 0 for every contact ever scored. The engagement views/saves now
+      // count buyer_behavior_log and the intent viewing-request bump now counts
+      // showing_requests — both fetched below as separate queries, the same shape
+      // this branch already uses for lead_intelligence and motivated_seller_signals.
+      // Every embed names its columns — never `*` inside an embed, which
       // hides drift from the schema guard (defect #214). Only the persona's EXISTENCE
       // is scored, so only its key is named.
       const result = await supabase
         .from("contacts")
         .select(`
           *,
-          property_interactions(id, interaction_type),
           client_detailed_personas(id)
         `)
         .eq("id", params.id)
@@ -195,6 +203,44 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
           console.error("[lead-management] motivated_seller_signals read failed:", contactSellerSignalsError.message)
         }
         record.motivated_seller_signals = contactSellerSignals || []
+
+        // ── BUYER BEHAVIOR FOR A CONTACT (m598 repoint) ────────────────────
+        // The views/saves engagement component read `property_interactions`, a
+        // table with ZERO writers (its only trigger is BEFORE INSERT, which
+        // never fires because nothing inserts) — so both components were
+        // structurally 0 for every contact ever scored. buyer_behavior_log is
+        // the live twin: written by the preference learner
+        // (lib/behavior-learning/preference-updater.ts) and the portal/CRM
+        // telemetry. Only signal_type is selected — the scorer classifies rows
+        // into the exported families and needs nothing else.
+        const { data: behaviorSignals, error: behaviorSignalsError } = await supabase
+          .from("buyer_behavior_log")
+          .select("signal_type")
+          .eq("contact_id", params.id)
+        if (behaviorSignalsError) {
+          console.error("[lead-management] buyer_behavior_log read failed:", behaviorSignalsError.message)
+        }
+        record.buyer_behavior_signals = behaviorSignals || []
+
+        // ── VIEWING REQUESTS FOR A CONTACT (m598 repoint) ──────────────────
+        // The intent bump read `property_interactions.interaction_type =
+        // 'tour_request'` — same dead table. buyer_behavior_log CANNOT carry
+        // this meaning: it has no tour-request value (its tour-adjacent
+        // spellings are POST-tour verdicts), and signal-mapping.ts's own
+        // doctrine says "tour_requested — logistics, not taste". The honest
+        // request record is `showing_requests` — the table requestShowing
+        // (app/actions/showings.ts:150-176) inserts with contact_id +
+        // brokerage_id on every buyer-initiated request, including the portal
+        // concierge's create_showing door (lib/portal/client-action-dispatch.ts
+        // :49-64). Count, not rows — only the number is scored.
+        const { count: showingRequestCount, error: showingRequestError } = await supabase
+          .from("showing_requests")
+          .select("id", { count: "exact", head: true })
+          .eq("contact_id", params.id)
+        if (showingRequestError) {
+          console.error("[lead-management] showing_requests read failed:", showingRequestError.message)
+        }
+        record.showing_request_count = showingRequestCount ?? 0
       }
     } else {
       // Same defect on the leads side, and it was equally fatal: NEITHER
@@ -445,7 +491,13 @@ function calculateEngagementScore(record: any, table: string, behavior: Behavior
   let score = 0
 
   if (table === "contacts") {
-    const interactions = record.property_interactions || []
+    // m598 repoint: `record.property_interactions` (zero-writer table, always [])
+    // became `record.buyer_behavior_signals` — buyer_behavior_log rows fetched in
+    // calculateLeadScore. The families below are the same split the exported sets
+    // were lifted for (lib/behavior-learning/signal-mapping.ts VIEW_SIGNALS /
+    // SAVE_SIGNALS); weights and caps are unchanged, so the 100-point budget note
+    // below is unaffected — these two components can simply now be nonzero.
+    const behaviorSignals: Array<{ signal_type?: string | null }> = record.buyer_behavior_signals || []
 
     // ── THE CONTACTS BUDGET WAS REBALANCED 2026-08-21, and the reason is not
     // cosmetic. This branch summed to exactly 100 (30 views + 25 saves + 45
@@ -464,11 +516,11 @@ function calculateEngagementScore(record: any, table: string, behavior: Behavior
     // one board than the other.
 
     // Property views (was 30)
-    const views = interactions.filter((i: any) => i.interaction_type === "view").length
+    const views = behaviorSignals.filter((i) => VIEW_SIGNALS.has(i.signal_type ?? "")).length
     score += Math.min(views * 5, 25)
 
     // Saved properties (was 25)
-    const saves = interactions.filter((i: any) => i.interaction_type === "save").length
+    const saves = behaviorSignals.filter((i) => SAVE_SIGNALS.has(i.signal_type ?? "")).length
     score += Math.min(saves * 10, 20)
 
     // Logged behaviour — opens, clicks, visits, form submits and the rest, from the
@@ -613,9 +665,20 @@ function calculateIntentScore(record: any, table: string): number {
     const hasBudget = record.budget_min && record.budget_max
     if (hasBudget) score += 20
 
-    // Viewing requests
-    const viewingRequests = record.property_interactions?.filter((i: any) => i.interaction_type === "tour_request")
-      .length
+    // Viewing requests — REPOINTED onto `showing_requests` (m598), NOT
+    // buyer_behavior_log. The old read counted property_interactions.
+    // interaction_type = 'tour_request' (zero-writer table — this ≤10-point
+    // bump has never been awarded). The MEANING — "this buyer asked to see a
+    // home" — does not survive a naïve repoint: buyer_behavior_log has NO
+    // tour-request value (its tour-adjacent spellings are post-tour verdicts,
+    // and signal-mapping.ts:29's doctrine is "tour_requested — logistics, not
+    // taste"), and silently mapping a save onto a request would invent intent.
+    // The real request record is `showing_requests`: requestShowing
+    // (app/actions/showings.ts:150-176) inserts one per buyer-initiated
+    // request — the portal concierge's create_showing door included
+    // (lib/portal/client-action-dispatch.ts:49-64). Count fetched in
+    // calculateLeadScore; same *10 weight, same 10 cap.
+    const viewingRequests = Number(record.showing_request_count ?? 0)
     score += Math.min(viewingRequests * 10, 10)
   } else {
     // For leads - use intent type and motivation score

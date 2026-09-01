@@ -366,19 +366,20 @@ export async function getContact(contactId: string, agentId: string) {
     // seller_contact_id), so the bare `transactions(*)` embed was ambiguous (PGRST201)
     // and would have failed on its own; it is now named by constraint, which picks the
     // side meant here — the deals this contact is the client on.
-    // property_interactions IS a declared relationship (contact_id -> contacts.id) and
-    // stays. Columns are named explicitly — never `*` inside an embed, which hides
+    // TOMBSTONE (m598 retirement): a nested `property_interactions(…listings(…))`
+    // embed stood here and is GONE. The key it produced was consumed by NOTHING —
+    // zero readers of `contact.property_interactions` off this function's return —
+    // and the table itself has ZERO writers (only a never-fired BEFORE INSERT
+    // trigger), so the embed could only ever return []. SURVIVOR for the meaning:
+    // `buyer_behavior_log`, which already carries the denormalized property facts
+    // (property_address, city, state, list_price, bedrooms…) on each row — a future
+    // card wanting the property graph reads it flat by contact_id, no nested embed
+    // needed. Columns are named explicitly — never `*` inside an embed, which hides
     // drift from the schema guard (defect #214).
     const { data: contact, error } = await supabase
       .from("contacts")
       .select(`
         *,
-        property_interactions(
-          id,
-          interaction_type,
-          created_at,
-          listings(id, address, city, state, list_price, status)
-        ),
         transactions!transactions_contact_id_fkey(
           id,
           deal_name,
@@ -723,8 +724,25 @@ export async function mergeContacts(params: { primaryContactId: string; duplicat
       throw new DatabaseError("Failed to merge contact fields onto primary", mergeError)
     }
 
-    // Transfer relationships to primary
-    await supabase.from("property_interactions").update({ contact_id: params.primaryContactId }).eq("contact_id", params.duplicateContactId)
+    // Transfer relationships to primary.
+    //
+    // m598 repoint: this re-keyed `property_interactions` — a zero-writer table
+    // whose count here was always 0 — while `buyer_behavior_log`, the live twin
+    // that actually carries the per-contact behavior trail (and feeds preference
+    // learning, engagement scoring and campaign audiences), was NOT re-keyed: the
+    // merge stranded the duplicate's behavior history on a soft-deleted contact.
+    // The error is READ and a failure ABORTS before the soft delete below, per
+    // this function's own standard on the field merge above — a duplicate whose
+    // history didn't move must not be deleted. (The sibling `transactions` line
+    // below still discards its error — a pre-existing defect recorded for its own
+    // lane, not widened here.)
+    const { error: behaviorRekeyError } = await supabase
+      .from("buyer_behavior_log")
+      .update({ contact_id: params.primaryContactId })
+      .eq("contact_id", params.duplicateContactId)
+    if (behaviorRekeyError) {
+      throw new DatabaseError("Failed to move the duplicate's behavior log onto the primary", behaviorRekeyError)
+    }
 
     await supabase.from("transactions").update({ contact_id: params.primaryContactId }).eq("contact_id", params.duplicateContactId)
 

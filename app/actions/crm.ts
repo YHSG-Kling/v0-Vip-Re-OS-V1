@@ -159,15 +159,17 @@ export async function searchContacts(params: { agentId: string; query: string })
 //
 // COMPLETENESS VERDICT on the original lib/services/contact-management.service
 // mergeContacts: it merged the contact ROW (phone/budget/cities/tags/notes,
-// primary wins) and moved only TWO child tables (property_interactions,
-// transactions.contact_id) before soft-deleting the duplicate — every other
-// child row (activities, tasks, messages, notes, leads, conversations, portal
-// invites/messages/access logs, showings, offers, property alerts, interests,
-// segments, agent client messages, transactions' buyer/seller contact columns)
-// stayed pointed at the soft-deleted duplicate: STRANDED history. The action
-// below EXTENDS the merge — it moves the full child set FIRST with checked
+// primary wins) and moved only TWO child tables (buyer_behavior_log,
+// transactions.contact_id — the behavior re-key was property_interactions until
+// m598 retired that zero-writer twin onto buyer_behavior_log, the live table
+// carrying the per-contact behavior trail) before soft-deleting the duplicate —
+// every other child row (activities, tasks, messages, notes, leads, conversations,
+// portal invites/messages/access logs, showings, offers, property alerts,
+// interests, segments, agent client messages, transactions' buyer/seller contact
+// columns) stayed pointed at the soft-deleted duplicate: STRANDED history. The
+// action below EXTENDS the merge — it moves the full child set FIRST with checked
 // writes and honest per-table counters, then delegates the field merge +
-// property_interactions/transactions.contact_id move + soft delete to the
+// buyer_behavior_log/transactions.contact_id move + soft delete to the
 // existing service, then audits via the activities idiom.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -220,7 +222,7 @@ export interface MergeContactsResult {
 /**
  * mergeContacts — EXTENDED complete merge. Moves every known child row from
  * the duplicate to the survivor (checked writes, honest counters), then runs
- * the existing service merge (field union + property_interactions +
+ * the existing service merge (field union + buyer_behavior_log +
  * transactions.contact_id + soft delete of the duplicate), then audits.
  * A child-move failure ABORTS before the duplicate is deleted — we never
  * soft-delete a contact whose history didn't fully move.
@@ -276,7 +278,7 @@ export async function mergeContacts(params: {
       }
     }
 
-    // ── 2. Field merge + property_interactions + transactions.contact_id +
+    // ── 2. Field merge + buyer_behavior_log + transactions.contact_id +
     //       soft delete — the existing service (survivor's fields win). The
     //       service checks agent_id, so pass the contacts' actual owner. ──
     const serviceRes = await mergeContactsService({

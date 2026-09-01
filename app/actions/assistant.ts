@@ -6,6 +6,9 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 // endpoint, so the AI cost ledger's tenant can only come from the SESSION
 // (CLAUDE.md §4) — never from an id the caller supplied.
 import { getAgentContext, type AgentContext } from "@/lib/identity/get-agent-context"
+// The buyer_behavior_log signal families — imported from the vocabulary owner (§6),
+// never re-spelled locally.
+import { VIEW_SIGNALS } from "@/lib/behavior-learning/signal-mapping"
 
 // =====================================================
 // EVENT HANDLERS — exposed as server actions but no UI currently invokes them.
@@ -348,14 +351,17 @@ export async function generateAssistantSuggestions(
 async function getContactSuggestions(contactId: string, spendActor: AgentContext) {
   const supabase = await createServerClient()
 
-  // Both embeds are single-FK pairs (communications_contact_id_fkey,
-  // property_interactions_contact_id_fkey), so neither is ambiguous and neither needs
-  // a constraint hint. The error is still checked: supabase-js RESOLVES a failed
-  // query, so an unchecked read hands back an absence indistinguishable from a
-  // contact with nothing to suggest.
+  // The `communications(*)` embed is a single-FK pair (communications_contact_id_fkey),
+  // so it is not ambiguous and needs no constraint hint. The error is still checked:
+  // supabase-js RESOLVES a failed query, so an unchecked read hands back an absence
+  // indistinguishable from a contact with nothing to suggest.
+  // NOTE: `communications` is itself a writer-less legacy table (the burn-down round-6
+  // repoint moved copilot.ts onto `messages`) — a SIBLING finding recorded for its own
+  // lane, not fixed here. `property_interactions(*)` was removed in the m598 retirement;
+  // the recent-views suggestion below reads the live twin, buyer_behavior_log.
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
-    .select("*, communications(*), property_interactions(*)")
+    .select("*, communications(*)")
     .eq("id", contactId)
     .single()
 
@@ -384,18 +390,41 @@ async function getContactSuggestions(contactId: string, spendActor: AgentContext
     })
   }
 
-  // Check for recent property views
-  const recentViews = contact.property_interactions?.filter(
-    (i: any) => new Date(i.created_at) > new Date(Date.now() - 24 * 60 * 60 * 1000),
-  )
+  // Check for recent property views — REPOINTED onto buyer_behavior_log (m598).
+  //
+  // THIS SUGGESTION HAS NEVER FIRED. It counted `property_interactions`, a table
+  // with ZERO writers anywhere in the tree (its only trigger is BEFORE INSERT,
+  // which never fires because nothing inserts) — so the count was structurally 0
+  // forever and no "Hot lead alert!" was ever raised. buyer_behavior_log is the
+  // live twin; the copy says VIEWED, so the filter is VIEW_SIGNALS ALONE — the
+  // honest family from the vocabulary owner (lib/behavior-learning/
+  // signal-mapping.ts). Counting saves or dismissals here would put words in the
+  // suggestion's mouth. Same 24h window, same ≥3 threshold.
+  //
+  // Separate query with the {error} READ (§3). §4 fail closed: it runs anchored
+  // to the contact's own brokerage_id or not at all.
+  let recentViewCount = 0
+  if (contact.brokerage_id) {
+    const { data: recentViewRows, error: recentViewsError } = await supabase
+      .from("buyer_behavior_log")
+      .select("id")
+      .eq("contact_id", contactId)
+      .eq("brokerage_id", contact.brokerage_id)
+      .in("signal_type", [...VIEW_SIGNALS])
+      .gte("created_at", new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
+    if (recentViewsError) {
+      console.error("[assistant] buyer_behavior_log read failed — recent-views suggestion skipped:", recentViewsError.message)
+    }
+    recentViewCount = (recentViewRows ?? []).length
+  }
 
-  if (recentViews && recentViews.length >= 3) {
+  if (recentViewCount >= 3) {
     suggestions.push({
       type: "insight",
       priority: "high",
       icon: "🔥",
       title: "Hot lead alert!",
-      description: `${contact.first_name} viewed ${recentViews.length} properties in last 24 hours`,
+      description: `${contact.first_name} viewed ${recentViewCount} properties in last 24 hours`,
       action: "call_contact",
       action_params: { contact_id: contactId },
     })
@@ -451,7 +480,7 @@ async function getContactSuggestions(contactId: string, spendActor: AgentContext
 - Lead Score: ${contact.lead_score || "unknown"}
 - Timeline: ${contact.timeline || "unknown"}
 - Last Contact: ${daysSinceContact} days ago
-- Recent Activity: ${recentViews?.length || 0} property views in 24hrs
+- Recent Activity: ${recentViewCount} property views in 24hrs
 
 Suggest a specific, actionable next step in 1-2 sentences.`,
       temperature: 0.7,

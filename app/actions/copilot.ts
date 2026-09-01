@@ -8,6 +8,9 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { incrementUsage } from "@/lib/usage"
 import { isValidUUID } from "@/lib/validations"
 import { authorizeForUser } from "@/lib/auth/authorize-for-user"
+// The buyer_behavior_log signal families — imported from the vocabulary owner (§6),
+// never re-spelled locally (a reader that filters on one family silently halves its data).
+import { VIEW_SIGNALS, SAVE_SIGNALS } from "@/lib/behavior-learning/signal-mapping"
 // Writers resolve their own identity and their own client here — never from the payload.
 import { resolveWriteContext } from "@/lib/platform/acting-context"
 
@@ -517,9 +520,11 @@ export async function generateDailyGameplan(userId: string) {
 
   // Get hot leads (score > 70)
   // communications was a writer-less legacy table (burn-down round 6 repoint) — recent replies now read from messages (direction='inbound')
+  // The `property_interactions(*)` embed is DELETED (m598 retirement): consumed by nothing —
+  // the prompt and the dashboard read only name/score/stage/id off these rows.
   const { data: hotLeadRows } = await supabase
     .from("contacts")
-    .select("*, property_interactions(*)")
+    .select("*")
     .eq("agent_id", gameplanAgentId)
     .eq("brokerage_id", profile.brokerage_id)
     .gte("lead_score", 70)
@@ -722,9 +727,11 @@ export async function executeCopilotTask(taskId: string, taskType: string, param
 export async function analyzeContactPriority(contactId: string) {
   const supabase = await createServerClient()
 
+  // The `property_interactions(*)` embed is gone (m598 retirement) — the recent-activity
+  // factor below now reads the live twin, buyer_behavior_log, as a separate query.
   const { data: contact } = await supabase
     .from("contacts")
-    .select("*, property_interactions(*)")
+    .select("*")
     .eq("id", contactId)
     .single()
 
@@ -740,12 +747,38 @@ export async function analyzeContactPriority(contactId: string) {
   let score = contact.lead_score || 0
   const factors = []
 
-  // Recent engagement (last 7 days)
-  const last7Days = contact.property_interactions?.filter(
-    (i: any) => new Date(i.created_at) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
-  )
+  // Recent engagement (last 7 days) — REPOINTED onto buyer_behavior_log (m598).
+  //
+  // This counted ANY `property_interactions` row in the window — a table with ZERO
+  // writers anywhere in the tree (its only trigger is BEFORE INSERT, which never
+  // fires because nothing inserts), so the +20 below has never once been awarded.
+  // The live twin is buyer_behavior_log (written by the preference learner and the
+  // portal/CRM telemetry). The signal families come from the vocabulary owner
+  // (lib/behavior-learning/signal-mapping.ts): VIEW ∪ SAVE — "engaged with homes" —
+  // deliberately excluding DISMISS, which the untyped count would have scored as
+  // activity when it means the opposite. Same 7-day window, same ≥5 threshold,
+  // same +20: the MEANING survives; only the dead table does not.
+  //
+  // Separate query, not an embed — the messages fetch above is this file's own
+  // precedent — with the {error} READ (§3: supabase-js RESOLVES refusals).
+  // §4 fail closed: the count runs anchored to the contact's own brokerage_id or
+  // not at all — never an unconditional query with an optional tenant predicate.
+  let recentSignalCount = 0
+  if (contact.brokerage_id) {
+    const { data: recentSignals, error: recentSignalsError } = await supabase
+      .from("buyer_behavior_log")
+      .select("id")
+      .eq("contact_id", contactId)
+      .eq("brokerage_id", contact.brokerage_id)
+      .in("signal_type", [...VIEW_SIGNALS, ...SAVE_SIGNALS])
+      .gte("created_at", new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
+    if (recentSignalsError) {
+      console.error("[copilot] buyer_behavior_log read failed — recent-activity factor skipped:", recentSignalsError.message)
+    }
+    recentSignalCount = (recentSignals ?? []).length
+  }
 
-  if (last7Days && last7Days.length >= 5) {
+  if (recentSignalCount >= 5) {
     score += 20
     factors.push("High recent activity")
   }
