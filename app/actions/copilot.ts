@@ -519,7 +519,14 @@ export async function generateDailyGameplan(userId: string) {
   const gameplanAgentId = (await agentIdForUser(supabase, userId)) ?? userId
 
   // Get hot leads (score > 70)
-  // communications was a writer-less legacy table (burn-down round 6 repoint) — recent replies now read from messages (direction='inbound')
+  // Recent replies read from `messages` (direction='inbound') — burn-down round 6
+  // repointed this off `communications`. CORRECTED PREMISE (2026-09-01): the note
+  // that stood here called `communications` writer-less. It is not — it is live and
+  // narrowly scoped (Zoom transcripts, lib/connections/zoom-transcripts.ts:147, plus
+  // a brokerage-stamping trigger). Its sole writer sets contact_id NULL by design,
+  // because a transcript attaches to the tenant, not a contact; that shape — not an
+  // absent writer — is why a contact-keyed read of it is structurally empty. There is
+  // no missing writer here to go build.
   // The `property_interactions(*)` embed is DELETED (m598 retirement): consumed by nothing —
   // the prompt and the dashboard read only name/score/stage/id off these rows.
   const { data: hotLeadRows } = await supabase
@@ -737,7 +744,14 @@ export async function analyzeContactPriority(contactId: string) {
 
   if (!contact) return { priority: "low", score: 0, factors: [], recommended_action: "Continue nurture" }
 
-  // communications was a writer-less legacy table (burn-down round 6 repoint) — recent replies now read from messages (direction='inbound')
+  // Recent replies read from `messages` (direction='inbound') — burn-down round 6
+  // repointed this off `communications`. CORRECTED PREMISE (2026-09-01): the note
+  // that stood here called `communications` writer-less. It is not — it is live and
+  // narrowly scoped (Zoom transcripts, lib/connections/zoom-transcripts.ts:147, plus
+  // a brokerage-stamping trigger). Its sole writer sets contact_id NULL by design,
+  // because a transcript attaches to the tenant, not a contact; that shape — not an
+  // absent writer — is why a contact-keyed read of it is structurally empty. There is
+  // no missing writer here to go build.
   const { data: inboundMessages } = await supabase
     .from("messages")
     .select("id, direction, created_at")
