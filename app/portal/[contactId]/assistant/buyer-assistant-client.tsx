@@ -14,6 +14,20 @@
  * malformed id ("I had trouble identifying your account") — deliberately, so a
  * probing caller cannot tell "that contact is not yours" from "that contact does not
  * exist". This component must not helpfully improve on that.
+ *
+ * TWO LANES, ADJUDICATED PER CLAUDE.md §1 (lane N3b, 2026-09-01). The intent lane
+ * above is deterministic execution out of the buyer's own file — but its
+ * `general_question` intent falls to the router's default branch and answers
+ * "I'm not sure how to help with that. Can you rephrase?"
+ * (lib/buyer-execution/voice-assistant-integration.ts:73-77): the free-text
+ * question was a dead end. /api/portal/ai-assistant is the OTHER half — a
+ * requireContactAccess-gated, context-grounded LLM lane (the contact's
+ * transactions, offers, showings, listing, persona) that answers arbitrary
+ * questions but executes nothing. Genuinely distinct capabilities, so the
+ * "Something else" intent now reaches the free-text route instead of the
+ * dead-end, and the four executable intents stay on the server action. Fetched
+ * like messages-client.tsx fetches its portal route — the portal's pattern for
+ * its gated API surfaces.
  */
 
 import { useState, useTransition } from "react"
@@ -39,14 +53,20 @@ interface Turn {
   answer: string
   ok: boolean
   actions?: string[]
+  /** Follow-up prompts the free-text lane suggests (empty for the intent lane). */
+  suggestions?: string[]
 }
 
 export function BuyerAssistantClient({
   contactId,
   firstName,
+  contactType = null,
+  persona = null,
 }: {
   contactId: string
   firstName: string
+  contactType?: string | null
+  persona?: string | null
 }) {
   const [intent, setIntent] = useState<Intent>("explain_progress")
   const [transcript, setTranscript] = useState("")
@@ -62,6 +82,60 @@ export function BuyerAssistantClient({
     if (needsWords && !said) return
 
     startTransition(async () => {
+      // FREE TEXT → the gated LLM lane. `general_question` used to dead-end at the
+      // intent router's default branch ("I'm not sure how to help with that");
+      // /api/portal/ai-assistant answers it from the client's own context instead.
+      // The route re-establishes the caller itself (requireContactAccess) — this
+      // component sends no identity beyond the contactId every portal URL carries.
+      if (intent === "general_question") {
+        try {
+          const res = await fetch("/api/portal/ai-assistant", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contactId,
+              message: said,
+              persona: persona ?? "default",
+              isBuyer: contactType !== "seller",
+              isSeller: contactType === "seller" || contactType === "both",
+              // The route maps over this unconditionally — always send an array.
+              conversationHistory: turns.slice(-6).flatMap((t) => [
+                { role: "user", content: t.question },
+                { role: "assistant", content: t.answer },
+              ]),
+            }),
+          })
+          const json = res.ok
+            ? ((await res.json().catch(() => null)) as {
+                response?: string
+                suggestions?: string[]
+              } | null)
+            : null
+          setTurns((prev) => [
+            ...prev,
+            {
+              question: said,
+              answer:
+                json?.response ??
+                "I could not answer that just now. Your agent can pick it up from here.",
+              ok: Boolean(json?.response),
+              suggestions: json?.suggestions ?? [],
+            },
+          ])
+        } catch {
+          setTurns((prev) => [
+            ...prev,
+            {
+              question: said,
+              answer: "I could not answer that just now. Your agent can pick it up from here.",
+              ok: false,
+            },
+          ])
+        }
+        setTranscript("")
+        return
+      }
+
       const res = await handleBuyerVoiceAssistant({
         contactId,
         intent,
@@ -149,6 +223,23 @@ export function BuyerAssistantClient({
                     <li key={j}>{a}</li>
                   ))}
                 </ul>
+              )}
+              {t.suggestions && t.suggestions.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {t.suggestions.map((s, j) => (
+                    <button
+                      key={j}
+                      type="button"
+                      onClick={() => {
+                        setIntent("general_question")
+                        setTranscript(s)
+                      }}
+                      className="rounded-full border px-3 py-1 text-xs text-muted-foreground hover:bg-muted"
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
               )}
             </div>
           ))}

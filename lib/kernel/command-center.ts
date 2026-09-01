@@ -71,6 +71,41 @@ export interface CommandCenterSession {
   createdAt:   string
   lastEventAt: string | null
   endedAt:     string | null
+  /** 240-char preview of the manager's last message — merged from the retired
+   *  /api/admin/agents/sessions list mode (§1.1, lane N3b 2026-09-01) so the
+   *  operator sees WHAT the session last said, not just that it exists. */
+  lastAgentMessage: string | null
+}
+
+/** One rubric evaluation row for a session — the outcome-grading trail written by
+ *  app/api/webhooks/anthropic-agent into agent_outcome_evaluations. */
+export interface ManagerSessionEvaluation {
+  iteration:   number
+  result:      string
+  explanation: string | null
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens: number
+  evaluatedAt: string | null
+}
+
+/** Single-session drill-down — the detail mode /api/admin/agents/sessions?session_id=
+ *  offered and the cockpit lacked. Loaded on demand by the session drawer. */
+export interface ManagerSessionDetail {
+  id:          string
+  brokerageId: string
+  agentKind:   string | null
+  model:       string | null
+  anthropicAgentId: string | null
+  entityType:  string
+  entityId:    string
+  status:      ManagerSessionStatus
+  stopReason:  string | null
+  lastAgentMessage: string | null
+  createdAt:   string
+  lastEventAt: string | null
+  endedAt:     string | null
+  evaluations: ManagerSessionEvaluation[]
 }
 
 export interface CommandCenterAction {
@@ -206,6 +241,12 @@ export interface CommandCenterParams {
   platform?: { reason: string }
   limit?:       number
   /**
+   * Session-status filter (merged from /api/admin/agents/sessions ?status=, §1.1):
+   * "active" keeps running+idle (the actionable cases), "all" (default — the
+   * cockpit's existing behavior) keeps everything, or pass one specific status.
+   */
+  sessionStatus?: "all" | "active" | ManagerSessionStatus
+  /**
    * EGRESS SCOPE — restrict every actionable surface to what THIS user oversees,
    * so a team lead sees only their team's work and a solo agent sees only their own
    * (the multi-tier egress made real on the Command Center). When set, scope.brokerageId
@@ -311,11 +352,16 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
 
   const sessionsQuery = supabase
     .from("managed_agent_sessions")
-    .select("id, entity_type, entity_id, status, created_at, last_event_at, ended_at, managed_agents!managed_agent_sessions_managed_agent_id_fkey(agent_kind)")
+    .select("id, entity_type, entity_id, status, created_at, last_event_at, ended_at, last_agent_message, managed_agents!managed_agent_sessions_managed_agent_id_fkey(agent_kind)")
     .order("created_at", { ascending: false })
     .limit(limit)
   applyTenantScope(sessionsQuery, tenant)
   if (sessionIdFilter) sessionsQuery.in("id", sessionIdFilter)
+  // Status filter (merged from the retired admin sessions route). Default stays
+  // "all" — the cockpit has always shown every status in its window.
+  const statusFilter = params.sessionStatus ?? "all"
+  if (statusFilter === "active") sessionsQuery.in("status", ["running", "idle"])
+  else if (statusFilter !== "all") sessionsQuery.eq("status", statusFilter)
 
   const marketingQuery = supabase
     .from("marketing_agent_actions")
@@ -437,6 +483,9 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     createdAt:   s.created_at,
     lastEventAt: s.last_event_at ?? null,
     endedAt:     s.ended_at ?? null,
+    lastAgentMessage: typeof s.last_agent_message === "string"
+      ? (s.last_agent_message as string).slice(0, 240)
+      : null,
   }))
 
   // Built without the manager fields; resolveActionManager attaches them in one pass below.
@@ -638,6 +687,100 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
       erroredSessions:   sessions.filter((s) => s.status === "error").length,
       pendingApprovals:  pendingActions.length,
       breachedApprovals: pendingActions.filter((a) => a.slaLevel === "breached").length,
+    },
+  }
+}
+
+/**
+ * SINGLE-SESSION DRILL-DOWN — merged onto the cockpit side from
+ * app/api/admin/agents/sessions (?session_id= mode) per §1.1 (lane N3b,
+ * 2026-09-01). One session's full record: agent identity (agent_kind / model /
+ * anthropic_agent_id from managed_agents), stop_reason, the untruncated-ish
+ * last_agent_message, and EVERY agent_outcome_evaluations rubric row
+ * (iteration / result / explanation / tokens / evaluated_at), newest first.
+ *
+ * Tenanted through the SAME discriminator as loadCommandCenter: a tenant scope
+ * pins the session row to that brokerage; the platform scope (platform staff
+ * only — the caller proves it, see getManagerSessionDetail) reads cross-tenant
+ * with its reason recorded at the call site. A caller with neither refuses
+ * (TenantScopeRefusal) rather than widening — §4.
+ *
+ * Every read destructures { error } and a refused read returns the refusal:
+ * "could not read the session" must never render as "session not found".
+ */
+export async function loadManagerSessionDetail(params: {
+  sessionId: string
+  brokerageId?: string
+  platform?: { reason: string }
+}): Promise<{ ok: true; detail: ManagerSessionDetail } | { ok: false; error: string }> {
+  const supabase = createServiceClient()
+  const tenant = resolveTenantScope({
+    brokerageId: params.brokerageId,
+    platformAuthorized: !!params.platform,
+    platformReason: params.platform?.reason,
+    where: "loadManagerSessionDetail",
+  })
+
+  const sessionQuery = supabase
+    .from("managed_agent_sessions")
+    .select("id, anthropic_session_id, brokerage_id, entity_type, entity_id, status, stop_reason, last_agent_message, last_event_at, created_at, ended_at, managed_agent_id")
+    .eq("id", params.sessionId)
+  applyTenantScope(sessionQuery, tenant)
+  const { data: session, error: sessionErr } = await sessionQuery.maybeSingle()
+  if (sessionErr) return { ok: false, error: `Session read was refused: ${sessionErr.message}` }
+  if (!session) return { ok: false, error: "Session not found" }
+
+  // Agent identity. Best-effort ONLY in the sense that an absent managed_agents
+  // row leaves the fields null; a REFUSED read is still reported.
+  let agentKind: string | null = null
+  let model: string | null = null
+  let anthropicAgentId: string | null = null
+  if (session.managed_agent_id) {
+    const { data: agent, error: agentErr } = await supabase
+      .from("managed_agents")
+      .select("agent_kind, anthropic_agent_id, model")
+      .eq("id", session.managed_agent_id as string)
+      .maybeSingle()
+    if (agentErr) return { ok: false, error: `Agent read was refused: ${agentErr.message}` }
+    agentKind = (agent?.agent_kind as string | null) ?? null
+    model = (agent?.model as string | null) ?? null
+    anthropicAgentId = (agent?.anthropic_agent_id as string | null) ?? null
+  }
+
+  const { data: evals, error: evalsErr } = await supabase
+    .from("agent_outcome_evaluations")
+    .select("iteration, result, explanation, input_tokens, output_tokens, cache_read_input_tokens, evaluated_at")
+    .eq("managed_agent_session_id", session.id as string)
+    .order("iteration", { ascending: false })
+  if (evalsErr) return { ok: false, error: `Evaluation read was refused: ${evalsErr.message}` }
+
+  return {
+    ok: true,
+    detail: {
+      id:          session.id as string,
+      brokerageId: session.brokerage_id as string,
+      agentKind,
+      model,
+      anthropicAgentId,
+      entityType:  session.entity_type as string,
+      entityId:    session.entity_id as string,
+      status:      isManagerSessionStatus(session.status) ? session.status : "error",
+      stopReason:  (session.stop_reason as string | null) ?? null,
+      lastAgentMessage: typeof session.last_agent_message === "string"
+        ? (session.last_agent_message as string)
+        : null,
+      createdAt:   session.created_at as string,
+      lastEventAt: (session.last_event_at as string | null) ?? null,
+      endedAt:     (session.ended_at as string | null) ?? null,
+      evaluations: ((evals ?? []) as Array<Record<string, unknown>>).map((e) => ({
+        iteration:   (e.iteration as number) ?? 0,
+        result:      String(e.result ?? ""),
+        explanation: (e.explanation as string | null) ?? null,
+        inputTokens: (e.input_tokens as number | null) ?? 0,
+        outputTokens: (e.output_tokens as number | null) ?? 0,
+        cacheReadInputTokens: (e.cache_read_input_tokens as number | null) ?? 0,
+        evaluatedAt: (e.evaluated_at as string | null) ?? null,
+      })),
     },
   }
 }

@@ -13,6 +13,7 @@ import {
 } from "@/app/actions/portal-seller"
 import { SellerPortalViewTracker } from "./components/seller-mode/SellerPortalViewTracker"
 import { RecentUpdatesFeed } from "./components/RecentUpdatesFeed"
+import { ClientActionCard } from "./components/ClientActionCard"
 import { ShareMyHomeCard } from "./components/seller-mode/ShareMyHomeCard"
 import { ListingStatsCard } from "@/app/components/portal/ListingStatsCard"
 import { ShowingActivityStrip, ShowingFeedbackCard } from "@/app/components/portal/ShowingsFeedCard"
@@ -296,6 +297,12 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
           </div>
         </CardContent>
       </Card>
+
+      {/* CLIENT-AS-ACTOR (manager-registry.ts:778) — the seller asks for a price
+          review or listing change and it is PROPOSED into the agent's approval
+          queue via the gated /api/portal/client-action route — never executed
+          by the portal (a seller action is the agent's decision). */}
+      <ClientActionCard contactId={contactId} audience="seller" />
 
       {/* DAYS ON MARKET + OFFER COUNT STATS */}
       {context.listing && (daysOnMarket !== null || dashboardOfferCount > 0) && (

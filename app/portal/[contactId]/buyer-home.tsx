@@ -37,6 +37,7 @@ import {
   Clock,
 } from "lucide-react"
 import { RecentUpdatesFeed } from "./components/RecentUpdatesFeed"
+import { ClientActionCard } from "./components/ClientActionCard"
 import { isBuyerStage, type BuyerStage } from "@/lib/contacts/buyer-stage"
 
 interface BuyerHomeProps {
@@ -457,6 +458,13 @@ export default async function BuyerHome({ contactId, embedded = false }: BuyerHo
             </Button>
           </div>
         </div>
+
+        {/* CLIENT-AS-ACTOR (manager-registry.ts:778) — the buyer makes a real
+            request (tour a home, find more homes) that flows into the SAME
+            manager bench + BBA/approval gates the agent uses, via the gated
+            /api/portal/client-action route. Sits beside "What's Next" because
+            it IS the next step made actionable. */}
+        <ClientActionCard contactId={contactId} audience="buyer" />
 
         {/* Your Agent Is Working On — transparency section */}
         {activeTransaction && (

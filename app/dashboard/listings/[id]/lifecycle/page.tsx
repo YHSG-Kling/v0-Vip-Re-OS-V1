@@ -32,6 +32,7 @@ import { PriceReductionSheet } from "../components/price-reduction-sheet"
 import { NeighborNotificationCard } from "../components/neighbor-notification-card"
 import { ListingPacketPanel } from "@/app/components/dashboard/listings/lifecycle/listing-packet-panel"
 import { AiOptimizationPanel, type AiListingOptimizationRow } from "../components/ai-optimization-panel"
+import { MlsCheckPanel } from "../components/mls-check-panel"
 import { ListingFormsPanel } from "@/app/components/dashboard/listings/lifecycle/listing-forms-panel"
 import { CompletedDocumentsPanel } from "@/app/components/dashboard/listings/lifecycle/completed-documents-panel"
 import { CheckCircle } from "lucide-react"
@@ -607,6 +608,15 @@ const { data: listingVendorBookings } = await supabase
             <AiOptimizationPanel optimizations={aiOptimizations} transactionId={transactionId} />
           </div>
         )}
+
+        {/* MLS pre-submission check — runs lib/listings/mls-rule-check.ts on
+            demand and renders the per-rule fixHints the validator has always
+            returned. Lives beside the launch checklist because this is the
+            pre-submission surface: the agent fixes rule violations here BEFORE
+            the listing goes to the MLS. */}
+        <div className="mb-4">
+          <MlsCheckPanel listingId={listingId} />
+        </div>
 
         {/* Consolidated Launch Readiness Checklist (replaces strip + 6 cards) */}
         <div className="mb-6">

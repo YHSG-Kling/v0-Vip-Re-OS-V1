@@ -7,7 +7,8 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { approveAgentAction, rejectAgentAction } from "@/app/actions/command-center"
 import { generateStandupAudio } from "@/app/actions/standup-audio"
-import type { CommandCenterData, CommandCenterAction, CommandCenterSession } from "@/lib/kernel/command-center"
+import { getManagerSessionDetail } from "@/app/actions/admin/manager-evals"
+import type { CommandCenterData, CommandCenterAction, CommandCenterSession, ManagerSessionDetail } from "@/lib/kernel/command-center"
 import { MANAGERS } from "@/lib/kernel/manager-registry"
 import { ManagerTalkFeed } from "./manager-talk-feed"
 import { ManagerActivityFeed } from "./manager-activity-feed"
@@ -350,6 +351,10 @@ export function CommandCenterClient({
                 <span className="text-green-700 font-medium">{data.retentionOutcomes.retained} retained</span>
                 <span className="text-red-700 font-medium">{data.retentionOutcomes.lost} lost</span>
                 <span className="text-muted-foreground">{data.retentionOutcomes.pending} pending</span>
+                {/* Unresolved past the settle window — still open, no longer "still working". */}
+                {data.retentionOutcomes.aging > 0 && (
+                  <span className="text-amber-700 font-medium">{data.retentionOutcomes.aging} aging</span>
+                )}
                 {data.retentionOutcomes.winRate !== null && (
                   <Badge className="bg-green-700 text-white">{Math.round(data.retentionOutcomes.winRate * 100)}% win rate</Badge>
                 )}
@@ -597,15 +602,10 @@ export function CommandCenterClient({
         )}
       </section>
 
-      {/* Sessions */}
-      <section className="space-y-3">
-        <h2 className="text-lg font-semibold">Manager sessions</h2>
-        {data.sessions.length === 0 ? (
-          <Card className="p-6 text-sm text-muted-foreground">No managed-agent sessions yet.</Card>
-        ) : (
-          <div className="space-y-2">{data.sessions.map((s) => <SessionRow key={s.id} session={s} />)}</div>
-        )}
-      </section>
+      {/* Sessions — with the status filter + per-session drill-down merged from
+          the retired /api/admin/agents/sessions route (§1.1): last-message
+          preview on the row, and a click opens the rubric-evaluation drawer. */}
+      <SessionsSection sessions={data.sessions} />
     </div>
   )
 }
@@ -619,16 +619,142 @@ function Stat({ label, value, accent }: { label: string; value: number; accent: 
   )
 }
 
-function SessionRow({ session }: { session: CommandCenterSession }) {
+/** The status vocabulary offered as filters — "active" = running+idle (the
+ *  actionable pair the retired route defaulted to), "all" = everything. The
+ *  filter is over the loaded window (the page's limit), not a re-query. */
+const SESSION_FILTERS = ["all", "active", "running", "idle", "terminated", "error"] as const
+type SessionFilter = (typeof SESSION_FILTERS)[number]
+
+function SessionsSection({ sessions }: { sessions: CommandCenterSession[] }) {
+  const [filter, setFilter] = useState<SessionFilter>("all")
+  const filtered = sessions.filter((s) =>
+    filter === "all" ? true : filter === "active" ? s.status === "running" || s.status === "idle" : s.status === filter,
+  )
   return (
-    <Card className="p-4 flex items-center justify-between">
-      <div>
-        <div className="font-medium">{managerLabelForKind(session.agentKind)}</div>
-        <div className="text-xs text-muted-foreground">
-          {session.entityType} · {session.entityId.slice(0, 8)}… · last event {timeAgo(session.lastEventAt)}
+    <section className="space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <h2 className="text-lg font-semibold">Manager sessions</h2>
+        <div className="flex flex-wrap gap-1.5">
+          {SESSION_FILTERS.map((f) => (
+            <button
+              key={f}
+              type="button"
+              onClick={() => setFilter(f)}
+              className={
+                "rounded-full border px-2.5 py-0.5 text-xs " +
+                (filter === f ? "bg-slate-900 text-white border-slate-900" : "text-muted-foreground hover:bg-muted")
+              }
+            >
+              {f}
+            </button>
+          ))}
         </div>
       </div>
-      <Badge className={SESSION_BADGE[session.status] ?? "bg-slate-100 text-slate-700"}>{session.status}</Badge>
+      {sessions.length === 0 ? (
+        <Card className="p-6 text-sm text-muted-foreground">No managed-agent sessions yet.</Card>
+      ) : filtered.length === 0 ? (
+        <Card className="p-6 text-sm text-muted-foreground">
+          No {filter} session in the loaded window ({sessions.length} loaded).
+        </Card>
+      ) : (
+        <div className="space-y-2">{filtered.map((s) => <SessionRow key={s.id} session={s} />)}</div>
+      )}
+    </section>
+  )
+}
+
+function SessionRow({ session }: { session: CommandCenterSession }) {
+  const [open, setOpen] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [detail, setDetail] = useState<ManagerSessionDetail | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  async function toggle() {
+    const next = !open
+    setOpen(next)
+    if (next && !detail && !loading) {
+      setLoading(true)
+      setError(null)
+      try {
+        const res = await getManagerSessionDetail(session.id)
+        if (res.ok) setDetail(res.detail)
+        else setError(res.error)
+      } catch {
+        setError("The session detail read failed to run.")
+      } finally {
+        setLoading(false)
+      }
+    }
+  }
+
+  return (
+    <Card className="p-4">
+      <button type="button" onClick={toggle} className="w-full text-left flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="font-medium">{managerLabelForKind(session.agentKind)}</div>
+          <div className="text-xs text-muted-foreground">
+            {session.entityType} · {session.entityId.slice(0, 8)}… · last event {timeAgo(session.lastEventAt)}
+          </div>
+          {session.lastAgentMessage && (
+            <p className="mt-1 text-xs text-muted-foreground line-clamp-2">
+              &ldquo;{session.lastAgentMessage}&rdquo;
+            </p>
+          )}
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <Badge className={SESSION_BADGE[session.status] ?? "bg-slate-100 text-slate-700"}>{session.status}</Badge>
+          <span className="text-xs text-muted-foreground">{open ? "▲" : "▼"}</span>
+        </div>
+      </button>
+
+      {open && (
+        <div className="mt-3 rounded-md border bg-muted/30 p-3 space-y-3">
+          {loading && <p className="text-xs text-muted-foreground">Loading session detail…</p>}
+          {error && <p className="text-xs text-red-600">Could not load this session: {error}</p>}
+          {detail && (
+            <>
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                {detail.model && <span>model: <span className="font-medium text-foreground">{detail.model}</span></span>}
+                {detail.agentKind && <span>kind: {detail.agentKind}</span>}
+                {detail.anthropicAgentId && <span>agent: {detail.anthropicAgentId.slice(0, 18)}…</span>}
+                {detail.stopReason && <span>stop reason: {detail.stopReason}</span>}
+                {detail.endedAt && <span>ended {timeAgo(detail.endedAt)}</span>}
+              </div>
+              {detail.lastAgentMessage && (
+                <p className="text-sm whitespace-pre-wrap max-h-40 overflow-auto">{detail.lastAgentMessage}</p>
+              )}
+              <div>
+                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground mb-1">
+                  Rubric evaluations {detail.evaluations.length > 0 ? `(${detail.evaluations.length})` : ""}
+                </div>
+                {detail.evaluations.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    No outcome evaluation has been recorded for this session yet.
+                  </p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {detail.evaluations.map((e) => (
+                      <li key={e.iteration} className="rounded border bg-background p-2">
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <Badge className={e.result === "pass" ? "bg-green-100 text-green-800" : e.result === "fail" ? "bg-red-100 text-red-800" : "bg-slate-100 text-slate-700"}>
+                            iter {e.iteration} · {e.result}
+                          </Badge>
+                          <span className="text-muted-foreground">
+                            {e.inputTokens.toLocaleString()} in / {e.outputTokens.toLocaleString()} out
+                            {e.cacheReadInputTokens > 0 ? ` (+${e.cacheReadInputTokens.toLocaleString()} cached)` : ""}
+                          </span>
+                          {e.evaluatedAt && <span className="text-muted-foreground">{timeAgo(e.evaluatedAt)}</span>}
+                        </div>
+                        {e.explanation && <p className="mt-1 text-xs text-muted-foreground">{e.explanation}</p>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </Card>
   )
 }

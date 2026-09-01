@@ -15,6 +15,7 @@ import {
   OperationalImpactPanel,
   ServiceSLAPanel,
   SchemaReadinessPanel,
+  DeconflictPanel,
 } from './components/os'
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
@@ -120,6 +121,16 @@ export default async function SystemPage() {
                 up — and, where nothing was ever collected, says exactly that
                 instead of drawing a 100% line through an empty table. */}
             <ServiceSLAPanel brokerageId={brokerageId} />
+            {/* THE HOME THE ENGINE PROMISED. lib/kernel/deconflict/index.ts:36 —
+                "every decision (allowed OR suppressed) writes one row to
+                deconflict_suppression_log (m113), which the broker cockpit reads"
+                — and until this panel nothing read it. This page IS the broker
+                cockpit for operational governance: it is gated to exactly the
+                audience the engine names ("Role gate: broker, admin, superadmin
+                only … a broker/admin operations surface", above), and the panel
+                sits in the alerts/impact column because a deferred outbound is an
+                operational fact about the egress, not a manager approval. */}
+            <DeconflictPanel brokerageId={brokerageId} />
           </div>
         </div>
 

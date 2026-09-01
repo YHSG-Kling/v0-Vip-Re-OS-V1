@@ -64,7 +64,7 @@ export default async function PortalAssistantPage({
   // of turning them away.
   const { data: contact, error } = await supabase
     .from("contacts")
-    .select("id, first_name")
+    .select("id, first_name, contact_type, contact_persona")
     .eq("id", contactId)
     .maybeSingle()
 
@@ -76,6 +76,8 @@ export default async function PortalAssistantPage({
     <BuyerAssistantClient
       contactId={contactId}
       firstName={(contact.first_name as string | null) ?? "there"}
+      contactType={(contact.contact_type as string | null) ?? null}
+      persona={(contact.contact_persona as string | null) ?? null}
     />
   )
 }

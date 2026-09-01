@@ -222,6 +222,53 @@ export async function getManagerTrustScorecard(): Promise<
 }
 
 /**
+ * SINGLE-SESSION DETAIL for the Command Center's session drawer — the door onto
+ * lib/kernel/command-center.ts:loadManagerSessionDetail (merged from the retired
+ * /api/admin/agents/sessions ?session_id= mode, §1.1 lane N3b 2026-09-01).
+ *
+ * Gate first (same shape as getManagerTrustScorecard above): admin/broker role,
+ * then the platform/tenant split. Platform staff — resolved from BOTH identity
+ * columns via isPlatformStaffIdentity — read cross-tenant through the explicit
+ * platformScope machinery (lib/kernel/tenant-scope.ts); everyone else is pinned
+ * to their session brokerage, and a session outside it reads as "not found".
+ * A caller with neither authority nor a tenant refuses (§4 fail closed).
+ */
+export async function getManagerSessionDetail(sessionId: string): Promise<
+  | { ok: true; detail: import("@/lib/kernel/command-center").ManagerSessionDetail }
+  | { ok: false; error: string }
+> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { ok: false, error: "Unauthorized" }
+  if (!isAdminOrBroker({ user_type: ctx.userType })) return { ok: false, error: "Forbidden" }
+  if (!sessionId?.trim()) return { ok: false, error: "Missing session id" }
+
+  const svc = createServiceClient()
+  const auth = await createClient()
+  const { data: { user } } = await auth.auth.getUser()
+  const { data: profile } = user
+    ? await svc.from("users").select("platform_role").eq("id", user.id).maybeSingle()
+    : { data: null }
+  const isPlatform = isPlatformStaffIdentity(ctx.userType, profile?.platform_role)
+  if (!isPlatform && !ctx.brokerageId) return { ok: false, error: "Brokerage not configured" }
+
+  const { loadManagerSessionDetail } = await import("@/lib/kernel/command-center")
+  const { isTenantScopeRefusal } = await import("@/lib/kernel/tenant-scope")
+  try {
+    return await loadManagerSessionDetail({
+      sessionId,
+      ...(isPlatform
+        ? { platform: { reason: "platform staff (platform_role) — cross-tenant manager-session drill-down" } }
+        : { brokerageId: ctx.brokerageId as string }),
+    })
+  } catch (e) {
+    if (isTenantScopeRefusal(e)) {
+      return { ok: false, error: "This session could not be scoped to a tenant — nothing is shown." }
+    }
+    throw e
+  }
+}
+
+/**
  * Broker governance: set (or clear) a manager's autonomy posture override. Persisted
  * on managed_agents.config.autonomy_tier for every instantiated agent of that kind in
  * the brokerage — the policy of record an enforcement layer gates on. Pass null to
