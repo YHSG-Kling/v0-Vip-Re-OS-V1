@@ -88,6 +88,10 @@ export async function recordSequenceTouchpoint(
       source:       "sequence",
       // Provenance — manager + sequence + ai_intent + channel make every touch answerable in the
       // Command Center: "why did my client get this, and which manager produced it?".
+      // The TYPED sequence_id/source columns above are the preferred home and are read by
+      // lib/intelligence/manager-touch-provenance.ts (per-manager sequence receipts) and
+      // lib/intelligence/decision-receipts.ts (per-contact "sent via sequence step" trail);
+      // this metadata duplicates enrollment/step linkage only for per-step drill-down.
       metadata:     {
         enrollment_id: input.enrollmentId,
         step_id:       input.stepId,

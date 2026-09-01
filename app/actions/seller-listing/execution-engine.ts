@@ -550,6 +550,21 @@ export async function markAgreementSigned(params: {
   uploadMode: "manual_upload" | "provider_pull"
   documentUrl?: string
   providerRef?: string
+  /**
+   * `listing_agreements.document_name` — what the executed agreement document is
+   * called. Read (with effective_date) on the listing lifecycle page; had no
+   * writer until orphan tranche X4 (2026-09-01) added intake for both. Optional:
+   * blank writes NULL ("not recorded"), never a name derived or invented here.
+   */
+  documentName?: string
+  /**
+   * `listing_agreements.effective_date` — the effective date stated ON the
+   * agreement (yyyy-mm-dd). NOT defaulted to today: the signature timestamps
+   * below already record when it was executed, and a listing agreement's stated
+   * effective date is part of the form, so an uncaptured one is NULL — the same
+   * "absent means not recorded" doctrine as seller_transaction_fee.
+   */
+  effectiveDate?: string
   commissionTerms?: {
     listingRate?: number
     buyerRate?: number
@@ -603,6 +618,19 @@ export async function markAgreementSigned(params: {
 }) {
   const supabase = await createClient()
   const { listingId, uploadMode, documentUrl, providerRef, commissionTerms } = params
+
+  // Validate the OPTIONAL agreement metadata before any work: a malformed date
+  // would be refused by Postgres and supabase-js reports that by resolving, so
+  // the whole insert would fail late looking like a compliance problem.
+  const documentName = params.documentName?.trim() || null
+  let effectiveDate: string | null = null
+  if (params.effectiveDate != null && params.effectiveDate.trim() !== "") {
+    const raw = params.effectiveDate.trim()
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(raw) || Number.isNaN(new Date(raw).getTime())) {
+      return { success: false, error: "Effective date must be a valid yyyy-mm-dd date (or left blank if the agreement states none)." }
+    }
+    effectiveDate = raw
+  }
 
   // TENANT GATE — identity from the SESSION, and the listing must belong to it.
   // The userId / brokerageId params are ignored in favour of these; a caller
@@ -847,6 +875,10 @@ export async function markAgreementSigned(params: {
       provider_name:               activeProviderKey,
       document_url:                uploadMode === "manual_upload" ? (documentUrl ?? null) : null,
       provider_ref:                uploadMode === "provider_pull" ? (providerRef ?? null) : null,
+      // Optional intake (see the parameter docs): NULL means "not recorded",
+      // and the lifecycle-page reader treats it that way.
+      document_name:               documentName,
+      effective_date:              effectiveDate,
       esign_status:                LISTING_AGREEMENT_EXECUTED_STATUS,
       agreement_type:              "listing",
       seller_signed_at:            new Date().toISOString(),

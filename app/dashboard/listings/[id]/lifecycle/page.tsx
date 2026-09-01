@@ -150,6 +150,10 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
     // real document/signature audit (execution-engine.ts §2.5 gate) — it was
     // written on every executed agreement and read by nobody, so the checklist
     // could not distinguish "executed through the gate" from a legacy row.
+    // document_name / effective_date are OPTIONAL intake on the
+    // markAgreementSigned card (wired 2026-09-01, orphan tranche X4) — NULL on
+    // every agreement recorded before that, and on any where the agent left the
+    // fields blank: NULL means "not recorded", never a default.
     .select("id, agreement_type, esign_status, provider_name, provider_ref, seller_signed_at, agent_signed_at, fully_executed_at, document_url, document_name, effective_date, compliance_passed")
     .eq("listing_id", listingId)
     .order("created_at", { ascending: false })

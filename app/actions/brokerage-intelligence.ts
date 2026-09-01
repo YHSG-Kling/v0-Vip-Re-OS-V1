@@ -177,10 +177,11 @@ export async function adoptInsightAction(params: {
   const supabase = await createClient()
   const svc = createServiceClient()
 
-  // Load insight + verify it's in this brokerage
+  // Load insight + verify it's in this brokerage. median_outcome rides along as
+  // the adoption's baseline_metric (see the stamp below).
   const { data: insight } = await supabase
     .from("brokerage_intelligence_insights")
-    .select("id, brokerage_id, playbook_actions, pattern_key")
+    .select("id, brokerage_id, playbook_actions, pattern_key, median_outcome")
     .eq("id", params.insightId)
     .maybeSingle()
   if (!insight) return { success: false, error: "Insight not found" }
@@ -232,6 +233,16 @@ export async function adoptInsightAction(params: {
         adopted_by:       auth.userId,
         applied_actions:  applied,
         status:           applied.length === actions.length ? "applied" : (applied.length === 0 ? "failed" : "applied"),
+        // BASELINE AT ADOPTION (orphan tranche X4, 2026-09-01): the mesh page
+        // renders baseline/follow-up/lift per adoption and no writer ever set
+        // them. The honest baseline available at adoption time is the insight's
+        // own median_outcome — the brokerage-median value of the very metric the
+        // miner measured (outcome_label names it). The +30d follow-up pass in
+        // app/api/cron/brokerage-intelligence-mine compares the SAME metric from
+        // a fresh mining run and derives observed_lift_pct from the two — the
+        // number is derived, never pinned (§2). NULL when the insight predates
+        // outcome columns or carried none.
+        baseline_metric:  insight.median_outcome == null ? null : Number(insight.median_outcome),
       })
       if (adoptionError) {
         console.error(`[adoptInsight] adoption row for agent ${agentUserId}:`, adoptionError.message)

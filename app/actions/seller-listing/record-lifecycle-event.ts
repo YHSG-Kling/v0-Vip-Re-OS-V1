@@ -133,6 +133,10 @@ export async function recordLifecycleEventAction(input: {
         uploadMode: str("uploadMode") as "manual_upload" | "provider_pull",
         documentUrl: str("documentUrl"),
         providerRef: str("providerRef"),
+        // Optional intake — blank passes undefined so the recorder writes NULL
+        // ("not recorded"), never a fabricated name or date.
+        documentName: str("documentName"),
+        effectiveDate: str("effectiveDate"),
         commissionTerms: {
           listingRate: num("listingRate"),
           buyerRate: num("buyerRate"),

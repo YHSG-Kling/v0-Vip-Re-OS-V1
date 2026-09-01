@@ -46,7 +46,7 @@ if (!isAdminOrBroker({ user_type: profile?.user_type ?? "" })) redirect("/dashbo
     const { data: adoptionRows } = await supabase
       .from("pattern_adoptions")
       .select(`
-        id, applied_actions, baseline_metric, followup_metric, observed_lift_pct, status, created_at,
+        id, applied_actions, baseline_metric, followup_metric, observed_lift_pct, followup_at, status, created_at,
         insight:brokerage_intelligence_insights(headline, pattern_key),
         agent:agents!pattern_adoptions_agent_id_fkey(users(first_name, last_name)),
         adopter:users!pattern_adoptions_adopted_by_fkey(first_name, last_name)
@@ -139,6 +139,10 @@ if (!isAdminOrBroker({ user_type: profile?.user_type ?? "" })) redirect("/dashbo
                       <td className="px-4 py-2.5 text-right tabular-nums">
                         {adoption.followup_metric != null ? Number(adoption.followup_metric).toLocaleString() : "—"}
                       </td>
+                      {/* Three honest states: measured (lift), measured-without-baseline
+                          (follow-up ran on a legacy adoption that predates baseline
+                          stamping — "n/a", never forever-"pending"), and pending (the
+                          +30d follow-up in the weekly mine cron has not run yet). */}
                       <td className={`px-4 py-2.5 text-right tabular-nums font-medium ${
                         adoption.observed_lift_pct == null
                           ? "text-muted-foreground"
@@ -148,7 +152,9 @@ if (!isAdminOrBroker({ user_type: profile?.user_type ?? "" })) redirect("/dashbo
                       }`}>
                         {adoption.observed_lift_pct != null
                           ? `${Number(adoption.observed_lift_pct) >= 0 ? "+" : ""}${Number(adoption.observed_lift_pct).toFixed(1)}%`
-                          : "pending"}
+                          : adoption.followup_at != null
+                            ? "n/a"
+                            : "pending"}
                       </td>
                       <td className="px-4 py-2.5">
                         <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs capitalize ${

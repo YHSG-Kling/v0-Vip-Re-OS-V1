@@ -167,6 +167,26 @@ export async function dismissStrategyAction(
 // automated writers.
 
 // ─── Fetch (UI) ─────────────────────────────────────────────────────────────
+
+/**
+ * CURATED rationale_signals — never the raw JSON blob. rationale_signals is
+ * written by two hands: the AI drafter (copilot-ai.ts SYSTEM_PROMPT schema:
+ * list_price / dom / current_offer / prior_rounds_count / peer_pattern_keys /
+ * agent_track_record / key_risks) and dismissStrategyAction ({dismiss_reason}).
+ * The agent-facing card renders only the named fields below — a raw dump would
+ * couple the UI to whatever a future writer stuffs in, and §5 (commission off
+ * agent-facing display) means an unaudited passthrough is the wrong shape even
+ * though today's schema carries prices, never commission.
+ */
+export interface StrategyRationale {
+  keyRisks:         string[]
+  peerPatternKeys:  string[]
+  agentTrackRecord: string | null
+  priorRoundsCount: number | null
+  /** Written by dismissStrategyAction when the agent said why they passed. */
+  dismissReason:    string | null
+}
+
 export interface NegotiationStrategyView {
   id:                       string
   offerId:                  string
@@ -180,6 +200,61 @@ export interface NegotiationStrategyView {
   customerExplanationMd:    string | null
   draftedCounterLanguage:   string | null
   createdAt:                string
+  /** 'ai' from the generator; attribution for "who wrote this strategy". */
+  generatedBy:              string | null
+  /** How and when the agent dispositioned it (did_now / did_already / let_ai_do_it / dismissed). */
+  agentDisposition:         string | null
+  agentDispositionAt:       string | null
+  /** Set by the automated outcome recorders when the offer actually resolved. */
+  outcome:                  string | null
+  outcomeRecordedAt:        string | null
+  rationale:                StrategyRationale | null
+}
+
+// Shared agent-facing select — the typed provenance/disposition/outcome columns
+// were written (strategy-writer.ts, accept/dismiss actions, the auto outcome
+// recorder) and read by nobody until orphan tranche X4 (2026-09-01).
+const AGENT_STRATEGY_SELECT =
+  "id, offer_id, side, status, recommended_action, recommended_counter_price, win_probability, confidence, agent_strategy_md, customer_explanation_md, drafted_counter_language, created_at, generated_by, agent_disposition, agent_disposition_at, outcome, outcome_recorded_at, rationale_signals"
+
+function curateRationale(raw: unknown): StrategyRationale | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null
+  const r = raw as Record<string, unknown>
+  const strList = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.trim() !== "").slice(0, 6) : []
+  const out: StrategyRationale = {
+    keyRisks:         strList(r.key_risks),
+    peerPatternKeys:  strList(r.peer_pattern_keys),
+    agentTrackRecord: typeof r.agent_track_record === "string" && r.agent_track_record.trim() ? r.agent_track_record : null,
+    priorRoundsCount: typeof r.prior_rounds_count === "number" && Number.isFinite(r.prior_rounds_count) ? r.prior_rounds_count : null,
+    dismissReason:    typeof r.dismiss_reason === "string" && r.dismiss_reason.trim() ? r.dismiss_reason : null,
+  }
+  const empty = out.keyRisks.length === 0 && out.peerPatternKeys.length === 0
+    && out.agentTrackRecord == null && out.priorRoundsCount == null && out.dismissReason == null
+  return empty ? null : out
+}
+
+function toAgentStrategyView(r: Record<string, unknown>): NegotiationStrategyView {
+  return {
+    id:                      r.id as string,
+    offerId:                 r.offer_id as string,
+    side:                    r.side as "buyer" | "seller",
+    status:                  r.status as string,
+    recommendedAction:       r.recommended_action as string,
+    recommendedCounterPrice: (r.recommended_counter_price as number | null) ?? null,
+    winProbability:          (r.win_probability as number | null) ?? null,
+    confidence:              (r.confidence as number | null) ?? null,
+    agentStrategyMd:         r.agent_strategy_md as string,
+    customerExplanationMd:   (r.customer_explanation_md as string | null) ?? null,
+    draftedCounterLanguage:  (r.drafted_counter_language as string | null) ?? null,
+    createdAt:               r.created_at as string,
+    generatedBy:             (r.generated_by as string | null) ?? null,
+    agentDisposition:        (r.agent_disposition as string | null) ?? null,
+    agentDispositionAt:      (r.agent_disposition_at as string | null) ?? null,
+    outcome:                 (r.outcome as string | null) ?? null,
+    outcomeRecordedAt:       (r.outcome_recorded_at as string | null) ?? null,
+    rationale:               curateRationale(r.rationale_signals),
+  }
 }
 
 export async function getNegotiationStrategyForOfferAction(
@@ -207,7 +282,7 @@ export async function getNegotiationStrategyForOfferAction(
 
   let q = supabase
     .from("negotiation_strategies")
-    .select("id, offer_id, side, status, recommended_action, recommended_counter_price, win_probability, confidence, agent_strategy_md, customer_explanation_md, drafted_counter_language, created_at")
+    .select(AGENT_STRATEGY_SELECT)
     .eq("offer_id", offerId)
     .eq("brokerage_id", u.brokerage_id)
     .order("created_at", { ascending: false })
@@ -218,24 +293,7 @@ export async function getNegotiationStrategyForOfferAction(
   if (error) return { ok: false, error: error.message }
   if (!data) return { ok: true, strategy: null }
 
-  const r = data as Record<string, unknown>
-  return {
-    ok: true,
-    strategy: {
-      id:                      r.id as string,
-      offerId:                 r.offer_id as string,
-      side:                    r.side as "buyer" | "seller",
-      status:                  r.status as string,
-      recommendedAction:       r.recommended_action as string,
-      recommendedCounterPrice: (r.recommended_counter_price as number | null) ?? null,
-      winProbability:          (r.win_probability as number | null) ?? null,
-      confidence:              (r.confidence as number | null) ?? null,
-      agentStrategyMd:         r.agent_strategy_md as string,
-      customerExplanationMd:   (r.customer_explanation_md as string | null) ?? null,
-      draftedCounterLanguage:  (r.drafted_counter_language as string | null) ?? null,
-      createdAt:               r.created_at as string,
-    },
-  }
+  return { ok: true, strategy: toAgentStrategyView(data as Record<string, unknown>) }
 }
 
 export async function listOpenNegotiationStrategiesForAgentAction(): Promise<
@@ -248,27 +306,14 @@ export async function listOpenNegotiationStrategiesForAgentAction(): Promise<
 
   const { data, error } = await supabase
     .from("negotiation_strategies")
-    .select("id, offer_id, side, status, recommended_action, recommended_counter_price, win_probability, confidence, agent_strategy_md, customer_explanation_md, drafted_counter_language, created_at")
+    .select(AGENT_STRATEGY_SELECT)
     .eq("agent_user_id", user.id)
     .eq("status", "open")
     .order("created_at", { ascending: false })
     .limit(10)
   if (error) return { ok: false, error: error.message }
 
-  const strategies = ((data ?? []) as Array<Record<string, unknown>>).map(r => ({
-    id:                      r.id as string,
-    offerId:                 r.offer_id as string,
-    side:                    r.side as "buyer" | "seller",
-    status:                  r.status as string,
-    recommendedAction:       r.recommended_action as string,
-    recommendedCounterPrice: (r.recommended_counter_price as number | null) ?? null,
-    winProbability:          (r.win_probability as number | null) ?? null,
-    confidence:              (r.confidence as number | null) ?? null,
-    agentStrategyMd:         r.agent_strategy_md as string,
-    customerExplanationMd:   (r.customer_explanation_md as string | null) ?? null,
-    draftedCounterLanguage:  (r.drafted_counter_language as string | null) ?? null,
-    createdAt:               r.created_at as string,
-  }))
+  const strategies = ((data ?? []) as Array<Record<string, unknown>>).map(toAgentStrategyView)
   return { ok: true, strategies }
 }
 
@@ -297,6 +342,10 @@ export async function getNegotiationStrategyForContactAction(
   if (!contactRow) return { ok: false, error: "Contact not found" }
   if (contactRow.brokerage_id !== u.brokerage_id) return { ok: false, error: "Forbidden" }
 
+  // CUSTOMER-FACING (the portal mirror panel) — deliberately does NOT select the
+  // internal provenance/rationale columns (generated_by, agent_disposition*,
+  // outcome*, rationale_signals). The mirror shows the customer the plain-language
+  // explanation only; the agent-side internals stay on the agent surfaces above.
   const { data, error } = await supabase
     .from("negotiation_strategies")
     .select("id, offer_id, side, status, recommended_action, recommended_counter_price, win_probability, confidence, agent_strategy_md, customer_explanation_md, drafted_counter_language, created_at")
@@ -308,22 +357,7 @@ export async function getNegotiationStrategyForContactAction(
     .maybeSingle()
   if (error) return { ok: false, error: error.message }
   if (!data) return { ok: true, strategy: null }
-  const r = data as Record<string, unknown>
-  return {
-    ok: true,
-    strategy: {
-      id:                      r.id as string,
-      offerId:                 r.offer_id as string,
-      side:                    r.side as "buyer" | "seller",
-      status:                  r.status as string,
-      recommendedAction:       r.recommended_action as string,
-      recommendedCounterPrice: (r.recommended_counter_price as number | null) ?? null,
-      winProbability:          (r.win_probability as number | null) ?? null,
-      confidence:              (r.confidence as number | null) ?? null,
-      agentStrategyMd:         r.agent_strategy_md as string,
-      customerExplanationMd:   (r.customer_explanation_md as string | null) ?? null,
-      draftedCounterLanguage:  (r.drafted_counter_language as string | null) ?? null,
-      createdAt:               r.created_at as string,
-    },
-  }
+  // toAgentStrategyView degrades the unselected internal columns to null, which
+  // is exactly the customer-facing shape this endpoint should return.
+  return { ok: true, strategy: toAgentStrategyView(data as Record<string, unknown>) }
 }

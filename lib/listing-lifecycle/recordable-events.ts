@@ -131,6 +131,14 @@ export const RECORDABLE_EVENTS: Record<RecordableAction, RecordableEvent> = {
       },
       { key: "documentUrl", label: "Signed document URL", type: "text", required: false, help: "For manual_upload." },
       { key: "providerRef", label: "Provider reference", type: "text", required: false, help: "For provider_pull — the envelope / loop id." },
+      // listing_agreements.document_name + effective_date (orphan tranche X4,
+      // 2026-09-01): both columns are read on the listing lifecycle page and had
+      // NO writer — the sole insert (markAgreementSigned) never received them,
+      // because this card never asked. Captured HERE, at the same intake that
+      // captures the rest of the agreement's terms; OPTIONAL, because a blank
+      // means "not recorded" (NULL), never a fabricated name or date.
+      { key: "documentName", label: "Document name", type: "text", required: false, help: "What the signed agreement file is called (e.g. \"Exclusive Right to Sell — 44 Birch\"). Optional." },
+      { key: "effectiveDate", label: "Effective date (yyyy-mm-dd)", type: "text", required: false, help: "The effective date stated ON the agreement, if different from today. Leave blank to record none." },
       { key: "listingRate", label: "Listing side commission %", type: "number", required: false },
       { key: "buyerRate", label: "Buyer side commission %", type: "number", required: false },
       // Owner ruling (2026-08-27): "listing agreement total commission rate is

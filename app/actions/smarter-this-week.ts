@@ -13,7 +13,9 @@
  * Data sources:
  *   - ai_message_drafts.status (accepted/edited/rejected) → Reply Coach acceptance
  *   - ai_isa_calls.appointment_set → AI-set appointments + auto-handled leads
- *   - property_matches.user_feedback → match recommendation quality
+ *   - property_matches.match_score → average AI match score (see the note on
+ *     getMatchQualityMetric: user_feedback has NO writer surface yet, so the
+ *     metric is the model's own score, not human feedback)
  *   - objection_training_sessions.total_score → practice score trend
  *   - call_coaching_insights → call coaching frequency
  *   - lead_score_history → distribution shifts
@@ -68,7 +70,8 @@ export async function getSmarterThisWeek(): Promise<SmarterDigest> {
     if (isaMetric) metrics.push(isaMetric)
   }
 
-  // 3. Match quality — avg user_feedback on property_matches for this agent's contacts
+  // 3. Match quality — avg match_score on property_matches for this agent's contacts
+  //    (user_feedback has no writer — see the adjudication at getMatchQualityMetric)
   if (ctx.agentId) {
     const matchMetric = await getMatchQualityMetric(svc, ctx.agentId, weekStart, priorWeekStart, weekEnd)
     if (matchMetric) metrics.push(matchMetric)
@@ -197,6 +200,17 @@ async function getIsaAppointmentsMetric(
   }
 }
 
+/**
+ * MATCH QUALITY = average match_score, and nothing else. This function used to
+ * also select property_matches.user_feedback and never touch it — and no writer
+ * anywhere sets user_feedback (the upserts in lib/buyer-search/market-watch.ts,
+ * lib/buyer-search/external-match.ts and app/actions/ai-property-matching.ts all
+ * omit it), so the column is a read-no-write phantom. Adjudicated 2026-09-01
+ * (orphan tranche X4): the select is corrected to what the metric actually uses.
+ * If a feedback surface (thumbs up/down on a match) is ever built, its writer
+ * should target property_matches.user_feedback and THEN this metric can honestly
+ * become "human-rated match quality" — until then it is the model's own score.
+ */
 async function getMatchQualityMetric(
   svc: ReturnType<typeof createServiceClient>,
   agentId: string,
@@ -212,14 +226,14 @@ async function getMatchQualityMetric(
 
   const { data: thisWeek } = await svc
     .from("property_matches")
-    .select("match_score, user_feedback")
+    .select("match_score")
     .in("contact_id", contactIds)
     .gte("created_at", weekStart)
     .lte("created_at", weekEnd)
 
   const { data: priorWeek } = await svc
     .from("property_matches")
-    .select("match_score, user_feedback")
+    .select("match_score")
     .in("contact_id", contactIds)
     .gte("created_at", priorWeekStart)
     .lt("created_at", weekStart)
