@@ -2092,6 +2092,10 @@ export const CRON_MANAGER: Record<string, ManagerKey> = {
   "/api/cron/offer-expiry": "shopping_agent",
   // The bucket reconciliation the Data Steward owns alongside the worklist table.
   "/api/cron/storage-orphan-sweep": "data_steward",
+  // The buyer twin of listing-presentation-prep: stages BuyerConsultationSlide
+  // decks off booked buyer_consultation appointments. Buyer journey ⇒
+  // shopping_agent (the same ruling that gave it tours and the offer lane).
+  "/api/cron/buyer-consultation-prep": "shopping_agent",
   // ── Listing Concierge — the seller side ──
   "/api/cron/listing-health-scan": "listing_concierge",
   "/api/cron/listing-presentation-prep": "listing_concierge",
