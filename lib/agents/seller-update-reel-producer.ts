@@ -395,9 +395,22 @@ export async function requestSellerUpdateReel(
 /**
  * ── THE D-ID → REMOTION HANDOFF FOR THE SELLER UPDATE (built 2026-09-01, §1.2) ─
  *
- * WHY IT IS BUILT HERE AND NOT ROUTED THROUGH director-reel-render. That cron
- * drains staged `ai_video_projects` rows and does the D-ID submit for the
- * Director rail, and it would have been the smaller diff — but it HARDCODES
+ * TOMBSTONE (§1.1): the body of this function — preconditions, consent rule,
+ * fair-housing screen, D-ID submit, project insert — MOVED to
+ * `lib/video/avatar-track-submit.ts::submitAvatarTrack`, which is now the ONE
+ * home for the submit side of the handoff. It was lifted there, not copied,
+ * when the two presentation lanes turned out to need the identical procedure
+ * (their `ai_video_projects` rows were written at status='draft' with no
+ * provider_job_id, so `poll-did-videos` never adopted them and both avatar lanes
+ * were dark). Three hand-rolled copies of one procedure is the §6 defect, and
+ * the line most likely to drift between copies is the agents/users identity
+ * cross that §3 records as a 23503 waiting to happen.
+ *
+ * WHAT STAYS HERE is only what is TRUE OF THIS LANE:
+ *
+ * WHY THE SUBMIT IS NOT ROUTED THROUGH director-reel-render. That cron drains
+ * staged `ai_video_projects` rows and does the D-ID submit for the Director
+ * rail, and it would have been the smaller diff — but it HARDCODES
  * `entity_type: 'video_project'` / `entity_id: <project id>` into the metadata it
  * stamps. Those two keys are copied onto whatever render row the handoff
  * eventually creates, and render-composition's runPostRenderCoordination fires
@@ -405,25 +418,22 @@ export async function requestSellerUpdateReel(
  * that door would therefore have raised `contact_outreach_ready` to the Campaign
  * Orchestrator — a SECOND gated proposal to the same seller about the same
  * video, on top of the one deliverSellerUpdateReels already makes. Submitting
- * here (the shape lib/video/intro-video-reactor.ts uses) keeps the entity fields
- * ours: `contact` / the seller's contact id, which is what the delivery sweep
- * reads and what keeps the fan-out silent.
+ * through the shared helper keeps the entity fields OURS: `contact` / the
+ * seller's contact id, which is what the delivery sweep reads and what keeps
+ * the fan-out silent.
  *
- * HOW THE TWO KEYS COOPERATE (avatar-render-orchestrator:192-270):
- *   · `target_composition_id` says an assembly is owed at all — without it,
- *     enqueueAvatarCompositionForProject skips the project forever.
- *   · `target_render_id` points at the row staged above, so the avatar is MERGED
- *     into it while it is still 'queued' (no duplicate row, no second render).
- *     If the queue already claimed it, the orchestrator falls through to a fresh
- *     avatar-led row seeded with the SAME input_props — which is why they are
- *     passed along too; an empty extraInputProps would stage the Studio sample
- *     data and be cancelled by the content contract.
+ * WHY video_type IS NULL. The live CHECK admits sixteen words and none of them
+ * is this product; `avatar_explainer` in particular is a member of
+ * PERSONAL_WELCOME_VIDEO_TYPES, so a seller's weekly update wearing that label
+ * could be served to a brand-new client as their welcome video. NULL passes the
+ * CHECK, matches no consumer's `.in(...)`, and the intent rides
+ * video_metadata.video_type_intent. Widening the CHECK is a migration, which
+ * this lane does not write.
  *
- * PRECONDITIONS ARE CHECKED, NOT ASSUMED. A submit with no face does not fail at
- * D-ID — it renders a stock stranger (the `no_brokerage_face` ruling) — so the
- * agent must have a READY avatar asset, and where that asset was built from
- * VIDEO, `consentRequiredFor` says a verified consent must exist. Every refusal
- * returns a reason; none of them fabricate.
+ * NO VOICEOVER URL IS PASSED. The avatar track carries the agent's cloned voice
+ * (the ElevenLabs voice id goes to D-ID at submit), so there is no separate
+ * `<Audio>` mp3 — passing one would play the same sentence twice over itself,
+ * which is the trap the section-narration lane had to be rescued from.
  */
 async function stageSellerUpdateAvatar(
   supabase: Svc,
@@ -441,147 +451,26 @@ async function stageSellerUpdateAvatar(
     script: string
   },
 ): Promise<{ requested: boolean; reason: string }> {
-  try {
-    if (!args.agentRecordId) return { requested: false, reason: "the listing has no agent, so there is no face to render" }
-    if (!args.agentUserId) return { requested: false, reason: `no users row behind agents.id=${args.agentRecordId}` }
-    const script = (args.script ?? "").trim()
-    if (!script) return { requested: false, reason: "no narration script could be built" }
-
-    // Do not pay D-ID for a track whose composite would be cancelled anyway —
-    // the same question buildIntroCompositionRequest asks before it stamps.
-    const missing = missingContentProps(SELLER_UPDATE_COMPOSITION, args.props)
-    if (missing.length > 0) {
-      return { requested: false, reason: describeMissingContent(SELLER_UPDATE_COMPOSITION, missing) }
-    }
-
-    // §5 — nothing model-authored reaches a client unscreened. This script is
-    // deterministic authored copy (buildSellerUpdateMessage) over the listing's
-    // own numbers, so there is no prompt to make compliance-first; the
-    // deterministic detector is still run because the address and the agent's
-    // name are interpolated, and a HARD hit means the sentence is not spoken.
-    const { detectFairHousingViolations } = await import("@/lib/compliance-rules/fair-housing-patterns")
-    const fhHits = detectFairHousingViolations(script)
-    if (fhHits.some((v) => v.severity === "high")) {
-      return {
-        requested: false,
-        reason: `hard fair-housing flag in the seller-update script (${fhHits.filter((v) => v.severity === "high").map((v) => v.phrase).join(", ")}) — not spoken`,
-      }
-    }
-
-    // ── PRECONDITION 1: a READY avatar asset. §3 — supabase-js RESOLVES a
-    //    refused read, so a refusal is reported as a refusal, never as "this
-    //    agent has no avatar".
-    const { data: assetRow, error: assetErr } = await supabase
-      .from("agent_avatar_assets")
-      .select("id, source_type, is_default")
-      .eq("agent_id", args.agentRecordId)
-      .eq("brokerage_id", args.brokerageId)
-      .eq("status", "ready")
-      .order("is_default", { ascending: false })
-      .limit(1).maybeSingle()
-    if (assetErr) return { requested: false, reason: `agent_avatar_assets unreadable: ${assetErr.message}` }
-    const asset = assetRow as { id: string; source_type: string | null } | null
-    if (!asset) return { requested: false, reason: "the agent has no READY avatar asset (Settings → Voice & Avatar)" }
-
-    // ── PRECONDITION 2: consent, where the asset's source makes it required.
-    //    ONE spelling of that rule (§6) — lib/did/contract.ts owns it. A
-    //    photo-sourced twin needs none, and demanding one would block a
-    //    legitimate avatar; a video-sourced one may not render without it.
-    const { consentRequiredFor } = await import("@/lib/did/contract")
-    const sourceType: "photo" | "video" = asset.source_type === "video" ? "video" : "photo"
-    if (consentRequiredFor(sourceType)) {
-      const { data: consent, error: consentErr } = await supabase
-        .from("agent_did_consents")
-        .select("id")
-        .eq("agent_id", args.agentRecordId)
-        .eq("status", "verified")
-        .maybeSingle()
-      if (consentErr) return { requested: false, reason: `agent_did_consents unreadable: ${consentErr.message}` }
-      if (!consent) return { requested: false, reason: "the agent's avatar is video-sourced and has no VERIFIED D-ID consent on file" }
-    }
-
-    // ── PRECONDITION 3: something to render WITH. resolveAgentPresenterMedia is
-    //    the one resolver for the actor id / source URL / cloned voice.
-    const { resolveAgentPresenterMedia } = await import("@/lib/video/presenter-media")
-    const presenter = await resolveAgentPresenterMedia(
-      { agentUserId: args.agentUserId, brokerageId: args.brokerageId }, supabase,
-    )
-    if (!presenter.canRender) return { requested: false, reason: "no D-ID actor id or avatar source resolved for this agent" }
-
-    // ── SUBMIT. submitOnly: the talk id comes back immediately and
-    //    poll-did-videos owns completion (it selects status='generating' AND
-    //    provider_job_id IS NOT NULL AND provider_metadata->>provider='did' —
-    //    a row missing any of those is never adopted, which is how the two
-    //    presentation lanes' avatar requests came to sit at 'draft' forever).
-    const { generateVideo } = await import("@/lib/did")
-    const submitted = await generateVideo({
-      script,
-      voiceId: presenter.voiceId ?? undefined,
-      actorId: presenter.actorId,
-      avatarImageUrl: presenter.avatarImageUrl,
-      agentUserId: args.agentUserId,
-      brokerageId: args.brokerageId,
-      expression: presenter.expression ?? "neutral",
-      submitOnly: true,
-    })
-    if (submitted.status === "error" || !submitted.videoId) {
-      return { requested: false, reason: `D-ID submit refused: ${submitted.note ?? "no job id returned"}` }
-    }
-
-    const now = new Date().toISOString()
-    const { error: projErr } = await supabase.from("ai_video_projects").insert({
-      brokerage_id: args.brokerageId,
-      // AGENTS-class (m366). Crossing users.id in here is a 23503.
-      agent_id: args.agentRecordId,
-      listing_id: args.listingId,
-      contact_id: args.sellerContactId,
-      title: `Weekly seller update — ${String(args.props.caption ?? "").slice(0, 60) || args.listingId}`,
-      script_content: script,
-      status: "generating",
-      provider_job_id: submitted.videoId,
-      provider_status: "processing",
-      video_provider: "did",
-      // video_type is left NULL on purpose. The live CHECK admits sixteen words
-      // and none of them is this product; picking the nearest would be a second
-      // spelling of somebody else's video (§6) — 'avatar_explainer' in
-      // particular is a member of PERSONAL_WELCOME_VIDEO_TYPES, so a seller's
-      // weekly update could then be served to a brand-new client as their
-      // welcome video. NULL passes the CHECK, matches no consumer's `.in(...)`,
-      // and the intent is recorded beside it. Widening the CHECK is a migration,
-      // which this lane does not write.
-      video_metadata: { video_type_intent: SELLER_UPDATE_KIND, listing_id: args.listingId },
-      usage_intent: "public_marketing",
-      audience_type: "customer_facing",
-      compliance_status: "passed",
-      compliance_evaluated_at: now,
-      approval_status: "pending_review",
-      is_ai_generated: true,
-      provider_metadata: {
-        provider: "did",
-        // talks = the V2 photo engine; RECORDED, never guessed from id shapes —
-        // poll-did-videos keys /talks vs /clips off this.
-        mode: submitted.engine === "expressives" ? "expressive" : "talk",
-        talk_id: submitted.videoId,
-        // The two keys the handoff reads. Without the first it is skipped
-        // forever; the second is what merges the avatar into the render row
-        // already staged for this seller instead of orphaning a second one.
-        target_composition_id: SELLER_UPDATE_COMPOSITION,
-        target_render_id: args.renderId,
-        input_props: args.props,
-        // OURS, and deliberately not 'video_project' — see the header above.
-        entity_type: "contact",
-        entity_id: args.sellerContactId,
-      },
-    })
-    if (projErr) {
-      // The D-ID job is REAL but unlinked: nothing will poll it, so say so with
-      // the job id rather than reporting a handoff that did not happen.
-      return { requested: false, reason: `D-ID job ${submitted.videoId} submitted but the project row was refused (${projErr.message}) — it cannot be polled` }
-    }
-    return { requested: true, reason: "" }
-  } catch (e) {
-    return { requested: false, reason: `avatar handoff errored: ${(e as Error).message}` }
-  }
+  const { submitAvatarTrack } = await import("@/lib/video/avatar-track-submit")
+  const res = await submitAvatarTrack(supabase, {
+    brokerageId:    args.brokerageId,
+    agentRecordId:  args.agentRecordId,
+    agentUserId:    args.agentUserId,
+    script:         args.script,
+    targetRenderId: args.renderId,
+    title:          `Weekly seller update — ${String(args.props.caption ?? "").slice(0, 60) || args.listingId}`,
+    videoType:      null,
+    videoTypeIntent: SELLER_UPDATE_KIND,
+    listingId:      args.listingId,
+    contactId:      args.sellerContactId,
+    request: {
+      target_composition_id: SELLER_UPDATE_COMPOSITION,
+      input_props:           args.props,
+      entity_type:           "contact",
+      entity_id:             args.sellerContactId,
+    },
+  })
+  return { requested: res.submitted, reason: res.reason }
 }
 
 /**

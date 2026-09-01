@@ -66,6 +66,17 @@ export interface RenderBuyerSlidesResult {
   rendered: number
   /** Slides not staged, each with the recorded reason — never silent. */
   skipped:  Array<{ kind: string; reason: string }>
+  /**
+   * Slides that DID stage but ship as the static photo PIP because the avatar
+   * track could not be submitted, each with the reason.
+   *
+   * A SEPARATE list on purpose: `skipped` means "no render exists", and folding
+   * an avatar skip into it would report a slide that rendered fine as missing.
+   * It is a list rather than a counter because the reasons differ per agent
+   * (no ready avatar, no verified consent, a refused read) and the fix is
+   * different for each.
+   */
+  avatarSkipped: Array<{ kind: string; reason: string }>
   error?:   string
 }
 
@@ -103,7 +114,7 @@ export async function renderBuyerConsultationSlides(
   client?: ReturnType<typeof createServiceClient>,
 ): Promise<RenderBuyerSlidesResult> {
   const supabase = client ?? createServiceClient()
-  const none: RenderBuyerSlidesResult = { ok: false, rendered: 0, skipped: [] }
+  const none: RenderBuyerSlidesResult = { ok: false, rendered: 0, skipped: [], avatarSkipped: [] }
 
   const { data: pres, error: presErr } = await supabase
     .from("listing_presentations")
@@ -360,7 +371,7 @@ export async function renderBuyerConsultationSlides(
   }
 
   // ── Stage each slide (mirror of section-render.ts:200-235) ────────────────
-  const result: RenderBuyerSlidesResult = { ok: true, rendered: 0, skipped: [] }
+  const result: RenderBuyerSlidesResult = { ok: true, rendered: 0, skipped: [], avatarSkipped: [] }
   for (const r of resolved) {
     if ("skip" in r) {
       if (r.skip !== "already rendered") {
@@ -440,14 +451,28 @@ export async function renderBuyerConsultationSlides(
     }
     result.rendered++
 
-    // ── Avatar (finish-spec: AVATAR_LED circle_pip) — NOT hand-rolled: the
-    //    request is stamped through the existing D-ID → Remotion handoff
-    //    (avatar-render-orchestrator buildBuyerSlideCompositionRequest →
-    //    enqueueAvatarCompositionForProject on completion, whose
-    //    target_render_id READER merges the avatar into THIS staged row while
-    //    it is still queued, or repoints this section at the avatar-led
-    //    replacement once it is not). Best-effort; the photo-PIP render above
-    //    is the guaranteed deliverable either way. ──────────────────────────
+    // ── Avatar (finish-spec: AVATAR_LED circle_pip) ──────────────────────────
+    //    THE LANE WAS DARK. This block used to INSERT the request row at
+    //    status='draft' with no provider_job_id and no D-ID submit anywhere in
+    //    the tree. poll-did-videos adopts only
+    //    (status='generating' AND provider_job_id IS NOT NULL AND
+    //    provider_metadata->>provider='did'), and director-reel-render adopts
+    //    only (status='queued' AND video_metadata.director_key AND
+    //    provider_metadata.composition_id) — this row matched neither, so it sat
+    //    forever: a writer with no reader. Every buyer consultation deck has
+    //    shipped as the photo-PIP cut since the lane was built, and the
+    //    orchestrator's target_render_id READER, which exists to serve exactly
+    //    this handoff, has never executed once.
+    //
+    //    The submit now happens, through the ONE shared submit path
+    //    (lib/video/avatar-track-submit.ts) that the seller-update lane and the
+    //    section-narration lane also call — same preconditions, same consent
+    //    rule, same fair-housing screen, same identity-class care. The REQUEST
+    //    is still built by the orchestrator's own builder, so the shape of the
+    //    contract stays where it is declared (§6).
+    //
+    //    Still best-effort: the photo-PIP render above is the guaranteed
+    //    deliverable, and no failure here un-stages it.
     try {
       const { resolveAgentNarrationAssets } = await import("@/lib/listing-presentation/section-narration-orchestrator")
       const assets = await resolveAgentNarrationAssets(supabase, pres.agent_user_id)
@@ -455,23 +480,29 @@ export async function renderBuyerConsultationSlides(
         const { buildBuyerSlideCompositionRequest } = await import("@/lib/video/avatar-render-orchestrator")
         const request = buildBuyerSlideCompositionRequest({ presentationId, inputProps })
         if (request) {
-          const { error: reqErr } = await supabase.from("ai_video_projects").insert({
+          const { submitAvatarTrack } = await import("@/lib/video/avatar-track-submit")
+          const sub = await submitAvatarTrack(supabase, {
+            brokerageId:    pres.brokerage_id,
             // agents-class id (ai_video_projects.agent_id → agents.id) — the
             // presentation's agent_user_id is USERS class and must not cross.
-            agent_id:     agentRecordId,
-            brokerage_id: pres.brokerage_id,
-            title:        `Buyer consultation slide ${r.section.section_key}`,
-            status:       "draft",
-            provider_metadata: {
-              provider: "did",
-              ...request,
-              target_render_id: renderId,
-              narration_script: r.narration.script,
-              did_avatar_id:    assets.avatarSource,
-              voice_id:         assets.voiceId,
-            },
+            agentRecordId,
+            agentUserId:    pres.agent_user_id ?? null,
+            script:         r.narration.script,
+            targetRenderId: renderId,
+            title:          `Buyer consultation slide ${r.section.section_key}`,
+            // An admitted value of the live video_type CHECK (m119) and the
+            // literal truth of the row: one chapter of a presentation deck.
+            videoType:       "presentation_chapter",
+            videoTypeIntent: "buyer_consultation_slide",
+            contactId:       pres.contact_id,
+            request,
+            // NO voiceoverUrl on purpose: BuyerConsultationSlide declares no
+            // voiceoverUrl prop, so the avatar track IS the audio.
           })
-          if (reqErr) console.warn(`[consultation-render] avatar request refused for '${r.section.section_key}': ${reqErr.message}`)
+          if (!sub.submitted) {
+            console.warn(`[consultation-render] '${r.section.section_key}' ships as the photo PIP — ${sub.reason}`)
+            result.avatarSkipped.push({ kind: r.section.section_key, reason: sub.reason })
+          }
         }
       }
     } catch { /* avatar is additive — the slide already renders with the photo PIP */ }

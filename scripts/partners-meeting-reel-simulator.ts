@@ -352,12 +352,64 @@ import { detectRateMoment, isTestimonialWorthy, isWalkthroughEligible } from "..
     isWalkthroughEligible({ lifecycle_stage: "MLS_ACTIVE", photos: [1, 2, 3, 4, 5] }) === true
     && isWalkthroughEligible({ lifecycle_stage: "MLS_ACTIVE", photos: [1, 2] }) === false
     && isWalkthroughEligible({ lifecycle_stage: "SOLD", photos: [1, 2, 3, 4, 5] }) === false)
-  check("the Director learned photo_walkthrough — every VIDEO play stages through commissionVideo (direct queueing is reserved for the print STILLS: flyer + door hanger)",
+  // ── THE RULE, DERIVED — not a pinned occurrence count (CLAUDE.md §2) ───────
+  // This assertion used to read `(src.match(/recordRenderQueued/g)).length <= 4`
+  // against RAW source. Two defects in one line:
+  //   · it pinned a WAYPOINT. Four was the count on the day it was written —
+  //     two imports plus two calls — so the bound encoded an accident of how the
+  //     helper happened to be imported, not the rule it meant.
+  //   · a TOMBSTONE IS NOT A CALL SITE. Reading raw source made a COMMENT that
+  //     names the helper count as a use of it, and that is exactly how it went
+  //     red: a lane documenting why the print plays queue directly tripped the
+  //     bound by explaining it. The guard punished the comment §1 asks for.
+  // The RULE is: every VIDEO play stages through the Director's commissionVideo;
+  // direct queueing is reserved for the two print STILLS. So the compositions
+  // queued directly are ENUMERATED from stripped source and compared to that
+  // set, and the number derives from the set instead of standing in for it.
+  // BLIND SPOT, published beside it: strings are deliberately NOT blanked (the
+  // composition ids ARE string literals), so a fixture containing the literal
+  // text `recordRenderQueued(` inside a quoted block would be read as a call.
+  // video-plays.ts contains no such literal; if one is ever added, this needs
+  // blankStrings and a different extractor.
+  const directlyQueuedCompositions = (source: string): string[] => {
+    const code = stripComments(source)
+    // `recordRenderQueued(` with the paren matches the CALL and not the
+    // `const { recordRenderQueued } = await import(…)` binding beside it.
+    return code.split(/\brecordRenderQueued\s*\(/).slice(1)
+      .map((seg) => seg.slice(0, 600).match(/compositionId:\s*"([^"]+)"/)?.[1] ?? "«no literal compositionId»")
+  }
+  const PRINT_STILLS = ["DoorHanger", "ListingFlyer"]
+  const queuedDirectly = [...new Set(directlyQueuedCompositions(src("lib/video/video-plays.ts")))].sort()
+  check(`the Director learned photo_walkthrough — every VIDEO play stages through commissionVideo (direct queueing is reserved for the print STILLS: ${PRINT_STILLS.join(" + ")})`,
     src("lib/video/video-director.ts").includes('"photo_walkthrough"')
     && src("lib/video/video-plays.ts").includes("commissionVideo")
-    && (src("lib/video/video-plays.ts").match(/recordRenderQueued/g) ?? []).length <= 4
-    && src("lib/video/video-plays.ts").includes('compositionId: "ListingFlyer"')
-    && src("lib/video/video-plays.ts").includes('compositionId: "DoorHanger"'))
+    && JSON.stringify(queuedDirectly) === JSON.stringify(PRINT_STILLS))
+  // The observed set is printed unconditionally: a bound whose actual reading is
+  // invisible cannot be audited, and this one exists precisely because a number
+  // with no denominator went unnoticed for a wave (§2).
+  console.log(`      compositions queued directly: ${queuedDirectly.join(", ") || "none"}`)
+  // POSITIVE CONTROL (§2) — a bound that always passes is not a bound. The
+  // finder must still catch the defect it was written for (a VIDEO composition
+  // queued straight past the Director), and must NOT be fooled by the two
+  // things that broke or would break it: a mention in a comment, and the import
+  // binding that produced the original count of four.
+  {
+    const poison = `
+      const { recordRenderQueued } = await import("@/lib/remotion/registry")
+      await recordRenderQueued({ compositionId: "PhotoWalkthroughReel", entityType: "listing" })
+    `
+    const commentOnly = `
+      // recordRenderQueued( is named here on purpose — a tombstone, not a call.
+      /* ask missingContentProps before recordRenderQueued( runs */
+      const { recordRenderQueued } = await import("@/lib/remotion/registry")
+      await recordRenderQueued({ compositionId: "ListingFlyer" })
+      await recordRenderQueued({ compositionId: "DoorHanger" })
+    `
+    check("POSITIVE CONTROL: the finder still catches a VIDEO composition queued past the Director",
+      directlyQueuedCompositions(poison).includes("PhotoWalkthroughReel"))
+    check("...and a COMMENT naming the helper is NOT a call site — the exact way the old pinned count went red",
+      JSON.stringify([...new Set(directlyQueuedCompositions(commentOnly))].sort()) === JSON.stringify(PRINT_STILLS))
+  }
   check("wiring: market-moment rides the rates cron tick; testimonial + walkthrough ride the daily video-plays cron (asset_manager-owned)",
     src("app/api/cron/refresh-market-rates/route.ts").includes("runMarketMomentReels")
     && src("app/api/cron/video-plays/route.ts").includes("runTestimonialReels")

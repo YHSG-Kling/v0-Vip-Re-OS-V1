@@ -999,9 +999,24 @@ export const SIGNAL_HANDLERS: Record<string, SignalHandler> = {
     if (!listingId) return null
     const { requestSellerUpdateReel } = await import("@/lib/agents/seller-update-reel-producer")
     const r = await requestSellerUpdateReel(ctx.brokerageId, listingId, ctx.supabase)
-    return r.queued
-      ? "commissioned the weekly seller-update avatar reel (queued for render)"
-      : "seller-update reel already up to date for this listing this week (deduped)"
+    // EVERY NON-QUEUE USED TO READ AS A DEDUPE. This line reported "already up
+    // to date this week" for a content-contract refusal, a listing that could
+    // not be found and a listing with no seller contact alike — three different
+    // problems, two of them actionable, all rendered as "nothing to do". The
+    // producer returns a precise `reason` for each; throwing it away is the
+    // shape CLAUDE.md §4 rules out ("nobody checked" must never render as
+    // "checked and fine"), and it got worse once the producer started returning
+    // named content-prop refusals.
+    if (!r.queued) {
+      return r.reason
+        ? `seller-update reel NOT commissioned — ${r.reason}`
+        : "seller-update reel not commissioned (no reason returned)"
+    }
+    // The avatar is the product's promise, so whether it was actually requested
+    // is part of what happened — not a detail to discover in a log.
+    return r.avatarRequested
+      ? "commissioned the weekly seller-update avatar reel (queued for render, D-ID avatar track submitted)"
+      : `commissioned the weekly seller-update reel (queued for render) — shipping as the agent-photo cut: ${r.avatarReason || "no avatar reason recorded"}`
   },
   // Deal Coordinator → Listing Concierge: an offer just landed on one of our listings — run the
   // net-sheet comparison NOW (event-driven, not waiting on the */15 cron) and propose the gated

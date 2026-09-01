@@ -121,6 +121,17 @@ export interface NarrateResult {
   onScreenOnly:  number
   hasVoiceClone: boolean
   hasAvatarSource: boolean
+  /** D-ID talking-head jobs actually SUBMITTED and linked to a pollable row. */
+  avatarSubmitted: number
+  /**
+   * Sections that planned an avatar and did not get one, with the reason.
+   *
+   * `avatarNarrated` counts the PLAN; this counts the OUTCOME, and the two used
+   * to be conflated because nothing ever submitted anything — the plan was the
+   * only number there was, and it reported a talking head for every section of
+   * a lane that has never produced one.
+   */
+  avatarSkipped: Array<{ renderId: string; reason: string }>
 }
 
 /**
@@ -133,7 +144,7 @@ export async function narratePresentationSections(
   client?: ReturnType<typeof createServiceClient>,
 ): Promise<NarrateResult> {
   const supabase = client ?? createServiceClient()
-  const empty: NarrateResult = { sections: 0, avatarNarrated: 0, voiceOnly: 0, onScreenOnly: 0, hasVoiceClone: false, hasAvatarSource: false }
+  const empty: NarrateResult = { sections: 0, avatarNarrated: 0, voiceOnly: 0, onScreenOnly: 0, hasVoiceClone: false, hasAvatarSource: false, avatarSubmitted: 0, avatarSkipped: [] }
 
   const { data: pres } = await supabase
     .from("listing_presentations")
@@ -178,8 +189,28 @@ export async function narratePresentationSections(
     const script = fit.script
     const plan = planSectionNarrationJob({ hasScript: !!script, hasVoiceClone: !!voiceId, hasAvatarSource: !!avatarSource })
 
+    // ── ONE VOICE, NOT TWO ────────────────────────────────────────────────────
+    // `plan.voiceover` and `plan.avatar` are independently true when the agent
+    // has BOTH a clone and an avatar — which is the normal, fully-configured
+    // case — and this branch used to synthesize the mp3 anyway and stage it on
+    // `input_props.voiceoverUrl`. ListingSectionReel plays that as a bare
+    // `<Audio src=…>` (remotion/ListingSectionReel.tsx:63) while the D-ID track
+    // arrives as an UNMUTED `<Video src={avatarVideoUrl}>` inside the slide
+    // (remotion/ListingPresentationSlide.tsx:324) — so the finished section
+    // would have spoken the same sentence twice, over itself. It never happened
+    // only because the avatar was never submitted; lighting the lane is what
+    // makes it reachable, so it is closed in the same change.
+    //
+    // The avatar carries the audio, and in the agent's OWN cloned voice: the
+    // ElevenLabs voice id goes to D-ID at submit time. So the separate
+    // synthesis is not merely redundant, it is a second ElevenLabs charge for
+    // audio nobody should hear. `planSectionNarrationJob` already ranks the
+    // modes this way (avatar wins over voice_only) and is left untouched — the
+    // fix belongs in the consumer, which is what disagreed with the plan.
+    const synthesizeVoiceover = plan.voiceover && !plan.avatar
+
     let voiceoverUrl: string | null = null
-    if (plan.voiceover && voiceId) {
+    if (synthesizeVoiceover && voiceId) {
       try {
         const { synthesizeSpeech } = await import("@/lib/voice/elevenlabs-tts")
         const tts = await synthesizeSpeech({ text: script, voiceId, brokerageId: pres.brokerage_id })
@@ -206,36 +237,74 @@ export async function narratePresentationSections(
     }
 
     if (plan.avatar && avatarSource && agentRecordId) {
-      // Request the D-ID talking head via the existing handoff: a project whose
-      // provider_metadata.target_composition_id routes the finished avatar into
-      // THIS render's input_props on completion — enqueueAvatarCompositionForProject
-      // reads target_render_id and merges the avatar into the STAGED row (or
-      // repoints the section at a fresh avatar-led render when the staged one is
-      // already terminal). Best-effort, and the {error} is READ: a refused
-      // request degrading to voice_only silently is how the whole avatar lane
-      // stayed dark.
-      try {
-        const { error: reqErr } = await supabase.from("ai_video_projects").insert({
-          // AGENTS-class id (ai_video_projects.agent_id → agents.id,
-          // scripts/schema-fk-map.ts). WAS `r.agent_user_id ?? pres.agent_user_id`
-          // — a USERS-class id, disjoint from agents.id (§3), so the moment any
-          // agent had a ready avatar every request here would have been refused
-          // with 23503. resolveAgentNarrationAssets already performs the
-          // users→agents cross for its asset lookups; agentRecordId is that
-          // same answer, returned instead of re-derived.
-          agent_id:    agentRecordId,
-          brokerage_id: pres.brokerage_id,
-          title:       `Section narration ${r.composition_id}`,
-          status:      "draft",
-          provider_metadata: {
-            provider: "did", target_composition_id: r.composition_id,
-            target_render_id: r.id, voiceover_url: voiceoverUrl, voice_id: voiceId,
-            narration_script: script, did_avatar_id: avatarSource,
-            entity_type: "listing_presentation", entity_id: presentationId,
-          },
-        })
-        if (reqErr) console.warn(`[section-narration-orchestrator] avatar request refused for render ${r.id}: ${reqErr.message}`)
-      } catch { /* avatar request best-effort → voice_only / on_screen */ }
+      // ── THE LANE WAS DARK, AND THIS IS WHERE IT STOPPED ────────────────────
+      // This block used to INSERT the request at status='draft' with no
+      // provider_job_id and no D-ID submit anywhere in the tree.
+      // poll-did-videos adopts only (status='generating' AND provider_job_id IS
+      // NOT NULL AND provider_metadata->>provider='did'); director-reel-render
+      // adopts only (status='queued' AND video_metadata.director_key AND
+      // provider_metadata.composition_id). The row matched NEITHER, so it sat
+      // forever — a writer with no reader — and every narrated presentation
+      // section has shipped as the static-photo PIP since the lane was built,
+      // while this function reported `avatarNarrated` for each one.
+      //
+      // The submit now happens, through the ONE shared path
+      // (lib/video/avatar-track-submit.ts) the seller-update and buyer-
+      // consultation lanes also call. On completion,
+      // enqueueAvatarCompositionForProject reads target_render_id and merges
+      // the avatar into THIS staged row (or repoints the section at a fresh
+      // avatar-led render when the staged one is already terminal) — a reader
+      // that, until now, had never once executed because nothing upstream ever
+      // reached it.
+      //
+      // The SCRIPT is written back first: `fitNarrationToBudget` may have
+      // trimmed it, and the avatar is about to speak the trimmed text, so the
+      // row must not keep the untrimmed version as its record of what was said.
+      // In voice_only mode the synthesis branch above already did this.
+      if (!synthesizeVoiceover && script && script !== rawScript) {
+        const { error: sErr } = await supabase.from("remotion_composition_renders")
+          .update({ input_props: { ...props, narrationScript: script } })
+          .eq("id", r.id)
+        if (sErr) console.warn(`[section-narration-orchestrator] trimmed-script write-back refused for render ${r.id}: ${sErr.message}`)
+      }
+
+      const { submitAvatarTrack } = await import("@/lib/video/avatar-track-submit")
+      const sub = await submitAvatarTrack(supabase, {
+        brokerageId: pres.brokerage_id,
+        // AGENTS-class id (ai_video_projects.agent_id → agents.id,
+        // scripts/schema-fk-map.ts). WAS `r.agent_user_id ?? pres.agent_user_id`
+        // — a USERS-class id, disjoint from agents.id (§3), so the moment any
+        // agent had a ready avatar every request here would have been refused
+        // with 23503. resolveAgentNarrationAssets already performs the
+        // users→agents cross for its asset lookups; agentRecordId is that same
+        // answer, returned instead of re-derived.
+        agentRecordId,
+        agentUserId:    pres.agent_user_id ?? null,
+        script,
+        targetRenderId: r.id,
+        title:          `Section narration ${r.composition_id}`,
+        // An admitted value of the live video_type CHECK (m119, added for
+        // exactly this: chapter videos riding the same completion pipeline).
+        videoType:       "presentation_chapter",
+        videoTypeIntent: "listing_presentation_section",
+        request: {
+          target_composition_id: r.composition_id,
+          // The STAGED row's own props, so the orchestrator's fallback path can
+          // seed a replacement render with the real slide instead of the
+          // composition's Studio sample data.
+          input_props: { ...props, narrationScript: script },
+          entity_type: "listing_presentation",
+          entity_id:   presentationId,
+        },
+        // Deliberately omitted: in avatar mode no separate mp3 exists (see the
+        // one-voice-not-two note above), so there is nothing to merge and
+        // nothing that could double up on the avatar's own audio.
+      })
+      if (sub.submitted) result.avatarSubmitted++
+      else {
+        console.warn(`[section-narration-orchestrator] render ${r.id} ships as the photo PIP — ${sub.reason}`)
+        result.avatarSkipped.push({ renderId: r.id, reason: sub.reason })
+      }
     }
 
     if (plan.mode === "avatar_narrated") result.avatarNarrated++
