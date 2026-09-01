@@ -695,21 +695,45 @@ export async function addAgentCommission(commissionData: {
   close_date: string
   side: "listing" | "buying" | "both"
 }) {
+  // ── GATE FIRST (§4) ───────────────────────────────────────────────────────
+  // This is a "use server" export, so it is a PUBLIC HTTP ENDPOINT — and it
+  // writes the MONEY LEDGER. It previously ran no auth check of any kind and
+  // took agent_id, gross_commission and agent_split_percent straight from the
+  // caller, resolving the brokerage FROM the body-supplied agent id: the exact
+  // IDOR shape §4 names, on commissions rather than on a counter. Anyone able to
+  // reach the endpoint could file a commission of any size against any agent in
+  // any brokerage. Same gate as awardPoints above, and for the same reason: the
+  // tenant comes from the SESSION, and the body-supplied agent must be proven to
+  // live inside it before a row is written.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { error: "Not authenticated" }
+  if (!ctx.brokerageId) return { error: "Your account is not linked to a brokerage yet." }
+  if (!isValidUUID(commissionData.agent_id)) return { error: "Invalid agent id." }
+
   const supabase = await createClient()
 
   const agentCommission = commissionData.gross_commission * (commissionData.agent_split_percent / 100)
   const brokerageCommission = commissionData.gross_commission - agentCommission
 
   // agent_commissions.agent_id is agents-class, so the brokerage anchor comes off the
-  // agents row (NOT NULL on the table).
+  // agents row (NOT NULL on the table). The brokerage predicate is what makes this
+  // read the tenant CHECK as well as the anchor resolution — a foreign agent simply
+  // does not resolve, and "cannot tell" is treated as "no" below.
   const { data: agentRow, error: agentErr } = await supabase
-    .from("agents").select("brokerage_id, user_id, location_id").eq("id", commissionData.agent_id).maybeSingle()
+    .from("agents").select("brokerage_id, user_id, location_id")
+    .eq("id", commissionData.agent_id)
+    .eq("brokerage_id", ctx.brokerageId)
+    .maybeSingle()
   if (agentErr) {
     console.error("Error resolving agent brokerage:", agentErr)
     return { error: agentErr.message }
   }
   if (!agentRow?.brokerage_id) {
-    return { error: "Agent has no brokerage — cannot create a commission record" }
+    // With the brokerage predicate above, an absent row means "no such agent" OR
+    // "not an agent of your brokerage" — indistinguishable from here, and the same
+    // refusal either way. The old wording ("agent has no brokerage") described the
+    // ungated read and would now be a false explanation.
+    return { error: "That agent was not found in your brokerage — no commission record was created." }
   }
 
   // OFFICE OF RECORD for the PRODUCING agent — not the caller, who may be a
