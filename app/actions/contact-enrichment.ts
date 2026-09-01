@@ -204,6 +204,61 @@ export async function getContactsNeedingLifeChangeCheck(limit = 25): Promise<{ c
 }
 
 /**
+ * Health of the enrichment QUEUE itself for the Data Health panel.
+ *
+ * The queue's writers (lib/lead-pipeline/enrichment-orchestrator.ts) stamp
+ * error_message on every failure/suppression and enrichment_cost on every
+ * paid lookup — but until this reader existed nothing ever showed either:
+ * the drain read only status/retry_count, so a failing vendor and its spend
+ * were both invisible. Tenant from session (§4); rows are the caller's own
+ * brokerage only. Read-only — this touches nothing in the orchestrator's
+ * scraping-source logic.
+ */
+export async function getEnrichmentQueueHealth(limit = 10): Promise<{
+  recentFailures: Array<{ id: string; enrichment_type: string | null; error_message: string | null; retry_count: number | null; queued_at: string | null }>
+  spend30d: number
+  error?: string
+}> {
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { recentFailures: [], spend30d: 0, error: "Unauthorized" }
+  }
+
+  const supabase = await createClient()
+  const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
+
+  const [failuresRes, costRes] = await Promise.all([
+    supabase
+      .from("lead_enrichment_queue")
+      .select("id, enrichment_type, error_message, retry_count, queued_at")
+      .eq("brokerage_id", ctx.brokerageId)
+      .eq("status", "failed")
+      .order("queued_at", { ascending: false })
+      .limit(limit),
+    supabase
+      .from("lead_enrichment_queue")
+      .select("enrichment_cost")
+      .eq("brokerage_id", ctx.brokerageId)
+      .gte("queued_at", since)
+      .not("enrichment_cost", "is", null),
+  ])
+
+  // §3: a refused read must render as "unavailable", not as a clean zero —
+  // a zero spend figure on a refused read would be a false bill of health.
+  if (failuresRes.error || costRes.error) {
+    const message = failuresRes.error?.message ?? costRes.error?.message ?? "read failed"
+    console.error("[contact-enrichment] queue health read failed:", message)
+    return { recentFailures: [], spend30d: 0, error: message }
+  }
+
+  const spend30d = (costRes.data ?? []).reduce(
+    (sum, r: { enrichment_cost: number | null }) => sum + (typeof r.enrichment_cost === "number" ? r.enrichment_cost : 0),
+    0,
+  )
+  return { recentFailures: failuresRes.data ?? [], spend30d }
+}
+
+/**
  * Recent life changes for agent notification. Life events live in
  * contacts.life_events (a jsonb array) — there is no contact_enrichment_data
  * table.

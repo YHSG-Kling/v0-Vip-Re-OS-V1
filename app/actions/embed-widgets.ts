@@ -294,6 +294,10 @@ export interface EmbedAnalytics {
   totalSessions: number
   totalLeads: number
   conversionRate: number
+  /** Distinct visitor_ids seen in the window. */
+  uniqueVisitors: number
+  /** Visitors with more than one session in the window. */
+  returningVisitors: number
   topPages: { pageUrl: string; sessions: number; leads: number }[]
   byDay: { date: string; sessions: number; leads: number }[]
 }
@@ -336,13 +340,16 @@ export async function getEmbedAnalytics(params: {
 
   if (widgetIds.length === 0) return { ok: true, analytics: [] }
 
-  // Pull sessions in the window
-  const { data: sessions } = await supabase
+  // Pull sessions in the window. metadata carries the full page URL — the
+  // session writer (app/api/embed/session/route.ts) stores it as
+  // metadata.page_url because embed_sessions has no page_url column.
+  const { data: sessions, error: sessionsError } = await supabase
     .from("embed_sessions")
-    .select("id, embed_widget_id, contact_id, origin, started_at")
+    .select("id, embed_widget_id, contact_id, origin, started_at, metadata, visitor_id")
     .in("embed_widget_id", widgetIds)
     .gte("started_at", since)
     .order("started_at", { ascending: false })
+  if (sessionsError) return { ok: false, error: sessionsError.message }
 
   const rows = sessions ?? []
 
@@ -351,10 +358,15 @@ export async function getEmbedAnalytics(params: {
     const total = wRows.length
     const leads = wRows.filter((r: any) => !!r.contact_id).length
 
-    // Top pages (by session count, top 10)
+    // Top pages (by session count, top 10). "Pages" means PAGES: the full
+    // URL from metadata.page_url — this used to group by origin, which
+    // collapsed every page of a site into one row labeled a page. Origin
+    // stays as the fallback for older rows written before page_url existed.
     const pageMap: Record<string, { sessions: number; leads: number }> = {}
     for (const r of wRows) {
-      const key = r.origin ?? "(unknown)"
+      const meta = (r.metadata ?? {}) as Record<string, unknown>
+      const pageUrl = typeof meta.page_url === "string" && meta.page_url ? meta.page_url : null
+      const key = pageUrl ?? r.origin ?? "(unknown)"
       if (!pageMap[key]) pageMap[key] = { sessions: 0, leads: 0 }
       pageMap[key].sessions++
       if (r.contact_id) pageMap[key].leads++
@@ -376,11 +388,22 @@ export async function getEmbedAnalytics(params: {
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([date, stats]) => ({ date, ...stats }))
 
+    // Returning visitors — visitor_id is stamped on every session row by the
+    // session writer; more than one session in the window = they came back.
+    const byVisitor: Record<string, number> = {}
+    for (const r of wRows) {
+      if (r.visitor_id) byVisitor[r.visitor_id] = (byVisitor[r.visitor_id] ?? 0) + 1
+    }
+    const uniqueVisitors = Object.keys(byVisitor).length
+    const returningVisitors = Object.values(byVisitor).filter((n) => n > 1).length
+
     return {
       widgetId: wid,
       totalSessions: total,
       totalLeads: leads,
       conversionRate: total > 0 ? Math.round((leads / total) * 1000) / 10 : 0,
+      uniqueVisitors,
+      returningVisitors,
       topPages,
       byDay,
     }

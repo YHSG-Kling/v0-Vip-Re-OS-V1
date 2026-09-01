@@ -76,7 +76,7 @@ export default async function EmbedAnalyticsPage({ params, searchParams }: PageP
       </div>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-3 gap-4 mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         <StatCard
           icon={<Users className="h-4 w-4" />}
           label="Sessions"
@@ -94,6 +94,12 @@ export default async function EmbedAnalyticsPage({ params, searchParams }: PageP
           label="Conversion rate"
           value={`${data?.conversionRate ?? 0}%`}
           sub="Leads ÷ sessions"
+        />
+        <StatCard
+          icon={<Users className="h-4 w-4" />}
+          label="Returning visitors"
+          value={data?.returningVisitors ?? 0}
+          sub={`Of ${data?.uniqueVisitors ?? 0} unique visitors, came back`}
         />
       </div>
 

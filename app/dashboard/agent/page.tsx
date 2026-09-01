@@ -13,6 +13,7 @@ import {
   checkOverdueMilestones,
 } from "@/app/actions/copilot"
 import { getTodaysBriefing, generateBriefing, getUpcomingShowings, getActiveTransactions, getUserTypeBrief } from "@/app/actions/briefing-actions"
+import { resolveAutopilotActionStatus } from "@/app/actions/open-house-kernel"
 import { TodaysFocusCard } from "@/app/components/shell/todays-focus-card"
 import BudgetWarningBanner from "@/app/components/shell/budget-warning-banner"
 import AutonomyHaltNotice from "@/app/components/shell/autonomy-halt-notice"
@@ -549,6 +550,21 @@ export default function AgentDashboard() {
     }
   }, [])
 
+  // Done/Skip for AI Autopilot suggestions. The rows are born 'pending'
+  // (lib/kernel/open-house.ts) and this feed reads .eq("status","pending") —
+  // until this handler existed the ONLY transition writer was the admin
+  // Command Center, so an agent's own suggestion feed could never clear.
+  // The card is removed from state only after the server confirms the
+  // transition; a refusal surfaces as a toast, never as a silent "done".
+  const handleResolveAutopilot = useCallback(async (planId: string, outcome: "executed" | "skipped") => {
+    const res = await resolveAutopilotActionStatus({ actionId: planId, outcome })
+    if (res.success) {
+      setActionPlans(prev => prev.filter(p => p.id !== planId))
+    } else {
+      toast.error(res.error ?? "Could not update the suggestion")
+    }
+  }, [])
+
   const handleRefreshBriefing = useCallback(async () => {
     setRefreshing(true)
     try {
@@ -960,6 +976,7 @@ export default function AgentDashboard() {
               dealsAtRisk={briefing?.deals_at_risk || []}
               upcomingShowings={showings}
               actionPlans={actionPlans}
+              onResolveAutopilot={handleResolveAutopilot}
             />
             <AgentDealIntelligence transactions={transactions} loading={loading} />
             <AgentLifetimeCustomersPanel

@@ -111,20 +111,26 @@ export async function getBuyerInsights(
       .order("generated_at", { ascending: false })
       .maybeSingle(),
 
-    // Signal counts for the bottom row
+    // Signal counts for the bottom row. §6: buyer_behavior_log.signal_type
+    // carries TWO spelling families for the same three ideas — the learner
+    // vocabulary (saved / love_it / dismissed, written by
+    // lib/behavior-learning/preference-updater.ts) and the portal/CRM
+    // telemetry spellings (property_saved / property_dismissed, written by
+    // app/crm/contacts/[contactId]/search/search-client.tsx). Filtering only
+    // the learner family under-reported every portal-side signal.
     svc
       .from("buyer_behavior_log")
       .select("signal_type")
       .eq("contact_id", contactId)
       .eq("brokerage_id", brokerageId)
-      .in("signal_type", ["saved", "love_it", "dismissed"]),
+      .in("signal_type", ["saved", "property_saved", "love_it", "dismissed", "property_dismissed"]),
   ])
 
   const rawSignals = signalRes.data ?? []
   const signalCounts: SignalCounts = {
-    saves:      rawSignals.filter(s => s.signal_type === "saved").length,
+    saves:      rawSignals.filter(s => s.signal_type === "saved" || s.signal_type === "property_saved").length,
     loves:      rawSignals.filter(s => s.signal_type === "love_it").length,
-    dismissals: rawSignals.filter(s => s.signal_type === "dismissed").length,
+    dismissals: rawSignals.filter(s => s.signal_type === "dismissed" || s.signal_type === "property_dismissed").length,
   }
 
   return {

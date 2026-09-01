@@ -132,13 +132,26 @@ export async function getOpenHouseDashboard(listingId: string) {
         .in("event_id", eventIds)
     : { data: [] }
 
-  const { data: packetJobs } = await supabase
+  // Latest completed listing packet for this listing. Two honesty fixes:
+  //   1. This used to filter job_type='open_house_booklet' — a vocabulary
+  //      value NO writer produces (the panel writes 'full_packet' via
+  //      app/actions/ai-listing-packet.ts; the stage automation writes
+  //      'mls_packet' via app/actions/listing-lifecycle.ts), so packetJob was
+  //      structurally null forever. Any completed packet is the binder the
+  //      agent brings to the open house — read what exists.
+  //   2. output_url is NULL by design today (the packet is content in
+  //      config.content, not a hosted file) — the event-day tab now links to
+  //      the packet panel instead of gating on a download URL.
+  const { data: packetJobs, error: packetJobsError } = await supabase
     .from("listing_packet_jobs")
     .select("id, job_type, status, output_url, completed_at")
     .eq("listing_id", listingId)
-    .eq("job_type", "open_house_booklet")
+    .eq("status", "completed")
     .order("created_at", { ascending: false })
     .limit(1)
+  if (packetJobsError) {
+    console.error("[seller-open-house] listing_packet_jobs read failed:", packetJobsError.message)
+  }
 
   return {
     listing,

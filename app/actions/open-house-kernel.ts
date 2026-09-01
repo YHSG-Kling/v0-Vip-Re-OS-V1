@@ -394,3 +394,58 @@ export async function completeOpenHouseCheckInAction(input: OpenHouseCheckInInpu
     }
   }
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// AUTOPILOT ACTION TRANSITIONS — the missing half of the state machine
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Marks an AI Autopilot suggestion done or skipped from the agent dashboard.
+ *
+ * WHY (§1, 2026-09-01): ai_autopilot_actions rows are born 'pending'
+ * (lib/kernel/open-house.ts inserts) and the agent dashboard feed reads
+ * .eq("status","pending") (app/dashboard/agent/page.tsx) — but the only
+ * transition writer was the admin Command Center (lib/kernel/approval-sources.ts
+ * agent_followup: approve → executed, reject → skipped). The AGENT surface that
+ * renders the suggestions had no way to clear them, so an agent's feed could
+ * only grow. This is the minimal transition on that surface, speaking the same
+ * vocabulary the Command Center writes and the live CHECK admits
+ * (pending | executed | skipped | cancelled — scripts/check-vocabularies.ts).
+ *
+ * Identity: ai_autopilot_actions.agent_id FKs agents(id); ctx.agentId is that
+ * class (see the header note). Tenant + ownership ride the UPDATE predicate,
+ * and the write is verified by counting what came back (§3): an UPDATE that
+ * matches nothing resolves cleanly, and here zero rows means the gate refused
+ * (wrong tenant, not the agent's row, or already transitioned) — which must
+ * surface as a refusal, not render as "done".
+ */
+export async function resolveAutopilotActionStatus(input: {
+  actionId: string
+  outcome: "executed" | "skipped"
+}): Promise<{ success: boolean; error?: string }> {
+  if (!input?.actionId) return { success: false, error: "An action id is required." }
+  if (input.outcome !== "executed" && input.outcome !== "skipped") {
+    return { success: false, error: "Outcome must be 'executed' or 'skipped'." }
+  }
+
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated." }
+  if (!ctx.brokerageId) return { success: false, error: "Your sign-in has no brokerage attached." }
+  if (!ctx.agentId) return { success: false, error: "Your sign-in has no agent profile." }
+
+  const service = createServiceClient()
+  const { data: updated, error } = await service
+    .from("ai_autopilot_actions")
+    .update({ status: input.outcome, executed_at: new Date().toISOString() })
+    .eq("id", input.actionId)
+    .eq("brokerage_id", ctx.brokerageId)
+    .eq("agent_id", ctx.agentId)
+    .eq("status", "pending")
+    .select("id")
+
+  if (error) return { success: false, error: error.message }
+  if (!updated || updated.length === 0) {
+    return { success: false, error: "Suggestion not found, not yours, or already resolved." }
+  }
+  return { success: true }
+}

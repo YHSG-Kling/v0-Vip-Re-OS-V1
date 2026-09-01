@@ -10,6 +10,13 @@ import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
 
 export interface AlertProperty {
   mls_number: string
+  /** listings.id when the match is one of OUR OWN listings (the internal-board
+   *  tier in idx-alert-search.ts). External IDX/RentCast matches have none.
+   *  Stamped into property_alert_results.listing_id so the "ours" branch of
+   *  the per-result actions (alert-actions.ts resultPropertyId) is reachable —
+   *  before this, every in-house listing saved from an alert was filed as an
+   *  external property. */
+  listing_id?: string
   property_address: string
   city?: string
   state?: string

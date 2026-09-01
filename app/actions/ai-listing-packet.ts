@@ -207,11 +207,20 @@ export async function generateListingPacket(config: ListingPacketConfig) {
       materialName: listing.address ?? undefined,
     })
 
-    // Update packet job with generated content stored in config jsonb
+    // Update packet job with generated content stored in config jsonb.
+    // completed_at is stamped here because readers key off it (the open-house
+    // dashboard shows when the packet was built). output_url stays NULL on
+    // purpose: this packet is CONTENT, not a hosted file — the documents live
+    // in config.content and are rendered by ListingPacketPanel on the listing
+    // lifecycle page. Open item: if the booklet ever gets a rendered/hosted
+    // PDF artifact, stamp its URL here; until then no reader may gate on
+    // output_url (app/actions/seller-open-house.ts now links to the panel
+    // instead of a phantom download).
     await supabase
       .from("listing_packet_jobs")
       .update({
         status: "completed",
+        completed_at: new Date().toISOString(),
         config: {
           ...config,
           sections: documents.map(d => d.type),

@@ -823,9 +823,18 @@ async function main() {
       ...Array.from({ length: 6 }, () => ({ page: "/neighborhood-guide", seconds: 180, source: "google" })),
     ]
     const si = composeSiteInsights(siteRows)
-    check("SITE TRAFFIC LEARNING (owner rule) — the write-only visitor tables now READ BACK: stickiest page found by time-on-page (5+ visit sample gate), ONE concrete adjustment composed ('feature it before they bounce'), weekly GATED notification (nothing auto-mutates), riding proactive-intelligence",
+    // §4 fail-closed control: time_on_page_seconds has NO writer today (the
+    // pixel upserts without it), so all-NULL dwell must produce NO dwell
+    // verdict — the old `?? 0` coercion made 0>=0×3 fire "stays 0× longer".
+    const siNoDwell = composeSiteInsights([
+      ...Array.from({ length: 8 }, () => ({ page: "/home", seconds: null, source: "google" })),
+      ...Array.from({ length: 6 }, () => ({ page: "/neighborhood-guide", seconds: null, source: "google" })),
+    ])
+    check("SITE TRAFFIC LEARNING (owner rule) — the write-only visitor tables now READ BACK: stickiest page found by time-on-page (5+ visit sample gate), ONE concrete adjustment composed ('feature it before they bounce'), weekly GATED notification (nothing auto-mutates), riding proactive-intelligence; NULL dwell (unwritten beacon) yields NO dwell verdict",
       si.stickiest?.page === "/neighborhood-guide" && si.bounciest?.page === "/home"
       && Boolean(si.adjustment?.includes("/neighborhood-guide")) && Boolean(si.adjustment?.includes("before they bounce"))
+      && siNoDwell.stickiest === null && siNoDwell.bounciest === null
+      && !(siNoDwell.adjustment ?? "").includes("longer on")
       && composeSiteInsights([]).adjustment === null
       && src("app/api/cron/proactive-intelligence/route.ts").includes("runSiteTrafficInsights")
       && src("lib/kernel/site-traffic-insights.ts").includes("rows.length < 10")
@@ -2360,7 +2369,15 @@ async function main() {
         && writeBaseline.length <= 63
         && src("scripts/orphan-write-sweep.ts").includes("AUDIT_EXEMPT")
         && src("lib/application/compliance-monitoring.ts").includes('"fair_housing_violation"')
-        && src("app/api/generate/newsletter/route.ts").includes('from("ai_generated_content")')
+        // The RULE Round 9 recorded is "the newsletter writer lands in the
+        // canonical ai_generated_content ledger, not the orphan generated_content
+        // twin". The writer it named — the auth-less /api/generate/newsletter
+        // route — was deleted (lane N3a 2026-09-01) after its artifact write was
+        // merged onto the survivor per §1.1, so the assertion follows the
+        // capability to app/actions/ai-newsletter.ts::aiWriteNewsletterContent
+        // rather than pinning to a file that finished its life (§2: assert the
+        // rule, not the waypoint).
+        && src("app/actions/ai-newsletter.ts").includes('from("ai_generated_content")')
         && src("lib/billing/stripe-subscription-ops.ts").includes("stripeRefundLatestInvoice")
         && src("app/actions/superadmin/brokerage-management.ts").includes("issueRefundAction")
         && src("app/dashboard/superadmin/brokerages/[id]/brokerage-actions.tsx").includes("issueRefundAction")

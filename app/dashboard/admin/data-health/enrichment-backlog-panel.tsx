@@ -34,26 +34,43 @@ import { Loader2, Sparkles, Users } from "lucide-react"
 import {
   getUnenrichedContacts,
   getContactsNeedingLifeChangeCheck,
+  getEnrichmentQueueHealth,
   enrichContactsBatch,
 } from "@/app/actions/contact-enrichment"
 
 const PAGE_LIMIT = 50
 
+interface QueueFailureRow {
+  id: string
+  enrichment_type: string | null
+  error_message: string | null
+  retry_count: number | null
+  queued_at: string | null
+}
+
 export function EnrichmentBacklogPanel() {
   const [unenriched, setUnenriched] = useState<Array<{ id: string }>>([])
   const [dueForCheck, setDueForCheck] = useState<Array<{ id: string }>>([])
+  const [queueFailures, setQueueFailures] = useState<QueueFailureRow[]>([])
+  const [spend30d, setSpend30d] = useState<number | null>(null)
+  const [queueError, setQueueError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [notice, setNotice] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
 
   const load = useCallback(async () => {
     setLoading(true)
-    const [a, b] = await Promise.all([
+    const [a, b, q] = await Promise.all([
       getUnenrichedContacts(PAGE_LIMIT),
       getContactsNeedingLifeChangeCheck(PAGE_LIMIT),
+      getEnrichmentQueueHealth(10),
     ])
     setUnenriched(a.contacts ?? [])
     setDueForCheck(b.contacts ?? [])
+    setQueueFailures(q.recentFailures ?? [])
+    // A refused queue read renders as "unavailable", never as $0 spent.
+    setQueueError(q.error ?? null)
+    setSpend30d(q.error ? null : q.spend30d)
     setLoading(false)
   }, [])
 
@@ -124,6 +141,45 @@ export function EnrichmentBacklogPanel() {
         {notice && (
           <p className="text-xs rounded border bg-muted/40 px-2 py-1.5 text-muted-foreground">{notice}</p>
         )}
+
+        {/* Queue health — failure reasons + spend. The orchestrator stamps
+            error_message on every failure and enrichment_cost on every paid
+            lookup; until this section nothing ever showed either, so a
+            failing vendor and its spend were both invisible. */}
+        {!loading && (
+          <div className="space-y-2 border-t pt-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium">Enrichment queue health</span>
+              <span className="text-xs text-muted-foreground">
+                {queueError
+                  ? "spend unavailable"
+                  : `$${(spend30d ?? 0).toFixed(2)} spent last 30 days`}
+              </span>
+            </div>
+            {queueError ? (
+              <p className="text-xs text-destructive">Queue read failed: {queueError}</p>
+            ) : queueFailures.length === 0 ? (
+              <p className="text-[11px] text-muted-foreground">No failed queue items.</p>
+            ) : (
+              <ul className="space-y-1">
+                {queueFailures.map((f) => (
+                  <li key={f.id} className="text-[11px] text-muted-foreground flex items-start justify-between gap-2">
+                    <span className="truncate" title={f.error_message ?? undefined}>
+                      <span className="font-medium text-foreground">{f.enrichment_type ?? "enrichment"}</span>
+                      {" — "}
+                      {f.error_message ?? "no reason recorded"}
+                    </span>
+                    <span className="shrink-0">
+                      {f.retry_count != null ? `${f.retry_count} retr${f.retry_count === 1 ? "y" : "ies"}` : ""}
+                      {f.queued_at ? ` · ${new Date(f.queued_at).toLocaleDateString()}` : ""}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
         <p className="text-[11px] text-muted-foreground">
           The scheduled sweep picks these up on its own; this is the manual lever for when you do
           not want to wait. Each contact costs a paid third-party lookup, so the bulk action only

@@ -419,6 +419,9 @@ export async function searchIDXForAlert(
 
   const internalResults: AlertProperty[] = (internalListings ?? []).map(l => ({
     mls_number: l.mls_number ?? `internal-${l.id}`,
+    // A real listings.id — this is what makes an in-house match file as OURS
+    // downstream (property_alert_results.listing_id → resultPropertyId).
+    listing_id: l.id,
     property_address: l.address,
     city: l.city ?? undefined,
     state: l.state ?? undefined,

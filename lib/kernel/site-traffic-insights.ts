@@ -23,6 +23,9 @@ export interface PageTraffic {
   page: string
   visits: number
   avgSeconds: number
+  /** Rows that actually carried a recorded time-on-page. 0 = no dwell data
+   *  exists for this page, and no dwell verdict may be built on it (§4). */
+  dwellSamples: number
 }
 
 export interface SiteInsights {
@@ -35,33 +38,54 @@ export interface SiteInsights {
 
 /** PURE: what the traffic says, and the ONE adjustment worth making. */
 export function composeSiteInsights(rows: Array<{ page: string | null; seconds: number | null; source?: string | null }>): SiteInsights {
-  const byPage = new Map<string, { visits: number; totalSeconds: number }>()
+  const byPage = new Map<string, { visits: number; totalSeconds: number; dwellSamples: number }>()
   const bySource = new Map<string, number>()
   for (const r of rows) {
     const page = (r.page ?? "").trim()
     if (page) {
-      const cur = byPage.get(page) ?? { visits: 0, totalSeconds: 0 }
+      const cur = byPage.get(page) ?? { visits: 0, totalSeconds: 0, dwellSamples: 0 }
       cur.visits += 1
-      cur.totalSeconds += Math.max(0, r.seconds ?? 0)
+      // §4 fail closed: NULL seconds is "nobody measured", not "0 seconds".
+      // website_visitors.time_on_page_seconds currently has NO writer — the
+      // pixel (app/api/track/pixel/route.ts) upserts the visit without it, and
+      // the dwell BEACON (a page-unload timer posting seconds back) is the
+      // unbuilt half (open item; building it is out of this module's scope).
+      // The old `?? 0` coercion made every page's avg 0, so the ×3 guard below
+      // read 0 >= 0×3 as true and mailed principals "visitors stay 0× longer".
+      // A recorded 0 still counts as a sample (a real instant bounce); an
+      // absent value counts as nothing.
+      if (typeof r.seconds === "number") {
+        cur.totalSeconds += Math.max(0, r.seconds)
+        cur.dwellSamples += 1
+      }
       byPage.set(page, cur)
     }
     const src = (r.source ?? "").trim()
     if (src) bySource.set(src, (bySource.get(src) ?? 0) + 1)
   }
   const pages: PageTraffic[] = Array.from(byPage.entries())
-    .map(([page, v]) => ({ page, visits: v.visits, avgSeconds: v.visits > 0 ? Math.round(v.totalSeconds / v.visits) : 0 }))
+    .map(([page, v]) => ({
+      page,
+      visits: v.visits,
+      avgSeconds: v.dwellSamples > 0 ? Math.round(v.totalSeconds / v.dwellSamples) : 0,
+      dwellSamples: v.dwellSamples,
+    }))
 
   if (pages.length === 0) return { topPage: null, stickiest: null, bounciest: null, topSource: null, adjustment: null }
 
   const topPage = [...pages].sort((a, b) => b.visits - a.visits)[0] ?? null
-  // Sticky/bouncy verdicts need real sample — never a claim from 2 visits.
-  const sampled = pages.filter((p) => p.visits >= 5)
+  // Sticky/bouncy verdicts need real sample — never a claim from 2 visits,
+  // and never from visits that carry no dwell measurement at all (§4: when
+  // no row has dwell data the dwell insight is SKIPPED, not sent).
+  const sampled = pages.filter((p) => p.visits >= 5 && p.dwellSamples >= 5)
   const stickiest = sampled.length > 0 ? [...sampled].sort((a, b) => b.avgSeconds - a.avgSeconds)[0]! : null
   const bounciest = sampled.length > 1 ? [...sampled].sort((a, b) => a.avgSeconds - b.avgSeconds)[0]! : null
   const topSource = bySource.size > 0 ? [...bySource.entries()].sort((a, b) => b[1] - a[1])[0]![0] : null
 
   let adjustment: string | null = null
-  if (stickiest && bounciest && stickiest.page !== bounciest.page && stickiest.avgSeconds >= bounciest.avgSeconds * 3) {
+  // stickiest.avgSeconds > 0 keeps the degenerate all-zero case (every
+  // measured dwell an instant bounce) from claiming "stays 0× longer".
+  if (stickiest && bounciest && stickiest.page !== bounciest.page && stickiest.avgSeconds > 0 && stickiest.avgSeconds >= bounciest.avgSeconds * 3) {
     adjustment = `Visitors stay ${Math.round(stickiest.avgSeconds / Math.max(1, bounciest.avgSeconds))}× longer on ${stickiest.page} than on ${bounciest.page} — feature that content (or link to it) from ${bounciest.page} before they bounce.`
   } else if (topPage && stickiest && topPage.page !== stickiest.page && stickiest.avgSeconds >= 60) {
     adjustment = `${stickiest.page} holds visitors ${stickiest.avgSeconds}s on average but gets less traffic than ${topPage.page} — promote it from your busiest page.`

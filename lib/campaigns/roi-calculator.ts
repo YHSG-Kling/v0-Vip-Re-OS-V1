@@ -67,12 +67,29 @@ export async function recalculateCampaignROI(
 
     // === SOCIAL campaigns ===
     if (campaignType === "social") {
-      // Get social posts linked to this campaign
-      const { data: socialPosts } = await supabase
+      // Get social posts linked to this campaign.
+      //
+      // §1 repoint (2026-09-01): this branch used to demand
+      // social_posts.kernel_event_id non-null — a column NO writer stamps
+      // (lib/ads/ad-creator.ts:610 writes a literal null on ad_campaigns
+      // "will be set by kernel event", and no kernel event ever sets either
+      // table's copy) — so every social campaign structurally reported 0.
+      // It also never filtered by campaign at all: any stamped post in the
+      // brokerage would have counted toward every social campaign. The join
+      // key that EXISTS is marketing_campaign_id — written by the video
+      // distributor (lib/kernel/video.ts:916) and already read by the
+      // sibling ROI rollup (lib/marketing/campaign-measurer.ts:60) and the
+      // ad branch below (ad_campaigns.marketing_campaign_id). kernel_event_id
+      // remains an open item: either a kernel-event publisher stamps it one
+      // day or the column retires — nothing may gate money math on it.
+      const { data: socialPosts, error: socialPostsError } = await supabase
         .from("social_posts")
         .select("id")
         .eq("brokerage_id", brokerageId)
-        .not("kernel_event_id", "is", null)
+        .eq("marketing_campaign_id", marketingCampaignId)
+      if (socialPostsError) {
+        console.error("[ROI Calculator] social_posts read failed:", socialPostsError.message)
+      }
 
       if (socialPosts && socialPosts.length > 0) {
         const postIds = socialPosts.map((p) => p.id)

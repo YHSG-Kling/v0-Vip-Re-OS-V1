@@ -170,6 +170,11 @@ export async function runAlert(alertId: string): Promise<RunAlertResult> {
       brokerage_id:           brokerageId,
       alert_id:               alertId,
       contact_id:             alert.contact_id,
+      // Set only when the match is one of OUR listings (internal-board tier).
+      // The reader's "ours" branch (alert-actions.ts resultPropertyId) keys on
+      // it; before this stamp it was structurally unreachable and in-house
+      // saves were filed as external properties.
+      listing_id:             p.listing_id ?? null,
       mls_number:             p.mls_number,
       property_address:       p.property_address,
       city:                   p.city,

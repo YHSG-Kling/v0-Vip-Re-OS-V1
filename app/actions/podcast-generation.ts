@@ -1015,17 +1015,34 @@ export async function updateDistributionChannel(
   }
 }
 
-// Create a distribution channel for the brokerage
+// Create a PERSONAL distribution channel for the calling agent.
+//
+// Lane fix (2026-09-01): the only caller is the settings page's
+// "Set Up My Channels" button (app/dashboard/settings/podcast-channels/
+// podcast-channels-client.tsx:127), whose whole purpose is the personal
+// override lane — yet this insert never stamped agent_user_id, so every
+// "personal" channel landed in the brokerage lane (agent_user_id NULL) and
+// the page's my-channels query (.eq("agent_user_id", user.id)) was
+// structurally empty forever. Worse, the duplicate check was lane-blind:
+// an existing BROKERAGE spotify channel made the personal setup return
+// alreadyExists and create nothing. Both now speak the personal lane;
+// agent_user_id FKs users(id) and getAgentContext().userId is that class.
 export async function createDistributionChannel(channelName: string) {
-  const { brokerageId } = await getAgentContext()
+  const { userId, brokerageId } = await getAgentContext()
+  if (!userId || !brokerageId) {
+    return { success: false, error: "Unauthorized" }
+  }
   const supabase = await createClient()
 
   try {
-    // Check if channel already exists to prevent duplicates
+    // Check if a PERSONAL channel already exists to prevent duplicates —
+    // a brokerage-level channel of the same name is the inherited default,
+    // not a duplicate of the caller's own.
     const { data: existing } = await supabase
       .from("podcast_distribution_channels")
       .select("id")
       .eq("brokerage_id", brokerageId)
+      .eq("agent_user_id", userId)
       .eq("channel_name", channelName)
       .maybeSingle()
 
@@ -1037,6 +1054,7 @@ export async function createDistributionChannel(channelName: string) {
       .from("podcast_distribution_channels")
       .insert({
         brokerage_id: brokerageId,
+        agent_user_id: userId,
         channel_name: channelName,
         is_enabled: false,
         created_at: new Date().toISOString(),

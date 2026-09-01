@@ -16,13 +16,16 @@ interface AgentNextBestActionsProps {
     contact: { first_name: string; last_name: string } | null
   }>
   actionPlans?: Array<{ id: string; title: string; description?: string; priority?: string; contact_id?: string | null; source?: string }>
+  /** Done/Skip transition for AI Autopilot suggestions — see ActionPlanCard.onResolve. */
+  onResolveAutopilot?: (planId: string, outcome: 'executed' | 'skipped') => Promise<void> | void
 }
 
 export function AgentNextBestActions({
   briefingActions,
   dealsAtRisk,
   upcomingShowings,
-  actionPlans
+  actionPlans,
+  onResolveAutopilot
 }: AgentNextBestActionsProps) {
   const highPriorityActions = briefingActions.filter(a => a.priority === 'high')
   const otherActions = briefingActions.filter(a => a.priority !== 'high')
@@ -136,7 +139,15 @@ export function AgentNextBestActions({
             <p className="text-xs font-semibold text-indigo-700 dark:text-indigo-400 uppercase mb-2">New Assignment Plans</p>
             <div className="space-y-2">
               {actionPlans?.map((plan) => (
-                <ActionPlanCard key={plan.id} plan={plan} />
+                <ActionPlanCard
+                  key={plan.id}
+                  plan={plan}
+                  onResolve={
+                    plan.source === 'AI Autopilot' && onResolveAutopilot
+                      ? (outcome) => onResolveAutopilot(plan.id, outcome)
+                      : undefined
+                  }
+                />
               ))}
             </div>
           </div>
