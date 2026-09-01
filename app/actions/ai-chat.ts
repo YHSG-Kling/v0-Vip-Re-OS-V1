@@ -1024,7 +1024,7 @@ export async function endChatSession(sessionId: string) {
   // ── CONVERSATION ANALYTICS (lane E2 2026-08-28: logConversationMetadata WIRED) ──
   // conversation_logs + conversation_audit_flags feed the Communication
   // Intelligence dashboard (app/dashboard/communications/intelligence), whose
-  // AuditFlagsTab/ComplianceTab review flags via reviewAuditFlag — but NOTHING
+  // ComplianceTab reviews flags via reviewAuditFlag — but NOTHING
   // in the tree wrote either table: the reviewers were reviewing rows that
   // could never exist. Ending a chat session is the one moment a conversation
   // is complete, so the sentiment/topic/compliance log is written here.

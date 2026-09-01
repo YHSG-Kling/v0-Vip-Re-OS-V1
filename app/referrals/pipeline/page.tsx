@@ -10,6 +10,7 @@ import { getAgentContext } from "@/lib/identity"
 import { referralStatusBadgeClass, referralStatusLabel } from "@/lib/referrals/referral-status"
 import { PipelineOsClient } from "./pipeline-os-client"
 import { ReferralAppreciationPanel } from "./appreciation-panel"
+import { DraftThankYouButton } from "./draft-thank-you-button"
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
@@ -187,17 +188,24 @@ export default async function ReferralPipelinePage() {
                     say "mark", not to fake a dispatch.
                   */}
                   {!referral.thank_you_sent && referral.status !== "received" && (
-                    <form
-                      action={async () => {
-                        "use server"
-                        await sendReferralThankYou(referral.id)
-                        revalidatePath("/referrals/pipeline")
-                      }}
-                    >
-                      <Button size="sm" variant="default" type="submit" className="w-full">
-                        Mark Thank-You Sent
-                      </Button>
-                    </form>
+                    <>
+                      {/* Words for the card: draftReferralThankYou (the routed,
+                          tenant-scoped replacement for the deleted
+                          /api/referrals/thank-you-draft route) returns a draft
+                          the agent copies — it sends nothing. */}
+                      <DraftThankYouButton referralId={referral.id} />
+                      <form
+                        action={async () => {
+                          "use server"
+                          await sendReferralThankYou(referral.id)
+                          revalidatePath("/referrals/pipeline")
+                        }}
+                      >
+                        <Button size="sm" variant="default" type="submit" className="w-full">
+                          Mark Thank-You Sent
+                        </Button>
+                      </form>
+                    </>
                   )}
                 </div>
               </div>

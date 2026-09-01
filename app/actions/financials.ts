@@ -469,9 +469,10 @@ export async function exportExpensesCSV(agentId: string) {
     // UPDATED 2026-08-22. The writer this paragraph used to name —
     // app/api/financial/expenses/route.ts, which inserted `{ ...request.json() }`
     // on the service client and so took brokerage_id from the request BODY — no
-    // longer exists in that shape. That route now derives both agent and tenant
-    // from the session and accepts an explicit allowlist of five columns
-    // (category, description, amount, expense_date, receipt_url). And m516 IS
+    // longer exists in that shape. (It was first fixed to derive agent+tenant
+    // from the session with a five-column allowlist, then DELETED outright —
+    // lane N3a 2026-09-01 — as a strict subset of logScopedExpense in this
+    // file; tombstone in scripts/opposite-missing-census.ts.) And m516 IS
     // applied live: `business_expenses.brokerage_id` is NOT NULL (verified
     // 2026-08-22 against hrvaqgvukzxfskkcrwbt via information_schema.columns),
     // with trigger business_expenses_derive_tenant_trg standing behind it.

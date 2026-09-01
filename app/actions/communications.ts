@@ -203,13 +203,14 @@ export async function logCall(params: {
     return { success: false, error: "Not authenticated" }
   }
 
-  const contact = await supabaseService.getContactById(params.contactId)
+  // Tenant-scoped read (§4, lane N3a 2026-09-01): getContactById now REQUIRES
+  // the session brokerage and applies it as an equality predicate, so a foreign
+  // contact id finds nothing — the explicit post-read inequality check this
+  // used to carry is subsumed by the predicate.
+  const contact = await supabaseService.getContactById(params.contactId, ctx.brokerageId)
 
   if (!contact) {
     return { success: false, error: "Contact not found" }
-  }
-  if ((contact as any).brokerage_id !== ctx.brokerageId) {
-    return { success: false, error: "Forbidden" }
   }
 
   // Sync to GHL
@@ -391,7 +392,18 @@ export async function addContactNote(params: {
   note: string
   category?: string
 }) {
-  const contact = await supabaseService.getContactById(params.contactId)
+  // SESSION GATE + TENANT ANCHOR (§4, lane N3a 2026-09-01 — added when
+  // getContactById grew its required tenant parameter). This "use server"
+  // export is a public HTTP endpoint and it WRITES a note onto the contact; it
+  // previously called the service-role reader with no gate at all, so anyone
+  // authenticated-or-not could pin notes to any tenant's contact. Same gate
+  // shape as its sibling logCall above.
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { success: false, error: "Not authenticated" }
+  }
+
+  const contact = await supabaseService.getContactById(params.contactId, ctx.brokerageId)
 
   if (!contact) {
     return { success: false, error: "Contact not found" }

@@ -38,8 +38,9 @@
  * receipt_url, team_id) — there is no path column, so a path could only be parsed
  * back out of the URL. Second, that parse is unreliable by construction:
  * `receipt_url` is ALSO written straight from caller input by
- * app/actions/financials.ts#logScopedExpense and by app/api/financial/expenses
- * (an allowlisted `receipt_url` field), so the column can hold any string at all,
+ * app/actions/financials.ts#logScopedExpense (and was by the since-deleted
+ * app/api/financial/expenses route — lane N3a 2026-09-01, tombstone in
+ * scripts/opposite-missing-census.ts), so the column can hold any string at all,
  * not just a `receipts`-bucket signed URL. A column that is a path on some rows
  * and a stranger's URL on others is worse than no column. It also spells the
  * brokerage uuid and the bucket layout into a file that has left the building,
@@ -108,7 +109,7 @@ export const RECEIPT_MISSING = "missing"
 /**
  * PURE: is there a receipt behind this row? Presence, never the value.
  * Whitespace-only is not a receipt — `logScopedExpense` trims to null, but the
- * API route and any legacy row may not have.
+ * deleted API route did not, and any legacy row may not have.
  *
  * ONE VOCABULARY (CLAUDE.md §6), AND THE SECOND SPELLING IT REPLACED. The CSV's
  * `Receipt` column and the deduction-readiness panel's "Missing Receipts" tile
@@ -119,8 +120,9 @@ export const RECEIPT_MISSING = "missing"
  * export — which trims — printed "missing". An agent could read 100% receipt
  * completeness on the dashboard and mail their bookkeeper a CSV saying the same
  * row has none. Whitespace is reachable: `logScopedExpense` trims to null, but
- * app/api/financial/expenses accepts an allowlisted `receipt_url` and any
- * pre-trim legacy row is still in the table. The panel now calls THIS.
+ * the deleted app/api/financial/expenses route accepted an allowlisted
+ * `receipt_url` untrimmed and any pre-trim legacy row is still in the table.
+ * The panel now calls THIS.
  */
 export function hasReceipt(row: ExpenseCsvInput): boolean {
   return typeof row.receipt_url === "string" && row.receipt_url.trim().length > 0

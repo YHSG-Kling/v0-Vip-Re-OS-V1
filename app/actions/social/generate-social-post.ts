@@ -28,6 +28,8 @@ import {
   publicPriceEventLabel,
 } from "@/lib/listings/price-improvement-label"
 import { SOCIAL_POST_CHAR_LIMITS, SOCIAL_POST_CHAR_LIMIT_DEFAULT } from "@/lib/constants"
+import { analyzeContentQuality, type QualityScore } from "@/lib/quality-checker"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -169,6 +171,12 @@ export async function generateSocialPostContent(params: {
    *  so a caller that ledgers a run of this generator MUST take the figure from
    *  here rather than inventing one. Absent when no model call was made. */
   usage?: GeneratedUsage
+  /** Merged (§1.1, lane N3a 2026-09-01) from the deleted /api/generate/social
+   *  route: the them-first quality verdict for the generated post. */
+  quality?: QualityScore
+  /** The ai_generated_content artifact row id — null when the session carried
+   *  no tenant to stamp or the ledger insert was refused (both logged). */
+  contentId?: string | null
 }> {
   try {
     const supabase = await createClient()
@@ -281,7 +289,56 @@ export async function generateSocialPostContent(params: {
       }
     }
 
-    return { success: true, data: object, usage }
+    // ── MERGED (§1.1, lane N3a 2026-09-01) from the deleted
+    // app/api/generate/social/route.ts: its two unique capabilities land on
+    // this survivor.
+    //
+    // 1. Them-first quality scoring (lib/quality-checker.ts) over the approved
+    //    post text.
+    const quality = analyzeContentQuality(object.content)
+
+    // 2. The ai_generated_content artifact row with the quality metrics. The
+    //    identity stamped on the ledger row is SESSION-derived (§4) — the
+    //    params.agentId/brokerageId shape generation inputs, but the row records
+    //    who actually ran it. content_type is the CANONICAL "social_post" (§6);
+    //    the route wrote the retired "social" spelling. Non-fatal on refusal —
+    //    the generated post is returned either way — but the error is READ and
+    //    logged (§3), never swallowed.
+    let contentId: string | null = null
+    const ctx = await getAgentContext()
+    if (ctx.isAuthenticated && ctx.brokerageId) {
+      const { data: savedContent, error: saveError } = await supabase
+        .from("ai_generated_content")
+        .insert({
+          content_type: "social_post",
+          content: object.content,
+          generated_content: object.content,
+          user_id: ctx.userId,               // users-class
+          agent_id: ctx.agentId,             // agents-class (identity census)
+          brokerage_id: ctx.brokerageId,
+          platform: params.platform || null,
+          hashtags: object.hashtags ?? [],
+          title: `Social post — ${params.platform}`,
+          quality_score: quality.score / 100,
+          metadata: {
+            source: "generateSocialPostContent",
+            brief: params.brief?.slice(0, 500),
+            them_percentage: quality.themPercentage,
+            agent_percentage: quality.agentPercentage,
+            warnings: quality.warnings,
+          },
+        })
+        .select("id")
+        .maybeSingle()
+      if (saveError) {
+        console.error("[generate-social-post] ai_generated_content artifact insert refused:", saveError.message)
+      }
+      contentId = savedContent?.id ?? null
+    } else {
+      console.warn("[generate-social-post] no authenticated tenant on session — artifact row not written")
+    }
+
+    return { success: true, data: object, usage, quality, contentId }
   } catch (error: any) {
     console.error("[generate-social-post] Error:", error)
     return { success: false, error: friendlyAiError(error, "Failed to generate post content") }

@@ -2303,13 +2303,40 @@ control("C3 counted non-function exports at all", typeExports.length > 200, `${t
   }
   // The positive: a module NOTHING reaches and no framework loads must have its
   // non-function exports REPORTED, not cleared by its own signature.
+  //
+  // NOT PINNED TO A LIVE SPECIMEN (§2, lane N3a 2026-09-01). This control used
+  // to demand `unaddressed.length > 0` — at least one unreached module still
+  // EXISTING in the tree — which is the waypoint defect this file's own rules
+  // name: the wave that deleted the last two such modules
+  // (BackgroundPicker.tsx, communication-compliance-helpers.ts — a tree
+  // IMPROVEMENT) turned the control red. The finder is now proven on a FIXTURE
+  // pushed through the same helpers the live classification uses
+  // (moduleIsAddressable must refuse the path; the exports must then survive
+  // every clearing rule and be reported), while the live arm still requires
+  // that any specimens that DO exist are all reported.
   {
     const unaddressed = [...new Set(typeExports.map((e) => e.file))].filter((f) => !moduleIsAddressable(f))
     const reportedFrom = new Set(typeOrphans.map((e) => e.file))
     const missed = unaddressed.filter((f) => !reportedFrom.has(f))
+    // The path carries a "/" so the root-level-runtime clearing in
+    // frameworkLoads cannot apply; nothing imports it, no Next/test/Remotion
+    // pattern matches it, so moduleIsAddressable must say NO.
+    const fixtureFile = "lib/<control>/unreached-fixture.ts"
+    const fixtureSrc = maskStrings(blankComments([
+      `export interface N3aControlUnreachedShape { a: string }`,
+      `export type N3aControlUnreachedAlias = N3aControlUnreachedShape`,
+    ].join("\n")))
+    const fixtureExports = scanTypeExports(fixtureFile, fixtureSrc)
+    const fixtureAddressable = moduleIsAddressable(fixtureFile)
+    // The SAME decision chain the live loop applies (product refs → structural
+    // reachability, which an unaddressed module never gets → proof refs).
+    const fixtureReported = fixtureExports.filter((e) =>
+      !refIn(e.name, e.file, productIndex) &&
+      (fixtureAddressable ? !namedInReachableDeclaration(fixtureSrc, e.name, e.line) : true) &&
+      !refIn(e.name, e.file, proofIndex))
     control("C3 every non-function export of an UNREACHED module is reported (defect B, positive side)",
-      unaddressed.length > 0 && missed.length === 0,
-      `${unaddressed.length} unreached module(s) declaring non-function exports · ${missed.length} still cleared${missed.length ? `: ${missed.slice(0, 5).join(", ")}` : ""}`)
+      !fixtureAddressable && fixtureExports.length === 2 && fixtureReported.length === 2 && missed.length === 0,
+      `fixture: addressable=${fixtureAddressable}, ${fixtureReported.length}/2 reported · live: ${unaddressed.length} unreached module(s), ${missed.length} still cleared${missed.length ? `: ${missed.slice(0, 5).join(", ")}` : ""}`)
   }
 }
 {
@@ -3251,6 +3278,103 @@ const QUALIFIED_EXTERNAL_ROUTES = new Map<string, string>([
 //     getPlatformVendorSpendOverview :107 for the platform-staff branch, wired
 //     at app/dashboard/support/page.tsx). Both of the route's audiences read
 //     the same checkVendorBudget + redactBudgetForActor pair there.
+
+// ─── TOMBSTONES: ten superseded/insecure routes DELETED (lane N3a, 2026-09-01) ─
+// All ten sat in census 6b ("route handler nothing in the tree addresses").
+// The deleted files, by path (the spelling orphan-export-guard's
+// tombstoneNaming() resolves a deleted ambiguous export against):
+//   app/api/generate/newsletter/route.ts
+//   app/api/generate/social/route.ts
+//   app/api/referrals/thank-you-draft/route.ts
+//   app/api/admin/seed-feature-flags/route.ts
+//   app/api/financial/expenses/route.ts
+//   app/api/ai/generate-content/route.ts
+//   app/api/ai/insider-edit-generate/route.ts
+//   app/api/ai/insider-edit-rewrite-section/route.ts
+//   app/api/ai/insider-edit-save/route.ts
+//   app/api/ai/content-suggestions/route.ts
+// Each was compared capability-by-capability against its survivor; anything the
+// survivor lacked was MERGED ONTO IT FIRST (§1.1), then the route deleted:
+//   · /api/generate/newsletter → app/actions/ai-newsletter.ts:229
+//     aiWriteNewsletterContent. THE AUTH HOLE that made this urgent: the route
+//     had NO gate — getAgentContext's result was used only optionally, AI spend
+//     proceeded with userId:"" and the ai_generated_content row was inserted
+//     with NULL identity, so an anonymous caller could burn platform AI budget
+//     and write unattributed ledger rows. The survivor session-gates, feature-
+//     gates (newsletter_engine), brand-voices and audience-shapes; the route's
+//     two unique halves — analyzeContentQuality scoring (lib/quality-checker.ts)
+//     and the ai_generated_content artifact row — were merged onto it (see the
+//     MERGED block before its return). doc-kernel-simulator ROUND 9's clause
+//     followed the ai_generated_content write to the survivor (§2).
+//   · /api/generate/social → app/actions/social/generate-social-post.ts:152
+//     generateSocialPostContent (brand-voice hierarchy, evaluateOutbound,
+//     price-improvement boundary, per-platform char limits — all absent from
+//     the route). Merged first: them-first quality scoring + the
+//     ai_generated_content artifact row with quality metrics (content_type
+//     folded to canonical "social_post"; the route wrote retired "social", §6).
+//     After this pair, lib/quality-checker.ts has exactly its two survivors as
+//     callers.
+//   · /api/referrals/thank-you-draft → app/actions/referrals/referral-actions.ts
+//     draftReferralThankYou, BUILT for it (§1.2) and wired at
+//     app/referrals/pipeline/draft-thank-you-button.tsx beside "Mark Thank-You
+//     Sent". The route bypassed BOTH AI rails: raw generateText (spend never
+//     booked, prompt never Data-Guard-scrubbed — it was pinned in
+//     ai-spend-booked-baseline.json as raw:generateText and in
+//     data-guard-baseline.json) with unscrubbed contact notes, and a
+//     body-supplied contactId read with no tenancy. The action anchors the
+//     referral to the session agent+brokerage and rides generateAIResponse.
+//   · /api/admin/seed-feature-flags → scripts/seed-all-missing-feature-flags.sql
+//     (the idempotent catalogue seed — every one of the route's 16 feature_keys
+//     is already in it, verified by key diff, so nothing to merge) and
+//     app/actions/superadmin/tenant-entitlements.ts:316 (the FK-safe in-app
+//     flag insert pattern). The route's platform-staff gate was correct but its
+//     upsert ran on the CALLER'S RLS client against the global feature_flags
+//     catalogue, so the write was refused live and masked as a generic 500 — a
+//     cockpit door that never opened, with no UI or script addressing it.
+//   · /api/financial/expenses → POST: app/actions/financials.ts:751
+//     logScopedExpense, a strict superset (identical validation clauses plus
+//     the agent/team/brokerage scope model and finance-admin gate); GET:
+//     app/dashboard/financials/expenses/page.tsx:27 reads business_expenses
+//     directly. Nothing merged. supabaseService.createBusinessExpense went with
+//     it (tombstone in services/supabaseService.ts).
+//   · /api/ai/generate-content → app/actions/ai-content-generation.tsx
+//     (generateEmail :1287, generateSocialPost :1158, generateBlogPost :1413,
+//     riding lib/services/content-generation.service.ts). Merged first: brand
+//     voice assembled INTO the writing prompt incl. the never-use list (§5
+//     compliance-first — landed on the LIVE columns preferred_words/
+//     prohibited_words; the route read `keywords`/`avoid_words`, which are not
+//     brand_voice_profile columns, so its avoid-list was always undefined), and
+//     hashtag harvesting from the body when the model skips the JSON field.
+//     Already present on the survivors, verified not re-merged: agentId in the
+//     AI metadata (runPipelineSimple resolves and stamps it; generateBlogPost
+//     passes it explicitly). RECORDED DIFFERENCES, not merged: the route's
+//     free-form propertyDetails object (survivors take propertyId and read the
+//     listing — the safer shape); its free-form topic rides customPrompt/
+//     targetAudience (audienceDirection) on the service; the "SEO echo" was the
+//     caller's own keywords array returned back verbatim — no capability.
+//   · /api/ai/insider-edit-generate + /api/ai/insider-edit-rewrite-section +
+//     /api/ai/insider-edit-save (a trio, no UI anywhere) → the newsletter lane.
+//     Merged first: the curator system prompt + forbidden-word list and the
+//     tone-validation pass (they existed NOWHERE else) into
+//     lib/newsletter/insider-edit.ts, wired as the selectable "insider"
+//     template of aiWriteNewsletterContent (which runs the tone pass in place
+//     of generic brand-voice rewriting for that template); the save half's
+//     upsert-by-id edit semantics into app/actions/ai-newsletter.ts
+//     createNewsletterCampaign (campaignId param, ownership-verified), whose
+//     create path already stamped created_by. The InsiderEdit* types the trio
+//     alone consumed are tombstoned in types.ts.
+//   · /api/ai/content-suggestions → the live per-contact suggestion lane:
+//     smart_assistant_suggestions (writer app/actions/assistant.ts:217
+//     generateSmartSuggestion, reader app/actions/contact-details.ts:189). §6:
+//     one suggestion lane. NOTHING carried from its hard-coded rule table, on
+//     evidence: the table keyed on lifecycle_stage/stage/buyer_type/price_range/
+//     preferred_locations — NONE of which are live contacts columns (schema-
+//     snapshot.ts:239) — so on real rows every branch but the "awareness"
+//     default was dead and the two suggestions that could ever fire were
+//     generic boilerplate. It called no model and wrote nothing.
+// STILL 6b BY DESIGN, fixed not deleted the same day: /api/credit/status keeps
+// its entry — it is the only reader of the credit lane and now resolves its
+// tenant from the session (see the route header and services/supabaseService.ts).
 
 for (const r of routesWithNoCaller) {
   const qualified = QUALIFIED_EXTERNAL_ROUTES.get(r.path)

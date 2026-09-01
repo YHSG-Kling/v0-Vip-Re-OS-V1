@@ -291,7 +291,17 @@ export async function getTenantAutonomyStateAction(brokerageId: string): Promise
 }
 
 /** Halt (or resume) ALL autonomous AI manager sends for ONE tenant. Reason required — it is
- *  audited AND shown to the tenant on their Command Center banner. */
+ *  audited AND shown to the tenant on their Command Center banner.
+ *
+ *  TOMBSTONE (§1.3, lane N3a 2026-09-01): app/api/admin/seed-feature-flags/route.ts
+ *  DELETED. Its platform-staff gate was correct, but its upsert ran on the
+ *  CALLER'S RLS client against the global feature_flags catalogue, so the write
+ *  was refused live and masked as a generic 500 — and nothing in the tree (no
+ *  UI, no script) ever addressed the route. SURVIVORS: the idempotent catalogue
+ *  seed scripts/seed-all-missing-feature-flags.sql (every one of the route's 16
+ *  feature_keys is already in it, verified by key diff), and the FK-safe
+ *  gate-then-service-client flag insert in THIS function below (the
+ *  feature_flags ensure-row before the override insert). */
 export async function setTenantAutonomyHaltAction(params: {
   brokerageId: string
   halt: boolean

@@ -27,6 +27,13 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { normalizeSectionType, defaultOrderFor } from "@/lib/kernel/newsletter/section-types"
 import { pickTopics, renderTopicsForPrompt, type TopicCandidate } from "@/lib/content-intel/topic-bank"
 import { logTopicUses } from "@/lib/content-intel/performance-aggregator"
+import { analyzeContentQuality } from "@/lib/quality-checker"
+import {
+  INSIDER_CURATOR_SYSTEM_PROMPT,
+  INSIDER_SECTION_PROMPTS,
+  INSIDER_SECTION_TITLES,
+  enforceInsiderTone,
+} from "@/lib/newsletter/insider-edit"
 
 // ============================================
 // AI NEWSLETTER SYSTEM
@@ -95,6 +102,20 @@ const NEWSLETTER_TEMPLATES: NewsletterTemplate[] = [
     sections: ["hero", "market_update", "tips", "cta"],
     primaryColor: "#374151",
     fontFamily: "system-ui, sans-serif",
+  },
+  // MERGED (§1.1, lane N3a 2026-09-01) from the deleted app/api/ai/insider-edit-*
+  // route trio: "The Insider Edit" curated deal-of-the-week format is now a
+  // selectable template on THIS lane. The curator voice + section direction live
+  // in lib/newsletter/insider-edit.ts; aiWriteNewsletterContent applies them when
+  // this template is chosen (and runs the trio's tone-validation pass in place of
+  // generic brand-voice rewriting, which would flatten the curator voice).
+  {
+    id: "insider",
+    name: "The Insider Edit",
+    style: "minimal",
+    sections: ["hook", "events", "civic", "deal", "eats"],
+    primaryColor: "#1c1917",
+    fontFamily: "Georgia, serif",
   },
 ]
 
@@ -397,8 +418,26 @@ export async function aiWriteNewsletterContent(params: {
       for (const t of list) allTopicIds.add(t.id)
     }
 
+    // ── THE INSIDER EDIT (merged §1.1, lane N3a 2026-09-01) ──────────────────
+    // When the "insider" template is selected, the deleted insider-edit-generate
+    // route's curator voice becomes this call's SYSTEM prompt and its per-section
+    // writing direction is appended to the user prompt — the format is a voice +
+    // five sections, not a different pipeline, so it rides the same schema,
+    // topic seeding, targeting metadata and compliance gates as every template.
+    const isInsiderTemplate = template.id === "insider"
+    const insiderBlock = isInsiderTemplate
+      ? `\n═══ THE INSIDER EDIT — SECTION DIRECTION ═══
+This issue is a curated "deal of the week" newsletter, NOT a property blast.
+Author exactly these sections, in this order, with these titles:
+${template.sections
+  .map((s) => `• ${s} — titled "${INSIDER_SECTION_TITLES[s] ?? s}": ${INSIDER_SECTION_PROMPTS[s] ?? ""}`)
+  .join("\n")}
+Each section is 150-200 words, specific, and free of hard-sell language.\n`
+      : ""
+
     const { object: content } = await generateObject({
       model: resolveModel("openai/gpt-4o"),
+      system: isInsiderTemplate ? INSIDER_CURATOR_SYSTEM_PROMPT : undefined,
       schema: z.object({
         sections: z.array(
           z.object({
@@ -496,7 +535,8 @@ COMPLIANCE: Never reference protected classes (race, color, religion,
 national origin, sex, disability, familial status). When targeting a
 persona, target by life-stage / financial readiness / property goal —
 NEVER by demographic proxy. "Perfect for families" is illegal; "Move-in
-ready with a fenced yard" is not.`,
+ready with a fenced yard" is not.
+${insiderBlock}`,
     })
 
     // Apply brand voice to generated content. The targeting metadata
@@ -505,8 +545,20 @@ ready with a fenced yard" is not.`,
     // When the AI marked a section persona-specific, seed brandVoice's
     // persona slot with the first target_persona so the resolver returns
     // the per-persona tone overrides if any are configured.
+    // For the INSIDER template the curator voice IS the brand voice: the generic
+    // applyBrandVoice rewrite would flatten it, so the merged tone-validation
+    // pass (deleted insider-edit-rewrite-section route) runs instead — it fixes
+    // hype/generic/sales-y tone while keeping the section's core message.
     const brandedSections = await Promise.all(
       content.sections.map(async (section: any) => {
+        if (isInsiderTemplate) {
+          const validated = await enforceInsiderTone(section.content, {
+            userId: sessionUserId,
+            brokerageId: sessionBrokerageId,
+            agentId: sessionAgentId,
+          })
+          return { ...section, content: validated.content || section.content }
+        }
         const seedPersona = Array.isArray(section.target_personas) && section.target_personas[0]
           ? section.target_personas[0]
           : "seller"
@@ -557,6 +609,51 @@ ready with a fenced yard" is not.`,
       )
       .join('<hr style="margin:1.5rem 0;border-color:#e5e7eb">')
 
+    // ── MERGED (§1.1, lane N3a 2026-09-01) from the deleted, auth-less
+    // app/api/generate/newsletter/route.ts: its two unique capabilities land here.
+    //
+    // 1. Them-first quality scoring (lib/quality-checker.ts) — measured over the
+    //    plain section text, never the HTML wrapper, so markup tokens don't
+    //    dilute the pronoun ratio.
+    const plainText = brandedSections.map((s: any) => `${s.title}\n${s.content}`).join("\n\n")
+    const quality = analyzeContentQuality(plainText)
+
+    // 2. The ai_generated_content artifact row (the canonical AI-output ledger —
+    //    the AI audit + Content OS surfaces read it). Identity is SESSION-derived
+    //    here, which is what the route could not guarantee: it inserted with
+    //    user_id/agent_id/brokerage_id NULL whenever getAgentContext came back
+    //    unauthenticated, because it had no gate. Non-fatal on refusal — the
+    //    generation succeeded and is returned either way — but the error is READ
+    //    and reported (§3), never swallowed.
+    let artifactId: string | null = null
+    {
+      const { data: savedContent, error: saveError } = await supabase
+        .from("ai_generated_content")
+        .insert({
+          content_type: "newsletter",
+          content: plainText,
+          generated_content: flatContent,
+          user_id: sessionUserId,               // users-class
+          agent_id: sessionAgentId,             // agents-class (identity census)
+          brokerage_id: sessionBrokerageId,
+          title: `Newsletter — ${params.topic || template.name}`,
+          quality_score: quality.score / 100,
+          metadata: {
+            source: "aiWriteNewsletterContent",
+            template: template.id,
+            them_percentage: quality.themPercentage,
+            agent_percentage: quality.agentPercentage,
+            warnings: quality.warnings,
+          },
+        })
+        .select("id")
+        .maybeSingle()
+      if (saveError) {
+        console.error("[AI Newsletter] ai_generated_content artifact insert refused:", saveError.message)
+      }
+      artifactId = savedContent?.id ?? null
+    }
+
     return {
       success: true,
       /** Flat markdown string — used by content-studio-client for display/editing */
@@ -565,6 +662,11 @@ ready with a fenced yard" is not.`,
       sections: brandedSections,
       estimatedReadTime: (content as any).estimatedReadTime ?? null,
       wordCount: (content as any).wordCount ?? null,
+      /** Merged from the deleted /api/generate/newsletter route (§1.1): the
+       *  them-first quality verdict and the ai_generated_content artifact id
+       *  (null when the ledger insert was refused — the refusal is logged). */
+      quality,
+      contentId: artifactId,
       /** Wave 20.1 — the content_topic_bank IDs that seeded this issue.
        *  The caller passes these into createNewsletterCampaign so the
        *  performance loop can log them against the newsletter_campaign
@@ -816,6 +918,14 @@ export async function createNewsletterCampaign(params: {
    *  produced this newsletter. The aggregator reads open/click rates back
    *  per topic and bumps its performance_score for the picker. */
   seedTopicIds?: string[]
+  /** UPSERT-BY-ID edit semantics — merged (§1.1, lane N3a 2026-09-01) from the
+   *  deleted app/api/ai/insider-edit-save route, whose save half upserted
+   *  newsletter_campaigns by id. When set, THIS campaign (verified to belong to
+   *  the session's brokerage — the route trusted the raw body id) is updated in
+   *  place and its sections re-decomposed, instead of a new row being created.
+   *  created_by stays the original author's; the route's created_by stamping on
+   *  CREATE was already here (see the insert below). */
+  campaignId?: string
   /** newsletter_campaigns.marketing_campaign_id — the umbrella marketing
    *  campaign this issue belongs to. The column is read by the campaign ROI
    *  measurer (lib/marketing/campaign-measurer.ts:28) and by the fan-out that
@@ -878,24 +988,82 @@ export async function createNewsletterCampaign(params: {
       marketingCampaignId = umbrella.id as string
     }
 
-    // STEP 2: Fix the insert payload with correct field names and values
-    const { data: newsletter, error } = await supabase
-      .from("newsletter_campaigns")
-      .insert({
-        campaign_name: params.title, // campaign_name NOT title
-        subject_line: params.subjectLine,
-        content: typeof params.content === "string" ? params.content : JSON.stringify(params.content),
-        status: params.scheduledAt ? "scheduled" : "draft",
-        send_date: params.scheduledAt ?? null, // send_date NOT scheduled_at
-        brokerage_id: sessionBrokerageId, // session-derived
-        agent_id: agentsTableId, // agents.id NOT users.id
-        created_by: sessionUserId, // users.id
-        marketing_campaign_id: marketingCampaignId, // verified above, never the raw body id
-      })
-      .select()
-      .maybeSingle()
+    // STEP 2: Fix the insert payload with correct field names and values.
+    //
+    // EDIT-IN-PLACE branch (merged from insider-edit-save, see the param doc):
+    // the id must first be PROVEN to be one of ours — .eq("brokerage_id", …) on
+    // the update alone would silently match nothing on a foreign id, and a
+    // matched-nothing update resolves exactly like a successful one (§3), so
+    // the ownership read is explicit and its error is read.
+    let newsletter: Record<string, any> | null = null
+    if (params.campaignId) {
+      if (!isValidUUID(params.campaignId)) {
+        return { success: false, error: "Invalid campaign ID" }
+      }
+      const { data: owned, error: ownedError } = await supabase
+        .from("newsletter_campaigns")
+        .select("id, created_by")
+        .eq("id", params.campaignId)
+        .eq("brokerage_id", sessionBrokerageId)
+        .maybeSingle()
+      if (ownedError) {
+        return { success: false, error: `Could not verify that newsletter: ${ownedError.message}` }
+      }
+      if (!owned) return { success: false, error: "That newsletter is not on your brokerage." }
 
-    if (error || !newsletter) throw error ?? new Error("Failed to create newsletter campaign")
+      const { data: updated, error: updateError } = await supabase
+        .from("newsletter_campaigns")
+        .update({
+          campaign_name: params.title,
+          subject_line: params.subjectLine,
+          content: typeof params.content === "string" ? params.content : JSON.stringify(params.content),
+          status: params.scheduledAt ? "scheduled" : "draft",
+          send_date: params.scheduledAt ?? null,
+          marketing_campaign_id: marketingCampaignId,
+          // created_by / agent_id / brokerage_id untouched — an edit does not
+          // change who authored the campaign or whose tenant owns it.
+        })
+        .eq("id", owned.id)
+        .eq("brokerage_id", sessionBrokerageId)
+        .select()
+        .maybeSingle()
+      if (updateError || !updated) throw updateError ?? new Error("Failed to update newsletter campaign")
+      newsletter = updated
+
+      // Re-decompose: the sections about to be inserted below replace the old
+      // ones, or the assembler would render both versions of the issue.
+      const { error: clearError } = await supabase
+        .from("newsletter_sections")
+        .delete()
+        .eq("newsletter_id", owned.id)
+        .eq("brokerage_id", sessionBrokerageId)
+      if (clearError) {
+        console.error(`[AI Newsletter] stale-section clear failed for campaign ${owned.id}:`, clearError.message)
+      }
+    } else {
+      const { data: created, error } = await supabase
+        .from("newsletter_campaigns")
+        .insert({
+          campaign_name: params.title, // campaign_name NOT title
+          subject_line: params.subjectLine,
+          content: typeof params.content === "string" ? params.content : JSON.stringify(params.content),
+          status: params.scheduledAt ? "scheduled" : "draft",
+          send_date: params.scheduledAt ?? null, // send_date NOT scheduled_at
+          brokerage_id: sessionBrokerageId, // session-derived
+          agent_id: agentsTableId, // agents.id NOT users.id
+          created_by: sessionUserId, // users.id
+          marketing_campaign_id: marketingCampaignId, // verified above, never the raw body id
+        })
+        .select()
+        .maybeSingle()
+      if (error || !created) throw error ?? new Error("Failed to create newsletter campaign")
+      newsletter = created
+    }
+
+    // Both branches above either assigned a row or threw/returned; the const
+    // carries that proof into the closures below (a `let` loses narrowing there).
+    if (!newsletter) throw new Error("Failed to persist newsletter campaign")
+    const savedCampaign = newsletter
 
     // STEP 2b — Wave 20 decomposer. The campaign envelope is in
     // newsletter_campaigns; the per-section persona+location targeting that
@@ -919,7 +1087,7 @@ export async function createNewsletterCampaign(params: {
           : null
         const normalizedType = normalizeSectionType(s.section_type ?? s.type)
         return {
-          newsletter_id:    newsletter.id,
+          newsletter_id:    savedCampaign.id,
           brokerage_id:     sessionBrokerageId,
           title:            s.title ?? null,
           content:          s.content ?? null,
@@ -936,7 +1104,7 @@ export async function createNewsletterCampaign(params: {
         // so a section-decompose failure shouldn't fail the whole create.
         // Surface the error so we see it in cron logs / Sentry without
         // breaking the caller.
-        console.error(`[AI Newsletter] section decompose failed for campaign ${newsletter.id}:`, secErr.message)
+        console.error(`[AI Newsletter] section decompose failed for campaign ${savedCampaign.id}:`, secErr.message)
       }
     }
 
@@ -952,7 +1120,7 @@ export async function createNewsletterCampaign(params: {
         topicIds:    params.seedTopicIds,
         brokerageId: sessionBrokerageId,
         assetType:   "newsletter_campaign",
-        assetId:     newsletter.id,
+        assetId:     savedCampaign.id,
       })
     }
 
@@ -964,12 +1132,12 @@ export async function createNewsletterCampaign(params: {
       .eq("status", "subscribed")
 
     // Kernel: Fire NEWSLETTER_SCHEDULED if scheduled
-    if (params.scheduledAt && newsletter) {
+    if (params.scheduledAt) {
       processKernelEvent({
         event: KernelEvent.NEWSLETTER_SCHEDULED,
         brokerageId: sessionBrokerageId,
         entityType: "newsletter_campaign",
-        entityId: newsletter.id,
+        entityId: savedCampaign.id,
       }).catch((err) => console.error("[Kernel] NEWSLETTER_SCHEDULED error:", err))
     }
 
@@ -980,7 +1148,7 @@ export async function createNewsletterCampaign(params: {
 
     return {
       success: true,
-      newsletter,
+      newsletter: savedCampaign,
       audienceSize: count || 0,
     }
   } catch (error) {

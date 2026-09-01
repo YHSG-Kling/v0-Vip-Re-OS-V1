@@ -213,6 +213,31 @@ async function gatherContextData(params: ContentGenerationParams) {
     context.persona = contact?.client_detailed_personas?.[0]
   }
 
+  // MERGED (§1.1, lane N3a 2026-09-01) from the deleted
+  // app/api/ai/generate-content/route.ts: the agent's brand voice is assembled
+  // INTO the writing prompt (see
+  // buildPrompt) rather than only applied post-hoc — §5's compliance-first
+  // principle, applied to voice: an instruction the model writes under beats a
+  // rewrite of what it already wrote. The route read `keywords` and
+  // `avoid_words`, which are NOT brand_voice_profile columns (live set:
+  // schema-snapshot.ts:137) — its avoid-list was always undefined — so the
+  // capability lands on the columns that exist: preferred_words /
+  // prohibited_words / tone / style / formality_level / custom_instructions.
+  if (params.agentId && isValidUUID(params.agentId)) {
+    const { data: brandVoice, error: brandVoiceError } = await supabase
+      .from("brand_voice_profile")
+      .select("tone, style, formality_level, preferred_words, prohibited_words, custom_instructions")
+      .eq("agent_id", params.agentId)
+      .eq("is_active", true)
+      .maybeSingle()
+
+    if (brandVoiceError) {
+      // A refused read is not "this agent has no brand voice" (§3).
+      console.error("[gatherContextData] brand voice read failed:", brandVoiceError.message)
+    }
+    context.brandVoice = brandVoice
+  }
+
   // Get transaction details if provided
   if (params.transactionId && isValidUUID(params.transactionId)) {
     // Same defect class as the contact read above, different cause: `transactions` has
@@ -298,6 +323,24 @@ function buildPrompt(params: ContentGenerationParams, contextData: any): string 
       break
     default:
       prompt += `Generate ${params.contentType} content.\n\n`
+  }
+
+  // Brand voice IN the writing prompt (merged from the deleted
+  // /api/ai/generate-content route — see gatherContextData). The post-hoc
+  // applyBrandVoice layer in app/actions/ai-content-generation.tsx still runs;
+  // this makes the first draft already conform instead of relying on the
+  // rewrite to catch everything.
+  const brandVoice = contextData.brandVoice
+  if (brandVoice) {
+    prompt += `\nBRAND VOICE:\n`
+    if (brandVoice.tone) prompt += `- Tone: ${brandVoice.tone}\n`
+    if (brandVoice.style) prompt += `- Writing style: ${brandVoice.style}\n`
+    if (brandVoice.formality_level) prompt += `- Formality: ${brandVoice.formality_level}\n`
+    if (brandVoice.preferred_words?.length)
+      prompt += `- Naturally incorporate these words/phrases: ${brandVoice.preferred_words.join(", ")}\n`
+    if (brandVoice.prohibited_words?.length)
+      prompt += `- NEVER use these words: ${brandVoice.prohibited_words.join(", ")}\n`
+    if (brandVoice.custom_instructions) prompt += `- ${brandVoice.custom_instructions}\n`
   }
 
   // Add "Them First" instruction
@@ -483,6 +526,15 @@ function buildVideoPrompt(params: ContentGenerationParams, contextData: any): st
  */
 function parseAIResponse(text: string, params: ContentGenerationParams) {
   const platformFacts = params.platform ? { platform: params.platform } : {}
+
+  // MERGED (§1.1, lane N3a 2026-09-01) from the deleted /api/ai/generate-content
+  // route: when the model wrote hashtags into the body instead of the JSON
+  // field (or the JSON parse fell through entirely), harvest them from the text
+  // rather than reporting none. Stored without the "#" prefix — the same shape
+  // the model's own hashtags field uses.
+  const harvestHashtags = (body: string): string[] =>
+    (body.match(/#[\w]+/g) ?? []).map((h) => h.slice(1))
+
   try {
     // Try to extract JSON from response
     const jsonMatch = text.match(/\{[\s\S]*\}/)
@@ -492,7 +544,9 @@ function parseAIResponse(text: string, params: ContentGenerationParams) {
       return {
         subject: parsed.subject || "",
         body,
-        hashtags: parsed.hashtags || [],
+        hashtags: (Array.isArray(parsed.hashtags) && parsed.hashtags.length > 0)
+          ? parsed.hashtags
+          : harvestHashtags(body),
         cta: parsed.cta || "",
         // MEASURED, not self-reported. This was `parsed.qualityScore || 85`,
         // reading a field the prompt itself specified as the literal 85 — so
@@ -515,7 +569,7 @@ function parseAIResponse(text: string, params: ContentGenerationParams) {
   return {
     subject: "",
     body: text,
-    hashtags: [],
+    hashtags: harvestHashtags(text),
     cta: "",
     qualityScore: themFirstQualityScore(text),
     platformSpecific: platformFacts,

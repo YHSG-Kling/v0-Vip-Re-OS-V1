@@ -191,6 +191,17 @@ export async function handleAutomationTriggered(payload: any) {
 // =====================================================
 // SMART ASSISTANT SUGGESTIONS
 // =====================================================
+//
+// TOMBSTONE (§1.3/§6, lane N3a 2026-09-01): app/api/ai/content-suggestions/route.ts
+// DELETED. It was a hard-coded rule table (no model, wrote nothing) posing as a
+// second per-contact suggestion lane beside this one — the §6 defect. Nothing
+// was carried across, on evidence: its rules keyed on lifecycle_stage / stage /
+// buyer_type / price_range / preferred_locations, NONE of which are live
+// contacts columns (scripts/schema-snapshot.ts:239), so on real rows every
+// branch but its "awareness" default was dead and the two suggestions that
+// could ever fire were generic boilerplate. SURVIVOR lane:
+// smart_assistant_suggestions — writer generateSmartSuggestion below, reader
+// app/actions/contact-details.ts.
 
 interface SuggestionInput {
   brokerage_id: string

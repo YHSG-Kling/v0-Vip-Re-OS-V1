@@ -61,8 +61,21 @@
 //     same table through the RLS-scoped client.
 //
 // STILL PRESENT, deliberately (do not sweep these into the same bucket):
-//   · app/api/financial/{commissions,expenses} and app/api/credit/status — see
-//     the notes at getCreditStatus and getCommissions below. UNRESOLVED.
+//   · app/api/financial/commissions — since DELETED (lane E3 2026-08-28); the
+//     tombstone lives on getCommissions below, which is kept as the named
+//     required-scope survivor pattern.
+//   · app/api/credit/status — RESOLVED 2026-09-01 (lane N3a): the route now
+//     resolves brokerageId from the SESSION via requireAuth and both service
+//     reads it makes (getContactById, getCreditStatus) REQUIRE that tenant and
+//     apply it as an equality predicate, so a foreign contact id finds nothing.
+//     The route stays: it is the only reader of the credit lane (credit_status
+//     has no other reader in the tree); building it a caller is another lane's
+//     item.
+//   · app/api/financial/expenses — DELETED 2026-09-01 (lane N3a, §1.1):
+//     survivor app/actions/financials.ts:751 logScopedExpense (identical
+//     validation clauses plus scope + finance-admin gate) for the POST half;
+//     app/dashboard/financials/expenses/page.tsx:27 reads the table directly
+//     for the GET half. Tombstone in scripts/opposite-missing-census.ts.
 import { createClient } from "@supabase/supabase-js"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import type { Contact } from "@/types/contact"
@@ -208,10 +221,28 @@ export const supabaseService = {
   // `SupabaseService.getContacts(agentId, brokerageId)` in this file, which now
   // REFUSES a call with neither scope.
 
-  async getContactById(id: string): Promise<Contact | null> {
+  /**
+   * THE TENANT IS REQUIRED — same contract as getContacts above, for the same
+   * reason: this runs on the SERVICE-ROLE client, so a bare `id` lookup reads
+   * ANY brokerage's contact. Every caller resolves brokerageId from the
+   * SESSION (§4) and passes it here; a foreign or unmatched id finds nothing.
+   * (Closed 2026-09-01, lane N3a — /api/credit/status handed this method a
+   * query-string leadId with no tenant predicate at all.)
+   */
+  async getContactById(id: string, brokerageId: string): Promise<Contact | null> {
+    if (!brokerageId) {
+      console.error("[Supabase Service] getContactById requires a brokerage scope — the service client bypasses RLS")
+      return null
+    }
     try {
       const supabase = getSupabaseAdmin()
-      const { data, error } = await supabase.from("contacts").select("*").eq("id", id).is("deleted_at", null).single()
+      const { data, error } = await supabase
+        .from("contacts")
+        .select("*")
+        .eq("id", id)
+        .eq("brokerage_id", brokerageId)
+        .is("deleted_at", null)
+        .single()
 
       if (error) throw error
 
@@ -802,10 +833,28 @@ export const supabaseService = {
   // CREDIT STATUS & REFERRALS
   // =====================================================
 
-  async getCreditStatus(contactId: string) {
+  /**
+   * THE TENANT IS REQUIRED (§4) — credit_status is client financial data
+   * (score, DTI, notes) read on the SERVICE-ROLE client, so without the
+   * brokerage predicate any authenticated agent could read any tenant's credit
+   * file by contact id (closed 2026-09-01, lane N3a; the caller,
+   * /api/credit/status, now resolves brokerageId from the session). The
+   * predicate is on credit_status.brokerage_id itself — the same column
+   * updateCreditStatus below stamps on every write.
+   */
+  async getCreditStatus(contactId: string, brokerageId: string) {
+    if (!brokerageId) {
+      console.error("[Supabase Service] getCreditStatus requires a brokerage scope — the service client bypasses RLS")
+      return null
+    }
     try {
       const supabase = getSupabaseAdmin()
-      const { data, error } = await supabase.from("credit_status").select("*").eq("contact_id", contactId).single()
+      const { data, error } = await supabase
+        .from("credit_status")
+        .select("*")
+        .eq("contact_id", contactId)
+        .eq("brokerage_id", brokerageId)
+        .single()
 
       if (error) {
         if (error.code === "PGRST116") return null // No rows found
@@ -1199,6 +1248,13 @@ export const supabaseService = {
    * Business expenses for a bounded scope — the same contract as getCommissions above,
    * and required for the same reason: this is the service-role client, so a call with
    * no scope returns every brokerage's expenses.
+   *
+   * CALLER STATUS (lane N3a 2026-09-01): its last caller, app/api/financial/
+   * expenses (GET), is deleted — the live reader of business_expenses is
+   * app/dashboard/financials/expenses/page.tsx:27 on the cookie client. KEPT
+   * anyway, by the same ruling that keeps getCommissions: both are the named
+   * required-scope survivor pattern in scripts/conditional-tenant-predicate-
+   * guard.ts:218.
    */
   async getBusinessExpenses(scope: { agentId?: string; agentIds?: string[]; brokerageId?: string }) {
     try {
@@ -1224,17 +1280,12 @@ export const supabaseService = {
     }
   },
 
-  async createBusinessExpense(expense: any) {
-    try {
-      const supabase = getSupabaseAdmin()
-      const { data, error } = await supabase.from("business_expenses").insert(expense).select().single()
-      if (error) throw error
-      return data
-    } catch (error) {
-      console.error("[Supabase Service] Error creating business expense:", error)
-      return null
-    }
-  },
+  // TOMBSTONE (§1.3, lane N3a 2026-09-01): `createBusinessExpense()` deleted.
+  // Its ONLY caller was app/api/financial/expenses (POST), deleted the same day
+  // as a strict subset of its survivor. SURVIVOR for the write:
+  // app/actions/financials.ts:751 `logScopedExpense` — identical validation
+  // clauses plus the personal/team/brokerage scope model and the finance-admin
+  // gate; it inserts business_expenses itself on a gated service client.
 
 
   // =====================================================

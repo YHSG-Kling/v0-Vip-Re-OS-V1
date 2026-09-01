@@ -303,6 +303,107 @@ export async function updateReferralStatus(
   }
 }
 
+/**
+ * Draft the thank-you note for a converted referral.
+ *
+ * BUILT HERE (§1.1, lane N3a 2026-09-01) to replace the deleted
+ * app/api/referrals/thank-you-draft/route.ts, which bypassed both AI rails: a raw
+ * `generateText` call (so the spend was never booked to ai_tool_usage and the
+ * prompt never passed Data Guard) carrying UNSCRUBBED contact notes, and a
+ * body-supplied contactId read with no tenancy at all. This action:
+ *   · anchors the referral to the SESSION's agent + brokerage (§4) and derives
+ *     the referrer contact from the referral row — never from the caller;
+ *   · reads every row through destructured { data, error } (§3);
+ *   · generates through generateAIResponse, the routed rail — Data Guard scrubs
+ *     the prompt at the model boundary and the spend books to ai_tool_usage.
+ *
+ * The draft is RETURNED, not sent: the appreciation flow on this pipeline is a
+ * physical card a human writes and posts (see the pipeline page's note on
+ * "Mark Thank-You Sent") — this hands the agent words to copy, nothing more.
+ */
+export async function draftReferralThankYou(referralId: string): Promise<{
+  success: boolean
+  draft?: string
+  error?: string
+}> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Unauthorized" }
+
+  const { agentId, brokerageId, userId } = await getAgentContext()
+  if (!brokerageId || !agentId) {
+    return { success: false, error: "Your account is not linked to an agent profile yet." }
+  }
+
+  const db = createServiceClient()
+
+  // The referral must be THIS agent's, in THIS tenant — same anchor as
+  // sendReferralThankYou above.
+  const { data: referral, error: referralError } = await db
+    .from("referrals")
+    .select("id, referral_name, referrer_contact_id")
+    .eq("id", referralId)
+    .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+  if (referralError) return { success: false, error: `Could not load that referral: ${referralError.message}` }
+  if (!referral) return { success: false, error: "Referral not found" }
+
+  // The recipient is the REFERRER (the person being thanked), resolved from the
+  // referral row itself and read tenant-scoped.
+  let referrerName = "there"
+  let referrerNotes: string | null = null
+  if (referral.referrer_contact_id) {
+    const { data: referrer, error: referrerError } = await db
+      .from("contacts")
+      .select("first_name, last_name, notes")
+      .eq("id", referral.referrer_contact_id)
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+    if (referrerError) {
+      return { success: false, error: `Could not load the referrer: ${referrerError.message}` }
+    }
+    if (referrer) {
+      referrerName = `${referrer.first_name ?? ""} ${referrer.last_name ?? ""}`.trim() || "there"
+      referrerNotes = referrer.notes ?? null
+    }
+  }
+
+  const { data: agentRow, error: agentRowError } = await db
+    .from("users")
+    .select("first_name, last_name")
+    .eq("id", userId)
+    .maybeSingle()
+  if (agentRowError) {
+    console.error("[draftReferralThankYou] agent name read failed:", agentRowError.message)
+  }
+  const agentName = agentRow
+    ? `${agentRow.first_name ?? ""} ${agentRow.last_name ?? ""}`.trim() || "your agent"
+    : "your agent"
+
+  try {
+    const { generateAIResponse } = await import("@/lib/ai")
+    const response = await generateAIResponse({
+      system: `You are a real estate agent assistant writing a warm, genuine thank-you message on behalf of ${agentName}.
+Keep the tone personal, concise (3-5 sentences), and grateful without being over-the-top.
+Do NOT include placeholders — write the full message ready to send.`,
+      prompt: `Write a thank-you message to ${referrerName} for referring ${referral.referral_name || "a client"} to me.
+${referrerNotes ? `Context about this person: ${referrerNotes}` : ""}
+The referral has converted, so express genuine appreciation and mention I look forward to continuing to be a resource for them.`,
+      metadata: {
+        userId,
+        brokerageId,
+        agentId,
+        feature: "email_generation",
+      },
+    })
+    return { success: true, draft: response.text }
+  } catch (error) {
+    console.error("[draftReferralThankYou] generation failed:", (error as Error).message)
+    return { success: false, error: "Could not draft the note — please try again." }
+  }
+}
+
 export async function sendReferralThankYou(referralId: string): Promise<{ success: true }> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()

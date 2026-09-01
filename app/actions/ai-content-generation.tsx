@@ -1660,6 +1660,8 @@ TARGET LENGTH: ${params.length || 1200} words
 SEO KEYWORDS: ${params.keywords?.join(", ") || "None"}
 
 ${brandVoice ? `BRAND VOICE: ${brandVoice.tone}, ${brandVoice.style}` : ""}
+${brandVoice?.preferred_words?.length ? `PREFERRED WORDS/PHRASES: ${brandVoice.preferred_words.join(", ")}` : ""}
+${brandVoice?.prohibited_words?.length ? `NEVER USE THESE WORDS: ${brandVoice.prohibited_words.join(", ")}` : ""}
 
 STRUCTURE:
 1. HEADLINE: SEO-optimized
