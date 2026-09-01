@@ -79,15 +79,19 @@ export default async function DocumentDownloadsPage({ searchParams }: { searchPa
   const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString()
 
   const svc = createServiceClient()
+  // Filters chained inside the builder, scope applied last — the
+  // compliance-ledger precedent (lib/kernel/compliance-ledger.ts:200-206).
+  // Chaining .gte/.order on applyTenantScope's generic return instead sent
+  // tsc into TS2589 (excessively deep instantiation).
   const { data: rows, error } = await applyTenantScope(
     svc
       .from("document_downloads")
-      .select("id, downloaded_at, document_id, user_id, partner_id, partner_type"),
+      .select("id, downloaded_at, document_id, user_id, partner_id, partner_type")
+      .gte("downloaded_at", since)
+      .order("downloaded_at", { ascending: false })
+      .limit(200),
     scope,
   )
-    .gte("downloaded_at", since)
-    .order("downloaded_at", { ascending: false })
-    .limit(200)
 
   // §3 — supabase-js RESOLVES refusals; without this branch a refused read
   // renders as a clean, empty audit trail.
@@ -122,19 +126,23 @@ export default async function DocumentDownloadsPage({ searchParams }: { searchPa
   const titleUserIds = Array.from(new Set(downloads.filter((d) => d.partner_type === "title").map((d) => d.partner_id).filter(Boolean))) as string[]
   const documentIds = Array.from(new Set(downloads.map((d) => d.document_id).filter(Boolean)))
 
+  // The explicit Rows shape severs Promise.all's tuple inference from the
+  // supabase builder generics — unioning a builder with Promise.resolve inside
+  // the tuple sent tsc into TS2589. Downstream already reads these as any[].
+  type Rows = PromiseLike<{ data: any[] | null }>
   const [{ data: vendors }, { data: titleUsers }, { data: documents }] = await Promise.all([
-    lenderVendorIds.length > 0
-      ? applyTenantScope(svc.from("vendors").select("id, name"), scope).in("id", lenderVendorIds)
-      : Promise.resolve({ data: [] as any[] }),
+    (lenderVendorIds.length > 0
+      ? applyTenantScope(svc.from("vendors").select("id, name").in("id", lenderVendorIds) as any, scope)
+      : Promise.resolve({ data: [] })) as Rows,
     // Title partner users are EXTERNAL to the brokerage — a brokerage_id anchor
     // here would blank every legitimate title name. The ids come off tenant-scoped
     // download rows, and the read is a PK list.
-    titleUserIds.length > 0
+    (titleUserIds.length > 0
       ? svc.from("users").select("id, first_name, last_name, email").in("id", titleUserIds)
-      : Promise.resolve({ data: [] as any[] }),
-    documentIds.length > 0
-      ? applyTenantScope(svc.from("documents").select("id, document_type, transaction_id"), scope).in("id", documentIds)
-      : Promise.resolve({ data: [] as any[] }),
+      : Promise.resolve({ data: [] })) as Rows,
+    (documentIds.length > 0
+      ? applyTenantScope(svc.from("documents").select("id, document_type, transaction_id").in("id", documentIds) as any, scope)
+      : Promise.resolve({ data: [] })) as Rows,
   ])
 
   const vendorName = new Map(((vendors ?? []) as any[]).map((v) => [v.id, v.name ?? "Lender"]))
