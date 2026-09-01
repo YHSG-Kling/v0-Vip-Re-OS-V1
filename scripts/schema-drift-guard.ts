@@ -639,6 +639,38 @@ export interface EmbedResolution {
   ambiguityUnknownParent: number
   /** of the bare table-name embeds, those whose pair carries more than one FK → PGRST201 */
   ambiguous: AmbiguousEmbed[]
+  /**
+   * PARENT-SIDE JOIN COLUMNS (2026-09-01). PostgREST resolves every embed THROUGH a joining
+   * column on the parent — `insight:brokerage_intelligence_insights(…)` off pattern_adoptions
+   * reads pattern_adoptions.insight_id on every request, exactly as a filter on it would. Until
+   * this channel existed, `refs` carried only TARGET-side columns, so those join columns were
+   * invisible as reads and the opposite-missing census filed them as "written, read by NOBODY"
+   * (pattern_adoptions.insight_id/.agent_id/.adopted_by, all three false 1a). Kept SEPARATE
+   * from `refs` deliberately: `refs` answers "must this column exist on the embedded table",
+   * this answers "which parent column does the join consume" — different tables, different
+   * questions, and merging them would silently change every existing refs assertion.
+   *
+   * Only emitted when the column can be named WITHOUT GUESSING (the file's standing rule):
+   *   · an FK-COLUMN embed — the relation token IS the parent column;
+   *   · a bare TABLE-NAME embed whose pair is joined by exactly ONE FK, and that FK sits on
+   *     the parent (SCHEMA_FK_MAP[parent] inverted; a multi-FK pair is the PGRST201 case and
+   *     emits nothing — naming one of three candidates would accuse a real column);
+   *   · a `!hint` that is either a parent FK column, or an FK CONSTRAINT name matching the
+   *     COUNTED `^<parent>_<column>_fkey$` fallback where the captured column is live on the
+   *     parent AND its FK really points at the resolved target. The exact fix is a generated
+   *     SCHEMA_FK_CONSTRAINTS export: the raw edges the fk-map generator reads ALREADY carry
+   *     the constraint `name` (see scripts/generate-schema-fk-map.ts's header SQL) — the
+   *     builder in scripts/schema-cache-builders.ts just does not publish it. Extending that
+   *     and REGENERATING (integrator only — never hand-write the cache, §3) retires this
+   *     pattern-match; the counted fallback stands until then.
+   * A reverse join (the single FK sits on the TARGET) consumes only the parent's PK — there is
+   * no parent FK column to record, so nothing is emitted and nothing is counted.
+   */
+  joinRefs: Array<{ table: string; column: string; path: string }>
+  /** join columns that could NOT be attributed without guessing — the PGRST201-shaped bare
+   *  multi-FK pair, an ambiguous FK column, an unknown parent, an unrecognisable `!hint`.
+   *  Counted, never guessed (§2: a silent skip is indistinguishable from a pass). */
+  joinUnresolved: number
 }
 
 /** Walk a select list to arbitrary depth, binding each embed's columns to ITS OWN table.
@@ -647,6 +679,7 @@ export function resolveEmbeddedSelects(literal: string, rootTable: string | null
   const res: EmbedResolution = {
     refs: [], unresolved: [], ambiguousFkColumn: 0, resolvedCount: 0,
     bareTableEmbeds: 0, pairsConsulted: [], ambiguityUnknownParent: 0, ambiguous: [],
+    joinRefs: [], joinUnresolved: 0,
   }
   const walk = (list: string, parent: string | null, path: string) => {
     for (const node of parseEmbedNodes(list)) {
@@ -655,10 +688,53 @@ export function resolveEmbeddedSelects(literal: string, rootTable: string | null
       const { table: target, route } = classifyEmbedRelation(parent, node.relation)
       if (!target) {
         res.unresolved.push({ relation: node.relation, parent, path: here })
-        if (route === "fk-column-ambiguous") res.ambiguousFkColumn++
+        // The relation IS a live parent column here (that is how it got classified), but its
+        // TARGET cannot be named, so the whole embed is skipped — the join column goes to the
+        // counted side with it rather than being the one thing salvaged from a refused embed.
+        if (route === "fk-column-ambiguous") { res.ambiguousFkColumn++; res.joinUnresolved++ }
         continue
       }
       res.resolvedCount++
+      // ── PARENT-SIDE JOIN COLUMN (see the joinRefs doc on EmbedResolution) ─────────────
+      if (route === "fk-column") {
+        // The relation token IS the parent column — SCHEMA_FK_MAP[parent][relation] named the
+        // target, which proves the column live on the parent. classifyEmbedRelation only
+        // returns this route with a parent, so the assertion is safe by construction.
+        res.joinRefs.push({ table: parent!, column: node.relation, path: here })
+      } else if (route === "table-name") {
+        if (!parent) res.joinUnresolved++
+        else if (embedHintDisambiguates(node.hint)) {
+          const hint = node.hint!
+          const cm = hint.match(new RegExp(`^${parent}_(.+)_fkey$`))
+          const captured = cm?.[1]
+          if (SCHEMA_FK_MAP[parent]?.[hint] === target && SCHEMA_SNAPSHOT[parent]?.includes(hint)) {
+            // The hint is itself a parent FK column (`brokerages!brokerage_id(…)`).
+            res.joinRefs.push({ table: parent, column: hint, path: here })
+          } else if (captured && SCHEMA_SNAPSHOT[parent]?.includes(captured) && SCHEMA_FK_MAP[parent]?.[captured] === target) {
+            // The COUNTED constraint-name fallback: `agents!pattern_adoptions_agent_id_fkey(…)`
+            // off pattern_adoptions. Accepted ONLY when the capture is a live parent column
+            // whose FK points at the resolved target — both proved against generated caches.
+            res.joinRefs.push({ table: parent, column: captured, path: here })
+          } else if (SCHEMA_FK_MAP[target]?.[hint] === parent) {
+            // Reverse join named by the TARGET's FK column — the parent contributes only its
+            // PK; there is no parent FK column to record.
+          } else res.joinUnresolved++
+        } else {
+          // Bare table-name: invert SCHEMA_FK_MAP[parent]. Unique key + unique pair → certain.
+          const parentKeys = Object.entries(SCHEMA_FK_MAP[parent] ?? {})
+            .filter(([, t]) => t === target).map(([k]) => k)
+          if (parentKeys.length === 1 && fkPairCount(parent, target) === 1) {
+            res.joinRefs.push({ table: parent, column: parentKeys[0], path: here })
+          } else if (parentKeys.length > 0 || fkPairCount(parent, target) > 1) {
+            // The PGRST201 shape (or a parent key shadowed by a second relationship in the
+            // pair): naming one candidate would accuse a real column — refuse and count,
+            // exactly as classifyEmbedRelation refuses an ambiguous FK column.
+            res.joinUnresolved++
+          }
+          // parentKeys.length === 0 with a single-FK pair: the FK sits on the TARGET (a
+          // reverse one-to-many) — the join consumes the parent's PK only; nothing to record.
+        }
+      }
       // ── PGRST201 ambiguity (see the block above). Only a TABLE-NAME embed with no
       // disambiguating hint is even a candidate; an FK-column embed has already picked its
       // relationship and a hint has already named one.
@@ -1142,6 +1218,33 @@ function testPure() {
       un.refs.length === 0 && un.unresolved.length === 1 && un.unresolved[0].relation === "whatever_id")
     check("resolveEmbeddedSelects: an unresolvable embed is NOT descended into (its parent is unknown)",
       un.resolvedCount === 0 && !un.unresolved.some((u) => u.relation === "other_id"))
+
+    // ── PARENT-SIDE JOIN COLUMNS (joinRefs — see the doc on EmbedResolution) ─────────
+    // Both arms per shape: the join column PostgREST really consumes is RECORDED, and a
+    // shape whose column cannot be named without guessing records NOTHING and is COUNTED.
+    const jr = (literal: string, root: string) => resolveEmbeddedSelects(literal, root)
+    check("joinRefs: an FK-COLUMN embed records the parent column the join consumes (brokerage:brokerage_id off contacts → contacts.brokerage_id)",
+      jr("id, brokerage:brokerage_id(name)", "contacts").joinRefs
+        .some((j) => j.table === "contacts" && j.column === "brokerage_id"))
+    check("joinRefs: a BARE table-name embed on a UNIQUE-FK pair inverts SCHEMA_FK_MAP (brokerages(…) off contacts → contacts.brokerage_id)",
+      jr("id, brokerages(name)", "contacts").joinRefs
+        .some((j) => j.table === "contacts" && j.column === "brokerage_id") &&
+      jr("id, brokerages(name)", "contacts").joinUnresolved === 0)
+    check("joinRefs: a CONSTRAINT-NAME hint resolves through the counted ^<parent>_<col>_fkey$ fallback (agents!pattern_adoptions_agent_id_fkey)",
+      jr("agents!pattern_adoptions_agent_id_fkey(id)", "pattern_adoptions").joinRefs
+        .map((j) => `${j.table}.${j.column}`).join() === "pattern_adoptions.agent_id")
+    check("joinRefs: the intelligence-mesh select (the false-1a proof case) yields all THREE parent join columns",
+      jr("id, insight:brokerage_intelligence_insights(headline), agent:agents!pattern_adoptions_agent_id_fkey(id), adopter:users!pattern_adoptions_adopted_by_fkey(first_name)", "pattern_adoptions")
+        .joinRefs.filter((j) => j.table === "pattern_adoptions").map((j) => j.column).sort().join(",") === "adopted_by,agent_id,insight_id")
+    check("joinRefs NEGATIVE: a bare MULTI-FK pair (PGRST201) records NOTHING and is COUNTED (transactions(…) off contacts, 3 FKs)",
+      jr("id, transactions(id)", "contacts").joinRefs.length === 0 &&
+      jr("id, transactions(id)", "contacts").joinUnresolved === 1)
+    check("joinRefs NEGATIVE: a hint naming no live parent column is skipped and counted, never guessed",
+      jr("agents!some_view_agent_ref_fkey(id)", "pattern_adoptions").joinRefs.length === 0 &&
+      jr("agents!some_view_agent_ref_fkey(id)", "pattern_adoptions").joinUnresolved === 1)
+    check("joinRefs NEGATIVE: joinRefs never leak into refs (the target-side channel is unchanged)",
+      jr("id, brokerage:brokerage_id(name)", "contacts").refs
+        .every((e) => e.table === "brokerages"))
   }
 
   // ── PGRST201 — the AMBIGUOUS EMBED ──────────────────────────────────────────────────

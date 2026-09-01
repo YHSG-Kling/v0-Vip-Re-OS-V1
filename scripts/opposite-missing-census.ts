@@ -295,6 +295,17 @@ let unresolvedWriteObjects = 0
 let unresolvedFilterTerms = 0
 let sqlSeeded = 0                            // 1b findings withheld because an applied .sql writes the column
 let selectSitesParsed = 0
+// ── EMBED JOIN COLUMNS (FIX A, 2026-09-01) ──────────────────────────────────
+// PostgREST resolves an embed THROUGH a joining column on the parent —
+// `insight:brokerage_intelligence_insights(…)` off pattern_adoptions reads
+// pattern_adoptions.insight_id on every request. Until resolveEmbeddedSelects
+// grew its joinRefs channel those reads were invisible, and all three of
+// pattern_adoptions' join columns (insight_id/agent_id/adopted_by) sat in 1a as
+// "written, read by NOBODY" while app/dashboard/admin/intelligence-mesh/page.tsx
+// read them on every render. Resolved and unresolved are both counted, printed
+// beside selectSitesParsed in the coverage block.
+let embedJoinColumnsResolved = 0
+let embedJoinColumnsUnresolved = 0
 
 /** Columns the database fills in on its own. A missing app WRITER is expected. */
 const DB_MANAGED = new Set([
@@ -1052,6 +1063,20 @@ function scanColumns(file: string, src: string) {
       for (const c of sd.parseSelectColumns(selArg)) if (cols.has(c)) noteCol(readCols, table, c, site)
       const emb = sd.resolveEmbeddedSelects(selArg, table)
       unresolvedEmbeds += emb.unresolved.length
+      // ── EMBED JOIN COLUMNS (FIX A — see the counter declarations) ────────
+      // A join column the resolver could name WITHOUT guessing is a read of the
+      // PARENT-side column; one it could not (the PGRST201 bare multi-FK pair,
+      // an unrecognisable !hint) is counted, never guessed — a guessed column
+      // would acquit a real finding. joinRefs only ever carries columns proved
+      // live against the generated caches, but the snapshot check stays as belt
+      // and braces (the same rule emb.refs consumption follows below).
+      embedJoinColumnsResolved += emb.joinRefs.length
+      embedJoinColumnsUnresolved += emb.joinUnresolved
+      for (const e of emb.joinRefs) {
+        if (!SCHEMA_SNAPSHOT[e.table]?.includes(e.column)) continue
+        tablesRead.add(e.table)
+        noteCol(readCols, e.table, e.column, site)
+      }
       for (const e of emb.refs) {
         if (!SCHEMA_SNAPSHOT[e.table]) continue
         tablesRead.add(e.table)
@@ -1218,6 +1243,30 @@ function scanColumns(file: string, src: string) {
       // read-never-written finding for every column the helper really writes.
       if (keys.length === 0) { opaqueWrite.add(table); unresolvedWriteObjects++ }
       for (const k of keys) if (cols.has(k)) noteCol(writeCols, table, k, site)
+    }
+    // ── MEMBER-EXPRESSION WRITE OBJECT — `.insert(v.value)` (FIX B, 2026-09-01) ──
+    // The varM branch above matches a BARE identifier only ([\w$]* admits no dot),
+    // so a write whose object is a member expression — `.insert(v.value)` in
+    // app/actions/superadmin/platform-brand.ts (v from validateTopic in
+    // lib/platform/product-brand.ts), `.insert(row.payload)` in
+    // lib/platform/tenant-import.ts — produced NO write record AND NO opacity
+    // mark: the silent-zero failure the `[,)]` comment above documents, and it
+    // read downstream as "written by NOBODY" (platform_content_topics.competitor
+    // was filed in 1b with a live writer). A SEPARATE branch, tried after varM
+    // and never replacing it (the patterns are disjoint — one forbids the dot,
+    // the other requires it). NO key resolution is attempted:
+    // resolveVariableInsertKeys is keyed on const/let/var declarations
+    // (schema-drift-guard.ts) and cannot follow a cross-module property; a wrong
+    // resolution would accuse a real column, which that file's own rules refuse.
+    // Straight to opaque — "not knowable", never "writes nothing". Scoping to
+    // PostgREST is by construction (writeChain is anchored to a resolved
+    // `.from("<live table>")` chain, so `stripe.subscriptions.update(sub.id,…)`
+    // can never reach here) — and proved by control, not just asserted.
+    const memberM = writeChain.match(/\.(insert|upsert|update)\(\s*([a-zA-Z_$][\w$]*(?:\.[a-zA-Z_$][\w$]*)+)\s*[,)]/)
+    if (memberM && memberM.index != null) {
+      tablesWritten.add(table)
+      opaqueWrite.add(table)
+      unresolvedWriteObjects++
     }
     if (/\.delete\s*\(/.test(writeChain)) tablesWritten.add(table)
     // A chain that filled the window was READ INCOMPLETELY. Both directions lose
@@ -1408,6 +1457,84 @@ stage("C1 columns")
   control("C1 does not mistake a nested key or a value expression for a shorthand key",
     shorthandObjectKeys(`{ a, meta: { b }, c: fn(d), e }`).sort().join(",") === "a,e",
     shorthandObjectKeys(`{ a, meta: { b }, c: fn(d), e }`).sort().join(","))
+  // ── MEMBER-EXPRESSION WRITE OBJECT (FIX B) — both arms ────────────────────
+  // `.insert(v.value)` used to produce NO write record AND NO opacity mark (the
+  // varM recogniser admits no dot), the silent zero that filed
+  // platform_content_topics.competitor in 1b over a live writer. All three verbs
+  // are probed; the second-argument arm is probed on upsert because
+  // `.upsert(row.payload, { onConflict })` is the `[,)]` bug class one shape over.
+  {
+    const savedOpaqueSites = unresolvedWriteObjects
+    const memberInsert = probe(`await supabase.from("contacts").insert(v.value)`)
+    control("C1 marks a MEMBER-EXPRESSION write object opaque rather than 'writes nothing' (.insert(v.value))",
+      memberInsert.opaque && memberInsert.write.length === 0, memberInsert.write.join(","))
+    const memberUpdate = probe(`await supabase.from("contacts").update(params.updates).eq("id", id)`)
+    control("C1 marks .update(params.updates) opaque rather than 'writes nothing'",
+      memberUpdate.opaque && memberUpdate.write.length === 0, memberUpdate.write.join(","))
+    const memberUpsert = probe(`await supabase.from("contacts").upsert(row.payload, { onConflict: "id" })`)
+    control("C1 marks .upsert(row.payload, { onConflict }) opaque — the second-argument arm of the member-expression shape",
+      memberUpsert.opaque && memberUpsert.write.length === 0, memberUpsert.write.join(","))
+    // MUST NOT REGRESS: a resolvable BARE identifier still resolves to real keys
+    // (the member branch requires the dot, so it can never fire on this shape).
+    const bareVar = probe(`const row = { first_name, phone }\nawait supabase.from("contacts").insert(row)`)
+    control("C1 a resolvable BARE-IDENTIFIER row variable still yields real keys, never opacity",
+      bareVar.write.includes("first_name") && bareVar.write.includes("phone") && !bareVar.opaque,
+      bareVar.write.join(","))
+    // MUST NOT WIDEN: a member-expression write on a NON-PostgREST chain records
+    // nothing — scoping is by the `.from("<live table>")` anchor, proved here.
+    const stripeChain = probe(`await stripe.subscriptions.update(sub.id, { cancel_at_period_end: true })`)
+    control("C1 a non-PostgREST member call (stripe.subscriptions.update) records NOTHING — no write, no opacity",
+      !stripeChain.opaque && stripeChain.write.length === 0 && stripeChain.read.length === 0)
+    // The probes above marked contacts opaque 3 times; probe() restores the SET,
+    // this restores the site COUNTER so the coverage line still describes the tree.
+    unresolvedWriteObjects = savedOpaqueSites
+  }
+  // ── EMBED JOIN COLUMNS (FIX A) — both arms, end-to-end through scanColumns ─
+  // An embed is resolved THROUGH a parent-side column on every request; a scan
+  // that cannot see that read files the column as written-never-read (the
+  // pattern_adoptions false 1a). The probes touch tables beyond contacts
+  // (brokerages/transactions get embed-target reads), so everything they touch
+  // is snapshotted and RESTORED — a control that adjudicates a live finding is
+  // the same defect this file exists to catch, one level up (see the probe()
+  // comment on opacity restoration).
+  {
+    const touchedTables = ["brokerages", "transactions"]
+    // COPIES, not references — noteCol mutates the live Set in place, so saving
+    // the reference would save the pollution along with it.
+    const savedReads = touchedTables.map((t) => [t, readCols.has(t) ? new Set(readCols.get(t)) : undefined] as const)
+    const savedTablesRead = touchedTables.map((t) => [t, tablesRead.has(t)] as const)
+    const savedColSites = new Map(colSites)
+    const saved = {
+      selectSitesParsed, unresolvedEmbeds,
+      embedJoinColumnsResolved, embedJoinColumnsUnresolved,
+    }
+    const joinFk = probe(`await supabase.from("contacts").select("id, brokerage:brokerage_id(name)")`)
+    control("C1 an FK-COLUMN embed reads the parent join column (brokerage:brokerage_id → contacts.brokerage_id)",
+      joinFk.read.includes("brokerage_id"), joinFk.read.join(","))
+    const joinHint = probe(`await supabase.from("contacts").select("id, brokerages!contacts_brokerage_id_fkey(name)")`)
+    control("C1 a CONSTRAINT-HINT embed reads the parent join column through the counted fallback (brokerages!contacts_brokerage_id_fkey)",
+      joinHint.read.includes("brokerage_id"), joinHint.read.join(","))
+    const joinBare = probe(`await supabase.from("contacts").select("id, brokerages(name)")`)
+    control("C1 a BARE table-name embed on a unique-FK pair reads the inverted parent join column (brokerages(…) → contacts.brokerage_id)",
+      joinBare.read.includes("brokerage_id"), joinBare.read.join(","))
+    // NEGATIVE — the PGRST201 pair: contacts↔transactions carries THREE FKs, so
+    // NO parent column may be recorded (guessing one of three would acquit a
+    // real finding) and the doubt must be COUNTED where the coverage line prints.
+    const unresolvedBefore = embedJoinColumnsUnresolved
+    const joinAmbig = probe(`await supabase.from("contacts").select("id, transactions(closing_date)")`)
+    control("C1 NEGATIVE — a bare MULTI-FK embed records NO parent join column and increments the unresolved counter",
+      !joinAmbig.read.some((c) => c.includes("contact_id")) &&
+      embedJoinColumnsUnresolved === unresolvedBefore + 1,
+      `read=${joinAmbig.read.join(",")} unresolved ${unresolvedBefore}→${embedJoinColumnsUnresolved}`)
+    // Restore everything the probes touched outside contacts, counters included.
+    for (const [t, s] of savedReads) { if (s) readCols.set(t, s); else readCols.delete(t) }
+    for (const [t, had] of savedTablesRead) if (!had) tablesRead.delete(t)
+    colSites.clear(); for (const [k, v] of savedColSites) colSites.set(k, v)
+    selectSitesParsed = saved.selectSitesParsed
+    unresolvedEmbeds = saved.unresolvedEmbeds
+    embedJoinColumnsResolved = saved.embedJoinColumnsResolved
+    embedJoinColumnsUnresolved = saved.embedJoinColumnsUnresolved
+  }
   // DB-TRIGGER WRITES, read out of the migrations rather than assumed.
   control("C1 read trigger-written columns out of supabase/migrations at all",
     TRIGGER_WRITTEN.size > 0, `${TRIGGER_WRITTEN.size} tables`)
@@ -2201,7 +2328,40 @@ for (const e of typeExports) {
 }
 
 stage("C3 exports")
-for (const e of typeOrphans) add("orphan-type-export", `${e.file}::${e.name}`, `${e.file}:${e.line}`, `exported ${e.kind}, referenced by no other file`)
+
+/**
+ * ── GENERATED-FILE EXEMPTION, path-scoped and SELF-REPORTING (2026-09-01) ────
+ * lib/external/_generated/** is MACHINE-WRITTEN (scripts/codegen-rentcast.sh
+ * regenerates rentcast-openapi.ts from the upstream OpenAPI spec — the file says
+ * so in its own header). Its orphan type exports ($defs/components/webhooks —
+ * spec sections the consumer, lib/external/rentcast-typed.ts, imports `paths`
+ * around) are codegen scaffolding: pruning them means HAND-EDITING A GENERATED
+ * FILE, which is §3-wrong the same way hand-editing schema-snapshot.ts is —
+ * the next regeneration silently restores them and the "fix" reads as drift.
+ * So the path is exempted BY RULING, on the QUALIFIED_EXTERNAL_ROUTES model:
+ *   · exact-prefix scoped — nothing outside lib/external/_generated/ is touched
+ *     (lib/property/rentcast-eligibility.ts keeps its finding);
+ *   · SELF-REPORTING — the match count prints in the coverage block, and the
+ *     control below goes RED if the prefix matches no file in the corpus, so a
+ *     stale exemption can never sit here reading as enforced (§2).
+ */
+const GENERATED_EXPORT_EXEMPT_PREFIX = "lib/external/_generated/"
+const generatedCorpusFiles = productFiles.filter((f) => f.startsWith(GENERATED_EXPORT_EXEMPT_PREFIX))
+let generatedExemptExports = 0
+for (const e of typeOrphans) {
+  if (e.file.startsWith(GENERATED_EXPORT_EXEMPT_PREFIX)) { generatedExemptExports++; continue }
+  add("orphan-type-export", `${e.file}::${e.name}`, `${e.file}:${e.line}`, `exported ${e.kind}, referenced by no other file`)
+}
+control("C3 the generated-file exemption still matches at least one corpus file (a stale exemption = red)",
+  generatedCorpusFiles.length > 0, generatedCorpusFiles.join(",") || "NO FILE under " + GENERATED_EXPORT_EXEMPT_PREFIX)
+control("C3 the generated-file exemption is prefix-EXACT — a sibling outside _generated/ is not exempt",
+  !"lib/external/rentcast-typed.ts".startsWith(GENERATED_EXPORT_EXEMPT_PREFIX) &&
+  !"lib/property/rentcast-eligibility.ts".startsWith(GENERATED_EXPORT_EXEMPT_PREFIX))
+control("C3 no finding under the exempted prefix survives, and none outside it was swallowed",
+  !findings.some((f) => f.cat === "orphan-type-export" && f.where.startsWith(GENERATED_EXPORT_EXEMPT_PREFIX)) &&
+  typeOrphans.filter((e) => !e.file.startsWith(GENERATED_EXPORT_EXEMPT_PREFIX)).length ===
+    findings.filter((f) => f.cat === "orphan-type-export").length,
+  `${generatedExemptExports} exempted`)
 
 control("C3 counted non-function exports at all", typeExports.length > 200, `${typeExports.length} scanned`)
 {
@@ -3687,7 +3847,7 @@ if (process.env.OPPOSITE_MISSING_VERBOSE === "1") {
 
 console.log("\n[coverage — the denominators, printed next to every numerator]")
 console.log(`  C1 columns   · ${pairedTables.length} tables both written AND read (the only ones asked)`)
-console.log(`               · ${selectSitesParsed} select sites parsed · ${starRead.size} tables read with select("*") (excluded from 1a)`)
+console.log(`               · ${selectSitesParsed} select sites parsed · ${embedJoinColumnsResolved} embed JOIN column read(s) resolved parent-side · ${embedJoinColumnsUnresolved} join column(s) unresolved (counted, never guessed) · ${starRead.size} tables read with select("*") (excluded from 1a)`)
 console.log(`               · ${opaqueWrite.size} tables with an OPAQUE write object (excluded from 1b) · ${unresolvedWriteObjects} opaque write sites`)
 console.log(`               · ${TRIGGER_WRITTEN.size} table(s) with DB-trigger-written columns read from supabase/migrations (exempt from 1b)`)
 console.log(`               · ${sqlSeeded} column read(s) written by an applied .sql seed/backfill across ${SQL_WRITTEN.size} table(s) (exempt from 1b)`)
@@ -3734,6 +3894,7 @@ console.log(`               · ${stillInvisible.length} of ${KNOWN_OFFLINE_INVIS
 console.log(`               · ${unresolvedEmbeds} unresolvable embeds · ${unresolvedFilterTerms} unresolvable filter terms · ${rpcTouched.size} tables in .rpc() files (excluded entirely)`)
 console.log(`  C2 imports   · ${importBindings.length} bindings across ${importStatements} statements (+${sideEffectImports} side-effect imports, not bindings)`)
 console.log(`  C3 exports   · ${typeExports.length} non-function exports · ${typeProofOnly.length} named only by a proof (reported, not failed)`)
+console.log(`               · ${generatedExemptExports} orphan export(s) in ${generatedCorpusFiles.length} GENERATED file(s) under ${GENERATED_EXPORT_EXEMPT_PREFIX} exempt BY RULING (codegen scaffolding — hand-pruning a generated file is §3-wrong; self-reporting, red when the prefix matches nothing)`)
 console.log(`               · ${typeStructurallyReachable} reachable through another declaration of the same module, private props interfaces included (a type in an exported signature needs no named import)`)
 console.log(`               · ${typeInUnaddressedModule} declared in a module NOTHING imports and no framework loads — the structural exclusion does not apply there, because it has no consumer to apply through`)
 console.log(`  C3 graph     · ${graphEdges} resolved import edges over ${TS_PATH_ALIASES.length} tsconfig path alias(es) · ${importersOf.size} modules with at least one importer`)
