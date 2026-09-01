@@ -2,6 +2,14 @@
 //
 // THE PRIVATE (AGENT) CHAT LANE — and only that lane.
 //
+// OWNER RULING (2026-09-01, verbatim): "chat/stream and send chat message is
+// different." Wave 21 recorded that neither this route nor
+// app/actions/ai-chat.ts:sendChatMessage is a superset of the other — this
+// one streams (SSE, fair-use pre-flight, post-stream ai_suggestions) without
+// persisting messages; the action persists and analyses without streaming.
+// They are two capabilities, not duplicates: BOTH STAY. Do not re-open this
+// as a §1.1 merge candidate.
+//
 // This route reads `conversations` / `messages` / `ai_suggestions`, which are
 // the AUTHENTICATED agent-coaching tables written by app/actions/ai-chat.ts.
 // The PUBLIC website-visitor lane is a different route on different tables:
