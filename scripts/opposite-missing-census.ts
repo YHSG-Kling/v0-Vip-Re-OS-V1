@@ -3285,17 +3285,20 @@ const QUALIFIED_EXTERNAL_ROUTES = new Map<string, string>([
 // ─── TOMBSTONES: ten superseded/insecure routes DELETED (lane N3a, 2026-09-01) ─
 // All ten sat in census 6b ("route handler nothing in the tree addresses").
 // The deleted files, by path (the spelling orphan-export-guard's
-// tombstoneNaming() resolves a deleted ambiguous export against):
-//   app/api/generate/newsletter/route.ts
-//   app/api/generate/social/route.ts
-//   app/api/referrals/thank-you-draft/route.ts
-//   app/api/admin/seed-feature-flags/route.ts
-//   app/api/financial/expenses/route.ts
-//   app/api/ai/generate-content/route.ts
-//   app/api/ai/insider-edit-generate/route.ts
-//   app/api/ai/insider-edit-rewrite-section/route.ts
-//   app/api/ai/insider-edit-save/route.ts
-//   app/api/ai/content-suggestions/route.ts
+// tombstoneNaming() resolves a deleted ambiguous export against). Each line
+// says "deleted" ITSELF because the deletion-audit classifies a path by its
+// own line before its context — a bare path mid-list near the "survivor …
+// merged onto" sentence below was read as a survivor claim and accused of rot:
+//   app/api/generate/newsletter/route.ts — deleted
+//   app/api/generate/social/route.ts — deleted
+//   app/api/referrals/thank-you-draft/route.ts — deleted
+//   app/api/admin/seed-feature-flags/route.ts — deleted
+//   app/api/financial/expenses/route.ts — deleted
+//   app/api/ai/generate-content/route.ts — deleted
+//   app/api/ai/insider-edit-generate/route.ts — deleted
+//   app/api/ai/insider-edit-rewrite-section/route.ts — deleted
+//   app/api/ai/insider-edit-save/route.ts — deleted
+//   app/api/ai/content-suggestions/route.ts — deleted
 // Each was compared capability-by-capability against its survivor; anything the
 // survivor lacked was MERGED ONTO IT FIRST (§1.1), then the route deleted:
 //   · /api/generate/newsletter → app/actions/ai-newsletter.ts:229
