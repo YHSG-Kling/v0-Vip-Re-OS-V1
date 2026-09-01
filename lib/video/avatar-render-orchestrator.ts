@@ -65,13 +65,47 @@ export interface AvatarRenderRowParams {
 }
 
 /**
+ * THE COMPOSITIONS THAT ACTUALLY PLAY `input_props.voiceoverUrl` — every
+ * remotion/ entry that declares the prop, and the setup guard §5 proves each
+ * declaration has an `<Audio src={...voiceoverUrl}>` reader, so declares ⇒
+ * renders. The RULE: buildAvatarRenderRow stages a voiceover URL and stamps
+ * `used_voiceover` ONLY for a composition on this list. For any other target
+ * (BuyerConsultationSlide / ListingPresentationSlide have no such prop) the
+ * flag would assert a narration that plays nowhere — an untrue ledger row.
+ * The CONTENT_CONTRACT cannot answer this question (it classifies voiceoverUrl
+ * on only 2 of these 14), so the list is explicit; a new consumer must be
+ * added here to have its voiceover staged. Source: grep voiceoverUrl remotion/
+ * (2026-09-01).
+ */
+const VOICEOVER_CONSUMING_COMPOSITIONS = new Set<string>([
+  "AffordabilitySnapshotReel",
+  "AgentTalkingHeadReel",
+  "CMAReel",
+  "ComingSoonReel",
+  "JustListedReel",
+  "JustListedReelHorizontal",
+  "JustListedReelSquare",
+  "JustSoldReelSquare",
+  "ListingSectionReel",
+  "NeighborhoodSpotlightReel",
+  "NewsletterDigestVideo",
+  "OpenHouseAnnounceReel",
+  "PhotoWalkthroughReel",
+  "TestimonialReel",
+])
+
+/**
  * Pure: build the remotion_composition_renders insert payload for an avatar
  * composition. The avatar (and optional voiceover) URL is merged into
  * input_props over any caller-supplied props, and the used_* flags + scope are
  * set so the queue, coordinator, and tier gate all see a DID-avatar render.
+ * The voiceover (URL and flag alike) is gated on the target composition
+ * actually consuming it — see VOICEOVER_CONSUMING_COMPOSITIONS above.
  */
 export function buildAvatarRenderRow(p: AvatarRenderRowParams): Record<string, unknown> {
-  const voiceover = p.voiceoverUrl ?? null
+  const voiceover = VOICEOVER_CONSUMING_COMPOSITIONS.has(p.compositionId)
+    ? (p.voiceoverUrl ?? null)
+    : null
   return {
     brokerage_id:    p.brokerageId,
     composition_id:  p.compositionId,
@@ -136,11 +170,15 @@ export async function enqueueAvatarCompositionForProject(
 ): Promise<EnqueueResult> {
   const supabase = client ?? createServiceClient()
 
-  const { data: project } = await supabase
+  const { data: project, error: projectErr } = await supabase
     .from("ai_video_projects")
     .select("id, brokerage_id, agent_id, video_url, provider_metadata")
     .eq("id", projectId)
     .maybeSingle()
+  // supabase-js RESOLVES a refused read (§3) — a refusal is NOT "project not
+  // found", and reporting it as absence would hide an RLS/permission failure as
+  // a benign skip. Same discipline as the staged-render read below.
+  if (projectErr) return { ok: false, skipped: `project read refused: ${projectErr.message}` }
   if (!project) return { ok: false, skipped: "project not found" }
 
   const meta = (project.provider_metadata ?? {}) as Record<string, any>
@@ -193,7 +231,14 @@ export async function enqueueAvatarCompositionForProject(
     }
 
     if (staged && staged.render_status === "queued") {
-      const voiceover = (meta.voiceover_url as string | null) ?? null
+      // Same gate as buildAvatarRenderRow: a voiceover is merged (and flagged)
+      // only when the target composition actually plays it — on any other
+      // composition `used_voiceover: true` would assert a narration that plays
+      // nowhere (BuyerConsultationSlide, this lane's staged row, has no
+      // voiceoverUrl prop).
+      const voiceover = VOICEOVER_CONSUMING_COMPOSITIONS.has(compositionId)
+        ? ((meta.voiceover_url as string | null) ?? null)
+        : null
       const mergedProps: Record<string, unknown> = {
         ...(staged.input_props ?? {}),
         avatarVideoUrl,

@@ -31,6 +31,17 @@ import {
 import type { SectionSpec } from "@/lib/listing-presentation/section-drip"
 import type { BuyerSlideKind, BuyerSearchExample } from "@/remotion/BuyerConsultationSlide"
 import { missingContentProps, describeMissingContent } from "@/lib/remotion/content-contract"
+import { geometryFor } from "@/lib/remotion/composition-geometry"
+
+/**
+ * The slide's registered length, DERIVED from the geometry table that
+ * test:remotion-setup proves equal to remotion/Root.tsx — a literal here with a
+ * comment asserting "≤ the composition's frames" is not a bound (wave-20 rule);
+ * a re-registration would silently outgrow it. The `?? 180` arm is unreachable
+ * while BuyerConsultationSlide stays registered (the guard proves the table);
+ * it exists only so a deregistration degrades to today's window instead of NaN.
+ */
+const BUYER_SLIDE_DURATION_FRAMES = geometryFor(BUYER_SLIDE_COMPOSITION)?.duration_frames ?? 180
 
 /**
  * The canonical buyer-facing slide sequence — the buyer twin of the drip's
@@ -369,8 +380,9 @@ export async function renderBuyerConsultationSlides(
       agentPhotoUrl:   ctx.agentPhotoUrl,
       avatarVideoUrl:  null,
       avatarStartFrame: 0,
-      // ≤ the composition's 180 frames — the PIP window is the whole slide.
-      avatarEndFrame:  180,
+      // The PIP window is the whole slide — derived from the registered
+      // duration_frames (BUYER_SLIDE_DURATION_FRAMES above), not a literal.
+      avatarEndFrame:  BUYER_SLIDE_DURATION_FRAMES,
       heroImageUrl:    null,
       brand:           ctx.brand,
       ...r.extra,

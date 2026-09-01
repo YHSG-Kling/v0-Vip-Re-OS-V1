@@ -90,10 +90,14 @@ export async function composeBuyerConsultationDeck(
 
   // Idempotency — one deck per appointment. An unreadable row is NOT absent:
   // building on a failed read is how one buyer gets two decks and two drips.
+  // Tenant predicate is REQUIRED here (§4): this is a service client, so RLS
+  // does not scope the read — without it a cross-tenant appointment_id
+  // collision would suppress this brokerage's deck.
   const { data: existing, error: existErr } = await svc
     .from("listing_presentations")
     .select("id")
     .eq("appointment_id", input.appointmentId)
+    .eq("brokerage_id", input.brokerageId)
     .maybeSingle()
   if (existErr) return { ok: false, skipped: `idempotency read failed: ${existErr.message}` }
   if (existing?.id) {
