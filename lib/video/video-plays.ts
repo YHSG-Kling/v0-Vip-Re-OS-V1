@@ -32,13 +32,9 @@
 // probe matched ANY render row for the listing with no status filter, that
 // cancelled row then blocked the listing from EVER getting a flyer again — the
 // day the agent added their phone number changed nothing. Three parts, all
-// below: ask missingContentProps BEFORE the render row is queued and count the
-// skip by name; exclude 'cancelled' from both probes so a fixed listing can
-// retry; and increment the success counters only for a row that actually landed.
-// (The queue-helper name is deliberately NOT spelled in this comment: the
-// partners-meeting simulator counts its occurrences in RAW source, where a
-// comment reads as a call site — CLAUDE.md §2's own trap, in another lane's
-// file. Reported rather than worked around by editing that guard.)
+// below: ask missingContentProps BEFORE recordRenderQueued and count the skip by
+// name; exclude 'cancelled' from both probes so a fixed listing can retry; and
+// increment the success counters only for a row that actually landed.
 import { missingContentProps, describeMissingContent } from "@/lib/remotion/content-contract"
 
 export interface RateMoment {
@@ -256,7 +252,7 @@ export async function runListingFlyers(svc: any): Promise<{ flyers: number; skip
       })
       // Only a row that actually landed is a flyer. A refused insert used to
       // fall through both counters and report as a clean tick (§3 — supabase-js
-      // resolves refusals; the queue helper hands the message back on `.error`
+      // resolves refusals; recordRenderQueued hands the message back on `.error`
       // and nobody read it).
       if (rq.ok) out.flyers += 1
       else {
