@@ -746,14 +746,28 @@ export async function mergeContacts(params: { primaryContactId: string; duplicat
     // discarding its error: supabase-js RESOLVES a refusal (§3), so a refused
     // transactions re-key looked identical to a successful one — and the soft
     // delete below then ran anyway, stranding the duplicate's DEALS on a deleted
-    // contact. Zero matched rows is NOT a failure here (a duplicate may own no
-    // transactions); a refusal is.
-    const { error: txRekeyError } = await supabase
-      .from("transactions")
-      .update({ contact_id: params.primaryContactId })
-      .eq("contact_id", params.duplicateContactId)
-    if (txRekeyError) {
-      throw new DatabaseError("Failed to move the duplicate's transactions onto the primary", txRekeyError)
+    // contact.
+    //
+    // ALL THREE FKs, not one. `transactions` carries THREE foreign keys to
+    // `contacts` — contact_id, buyer_contact_id, seller_contact_id (schema-fk-map
+    // header :32-33, confirmed against the live snapshot). Re-keying only
+    // contact_id stranded every deal where the duplicate was the BUYER or the
+    // SELLER rather than the generic client — the same defect one column over,
+    // and invisible because the update reported success.
+    //
+    // Zero matched rows is NOT a failure on any arm (a duplicate may own no deals
+    // at all, and most deals name the contact on exactly one side); a refusal is.
+    for (const column of ["contact_id", "buyer_contact_id", "seller_contact_id"] as const) {
+      const { error: txRekeyError } = await supabase
+        .from("transactions")
+        .update({ [column]: params.primaryContactId })
+        .eq(column, params.duplicateContactId)
+      if (txRekeyError) {
+        throw new DatabaseError(
+          `Failed to move the duplicate's transactions onto the primary (${column})`,
+          txRekeyError,
+        )
+      }
     }
 
     // Soft delete duplicate
