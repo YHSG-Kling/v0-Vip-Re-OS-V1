@@ -611,76 +611,15 @@ export async function rateVendorBooking(data: {
 }
 
 export async function recalculateVendorRatings(vendorId: string, brokerageId: string) {
+  // §6, extracted 2026-09-01: the rollup body moved to
+  // lib/vendor-marketplace/vendor-ratings.ts :: recalculateVendorRatingsCore so
+  // the portal client-rating action (app/actions/contact-vendor-booking.ts ::
+  // rateVendorBookingAsClient, which runs on the SERVICE client) shares ONE
+  // aggregate computation instead of spelling a second one. This export keeps
+  // its session-client behavior for the agent-side callers above.
   const supabase = await createClient()
-
-  // Get all bookings with ratings for this vendor in this brokerage
-  const { data: bookings } = await supabase
-    .from("vendor_bookings")
-    .select("agent_rating, client_rating")
-    .eq("vendor_id", vendorId)
-    .eq("brokerage_id", brokerageId)
-
-  if (!bookings || bookings.length === 0) return
-
-  // Calculate aggregates
-  const agentRatings = bookings.filter(b => b.agent_rating != null).map(b => b.agent_rating)
-  const clientRatings = bookings.filter(b => b.client_rating != null).map(b => b.client_rating)
-  const fiveStars = agentRatings.filter(r => r === 5).length
-  const oneStars = agentRatings.filter(r => r === 1).length
-  
-  const avgAgentRating = agentRatings.length > 0 
-    ? agentRatings.reduce((a, b) => a + b, 0) / agentRatings.length 
-    : null
-  const avgClientRating = clientRatings.length > 0 
-    ? clientRatings.reduce((a, b) => a + b, 0) / clientRatings.length 
-    : null
-
-  // Upsert vendor_ratings
-  const { error } = await supabase
-    .from("vendor_ratings")
-    .upsert({
-      vendor_id: vendorId,
-      brokerage_id: brokerageId,
-      avg_agent_rating: avgAgentRating,
-      avg_client_rating: avgClientRating,
-      total_bookings: bookings.length,
-      five_star_count: fiveStars,
-      one_star_count: oneStars,
-      last_updated: new Date().toISOString(),
-    }, { onConflict: "vendor_id" })
-
-  if (error) {
-    // If unique constraint doesn't exist, insert new record
-    await supabase
-      .from("vendor_ratings")
-      .insert({
-        vendor_id: vendorId,
-        brokerage_id: brokerageId,
-        avg_agent_rating: avgAgentRating,
-        avg_client_rating: avgClientRating,
-        total_bookings: bookings.length,
-        five_star_count: fiveStars,
-        one_star_count: oneStars,
-        last_updated: new Date().toISOString(),
-      })
-  }
-
-  // Also update the main vendors table rating. vendors.rating carries a CHECK
-  // (0 <= rating <= 5) — an out-of-range average is refused outright, and this
-  // write said nothing either way, so the directory kept showing the previous
-  // star rating with no sign the recompute had been rejected.
-  if (avgAgentRating) {
-    const { error: ratingError } = await supabase
-      .from("vendors")
-      .update({ rating: avgAgentRating })
-      .eq("id", vendorId)
-    if (ratingError) {
-      console.error(
-        `[vendor-marketplace] vendors.rating update REFUSED for vendor ${vendorId} (value ${avgAgentRating}):`,
-        ratingError.message,
-      )
-    }
-  }
+  const { recalculateVendorRatingsCore } = await import("@/lib/vendor-marketplace/vendor-ratings")
+  await recalculateVendorRatingsCore(supabase, vendorId, brokerageId)
 }
 
 export async function getVendorReviews(vendorId: string) {

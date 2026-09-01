@@ -45,17 +45,26 @@ export function buildVendorIntro(facts: VendorIntroFacts, agentName: string): { 
   }
 }
 
-/** Pure: client-safe vendor review request copy (service_type sanitized — same injection surface). */
-export function buildVendorReviewRequest(vendorName: string, serviceType: string | null, agentName: string): { subject: string; body: string } {
+/** Pure: client-safe vendor review request copy (service_type sanitized — same injection surface).
+ *  The ask is a DEEP LINK to the portal rating control, not "reply with a 1–5": until 2026-09-01 the
+ *  copy requested a number with nowhere to put it (no reply parser exists, and portal messages are
+ *  one-way agent→client here), so vendor_bookings.client_rating aggregated an always-empty set. The
+ *  link lands on the booking's own row anchor in /portal/[contactId]/vendors, where RateBookingStars
+ *  renders exactly when the booking is completed and unrated. */
+export function buildVendorReviewRequest(
+  vendorName: string, serviceType: string | null, agentName: string,
+  link: { contactId: string; bookingId: string },
+): { subject: string; body: string } {
   const v = sanitizeProperNoun(vendorName, 80) ?? "the provider"
   const who = sanitizeProperNoun(agentName, 60) ?? "Your Agent"
   const svc = sanitizeProperNoun(serviceType, 40) ?? "service"
+  const portalLink = `/portal/${link.contactId}/vendors#booking-${link.bookingId}`
   return {
     subject: `How did your ${svc} go?`,
     body: [
       `Hi,`,
       `Now that your ${svc} with ${v} is complete, I'd love a quick rating — it helps me keep only the best providers in your corner (and helps other clients too).`,
-      `Just reply with a 1–5 and a line about how it went. Thank you!`,
+      `Tap the stars on your services page to rate it (takes ten seconds): ${portalLink}`,
       `— ${who}`,
     ].join("\n\n"),
   }
@@ -142,7 +151,10 @@ export async function produceVendorReviewRequest(
   if (!ctx.booking.contact_id) return { proposed: false, reason: "no client contact on booking" }
   if (await alreadyProposed(supabase, brokerageId, bookingId, "sphere_of_influence")) return { proposed: false, reason: "review request already proposed" }
 
-  const msg = buildVendorReviewRequest(ctx.vendor.name, ctx.booking.service_type, ctx.agentName)
+  const msg = buildVendorReviewRequest(ctx.vendor.name, ctx.booking.service_type, ctx.agentName, {
+    contactId: ctx.booking.contact_id, // non-null: guarded two lines up
+    bookingId,
+  })
   const { proposeClientMessage } = await import("@/lib/agents/agent-client-messages")
   const res = await proposeClientMessage({
     brokerageId, agentKind: "sphere_of_influence", entityType: "vendor_booking", entityId: bookingId,

@@ -156,6 +156,30 @@ export function isNegativeShowingInterest(interestLevel: string | null | undefin
   return rating !== null && rating <= 2
 }
 
+// ─── The buyer_behavior_log.signal_type FAMILIES ─────────────────────────────
+/**
+ * VIEW_SIGNALS / SAVE_SIGNALS / DISMISS_SIGNALS — the canonical families of
+ * buyer_behavior_log.signal_type, LIFTED here (§6, 2026-09-01) from their
+ * original private spelling inside lib/showings/showing-brief.ts so every
+ * reader filters on the same sets instead of re-spelling them.
+ *
+ * WHY TWO SPELLINGS PER FAMILY: the live CHECK on buyer_behavior_log.signal_type
+ * (scripts/check-vocabularies.ts) admits NO "view"/"save"/"favorite" — the
+ * writers use two spelling families: the learner vocabulary (viewed / saved /
+ * love_it — lib/behavior-learning/preference-updater.ts SIGNAL_WEIGHTS) and
+ * the portal/CRM telemetry spellings (property_viewed / property_saved /
+ * property_dismissed — app/crm/contacts/[contactId]/search/search-client.tsx).
+ * A reader that filters on only one family silently halves its data; a reader
+ * that invents "view" matches zero rows structurally. Count both, from here.
+ *
+ * Readers: lib/showings/showing-brief.ts (per-showing signal one-liners) and
+ * app/actions/email-campaigns.ts getListingCampaignRecipients (open_house /
+ * price_drop audiences). This module owns the vocabulary; readers import.
+ */
+export const VIEW_SIGNALS    = new Set(["viewed", "property_viewed"])
+export const SAVE_SIGNALS    = new Set(["saved", "property_saved", "love_it"])
+export const DISMISS_SIGNALS = new Set(["dismissed", "property_dismissed", "not_for_us"])
+
 /**
  * feedbackTemperatureToRating — PURE. The SHOWING-AGENT feedback form's buyer
  * TEMPERATURE as the same 1-5 number, so an aggregate reader of that form uses one

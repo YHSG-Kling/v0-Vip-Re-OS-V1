@@ -31,6 +31,7 @@ import {
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { generateEmail } from "@/app/actions/ai-content-generation"
+import { VIEW_SIGNALS, SAVE_SIGNALS } from "@/lib/behavior-learning/signal-mapping"
 
 // Previously most actions in this file trusted caller-supplied
 // brokerageId / createdBy / actorUserId / agentId. canAccessFeature
@@ -874,9 +875,9 @@ export async function prepareListingEmailCampaign(params: {
  * caller hands in a transaction id, and an id from another brokerage must resolve to
  * nothing rather than to that brokerage's contacts.
  *
- * `property_interactions` picked up the same tenant predicate while we were here: it
- * carries `brokerage_id` (scripts/schema-snapshot.ts) and both reads keyed on
- * `listing_id` alone.
+ * The interest-signal reads below (open_house / price_drop) carry the same tenant
+ * predicate: `buyer_behavior_log` has `brokerage_id` (scripts/schema-snapshot.ts)
+ * and a listing/mls key alone would leak another tenant's viewers into the blast.
  */
 async function getListingCampaignRecipients(
   transactionId: string,
@@ -915,26 +916,63 @@ async function getListingCampaignRecipients(
     return withoutDealParties((contacts ?? []).map((c) => c.id))
   }
 
-  if (campaignType === "open_house") {
-    const { data: interested, error: interestedError } = await supabase
-      .from("property_interactions")
-      .select("contact_id")
-      .eq("listing_id", listing.id)
-      .eq("brokerage_id", listing.brokerage_id)
-      .in("interaction_type", ["view", "save"])
-    if (interestedError) throw interestedError
-    return withoutDealParties((interested ?? []).map((i) => i.contact_id))
-  }
+  // ── TOMBSTONE (§1.1, 2026-09-01): the open_house and price_drop audiences read
+  // `property_interactions` here. That table has ZERO writers anywhere in the tree
+  // (its only trigger is BEFORE INSERT, which never fires because nothing inserts),
+  // so both audiences were structurally empty forever. SURVIVOR:
+  // `buyer_behavior_log` — the live twin, written by the preference learner and the
+  // portal/CRM telemetry — which both reads below now query.
+  //
+  // The SIX surviving property_interactions readers are a SEPARATE future lane, NOT
+  // repointed here: app/actions/copilot.ts:522 and :727, app/actions/assistant.ts:358,
+  // lib/services/lead-management.service.ts:136,
+  // lib/services/contact-management.service.ts:372 (and the merge re-key at :588),
+  // and the lib/kernel/listing-archive.ts:291 cascade entry.
+  if (campaignType === "open_house" || campaignType === "price_drop") {
+    const isOpenHouse = campaignType === "open_house"
 
-  if (campaignType === "price_drop") {
-    const { data: viewers, error: viewersError } = await supabase
-      .from("property_interactions")
+    // Signal families come from the vocabulary owner (§6):
+    //   price_drop  → VIEW only — "previous viewers" who should hear the new price;
+    //   open_house  → VIEW ∪ SAVE — anyone who showed interest gets the invite.
+    const signalTypes = isOpenHouse ? [...VIEW_SIGNALS, ...SAVE_SIGNALS] : [...VIEW_SIGNALS]
+
+    // Recency floor: a price-drop nudge is only relevant to people whose interest is
+    // CURRENT (30d — a viewer from last quarter has moved on, and "the price dropped
+    // on a house you looked at in June" reads as surveillance). An open-house invite
+    // tolerates a longer memory (90d — an event invitation to a past saver is a
+    // welcome re-engagement, not a claim about their current search).
+    const sinceDays = isOpenHouse ? 90 : 30
+    const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString()
+
+    // DUAL KEY: buyer_behavior_log rows carry listing_id for our own inventory and
+    // mls_number for external/IDX properties — a buyer who viewed this listing
+    // through an IDX surface has mls_number stamped and listing_id null. The .or()
+    // is built CONDITIONALLY: mls_number is IDX free text, and PostgREST .or()
+    // grammar is string-parsed, so an unvalidated value is a filter-injection
+    // surface (precedent: app/api/track/identify/route.ts:47-52). Only a value
+    // matching the strict key shape may enter the grammar.
+    const orKeys = [`listing_id.eq.${listing.id}`]
+    const mls = typeof listing.mls_number === "string" ? listing.mls_number.trim() : ""
+    if (mls && /^[A-Za-z0-9-]{1,32}$/.test(mls)) {
+      orKeys.push(`mls_number.eq.${mls}`)
+    }
+
+    const { data: signals, error: signalsError } = await supabase
+      .from("buyer_behavior_log")
       .select("contact_id")
-      .eq("listing_id", listing.id)
       .eq("brokerage_id", listing.brokerage_id)
-      .eq("interaction_type", "view")
-    if (viewersError) throw viewersError
-    return withoutDealParties((viewers ?? []).map((v) => v.contact_id))
+      .in("signal_type", signalTypes)
+      .gte("created_at", since)
+      .or(orKeys.join(","))
+    if (signalsError) throw signalsError
+
+    // A buyer who viewed five times is ONE recipient: dedupe locally before the
+    // deal-party filter so the returned array carries no repeats.
+    const unique = new Set<string>()
+    for (const s of signals ?? []) {
+      if (s.contact_id) unique.add(s.contact_id as string)
+    }
+    return withoutDealParties([...unique])
   }
 
   const { data: allContacts, error: allContactsError } = await supabase.from("contacts").select("id")

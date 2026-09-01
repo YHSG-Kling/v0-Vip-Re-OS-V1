@@ -46,10 +46,11 @@ export function composeSiteInsights(rows: Array<{ page: string | null; seconds: 
       const cur = byPage.get(page) ?? { visits: 0, totalSeconds: 0, dwellSamples: 0 }
       cur.visits += 1
       // §4 fail closed: NULL seconds is "nobody measured", not "0 seconds".
-      // website_visitors.time_on_page_seconds currently has NO writer — the
-      // pixel (app/api/track/pixel/route.ts) upserts the visit without it, and
-      // the dwell BEACON (a page-unload timer posting seconds back) is the
-      // unbuilt half (open item; building it is out of this module's scope).
+      // website_visitors.time_on_page_seconds now HAS its writer (2026-09-01):
+      // the dwell BEACON — a pagehide timer in the installer snippet
+      // (app/dashboard/admin/visitor-tracking/page.tsx) posting seconds to
+      // app/api/track/dwell/route.ts. The pixel still upserts the visit
+      // without it, and old rows carry NULL forever, so this guard stays.
       // The old `?? 0` coercion made every page's avg 0, so the ×3 guard below
       // read 0 >= 0×3 as true and mailed principals "visitors stay 0× longer".
       // A recorded 0 still counts as a sample (a real instant bounce); an

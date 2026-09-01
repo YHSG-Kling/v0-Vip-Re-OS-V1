@@ -607,7 +607,11 @@ export async function launchAdCampaign(
     .from("ad_campaigns")
     .update({
       status: "launching",
-      kernel_event_id: null, // Will be set by kernel event
+      // kernel_event_id RETIRED (m597): the column linked to a kernel_events
+      // table that never existed, no publisher ever produced an id ("will be
+      // set by kernel event" was a promise nothing kept), and after the drop a
+      // write naming it would PGRST204-refuse the ENTIRE row — failing every
+      // launch. The durable event link is the lifecycle_events insert below.
     })
     .eq("id", campaignId)
     .eq("brokerage_id", brokerageId)

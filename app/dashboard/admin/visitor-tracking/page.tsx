@@ -126,6 +126,22 @@ export default function VisitorTrackingPage() {
   // once per session (`_vipid`). The endpoint creates nothing — it can only
   // link the session to a lead or contact this brokerage ALREADY holds.
   //
+  // ── THE DWELL HALF, BUILT (2026-09-01) ──────────────────────────────────────
+  //
+  // `website_visitors.time_on_page_seconds` had a reader — the principal digest's
+  // site-traffic insight (lib/kernel/site-traffic-insights.ts), which fails
+  // closed on the absent value — and NO writer. This is the unbuilt half that
+  // comment names: a `pagehide` timer posting seconds back to
+  // `/api/track/dwell`, via the SAME two-step beacon shape as `send()` above
+  // (sendBeacon with a text/plain Blob, then no-cors keepalive fetch). Both
+  // steps stay CORS "simple requests" — a fetch with Content-Type:
+  // application/json would force an OPTIONS preflight this endpoint does not
+  // answer and the loop would die silently; the warning lives at the identify
+  // route's header. `pagehide` and not `beforeunload`: beforeunload does not
+  // fire on bfcache navigations or on mobile Safari tab kills, which is most of
+  // the traffic a brokerage site sees. The reader turns on with no change the
+  // moment rows carry a measured value.
+  //
   // Note the doubled backslashes: this is a TS template literal, so `\\D` here
   // is the single `\D` the pasted script needs. A bare `\D` would collapse to a
   // literal "D" and the phone test would silently match nothing.
@@ -160,6 +176,16 @@ export default function VisitorTrackingPage() {
     }
     send(e,p);
   },true);
+  var t0=Date.now();
+  addEventListener('pagehide',function(){
+    var sec=Math.round((Date.now()-t0)/1000);
+    if(sec<1||sec>7200)return;
+    var w=JSON.stringify({sessionId:s,pageUrl:location.href,seconds:sec});
+    try{
+      if(navigator.sendBeacon&&navigator.sendBeacon(o+'/api/track/dwell',new Blob([w],{type:'text/plain'})))return;
+    }catch(x){}
+    try{fetch(o+'/api/track/dwell',{method:'POST',mode:'no-cors',keepalive:true,body:w});}catch(x){}
+  });
 })('${profile.brokerage_id}','${profile.agent_id}','${trackingOrigin}');
 </script>`
     : ''

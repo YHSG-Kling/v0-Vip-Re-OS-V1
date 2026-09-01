@@ -123,7 +123,7 @@ export async function distributeVideo(
           status: params.action === "post_now" ? "scheduled" : "scheduled",
           approval_status: "approved",
           ai_generated: true,
-          // Link back to the video project via kernel_event_id proxy — stored in post_brief
+          // Link back to the video project — stored in post_brief (kernel_event_id retired, m597)
           post_brief: `video_project:${project.id}`,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),

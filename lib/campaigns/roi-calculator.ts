@@ -80,8 +80,14 @@ export async function recalculateCampaignROI(
       // distributor (lib/kernel/video.ts:916) and already read by the
       // sibling ROI rollup (lib/marketing/campaign-measurer.ts:60) and the
       // ad branch below (ad_campaigns.marketing_campaign_id). kernel_event_id
-      // remains an open item: either a kernel-event publisher stamps it one
-      // day or the column retires — nothing may gate money math on it.
+      // is no longer an open item — it RETIRED (m597, 2026-09-01): no
+      // kernel_events table ever existed, no FK, no reader anywhere after this
+      // repoint, and the one writer wrote a literal null. The durable event
+      // link that DOES exist is lifecycle_events, written beside every publish
+      // (app/actions/social-media-automation.ts:431, lib/ads/ad-creator.ts:625)
+      // — a per-row stamp would just be a second spelling of that (§6). See
+      // supabase/migrations/m597-kernel-event-id-five-copies-of-a-link-to-a-
+      // table-that-does-not-exist.sql.
       const { data: socialPosts, error: socialPostsError } = await supabase
         .from("social_posts")
         .select("id")

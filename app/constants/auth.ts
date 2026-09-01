@@ -47,11 +47,12 @@ export const PUBLIC_ROUTES = [
   '/api/showings/feedback',
   '/api/providers/inbound',
   '/api/billing/webhook',
-  // ── The visitor-tracking pair, moved OUT of PROTECTED_ROUTES ─────
+  // ── The visitor-tracking routes, moved OUT of PROTECTED_ROUTES ─────
   //
-  // `/api/track` holds exactly two routes — `pixel` and `identify` — and BOTH
+  // `/api/track` holds exactly three routes — `pixel`, `identify` and `dwell`
+  // (the pagehide time-on-page beacon, added 2026-09-01) — and ALL of them
   // are fired by an anonymous stranger on a BROKERAGE'S OWN WEBSITE, from a
-  // snippet the brokerage pastes there. Neither reads a session; both use the
+  // snippet the brokerage pastes there. None reads a session; all use the
   // service client, and the pixel route's own first line states the rule:
   // "Pixel fire = anonymous visit record only. NOT consent. NOT lead creation."
   //
@@ -68,11 +69,12 @@ export const PUBLIC_ROUTES = [
   // 0 rows to this day (live count on hrvaqgvukzxfskkcrwbt, 2026-08-26), which
   // is consistent with a pixel that has never once been allowed to fire.
   //
-  // Publishing the prefix is what the two routes were written for, and it is
+  // Publishing the prefix is what these routes were written for, and it is
   // not a widening of anything real: an authenticated caller was never possible
-  // here. Both are hardened for the traffic they now actually receive — see the
+  // here. All are hardened for the traffic they now actually receive — see the
   // header of app/api/track/identify/route.ts for the tenant, filter-grammar
-  // and enumeration-oracle findings that came with wiring its caller.
+  // and enumeration-oracle findings that came with wiring its caller (the
+  // dwell route inherits all three).
   '/api/track',
   // ── Public page routes (no auth required) ────────────────────────
   '/portal/login',
@@ -145,8 +147,9 @@ export const PROTECTED_ROUTES = [
   '/api/offers',
   '/api/onboarding',
   // '/api/track' MOVED to PUBLIC_ROUTES — see the note there. It holds only the
-  // anonymous visitor pixel and the identify beacon, neither of which a session
-  // can ever accompany; gating it here redirected every hit to /login.
+  // anonymous visitor pixel and the identify + dwell beacons (three routes),
+  // none of which a session can ever accompany; gating it here redirected
+  // every hit to /login.
   '/api/video-scripts',
   '/api/video',
   '/api/videos',

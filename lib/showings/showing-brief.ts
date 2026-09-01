@@ -37,6 +37,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"
 import { loadBuyerCriteria } from "@/lib/buyer-search/buyer-criteria"
+import { VIEW_SIGNALS, SAVE_SIGNALS, DISMISS_SIGNALS } from "@/lib/behavior-learning/signal-mapping"
 
 export interface MatchupRow {
   criterion:   string
@@ -386,14 +387,10 @@ export async function buildShowingBriefing(showingId: string): Promise<ShowingBr
   // §6 one vocabulary: the live CHECK on buyer_behavior_log.signal_type
   // (scripts/check-vocabularies.ts) admits NO "view"/"save"/"favorite" — the
   // old filters matched zero rows structurally, so "Viewed N"/"Saved N" had
-  // never rendered. The writers use two spelling families: the learner
-  // vocabulary (viewed / saved / love_it — lib/behavior-learning/
-  // preference-updater.ts SIGNAL_WEIGHTS) and the portal/CRM telemetry
-  // spellings (property_viewed / property_saved / property_dismissed —
-  // app/crm/contacts/[contactId]/search/search-client.tsx). Count both.
-  const VIEW_SIGNALS    = new Set(["viewed", "property_viewed"])
-  const SAVE_SIGNALS    = new Set(["saved", "property_saved", "love_it"])
-  const DISMISS_SIGNALS = new Set(["dismissed", "property_dismissed", "not_for_us"])
+  // never rendered. The canonical signal families were LIFTED from here into
+  // lib/behavior-learning/signal-mapping.ts (§6, 2026-09-01) — the module that
+  // owns the buyer_behavior_log vocabulary mappers — so the audience readers
+  // in app/actions/email-campaigns.ts count the same families this brief does.
   const viewCount = beh.filter(b => VIEW_SIGNALS.has(b.signal_type)).length
   if (viewCount > 0) signals.push(`Viewed ${viewCount} listing${viewCount === 1 ? "" : "s"}`)
   const saveCount = beh.filter(b => SAVE_SIGNALS.has(b.signal_type)).length
