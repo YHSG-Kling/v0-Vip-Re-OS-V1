@@ -44,6 +44,91 @@ export interface ScriptComplianceActor {
 }
 
 /**
+ * The minimum surface of a supabase client the human lane below uses.
+ *
+ * ONE SPELLING (§6). lib/video/video-render-hold.ts declared this same shape
+ * privately so its three doors could hand it whichever client they already
+ * held; it now imports this one, because the escalation it calls needs the very
+ * same freedom for the very same reason. The two clients are different types —
+ * `@supabase/ssr`'s session client and `@supabase/supabase-js`'s service client
+ * — and neither is assignable to the other, so a structural type is what lets
+ * one function serve both without an `any` at every call site.
+ */
+export interface QueryableClient {
+  from: (table: string) => any
+}
+
+export type ActorTenancyProof =
+  | { ok: true; via: "users.brokerage_id" | "agents.user_id"; agentId: string | null }
+  | { ok: false; error: string }
+
+/**
+ * PROVE that this actor really belongs to this brokerage — the gate that runs
+ * BEFORE the service client is allowed to write anything (§4).
+ *
+ * WHY IT EXISTS, AND WHY ONLY ON THE SERVICE PATH. On the session client the
+ * proof is already carried by RLS: `video_scripts_library`'s only policy is
+ * `brokerage_id = current_user_brokerage_id()`, so a foreign brokerage id is
+ * refused by the database and nothing here could improve on that. A SERVICE
+ * client bypasses that policy entirely. Handing it a `brokerageId` off the
+ * params object and inserting is precisely the body-supplied-tenant IDOR shape
+ * §4 names — so on that path the pair is re-derived from the database instead
+ * of trusted.
+ *
+ * TWO ADMISSIBLE PROOFS, because one class of user has each:
+ *   · `users.brokerage_id` — the ordinary seat.
+ *   · an `agents` row at (user_id, brokerage_id) — the agent's tenancy of
+ *     record, and the read the escalation performs anyway to fill `agent_id`.
+ *     Reused rather than repeated, so the two can never disagree (§6).
+ *
+ * FAIL CLOSED. supabase-js RESOLVES a refused read, so `error` is destructured
+ * and a read that could not run REFUSES the escalation rather than assuming the
+ * pair is fine — "nobody checked" must never render as "checked and fine". The
+ * caller reports that refusal; it never becomes a silent skip.
+ */
+export async function proveActorTenancy(
+  client: QueryableClient,
+  actor: ScriptComplianceActor,
+): Promise<ActorTenancyProof> {
+  if (!actor?.userId || !actor?.brokerageId) {
+    return { ok: false, error: "actor is incomplete — a userId and a brokerageId are both required to file under a service client" }
+  }
+
+  const { data: userRow, error: userErr } = await client
+    .from("users")
+    .select("id, brokerage_id")
+    .eq("id", actor.userId)
+    .maybeSingle()
+  if (userErr) {
+    return {
+      ok: false,
+      error: `tenancy could not be proven — the users row was unreadable (${userErr.message}). Refusing to file under a service client.`,
+    }
+  }
+  if (!userRow) {
+    return { ok: false, error: `tenancy could not be proven — no users row ${actor.userId}. Refusing to file under a service client.` }
+  }
+
+  // The agents cross is performed here rather than after, so the ONE read
+  // answers both questions: does this user hold this tenant, and which
+  // agents-class id does `agent_id` take (FK agents(id) — never the users id).
+  const { resolveAgentIdInBrokerage } = await import("@/lib/kernel/agent-identity")
+  const agentId = await resolveAgentIdInBrokerage(client as any, actor.userId, actor.brokerageId)
+
+  if ((userRow as { brokerage_id?: string | null }).brokerage_id === actor.brokerageId) {
+    return { ok: true, via: "users.brokerage_id", agentId }
+  }
+  if (agentId) return { ok: true, via: "agents.user_id", agentId }
+
+  return {
+    ok: false,
+    error:
+      `tenancy could not be proven — user ${actor.userId} holds neither users.brokerage_id nor an agents row in brokerage ` +
+      `${actor.brokerageId}. Refusing to file a review row under a service client for a tenant this actor does not belong to.`,
+  }
+}
+
+/**
  * The persona a broadcast script is graded against.
  *
  * There is no individual recipient at script time (see the header note on the
@@ -689,9 +774,16 @@ export interface ScriptEscalationResult {
  * shelf); 'pending_review' is what actually summons a human.
  *
  * agent_id is agents-class (FK agents(id)) while every caller holds a users id,
- * so it is RESOLVED, never substituted; created_by is the users id. brokerageId
- * must be the SESSION's — the only policy on this table is
- * `brokerage_id = current_user_brokerage_id()`, so a foreign one is refused.
+ * so it is RESOLVED, never substituted; created_by is the users id.
+ *
+ * WHERE THE BROKERAGE'S PROOF COMES FROM — one rule, two mechanisms:
+ *   · No `client` param (server actions): the SESSION's brokerage. The only
+ *     policy on this table is `brokerage_id = current_user_brokerage_id()`, so
+ *     a foreign one is refused BY THE DATABASE.
+ *   · A `client` param (a cron under the service client): RLS is bypassed, so
+ *     the pair is proven in code first — see `proveActorTenancy`. A brokerage
+ *     that cannot be proven is refused here instead, and the refusal is
+ *     REPORTED as `ok:false`, never swallowed.
  */
 export async function escalateScriptToHumanReview(params: {
   actor: ScriptComplianceActor
@@ -718,15 +810,52 @@ export async function escalateScriptToHumanReview(params: {
   holdReason?: "fair_housing_red_flag" | "unevaluated"
   /** The `Compliance: UNKNOWN — …` sentences, when holdReason is "unevaluated". */
   unknownReasons?: string[]
+  /**
+   * THE CLIENT TO FILE UNDER — and the half that made this lane unreachable
+   * from a cron.
+   *
+   * OMITTED (every server-action caller, unchanged): the SESSION client is
+   * built here. RLS's `brokerage_id = current_user_brokerage_id()` is both the
+   * gate and the tenancy proof, which is exactly right when a person is logged
+   * in.
+   *
+   * SUPPLIED: the caller's own client — the pattern
+   * lib/video/video-render-hold.ts already uses for the same reason (it takes
+   * `supabase` from whichever of its three doors called it rather than opening
+   * its own), and the pattern every lib/listing-presentation/* entry point uses
+   * (`client?: ReturnType<typeof createServiceClient>`). This is what lets the
+   * pre-listing SECTION lane file at all: it runs cron → section-drip →
+   * section-render under the SERVICE client, where there is no session, so
+   * `current_user_brokerage_id()` is NULL, every insert here was refused by
+   * RLS, and a hard fair-housing finding withheld the model's script and
+   * summoned nobody.
+   *
+   * A SERVICE CLIENT BYPASSES THE POLICY THAT WAS DOING THE TENANCY CHECK, so
+   * supplying one turns `proveActorTenancy` on: the (user, brokerage) pair is
+   * re-derived from the database before anything is written, and a pair that
+   * cannot be proven is REFUSED, never written on trust. See §4 — the brokerage
+   * must be proven, never taken from a parameter a caller could set freely.
+   */
+  client?: QueryableClient
 }): Promise<ScriptEscalationResult> {
-  const supabase = await createClient()
+  const supabase: QueryableClient = params.client ?? (await createClient())
 
-  const { resolveAgentIdInBrokerage } = await import("@/lib/kernel/agent-identity")
-  const agentId = await resolveAgentIdInBrokerage(
-    supabase,
-    params.actor.userId,
-    params.actor.brokerageId,
-  )
+  let agentId: string | null
+  if (params.client) {
+    // GATE FIRST, THEN THE SERVICE CLIENT. Nothing is written until the pair is
+    // proven, and the proof's own agents-class answer is what fills `agent_id`
+    // — no second read, no chance of the two disagreeing.
+    const proof = await proveActorTenancy(params.client, params.actor)
+    if (!proof.ok) return { ok: false, error: proof.error }
+    agentId = proof.agentId
+  } else {
+    const { resolveAgentIdInBrokerage } = await import("@/lib/kernel/agent-identity")
+    agentId = await resolveAgentIdInBrokerage(
+      supabase as any,
+      params.actor.userId,
+      params.actor.brokerageId,
+    )
+  }
 
   const unevaluated = params.holdReason === "unevaluated"
   const notes = [

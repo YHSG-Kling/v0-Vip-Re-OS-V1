@@ -82,6 +82,7 @@ import {
   escalateScriptToHumanReview,
   COMPLIANCE_UNKNOWN_PREFIX,
   type ProhibitedPhraseCatalogue,
+  type QueryableClient,
   type ScriptComplianceActor,
   type ScriptComplianceState,
 } from "@/lib/video/script-compliance"
@@ -113,10 +114,15 @@ export interface VideoRenderHoldDecision {
   humanVerdict: HumanVerdict
 }
 
-/** The minimum surface of a supabase client this module uses. */
-interface QueryableClient {
-  from: (table: string) => any
-}
+// ── TOMBSTONE — `interface QueryableClient` (declared here until now) ────────
+//
+// SURVIVOR: lib/video/script-compliance.ts `QueryableClient`, imported above.
+//
+// Byte-identical shape, and it had to be duplicated only because this module
+// was the sole one that let its caller choose the client. The escalation it
+// calls now does the same — a cron under the service client is the whole reason
+// — so the type belongs beside the function both modules share (§6: one
+// spelling, or a scorer cannot match writer to reader across them).
 
 interface HumanDecisionLookup {
   verdict: HumanVerdict

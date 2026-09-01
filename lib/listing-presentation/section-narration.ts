@@ -31,7 +31,7 @@ import {
 // deterministic builder and into every pure simulator that exercises it. The
 // escalation lane and the compliance verdict are reached by dynamic import at
 // the two points that actually need them.
-import type { ScriptComplianceActor } from "@/lib/video/script-compliance"
+import type { QueryableClient, ScriptComplianceActor } from "@/lib/video/script-compliance"
 
 /**
  * The composition these scripts are SPOKEN OVER.
@@ -239,6 +239,27 @@ export interface AINarrationInput extends NarrationInput {
    * (`pres.brokerage_id`, `pres.agent_user_id`).
    */
   escalationActor?: ScriptComplianceActor | null
+  /**
+   * THE CLIENT THE ESCALATION FILES UNDER — the second half of why nothing was
+   * ever summoned on this lane.
+   *
+   * An actor alone was not enough. `escalateScriptToHumanReview` used to open
+   * the SESSION client unconditionally, while this producer's live path is
+   * cron → section-drip → section-render, entirely under the SERVICE client
+   * with no session at all. `video_scripts_library`'s only policy is
+   * `brokerage_id = current_user_brokerage_id()`, which is NULL for an
+   * unauthenticated client, so the insert was RLS-refused every time — and
+   * supabase-js RESOLVES that refusal, so it would have read as an escalation.
+   *
+   * Passing the cron's own client is the same shape
+   * lib/video/video-render-hold.ts uses (its three doors hand it the client
+   * they already hold). Supplying one turns on `proveActorTenancy`: the
+   * (user, brokerage) pair is re-derived from the database before anything is
+   * written, because a service client bypasses the policy that was doing that
+   * check. Omit it and the session client is used exactly as before, which is
+   * what the pure builder and the simulators need.
+   */
+  escalationClient?: QueryableClient | null
 }
 
 /**
@@ -262,6 +283,8 @@ export interface AINarrationInput extends NarrationInput {
  */
 async function escalateSectionScript(args: {
   actor:      ScriptComplianceActor | null | undefined
+  /** The cron's SERVICE client, when this producer was reached from one. */
+  client?:    QueryableClient | null
   sectionKey: string
   script:     string
   redFlags:   string[]
@@ -281,6 +304,10 @@ async function escalateSectionScript(args: {
     const { escalateScriptToHumanReview } = await import("@/lib/video/script-compliance")
     const filed = await escalateScriptToHumanReview({
       actor:     args.actor,
+      // Omitted on the session paths (the pure builder, the simulators), so the
+      // escalation opens the session client exactly as it always has. Supplied
+      // by section-render.ts, which is the cron.
+      ...(args.client ? { client: args.client } : {}),
       script:    args.script,
       // The live CHECK admits five values; toLibraryScriptType maps this one.
       videoType: "listing_presentation",
@@ -327,6 +354,7 @@ async function escalateHardFairHousing(
 ): Promise<{ notes: string[]; reviewId?: string }> {
   return escalateSectionScript({
     actor:      input.escalationActor,
+    client:     input.escalationClient,
     sectionKey: input.sectionKey,
     script,
     redFlags:   hardHits.map((v) => `FairHousing: "${v.phrase}" — rewrite as: ${v.fix} (${v.reference})`),
@@ -556,6 +584,7 @@ export async function generateSectionNarration(input: AINarrationInput): Promise
         if (verdict.redFlags.length > 0) {
           const filed = await escalateSectionScript({
             actor: input.escalationActor,
+            client: input.escalationClient,
             sectionKey: input.sectionKey,
             script, redFlags: verdict.redFlags, warnings: verdict.warnings, budget,
           })

@@ -197,6 +197,32 @@ export async function renderSectionsForPresentation(
       areaName,
       agentTake,
       marketingSystem: marketing.text,
+      // ── WHO IS ON THE HOOK, AND WHAT THE ESCALATION FILES UNDER ───────────
+      // §5's other half. A HARD fair-housing hit in a script destined for the
+      // agent's CLONED VOICE withholds the model's text (correct) and must put
+      // a person on it. It could not: this call supplied no actor, so every
+      // hard hit took section-narration.ts's "NO HUMAN WAS SUMMONED" branch,
+      // and even with an actor the escalation opened the SESSION client while
+      // this whole lane runs cron → section-drip → section-render under the
+      // SERVICE client, where video_scripts_library's
+      // `brokerage_id = current_user_brokerage_id()` policy refuses the insert.
+      //
+      // BOTH HALVES COME OFF THE ROW THE CRON ALREADY LOADED, so neither is a
+      // free parameter (§4): `listing_presentations.brokerage_id` (FK
+      // brokerages(id)) is the tenant, and `listing_presentations.agent_user_id`
+      // is the actor — USERS-class by its FK `agent_user_id → users(id)`, which
+      // is the class ScriptComplianceActor.userId wants. `agents.id` is a
+      // DISJOINT space (§3) and is never substituted here; the escalation does
+      // the users→agents cross itself, inside the tenancy proof.
+      //
+      // Null when the presentation names no agent — reported LOUDLY by the
+      // narration's own branch rather than silently treated as "nothing to
+      // file". `escalationClient` turns on proveActorTenancy in the escalation,
+      // because a service client bypasses the RLS that was the tenancy check.
+      escalationActor: pres.agent_user_id
+        ? { userId: pres.agent_user_id as string, brokerageId: pres.brokerage_id as string }
+        : null,
+      escalationClient: supabase,
     })
     const inputProps: Record<string, unknown> = {
       sectionKey:      s.section_key,
@@ -208,6 +234,18 @@ export async function renderSectionsForPresentation(
       voiceoverUrl:   null,
       totalSlides: total,
       brand,
+      // ── THE HOLD TRAVELS WITH THE RENDER, NOT ONLY INTO A LOG ─────────────
+      // §1: `SectionNarration.notes / heldForReview / reviewId` had a producer
+      // and no reader — the disposition died in a local variable while the row
+      // went to the queue looking like any other section. Staged here so the
+      // narration orchestrator, the drip and anyone reading
+      // remotion_composition_renders.input_props can all see that this
+      // section's model script was WITHHELD and which video_scripts_library row
+      // a human now owns. Only written when there is something to say, so an
+      // ordinary section's props are byte-identical to before.
+      ...(narration.notes?.length ? { narrationNotes: narration.notes } : {}),
+      ...(narration.heldForReview ? { narrationHeldForReview: true } : {}),
+      ...(narration.reviewId ? { narrationReviewId: narration.reviewId } : {}),
     }
     const { data: render, error } = await supabase
       .from("remotion_composition_renders")
