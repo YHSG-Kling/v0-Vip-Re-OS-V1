@@ -48,7 +48,10 @@ import {
   narrationBudget,
   narrationLengthDirective,
   narrationMaxTokens,
+  narrationOverrunRedraftDirective,
   fitNarrationToBudget,
+  fitNarrationWithOneRedraft,
+  type NarrationBudgetOutcome,
 } from "@/lib/video/script-structure"
 import path from "node:path"
 import fs from "node:fs/promises"
@@ -198,11 +201,28 @@ export async function POST(req: NextRequest) {
       NEWSLETTER_VIDEO_COMPOSITION,
       compositionSeconds(geometryFor(NEWSLETTER_VIDEO_COMPOSITION) ?? { duration_frames: 0, fps: 30 }),
     )
+    /**
+     * THE AUTHORED NARRATION — what gets spoken when even a re-draft will not
+     * fit NewsletterDigestVideo. Two short sentences built from the campaign's
+     * own subject line and the lead topic's headline, so it fits any composition
+     * with real runtime and states nothing the email does not.
+     * §1: there was no deterministic newsletter narration anywhere; this is the
+     * missing half the overrun reader needs to fall back to.
+     */
+    const deterministicNewsletterNarration = (): string => {
+      const subject = (camp.subject_line ?? camp.campaign_name ?? "this week's market digest").trim()
+      const beat = marketBeat.replace(/\s+/g, " ").trim().replace(/[.\s]+$/, "")
+      const head = (camp.subject_line ?? camp.campaign_name) ? `Open the email for the full breakdown on ${subject}.` : "Open the email for the full breakdown."
+      return `This week: ${beat}. ${head}`
+    }
+
+    const budgetNotes: string[] = []
+    let budgetOutcome: NarrationBudgetOutcome["outcome"] = "fit"
     const draft = async (violations: string[]): Promise<string> => {
       const fix = violations.length > 0
         ? `\n\nResolve these violations from prior draft:\n- ${violations.join("\n- ")}`
         : ""
-      const prompt = `Write a 25-35 word VOICEOVER narration for a real-estate weekly newsletter intro video.
+      const basePrompt = `Write a 25-35 word VOICEOVER narration for a real-estate weekly newsletter intro video.
 
 THE VIDEO IS NOT A LIST OF OUR SECTIONS. It opens with a hook from the
 audience's lens — what's the most timely VALUE insight the recipient
@@ -223,19 +243,45 @@ phrases like "perfect for families"; rate / valuation / appreciation
 guarantees; exclamation marks.
 ${narrationLengthDirective(narrationCap)}
 Return ONLY the spoken text.${fix}`
-      const { text } = await generateTextRouted({
-        brokerageId: camp.brokerage_id,
-        userId: ledgerAgentUserId,
-        feature:     "newsletter_video_narration",
-        prompt,
-        maxTokens:   narrationMaxTokens(narrationCap),
-        temperature: 0.55,
+      // ── VERIFY, DON'T TRUST — AND NOW SOMETHING READS THE VERDICT (§1) ────
+      // A word ceiling in a prompt is a request; fitNarrationToBudget is the
+      // enforcement, and an overrun is trimmed at a sentence boundary. What
+      // NOTHING read was `stillOverBudget` — the case where the trim CANNOT get
+      // under budget because the first sentence alone is longer than the whole
+      // composition. This route puts the mp3 in input_props.voiceoverUrl (the
+      // camel key) and deliberately NOT in voiceover_url, so the m313 tpad that
+      // rescues every other narration is off by design here: that sentence is
+      // simply cut, mid-word, in a video embedded in every recipient's email.
+      // Re-draft ONCE, then speak the authored line. The policy is shared with
+      // the other two camel-key producers (fitNarrationWithOneRedraft) so the
+      // three cannot drift, and it nests INSIDE the compliance draft so a
+      // re-draft or the fallback is still gated by evaluateOutbound below.
+      const drafted = await fitNarrationWithOneRedraft({
+        budget: narrationCap,
+        label: "[render-newsletter-video]",
+        deterministic: deterministicNewsletterNarration,
+        draft: async ({ previous }) => {
+          const { text } = await generateTextRouted({
+            brokerageId: camp.brokerage_id,
+            userId: ledgerAgentUserId,
+            feature:     "newsletter_video_narration",
+            prompt:      previous ? `${basePrompt}\n${narrationOverrunRedraftDirective(previous, narrationCap)}` : basePrompt,
+            maxTokens:   narrationMaxTokens(narrationCap),
+            temperature: 0.55,
+          })
+          return fitNarrationToBudget(text.trim(), narrationCap)
+        },
       })
-      // VERIFY, don't trust: a word ceiling in a prompt is a request. Trimmed at
-      // a sentence boundary and logged when the model overshoots — never silent.
-      const fit = fitNarrationToBudget(text.trim(), narrationCap)
-      if (fit.note) console.warn(`[render-newsletter-video] ${fit.note}`)
-      return fit.script
+      for (const n of drafted.notes) console.warn(n)
+      budgetNotes.push(...drafted.notes)
+      budgetOutcome = drafted.outcome
+      // REFUSED = the composition has no runtime to narrate. Fail the render
+      // (the catch stamps newsletter_video_renders.error_message) rather than
+      // bake a track nothing can play.
+      if (drafted.outcome === "refused") {
+        throw new Error(drafted.notes[drafted.notes.length - 1] ?? `no narration fits ${narrationCap.compositionId}`)
+      }
+      return drafted.script
     }
     const complianceResult = await runWithComplianceRedraft({
       draft: ({ violations }) => draft(violations),
@@ -376,6 +422,11 @@ Return ONLY the spoken text.${fix}`
         ledger_id:              ledger.id,
         voiceover_url:          voiceoverUrlStored,
         kind:                   "newsletter_digest",
+        // THE OVERRUN, ON THE LEDGER (§1). "fit" | "trimmed" | "redrafted" |
+        // "deterministic" — a truncated narration used to be indistinguishable
+        // from a clean one once the console.warn scrolled away.
+        narration_budget_outcome: budgetOutcome,
+        narration_budget_notes:   budgetNotes,
       },
     }).select("id").single()
 

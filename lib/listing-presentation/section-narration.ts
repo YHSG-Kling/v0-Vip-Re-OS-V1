@@ -13,17 +13,25 @@
  * also drives the on-screen bullets so copy + voiceover stay in sync.
  */
 import { findSuggestedPriceLeaks } from "@/lib/cma/customer-facing-guard"
-import { detectFairHousingViolations } from "@/lib/compliance-rules/fair-housing-patterns"
+import { detectFairHousingViolations, type FairHousingPattern } from "@/lib/compliance-rules/fair-housing-patterns"
 import { MARKETING_SYSTEM_FLOOR } from "@/lib/listing-presentation/marketing-system"
 import { compositionSeconds, geometryFor } from "@/lib/remotion/composition-geometry"
 import {
   narrationBudget,
   narrationLengthDirective,
   narrationMaxTokens,
+  narrationOverrunRedraftDirective,
   fitNarrationToBudget,
+  fitNarrationWithOneRedraft,
   spokenWords,
   type NarrationBudget,
 } from "@/lib/video/script-structure"
+// TYPE-ONLY, deliberately. lib/video/script-compliance.ts imports the server
+// Supabase client at module scope; a value import here would drag that into the
+// deterministic builder and into every pure simulator that exercises it. The
+// escalation lane and the compliance verdict are reached by dynamic import at
+// the two points that actually need them.
+import type { ScriptComplianceActor } from "@/lib/video/script-compliance"
 
 /**
  * The composition these scripts are SPOKEN OVER.
@@ -62,6 +70,26 @@ export interface SectionNarration {
   script:     string
   /** Short on-screen lines (kept in sync with the script). */
   bullets:    string[]
+  /**
+   * What the budget fit and the compliance belt actually DID, in words, so the
+   * caller can stage it beside the render instead of it living only in a
+   * console.warn nobody reads. Present only when there is something to say.
+   *
+   * §1: this is the READER half of `NarrationFit.stillOverBudget`. The field was
+   * produced and asserted by scripts/remotion-setup-guard.ts and consumed by
+   * nothing — three producers warned and shipped the truncated track anyway.
+   * lib/listing-presentation/section-render.ts should stage these onto the
+   * render's input_props / ledger so an overrun or a held script is visible.
+   */
+  notes?:     string[]
+  /**
+   * TRUE when a HARD fair-housing finding was escalated to a human and the
+   * deterministic script is what will be spoken. §5's disposition, in a field
+   * rather than only in a log line.
+   */
+  heldForReview?: boolean
+  /** video_scripts_library.id a human now owns, when the escalation filed. */
+  reviewId?:  string
 }
 
 export function buildSectionNarrationScript(input: NarrationInput): SectionNarration {
@@ -196,6 +224,115 @@ export interface AINarrationInput extends NarrationInput {
   /** Background market context (never a price): e.g. "rising", "balanced". */
   marketTrend?:     string | null
   avgDaysOnMarket?: number | null
+  /**
+   * WHO IS ON THE HOOK — the actor a hard fair-housing finding is filed under.
+   *
+   * §5 has two halves and this producer only ever had one: a high-severity hit
+   * returned the deterministic script (right) and told NOBODY (wrong — the only
+   * record was a console.warn). Filing the review row needs a users id and the
+   * SESSION's brokerage id, which the pure builder and the simulators do not
+   * have, so it is optional in the TYPE and its absence is reported LOUDLY
+   * rather than treated as "nothing to file" (§4, fail closed: "nobody was
+   * summoned" must never render as "nobody needed to be").
+   *
+   * The caller that has both is lib/listing-presentation/section-render.ts
+   * (`pres.brokerage_id`, `pres.agent_user_id`).
+   */
+  escalationActor?: ScriptComplianceActor | null
+}
+
+/**
+ * File a hard fair-housing finding on the lane that already exists, and READ
+ * WHAT CAME BACK.
+ *
+ * THE LANE (nothing new is built): lib/video/script-compliance.ts
+ * escalateScriptToHumanReview writes video_scripts_library at
+ * approval_status='pending_review', which app/actions/marketing-ai-approvals.ts
+ * listPendingMarketingAssetsAction already reads and
+ * /dashboard/admin/marketing-approvals already renders.
+ *
+ * ITS OWN try/catch, for the same reason video-render-hold.ts gives: the
+ * escalation opens a database connection and can throw outright, and a failure
+ * to file the paperwork must never be allowed to change the DISPOSITION it was
+ * filed about. The deterministic script ships either way; only the note changes.
+ *
+ * §3: supabase-js RESOLVES a refusal, so `ok:false` is a real outcome here and
+ * is reported as one. An escalation that silently fails to record is worse than
+ * none — it reads as handled.
+ */
+async function escalateSectionScript(args: {
+  actor:      ScriptComplianceActor | null | undefined
+  sectionKey: string
+  script:     string
+  redFlags:   string[]
+  warnings:   string[]
+  budget:     NarrationBudget
+}): Promise<{ notes: string[]; reviewId?: string }> {
+  const done = (note: string, reviewId?: string) => ({ notes: [note, ...args.redFlags], reviewId })
+  if (!args.actor?.userId || !args.actor?.brokerageId) {
+    const note =
+      `[section-narration] ${args.sectionKey} — HARD fair-housing finding, and NO HUMAN WAS SUMMONED: `
+      + `this call supplied no escalationActor, so there is no session brokerage to file `
+      + `video_scripts_library under. The deterministic script ships, but nobody is reviewing the model's.`
+    console.error(note)
+    return done(note)
+  }
+  try {
+    const { escalateScriptToHumanReview } = await import("@/lib/video/script-compliance")
+    const filed = await escalateScriptToHumanReview({
+      actor:     args.actor,
+      script:    args.script,
+      // The live CHECK admits five values; toLibraryScriptType maps this one.
+      videoType: "listing_presentation",
+      title:     `Pre-listing presentation — ${args.sectionKey} section narration (held: Fair Housing)`,
+      redFlags:  args.redFlags,
+      warnings:  args.warnings,
+      holdReason: "fair_housing_red_flag",
+      durationTargetSeconds: Math.round(args.budget.compositionSeconds) || undefined,
+    })
+    if (filed.ok) {
+      const note =
+        `[section-narration] ${args.sectionKey} — HARD fair-housing finding escalated for human review `
+        + `(video_scripts_library ${filed.reviewId}, pending_review). The deterministic script is what the seller hears.`
+      console.warn(note)
+      return done(note, filed.reviewId)
+    }
+    const note =
+      `[section-narration] ${args.sectionKey} — the review row could NOT be filed (${filed.error}). `
+      + `The model's script is still withheld, but no reviewer exists — ask an admin to look at this section directly.`
+    console.error(note)
+    return done(note)
+  } catch (err) {
+    const note =
+      `[section-narration] ${args.sectionKey} — the review row could NOT be filed `
+      + `(${err instanceof Error ? err.message : String(err)}). The model's script is still withheld, `
+      + `but no reviewer exists — ask an admin to look at this section directly.`
+    console.error(note)
+    return done(note)
+  }
+}
+
+/**
+ * The HARD-fair-housing door onto the lane above: pattern hits → red-flag
+ * sentences (each carrying the rule's own suggested rewrite and legal
+ * reference, so the reviewer is not left to guess what tripped) → the review
+ * row. Split out so the disposition branch itself reads in three lines: file
+ * it, attach what came back, speak the deterministic script.
+ */
+async function escalateHardFairHousing(
+  input: AINarrationInput,
+  script: string,
+  hardHits: FairHousingPattern[],
+  budget: NarrationBudget,
+): Promise<{ notes: string[]; reviewId?: string }> {
+  return escalateSectionScript({
+    actor:      input.escalationActor,
+    sectionKey: input.sectionKey,
+    script,
+    redFlags:   hardHits.map((v) => `FairHousing: "${v.phrase}" — rewrite as: ${v.fix} (${v.reference})`),
+    warnings:   [],
+    budget,
+  })
 }
 
 /**
@@ -224,22 +361,34 @@ export interface AINarrationInput extends NarrationInput {
  * retyped to make that happen: the number below is still geometryFor() ×
  * compositionSeconds() and it moved on its own.
  *
- * BOTH the AI path and the fallback can come back flagged `stillOverBudget`
- * when even one sentence does not fit; that is logged loudly rather than
- * swallowed, because it means the COMPOSITION is too short for what this
- * section has to say and only a geometry change can fix it.
+ * AND THE THIRD HALF — SOMETHING ACTUALLY READS `stillOverBudget` NOW (§1).
+ * `fitNarrationToBudget` has reported it since it was written and this function
+ * did what the other two producers did: `console.warn(fit.note)` and shipped the
+ * script. A warn is not a reader. ListingSectionReel carries the narration as an
+ * <Audio> inside a FIXED durationInFrames, so a first sentence that overruns is
+ * cut mid-word in a video already sent to a seller. The policy is now
+ * fitNarrationWithOneRedraft: re-draft ONCE at the same budget, and if that
+ * still does not fit, speak the DETERMINISTIC script rather than bake a track
+ * that gets truncated. Every note it produced comes back on `notes` so the
+ * caller can stage it — not only into a log.
  */
 export async function generateSectionNarration(input: AINarrationInput): Promise<SectionNarration> {
   const budget = sectionNarrationBudget(input.compositionId ?? SECTION_NARRATION_COMPOSITION)
   const rawFallback = buildSectionNarrationScript(input)
+  /** Everything worth recording about this section's draft. Returned, not just logged. */
+  const notes: string[] = []
   /** The deterministic script, held to the same budget as the AI's. */
   const fallback = ((): SectionNarration => {
     const fit = fitNarrationToBudget(rawFallback.script, budget)
-    if (fit.note) console.warn(`[section-narration] deterministic fallback — ${fit.note}`)
+    if (fit.note) {
+      const note = `[section-narration] deterministic fallback — ${fit.note}`
+      console.warn(note)
+      notes.push(note)
+    }
     return { ...rawFallback, script: fit.script }
   })()
   const brief = SECTION_BRIEF[input.sectionKey]
-  if (!brief) return fallback
+  if (!brief) return notes.length > 0 ? { ...fallback, notes: [...notes] } : fallback
 
   const agent = (input.agentName || "your agent").trim()
   const brokerage = (input.brokerageName || "our brokerage").trim()
@@ -277,21 +426,65 @@ export async function generateSectionNarration(input: AINarrationInput): Promise
     `Write only the narration text.`,
   ].filter(Boolean).join("\n")
 
+  /**
+   * Attach the disposition to the DETERMINISTIC result, so `return fallback` is
+   * literally what a hold does and the record travels WITH the script rather
+   * than only into a log line. `fallback` is this call's own object; nothing
+   * outside this function holds a reference to it.
+   */
+  const attach = (extra: string[] = [], reviewId?: string): SectionNarration => {
+    const all = [...notes, ...extra]
+    if (all.length > 0) fallback.notes = all
+    if (reviewId) { fallback.heldForReview = true; fallback.reviewId = reviewId }
+    return fallback
+  }
+
   try {
     const { generateAIText } = await import("@/lib/ai/generate")
-    const { text } = await generateAIText(prompt, {
-      maxTokens: narrationMaxTokens(budget), temperature: 0.8, feature: "listing_presentation_narration",
+
+    // ── THE OVERRUN IS READ, NOT WARNED ABOUT (§1) ─────────────────────────
+    // VERIFY, don't trust: "at most N words" in a prompt is a request, and
+    // fitNarrationToBudget is the enforcement. What was MISSING is what happens
+    // when the trim cannot get under budget — `stillOverBudget`, i.e. the first
+    // sentence alone is longer than the composition. That was warned about and
+    // then baked anyway, so the seller heard it cut mid-word. One re-draft, then
+    // the deterministic script; the shared policy lives in
+    // lib/video/script-structure.ts fitNarrationWithOneRedraft so the two render
+    // routes and this producer cannot drift apart (§6).
+    const drafted = await fitNarrationWithOneRedraft({
+      budget,
+      label: `[section-narration] ${input.sectionKey}`,
+      deterministic: () => rawFallback.script,
+      draft: async ({ previous }) => {
+        const { text } = await generateAIText(
+          previous ? `${prompt}\n${narrationOverrunRedraftDirective(previous, budget)}` : prompt,
+          { maxTokens: narrationMaxTokens(budget), temperature: 0.8, feature: "listing_presentation_narration" },
+        )
+        let draft = (text ?? "").trim().replace(/^["“]|["”]$/g, "")
+        // "The model returned junk" floor. WAS `script.length < 40` — a character
+        // literal that would start rejecting VALID output the moment the derived
+        // budget dropped below ~7 words, i.e. it fought the cap. Counted in words
+        // instead, well under any real budget. An empty fit reads as "nothing to
+        // speak" downstream and takes the deterministic path.
+        if (spokenWords(draft).length < 3) return fitNarrationToBudget("", budget)
+        // Absolute no-price rule — scrub any dollar figure or leaked valuation,
+        // BEFORE the fit, so the trim measures the text that will be spoken.
+        if (/\$\s?\d/.test(draft) || findSuggestedPriceLeaks({ script: draft }).length > 0) {
+          draft = draft.replace(/\$\s?[\d,]+(?:\.\d+)?/g, "the right price")
+        }
+        return fitNarrationToBudget(draft, budget)
+      },
     })
-    let script = (text ?? "").trim().replace(/^["“]|["”]$/g, "")
-    // "The model returned junk" floor. WAS `script.length < 40` — a character
-    // literal that would start rejecting VALID output the moment the derived
-    // budget dropped below ~7 words, i.e. it fought the cap. Counted in words
-    // instead, well under any real budget.
-    if (spokenWords(script).length < 3) return fallback
-    // Absolute no-price rule — scrub any dollar figure or leaked valuation.
-    if (/\$\s?\d/.test(script) || findSuggestedPriceLeaks({ script }).length > 0) {
-      script = script.replace(/\$\s?[\d,]+(?:\.\d+)?/g, "the right price")
-    }
+    for (const n of drafted.notes) console.warn(n)
+    notes.push(...drafted.notes)
+    // "refused" means the composition cannot carry ANY narration; the fallback
+    // is already fitted to the same budget, so returning it is honest either way.
+    if (drafted.outcome === "refused" || !drafted.script) return attach()
+    // The deterministic branch already IS the fallback text — nothing model-
+    // authored survived, so there is nothing for the compliance belt to judge.
+    if (drafted.outcome === "deterministic") return attach()
+    const script = drafted.script
+
     // ── FAIR-HOUSING BELT, AND THIS PATH HAD NONE ──────────────────────────
     // Measured while wiring the marketing-system function: the price scrub above
     // was the ONLY compliance check on this producer. Every other AI video-script
@@ -303,34 +496,100 @@ export async function generateSectionNarration(input: AINarrationInput): Promise
     // was not model-authored. Now that the prompt composes per-tenant claims, the
     // model's output needs the belt the prompt's braces already assume.
     //
-    // §5's disposition exactly: a HARD (high-severity) fair-housing hit does not
-    // ship — it falls back to the deterministic script, which is authored copy
-    // that cannot carry a protected-class reference — and medium/low ride through
-    // as warnings, because escalating those would hold up every presentation.
-    // Deliberately the DETERMINISTIC detector rather than a second model call:
-    // it is pure, it cannot itself fail open, and a fallback is always available
-    // here, so refusing costs the seller nothing.
+    // §5's disposition, BOTH HALVES. It used to be one: a HARD (high-severity)
+    // hit correctly returned the deterministic script — authored copy that cannot
+    // carry a protected-class reference — and then told NOBODY. A console.warn is
+    // not an escalation; "a tenant's model produced protected-class language in
+    // the agent's own cloned voice" is precisely the event a human is supposed to
+    // see, and §5 says a hard flag escalates. It now files the review row on the
+    // lane that already exists (escalateScriptToHumanReview → video_scripts_library
+    // 'pending_review' → app/actions/marketing-ai-approvals.ts), and the filing's
+    // own outcome is READ: a refused insert says so rather than reading as handled.
+    // Medium/low still ride through as warnings, because escalating those would
+    // hold up every presentation — the ruling is explicit that warnings pass.
+    //
+    // Deliberately the DETERMINISTIC detector as the hard gate rather than a
+    // model call: it is pure, it cannot itself fail open, and a fallback is
+    // always available here, so refusing costs the seller nothing.
     const fhHits = detectFairHousingViolations(script)
-    if (fhHits.some((v) => v.severity === "high")) {
-      console.warn(
-        `[section-narration] ${input.sectionKey} — HARD fair-housing flag in the generated script `
-        + `(${fhHits.filter((v) => v.severity === "high").map((v) => v.phrase).join(", ")}); `
-        + `falling back to the deterministic script rather than speaking it to a seller.`,
-      )
+    const hardHits = fhHits.filter((v) => v.severity === "high")
+    if (hardHits.length > 0) {
+      const filed = await escalateHardFairHousing(input, script, hardHits, budget)
+      attach(filed.notes, filed.reviewId)
       return fallback
     }
-    if (fhHits.length > 0) {
-      console.warn(`[section-narration] ${input.sectionKey} — advisory fair-housing finding(s), passing through per §5: ${fhHits.map((v) => v.severity).join(", ")}`)
+    const advisory = fhHits
+      .map((v) => `FairHousing(${v.severity}): "${v.phrase}" — suggested: ${v.fix} (${v.reference})`)
+    if (advisory.length > 0) {
+      console.warn(`[section-narration] ${input.sectionKey} — advisory fair-housing finding(s), passing through per §5: ${advisory.join("; ")}`)
+      notes.push(...advisory)
     }
-    // VERIFY, don't trust. "At most N words" in a prompt is a request; this is
-    // the enforcement. An overrun is trimmed at a sentence boundary and SAID SO
-    // — it must never pass silently, which is the whole defect.
-    const fit = fitNarrationToBudget(script, budget)
-    if (fit.note) console.warn(`[section-narration] ${input.sectionKey} — ${fit.note}`)
-    if (!fit.script) return fallback
+
+    // ── AND THE REST OF THE GATE, WHEN THERE IS AN ACTOR TO RUN IT AS ──────
+    // R3's other half: this producer called neither runWithComplianceRedraft nor
+    // buildComplianceSystemBlocks nor postcheckScript. The prompt above is now
+    // compliance-FIRST in its own right (§5) — fair housing, the no-price rule
+    // and the capability bound are all written INTO it — and the deterministic
+    // detector above is the hard belt. What was still missing is the brokerage's
+    // OWN prohibited-phrase catalogue, brand voice and ThemFirst, plus the
+    // compliance_events audit row.
+    //
+    // WHY assessScriptCompliance AND NOT postcheckScript. postcheckScript is a
+    // thin wrapper over it that FLATTENS red flags, warnings and UNKNOWN lines
+    // into one string[] — right for the four generators that only display
+    // sentences to an agent, wrong here, because this producer HAS a hold lever
+    // (the deterministic script) and therefore needs to know which class a
+    // finding is in before it can act on it.
+    //
+    // WHY IT IS GATED ON AN ACTOR. Both the gate and the audit row need a users
+    // id and the SESSION's brokerage. The sibling generators are server actions
+    // that always have one; this producer is reached from a cron under the
+    // service client, so without an actor every section would grade `unknown`
+    // and that would be noise, not a finding. When no actor is supplied the
+    // pure detector above is still the belt and the model's text is still
+    // withheld on any hard hit — so the absence degrades what is CHECKED, never
+    // what SHIPS.
+    if (input.escalationActor?.userId && input.escalationActor?.brokerageId) {
+      try {
+        const { assessScriptCompliance } = await import("@/lib/video/script-compliance")
+        const verdict = await assessScriptCompliance(input.escalationActor, script, "seller")
+        if (verdict.redFlags.length > 0) {
+          const filed = await escalateSectionScript({
+            actor: input.escalationActor,
+            sectionKey: input.sectionKey,
+            script, redFlags: verdict.redFlags, warnings: verdict.warnings, budget,
+          })
+          attach([`Compliance RED FLAG — the model's script is withheld.`, ...filed.notes], filed.reviewId)
+          return fallback
+        }
+        if (verdict.state === "unknown") {
+          // FAIL CLOSED, and cheaply. "Nobody could check" is not "checked and
+          // fine" (§4). No reviewer is summoned because nothing model-authored
+          // ships — the authored fallback needs no human, unlike the generator
+          // paths where the unchecked script is what the agent walks away with.
+          console.warn(`[section-narration] ${input.sectionKey} — compliance UNKNOWN; speaking the deterministic script instead: ${verdict.unknownReasons.join("; ")}`)
+          return attach(verdict.unknownReasons)
+        }
+        if (verdict.warnings.length > 0) {
+          console.warn(`[section-narration] ${input.sectionKey} — advisory compliance finding(s), passing through per §5: ${verdict.warnings.join("; ")}`)
+          notes.push(...verdict.warnings)
+        }
+      } catch (gateErr) {
+        // The gate itself threw. Same ruling as the unknown state above.
+        const msg = gateErr instanceof Error ? gateErr.message : String(gateErr)
+        console.warn(`[section-narration] ${input.sectionKey} — the compliance gate could not run (${msg}); speaking the deterministic script.`)
+        return attach([`Compliance gate could not run (${msg}) — deterministic script spoken.`])
+      }
+    }
+
     // Bullets stay deterministic (concise, seller-safe on-screen text).
-    return { sectionKey: input.sectionKey, script: fit.script, bullets: fallback.bullets }
+    return {
+      sectionKey: input.sectionKey,
+      script,
+      bullets: fallback.bullets,
+      ...(notes.length > 0 ? { notes } : {}),
+    }
   } catch {
-    return fallback
+    return attach()
   }
 }

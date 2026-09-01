@@ -17,9 +17,19 @@
 // resolver, and voiceover pipeline.
 
 import type { PartnersMeetingReelProps, ReelCard } from "@/lib/intelligence/partners-meeting-reel-props"
+import { geometryFor } from "@/lib/remotion/composition-geometry"
 import { TRANSACTION_STATUSES_OPEN } from "@/lib/transactions/transaction-status"
 
 export const DEAL_ROOM_REEL_ENTITY = "deal_room_reel"
+
+/**
+ * The composition this reel rides, named ONCE (§6).
+ *
+ * It was written out twice — the caption plan's timeline and the queued render's
+ * composition_id — and only the render's copy was load-bearing, so the caption
+ * half could have come to describe a different video with nothing to notice.
+ */
+const DEAL_ROOM_COMPOSITION = "PartnersMeetingReel"
 
 export interface DealRoomFacts {
   address: string
@@ -147,10 +157,34 @@ export async function queueDealRoomReels(svc: any, now: Date = new Date()): Prom
         })
         if (vo) {
           props.voiceover_url = vo.url
-          // WORD-SYNCED CAPTIONS (client-facing per the finish spec).
+          // WORD-SYNCED CAPTIONS (client-facing per the finish spec), TIMED
+          // AGAINST THE COMPOSITION'S OWN GEOMETRY.
+          //
+          // WAS `900, 30` — PartnersMeetingReel's frame count and fps typed out
+          // by hand. Both were correct on the day they were written, which is
+          // exactly the §2 waypoint pin: durationInFrames is a legal thing to
+          // change in lib/remotion/composition-geometry.ts (and every guard
+          // permits it), and the captions would then have stopped dead at
+          // second 30 of a longer video with nothing anywhere going red. The
+          // numbers now come from the registry, so they move when it moves.
           const { buildCaptionPlan } = await import("@/lib/video/caption-plan")
-          const plan = buildCaptionPlan(vo.alignment ?? (props as any).narration, 900, 30, { tailPaddingFrames: 45 })
-          if (plan.cues.length > 0) props.captionsCues = plan.cues
+          const geo = geometryFor(DEAL_ROOM_COMPOSITION)
+          if (!geo) {
+            // REFUSE, do not guess. A composition that is not in the registry
+            // has no known timeline, and cueing against a remembered 900/30
+            // would place captions on a video whose real length nobody knows.
+            console.error(
+              `[deal-room-reel] ${DEAL_ROOM_COMPOSITION} is not in the composition registry — `
+              + `captions REFUSED rather than timed against a hardcoded frame count. The video still ships.`,
+            )
+          } else {
+            const plan = buildCaptionPlan(
+              vo.alignment ?? (props as any).narration,
+              geo.duration_frames, geo.fps,
+              { tailPaddingFrames: 45 },
+            )
+            if (plan.cues.length > 0) props.captionsCues = plan.cues
+          }
         }
         // Finish-spec: the Deal Room is CLIENT-FACING → tracked outro QR.
         try {
@@ -167,7 +201,7 @@ export async function queueDealRoomReels(svc: any, now: Date = new Date()): Prom
         }
         const { recordRenderQueued } = await import("@/lib/remotion/registry")
         const q = await recordRenderQueued({
-          brokerageId: b.id, compositionId: "PartnersMeetingReel", agentUserId,
+          brokerageId: b.id, compositionId: DEAL_ROOM_COMPOSITION, agentUserId,
           entityType: DEAL_ROOM_REEL_ENTITY, entityId: t.id,
           inputProps: props, scopeType: "brokerage", scopeId: b.id, requestedVia: "cron",
         })

@@ -322,6 +322,146 @@ export function fitNarrationToBudget(
     + `trimmed to ${keptWords} words at a sentence boundary (${draftCount - keptWords} dropped).`)
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// THE READER FOR `stillOverBudget` (§1 — build the missing half)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// `fitNarrationToBudget` has reported `stillOverBudget` since it was written and
+// scripts/remotion-setup-guard.ts asserts the flag is set — but NO producer in
+// lib/** or app/** ever read it. Three of them (`draftAndClearScript` in
+// render-just-listed, `draft()` in render-newsletter-video, and
+// `generateSectionNarration`) logged `fit.note` with console.warn and shipped
+// the script anyway. A warn is not a reader: for the camel-key producers the
+// narration is an <Audio> INSIDE a fixed durationInFrames, so that sentence IS
+// cut mid-word in a video already sent to a client.
+//
+// WHY ONE HELPER AND NOT THREE COPIES (§6). The policy — re-draft ONCE, then
+// fall back to authored copy, then refuse — is one rule about one failure, and
+// three inline copies is the drift this repo keeps paying for. It is shaped
+// deliberately like lib/kernel/compliance-redraft.ts runWithComplianceRedraft:
+// caller-supplied callbacks, ONE retry, the caller keeps its own prompt. That
+// is also why this is not a second retry LOOP — the compliance loop retries on
+// what a script SAYS, this retries on how LONG it is, and each producer nests
+// this inside its compliance draft so a re-drafted script is still gated.
+//
+// PURE in the sense this module means it: it performs no I/O of its own, makes
+// no model call, and touches no database. It sequences what the caller hands it.
+
+/** One drafting attempt. `attempt` is 0 for the first draft, 1 for the redraft. */
+export type NarrationDraftFn = (args: {
+  attempt: number
+  /** The previous attempt's fit — null on the first. Feed its note back to the model. */
+  previous: NarrationFit | null
+}) => Promise<NarrationFit>
+
+/** How a narration finally came to be, and everything worth recording about it. */
+export interface NarrationBudgetOutcome {
+  /** The script to speak. EMPTY when `outcome` is "refused" — nothing may be baked. */
+  script: string
+  /** The fit that produced `script`. */
+  fit: NarrationFit
+  /**
+   * · fit           — the first draft fitted as written.
+   * · trimmed       — the first draft overran and was cut at a sentence boundary.
+   * · redrafted     — the first draft's own first sentence overran; the redraft fits.
+   * · deterministic — both drafts overran; authored copy is being spoken instead.
+   * · refused       — nothing fits this composition. The caller MUST refuse.
+   */
+  outcome: "fit" | "trimmed" | "redrafted" | "deterministic" | "refused"
+  /** Model drafts actually paid for (1 or 2). */
+  attempts: number
+  /**
+   * Every note, in order, INCLUDING the ones fitNarrationToBudget produced.
+   * Quote these into whatever the lane records — the defect being closed is that
+   * this event was only ever warned to a log nobody reads.
+   */
+  notes: string[]
+}
+
+/**
+ * Draft → fit → (re-draft once) → fall back to authored copy → refuse.
+ *
+ * WHY REDRAFT ONCE AND NOT NEVER. fitNarrationToBudget's own header argues
+ * against regenerating, and it is right about the case it is arguing about: a
+ * draft that runs LONG is trimmed at a sentence boundary for free, and paying
+ * for a second model call to fix that would be waste. `stillOverBudget` is the
+ * other case entirely — the trim could not get under budget because the FIRST
+ * SENTENCE alone is longer than the composition, so there is no clean cut to
+ * make and the trim's own output is the thing that gets truncated. One retry,
+ * fed the measurement, is the cheapest thing that can actually change the answer.
+ *
+ * WHY THE FALLBACK IS DETERMINISTIC COPY AND NOT A SECOND RETRY. An unbounded
+ * loop to enforce a bound is the wrong shape (same reasoning as the trim
+ * policy). Authored copy is short by construction, carries no claim a gate has
+ * not seen, and is available with no network — so it is the honest last thing to
+ * speak before refusing outright.
+ *
+ * WHY REFUSING IS A REAL OUTCOME. `budget.maxWords <= 0` means the composition
+ * has no runtime at all (a still, or an id that is not registered). NOTHING fits
+ * that, authored copy included, and baking a track nothing can play is worse
+ * than a failed render that says why.
+ */
+export async function fitNarrationWithOneRedraft(args: {
+  budget: NarrationBudget
+  /** Prefix for the notes, e.g. "[render-just-listed] just_sold". */
+  label: string
+  draft: NarrationDraftFn
+  /** The authored, model-free script for this subject. Optional — absent means refuse instead. */
+  deterministic?: () => string | null | undefined
+}): Promise<NarrationBudgetOutcome> {
+  const notes: string[] = []
+  const record = (f: NarrationFit) => { if (f.note) notes.push(`${args.label} — ${f.note}`) }
+
+  const first = await args.draft({ attempt: 0, previous: null })
+  record(first)
+  if (!first.stillOverBudget) {
+    return { script: first.script, fit: first, outcome: first.overran ? "trimmed" : "fit", attempts: 1, notes }
+  }
+
+  notes.push(
+    `${args.label} — the draft's FIRST SENTENCE alone overruns ${args.budget.compositionId}, so there is no `
+    + `sentence boundary to trim at and the track would be cut mid-word. Re-drafting ONCE against the same budget.`,
+  )
+  const second = await args.draft({ attempt: 1, previous: first })
+  record(second)
+  if (!second.stillOverBudget) {
+    return { script: second.script, fit: second, outcome: "redrafted", attempts: 2, notes }
+  }
+
+  const authored = (args.deterministic?.() ?? "").trim()
+  if (authored) {
+    const fitted = fitNarrationToBudget(authored, args.budget)
+    record(fitted)
+    if (!fitted.stillOverBudget && fitted.script) {
+      notes.push(
+        `${args.label} — the re-draft ALSO overran; speaking the DETERMINISTIC script `
+        + `(${fitted.wordCount}w / ~${fitted.estimatedSeconds}s) instead of baking a sentence the composition cuts.`,
+      )
+      return { script: fitted.script, fit: fitted, outcome: "deterministic", attempts: 2, notes }
+    }
+  }
+
+  notes.push(
+    `${args.label} — REFUSED: neither draft nor the deterministic script fits `
+    + `${args.budget.compositionId} (${args.budget.maxWords}-word / ${args.budget.budgetSeconds}s budget on a `
+    + `${args.budget.compositionSeconds}s composition). Nothing was baked; only a geometry change fixes this.`,
+  )
+  return { script: "", fit: second, outcome: "refused", attempts: 2, notes }
+}
+
+/**
+ * The line a re-draft prompt adds so the model knows WHY it is being asked
+ * again. ONE spelling (§6) — all three producers say it the same way, and the
+ * measurement in it is the one fitNarrationToBudget actually made.
+ */
+export function narrationOverrunRedraftDirective(previous: NarrationFit | null, budget: NarrationBudget): string {
+  if (!previous) return ""
+  return `\nYOUR PREVIOUS DRAFT DID NOT FIT. Its first sentence alone ran `
+    + `${spokenWords(spokenSentences(previous.script)[0] ?? previous.script).length} words `
+    + `against a ${budget.maxWords}-word budget, so it cannot be trimmed — it would be cut off mid-word. `
+    + `Write SHORT sentences. No sentence may exceed ${Math.max(4, Math.floor(budget.maxWords / 2))} words.\n`
+}
+
 /**
  * The sentence a prompt uses to ask for a script that fits. ONE spelling, so
  * every producer asks in the same words and a reader can tell at a glance that

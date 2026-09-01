@@ -44,9 +44,9 @@
  * gutting the branch fails it — a bare token-presence check would keep passing
  * on the function's own import line or a comment mentioning it.
  */
-import { readFileSync } from "node:fs"
+import { readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
-import { stripComments } from "./strip-comments"
+import { blankStrings, stripComments } from "./strip-comments"
 
 const root = process.cwd()
 const read = (p: string) => readFileSync(join(root, p), "utf8")
@@ -98,6 +98,160 @@ check(
 )
 
 // ── 2. Every reachable generator calls the shared gate ───────────────────────
+//
+// ── THE ROSTER IS DERIVED NOW, NOT HAND-WRITTEN (§2) ─────────────────────────
+//
+// GENERATORS below was a hand-maintained list of six files, and it was WRONG by
+// two: lib/video/chapter-video-generator.ts and app/actions/video/create-video-project.ts
+// both call buildComplianceSystemBlocks and neither was on it. Both DO run the
+// gate today, so there was no live compliance hole — which is exactly the shape
+// this guard's own header (§ "ASSERTS THE CONSTRUCT") says it exists to prevent:
+// gutting either file's gate left this guard GREEN, so the assertion was TRUE
+// AND USELESS. A roster that only covers the files somebody remembered to type
+// is not a measurement of the repo, it is a measurement of the list.
+//
+// The rule, stated instead of counted: EVERY file under lib/** or app/** that
+// calls buildComplianceSystemBlocks — i.e. puts the compliance blocks into a
+// writing prompt — must also call postcheckScript on what the model gave back.
+// Compliance-first is both halves; a file that only does the first is asking the
+// model nicely and never checking.
+
+const SCAN_ROOTS = ["lib", "app"] as const
+const SCAN_DIR_EXCLUSIONS = new Set(["node_modules", ".next", "dist", "build", "__tests__", "__snapshots__"])
+const SCAN_EXTENSIONS = [".ts", ".tsx"]
+/** The gate's own module. It DECLARES buildComplianceSystemBlocks; it is not a caller. */
+const GATE_MODULE = "lib/video/script-compliance.ts"
+
+function walkSource(dir: string, out: string[] = []): string[] {
+  let entries: Array<{ name: string; isDirectory(): boolean }>
+  try { entries = readdirSync(join(root, dir), { withFileTypes: true }) } catch { return out }
+  for (const e of entries) {
+    const rel = `${dir}/${e.name}`
+    if (e.isDirectory()) {
+      if (SCAN_DIR_EXCLUSIONS.has(e.name)) continue
+      walkSource(rel, out)
+    } else if (SCAN_EXTENSIONS.some((x) => e.name.endsWith(x))) {
+      out.push(rel)
+    }
+  }
+  return out
+}
+
+/**
+ * Does this source CALL `fn`?
+ *
+ * Reads source with comments blanked AND string/template contents blanked
+ * (scripts/strip-comments.ts blankStrings — one left-to-right scan, never a
+ * hand-rolled stripper). Both halves are load-bearing here:
+ *
+ *   · A TOMBSTONE IS NOT A CALL SITE. app/actions/video/create-video-project.ts
+ *     carries a tombstone naming buildComplianceSystemBlocks, and section-narration.ts
+ *     carries a comment naming it in prose about what it does NOT do. Reading raw
+ *     source would count both as callers — the exact failure that made five guards
+ *     accuse live code of the thing a tombstone records having fixed.
+ *   · A FIXTURE IS NOT A CALL SITE either: a quoted specimen (a prompt, a
+ *     narrative, a manager-registry entry describing the gate) must not count.
+ *
+ * The DECLARATION is neutralised first, so the module that exports a function
+ * does not read as one of its own callers.
+ */
+function callsFunction(code: string, fn: string): boolean {
+  const withoutDeclaration = code.replace(
+    new RegExp(String.raw`function\s+${fn}\s*\(`, "g"),
+    "function __declaration__(",
+  )
+  return new RegExp(String.raw`\b${fn}\s*\(`).test(withoutDeclaration)
+}
+
+/**
+ * Every file that puts the compliance blocks into a writing prompt, and whether
+ * it also post-checks. Pure over the (file, code) pairs it is handed, so the
+ * positive control below can feed it synthetic sources.
+ */
+function deriveGateRoster(files: Array<{ file: string; code: string }>): {
+  callers: string[]
+  unchecked: string[]
+} {
+  const callers = files
+    .filter((f) => f.file !== GATE_MODULE && callsFunction(f.code, "buildComplianceSystemBlocks"))
+    .map((f) => f.file)
+  const byFile = new Map(files.map((f) => [f.file, f.code]))
+  const unchecked = callers.filter((f) => !/await\s+postcheckScript\s*\(/.test(byFile.get(f) ?? ""))
+  return { callers, unchecked }
+}
+
+const SCANNED_FILES = SCAN_ROOTS.flatMap((r) => walkSource(r))
+// CHEAP PRE-FILTER, and it cannot lose a call site: blanking comments and string
+// contents never INTRODUCES a token, so a file whose RAW text does not contain
+// the name cannot contain a call to it after blanking either. Only the handful
+// of candidates pay for the character scan — without this the guard reads every
+// one of the ~4,500 files twice and runs ~7s slower on every chain.
+const SCANNED = SCANNED_FILES
+  .map((file) => ({ file, raw: read(file) }))
+  .filter((f) => f.raw.includes("buildComplianceSystemBlocks") || f.raw.includes("postcheckScript"))
+  .map(({ file, raw }) => ({ file, code: blankStrings(raw) }))
+const DERIVED = deriveGateRoster(SCANNED)
+
+check(
+  "GATE-ROSTER-EVERY-CALLER-POSTCHECKS",
+  DERIVED.unchecked.length === 0,
+  `${DERIVED.unchecked.join(", ")} put the compliance blocks in the writing prompt but never await postcheckScript(...) — `
+  + `compliance-first is both halves`,
+)
+
+// POSITIVE CONTROL (§2). A broken finder and a clean tree both report zero, and
+// this finder replaced a hand-written list precisely because "0 found" was
+// meaningless. These fixtures prove it still recognises the defect it exists for
+// — and still refuses to be satisfied by prose or by a quoted specimen.
+{
+  const FIXTURES = [
+    { file: "fixture/gutted.ts", code: blankStrings(`const b = await buildComplianceSystemBlocks(id)\nconst s = await gen(b)`) },
+    { file: "fixture/whole.ts", code: blankStrings(`const b = await buildComplianceSystemBlocks(id)\nconst w = await postcheckScript(actor, s, "buyer")`) },
+    { file: "fixture/tombstone.ts", code: blankStrings(`// this used to call buildComplianceSystemBlocks(brokerageId); see the survivor\nexport const x = 1`) },
+    { file: "fixture/specimen.ts", code: blankStrings(`const help = "call buildComplianceSystemBlocks(id) then postcheckScript(a, s, j)"`) },
+    { file: GATE_MODULE, code: blankStrings(`export async function buildComplianceSystemBlocks(brokerageId: string) { return [] }`) },
+  ]
+  const control = deriveGateRoster(FIXTURES)
+  check(
+    "CONTROL-FINDER-CATCHES-A-GUTTED-POSTCHECK",
+    control.unchecked.length === 1 && control.unchecked[0] === "fixture/gutted.ts",
+    `expected exactly fixture/gutted.ts, got [${control.unchecked.join(", ")}]`,
+  )
+  check(
+    "CONTROL-FINDER-IGNORES-COMMENTS-STRINGS-AND-THE-DECLARATION",
+    control.callers.length === 2
+      && control.callers.includes("fixture/gutted.ts")
+      && control.callers.includes("fixture/whole.ts"),
+    `a tombstone, a quoted specimen and the gate's own declaration must not read as call sites; got [${control.callers.join(", ")}]`,
+  )
+  check(
+    "CONTROL-SCAN-ACTUALLY-READ-THE-TREE",
+    SCANNED_FILES.length > 500 && DERIVED.callers.length >= 6,
+    `${SCANNED_FILES.length} files walked, ${SCANNED.length} candidates scanned, ${DERIVED.callers.length} gate callers derived — `
+    + `a walk that reads nothing reports zero defects`,
+  )
+}
+
+console.log(
+  `\n  roster DERIVED: ${DERIVED.callers.length} file(s) under ${SCAN_ROOTS.map((r) => `${r}/**`).join(" + ")} `
+  + `call buildComplianceSystemBlocks, out of ${SCANNED_FILES.length} .ts/.tsx files walked `
+  + `(${SCANNED.length} of them named either half in raw text and were character-scanned).`,
+)
+for (const c of DERIVED.callers) console.log(`    · ${c}`)
+console.log(
+  `  BLIND SPOTS beside the number (§2):\n`
+  + `    · Denominator is lib/** + app/** only. scripts/**, remotion/** and any\n`
+  + `      generator living elsewhere is OUT — as is ${GATE_MODULE} itself, which\n`
+  + `      declares the function rather than calling it.\n`
+  + `    · Excluded directories: ${[...SCAN_DIR_EXCLUSIONS].join(", ")}. Files whose RAW text\n`
+  + `      names neither half are skipped before the character scan — sound, because\n`
+  + `      blanking comments and strings never introduces a token.\n`
+  + `    · The rule proven is "blocks in the prompt ⇒ postcheck after". A generator\n`
+  + `      that calls NEITHER is invisible to this derivation — that is what the\n`
+  + `      named GENERATORS roster below still covers, and why it survives.\n`
+  + `    · precheckBriefForFairHousing is per-file and cannot be derived: only the\n`
+  + `      file knows which of its fields are CALLER-authored prose.`,
+)
 
 const GENERATORS: Array<{ id: string; file: string; needs: string[] }> = [
   {
@@ -221,6 +375,27 @@ for (const g of GENERATORS) {
         : `${g.file} has ${orphaned.length} caller-prose gate(s) that never pre-check: ${orphaned.join(", ")}`,
     )
   }
+}
+
+// The named roster is a SUBSET of the derived one, or it is decoration. The
+// CALLERS list further down learned this the hard way: a file stopped calling
+// evaluateOutbound and its per-file check stayed green while asserting nothing.
+// A named generator that stops calling the gate must go RED here, not silently
+// drop out of the derivation.
+{
+  const derived = new Set(DERIVED.callers)
+  const stale = GENERATORS.filter((g) => !derived.has(g.file)).map((g) => g.file)
+  check(
+    "GENERATORS-ROSTER-IS-A-SUBSET-OF-THE-DERIVED-ONE",
+    stale.length === 0,
+    `${stale.join(", ")} is named on the GENERATORS roster but no longer calls buildComplianceSystemBlocks — `
+    + `either it was gutted, or the entry is decoration and must come off`,
+  )
+  const notNamed = DERIVED.callers.filter((f) => !GENERATORS.some((g) => g.file === f))
+  console.log(
+    `  derived-but-unnamed (covered by GATE-ROSTER-EVERY-CALLER-POSTCHECKS, not by a\n`
+    + `  per-file precheck rule): ${notNamed.length > 0 ? notNamed.join(", ") : "(none)"}`,
+  )
 }
 
 // The wizard must no longer own a private copy of the rule text — that is the

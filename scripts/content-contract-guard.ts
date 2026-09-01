@@ -544,6 +544,99 @@ console.log("\n═══ 12. The LIVE rows satisfy the contracts ═══")
     && t.stars === 5 && t.clientRole === "Seller" && t.closingLabel === "Reviewed Jun 2026")
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 12b. THE POSITIVE CONTROL FOR THE FIXTURES THEMSELVES.
+//
+// WHY THIS EXISTS, and it is the §2 lesson pointed at this guard's own inputs.
+// Every fixture above supplies a phone — `identity.agentPhone` is
+// "(239) 555-0184" and nothing in sections 11-13 can ever hand a composition an
+// empty one. So the guard's entire body of evidence about `agentPhone` is
+// evidence about a value that is always present, and TWO live producer defects
+// (an empty agentPhone staged into compositions that REQUIRE it) sat under it
+// for months reporting ✓. A fixture that cannot be empty cannot detect an
+// empty-prop defect: it is the "0 found" that means "I did not look".
+//
+// So the blanks are supplied deliberately here, and the rule is DERIVED rather
+// than typed: every composition whose contract REQUIRES agentPhone must refuse a
+// blank one, and every composition that requires `highlights` must refuse an
+// empty list. Add a ninth composition that requires a phone and it is covered
+// with nobody editing this section; retire one and the list shrinks on its own.
+// A hardcoded roster of composition names here would be the waypoint pin §2
+// forbids — true on the day it was written and quietly stale after.
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\n═══ 12b. A BLANK is not a value — the empty-prop positive control ═══")
+{
+  /** Every required prop supplied with a plausible value, then the blanks under test. */
+  const filled = (id: string, overrides: Record<string, unknown>): Record<string, unknown> => {
+    const p: Record<string, unknown> = {}
+    for (const k of CONTENT_CONTRACT[id].required) p[k] = "supplied"
+    return { ...p, ...overrides }
+  }
+
+  const requiresPhone = Object.entries(CONTENT_CONTRACT)
+    .filter(([, c]) => c.required.includes("agentPhone")).map(([id]) => id).sort()
+  const requiresHighlights = Object.entries(CONTENT_CONTRACT)
+    .filter(([, c]) => c.required.includes("highlights")).map(([id]) => id).sort()
+
+  // THE CONTROL ON THE CONTROL. If the filler did not actually satisfy the
+  // contract, every assertion below would report the prop as missing for the
+  // wrong reason and prove nothing about blanks at all.
+  const fillerLeaks = [...requiresPhone, ...requiresHighlights]
+    .filter((id) => missingContentProps(id, filled(id, {})).length > 0)
+  ok("CONTROL: the filler satisfies every required prop, so anything reported below\n    is caused by the BLANK and not by a thin payload",
+    fillerLeaks.length === 0, fillerLeaks.join(", "))
+
+  const phoneMisses = requiresPhone.filter((id) => {
+    const missing = missingContentProps(id, filled(id, { agentPhone: "" }))
+    return !(missing.length === 1 && missing[0] === "agentPhone")
+  })
+  ok(`an EMPTY agentPhone is refused by all ${requiresPhone.length} compositions that require one\n    (${requiresPhone.join(", ")}) — the exact live defect the always-populated fixture\n    could never have seen`,
+    requiresPhone.length > 0 && phoneMisses.length === 0, phoneMisses.join(", "))
+
+  const wsMisses = requiresPhone.filter((id) => !missingContentProps(id, filled(id, { agentPhone: "   " })).includes("agentPhone"))
+  ok("...and so is a WHITESPACE phone — a producer that stages `\" \"` has still said nothing",
+    wsMisses.length === 0, wsMisses.join(", "))
+
+  const nullMisses = requiresPhone.filter((id) => !missingContentProps(id, filled(id, { agentPhone: null })).includes("agentPhone"))
+  ok("...and so is a NULL one, which is what a users row with no phone actually yields",
+    nullMisses.length === 0, nullMisses.join(", "))
+
+  const hlMisses = requiresHighlights.filter((id) => {
+    const missing = missingContentProps(id, filled(id, { highlights: [] }))
+    return !(missing.length === 1 && missing[0] === "highlights")
+  })
+  ok(`an EMPTY highlights array is refused by all ${requiresHighlights.length} compositions that require it\n    (${requiresHighlights.join(", ")}) — a flyer with no bullet points states nothing`,
+    requiresHighlights.length > 0 && hlMisses.length === 0, hlMisses.join(", "))
+
+  // The BEHAVIOUR the refusal rests on, asserted directly so that loosening
+  // isSupplied — the one edit that would make every assertion above pass while
+  // meaning nothing — fails here as well as in section 6.
+  ok("the refusal rests on isSupplied: \"\" and [] are NOT supplied…",
+    !isSupplied("") && !isSupplied("   ") && !isSupplied([]))
+  ok("...while 0 and false still ARE — a strictness fix must not start refusing\n    honest zeroes",
+    isSupplied(0) && isSupplied(false))
+
+  // AND THROUGH THE REAL PRODUCERS, not just a synthetic payload. This is the
+  // shape the live defect actually had: the identity resolved with no phone, the
+  // producer passed it straight through, and the composition printed its Studio
+  // sample number instead. Same LIVE row, same producer, one blank field.
+  const noPhone: DirectorIdentity = { ...identity, agentPhone: "" }
+  const blankChrome: Record<string, unknown> = { brand: brandBlock(noPhone) }
+  const mNoPhone = { ...blankChrome, ...marketUpdateProps(LIVE.market, noPhone) }
+  ok("a real producer handed an identity with NO phone is refused by the contract —\n    it does not quietly print the composition's sample number",
+    missingContentProps("MarketUpdateReel", mNoPhone).includes("agentPhone"),
+    missingContentProps("MarketUpdateReel", mNoPhone).join(",") || "(nothing missing)")
+  const nNoPhone = { ...blankChrome, ...neighborhoodProps(LIVE.hood, noPhone) }
+  ok("...the neighborhood spotlight likewise",
+    missingContentProps("NeighborhoodSpotlightReel", nNoPhone).includes("agentPhone"),
+    missingContentProps("NeighborhoodSpotlightReel", nNoPhone).join(",") || "(nothing missing)")
+  // NEGATIVE HALF: the same producers with the POPULATED identity must NOT be
+  // refused, or the two assertions above would pass for the wrong reason.
+  ok("CONTROL: with the phone present, both producers pass — the refusal tracks the\n    blank field and nothing else",
+    !missingContentProps("MarketUpdateReel", { ...chrome, ...marketUpdateProps(LIVE.market, identity) }).includes("agentPhone")
+    && !missingContentProps("NeighborhoodSpotlightReel", { ...chrome, ...neighborhoodProps(LIVE.hood, identity) }).includes("agentPhone"))
+}
+
 console.log("\n═══ 13. The equity reel — the case that started this ═══")
 {
   // equity-trigger's REAL dispatch shape (lib/kernel/equity-trigger.ts).

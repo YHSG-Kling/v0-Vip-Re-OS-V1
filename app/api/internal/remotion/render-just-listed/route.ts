@@ -67,7 +67,10 @@ import {
 import {
   narrationLengthDirective,
   narrationMaxTokens,
+  narrationOverrunRedraftDirective,
   fitNarrationToBudget,
+  fitNarrationWithOneRedraft,
+  type NarrationBudgetOutcome,
 } from "@/lib/video/script-structure"
 import path from "node:path"
 import fs from "node:fs/promises"
@@ -196,7 +199,7 @@ export async function POST(req: NextRequest) {
     // 3. REUSE the reactor's gated script (one draft per promo, §5); draft
     //    fresh only when no staged script exists or it no longer clears the
     //    render-time gate.
-    const { script, reused: scriptReused } = await draftAndClearScript({
+    const { script, reused: scriptReused, budgetNotes, budgetOutcome } = await draftAndClearScript({
       svc,
       brokerageId: promo.brokerage_id,
       agentUserId: promoAgentUserId,
@@ -282,6 +285,13 @@ export async function POST(req: NextRequest) {
         // about whether timing is real ("alignment") or estimated.
         caption_timing_source: voiceoverAlignment ? "alignment" : "even",
         voiceover_alignment:   voiceoverAlignment,
+        // THE OVERRUN, ON THE LEDGER (§1). `stillOverBudget` used to reach a
+        // console.warn and stop there, so a narration the composition cut
+        // mid-word looked identical to one that fit. The outcome and every note
+        // are stored beside the script they describe: "fit" | "trimmed" |
+        // "redrafted" | "deterministic" | "reused".
+        narration_budget_outcome: budgetOutcome,
+        narration_budget_notes:   budgetNotes,
       },
     }
     let projectId: string
@@ -350,6 +360,8 @@ export async function POST(req: NextRequest) {
           voiceover_url:    voiceoverUrl,
           remotion_only:    false,
           narration_reused: scriptReused,
+          narration_budget_outcome: budgetOutcome,
+          narration_budget_notes:   budgetNotes,
           hybrid_intro_job_id: introResult.messageId ?? null,
           hybrid_outro_job_id: outroResult.messageId ?? null,
           hybrid_pending:      true,
@@ -454,7 +466,17 @@ async function draftAndClearScript(args: {
    *  ai_video_projects.script_content). When it clears the render-time gate it
    *  is REUSED verbatim — one model draft per promo (§5). Null/empty → draft. */
   stagedScript?: string | null
-}): Promise<{ script: string; reused: boolean }> {
+}): Promise<{
+  script: string
+  reused: boolean
+  /**
+   * Every budget note, quoted so the LEDGER carries it (§1 — the reader half).
+   * `stillOverBudget` used to reach a console.warn and nothing else; the
+   * truncated track shipped and the event existed only in a log line.
+   */
+  budgetNotes: string[]
+  budgetOutcome: NarrationBudgetOutcome["outcome"] | "reused"
+}> {
   // THE CAP, DERIVED FROM THE COMPOSITION THIS EVENT WILL RENDER ON.
   // renderRemotionReel routes the event through compositionForPromoEvent and
   // buildPromoProps, which hand the mp3 to input_props.voiceoverUrl — an <Audio>
@@ -474,11 +496,21 @@ async function draftAndClearScript(args: {
   // that no longer clears the gate (brand rules changed since staging) falls
   // through to a fresh draft rather than being spoken anyway — the gate runs
   // on what is SPOKEN, never on a stale clearance.
+  const budgetNotes: string[] = []
   const preset = (args.stagedScript ?? "").trim()
   if (preset) {
     const fit = fitNarrationToBudget(preset, budget)
-    if (fit.note) console.warn(`[render-just-listed] ${args.eventType} staged script — ${fit.note}`)
-    if (fit.script) {
+    if (fit.note) {
+      const note = `[render-just-listed] ${args.eventType} staged script — ${fit.note}`
+      console.warn(note)
+      budgetNotes.push(note)
+    }
+    // AND THE OVERRUN IS NOW READ (§1). A staged script whose FIRST SENTENCE
+    // alone overruns cannot be trimmed to fit, so reusing it means baking a
+    // track the composition cuts mid-word. It falls through to a fresh draft
+    // (which re-drafts once and then speaks authored copy) rather than being
+    // spoken anyway — the same ruling the gate failure below already makes.
+    if (fit.script && !fit.stillOverBudget) {
       const r = await evaluateOutbound({
         actorContext: { brokerageId: args.brokerageId, userId: args.agentUserId, role: "system" },
         journeyType:  "seller",
@@ -486,7 +518,7 @@ async function draftAndClearScript(args: {
         messageType:  "social",
         content:      fit.script,
       })
-      if (r.allowed) return { script: fit.script, reused: true }
+      if (r.allowed) return { script: fit.script, reused: true, budgetNotes, budgetOutcome: "reused" }
       console.warn(
         `[render-just-listed] ${args.eventType} staged script failed the render-time gate ` +
         `(${r.violations.join("; ")}) — drafting fresh (second billed call)`,
@@ -494,11 +526,12 @@ async function draftAndClearScript(args: {
     }
   }
 
+  let budgetOutcome: NarrationBudgetOutcome["outcome"] = "fit"
   const draft = async (violations: string[]) => {
     const violationLine = violations.length > 0
       ? `\n\nYour previous draft failed compliance. Resolve these violations:\n- ${violations.join("\n- ")}\n`
       : ""
-    const prompt = `Write a voiceover script for a real-estate ${eventLabel(args.eventType)} reel.
+    const basePrompt = `Write a voiceover script for a real-estate ${eventLabel(args.eventType)} reel.
 Use ONLY these facts — do not invent:
 - Address: ${args.facts.address || "(omitted)"}
 - Location: ${args.facts.city_state || "(omitted)"}
@@ -512,20 +545,47 @@ Style: first-person, energetic but professional. Lead with the hook, hit the str
 Banned: protected-class refs (race, religion, family status, national origin, gender, sexual orientation, disability, source of income); phrases like "perfect for families" or "ideal starter home"; rate/valuation/appreciation guarantees; exclamation marks.
 ${narrationLengthDirective(budget)}
 Return ONLY the script text the avatar will speak — no scene directions.${violationLine}`
-    const { text } = await generateTextRouted({
-      brokerageId: args.brokerageId,
-      userId: args.agentUserId,
-      feature:     "listing_promo_voiceover_script",
-      prompt,
-      maxTokens:   narrationMaxTokens(budget),
-      temperature: 0.5,
-    })
+    // ── THE OVERRUN IS READ, NOT WARNED ABOUT (§1) ─────────────────────────
     // VERIFY, don't trust — a word ceiling in a prompt is a request, not a
-    // guarantee. Trim at a sentence boundary and SAY SO; the defect being fixed
-    // is not that scripts are long, it is that nothing ever looked.
-    const fit = fitNarrationToBudget(text.trim(), budget)
-    if (fit.note) console.warn(`[render-just-listed] ${args.eventType} — ${fit.note}`)
-    return fit.script
+    // guarantee, and fitNarrationToBudget is the enforcement. What NOTHING did
+    // was read `stillOverBudget`: the trim could not get under budget because
+    // the FIRST SENTENCE alone is longer than the composition, so its own output
+    // is what gets cut mid-word. This lane writes input_props.voiceoverUrl (the
+    // camel key), which the m313 tpad does NOT pad, so that cut is real and
+    // reaches the public post. One re-draft against the same budget, then the
+    // AUTHORED script; the policy is shared with the other two camel-key
+    // producers (lib/video/script-structure.ts fitNarrationWithOneRedraft) so
+    // three copies of it cannot drift.
+    //
+    // It nests INSIDE the compliance draft deliberately: whatever comes out —
+    // re-draft or authored fallback — is still handed to the gate below, so the
+    // length fix can never route text around the compliance loop.
+    const drafted = await fitNarrationWithOneRedraft({
+      budget,
+      label: `[render-just-listed] ${args.eventType}`,
+      deterministic: () => deterministicPromoNarration(args.facts, args.eventType),
+      draft: async ({ previous }) => {
+        const { text } = await generateTextRouted({
+          brokerageId: args.brokerageId,
+          userId: args.agentUserId,
+          feature:     "listing_promo_voiceover_script",
+          prompt:      previous ? `${basePrompt}\n${narrationOverrunRedraftDirective(previous, budget)}` : basePrompt,
+          maxTokens:   narrationMaxTokens(budget),
+          temperature: 0.5,
+        })
+        return fitNarrationToBudget(text.trim(), budget)
+      },
+    })
+    for (const n of drafted.notes) console.warn(n)
+    budgetNotes.push(...drafted.notes)
+    budgetOutcome = drafted.outcome
+    // REFUSED means the composition has no runtime to narrate at all. Failing
+    // the render (the catch below stamps listing_promo_videos.error_message)
+    // beats baking a track nothing can play.
+    if (drafted.outcome === "refused") {
+      throw new Error(drafted.notes[drafted.notes.length - 1] ?? `no narration fits ${budget.compositionId}`)
+    }
+    return drafted.script
   }
   const result = await runWithComplianceRedraft({
     draft: ({ violations }) => draft(violations),
@@ -541,7 +601,40 @@ Return ONLY the script text the avatar will speak — no scene directions.${viol
     },
   })
   if (!result.ok) throw new Error(`compliance failed after redraft: ${result.violations.join("; ")}`)
-  return { script: result.script, reused: false }
+  return { script: result.script, reused: false, budgetNotes, budgetOutcome }
+}
+
+/**
+ * THE AUTHORED PROMO NARRATION — the deterministic half fitNarrationWithOneRedraft
+ * falls back to when even a re-draft will not fit the composition.
+ *
+ * Short BY CONSTRUCTION: every sentence is one fact, so it fits any composition
+ * with real runtime. Facts only, straight off the loaded listing row — this is
+ * the same no-invention rule the prompt above states, enforced instead of asked
+ * for. It still goes through evaluateOutbound like any draft, because it is
+ * returned from INSIDE the compliance loop's draft callback.
+ *
+ * Built here rather than imported: there was no deterministic promo narration
+ * anywhere in the tree (§1 — build the missing half). lib/video/promo-composition.ts
+ * owns the composition/props side and holds no spoken copy, and this route's
+ * buildHybridHookScript is the D-ID bookend, not the reel's narration.
+ */
+function deterministicPromoNarration(facts: ListingFacts, eventType: string): string {
+  const sold = eventType === "just_sold" || eventType === "under_contract"
+  const out: string[] = []
+  out.push(
+    `${eventLabel(eventType)}${facts.address ? ` at ${facts.address}` : ""}${facts.city_state ? ` in ${facts.city_state}` : ""}.`,
+  )
+  const specs = [
+    facts.bedrooms ? `${facts.bedrooms} bedrooms` : "",
+    facts.bathrooms ? `${facts.bathrooms} baths` : "",
+    facts.sqft ? `${facts.sqft} square feet` : "",
+  ].filter(Boolean)
+  if (specs.length > 0) out.push(`${specs.join(", ")}.`)
+  const money = sold ? facts.soldPrice : facts.price
+  if (money) out.push(`${sold ? "Sold at" : "Offered at"} ${money}.`)
+  out.push(sold ? "DM me about yours." : "DM me to tour.")
+  return out.join(" ")
 }
 
 async function renderVoiceover(args: {
