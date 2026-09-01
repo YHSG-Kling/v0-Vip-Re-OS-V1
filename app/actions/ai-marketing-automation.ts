@@ -270,10 +270,19 @@ Return JSON:
     revalidatePath("/dashboard/marketing/studio")
     revalidatePath("/newsletters")
 
+    // createNewsletterCampaign's success shape types `newsletter` loosely
+    // (Record<string, any> — it gained upsert-by-id edit semantics this wave),
+    // so the id is read with a runtime check instead of the old hard cast: a
+    // save that came back id-less must surface as a failure, not crash the
+    // spread below.
+    const savedId = (saveResult as { newsletter?: { id?: unknown } }).newsletter?.id
+    if (typeof savedId !== "string" || !savedId) {
+      return { success: false, error: "Newsletter was saved but no id came back" }
+    }
     return {
       success: true,
       newsletter: {
-        id: (saveResult as { newsletter: { id: string } }).newsletter.id,
+        id: savedId,
         ...newsletter,
       },
     }

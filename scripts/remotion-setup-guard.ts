@@ -380,7 +380,9 @@ console.log("\n═══ 4b. Each component's INTERNAL storyboard sums to its re
   ok("...and a DESYNCED storyboard is actually caught — a component summing 510\n    against a 540-frame registration reads as 510, not as fine",
     (() => {
       const d = deriveStoryboardTotal("const FPS = 30\nconst COVER = 3 * FPS\nconst DIAGRAM = 11 * FPS\nconst CTA = 3 * FPS\nconst TOTAL = COVER + DIAGRAM + CTA\n")
-      return d.total === 510 && d.total !== 540
+      // === 510 alone proves the desync is visible (tsc: after narrowing to the
+      // literal 510, a second !== 540 comparison is statically vacuous).
+      return d.total === 510
     })())
   ok("...and it read STRIPPED source — a comment or a string naming const TOTAL is\n    not a storyboard",
     deriveStoryboardTotal("// const TOTAL = 300\nconst s = `const TOTAL = 300`\n").total === null)
