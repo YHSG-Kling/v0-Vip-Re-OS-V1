@@ -1763,6 +1763,17 @@ export async function generateSmartChecklist(transactionId: string, stage: strin
   if (!gate.ok) return { success: false, error: gate.error }
   const supabase = gate.db
 
+  // Tenant anchor: the checklist rows carry brokerage_id, and the honest place
+  // to get it is the transaction itself (RLS-scoped for a tenant caller, so a
+  // foreign deal reads as absent, not as someone else's).
+  const { data: txnRow, error: txnErr } = await supabase
+    .from("transactions")
+    .select("id, brokerage_id")
+    .eq("id", transactionId)
+    .maybeSingle()
+  if (txnErr) return { success: false, error: txnErr.message }
+  if (!txnRow) return { success: false, error: "Transaction not found" }
+
   const checklistPrompt = `Generate smart checklist for transaction stage: ${stage}
 
 Create tasks for:
@@ -1785,22 +1796,43 @@ Return JSON array of tasks.`
 
     const checklist = JSON.parse(await runPipelineSimple(checklistPrompt, { feature: "transaction_checklist" }))
 
-  if (checklist.data?.tasks) {
-    const { data: checklistRecord } = await supabase
-      .from("smart_checklists")
-      .insert({
-        transaction_id: transactionId,
-        checklist_type: "stage_specific",
-        total_items: checklist.data.tasks.length,
-        completed_items: 0,
-        percent_complete: 0,
-        auto_generated: true,
-      })
-      .select()
-      .single()
+  // HONESTY CONTRACT (same as ai-coordinator-panel.tsx): report the server's
+  // verdict — proposedCount (what the model suggested) vs createdCount (what the
+  // database now agrees with) plus per-row `skipped` refusals. supabase-js
+  // RESOLVES refusals (§3), so every insert below reads its error; the old loop
+  // discarded them all and this function said { success: true } no matter what.
+  const proposedTasks: any[] = Array.isArray(checklist.data?.tasks) ? checklist.data.tasks : []
+  if (proposedTasks.length === 0) {
+    return { success: false, error: "The model proposed no checklist tasks — nothing was written.", proposedCount: 0, createdCount: 0, skipped: [] as string[] }
+  }
 
-    if (checklistRecord) {
-      for (const task of checklist.data.tasks) {
+  const { data: checklistRecord, error: checklistErr } = await supabase
+    .from("smart_checklists")
+    .insert({
+      transaction_id: transactionId,
+      brokerage_id: txnRow.brokerage_id,
+      checklist_type: "stage_specific",
+      total_items: proposedTasks.length,
+      completed_items: 0,
+      percent_complete: 0,
+      auto_generated: true,
+    })
+    .select()
+    .single()
+
+  if (checklistErr || !checklistRecord) {
+    return {
+      success: false,
+      error: checklistErr?.message ?? "The checklist row was refused — no tasks were written.",
+      proposedCount: proposedTasks.length,
+      createdCount: 0,
+      skipped: [] as string[],
+    }
+  }
+
+  let createdCount = 0
+  const skipped: string[] = []
+  for (const task of proposedTasks) {
         // task_items links to the transaction via checklist_id → smart_checklists,
         // not a direct transaction_id. Real columns: title/description/assigned_to/
         // completed (no status/client_visible).
@@ -1824,8 +1856,9 @@ Return JSON array of tasks.`
         const dueDate = Number.isFinite(offsetDays) && offsetDays >= 0
           ? new Date(Date.now() + offsetDays * 86_400_000).toISOString()
           : null
-        await supabase.from("task_items").insert({
+        const { error: itemErr } = await supabase.from("task_items").insert({
           checklist_id: checklistRecord.id,
+          brokerage_id: txnRow.brokerage_id,
           title: task.task_name,
           description: task.task_description,
           assigned_to: task.assigned_to_role,
@@ -1833,11 +1866,183 @@ Return JSON array of tasks.`
           due_date: dueDate,
           completed: false,
         })
-      }
-    }
+        if (itemErr) {
+          skipped.push(`${task.task_name ?? "(untitled task)"}: ${itemErr.message}`)
+        } else {
+          createdCount += 1
+        }
   }
 
-  return { success: true }
+  // total_items was written from the PROPOSAL; if the database refused some,
+  // the stored denominator would overstate the checklist. Correct it to what
+  // actually landed — a refusal here is reported, never swallowed.
+  if (createdCount !== proposedTasks.length) {
+    const { error: fixErr } = await supabase
+      .from("smart_checklists")
+      .update({ total_items: createdCount })
+      .eq("id", checklistRecord.id)
+    if (fixErr) skipped.push(`checklist total_items correction refused: ${fixErr.message}`)
+  }
+
+  return {
+    success: createdCount > 0,
+    error: createdCount > 0 ? undefined : "Every proposed task was refused by the database.",
+    checklistId: checklistRecord.id,
+    proposedCount: proposedTasks.length,
+    createdCount,
+    skipped,
+  }
+}
+
+/**
+ * READER for the smart-checklist card (app/dashboard/transactions/[id]/
+ * smart-checklist-panel.tsx). task_items has no direct transaction FK — it
+ * links via checklist_id → smart_checklists.transaction_id (same join the
+ * health counter below uses).
+ *
+ * Deliberately the CALLER'S RLS client, not the write gate: a read_only
+ * support grant may look, and RLS scopes a tenant user to their own deals.
+ * Every read destructures { error } (§3) — a refused read comes back as
+ * { success: false }, never as an empty (and therefore reassuring) checklist.
+ */
+export async function getSmartChecklists(transactionId: string): Promise<
+  | {
+      success: true
+      checklists: Array<{
+        id: string
+        checklist_type: string | null
+        total_items: number | null
+        completed_items: number | null
+        percent_complete: number | null
+        auto_generated: boolean | null
+        created_at: string | null
+      }>
+      items: Array<{
+        id: string
+        checklist_id: string
+        title: string | null
+        description: string | null
+        assigned_to: string | null
+        priority: string | null
+        due_date: string | null
+        completed: boolean | null
+        completed_at: string | null
+        created_at: string | null
+      }>
+    }
+  | { success: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: checklists, error: clErr } = await supabase
+    .from("smart_checklists")
+    .select("id, checklist_type, total_items, completed_items, percent_complete, auto_generated, created_at")
+    .eq("transaction_id", transactionId)
+    .order("created_at", { ascending: false })
+  if (clErr) return { success: false, error: clErr.message }
+
+  const checklistIds = (checklists ?? []).map((c: any) => c.id)
+  if (checklistIds.length === 0) return { success: true, checklists: [], items: [] }
+
+  const { data: items, error: itErr } = await supabase
+    .from("task_items")
+    .select("id, checklist_id, title, description, assigned_to, priority, due_date, completed, completed_at, created_at")
+    .in("checklist_id", checklistIds)
+    .order("created_at", { ascending: true })
+  if (itErr) return { success: false, error: itErr.message }
+
+  return { success: true, checklists: checklists ?? [], items: (items ?? []) as any }
+}
+
+/**
+ * The COMPLETION WRITER task_items never had. The card renders a checkbox per
+ * task; this is what the checkbox lands on.
+ *
+ * §3, both traps: the error is read AND the update is `.select()`-counted —
+ * an UPDATE that matched nothing resolves `{ data: [], error: null }`, which is
+ * byte-identical to one that worked. Zero rows here means the tenant/transaction
+ * predicate refused (or the task is gone), and that is reported as a failure,
+ * never as success.
+ *
+ * Tenant scope comes from the SESSION via the write gate (§4); the task is
+ * additionally pinned to the transaction the caller is looking at through the
+ * checklist join, so a valid task id from another deal cannot be flipped from
+ * this page.
+ */
+export async function setTaskItemCompleted(
+  taskItemId: string,
+  transactionId: string,
+  completed: boolean,
+): Promise<{ success: true; rollupError?: string } | { success: false; error: string }> {
+  const gate = await actingWriteContext()
+  if (!gate.ok) return { success: false, error: gate.error }
+  const supabase = gate.db
+
+  // Pin the task to THIS transaction (task → checklist → transaction).
+  const { data: taskRow, error: taskErr } = await supabase
+    .from("task_items")
+    .select("id, checklist_id")
+    .eq("id", taskItemId)
+    .maybeSingle()
+  if (taskErr) return { success: false, error: taskErr.message }
+  if (!taskRow?.checklist_id) return { success: false, error: "Task not found" }
+
+  const { data: checklistRow, error: clErr } = await supabase
+    .from("smart_checklists")
+    .select("id, transaction_id")
+    .eq("id", taskRow.checklist_id)
+    .maybeSingle()
+  if (clErr) return { success: false, error: clErr.message }
+  if (!checklistRow || checklistRow.transaction_id !== transactionId) {
+    return { success: false, error: "Task does not belong to this transaction" }
+  }
+
+  // Session-tenant check: the transaction must be in the caller's brokerage.
+  const { data: txnRow, error: txnErr } = await supabase
+    .from("transactions")
+    .select("id, brokerage_id")
+    .eq("id", transactionId)
+    .maybeSingle()
+  if (txnErr) return { success: false, error: txnErr.message }
+  if (!txnRow) return { success: false, error: "Transaction not found" }
+  if (gate.brokerageId && txnRow.brokerage_id !== gate.brokerageId) {
+    return { success: false, error: "Transaction is not in your brokerage" }
+  }
+
+  const { data: updated, error: updErr } = await supabase
+    .from("task_items")
+    .update({ completed, completed_at: completed ? new Date().toISOString() : null })
+    .eq("id", taskItemId)
+    .eq("checklist_id", checklistRow.id)
+    .select("id")
+  if (updErr) return { success: false, error: updErr.message }
+  if (!updated || updated.length === 0) {
+    return { success: false, error: "The update matched no task — nothing was changed." }
+  }
+
+  // Roll the count up onto the checklist so completed_items / percent_complete
+  // (which the health scorer's denominator reads) stay true. A refusal here is
+  // returned beside the success, not swallowed.
+  let rollupError: string | undefined
+  const { data: allItems, error: countErr } = await supabase
+    .from("task_items")
+    .select("completed")
+    .eq("checklist_id", checklistRow.id)
+  if (countErr) {
+    rollupError = countErr.message
+  } else {
+    const total = (allItems ?? []).length
+    const done = (allItems ?? []).filter((t: any) => t.completed).length
+    const { error: rollErr } = await supabase
+      .from("smart_checklists")
+      .update({
+        completed_items: done,
+        percent_complete: total > 0 ? Math.round((done / total) * 100) : 0,
+      })
+      .eq("id", checklistRow.id)
+    if (rollErr) rollupError = rollErr.message
+  }
+
+  return rollupError ? { success: true, rollupError } : { success: true }
 }
 
 export async function detectTransactionIssues(transactionId: string) {

@@ -560,6 +560,56 @@ export async function listLearningModulesForBrokerageAction(opts?: {
   return { ok: true, rows }
 }
 
+// ─── Publication ledger (per-module, per-channel) ───────────────────────────
+// The publisher above writes a learning_module_channel_publications row on
+// EVERY fan-out — status 'published' with external_url/external_id/
+// external_table/published_at, or status 'failed' with error_message. Until
+// this reader, the only consumer was the portal-stream cron picking module_id:
+// a failed publish was invisible the moment the request returned. This is the
+// admin screen's ledger loader.
+
+export interface ModulePublicationRow {
+  moduleId:      string
+  channel:       string
+  status:        string
+  externalUrl:   string | null
+  externalTable: string | null
+  publishedAt:   string | null
+  errorMessage:  string | null
+  createdAt:     string | null
+}
+
+export async function getModulePublicationsAction(): Promise<
+  | { ok: true; publications: ModulePublicationRow[] }
+  | { ok: false; error: string }
+> {
+  const auth = await requireAdmin()
+  if (!auth.ok) return auth
+
+  const supabase = createServiceClient()
+  const { data, error } = await supabase
+    .from("learning_module_channel_publications")
+    .select("module_id, channel, status, external_url, external_table, published_at, error_message, created_at")
+    .eq("brokerage_id", auth.brokerageId)
+    .order("created_at", { ascending: false })
+    .limit(1000)
+  if (error) return { ok: false, error: error.message }
+
+  return {
+    ok: true,
+    publications: (data ?? []).map((r: Record<string, unknown>) => ({
+      moduleId:      r.module_id as string,
+      channel:       r.channel as string,
+      status:        (r.status as string) ?? "unknown",
+      externalUrl:   (r.external_url as string | null) ?? null,
+      externalTable: (r.external_table as string | null) ?? null,
+      publishedAt:   (r.published_at as string | null) ?? null,
+      errorMessage:  (r.error_message as string | null) ?? null,
+      createdAt:     (r.created_at as string | null) ?? null,
+    })),
+  }
+}
+
 export async function getLearningAssignmentsForActorAction(opts: {
   actorKind: LearningActorKind
   actorId:   string

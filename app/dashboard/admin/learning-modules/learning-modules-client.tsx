@@ -12,6 +12,8 @@ import {
   createLearningModuleAction,
   publishLearningModuleAction,
   updateLearningModuleAction,
+  getModulePublicationsAction,
+  type ModulePublicationRow,
 } from "@/app/actions/learning-modules"
 
 type Channel =
@@ -71,13 +73,41 @@ interface ModuleRow {
 
 interface Props {
   initialModules: ModuleRow[]
+  /** learning_module_channel_publications rows for this brokerage — the
+   *  per-channel publish ledger the fan-out writes on every attempt. */
+  initialPublications?: ModulePublicationRow[]
+  /** Non-null when the ledger READ was refused — rendered as a refusal,
+   *  never as "no publications". */
+  initialPublicationsError?: string | null
 }
 
-export function LearningModulesClient({ initialModules }: Props) {
+export function LearningModulesClient({
+  initialModules,
+  initialPublications = [],
+  initialPublicationsError = null,
+}: Props) {
   const [modules, setModules] = useState<ModuleRow[]>(initialModules)
   const [showForm, setShowForm] = useState(false)
   const [isPending, startTransition] = useTransition()
   const [feedback, setFeedback] = useState<string | null>(null)
+
+  // ── PUBLISH LEDGER ────────────────────────────────────────────────────────
+  // Every fan-out writes a learning_module_channel_publications row — status
+  // 'published' (external_url / published_at) or 'failed' (error_message).
+  // Until this ledger the only reader was a cron picking module_id, so a failed
+  // publish was invisible the moment the request returned.
+  const [publications, setPublications] = useState<ModulePublicationRow[]>(initialPublications)
+  const [publicationsError, setPublicationsError] = useState<string | null>(initialPublicationsError)
+
+  async function refreshPublications(): Promise<void> {
+    const res = await getModulePublicationsAction()
+    if (!res.ok) {
+      setPublicationsError(res.error)
+      return
+    }
+    setPublicationsError(null)
+    setPublications(res.publications)
+  }
 
   // form state
   const [title, setTitle] = useState("")
@@ -253,6 +283,10 @@ export function LearningModulesClient({ initialModules }: Props) {
       )
       const failMsg = fail.length > 0 ? ` — ${fail.length} failed: ${fail.map((f) => `${f.channel}(${f.error ?? "?"})`).join(", ")}` : ""
       setFeedback(`Published to ${ok} channel${ok === 1 ? "" : "s"}.${failMsg}`)
+      // Re-read the ledger so the per-channel rows below show what the fan-out
+      // actually recorded (external_url / published_at / error_message), not an
+      // optimistic reconstruction.
+      await refreshPublications()
     })
   }
 
@@ -448,15 +482,27 @@ export function LearningModulesClient({ initialModules }: Props) {
       )}
 
       <div className="grid grid-cols-1 gap-3">
+        {/* A refused ledger read renders as a refusal — the per-module rows
+            below would otherwise read as "never published anywhere". */}
+        {publicationsError && (
+          <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+            The publish ledger could not be read: {publicationsError} — per-channel publication
+            status below is unavailable, not empty.
+          </div>
+        )}
+
         {modules.length === 0 && (
           <div className="text-sm text-muted-foreground border rounded-md p-6 text-center">
             No modules yet. Click <span className="font-medium">New module</span> to author the first one.
           </div>
         )}
 
-        {modules.map((m) => (
+        {modules.map((m) => {
+          const modulePubs = publications.filter((p) => p.moduleId === m.id)
+          return (
           <Card key={m.id}>
-            <CardContent className="py-4 flex items-center justify-between gap-4">
+            <CardContent className="py-4">
+            <div className="flex items-center justify-between gap-4">
               {editingId === m.id ? (
                 <div className="min-w-0 flex-1 space-y-2">
                   <div className="space-y-1">
@@ -548,9 +594,62 @@ export function LearningModulesClient({ initialModules }: Props) {
                   </>
                 )}
               </div>
+            </div>
+
+            {/* ── Publish ledger — what the fan-out actually recorded ─────────
+                One learning_module_channel_publications row per channel:
+                'published' with the external row it landed in, or 'failed' with
+                the error the channel returned. Before this list, a failed
+                publish was invisible the moment the request returned. */}
+            {!publicationsError && modulePubs.length > 0 && (
+              <div className="mt-3 border-t pt-3">
+                <div className="text-xs font-medium text-muted-foreground mb-1.5">
+                  Publications ({modulePubs.length})
+                </div>
+                <ul className="space-y-1.5">
+                  {modulePubs.map((p) => (
+                    <li
+                      key={`${p.moduleId}:${p.channel}`}
+                      className="flex items-start gap-2 text-xs flex-wrap"
+                    >
+                      <Badge
+                        variant={p.status === "published" ? "default" : "destructive"}
+                        className="capitalize"
+                      >
+                        {p.channel}: {p.status === "published" ? "live" : p.status}
+                      </Badge>
+                      {p.publishedAt && (
+                        <span className="text-muted-foreground">
+                          {new Date(p.publishedAt).toLocaleString()}
+                        </span>
+                      )}
+                      {p.externalUrl && (
+                        <a
+                          href={p.externalUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-blue-700 hover:underline break-all"
+                        >
+                          {p.externalUrl}
+                        </a>
+                      )}
+                      {!p.externalUrl && p.externalTable && (
+                        <span className="text-muted-foreground">→ {p.externalTable}</span>
+                      )}
+                      {p.status === "failed" && (
+                        <span className="text-destructive break-words">
+                          {p.errorMessage ?? "no error recorded"}
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             </CardContent>
           </Card>
-        ))}
+          )
+        })}
       </div>
     </div>
   )

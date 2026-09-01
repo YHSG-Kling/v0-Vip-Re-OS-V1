@@ -9,6 +9,7 @@ import { BuyerMoveSection } from "./buyer-move-section"
 import { HazardInsuranceSection } from "./hazard-insurance-section"
 import { getTransactionHazardInsuranceAction } from "@/app/actions/transaction-hazard-insurance"
 import { AiCoordinatorPanel } from "./ai-coordinator-panel"
+import { SmartChecklistPanel } from "./smart-checklist-panel"
 import { getBuyerMoveCase } from "@/lib/transactions/buyer-move"
 import { FEATURES } from "@/lib/constants"
 import { TRANSACTION_STAGES, TransactionStage } from "@/lib/transactions/transaction-stages"
@@ -530,6 +531,12 @@ export default async function TransactionDetailPage({ params }: PageProps) {
         stage={(transaction as any).stage ?? null}
         closeDate={(transaction as any).close_date ?? null}
       />
+      {/* Smart Checklist — the surface for smart_checklists / task_items. The
+          generator wrote per-deal compliance checklists (owners, priorities,
+          deadlines) that no page could show, and the generator itself had no
+          caller. Reader + completion writer + generate control, all reporting
+          the server's verdict. */}
+      <SmartChecklistPanel transactionId={id} stage={(transaction as any).stage ?? null} />
       <TransactionDetailClient
       transaction={transaction}
       brokerageId={brokerageId}

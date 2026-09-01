@@ -2,6 +2,7 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { getTransactions } from "@/app/actions/transactions"
 import { PortfolioRiskScan } from "./portfolio-risk-scan"
+import { DealsLostBoard } from "./deals-lost-board"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -349,6 +350,11 @@ export default async function TransactionsPage() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Deals Lost — the read half of the deal-autopsy learning lane
+            (deal_autopsy_observations). The writer runs on every lost deal;
+            until this board its only reader was its own idempotency check. */}
+        <DealsLostBoard />
       </div>
     </div>
   )

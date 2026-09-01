@@ -323,6 +323,16 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
   const [localContent, setLocalContent] = useState<any[]>([])
   const [isNewsletterLoading, setIsNewsletterLoading] = useState(false)
   const [newsletterError, setNewsletterError] = useState<string | null>(null)
+  // Newsletter VIDEO renders — the render worker writes video_url/completed_at
+  // on success and error_message on failure into newsletter_video_renders, and
+  // no page linked either: a failed render was indistinguishable from a slow
+  // one. Keyed by newsletter_campaign_id, most recent render wins. Vocabulary
+  // is the composition gate's (lib/kernel/composition-gate.ts): queued /
+  // rendering / completed / failed / suppressed.
+  const [videoRendersByCampaign, setVideoRendersByCampaign] = useState<
+    Record<string, { status: string; video_url: string | null; error_message: string | null; completed_at: string | null }>
+  >({})
+  const [videoRendersError, setVideoRendersError] = useState<string | null>(null)
 
   // EMAIL CAMPAIGN state. The "New Campaign" button on this tab has always
   // called createEmailCampaign, which writes `email_campaigns` — but the list
@@ -923,6 +933,40 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
         .limit(10)
       if (campaignsError) setNewsletterError(campaignsError.message)
       setNewsletterCampaigns(campaigns || [])
+
+      // Video render status per campaign. A REFUSED read is surfaced as its
+      // own error — it must not render as "no video", which is what an
+      // optimistic empty map would say.
+      const campaignIds = (campaigns || []).map((c: any) => c.id)
+      if (campaignIds.length === 0) {
+        setVideoRendersByCampaign({})
+        setVideoRendersError(null)
+      } else {
+        const { data: renders, error: rendersError } = await supabase
+          .from("newsletter_video_renders")
+          .select("newsletter_campaign_id, status, video_url, error_message, completed_at, created_at")
+          .in("newsletter_campaign_id", campaignIds)
+          .order("created_at", { ascending: false })
+        if (rendersError) {
+          setVideoRendersError(rendersError.message)
+          setVideoRendersByCampaign({})
+        } else {
+          setVideoRendersError(null)
+          const byCampaign: Record<string, { status: string; video_url: string | null; error_message: string | null; completed_at: string | null }> = {}
+          for (const r of renders || []) {
+            // Ordered newest-first; the first row per campaign is the current one.
+            if (!byCampaign[r.newsletter_campaign_id]) {
+              byCampaign[r.newsletter_campaign_id] = {
+                status: r.status,
+                video_url: r.video_url ?? null,
+                error_message: r.error_message ?? null,
+                completed_at: r.completed_at ?? null,
+              }
+            }
+          }
+          setVideoRendersByCampaign(byCampaign)
+        }
+      }
 
       // Get scheduled sends. agent_id here is agents-class — agentIdProp is
       // already server-resolved; without it, resolve rather than reach for the
@@ -3073,12 +3117,21 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                     </div>
                   </CardHeader>
                   <CardContent>
+                    {/* Render-ledger refusal is its own line — an empty status
+                        column must mean "no render", never "the read failed". */}
+                    {videoRendersError && (
+                      <p className="text-xs text-red-600 mb-2">
+                        Video render status unavailable — the ledger read was refused: {videoRendersError}
+                      </p>
+                    )}
                     {newsletterCampaigns.length === 0 ? (
                       <p className="text-muted-foreground text-center py-8">No newsletter campaigns yet</p>
                     ) : (
                       <div className="space-y-3">
-                        {newsletterCampaigns.map((campaign) => (
-                          <div key={campaign.id} className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
+                        {newsletterCampaigns.map((campaign) => {
+                          const render = videoRendersByCampaign[campaign.id]
+                          return (
+                          <div key={campaign.id} className="flex items-center justify-between p-3 rounded-lg bg-muted/50 gap-3 flex-wrap">
                             <div>
                               <p className="font-medium">{campaign.campaign_name || campaign.subject_line}</p>
                               <p className="text-sm text-muted-foreground">
@@ -3086,8 +3139,41 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                                   ? format(new Date(campaign.send_date), "MMM d, yyyy")
                                   : "Not scheduled"}
                               </p>
+                              {/* Failed render: the error the worker recorded,
+                                  shown where the campaign is managed. */}
+                              {render?.status === "failed" && (
+                                <p className="text-xs text-red-600 mt-0.5 break-words max-w-md">
+                                  Video render failed: {render.error_message ?? "no error recorded"}
+                                </p>
+                              )}
                             </div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              {/* newsletter_video_renders status — vocabulary
+                                  settled at lib/kernel/composition-gate.ts:
+                                  queued / rendering / completed / failed /
+                                  suppressed. No render row = no video queued. */}
+                              {render ? (
+                                render.status === "completed" && render.video_url ? (
+                                  <a
+                                    href={render.video_url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="text-xs text-violet-700 hover:underline flex items-center gap-1"
+                                  >
+                                    <Video className="h-3.5 w-3.5" />
+                                    Play video
+                                  </a>
+                                ) : (
+                                  <Badge
+                                    variant={render.status === "failed" ? "destructive" : "outline"}
+                                    className="text-xs capitalize"
+                                  >
+                                    video: {render.status === "completed" ? "completed (no url)" : render.status}
+                                  </Badge>
+                                )
+                              ) : (
+                                <span className="text-xs text-muted-foreground">no video</span>
+                              )}
                               <Badge className={getStatusColor(campaign.status || "draft")}>
                                 {campaign.status || "draft"}
                               </Badge>
@@ -3103,7 +3189,8 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
                               )}
                             </div>
                           </div>
-                        ))}
+                          )
+                        })}
                       </div>
                     )}
                   </CardContent>

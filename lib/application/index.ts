@@ -126,6 +126,8 @@ export {
   generateCostBreakdown,
   generateStatusUpdate,
   generateSmartChecklist,
+  getSmartChecklists,
+  setTaskItemCompleted,
   detectTransactionIssues,
   deliverEducationalContent,
   monitorTransactionHealth,

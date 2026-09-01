@@ -630,8 +630,25 @@ export async function generateStatusUpdate(transactionId: string) {
 }
 
 export async function generateSmartChecklist(transactionId: string, stage: string) {
-  if (!isValidUUID(transactionId)) return { success: false }
+  if (!isValidUUID(transactionId)) return { success: false, error: "Invalid transaction ID" }
   return TransactionService.generateSmartChecklist(transactionId, stage)
+}
+
+// ── Smart checklist card (transaction detail page) ─────────────────────────
+// The reader + completion writer for smart_checklists / task_items. The
+// generator above wrote per-deal compliance checklists that no surface could
+// show; these are the two halves the card in
+// app/dashboard/transactions/[id]/smart-checklist-panel.tsx stands on.
+
+export async function getSmartChecklists(transactionId: string) {
+  if (!isValidUUID(transactionId)) return { success: false as const, error: "Invalid transaction ID" }
+  return TransactionService.getSmartChecklists(transactionId)
+}
+
+export async function setTaskItemCompleted(taskItemId: string, transactionId: string, completed: boolean) {
+  if (!isValidUUID(taskItemId)) return { success: false as const, error: "Invalid task ID" }
+  if (!isValidUUID(transactionId)) return { success: false as const, error: "Invalid transaction ID" }
+  return TransactionService.setTaskItemCompleted(taskItemId, transactionId, completed)
 }
 
 export async function detectTransactionIssues(transactionId: string) {
