@@ -208,18 +208,31 @@ const PROBES: Probe[] = [
   // ── LOOP 1 ────────────────────────────────────────────────────────────────
   {
     name: "V1 requireAuth is CALLED on the POST path, not merely imported for GET's benefit",
+    // Re-pinned 2026-09-01: POST became a DUAL gate (requireAuth for staff, or
+    // requireContactAccess for the portal contact whose engagement this route
+    // exists to record) — the old pin required the single-gate spelling
+    // `if (!auth.ok) return auth.response` at the top. The rule survives
+    // strengthened: requireAuth is still called and its refusal still returned
+    // on the no-session-no-contact path, and the ONLY other admission is the
+    // shared portal gate with its own refusal handled.
     run: (s) => {
       const body = postBody(s)
       return /const auth = await requireAuth\(supabase\)/.test(body)
-        && /if \(!auth\.ok\) return auth\.response/.test(body)
+        && /return auth\.response/.test(body)
+        && /await requireContactAccess\(contactId\)/.test(body)
+        && /if \(!access\.ok\)/.test(body)
     },
   },
   {
     name: "V2 the tenant comes from the SESSION — POST's body destructure names no brokerageId",
+    // Re-pinned with V1: the tenant now arrives from the session (staff) or
+    // the gate-proven CONTACT ROW (portal) — never the body destructure.
     run: (s) => {
       const body = postBody(s)
       const destructure = body.slice(body.indexOf("const {"), body.indexOf("} = body"))
-      return /const brokerageId = auth\.brokerageId/.test(body) && !/brokerageId/.test(destructure)
+      return /brokerageId = auth\.brokerageId/.test(body)
+        && /brokerageId = access\.brokerageId/.test(body)
+        && !/brokerageId/.test(destructure)
     },
   },
   {
@@ -396,15 +409,20 @@ const MUTATIONS: Mutation[] = [
     // anchored on the POST signature itself.
     name: "the POST auth gate is removed again, leaving requireAuth imported but called only by GET",
     probe: "V1",
+    // Re-anchored with the dual gate: the requireAuth call now sits inside
+    // POST's try block ahead of the auth.ok branch — GET's call is spelled
+    // without the following dual-gate branch, so this replace cannot hit GET.
     mutate: (s) => ({ ...s, [ROUTE]: s[ROUTE].replace(
-      "export async function POST(request: Request) {\n  const supabase = await createClient()\n  const auth = await requireAuth(supabase)\n  if (!auth.ok) return auth.response",
-      "export async function POST(request: Request) {\n  const supabase = await createClient()\n  const auth = { ok: true, brokerageId: null } as any",
+      "    const auth = await requireAuth(supabase)\n    if (auth.ok) {",
+      "    const auth = { ok: true, brokerageId: null } as any\n    if (auth.ok) {",
     ) }),
   },
   {
     name: "the tenant goes back to being destructured out of the request body",
     probe: "V2",
-    mutate: (s) => ({ ...s, [ROUTE]: s[ROUTE].replace("      videoProjectId,\n      contactId,", "      videoProjectId,\n      brokerageId,\n      contactId,") }),
+    // Re-anchored: contactId left the destructure (it is validated off body
+    // separately for the portal gate), so the mutation rides eventType now.
+    mutate: (s) => ({ ...s, [ROUTE]: s[ROUTE].replace("      videoProjectId,\n      eventType,", "      videoProjectId,\n      brokerageId,\n      eventType,") }),
   },
   {
     name: "a caller-supplied tenant is silently ignored instead of refused",
