@@ -2070,6 +2070,7 @@ export const CRON_MANAGER: Record<string, ManagerKey> = {
   "/api/cron/source-conversion-learning": "ai_isa",
   "/api/cron/intent-campaign": "ai_isa",
   "/api/cron/voice-call-analysis": "ai_isa",
+  "/api/cron/zoom-transcript-reconcile": "ai_isa", // same rail as voice-call-analysis: feeds voice_calls/call_analyses + the ISA meeting follow-through (call_transcription_to_contact above)
   "/api/cron/voice-distiller-weekly": "ai_isa",
   "/api/cron/voice-week-in-review": "ai_isa",
   "/api/cron/overnight-digest": "ai_isa",

@@ -193,6 +193,11 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/showing-lifecycle"                   , schedule: "15 * * * *" },
   { path: "/api/cron/open-house-followup"                 , schedule: "45 * * * *" },
   { path: "/api/cron/voice-call-analysis"                 , schedule: "20 * * * *" },
+  // Zoom transcript reconciliation (lane Z2) — re-asks Zoom's recordings API for
+  // past meetings whose transcript webhook never landed, and feeds the SAME
+  // ingest the webhook uses. Every 2h: transcripts render within an hour of the
+  // meeting, so a lost delivery recovers inside two ticks; batch-bounded (25).
+  { path: "/api/cron/zoom-transcript-reconcile"           , schedule: "25 */2 * * *" },
   { path: "/api/cron/overnight-digest"                    , schedule: "30 12 * * *" },
   { path: "/api/cron/board-packet"                        , schedule: "0 13 1 * *" },
   { path: "/api/cron/board-packet?phase=deliver"          , schedule: "0 13 2 * *" },
