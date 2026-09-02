@@ -30,6 +30,11 @@ import { videoThumbnailEmbed } from "@/lib/video/video-thumbnail-embed"
 // Remotion remotion_composition_renders). Type-only here so the drip cron's
 // module graph is unchanged; the implementation is imported at the call site.
 import type { PlayableVideo } from "@/lib/video/playable-video"
+// The two receipts materialize used to compute and DISCARD (§1.2 — the reader
+// half is built below). Type-only, for the same module-graph reason: the
+// implementations are still reached by dynamic import inside materialize.
+import type { RenderSectionsResult } from "./section-render"
+import type { NarrateResult } from "./section-narration-orchestrator"
 
 export interface SectionSpec { key: string; title: string; body: Record<string, unknown> }
 
@@ -339,7 +344,59 @@ function escapeHtml(s: string): string {
 }
 function escapeAttr(s: string): string { return escapeHtml(s) }
 
-export interface MaterializeResult { ok: boolean; inserted: number; error?: string }
+export interface MaterializeResult {
+  ok: boolean
+  inserted: number
+  error?: string
+  /**
+   * THE RECEIPT for the best-effort production pass that runs after the rows are
+   * inserted. Both halves used to be computed and dropped on the floor:
+   * `renderSectionsForPresentation` returns its refusals and
+   * `narratePresentationSections` returns four deliberately DISTINCT counters —
+   * `avatarNarrated` is the PLAN, `avatarSubmitted` / `avatarSkipped` are the
+   * OUTCOME (section-narration-orchestrator.ts adjudicates the difference) — and
+   * materialize `await`ed each and read neither. So a run that planned six
+   * talking heads and submitted none was indistinguishable from one that
+   * submitted six. They are carried here VERBATIM (the orchestrator's own type,
+   * not a re-spelling — §6) so that difference is a fact on the receipt.
+   *
+   * Absent when the pass did not run (a buyer deck renders through its own
+   * producer) or threw before producing one — see `productionError`.
+   */
+  render?: RenderSectionsResult
+  narration?: NarrateResult
+  /**
+   * Why the production pass stopped, when it threw. The rows are still inserted
+   * and `ok` is still true — a render failure must not fail materialization —
+   * but "best-effort" is no longer a `catch {}` that erases what went wrong.
+   */
+  productionError?: string
+}
+
+/**
+ * ONE LINE a human can read off the receipt. PURE, module-private (its only
+ * reader is the log line materialize writes; the structured counters travel on
+ * MaterializeResult.narration for any caller that wants them).
+ *
+ * Leads with the plan-versus-outcome gap because that is the number nobody could
+ * see: a lane that has never produced a talking head reported `avatarNarrated`
+ * for every section, and the gap between that and `avatarSubmitted` is the
+ * finding. Every skip reason rides along, so "0 of 6 submitted" is never left
+ * without its why.
+ */
+function describeNarrationReceipt(n: NarrateResult): string {
+  const gap = n.avatarNarrated - n.avatarSubmitted
+  const skips = n.avatarSkipped.length
+    ? ` — skipped: ${n.avatarSkipped.map((s) => `${s.renderId}: ${s.reason}`).join("; ")}`
+    : ""
+  return (
+    `${n.sections} section(s); planned ${n.avatarNarrated} avatar / ${n.voiceOnly} voice-only / ${n.onScreenOnly} on-screen; ` +
+    `avatar submitted ${n.avatarSubmitted} of ${n.avatarNarrated} planned` +
+    (gap > 0 ? ` (${gap} planned and NOT submitted)` : "") +
+    `; voice clone ${n.hasVoiceClone ? "yes" : "no"}, avatar source ${n.hasAvatarSource ? "yes" : "no"}` +
+    skips
+  )
+}
 
 /**
  * Which deck a materialization is building. EXTENDED, NOT FORKED (§6): the
@@ -400,6 +457,13 @@ export async function materializePresentationSections(
   // seller-safe CMAReel and the rest as branded ListingSectionReel slides. A
   // render failure must not fail section materialization — the section still
   // drips (as a card until rendered).
+  //
+  // BEST-EFFORT IS NOT THE SAME AS UNRECORDED. Each producer's own receipt is
+  // kept and returned (MaterializeResult.render / .narration), and a throw is
+  // named rather than swallowed — the sections still drip either way.
+  let render: RenderSectionsResult | undefined
+  let narration: NarrateResult | undefined
+  let productionError: string | undefined
   try {
     if (opts.presentationType === "buyer_consultation") {
       // The buyer producer handles its own narration (script + avatar request
@@ -409,16 +473,39 @@ export async function materializePresentationSections(
       await renderBuyerConsultationSlides(presentationId, supabase)
     } else {
       const { renderSectionsForPresentation } = await import("./section-render")
-      await renderSectionsForPresentation(presentationId, supabase)
+      render = await renderSectionsForPresentation(presentationId, supabase)
       // Then narrate: the agent's cloned voice (+ avatar when available) over each
       // section. Degrades gracefully — no clone → on-screen copy only; the video
       // still renders. Best-effort; never blocks materialization.
       const { narratePresentationSections } = await import("./section-narration-orchestrator")
-      await narratePresentationSections(presentationId, supabase)
+      narration = await narratePresentationSections(presentationId, supabase)
+      // THE READER (§1.2). The orchestrator has reported plan and outcome as two
+      // numbers since the avatar lane was lit, and this was the only caller —
+      // it awaited the result and dropped it, so the two could disagree by six
+      // and nothing anywhere would say so. Logged as one line here, and carried
+      // out on the receipt for whoever holds it.
+      const line = describeNarrationReceipt(narration)
+      if (narration.avatarNarrated > narration.avatarSubmitted) {
+        console.warn(`[section-drip] presentation ${presentationId} narration — ${line}`)
+      } else {
+        console.log(`[section-drip] presentation ${presentationId} narration — ${line}`)
+      }
+      if (render.refused > 0) {
+        console.warn(`[section-drip] presentation ${presentationId} render — ${render.rendered} rendered, ${render.skipped} skipped, ${render.refused} refused by contract: ${render.refusals.join("; ")}`)
+      }
     }
-  } catch { /* section render + narration are best-effort */ }
+  } catch (e) {
+    productionError = e instanceof Error ? e.message : String(e)
+    console.error(`[section-drip] presentation ${presentationId} — section render/narration pass threw (${productionError}); sections are inserted and will drip as cards`)
+  }
 
-  return { ok: true, inserted: inserted?.length ?? 0 }
+  return {
+    ok: true,
+    inserted: inserted?.length ?? 0,
+    ...(render ? { render } : {}),
+    ...(narration ? { narration } : {}),
+    ...(productionError ? { productionError } : {}),
+  }
 }
 
 

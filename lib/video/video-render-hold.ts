@@ -262,9 +262,10 @@ export async function evaluateVideoRenderHold(params: {
   fileEscalation?: boolean
   /**
    * An already-loaded prohibited-phrase catalogue, to avoid a second read when
-   * the caller has one. Omitted, the catalogue is read here — and an unreadable
-   * or empty one produces `unknown`, which HOLDS. Passing a catalogue can only
-   * ever make this gate see MORE, never less.
+   * the caller has one. Omitted, the catalogue is read here — through
+   * `supabase`, scoped to `actor.brokerageId` — and an unreadable or empty one
+   * produces `unknown`, which HOLDS. Passing a catalogue can only ever make
+   * this gate see MORE, never less.
    */
   catalogue?: ProhibitedPhraseCatalogue
 }): Promise<VideoRenderHoldDecision> {
@@ -278,7 +279,14 @@ export async function evaluateVideoRenderHold(params: {
     // 2. This brokerage's own BLOCKING words. assessProhibitedPhrases never
     //    throws: an unreadable catalogue, an empty one and an uncompilable
     //    pattern each arrive as an explicit unknownReason, never as silence.
-    const phrases = await assessProhibitedPhrases(script, params.catalogue)
+    //    Read through THE DOOR'S OWN CLIENT and scoped to the actor's tenant in
+    //    the query itself — on a session door that is what RLS would have
+    //    computed anyway; on a service-credentialed door it is the difference
+    //    between this brokerage's words and every brokerage's.
+    const phrases = await assessProhibitedPhrases(script, params.catalogue, {
+      brokerageId: params.actor.brokerageId,
+      client: params.supabase,
+    })
     redFlags.push(...phrases.redFlags)
     const warnings = [...phrases.warnings]
     const unknownReasons = phrases.unknownReason ? [phrases.unknownReason] : []
@@ -368,15 +376,26 @@ export async function evaluateVideoRenderHold(params: {
 
     let reviewId = decision.reviewId
     if (!reviewId && params.fileEscalation !== false) {
-      // ITS OWN try/catch, DELIBERATELY. escalateScriptToHumanReview opens a
-      // database connection and can throw outright. If that throw reached the
-      // outer catch it would overwrite a KNOWN red_flag verdict with 'unknown' —
-      // a failure to file the paperwork must never be allowed to downgrade the
-      // finding that caused it. The hold stands either way; only the reason
-      // gains a line.
+      // ITS OWN try/catch, DELIBERATELY. escalateScriptToHumanReview can throw
+      // outright. If that throw reached the outer catch it would overwrite a
+      // KNOWN red_flag verdict with 'unknown' — a failure to file the paperwork
+      // must never be allowed to downgrade the finding that caused it. The hold
+      // stands either way; only the reason gains a line.
+      //
+      // FILED UNDER THE SAME CLIENT EVERY OTHER READ IN THIS GATE USES. This
+      // call used to omit `client`, so the escalation opened the SESSION client
+      // while lookupHumanDecision above had just used `params.supabase` — and
+      // under a service-credentialed door (a cron) that session client has no
+      // session, `current_user_brokerage_id()` is NULL, the insert is
+      // RLS-refused, and the hold filed NO reviewer. The listing-presentation
+      // lane paid for exactly this one wave earlier. Supplying the client turns
+      // on proveActorTenancy in the escalation, which is why every door must
+      // hand this gate a REAL user id: an empty one is refused there, by design
+      // (lib/kernel/video.ts now refuses the render before reaching here).
       try {
         const filed = await escalateScriptToHumanReview({
           actor: params.actor,
+          client: params.supabase,
           script,
           videoType: params.videoType ?? "custom",
           title: params.title?.trim() || `Held video script — ${new Date().toLocaleDateString()}`,

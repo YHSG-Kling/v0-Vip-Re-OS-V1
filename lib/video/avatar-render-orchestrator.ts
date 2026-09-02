@@ -62,6 +62,29 @@ export interface AvatarRenderRowParams {
   extraInputProps?: Record<string, unknown>
   entityType?:      string | null
   entityId?:        string | null
+  /**
+   * THE LIVING IDENTITY of the row this one REPLACES — m312's three columns,
+   * exactly as lib/remotion/registry.ts recordRenderQueued stamps them.
+   *
+   * WHY THEY ARE HERE. enqueueAvatarCompositionForProject prefers to merge the
+   * avatar INTO the staged row, but when the queue claims that row between the
+   * read and the write it falls back to inserting a fresh avatar-led row from
+   * this builder — and this builder wrote no living_kind. The refresh sweep
+   * (lib/video/living-video-sweep.ts) selects `.not("living_kind","is",null)`,
+   * so the replacement was invisible to the staleness check FOREVER: a seller's
+   * weekly update whose price then moved would never have been re-derived,
+   * because the row that actually rendered had no identity to check. Both the
+   * seller-update and buyer-match producers stage a living row and then request
+   * the avatar with target_render_id (lib/agents/seller-update-reel-producer.ts
+   * stageSellerUpdateAvatar), so the race is live, not hypothetical.
+   *
+   * Sourced from the staged row, never invented. Non-living callers (the intro /
+   * anniversary lane) pass nothing and their row is byte-identical to before:
+   * the three keys are only written when a kind is present.
+   */
+  livingKind?:      string | null
+  factsKey?:        string | null
+  facts?:           Record<string, unknown> | null
 }
 
 /**
@@ -127,6 +150,13 @@ export function buildAvatarRenderRow(p: AvatarRenderRowParams): Record<string, u
     // carried by used_did_avatar + input_props.avatarVideoUrl.
     requested_via: "cron",
     is_published:  false,
+    // The living identity, only when the row being replaced had one — see
+    // AvatarRenderRowParams. facts_key / facts follow the kind: a kind with no
+    // key is a render the sweep would re-derive from nothing and always call
+    // stale, which is worse than honest nulls beside a kind.
+    ...(p.livingKind
+      ? { living_kind: p.livingKind, facts_key: p.factsKey ?? null, facts: p.facts ?? null }
+      : {}),
   }
 }
 
@@ -213,12 +243,22 @@ export async function enqueueAvatarCompositionForProject(
   // Named type on purpose: `stagedRow as typeof staged` would cast against the
   // control-flow-NARROWED type (null at that point, since only null had been
   // assigned), collapsing every later property access to `never`.
-  type StagedRender = { id: string; render_status: string | null; input_props: Record<string, unknown> | null }
+  type StagedRender = {
+    id: string
+    render_status: string | null
+    input_props: Record<string, unknown> | null
+    // m312's living identity (scripts/schema-snapshot.ts remotion_composition_renders:
+    // living_kind, facts_key, facts) — read so the fallback row below can carry
+    // it; see AvatarRenderRowParams.
+    living_kind: string | null
+    facts_key: string | null
+    facts: Record<string, unknown> | null
+  }
   let staged: StagedRender | null = null
   if (targetRenderId) {
     const { data: stagedRow, error: stagedErr } = await supabase
       .from("remotion_composition_renders")
-      .select("id, render_status, input_props")
+      .select("id, render_status, input_props, living_kind, facts_key, facts")
       .eq("id", targetRenderId)
       .eq("brokerage_id", project.brokerage_id)
       .maybeSingle()
@@ -298,6 +338,13 @@ export async function enqueueAvatarCompositionForProject(
     extraInputProps: staged?.input_props ?? (meta.input_props as Record<string, unknown>) ?? {},
     entityType:      (meta.entity_type as string | null) ?? null,
     entityId:        (meta.entity_id as string | null) ?? null,
+    // The replacement inherits the staged row's LIVING identity, or the
+    // staleness sweep never sees the cut that actually rendered. Null for a
+    // non-living staged row and for the intro lane (no staged row at all), in
+    // which case buildAvatarRenderRow writes none of the three columns.
+    livingKind:      staged?.living_kind ?? null,
+    factsKey:        staged?.facts_key ?? null,
+    facts:           staged?.facts ?? null,
   })
 
   const { data: inserted, error } = await supabase

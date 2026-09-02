@@ -50,9 +50,17 @@ async function resolveCaller(): Promise<
 // Neither removed function published anything; both were "use server" endpoints —
 // reachable over HTTP by any signed-in browser session — that mutated the publish
 // state machine out of band, and nothing in the tree ever dispatched them (searched
-// for callers, for the event names, and through lib/orchestrator; the internal
-// EVENT_HANDLERS map that would have registered them is itself declared and never
-// read).
+// for callers, for the event names, and through lib/orchestrator).
+//
+// ONE GROUND OF THAT SEARCH HAS SINCE CHANGED; THE CONCLUSION HAS NOT. This note used
+// to add that "the internal EVENT_HANDLERS map that would have registered them is
+// itself declared and never read". That is RETIRED: lib/orchestrator/internal.ts's
+// map is now "CONSULTED BY orchestrateEvent()" — `dispatchRegistered` (~:185-208)
+// invokes handlers through it for the event types the switch routes there. What still
+// holds, and is decisive on its own: neither function was ever a key in that map, and
+// `lib/events/types.ts:29-54` — the whole EVENT_TYPES vocabulary — has no member for a
+// scheduled-post or post-published event, so there was never an event that could have
+// reached them through the map even now.
 //
 // They were actively hazardous, not merely redundant:
 //   · handleScheduledPost flipped a due post to status='publishing' and created a

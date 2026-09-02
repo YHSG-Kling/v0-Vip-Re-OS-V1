@@ -227,10 +227,15 @@ export function detectFairHousingRedFlags(
 async function loadBrandVoiceBlock(
   brokerageId: string,
   toneOverride?: string,
+  client?: QueryableClient | null,
 ): Promise<string> {
   if (toneOverride) return `\nBrand voice tone: ${toneOverride}`
 
-  const supabase = await createClient()
+  // The read is already `.eq("brokerage_id", …)`, so it is tenant-correct under
+  // either client; what a caller's own client buys is a read that WORKS where
+  // there is no session (the cron-reached chapter generator), instead of
+  // returning "" and writing the prompt off-brand.
+  const supabase: QueryableClient = client ?? (await createClient())
   const { data: bvp, error } = await supabase
     .from("brand_voice_profile")
     .select(
@@ -297,12 +302,66 @@ export interface ProhibitedPhraseCatalogue {
 }
 
 /**
- * Every active prohibited phrase this SESSION may see — federal ∪ this tenant's.
+ * WHO the catalogue is read FOR, and THROUGH WHAT.
+ *
+ * The catalogue is federal ∪ ONE tenant's own words, and until this existed the
+ * "one tenant" was decided by RLS alone: `brokerage_id IS NULL OR brokerage_id =
+ * current_user_brokerage_id()`. Correct under a session. Under NO session —
+ * the live cron path app/api/cron/listing-presentation-prep → listing-appt-prep
+ * → section-drip → section-render → section-narration → assessScriptCompliance
+ * — `current_user_brokerage_id()` is NULL, so only the ~25 federal rows applied
+ * and the brokerage's own prohibited words SILENTLY did not. And the obvious
+ * "fix" — read through the service client — would have made it federal ∪ EVERY
+ * tenant's words, which is a different tenant's policy grading this one's
+ * script. So the tenant is now an explicit PARAMETER, and the predicate is
+ * written into the query rather than inherited from whichever client happened
+ * to run it.
+ */
+export interface PhraseCatalogueScope {
+  /**
+   * The tenant whose own words apply. `null` means FEDERAL ONLY — the honest
+   * answer when no brokerage is known, never "every brokerage's".
+   */
+  brokerageId: string | null
+  /** The client to read through. Omitted ⇒ the session client. */
+  client?: QueryableClient | null
+}
+
+/**
+ * The tenant predicate, as PostgREST `.or()` spells it. ONE spelling — the same
+ * `col.is.null,col.eq.<value>` shape app/dashboard/admin/compliance/tcpa uses and
+ * ~30 other federal ∪ tenant reads in this tree write. Module-private: a control
+ * asserts the exact text by reading what the query RECEIVED, not by calling this.
+ *
+ *   scope given, brokerage known → `brokerage_id.is.null,brokerage_id.eq.<id>`
+ *   scope given, brokerage null  → `brokerage_id.is.null`          (federal only)
+ *   NO scope                     → every row the client's RLS admits — which is
+ *                                  federal ∪ the SESSION's tenant on a session
+ *                                  client, and federal only when there is no
+ *                                  session. Spelled as a predicate that admits
+ *                                  everything rather than as "no predicate", so
+ *                                  the three cases sit on one line of one query.
+ *
+ * The no-scope form is the SESSION form. Every caller that runs without a
+ * session must pass a scope; the ones in this file do.
+ */
+function phraseCataloguePredicate(scope?: PhraseCatalogueScope): string {
+  if (!scope) return "brokerage_id.is.null,brokerage_id.not.is.null"
+  return scope.brokerageId
+    ? `brokerage_id.is.null,brokerage_id.eq.${scope.brokerageId}`
+    : "brokerage_id.is.null"
+}
+
+/**
+ * Every active prohibited phrase THIS TENANT is governed by — federal ∪ its own.
  *
  * NO `.eq("brokerage_id", …)`. `NULL = <uuid>` is never true, so that filter
  * would hide all 25 federal rows and leave the gate reading only whatever the
  * brokerage happened to type — the exact mistake app/actions/compliance-phrases.ts
- * documents at (a). RLS already unions the two scopes.
+ * documents at (a). The union is an explicit `.or()` — see
+ * phraseCataloguePredicate — so it holds under BOTH the session client (where
+ * RLS would have unioned it anyway) and the service client (where nothing else
+ * would).
  *
  * THREE OUTCOMES, and only one of them is "we checked":
  *   loaded     — rows came back; the scan can run.
@@ -316,14 +375,19 @@ export interface ProhibitedPhraseCatalogue {
  *                RESOLVES a refused read, so `error` is destructured; a throw is
  *                caught here rather than taking down the generation, and both
  *                report the same honest state.
+ *
+ * The scope changes WHICH rows are asked for, never how a refusal is reported:
+ * the three states above are the contract every reader downstream depends on
+ * (assessProhibitedPhrases turns anything but `loaded` into an UNKNOWN reason).
  */
-export async function loadProhibitedPhraseCatalogue(): Promise<ProhibitedPhraseCatalogue> {
+export async function loadProhibitedPhraseCatalogue(scope?: PhraseCatalogueScope): Promise<ProhibitedPhraseCatalogue> {
   try {
-    const supabase = await createClient()
+    const supabase: QueryableClient = scope?.client ?? (await createClient())
     const { data, error } = await supabase
       .from("prohibited_phrases")
       .select("phrase, phrase_pattern, category, severity, suggested_alternative")
       .eq("is_active", true)
+      .or(phraseCataloguePredicate(scope))
       .order("category", { ascending: true })
       .order("phrase", { ascending: true })
 
@@ -421,12 +485,17 @@ export interface ProhibitedPhraseFindings {
  * so one bad row takes the whole scan down. That is right — a scan that cannot
  * compile its catalogue must not report content clean — and it is caught HERE
  * into `unknownReason` rather than into an empty finding list.
+ *
+ * `scope` says whose words to load when no `catalogue` was handed in — see
+ * PhraseCatalogueScope. A caller with a catalogue already in hand needs no
+ * scope; a caller with neither, and no session, gets federal ∪ nothing.
  */
 export async function assessProhibitedPhrases(
   script: string,
   catalogue?: ProhibitedPhraseCatalogue,
+  scope?: PhraseCatalogueScope,
 ): Promise<ProhibitedPhraseFindings> {
-  const cat = catalogue ?? (await loadProhibitedPhraseCatalogue())
+  const cat = catalogue ?? (await loadProhibitedPhraseCatalogue(scope))
 
   if (cat.state === "unreadable") {
     return {
@@ -529,13 +598,21 @@ Fair Housing compliance (Gate 4 — mandatory):
  *
  * Return type is unchanged (string[]) on purpose: six callers spread this into
  * their prompt arrays and none of them has to change to get the new block.
+ *
+ * `client` is the same seam as everywhere else in this file: omitted, the
+ * session client (every server-action caller, unchanged); supplied, the
+ * caller's own — and the tenant is then the `brokerageId` parameter, written
+ * into the catalogue read explicitly rather than left to an RLS policy that has
+ * no session to evaluate. The phrase read carries the brokerage either way, so
+ * Gate 6 names the same tenant under both clients.
  */
 export async function buildComplianceSystemBlocks(
   brokerageId: string,
   toneOverride?: string,
+  client?: QueryableClient | null,
 ): Promise<string[]> {
-  const brandVoiceBlock = await loadBrandVoiceBlock(brokerageId, toneOverride)
-  const phraseBlock = buildProhibitedPhraseBlock(await loadProhibitedPhraseCatalogue())
+  const brandVoiceBlock = await loadBrandVoiceBlock(brokerageId, toneOverride, client)
+  const phraseBlock = buildProhibitedPhraseBlock(await loadProhibitedPhraseCatalogue({ brokerageId, client }))
   return [brandVoiceBlock, THEM_FIRST_BLOCK, FAIR_HOUSING_BLOCK, phraseBlock].filter(Boolean)
 }
 
@@ -638,11 +715,21 @@ export interface ScriptComplianceAssessment {
  * ruling NOTHING here blocks the render — the caller shows warnings next to a
  * Regenerate button, and escalates red flags to the human lane
  * (escalateScriptToHumanReview) while still handing the agent their script.
+ *
+ * `opts.client` — the caller's own client, for the one producer reached with
+ * no session (lib/listing-presentation/section-narration.ts, under the cron's
+ * service client). The phrase catalogue is then read through it, scoped to
+ * `actor.brokerageId` explicitly. Omitted, the session client is used and the
+ * tenant is the same `actor.brokerageId`, so the verdict names one tenant
+ * under both. The kernel gate (evaluateOutbound) builds its own client and is
+ * unchanged — under the service path it may throw, which is already reported
+ * as `evaluatorFailed`, never swallowed.
  */
 export async function assessScriptCompliance(
   actor: ScriptComplianceActor,
   script: string,
   journeyType: "buyer" | "seller",
+  opts?: { client?: QueryableClient | null },
 ): Promise<ScriptComplianceAssessment> {
   // Deterministic first and OUTSIDE the try, for the reason on
   // detectFairHousingRedFlags: a thrown evaluator must not be able to hide a
@@ -652,8 +739,12 @@ export async function assessScriptCompliance(
   // The brokerage's OWN words, second, and also outside the try — same reason.
   // assessProhibitedPhrases never throws: it converts a refused read, an empty
   // catalogue and an uncompilable pattern into an explicit unknownReason, so a
-  // failure here can never arrive as an empty finding list.
-  const phrases = await assessProhibitedPhrases(script)
+  // failure here can never arrive as an empty finding list. The tenant is the
+  // actor's, written into the read — not whatever the client's session implies.
+  const phrases = await assessProhibitedPhrases(script, undefined, {
+    brokerageId: actor.brokerageId,
+    client: opts?.client,
+  })
   redFlags.push(...phrases.redFlags)
 
   let warnings: string[] = [...phrases.warnings]
@@ -734,8 +825,9 @@ export async function postcheckScript(
   actor: ScriptComplianceActor,
   script: string,
   journeyType: "buyer" | "seller",
+  opts?: { client?: QueryableClient | null },
 ): Promise<string[] | undefined> {
-  const assessment = await assessScriptCompliance(actor, script, journeyType)
+  const assessment = await assessScriptCompliance(actor, script, journeyType, opts)
   const flat = [...assessment.redFlags, ...assessment.warnings, ...assessment.unknownReasons]
   return flat.length > 0 ? flat : undefined
 }

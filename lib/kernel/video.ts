@@ -370,16 +370,28 @@ export async function submitVideoGenerationJob(
   // BEFORE the slot claim below, so a held project is never left wedged at
   // status='generating' with no provider job for the poller to chase.
   {
-    const { data: authData } = await supabase.auth.getUser()
+    const { data: authData, error: authError } = await supabase.auth.getUser()
     const actorUserId = authData?.user?.id
+    // No session id means we cannot even say who is asking. That used to be
+    // written as `userId: actorUserId ?? ""` with a note that the gate's own
+    // catch would turn the bad shape into a hold — it would not have: an empty
+    // string is a perfectly well-formed actor to evaluateVideoRenderHold, which
+    // never inspects userId, so the gate ran, and only the ESCALATION refused
+    // it (proveActorTenancy: "actor is incomplete"). The hold stood, but every
+    // such hold filed no reviewer. Fail closed LITERALLY instead: refuse the
+    // render before the gate, and say why. supabase-js RESOLVES an auth
+    // failure, so `authError` is read rather than collapsed into "no user".
+    if (authError) {
+      throw new Error(`Cannot submit video: the session could not be read (${authError.message}) — refusing to render for an unidentified actor.`)
+    }
+    if (!actorUserId) {
+      throw new Error("Cannot submit video: no signed-in user on this session — a render must be attributable to the person who asked for it.")
+    }
     const { evaluateVideoRenderHold, stampProjectComplianceHold, holdErrorMessage } =
       await import("@/lib/video/video-render-hold")
     const hold = await evaluateVideoRenderHold({
       supabase,
-      // No session id means we cannot even say who is asking — that is an
-      // UNKNOWN, and evaluateVideoRenderHold's own catch turns a bad actor
-      // shape into a hold rather than a pass. Fail closed either way.
-      actor: { userId: actorUserId ?? "", brokerageId },
+      actor: { userId: actorUserId, brokerageId },
       script: input.scriptText ?? "",
       projectId: input.projectId,
       title: "Held video script (render blocked)",

@@ -577,10 +577,22 @@ export async function generateSectionNarration(input: AINarrationInput): Promise
     // pure detector above is still the belt and the model's text is still
     // withheld on any hard hit — so the absence degrades what is CHECKED, never
     // what SHIPS.
+    //
+    // AND THE CLIENT TRAVELS WITH THE ACTOR. The gate's prohibited-phrase read
+    // used to open its own session client, which on this cron path has no
+    // session: `current_user_brokerage_id()` was NULL, so only the federal
+    // catalogue applied and this brokerage's own prohibited words were never
+    // checked against a script spoken in its agent's cloned voice — silently,
+    // because the read still returned `loaded`. Handing the gate the cron's
+    // client makes the read work; handing it `escalationActor.brokerageId`
+    // (which assessScriptCompliance writes INTO the query) keeps it this
+    // tenant's words and not every tenant's.
     if (input.escalationActor?.userId && input.escalationActor?.brokerageId) {
       try {
         const { assessScriptCompliance } = await import("@/lib/video/script-compliance")
-        const verdict = await assessScriptCompliance(input.escalationActor, script, "seller")
+        const verdict = await assessScriptCompliance(input.escalationActor, script, "seller", {
+          client: input.escalationClient,
+        })
         if (verdict.redFlags.length > 0) {
           const filed = await escalateSectionScript({
             actor: input.escalationActor,

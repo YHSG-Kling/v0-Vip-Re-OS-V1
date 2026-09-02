@@ -19,18 +19,25 @@ import { resolveWriteContext } from "@/lib/platform/acting-context"
 // =====================================================
 // They were named for a dispatcher that was never going to call them, and the earlier
 // note here recorded that as "a build line blocked on the orchestrator lane". That
-// premise does not survive reading the orchestrator. Three checks, all repeatable:
+// premise does not survive reading the orchestrator. Three checks, all repeatable —
+// and one of them has CHANGED GROUNDS since this note was first written, without
+// changing the conclusion:
 //
-//   1. `lib/orchestrator/internal.ts:EVENT_HANDLERS` IS NOT A DISPATCH PATH.
-//      `orchestrateEvent` routes through `switch (event.event_type)` (internal.ts
-//      :158-202). The map is never read at runtime — its own header says so — and it
-//      exists to keep unwired feature modules referenced. Adding a name to it wires
-//      nothing.
-//   2. THERE IS NO EVENT TO HANDLE. `lib/events/types.ts:29-54` is the entire
-//      EVENT_TYPES vocabulary: no coaching-booked, and the one near-match for
-//      suggestion acceptance (`AI_SUGGESTION_ACTIONED`) has ZERO emitters repo-wide.
-//      (It had no morning-kickoff either; that one is now deleted onto its survivor
-//      — see the tombstone below.)
+//   1. `lib/orchestrator/internal.ts:EVENT_HANDLERS` IS NOW A DISPATCH PATH — and
+//      still does not reach these. The earlier line here ("the map is never read at
+//      runtime") was true when written and is RETIRED: internal.ts's header now reads
+//      "EVENT HANDLER REGISTRY — CONSULTED BY orchestrateEvent()", and
+//      `dispatchRegistered` (internal.ts ~:185-208) invokes handlers THROUGH the map
+//      for every event type the switch routes to it. So adding a name to the map is no
+//      longer inert. It is still not done for these three, for reason 2 — and
+//      internal.ts's own header records the same decision from its side ("the six
+//      copilot/assistant 'handlers' do NOT belong here").
+//   2. THERE IS NO EVENT TO HANDLE, and that alone is decisive. `lib/events/types.ts
+//      :29-54` is the entire EVENT_TYPES vocabulary: no coaching-booked, and the one
+//      near-match for suggestion acceptance (`AI_SUGGESTION_ACTIONED`) has ZERO
+//      emitters repo-wide. A registered handler for an event nothing writes cannot
+//      fire. (It had no morning-kickoff either; that one is now deleted onto its
+//      survivor — see the tombstone below.)
 //   3. The recorded blocker — `emitEventFromCron` carries a service credential and no
 //      session, so `authorizeForUser` refuses every unattended dispatch — is TRUE and
 //      MOOT. An internal-caller seam would gate a dispatch that never happens. It
