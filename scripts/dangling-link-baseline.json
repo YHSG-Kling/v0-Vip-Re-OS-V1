@@ -1,20 +1,4 @@
 {
   "generated": "2026-09-02",
-  "dangling": [
-    "/content-studio/campaigns/__dyn__",
-    "/crm/contacts/__dyn__/cma/__dyn__",
-    "/dashboard/admin/agents/__dyn__",
-    "/dashboard/ai-isa",
-    "/dashboard/buyers/__dyn__/fatigue",
-    "/dashboard/isa/campaigns/__dyn__",
-    "/dashboard/isa/leads/__dyn__",
-    "/dashboard/presentations/__dyn__",
-    "/dashboard/tasks/__dyn__",
-    "/dashboard/vendors/__dyn__",
-    "/learn/__dyn__",
-    "/lender/transactions/__dyn__",
-    "/lender/transactions/__dyn__/documents",
-    "/portal/__dyn__/learn/__dyn__",
-    "/workflows/__dyn__"
-  ]
+  "dangling": []
 }
