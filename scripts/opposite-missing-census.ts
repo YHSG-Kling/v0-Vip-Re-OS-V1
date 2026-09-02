@@ -3153,16 +3153,22 @@ function collectFetchRefs(file: string, src: string) {
   // literals with their true offsets, so re-tokenizing a template's raw span
   // rediscovers them at the same offset and this set drops the duplicate.
   const seenLiteral = new Set<number>()
-  const spans: Array<{ text: string; base: number }> = [{ text: src, base: 0 }]
+  // `jsx` is on for the MODULE (a .tsx file's elements must be tracked or a quote
+  // in element text desynchronises the scan) and OFF for every re-entered
+  // template body: that body is HTML-with-script, not TSX, and read as TSX its
+  // `<script>` opens an element that turns the quoted route inside it into
+  // element text — C6 below measured exactly that (160/160 → 159/160 the day the
+  // JSX modes landed in strip-comments.ts). See ScanOptions there.
+  const spans: Array<{ text: string; base: number; jsx: boolean }> = [{ text: src, base: 0, jsx: true }]
   while (spans.length > 0) {
-    const { text: span, base } = spans.pop()!
-    for (const lit of stringLiterals(span)) {
+    const { text: span, base, jsx } = spans.pop()!
+    for (const lit of stringLiterals(span, { jsx })) {
       const at = base + lit.start
       if (seenLiteral.has(at)) continue
       seenLiteral.add(at)
       // Every template is re-entered as a span of its own: generated JS inside one
       // is a program, and each recursion is strictly shorter, so this terminates.
-      if (lit.kind === "template") spans.push({ text: span.slice(lit.start + 1, lit.end - 1), base: at + 1 })
+      if (lit.kind === "template") spans.push({ text: span.slice(lit.start + 1, lit.end - 1), base: at + 1, jsx: false })
       let text = lit.text
       // Must START with /api/ — that rules out `https://other.host/api/x`, which
       // is somebody else's server and not a route this repo is expected to own.

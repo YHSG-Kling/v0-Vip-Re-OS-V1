@@ -431,9 +431,18 @@ export default async function ContactDetailPage({ params }: PageProps) {
                   <li key={`${m.source_table}-${m.id}`} className="rounded-lg border px-3 py-2">
                     <div className="flex flex-wrap items-baseline gap-2">
                       <Badge variant="outline" className="text-[11px]">{m.channel}</Badge>
+                      {/* vendor_role and read_at travel on vendor rows since lane W1
+                          (2026-09-02); this is the universal inbox's only vendor-row
+                          renderer — InboxClient's thread loader never receives one. */}
+                      {m.source_table === "vendor_messages" && m.vendor_role && (
+                        <Badge variant="outline" className="text-[11px] capitalize">{m.vendor_role.replace(/_/g, " ")}</Badge>
+                      )}
                       <span className="text-xs text-muted-foreground">
                         {m.direction === "inbound" ? "from contact" : "to contact"}
                       </span>
+                      {m.read_at && (
+                        <span className="text-xs text-muted-foreground">read {new Date(m.read_at).toLocaleString()}</span>
+                      )}
                       <span className="ml-auto text-xs text-muted-foreground">
                         {new Date(m.created_at).toLocaleString()}
                       </span>

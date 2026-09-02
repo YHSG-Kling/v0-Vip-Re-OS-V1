@@ -1,4 +1,12 @@
-"use server"
+// NOT a server-action module (2026-09-02, integrator, same fix as its sibling
+// prediction-engine.ts under lane S1). The module-level "use server" that stood
+// here made every export a public HTTP door with no gate: a service client and a
+// caller-supplied brokerageId — section 4's named IDOR shape. Every caller is an
+// in-process server writer (the tombstone below records that the only HTTP door
+// was already deleted onto them), so the directive published nothing anyone
+// needed. `server-only` makes a future client import fail at build time instead
+// of bundling the service credential.
+import "server-only"
 
 import { createServiceClient } from "@/lib/supabase/service"
 

@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity"
+import { generateAssistantSuggestions } from "@/app/actions/assistant"
 
 // Every read in this file is a contact PII surface: contact record itself,
 // credit accounts, transactions, message threads, documents, video engagement,
@@ -184,6 +185,17 @@ export async function getContactCopilotSuggestions(contactId: string) {
   if (!contact || contact.brokerage_id !== brokerageId) {
     return { suggestions: [], error: null }
   }
+
+  // GENERATE-THEN-READ (2026-09-02, closes the last category-C orphan export).
+  // generateAssistantSuggestions carried four rule sets against live tables and
+  // was called by nothing; lane W4b made it persist through the one suggestion
+  // writer, and this page-level trigger is the caller — placed AFTER the
+  // ownership pre-check so a foreign contact id never generates anything, and
+  // deduped inside the generator so a repeat open costs no model call. Its
+  // failure is logged, not returned: a model or write refusal must not blank
+  // the rows that already exist for this contact.
+  const gen = await generateAssistantSuggestions({ page: "contact_detail", entity_id: contactId, entity_type: "contact" })
+  if (gen.error) console.warn(`[contact-details] suggestion generation skipped for ${contactId}: ${gen.error}`)
 
   let query = supabase
     .from("smart_assistant_suggestions")

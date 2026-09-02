@@ -73,9 +73,28 @@
  * Analyzers that compute a position from a match index need the second one.
  */
 
+/**
+ * Options shared by the four exports.
+ *
+ * `jsx` (default true) — whether a `<` may open a JSX element. Pass `false` when
+ * the text handed in is NOT a TS/TSX module but a program EMBEDDED in one: the
+ * opposite-missing census re-enters every template literal's body as a span of
+ * its own, because the blog view tracker, the embed loader and the tracking pixel
+ * ship generated client-side JS (`<script>fetch("/api/track/pixel")</script>`)
+ * inside a template. Read as TSX, `<script>` opens an element and the quoted route
+ * inside it becomes element TEXT — no literal is reported and the route reads as
+ * having no caller. MEASURED 2026-09-02: census control C6 went 160/160 → 159/160
+ * the day the JSX modes landed, on exactly that shape. Such a span is HTML-with-
+ * script, where `<` never means a JSX element; with `jsx: false` the scanner is the
+ * pre-round-six scanner for that span and the quote is a literal again.
+ */
+export interface ScanOptions {
+  jsx?: boolean
+}
+
 /** Comments removed, line numbers intact, strings untouched. */
-export function stripComments(src: string): string {
-  return scan(src, false)
+export function stripComments(src: string, opts?: ScanOptions): string {
+  return scan(src, false, false, undefined, opts?.jsx ?? true)
 }
 
 /**
@@ -91,8 +110,8 @@ export function stripComments(src: string): string {
  * scanner WITHOUT changing their position arithmetic — so converting them is a pure
  * fix to what the analyzer can SEE, with nothing else moving underneath it.
  */
-export function blankComments(src: string): string {
-  return scan(src, true)
+export function blankComments(src: string, opts?: ScanOptions): string {
+  return scan(src, true, false, undefined, opts?.jsx ?? true)
 }
 
 /**
@@ -131,8 +150,8 @@ export function blankComments(src: string): string {
  * order to know where a comment is — so masking is a THIRD output of the one
  * scan rather than a fourth hand-rolled approximation of it.
  */
-export function blankStrings(src: string): string {
-  return scan(src, true, true)
+export function blankStrings(src: string, opts?: ScanOptions): string {
+  return scan(src, true, true, undefined, opts?.jsx ?? true)
 }
 
 /**
@@ -185,11 +204,11 @@ export interface StringLiteral {
  *
  * Comments are skipped for free, because the scanner already knows it is in one.
  */
-export function stringLiterals(src: string): StringLiteral[] {
+export function stringLiterals(src: string, opts?: ScanOptions): StringLiteral[] {
   const out: StringLiteral[] = []
   // `blank`/`mask` govern the returned TEXT only, which this caller discards; the
   // literal sink is filled the same way whichever is passed.
-  scan(src, true, false, out)
+  scan(src, true, false, out, opts?.jsx ?? true)
   return out
 }
 
@@ -201,8 +220,11 @@ export function stringLiterals(src: string): StringLiteral[] {
  *               closes. Purely additive — when it is absent this scan behaves, and
  *               returns, exactly as it did before the sink existed, which is what
  *               keeps stripComments/blankComments/blankStrings unchanged.
+ * @param jsx    whether a `<` may open a JSX element (see ScanOptions). With it
+ *               off, the jsxTag/jsxText arms are never entered and the scanner is
+ *               exactly the pre-round-six one.
  */
-function scan(src: string, blank: boolean, mask = false, sink?: StringLiteral[]): string {
+function scan(src: string, blank: boolean, mask = false, sink?: StringLiteral[], jsx = true): string {
   let out = ""
   let i = 0
   const n = src.length
@@ -515,7 +537,7 @@ function scan(src: string, blank: boolean, mask = false, sink?: StringLiteral[])
       continue
     }
 
-    if (c === "<" && jsxOpensAt(src, i, prevSignificant)) {
+    if (jsx && c === "<" && jsxOpensAt(src, i, prevSignificant)) {
       elemStack.push(exprStack.length)
       out += c
       i++
@@ -809,6 +831,18 @@ export function scannerSelfTest(): string[] {
   {
     const s = "const p = <p>mentionOnly</p>\n"
     expect("JSX text is NOT masked by blankStrings (documented blind spot)", blankStrings(s).includes("mentionOnly"))
+  }
+  // ── jsx:false — a template body re-entered as its own program ─────────────
+  // The exact census C6 shape: generated client JS inside a template. As TSX the
+  // `<script>` is an element and the route inside it is text; as embedded JS it
+  // is a literal. BOTH readings are pinned so a change to either is deliberate.
+  {
+    const s = '<script>fetch("/api/control/inside-generated-js")</script>'
+    const asTsx = stringLiterals(s).map((l) => l.text)
+    const asJs = stringLiterals(s, { jsx: false }).map((l) => l.text)
+    expect("jsx:true reads `<script>…</script>` as an element (no literal)", asTsx.length === 0)
+    expect("jsx:false reads the quoted route inside `<script>` as a literal", asJs.length === 1 && asJs[0] === "/api/control/inside-generated-js")
+    expect("jsx:false blanks that literal's contents", !blankStrings(s, { jsx: false }).includes("inside-generated-js"))
   }
   return problems
 }
