@@ -173,6 +173,29 @@ export function parseRootCompositions(src: string): Record<string, Geo> {
 const rootSrc = readFileSync("remotion/Root.tsx", "utf8")
 const root = parseRootCompositions(rootSrc)
 
+// ── THE INSTALLED REMOTION, DERIVED ONCE ─────────────────────────────────────
+// Several sections below describe "the installed package". That description
+// used to carry a version LITERAL in prose (4.0.473, typed on 2026-09-01), and
+// the very next day's bump made every one of those sentences false while every
+// assertion beside them stayed green — §2's waypoint pin, in comments. So the
+// number is derived HERE, from node_modules, and every label that describes the
+// installed package prints THIS value. No prose in this file may claim what
+// version is installed; section 6 asserts that rule over this file's own text.
+//
+// FAIL CLOSED (§4): a gate that cannot load the package it judges must refuse,
+// not report a clean bill of health — section 6 asserts `installedRemotion` is
+// non-null before it trusts the export list.
+let installedRemotion: Record<string, unknown> | null = null
+let installedVersion = "unreadable"
+try {
+  const req = createRequire(join(process.cwd(), "package.json"))
+  installedRemotion = req("remotion") as Record<string, unknown>
+  installedVersion = (req("remotion/package.json") as { version: string }).version
+} catch (e) {
+  installedRemotion = null
+  installedVersion = `unreadable (${(e as Error).message})`
+}
+
 console.log("\n═══ 1. The parser itself ═══")
 {
   const sample = parseRootCompositions(`
@@ -544,9 +567,11 @@ console.log("\n═══ 5. The rules that silently do not render ═══")
 
   // ── ONE SPELLING FOR TRIMMING A MEDIA CLIP (§6) ────────────────────────────
   // Remotion renamed `startFrom`→`trimBefore` and `endAt`→`trimAfter`. Both
-  // spellings still WORK in the installed 4.0.473 — validate-start-from-props.js
-  // exports resolveTrimProps, which reads `trimBefore ?? startFrom` — so this is
-  // not a rendering bug and never was. It is a §6 defect and a scheduled break:
+  // spellings still WORK in the installed remotion (whatever version
+  // node_modules holds — `installedVersion`, printed in the label below, never
+  // a literal here): validate-start-from-props.js exports resolveTrimProps,
+  // which reads `trimBefore ?? startFrom` — so this is not a rendering bug and
+  // never was. It is a §6 defect and a scheduled break:
   // node_modules/remotion/dist/cjs/video/props.d.ts marks both old names
   // @deprecated, and the vendored skill
   // (.claude/skills/remotion-best-practices/remotion-markup/REFERENCE.md,
@@ -575,7 +600,7 @@ console.log("\n═══ 5. The rules that silently do not render ═══")
     && !trimProp.test(`<X myStartFrom={1} />`))
   ok("...and it read stripped source, so a comment naming startFrom is not a call site",
     !trimProp.test(blankStrings(stripComments(`// use startFrom={0} — no\nconst x = "endAt={1}"`))))
-  ok(`no <Video>/<Audio> in remotion/ still uses startFrom/endAt — one spelling,\n    and the new one is the only one the skill documents`,
+  ok(`no <Video>/<Audio> in remotion/ still uses startFrom/endAt — one spelling,\n    and the new one is the only one the skill documents (installed remotion@${installedVersion}\n    still accepts both, so only this guard sees the drift)`,
     deprecatedTrim.length === 0, deprecatedTrim.slice(0, 6).join(", "))
 
   // ── EVERY interpolate() CLAMPS ON BOTH SIDES ───────────────────────────────
@@ -641,9 +666,10 @@ console.log("\n═══ 5. The rules that silently do not render ═══")
 
   // ── MEDIA COMPONENTS COME FROM @remotion/media, NOT FROM "remotion" (§6) ───
   //
-  // The installed remotion (4.0.473) still EXPORTS `Video` and `Audio`, so an
-  // import from "remotion" compiles and renders — which is exactly why this
-  // needs a guard rather than a compiler error. Both are marked @deprecated in
+  // The installed remotion (version derived above as `installedVersion` and
+  // printed in the label — never typed here) still EXPORTS `Video` and `Audio`,
+  // so an import from "remotion" compiles and renders — which is exactly why
+  // this needs a guard rather than a compiler error. Both are marked @deprecated in
   // the installed types (node_modules/remotion/dist/cjs/video/html5-video.d.ts:
   // "This component has been renamed to `Html5Video`";
   // .../audio/html5-audio.d.ts: "…renamed to `Html5Audio`"), and the vendored
@@ -743,7 +769,7 @@ console.log("\n═══ 5. The rules that silently do not render ═══")
     legacyMediaNames(`import { Audio, Video } from "@remotion/media"\nimport { AbsoluteFill } from "remotion"`).length === 0)
   ok("...nor on a comment or a string that merely names the old import",
     legacyMediaNames(`// import { Video } from "remotion"\nconst s = 'import { Audio } from "remotion"'`).length === 0)
-  ok(`no composition imports ${movedNames.join("/")} from "remotion" — one source per\n    component (${files.length} files scanned under remotion/)`,
+  ok(`no composition imports ${movedNames.join("/")} from "remotion" — one source per\n    component (${files.length} files scanned under remotion/; installed remotion@${installedVersion}\n    still exports the old names, so the compiler cannot see this)`,
     wrongSource.length === 0, wrongSource.slice(0, 6).join(" | "))
 
   // ── objectFit ON <Video> IS A PROP, NEVER A STYLE ──────────────────────────
@@ -915,13 +941,26 @@ console.log("\n═══ 6. ONE vendored Remotion skill, and it matches upstream
   // ── THE VERSION THE SKILL DECLARES IS NOT A FACT ABOUT THIS REPO ──────────
   //
   // The assertion above proves the vendored skill DECLARES an upstream version.
-  // It cannot prove that version is the one INSTALLED, and on 2026-09-01 it was
-  // not: the skill declares 4.0.517 while package.json pins `remotion ^4.0.471`
-  // and node_modules holds 4.0.473. That gap is not cosmetic — the skill's
-  // PRIMARY markup pattern is `<Interactive.Div>`, and `Interactive` is not
-  // exported by 4.0.473 at all, so an agent following the skill verbatim writes
-  // a component that does not compile. Nothing could see it: a declared version
-  // and an installed version are two numbers nobody compared.
+  // It cannot prove that version is the one INSTALLED.
+  //
+  // HISTORY, RESOLVED BY THE BUMP (99b5f076, 2026-09-02). On 2026-09-01 the
+  // two were apart: the skill declared 4.0.517 while package.json pinned a
+  // caret range whose node_modules resolution then held 4.0.473, and the gap
+  // was not cosmetic — the skill's PRIMARY markup pattern is `<Interactive.Div>`
+  // and that older package had no `Interactive` export at all, so an agent
+  // following the skill verbatim wrote a component that did not compile.
+  // Nothing could see it: a declared version and an installed version were two
+  // numbers nobody compared. The bump moved all five Remotion packages past
+  // the skill's snapshot and `Interactive` now resolves; the assertion below
+  // is what proved that on the day, and what keeps proving it.
+  //
+  // THIS PARAGRAPH NAMES NO CURRENT VERSION ON PURPOSE. The first draft did
+  // ("node_modules holds …", "not exported by …") and every clause was false
+  // one commit later while the assertion beside it stayed green — the exact
+  // §2 waypoint pin. The installed version is derived once at the top of this
+  // file (`installedVersion`) and printed in the labels; the rule that no prose
+  // here may claim it is asserted at the end of this block over this file's
+  // own text.
   //
   // COMPARING THE NUMBERS WOULD BE THE WEAK FORM (§2: do not pin an assertion to
   // a waypoint — a version string is exactly that, and semver skew between a
@@ -966,17 +1005,10 @@ console.log("\n═══ 6. ONE vendored Remotion skill, and it matches upstream
     }
 
     // FAIL CLOSED (§4): a gate that cannot load the package it judges must
-    // refuse, not report a clean bill of health.
-    let installed: Record<string, unknown> | null = null
-    let installedVersion = "unreadable"
-    try {
-      const req = createRequire(join(process.cwd(), "package.json"))
-      installed = req("remotion") as Record<string, unknown>
-      installedVersion = (req("remotion/package.json") as { version: string }).version
-    } catch (e) {
-      installed = null
-      installedVersion = `unreadable (${(e as Error).message})`
-    }
+    // refuse, not report a clean bill of health. The derivation itself lives at
+    // the top of the file (one spelling, §6) so sections 5 and 6 print the
+    // same number.
+    const installed = installedRemotion
     ok(`the INSTALLED remotion package loaded, so its export list is a fact and not\n    an assumption (${installedVersion})`,
       !!installed && Object.keys(installed).length > 0)
 
@@ -1008,6 +1040,40 @@ console.log("\n═══ 6. ONE vendored Remotion skill, and it matches upstream
       unresolved.length === 0,
       unresolved.map((n) => `${n} — imported by ${(wanted.get(n) ?? []).join(", ")} but NOT exported by remotion@${installedVersion}`
         + ` (fix ONE side: bump the remotion dependency to a version that exports it, or re-vendor the skill from the upstream snapshot that matches ${installedVersion})`).join(" | "))
+    // The symbol the 2026-09-01 gap was about, asserted by NAME so the history
+    // above stays a checked fact rather than a story: the skill's primary
+    // markup pattern must resolve. Derived from the skill's own imports (it is
+    // in `wanted`), not from a hardcoded expectation of the package.
+    ok("...and the skill's primary markup symbol (`Interactive`) is among them and resolves",
+      wanted.has("Interactive") && !!installed && "Interactive" in installed)
+
+    // ── NO PROSE IN THIS FILE MAY CLAIM THE INSTALLED VERSION (§2) ─────────
+    // The guard's own text is scanned RAW (comments are the thing being
+    // judged) for the sentence shapes that lied last time. The controls are
+    // built by concatenation so the specimens do not themselves sit in the
+    // file as matches.
+    const CLAIMS_INSTALLED_LITERAL = [
+      /\binstalled\s+(?:remotion\s*)?\(?\s*\d+\.\d+\.\d+\)?/i,
+      /\bnode_modules\s+holds\s+\d+\.\d+\.\d+/i,
+      /\bexported\s+by\s+\d+\.\d+\.\d+/i,
+      /\bremotion@\d+\.\d+\.\d+\b/,
+    ]
+    const guardSelf = readFileSync("scripts/remotion-setup-guard.ts", "utf8")
+    const selfHits = CLAIMS_INSTALLED_LITERAL.flatMap((re) => {
+      const m = guardSelf.match(re)
+      return m ? [`${m[0]} @ line ${guardSelf.slice(0, m.index).split("\n").length}`] : []
+    })
+    ok("the literal-version finder recognises the retired sentences (control)",
+      CLAIMS_INSTALLED_LITERAL[0].test("the installed " + "4.0." + "473")
+      && CLAIMS_INSTALLED_LITERAL[0].test("installed remotion (" + "4.0." + "473)")
+      && CLAIMS_INSTALLED_LITERAL[1].test("node_modules holds " + "4.0." + "473")
+      && CLAIMS_INSTALLED_LITERAL[2].test("not exported by " + "4.0." + "473 at all")
+      && CLAIMS_INSTALLED_LITERAL[3].test("remotion@" + "4.0." + "473"))
+    ok("...and does NOT fire on the derived spelling or on the skill's own declared version",
+      !CLAIMS_INSTALLED_LITERAL.some((re) => re.test("installed remotion@${installedVersion} still exports"))
+      && !CLAIMS_INSTALLED_LITERAL.some((re) => re.test("the skill declares 4.0.517")))
+    ok("no prose in this guard claims the installed remotion at a version LITERAL —\n    the number is derived (`installedVersion`) and printed, never typed",
+      selfHits.length === 0, selfHits.join(" | "))
   }
 }
 

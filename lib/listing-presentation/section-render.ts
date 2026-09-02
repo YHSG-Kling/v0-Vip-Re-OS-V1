@@ -19,6 +19,7 @@ import {
   SECTION_NARRATION_COMPOSITION,
 } from "@/lib/listing-presentation/section-narration"
 import { resolveMarketingSystem } from "@/lib/listing-presentation/marketing-system-resolver"
+import { missingContentProps, describeMissingContent } from "@/lib/remotion/content-contract"
 import type { CmaComp } from "@/lib/charts/cma-reel-data"
 
 export type SectionRenderResult =
@@ -100,7 +101,15 @@ export async function renderCmaSectionForPresentation(
   return { ok: true, renderId: enq.renderId }
 }
 
-export interface RenderSectionsResult { rendered: number; skipped: number }
+export interface RenderSectionsResult {
+  rendered: number
+  /** Sections that did not get a render: CMA-section skips, insert refusals, AND the contract refusals below. */
+  skipped: number
+  /** The subset of `skipped` refused by the content contract BEFORE any row was staged. */
+  refused: number
+  /** One line per refusal — `<section_key>: <describeMissingContent>` — so the count is never silent. */
+  refusals: string[]
+}
 
 /**
  * Render EVERY section of a presentation: the CMA section as a CMAReel data
@@ -119,13 +128,22 @@ export async function renderSectionsForPresentation(
   const cmaRes = await renderCmaSectionForPresentation(presentationId, supabase)
   let rendered = cmaRes.ok ? 1 : 0
   let skipped = cmaRes.ok ? 0 : 1
+  let refused = 0
+  const refusals: string[] = []
+  // enqueueCmaReelRender now refuses by contract (comps / daysOnMarket) and
+  // reports the sentence as `error`; carry it here so the CMA section's
+  // refusal is as visible as any other section's.
+  if (!cmaRes.ok && /was not given .* content prop/.test(cmaRes.skipped)) {
+    refused += 1
+    refusals.push(`cma: ${cmaRes.skipped}`)
+  }
 
   const { data: pres } = await supabase
     .from("listing_presentations")
     .select("brokerage_id, agent_user_id, property_address")
     .eq("id", presentationId)
     .maybeSingle()
-  if (!pres?.brokerage_id) return { rendered, skipped }
+  if (!pres?.brokerage_id) return { rendered, skipped, refused, refusals }
 
   // Resolve the agent's display name + their own "take" (for the narration).
   let agentName = "Your Agent"
@@ -247,6 +265,20 @@ export async function renderSectionsForPresentation(
       ...(narration.heldForReview ? { narrationHeldForReview: true } : {}),
       ...(narration.reviewId ? { narrationReviewId: narration.reviewId } : {}),
     }
+    // THE CONTENT GATE, before the insert. `bullets` is the pitch and the
+    // contract requires it; a narration whose bullets came back empty (a held
+    // script, a thin fallback) used to be staged anyway, the backstop cancelled
+    // the row, and this function counted it as `rendered` and attached the
+    // cancelled render_id to the section — so the drip delivered nothing and
+    // the section looked handled. Refused by NAME and counted instead; the
+    // section keeps render_id null and drips as a card, which is honest.
+    const missing = missingContentProps("ListingSectionReel", inputProps)
+    if (missing.length > 0) {
+      const reason = describeMissingContent("ListingSectionReel", missing)
+      console.warn(`[section-render] ${presentationId} section ${s.section_key} skipped — ${reason}`)
+      skipped++; refused++; refusals.push(`${s.section_key}: ${reason}`)
+      continue
+    }
     const { data: render, error } = await supabase
       .from("remotion_composition_renders")
       .insert({
@@ -273,5 +305,5 @@ export async function renderSectionsForPresentation(
     rendered++
   }
 
-  return { rendered, skipped }
+  return { rendered, skipped, refused, refusals }
 }

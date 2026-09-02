@@ -133,7 +133,11 @@ export const CONTENT_CONTRACT: Record<string, CompositionContentContract> = {
     cosmetic: [...CHROME],
     why:
       "A comparative market analysis IS its data. Every chart here is a " +
-      "valuation input a seller prices their home on.",
+      "valuation input a seller prices their home on. `daysOnMarket` is a " +
+      "{values, labels} pair and the builder emits it EMPTY-BUT-SHAPED when no " +
+      "comp reports a figure; isSupplied reads a container of empties as " +
+      "unsupplied, so that case is refused rather than drawn as a bar chart " +
+      "with no bars.",
   },
   AffordabilitySnapshotReel: {
     required: ["monthlyHeadline", "areaName", "period", "examples", "ratesAssumption", "agentName", "agentPhone"],
@@ -336,12 +340,25 @@ export const CONTENT_CONTRACT: Record<string, CompositionContentContract> = {
  *
  * `0` and `false` ARE supplied: a zero appreciation and a hasData:false are
  * both real, deliberate answers.
+ *
+ * A CONTAINER OF NOTHING SAYS NOTHING (2026-09-02). An object or array is
+ * supplied only if at least one of its members is. The shape that proved it:
+ * lib/charts/cma-reel-data.ts builds `daysOnMarket: { values: [], labels: [] }`
+ * when no comparable reports a days-on-market figure. Two keys, so the old
+ * rule (non-empty object ⇒ supplied) accepted it, and CMAReel then rendered
+ * remotion/charts/DaysOnMarketBars over an empty series — `Math.min(...[])` is
+ * Infinity, `verticalBars([])` maps nothing, and the seller received a
+ * "days on market" panel with no bars in it and no honest empty state (the
+ * composition has none; the chart is unconditional at remotion/CMAReel.tsx:95).
+ * The same rule catches `[{}]`, `[""]`, `{ values: [] }` and every other
+ * container a producer can build by mapping over an empty result set. `{ a: 0 }`
+ * and `{ hasData: false }` stay supplied because their members are.
  */
 export function isSupplied(value: unknown): boolean {
   if (value === null || value === undefined) return false
   if (typeof value === "string") return value.trim().length > 0
-  if (Array.isArray(value)) return value.length > 0
-  if (typeof value === "object") return Object.keys(value as object).length > 0
+  if (Array.isArray(value)) return value.some(isSupplied)
+  if (typeof value === "object") return Object.values(value as Record<string, unknown>).some(isSupplied)
   return true
 }
 

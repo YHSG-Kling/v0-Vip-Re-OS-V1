@@ -15,6 +15,7 @@
 
 import type { BoardPacketData } from "./board-packet"
 import type { PartnersMeetingReelProps, ReelCard } from "@/lib/intelligence/partners-meeting-reel-props"
+import type { ReelQueueOutcome } from "@/lib/intelligence/partners-meeting"
 
 export const BOARD_PACKET_REEL_COMPOSITION = "PartnersMeetingReel"
 /** entity_type on the render row — the dedupe + delivery-sweep key. */
@@ -78,10 +79,11 @@ export function buildBoardPacketReelProps(
 /** Queue ONE packet reel per brokerage per month (idempotent by entity + month
  *  window on the render ledger). Best-effort — a queue failure never blocks
  *  the PDF packet. Branded from the LIVE tenant brand tables + a branded
- *  VideoCoverThumb pass (thumbnail_props). */
+ *  VideoCoverThumb pass (thumbnail_props). Returns the disposition (the same
+ *  vocabulary as the weekly show — §6), never a bare boolean. */
 export async function queueBoardPacketReel(
   svc: any, p: { brokerageId: string; monthStartIso: string; data: BoardPacketData },
-): Promise<boolean> {
+): Promise<ReelQueueOutcome> {
   const { data: existing } = await svc.from("remotion_composition_renders").select("id")
     .eq("brokerage_id", p.brokerageId)
     .eq("composition_id", BOARD_PACKET_REEL_COMPOSITION)
@@ -89,7 +91,7 @@ export async function queueBoardPacketReel(
     .eq("entity_id", p.brokerageId)
     .gte("created_at", p.monthStartIso)
     .limit(1).maybeSingle()
-  if (existing) return false
+  if (existing) return { status: "already_queued", reason: "one packet reel per brokerage per month; this month's row exists" }
   const { resolveReelBrand } = await import("@/lib/video/reel-brand")
   const { resolveVideoIdentity } = await import("@/lib/video/video-identity")
   const [brand, identity] = await Promise.all([
@@ -101,6 +103,18 @@ export async function queueBoardPacketReel(
   const props = buildBoardPacketReelProps(p.data, {
     brand, agentName: identity.speakerName, agentPhotoUrl: identity.avatarPhotoUrl,
   }) as unknown as Record<string, unknown>
+  // THE CONTENT GATE, before any spend (the voiceover below is a TTS call) and
+  // before the insert. Every push in buildBoardPacketReelProps is gated on a
+  // count > 0, so a month with no closings, no AI calls, no attributed volume
+  // and no opt-outs yields `cards: []` — the contract reads that as unsupplied,
+  // render-composition would cancel the row, and this used to return `true`.
+  const { missingContentProps, describeMissingContent } = await import("@/lib/remotion/content-contract")
+  const missing = missingContentProps(BOARD_PACKET_REEL_COMPOSITION, props)
+  if (missing.length > 0) {
+    const reason = describeMissingContent(BOARD_PACKET_REEL_COMPOSITION, missing)
+    console.warn(`[board-packet-reel] ${BOARD_PACKET_REEL_COMPOSITION} for brokerage ${p.brokerageId} (${p.data.monthLabel}) skipped — ${reason}`)
+    return { status: "refused", reason }
+  }
   // Voice on every video: the assistant narrates the month (its ElevenLabs
   // voice, the same one that answers the phone). Best-effort.
   const { prepareReelVoiceover } = await import("@/lib/video/reel-voiceover")
@@ -126,7 +140,8 @@ export async function queueBoardPacketReel(
     scopeId: p.brokerageId,
     requestedVia: "cron",
   })
-  return r.ok
+  if (r.ok) return { status: "queued" }
+  return { status: "failed", reason: ("error" in r && typeof r.error === "string" ? r.error : null) ?? "render row insert refused" }
 }
 
 export interface PacketReelDeliveryResult { completed: number; notified: number }

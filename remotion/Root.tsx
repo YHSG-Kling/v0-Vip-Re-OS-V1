@@ -6,6 +6,53 @@
  * this file as the entry. Compositions are versioned by id — when the
  * render endpoint calls renderMedia({ composition: 'JustListedReel' }) it
  * resolves to the entry below.
+ *
+ * ── `<Interactive.Div>`: SKIPPED ON PURPOSE, WITH THE REASON (2026-09-02) ──
+ *
+ * The vendored skill (.claude/skills/remotion-best-practices/remotion-markup/
+ * REFERENCE.md) makes `<Interactive.Div name="…">` its primary markup pattern,
+ * and remotion-interactivity/REFERENCE.md:7-14 says why. Quoted, so a future
+ * reader is not re-persuaded by the skill alone:
+ *
+ *   "By writing Remotion markup in a specific way, the Remotion Studio is able
+ *    to recognize the structure of the code and makes it interactive:
+ *    - Allowing items to be selected by clicking on them
+ *    - Allowing drag+drop, resizing and rotation
+ *    - Editing the CSS styles
+ *    - Making keyframes and easing values editable
+ *    If the markup is too complex for the Studio to make it interactive, then
+ *    the values become grayed out."
+ *
+ * The 41 .tsx files under remotion/ (33 compositions registered below) use it
+ * ZERO times, and that is a decision, not a gap:
+ *
+ *  1. Every benefit the skill names is a Studio / <Player> affordance, and this
+ *     product has neither surface: `@remotion/player` and `@remotion/studio`
+ *     are imported 0 times (only package-lock.json names them), package.json
+ *     has no studio script, and every composition below renders HEADLESSLY
+ *     from live-row input_props (remotion_composition_renders) through
+ *     @remotion/renderer. No user can click, drag or keyframe anything, so the
+ *     wrapper would buy nothing anyone can reach.
+ *  2. Most of it would be grayed out anyway. The skill's own disqualifiers
+ *     (remotion-interactivity/REFERENCE.md:77-93 — "Non-inline styles are not
+ *     supported", "Spreading is not supported", "Referring to constants is not
+ *     supported", "Math is not supported") describe how these files are
+ *     written on purpose: styles spread shared helpers and read tenant brand
+ *     values (`brand.accentColor`) that arrive as props, because the brand is
+ *     the tenant's, not a constant.
+ *  3. It is not free. `Interactive.Div` compiles to a `<Sequence layout="none">`
+ *     with `showInTimeline: true` (node_modules/remotion/dist/cjs/Interactive.js,
+ *     the Sequence call in the wrapped render), so every wrapper is a timeline
+ *     track counted against the Studio's `maxTimelineTracks` budget — hundreds
+ *     of them across these compositions, for a timeline nobody opens.
+ *
+ * EXIT CONDITION: a Player- or Studio-backed editor in the product (an agent
+ * adjusting a reel before it renders). If that arrives and adoption is wanted
+ * narrowly, the three honest candidates are the slide compositions whose
+ * styles are closest to inline already: ListingPresentationSlide,
+ * BuyerConsultationSlide, CarouselSlide. Until then, do not add wrappers here
+ * to satisfy the skill; the skill is describing a surface this product does
+ * not have.
  */
 import React from "react"
 import { Composition } from "remotion"

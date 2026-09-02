@@ -35,7 +35,12 @@ import {
   RENDER_CACHE_LEAK_SIGNAL,
   type FinishInputs,
 } from "../lib/remotion/composition-cache"
-import { resolveCodeRevision, __resetCodeRevisionMemo } from "../lib/remotion/code-revision"
+import {
+  resolveCodeRevision, __resetCodeRevisionMemo,
+  composeCodeRevision, readInstalledPackageVersions, REVISION_PACKAGES,
+} from "../lib/remotion/code-revision"
+import { createRequire } from "node:module"
+import { join } from "node:path"
 import { SIGNAL_REGISTRY } from "../lib/kernel/signal-registry"
 import { TABLE_MANAGER, MAINTENANCE_DOMAINS } from "../lib/kernel/manager-registry"
 import { stripComments } from "./strip-comments"
@@ -191,12 +196,71 @@ console.log("\n═══ 6. Code revision — derived from the SOURCE, and able 
   ok("...and it is memoized (source cannot change under a running server)",
     resolveCodeRevision() === live)
 
+  // ── THE RENDERER IS PART OF THE REVISION (2026-09-02) ───────────────────
+  // The 4.0.473 → 4.0.520 bump changed no file under remotion/ and no env var,
+  // so every 4.0.473-era artifact stayed a cache HIT under 4.0.520. The rule,
+  // asserted rather than the number: same source + different package version
+  // ⇒ different revision; same source + same version ⇒ same revision. The
+  // versions below are NOT the installed ones — they are two arbitrary
+  // strings, because the rule must hold for any pair, not for today's pair.
+  const V = (v: string) => Object.fromEntries(REVISION_PACKAGES.map((p) => [p, v])) as Record<(typeof REVISION_PACKAGES)[number], string>
+  ok("POSITIVE CONTROL: same source + DIFFERENT package version ⇒ DIFFERENT revision",
+    composeCodeRevision("h", V("1.0.0")) !== composeCodeRevision("h", V("1.0.1")))
+  ok("...same source + SAME package version ⇒ SAME revision (a bump that did not\n    happen must not flush the cache)",
+    composeCodeRevision("h", V("1.0.0")) === composeCodeRevision("h", V("1.0.0")))
+  ok("...and a bump to ANY ONE of the three packages moves it — a half-applied\n    bump cannot collapse onto the fully-applied one",
+    REVISION_PACKAGES.every((p) =>
+      composeCodeRevision("h", V("1.0.0")) !== composeCodeRevision("h", { ...V("1.0.0"), [p]: "1.0.1" })))
+  ok("...and a different source with the same version still moves it (the old half\n    of the rule survives)",
+    composeCodeRevision("h1", V("1.0.0")) !== composeCodeRevision("h2", V("1.0.0")))
+  ok("...and a divergent trio is not spelled as if it agreed",
+    composeCodeRevision("h", { ...V("1.0.0"), remotion: "1.0.1" }) !== composeCodeRevision("h", V("1.0.1")))
+
+  // The LIVE revision carries the INSTALLED version — read here through the
+  // same createRequire path a runtime uses, never typed in (§2: the number is
+  // derived; a literal would be true today and a lie after the next bump).
+  const req = createRequire(join(process.cwd(), "package.json"))
+  const installed = Object.fromEntries(REVISION_PACKAGES.map((p) => [p, (req(`${p}/package.json`) as { version: string }).version]))
+  const versionsSeen = new Set(Object.values(installed))
+  ok(`the installed trio was read from node_modules (${REVISION_PACKAGES.map((p) => `${p}@${installed[p]}`).join(", ")})`,
+    versionsSeen.size >= 1 && [...versionsSeen].every((v) => /^\d+\.\d+\.\d+/.test(v)))
+  ok("readInstalledPackageVersions agrees with that direct read, package for package",
+    JSON.stringify(readInstalledPackageVersions(process.cwd())) === JSON.stringify(installed))
+  ok(`the LIVE revision embeds the installed renderer version — a 4.0.473-era\n    artifact can no longer be a hit under a later renderer (live=${live})`,
+    [...versionsSeen].every((v) => live!.includes(v)) && live!.includes("_rm"))
+  ok("...and it is the composed shape, not a coincidence: recomposing the live\n    source hash with the live versions reproduces it",
+    (() => {
+      const m = live!.match(/^src_([0-9a-f]+)_rm/)
+      return !!m && composeCodeRevision(m[1], installed as Record<(typeof REVISION_PACKAGES)[number], string>) === live
+    })())
+
+  // THE ENV FALLBACK, intact: a readable tree whose PACKAGES cannot be read must
+  // fall to the deploy proxy — and to null with no proxy — never to a
+  // source-only key, which is the exact version-blind key this pass retires.
+  const savedSha = process.env.VERCEL_GIT_COMMIT_SHA, savedDep = process.env.VERCEL_DEPLOYMENT_ID
+  delete process.env.VERCEL_GIT_COMMIT_SHA; delete process.env.VERCEL_DEPLOYMENT_ID
+  __resetCodeRevisionMemo()
+  ok("packages unreadable + no deploy env ⇒ NULL (cache disabled), not a\n    version-blind src_ key",
+    resolveCodeRevision(process.cwd(), { readVersions: () => null }) === null)
+  process.env.VERCEL_GIT_COMMIT_SHA = "0123456789abcdef"
+  __resetCodeRevisionMemo()
+  ok("packages unreadable + deploy sha ⇒ the sha proxy (moves on every deploy, so a\n    bump commit still flushes)",
+    resolveCodeRevision(process.cwd(), { readVersions: () => null }) === "sha_0123456789ab")
+  if (savedSha === undefined) delete process.env.VERCEL_GIT_COMMIT_SHA; else process.env.VERCEL_GIT_COMMIT_SHA = savedSha
+  if (savedDep === undefined) delete process.env.VERCEL_DEPLOYMENT_ID; else process.env.VERCEL_DEPLOYMENT_ID = savedDep
+  ok("readInstalledPackageVersions on a root with no node_modules is null, not a\n    partial map", readInstalledPackageVersions("/nonexistent-root-for-this-proof") === null)
+
   __resetCodeRevisionMemo()
   ok("a tree with NO composition source yields null — unknown, not a constant",
     resolveCodeRevision("/nonexistent-root-for-this-proof") === null
       || resolveCodeRevision("/nonexistent-root-for-this-proof")!.startsWith("sha_")
       || resolveCodeRevision("/nonexistent-root-for-this-proof")!.startsWith("dep_"))
   __resetCodeRevisionMemo()
+
+  const revSrcCode = code("lib/remotion/code-revision.ts")
+  ok("the versions are READ from each package.json at runtime: no version literal\n    is hardcoded in code-revision.ts code (a literal would be a waypoint pin)",
+    /\/package\.json`\)/.test(revSrcCode) && !/["'`]\d+\.\d+\.\d+["'`]/.test(revSrcCode))
+  ok("...and that finder would see a literal (control)", /["'`]\d+\.\d+\.\d+["'`]/.test(`const v = "4.0.520"`))
 
   const cacheSrc = code("lib/remotion/render-cache.ts")
   ok("a null revision DISABLES the cache rather than keying on a constant",

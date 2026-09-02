@@ -88,7 +88,7 @@ const BrandHeader: React.FC<{
 
 const PhotoFrame: React.FC<{ url: string; span: number }> = ({ url, span }) => {
   const frame = useCurrentFrame()
-  const scale = interpolate(frame, [0, span], [1, 1.05], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+  const scale = interpolate(frame, [0, span], [1, 1.05], { extrapolateLeft: "clamp", extrapolateRight: "clamp", output: "perceptual-scale" })
   return (
     <AbsoluteFill style={{ overflow: "hidden" }}>
       <Img src={url} style={{

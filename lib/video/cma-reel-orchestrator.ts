@@ -16,6 +16,7 @@ import {
   buildCmaReelInputProps,
   type CmaSubject, type CmaComp, type CmaPricePoint, type CmaBrand, type AffordabilityAssumptions,
 } from "@/lib/charts/cma-reel-data"
+import { missingContentProps, describeMissingContent } from "@/lib/remotion/content-contract"
 
 export const CMA_REEL_COMPOSITION_ID = "CMAReel"
 
@@ -62,6 +63,20 @@ export async function enqueueCmaReelRender(
     audience:          params.audience,
   })
   const voiceoverUrl = params.voiceoverUrl ?? null
+
+  // THE CONTENT GATE, on the payload that will actually be staged — the same
+  // question the render backstop (render-composition/route.ts) asks before it
+  // cancels. The estimatedPrice guard above is a spend guard for the subject
+  // bar; it never looked at `comparables`, so `comparables: []` built
+  // `comps: []` (and `daysOnMarket: {values: [], labels: []}` when no comp
+  // reports one), the row was inserted, this function returned ok + a renderId,
+  // and the backstop cancelled it a minute later with nobody told. Refusing
+  // HERE, by name, is what turns that invisible cancellation into a reason the
+  // caller (section-render → `skipped`, the API) can show a manager.
+  const missing = missingContentProps(CMA_REEL_COMPOSITION_ID, inputProps)
+  if (missing.length > 0) {
+    return { ok: false, error: describeMissingContent(CMA_REEL_COMPOSITION_ID, missing) }
+  }
 
   const supabase = client ?? createServiceClient()
   const { data, error } = await supabase

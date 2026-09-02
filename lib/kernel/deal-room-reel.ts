@@ -89,12 +89,21 @@ export function clearedContingencies(t: { financing_contingency_removed_at?: str
   return out
 }
 
-export interface DealRoomRunResult { transactions: number; queued: number; proposed: number; errors: number }
+export interface DealRoomRunResult {
+  transactions: number
+  queued: number
+  proposed: number
+  errors: number
+  /** Deals with nothing to say this week (no close date, nothing cleared, no activity, no deadline) — deliberately not padded into a video. */
+  quiet: number
+  /** Deals whose props the CONTENT CONTRACT refused before any row was staged (named in a warn). */
+  refused: number
+}
 
 /** Weekly queue pass (rides the client-pulse cron): one Deal Room video per
  *  active under-contract transaction per ISO week. */
 export async function queueDealRoomReels(svc: any, now: Date = new Date()): Promise<DealRoomRunResult> {
-  const r: DealRoomRunResult = { transactions: 0, queued: 0, proposed: 0, errors: 0 }
+  const r: DealRoomRunResult = { transactions: 0, queued: 0, proposed: 0, errors: 0, quiet: 0, refused: 0 }
   const since7 = new Date(now.getTime() - 7 * 86_400_000).toISOString()
   const { data: brokerages } = await svc.from("brokerages").select("id").limit(2000)
   for (const b of ((brokerages ?? []) as any[])) {
@@ -136,7 +145,8 @@ export async function queueDealRoomReels(svc: any, now: Date = new Date()): Prom
           activityCount7d: (acts as number | null) ?? 0,
         }
         // A totally quiet, dateless deal renders nothing — never a padded video.
-        if (facts.daysToClose == null && facts.clearedThisWeek.length === 0 && facts.activityCount7d === 0 && !facts.nextDeadline) continue
+        // COUNTED (§2: a skip that is not counted reads as a clean tick).
+        if (facts.daysToClose == null && facts.clearedThisWeek.length === 0 && facts.activityCount7d === 0 && !facts.nextDeadline) { r.quiet += 1; continue }
 
         const [{ resolveReelBrand }, { resolveVideoIdentity }] = await Promise.all([
           import("@/lib/video/reel-brand"), import("@/lib/video/video-identity"),
@@ -150,6 +160,19 @@ export async function queueDealRoomReels(svc: any, now: Date = new Date()): Prom
           agentName: identity.speakerName, agentPhotoUrl: identity.avatarPhotoUrl,
           brand: { primaryColor: brand.primaryColor, accentColor: brand.accentColor, brokerageName: brand.brokerageName, logoUrl: brand.logoUrl, showEhoMark: true },
         }) as unknown as Record<string, unknown>
+        // THE CONTENT GATE, before any spend (voiceover, QR) and before the
+        // insert. Every push in buildDealRoomReelProps is gated on a fact, so
+        // the quiet-deal skip above and `cards: []` coincide TODAY — but that is
+        // a coincidence of two hand-written conditions, not a contract, and the
+        // render backstop will cancel a `cards: []` row a minute after this
+        // function counts it as `queued`. Asked of the payload itself, by name.
+        const { missingContentProps, describeMissingContent } = await import("@/lib/remotion/content-contract")
+        const missing = missingContentProps(DEAL_ROOM_COMPOSITION, props)
+        if (missing.length > 0) {
+          console.warn(`[deal-room-reel] transaction ${t.id} skipped — ${describeMissingContent(DEAL_ROOM_COMPOSITION, missing)}`)
+          r.refused += 1
+          continue
+        }
         const { prepareReelVoiceover } = await import("@/lib/video/reel-voiceover")
         const vo = await prepareReelVoiceover({
           brokerageId: b.id, narration: (props as any).narration, voiceId: identity.voiceId,

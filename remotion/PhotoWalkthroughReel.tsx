@@ -228,6 +228,7 @@ const KenBurnsPhoto: React.FC<{ clip: KenBurnsClip; brand: PhotoWalkthroughReelP
     easing: Easing.bezier(0.45, 0, 0.55, 1),
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
+    output: "perceptual-scale",
   })
   const panX = interpolate(frame, [0, dur], [clip.panFromXY[0], clip.panToXY[0]], {
     easing: Easing.bezier(0.45, 0, 0.55, 1),

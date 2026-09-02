@@ -125,7 +125,7 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
             color: brand.primaryColor,
             fontSize: 64, fontWeight: 900, letterSpacing: 6,
             borderRadius: 8,
-            scale: interpolate(frame, [0, 15], [0.8, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
+            scale: interpolate(frame, [0, 15], [0.8, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp", output: "perceptual-scale" }),
             opacity: interpolate(frame, [0, 12], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
           }}>
             SOLD
@@ -260,7 +260,7 @@ export const JustSoldReelSquare: React.FC<JustSoldReelSquareProps> = ({
 
 const SoldPhotoFrame: React.FC<{ url: string; span: number }> = ({ url, span }) => {
   const frame = useCurrentFrame()
-  const scale = interpolate(frame, [0, span], [1, 1.08], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+  const scale = interpolate(frame, [0, span], [1, 1.08], { extrapolateLeft: "clamp", extrapolateRight: "clamp", output: "perceptual-scale" })
   return (
     <AbsoluteFill style={{ overflow: "hidden" }}>
       <Img

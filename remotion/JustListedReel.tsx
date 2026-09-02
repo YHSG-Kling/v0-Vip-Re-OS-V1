@@ -157,7 +157,7 @@ const PropertyImages: React.FC<{ images: string[] }> = ({ images }) => {
   const idx = Math.min(images.length - 1, Math.floor(frame / slideFrames))
   const localFrame = frame - idx * slideFrames
   // Ken-burns: subtle scale + drift over each slide
-  const scale = interpolate(localFrame, [0, slideFrames], [1.0, 1.08], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+  const scale = interpolate(localFrame, [0, slideFrames], [1.0, 1.08], { extrapolateLeft: "clamp", extrapolateRight: "clamp", output: "perceptual-scale" })
   const opacity = interpolate(localFrame, [0, 8, slideFrames - 8, slideFrames], [0, 1, 1, 0], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
