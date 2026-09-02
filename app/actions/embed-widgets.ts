@@ -299,7 +299,45 @@ export interface EmbedAnalytics {
   /** Visitors with more than one session in the window. */
   returningVisitors: number
   topPages: { pageUrl: string; sessions: number; leads: number }[]
+  /** Same shape as topPages, keyed by embed_sessions.referrer (the page that sent the visitor). */
+  topReferrers: { referrer: string; sessions: number; leads: number }[]
+  /**
+   * Coarse device split derived from embed_sessions.user_agent. The raw UA is
+   * fingerprint-adjacent and is NEVER returned or stored anywhere but the row
+   * the session writer already wrote — only these four buckets leave the action.
+   */
+  devices: { mobile: number; desktop: number; bot: number; unknown: number }
+  /**
+   * Which twin actually greeted visitors. embed_sessions.did_session_ref is the
+   * D-ID agent id the session was opened against (app/api/embed/session/route.ts
+   * stores ensured.didAgentId — an AGENT id, not a D-ID session id, despite the
+   * column name), resolved tenant-scoped against agent_avatar_assets.did_agent_id.
+   * A widget's twin can change (default_twin_id is nullable and the route falls
+   * back to the agent's first ready twin), so this is not always one row.
+   *
+   * NOT A LINK: nothing in the tree routes by a D-ID agent id — the only readers
+   * of did_agent_id are the D-ID cache lookups in lib/did/agents.ts, and the
+   * twin-studio settings page is keyed by agent_avatar_assets.id, not by it. A
+   * label is what can be honestly shown; a link would have nowhere to go.
+   */
+  byTwin: { twinId: string | null; label: string; sessions: number }[]
   byDay: { date: string; sessions: number; leads: number }[]
+}
+
+/**
+ * Bucket a User-Agent string without retaining it. Bot first (a crawler's UA
+ * often also says "Mobile"), then the mobile markers, else desktop. Empty/NULL
+ * is "unknown" — older rows and header-less requests must not read as desktop.
+ *
+ * NOT exported: this file is "use server", where every export is a public
+ * HTTP endpoint and must be async (CLAUDE.md §4). A sync helper stays private.
+ */
+function classifyUserAgent(ua: string | null | undefined): "mobile" | "desktop" | "bot" | "unknown" {
+  if (!ua || !ua.trim()) return "unknown"
+  const s = ua.toLowerCase()
+  if (/\b(bot|crawl|spider|slurp|headless|lighthouse|preview|facebookexternalhit|curl\/|wget\/|python-requests)\b/.test(s)) return "bot"
+  if (/\b(mobile|iphone|ipod|android|windows phone|blackberry|opera mini|ipad|tablet)\b/.test(s)) return "mobile"
+  return "desktop"
 }
 
 /**
@@ -343,15 +381,38 @@ export async function getEmbedAnalytics(params: {
   // Pull sessions in the window. metadata carries the full page URL — the
   // session writer (app/api/embed/session/route.ts) stores it as
   // metadata.page_url because embed_sessions has no page_url column.
+  // referrer / user_agent / did_session_ref are written on every row by that
+  // same route and were never selected. referrer feeds "Top referrers",
+  // user_agent is reduced to a device bucket in-process (see classifyUserAgent
+  // — the string itself never leaves this function), did_session_ref is
+  // resolved to a twin label below.
   const { data: sessions, error: sessionsError } = await supabase
     .from("embed_sessions")
-    .select("id, embed_widget_id, contact_id, origin, started_at, metadata, visitor_id")
+    .select("id, embed_widget_id, contact_id, origin, started_at, metadata, visitor_id, referrer, user_agent, did_session_ref")
     .in("embed_widget_id", widgetIds)
     .gte("started_at", since)
     .order("started_at", { ascending: false })
   if (sessionsError) return { ok: false, error: sessionsError.message }
 
   const rows = sessions ?? []
+
+  // Twin resolution: did_session_ref → agent_avatar_assets.did_agent_id, ONE
+  // batched read anchored on the session tenant. A ref that matches no twin in
+  // this brokerage (twin deleted, or a D-ID agent cached on agent_voice_profiles
+  // rather than on a twin) stays a labelled "unresolved" bucket, never a guess.
+  const twinRefs = [...new Set(rows.map((r: any) => r.did_session_ref).filter((v: unknown): v is string => typeof v === "string" && v.length > 0))]
+  const twinByRef = new Map<string, { id: string; label: string }>()
+  if (twinRefs.length > 0) {
+    const { data: twins, error: twinErr } = await supabase
+      .from("agent_avatar_assets")
+      .select("id, did_agent_id, label")
+      .eq("brokerage_id", ctx.brokerageId)
+      .in("did_agent_id", twinRefs)
+    if (twinErr) console.error("[embed-widgets] twin resolve for analytics refused:", twinErr.message)
+    for (const t of twins ?? []) {
+      if (t.did_agent_id) twinByRef.set(t.did_agent_id, { id: t.id, label: t.label ?? "Untitled twin" })
+    }
+  }
 
   const analytics: EmbedAnalytics[] = widgetIds.map((wid) => {
     const wRows = rows.filter((r: any) => r.embed_widget_id === wid)
@@ -375,6 +436,42 @@ export async function getEmbedAnalytics(params: {
       .sort((a, b) => b[1].sessions - a[1].sessions)
       .slice(0, 10)
       .map(([pageUrl, stats]) => ({ pageUrl, ...stats }))
+
+    // Top referrers — same shape and bound as topPages. "(direct)" is the
+    // honest label for an empty referrer: the visitor typed the URL, came from
+    // an app, or the referrer policy stripped it — none of which is "unknown page".
+    const refMap: Record<string, { sessions: number; leads: number }> = {}
+    for (const r of wRows) {
+      const key = typeof r.referrer === "string" && r.referrer.trim() ? r.referrer.trim() : "(direct)"
+      if (!refMap[key]) refMap[key] = { sessions: 0, leads: 0 }
+      refMap[key].sessions++
+      if (r.contact_id) refMap[key].leads++
+    }
+    const topReferrers = Object.entries(refMap)
+      .sort((a, b) => b[1].sessions - a[1].sessions)
+      .slice(0, 10)
+      .map(([referrer, stats]) => ({ referrer, ...stats }))
+
+    // Device split — buckets only; the UA string is consumed here and dropped.
+    const devices = { mobile: 0, desktop: 0, bot: 0, unknown: 0 }
+    for (const r of wRows) devices[classifyUserAgent(r.user_agent)]++
+
+    // Sessions by twin (see EmbedAnalytics.byTwin for why this is a label, not a link).
+    const twinMap: Record<string, { twinId: string | null; label: string; sessions: number }> = {}
+    for (const r of wRows) {
+      const ref = typeof r.did_session_ref === "string" && r.did_session_ref ? r.did_session_ref : null
+      const twin = ref ? twinByRef.get(ref) : undefined
+      const key = twin ? twin.id : ref ? `unresolved:${ref}` : "none"
+      if (!twinMap[key]) {
+        twinMap[key] = {
+          twinId: twin?.id ?? null,
+          label: twin ? twin.label : ref ? "(twin no longer in this brokerage)" : "(no twin recorded)",
+          sessions: 0,
+        }
+      }
+      twinMap[key].sessions++
+    }
+    const byTwin = Object.values(twinMap).sort((a, b) => b.sessions - a.sessions)
 
     // By day (last N days)
     const dayMap: Record<string, { sessions: number; leads: number }> = {}
@@ -405,6 +502,9 @@ export async function getEmbedAnalytics(params: {
       uniqueVisitors,
       returningVisitors,
       topPages,
+      topReferrers,
+      devices,
+      byTwin,
       byDay,
     }
   })

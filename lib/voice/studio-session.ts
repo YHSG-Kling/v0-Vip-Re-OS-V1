@@ -336,16 +336,32 @@ export async function commissionStudioSession(
     `studio:${opts.brokerageId}:${opts.agentUserId}:${plan.durationLabel}:${plan.items[0]?.scheduledFor ?? "no-dates"}`
 
   // Check for an existing session with this key.
-  const { data: existingSession } = await svc
+  //
+  // duration_label / plan / spoken_command are read back HERE and nowhere
+  // else. The already-commissioned confirmation below used to be composed from
+  // the FRESHLY computed `plan` — but the session key is the caller's (see
+  // opts.sessionKey), so the row this probe finds can belong to a plan with a
+  // different duration label and a different item set. Agent hears "your
+  // week's session is already in the pipeline" about a row that booked a
+  // month. What was STORED is what was booked; speak that.
+  const { data: existingSession, error: existingErr } = await svc
     .from("studio_sessions")
-    .select("id, status, commissioned_count, skipped_count")
+    .select("id, status, commissioned_count, skipped_count, duration_label, plan, spoken_command")
     .eq("brokerage_id", opts.brokerageId)
     .eq("agent_id", sessionAgentId)
     .eq("session_key", sessionKey)
     .maybeSingle()
+  if (existingErr) {
+    // A refused probe cannot prove absence; proceeding would insert a duplicate
+    // anchor under a key that may already exist. Refuse instead.
+    return { ok: false, status: "failed", commissioned: 0, skipped: 0, videoProjectIds: [], spoken: "I couldn't check whether this studio session already exists — try again in a moment.", reason: `idempotency probe refused: ${existingErr.message}` }
+  }
 
   if (existingSession?.id) {
-    const s = existingSession as { id: string; status: string; commissioned_count: number; skipped_count: number }
+    const s = existingSession as {
+      id: string; status: string; commissioned_count: number; skipped_count: number
+      duration_label: string | null; plan: unknown; spoken_command: string | null
+    }
     // Fetch the video project IDs already linked to this session.
     const { data: existingVideos } = await svc
       .from("ai_video_projects")
@@ -361,7 +377,16 @@ export async function commissionStudioSession(
       commissioned: s.commissioned_count,
       skipped: s.skipped_count,
       videoProjectIds: ids,
-      spoken: `Your ${plan.durationLabel}'s studio session is already in the pipeline — ${s.commissioned_count} reel${s.commissioned_count !== 1 ? "s" : ""} staged for approval. No duplicate commissions.`,
+      spoken: composeSessionAlreadyCommissionedSpoken({
+        storedDurationLabel: s.duration_label,
+        storedPlan: s.plan,
+        storedSpokenCommand: s.spoken_command,
+        commissioned: s.commissioned_count,
+        // Only a row written before duration_label was stamped falls back to
+        // the fresh plan's label — and says so, rather than presenting a guess
+        // as the record.
+        fallbackDurationLabel: plan.durationLabel,
+      }),
     }
   }
 
@@ -469,6 +494,33 @@ export async function commissionStudioSession(
     videoProjectIds,
     spoken,
   }
+}
+
+/**
+ * Pure: compose the spoken "already booked" confirmation from what the
+ * studio_sessions row STORED — never from a plan recomputed on the re-run.
+ * `storedPlan` is the jsonb `plan` column (StudioSessionItem[] as written by
+ * commissionStudioSession); its length is the number of reels that were
+ * planned, which may differ from commissioned_count when some were skipped.
+ */
+export function composeSessionAlreadyCommissionedSpoken(args: {
+  storedDurationLabel: string | null
+  storedPlan: unknown
+  storedSpokenCommand: string | null
+  commissioned: number
+  fallbackDurationLabel: string
+}): string {
+  const { storedDurationLabel, storedPlan, storedSpokenCommand, commissioned, fallbackDurationLabel } = args
+  const label = storedDurationLabel?.trim() || fallbackDurationLabel
+  const labelNote = storedDurationLabel?.trim() ? "" : " (that session predates duration tracking, so I'm going by your current request)"
+  const planned = Array.isArray(storedPlan) ? storedPlan.length : null
+  const plannedNote = planned !== null && planned !== commissioned
+    ? ` of the ${planned} planned`
+    : ""
+  const commandNote = storedSpokenCommand?.trim()
+    ? ` You booked it by asking "${storedSpokenCommand.trim()}".`
+    : ""
+  return `Your ${label}'s studio session is already in the pipeline${labelNote} — ${commissioned} reel${commissioned !== 1 ? "s" : ""}${plannedNote} staged for approval.${commandNote} No duplicate commissions.`
 }
 
 /** Pure: compose the spoken post-commission confirmation. */

@@ -129,6 +129,17 @@ export interface VendorMessageRow {
   sender_type: string
   body: string
   read: boolean
+  /**
+   * WHEN the reader flipped `read` (markVendorMessagesRead below stamps it
+   * together with read=true). `read` alone says "seen"; this says when — the
+   * receipt a sender actually wants. NULL while unread or for rows read before
+   * the column was stamped.
+   */
+  read_at: string | null
+  /** The lane discriminator the universal inbox keys on. sendVendorMessage writes "vendor". */
+  channel: string | null
+  /** contact_vendors.id — the relationship (role/status) this thread rides on. */
+  contact_vendor_id: string | null
   created_at: string
 }
 
@@ -148,7 +159,7 @@ export async function getVendorThread(input: {
   const supabase = await createClient()
   const { data, error } = await supabase
     .from("vendor_messages")
-    .select("id, vendor_id, counterparty_type, counterparty_id, sender_type, body, read, created_at")
+    .select("id, vendor_id, counterparty_type, counterparty_id, sender_type, body, read, read_at, channel, contact_vendor_id, created_at")
     .eq("vendor_id", input.vendorId)
     .eq("counterparty_type", "contact")
     .eq("counterparty_id", input.contactId)

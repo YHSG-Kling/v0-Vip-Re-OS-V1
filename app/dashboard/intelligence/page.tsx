@@ -121,7 +121,8 @@ export default async function IntelligencePage() {
   const citationSince = new Date(Date.now() - 30 * 86_400_000).toISOString()
   const { data: citationRows, error: citationError } = await supabase
     .from("ai_search_citation_observations")
-    .select("id, platform, outcome, cited_url, provider, public_slug, observed_at")
+    // `query` is the prompt the monitor asked — the card shows it under each outcome.
+    .select("id, platform, outcome, cited_url, provider, public_slug, observed_at, query")
     .eq("brokerage_id", brokerageId)
     .gte("observed_at", citationSince)
     .order("observed_at", { ascending: false })

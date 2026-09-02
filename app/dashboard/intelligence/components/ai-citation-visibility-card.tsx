@@ -21,6 +21,13 @@ export interface CitationObservationRow {
   provider: string | null
   public_slug: string | null
   observed_at: string | null
+  /**
+   * THE PROMPT THAT WAS ASKED of the AI platform (written by the monitor at
+   * lib/kernel/ai-search-citation-monitor.ts, upsert `query`). Without it an
+   * outcome is a verdict with no question — "not cited" for WHAT? Nullable
+   * only for rows older than the column.
+   */
+  query: string | null
 }
 
 const OUTCOME_BADGE: Record<string, string> = {
@@ -82,19 +89,29 @@ export function AiCitationVisibilityCard({ observations }: { observations: Citat
           <ul className="divide-y">
             {recent.map((obs) => (
               <li key={obs.id} className="py-2 flex items-center justify-between gap-2 text-sm">
-                <div className="flex items-center gap-2 min-w-0 flex-wrap">
-                  <Badge variant="outline" className="text-[10px] capitalize">
-                    {obs.platform.replace(/_/g, " ")}
-                  </Badge>
-                  <Badge
-                    variant="outline"
-                    className={`text-[10px] capitalize ${OUTCOME_BADGE[obs.outcome] ?? ""}`}
-                  >
-                    {obs.outcome.replace(/_/g, " ")}
-                  </Badge>
-                  <span className="text-xs text-muted-foreground truncate">
-                    {obs.cited_url ?? (obs.public_slug ? `/v/${obs.public_slug}` : "")}
-                  </span>
+                <div className="min-w-0 space-y-0.5">
+                  <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                    <Badge variant="outline" className="text-[10px] capitalize">
+                      {obs.platform.replace(/_/g, " ")}
+                    </Badge>
+                    <Badge
+                      variant="outline"
+                      className={`text-[10px] capitalize ${OUTCOME_BADGE[obs.outcome] ?? ""}`}
+                    >
+                      {obs.outcome.replace(/_/g, " ")}
+                    </Badge>
+                    <span className="text-xs text-muted-foreground truncate">
+                      {obs.cited_url ?? (obs.public_slug ? `/v/${obs.public_slug}` : "")}
+                    </span>
+                  </div>
+                  {/* Same spelling as the landing rail's card
+                      (app/dashboard/marketing/seo/landing-citation-card.tsx) —
+                      one vocabulary for "the question that was asked". */}
+                  {obs.query && (
+                    <p className="text-xs text-foreground/90 truncate" title={obs.query}>
+                      “{obs.query}”
+                    </p>
+                  )}
                 </div>
                 <span className="text-xs text-muted-foreground shrink-0">
                   {obs.observed_at ? new Date(obs.observed_at).toLocaleDateString() : "—"}

@@ -203,10 +203,22 @@ async function GeoTab({
   const citationSince = new Date(Date.now() - 30 * 86_400_000).toISOString()
   let query = supabase
     .from("ai_search_citation_observations")
-    .select("id, platform, outcome, cited_url, provider, public_slug, observed_at, project_id, observed_on, competitors_cited")
+    // `query` is the prompt the monitor asked — the card shows it under each outcome.
+    .select("id, platform, outcome, cited_url, provider, public_slug, observed_at, project_id, observed_on, competitors_cited, query")
     // The tenant filter ALWAYS applies. The scope filter narrows within it — it
     // never replaces it, so a narrower scope can never widen the read.
     .eq("brokerage_id", brokerageId)
+  // agent_id / team_id ARE READ HERE — as the dynamic filter column
+  // `active.column` (one of brokerage_id | team_id | agent_id, from
+  // allowedScopes), not as selected fields. A column-level census that looks
+  // for the literal name inside `.select()` / `.eq("agent_id", …)` cannot see
+  // this `.eq(active.column, …)`, so ai_search_citation_observations.agent_id
+  // and .team_id read as "written, never read" in scripts/opposite-missing-
+  // baseline.json while being the axis this whole page pivots on. They are
+  // deliberately NOT added to the select: nothing renders a per-row
+  // attribution, and selecting a column no one shows is the other half of the
+  // same orphan. (The landing rail below spells its branches literally for the
+  // same reason — see the comment there.)
   if (active.column !== "brokerage_id" && active.value) {
     query = query.eq(active.column, active.value)
   }

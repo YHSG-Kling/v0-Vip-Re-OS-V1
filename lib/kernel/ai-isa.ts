@@ -75,6 +75,16 @@ export interface AiIsaWorkspaceData {
   queue: AiIsaLeadRow[]
   recentCalls: AiIsaCallRow[]
   pendingHandoffs: AiIsaHandoffRow[]
+  /**
+   * The ledger of handoffs a human already took — newest first, bounded to
+   * COMPLETED_HANDOFFS_BOUND rows (the bound is echoed in stats so a consumer
+   * can say "showing the last N" instead of implying it saw them all).
+   * Written by app/actions/leads.ts handOffToHumanAgent (handoff_status =
+   * 'completed', completed_at, to_agent_type = 'human'); until this read the
+   * repo had no completed-handoff view of any kind — every reader filtered
+   * handoff_status = 'pending'.
+   */
+  completedHandoffs: AiIsaCompletedHandoffRow[]
   stats: {
     activeCampaigns: number
     leadsInQueue: number
@@ -82,8 +92,14 @@ export interface AiIsaWorkspaceData {
     pendingHandoffs: number
     appointmentsBooked: number
     conversionRate: number
+    /** Rows in completedHandoffs — may equal completedHandoffsBound (truncated). */
+    completedHandoffs: number
+    completedHandoffsBound: number
   }
 }
+
+/** Upper bound on the completed-handoff ledger read by loadAiIsaWorkspace. */
+export const COMPLETED_HANDOFFS_BOUND = 20
 
 export interface AiIsaCampaignRow {
   id: string
@@ -121,6 +137,35 @@ export interface AiIsaCallRow {
   created_at: string
 }
 
+/**
+ * The EXACT shape handoffToHumanAgent (this file, COMMAND 7) writes into
+ * agent_handoffs.context_package. It is the package written FOR the receiving
+ * human: who handed the lead over and, when the lead had already converted,
+ * the contact the human should open instead of the lead. Curated fields only —
+ * a consumer renders these two, never the raw jsonb.
+ *
+ * Other writers of agent_handoffs (app/actions/leads.ts handOffToHumanAgent)
+ * write NO context_package, so the column is nullable on read and every field
+ * inside it is optional: an older or foreign row must not throw on `.contact_id`.
+ */
+export interface AiIsaHandoffContextPackage {
+  /** users.id of the actor who triggered the handoff (ctx.userId) — NOT agents.id. */
+  from_user_id?: string | null
+  /** contacts.id (the PK, not contacts.contact_id) when the lead had already converted. */
+  contact_id?: string | null
+}
+
+/** Pick the curated fields out of a context_package jsonb value; anything that
+ *  is not an object (NULL, a string, an array) yields an empty package. */
+export function readHandoffContextPackage(raw: unknown): AiIsaHandoffContextPackage {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {}
+  const r = raw as Record<string, unknown>
+  return {
+    from_user_id: typeof r.from_user_id === "string" ? r.from_user_id : null,
+    contact_id: typeof r.contact_id === "string" ? r.contact_id : null,
+  }
+}
+
 export interface AiIsaHandoffRow {
   id: string
   // Live schema uses an entity_type/entity_id discriminator instead of
@@ -131,6 +176,22 @@ export interface AiIsaHandoffRow {
   handoff_reason: string | null
   handoff_status: string
   human_agent_id: string | null
+  /** CHECK: coaching_agent | content_agent | human | isa_agent | none | router | tc_agent */
+  to_agent_type: string | null
+  /** Curated from the jsonb by readHandoffContextPackage — see that type. */
+  context_package: AiIsaHandoffContextPackage
+  created_at: string
+}
+
+export interface AiIsaCompletedHandoffRow {
+  id: string
+  entity_type: string
+  entity_id: string
+  handoff_reason: string | null
+  to_agent_type: string | null
+  human_agent_id: string | null
+  /** When the human took it. NULL only for a 'completed' row written before completed_at existed. */
+  completed_at: string | null
   created_at: string
 }
 
@@ -263,7 +324,7 @@ export async function loadAiIsaWorkspace(
     const { ctx, limit = 50 } = input
     const supabase = createServiceClient()
 
-    const [campaignsRes, queueRes, callsRes, handoffsRes] = await Promise.all([
+    const [campaignsRes, queueRes, callsRes, handoffsRes, completedRes] = await Promise.all([
       supabase
         .from("ai_isa_campaigns")
         .select("id, name, campaign_type, status, leads_targeted, touches_sent, conversions, created_at")
@@ -287,19 +348,49 @@ export async function loadAiIsaWorkspace(
         .order("created_at", { ascending: false })
         .limit(20),
 
+      // to_agent_type + context_package: the package COMMAND 7 writes FOR the
+      // receiving human (who handed it over, which contact to open) was never
+      // selected by any reader — every agent_handoffs read in the tree stopped
+      // at handoff_reason. Curated by readHandoffContextPackage below.
       supabase
         .from("agent_handoffs")
-        .select("id, entity_type, entity_id, handoff_reason, handoff_status, human_agent_id, created_at")
+        .select("id, entity_type, entity_id, handoff_reason, handoff_status, human_agent_id, to_agent_type, context_package, created_at")
         .eq("brokerage_id", ctx.brokerageId)
         .eq("handoff_status", "pending")
         .order("created_at", { ascending: false })
         .limit(20),
+
+      // The completed ledger — bounded; the bound is reported in stats.
+      supabase
+        .from("agent_handoffs")
+        .select("id, entity_type, entity_id, handoff_reason, to_agent_type, human_agent_id, completed_at, created_at")
+        .eq("brokerage_id", ctx.brokerageId)
+        .eq("handoff_status", "completed")
+        .order("completed_at", { ascending: false, nullsFirst: false })
+        .limit(COMPLETED_HANDOFFS_BOUND),
     ])
+
+    // supabase-js RESOLVES a refusal (CLAUDE.md §3). Every lane above used to
+    // coalesce `data ?? []`, which renders a refused read as an empty console.
+    // Log each refusal by lane so an empty workspace is at least not silent.
+    for (const [lane, res] of [
+      ["ai_isa_campaigns", campaignsRes],
+      ["leads", queueRes],
+      ["ai_isa_calls", callsRes],
+      ["agent_handoffs(pending)", handoffsRes],
+      ["agent_handoffs(completed)", completedRes],
+    ] as const) {
+      if (res.error) console.error(`[ai-isa] loadAiIsaWorkspace ${lane} read refused:`, res.error.message)
+    }
 
     const campaigns: AiIsaCampaignRow[] = campaignsRes.data ?? []
     const queue: AiIsaLeadRow[] = queueRes.data ?? []
     const calls: AiIsaCallRow[] = callsRes.data ?? []
-    const handoffs: AiIsaHandoffRow[] = handoffsRes.data ?? []
+    const handoffs: AiIsaHandoffRow[] = (handoffsRes.data ?? []).map((h) => ({
+      ...h,
+      context_package: readHandoffContextPackage(h.context_package),
+    }))
+    const completedHandoffs: AiIsaCompletedHandoffRow[] = completedRes.data ?? []
 
     const today = new Date().toISOString().slice(0, 10)
     const callsToday = calls.filter((c) => c.created_at.startsWith(today)).length
@@ -314,6 +405,7 @@ export async function loadAiIsaWorkspace(
         queue,
         recentCalls: calls,
         pendingHandoffs: handoffs,
+        completedHandoffs,
         stats: {
           activeCampaigns: campaigns.filter((c) => c.status === "active").length,
           leadsInQueue: queue.length,
@@ -321,6 +413,8 @@ export async function loadAiIsaWorkspace(
           pendingHandoffs: handoffs.length,
           appointmentsBooked: apptBooked,
           conversionRate,
+          completedHandoffs: completedHandoffs.length,
+          completedHandoffsBound: COMPLETED_HANDOFFS_BOUND,
         },
       },
     }

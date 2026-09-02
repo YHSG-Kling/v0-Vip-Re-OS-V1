@@ -160,10 +160,16 @@ export interface InboxMessageRow {
   body: string
   created_at: string
   read: boolean
+  /** WHEN it was read, where the source table records it (vendor_messages.read_at). Undefined = lane does not track it. */
+  read_at?: string | null
   source_table: "messages" | "client_portal_messages" | "voice_calls" | "chat_messages" | "vendor_messages" | "isa_outreach_log" | "ai_isa_activities"
   sentiment?: string | null
   summary?: string | null
   vendor_id?: string | null
+  /** vendor_messages.contact_vendor_id — the contact↔vendor relationship the thread rides on. */
+  contact_vendor_id?: string | null
+  /** contact_vendors.role for that relationship (lender, inspector, …), resolved tenant-scoped; null when the link row is gone. */
+  vendor_role?: string | null
   /** "lead" for AI-ISA lead-lane rows (isa_outreach_log sends + lead voice calls). */
   party?: "contact" | "lead"
   /** leads.id when party === "lead". Leads are NOT contacts — separate id class. */
@@ -390,28 +396,65 @@ export async function loadUniversalInbox(
     if (fetchVendor) {
       let q = supabase
         .from("vendor_messages")
-        .select("id, vendor_id, counterparty_type, counterparty_id, sender_type, body, created_at, read")
+        // channel / contact_vendor_id / read_at were written by
+        // app/actions/vendor-messages.ts and read by nobody: this lane
+        // hard-coded `channel: "vendor"` from its own PARAMETER and threw the
+        // row's column away, `read` survived without its timestamp, and the
+        // relationship id was never resolved.
+        .select("id, vendor_id, counterparty_type, counterparty_id, sender_type, body, created_at, read, read_at, channel, contact_vendor_id")
         .eq("brokerage_id", actorContext.brokerageId)
         .eq("counterparty_type", "contact")
         .order("created_at", { ascending: false })
         .limit(limit)
       if (contactIds) q = q.in("counterparty_id", contactIds)
       if (unreadOnly) q = q.eq("read", false)
-      const { data: vendorMsgs } = await q
+      // PARAMETER AND COLUMN MUST AGREE. The parameter decides whether this
+      // LANE runs; the column says what each ROW is. Under the "vendor" filter
+      // the two are pinned together here so a row can never be fetched by the
+      // vendor filter and labelled something else. Under "all" the row's own
+      // channel passes through. vendor_messages.channel carries NO CHECK
+      // (scripts/check-vocabularies.ts lists only counterparty_type and
+      // sender_type), and its one writer (sendVendorMessage) writes "vendor";
+      // a row with any other value is therefore reachable under "all" only —
+      // it would be labelled by its own channel and no per-channel filter
+      // would fetch it. Today no such row can be written.
+      if (channel === "vendor") q = q.eq("channel", "vendor")
+      const { data: vendorMsgs, error: vendorErr } = await q
+      if (vendorErr) console.error("[communications] inbox vendor_messages lane refused:", vendorErr.message)
+
+      // Resolve contact_vendor_id → the relationship's role (lender, inspector, …),
+      // ONE batched read, tenant-anchored. A message whose link row was revoked
+      // and deleted resolves to null and still renders — the thread outlives
+      // the relationship.
+      const linkIds = [...new Set((vendorMsgs ?? []).map((m) => m.contact_vendor_id).filter((v): v is string => !!v))]
+      const roleByLink = new Map<string, string | null>()
+      if (linkIds.length > 0) {
+        const { data: links, error: linkErr } = await supabase
+          .from("contact_vendors")
+          .select("id, role")
+          .eq("brokerage_id", actorContext.brokerageId)
+          .in("id", linkIds)
+        if (linkErr) console.error("[communications] inbox contact_vendors resolve refused:", linkErr.message)
+        for (const l of links ?? []) roleByLink.set(l.id, l.role ?? null)
+      }
+
       for (const m of vendorMsgs ?? []) {
         const contact = contactMap.get(m.counterparty_id)
         results.push({
           id: m.id,
           contact_id: m.counterparty_id,
           contact_name: contact?.name ?? "Unknown",
-          channel: "vendor",
+          channel: m.channel ?? "vendor",
           // A vendor-sent message is inbound to the brokerage side.
           direction: m.sender_type === "vendor" ? "inbound" : "outbound",
           body: m.body ?? "",
           created_at: m.created_at,
           read: m.read ?? false,
+          read_at: m.read_at ?? null,
           source_table: "vendor_messages",
           vendor_id: m.vendor_id,
+          contact_vendor_id: m.contact_vendor_id ?? null,
+          vendor_role: m.contact_vendor_id ? (roleByLink.get(m.contact_vendor_id) ?? null) : null,
         })
       }
     }

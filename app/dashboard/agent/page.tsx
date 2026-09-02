@@ -340,10 +340,17 @@ export default function AgentDashboard() {
         // filter is `.eq`, which also excludes brokerage_id IS NULL: the 64
         // pre-rollout rows that nothing records a tenant for stay out of the
         // feed rather than being shown to whoever loads the page first.
+        //
+        // actionable_steps / entity_type / entity_id: every one of the eleven
+        // ai_insights writers in app/actions/ai-predictions.ts records WHAT the
+        // insight is about and WHAT TO DO about it, and until this select the
+        // feed showed only title/description — the "do this next" half of every
+        // insight was written and never read. The card turns entity_type +
+        // entity_id into a deep link (see insightEntityHref in the card).
         if (agentRow?.id && agentRow?.brokerage_id) {
           const { data: insightRows, error: insightsError } = await supabase
             .from("ai_insights")
-            .select("id, insight_type, insight_title, insight_description, priority, estimated_impact, created_at")
+            .select("id, insight_type, insight_title, insight_description, priority, estimated_impact, created_at, actionable_steps, entity_type, entity_id")
             .eq("brokerage_id", agentRow.brokerage_id)
             .or(`agent_id.eq.${agentRow.id},agent_id.is.null`)
             .order("created_at", { ascending: false })
