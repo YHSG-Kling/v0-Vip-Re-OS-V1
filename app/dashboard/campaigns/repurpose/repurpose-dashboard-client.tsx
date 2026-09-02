@@ -185,14 +185,21 @@ export function RepurposeDashboardClient({
   brokerageId,
   teamId,
   userRole,
-  pipelines: initialPipelines,
+  pipelines,
   history: initialHistory,
   sources,
   initialSourceType = null,
   initialSourceId = null,
 }: RepurposeDashboardClientProps) {
   const router = useRouter()
-  const [pipelines, setPipelines] = useState(initialPipelines)
+  // TOMBSTONE — `const [pipelines, setPipelines] = useState(initialPipelines)`.
+  // The setter was never called, and create / toggle / delete / execute all end
+  // in router.refresh(): React ignores a changed useState initializer after
+  // mount, so the refreshed server prop never reached the table and every
+  // mutation looked like a no-op until a hard reload. The PROP is the survivor
+  // (`pipelines`, destructured above) — it re-renders with each refresh.
+  // `history` keeps its local state on purpose: the filter bar below replaces it
+  // from getFilteredRepurposeHistory between refreshes.
   const [history, setHistory] = useState(initialHistory)
   
   // UI State
@@ -291,7 +298,7 @@ export function RepurposeDashboardClient({
 
     setActiveTab("execute")
 
-    const activePipeline = initialPipelines.find((p) => p.is_active && p.source_type === type)
+    const activePipeline = pipelines.find((p) => p.is_active && p.source_type === type)
     if (activePipeline) {
       setSelectedPipeline(activePipeline)
       if (match) setSelectedSource({ type, id: match.id, title: match.title })

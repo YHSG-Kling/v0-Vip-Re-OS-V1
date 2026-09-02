@@ -36,6 +36,8 @@ import {
 // the `include_price_reductions` / `price_reduction_min_percent` criteria columns
 // are all unchanged.
 import { priceImprovementLabel } from "@/lib/listings/price-improvement-label"
+import { useAuth } from "@/lib/auth/client"
+import { BROKERAGE_ADMIN_USER_TYPES } from "@/lib/auth/require-brokerage-admin"
 
 type Filter = "all" | "new_listings" | "price_reductions" | "not_viewed"
 
@@ -100,7 +102,21 @@ export default function BuyerAlertsPage() {
   // the sweep itself resolves, plus the sentence explaining it.
   const [sourceStatus, setSourceStatus] = useState<"checking" | "idx" | "rentcast" | "none" | "unreadable">("checking")
   const [sourceDetail, setSourceDetail] = useState<string>("")
-  const [isAdmin, setIsAdmin]         = useState(false)
+  // WHO MAY BE POINTED AT THE IDX SETTINGS PAGE. This was `useState(false)` with
+  // a setter nobody called, so the "Connect / Configure IDX Broker" links at the
+  // bottom of the source banner could never render for anyone — a broker read
+  // "ask your admin" about themselves. The role now comes from the canonical
+  // client auth hook (lib/auth/useAuth.ts — users.user_type ∪ user_role_assignments,
+  // read under the session's own RLS, never a cookie or a body field), tested
+  // against the SAME set the destination page enforces server-side
+  // (BROKERAGE_ADMIN_USER_TYPES, lib/auth/require-brokerage-admin.ts — one
+  // vocabulary, §6; `broker_owner` canonicalises to `broker` on the client,
+  // lib/security/types.ts:100, so it is still admitted). While the session is
+  // still resolving this reads false: FAIL CLOSED, the link appears only once
+  // the role is known. The link is a pointer, not the gate — the settings page
+  // refuses a non-admin on its own.
+  const { userContext, loading: authLoading } = useAuth()
+  const isAdmin = !authLoading && (userContext?.roles ?? []).some((r) => BROKERAGE_ADMIN_USER_TYPES.has(r))
   const [loading, setLoading]         = useState(true)
 
   // Results panel state

@@ -376,14 +376,25 @@ export default function CRMPage() {
   const [draftingFor, setDraftingFor] = useState<string | null>(null)
   const [offerWizardOpen, setOfferWizardOpen] = useState(false)
 
-  // Portal invite status for selected contact
-  const [portalInviteStatus, setPortalInviteStatus] = useState<string | null>(null)
-  // Richer portal invite data for the Portal tab
+  // TOMBSTONE — `const [portalInviteStatus, setPortalInviteStatus] = useState<string | null>(null)`.
+  // Set in three places (the fetch below, the reset, the optimistic "invited"
+  // after a send) and read nowhere. It was a strict subset of
+  // `portalInviteData.status`, which IS read — the sidebar banner, the
+  // Send-Portal-Invite gate and the Portal tab. Merged onto that survivor; what
+  // the survivor was missing is `readError`, so a refused read is its own state
+  // instead of rendering as "not invited" (and offering a second invite).
+  //
+  // `status` speaks the live portal_contact_invites vocabulary only —
+  // accepted | expired | pending | revoked | sent (scripts/check-vocabularies.ts).
+  // null = no invite row. The old sentinels "not_invited" / "invited" were
+  // spellings no row can carry (§6): issuePortalInvite writes "pending".
   const [portalInviteData, setPortalInviteData] = useState<{
     status: string | null
     accepted_at: string | null
     invited_at: string | null
     lastAccessed: string | null
+    /** Non-null when the invite read was REFUSED — status is then unknown, not absent. */
+    readError: string | null
   } | null>(null)
 
   // Journey & Team tab — lazy loaded on first tab activation
@@ -624,7 +635,6 @@ export default function CRMPage() {
   // Fetch portal invite status when a contact is selected — non-blocking
   useEffect(() => {
     if (!selectedContactId) {
-      setPortalInviteStatus(null)
       setPortalInviteData(null)
       setJourneyTeamData(null)
       setJourneyTeamLoaded(false)
@@ -633,7 +643,11 @@ export default function CRMPage() {
       return
     }
     const supabase = createClient()
-    // Fetch invite + last access in parallel
+    // Fetch invite + last access in parallel. Both READ their error (§3):
+    // supabase-js resolves a refusal with `data: null`, byte-identical to "no
+    // invite yet", and this used to swallow it — a refused read rendered as
+    // "not invited" and offered a fresh invite to a contact who may already
+    // hold one. A refusal now lands in `readError` and is shown as unknown.
     Promise.all([
       supabase
         .from("portal_contact_invites")
@@ -651,15 +665,20 @@ export default function CRMPage() {
         .maybeSingle(),
     ])
       .then(([inviteRes, accessRes]) => {
-        setPortalInviteStatus(inviteRes.data?.status ?? null)
         setPortalInviteData({
-          status:       inviteRes.data?.status ?? null,
+          status:       inviteRes.error ? null : (inviteRes.data?.status ?? null),
           accepted_at:  inviteRes.data?.accepted_at ?? null,
           invited_at:   inviteRes.data?.invited_at ?? null,
-          lastAccessed: accessRes.data?.accessed_at ?? null,
+          lastAccessed: accessRes.error ? null : (accessRes.data?.accessed_at ?? null),
+          readError:    inviteRes.error?.message ?? null,
         })
       })
-      .catch(() => {/* non-blocking */})
+      .catch((err: unknown) => {
+        setPortalInviteData({
+          status: null, accepted_at: null, invited_at: null, lastAccessed: null,
+          readError: err instanceof Error ? err.message : "Portal status could not be read",
+        })
+      })
   }, [selectedContactId])
 
   // Load conversations for the selected contact so RelationshipRadar and
@@ -1286,13 +1305,27 @@ export default function CRMPage() {
                      - Quick deep-links that open dialogs or other routes
                 ── */}
               <aside className="w-64 shrink-0 border-r bg-muted/20 flex flex-col overflow-y-auto px-4 py-4 gap-4">
-                {/* Portal invite status — small banner at top */}
-                {portalInviteData?.status && (
+                {/* Portal invite status — small banner at top. Three states kept
+                    distinct: a live status, no invite row, and a REFUSED read.
+                    Previously it rendered only when a row existed, so "never
+                    invited" and "could not tell" both showed nothing. */}
+                {portalInviteData && (
                   <div className="rounded-md border bg-background px-3 py-2">
                     <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">Portal</p>
-                    <p className="text-xs font-medium capitalize text-foreground">
-                      {portalInviteData.status === "not_invited" ? "Not invited yet" : portalInviteData.status}
-                    </p>
+                    {portalInviteData.readError ? (
+                      <p className="text-xs font-medium text-amber-600" title={portalInviteData.readError}>
+                        Status unknown — could not read
+                      </p>
+                    ) : portalInviteData.status ? (
+                      <p className={cn("text-xs font-medium capitalize",
+                        portalInviteData.status === "accepted" ? "text-green-600"
+                        : portalInviteData.status === "pending" || portalInviteData.status === "sent" ? "text-blue-600"
+                        : "text-foreground")}>
+                        {portalInviteData.status}
+                      </p>
+                    ) : (
+                      <p className="text-xs font-medium text-muted-foreground">Not invited yet</p>
+                    )}
                   </div>
                 )}
 
@@ -1395,7 +1428,12 @@ export default function CRMPage() {
                     <Phone className="h-3.5 w-3.5" />
                     Log Call
                   </Button>
-                  {(!portalInviteData?.status || portalInviteData.status === "not_invited") && brokerageId && (
+                  {/* Offered only when we KNOW there is no live invite (no row,
+                      or an expired one — issuePortalInvite renews an expired row
+                      in place). A refused read hides it: fail closed (§4). */}
+                  {portalInviteData && !portalInviteData.readError
+                    && (!portalInviteData.status || portalInviteData.status === "expired")
+                    && brokerageId && (
                     <Button
                       size="sm"
                       variant="outline"
@@ -1448,8 +1486,16 @@ export default function CRMPage() {
                           sendMagicLink: true,
                         })
                         if (result.success) {
-                          setPortalInviteStatus("invited")
-                          setPortalInviteData(prev => ({ ...prev, status: "invited", invited_at: new Date().toISOString() } as any))
+                          // "pending" is what issuePortalInvite actually wrote
+                          // (lib/portal/portal-invite-core.ts:180/189) — not the
+                          // former "invited", which no row can carry.
+                          setPortalInviteData(prev => ({
+                            status: "pending",
+                            accepted_at: prev?.accepted_at ?? null,
+                            invited_at: new Date().toISOString(),
+                            lastAccessed: prev?.lastAccessed ?? null,
+                            readError: null,
+                          }))
                           toast.success("Portal invite sent")
                         } else {
                           toast.error(result.error ?? "Invite failed")
@@ -2591,11 +2637,14 @@ export default function CRMPage() {
                           <div className="rounded-lg border bg-muted/20 p-3 space-y-1">
                             <p className="font-medium text-muted-foreground">Portal Status</p>
                             <p className={cn("font-semibold capitalize",
+                              portalInviteData?.readError ? "text-amber-600" :
                               portalInviteData?.status === "accepted" ? "text-green-600" :
-                              portalInviteData?.status === "invited"  ? "text-blue-600"  :
+                              portalInviteData?.status === "pending" || portalInviteData?.status === "sent" ? "text-blue-600" :
                               "text-muted-foreground"
-                            )}>
-                              {portalInviteData?.status ?? "Not yet invited"}
+                            )} title={portalInviteData?.readError ?? undefined}>
+                              {portalInviteData?.readError
+                                ? "Unknown — could not read"
+                                : portalInviteData?.status ?? "Not yet invited"}
                             </p>
                           </div>
                           <div className="rounded-lg border bg-muted/20 p-3 space-y-1">

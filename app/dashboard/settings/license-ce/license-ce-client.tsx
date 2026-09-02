@@ -70,8 +70,12 @@ function statusBadge(days: number | null) {
   return <Badge className="bg-green-100 text-green-800">{days}d</Badge>
 }
 
-export function LicenseCEClient({ agentId, profile, initialCompletions }: Props) {
-  const [completions, setCompletions] = useState(initialCompletions)
+export function LicenseCEClient({ agentId, profile, initialCompletions: completions }: Props) {
+  // TOMBSTONE — `const [completions, setCompletions] = useState(initialCompletions)`.
+  // The setter was never called; the prop is rendered directly. (handleLog ends
+  // in window.location.reload(), a full remount, so this list was not frozen in
+  // practice — but a writerless copy of a prop is a wire with no other end, and
+  // it would freeze the moment that reload became a router.refresh().)
   const [logOpen, setLogOpen] = useState(false)
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)

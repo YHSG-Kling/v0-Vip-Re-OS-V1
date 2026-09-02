@@ -99,7 +99,7 @@ interface MarketInsightsDashboardClientProps {
 export function MarketInsightsDashboardClient({
   brokerageId,
   agentId,
-  sources: initialSources,
+  sources,
   initialMarketArea,
   initialInsight,
   initialMarketData,
@@ -108,7 +108,11 @@ export function MarketInsightsDashboardClient({
   suggestedZip = null,
 }: MarketInsightsDashboardClientProps) {
   const router = useRouter()
-  const [sources, setSources] = useState(initialSources)
+  // TOMBSTONE — `const [sources, setSources] = useState(initialSources)`.
+  // setSources was never called and handleAddMarket ends in router.refresh();
+  // a useState initializer is read once, so the market the agent just added
+  // never appeared in the selector (nor did the empty-state ever clear) until a
+  // hard reload. The PROP `sources` is the survivor and follows every refresh.
   const [selectedMarket, setSelectedMarket] = useState(initialMarketArea)
   const [insight, setInsight] = useState(initialInsight)
   const [marketData, setMarketData] = useState(initialMarketData)

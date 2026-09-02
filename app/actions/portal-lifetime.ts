@@ -615,11 +615,30 @@ export async function submitReferral(data: {
   referredName: string
   referredContact: string
   relationship?: string
+  /** Free-text context from the referring client ("relocating in spring, wants
+   *  a yard"). Optional; capped and control-character-stripped below. */
+  notes?: string
 }) {
   const access = await requireContactAccess(data.contactId)
   if (!access.ok) throw new Error("Forbidden")
 
   const supabase = createServiceClient()
+
+  // THE CLIENT'S OWN WORDS. The portal form held a `notes` field that was never
+  // rendered and never sent, and this action had no parameter for it, so the
+  // qualifying context the brokerage's routing wants (§5 — leads belong to the
+  // brokerage) was lost on both sides. It lands in `referrals.notes` (TEXT,
+  // scripts/180-create-past-client-referral-system.sql:53) behind the
+  // contact-line this action already wrote there, and in the agent's portal
+  // message, so app/referrals/pipeline/page.tsx:165 and the inbox both show it.
+  // Sanitized: control characters out, trimmed, hard cap — a "use server"
+  // export is a public endpoint and the body is not trusted for length.
+  const REFERRAL_NOTE_MAX = 500
+  const clientNote = String(data.notes ?? "")
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .trim()
+    .slice(0, REFERRAL_NOTE_MAX)
 
   // Get contact's agent. Note: agent_id can legitimately be NULL when the contact came
   // through the public listing page disclosing they're already represented by another
@@ -643,7 +662,10 @@ export async function submitReferral(data: {
       referred_by: data.contactId,
       referral_name: data.referredName,
       source_contact_name: data.referredName,
-      notes: data.referredContact + (data.relationship ? ` (${data.relationship})` : ""),
+      notes:
+        data.referredContact +
+        (data.relationship ? ` (${data.relationship})` : "") +
+        (clientNote ? `\n${clientNote}` : ""),
       status: "received", // CHECK: received|contacted|qualified|assigned|under_contract|closed|lost (no 'new')
       agent_id: contact.agent_id,
       brokerage_id: contact.brokerage_id,
@@ -665,7 +687,9 @@ export async function submitReferral(data: {
       direction: "client_to_agent",
       channel: "portal",
       read: false,
-      body: `New referral: ${data.referredName} (${data.referredContact})${data.relationship ? ` - ${data.relationship}` : ""}`,
+      body:
+        `New referral: ${data.referredName} (${data.referredContact})${data.relationship ? ` - ${data.relationship}` : ""}` +
+        (clientNote ? `\nTheir note: ${clientNote}` : ""),
     })
 
     // Emit kernel event - resolve agent via kernel identity function

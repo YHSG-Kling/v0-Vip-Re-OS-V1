@@ -328,9 +328,34 @@ export function ReputationPanel({
   const [templateName,      setTemplateName]      = useState("")
   const [savingTemplate,    setSavingTemplate]    = useState(false)
 
-  // Note history
+  // Note history. `noteHistory` feeds the "Previous Notes" accordion inside the
+  // composer AND the standalone history dialog below. `noteHistoryOpen` was
+  // declared with neither a writer nor a reader — the dialog it was meant to
+  // open never existed, so the only way to see what a client had already been
+  // sent was to start composing them another note.
   const [noteHistory,       setNoteHistory]       = useState<any[]>([])
   const [noteHistoryOpen,   setNoteHistoryOpen]   = useState(false)
+  const [noteHistoryClient, setNoteHistoryClient] = useState<any>(null)
+  const [noteHistoryLoading, setNoteHistoryLoading] = useState(false)
+  const [noteHistoryError,  setNoteHistoryError]  = useState<string | null>(null)
+
+  function openNoteHistory(client: any) {
+    const contactId = client.contact_id || client.id
+    if (!contactId) { toast.error("No contact found"); return }
+    setNoteHistoryClient(client)
+    setNoteHistory([])
+    setNoteHistoryError(null)
+    setNoteHistoryOpen(true)
+    setNoteHistoryLoading(true)
+    // The action returns { success, error } — a refusal is shown as one, not as
+    // an empty history.
+    loadNoteHistoryAction(contactId)
+      .then(r => {
+        if (r.success) setNoteHistory(r.notes ?? [])
+        else setNoteHistoryError(r.error ?? "Note history could not be loaded.")
+      })
+      .finally(() => setNoteHistoryLoading(false))
+  }
 
   async function loadTemplates(occasion?: string) {
     const result = await loadThankYouTemplatesAction(occasion)
@@ -460,8 +485,29 @@ export function ReputationPanel({
   const [giftDialogOpen,  setGiftDialogOpen]  = useState(false)
   const [assigningGift,   setAssigningGift]   = useState(false)
   const [giftHistory,     setGiftHistory]     = useState<any[]>([])
+  // Same shape as the note history: `giftHistoryOpen` had no writer and no
+  // reader until the standalone dialog below.
   const [giftHistoryOpen, setGiftHistoryOpen] = useState(false)
+  const [giftHistoryClient,  setGiftHistoryClient]  = useState<any>(null)
+  const [giftHistoryLoading, setGiftHistoryLoading] = useState(false)
+  const [giftHistoryError,   setGiftHistoryError]   = useState<string | null>(null)
   const [markingSent,     setMarkingSent]     = useState<string | null>(null)
+
+  function openGiftHistory(client: any) {
+    const contactId = client.id || client.contact_id
+    if (!contactId) { toast.error("No contact found"); return }
+    setGiftHistoryClient(client)
+    setGiftHistory([])
+    setGiftHistoryError(null)
+    setGiftHistoryOpen(true)
+    setGiftHistoryLoading(true)
+    loadGiftHistoryAction(contactId)
+      .then(r => {
+        if (r.success) setGiftHistory(r.gifts ?? [])
+        else setGiftHistoryError(r.error ?? "Gift history could not be loaded.")
+      })
+      .finally(() => setGiftHistoryLoading(false))
+  }
 
   function openGiftDialog(client: any) {
     setGiftClient(client)
@@ -583,6 +629,101 @@ export function ReputationPanel({
       : "—"
 
   // ─── Render ───────────────────────────────────────────────────────────────────
+
+  // ── Shared history renderers ─────────────────────────
+  // ONE renderer per list, used by the composer accordions ("Previous Notes"
+  // inside the Thank You dialog, "Gift History" inside the Gift dialog) AND by
+  // the standalone history dialogs — so the two surfaces can never drift.
+  function renderNoteHistoryList() {
+    return (
+      <div className="space-y-1.5">
+        {noteHistory.map(n => (
+          <div key={n.id} className="flex items-start justify-between gap-2 p-2 rounded border text-sm">
+            <div className="min-w-0">
+              <p className="font-medium truncate capitalize">
+                {n.occasion}
+                {/* Provenance the table always recorded and never showed:
+                    AI-written vs typed, which template, which surface. */}
+                {n.ai_generated && (
+                  <Badge variant="outline" className="ml-1.5 text-[10px] align-middle">AI</Badge>
+                )}
+                {n.template_id && (
+                  <Badge variant="outline" className="ml-1 text-[10px] align-middle">template</Badge>
+                )}
+              </p>
+              {/* What was actually said — so the agent does not send the
+                  same note twice. Title carries the full body on hover. */}
+              {n.body && (
+                <p className="text-xs text-muted-foreground truncate" title={n.body}>
+                  {n.body}
+                </p>
+              )}
+              <p className="text-xs text-muted-foreground">
+                {n.channel} &middot; {new Date(n.created_at).toLocaleDateString()}
+                {n.source ? <> &middot; {String(n.source).replace(/_/g, " ")}</> : null}
+                {n.transaction_id ? <> &middot; for a transaction</> : null}
+              </p>
+            </div>
+            <div className="flex flex-col items-end gap-1 shrink-0">
+              <Badge variant="outline" className={`text-xs ${statusBadge(n.status)}`}>{n.status}</Badge>
+              {/* The queue row is the delivery truth for email notes —
+                  the note is stamped 'sent' when it is merely queued. */}
+              {n.delivery_status && n.delivery_status !== "sent" && (
+                <span className="text-[10px] text-amber-600">email {n.delivery_status}</span>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  function renderGiftHistoryList() {
+    return (
+      <div className="space-y-2">
+        {giftHistory.map(g => (
+          <div key={g.id} className="flex items-center justify-between p-2 rounded border text-sm">
+            <div className="min-w-0">
+              <p className="font-medium truncate">{g.gift_name}</p>
+              <p className="text-xs text-muted-foreground capitalize">
+                {g.occasion} &middot;{" "}
+                {g.actual_cost != null
+                  ? `$${g.actual_cost} paid`
+                  : `$${g.estimated_cost} budget`}{" "}
+                &middot; {new Date(g.created_at).toLocaleDateString()}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0 ml-2">
+              <Badge variant="outline" className={`text-xs ${statusBadge(g.status)}`}>{g.status}</Badge>
+              {g.status === "recommended" && (
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  inputMode="decimal"
+                  className="h-8 w-24 text-xs"
+                  placeholder="Paid $"
+                  aria-label="Amount actually paid for this gift"
+                  value={giftPaid[g.id] ?? ""}
+                  onChange={(e) => setGiftPaid(prev => ({ ...prev, [g.id]: e.target.value }))}
+                />
+              )}
+              {g.status === "recommended" && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={markingSent === g.id}
+                  onClick={() => handleMarkGiftSent(g.id)}
+                >
+                  {markingSent === g.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                </Button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-6">
@@ -928,9 +1069,14 @@ export function ReputationPanel({
                       </p>
                       <p className="text-xs text-muted-foreground truncate">{client.property_address}</p>
                     </div>
-                    <Button size="sm" variant="outline" onClick={() => openThankYouDialog(client)}>
-                      <Send className="w-4 h-4 mr-1" />Note
-                    </Button>
+                    <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                      <Button size="sm" variant="ghost" onClick={() => openNoteHistory(client)} title="Previous notes">
+                        <History className="w-4 h-4" />
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={() => openThankYouDialog(client)}>
+                        <Send className="w-4 h-4 mr-1" />Note
+                      </Button>
+                    </div>
                   </div>
                 ))
               )}
@@ -959,9 +1105,14 @@ export function ReputationPanel({
                         {client.transactions?.[0]?.property_address || "Lifetime Customer"}
                       </p>
                     </div>
-                    <Button size="sm" variant="outline" onClick={() => openGiftDialog(client)}>
-                      <Gift className="w-4 h-4 mr-1" />Gifts
-                    </Button>
+                    <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                      <Button size="sm" variant="ghost" onClick={() => openGiftHistory(client)} title="Gift history">
+                        <History className="w-4 h-4" />
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={() => openGiftDialog(client)}>
+                        <Gift className="w-4 h-4 mr-1" />Gifts
+                      </Button>
+                    </div>
                   </div>
                 ))
               )}
@@ -1138,45 +1289,8 @@ export function ReputationPanel({
                   </span>
                 </AccordionTrigger>
                 <AccordionContent>
-                  <div className="space-y-1.5">
-                    {noteHistory.map(n => (
-                      <div key={n.id} className="flex items-start justify-between gap-2 p-2 rounded border text-sm">
-                        <div className="min-w-0">
-                          <p className="font-medium truncate capitalize">
-                            {n.occasion}
-                            {/* Provenance the table always recorded and never showed:
-                                AI-written vs typed, which template, which surface. */}
-                            {n.ai_generated && (
-                              <Badge variant="outline" className="ml-1.5 text-[10px] align-middle">AI</Badge>
-                            )}
-                            {n.template_id && (
-                              <Badge variant="outline" className="ml-1 text-[10px] align-middle">template</Badge>
-                            )}
-                          </p>
-                          {/* What was actually said — so the agent does not send the
-                              same note twice. Title carries the full body on hover. */}
-                          {n.body && (
-                            <p className="text-xs text-muted-foreground truncate" title={n.body}>
-                              {n.body}
-                            </p>
-                          )}
-                          <p className="text-xs text-muted-foreground">
-                            {n.channel} &middot; {new Date(n.created_at).toLocaleDateString()}
-                            {n.source ? <> &middot; {String(n.source).replace(/_/g, " ")}</> : null}
-                            {n.transaction_id ? <> &middot; for a transaction</> : null}
-                          </p>
-                        </div>
-                        <div className="flex flex-col items-end gap-1 shrink-0">
-                          <Badge variant="outline" className={`text-xs ${statusBadge(n.status)}`}>{n.status}</Badge>
-                          {/* The queue row is the delivery truth for email notes —
-                              the note is stamped 'sent' when it is merely queued. */}
-                          {n.delivery_status && n.delivery_status !== "sent" && (
-                            <span className="text-[10px] text-amber-600">email {n.delivery_status}</span>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                  {/* One renderer for both surfaces — see renderNoteHistoryList. */}
+                  {renderNoteHistoryList()}
                 </AccordionContent>
               </AccordionItem>
             )}
@@ -1352,48 +1466,8 @@ export function ReputationPanel({
                   </span>
                 </AccordionTrigger>
                 <AccordionContent>
-                  <div className="space-y-2">
-                    {giftHistory.map(g => (
-                      <div key={g.id} className="flex items-center justify-between p-2 rounded border text-sm">
-                        <div className="min-w-0">
-                          <p className="font-medium truncate">{g.gift_name}</p>
-                          <p className="text-xs text-muted-foreground capitalize">
-                            {g.occasion} &middot;{" "}
-                            {g.actual_cost != null
-                              ? `$${g.actual_cost} paid`
-                              : `$${g.estimated_cost} budget`}{" "}
-                            &middot; {new Date(g.created_at).toLocaleDateString()}
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-2 shrink-0 ml-2">
-                          <Badge variant="outline" className={`text-xs ${statusBadge(g.status)}`}>{g.status}</Badge>
-                          {g.status === "recommended" && (
-                            <Input
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              inputMode="decimal"
-                              className="h-8 w-24 text-xs"
-                              placeholder="Paid $"
-                              aria-label="Amount actually paid for this gift"
-                              value={giftPaid[g.id] ?? ""}
-                              onChange={(e) => setGiftPaid(prev => ({ ...prev, [g.id]: e.target.value }))}
-                            />
-                          )}
-                          {g.status === "recommended" && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              disabled={markingSent === g.id}
-                              onClick={() => handleMarkGiftSent(g.id)}
-                            >
-                              {markingSent === g.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                  {/* One renderer for both surfaces — see renderGiftHistoryList. */}
+                  {renderGiftHistoryList()}
                 </AccordionContent>
               </AccordionItem>
             </Accordion>
@@ -1401,6 +1475,78 @@ export function ReputationPanel({
 
           <DialogFooter>
             <Button variant="outline" onClick={() => setGiftDialogOpen(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ════════════════════════════════════════════════════════════════
+          NOTE HISTORY DIALOG — read-only. `noteHistoryOpen` existed with
+          no dialog behind it; loadNoteHistoryAction ran only from inside
+          the composer. Same shape as the sibling dialogs above.
+      ════════════════════════════════════════════════════════════════ */}
+      <Dialog open={noteHistoryOpen} onOpenChange={setNoteHistoryOpen}>
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Previous Notes</DialogTitle>
+            <DialogDescription>
+              Sent to {noteHistoryClient?.contacts?.first_name || noteHistoryClient?.first_name}{" "}
+              {noteHistoryClient?.contacts?.last_name  || noteHistoryClient?.last_name}
+            </DialogDescription>
+          </DialogHeader>
+          {noteHistoryLoading ? (
+            <p className="text-sm text-muted-foreground flex items-center gap-2 py-4">
+              <Loader2 className="w-4 h-4 animate-spin" /> Loading…
+            </p>
+          ) : noteHistoryError ? (
+            <p className="text-sm text-red-600 py-4">{noteHistoryError}</p>
+          ) : noteHistory.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-4">No notes sent yet</p>
+          ) : (
+            renderNoteHistoryList()
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setNoteHistoryOpen(false)}>Close</Button>
+            {noteHistoryClient && (
+              <Button onClick={() => { setNoteHistoryOpen(false); openThankYouDialog(noteHistoryClient) }}>
+                <Send className="w-4 h-4 mr-1" />Write a Note
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ════════════════════════════════════════════════════════════════
+          GIFT HISTORY DIALOG — same story as the note history: the state
+          existed, the surface did not. The "Paid $" + mark-sent controls
+          come with the shared renderer, so a gift can be closed out here
+          without opening the recommender.
+      ════════════════════════════════════════════════════════════════ */}
+      <Dialog open={giftHistoryOpen} onOpenChange={setGiftHistoryOpen}>
+        <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Gift History</DialogTitle>
+            <DialogDescription>
+              For {giftHistoryClient?.first_name} {giftHistoryClient?.last_name}
+            </DialogDescription>
+          </DialogHeader>
+          {giftHistoryLoading ? (
+            <p className="text-sm text-muted-foreground flex items-center gap-2 py-4">
+              <Loader2 className="w-4 h-4 animate-spin" /> Loading…
+            </p>
+          ) : giftHistoryError ? (
+            <p className="text-sm text-red-600 py-4">{giftHistoryError}</p>
+          ) : giftHistory.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-4">No gifts recorded yet</p>
+          ) : (
+            renderGiftHistoryList()
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setGiftHistoryOpen(false)}>Close</Button>
+            {giftHistoryClient && (
+              <Button onClick={() => { setGiftHistoryOpen(false); openGiftDialog(giftHistoryClient) }}>
+                <Gift className="w-4 h-4 mr-1" />Find a Gift
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

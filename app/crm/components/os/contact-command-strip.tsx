@@ -4,8 +4,6 @@ import { useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
-  } from "@/components/ui/dropdown-menu"
-import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
@@ -40,8 +38,6 @@ interface ContactCommandStripProps {
   autopilotPlans?: Array<{ id: string; is_active: boolean; autopilot_level: string }> | null
   agentId: string
   brokerageId: string
-  onEnableAutopilot: (level: "conservative" | "moderate" | "aggressive") => Promise<void>
-  onToggleAutopilot: (planId: string, pause: boolean) => Promise<void>
   onShareSocialPost?: () => void | Promise<void>
   onChannelToggled?: () => void
   onAddNote?: () => void
@@ -79,35 +75,26 @@ export function ContactCommandStrip({
   autopilotPlans,
   agentId,
   brokerageId,
-  onEnableAutopilot,
-  onToggleAutopilot,
   onShareSocialPost,
   onChannelToggled,
   onAddNote,
   loading = false,
 }: ContactCommandStripProps) {
-  const [autopilotLoading, setAutopilotLoading] = useState(false)
+  // TOMBSTONE — `autopilotLoading` / `handleEnableAutopilot` /
+  // `handleToggleAutopilot` and the required props `onEnableAutopilot` /
+  // `onToggleAutopilot`. The busy flag was set around two awaited mutations and
+  // read by nothing — because the dropdown that fired them was deliberately
+  // removed (see the note in the JSX below: it wrote to a different table than
+  // the sidebar switch and the two never agreed). No caller passed either prop.
+  // The capability, WITH its busy affordance, lives in AIPilotControl
+  // (app/crm/components/ai-pilot-control.tsx:58 — `isPending` disables the
+  // trigger and swaps in a spinner), rendered by ContactHeaderCard
+  // (app/crm/components/contact-header-card.tsx:276). Rebuilding buttons here
+  // would have re-created the split that note records fixing. `activePlan`
+  // (`autopilotPlans?.find(p => p.is_active)`) went with them — its only reader
+  // was that dropdown; the prop stays so the strip's contract is unchanged.
+  void autopilotPlans
   const [channelLoading, setChannelLoading] = useState<string | null>(null)
-
-  const activePlan = autopilotPlans?.find((p) => p.is_active)
-
-  const handleEnableAutopilot = async (level: "conservative" | "moderate" | "aggressive") => {
-    setAutopilotLoading(true)
-    try {
-      await onEnableAutopilot(level)
-    } finally {
-      setAutopilotLoading(false)
-    }
-  }
-
-  const handleToggleAutopilot = async (planId: string, pause: boolean) => {
-    setAutopilotLoading(true)
-    try {
-      await onToggleAutopilot(planId, pause)
-    } finally {
-      setAutopilotLoading(false)
-    }
-  }
 
   return (
     <div className="bg-gradient-to-r from-blue-700 to-indigo-800 text-white rounded-lg p-4">

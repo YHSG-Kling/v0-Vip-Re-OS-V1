@@ -258,7 +258,7 @@ export function NetSheetCalculator({ offerPrice, listPrice, currentMortgageBalan
           {/* Liens */}
           <div className="space-y-1">
             <div className="flex justify-between items-center">
-              <Label htmlFor="liens">Liens / HOA Dues</Label>
+              <Label htmlFor="liens">Liens / Judgments</Label>
               <Input
                 id="liens"
                 type="number"
@@ -269,6 +269,27 @@ export function NetSheetCalculator({ offerPrice, listPrice, currentMortgageBalan
               />
             </div>
             {liens > 0 && <span className="text-red-600 text-right block text-sm">-{formatCurrency(liens)}</span>}
+          </div>
+
+          {/* HOA — `hoaFees` fed every net figure on this card (the live total,
+              the three quick scenarios and the PDF's "other" line) and had NO
+              input, so a seller's proceeds always assumed zero HOA. The lien
+              field above was labelled "Liens / HOA Dues" as a stand-in; it is
+              now liens only and HOA has its own line, same shape as its
+              siblings. Portal surface: these are the seller's own figures. */}
+          <div className="space-y-1">
+            <div className="flex justify-between items-center">
+              <Label htmlFor="hoaFees">HOA Dues / Transfer Fees (owed at closing)</Label>
+              <Input
+                id="hoaFees"
+                type="number"
+                value={hoaFees}
+                onChange={(e) => setHoaFees(Number(e.target.value))}
+                className="w-32 text-right"
+                placeholder="0"
+              />
+            </div>
+            {hoaFees > 0 && <span className="text-red-600 text-right block text-sm">-{formatCurrency(hoaFees)}</span>}
           </div>
 
           {/* Prorations */}
