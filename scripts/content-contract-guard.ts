@@ -343,6 +343,23 @@ console.log("\n═══ 6. isSupplied cannot be satisfied by a blank ═══"
   ok("undefined is not supplied", !isSupplied(undefined))
   ok("an empty string is not supplied", !isSupplied(""))
   ok("whitespace is not supplied", !isSupplied("   "))
+
+  // A CONTAINER OF NOTHING IS NOTHING (lane RM1, 2026-09-02). The defect that
+  // motivated this: `daysOnMarket: { values: [], labels: [] }` — the shape the
+  // CMA builder emits when no comp reports days-on-market — passed isSupplied
+  // because it is a non-empty OBJECT, and remotion/CMAReel.tsx:95 then rendered a
+  // bar chart with no bars (its Math.min over an empty array is -Infinity). The
+  // rule is now recursive: an object or array is supplied only if SOME member
+  // is. These are the positive controls that keep it so, plus the arm that
+  // proves it does not over-refuse — one live member is enough.
+  ok("an object whose members are all empty is NOT supplied (the CMA no-DOM shape)",
+    !isSupplied({ values: [], labels: [] }))
+  ok("an array of empty arrays is NOT supplied", !isSupplied([[], []]))
+  ok("an object of nulls and blanks is NOT supplied", !isSupplied({ a: null, b: "", c: "  " }))
+  ok("nested emptiness is NOT supplied", !isSupplied({ series: { values: [], labels: [] } }))
+  ok("...but ONE live member is enough — no false refusal",
+    isSupplied({ values: [42], labels: [] }) && isSupplied([[], [1]]) && isSupplied({ a: null, b: "x" }))
+  ok("...and a plain number or non-blank string is still supplied", isSupplied(0) && isSupplied("x"))
   ok("an empty array is not supplied — a reel with no cards states nothing", !isSupplied([]))
   ok("an empty object is not supplied", !isSupplied({}))
   ok("ZERO is supplied — zero appreciation is a real answer", isSupplied(0))
