@@ -642,7 +642,10 @@ async function main() {
       file: GATE,
       detail: "buildComplianceSystemBlocks must splice the prohibited-phrase block into what it returns — computing it and not returning it is the dead-gate shape",
       predicate: (s) =>
-        /buildComplianceSystemBlocks[\s\S]{0,600}?buildProhibitedPhraseBlock\(\s*await\s+loadProhibitedPhraseCatalogue\(\)\s*\)/.test(s) &&
+        // `\([^)]*\)` not `\(\)`: the catalogue read carries a tenant scope since
+        // 2026-09-02 (lane W4a) — pinning the empty-argument spelling was a §2
+        // waypoint that went red because the work landed.
+        /buildComplianceSystemBlocks[\s\S]{0,600}?buildProhibitedPhraseBlock\(\s*await\s+loadProhibitedPhraseCatalogue\([^)]*\)\s*\)/.test(s) &&
         /return\s*\[[^\]]*phraseBlock[^\]]*\]\.filter\(Boolean\)/.test(s),
       mutate: (s) => s.replace(/,\s*phraseBlock\]/, "]"),
     },
@@ -656,7 +659,10 @@ async function main() {
         const t = fn.indexOf("try {")
         return p >= 0 && t >= 0 && p < t
       },
-      mutate: (s) => s.replace(/const\s+phrases\s*=\s*await\s+assessProhibitedPhrases\(script\)/, "const phrases = { catalogueState: \"loaded\" as const, redFlags: [] as string[], warnings: [] as string[], unknownReason: undefined }"),
+      // `script[^)]*` not `script`: the call carries the catalogue and tenant scope
+      // since 2026-09-02 (lane W4a); a mutation anchored on the old spelling
+      // silently changes nothing and the control never runs (§2).
+      mutate: (s) => s.replace(/const\s+phrases\s*=\s*await\s+assessProhibitedPhrases\(script[^)]*\)/, "const phrases = { catalogueState: \"loaded\" as const, redFlags: [] as string[], warnings: [] as string[], unknownReason: undefined }"),
     },
     {
       id: "6.3 GATE-KEEPS-THE-PHRASE-WARNINGS",

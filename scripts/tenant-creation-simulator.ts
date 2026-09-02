@@ -125,8 +125,13 @@ function sourceLayer() {
   const reg = src("lib/kernel/manager-registry.ts")
   check("tenant_creation burn domain owned by data_steward with proof test:tenant-creation",
     /tenant_creation:\s*\{\s*manager:\s*"data_steward",\s*proof:\s*"test:tenant-creation"/.test(reg))
+  // The RULE is "package.json runs this file", not "with exactly these
+  // characters": the live layer dynamic-imports lib/kernel/users, which is
+  // `server-only` since 2026-09-02 (lane S1), so the script line legitimately
+  // carries NODE_OPTIONS=--conditions=react-server — and a pin on the bare
+  // spelling went red because the work landed (§2).
   check("package.json wires the proof",
-    /"test:tenant-creation":\s*"tsx scripts\/tenant-creation-simulator\.ts"/.test(src("package.json")))
+    /"test:tenant-creation":\s*"(?:NODE_OPTIONS=[^\s"]+\s+)?tsx scripts\/tenant-creation-simulator\.ts"/.test(src("package.json")))
 }
 
 async function liveLayer() {
