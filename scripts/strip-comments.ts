@@ -50,6 +50,24 @@
  * vendor-retirement guard duly reported a comment as a live reference to a retired vendor.
  * Interpolation depth is tracked; see the mode/tmplStack block in scan().
  *
+ * A SIXTH ROUND (lane S1, 2026-09-02): JSX TEXT. The scanner was not JSX-aware, so
+ * a slash-star inside the TEXT of an element opened a block comment. Reproduced on
+ * app/settings/developers/developers-client.tsx:326, which renders
+ * `<code>/api/agentic-os/` + star + `</code>`: that slash-star ran to the
+ * star-slash of the next real JSX comment and swallowed 5,352 characters — 27 code tokens, lines
+ * ~330-355 — from EVERY guard that reads the file through this module. Blast radius
+ * on that day was zero (no import or export in the swallowed region); the class is
+ * not: any capability whose only call site moves into such a block becomes
+ * invisible. The same blindness cost blankStrings an apostrophe: `<p>Don't forget
+ * {props.name}</p>` opened a "string" at the apostrophe and blanked `{props.name}`
+ * to the end of the line, so a reference in JSX text after a contraction read as
+ * absent. The scanner now tracks JSX: a `<` that OPENS AN ELEMENT (decided by what
+ * precedes it and CONFIRMED by a matching `</name>` or `/>` ahead — a `<T>(x)`
+ * generic or a `<Foo>bar` assertion has neither and stays code), the TAG (attribute
+ * strings, `{…}` expressions back in code), and the TEXT between tags, where
+ * nothing but `{` and `<` is significant. See the jsxTag/jsxText arms of scan() and
+ * the STATED BLIND SPOTS beside scannerSelfTest() at the bottom of this file.
+ *
  * TWO EXPORTS, one scanner: stripComments() DELETES comments (line numbers survive);
  * blankComments() replaces them with SPACES (line numbers AND character offsets survive).
  * Analyzers that compute a position from a match index need the second one.
@@ -204,9 +222,40 @@ function scan(src: string, blank: boolean, mask = false, sink?: StringLiteral[])
   // of naming a retired vendor in live code when all three mentions are comments.
   // Same lesson as the block-first strip: a stripper that loses sync does not go
   // quiet, it goes confidently wrong.
-  let mode: "code" | "template" = "code"
-  const tmplStack: number[] = [] // brace depth captured at each open `${`
+  //
+  // ── JSX (round six) ─────────────────────────────────────────────────────────
+  // Two more modes. `jsxTag` is the inside of `<… >`: attribute strings are
+  // literals, `{…}` is code, and the `>` (or `/>`) ends it. `jsxText` is the
+  // children between an opening and a closing tag: NOTHING there is code except
+  // `{`, which opens an expression, and `<`, which opens a child or closes the
+  // element. A `/*`, a `//`, a quote or a backtick in text is text and is copied
+  // through untouched — that is the whole fix for the developers-client swallow.
+  //
+  // The one real question is whether a `<` in code OPENS AN ELEMENT or is a
+  // comparison / type argument. jsxOpensAt() answers it from what precedes the
+  // `<` (a value — identifier, `)`, `]`, a quote, a digit — means comparison or
+  // generic; an operator, a delimiter or `return`/`case`/… means an element) and
+  // then CONFIRMS the guess by finding the element's `/>` or a matching `</name>`
+  // ahead. A `<T,>(…)` generic arrow, a `<T extends X>`, a `<Foo>bar` assertion
+  // or a `<T>(x: T) => T` function type has none of those and stays code. A wrong
+  // "yes" here would put the rest of the file into text mode — the desync this
+  // header keeps describing — which is why the guess is confirmed, not trusted.
+  let mode: "code" | "template" | "jsxTag" | "jsxText" = "code"
+  // One frame per `${` or JSX `{` currently open: the brace depth at which it
+  // opened, and the mode a `}` at that depth returns to. (Was `tmplStack`, a bare
+  // list of depths, when templates were the only way back out of code.)
+  const exprStack: Array<{ back: "template" | "jsxText" | "jsxTag"; depth: number }> = []
   let braceDepth = 0
+  // One entry per JSX element currently open, innermost last: exprStack.length at
+  // the moment it opened. Closing an element returns to its parent's TEXT when the
+  // parent opened at this same expression level, and to CODE otherwise — the
+  // `<li>` produced inside `{items.map(i => <li/>)}` must hand control back to the
+  // arrow function, not to the `<ul>`'s children.
+  const elemStack: number[] = []
+  // `<Select<Option> …>` — type arguments inside a tag; their `>` must not end it.
+  let angleDepth = 0
+  // Last non-space character seen inside the current tag, so `/>` is recognised.
+  let tagPrev = ""
 
   // Open template literals, innermost last — one entry per unclosed backtick, so a
   // template opened INSIDE an interpolation collects its own text and is emitted as
@@ -217,6 +266,12 @@ function scan(src: string, blank: boolean, mask = false, sink?: StringLiteral[])
 
   /** Same span, every character a space except the newlines (offsets AND lines survive). */
   const blanked = (text: string) => text.replace(/[^\n]/g, " ")
+
+  /** Where control goes once the innermost element has closed. */
+  const afterElementClose = (): "code" | "jsxText" => {
+    const parent = elemStack.length > 0 ? elemStack[elemStack.length - 1] : undefined
+    return parent !== undefined && parent === exprStack.length ? "jsxText" : "code"
+  }
 
   while (i < n) {
     if (mode === "template") {
@@ -240,7 +295,7 @@ function scan(src: string, blank: boolean, mask = false, sink?: StringLiteral[])
       if (t === "$" && src[i + 1] === "{") {
         out += "${"
         i += 2
-        tmplStack.push(braceDepth)
+        exprStack.push({ back: "template", depth: braceDepth })
         mode = "code"
         prevSignificant = "{"
         // The interpolation's INTERIOR is code and is deliberately not collected as
@@ -264,18 +319,125 @@ function scan(src: string, blank: boolean, mask = false, sink?: StringLiteral[])
       continue
     }
 
+    if (mode === "jsxText") {
+      const t = src[i]
+      if (t === "{") {
+        exprStack.push({ back: "jsxText", depth: braceDepth })
+        out += t
+        i++
+        mode = "code"
+        prevSignificant = "{"
+        continue
+      }
+      if (t === "<") {
+        const u = src[i + 1] ?? ""
+        if (u === "/") {
+          // Closing tag — copied through its `>`; the element it closes is popped.
+          const end = src.indexOf(">", i)
+          const stop = end === -1 ? n : end + 1
+          out += src.slice(i, stop)
+          i = stop
+          elemStack.pop()
+          mode = afterElementClose()
+          prevSignificant = ">"
+          continue
+        }
+        if (/[A-Za-z_$>]/.test(u)) {
+          // A child element (or fragment) — no guess needed here: in text, `<`
+          // followed by a name can only be a tag.
+          elemStack.push(exprStack.length)
+          out += t
+          i++
+          mode = "jsxTag"
+          angleDepth = 0
+          tagPrev = ""
+          continue
+        }
+      }
+      // Text, verbatim, up to the next `{` or `<`. Deliberately NOT masked in
+      // blankStrings mode — see STATED BLIND SPOTS at the bottom of this file.
+      let k = i + 1
+      while (k < n && src[k] !== "{" && src[k] !== "<") k++
+      out += src.slice(i, k)
+      i = k
+      continue
+    }
+
+    if (mode === "jsxTag") {
+      const t = src[i]
+      const u = src[i + 1]
+      // Comments are legal between attributes and are stripped like any other.
+      if (t === "/" && u === "*") {
+        const end = src.indexOf("*/", i + 2)
+        const stop = end === -1 ? n : end + 2
+        for (let k = i; k < stop; k++) out += src[k] === "\n" ? "\n" : blank ? " " : ""
+        i = stop
+        continue
+      }
+      if (t === "/" && u === "/") {
+        while (i < n && src[i] !== "\n") { if (blank) out += " "; i++ }
+        continue
+      }
+      if (t === '"' || t === "'") {
+        // A JSX attribute string: no escapes, may span lines, ends at the same quote.
+        const litStart = i
+        out += t
+        i++
+        let k = i
+        while (k < n && src[k] !== t) k++
+        const span = src.slice(i, k)
+        out += mask ? blanked(span) : span
+        i = k
+        if (i < n) {
+          out += src[i]
+          i++
+          if (sink) sink.push({ start: litStart, end: i, kind: t === '"' ? "double" : "single", text: span })
+        }
+        tagPrev = t
+        continue
+      }
+      if (t === "{") {
+        exprStack.push({ back: "jsxTag", depth: braceDepth })
+        out += t
+        i++
+        mode = "code"
+        prevSignificant = "{"
+        tagPrev = "}"
+        continue
+      }
+      if (t === "<") { angleDepth++; out += t; i++; tagPrev = t; continue }
+      if (t === ">") {
+        out += t
+        i++
+        if (angleDepth > 0) { angleDepth--; tagPrev = t; continue }
+        prevSignificant = ">"
+        if (tagPrev === "/") {
+          elemStack.pop()
+          mode = afterElementClose()
+        } else {
+          mode = "jsxText"
+        }
+        continue
+      }
+      out += t
+      if (!/\s/.test(t)) tagPrev = t
+      i++
+      continue
+    }
+
     const c = src[i]
     const d = src[i + 1]
 
-    // Closing brace of an interpolation returns us to template text.
-    if (tmplStack.length > 0 && (c === "{" || c === "}")) {
+    // Closing brace of an interpolation / JSX expression returns us to where it opened.
+    if (exprStack.length > 0 && (c === "{" || c === "}")) {
       if (c === "{") {
         braceDepth++
-      } else if (braceDepth === tmplStack[tmplStack.length - 1]) {
-        tmplStack.pop()
+      } else if (braceDepth === exprStack[exprStack.length - 1].depth) {
+        const frame = exprStack.pop()!
         out += "}"
         i++
-        mode = "template"
+        mode = frame.back
+        if (frame.back === "jsxTag") tagPrev = "}"
         continue
       } else {
         braceDepth--
@@ -353,6 +515,16 @@ function scan(src: string, blank: boolean, mask = false, sink?: StringLiteral[])
       continue
     }
 
+    if (c === "<" && jsxOpensAt(src, i, prevSignificant)) {
+      elemStack.push(exprStack.length)
+      out += c
+      i++
+      mode = "jsxTag"
+      angleDepth = 0
+      tagPrev = ""
+      continue
+    }
+
     if (c === "/" && canStartRegex(prevSignificant)) {
       // Copy the regex literal verbatim, including its class ranges.
       let j = i + 1
@@ -378,13 +550,14 @@ function scan(src: string, blank: boolean, mask = false, sink?: StringLiteral[])
     // Fast path. Appending one character at a time made this ~40x slower than the
     // (wrong) regex idiom it replaces, which matters when a repo-wide guard runs it
     // over thousands of files. Ordinary characters — anything that cannot open a
-    // comment, string, template or regex — are copied in a single slice instead.
-    // Semantics are identical; only the number of string concatenations changes.
+    // comment, string, template, regex or JSX element — are copied in a single
+    // slice instead. Semantics are identical; only the number of string
+    // concatenations changes.
     let j = i
-    const tracking = tmplStack.length > 0
+    const tracking = exprStack.length > 0
     while (j < n) {
       const ch = src[j]
-      if (ch === "/" || ch === '"' || ch === "'" || ch === "`") break
+      if (ch === "/" || ch === '"' || ch === "'" || ch === "`" || ch === "<") break
       if (tracking && (ch === "{" || ch === "}")) break
       j++
     }
@@ -417,4 +590,236 @@ function canStartRegex(prev: string): boolean {
   if (prev === "") return true
   if (/[A-Za-z0-9_$)\]"'`]/.test(prev)) return false
   return true
+}
+
+/** What may stand directly before a `<` that opens a JSX element. */
+const JSX_PREV = new Set(["(", ",", "=", ":", "?", "{", "[", "&", "|", ";", ">", "!"])
+/** …and the keywords that may: `return <div/>`, `case 1: … default: return`, `yield <X/>`. */
+const JSX_KEYWORDS = new Set(["return", "case", "default", "yield", "await", "else", "do", "throw"])
+
+/**
+ * Does the `<` at `i` open a JSX element?
+ *
+ * Two questions, both answered before "yes". WHAT PRECEDES IT: after a value
+ * (an identifier, a digit, `)`, `]`, a quote) a `<` is a comparison or a type
+ * argument — `a < b`, `useState<string>()`, `Array<Foo>` — and after an operator,
+ * a delimiter or one of JSX_KEYWORDS it can be an element. WHAT FOLLOWS IT: the
+ * element must be real, meaning the tag is self-closing (`/>`) or a matching
+ * `</name>` appears later in the source. The shapes that pass the first test and
+ * fail the second are exactly the TypeScript ones — `<T,>(x) =>`, `<T extends X>`,
+ * `<Foo>bar` (an angle-bracket assertion, .ts only), `<T>(x: T) => T` (a generic
+ * function type) — and each stays code. The lookahead is what keeps a wrong guess
+ * from sending the rest of a .ts file into text mode.
+ */
+function jsxOpensAt(src: string, i: number, prev: string): boolean {
+  const n = src.length
+  const next = src[i + 1] ?? ""
+  const fragment = next === ">"
+  if (!fragment && !/[A-Za-z_$]/.test(next)) return false
+
+  if (/[A-Za-z0-9_$]/.test(prev)) {
+    // A word precedes. Only a keyword may open an element; read it back from the
+    // source. (A comment between the keyword and the `<` defeats this and the
+    // `<` is left as code — the pre-round-six behaviour, never anything worse.)
+    let j = i - 1
+    while (j >= 0 && /\s/.test(src[j])) j--
+    let k = j
+    while (k >= 0 && /[A-Za-z0-9_$]/.test(src[k])) k--
+    if (!JSX_KEYWORDS.has(src.slice(k + 1, j + 1))) return false
+  } else if (prev !== "" && !JSX_PREV.has(prev)) {
+    return false
+  }
+
+  if (fragment) return src.indexOf("</>", i + 2) !== -1
+
+  // The tag name — `Foo.Bar`, `svg:rect`, `my-element` are all names.
+  let j = i + 1
+  while (j < n && /[A-Za-z0-9_$.:\-]/.test(src[j])) j++
+  const name = src.slice(i + 1, j)
+  let k = j
+  while (k < n && /\s/.test(src[k])) k++
+  if (src[k] === ",") return false                                                   // <T,>(x) => …
+  if (src.startsWith("extends", k) && !/[A-Za-z0-9_$]/.test(src[k + 7] ?? "")) return false // <T extends X>
+
+  // Find the end of the tag. Quotes and `{…}` are stepped over so a `>` inside an
+  // attribute does not end it; a `/` right before the `>` means self-closing.
+  let depth = 0
+  let angle = 0
+  let quote: string | null = null
+  let m = j
+  while (m < n) {
+    const ch = src[m]
+    if (quote) { if (ch === quote) quote = null; m++; continue }
+    if (ch === '"' || ch === "'") { quote = ch; m++; continue }
+    if (ch === "{") depth++
+    else if (ch === "}") { if (depth > 0) depth-- }
+    else if (depth === 0 && ch === "<") angle++
+    else if (depth === 0 && ch === ">") {
+      if (angle > 0) { angle--; m++; continue }
+      let p = m - 1
+      while (p > j && /\s/.test(src[p])) p--
+      if (src[p] === "/") return true
+      break
+    }
+    m++
+  }
+  if (m >= n) return false
+
+  // Not self-closing: a matching closing tag must exist somewhere after it.
+  const close = "</" + name
+  let p = src.indexOf(close, m)
+  while (p !== -1) {
+    let e = p + close.length
+    while (e < n && /\s/.test(src[e])) e++
+    if (src[e] === ">") return true
+    p = src.indexOf(close, p + 1)
+  }
+  return false
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POSITIVE CONTROLS for the scanner itself (§2 — every absence assertion needs a
+// control that still recognises the defect it was written for). Run with
+// `npx tsx scripts/strip-comments.ts`; returns the failures so a guard can wire
+// it in. Each case names the shape it pins, and the JSX cases each carry the
+// exact shape that was measured to fail before round six.
+//
+// STATED BLIND SPOTS (§2 — publish them beside the number):
+//   · JSX TEXT IS NOT MASKED by blankStrings. An export name in element text —
+//     `<p>Call generateClientMessage</p>` — is prose, and a masker that blanked
+//     it would be MORE correct; it is left verbatim so the orphan ledger's
+//     classification does not move under a comment-stripping fix. Changing it is
+//     a deliberate step with its own measurement, not a side effect of this one.
+//   · A `<` opener whose confirming `</name>` or `/>` is inside a string or
+//     template later in the file confirms falsely. Not observed in this tree
+//     (measured 2026-09-02: zero .ts files changed output under round six).
+//   · A keyword separated from its `<` by a comment (`return /* x */ <div/>`)
+//     is not recognised as an opener; the element is scanned as code, which is
+//     the pre-round-six behaviour for that one expression.
+//   · Invalid JSX (an unclosed `<br>`) desynchronises the element stack for the
+//     rest of the file. Such a file does not compile, so it cannot ship.
+// ─────────────────────────────────────────────────────────────────────────────
+export function scannerSelfTest(): string[] {
+  const problems: string[] = []
+  const expect = (name: string, cond: boolean) => { if (!cond) problems.push(name) }
+
+  // ── round one/two: block-first is the defect, this scanner is not it ──────
+  {
+    const s = "// a comment mentioning /* here\nconst live = 1\n/* real */ const two = 2\n"
+    const o = stripComments(s)
+    expect("a `//` line containing `/*` does not swallow the code below it", o.includes("const live = 1") && o.includes("const two = 2") && !o.includes("real"))
+  }
+  // ── round three: nested templates keep sync ───────────────────────────────
+  {
+    const s = "const a = `outer ${cond ? `inner` : \"\"} tail`\n// after\nconst b = 2\n"
+    const o = stripComments(s)
+    expect("a nested template does not desynchronise the literal after it", o.includes("const b = 2") && !o.includes("after"))
+  }
+  // ── regex literals and strings holding comment syntax ─────────────────────
+  {
+    const s = "const re = /\\/\\/ not a comment/g\nconst u = \"http://x/*y*/\"\n// gone\nconst z = 1\n"
+    const o = stripComments(s)
+    expect("`//` inside a regex and `/*` inside a string are not comments", o.includes("not a comment") && o.includes("http://x/*y*/") && !o.includes("gone") && o.includes("const z = 1"))
+  }
+  // ── round six: the developers-client shape, verbatim in miniature ─────────
+  {
+    const s = [
+      "export function C(props: P) {",
+      "  return (",
+      "    <section>",
+      "      <p>Scoped credentials (<code>vos_…</code>) for the API (<code>/api/agentic-os/*</code>)</p>",
+      "      {props.tokenStateError && <p className=\"x\">{props.tokenStateError}</p>}",
+      "      {/* a real JSX comment */}",
+      "      <button onClick={() => setFreshToken(null)}>done</button>",
+      "    </section>",
+      "  )",
+      "}",
+      "// trailing",
+      "const after = 1",
+      "",
+    ].join("\n")
+    const o = stripComments(s)
+    expect("`/*` in JSX text does not open a block comment (the developers-client swallow)", o.includes("props.tokenStateError") && o.includes("setFreshToken(null)") && o.includes("const after = 1"))
+    expect("…while the real `{/* */}` JSX comment IS stripped and so is the trailing `//`", !o.includes("a real JSX comment") && !o.includes("trailing"))
+    const b = blankStrings(s)
+    expect("blankStrings keeps the reference inside a JSX expression after that text", b.includes("props.tokenStateError") && b.includes("setFreshToken(null)"))
+    expect("blankStrings still blanks the attribute string (to a space — offsets survive)", !b.includes('"x"') && b.includes('className=" "'))
+    expect("blankStrings preserves offsets across JSX", b.length === s.length)
+    expect("blankComments preserves offsets across JSX", blankComments(s).length === s.length)
+  }
+  // ── round six: an apostrophe in JSX text is text, not a string opener ─────
+  {
+    const s = "const x = <p>Don't forget {props.name} today</p>\n// c\nconst y = 1\n"
+    const b = blankStrings(s)
+    expect("an apostrophe in JSX text no longer blanks the `{ref}` after it", b.includes("props.name") && b.includes("const y = 1"))
+    expect("…and the comment after the element is still removed", !stripComments(s).includes("// c"))
+  }
+  // ── round six: TypeScript angle brackets stay code ────────────────────────
+  {
+    const cases: Array<[string, string]> = [
+      ["generic call", "const [a, setA] = useState<string>(\"x\") // c\nconst b = 1\n"],
+      ["generic type", "const m: Map<string, Array<Foo>> = new Map() // c\nconst b = 1\n"],
+      ["generic arrow <T,>", "const f = <T,>(x: T) => x // c\nconst b = 1\n"],
+      ["generic arrow <T extends X>", "const f = <T extends object>(x: T) => x // c\nconst b = 1\n"],
+      ["generic function type", "type F = <T>(x: T) => T // c\nconst b = 1\n"],
+      ["angle-bracket assertion (.ts)", "const v = <Foo>bar // c\nconst b = 1\n"],
+      ["comparison", "if (a < b && c > d) run() // c\nconst b = 1\n"],
+      ["return assertion (.ts)", "function g() { return <Foo>bar } // c\nconst b = 1\n"],
+    ]
+    for (const [name, s] of cases) {
+      const o = stripComments(s)
+      expect(`${name} is not read as JSX`, !o.includes("// c") && o.includes("const b = 1"))
+    }
+  }
+  // ── round six: nesting, expressions, fragments, self-closing, templates ───
+  {
+    const s = "const l = <ul>{items.map((i) => <li key={i}>{i} /* text */ it's</li>)}</ul> // c\nconst b = 1\n"
+    const o = stripComments(s)
+    expect("a child element inside a map() returns to the arrow, then to the parent's text", o.includes("/* text */") && o.includes("it's") && !o.includes("// c") && o.includes("const b = 1"))
+  }
+  {
+    const s = "const a = <a title=\"/* not */\" href={\"/x\" /* c1 */}>t</a> // c2\nconst b = 1\n"
+    const o = stripComments(s)
+    expect("a `/*` inside an attribute string is not a comment; one inside `{}` is", o.includes("/* not */") && !o.includes("c1") && !o.includes("c2") && o.includes("const b = 1"))
+    const lits = stringLiterals(s).map((l) => l.text)
+    expect("attribute strings still reach the literal sink", lits.includes("/* not */") && lits.includes("/x"))
+  }
+  {
+    const s = "function R() { return <>{a}<b/></> } // c\nconst b = 1\n"
+    expect("a fragment opens and closes", !stripComments(s).includes("// c") && stripComments(s).includes("const b = 1"))
+  }
+  {
+    const s = "const x = <Foo bar={1} baz=\"q\" />\n// c\nconst b = 1\n"
+    expect("a self-closing element returns to code", !stripComments(s).includes("// c") && stripComments(s).includes("const b = 1"))
+  }
+  {
+    const s = "const x = <Select<Option> onChange={(v) => v > 1} />\n// c\nconst b = 1\n"
+    expect("type arguments on a tag do not end it early", !stripComments(s).includes("// c") && stripComments(s).includes("const b = 1"))
+  }
+  {
+    const s = "const t = `${cond ? <b>/* text */</b> : \"\"}` // c\nconst b = 1\n"
+    const o = stripComments(s)
+    expect("JSX inside a template interpolation keeps its text and returns to the template", o.includes("/* text */") && !o.includes("// c") && o.includes("const b = 1"))
+  }
+  {
+    const s = "return (\n  <div>\n    text\n  </div>\n) // c\nconst b = 1\n"
+    expect("`return (` followed by an element on the next line", !stripComments(s).includes("// c") && stripComments(s).includes("const b = 1"))
+  }
+  // ── stated blind spot, pinned so a change to it is deliberate ─────────────
+  {
+    const s = "const p = <p>mentionOnly</p>\n"
+    expect("JSX text is NOT masked by blankStrings (documented blind spot)", blankStrings(s).includes("mentionOnly"))
+  }
+  return problems
+}
+
+// `npx tsx scripts/strip-comments.ts` runs the controls; importing the module does not.
+if (typeof process !== "undefined" && /strip-comments\.ts$/.test(process.argv[1] ?? "")) {
+  const problems = scannerSelfTest()
+  if (problems.length) {
+    console.log("✗ strip-comments self-test — the scanner no longer recognises:")
+    for (const p of problems) console.log("   - " + p)
+    process.exit(1)
+  }
+  console.log("✓ strip-comments self-test — every control shape classified correctly")
 }

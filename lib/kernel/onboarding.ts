@@ -17,7 +17,13 @@
 //   - Errors returned as structured { success, error } — never thrown silently
 //   - All writes emit canonical KernelEvents
 
-"use server"
+// NOT A "use server" MODULE (lane S1, 2026-09-02). The directive that stood here
+// published four service-client commands — `markOnboardingStepComplete` takes
+// userId / agentId / brokerageId from its parameters — as Server Actions with no
+// session token in the file (§4). The only callers are app/dashboard/page.tsx
+// (a server component that resolves the user from getAgentContext first) and the
+// server-only kernel barrel. `server-only` keeps it that way at build time.
+import "server-only"
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"

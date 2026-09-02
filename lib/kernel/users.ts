@@ -31,7 +31,20 @@
 //   user_role_assignments.brokerage_id → brokerages.id
 //   user_role_assignments.agent_id     → agents.id (nullable)
 
-"use server"
+// NOT A "use server" MODULE (lane S1, 2026-09-02). The directive that stood here
+// — under this header, below raw line 3, where scripts/use-server-export-guard.ts
+// could not see it — published all nine exports as Server Actions, POST-able by
+// action id from any session while this module sat in the server graph, with
+// ZERO session tokens in the file. `assignUserToBrokerage` and `assignUserToTeam`
+// take the target TENANT and the CALLER'S IDENTITY from their parameters and
+// write on the service client: §4's IDOR shape, on the tenancy ledger. Every
+// real caller is server-side and gates before calling (app/actions/admin/
+// update-user.ts, invite-user.ts, create-subscriber.ts, superadmin/tenant-users.ts,
+// auth/signup-brokerage.ts, onboarding/ensure-agent-brokerage.ts,
+// app/dashboard/page.tsx, app/api/billing/webhook), so the directive was only
+// ever a door. These are gate-first internals; `server-only` makes a future
+// client import fail at build instead of bundling the service client.
+import "server-only"
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"

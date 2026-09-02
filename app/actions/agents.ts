@@ -7,7 +7,7 @@ import { isValidUUID } from "@/lib/validations"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { resolveUserOffice, pickUserOffice } from "@/lib/kernel/resolve-user-office"
 import { ensureAgentCapWindow } from "@/lib/commission/cap-resolver"
-import { isAdminOrBroker, isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
+import { isAdminOrBroker, isBrokerageFinanceAdmin, resolveTenantPrincipalTeamLead } from "@/lib/auth/resolve-user-role"
 // A new `agents` row invalidates any memoized "this user has no agent record" answer.
 import { invalidateAgentIdentity } from "@/lib/kernel/agent-identity-resolver"
 
@@ -702,15 +702,41 @@ export async function addAgentCommission(commissionData: {
   // caller, resolving the brokerage FROM the body-supplied agent id: the exact
   // IDOR shape §4 names, on commissions rather than on a counter. Anyone able to
   // reach the endpoint could file a commission of any size against any agent in
-  // any brokerage. Same gate as awardPoints above, and for the same reason: the
-  // tenant comes from the SESSION, and the body-supplied agent must be proven to
-  // live inside it before a row is written.
+  // any brokerage. The TENANT half is the same gate as awardPoints above, and for
+  // the same reason: the tenant comes from the SESSION, and the body-supplied
+  // agent must be proven to live inside it before a row is written. The ROLE
+  // half below is what a money ledger needs and a points counter does not.
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) return { error: "Not authenticated" }
   if (!ctx.brokerageId) return { error: "Your account is not linked to a brokerage yet." }
   if (!isValidUUID(commissionData.agent_id)) return { error: "Invalid agent id." }
 
   const supabase = await createClient()
+
+  // ── ROLE GATE (§4) — the money ledger is not the points counter ───────────
+  // The tenant gate proves the caller is SOMEONE in this brokerage; it says
+  // nothing about who may write a commission, so until 2026-09-02 any
+  // authenticated member could file one of any size against any colleague.
+  // The predicate is the ONE finance roster this repo already uses for
+  // commission writes — lib/auth/resolve-user-role.ts:isBrokerageFinanceAdmin,
+  // mirroring public.is_brokerage_finance_admin() (m472): admin / broker /
+  // broker_owner / broker_admin. `team_lead` is NOT in it, by the owner's
+  // ruling, EXCEPT as the tier-conditioned tenant principal (m526): on a
+  // team/solo tier the lead IS the tenant and keeps its books, and that fact is
+  // resolved from the SESSION's own ids by resolveTenantPrincipalTeamLead —
+  // never from the body. Same gate and same resolver as
+  // app/actions/financial-kernel.ts:78 and lib/kernel/financial.ts (§6, one
+  // vocabulary), rather than a third spelling written here.
+  //
+  // FAILS CLOSED twice over: an unreadable teams / plan_tier row comes back
+  // ok:false and is a refusal, not a false; and getAgentContext's userType
+  // falls back to "agent" when the users row cannot be read, which the roster
+  // refuses.
+  const principal = await resolveTenantPrincipalTeamLead(supabase, ctx.userId, ctx.brokerageId)
+  if (!principal.ok) return { error: principal.reason }
+  if (!isBrokerageFinanceAdmin({ user_type: ctx.userType, is_tenant_principal: principal.isPrincipal })) {
+    return { error: "Only a broker or brokerage admin may file a commission." }
+  }
 
   const agentCommission = commissionData.gross_commission * (commissionData.agent_split_percent / 100)
   const brokerageCommission = commissionData.gross_commission - agentCommission

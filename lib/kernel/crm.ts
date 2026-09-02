@@ -27,7 +27,17 @@
  * All events use KernelEvent enum values — no string literals.
  */
 
-"use server"
+// NOT A "use server" MODULE (lane S1, 2026-09-02). The directive that stood here,
+// below the header where use-server-export-guard's raw-line-3 check never looked,
+// published all thirteen commands as Server Actions callable by action id, with
+// zero session tokens in the file and the tenant taken from `brokerage_id` /
+// `brokerageId` parameters on the service client (§4). Every real caller gates
+// first and passes the SESSION's tenant: app/actions/contacts.ts
+// (resolveWriteContext), app/actions/transactions.ts (getAgentContext), the
+// widget route (tenant from the minted chat_sessions row), and the server-only
+// kernel barrel. The module already reached `server-only` through ./emit; it is
+// now declared here so the boundary guards read it off this file directly.
+import "server-only"
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { statusForNewContact } from "@/lib/contact-promotion/qualification"

@@ -1,4 +1,10 @@
-'use server'
+// NOT A "use server" MODULE (lane S1, 2026-09-02). The directive that stood here
+// made `analyzePropertyImages` — a model call, ungated — a Server Action. It is
+// re-exported by the lib/ai barrel and called by NOTHING (orphan export; the
+// barrel is imported by 26 server modules, so the module was bundled and the
+// action id was live regardless). Kept, un-published, server-only; a caller that
+// wants it goes through a gated app/actions wrapper (§4).
+import "server-only"
 
 import { runPipelineSimple } from "./pipeline"
 

@@ -1,4 +1,11 @@
-"use server"
+// NOT A "use server" MODULE (lane S1, 2026-09-02). The directive that stood here
+// published six MODEL-CALLING exports as Server Actions with no auth of any kind:
+// AI is platform-covered with per-tier overage (§5), so an unauthenticated
+// action id hitting `generateTextContent` was a wrong invoice, not just a leak.
+// The one caller is app/actions/content-generation-engine.ts, whose every action
+// resolves the session through resolveAuthorizedAgentId → getAgentContext before
+// reaching these builders. `server-only` fails a future client import at build.
+import "server-only"
 
 import { runPipelineSimple } from "@/lib/ai"
 import { contentFeatureForType } from "@/lib/ai/content-features"

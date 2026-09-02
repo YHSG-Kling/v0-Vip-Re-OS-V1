@@ -1,4 +1,10 @@
-"use server"
+// NOT A "use server" MODULE (lane S1, 2026-09-02). The directive that stood here
+// published `generateBuyerPredictions` — a model call plus a service-client
+// upsert keyed on a caller-supplied brokerageId — as an ungated Server Action.
+// The one caller is app/actions/buyer-insights.ts:refreshBuyerInsights, which
+// resolves the user from the session and the brokerage from that user's own row
+// before calling. `server-only` fails a future client import at build.
+import "server-only"
 
 import { createServiceClient } from "@/lib/supabase/service"
 // ROUTED, was raw — see lib/ai/models.ts:buyer_prediction, pinned to

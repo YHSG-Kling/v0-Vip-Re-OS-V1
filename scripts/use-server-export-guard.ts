@@ -14,8 +14,49 @@ import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { dirname, join, relative } from "node:path"
 import { walkTs, rootRuntimeFiles } from "./runtime-roots"
+import { stripComments } from "./strip-comments"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
+
+/**
+ * Does this module carry a TOP-LEVEL "use server" directive?
+ *
+ * WAS: `src.split("\n").slice(0, 3)` tested against the RAW source. Next.js
+ * accepts a directive preceded by comments — it is the first STATEMENT that
+ * counts, and a comment is not a statement — so a directive sitting under a
+ * doc block that runs past line 3 was invisible to this guard. Measured on
+ * 2026-09-02: 13 files sat in that gap (lib/kernel/users.ts at line 34,
+ * lib/kernel/crm.ts at 30, lib/kernel/onboarding.ts at 20,
+ * lib/kernel/communications.ts at 16, and nine app/actions files), every one of
+ * them a real "use server" module this guard reported green for without ever
+ * having judged it. The count moved 615 → 628 when this was fixed; the
+ * direction is the finding (§2 — more findings = the check was blind).
+ *
+ * The rule is now the one Next applies: the first non-empty line of the
+ * COMMENT-STRIPPED source is the directive, either quote style, optional
+ * semicolon. Stripping is done by scripts/strip-comments.ts (§2 — never
+ * hand-roll a comment stripper), so a `//` line containing `/*` cannot swallow
+ * the directive, and prose that merely MENTIONS "use server" inside a header
+ * comment is not mistaken for one.
+ */
+export function hasUseServerDirective(src: string): boolean {
+  const first = stripComments(src).split("\n").find((l) => l.trim().length > 0) ?? ""
+  return /^\s*["']use server["']\s*;?\s*$/.test(first)
+}
+
+// POSITIVE CONTROL for the detector (§2 — a broken finder and a clean tree
+// both report zero). A directive at line 12 under a doc block MUST be seen; a
+// module with no directive, one whose only "use server" is comment prose, and
+// one whose directive sits AFTER an import (Next ignores it there) MUST NOT.
+const directiveDetectorOk =
+  hasUseServerDirective(
+    "/**\n * doc block\n * line 3\n * line 4\n * line 5\n * line 6\n * line 7\n * line 8\n * line 9\n */\n\n\"use server\"\n\nimport x from \"y\"\n",
+  ) &&
+  hasUseServerDirective("'use server';\nexport async function a() {}\n") &&
+  hasUseServerDirective("// header\n\"use server\"\n") &&
+  !hasUseServerDirective("import x from \"y\"\nexport async function a() {}\n") &&
+  !hasUseServerDirective("/*\n\"use server\" is what the ACTION file says; this helper is plain.\n*/\nexport function a() {}\n") &&
+  !hasUseServerDirective("import x from \"y\"\n\"use server\"\n")
 
 // TOMBSTONE (orphan doctrine §1.1) — the private `walk(dir, out)` that stood here
 // was one of 82 copies of the same readdirSync walker. Survivor:
@@ -49,11 +90,11 @@ const files = [
   .map((p) => relative(root, p).replace(/\\/g, "/"))
 
 const violations: string[] = []
-for (const f of files) {
+// Every module that carries the directive — computed ONCE, on stripped source,
+// and published as a count beside the result so the denominator is visible.
+const useServerFiles = files.filter((f) => hasUseServerDirective(readFileSync(join(root, f), "utf8")))
+for (const f of useServerFiles) {
   const src = readFileSync(join(root, f), "utf8")
-  // Top-level "use server" directive (first ~3 non-empty lines, before any import)?
-  const head = src.split("\n").slice(0, 3).join("\n")
-  if (!/^\s*["']use server["']/m.test(head)) continue
 
   const lines = src.split("\n")
   lines.forEach((line, i) => {
@@ -109,10 +150,8 @@ export function cronTickExports(src: string): string[] {
 }
 
 const cronViolations: string[] = []
-for (const f of files) {
+for (const f of useServerFiles) {
   const src = readFileSync(join(root, f), "utf8")
-  const head = src.split("\n").slice(0, 3).join("\n")
-  if (!/^\s*["']use server["']/m.test(head)) continue
   for (const name of cronTickExports(src)) {
     cronViolations.push(`${f}  export ${name} — a platform-wide sweep must live in lib/, not behind a "use server" RPC`)
   }
@@ -126,8 +165,9 @@ const detectorOk =
   cronTickExports('async function privateCronTick() {}').length === 0
 
 console.log("\n[use-server export guard — a 'use server' file may only export async functions]")
-console.log(`  scanned ${files.length} action files`)
-const allOk = violations.length === 0 && cronViolations.length === 0 && detectorOk
+console.log(`  scanned ${files.length} .ts files under app/, lib/ and the root; ${useServerFiles.length} carry a top-level "use server" directive (${useServerFiles.filter((f) => f.startsWith("lib/")).length} of them under lib/)`)
+console.log(`  ${directiveDetectorOk ? "✓" : "✗"} directive detector: sees a directive under a doc block, ignores prose / post-import / absent`)
+const allOk = violations.length === 0 && cronViolations.length === 0 && detectorOk && directiveDetectorOk
 if (violations.length === 0) {
   console.log("  ✓ no non-async value exports in any top-level 'use server' file")
 } else {
@@ -143,9 +183,10 @@ if (cronViolations.length === 0) {
 }
 console.log("\n──────────────────────────────────────────────────")
 if (allOk) {
-  console.log(" RESULT: 3 passed, 0 failed")
+  console.log(" RESULT: 4 passed, 0 failed")
   console.log(" ✅ USE_SERVER_EXPORTS_PASS — no RSC page-data build-breaker, no ungated cron sweep")
 } else {
-  console.log(` RESULT: ${[violations.length === 0, cronViolations.length === 0, detectorOk].filter(Boolean).length} passed, ${[violations.length > 0, cronViolations.length > 0, !detectorOk].filter(Boolean).length} failed`)
+  const checks = [violations.length === 0, cronViolations.length === 0, detectorOk, directiveDetectorOk]
+  console.log(` RESULT: ${checks.filter(Boolean).length} passed, ${checks.filter((c) => !c).length} failed`)
   process.exit(1)
 }
