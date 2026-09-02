@@ -43,7 +43,12 @@ import {
   RetrainingSignalsPanel,
 } from './components/qualification-os'
 import { HandoffQueuePanel } from '@/app/dashboard/voice/isa/handoff-queue-panel'
-import { AIISAConsoleClient } from './ai-isa-console-client'
+import { AIISAConsoleClient, type IsaLedgerHandoff } from './ai-isa-console-client'
+import { loadAiIsaWorkspace } from '@/lib/kernel'
+// COMPLETED_HANDOFFS_BOUND is not re-exported by lib/kernel/index.ts (not this
+// lane's file); the kernel module is imported directly for that one constant.
+import { COMPLETED_HANDOFFS_BOUND } from '@/lib/kernel/ai-isa'
+import type { ActorRole } from '@/lib/kernel/types'
 import { SpeedToLeadPanel } from './components/speed-to-lead-panel'
 import { ISALeadQueuePanel } from './components/isa-lead-queue-panel'
 import { getSpeedToLeadMetrics } from '@/app/actions/ai-isa/speed-to-lead-metrics'
@@ -51,6 +56,31 @@ import { ensureAgentContextInPlace } from "@/lib/identity/ensure-agent-context"
 import { resolveLeadVisibility } from "@/lib/auth/lead-visibility"
 
 export const dynamic = 'force-dynamic'
+
+/**
+ * users.user_type → the kernel's ActorRole. The two vocabularies overlap but
+ * are not equal: broker_owner / broker_admin are tenant roster spellings the
+ * kernel folds into "broker"; support / superadmin are platform staff (their
+ * real identity is platform_role, CLAUDE.md §4) and are treated as admin here
+ * because loadAiIsaWorkspace scopes by brokerage_id, not by role.
+ */
+function toActorRole(userType: string | null | undefined): ActorRole {
+  switch (userType) {
+    case 'broker': case 'broker_owner': case 'broker_admin': return 'broker'
+    case 'admin': case 'superadmin': case 'support': return 'admin'
+    case 'team_lead': return 'team_lead'
+    case 'isa': return 'isa'
+    case 'tc': return 'tc'
+    case 'compliance_officer': return 'compliance_officer'
+    default: return 'agent'
+  }
+}
+
+function personName(u: { first_name?: string | null; last_name?: string | null } | null | undefined): string | null {
+  if (!u) return null
+  const n = `${u.first_name ?? ''} ${u.last_name ?? ''}`.trim()
+  return n || null
+}
 
 export const metadata = {
   title: 'AI-ISA Operations Console | VIP Real Estate AI OS',
@@ -285,6 +315,101 @@ export default async function AIISAOperationsConsolePage() {
   const voiceCalls = (voiceCallsResult?.data || []) as any[]
   const handoffQueue = (handoffResult?.data || []) as any[]
 
+  // ── THE HANDOFF LEDGER — agent_handoffs via the kernel loader ─────────────
+  // Survivor decision recorded at lib/kernel/ai-isa.ts (above COMMAND 1's
+  // types): the console's per-lead state is a FORECAST of readiness; the
+  // ledger is the RECORD of handoffs the ISA issued, and the only home of the
+  // context package written for the receiving human. loadAiIsaWorkspace had
+  // no caller until this page; it reads by brokerage_id with the service
+  // client, so the visibility narrowing this page already applies to its lead
+  // read is applied to the ledger too:
+  //   · broker/admin-class (raw leads allowed, brokerage scope) → the whole ledger
+  //   · team lead (team scope)      → handoffs on the team's leads or to a team agent
+  //   · everyone else (agent-class) → only handoffs addressed to THEIR agents.id —
+  //     §5: a lead reaches an agent once qualified, which is what a handoff is.
+  const workspaceRes = await loadAiIsaWorkspace({
+    ctx: { userId: user.id, brokerageId, role: toActorRole(profile.user_type) },
+    limit: 50,
+  })
+  if (!workspaceRes.success) console.error('[isa console] loadAiIsaWorkspace refused:', workspaceRes.error)
+  const ledgerPendingRaw = workspaceRes.data?.pendingHandoffs ?? []
+  const ledgerCompletedRaw = workspaceRes.data?.completedHandoffs ?? []
+  const completedBound = workspaceRes.data?.stats.completedHandoffsBound ?? COMPLETED_HANDOFFS_BOUND
+
+  const ownAgentId: string | null = agentRow?.id
+    ?? (await supabase.from('agents').select('id').eq('user_id', user.id).eq('brokerage_id', brokerageId).maybeSingle()).data?.id
+    ?? null
+
+  const uniq = (xs: (string | null | undefined)[]) => [...new Set(xs.filter((x): x is string => !!x))]
+  const allLedger = [...ledgerPendingRaw, ...ledgerCompletedRaw]
+  const ledgerUserIds = uniq(ledgerPendingRaw.map((h) => h.context_package.from_user_id))
+  const ledgerAgentIds = uniq(allLedger.map((h) => h.human_agent_id))
+  const ledgerLeadIds = uniq(allLedger.filter((h) => h.entity_type === 'lead').map((h) => h.entity_id))
+
+  // Every id → name lookup is anchored on the session brokerage. users.id and
+  // agents.id are disjoint classes (§3): from_user_id resolves against users,
+  // human_agent_id against agents (through agents.user_id → users for the name).
+  const [ledgerUsersRes, ledgerAgentsRes, ledgerLeadsRes] = await Promise.all([
+    ledgerUserIds.length
+      ? supabase.from('users').select('id, first_name, last_name').eq('brokerage_id', brokerageId).in('id', ledgerUserIds)
+      : Promise.resolve({ data: [] as any[], error: null }),
+    ledgerAgentIds.length
+      ? supabase.from('agents').select('id, users(first_name, last_name)').eq('brokerage_id', brokerageId).in('id', ledgerAgentIds)
+      : Promise.resolve({ data: [] as any[], error: null }),
+    ledgerLeadIds.length
+      ? supabase.from('leads').select('id, first_name, last_name, agent_id').eq('brokerage_id', brokerageId).in('id', ledgerLeadIds)
+      : Promise.resolve({ data: [] as any[], error: null }),
+  ])
+  for (const [lane, res] of [['users', ledgerUsersRes], ['agents', ledgerAgentsRes], ['leads', ledgerLeadsRes]] as const) {
+    if (res.error) console.error(`[isa console] ledger ${lane} name resolve refused:`, res.error.message)
+  }
+  const userNameById = new Map<string, string | null>((ledgerUsersRes.data ?? []).map((u: any) => [u.id, personName(u)]))
+  const agentNameById = new Map<string, string | null>(
+    (ledgerAgentsRes.data ?? []).map((a: any) => [a.id, personName(Array.isArray(a.users) ? a.users[0] : a.users)]),
+  )
+  const leadById = new Map<string, { name: string; agent_id: string | null }>(
+    (ledgerLeadsRes.data ?? []).map((l: any) => [l.id, { name: personName(l) ?? 'Lead', agent_id: l.agent_id ?? null }]),
+  )
+
+  const ledgerInScope = (h: { entity_id: string; human_agent_id: string | null }): boolean => {
+    if (leadVisibility.allowed && leadVisibility.scope.kind !== 'team') return true
+    if (leadVisibility.allowed && leadVisibility.scope.kind === 'team') {
+      const ids = leadVisibility.scope.agentIds
+      const leadAgent = leadById.get(h.entity_id)?.agent_id ?? null
+      return (!!h.human_agent_id && ids.includes(h.human_agent_id)) || (!!leadAgent && ids.includes(leadAgent))
+    }
+    return !!ownAgentId && h.human_agent_id === ownAgentId
+  }
+
+  const ledgerHandoffs: IsaLedgerHandoff[] = ledgerPendingRaw
+    .filter((h) => h.entity_type === 'lead' && ledgerInScope(h))
+    .map((h) => ({
+      id: h.id,
+      leadId: h.entity_id,
+      reason: h.handoff_reason,
+      issuedAt: h.created_at,
+      toAgentType: h.to_agent_type,
+      fromUserName: h.context_package.from_user_id ? (userNameById.get(h.context_package.from_user_id) ?? null) : null,
+      contactId: h.context_package.contact_id ?? null,
+      assignedAgentName: h.human_agent_id ? (agentNameById.get(h.human_agent_id) ?? null) : null,
+      assignedAgentId: h.human_agent_id,
+    }))
+  // Pending handoffs whose lead is not among the console's 50 most recently
+  // updated leads would otherwise be invisible — they are listed in the
+  // Handoff tab, not silently dropped.
+  const consoleLeadIds = new Set(records.map((r: any) => r.id))
+  const ledgerOffConsole = ledgerHandoffs.filter((h) => !consoleLeadIds.has(h.leadId))
+  const ledgerCompleted = ledgerCompletedRaw
+    .filter((h) => ledgerInScope(h))
+    .map((h) => ({
+      id: h.id,
+      leadName: h.entity_type === 'lead' ? (leadById.get(h.entity_id)?.name ?? 'Lead') : `${h.entity_type} ${h.entity_id.slice(0, 8)}`,
+      reason: h.handoff_reason,
+      toAgentType: h.to_agent_type,
+      assignedAgentName: h.human_agent_id ? (agentNameById.get(h.human_agent_id) ?? null) : null,
+      completedAt: h.completed_at,
+    }))
+
   const activeCampaigns = campaigns.filter((c: any) => c.status === 'active')
 
   // CAN THIS BROKERAGE ACTUALLY PLACE AN AI CALL? This probed
@@ -432,6 +557,7 @@ export default async function AIISAOperationsConsolePage() {
         pendingDrafts={pendingDrafts}
         userId={user.id}
         brokerageId={brokerageId}
+        ledgerHandoffs={ledgerHandoffs}
         callingReady={callingReadiness.canPlaceAiCalls}
         callingBlockedReason={callingReadiness.reason}
       />
@@ -505,7 +631,77 @@ export default async function AIISAOperationsConsolePage() {
         </TabsList>
 
         {/* Handoff Queue Tab - Qualified leads ready for agent */}
-        <TabsContent value="handoff" className="mt-4">
+        <TabsContent value="handoff" className="mt-4 space-y-4">
+          {/* The LEDGER (agent_handoffs) — issued handoffs awaiting a human that
+              are not on a console card above, and the recently completed list.
+              The qualification queue below is the forecast; this is the record. */}
+          {ledgerOffConsole.length > 0 && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <UserCheck className="h-4 w-4 text-indigo-600" />
+                  Handoffs issued by the ISA, awaiting a human ({ledgerOffConsole.length})
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {ledgerOffConsole.map((h) => (
+                  <div key={h.id} className="rounded border border-indigo-200 bg-indigo-50 p-2 text-xs space-y-0.5">
+                    <p className="font-medium text-indigo-900">
+                      {leadById.get(h.leadId)?.name ?? 'Lead'}
+                      <span className="font-normal text-indigo-700"> · issued {new Date(h.issuedAt).toLocaleString()}</span>
+                    </p>
+                    {h.reason && <p className="text-indigo-800">{h.reason}</p>}
+                    <p className="text-indigo-700">
+                      Handed off by {h.fromUserName ?? 'the AI-ISA'} ·{' '}
+                      {h.assignedAgentName ? `assigned to ${h.assignedAgentName}` : 'unassigned — route manually'}
+                    </p>
+                    <div className="flex gap-3">
+                      <Link href={`/leads/${h.leadId}`} className="text-indigo-700 underline">Open lead</Link>
+                      {h.contactId && (
+                        <Link href={`/crm?contact=${h.contactId}`} className="text-indigo-700 underline">Contact already on file</Link>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          )}
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <CheckCircle2 className="h-4 w-4 text-green-600" />
+                Recently completed handoffs
+                <span className="text-xs font-normal text-muted-foreground">
+                  — showing {ledgerCompleted.length}, at most the last {completedBound}
+                </span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {ledgerCompleted.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No completed handoffs in scope yet.</p>
+              ) : (
+                <ul className="divide-y">
+                  {ledgerCompleted.map((h) => (
+                    <li key={h.id} className="py-1.5 flex items-center justify-between gap-2 text-xs">
+                      <div className="min-w-0">
+                        <span className="font-medium">{h.leadName}</span>
+                        <span className="text-muted-foreground"> · {h.reason?.replace(/_/g, ' ') ?? 'handoff'}</span>
+                        {h.toAgentType && h.toAgentType !== 'human' && (
+                          <Badge variant="outline" className="text-[10px] ml-1">to {h.toAgentType.replace(/_/g, ' ')}</Badge>
+                        )}
+                        <span className="text-muted-foreground"> · {h.assignedAgentName ? `to ${h.assignedAgentName}` : 'unassigned'}</span>
+                      </div>
+                      <span className="text-muted-foreground shrink-0">
+                        {h.completedAt ? new Date(h.completedAt).toLocaleString() : 'completed (no timestamp)'}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
+
           {/* `user.id` is a `users.id`, which is what every column the panel
               writes actually FKs — this caller was already passing the right
               VALUE under a prop name that claimed otherwise. Only the name

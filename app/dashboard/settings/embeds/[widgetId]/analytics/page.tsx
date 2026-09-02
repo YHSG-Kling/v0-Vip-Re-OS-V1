@@ -149,6 +149,61 @@ export default async function EmbedAnalyticsPage({ params, searchParams }: PageP
             <p className="text-sm text-muted-foreground">No data yet for this period.</p>
           )}
         </Card>
+
+        {/* Top referrers — same shape as Top pages, keyed by the page that SENT
+            the visitor (embed_sessions.referrer). "(direct)" is the honest
+            label for an empty referrer, not "unknown". */}
+        <Card className="p-4">
+          <p className="text-sm font-medium mb-3">Top referrers</p>
+          {data?.topReferrers && data.topReferrers.length > 0 ? (
+            <div className="space-y-2">
+              {data.topReferrers.map((r) => (
+                <div key={r.referrer} className="flex items-start justify-between gap-3 text-sm">
+                  <span className="text-xs text-muted-foreground truncate flex-1" title={r.referrer}>
+                    {r.referrer === "(direct)" ? <em>Direct / no referrer</em> : hostAndPath(r.referrer)}
+                  </span>
+                  <div className="flex gap-3 shrink-0 text-xs">
+                    <span>{r.sessions} sessions</span>
+                    <span className="text-emerald-600">{r.leads} leads</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No data yet for this period.</p>
+          )}
+        </Card>
+
+        {/* Device split — four buckets derived server-side from the User-Agent.
+            The raw UA string never reaches this page (fingerprint-adjacent). */}
+        <Card className="p-4">
+          <p className="text-sm font-medium mb-3">Devices</p>
+          {data && data.totalSessions > 0 ? (
+            <DeviceSplit devices={data.devices} total={data.totalSessions} />
+          ) : (
+            <p className="text-sm text-muted-foreground">No data yet for this period.</p>
+          )}
+        </Card>
+
+        {/* Which twin greeted visitors. A label, not a link — nothing in the
+            app routes by the D-ID agent id the session stored. */}
+        <Card className="p-4">
+          <p className="text-sm font-medium mb-3">Sessions by twin</p>
+          {data?.byTwin && data.byTwin.length > 0 ? (
+            <div className="space-y-2">
+              {data.byTwin.map((t) => (
+                <div key={t.twinId ?? t.label} className="flex items-center justify-between gap-3 text-sm">
+                  <span className={`text-xs truncate flex-1 ${t.twinId ? "" : "text-muted-foreground italic"}`}>
+                    {t.label}
+                  </span>
+                  <span className="text-xs shrink-0">{t.sessions} sessions</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No data yet for this period.</p>
+          )}
+        </Card>
       </div>
 
       {/* Routing info */}
@@ -175,6 +230,43 @@ export default async function EmbedAnalyticsPage({ params, searchParams }: PageP
 }
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
+
+/** "https://example.com/blog/post?x=1" → "example.com/blog/post" — a referrer is a
+ *  whole URL; the host is the part that identifies WHO sent the visitor. */
+function hostAndPath(url: string): string {
+  try {
+    const u = new URL(url)
+    return u.host + (u.pathname === "/" ? "" : u.pathname)
+  } catch {
+    return url
+  }
+}
+
+function DeviceSplit({ devices, total }: { devices: EmbedAnalytics["devices"]; total: number }) {
+  const rows: { key: keyof EmbedAnalytics["devices"]; label: string; tone: string }[] = [
+    { key: "mobile",  label: "Mobile",  tone: "bg-primary/60" },
+    { key: "desktop", label: "Desktop", tone: "bg-primary/30" },
+    { key: "bot",     label: "Bots / crawlers", tone: "bg-amber-400/60" },
+    { key: "unknown", label: "Unknown", tone: "bg-muted-foreground/30" },
+  ]
+  return (
+    <div className="space-y-1.5">
+      {rows.map((r) => {
+        const n = devices[r.key]
+        const pct = total > 0 ? Math.round((n / total) * 100) : 0
+        return (
+          <div key={r.key} className="flex items-center gap-2 text-xs">
+            <span className="text-muted-foreground w-28 shrink-0">{r.label}</span>
+            <div className="flex-1">
+              <div className={`h-3 rounded-sm min-w-[2px] ${r.tone}`} style={{ width: `${Math.max(n > 0 ? 4 : 0, pct)}%` }} title={`${n} sessions`} />
+            </div>
+            <span className="text-muted-foreground w-20 text-right shrink-0">{n} · {pct}%</span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
 
 function StatCard({
   icon, label, value, sub,

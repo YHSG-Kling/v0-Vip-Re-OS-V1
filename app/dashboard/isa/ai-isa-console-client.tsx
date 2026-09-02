@@ -128,11 +128,37 @@ function ChannelTruth({ record }: { record: any }) {
 // Main client component
 // ──────────────────────────────────────────────────────────────
 
+/**
+ * ONE pending row of the agent_handoffs LEDGER, curated for the card. This is
+ * the record of a handoff the ISA actually issued (lib/kernel/ai-isa.ts
+ * handoffToHumanAgent) — not the console's per-lead forecast of readiness.
+ * The page resolves every id to a name tenant-scoped before it gets here; the
+ * raw context_package jsonb never reaches this component.
+ */
+export interface IsaLedgerHandoff {
+  id: string
+  /** leads.id — joined onto the console's lead cards by this key. */
+  leadId: string
+  reason: string | null
+  issuedAt: string
+  /** CHECK vocabulary: human | isa_agent | tc_agent | … — what the ISA handed TO. */
+  toAgentType: string | null
+  /** context_package.from_user_id → users first/last name, or null when the package carried none. */
+  fromUserName: string | null
+  /** context_package.contact_id — the contact the human should open when the lead already converted. */
+  contactId: string | null
+  /** human_agent_id → the assigned agent's name; null = unassigned (broker routes manually). */
+  assignedAgentName: string | null
+  assignedAgentId: string | null
+}
+
 interface AIISAConsoleClientProps {
   records: any[]
   pendingDrafts: any[]
   userId: string
   brokerageId: string
+  /** Pending rows of the handoff ledger, already scoped by the page (see there). */
+  ledgerHandoffs?: IsaLedgerHandoff[]
   /** Whether an AI outbound call could actually be placed — resolved from the
    *  real Twilio-lane gates, not from a retired vendor's assistant id. */
   callingReady?: boolean
@@ -149,11 +175,19 @@ const TAB_FILTERS: { label: string; value: string; states: AIISAState[] | 'all' 
   { label: 'Completed',              value: 'completed',        states: ['handoff_complete'] },
 ]
 
-export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId, callingReady = false, callingBlockedReason = null }: AIISAConsoleClientProps) {
+export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId, ledgerHandoffs = [], callingReady = false, callingBlockedReason = null }: AIISAConsoleClientProps) {
   const router = useRouter()
   const supabase = createClient()
   const [activeTab, setActiveTab] = useState('all')
   const [isPending, startTransition] = useTransition()
+
+  // The ledger, indexed by lead. One pending handoff per lead is the norm; if
+  // the ISA issued two, the newest wins (the page orders newest-first).
+  const ledgerByLead = useMemo(() => {
+    const m = new Map<string, IsaLedgerHandoff>()
+    for (const h of ledgerHandoffs) if (!m.has(h.leadId)) m.set(h.leadId, h)
+    return m
+  }, [ledgerHandoffs])
 
   // ── Priority queue derivation ──────────────────────────────
   const aiisaPriorityQueue = useMemo(() => {
@@ -170,6 +204,8 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
           record.created_at
 
         let priorityBoost = 0
+        // A handoff the ISA has actually ISSUED outranks one it merely forecasts.
+        if (ledgerByLead.has(record.id))        priorityBoost += 110
         if (state === 'agent_handoff_required') priorityBoost += 100
         if (state === 'handoff_ready')          priorityBoost += 80
         if (state === 'awaiting_approval')      priorityBoost += 60
@@ -187,7 +223,7 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
       })
       .sort((a: any, b: any) => b.priority_score - a.priority_score)
       .slice(0, 12)
-  }, [records])
+  }, [records, ledgerByLead])
 
   // ── Blocker stats ──────────────────────────────────────────
   const blockerStats = useMemo(() => ({
@@ -256,9 +292,13 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
   }
 
   function handleAcceptHandoff(record: any) {
-    if (record.contact_id) {
+    // The ledger's package names the contact to open when the lead had already
+    // converted at handoff time — honour it the same way the lead's own
+    // contact_id is honoured (both are contacts.id, the PK).
+    const contactOnFile = record.contact_id ?? ledgerByLead.get(record.id)?.contactId ?? null
+    if (contactOnFile) {
       toast.success('Opening assigned contact')
-      router.push(`/crm?contact=${record.contact_id}`)
+      router.push(`/crm?contact=${contactOnFile}`)
       return
     }
 
@@ -647,6 +687,35 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
                           </div>
                         )}
 
+                        {/* THE HANDOFF PACKAGE — agent_handoffs.context_package, curated.
+                            Rendered only when the ledger holds a pending handoff for
+                            this lead; the forecast badges above say "looks ready", this
+                            box says "the ISA handed it over, here is what it left you". */}
+                        {ledgerByLead.get(item.id) && (() => {
+                          const h = ledgerByLead.get(item.id)!
+                          return (
+                            <div className="mt-2 rounded border border-indigo-200 bg-indigo-50 p-2 space-y-1">
+                              <p className="text-xs font-medium text-indigo-900 flex items-center gap-1">
+                                <UserCheck className="h-3 w-3 shrink-0" />
+                                ISA handoff issued {formatDistanceToNow(new Date(h.issuedAt), { addSuffix: true })}
+                                {h.toAgentType && h.toAgentType !== 'human' && (
+                                  <Badge variant="outline" className="text-[10px] ml-1">to {h.toAgentType.replace(/_/g, ' ')}</Badge>
+                                )}
+                              </p>
+                              {h.reason && <p className="text-xs text-indigo-800">{h.reason}</p>}
+                              <p className="text-[11px] text-indigo-700">
+                                Handed off by {h.fromUserName ?? 'the AI-ISA'} ·{' '}
+                                {h.assignedAgentName ? `assigned to ${h.assignedAgentName}` : 'unassigned — route manually'}
+                              </p>
+                              {h.contactId && (
+                                <Link href={`/crm?contact=${h.contactId}`} className="text-[11px] text-indigo-700 underline">
+                                  Contact already on file — open it
+                                </Link>
+                              )}
+                            </div>
+                          )
+                        })()}
+
                         {/* Compliance hold notice */}
                         {item.aiisa_state === 'compliance_hold' && (
                           <div className="mt-2 rounded border border-gray-300 bg-white p-2">
@@ -723,11 +792,14 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
                           </Button>
                         )}
 
-                        {/* Hand Off to Human Agent — handoff_ready, agent_handoff_required, awaiting_approval */}
+                        {/* Hand Off to Human Agent — handoff_ready, agent_handoff_required,
+                            awaiting_approval, OR a pending row in the handoff ledger (the
+                            ISA already issued it; the human's job is to accept). */}
                         {(
                           item.aiisa_state === 'handoff_ready' ||
                           item.aiisa_state === 'agent_handoff_required' ||
-                          item.aiisa_state === 'awaiting_approval'
+                          item.aiisa_state === 'awaiting_approval' ||
+                          ledgerByLead.has(item.id)
                         ) && (
                           <Button
                             size="sm"
@@ -737,7 +809,7 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
                             disabled={isPending}
                           >
                             <UserCheck className="h-3.5 w-3.5 mr-1.5" />
-                            Hand Off to Human Agent
+                            {ledgerByLead.has(item.id) ? 'Accept ISA Handoff' : 'Hand Off to Human Agent'}
                           </Button>
                         )}
 

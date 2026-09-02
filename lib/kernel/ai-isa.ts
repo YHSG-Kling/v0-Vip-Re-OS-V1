@@ -101,6 +101,30 @@ export interface AiIsaWorkspaceData {
 /** Upper bound on the completed-handoff ledger read by loadAiIsaWorkspace. */
 export const COMPLETED_HANDOFFS_BOUND = 20
 
+/*
+ * SURVIVOR DECISION — "what is the ISA handing me?" (wave 25, lane W1)
+ *
+ * Two sources answered that question and disagreed about what it meant:
+ *
+ *   · app/dashboard/isa/ai-isa-console-client.tsx derives a per-LEAD state
+ *     (handoff_ready / agent_handoff_required) from the lead's qualification
+ *     row, urgency score and last call analysis. That is a PREDICTION —
+ *     "this lead looks ready to hand off" — computed on every render.
+ *   · agent_handoffs is the LEDGER — a row exists only because handoffToHumanAgent
+ *     (below) or app/actions/leads.ts actually issued one, and only the ledger
+ *     row carries the context_package written FOR the receiving human.
+ *
+ * They are not duplicates; they are the forecast and the record. The console
+ * keeps its forecast for triage. The ledger is the survivor for "what has been
+ * handed to me": it is what the operations dashboard and the team page already
+ * count as "pending handoffs", and it is the sole home of the package. Until
+ * wave 25 this loader had NO caller — a written contract nobody read — while
+ * the console showed an "accept" affordance that had never seen the ledger.
+ * app/dashboard/isa/page.tsx now calls this loader, joins the pending ledger
+ * onto the console's lead cards by entity_id, and renders the completed ledger
+ * with its bound printed. Do not re-derive the ledger from lead state.
+ */
+
 export interface AiIsaCampaignRow {
   id: string
   name: string

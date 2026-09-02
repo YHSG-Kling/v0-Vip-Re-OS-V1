@@ -143,13 +143,26 @@ export interface VendorMessageRow {
   created_at: string
 }
 
-// Reads a vendor↔contact thread. RLS scopes rows to the owning vendor or the
-// brokerage's staff; we additionally require the caller to be authenticated.
+// Reads a vendor↔contact thread — the VENDOR's own thread only (§5: a vendor
+// sees no one else's). The read used to be gated by RLS alone while send and
+// mark-read each spelled the ownership predicate in app code: one predicate in
+// two places (§6), and a read that a service client would have walked straight
+// through. The same callerOwnsVendor gate now fronts the read, failing closed —
+// a refused ownership lookup reads as "not yours", never as "all of it". The
+// only caller is the vendor portal's panel (app/portal/vendor/contacts), whose
+// vendorId is chosen from the caller's own role grants; brokerage staff read
+// these threads through the universal inbox, not here.
 export async function getVendorThread(input: {
   vendorId: string
   contactId: string
   limit?: number
-}): Promise<{ success: boolean; messages?: VendorMessageRow[]; error?: string }> {
+}): Promise<{
+  success: boolean
+  messages?: VendorMessageRow[]
+  /** contact_vendors.role for this thread's relationship (lender, inspector, …); null when the link row is gone. */
+  relationshipRole?: string | null
+  error?: string
+}> {
   if (!isValidUUID(input.vendorId) || !isValidUUID(input.contactId)) {
     return { success: false, error: "Invalid ids" }
   }
@@ -157,6 +170,10 @@ export async function getVendorThread(input: {
   if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
 
   const supabase = await createClient()
+  if (!(await callerOwnsVendor(supabase, ctx.userId, input.vendorId))) {
+    return { success: false, error: "Not permitted to read this vendor's threads" }
+  }
+
   const { data, error } = await supabase
     .from("vendor_messages")
     .select("id, vendor_id, counterparty_type, counterparty_id, sender_type, body, read, read_at, channel, contact_vendor_id, created_at")
@@ -167,7 +184,25 @@ export async function getVendorThread(input: {
     .limit(input.limit ?? 100)
 
   if (error) return { success: false, error: error.message }
-  return { success: true, messages: (data ?? []) as VendorMessageRow[] }
+  const messages = (data ?? []) as VendorMessageRow[]
+
+  // Resolve contact_vendor_id → the relationship's role. The thread's rows all
+  // ride one link (sendVendorMessage stamps link.id at write time); the newest
+  // row's id is used so a re-introduced relationship reads with its current role.
+  const linkId = [...messages].reverse().find((m) => m.contact_vendor_id)?.contact_vendor_id ?? null
+  let relationshipRole: string | null = null
+  if (linkId) {
+    const { data: link, error: linkErr } = await supabase
+      .from("contact_vendors")
+      .select("id, role")
+      .eq("id", linkId)
+      .eq("vendor_id", input.vendorId)
+      .maybeSingle()
+    if (linkErr) console.error("[vendor-messages] relationship role read failed:", linkErr.message)
+    relationshipRole = link?.role ?? null
+  }
+
+  return { success: true, messages, relationshipRole }
 }
 
 // Marks the contact's messages read on the vendor's behalf when the vendor

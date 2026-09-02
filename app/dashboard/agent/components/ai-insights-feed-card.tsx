@@ -42,11 +42,15 @@ export interface AiInsightRow {
  *   transaction → /dashboard/transactions/[id]   (app/dashboard/transactions/[id])
  *   contact     → /crm/contacts/[contactId]      (app/crm/contacts/[contactId];
  *                 /dashboard/buyers/[contactId] is a redirect onto it)
- *   lead        → NO LINK. Leads belong to the brokerage (CLAUDE.md §5) and the
- *                 tree has no lead detail route: the only `/dashboard/leads/${id}`
- *                 href in the repo (analytics/source/[sourceId]/source-detail-client.tsx)
- *                 points at a directory that does not exist. A link that 404s is
- *                 worse than none, so a lead insight renders its steps unlinked.
+ *   lead        → /leads/[leadId]                 (app/leads/[leadId]/page.tsx —
+ *                 six of the eleven writers stamp 'lead', so this is the majority
+ *                 case). The `/dashboard/leads/[id]` spelling is the one that does
+ *                 NOT exist; an earlier version of this map searched only that
+ *                 spelling and wrongly concluded no lead route existed.
+ *                 §5: leads belong to the brokerage. The card does not decide who
+ *                 may view one — the page's own gate does (resolveLeadVisibility +
+ *                 leadRowInScope, redirecting to /dashboard when out of scope),
+ *                 and this link widens nothing.
  *   property    → NO LINK. entity_id is NULL by design (MLS id, not a uuid).
  *
  * Anything else (a future vocabulary entry) gets no link rather than a guess.
@@ -56,6 +60,7 @@ export function insightEntityHref(entityType: string | null, entityId: string | 
   switch (entityType) {
     case "transaction": return `/dashboard/transactions/${entityId}`
     case "contact":     return `/crm/contacts/${entityId}`
+    case "lead":        return `/leads/${entityId}`
     default:            return null
   }
 }
