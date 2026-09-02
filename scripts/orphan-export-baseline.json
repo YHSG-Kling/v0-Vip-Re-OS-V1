@@ -11,7 +11,6 @@
     "app/actions/ai-showing-management.ts": 1,
     "app/actions/ai-transaction-coordinator.ts": 2,
     "app/actions/ai-voice-transcription.ts": 1,
-    "app/actions/assistant.ts": 1,
     "app/actions/billing.ts": 3,
     "app/actions/buyer-financial.ts": 1,
     "app/actions/calculators.ts": 1,
@@ -38,7 +37,9 @@
     "app/actions/video-repurposing.ts": 3,
     "app/components/command-palette-items.ts": 3,
     "app/components/portal/FitBadge.tsx": 1,
+    "app/dashboard/agent/components/ai-insights-feed-card.tsx": 1,
     "app/dashboard/intelligence-report/trust-receipts-card.tsx": 1,
+    "app/dashboard/meetings/[eventId]/transcript-panel.tsx": 1,
     "app/settings/email-templates/template-preview.tsx": 1,
     "hooks/use-toast.ts": 1,
     "lib/ads/ad-creative-engine.ts": 3,
@@ -144,8 +145,7 @@
     "lib/compliance/vendor-respa.ts": 7,
     "lib/connections/accounting-scopes.ts": 4,
     "lib/connections/scope.ts": 2,
-    "lib/connections/zoom-transcripts.ts": 1,
-    "lib/connections/zoom.ts": 12,
+    "lib/connections/zoom.ts": 9,
     "lib/contact-promotion/conversion-welcome.ts": 1,
     "lib/contacts/contact-brief.ts": 1,
     "lib/contacts/persona-builder.ts": 5,
@@ -239,6 +239,7 @@
     "lib/intelligence/time-to-value-radar.ts": 1,
     "lib/kernel/agent-coaching.ts": 4,
     "lib/kernel/agent-identity.ts": 1,
+    "lib/kernel/ai-isa.ts": 1,
     "lib/kernel/ai-search-citation-monitor.ts": 8,
     "lib/kernel/ai-sentinel.ts": 1,
     "lib/kernel/anniversary-equity.ts": 5,
@@ -485,7 +486,7 @@
     "lib/recruiting/vendor-recruitment-scout.ts": 2,
     "lib/referrals/partner-agreement-watch.ts": 1,
     "lib/referrals/referral-reciprocity.ts": 1,
-    "lib/remotion/code-revision.ts": 1,
+    "lib/remotion/code-revision.ts": 3,
     "lib/remotion/composition-cache.ts": 1,
     "lib/remotion/render-cache.ts": 1,
     "lib/remotion/render-decision.ts": 4,
@@ -543,13 +544,14 @@
     "lib/video/video-director.ts": 8,
     "lib/video/video-plays.ts": 2,
     "lib/video/video-qr.ts": 1,
+    "lib/voice/call-analysis.ts": 1,
     "lib/voice/call-recording.ts": 3,
     "lib/voice/command-coverage.ts": 1,
     "lib/voice/conversation-relay.ts": 3,
     "lib/voice/deal-decision.ts": 2,
     "lib/voice/platform-reception.ts": 2,
     "lib/voice/reception-inventory.ts": 2,
-    "lib/voice/studio-session.ts": 8,
+    "lib/voice/studio-session.ts": 9,
     "lib/voice/tool-registry.ts": 2,
     "lib/voice/twilio-outbound.ts": 1,
     "lib/voice/twilio-tenancy.ts": 2,
@@ -566,7 +568,7 @@
     "remotion/EquityReportReel.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9447,
+  "census": 9457,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -1373,6 +1375,7 @@
     "app/api/cron/webhook-deliveries/route.ts": 1,
     "app/api/cron/weekly-ai-metrics/route.ts": 1,
     "app/api/cron/weekly-income-digest/route.ts": 1,
+    "app/api/cron/zoom-transcript-reconcile/route.ts": 1,
     "app/api/dashboard/badge-counts/route.ts": 1,
     "app/api/dashboard/operations/route.ts": 1,
     "app/api/dashboard/reporting/route.ts": 1,
@@ -1959,7 +1962,7 @@
     "app/dashboard/agent/components/agent-operating-radar.tsx": 1,
     "app/dashboard/agent/components/agent-superpowers-panel.tsx": 1,
     "app/dashboard/agent/components/agent-system-readiness.tsx": 1,
-    "app/dashboard/agent/components/ai-insights-feed-card.tsx": 1,
+    "app/dashboard/agent/components/ai-insights-feed-card.tsx": 2,
     "app/dashboard/agent/components/connection-health-card.tsx": 1,
     "app/dashboard/agent/components/conversion/newly-converted-contacts-panel.tsx": 1,
     "app/dashboard/agent/components/deal-risk-widget.tsx": 1,
@@ -2247,6 +2250,7 @@
     "app/dashboard/marketing/video-pages/client.tsx": 1,
     "app/dashboard/meetings/[eventId]/join-fallback.tsx": 1,
     "app/dashboard/meetings/[eventId]/meeting-embed.tsx": 1,
+    "app/dashboard/meetings/[eventId]/transcript-panel.tsx": 3,
     "app/dashboard/motivation/motivation-client.tsx": 1,
     "app/dashboard/onboarding/OnboardingDashboardClient.tsx": 1,
     "app/dashboard/onboarding/OnboardingQuizClient.tsx": 1,
@@ -3376,7 +3380,7 @@
     "lib/kernel/agent-identity.ts": 4,
     "lib/kernel/agent-onboarding.ts": 8,
     "lib/kernel/ai-copy.ts": 3,
-    "lib/kernel/ai-isa.ts": 10,
+    "lib/kernel/ai-isa.ts": 11,
     "lib/kernel/ai-model.ts": 1,
     "lib/kernel/ai-search-citation-monitor.ts": 10,
     "lib/kernel/ai-sentinel.ts": 2,
@@ -3991,7 +3995,7 @@
     "lib/referrals/referral-reciprocity.ts": 3,
     "lib/referrals/referral-status.ts": 3,
     "lib/remotion/bundle-cache.ts": 1,
-    "lib/remotion/code-revision.ts": 2,
+    "lib/remotion/code-revision.ts": 4,
     "lib/remotion/composition-cache.ts": 9,
     "lib/remotion/composition-geometry.ts": 2,
     "lib/remotion/content-contract.ts": 4,
@@ -4206,7 +4210,7 @@
     "lib/video/viral-script-share.ts": 1,
     "lib/voice/a2p-registration.ts": 9,
     "lib/voice/broker-commands.ts": 3,
-    "lib/voice/call-analysis.ts": 4,
+    "lib/voice/call-analysis.ts": 5,
     "lib/voice/call-coaching.ts": 1,
     "lib/voice/call-recording.ts": 8,
     "lib/voice/campaign-command.ts": 1,
@@ -4227,7 +4231,7 @@
     "lib/voice/showing-request.ts": 1,
     "lib/voice/sms-inbound.ts": 5,
     "lib/voice/spoken-values.ts": 3,
-    "lib/voice/studio-session.ts": 9,
+    "lib/voice/studio-session.ts": 10,
     "lib/voice/sync-voice-id.ts": 1,
     "lib/voice/task-command.ts": 3,
     "lib/voice/team-command-names.ts": 1,
@@ -8845,6 +8849,9 @@
     "app/api/cron/weekly-income-digest/route.ts": [
       "GET"
     ],
+    "app/api/cron/zoom-transcript-reconcile/route.ts": [
+      "GET"
+    ],
     "app/api/dashboard/badge-counts/route.ts": [
       "GET"
     ],
@@ -10641,6 +10648,7 @@
       "AgentSystemReadiness"
     ],
     "app/dashboard/agent/components/ai-insights-feed-card.tsx": [
+      "insightEntityHref",
       "AiInsightsFeedCard"
     ],
     "app/dashboard/agent/components/connection-health-card.tsx": [
@@ -11523,6 +11531,11 @@
     ],
     "app/dashboard/meetings/[eventId]/meeting-embed.tsx": [
       "MeetingEmbed"
+    ],
+    "app/dashboard/meetings/[eventId]/transcript-panel.tsx": [
+      "splitTranscriptLines",
+      "loadMeetingTranscript",
+      "TranscriptPanel"
     ],
     "app/dashboard/motivation/motivation-client.tsx": [
       "MotivationClient"
@@ -16367,6 +16380,7 @@
       "realCopyGenerator"
     ],
     "lib/kernel/ai-isa.ts": [
+      "readHandoffContextPackage",
       "loadAiIsaWorkspace",
       "evaluateAiIsaEligibility",
       "assignAiIsaToLeadAfterGate",
@@ -19753,7 +19767,9 @@
     ],
     "lib/remotion/code-revision.ts": [
       "resolveCodeRevision",
-      "__resetCodeRevisionMemo"
+      "__resetCodeRevisionMemo",
+      "composeCodeRevision",
+      "readInstalledPackageVersions"
     ],
     "lib/remotion/composition-cache.ts": [
       "canonicalJson",
@@ -20791,6 +20807,7 @@
     "lib/voice/call-analysis.ts": [
       "isAnalyzableCall",
       "extractVoiceIntel",
+      "analysisCallType",
       "analyzeVoiceCallRow",
       "sweepVoiceCallIntelligence"
     ],
@@ -20908,6 +20925,7 @@
       "planStudioSession",
       "composeSessionPreviewSpoken",
       "commissionStudioSession",
+      "composeSessionAlreadyCommissionedSpoken",
       "composeSessionCommissionSpoken",
       "normalizeStudioSessionDuration",
       "isStudioSessionCommand",
@@ -21280,5 +21298,5 @@
       "marketInsightWorkflow"
     ]
   },
-  "trulyDead": 1
+  "trulyDead": 0
 }
