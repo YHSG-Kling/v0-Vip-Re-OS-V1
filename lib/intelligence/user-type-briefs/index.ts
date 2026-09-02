@@ -159,7 +159,23 @@ function buildAgentPriorityCtas(p: {
     case "view_listing":
       return [{ label: "Open listing", href: `/dashboard/listings/${id}` }]
     case "complete_task":
-      return [{ label: "Complete task", href: `/dashboard/tasks/${id}` }]
+      // TOMBSTONE (§1.2, dangling-link sweep template class, 2026-09-02): this
+      // returned `{ label: "Complete task", href: `/dashboard/tasks/${id}` }`.
+      // app/dashboard/tasks does not exist; /tasks is an alias page that
+      // redirects to /dashboard, and the only tasks table surface
+      // (app/dashboard/admin/tasks — admin/broker only) reads no ?task= param.
+      // No page anywhere opens a task by id, so a task-typed entity gets NO CTA
+      // (the shell and the brief email render only href-bearing CTAs — see
+      // app/components/shell/todays-focus-card.tsx:204 — so the priority text
+      // still shows, without a dead button). A contact / transaction / listing
+      // entity tagged complete_task falls through to the entity fallback below,
+      // which is a real page. A task detail page would need a tasks-by-id
+      // reader gated by brokerage_id + assignee, and a mark-complete action.
+      // NOTE for the integrator: brief EMAILS already sent minted the old path;
+      // a thin app/dashboard/tasks/[id] redirect page has no survivor to
+      // redirect to, so those links stay dead until a task surface exists.
+      // (Falls through — a `break` here left the switch and the function
+      // returned undefined, never reaching the fallback it was written for.)
     default:
       // Fallback by entity type when AI didn't pick action_type
       if (p.entity_type === "contact") return [{ label: "Open contact", href: `/crm?contact=${id}` }]

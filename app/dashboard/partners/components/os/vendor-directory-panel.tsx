@@ -133,9 +133,17 @@ export function VendorDirectoryPanel({ brokerageId }: VendorDirectoryPanelProps)
             </div>
           ) : (
             filteredVendors.slice(0, 10).map(vendor => (
+              // REPOINTED (dangling-link sweep, 2026-09-02): was
+              // `/dashboard/vendors/${id}` — app/dashboard/vendors has no [vendorId]
+              // child (page.tsx + panels only) and no page reads a ?vendor= query.
+              // The vendor is viewed on /dashboard/vendors itself: the default
+              // "marketplace" tab mounts VendorDirectoryClient, which lists every
+              // brokerage vendor with its book / edit / review / assign actions.
+              // A per-vendor deep link (?vendor=<id> opening that row) is the
+              // missing half — see the lane report.
               <Link
                 key={vendor.id}
-                href={`/dashboard/vendors/${vendor.id}`}
+                href="/dashboard/vendors"
                 className="flex items-center justify-between rounded-lg border p-3 transition-colors hover:bg-muted/50"
               >
                 <div className="flex items-center gap-3">

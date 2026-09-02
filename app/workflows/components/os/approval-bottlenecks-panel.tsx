@@ -2,9 +2,8 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Clock, CheckCircle2, ExternalLink, Eye } from "lucide-react"
+import { Clock, CheckCircle2, Eye } from "lucide-react"
 import { formatDistanceToNow } from "date-fns"
-import Link from "next/link"
 
 interface Execution {
   id: string
@@ -91,14 +90,15 @@ export function ApprovalBottlenecksPanel({
                     <CheckCircle2 className="h-3 w-3 mr-1" />
                     Approve & Continue
                   </Button>
-                ) : (
-                  <Link href={`/workflows/${execution.id}`}>
-                    <Button variant="outline" size="sm" className="text-xs">
-                      <ExternalLink className="h-3 w-3 mr-1" />
-                      Open Workflow
-                    </Button>
-                  </Link>
-                )}
+                ) : null}
+                {/* TOMBSTONE (§1.3, dangling-link sweep template class, 2026-09-02):
+                    an "Open Workflow" Link to `/workflows/${execution.id}` stood in
+                    the else-branch above. app/workflows has no [id] child; the
+                    execution detail lives on THIS page — the "View Details" button
+                    below calls onViewDetail → loadExecutionDetails →
+                    getWorkflowExecutionDetails (app/workflows/workflows-content.tsx:121),
+                    which opens the inline run/steps panel. Two controls for one
+                    destination, one of them a 404, so the dead one is gone. */}
                 <Button
                   variant="ghost"
                   size="sm"

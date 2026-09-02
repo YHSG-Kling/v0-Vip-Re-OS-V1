@@ -1,7 +1,6 @@
 "use client"
 
 import { useState } from "react"
-import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Mail, Video, FileText, Phone, MessageSquare, PlayCircle, PauseCircle, TestTube, Rocket, CheckCircle2 } from "lucide-react"
 import { toggleCampaignStatus, sendCampaignTestTouch, launchAIISACampaign, completeISACampaign } from "@/app/actions/ai-isa"
@@ -31,7 +30,6 @@ interface Props {
 }
 
 export function CampaignCard({ campaign, onStatusChange }: Props) {
-  const router = useRouter()
   const [loading, setLoading] = useState(false)
   const [testLoading, setTestLoading] = useState(false)
   const [testResult, setTestResult] = useState<string | null>(null)
@@ -131,17 +129,26 @@ export function CampaignCard({ campaign, onStatusChange }: Props) {
         </span>
       </div>
 
-      {/* Channel icons — clickable to open campaign settings for that channel */}
+      {/* Channel icons — which channels this campaign rides.
+          TOMBSTONE (§1.2, dangling-link sweep template class, 2026-09-02): each
+          icon was a <button> that router.push'd
+          `/dashboard/isa/campaigns/${id}?channel=${ch}` — "open campaign settings
+          for that channel". app/dashboard/isa/campaigns has no [id] child, and no
+          surface edits an ISA campaign after creation: app/actions/ai-isa.ts
+          exposes toggle / complete / test-touch / launch only (updateCampaignStatus
+          is itself tombstoned at ai-isa.ts:240). Downgraded to non-navigating
+          indicators. A per-channel settings page would need an updateISACampaign
+          action (brokerage-gated like createISACampaign) and a [campaignId] route
+          that seeds CreateCampaignDrawer's channel picker from the row. */}
       <div className="flex items-center gap-2">
         {(campaign.channels ?? []).map((ch) => (
-          <button
+          <span
             key={ch}
-            title={`Configure ${ch} channel`}
-            className="p-1 rounded hover:bg-accent transition-colors cursor-pointer"
-            onClick={() => router.push(`/dashboard/isa/campaigns/${campaign.id}?channel=${ch}`)}
+            title={`${ch} channel`}
+            className="p-1 rounded"
           >
             {CHANNEL_ICON[ch] ?? null}
-          </button>
+          </span>
         ))}
       </div>
 

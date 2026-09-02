@@ -218,14 +218,18 @@ export function ListingApptCoPilotPanel({ prep }: Props) {
             <p className="text-xs font-semibold text-indigo-900 flex items-center gap-1.5">
               <TrendingUp className="h-3.5 w-3.5" /> CMA & Pricing
             </p>
-            {prep.cma.cmaId && (
-              <Link
-                href={`/crm/contacts/${prep.contactId ?? ""}/cma/${prep.cma.cmaId}`}
-                className="text-[11px] text-indigo-700 hover:underline"
-              >
-                Open CMA →
-              </Link>
-            )}
+            {/* TOMBSTONE (§1.2, dangling-link sweep template class, 2026-09-02):
+                an "Open CMA →" Link to `/crm/contacts/${contactId}/cma/${cmaId}`
+                stood here. app/crm/contacts/[contactId]/ has no cma child and NO
+                page anywhere renders a cma_reports row by its id —
+                /dashboard/listings/[id]/cma is listing-scoped (latest row by
+                listing_id, app/actions/seller-cma.ts:200) and this prep's CMA
+                carries no listingId (ListingApptCmaSummary). The card below
+                already shows the row's recommended price, range, comp count and
+                strategy inline. A future CMA detail page would need: a
+                cma_reports-by-id reader gated by brokerage_id (and contact_id
+                for the contact-facing case), plus the cma_comparables /
+                cma_price_adjustments children ai-cma.ts writes. */}
           </div>
           <div className="grid grid-cols-3 gap-2 text-xs">
             <div>
@@ -260,8 +264,12 @@ export function ListingApptCoPilotPanel({ prep }: Props) {
               <FileText className="h-3.5 w-3.5" /> Listing Presentation
             </p>
             {prep.presentation.presentationId && (
+              // REPOINTED (dangling-link sweep, 2026-09-02): was
+              // `/dashboard/presentations/${id}` — no such route. The
+              // listing_presentations viewer by id is
+              // app/dashboard/listings/presentations/[id]/page.tsx.
               <Link
-                href={`/dashboard/presentations/${prep.presentation.presentationId}`}
+                href={`/dashboard/listings/presentations/${prep.presentation.presentationId}`}
                 className="text-[11px] text-indigo-700 hover:underline"
               >
                 Review & edit →

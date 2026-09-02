@@ -544,7 +544,15 @@ export function MarketingTierClient({
                         <TableCell className="text-right">{formatCurrency(campaign.budget_total)}</TableCell>
                         <TableCell className="text-right">{formatCurrency(campaign.budget_spent)}</TableCell>
                         <TableCell>
-                          <Link href={`/content-studio/campaigns/${campaign.id}`}>
+                          {/* REPOINTED (dangling-link sweep, template class, 2026-09-02):
+                              was `/content-studio/campaigns/${id}` — app/content-studio has
+                              no campaigns child, so every arrow 404'd. These rows are
+                              marketing_campaigns; the surface that lists them per brokerage
+                              and opens one (getCampaignById, brokerage-scoped) is the
+                              Campaigns tab of app/dashboard/marketing/studio/page.tsx. No
+                              page takes a per-campaign id — the tab is the closest honest
+                              landing. */}
+                          <Link href="/dashboard/marketing/studio?tab=campaigns">
                             <Button variant="ghost" size="sm">
                               <ArrowRight className="h-4 w-4" />
                             </Button>

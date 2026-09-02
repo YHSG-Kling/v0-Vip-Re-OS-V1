@@ -128,18 +128,34 @@ interface AIValuationResponse {
 
 export async function convertValuationRequestToContact(params: {
   requestId: string
-  brokerageId: string
-  agentId: string
-  userId: string // users.id for portal invite
 }): Promise<{ success: boolean; contactId?: string; error?: string }> {
+  // TENANT FROM THE SESSION (§4, 2026-09-02). This took brokerageId / agentId /
+  // userId in the BODY and wrote them straight onto a service client — the IDOR
+  // shape CLAUDE.md names: any signed-in caller could convert any brokerage's
+  // request into a contact owned by any agent. Gate first, then the service
+  // client; the request must belong to the caller's brokerage or it does not
+  // exist as far as this door is concerned.
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Not authenticated" }
+
   const service = createServiceClient()
+  const { data: me, error: meError } = await service
+    .from("agents")
+    .select("id, brokerage_id")
+    .eq("user_id", user.id)
+    .maybeSingle()
+  if (meError) return { success: false, error: meError.message }
+  if (!me?.brokerage_id) return { success: false, error: "No agent profile for this session" }
+  const tenant = { brokerageId: me.brokerage_id as string, agentId: me.id as string, userId: user.id }
 
   try {
-    // 1. Load valuation request
+    // 1. Load valuation request — scoped to the caller's brokerage
     const { data: request, error: requestError } = await service
       .from("valuation_requests")
       .select("*")
       .eq("id", params.requestId)
+      .eq("brokerage_id", tenant.brokerageId)
       .maybeSingle()
 
     if (requestError || !request) {
@@ -168,27 +184,33 @@ export async function convertValuationRequestToContact(params: {
         phone,
         contact_type: "seller",
         source: CONTACT_SOURCE_HOME_VALUE,
-        agent_id: params.agentId,
-        brokerage_id: params.brokerageId,
+        agent_id: tenant.agentId,
+        brokerage_id: tenant.brokerageId,
       })
       .select("id")
       .single()
 
     if (contactError || !newContact) {
-      return { success: false, error: "Failed to create contact" }
+      return { success: false, error: contactError?.message ?? "Failed to create contact" }
     }
 
-    // 4. Link request to contact
-    await service
+    // 4. Link request to contact. Counted (§3): a DELETE/UPDATE that matches
+    //    nothing also resolves, and an unlinked request would be offered for
+    //    conversion again — a second contact for the same seller.
+    const { data: linked, error: linkError } = await service
       .from("valuation_requests")
-      .update({ contact_id: newContact.id, agent_id: params.agentId })
+      .update({ contact_id: newContact.id, agent_id: tenant.agentId })
       .eq("id", params.requestId)
+      .eq("brokerage_id", tenant.brokerageId)
+      .select("id")
+    if (linkError) return { success: false, error: `Contact created but request not linked: ${linkError.message}`, contactId: newContact.id }
+    if (!linked || linked.length === 0) return { success: false, error: "Contact created but request not linked (no matching row)", contactId: newContact.id }
 
     // 5. Send portal invite
     await createPortalInviteForContact({
       contactId: newContact.id,
-      brokerageId: params.brokerageId,
-      invitedByUserId: params.userId,
+      brokerageId: tenant.brokerageId,
+      invitedByUserId: tenant.userId,
       sendMagicLink: true,
     }).catch(() => {})
 
@@ -204,7 +226,7 @@ export async function convertValuationRequestToContact(params: {
       const { queueContactEnrichment } = await import("@/lib/enrichment/contact-enrichment-core")
       await queueContactEnrichment({
         contactId:   newContact.id,
-        brokerageId: params.brokerageId,
+        brokerageId: tenant.brokerageId,
         triggerType: "home_value_conversion",
       })
     } catch (err) {

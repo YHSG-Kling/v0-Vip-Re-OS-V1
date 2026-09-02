@@ -73,7 +73,14 @@ export function EducationTutorCard({ contactId }: { contactId: string }) {
                 <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Related lessons</p>
                 <div className="flex flex-wrap gap-1.5">
                   {related.map((m) => (
-                    <Link key={m.id} href={`/portal/${contactId}/learn/${m.id}`}>
+                    // REPOINTED (dangling-link sweep, 2026-09-02): was
+                    // `/portal/${contactId}/learn/${id}` — app/portal/[contactId]/learn
+                    // has page.tsx + learn-client.tsx and no [moduleId] child. The
+                    // contact's lesson surface is that learn page (same portal, same
+                    // contactId, so the clicker sees only their own lessons); it takes
+                    // only ?milestone=, not a module id, so the related lesson is
+                    // reached by opening the page rather than pre-selected.
+                    <Link key={m.id} href={`/portal/${contactId}/learn`}>
                       <Badge variant="outline" className="text-xs cursor-pointer hover:bg-muted">{m.title ?? "Lesson"}</Badge>
                     </Link>
                   ))}
