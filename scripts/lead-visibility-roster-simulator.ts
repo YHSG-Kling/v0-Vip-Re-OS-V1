@@ -440,17 +440,37 @@ console.log("\n[the retired rosters are gone by NAME, and their tombstones name 
   }
 }
 
-console.log("\n[the dead user_type comparisons are gone from the folded sites]")
+console.log("\n[the folded sites compare against no user_type the column cannot store]")
 {
-  // 'superadmin' as a users.user_type has ZERO live rows; 'broker_admin' is not a
-  // storable user_type at all. Both appeared in the deleted rosters, where they
-  // matched nothing. They may still appear inside the SURVIVOR (as the documented
-  // input spelling / the legacy platform marker) and in prose.
+  // WAS a flat "no bare 'broker_admin'" per folded site — pinned to the waypoint
+  // where the value was unstorable (§2: every intermediate state of a migration
+  // is briefly true and then permanently false). m530 made broker_admin a
+  // storable user_type and the regenerated vocabulary cache carries it, so a
+  // folded site comparing against it is LIVE code: app/dashboard/isa/page.tsx
+  // maps users.user_type → ActorRole and folds broker_admin into broker, exactly
+  // as resolve-user-role does. The pin went red on 2026-09-02 for that reason.
+  //
+  // The RULE, asserted the same way the SQL-body check below asserts it: of the
+  // two spellings the deleted rosters carried, a folded site may compare against
+  // one only while the column can hold it. Derived from CHECK_VOCABULARIES, so
+  // a future vocabulary regeneration that drops a value turns this back on with
+  // no edit — and while both are storable the list is empty, which is honest,
+  // not vacuous: the finder's positive control below proves it still sees.
+  const admitted = CHECK_VOCABULARIES.users?.user_type ?? []
+  const ROSTER_SPELLINGS = ["broker_admin", "superadmin"]
+  const findDead = (c: string, dead: string[]) =>
+    dead.filter((v) => new RegExp(`["']${v}["']`).test(c))
+  const deadSpellings = ROSTER_SPELLINGS.filter((v) => !admitted.includes(v))
   for (const site of FOLDED_SITES) {
-    const c = code(site.file)
-    check(`${site.file} no longer compares against a bare 'broker_admin'`,
-      !/["']broker_admin["']/.test(c))
+    const found = findDead(code(site.file), deadSpellings)
+    check(`${site.file} compares against no user_type the column cannot store`,
+      admitted.length > 0 && found.length === 0, found.join(", "))
   }
+  // POSITIVE CONTROL — a folded site comparing against a value the column has
+  // never admitted must still be caught.
+  check("POSITIVE CONTROL the dead-spelling finder still catches an unstorable comparison",
+    findDead("if (profile.user_type === 'managing_broker') {}", ["managing_broker"]).length === 1
+    && findDead("if (profile.user_type === 'broker') {}", ["managing_broker"]).length === 0)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
