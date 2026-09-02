@@ -1,6 +1,11 @@
 -- m599 — a Zoom redelivery must not fork the tenant transcript lane.
 -- ─────────────────────────────────────────────────────────────────────────────
--- STATUS: WRITTEN, NOT APPLIED (lane Z1, 2026-09-02). Only the integrator
+-- STATUS: APPLIED 2026-09-02 (integrator, MCP execute_sql, hrvaqgvukzxfskkcrwbt).
+-- Preflight matched this header exactly: 0 rows, 4 indexes, target absent.
+-- Postflight: pg_indexes shows uq_communications_zoom_uuid as a partial UNIQUE
+-- btree on ((metadata ->> 'zoom_uuid')) WHERE that expression IS NOT NULL — the
+-- exact shape below. No column, CHECK, or FK changed; no cache regenerated.
+-- Written by lane Z1; only the integrator
 -- applies. Nothing to regenerate afterwards — see ORDERING below.
 --
 -- MEASURED BEFORE WRITING THIS (live db, hrvaqgvukzxfskkcrwbt, 2026-09-02):

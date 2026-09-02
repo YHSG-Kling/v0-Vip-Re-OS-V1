@@ -1,6 +1,13 @@
 -- m600 — every Zoom webhook delivery was a seq scan of the calendar.
 -- ─────────────────────────────────────────────────────────────────────────────
--- STATUS: WRITTEN, NOT APPLIED (lane Z1, 2026-09-02). Only the integrator
+-- STATUS: APPLIED 2026-09-02 (integrator, MCP execute_sql, hrvaqgvukzxfskkcrwbt).
+-- Preflight matched this header exactly: 0 rows, 4 indexes, target absent.
+-- Postflight: pg_indexes shows idx_calendar_events_zoom_meeting_id as a partial
+-- btree on (((metadata -> 'zoom') ->> 'meeting_id')) WHERE that expression IS
+-- NOT NULL — the exact path the planner printed. No column, CHECK, or FK
+-- changed; no cache regenerated. The 0-row planner caveat below stands: index
+-- selection is proven by definition here, not by an EXPLAIN on a populated table.
+-- Written by lane Z1; only the integrator
 -- applies. Nothing to regenerate afterwards — see ORDERING below.
 --
 -- MEASURED BEFORE WRITING THIS (live db, hrvaqgvukzxfskkcrwbt, 2026-09-02):
