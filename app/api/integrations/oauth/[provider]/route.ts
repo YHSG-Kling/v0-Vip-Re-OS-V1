@@ -504,13 +504,24 @@ export async function GET(
     // Resolve the connecting actor's OWNER scope so the callback stores tokens owner-scoped
     // (agent/team/brokerage/staff/vendor/contact) — not always brokerage. This is what lets a
     // vendor/contact connect their OWN email/calendar and have it resolve via the owner cascade.
-    const { data: userData } = await supabase
+    // BOTH identity columns (§4). On user_type alone the platform's one human
+    // staff row (user_type='admin', platform_role='superadmin') resolved to
+    // "brokerage", so the company's own Zoom/QuickBooks were stored as a tenant
+    // row under 'zoom'/'quickbooks' and the 'platform_zoom'/'platform_quickbooks'
+    // arms in the callback (storedPlatform above) were unreachable — the
+    // platform cards read a row this route could never write. A refused read
+    // leaves platform_role null, which fails closed toward the tenant scopes.
+    const { data: userData, error: userError } = await supabase
       .from("users")
-      .select("brokerage_id, user_type, team_id")
+      .select("brokerage_id, user_type, platform_role, team_id")
       .eq("id", user.id)
       .maybeSingle()
+    if (userError) console.error("[OAuth] identity read failed:", userError.message)
 
-    const { scope } = connectionScopeForUserType((userData?.user_type as string) ?? "")
+    const { scope } = connectionScopeForUserType(
+      (userData?.user_type as string) ?? "",
+      (userData?.platform_role as string | null) ?? null,
+    )
     let ownerType: string = scope
     let ownerId: string | null = null
     let brokerageId: string | null = (userData?.brokerage_id as string | null) ?? null

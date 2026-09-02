@@ -76,12 +76,17 @@ export async function scheduleISAAppointment(params: {
     try {
       const { ensureZoomMeetingForAppointment } = await import('@/lib/connections/zoom')
       const { connectionScopeForUserType } = await import('@/lib/connections/field-spec')
+      // platform_role rides along (§4): a platform-staff booker resolves to the
+      // platform host scope only through BOTH identity columns.
       const { data: booker } = await supabase
         .from('users')
-        .select('user_type, team_id, brokerage_id')
+        .select('user_type, platform_role, team_id, brokerage_id')
         .eq('id', params.agentId)
         .maybeSingle()
-      const scope = connectionScopeForUserType((booker?.user_type as string) ?? '').scope
+      const scope = connectionScopeForUserType(
+        (booker?.user_type as string) ?? '',
+        (booker?.platform_role as string | null) ?? null,
+      ).scope
       const outcome = await ensureZoomMeetingForAppointment(supabase, {
         host: {
           scope: scope as any,

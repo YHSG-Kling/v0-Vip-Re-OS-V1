@@ -105,15 +105,25 @@ async function resolveActor(owner?: OwnerHint): Promise<Actor | null> {
   // Internal actor (agent / team / brokerage).
   const ctx = await getAgentContext().catch(() => null)
   if (!ctx?.isAuthenticated) return null
-  const { scope, isBrokerageManager } = connectionScopeForUserType(ctx.userType)
+  // BOTH identity columns decide the ownership scope (§4): AgentContext carries
+  // user_type but not platform_role, and the platform's one human staff row is
+  // (user_type='admin', platform_role='superadmin') — on user_type alone it
+  // resolved to "brokerage" and the platform could never own a connection. The
+  // row is read ONCE here (RLS: the caller's own row) for platform_role AND the
+  // team anchor that the team scope needs; a refused read leaves both null,
+  // which fails closed toward the tenant scopes and toward "no team".
+  let platformRole: string | null = null
   let teamId: string | null = null
-  if (scope === "team") {
-    try {
-      const supabase = await createClient()
-      const { data } = await supabase.from("users").select("team_id").eq("id", ctx.userId).maybeSingle()
-      teamId = (data?.team_id as string | null) ?? null
-    } catch { teamId = null }
-  }
+  try {
+    const supabase = await createClient()
+    const { data, error } = await supabase
+      .from("users").select("platform_role, team_id").eq("id", ctx.userId).maybeSingle()
+    if (error) console.error("[connection-center] identity read failed:", error.message)
+    platformRole = (data?.platform_role as string | null) ?? null
+    teamId = (data?.team_id as string | null) ?? null
+  } catch { platformRole = null; teamId = null }
+  const { scope, isBrokerageManager } = connectionScopeForUserType(ctx.userType, platformRole)
+  if (scope !== "team") teamId = null
   const ownerId =
     scope === "agent" ? ctx.userId
     : scope === "team" ? teamId

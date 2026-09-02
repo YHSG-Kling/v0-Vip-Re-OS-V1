@@ -159,6 +159,13 @@ export async function processZoomRecordingEvent(
     // NOT a defect, and NOT to be "fixed" by deleting columns: what does not
     // exist is an in-product surface that shows a meeting transcript back to the
     // agent. That is a feature decision, not a broken wire.
+    // The pre-check above is the FAST path only (the voice_calls lane's idiom,
+    // below): a check-then-insert is a race, and two concurrent redeliveries of
+    // the same meeting both read null. m599 (partial UNIQUE on
+    // metadata->>'zoom_uuid') is what decides; 23505 from it is the SAME
+    // "already attached" answer the pre-check returns, never a failed attach.
+    // Until m599 is applied a duplicate is still possible — the arm is inert
+    // rather than wrong, and becomes live the moment the index exists.
     const { error } = await svc.from("communications").insert({
       brokerage_id: target.brokerageId,
       contact_id: null,
@@ -177,7 +184,12 @@ export async function processZoomRecordingEvent(
       },
       sent_at: startedAt,
     })
-    if (error) return { handled: false, reason: `communications insert failed: ${error.message}` }
+    if (error) {
+      if ((error as any)?.code === "23505") {
+        return { handled: true, attached: "tenant", analyzed: false, reason: "already attached (idempotent)" }
+      }
+      return { handled: false, reason: `communications insert failed: ${error.message}` }
+    }
 
     await stampTranscriptAttached(svc, (event as any).id, meta, meetingUuid, "tenant")
     return { handled: true, attached: "tenant", analyzed: !!insights }
@@ -247,7 +259,12 @@ export async function processZoomRecordingEvent(
       brokerage_id: (event as any).brokerage_id,
       contact_id: target.contactId,
       agent_id: agentId,
-      direction: "zoom_meeting",
+      // The SAME two values the ledger row above carries — never a smear
+      // (§6). direction used to carry "zoom_meeting", which the analyzer
+      // mapped to call_analyses.call_type "inbound"; the kind now travels in
+      // call_type and the analyzer records it verbatim (analysisCallType).
+      direction: "outbound",
+      call_type: "zoom_meeting",
       duration_seconds: durationSeconds,
       transcription: transcript,
     },

@@ -274,11 +274,16 @@ export async function scheduleListingAppointmentService(
       // booker lookup carries the brokerage explicitly. A refused read used to
       // fall through to an empty user_type and silently pick the wrong Zoom
       // host scope.
+      // platform_role rides along (§4): a platform-staff booker resolves to the
+      // platform host scope only through BOTH identity columns.
       const { data: booker, error: bookerError } = await svc
-        .from("users").select("user_type, team_id, brokerage_id")
+        .from("users").select("user_type, platform_role, team_id, brokerage_id")
         .eq("id", agentId).eq("brokerage_id", brokerageId).maybeSingle()
       if (bookerError) throw new Error(`booker lookup failed: ${bookerError.message}`)
-      const scope = connectionScopeForUserType((booker?.user_type as string) ?? "").scope
+      const scope = connectionScopeForUserType(
+        (booker?.user_type as string) ?? "",
+        (booker?.platform_role as string | null) ?? null,
+      ).scope
       const start = new Date(appointmentAt)
       const outcome = await ensureZoomMeetingForAppointment(svc, {
         host: {
