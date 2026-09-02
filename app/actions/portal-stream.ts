@@ -41,6 +41,22 @@ export interface PortalStreamRow {
   agentActionLabel:        string | null
   agentActionStatus:       "open" | "completed_manual" | "completed_executed" | "completed_ai" | "dismissed"
   agentActionCompletedAt:  string | null
+  /**
+   * WHO dispositioned it. `agent_action_completed_by` FKs users(id)
+   * (scripts/schema-fk-map.ts; listed under USERS_FK_AGENTISH_COLUMNS in
+   * scripts/agent-fk-columns.ts — a users id under an agent-ish name) and is
+   * stamped from auth.getUser() in dispositionPortalEventAction below. It and
+   * `agent_action_notes` were written on every disposition and read by nothing.
+   * Resolved in one batched read anchored on the caller's brokerage. States:
+   *   resolved / unresolved (id present, no user of this brokerage carries it) /
+   *   not_recorded (NULL — an open row, or a legacy disposition) /
+   *   lookup_refused / withheld (the CUSTOMER feed: the agent's internal
+   *   disposition lane is never shown to the contact — CLAUDE.md §5).
+   */
+  agentActionCompletedBy:      string | null
+  agentActionCompletedByName:  string | null
+  agentActionCompletedByState: "resolved" | "unresolved" | "not_recorded" | "lookup_refused" | "withheld"
+  agentActionNotes:            string | null
   severity:                "normal" | "high" | "critical" | "celebration"
   occurredAt:              string
   transactionId:           string | null
@@ -58,13 +74,39 @@ interface RawRow {
   agent_action_label:            string | null
   agent_action_status:           PortalStreamRow["agentActionStatus"]
   agent_action_completed_at:     string | null
+  /** Absent on the customer read — that select deliberately omits both. */
+  agent_action_completed_by?:    string | null
+  agent_action_notes?:           string | null
   severity:                      PortalStreamRow["severity"]
   occurred_at:                   string
   transaction_id:                string | null
   listing_id:                    string | null
 }
 
-function rowToStream(r: RawRow, contactName: string | null = null): PortalStreamRow {
+const AGENT_STREAM_COLS =
+  "id, contact_id, event_type, customer_copy, customer_icon, agent_copy, agent_action_required, agent_action_label, agent_action_status, agent_action_completed_at, agent_action_completed_by, agent_action_notes, severity, occurred_at, transaction_id, listing_id"
+
+interface CompleterNames {
+  byId: Map<string, string>
+  lookupRefused: boolean
+}
+
+function rowToStream(
+  r: RawRow,
+  contactName: string | null = null,
+  completers: CompleterNames | "withheld" = { byId: new Map(), lookupRefused: false },
+): PortalStreamRow {
+  const completedBy = r.agent_action_completed_by ?? null
+  let completedByName: string | null = null
+  let completedByState: PortalStreamRow["agentActionCompletedByState"]
+  if (completers === "withheld") {
+    completedByState = "withheld"
+  } else if (!completedBy) {
+    completedByState = "not_recorded"
+  } else {
+    completedByName = completers.byId.get(completedBy) ?? null
+    completedByState = completedByName ? "resolved" : completers.lookupRefused ? "lookup_refused" : "unresolved"
+  }
   return {
     id:                     r.id,
     contactId:              r.contact_id,
@@ -77,11 +119,44 @@ function rowToStream(r: RawRow, contactName: string | null = null): PortalStream
     agentActionLabel:       r.agent_action_label,
     agentActionStatus:      r.agent_action_status,
     agentActionCompletedAt: r.agent_action_completed_at,
+    agentActionCompletedBy:      completers === "withheld" ? null : completedBy,
+    agentActionCompletedByName:  completedByName,
+    agentActionCompletedByState: completedByState,
+    agentActionNotes:            completers === "withheld" ? null : (r.agent_action_notes ?? null),
     severity:               r.severity,
     occurredAt:             r.occurred_at,
     transactionId:          r.transaction_id,
     listingId:              r.listing_id,
   }
+}
+
+/**
+ * Batched, TENANT-ANCHORED completer names: users.id → display name, only for
+ * users of the caller's brokerage. The refusal is surfaced (not swallowed) so a
+ * blocked read renders as `lookup_refused`, never as "outside this brokerage".
+ */
+async function resolveCompleterNames(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  rows: RawRow[],
+  brokerageId: string,
+): Promise<CompleterNames> {
+  const ids = Array.from(new Set(rows.map((r) => r.agent_action_completed_by).filter((id): id is string => !!id)))
+  const byId = new Map<string, string>()
+  if (ids.length === 0) return { byId, lookupRefused: false }
+  const { data, error } = await supabase
+    .from("users")
+    .select("id, first_name, last_name, email")
+    .in("id", ids)
+    .eq("brokerage_id", brokerageId)
+  if (error) {
+    console.error("[portalStream] completer name lookup refused:", error.message)
+    return { byId, lookupRefused: true }
+  }
+  for (const u of (data ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null; email: string | null }>) {
+    const label = [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email
+    if (label) byId.set(u.id, label)
+  }
+  return { byId, lookupRefused: false }
 }
 
 // ─── Customer-facing read ────────────────────────────────────────────────
@@ -94,6 +169,9 @@ export async function getCustomerPortalFeed(params: {
   const supabase = await createClient()
   // RLS gates: customer can read only their own (via contacts.user_id =
   // auth.uid()) AND only rows with customer_copy IS NOT NULL.
+  // agent_action_completed_by / agent_action_notes are NOT selected here: the
+  // disposition lane is the agent's internal record and is withheld from the
+  // contact (state "withheld", never a fabricated null-as-"not recorded").
   const { data, error } = await supabase
     .from("portal_event_stream")
     .select("id, contact_id, event_type, customer_copy, customer_icon, agent_copy, agent_action_required, agent_action_label, agent_action_status, agent_action_completed_at, severity, occurred_at, transaction_id, listing_id")
@@ -102,7 +180,7 @@ export async function getCustomerPortalFeed(params: {
     .order("occurred_at", { ascending: false })
     .limit(params.limit ?? 30)
   if (error) return { success: false, error: error.message }
-  return { success: true, rows: (data ?? []).map((r) => rowToStream(r as RawRow)) }
+  return { success: true, rows: (data ?? []).map((r) => rowToStream(r as RawRow, null, "withheld")) }
 }
 
 // ─── Agent-facing read (single contact, full stream) ─────────────────────
@@ -139,13 +217,15 @@ export async function getAgentPortalStream(params: {
 
   const { data, error } = await supabase
     .from("portal_event_stream")
-    .select("id, contact_id, event_type, customer_copy, customer_icon, agent_copy, agent_action_required, agent_action_label, agent_action_status, agent_action_completed_at, severity, occurred_at, transaction_id, listing_id")
+    .select(AGENT_STREAM_COLS)
     .eq("contact_id", params.contactId)
     .eq("brokerage_id", callerRow.brokerage_id)
     .order("occurred_at", { ascending: false })
     .limit(params.limit ?? 50)
   if (error) return { success: false, error: error.message }
-  return { success: true, rows: (data ?? []).map((r) => rowToStream(r as RawRow)) }
+  const rows = (data ?? []) as RawRow[]
+  const completers = await resolveCompleterNames(supabase, rows, callerRow.brokerage_id)
+  return { success: true, rows: rows.map((r) => rowToStream(r, null, completers)) }
 }
 
 // ─── Agent-facing action queue across the brokerage ──────────────────────
@@ -165,9 +245,12 @@ export async function getOpenAgentActions(params?: {
     .maybeSingle()
   if (!callerRow?.brokerage_id) return { success: false, error: "Unauthorized" }
 
+  // The same column set as the single-contact stream. Every row here is
+  // status=open, so completed_by is NULL by construction ("not_recorded") —
+  // the shape is kept identical so the queue component reads one row type.
   const { data, error } = await supabase
     .from("portal_event_stream")
-    .select("id, contact_id, event_type, customer_copy, customer_icon, agent_copy, agent_action_required, agent_action_label, agent_action_status, agent_action_completed_at, severity, occurred_at, transaction_id, listing_id")
+    .select(AGENT_STREAM_COLS)
     .eq("brokerage_id", callerRow.brokerage_id)
     .eq("agent_action_required", true)
     .eq("agent_action_status", "open")
@@ -175,24 +258,27 @@ export async function getOpenAgentActions(params?: {
     .order("occurred_at", { ascending: false })
     .limit(params?.limit ?? 20)
   if (error) return { success: false, error: error.message }
+  const rows = (data ?? []) as RawRow[]
 
   // Hydrate contact names for the queue UI — also scoped to caller's brokerage
-  const contactIds = Array.from(new Set((data ?? []).map((r) => (r as RawRow).contact_id)))
+  const contactIds = Array.from(new Set(rows.map((r) => r.contact_id)))
   const nameMap = new Map<string, string>()
   if (contactIds.length > 0) {
-    const { data: contacts } = await supabase
+    const { data: contacts, error: contactsErr } = await supabase
       .from("contacts")
       .select("id, first_name, last_name")
       .in("id", contactIds)
       .eq("brokerage_id", callerRow.brokerage_id)
+    if (contactsErr) console.error("[portalStream] contact name lookup refused — queue renders without names:", contactsErr.message)
     for (const c of (contacts ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null }>) {
       const name = `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim()
       if (name) nameMap.set(c.id, name)
     }
   }
+  const completers = await resolveCompleterNames(supabase, rows, callerRow.brokerage_id)
   return {
     success: true,
-    rows: (data ?? []).map((r) => rowToStream(r as RawRow, nameMap.get((r as RawRow).contact_id) ?? null)),
+    rows: rows.map((r) => rowToStream(r, nameMap.get(r.contact_id) ?? null, completers)),
   }
 }
 

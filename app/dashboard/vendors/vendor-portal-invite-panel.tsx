@@ -45,6 +45,24 @@ export interface VendorInviteRow {
   email:      string | null
   expires_at: string | null
   created_at: string | null
+  /** When the login was claimed (vendor_invitations.accepted_at). */
+  accepted_at: string | null
+  /** users.id of the accepting LOGIN (see the identity note in page.tsx). */
+  accepted_by: string | null
+  /** The accepting account's email (or name), resolved inside this brokerage. */
+  accepted_by_label: string | null
+  accepted_by_state: "resolved" | "unresolved" | "not_recorded" | "lookup_refused"
+}
+
+/** Three-plus-one states, never collapsed: a name; an id no account of this
+ *  brokerage carries; no id at all; or a lookup that was refused. */
+function acceptedByText(inv: VendorInviteRow): string {
+  switch (inv.accepted_by_state) {
+    case "resolved":       return `by ${inv.accepted_by_label}`
+    case "unresolved":     return "by an account outside this brokerage"
+    case "lookup_refused": return "acceptor lookup refused"
+    case "not_recorded":   return "acceptor not recorded"
+  }
 }
 
 export interface InvitableVendor {
@@ -209,8 +227,16 @@ export function VendorPortalInvitePanel({
                             portal account: {v.linkedEmail}
                           </Badge>
                         ) : inv ? (
-                          <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${statusTone(expired ? "expired" : inv.status)}`}>
-                            invite {expired ? "expired" : inv.status}
+                          <span className="inline-flex flex-wrap items-center gap-1.5">
+                            <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${statusTone(expired ? "expired" : inv.status)}`}>
+                              invite {expired ? "expired" : inv.status}
+                            </span>
+                            {inv.status === "accepted" && (
+                              <span className="text-[11px] text-muted-foreground">
+                                {inv.accepted_at ? `${new Date(inv.accepted_at).toLocaleDateString()} ` : ""}
+                                {acceptedByText(inv)}
+                              </span>
+                            )}
                           </span>
                         ) : (
                           <span className="text-muted-foreground">never invited</span>

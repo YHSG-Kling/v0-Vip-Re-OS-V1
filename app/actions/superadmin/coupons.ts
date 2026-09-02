@@ -77,6 +77,21 @@ export interface CouponListRow extends PlatformCoupon {
    *  denormalized redeemed_count column. */
   ledger_redemptions: number
   last_redeemed_at: string | null
+  /**
+   * WHO redeemed it last. `redeemed_by` FKs users(id) (scripts/schema-fk-map.ts)
+   * and ALL THREE writers agree on the class — each stamps the session's auth
+   * user id: app/actions/auth/signup-brokerage.ts (the new tenant owner),
+   * app/actions/billing.ts (the tenant's billing admin accepting the save-offer),
+   * and redeemCouponForBrokerageAction below (platform staff). It was read by
+   * nothing. This is a PLATFORM surface (billing capability gate), so the name
+   * resolves platform-wide; `platform_staff` says whether the redeemer was
+   * platform staff acting on the tenant's behalf rather than someone at the
+   * redeeming brokerage. "unresolved" = the users row is no longer on file.
+   */
+  last_redeemed_by_user_id: string | null
+  last_redeemed_by_name: string | null
+  last_redeemed_by_state: "resolved" | "unresolved" | "not_recorded" | "lookup_refused"
+  last_redeemed_by_platform_staff: boolean
   summary: string
 }
 
@@ -90,21 +105,65 @@ export async function listCouponsAction(): Promise<
 
   const [couponsRes, redemptionsRes] = await Promise.all([
     svc.from("platform_coupons").select(COUPON_COLS).order("created_at", { ascending: false }),
-    svc.from("platform_coupon_redemptions").select("coupon_id, redeemed_at"),
+    svc.from("platform_coupon_redemptions").select("coupon_id, redeemed_at, redeemed_by, brokerage_id"),
   ])
   if (couponsRes.error) return { ok: false, error: couponsRes.error.message }
+  // The ledger's error is read: a refused ledger read used to render every
+  // coupon as "0 redeemed", which on a billing surface is a wrong number.
+  if (redemptionsRes.error) return { ok: false, error: `redemption ledger read refused: ${redemptionsRes.error.message}` }
 
-  const byCoupon = new Map<string, { count: number; last: string | null }>()
-  for (const r of (redemptionsRes.data ?? []) as Array<{ coupon_id: string; redeemed_at: string | null }>) {
-    const cur = byCoupon.get(r.coupon_id) ?? { count: 0, last: null }
+  type Redemption = { coupon_id: string; redeemed_at: string | null; redeemed_by: string | null; brokerage_id: string | null }
+  type Agg = { count: number; last: string | null; lastBy: string | null; lastBrokerageId: string | null }
+  const byCoupon = new Map<string, Agg>()
+  for (const r of (redemptionsRes.data ?? []) as Redemption[]) {
+    const cur = byCoupon.get(r.coupon_id) ?? { count: 0, last: null, lastBy: null, lastBrokerageId: null }
     cur.count += 1
-    if (r.redeemed_at && (!cur.last || r.redeemed_at > cur.last)) cur.last = r.redeemed_at
+    if (r.redeemed_at && (!cur.last || r.redeemed_at > cur.last)) {
+      cur.last = r.redeemed_at
+      cur.lastBy = r.redeemed_by ?? null
+      cur.lastBrokerageId = r.brokerage_id ?? null
+    }
     byCoupon.set(r.coupon_id, cur)
   }
 
+  // One batched read for every distinct last-redeemer. brokerage_id and
+  // platform_role are read so "platform staff redeemed this for the tenant"
+  // is distinguishable from "the tenant redeemed it themselves".
+  const redeemerIds = Array.from(new Set(Array.from(byCoupon.values()).map((a) => a.lastBy).filter((id): id is string => !!id)))
+  const redeemerById = new Map<string, { name: string; brokerageId: string | null; platformRole: string | null }>()
+  let redeemerLookupRefused = false
+  if (redeemerIds.length > 0) {
+    const { data: redeemers, error: redeemersErr } = await svc.from("users").select("id, first_name, last_name, email, brokerage_id, platform_role").in("id", redeemerIds)
+    if (redeemersErr) {
+      redeemerLookupRefused = true
+      console.error("[coupons] redeemer name lookup refused:", redeemersErr.message)
+    }
+    for (const u of (redeemers ?? []) as any[]) {
+      const name = [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email
+      if (name) redeemerById.set(u.id as string, { name: name as string, brokerageId: (u.brokerage_id as string | null) ?? null, platformRole: (u.platform_role as string | null) ?? null })
+    }
+  }
+
   const coupons = ((couponsRes.data ?? []) as any[]).map((c) => {
-    const agg = byCoupon.get(c.id) ?? { count: 0, last: null }
-    return { ...c, ledger_redemptions: agg.count, last_redeemed_at: agg.last, summary: describeCoupon(c) } as CouponListRow
+    const agg = byCoupon.get(c.id) ?? { count: 0, last: null, lastBy: null, lastBrokerageId: null }
+    const redeemer = agg.lastBy ? redeemerById.get(agg.lastBy) ?? null : null
+    const last_redeemed_by_state: CouponListRow["last_redeemed_by_state"] =
+      !agg.lastBy ? "not_recorded"
+      : redeemer ? "resolved"
+      : redeemerLookupRefused ? "lookup_refused"
+      : "unresolved"
+    return {
+      ...c,
+      ledger_redemptions: agg.count,
+      last_redeemed_at: agg.last,
+      last_redeemed_by_user_id: agg.lastBy,
+      last_redeemed_by_name: redeemer?.name ?? null,
+      last_redeemed_by_state,
+      // Platform staff = carries a platform_role AND is not a member of the
+      // brokerage the redemption landed on.
+      last_redeemed_by_platform_staff: !!redeemer && !!redeemer.platformRole && redeemer.brokerageId !== agg.lastBrokerageId,
+      summary: describeCoupon(c),
+    } as CouponListRow
   })
   return { ok: true, coupons, stripeConfigured: isStripeConfigured() }
 }

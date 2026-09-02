@@ -30,6 +30,11 @@ type ScanRow = {
   review_status: "approved" | "rejected"
   contact_id: string | null
   raw_image_url: string
+  /** users.id of a human reviewer — the writer only ever stamps null (see
+   *  getRecentScans in business-card-actions.ts); rendered honestly below. */
+  reviewed_by: string | null
+  /** When the viability gate ran. */
+  reviewed_at: string | null
 }
 
 type ScanResult = {
@@ -439,6 +444,16 @@ export default function BusinessCardsPage() {
                         ) : (
                           <span className="text-xs bg-muted text-muted-foreground px-2 py-0.5 rounded font-medium">Viability failed</span>
                         )}
+                        {/* The status above is the automatic viability gate's verdict.
+                            No person reviews these scans today (reviewed_by is written
+                            as null by its only writer), and this says so rather than
+                            implying a reviewer. A non-null id has no resolver yet — by
+                            ruling, none is built for a column nothing sets. */}
+                        <p className="mt-1 text-[11px] text-muted-foreground">
+                          {s.reviewed_by
+                            ? "reviewed by a person (name not resolved)"
+                            : `auto-gated${s.reviewed_at ? ` ${new Date(s.reviewed_at).toLocaleDateString()}` : ""} — not reviewed by a person`}
+                        </p>
                       </td>
                       <td className="px-4 py-3">
                         {s.contact_id ? (

@@ -248,9 +248,14 @@ export default async function VendorsPage() {
   // reachable in principle and unreachable in practice. This reads the state the
   // panel below acts on. `error` is read deliberately — an RLS refusal must not
   // render as "nobody has been invited".
+  // accepted_by / accepted_at: WHO claimed the login and when. `accepted_by` is
+  // a USERS-class id — no FK in scripts/schema-fk-map.ts, and the one writer
+  // (app/actions/vendor-invite.ts acceptVendorInviteAction) stamps
+  // `user.id` from auth.getUser(): the accepting LOGIN, not a vendors.id.
+  // Written on every acceptance, read by nothing until here.
   const { data: inviteRows, error: inviteErr } = await supabase
     .from("vendor_invitations")
-    .select("id, vendor_id, status, email, expires_at, created_at")
+    .select("id, vendor_id, status, email, expires_at, created_at, accepted_by, accepted_at")
     .eq("brokerage_id", profile.brokerage_id)
     .order("created_at", { ascending: false })
     .limit(500)
@@ -275,6 +280,50 @@ export default async function VendorsPage() {
       linkedEmailByVendor.set(l.vendor_id, emailByUserId.get(l.user_id) ?? "linked account")
     }
   }
+
+  // Resolve the accepting logins, TENANT-ANCHORED two ways: an id already in
+  // this brokerage's user_role_assignments link set (loaded above, scoped by
+  // brokerage_id) resolves from that map; anything else is looked up only
+  // among users of THIS brokerage. An id that matches neither is
+  // "unresolved" — it is never named across the tenant line.
+  const acceptedByIds = [...new Set(
+    ((inviteRows ?? []) as any[]).map((i) => i.accepted_by as string | null).filter((id): id is string => !!id && !emailByUserId.has(id))
+  )]
+  const acceptorLabelById = new Map<string, string>(emailByUserId)
+  let acceptorLookupRefused = false
+  if (acceptedByIds.length > 0) {
+    const { data: acceptors, error: acceptorsErr } = await svcForLinks
+      .from("users")
+      .select("id, email, first_name, last_name")
+      .in("id", acceptedByIds)
+      .eq("brokerage_id", profile.brokerage_id)
+    if (acceptorsErr) {
+      acceptorLookupRefused = true
+      console.error("[vendors] invite acceptor lookup refused:", acceptorsErr.message)
+    }
+    for (const u of (acceptors ?? []) as any[]) {
+      const label = (u.email as string | null) ?? [u.first_name, u.last_name].filter(Boolean).join(" ")
+      if (label) acceptorLabelById.set(u.id as string, label)
+    }
+  }
+  const invitations = ((inviteRows ?? []) as any[]).map((i) => {
+    const acceptedBy = (i.accepted_by as string | null) ?? null
+    const label = acceptedBy ? acceptorLabelById.get(acceptedBy) ?? null : null
+    const acceptedByState: "resolved" | "unresolved" | "not_recorded" | "lookup_refused" =
+      !acceptedBy ? "not_recorded" : label ? "resolved" : acceptorLookupRefused ? "lookup_refused" : "unresolved"
+    return {
+      id:                i.id as string,
+      vendor_id:         i.vendor_id as string,
+      status:            (i.status as string) ?? "pending",
+      email:             (i.email as string | null) ?? null,
+      expires_at:        (i.expires_at as string | null) ?? null,
+      created_at:        (i.created_at as string | null) ?? null,
+      accepted_at:       (i.accepted_at as string | null) ?? null,
+      accepted_by:       acceptedBy,
+      accepted_by_label: label,
+      accepted_by_state: acceptedByState,
+    }
+  })
   const invitableVendors = (preferredVendors ?? []).map((v: any) => ({
     id:          v.id as string,
     name:        (v.name as string) ?? "Unnamed vendor",
@@ -598,7 +647,7 @@ export default async function VendorsPage() {
               per-client grants below, which decide what a signed-in vendor sees. */}
           <VendorPortalInvitePanel
             vendors={invitableVendors}
-            invitations={(inviteRows ?? []) as any}
+            invitations={invitations}
             loadError={inviteErr?.message ?? null}
             canInvite={canInviteVendorsHere}
             canRevoke={canRevokeAccess}

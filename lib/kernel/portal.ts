@@ -292,26 +292,60 @@ export async function determinePortalView(
 }
 
 /**
+ * WHO ENABLED A MODULE. `contact_portal_modules.enabled_by_agent_id` is stamped
+ * by the one writer (lib/transactions/stage-progression.ts, the sold-listing
+ * grant) and was read by nothing. It is an AGENTS-class id — the column FKs
+ * agents(id), per scripts/agent-fk-columns.ts (AGENT_FK_COLUMNS.contact_portal_modules)
+ * and scripts/schema-fk-map.ts — so it is resolved agents → users through
+ * `agents.user_id`; it would match nothing against users.id (the two spaces are
+ * disjoint, CLAUDE.md §3). Four states, never collapsed and never "the system":
+ *   resolved        — the agent's name, found inside the row's own brokerage
+ *   unresolved      — an id is stamped but no agent of THIS brokerage carries it
+ *   not_recorded    — the column is NULL
+ *   lookup_refused  — the name read itself was refused (supabase-js RESOLVES a
+ *                     refusal; a swallowed one would read as "unresolved", which
+ *                     asserts a fact nobody checked)
+ */
+interface PortalModuleAttribution {
+  moduleKey: string
+  isEnabled: boolean
+  enabledAt: string | null
+  enabledByAgentId: string | null
+  enabledByName: string | null
+  enabledByState: "resolved" | "unresolved" | "not_recorded" | "lookup_refused"
+}
+
+/**
  * KERNEL CONTRACT: Determines which portal modules are enabled for a contact.
- * 
+ *
  * Input: PortalModulesInput { contactId, view, isPropertyOwner? }
- * Output: PortalModulesOutput { modules, journey, messages, ... }
- * 
+ * Output: PortalModulesOutput { modules, journey, messages, ... } plus
+ *         `moduleAttribution` — one entry per stored override, naming the agent
+ *         who set it (see PortalModuleAttribution above). The contract type in
+ *         portal-contracts.ts is widened here by intersection rather than edited.
+ *
  * Reads from contact_portal_modules table if available.
  * Returns all modules enabled as graceful fallback if table not accessible.
  */
 export async function determinePortalModules(
   supabase: SupabaseClient,
   input: PortalModulesInput
-): Promise<PortalModulesOutput> {
+): Promise<PortalModulesOutput & { moduleAttribution: PortalModuleAttribution[] }> {
   try {
     const { contactId, view, isPropertyOwner } = input
 
-    // Fetch module overrides from database
+    // Fetch module overrides from database. enabled_by_agent_id / enabled_at /
+    // brokerage_id are read so the attribution below can be resolved and
+    // TENANT-ANCHORED on the row's own brokerage, never on a caller field.
     const { data: modules, error } = await supabase
       .from("contact_portal_modules")
-      .select("module_key, is_enabled")
+      .select("module_key, is_enabled, enabled_by_agent_id, enabled_at, brokerage_id")
       .eq("contact_id", contactId)
+    if (error) {
+      // Read, not swallowed: the reason below carries DEFAULT_FALLBACK, and the
+      // log carries WHY so a refused read is distinguishable from "no overrides".
+      console.warn("[Portal] contact_portal_modules read refused — rendering defaults:", error.message)
+    }
 
     // Build default module map based on view type
     const defaultModules: Record<string, boolean> = {
@@ -341,14 +375,72 @@ export async function determinePortalModules(
       education: true,
     }
 
+    type ModuleRow = {
+      module_key: string
+      is_enabled: boolean
+      enabled_by_agent_id: string | null
+      enabled_at: string | null
+      brokerage_id: string | null
+    }
+    const moduleRows = (!error && modules ? modules : []) as ModuleRow[]
+
     // Merge database overrides if available
-    if (!error && modules && modules.length > 0) {
-      for (const m of modules) {
-        defaultModules[m.module_key] = m.is_enabled
-      }
+    for (const m of moduleRows) {
+      defaultModules[m.module_key] = m.is_enabled
     }
 
+    // Resolve the enabling agents in ONE batched read, anchored on the rows'
+    // own brokerage_id (every override for one contact belongs to one tenant;
+    // the first stamped tenant is the anchor). agents → users via agents.user_id.
+    const agentIds = Array.from(new Set(moduleRows.map((m) => m.enabled_by_agent_id).filter((id): id is string => !!id)))
+    const anchorBrokerageId = moduleRows.find((m) => m.brokerage_id)?.brokerage_id ?? null
+    const agentNameById = new Map<string, string>()
+    let attributionLookupRefused = false
+    if (agentIds.length > 0 && anchorBrokerageId) {
+      const { data: agentRows, error: agentErr } = await supabase
+        .from("agents")
+        .select("id, users(first_name, last_name, email)")
+        .in("id", agentIds)
+        .eq("brokerage_id", anchorBrokerageId)
+      if (agentErr) {
+        attributionLookupRefused = true
+        console.warn("[Portal] module attribution lookup refused:", agentErr.message)
+      }
+      // agents.user_id is the ONE FK from agents to users, so the embed is a
+      // single row at runtime; the generated types spell it as an array, hence
+      // the normalisation (same shape the portal pages read).
+      type EmbeddedUser = { first_name: string | null; last_name: string | null; email: string | null }
+      for (const a of (agentRows ?? []) as unknown as Array<{ id: string; users: EmbeddedUser | EmbeddedUser[] | null }>) {
+        const u = Array.isArray(a.users) ? (a.users[0] ?? null) : a.users
+        const label = u ? ([u.first_name, u.last_name].filter(Boolean).join(" ") || u.email || "") : ""
+        if (label) agentNameById.set(a.id, label)
+      }
+    } else if (agentIds.length > 0 && !anchorBrokerageId) {
+      // An id with no tenant to anchor on cannot be resolved honestly — a
+      // cross-tenant name read is exactly the shape §4 forbids.
+      attributionLookupRefused = true
+      console.warn("[Portal] module attribution skipped — override rows carry no brokerage_id to anchor on")
+    }
+
+    const moduleAttribution: PortalModuleAttribution[] = moduleRows.map((m) => {
+      const name = m.enabled_by_agent_id ? agentNameById.get(m.enabled_by_agent_id) ?? null : null
+      const enabledByState: PortalModuleAttribution["enabledByState"] =
+        !m.enabled_by_agent_id ? "not_recorded"
+        : name ? "resolved"
+        : attributionLookupRefused ? "lookup_refused"
+        : "unresolved"
+      return {
+        moduleKey: m.module_key,
+        isEnabled: m.is_enabled,
+        enabledAt: m.enabled_at ?? null,
+        enabledByAgentId: m.enabled_by_agent_id ?? null,
+        enabledByName: name,
+        enabledByState,
+      }
+    })
+
     return {
+      moduleAttribution,
       modules: defaultModules,
       journey: defaultModules.journey,
       messages: defaultModules.messages,
@@ -365,6 +457,9 @@ export async function determinePortalModules(
   } catch (error) {
     console.warn("[Portal] Error fetching portal modules:", error)
     return {
+      // Nothing was read, so nothing is attributed — an empty list, not a
+      // fabricated "enabled by" for the defaults below.
+      moduleAttribution: [],
       modules: {
         journey: true,
         messages: true,

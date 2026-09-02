@@ -274,6 +274,22 @@ export async function uploadBusinessCard(params: {
   return { scanId: scan!.id, contactId, vendorId: null, recruitId: null, target: "contact", viable: true }
 }
 
+/**
+ * WHO REVIEWED THE SCAN — nobody, and the row says so honestly.
+ *
+ * `business_card_scans.reviewed_by` FKs users(id) (scripts/schema-fk-map.ts),
+ * and its ONLY writer is uploadBusinessCard above, which stamps a LITERAL
+ * `null` beside `reviewed_at: now` (verified 2026-09-02: no other
+ * `.from("business_card_scans")` insert/update in app/ or lib/ names the
+ * column). There is no human review lane: `review_status` is the VIABILITY
+ * GATE's verdict (name + a contact method present), and `reviewed_at` is the
+ * moment that gate ran. A name resolver for a column no code path ever sets
+ * would resolve nothing forever and read as a working feature — so none is
+ * built. Both columns are read and returned so the surface can render
+ * "auto-gated, not reviewed by a person" instead of implying a reviewer. If a
+ * writer is ever added, the value arrives here non-null and the page's text
+ * changes on its own — that is the moment to build the resolver, not before.
+ */
 export async function getRecentScans(params: {
   agentId?: string  // ignored — derived from session
   brokerageId?: string  // ignored — derived from session
@@ -286,6 +302,10 @@ export async function getRecentScans(params: {
   review_status: "approved" | "rejected"
   contact_id: string | null
   raw_image_url: string
+  /** Always null today — see the note above this function. */
+  reviewed_by: string | null
+  /** When the viability gate ran (not a human review timestamp). */
+  reviewed_at: string | null
 }[]> {
   const auth = await requireCaller()
   if (!auth.ok) return []
@@ -295,7 +315,7 @@ export async function getRecentScans(params: {
   // Scope to caller's session — only their own scans within their brokerage
   let query = supabase
     .from("business_card_scans")
-    .select("id, created_at, extracted_data, confidence_score, review_status, contact_id, raw_image_url")
+    .select("id, created_at, extracted_data, confidence_score, review_status, contact_id, raw_image_url, reviewed_by, reviewed_at")
     .eq("brokerage_id", auth.brokerageId)
     .order("created_at", { ascending: false })
     .limit(params.limit ?? 20)
@@ -311,13 +331,15 @@ export async function getRecentScans(params: {
 
   if (error) throw new Error(`Failed to load scans: ${error.message}`)
 
-  return (data ?? []) as {
-    id: string
-    created_at: string
-    extracted_data: Record<string, string>
-    confidence_score: number
-    review_status: "approved" | "rejected"
-    contact_id: string | null
-    raw_image_url: string
-  }[]
+  return ((data ?? []) as any[]).map((s) => ({
+    id: s.id as string,
+    created_at: s.created_at as string,
+    extracted_data: (s.extracted_data ?? {}) as Record<string, string>,
+    confidence_score: Number(s.confidence_score ?? 0),
+    review_status: s.review_status as "approved" | "rejected",
+    contact_id: (s.contact_id as string | null) ?? null,
+    raw_image_url: s.raw_image_url as string,
+    reviewed_by: (s.reviewed_by as string | null) ?? null,
+    reviewed_at: (s.reviewed_at as string | null) ?? null,
+  }))
 }
