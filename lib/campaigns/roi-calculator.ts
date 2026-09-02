@@ -42,6 +42,19 @@ export async function recalculateCampaignROI(
     cost_per_qualified_lead: number | null
     cost_per_conversion: number | null
     roi_percentage: number | null
+    /** Where total_spend came from — "derived" from the channel ledger (ad,
+     *  direct_mail) or "stored" from hand-entered budget_spent (channels with
+     *  no spend source). Never silent. */
+    spend_source: "derived" | "stored"
+    /** The hand-entered figure, published beside the derived one so a reader
+     *  can see the disagreement instead of inheriting it. */
+    stored_budget_spent: number
+    /** The ledger-derived figure, or null where no ledger exists. */
+    derived_channel_spend: number | null
+    /** True when a ledger exists AND the stored figure disagrees with it. */
+    spend_disagrees: boolean
+    /** Human note on the derivation (which ledger, how many rows, partial?). */
+    spend_note: string | null
   }
 }> {
   try {
@@ -61,8 +74,41 @@ export async function recalculateCampaignROI(
       return { success: false, error: "Campaign not found" }
     }
 
-    const totalSpend = campaign.budget_spent ?? 0
     const campaignType = campaign.campaign_type
+
+    // ── SPEND: DERIVED WHERE A LEDGER EXISTS, STORED ONLY WHERE NONE DOES ────
+    // (§2/§6, 2026-09-02). This used to be `totalSpend = budget_spent ?? 0` for
+    // every channel — a HAND-ENTERED figure on marketing_campaigns (its only
+    // writers are the two create paths, app/actions/marketing-studio.ts:235 and
+    // lib/kernel/marketing.ts:1534, both writing a literal 0; nothing in the
+    // tree ever updates it from a ledger) — while the channel rollup below
+    // DERIVES cost for the same money: ad = Σ ad_performance.spend, direct_mail
+    // = Σ per_piece_cost × pieces_mailed. So a campaign's own row and the
+    // channel it belongs to could disagree about what it cost and nothing said
+    // so: cost_per_lead and roi_percentage were computed over a number the
+    // ledger contradicted.
+    //
+    // THE CHOICE, with the consumer as evidence: campaign_roi.total_spend is
+    // rendered as "Spend" per row and summed into the "Total Spend" card on
+    // app/dashboard/campaigns/roi/roi-dashboard-client.tsx:266,:524 — ONE
+    // figure, unlabelled as to source — and lib/kernel/reporting.ts:614-639
+    // already renders total_spend and budget_spent SIDE BY SIDE as two fields
+    // (plus budget_utilization off the stored one). So the dashboard gets the
+    // derived figure where one exists, and the report is the surface that shows
+    // both, each under its own name. Rule:
+    //   · ad, direct_mail → DERIVED from the same ledgers the channel rollup
+    //     reads (spendSource "derived"); the stored budget_spent is compared
+    //     against it and a disagreement is LOGGED and RETURNED, never hidden.
+    //   · social, newsletter, podcast, video → STORED budget_spent, because no
+    //     spend source exists for them in the live schema (adjudicated at the
+    //     channel rollup's revenue step below — a MISSING LEDGER, not a bug
+    //     here). spendSource "stored" says so. No spend is invented for them.
+    // campaign_roi has no column for the source or the disagreement
+    // (scripts/schema-snapshot.ts:176), so both ride the return value and the
+    // log; persisting them is a migration this lane does not write.
+    const storedSpend = Number(campaign.budget_spent ?? 0)
+    let derivedSpend: number | null = null
+    let derivedSpendNote: string | null = null
 
     // ══════════════════════════════════════════════════════════════════════════
     // STEP 2: Aggregate performance data by campaign type
@@ -123,29 +169,54 @@ export async function recalculateCampaignROI(
 
     // === AD campaigns ===
     if (campaignType === "ad") {
-      // Get ad campaigns linked to this marketing campaign
-      const { data: adCampaigns } = await supabase
+      // Get ad campaigns linked to this marketing campaign. Both errors are now
+      // READ (§3) — they were discarded, so a refused resolve was an honest-
+      // looking zero. FAIL CLOSED like the other arms: the previous campaign_roi
+      // row survives rather than a number nobody can stand behind.
+      const { data: adCampaigns, error: adCampaignsError } = await supabase
         .from("ad_campaigns")
         .select("id")
         .eq("marketing_campaign_id", marketingCampaignId)
         .eq("brokerage_id", brokerageId)
 
+      if (adCampaignsError) {
+        console.error("[ROI Calculator] ad campaign resolve refused:", adCampaignsError.message)
+        return { success: false, error: `ad campaign resolve refused: ${adCampaignsError.message}` }
+      }
+
       if (adCampaigns && adCampaigns.length > 0) {
         const adCampaignIds = adCampaigns.map((a) => a.id)
 
-        // Sum ad performance
-        const { data: adPerf } = await supabase
+        // Sum ad performance. `spend` was ALREADY SELECTED here and thrown
+        // away while total_spend came from the hand-entered budget_spent — the
+        // ledger was in hand and unused. It is the derived spend now, the same
+        // Σ ad_performance.spend the channel rollup uses.
+        const { data: adPerf, error: adPerfError } = await supabase
           .from("ad_performance")
           .select("spend, leads, conversions")
           .in("ad_campaign_id", adCampaignIds)
           .eq("brokerage_id", brokerageId)
 
-        if (adPerf) {
-          for (const p of adPerf) {
-            totalLeads += p.leads ?? 0
-            totalConversions += p.conversions ?? 0
-          }
+        if (adPerfError) {
+          console.error("[ROI Calculator] ad_performance read refused:", adPerfError.message)
+          return { success: false, error: `ad_performance read refused: ${adPerfError.message}` }
         }
+
+        let adSpend = 0
+        for (const p of adPerf ?? []) {
+          adSpend += Number(p.spend ?? 0)
+          totalLeads += p.leads ?? 0
+          totalConversions += p.conversions ?? 0
+        }
+        derivedSpend = adSpend
+        derivedSpendNote = `Σ ad_performance.spend over ${adPerf?.length ?? 0} row(s) of ${adCampaignIds.length} ad campaign(s)`
+      } else {
+        // No ad_campaigns child → the ledger exists but holds nothing for this
+        // campaign: an HONEST ZERO, not "unknown". Stored budget_spent is not
+        // consulted — a hand-typed figure for an ad campaign no ad ran under
+        // is exactly the disagreement this block exists to surface.
+        derivedSpend = 0
+        derivedSpendNote = "no ad_campaigns rows under this campaign"
       }
     }
 
@@ -168,7 +239,10 @@ export async function recalculateCampaignROI(
       // supabase-js RESOLVES refusals, so a discarded error degrades silently).
       const { data: mailCampaigns, error: mailCampaignsError } = await supabase
         .from("direct_mail_campaigns")
-        .select("id")
+        // per_piece_cost / pieces_mailed: the SAME derivation the channel
+        // rollup makes (spend = Σ per_piece_cost × pieces_mailed), now made at
+        // campaign altitude too, so the two cannot disagree about this money.
+        .select("id, per_piece_cost, pieces_mailed")
         .eq("marketing_campaign_id", marketingCampaignId)
         .eq("brokerage_id", brokerageId)
 
@@ -189,6 +263,38 @@ export async function recalculateCampaignROI(
       }
 
       const mailCampaignIds = (mailCampaigns ?? []).map((c) => c.id)
+
+      // ── DERIVE THE SPEND (same rule as the channel rollup) ─────────────────
+      // A NULL per_piece_cost or pieces_mailed is "SPEND NOT RECORDED", never
+      // $0. Costed children sum; uncosted ones are counted and published. If
+      // NO child is costed the ledger has nothing to say and derivedSpend stays
+      // null, so the stored budget_spent is used AND LABELLED as stored.
+      {
+        let mailSpend = 0
+        let costed = 0
+        let uncosted = 0
+        for (const c of mailCampaigns ?? []) {
+          const perPiece = c.per_piece_cost == null ? null : Number(c.per_piece_cost)
+          const pieces = c.pieces_mailed == null ? null : Number(c.pieces_mailed)
+          if (perPiece == null || pieces == null || !Number.isFinite(perPiece) || !Number.isFinite(pieces)) {
+            uncosted++
+            continue
+          }
+          mailSpend += perPiece * pieces
+          costed++
+        }
+        if (costed > 0) {
+          derivedSpend = mailSpend
+          derivedSpendNote =
+            `Σ per_piece_cost × pieces_mailed over ${costed} costed direct_mail campaign(s)` +
+            (uncosted > 0 ? `; ${uncosted} uncosted (spend NOT RECORDED, excluded — PARTIAL spend, ROI overstated)` : "")
+        } else if (mailCampaignIds.length === 0) {
+          derivedSpend = 0
+          derivedSpendNote = "no direct_mail_campaigns rows under this campaign"
+        } else {
+          derivedSpendNote = `${uncosted} direct_mail campaign(s), none costed — spend NOT RECORDED, stored budget_spent used`
+        }
+      }
 
       // No direct-mail children → an HONEST ZERO. Not a brokerage-wide total.
       // (Skipping the read also avoids `.in("campaign_id", [])`, whose PostgREST
@@ -380,6 +486,24 @@ export async function recalculateCampaignROI(
     }
 
     // ══════════════════════════════════════════════════════════════════════════
+    // STEP 2b: Resolve the spend and SAY where it came from
+    // ══════════════════════════════════════════════════════════════════════════
+    const spendSource: "derived" | "stored" = derivedSpend != null ? "derived" : "stored"
+    const totalSpend = derivedSpend ?? storedSpend
+    // A stored figure that disagrees with its own ledger is the finding this
+    // block exists for. It is a WARNING, not a refusal: the ledger wins, and the
+    // person who typed budget_spent is told — the cron's success count does not
+    // read this log, which is why it also rides the return value below.
+    const spendDisagrees = derivedSpend != null && storedSpend !== derivedSpend
+    if (spendDisagrees) {
+      console.warn(
+        `[ROI Calculator] campaign ${marketingCampaignId} (${campaignType}): stored marketing_campaigns.budget_spent=${storedSpend} ` +
+        `≠ derived channel spend ${derivedSpend} (${derivedSpendNote}). total_spend uses the DERIVED figure; ` +
+        `budget_spent is hand-entered and stale.`
+      )
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
     // STEP 3: Calculate ROI metrics
     // ══════════════════════════════════════════════════════════════════════════
     qualifiedLeads = Math.floor(totalLeads * 0.3) // Estimate 30% qualification rate
@@ -448,6 +572,11 @@ export async function recalculateCampaignROI(
         cost_per_qualified_lead: costPerQualifiedLead,
         cost_per_conversion: costPerConversion,
         roi_percentage: roiPercentage,
+        spend_source: spendSource,
+        stored_budget_spent: storedSpend,
+        derived_channel_spend: derivedSpend,
+        spend_disagrees: spendDisagrees,
+        spend_note: derivedSpendNote,
       },
     }
   } catch (error: any) {
@@ -704,12 +833,21 @@ export async function recalculateChannelPerformance(
 
       if (channelType === "video") {
         // NO SPEND SOURCE EXISTS: video_performance_tracking and
-        // ai_video_projects carry no cost/spend/budget column. Note that
-        // video_performance_tracking DOES carry `estimated_roi` — a second,
-        // unrelated spelling of this channel's ROI that no writer in this file
-        // feeds and that nothing here reads (§6). Left alone deliberately:
-        // reconciling the two belongs to whoever owns that column, and guessing
-        // which one is authoritative would be the worse defect.
+        // ai_video_projects carry no cost/spend/budget column.
+        //
+        // RECONCILED (§6, 2026-09-02): video_performance_tracking.estimated_roi
+        // WAS a second spelling of video ROI — not "no writer feeds it", as an
+        // earlier note here said (true of this file, false tree-wide): it was
+        // written at app/actions/video-generation.ts and
+        // app/api/video/engagement/route.ts as a flat `lead_conversions × $500`
+        // and summed onto /dashboard/videos/analytics as "Est. ROI". That is
+        // not an ROI — no cost is subtracted, and the column carried nothing
+        // `lead_conversions` did not (always exactly ×500). THIS FILE IS THE
+        // SURVIVOR of the word: roi_percentage = (revenue − spend) / spend, and
+        // NULL when spend is unknown, which for video it is. The column is no
+        // longer written or read anywhere (tombstones at both writers and the
+        // reader); the analytics figure is now derived at read time from
+        // lead_conversions and documented as an estimated lead VALUE.
         const { data: videoPerf, error: videoPerfError } = await supabase
           .from("video_performance_tracking")
           .select("lead_conversions")

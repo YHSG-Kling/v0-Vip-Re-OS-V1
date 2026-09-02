@@ -65,10 +65,56 @@ export interface ListingHealthRow {
   }>
 }
 
+/** A CLEARED intervention across the board, with who cleared it. */
+export interface RecentlyClearedIntervention {
+  id:               string
+  listingId:        string
+  address:          string | null
+  severity:         "low" | "medium" | "high" | "critical"
+  category:         string | null
+  issueDetected:    string | null
+  sellerImpacted:   boolean
+  createdAt:        string
+  resolvedAt:       string | null
+  /** users.id (scripts/schema-fk-map.ts:458 — resolved_by → users). */
+  resolvedBy:       string | null
+  /** Resolved tenant-scoped. Null with resolvedBy set = an account outside
+   *  this brokerage; both null = nobody was recorded. */
+  resolvedByName:   string | null
+  resolutionNote:   string | null
+}
+
+/**
+ * The cross-listing "recently cleared" audit. BOUNDS ARE STATED, not implied:
+ * newest `limit`, resolved within `windowDays`. `error` is the refused read —
+ * a refused audit read must render as "could not read", never as "nothing was
+ * ever cleared" (§3: supabase-js RESOLVES refusals).
+ */
+export interface RecentlyClearedBoard {
+  rows:       RecentlyClearedIntervention[]
+  error:      string | null
+  windowDays: number
+  limit:      number
+}
+
 export interface ListingHealthBoard {
   rows: ListingHealthRow[]
   summary: { healthy: number; watch: number; at_risk: number; critical: number }
+  recentlyCleared: RecentlyClearedBoard
 }
+
+// THE SAME BOUNDS AS THE PER-LISTING AUDIT (§6 — one spelling of "recent").
+// app/dashboard/listings/[id]/lifecycle/page.tsx:241-242 declares
+// RESOLVED_HISTORY_LIMIT = 10 and RESOLVED_HISTORY_WINDOW_DAYS = 180 as
+// function-local consts INSIDE the page component's body — not exported, not
+// importable — and that page is read-only for this lane, so they are restated
+// here rather than imported. The drift risk is real and named: hoisting both
+// into one shared module (lib/listing-health/…) that both pages import is the
+// follow-up, and any change to one number must be made in both places until
+// then. The rationale is theirs: 180d covers a listing term plus a renewal;
+// 10 matches the open-list limit so neither half dominates.
+const RESOLVED_HISTORY_LIMIT = 10
+const RESOLVED_HISTORY_WINDOW_DAYS = 180
 
 export async function loadListingHealthBoard(): Promise<ListingHealthBoard | { error: string }> {
   const supabase = await createClient()
@@ -89,8 +135,11 @@ export async function loadListingHealthBoard(): Promise<ListingHealthBoard | { e
     .limit(100)
 
   const listingIds = (listings ?? []).map((l: { id: string }) => l.id)
+  const emptyCleared: RecentlyClearedBoard = {
+    rows: [], error: null, windowDays: RESOLVED_HISTORY_WINDOW_DAYS, limit: RESOLVED_HISTORY_LIMIT,
+  }
   if (listingIds.length === 0) {
-    return { rows: [], summary: { healthy: 0, watch: 0, at_risk: 0, critical: 0 } }
+    return { rows: [], summary: { healthy: 0, watch: 0, at_risk: 0, critical: 0 }, recentlyCleared: emptyCleared }
   }
 
   // 2. Latest score per listing — cron writes a row every 12h; we use the most
@@ -118,6 +167,91 @@ export async function loadListingHealthBoard(): Promise<ListingHealthBoard | { e
     const list = interventionsByListing.get(i.listing_id) ?? []
     list.push(i)
     interventionsByListing.set(i.listing_id, list)
+  }
+
+  // 3b. RECENTLY CLEARED — the cross-listing audit (built 2026-09-02).
+  //     The open-only read above is deliberately untouched; this is a SECOND,
+  //     bounded read beside it, mirroring the per-listing history at
+  //     app/dashboard/listings/[id]/lifecycle/page.tsx:265-318: resolved=true,
+  //     resolved_at within the window, newest first, limit, error READ, and
+  //     the clearer's name resolved tenant-scoped. Before this a broker
+  //     sweeping ALL listings could see what was open on each and never who
+  //     had cleared what — the resolution record (resolved_by / resolved_at /
+  //     resolution_note, stamped by resolveIntervention below) existed only
+  //     one listing at a time.
+  //
+  //     Service client, so the tenant predicate is EXPLICIT (§4): the listing
+  //     ids are already this agent's, and brokerage_id is anchored to the
+  //     session's agents row resolved at the top of this function.
+  const resolvedSince = new Date(Date.now() - RESOLVED_HISTORY_WINDOW_DAYS * 86_400_000).toISOString()
+  const { data: clearedRows, error: clearedError } = await svc
+    .from("listing_health_interventions")
+    .select("id, listing_id, severity, category, issue_detected, seller_impacted, created_at, resolved_at, resolved_by, resolution_note")
+    .in("listing_id", listingIds)
+    .eq("brokerage_id", agentRow.brokerage_id)
+    .eq("resolved", true)
+    .gte("resolved_at", resolvedSince)
+    .order("resolved_at", { ascending: false })
+    .limit(RESOLVED_HISTORY_LIMIT)
+  if (clearedError) {
+    // §3: a swallowed error here would render the audit as "nothing has ever
+    // been cleared" — the opposite of what this section exists to tell.
+    console.error("[listing health board] recently-cleared read failed:", clearedError.message)
+  }
+
+  // WHO CLEARED IT. resolved_by FKs users(id) (scripts/schema-fk-map.ts:458) —
+  // USERS-class, disjoint from agents.id, so it is never resolved against
+  // `agents`. One batched `.in()`, anchored to the session's brokerage, so a
+  // foreign id stays unresolved rather than borrowing a name from another
+  // tenant. Same lookup the lifecycle page makes at :300-314.
+  const resolverNames = new Map<string, string>()
+  const resolverIds = Array.from(new Set(
+    (clearedRows ?? []).map((r: any) => r.resolved_by as string | null).filter((v): v is string => !!v),
+  ))
+  let resolverError: string | null = null
+  if (resolverIds.length > 0) {
+    const { data: resolvers, error: resolverErr } = await svc
+      .from("users")
+      .select("id, first_name, last_name, email")
+      .in("id", resolverIds)
+      .eq("brokerage_id", agentRow.brokerage_id)
+    if (resolverErr) {
+      console.error("[listing health board] resolver name lookup failed:", resolverErr.message)
+      resolverError = resolverErr.message
+    }
+    for (const u of (resolvers ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null; email: string | null }>) {
+      const full = [u.first_name, u.last_name].filter(Boolean).join(" ").trim()
+      resolverNames.set(u.id, full || u.email || "Teammate")
+    }
+  }
+  const addressByListing = new Map<string, string | null>(
+    (listings ?? []).map((l: any) => [l.id as string, (l.address ?? null) as string | null]),
+  )
+  const recentlyCleared: RecentlyClearedBoard = {
+    rows: clearedError ? [] : (clearedRows ?? []).map((r: any) => ({
+      id:             r.id,
+      listingId:      r.listing_id,
+      address:        addressByListing.get(r.listing_id) ?? null,
+      severity:       r.severity,
+      category:       r.category ?? null,
+      issueDetected:  r.issue_detected ?? null,
+      sellerImpacted: r.seller_impacted ?? false,
+      createdAt:      r.created_at,
+      resolvedAt:     r.resolved_at ?? null,
+      resolvedBy:     r.resolved_by ?? null,
+      resolvedByName: r.resolved_by ? (resolverNames.get(r.resolved_by) ?? null) : null,
+      resolutionNote: r.resolution_note ?? null,
+    })),
+    // The rows are still shown when only the NAME lookup failed — the audit
+    // is real, the names are the part that could not be read, and the client
+    // says which.
+    error: clearedError
+      ? `Could not read the cleared-intervention history: ${clearedError.message}`
+      : resolverError
+      ? `Cleared history loaded, but resolver names could not be read: ${resolverError}`
+      : null,
+    windowDays: RESOLVED_HISTORY_WINDOW_DAYS,
+    limit: RESOLVED_HISTORY_LIMIT,
   }
 
   // Price-advice inputs. Showing VELOCITY (last 14d vs the prior 14d) and the
@@ -213,7 +347,7 @@ export async function loadListingHealthBoard(): Promise<ListingHealthBoard | { e
     { healthy: 0, watch: 0, at_risk: 0, critical: 0 } as Record<RiskLevel, number>
   )
 
-  return { rows, summary }
+  return { rows, summary, recentlyCleared }
 }
 
 /**

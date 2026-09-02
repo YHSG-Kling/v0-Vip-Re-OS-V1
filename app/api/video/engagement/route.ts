@@ -471,8 +471,14 @@ async function aggregateVideoPerformance(
         break
       case "lead_capture":
         updates.lead_conversions = (existing.lead_conversions || 0) + 1
-        // Estimate ROI based on lead conversions
-        updates.estimated_roi = (updates.lead_conversions || existing.lead_conversions || 0) * 500 // $500 estimated value per lead
+        // TOMBSTONE (§6, 2026-09-02): `estimated_roi = lead_conversions × 500`
+        // was written here and at the insert below. NOT written any more — it
+        // was a stored copy of lead_conversions calling itself an ROI with no
+        // cost subtracted, a rival spelling of the ROI that
+        // lib/campaigns/roi-calculator.ts owns ((revenue − spend) / spend,
+        // NULL when spend is unknown). SURVIVOR for the fact: this row's
+        // `lead_conversions`; the analytics figure derives from it at read
+        // time in app/actions/video-generation.ts:getVideoPerformanceStats.
         break
     }
 
@@ -512,7 +518,8 @@ async function aggregateVideoPerformance(
       click_through_rate: eventType === "click" || eventType === "cta_click" ? 100 : 0,
       share_rate: eventType === "share" ? 100 : 0,
       lead_conversions: eventType === "lead_capture" ? 1 : 0,
-      estimated_roi: eventType === "lead_capture" ? 500 : 0,
+      // estimated_roi: NOT WRITTEN — see the tombstone in the update branch
+      // above. Nullable, no default (live schema); it stays NULL.
       last_event_at: new Date().toISOString(),
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),

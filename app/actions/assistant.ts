@@ -20,15 +20,19 @@ import { VIEW_SIGNALS } from "@/lib/behavior-learning/signal-mapping"
 // and the earlier note that they were "a build line blocked on the orchestrator
 // lane" rested on a premise that does not survive reading the orchestrator.
 //
-// THE DISPROOF, in three checks anyone can repeat:
-//   1. `lib/orchestrator/internal.ts:EVENT_HANDLERS` IS NOT A DISPATCH PATH.
-//      `orchestrateEvent` routes through `switch (event.event_type)` (internal.ts
-//      :158-202); the map is never read at runtime and its own header says so.
-//      Adding a name to it changes nothing that runs.
-//   2. THERE IS NO EVENT. `lib/events/types.ts:29-54` is the whole EVENT_TYPES
-//      vocabulary. It has no member for an assistant query, a task delegation or an
-//      automation firing — and no member for the copilot three either. The closest,
-//      `AI_SUGGESTION_ACTIONED`, has ZERO emitters repo-wide.
+// THE DISPROOF, in checks anyone can repeat:
+//   1. RETIRED (2026-09-02). This check used to say `EVENT_HANDLERS` "IS NOT A
+//      DISPATCH PATH" and that orchestrateEvent never read it. That stopped being
+//      true last wave: internal.ts:40 now heads the map "CONSULTED BY
+//      orchestrateEvent()", the switch dispatches THROUGH it (dispatchRegistered),
+//      and internal.ts:97-100 names this very note as stale. Struck rather than
+//      left to mislead the next reader. It was never the decisive reason.
+//   2. THERE IS NO EVENT — and that alone is decisive. `lib/events/types.ts:29-54`
+//      is the whole EVENT_TYPES vocabulary. It has no member for an assistant
+//      query, a task delegation or an automation firing — and no member for the
+//      copilot three either. The closest, `AI_SUGGESTION_ACTIONED`, has ZERO
+//      emitters repo-wide. Registering a handler for an event nothing writes
+//      cannot make it fire.
 //   3. So the recorded blocker (a service-credentialed dispatcher versus a session
 //      gate) is real but MOOT: an internal-caller seam would gate a dispatch that
 //      never occurs. Building it would put a door on a wall and make six functions
@@ -206,6 +210,12 @@ export async function handleAutomationTriggered(payload: any) {
 // smart_assistant_suggestions — writer generateSmartSuggestion below, reader
 // app/actions/contact-details.ts.
 
+/** smart_assistant_suggestions.priority — the live CHECK vocabulary
+ *  (scripts/check-vocabularies.ts:1371). "critical" is NOT a member; callers
+ *  carrying it map to "high" (lib/intelligence/multi-agent-router.ts:349 makes
+ *  the same mapping). */
+type SuggestionPriority = "low" | "medium" | "high"
+
 interface SuggestionInput {
   brokerage_id: string
   user_id: string
@@ -215,6 +225,10 @@ interface SuggestionInput {
   title: string
   description: string
   action_payload: Record<string, any>
+  /** Optional — the readers ORDER BY this column (app/actions/contact-details.ts
+   *  :199, app/dashboard/coaching/page.tsx:75), and this writer never set it, so
+   *  every row it wrote sorted as NULL. */
+  priority?: SuggestionPriority
 }
 
 export async function generateSmartSuggestion(input: SuggestionInput): Promise<void> {
@@ -228,6 +242,18 @@ export async function generateSmartSuggestion(input: SuggestionInput): Promise<v
   // pass 14 (array-literal sweep): the live columns are agent_id /
   // action_payload_json, and context_id rides metadata (no such column) —
   // the old user_id/context_id/action_payload keys errored every insert.
+  //
+  // THE METADATA KEY (§6, 2026-09-02). This wrote `metadata.context_id`, a key
+  // NO reader in the tree consults. The one reader that keys on metadata at all
+  // — app/actions/contact-details.ts:192, the /crm "Suggestions for this
+  // contact" card — filters `metadata->>contact_id`, the spelling every OTHER
+  // writer uses (lib/intelligence/intent-classifier.ts:126, ai-reply-coach,
+  // fatigue-calculator, alert-notifier). So the nine orchestrator call sites
+  // routed through here with context_type "contact" (internal.ts:404,:440,…)
+  // wrote rows the contact card could never show. SURVIVOR spelling:
+  // `<context_type>_id` — contact_id / listing_id / transaction_id / video_id /
+  // image_id, which is every context_type the tree passes here. `context_id`
+  // is no longer written.
   const { error } = await supabase.from("smart_assistant_suggestions").insert([
     {
       brokerage_id: input.brokerage_id,
@@ -242,8 +268,9 @@ export async function generateSmartSuggestion(input: SuggestionInput): Promise<v
       title: input.title,
       description: input.description,
       action_payload_json: input.action_payload,
-      metadata: { context_id: input.context_id },
+      metadata: { [`${input.context_type}_id`]: input.context_id },
       status: "pending",
+      ...(input.priority ? { priority: input.priority } : {}),
     },
   ])
 
@@ -304,51 +331,196 @@ export async function completeSuggestion(suggestionId: string): Promise<Suggesti
   return setSuggestionStatus(suggestionId, "actioned")
 }
 
+/** One rule-engine suggestion, as the four per-page helpers below produce it. */
+interface RuleSuggestion {
+  type: string
+  priority: "low" | "medium" | "high" | "critical"
+  icon: string
+  title: string
+  description: string
+  action: string | null
+  action_params?: Record<string, any>
+}
+
+/** Which surface a page's suggestions are FOR, in the table's own
+ *  `context_type` vocabulary (the values the orchestrator already writes —
+ *  lib/orchestrator/internal.ts:407,:486,:644). */
+const PAGE_CONTEXT_TYPE: Record<string, string> = {
+  contact_detail: "contact",
+  listing_detail: "listing",
+  transaction_detail: "transaction",
+  dashboard: "dashboard",
+}
+
+/**
+ * THE PAGE-LEVEL RULE ENGINE — NOW PERSISTED THROUGH THE SURVIVOR (§1.2 BUILD,
+ * 2026-09-02).
+ *
+ * This was the ONE remaining category-C orphan export: four real rule sets
+ * (getContactSuggestions, getListingSuggestions, getTransactionSuggestions,
+ * getDashboardSuggestions) that returned an in-memory array to a caller that
+ * did not exist. It could not be deleted — `generateSmartSuggestion` above is
+ * an INSERT API, not a rule engine, so there was no duplicate to merge onto,
+ * and deleting four rule sets to move a number is forbidden. It could not be
+ * wired to the orchestrator — lib/orchestrator/internal.ts:125-130 REFUSES its
+ * three mapped events (lead.tagged_hot, lead.engaged,
+ * transaction.milestone_overdue) explicitly, because none of them carries a
+ * `page`, and nothing emits two of them anyway.
+ *
+ * WHAT IT DOES NOW: every suggestion the rules produce is written to
+ * `smart_assistant_suggestions` THROUGH generateSmartSuggestion, so it lands on
+ * the three readers that already exist —
+ *   · app/actions/contact-details.ts:getContactCopilotSuggestions
+ *     (metadata->>contact_id, pending, this agent + brokerage) → the
+ *     "Suggestions for this contact" card on /crm (app/crm/page.tsx:2265);
+ *   · app/dashboard/coaching/page.tsx:71 (this agent, pending, top 5);
+ *   · app/dashboard/coaching/sessions/page.tsx:98 (this agent, pending, 25).
+ * The array is still returned so a caller can render immediately.
+ *
+ * THE TRIGGER, decided: THE PAGE THAT KNOWS ITS PAGE. The natural call site is
+ * the /crm contact-detail load — app/crm/page.tsx:507 already awaits
+ * getContactCopilotSuggestions(contactId) in the same Promise.all; a
+ * generate-then-read there (or inside that action) is one line, and the
+ * dedupe below makes a repeat open free. A CADENCE was rejected on three
+ * counts: (a) the contact rules reach a model — a sweep over every contact is
+ * unbounded AI spend on the platform-covered ledger (§5: a wrong number there
+ * is a wrong invoice); (b) getAgentContext() is a SESSION gate, so an
+ * unattended cron would fail closed by construction (§4) and a service-client
+ * variant would be exactly the seam internal.ts:105-111 declines to build;
+ * (c) the rules are per-entity facts ("3 showings without feedback") that are
+ * only worth writing when someone is about to look. The one-line wire in
+ * contact-details.ts / crm/page.tsx belongs to those files' owner.
+ *
+ * DEDUPE, so the page trigger is idempotent: a suggestion whose title is
+ * already PENDING for this agent + brokerage + context is not written again,
+ * and when a pending "AI Recommendation" already exists for a contact the
+ * model is NOT called — the existing card is the recommendation. A rule whose
+ * title carries a changed count ("4 showings…" after "3 showings…") is a new
+ * fact and is written.
+ *
+ * AUTH — nothing here widens the gate: the tenant and the agent come from the
+ * SESSION (getAgentContext, §4 — the `agentId` parameter this used to take is
+ * GONE; it named which agent's dashboard to read and was caller-supplied,
+ * i.e. a same-tenant peer could be probed by id), every read is RLS-bound
+ * through createServerClient, and an unauthenticated or untenanted caller is
+ * refused before any read or model call (fail closed).
+ */
 export async function generateAssistantSuggestions(
-  agentId: string,
   context: {
     page: string
     entity_id?: string
     entity_type?: string
   },
-) {
-  // Tenant for the AI cost ledger — SESSION, never `agentId` (§4). Threaded
-  // into the per-page suggestion helpers below, which reach a model.
+): Promise<{ suggestions: RuleSuggestion[]; persisted: number; skipped: number; error?: string }> {
+  // Tenant for the AI cost ledger AND for the rows — SESSION, never a
+  // parameter (§4). Threaded into the per-page helpers below, which reach a
+  // model.
   const spendActor = await getAgentContext()
-  const supabase = await createServerClient()
+  if (!spendActor.isAuthenticated || !spendActor.brokerageId) {
+    return { suggestions: [], persisted: 0, skipped: 0, error: "Not authenticated" }
+  }
+  const contextType = PAGE_CONTEXT_TYPE[context.page]
+  if (!contextType) {
+    return { suggestions: [], persisted: 0, skipped: 0, error: `Unknown page: ${context.page}` }
+  }
+  // The dashboard's context is the agent themselves; the other three need an
+  // entity. No entity → nothing to suggest about, honestly.
+  const contextId = context.page === "dashboard" ? spendActor.agentId : (context.entity_id ?? null)
+  if (!contextId) {
+    return { suggestions: [], persisted: 0, skipped: 0, error: "No entity for this page" }
+  }
 
-  const suggestions = []
+  // ── DEDUPE READ — what is already pending for this page ──────────────────
+  // RLS-bound; scoped the way the readers scope (agent + brokerage + the
+  // metadata link generateSmartSuggestion writes).
+  const supabase = await createServerClient()
+  const pendingTitles = new Set<string>()
+  if (spendActor.agentId) {
+    const { data: pendingRows, error: pendingError } = await supabase
+      .from("smart_assistant_suggestions")
+      .select("title")
+      .eq("brokerage_id", spendActor.brokerageId)
+      .eq("agent_id", spendActor.agentId)
+      .eq("context_type", contextType)
+      .eq(`metadata->>${contextType}_id`, contextId)
+      .eq("status", "pending")
+    if (pendingError) {
+      // A refused dedupe read must not become "nothing is pending" and a
+      // duplicate card — nor a model call that already has an answer. Refuse.
+      console.error("[assistant] pending-suggestion read refused — nothing generated:", pendingError.message)
+      return { suggestions: [], persisted: 0, skipped: 0, error: pendingError.message }
+    }
+    for (const r of pendingRows ?? []) if (r.title) pendingTitles.add(r.title as string)
+  }
+
+  const suggestions: RuleSuggestion[] = []
 
   switch (context.page) {
     case "contact_detail":
-      if (context.entity_id) {
-        suggestions.push(...(await getContactSuggestions(context.entity_id, spendActor)))
-      }
+      suggestions.push(...(await getContactSuggestions(contextId, spendActor, {
+        skipAi: pendingTitles.has(AI_RECOMMENDATION_TITLE),
+      })))
       break
 
     case "listing_detail":
-      if (context.entity_id) {
-        suggestions.push(...(await getListingSuggestions(context.entity_id)))
-      }
+      suggestions.push(...(await getListingSuggestions(contextId)))
       break
 
     case "dashboard":
-      suggestions.push(...(await getDashboardSuggestions(agentId)))
+      suggestions.push(...(await getDashboardSuggestions(contextId)))
       break
 
     case "transaction_detail":
-      if (context.entity_id) {
-        suggestions.push(...(await getTransactionSuggestions(context.entity_id)))
-      }
+      suggestions.push(...(await getTransactionSuggestions(contextId)))
       break
   }
 
-  return { suggestions }
+  // ── PERSIST THROUGH THE SURVIVOR ─────────────────────────────────────────
+  let persisted = 0
+  let skipped = 0
+  let firstError: string | undefined
+  for (const s of suggestions) {
+    if (pendingTitles.has(s.title)) { skipped++; continue }
+    try {
+      await generateSmartSuggestion({
+        brokerage_id: spendActor.brokerageId,
+        user_id: spendActor.userId,
+        context_type: contextType,
+        context_id: contextId,
+        suggestion_type: s.type,
+        title: s.title,
+        description: s.description,
+        action_payload: { action: s.action, icon: s.icon, ...(s.action_params ?? {}) },
+        priority: s.priority === "critical" ? "high" : s.priority,
+      })
+      persisted++
+      pendingTitles.add(s.title) // two rules with one title in a single run write once
+    } catch (err) {
+      // generateSmartSuggestion THROWS on a refused insert (it reads its error).
+      // Counted and reported, not swallowed: the array below still renders, but
+      // the caller is told the queue is short.
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error("[assistant] suggestion persist refused:", msg)
+      firstError ??= msg
+    }
+  }
+
+  return { suggestions, persisted, skipped, ...(firstError ? { error: firstError } : {}) }
 }
 
+/** ONE spelling of the model-authored card's title — the dedupe key that keeps
+ *  a repeat page open from re-spending on a recommendation already pending. */
+const AI_RECOMMENDATION_TITLE = "AI Recommendation"
+
 /** `spendActor` is the SESSION context resolved by the caller — the AI ledger's
- *  tenant, threaded rather than re-derived so its provenance stays visible. */
-async function getContactSuggestions(contactId: string, spendActor: AgentContext) {
+ *  tenant, threaded rather than re-derived so its provenance stays visible.
+ *  `skipAi` — the caller found a pending "AI Recommendation" for this contact
+ *  already; the rules still run (they are free), the model is not called. */
+async function getContactSuggestions(
+  contactId: string,
+  spendActor: AgentContext,
+  opts: { skipAi?: boolean } = {},
+): Promise<RuleSuggestion[]> {
   const supabase = await createServerClient()
 
   // The error is checked: supabase-js RESOLVES a failed query, so an unchecked read hands
@@ -385,7 +557,7 @@ async function getContactSuggestions(contactId: string, spendActor: AgentContext
   }
   if (!contact) return []
 
-  const suggestions = []
+  const suggestions: RuleSuggestion[] = []
 
   // Check last contact date
   const daysSinceContact = contact.last_contact_date
@@ -480,7 +652,10 @@ async function getContactSuggestions(contactId: string, spendActor: AgentContext
     })
   }
 
-  // AI-generated suggestion
+  // AI-generated suggestion — skipped when one is already pending for this
+  // contact (see generateAssistantSuggestions: the pending card IS the answer,
+  // and a second model call would be a second charge for the same sentence).
+  if (opts.skipAi) return suggestions
   try {
     const { text } = await generateText({
       brokerageId: spendActor.brokerageId,
@@ -505,7 +680,7 @@ Suggest a specific, actionable next step in 1-2 sentences.`,
       type: "ai_suggestion",
       priority: "medium",
       icon: "💡",
-      title: "AI Recommendation",
+      title: AI_RECOMMENDATION_TITLE,
       description: text,
       action: null,
     })
@@ -516,14 +691,20 @@ Suggest a specific, actionable next step in 1-2 sentences.`,
   return suggestions
 }
 
-async function getListingSuggestions(listingId: string) {
+async function getListingSuggestions(listingId: string): Promise<RuleSuggestion[]> {
   const supabase = await createServerClient()
 
-  const { data: listing } = await supabase.from("listings").select("*").eq("id", listingId).single()
-
+  // Errors READ (§3) — these three reads discarded theirs, so a refused read
+  // was "nothing to suggest". RLS-bound: a listing outside the caller's tenant
+  // reads as absent here, which is the refusal we want.
+  const { data: listing, error: listingError } = await supabase.from("listings").select("*").eq("id", listingId).maybeSingle()
+  if (listingError) {
+    console.error("[assistant] listing suggestions read failed:", listingError.message)
+    return []
+  }
   if (!listing) return []
 
-  const suggestions = []
+  const suggestions: RuleSuggestion[] = []
 
   // Check days on market
   const daysOnMarket = listing.listing_date
@@ -543,13 +724,18 @@ async function getListingSuggestions(listingId: string) {
   }
 
   // Check showing activity
-  const { data: recentShowings } = await supabase
+  const { data: recentShowings, error: recentShowingsError } = await supabase
     .from("showings")
-    .select("*")
+    .select("id")
     .eq("listing_id", listingId)
     .gte("scheduled_at", new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString())
+  if (recentShowingsError) {
+    // A refused read is NOT "no showings" — that would raise the low-activity
+    // nudge about a listing that may be busy. Skip this rule only.
+    console.error("[assistant] showings read failed — low-activity rule skipped:", recentShowingsError.message)
+  }
 
-  if ((!recentShowings || recentShowings.length === 0) && listing.status === "active") {
+  if (!recentShowingsError && (!recentShowings || recentShowings.length === 0) && listing.status === "active") {
     suggestions.push({
       type: "action",
       priority: "medium",
@@ -562,12 +748,15 @@ async function getListingSuggestions(listingId: string) {
   }
 
   // Check for missing feedback
-  const { data: showingsNoFeedback } = await supabase
+  const { data: showingsNoFeedback, error: noFeedbackError } = await supabase
     .from("showings")
-    .select("*")
+    .select("id")
     .eq("listing_id", listingId)
     .eq("status", "completed")
     .is("feedback", null)
+  if (noFeedbackError) {
+    console.error("[assistant] showings feedback read failed — feedback rule skipped:", noFeedbackError.message)
+  }
 
   if (showingsNoFeedback && showingsNoFeedback.length > 0) {
     suggestions.push({
@@ -584,22 +773,28 @@ async function getListingSuggestions(listingId: string) {
   return suggestions
 }
 
-async function getTransactionSuggestions(transactionId: string) {
+async function getTransactionSuggestions(transactionId: string): Promise<RuleSuggestion[]> {
   const supabase = await createServerClient()
 
-  const { data: transaction } = await supabase.from("transactions").select("*").eq("id", transactionId).single()
-
+  const { data: transaction, error: transactionError } = await supabase.from("transactions").select("*").eq("id", transactionId).maybeSingle()
+  if (transactionError) {
+    console.error("[assistant] transaction suggestions read failed:", transactionError.message)
+    return []
+  }
   if (!transaction) return []
 
-  const suggestions = []
+  const suggestions: RuleSuggestion[] = []
 
   // Check for overdue documents
-  const { data: overdueDocuments } = await supabase
+  const { data: overdueDocuments, error: overdueError } = await supabase
     .from("document_requests")
-    .select("*")
+    .select("id")
     .eq("transaction_id", transactionId)
     .eq("status", "pending")
     .lt("due_date", new Date().toISOString())
+  if (overdueError) {
+    console.error("[assistant] document_requests read failed — overdue rule skipped:", overdueError.message)
+  }
 
   if (overdueDocuments && overdueDocuments.length > 0) {
     suggestions.push({
@@ -633,16 +828,22 @@ async function getTransactionSuggestions(transactionId: string) {
   return suggestions
 }
 
-async function getDashboardSuggestions(agentId: string) {
+/** `agentId` is the SESSION's agents.id (getAgentContext), never a parameter
+ *  of the public export — see generateAssistantSuggestions. */
+async function getDashboardSuggestions(agentId: string): Promise<RuleSuggestion[]> {
   const supabase = await createServerClient()
-  const suggestions = []
+  const suggestions: RuleSuggestion[] = []
 
-  // Check for pending video approvals
-  const { data: pendingVideos, count: videoCount } = await supabase
+  // Check for pending video approvals. HEAD-only counts: the rows were fetched
+  // with `*` and only the count was read.
+  const { count: videoCount, error: videoCountError } = await supabase
     .from("video_scripts_library")
-    .select("*", { count: "exact" })
+    .select("id", { count: "exact", head: true })
     .eq("agent_id", agentId)
     .eq("approval_status", "pending_review")  // the column has no bare 'pending'
+  if (videoCountError) {
+    console.error("[assistant] video_scripts_library count refused — rule skipped:", videoCountError.message)
+  }
 
   if (videoCount && videoCount > 0) {
     suggestions.push({
@@ -657,12 +858,15 @@ async function getDashboardSuggestions(agentId: string) {
   }
 
   // Check for unapproved auto-tasks
-  const { data: autoTasks, count: taskCount } = await supabase
+  const { count: taskCount, error: taskCountError } = await supabase
     .from("tasks")
-    .select("*", { count: "exact" })
+    .select("id", { count: "exact", head: true })
     .eq("assigned_to_agent_id", agentId)
     .eq("auto_generated", true)
     .eq("status", "pending")
+  if (taskCountError) {
+    console.error("[assistant] tasks count refused — rule skipped:", taskCountError.message)
+  }
 
   if (taskCount && taskCount > 0) {
     suggestions.push({

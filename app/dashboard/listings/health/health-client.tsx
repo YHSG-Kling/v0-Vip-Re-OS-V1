@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label"
 import { toast } from "sonner"
 import {
   AlertTriangle, AlertCircle, CheckCircle2, Clock, TrendingDown, TrendingUp, Sparkles,
-  Mail, ArrowRight, Loader2, ShieldCheck, X,
+  Mail, ArrowRight, Loader2, ShieldCheck, X, History,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { resolveIntervention, draftSellerActionEmail, type ListingHealthBoard, type ListingHealthRow, type RiskLevel } from "./actions"
@@ -329,6 +329,73 @@ export function ListingHealthBoardClient({ board }: Props) {
           )
         })}
       </div>
+
+      {/* ── Recently cleared — the cross-listing audit ───────────────────
+          Who cleared what, across every listing on this board. The open lists
+          above are the work; this is the record. Bounds printed beside it so a
+          truncated history never reads as a complete one, and a REFUSED read
+          renders as a refusal, never as "nothing was cleared". */}
+      {board.rows.length > 0 && (
+        <Card className="mt-6">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <History className="h-4 w-4 text-muted-foreground" />
+              Recently cleared
+              {!board.recentlyCleared.error && (
+                <Badge variant="outline" className="text-[10px]">{board.recentlyCleared.rows.length}</Badge>
+              )}
+            </CardTitle>
+            <p className="text-xs text-muted-foreground">
+              The most recent {board.recentlyCleared.limit} interventions cleared in the last{" "}
+              {board.recentlyCleared.windowDays} days, across all your listings on this board
+              {board.recentlyCleared.rows.length === board.recentlyCleared.limit ? " — older ones are not shown." : "."}
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {board.recentlyCleared.error && (
+              <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2">
+                {board.recentlyCleared.error}
+              </p>
+            )}
+            {!board.recentlyCleared.error && board.recentlyCleared.rows.length === 0 && (
+              <p className="text-xs text-muted-foreground">
+                Nothing has been cleared in the last {board.recentlyCleared.windowDays} days.
+              </p>
+            )}
+            {board.recentlyCleared.rows.map(iv => (
+              <div key={iv.id} className="border rounded p-3 space-y-1 bg-muted/20">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <Badge className="bg-emerald-100 text-emerald-800 text-[10px]">cleared</Badge>
+                  <Badge variant="secondary" className="text-[10px]">{iv.severity}</Badge>
+                  {iv.category && <span className="text-[10px] text-muted-foreground uppercase">{iv.category}</span>}
+                  {iv.sellerImpacted && <span className="text-[10px] text-amber-700">· seller impacted</span>}
+                  <span className="text-[10px] text-muted-foreground">· raised {relative(iv.createdAt)}</span>
+                </div>
+                <p className="text-sm font-medium">
+                  <Link href={`/dashboard/listings/${iv.listingId}`} className="hover:underline">
+                    {iv.address ?? "Untitled listing"}
+                  </Link>
+                  {iv.issueDetected && <span className="text-muted-foreground font-normal"> — {iv.issueDetected}</span>}
+                </p>
+                <p className="text-xs">
+                  {/* WHO. Three distinct states, same as the per-listing panel: a
+                      missing name is not a missing actor, and neither is ever
+                      "the system". */}
+                  {iv.resolvedByName
+                    ? <>Cleared by <span className="font-medium">{iv.resolvedByName}</span></>
+                    : iv.resolvedBy
+                    ? <>Cleared by an account outside this brokerage</>
+                    : <>Cleared — <span className="text-muted-foreground">resolver not recorded</span></>}
+                  {iv.resolvedAt ? ` on ${new Date(iv.resolvedAt).toLocaleString()}` : " (time not recorded)"}
+                </p>
+                {iv.resolutionNote
+                  ? <p className="text-xs text-muted-foreground italic">&ldquo;{iv.resolutionNote}&rdquo;</p>
+                  : <p className="text-xs text-muted-foreground">No resolution note was written.</p>}
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       {/* ── Draft email dialog ──────────────────────────────────────────── */}
       <Dialog open={draftOpen} onOpenChange={(o) => { if (!o) setDraftOpen(false) }}>

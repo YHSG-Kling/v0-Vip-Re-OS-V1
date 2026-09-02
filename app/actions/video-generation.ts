@@ -27,6 +27,16 @@ import {
 } from "@/lib/video/script-compliance"
 import type { ScriptType, ApprovalStatus, VideoScript, ScriptVariation, VideoEventType } from "@/app/types/video-generation"
 import { VIDEO_EVENT_TYPES, PERFORMANCE_THRESHOLDS } from "@/app/types/video-generation"
+
+// ONE spelling of the per-lead value ESTIMATE behind the analytics page's
+// "estimatedRoi" figure (§6). It was `* 500` inline at four writer sites
+// across this file and app/api/video/engagement/route.ts, persisted into
+// `video_performance_tracking.estimated_roi` — a column that is now written
+// by nothing and read by nothing (tombstones at each former site). It is an
+// ESTIMATE of gross lead VALUE, not an ROI: no spend is recorded for video, so
+// no ROI can be computed here — that word belongs to
+// lib/campaigns/roi-calculator.ts, which reports NULL until a spend exists.
+const VIDEO_LEAD_VALUE_ESTIMATE = 500
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 // THE ONE speaking-pace vocabulary (§6). The word counts a duration tier asks
 // for are DERIVED from its declared seconds at WORDS_PER_MINUTE — never a
@@ -796,7 +806,15 @@ async function updateVideoPerformanceAggregates(data: {
         break
       case "lead_capture":
         updates.lead_conversions = (existing.lead_conversions || 0) + 1
-        updates.estimated_roi = (updates.lead_conversions || existing.lead_conversions || 0) * 500
+        // TOMBSTONE (§6, 2026-09-02): `estimated_roi = lead_conversions × 500`
+        // was written here. It is NOT written any more. It was a stored copy
+        // of lead_conversions under a name that claimed to be an ROI while
+        // subtracting no cost, and a rival spelling of the ROI that
+        // lib/campaigns/roi-calculator.ts owns ((revenue − spend) / spend,
+        // NULL when spend is unknown). SURVIVOR for the word "ROI":
+        // lib/campaigns/roi-calculator.ts. SURVIVOR for the fact: this row's
+        // `lead_conversions`; the analytics figure derives from it at read
+        // time (getVideoPerformanceStats below, VIDEO_LEAD_VALUE_ESTIMATE).
         break
     }
 
@@ -836,7 +854,9 @@ async function updateVideoPerformanceAggregates(data: {
       click_through_rate: data.eventType === "click" || data.eventType === "cta_click" ? 100 : 0,
       share_rate: data.eventType === "share" ? 100 : 0,
       lead_conversions: data.eventType === "lead_capture" ? 1 : 0,
-      estimated_roi: data.eventType === "lead_capture" ? 500 : 0,
+      // estimated_roi: NOT WRITTEN — see the tombstone in the update branch
+      // above. The column is nullable with no default (live schema), so
+      // omitting it is safe; it simply stays NULL.
       last_event_at: now,
       created_at: now,
       updated_at: now,
@@ -1036,7 +1056,15 @@ export async function getVideoPerformanceStats(agentId: string, _brokerageId?: s
     ? (performance ?? []).reduce((sum, p) => sum + (p.share_rate || 0), 0) / performanceCount
     : 0
   const totalLeadConversions = performance?.reduce((sum, p) => sum + (p.lead_conversions || 0), 0) || 0
-  const estimatedRoi = performance?.reduce((sum, p) => sum + (p.estimated_roi || 0), 0) || 0
+  // DERIVED, not read from the retired `estimated_roi` column (tombstone at
+  // updateVideoPerformanceAggregates above). The field keeps its `estimatedRoi`
+  // NAME because app/dashboard/videos/analytics/page.tsx:325,:542 renders it
+  // under that key (that page is not this lane's to rename); its MEANING is an
+  // estimated gross lead VALUE — lead_conversions × one named per-lead estimate
+  // — and not an ROI, which would subtract a spend this table does not record.
+  // The ROI of a video campaign lives in campaign_roi.roi_percentage
+  // (lib/campaigns/roi-calculator.ts), where it is NULL until a spend exists.
+  const estimatedRoi = totalLeadConversions * VIDEO_LEAD_VALUE_ESTIMATE
 
   // Get top performing videos
   const topPerforming = performance
@@ -1055,7 +1083,8 @@ export async function getVideoPerformanceStats(agentId: string, _brokerageId?: s
         clickThroughRate: p.click_through_rate || 0,
         shareRate: p.share_rate || 0,
         leadConversions: p.lead_conversions || 0,
-        estimatedRoi: p.estimated_roi || 0,
+        // Derived from the same fact, same estimate — never the stored column.
+        estimatedRoi: (p.lead_conversions || 0) * VIDEO_LEAD_VALUE_ESTIMATE,
         lastEventAt: p.last_event_at,
       }
     }) || []
