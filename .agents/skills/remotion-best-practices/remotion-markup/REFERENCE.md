@@ -21,28 +21,17 @@ Tailwind animation class will not render correctly, they need to be refactored.
 
 Use `Easing.bezier()` and `Easing.spring()` to customize timing.
 
-> **VERSION NOTE for this repository (recorded 2026-09-01).** Upstream this
-> example uses `<Interactive.Div>` from `"remotion"`, and the
-> [Remotion Interactivity Best Practices](../remotion-interactivity/REFERENCE.md)
-> sub-skill is written around it. **That component does not exist in the version
-> this repo installs** (`remotion@4.0.473`; the skill snapshot declares 4.0.517),
-> so code following the upstream form does not compile here. The example below is
-> the plain-element equivalent, which is what all 42 compositions under
-> `remotion/` already use. Everything else on this page applies unchanged —
-> `Interactive.Div` only adds Studio-side selection affordances, not render
-> behaviour. `scripts/remotion-setup-guard.ts` §6 asserts that every symbol this
-> page imports from `"remotion"` resolves in the INSTALLED package, so if the
-> dependency is ever bumped to a version that exports `Interactive`, restore the
-> upstream form and the guard will keep the two in agreement.
+Structure your markup according to [Remotion Interactivity Best Practices](../remotion-interactivity/REFERENCE.md)
 
 ```tsx
-import { useCurrentFrame, Easing, interpolate } from "remotion";
+import { useCurrentFrame, Easing, interpolate, Interactive } from "remotion";
 
 export const FadeIn = () => {
   const frame = useCurrentFrame();
 
   return (
-    <div
+    <Interactive.Div
+      name="Title"
       style={{
         opacity: interpolate(frame, [0, 2 * fps], [0, 1], {
           extrapolateRight: "clamp",
@@ -52,7 +41,7 @@ export const FadeIn = () => {
       }}
     >
       Hello World!
-    </div>
+    </Interactive.Div>
   );
 };
 ```
@@ -127,6 +116,7 @@ export const MyComposition = () => {
 import {
   AbsoluteFill,
   Easing,
+  Interactive,
   interpolate,
   useCurrentFrame,
   useVideoConfig
@@ -146,7 +136,7 @@ export const Empty = () => {
         backgroundColor: 'white'
       }}
     >
-      <div
+      <Interactive.Div
         name="Title"
         style={{
           opacity: interpolate(frame, [1 * fps, 2 * fps], [0, 1], {
@@ -158,8 +148,8 @@ export const Empty = () => {
         }}
       >
         Title
-      </div>
-      <div
+      </Interactive.Div>
+      <Interactive.Div
         name="Subtitle"
         style={{
           opacity: interpolate(frame, [2 * fps, 3 * fps, 8 * fps, 10 * fps], [0, 1, 1, 0], {
@@ -171,7 +161,7 @@ export const Empty = () => {
         }}
       >
         Subtitle
-      </div>
+      </Interactive.Div>
     </AbsoluteFill>
   );
 }
@@ -186,7 +176,7 @@ Most components (`<AbsoluteFill>`, `<Interactive.*>` `<Img>`, `<AnimatedImage>`,
 ```tsx
 <Img from={1 * fps} {/* ... */}/>
 <Video from={1 * fps} {/* ... */}/>
-<AbsoluteFill from={1 * fps} {/* ... */}/>
+<Interactive.Div from={1 * fps} {/* ... */}/>
 ```
 
 When the element starts appearing in the timelien.
@@ -195,7 +185,7 @@ When the element starts appearing in the timelien.
 
 ```tsx
 <Img durationInFrames={20 * fps} {/* ... */}/>
-<AbsoluteFill durationInFrames={20 * fps} {/* ... */}/>
+<Interactive.Div durationInFrames={20 * fps} {/* ... */}/>
 ```
 
 For how long the layer plays in the timeline.  
