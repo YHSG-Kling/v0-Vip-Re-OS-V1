@@ -324,8 +324,27 @@ function sourceLayer() {
 
   console.log("\n[source · the producer keeps the price on the agent's side]")
   const producer = src("lib/agents/offer-strategy-producer.ts")
+  // ASSERTED ON THE INITIALIZER, not on the first token after the `=`. This used
+  // to require `baseRationale = strategySummary` adjacently, so the day the
+  // expression was PARENTHESISED to append a comps read (wave 26) the check went
+  // red while the rule it guards — the concrete, number-carrying plan reaches the
+  // AGENT's rationale — was still exactly true. The initializer is sliced to the
+  // next declaration so a `strategySummary` mentioned further down the file
+  // cannot satisfy it either.
+  const baseRationaleInit = (() => {
+    const a = producer.indexOf("const baseRationale =")
+    if (a < 0) return ""
+    const b = producer.indexOf("const rationale", a)
+    return b > a ? producer.slice(a, b) : producer.slice(a, a + 600)
+  })()
   check("the concrete plan (with numbers) goes into the agent-facing rationale",
-    /baseRationale\s*=\s*strategySummary/.test(producer))
+    baseRationaleInit.length > 0 &&
+    /\bstrategySummary\b/.test(baseRationaleInit) &&
+    /\brationale\b/.test(producer.slice(producer.indexOf("const rationale"))))
+  // POSITIVE CONTROL — the slice really is the initializer, so the assertion
+  // above cannot pass on an empty string if the declaration is ever renamed.
+  check("CONTROL the baseRationale initializer was actually found",
+    baseRationaleInit.startsWith("const baseRationale ="))
   check("…and never into the buyer-facing body",
     !/body:\s*[^,\n]*strategySummary/.test(producer) && /body:\s*msg\.body/.test(producer))
   check("the buyer-facing copy is generated with numbers disallowed", /allowNumbers:\s*false/.test(producer))
