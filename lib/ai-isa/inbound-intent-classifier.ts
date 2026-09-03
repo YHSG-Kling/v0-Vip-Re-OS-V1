@@ -35,6 +35,7 @@
 
 import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
+import { sentinelWrite } from "@/lib/kernel/write-sentinel"
 import { guardedGenerateText } from "@/lib/data-guard/guarded-generate"
 import { logAIUsage } from "@/lib/ai/cost-tracking"
 import { resolveModel } from "@/lib/ai/resolve-model"
@@ -500,7 +501,14 @@ export async function classifyAndRouteInbound(
 
   // AMBIGUOUS / no clear intent → NO conversion. Record a nurture touch, keep nurturing.
   if (!classified) {
-    await svc.from("activities").insert({
+    // SENTINELLED, not swallowed. This used to end `.then(() => null, () => null)`,
+    // which discards the refusal as well as the result — and this row is the ONLY
+    // trace that an inbound reply was seen and deliberately not converted. Losing
+    // it silently means a lead looks untouched. The service client cannot be
+    // RLS-refused, so a failure here is a real fault worth a ledger row rather
+    // than a tolerated one (write-sentinel.ts is the instrument the guard names
+    // for a service-client write).
+    await sentinelWrite(svc, svc.from("activities").insert({
       // activities.contact_id FKs contacts(id) — a LEAD id is FK-rejected, so this
       // insert was silently lost. The lead rides on entity_type/entity_id, the shape
       // already used at the conversion branch above; contact_id stays honestly null.
@@ -518,7 +526,12 @@ export async function classifyAndRouteInbound(
       status: "completed",
       completed_at: new Date().toISOString(),
       created_at: new Date().toISOString(),
-    }).then(() => null, () => null)
+    }), {
+      table: "activities",
+      flow: "isa_inbound_nurture",
+      brokerageId: params.brokerageId,
+      reason: "the nurture breadcrumb is additive — the lead stays nurtured either way, but the loss is ledgered so a run of them is visible",
+    })
     return { outcome: "nurtured", reason: heldForModel ? "degraded_held" : "none", ...provenance }
   }
 
