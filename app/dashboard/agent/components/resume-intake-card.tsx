@@ -5,9 +5,10 @@ import Link from "next/link"
 import { formatDistanceToNow } from "date-fns"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Mic } from "lucide-react"
+import { FileText, Mic } from "lucide-react"
 import {
   listResumableIntakeSessions,
+  type DraftedIntakeSession,
   type ResumableIntakeSession,
 } from "@/app/actions/voice-assistant/list-resumable-intake-sessions"
 
@@ -22,12 +23,16 @@ import {
  */
 export function ResumeIntakeCard() {
   const [sessions, setSessions] = useState<ResumableIntakeSession[] | null>(null)
+  /** Finished intakes and the packet each produced — workflow_intake_sessions.document_id. */
+  const [drafted, setDrafted] = useState<DraftedIntakeSession[]>([])
 
   useEffect(() => {
     let cancelled = false
     listResumableIntakeSessions()
       .then((r) => {
-        if (!cancelled && r.ok) setSessions(r.sessions ?? [])
+        if (cancelled || !r.ok) return
+        setSessions(r.sessions ?? [])
+        setDrafted(r.drafted ?? [])
       })
       .catch(() => {
         if (!cancelled) setSessions([])
@@ -37,14 +42,15 @@ export function ResumeIntakeCard() {
     }
   }, [])
 
-  if (sessions == null) return null      // initial load — no flash
-  if (sessions.length === 0) return null // nothing unfinished — hide
+  if (sessions == null) return null                              // initial load — no flash
+  if (sessions.length === 0 && drafted.length === 0) return null // nothing to show — hide
 
   return (
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-sm font-medium flex items-center gap-2">
-          <Mic className="h-4 w-4" /> Unfinished voice intakes
+          <Mic className="h-4 w-4" />
+          {sessions.length > 0 ? "Unfinished voice intakes" : "Recent voice intakes"}
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-2">
@@ -69,6 +75,30 @@ export function ResumeIntakeCard() {
             ) : (
               <Badge className="shrink-0 bg-amber-100 text-amber-800">Needs more info</Badge>
             )}
+          </Link>
+        ))}
+
+        {/* THE FINISHED ONES. workflow_intake_sessions.document_id, read back at
+            last: the packet a completed voice intake produced. The spoken response
+            promised to open it; before this, navigating away lost the route to it
+            entirely. Only sessions that actually carry a document are listed. */}
+        {drafted.map((d) => (
+          <Link
+            key={d.id}
+            href={d.documentHref}
+            className="flex items-center justify-between gap-3 rounded-lg border p-3 hover:bg-muted/40 transition-colors"
+          >
+            <div className="min-w-0">
+              <p className="text-sm font-medium flex items-center gap-1.5">
+                <FileText className="h-3.5 w-3.5" /> {d.intakeType === "offer" ? "Offer" : "Listing"} packet ready
+              </p>
+              <p className="text-xs text-muted-foreground truncate">
+                {d.contactName ?? d.propertyAddress ?? "No contact"}
+                {" · "}
+                {formatDistanceToNow(new Date(d.updatedAt), { addSuffix: true })}
+              </p>
+            </div>
+            <Badge className="shrink-0 bg-blue-100 text-blue-800">Open packet</Badge>
           </Link>
         ))}
       </CardContent>

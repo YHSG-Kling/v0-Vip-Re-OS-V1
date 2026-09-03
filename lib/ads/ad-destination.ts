@@ -67,20 +67,38 @@ async function listingAdDestination(
   // `status = 'published'` is the same predicate getLandingPageBySlug uses
   // (app/actions/listing-landing.ts:118). A draft page 404s for the public, so
   // an ad must not be pointed at one.
+  //
+  // contact_id IS READ HERE, and it changes which page wins. The column is
+  // stamped by both writers — the workflow adapter
+  // (lib/workflow/adapters/listing-landing-page.ts:49, from the enrolled
+  // contact) and generateListingLandingPage (app/actions/ai-listing-intake.ts)
+  // — and until now nothing read it, so "the newest published page" could be a
+  // page GENERATED FOR ONE NAMED PERSON inside a sequence. Pointing a paid
+  // audience at that page spends budget sending strangers to a one-person
+  // micro-site. A page with NO contact_id is the general page and is preferred;
+  // a contact-scoped page is used only when it is the ONLY published page for
+  // the listing, and that substitution is logged rather than made silently.
   const { data, error } = await supabase
     .from("listing_landing_pages")
-    .select("slug")
+    .select("slug, contact_id")
     .eq("listing_id", listingId)
     .eq("status", "published")
     .order("updated_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
+    .limit(20)
   if (error) {
     console.error("[ad-destination] landing-page lookup was refused:", error.message)
     return null
   }
-  const slug = (data as { slug: string | null } | null)?.slug
-  return slug ? `${origin}/listing/${slug}` : null
+  const pages = (data ?? []) as Array<{ slug: string | null; contact_id: string | null }>
+  const general = pages.find((p) => p.slug && !p.contact_id)
+  const chosen = general ?? pages.find((p) => p.slug) ?? null
+  if (!general && chosen) {
+    console.warn(
+      `[ad-destination] listing ${listingId} has no general published landing page — ` +
+      `falling back to one generated for a single contact (${chosen.slug}).`,
+    )
+  }
+  return chosen?.slug ? `${origin}/listing/${chosen.slug}` : null
 }
 
 /**

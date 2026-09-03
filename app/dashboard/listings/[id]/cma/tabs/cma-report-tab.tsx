@@ -461,6 +461,16 @@ export function CMAReportTab({ listing, data }: Props) {
                           <li key={j} className="text-xs text-muted-foreground">
                             {a.direction === "add" ? "+" : "−"}${a.amount.toLocaleString()} {a.label}
                             {a.rationale ? ` — ${a.rationale}` : ""}
+                            {/* cma_price_adjustments.comparable_address, printed
+                                verbatim, and only when it disagrees with the comp
+                                this line is filed under. This page is printed for a
+                                licensed appraiser (§5): the address is the stored
+                                string, never composed. */}
+                            {a.addressMismatch && (
+                              <span className="text-amber-700">
+                                {" "}· recorded against {a.recordedAddress}
+                              </span>
+                            )}
                           </li>
                         ))}
                       </ul>
@@ -468,6 +478,28 @@ export function CMAReportTab({ listing, data }: Props) {
                   </div>
                 ))}
               </div>
+
+              {/* Adjustments this CMA holds that attach to no comparable on file.
+                  Named by their own recorded address rather than a uuid — see
+                  unattachedAdjustments in app/actions/appraisal-defense.ts. They
+                  are OUTSIDE the adjusted values above and the block says so. */}
+              {defense.unattachedAdjustments.length > 0 && (
+                <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2">
+                  <p className="text-xs font-medium text-amber-900">
+                    Not included in the values above — {defense.unattachedAdjustments.length} recorded
+                    adjustment(s) attach to no comparable on this CMA:
+                  </p>
+                  <ul className="mt-1 space-y-0.5">
+                    {defense.unattachedAdjustments.map((a, i) => (
+                      <li key={i} className="text-xs text-amber-900">
+                        {a.recordedAddress ?? "Address not recorded"} · {a.direction === "add" ? "+" : "−"}$
+                        {a.amount.toLocaleString()} {a.label}
+                        {a.rationale ? ` — ${a.rationale}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           )}
         </CardContent>

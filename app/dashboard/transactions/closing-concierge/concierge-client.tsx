@@ -277,10 +277,21 @@ export function ClosingConciergeClient({ board }: Props) {
                               {dtd != null && dtd > 0 ? `${dtd} day${dtd === 1 ? "" : "s"} to deadline` : dtd === 0 ? "due today" : `${Math.abs(dtd ?? 0)} day${Math.abs(dtd ?? 0) === 1 ? "" : "s"} overdue`}
                             </span>
                           )}
+                          {/* transaction_pending_actions.dispatched_email_id, read
+                              back at last. An action that already had an email sent
+                              looked identical to one that had not, so the same
+                              lender got chased twice. The stamp records THAT a send
+                              happened, not which message — the label says only what
+                              the column can support. */}
+                          {action.emailDispatched && (
+                            <span className="inline-flex items-center gap-1 text-emerald-700">
+                              <Mail className="h-3 w-3" /> Email already sent for this item
+                            </span>
+                          )}
                         </div>
                         <div className="flex gap-2 pt-1">
-                          <Button size="sm" variant="default" onClick={() => openDraft(action)}>
-                            <Sparkles className="h-3 w-3 mr-1" /> Draft email
+                          <Button size="sm" variant={action.emailDispatched ? "outline" : "default"} onClick={() => openDraft(action)}>
+                            <Sparkles className="h-3 w-3 mr-1" /> {action.emailDispatched ? "Draft another" : "Draft email"}
                           </Button>
                           <Button size="sm" variant="outline" onClick={() => handleResolve(action.id)} disabled={busyId === action.id || pending}>
                             <CheckCircle2 className="h-3 w-3 mr-1" /> Mark done

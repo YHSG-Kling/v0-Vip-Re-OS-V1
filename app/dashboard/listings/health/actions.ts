@@ -37,6 +37,23 @@ export interface ListingHealthRow {
   status:            string | null
   goLiveDate:        string | null
   scoreId:           string | null
+  /**
+   * listing_health_scores.agent_id — the agent who OWNED the listing at the moment
+   * the score was written (lib/listing-health/health-scorer.ts:572 copies
+   * listings.agent_id, so it is AGENTS class, not users). Nullable: an unassigned
+   * listing is still scored.
+   */
+  scoredAgentId:     string | null
+  /**
+   * TRUE when this row's score was produced under a DIFFERENT agent than the one
+   * reading the board. The board selects listings by their CURRENT agent_id, so a
+   * reassigned listing arrives carrying the previous owner's snapshot — the score,
+   * the flags and the narrative are all about somebody else's work on it. Until
+   * agent_id was read, that row was presented as this agent's own. It stays on the
+   * board (the listing is theirs now and the risk is real); it is LABELLED, not
+   * hidden and not silently attributed.
+   */
+  scoredUnderPreviousAgent: boolean
   overallScore:      number | null
   previousScore:     number | null
   scoreDelta:        number | null
@@ -141,7 +158,7 @@ export async function loadListingHealthBoard(): Promise<ListingHealthBoard | { e
   //    recent scored_at per listing_id.
   const { data: scores } = await svc
     .from("listing_health_scores")
-    .select("id, listing_id, overall_score, previous_score, score_delta, risk_level, days_on_market, flags, ai_narrative, recommended_actions, scored_at")
+    .select("id, listing_id, agent_id, overall_score, previous_score, score_delta, risk_level, days_on_market, flags, ai_narrative, recommended_actions, scored_at")
     .in("listing_id", listingIds)
     .order("scored_at", { ascending: false })
   const scoreByListing = new Map<string, any>()
@@ -298,6 +315,11 @@ export async function loadListingHealthBoard(): Promise<ListingHealthBoard | { e
       status:       l.status ?? null,
       goLiveDate:   l.go_live_date ?? null,
       scoreId:      s.id ?? null,
+      scoredAgentId: (s.agent_id ?? null) as string | null,
+      // Only a score that EXISTS and names a DIFFERENT agent counts. A null
+      // agent_id (unassigned when scored) is not evidence of a handover, and
+      // neither is the absence of a score row.
+      scoredUnderPreviousAgent: !!s.id && !!s.agent_id && s.agent_id !== agentRow.id,
       overallScore: s.overall_score != null ? Number(s.overall_score) : null,
       previousScore: s.previous_score != null ? Number(s.previous_score) : null,
       scoreDelta:   s.score_delta != null ? Number(s.score_delta) : null,

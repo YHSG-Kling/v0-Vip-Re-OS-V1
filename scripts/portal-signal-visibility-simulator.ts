@@ -592,10 +592,17 @@ const CONTROLS: Control[] = [
     // proves nothing, which is exactly the failure mode this step exists to catch.
     name: "V1 — a buyer-tool row loses its agent stamp",
     file: "app/actions/buyer-offer-tools.ts",
+    // RE-ANCHORED 2026-09-03. The old anchor's second line was the `// loose uuid
+    // ref` comment, which wave 26 replaced with the real `property_id` write when
+    // that column stopped being carried only inside metadata. A control whose
+    // patch cannot apply proves NOTHING, and this one says so out loud rather
+    // than passing — which is how the drift was caught. Anchored on the two
+    // adjacent WRITES instead of a comment, so the next edit to the surrounding
+    // prose cannot silently disarm it.
     find: `    agent_id: args.agentId,
-    // loose uuid ref`,
+    property_id:`,
     replace: `    agent_id: null,
-    // loose uuid ref`,
+    property_id:`,
     expect: "the agent stamp is the AGENTS-class id",
   },
   {

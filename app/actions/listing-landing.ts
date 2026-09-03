@@ -562,7 +562,28 @@ export async function logLandingSession(params: {
 export async function getLandingSourceBreakdown(listingId: string): Promise<
   | {
       success: true
-      totals: { sessions: number; ctaClicks: number; showingRequests: number; avgTimeOnPageSeconds: number | null; pagesViewed: number }
+      totals: {
+        sessions: number
+        ctaClicks: number
+        showingRequests: number
+        avgTimeOnPageSeconds: number | null
+        pagesViewed: number
+        /**
+         * listing_page_analytics.unique_visitors, summed over the days that have a
+         * row. THE UNIT MATTERS AND IS NOT "visitors": the writer derives it as
+         * DISTINCT session_token WITHIN ONE DAY (logLandingSession, see the
+         * derivation note there), so somebody who comes back tomorrow is counted on
+         * both days. Summing is the only thing the stored column supports — a true
+         * period-distinct count would need the session ledger, which is what
+         * `sessions` above already reports. Labelled at the render site accordingly.
+         */
+        uniqueVisitorsSummed: number
+        /** How many days carry a stored figure — the denominator for the number above. */
+        uniqueVisitorDays: number
+        /** True when the analytics read itself was refused: the two fields above are
+         *  then UNKNOWN, not zero, and the tile must not print them as a count. */
+        uniqueVisitorsUnavailable: boolean
+      }
       bySource: Array<{
         source: string
         medium: string | null
@@ -605,6 +626,26 @@ export async function getLandingSourceBreakdown(listingId: string): Promise<
     return { success: false, error: sessionsError.message }
   }
 
+  // THE READER FOR listing_page_analytics.unique_visitors. The column was derived
+  // and written every visit (logLandingSession above) and selected by nothing —
+  // the three other reads of this table each pull only the counter they are about
+  // to increment. Same gate, same service client, same listing pin.
+  const { data: dailyRows, error: dailyError } = await svc
+    .from("listing_page_analytics")
+    .select("date, unique_visitors")
+    .eq("listing_id", listingId)
+    .order("date", { ascending: false })
+    .limit(365)
+  if (dailyError) {
+    // Not fatal to the whole breakdown — the session ledger above stands on its
+    // own. But it is reported as UNAVAILABLE rather than folded into a zero,
+    // because "nobody could read it" must never render as "nobody visited".
+    console.error("[getLandingSourceBreakdown] daily analytics read refused:", dailyError.message)
+  }
+  const daily = (dailyRows ?? []) as unknown as Array<{ date: string | null; unique_visitors: number | null }>
+  const uniqueVisitorDaily = daily.filter((d) => typeof d.unique_visitors === "number")
+  const uniqueVisitorsSummed = uniqueVisitorDaily.reduce((n, d) => n + (d.unique_visitors as number), 0)
+
   const rows = sessions ?? []
   const bySourceMap = new Map<string, { source: string; medium: string | null; campaign: string | null; sessions: number; ctaClicks: number; showingRequests: number }>()
   let ctaClicks = 0
@@ -639,6 +680,9 @@ export async function getLandingSourceBreakdown(listingId: string): Promise<
       showingRequests,
       avgTimeOnPageSeconds: timeCount > 0 ? Math.round(timeSum / timeCount) : null,
       pagesViewed,
+      uniqueVisitorsSummed,
+      uniqueVisitorDays: uniqueVisitorDaily.length,
+      uniqueVisitorsUnavailable: !!dailyError,
     },
     bySource: [...bySourceMap.values()].sort((a, b) => b.sessions - a.sessions),
   }

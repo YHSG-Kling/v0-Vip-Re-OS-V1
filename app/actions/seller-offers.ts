@@ -623,9 +623,16 @@ export async function loadLatestOfferComparison(listingId: string) {
 
   const supabase = createServiceClient()
 
+  // agent_id is WHO RAN THE COMPARISON — both writers stamp it
+  // (lib/kernel/offers.ts:336 and lib/offers/offer-analyzer.ts:194) and it is
+  // AGENTS class (agents.id, disjoint from the users.id in created_by beside it).
+  // Nothing read it, so on a co-listed or team-covered listing the agent opening
+  // this page was shown a recommendation as though it were their own analysis with
+  // no way to see that a colleague had generated it — and no way to tell a
+  // comparison run before a handover from one run after it.
   const { data: comparison, error } = await supabase
     .from("offer_comparison")
-    .select("id, offer_ids, comparison_matrix, net_to_seller_by_offer, ai_recommendation, ai_analysis_notes, recommended_offer_id, created_at")
+    .select("id, offer_ids, comparison_matrix, net_to_seller_by_offer, ai_recommendation, ai_analysis_notes, recommended_offer_id, agent_id, created_at")
     .eq("listing_id", listingId)
     // tenant anchor (scope burn-down)
     .eq("brokerage_id", auth.brokerageId)
@@ -634,7 +641,32 @@ export async function loadLatestOfferComparison(listingId: string) {
     .maybeSingle()
 
   if (error) return { success: false, error: error.message }
-  return { success: true, comparison }
+  if (!comparison) return { success: true, comparison: null }
+
+  // The generating agent's display name, resolved agents → users (agents.user_id)
+  // and anchored to the caller's own brokerage, so an id from anywhere else stays
+  // unresolved rather than borrowing a name. Four states, never collapsed.
+  const generatedByAgentId = (comparison as { agent_id: string | null }).agent_id ?? null
+  let generatedByName: string | null = null
+  let generatedByState: "resolved" | "unresolved" | "not_recorded" | "lookup_refused" = "not_recorded"
+  if (generatedByAgentId) {
+    const { data: agentRow, error: agentErr } = await supabase
+      .from("agents")
+      .select("id, users(first_name, last_name)")
+      .eq("id", generatedByAgentId)
+      .eq("brokerage_id", auth.brokerageId)
+      .maybeSingle()
+    if (agentErr) {
+      console.error("[seller-offers] comparison author lookup refused:", agentErr.message)
+      generatedByState = "lookup_refused"
+    } else {
+      const u = (agentRow as any)?.users
+      generatedByName = [u?.first_name, u?.last_name].filter(Boolean).join(" ").trim() || null
+      generatedByState = generatedByName ? "resolved" : "unresolved"
+    }
+  }
+
+  return { success: true, comparison: { ...comparison, generatedByAgentId, generatedByName, generatedByState } }
 }
 
 // ── FETCH LINKED TRANSACTION FOR A LISTING ────────────────────────────────────

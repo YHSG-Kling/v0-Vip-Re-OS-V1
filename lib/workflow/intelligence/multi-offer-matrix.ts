@@ -101,7 +101,7 @@ export async function buildMultiOfferMatrix(input: {
   // Agreed terms + regional closing costs — the same inputs the net sheet uses.
   const { data: agreementRow } = await svc
     .from("listing_agreements")
-    .select("listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, seller_transaction_fee")
+    .select("listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, seller_transaction_fee, has_commission_adjustment, adjustment_type, adjustment_value, adjustment_value_type")
     .eq("listing_id", input.listingId)
     .eq("brokerage_id", (listing as any)?.brokerage_id ?? "")
     .order("fully_executed_at", { ascending: false, nullsFirst: false })

@@ -110,7 +110,14 @@ export default async function FormsLibraryPage() {
   // 5. Listing agreements — to show signed listing forms
   let listingAgreementsQuery = supabase
     .from("listing_agreements")
-    .select("id, listing_id, agreement_type, esign_status, seller_signed_at, agent_signed_at, fully_executed_at, provider_name, brokerage_id, agent_user_id")
+    // upload_mode says HOW the executed agreement got here — 'manual_upload' (the
+    // agent uploaded a signed PDF; document_url carries it) or 'provider_pull'
+    // (an e-sign provider produced it; provider_ref is the envelope). Live CHECK:
+    // scripts/check-vocabularies.ts:856. It was written on every agreement
+    // (app/actions/seller-listing/execution-engine.ts:874) and read by nothing, so
+    // the e-sign history listed hand-uploaded agreements under a provider column
+    // and offered no link to the PDF that IS the agreement.
+    .select("id, listing_id, agreement_type, esign_status, seller_signed_at, agent_signed_at, fully_executed_at, provider_name, upload_mode, document_url, brokerage_id, agent_user_id")
     .eq("brokerage_id", brokerageId)
     .order("created_at", { ascending: false })
     .limit(50)

@@ -171,6 +171,16 @@ export function ListingHealthBoardClient({ board }: Props) {
                       {dollars(row.listPrice)}{row.bedrooms != null && ` · ${row.bedrooms} bd`}{row.bathrooms != null && ` · ${row.bathrooms} ba`}
                       {row.daysOnMarket != null && ` · ${row.daysOnMarket} day${row.daysOnMarket === 1 ? "" : "s"} on market`}
                     </p>
+                    {/* listing_health_scores.agent_id read back: this snapshot was
+                        taken while a different agent held the listing, so the score,
+                        the flags and the narrative describe their work on it, not
+                        yours. Said plainly rather than attributed to you by default. */}
+                    {row.scoredUnderPreviousAgent && (
+                      <p className="text-[11px] text-amber-700 mt-1">
+                        Scored before this listing was reassigned to you — this snapshot reflects the
+                        previous agent&apos;s work. The next scan will score it under you.
+                      </p>
+                    )}
                   </div>
                   {row.overallScore != null && (
                     <div className="text-right">

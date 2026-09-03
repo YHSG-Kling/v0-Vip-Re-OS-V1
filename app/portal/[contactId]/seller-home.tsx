@@ -640,6 +640,7 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
         <ShareMyHomeCard
           listingId={context.listing.id}
           listingAddress={context.listing.address ?? "your home"}
+          contactId={contactId}
         />
       )}
     </div>

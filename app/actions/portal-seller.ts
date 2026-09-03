@@ -224,10 +224,24 @@ export async function getListingDetails(contactId: string) {
       .eq("listing_id", listing.id)
       .order("created_at", { ascending: false })
       .limit(100),
+    // PRICE HISTORY — two columns the writer stamps and this read ignored.
+    //
+    // effective_date: app/actions/listings.ts:363 writes the DATE the change takes
+    // effect. This select aliased `change_date:created_at` — the row's INSERT
+    // time — so a price change backdated or applied on a different day was dated
+    // to whenever the ledger row happened to be written. effective_date is now the
+    // date the seller reads; created_at is kept beside it as `recordedAt` so the
+    // two are never confused rather than one silently standing in for the other.
+    //
+    // agent_id: listings.ts:359 stamps the listing's agent (AGENTS class — see the
+    // resolution below, which crosses agents → users because agents.id and
+    // users.id are disjoint, CLAUDE.md §3). Nothing read it, so the seller's own
+    // price history said a price changed and never who changed it.
     supabase
       .from("listing_price_changes")
-      .select("id, old_price, new_price, change_date:created_at, reason:change_reason")
+      .select("id, old_price, new_price, created_at, effective_date, agent_id, reason:change_reason")
       .eq("listing_id", listing.id)
+      .order("effective_date", { ascending: false })
       .order("created_at", { ascending: false }),
   ])
 
@@ -241,11 +255,74 @@ export async function getListingDetails(contactId: string) {
     .sort((a, b) => new Date(b.event_date ?? 0).getTime() - new Date(a.event_date ?? 0).getTime())
     .slice(0, 100)
 
+  if (priceHistoryResult.error) {
+    // supabase-js RESOLVES a refusal — an unread error here renders as "the price
+    // never changed", which is the one conclusion an empty list never licenses.
+    console.error("[portal-seller] price-history read refused:", priceHistoryResult.error.message)
+  }
+
+  // WHO CHANGED THE PRICE. agent_id is AGENTS class (listings.agent_id is what
+  // listings.ts:359 copies in), and agents.id / users.id are DISJOINT — so the
+  // name is resolved agents → users through agents.user_id, batched, and anchored
+  // to the caller's own brokerage so a name can never be reached out of another
+  // tenant. Four states are kept apart and never collapsed into "the system":
+  //   resolved / unresolved (id stamped, no agent of this tenant carries it) /
+  //   not_recorded (column NULL) / lookup_refused (the name read itself failed).
+  type PriceChangeRow = {
+    id: string
+    old_price: number | null
+    new_price: number | null
+    created_at: string | null
+    effective_date: string | null
+    agent_id: string | null
+    reason: string | null
+  }
+  const priceRows = (priceHistoryResult.data ?? []) as unknown as PriceChangeRow[]
+  const changerIds = [...new Set(priceRows.map((r) => r.agent_id).filter((v): v is string => !!v))]
+  const changerNames = new Map<string, string>()
+  let changerLookupRefused = false
+  if (changerIds.length > 0) {
+    const { data: agentRows, error: agentErr } = await supabase
+      .from("agents")
+      .select("id, users(first_name, last_name)")
+      .in("id", changerIds)
+      .eq("brokerage_id", access.brokerageId)
+    if (agentErr) {
+      console.error("[portal-seller] price-change agent name lookup refused:", agentErr.message)
+      changerLookupRefused = true
+    } else {
+      for (const a of (agentRows ?? []) as any[]) {
+        const full = [a.users?.first_name, a.users?.last_name].filter(Boolean).join(" ").trim()
+        if (full) changerNames.set(a.id, full)
+      }
+    }
+  }
+
+  const priceHistory = priceRows.map((r) => ({
+    id: r.id,
+    old_price: r.old_price,
+    new_price: r.new_price,
+    reason: r.reason,
+    /** The date the change TOOK EFFECT (listing_price_changes.effective_date). */
+    change_date: r.effective_date ?? r.created_at,
+    /** When the ledger row was written — kept distinct from the effective date. */
+    recordedAt: r.created_at,
+    changedByAgentId: r.agent_id,
+    changedByName: r.agent_id ? (changerNames.get(r.agent_id) ?? null) : null,
+    changedByState: (!r.agent_id
+      ? "not_recorded"
+      : changerLookupRefused
+        ? "lookup_refused"
+        : changerNames.has(r.agent_id)
+          ? "resolved"
+          : "unresolved") as "resolved" | "unresolved" | "not_recorded" | "lookup_refused",
+  }))
+
   return {
     listing,
     metrics: metricsResult.data,
     engagement,
-    priceHistory: priceHistoryResult.data ?? [],
+    priceHistory,
   }
 }
 
@@ -553,7 +630,7 @@ export async function getSellerNetSheetInputs(contactId: string): Promise<Seller
 
   const { data: agreement, error: agreementErr } = await svc
     .from("listing_agreements")
-    .select("listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, seller_transaction_fee, fully_executed_at")
+    .select("listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, seller_transaction_fee, fully_executed_at, has_commission_adjustment, adjustment_type, adjustment_value, adjustment_value_type")
     .eq("listing_id", listing.id)
     .eq("brokerage_id", access.brokerageId)
     .order("fully_executed_at", { ascending: false, nullsFirst: false })

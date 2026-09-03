@@ -277,6 +277,21 @@ export interface ClosingCostObsRow {
   /** the CD's own section-J total. NEVER compared to the estimate total (it nets
    *  lender credits); used only to scale the per-line error into a share. */
   total_closing_costs?: number | string | null
+  // ── CONTEXT ONLY, NEVER AN ERROR TERM ────────────────────────────────────
+  // Both are written on every observation (lib/offers/closing-cost-accuracy.ts:498
+  // and :632 on the buyer side, :632-633 on the seller side) and were read by
+  // nothing. They are admitted here as SAMPLE DESCRIPTION and nowhere else: the
+  // rail's honesty contract (see the note at :16 and the section-J rule at :192)
+  // is that only a line the estimator actually predicted may be scored, and
+  // neither of these is such a line.
+  /** The count the writer recorded beside `lines`. Read back as an INTEGRITY
+   *  check on the sample — if it disagrees with the array that arrived, the
+   *  observation was truncated in transit and the denominator is wrong. */
+  line_count?: number | string | null
+  /** The CD's cash-to-close (buyer side only; the seller writer stores null by
+   *  construction). Describes the deals the accuracy was measured on. NEVER
+   *  differenced against anything — no estimator predicts it. */
+  cash_to_close?: number | string | null
 }
 
 const CLOSING_COSTS_BASE = {
@@ -441,6 +456,38 @@ function describeClosingCostSample(rows: ClosingCostObsRow[], medianLineError: n
     )
   }
 
+  // (4b) SAMPLE INTEGRITY. line_count is what the WRITER recorded beside the
+  // lines array; the array is what actually arrived. They should agree on every
+  // row, and a disagreement means the graded denominator is not the denominator
+  // that was measured — a blind spot published beside the number rather than
+  // discovered later (CLAUDE.md §2). Rows with no count are excluded from the
+  // comparison, never scored as a mismatch.
+  const countable = rows.filter((r) => num(r.line_count) != null && Array.isArray(r.lines))
+  const countMismatch = countable.filter((r) => num(r.line_count) !== r.lines.length).length
+  if (countable.length > 0 && countMismatch > 0) {
+    notes.push(
+      `Sample integrity: ${countMismatch} of ${countable.length} observation(s) carry a recorded line count that ` +
+      `disagrees with the lines actually stored — the graded line total for those rows is not what was measured.`,
+    )
+  }
+
+  // (4c) WHOSE DEALS, IN THE BUYER'S OWN TERMS. cash_to_close is CONTEXT: it says
+  // what size of cash requirement these estimates were sitting behind. It is
+  // deliberately NOT differenced against anything — no estimator on this rail
+  // predicts cash-to-close, and treating it as an outcome would manufacture an
+  // error term for a prediction nobody made. The seller-side writer stores null,
+  // so this describes the buyer-side subset and says so.
+  const cash = rows.map((r) => num(r.cash_to_close)).filter((v): v is number => v != null && v > 0)
+  if (cash.length > 0) {
+    const sortedCash = [...cash].sort((a, b) => a - b)
+    const usdC = (v: number) => `$${Math.round(v).toLocaleString("en-US")}`
+    notes.push(
+      `Context (not graded): the ${cash.length} observation(s) that recorded a cash-to-close ranged ` +
+      `${usdC(sortedCash[0])} to ${usdC(sortedCash[sortedCash.length - 1])}, median ` +
+      `${usdC(fractionalMedian(cash))}. Cash-to-close is never compared to an estimate — nothing predicts it.`,
+    )
+  }
+
   // (5) THE ERROR IN CONTEXT. Scaled against the CD's OWN section-J total, not
   // against the estimate total — the honesty contract forbids that comparison
   // (section J nets lender credits; it is not the estimated quantity).
@@ -468,8 +515,8 @@ async function closingCostsAdapter(svc: Svc, brokerageId?: string): Promise<Rail
     // blind spot (CLAUDE.md §2).
     let q = svc.from("closing_cost_accuracy_observations")
       .select(withSide
-        ? "state, lines, created_at, extraction_verified, extracted_field_keys, purchase_price, loan_amount, total_closing_costs, side"
-        : "state, lines, created_at, extraction_verified, extracted_field_keys, purchase_price, loan_amount, total_closing_costs")
+        ? "state, lines, created_at, extraction_verified, extracted_field_keys, purchase_price, loan_amount, total_closing_costs, line_count, cash_to_close, side"
+        : "state, lines, created_at, extraction_verified, extracted_field_keys, purchase_price, loan_amount, total_closing_costs, line_count, cash_to_close")
       .order("created_at", { ascending: false })
       .limit(2000)
     if (brokerageId) q = q.eq("brokerage_id", brokerageId)

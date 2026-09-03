@@ -355,7 +355,54 @@ export interface AgreementCommissionFields {
   total_commission_rate: number | null
   commission_is_flat_fee: boolean | null
   commission_flat_amount: number | null
+  // ── THE NEGOTIATED CONCESSION ────────────────────────────────────────────
+  // An agent who discounts a military or repeat-client seller records it HERE,
+  // on the agreement, the moment the agreement is uploaded
+  // (app/actions/seller-listing/execution-engine.ts:899-902). The commission
+  // LEDGER row that reduces the invoice at closing
+  // (`commission_adjustments`, read by the waterfall) can only be written when
+  // a TRANSACTION already exists — which, for a listing that has just gone
+  // live, it does not. So between "the agreement is signed" and "the deal is
+  // under contract" — exactly the window in which every net sheet on this page
+  // is produced — the agreement was the ONLY record of the discount, and no
+  // sheet read it. Every seller net sheet quoted the FULL commission the agent
+  // had already promised to cut.
+  //
+  // OPTIONAL on purpose: a caller whose select does not name these columns is
+  // unchanged, and gets exactly the unadjusted number it got before.
+  has_commission_adjustment?: boolean | null
+  /** The REASON vocabulary (military, repeat_client, …) — carried for labelling only. */
+  adjustment_type?: string | null
+  /** The magnitude. Its UNIT is adjustment_value_type and is never assumed. */
+  adjustment_value?: number | null
+  /** Live CHECK: 'percent' | 'flat' (scripts/check-vocabularies.ts:853). */
+  adjustment_value_type?: string | null
 }
+
+/** The two units the live CHECK allows on listing_agreements.adjustment_value_type. */
+const ADJUSTMENT_VALUE_TYPES = ["percent", "flat"] as const
+
+/**
+ * How the recorded concession was (or was not) applied to the rate. NEVER
+ * collapsed into "no adjustment" — a discount that could not be priced is a
+ * different fact from a seller who negotiated none, and the difference is money.
+ */
+export type CommissionAdjustmentState =
+  /** No concession is recorded on the agreement. */
+  | "none"
+  /** Applied: a percentage came off the total rate. */
+  | "applied_percent"
+  /** Applied: a flat dollar amount came off the commission. */
+  | "applied_flat"
+  /** Recorded, but adjustment_value_type is NULL or outside the CHECK — the unit
+   *  is unknown, so applying it would be a guess about a dollar figure. */
+  | "unit_unknown"
+  /** Recorded with no value, or against a price of 0 for a flat amount — nothing
+   *  to subtract. */
+  | "not_priceable"
+  /** Recorded, but the base is a flat FEE, not a rate: the concession belongs on
+   *  the fee itself and this resolver will not invent that arithmetic. */
+  | "flat_fee_base"
 
 export interface AgreedCommission {
   /** Decimal rate to apply to the sale price (0.055 = 5.5%). */
@@ -367,15 +414,107 @@ export interface AgreedCommission {
   label: string
   /** True when no executed listing agreement backed the number. */
   isEstimate: boolean
+  /** What happened to the agreement's recorded concession. See the type. */
+  adjustmentState: CommissionAdjustmentState
+  /** The rate BEFORE the concession, when one was applied; null otherwise. */
+  rateBeforeAdjustment: number | null
+  /**
+   * TRUE when a concession IS recorded on the agreement and this resolver could
+   * not price it ('unit_unknown', 'not_priceable', 'flat_fee_base'). The number
+   * returned is then the UNDISCOUNTED commission, i.e. the seller's net is
+   * understated — the caller must say so rather than print it flat.
+   */
+  adjustmentUnpriced: boolean
 }
 
 /** The house fallback when nothing is on file. Matches defaultSellerCosts. */
 export const FALLBACK_TOTAL_COMMISSION_RATE = 0.06
 
 /**
+ * PURE. Apply the agreement's recorded commission concession to a resolved rate,
+ * HONOURING THE STORED UNIT.
+ *
+ * `adjustment_value` is a bare number; `adjustment_value_type` is the only thing
+ * that says whether 1 means one PERCENT of the sale price or one DOLLAR. On a
+ * $700,000 sale those two readings differ by roughly $6,999 in the seller's
+ * pocket — which is why the unit is never assumed here. Where the ledger writer
+ * falls back to "percent" when the type is absent
+ * (execution-engine.ts:963, `?? "percent"`), this refuses instead: the caller is
+ * told the concession could not be priced and the UNDISCOUNTED number is
+ * returned, because understating a discount is a number the agent can spot and
+ * fix, while silently applying the wrong unit is not.
+ *
+ * The concession is a CREDIT (a reduction) — that is the direction the ledger
+ * writer stamps for a seller-negotiated listing concession — and the resulting
+ * rate is floored at 0: a discount larger than the commission zeroes it, it
+ * never pays the seller.
+ */
+function applyAgreementAdjustment(
+  base: AgreedCommission,
+  a: AgreementCommissionFields | null | undefined,
+  price: number,
+): AgreedCommission {
+  const value = a?.adjustment_value
+  // has_commission_adjustment is the agent's own "yes, there is one" flag; a
+  // value without it (or vice versa) is still treated as recorded, because
+  // either half alone is evidence a concession was entered.
+  const recorded = !!(a && (a.has_commission_adjustment || value != null))
+  if (!recorded) return base
+
+  const unit = a?.adjustment_value_type
+  const unitKnown = typeof unit === "string" && (ADJUSTMENT_VALUE_TYPES as readonly string[]).includes(unit)
+  const unpriced = (state: CommissionAdjustmentState): AgreedCommission => ({
+    ...base,
+    adjustmentState: state,
+    rateBeforeAdjustment: null,
+    adjustmentUnpriced: true,
+  })
+
+  if (!unitKnown) return unpriced("unit_unknown")
+  if (value == null || !Number.isFinite(Number(value))) return unpriced("not_priceable")
+  if (base.isFlatFee) return unpriced("flat_fee_base")
+
+  const v = Number(value)
+  if (unit === "percent") {
+    const adjusted = Math.max(0, base.rate - v / 100)
+    return {
+      ...base,
+      rate: adjusted,
+      rateBeforeAdjustment: base.rate,
+      adjustmentState: "applied_percent",
+      adjustmentUnpriced: false,
+      label: `${base.label} · less ${v}% ${commissionConcessionLabel(a?.adjustment_type)}`,
+    }
+  }
+
+  // 'flat': dollars off the commission. Expressing it as a rate needs a price to
+  // divide by; without one there is nothing to express and nothing is guessed.
+  if (!(price > 0)) return unpriced("not_priceable")
+  const adjusted = Math.max(0, base.rate - v / price)
+  return {
+    ...base,
+    rate: adjusted,
+    rateBeforeAdjustment: base.rate,
+    adjustmentState: "applied_flat",
+    adjustmentUnpriced: false,
+    label: `${base.label} · less ${fmtUsd(v)} ${commissionConcessionLabel(a?.adjustment_type)}`,
+  }
+}
+
+/** Reason → a short human tail for the provenance label. Unknown reasons say so. */
+function commissionConcessionLabel(reason: string | null | undefined): string {
+  if (!reason) return "agreed concession"
+  return `${reason.replace(/_/g, " ")} concession`
+}
+
+/**
  * PURE. Resolve the commission rate a seller net sheet should charge.
  * Precedence: flat fee → total rate → listing+buyer rates → listings.commission_rate
  * → house default. Anything below an executed agreement is flagged as an estimate.
+ *
+ * Then, and only on an agreement-backed base, the agreement's recorded concession
+ * is applied through applyAgreementAdjustment above — see that function for why
+ * the stored unit is honoured rather than defaulted.
  */
 export function resolveAgreedCommission(args: {
   agreement: AgreementCommissionFields | null | undefined
@@ -386,44 +525,52 @@ export function resolveAgreedCommission(args: {
 }): AgreedCommission {
   const a = args.agreement
   const price = Number(args.referencePrice ?? 0)
+  /** Defaults every branch below shares: no concession seen yet. */
+  const unadjusted = { adjustmentState: "none" as CommissionAdjustmentState, rateBeforeAdjustment: null, adjustmentUnpriced: false }
 
   if (a?.commission_is_flat_fee && a.commission_flat_amount != null) {
     const flat = Number(a.commission_flat_amount)
-    return {
+    return applyAgreementAdjustment({
       rate: price > 0 ? flat / price : 0,
       isFlatFee: true,
       flatAmount: flat,
       source: "confirmed",
       label: "Flat fee per listing agreement",
       isEstimate: false,
-    }
+      ...unadjusted,
+    }, a, price)
   }
 
   if (a?.total_commission_rate != null) {
-    return {
+    return applyAgreementAdjustment({
       rate: Number(a.total_commission_rate) / 100,
       isFlatFee: false, flatAmount: null, source: "confirmed",
       label: "Total rate per listing agreement", isEstimate: false,
-    }
+      ...unadjusted,
+    }, a, price)
   }
 
   if (a && (a.listing_commission_rate != null || a.buyer_commission_rate != null)) {
     const listing = Number(a.listing_commission_rate ?? 0)
     const buyer = Number(a.buyer_commission_rate ?? 0)
-    return {
+    return applyAgreementAdjustment({
       rate: (listing + buyer) / 100,
       isFlatFee: false, flatAmount: null, source: "confirmed",
       label: `Listing ${listing}% + buyer ${buyer}% per listing agreement`,
       isEstimate: false,
-    }
+      ...unadjusted,
+    }, a, price)
   }
 
+  // Below this line there is no agreement backing the rate, so there is no
+  // agreement concession to apply either.
   if (args.listingCommissionRatePercent != null) {
     return {
       rate: Number(args.listingCommissionRatePercent) / 100,
       isFlatFee: false, flatAmount: null, source: "template",
       label: "Listing-side rate only — no executed agreement on file",
       isEstimate: true,
+      ...unadjusted,
     }
   }
 
@@ -432,6 +579,7 @@ export function resolveAgreedCommission(args: {
     isFlatFee: false, flatAmount: null, source: "default",
     label: "Estimate — no commission terms on file",
     isEstimate: true,
+    ...unadjusted,
   }
 }
 

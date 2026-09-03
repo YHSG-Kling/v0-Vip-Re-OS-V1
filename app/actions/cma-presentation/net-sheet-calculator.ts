@@ -140,7 +140,7 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
       supabase.from("listings").select("state, commission_rate").eq("id", input.listingId).maybeSingle(),
       supabase
         .from("listing_agreements")
-        .select("listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, seller_transaction_fee")
+        .select("listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, seller_transaction_fee, has_commission_adjustment, adjustment_type, adjustment_value, adjustment_value_type")
         .eq("listing_id", input.listingId)
         .order("created_at", { ascending: false })
         .limit(1)

@@ -31,6 +31,23 @@ export interface ConciergeAction {
   detail:             string | null
   suggestedRecipient: Recipient | null
   createdAt:          string
+  /**
+   * TRUE when transaction_pending_actions.dispatched_email_id is stamped — an
+   * email for this action has already gone out through dispatchConciergeActionEmail.
+   *
+   * THE AUDIT TRAIL THAT NOBODY COULD SEE. The stamp exists precisely so "the
+   * agent actually sent something" is on the record (see the doc on the dispatch
+   * helper below), and every read of this table selected around it — so the board
+   * showed a still-open action with a "Draft email" button and no sign that one
+   * had already been sent. Chasing a lender twice about the same blocker is the
+   * cost.
+   *
+   * A FLAG, NOT AN ID, AND DELIBERATELY SO: the writer stamps the ACTION'S OWN id
+   * into the column, not the dispatched message's, so the value identifies
+   * nothing beyond its own presence. Surfacing it as a boolean is the honest
+   * reading of what is actually stored; see the note at the write site.
+   */
+  emailDispatched:    boolean
 }
 
 /** One deal in the brokerage's closing window, distilled from its war room. */
@@ -94,7 +111,7 @@ export async function loadClosingConciergeBoard(): Promise<ConciergeBoard | { er
     .from("transaction_pending_actions")
     .select(`
       id, transaction_id, action_type, severity, due_date, headline, detail,
-      suggested_recipient, created_at,
+      suggested_recipient, created_at, dispatched_email_id,
       transaction:transaction_id (id, deal_name, property_address, close_date, contract_date)
     `)
     .eq("agent_id", agentRow.id)
@@ -116,6 +133,7 @@ export async function loadClosingConciergeBoard(): Promise<ConciergeBoard | { er
     detail:             a.detail ?? null,
     suggestedRecipient: a.suggested_recipient ?? null,
     createdAt:          a.created_at,
+    emailDispatched:    a.dispatched_email_id != null,
   }))
 
   // Defensive re-sort (Supabase severity ordering is lexicographic)
@@ -380,11 +398,37 @@ export async function dispatchConciergeActionEmail(args: {
 
   if (!result.success) return { success: false, error: result.error }
 
-  // Stamp the dispatch on the action so the agent's resolve UI can show it
-  await svc
+  // Stamp the dispatch on the action so the agent's board can show it. The
+  // reader is loadClosingConciergeBoard above, which surfaces it as
+  // ConciergeAction.emailDispatched.
+  //
+  // KNOWN DEFECT, RECORDED RATHER THAN GUESSED AT: the value written is the
+  // ACTION'S OWN id, not the dispatched message's — `result.messageId` is the
+  // provider's handle and it is a provider string (SendGrid message id), not a
+  // uuid, and this column's type is not knowable from the generated schema
+  // caches (scripts/schema-snapshot.ts records column NAMES only) and there is no
+  // FK on it (scripts/schema-fk-map.ts:740). Writing a provider string into a
+  // uuid column would be refused whole (22P02) and take the stamp with it. So the
+  // column is honestly a PRESENCE FLAG today and is read as exactly that; making
+  // it a real message handle needs the column type confirmed against the live
+  // database first, which a lane may not query.
+  //
+  // §3: supabase-js RESOLVES a refused update, and an unread refusal here is a
+  // dispatch that happened with no record that it did.
+  const { data: stamped, error: stampErr } = await svc
     .from("transaction_pending_actions")
     .update({ dispatched_email_id: action.id, updated_at: new Date().toISOString() })
     .eq("id", action.id)
+    .select("id")
+  if (stampErr) {
+    console.error("[closing-concierge] dispatch stamp refused:", stampErr.message)
+  } else if ((stamped ?? []).length !== 1) {
+    // An UPDATE matching nothing resolves exactly like one that worked.
+    console.error(
+      `[closing-concierge] dispatch stamp matched ${(stamped ?? []).length} rows for action ${action.id} — ` +
+      "the email WAS sent and the board will not show it.",
+    )
+  }
 
   return { success: true, providerKey: result.providerKey }
 }

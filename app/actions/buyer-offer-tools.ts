@@ -59,14 +59,29 @@ async function recordPortalActivity(
   supabase: any,
   args: { contactId: string; brokerageId: string | null; agentId: string | null; activityType: string; propertyId?: string | null; metadata: Record<string, unknown> },
 ): Promise<boolean> {
+  // ONE SPELLING OF "WHICH HOME" (CLAUDE.md §6). The handle used to be written
+  // TWICE — into this column and again into metadata.property_id — and only the
+  // jsonb copy was ever read. SURVIVOR: the column `client_portal_activity.property_id`,
+  // read at app/actions/contact-details.ts:getContactActivity. The metadata copies
+  // at the three call sites below are gone; metadata keeps property_ADDRESS, which
+  // the uuid column cannot hold.
+  const isUuid = Boolean(args.propertyId) && UUID_RE.test(args.propertyId as string)
+  const meta: Record<string, unknown> = { ...args.metadata }
+  if (args.propertyId && !isUuid) {
+    // The column is a uuid ref and would refuse the whole insert (PGRST/22P02) on a
+    // non-uuid handle. Rather than drop the handle silently, the UNRESOLVABLE case —
+    // and only that case — is preserved under a distinct key, so this is a complement
+    // to the column, never a second spelling of it.
+    meta.property_ref_non_uuid = args.propertyId
+    console.warn(`[buyer-offer-tools] '${args.activityType}' property handle is not a uuid — column left NULL, handle kept as metadata.property_ref_non_uuid`)
+  }
   const { error } = await supabase.from("client_portal_activity").insert({
     brokerage_id: args.brokerageId,
     contact_id: args.contactId,
     agent_id: args.agentId,
-    // loose uuid ref — a non-uuid handle would fail the whole insert, so it rides metadata only
-    property_id: args.propertyId && UUID_RE.test(args.propertyId) ? args.propertyId : null,
+    property_id: isUuid ? args.propertyId : null,
     activity_type: args.activityType,
-    metadata: args.metadata,
+    metadata: meta,
   })
   if (error) {
     console.error(`[buyer-offer-tools] portal activity '${args.activityType}' NOT recorded:`, error.message)
@@ -196,7 +211,8 @@ export async function signalAffordabilityChecked(input: {
       contactId: input.contactId, brokerageId: contact.brokerage_id, agentId: contact.agent_id,
       activityType: "affordability_checked", propertyId: input.propertyId,
       metadata: {
-        property_id: input.propertyId, property_address: input.propertyAddress,
+        // property_id removed — SURVIVOR is the column, stamped by recordPortalActivity above.
+        property_address: input.propertyAddress,
         price: input.price, monthly_estimate: input.monthlyEstimate, verdict: input.verdict,
         source: "buyer_portal",
       },
@@ -283,7 +299,8 @@ export async function requestOfferHelp(input: {
     await recordPortalActivity(svc, {
       contactId: input.contactId, brokerageId: contact.brokerage_id, agentId: contact.agent_id,
       activityType: "offer_help_requested", propertyId: input.propertyId,
-      metadata: { property_id: input.propertyId, property_address: input.propertyAddress, source: "buyer_portal", outcome, repeat: ack.duplicate },
+      // property_id removed — SURVIVOR is the column (recordPortalActivity stamps it).
+      metadata: { property_address: input.propertyAddress, source: "buyer_portal", outcome, repeat: ack.duplicate },
     })
 
     // 3) Asking again about the SAME home does not re-alert the agent or re-post to the thread.
@@ -489,7 +506,8 @@ export async function requestPreApprovalRefresh(input: {
     const recorded = await recordPortalActivity(svc, {
       contactId: input.contactId, brokerageId: contact.brokerage_id, agentId: contact.agent_id,
       activityType: "preapproval_refresh_requested", propertyId: input.propertyId,
-      metadata: { property_id: input.propertyId, property_address: input.propertyAddress, source: "buyer_portal" },
+      // property_id removed — SURVIVOR is the column (recordPortalActivity stamps it).
+      metadata: { property_address: input.propertyAddress, source: "buyer_portal" },
     })
 
     const notified = await notifyAgent(svc, {

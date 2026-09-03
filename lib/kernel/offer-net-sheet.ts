@@ -133,7 +133,7 @@ export async function runOfferNetSheets(
     // Agreed commission terms for this listing.
     const { data: agreementRow } = await supabase
       .from("listing_agreements")
-      .select("listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, seller_transaction_fee")
+      .select("listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, seller_transaction_fee, has_commission_adjustment, adjustment_type, adjustment_value, adjustment_value_type")
       .eq("listing_id", lst.id)
       .eq("brokerage_id", brokerageId)
       .order("fully_executed_at", { ascending: false, nullsFirst: false })
@@ -169,6 +169,20 @@ export async function runOfferNetSheets(
     // The commission line carries the agreement's own provenance: "confirmed" when
     // an executed agreement backed it, "template"/"default" when it did not.
     provenance.commissionRate = agreed.source
+    // A NEGOTIATED CONCESSION THAT COULD NOT BE PRICED IS NOT A CONFIRMED RATE.
+    // resolveAgreedCommission refuses to guess the unit of adjustment_value when
+    // adjustment_value_type is missing or outside the live CHECK, and returns the
+    // UNDISCOUNTED rate — which overstates the commission and UNDERSTATES the
+    // seller's net. Demoting the provenance is what carries that into the policy
+    // decision below, so the sheet cannot be labelled presentation-grade while a
+    // discount the agent already promised is missing from it.
+    if (agreed.adjustmentUnpriced) {
+      provenance.commissionRate = "template"
+      console.warn(
+        `[offer-net-sheet] listing ${lst.id}: a commission concession is recorded on the listing agreement ` +
+        `but could not be priced (${agreed.adjustmentState}) — the commission line is the UNDISCOUNTED figure.`,
+      )
+    }
     if (opts.costsResolver) {
       provenance.mortgagePayoff = "confirmed"
       provenance.countyCityTaxes = "confirmed"

@@ -129,14 +129,19 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
           .limit(1)
           .maybeSingle()
       : Promise.resolve({ data: null }),
-    // Latest seller update
+    // Latest seller update ADDRESSED TO THIS CONTACT. materializeSellerUpdate stamps
+    // contact_id with the listing's seller contact (lib/agents/seller-update-reel-producer.ts:625);
+    // filtering on listing_id alone served a co-seller the update recorded for the
+    // OTHER seller. A window + the addressee filter applied below on `latestUpdate`,
+    // rather than a `.or()` string, so the route param never enters PostgREST
+    // filter grammar.
+    // NULL contact_id = listing-wide, which every seller on the listing may see.
     supabase
       .from("seller_updates")
-      .select("id, subject, body, video_url, thumbnail_url, created_at")
+      .select("id, subject, body, video_url, thumbnail_url, created_at, contact_id")
       .eq("listing_id", listing.id)
       .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
+      .limit(10),
     // Seller documents
     getSellerDocuments(contactId, context.transactionId ?? null),
   ])
@@ -156,7 +161,20 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
     ? [(agent.users as any)?.first_name, (agent.users as any)?.last_name].filter(Boolean).join(" ") || null
     : null
   const nextMilestone = nextMilestoneResult.data
-  const latestUpdate = updatesResult.data
+  // The newest row this contact is entitled to: addressed to them, or listing-wide.
+  type SellerUpdateRow = {
+    id: string
+    subject: string | null
+    body: string | null
+    video_url: string | null
+    thumbnail_url: string | null
+    created_at: string | null
+    contact_id: string | null
+  }
+  const latestUpdate =
+    ((updatesResult.data ?? []) as unknown as SellerUpdateRow[]).find(
+      (u) => u.contact_id === null || u.contact_id === contactId,
+    ) ?? null
 
   // Calculate days on market
   const listingDate = listing.listing_date ? new Date(listing.listing_date) : null
@@ -171,15 +189,32 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
     .select("id", { count: "exact", head: true })
     .eq("listing_id", listing.id)
     .eq("status", "live")
-  // The seller's weekly digest (seller_weekly_reports, written by runSellerWeeklyReports). Latest week.
-  const { data: weeklyReportRow } = await supabase
+  // The seller's weekly digest (seller_weekly_reports, written by runSellerWeeklyReports).
+  // contact_id is the ADDRESSEE the runner stamped (lib/listings/seller-weekly-report-runner.ts:80
+  // writes listings.seller_contact_id); reading only listing_id served a co-seller the
+  // digest recorded for the other seller. NULL = listing-wide.
+  // generated_at is WHEN the digest was compiled (runner.ts:84) — the week label comes
+  // from report_week_start, but "compiled on" is what tells the seller whether the
+  // numbers are this morning's or six days stale. Both were written and never read.
+  const { data: weeklyReportRows, error: weeklyReportErr } = await supabase
     .from("seller_weekly_reports")
-    .select("report_content")
+    .select("report_content, generated_at, report_week_start, contact_id")
     .eq("listing_id", listing.id)
     .order("report_week_start", { ascending: false })
-    .limit(1)
-    .maybeSingle()
-  const weeklyReport = (weeklyReportRow?.report_content as Record<string, unknown> | null) ?? null
+    .limit(10)
+  if (weeklyReportErr) console.warn("[portal/listing] seller_weekly_reports read refused:", weeklyReportErr.message)
+  type WeeklyReportRow = {
+    report_content: Record<string, unknown> | null
+    generated_at: string | null
+    report_week_start: string | null
+    contact_id: string | null
+  }
+  const weeklyReportRow =
+    ((weeklyReportRows ?? []) as unknown as WeeklyReportRow[]).find(
+      (r) => r.contact_id === null || r.contact_id === contactId,
+    ) ?? null
+  const weeklyReport = weeklyReportRow?.report_content ?? null
+  const weeklyReportGeneratedAt = weeklyReportRow?.generated_at ?? null
 
   // National "Market Pulse" — what buyers are prioritizing now (market_pulse, written weekly).
   // generated_at + source_count are the card's provenance line: WHEN the pulse
@@ -343,7 +378,7 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
         <SellerTeamActivityCard team={sellerTeam} timeline={sellerTeamTimeline} />
 
         {/* Weekly digest — this week's real activity, client-safe */}
-        <SellerWeeklyReportCard report={weeklyReport as any} />
+        <SellerWeeklyReportCard report={weeklyReport as any} generatedAt={weeklyReportGeneratedAt} />
 
         {/* Market Pulse — what buyers are prioritizing now (the novel buyer-sentiment differentiator) */}
         <SellerMarketPulseCard pulse={marketPulse as any} />

@@ -166,6 +166,22 @@ export async function processZoomRecordingEvent(
     // "already attached" answer the pre-check returns, never a failed attach.
     // Until m599 is applied a duplicate is still possible — the arm is inert
     // rather than wrong, and becomes live the moment the index exists.
+    // RE-ADJUDICATED 2026-09-03, same finding, named at the COLUMN so a
+    // column-level census stops re-raising it: `communications.contact_id` and
+    // `communications.direction` are read by lib/platform/tenant-export.ts:54
+    // (`.select("*")` over TENANT_EXPORT_TABLES, which names "communications" at
+    // :22). The two in-product readers select neither — tenant-calls/page.tsx:117
+    // and app/dashboard/meetings/[eventId]/transcript-panel.tsx:164 both take
+    // subject/content_preview/metadata only — so a column-level scan sees no
+    // reader and the export's whole-row, loop-variable read is invisible to it.
+    // AND THE PROPOSED FIX WOULD BE WRONG: lib/kernel/communications.ts merges a
+    // CONTACT inbox keyed on contact_id (:291, :336, :366), and these rows carry
+    // contact_id NULL by design — a platform-hosted meeting has no contact — so
+    // wiring this table into that reader adds rows it can never key on. Nor is
+    // `direction` here a second spelling of client_portal_messages.direction
+    // (§6): that column is a portal message's sender side ('client_to_agent' /
+    // 'agent_to_client', normalised at communications.ts:305) and this one is a
+    // recording's provenance on a different table. Two ideas, two columns.
     const { error } = await svc.from("communications").insert({
       brokerage_id: target.brokerageId,
       contact_id: null,

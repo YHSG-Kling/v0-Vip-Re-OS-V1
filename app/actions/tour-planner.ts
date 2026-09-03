@@ -768,6 +768,10 @@ export async function confirmTourStop(params: ConfirmStopParams) {
       listing_agent_name:     listingAgentName ?? null,
       listing_agent_phone:    listingAgentPhone ?? null,
       listing_agent_company:  listingAgentCompany ?? null,
+      // NOT WRITE-ONLY (census re-check 2026-09-03): the reader is the confirm
+      // tab — app/crm/contacts/[contactId]/tours/components/tour-confirm-tab.tsx:39
+      // types it and :98 seeds the field from it. The other writer is the
+      // ShowingTime webhook (app/api/showings/showingtime-webhook/route.ts:180).
       scheduling_reference:   schedulingReference ?? null,
       is_confirmed:           true,
     })

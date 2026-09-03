@@ -263,9 +263,13 @@ export async function getContactActivity(contactId: string) {
     // Its error is no longer dropped: supabase-js RESOLVES a refused read, so a refusal used to
     // arrive here as an empty list and render as "this client has done nothing", which is the one
     // conclusion an empty result never licenses.
+    // property_id is the COLUMN, and it is the SURVIVOR of a duplicate: the same
+    // handle used to be copied into metadata.property_id by every buyer-portal
+    // writer. This select is the reader that makes the column live — see the
+    // tombstone at app/actions/buyer-offer-tools.ts:recordPortalActivity.
     supabase
       .from("client_portal_activity")
-      .select("id, contact_id, activity_type, metadata, created_at")
+      .select("id, contact_id, activity_type, metadata, property_id, created_at")
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
       .limit(50),
@@ -298,12 +302,25 @@ export async function getContactActivity(contactId: string) {
       activity_type: "activity",
       activity_date: item.created_at
     })),
-    ...(portalActivity.data || []).map((item: any) => ({
-      ...item,
-      activity_type: item.activity_type ?? "portal_view",
-      activity_date: item.created_at,
-      notes: item.metadata ? JSON.stringify(item.metadata) : "Portal activity",
-    })),
+    ...(portalActivity.data || []).map((item: any) => {
+      const meta = (item.metadata ?? {}) as Record<string, unknown>
+      // WHICH HOME the buyer was working on. Read off the COLUMN; the address
+      // label still rides metadata because the column holds only the uuid.
+      const propertyId = (item.property_id as string | null) ?? null
+      const address = typeof meta.property_address === "string" && meta.property_address ? meta.property_address : null
+      const label = address ?? (propertyId ? `property ${propertyId.slice(0, 8)}` : null)
+      return {
+        ...item,
+        activity_type: item.activity_type ?? "portal_view",
+        activity_date: item.created_at,
+        property_id: propertyId,
+        notes: label
+          ? `${String(item.activity_type ?? "portal activity").replace(/_/g, " ")} — ${label}`
+          : item.metadata
+            ? JSON.stringify(item.metadata)
+            : "Portal activity",
+      }
+    }),
     ...(notes.data || []).map((item: any) => ({
       ...item,
       activity_type: "note",

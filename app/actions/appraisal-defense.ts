@@ -60,8 +60,43 @@ export interface AppraisalDefensePackage {
       amount: number
       direction: "add" | "subtract"
       rationale: string | null
+      /**
+       * cma_price_adjustments.comparable_address — the address the ADJUSTMENT ROW
+       * itself records, copied at write time from the comp it was computed
+       * against (app/actions/ai-cma.ts:532). Kept beside the joined comp so the
+       * packet can SHOW that the two agree, and flag it when they do not.
+       *
+       * §5: this document reaches a licensed appraiser, so the address is the
+       * STORED string, verbatim, and is never composed, normalised or generated.
+       * Null on rows written before the column was populated.
+       */
+      recordedAddress: string | null
+      /** TRUE when the adjustment's own recorded address disagrees with the comp
+       *  it is filed under. Never silently reconciled — the appraiser is told. */
+      addressMismatch: boolean
     }>
     adjustedValue: number
+  }>
+  /**
+   * ADJUSTMENTS THIS REPORT HOLDS THAT NO COMP IN IT CLAIMS.
+   *
+   * The packet joins adjustments to comps on `comparable_property_id`. Any row
+   * whose id matches no comp — a comp deleted after the adjustment was written, a
+   * partially-failed comp insert (ai-cma.ts:510 warns about exactly that), or a
+   * row carrying no comparable id at all — used to vanish from the packet with no
+   * trace, leaving an appraiser a value range whose stored adjustments do not add
+   * up to it and nothing but a uuid to ask about. comparable_address is the
+   * human-readable fact that makes the gap NAMEABLE. Listed, never dropped, and
+   * never folded into the value math.
+   */
+  unattachedAdjustments: Array<{
+    /** The stored address, verbatim. Null when the row recorded none — said as
+     *  "address not recorded", never filled in from anywhere else. */
+    recordedAddress: string | null
+    label: string
+    amount: number
+    direction: "add" | "subtract"
+    rationale: string | null
   }>
   summary: {
     indicatedRangeLow: number
@@ -119,7 +154,10 @@ export async function buildAppraisalDefensePackage(
       .order("sale_date", { ascending: false }),
     supabase
       .from("cma_price_adjustments")
-      .select("comparable_property_id, adjustment_type, adjustment_amount, rationale")
+      // comparable_address is the adjustment row's OWN record of which property it
+      // was computed against. Selecting it is what lets this packet name an
+      // adjustment it cannot attach, instead of showing a uuid or dropping it.
+      .select("comparable_property_id, comparable_address, adjustment_type, adjustment_amount, rationale")
       .eq("cma_report_id", report.id),
   ])
 
@@ -152,15 +190,42 @@ export async function buildAppraisalDefensePackage(
       bathrooms: c.bathrooms as number | null,
       yearBuilt: null as number | null, // not on cma_comparables
       distanceMi: c.distance_miles as number | null,
-      adjustments: adjs.map((a) => ({
-        label: a.adjustment_type as string,
-        amount: Math.abs(Number(a.adjustment_amount)),
-        direction: (Number(a.adjustment_amount) < 0 ? "subtract" : "add") as "add" | "subtract",
-        rationale: (a.rationale as string | null) ?? null,
-      })),
+      adjustments: adjs.map((a) => {
+        // VERBATIM. The stored string is compared and displayed as-is; only the
+        // MISMATCH TEST trims and case-folds, because "123 Main St " and
+        // "123 Main St" are the same address and flagging that at an appraiser
+        // would be noise. Nothing is rewritten for display.
+        const recordedAddress = (a.comparable_address as string | null) ?? null
+        const norm = (s: string | null) => (s ?? "").trim().toLowerCase()
+        return {
+          label: a.adjustment_type as string,
+          amount: Math.abs(Number(a.adjustment_amount)),
+          direction: (Number(a.adjustment_amount) < 0 ? "subtract" : "add") as "add" | "subtract",
+          rationale: (a.rationale as string | null) ?? null,
+          recordedAddress,
+          addressMismatch: !!recordedAddress && norm(recordedAddress) !== norm(c.address as string),
+        }
+      }),
       adjustedValue,
     }
   })
+
+  // The rows the join could not place. Computed against the WHOLE comp set for
+  // this report, before the top-3 trim below, so "unattached" means "matches no
+  // comp on file" and never "did not make the cut".
+  const compIds = new Set((comps ?? []).map((c) => c.id as string))
+  const unattachedAdjustments = (adjustments ?? [])
+    .filter((a) => {
+      const id = a.comparable_property_id as string | null
+      return !id || !compIds.has(id)
+    })
+    .map((a) => ({
+      recordedAddress: (a.comparable_address as string | null) ?? null,
+      label: a.adjustment_type as string,
+      amount: Math.abs(Number(a.adjustment_amount)),
+      direction: (Number(a.adjustment_amount) < 0 ? "subtract" : "add") as "add" | "subtract",
+      rationale: (a.rationale as string | null) ?? null,
+    }))
 
   // Trim to the strongest 3 comps (closest by distance, then most recent sale).
   const ranked = [...builtComps].sort((a, b) => {
@@ -226,6 +291,32 @@ export async function buildAppraisalDefensePackage(
     )
   }
 
+  // DISCLOSE THE GAP, IN THE DOCUMENT ITSELF. Template text over counted rows —
+  // no model wrote this sentence, and the addresses in it are the stored strings
+  // (§5). Silence here would let an appraiser read a value range as fully
+  // explained by the adjustments shown when it is not.
+  if (unattachedAdjustments.length > 0) {
+    const named = unattachedAdjustments
+      .map((a) => a.recordedAddress)
+      .filter((v): v is string => !!v)
+    const unique = Array.from(new Set(named))
+    argumentBullets.push(
+      `${unattachedAdjustments.length} recorded adjustment(s) on this CMA are not attached to any comparable on file` +
+      (unique.length > 0 ? ` (recorded against ${unique.join("; ")})` : " (no address recorded on them)") +
+      ` and are therefore NOT included in the adjusted values above.`,
+    )
+  }
+  // Same rule for a comp whose own adjustment rows name a different address.
+  const mismatched = top.flatMap((c) =>
+    c.adjustments.filter((a) => a.addressMismatch).map((a) => ({ comp: c.address, recorded: a.recordedAddress })),
+  )
+  if (mismatched.length > 0) {
+    argumentBullets.push(
+      `${mismatched.length} adjustment(s) shown above record a different subject address than the comparable they are filed under ` +
+      `(${Array.from(new Set(mismatched.map((m) => `${m.recorded} vs ${m.comp}`))).join("; ")}); verify before relying on them.`,
+    )
+  }
+
   return {
     success: true,
     package: {
@@ -240,6 +331,7 @@ export async function buildAppraisalDefensePackage(
         yearBuilt: (report.year_built as number | null) ?? null,
       },
       comparables: top,
+      unattachedAdjustments,
       summary: {
         indicatedRangeLow,
         indicatedRangeHigh,

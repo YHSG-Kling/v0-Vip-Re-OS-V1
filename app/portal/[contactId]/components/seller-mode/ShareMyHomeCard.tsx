@@ -29,6 +29,9 @@ import { SellerSharePostsRail, type SellerSharePost } from "./SellerSharePostsRa
 interface Props {
   listingId: string
   listingAddress: string
+  /** The portal's own contact (route param). The feed read is scoped to it —
+   *  see the contact_id note on ShareFeedRow below. */
+  contactId: string
 }
 
 interface PublishedPostRow {
@@ -53,6 +56,19 @@ interface ShareFeedRow {
   pushed_by_user_id: string | null
   /** The tenant the push landed on — the anchor for the name read below. */
   brokerage_id: string | null
+  /** WHO the push was addressed to — pushListingToSellerPortal stamps the
+   *  listing's own contact_id (app/actions/push-listing-to-seller-portal.ts:78).
+   *  Until this card read it, a co-seller on the same listing was served the
+   *  push addressed to the OTHER seller. NULL = listing-wide (no addressee was
+   *  recorded), which every seller on the listing may see. */
+  contact_id: string | null
+}
+
+/** Pick the newest feed row this contact is entitled to: addressed to them, or
+ *  listing-wide (NULL addressee). A row addressed to a DIFFERENT contact is
+ *  skipped rather than rendered. */
+function selectFeedForContact(rows: ShareFeedRow[], contactId: string): ShareFeedRow | null {
+  return rows.find((r) => r.contact_id === null || r.contact_id === contactId) ?? null
 }
 
 /**
@@ -101,24 +117,27 @@ function withSellerShareAttribution(url: string, listingId: string): string {
   return `${url}${sep}ref=seller-share&listing=${listingId}&utm_source=seller-share&utm_campaign=seller_share_${listingId}`
 }
 
-export async function ShareMyHomeCard({ listingId, listingAddress }: Props) {
+export async function ShareMyHomeCard({ listingId, listingAddress, contactId }: Props) {
   const supabase = await createClient()
 
   const [{ data: listingRow }, { data: shareFeed, error: shareFeedErr }, { data: campaigns }] = await Promise.all([
     supabase.from("listings").select("id, slug").eq("id", listingId).maybeSingle(),
+    // A window, not limit(1): the newest row may be addressed to a CO-SELLER, and
+    // the addressee filter runs in selectFeedForContact below (contactId is a route
+    // param — keeping it out of a PostgREST `.or()` string keeps it out of the filter
+    // grammar entirely).
     supabase
       .from("seller_share_feed")
-      .select("public_url, share_messages, agent_note, pushed_at, pushed_by_user_id, brokerage_id")
+      .select("public_url, share_messages, agent_note, pushed_at, pushed_by_user_id, brokerage_id, contact_id")
       .eq("listing_id", listingId)
       .order("pushed_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
+      .limit(10),
     supabase.from("marketing_campaigns").select("id").eq("listing_id", listingId).limit(10),
   ])
   // Read, not swallowed: a refused feed read used to resolve as "nothing pushed"
   // and the card quietly disappeared.
   if (shareFeedErr) console.warn("[ShareMyHomeCard] seller_share_feed read refused:", shareFeedErr.message)
-  const feed = (shareFeed as ShareFeedRow | null) ?? null
+  const feed = selectFeedForContact((shareFeed as unknown as ShareFeedRow[] | null) ?? [], contactId)
   const slug = (listingRow as { slug: string | null } | null)?.slug ?? null
 
   // Resolve the pushing agent's display name, anchored on the feed row's tenant.

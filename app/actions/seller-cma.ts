@@ -624,7 +624,7 @@ export async function saveNetSheet(params: {
 
   const { data: agreement } = await svc
     .from("listing_agreements")
-    .select("listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount")
+    .select("listing_commission_rate, buyer_commission_rate, total_commission_rate, commission_is_flat_fee, commission_flat_amount, has_commission_adjustment, adjustment_type, adjustment_value, adjustment_value_type")
     .eq("listing_id", params.listingId)
     .eq("brokerage_id", profile.brokerage_id)
     .maybeSingle()

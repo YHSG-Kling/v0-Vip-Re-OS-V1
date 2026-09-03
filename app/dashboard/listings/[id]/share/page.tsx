@@ -292,6 +292,24 @@ export default function ListingSharePage() {
                   {traffic.totals.showingRequests} showing request{traffic.totals.showingRequests === 1 ? "" : "s"}
                   {traffic.totals.avgTimeOnPageSeconds != null && ` · avg ${traffic.totals.avgTimeOnPageSeconds}s on page`}
                 </p>
+                {/* listing_page_analytics.unique_visitors — the stored figure, said in
+                    its real unit. It is DISTINCT-PER-DAY, so a repeat visitor counts on
+                    each day they came back; the sentence says that rather than passing
+                    the sum off as a headcount. A refused read prints as unknown, never 0. */}
+                {traffic.totals.uniqueVisitorsUnavailable ? (
+                  <p className="text-xs text-muted-foreground">
+                    Unique visitors unavailable — the daily analytics read was refused, so this is
+                    unknown, not zero.
+                  </p>
+                ) : traffic.totals.uniqueVisitorDays > 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    {traffic.totals.uniqueVisitorsSummed} unique visitor
+                    {traffic.totals.uniqueVisitorsSummed === 1 ? "" : "s"} across{" "}
+                    {traffic.totals.uniqueVisitorDays} day
+                    {traffic.totals.uniqueVisitorDays === 1 ? "" : "s"} — counted distinct within
+                    each day, so someone who came back on another day is counted again.
+                  </p>
+                ) : null}
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="text-left text-muted-foreground border-b">
