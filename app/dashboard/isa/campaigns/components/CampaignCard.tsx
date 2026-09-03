@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
-import { Mail, Video, FileText, Phone, MessageSquare, PlayCircle, PauseCircle, TestTube, Rocket, CheckCircle2 } from "lucide-react"
+import { Mail, Video, FileText, Phone, MessageSquare, PlayCircle, PauseCircle, TestTube, Rocket, CheckCircle2, Pencil } from "lucide-react"
 import { toggleCampaignStatus, sendCampaignTestTouch, launchAIISACampaign, completeISACampaign } from "@/app/actions/ai-isa"
 import type { ISACampaignRow } from "@/app/actions/ai-isa"
 
@@ -27,9 +27,16 @@ const CHANNEL_ICON: Record<string, React.ReactNode> = {
 interface Props {
   campaign: ISACampaignRow
   onStatusChange: () => void
+  /**
+   * Open the campaign's settings for editing. The owner
+   * (ISACampaignsClient) renders CreateCampaignDrawer in edit mode with this
+   * row; the write is app/actions/ai-isa.ts:updateISACampaign.
+   */
+  onEdit?: (campaign: ISACampaignRow) => void
 }
 
-export function CampaignCard({ campaign, onStatusChange }: Props) {
+export function CampaignCard({ campaign, onStatusChange, onEdit }: Props) {
+  const canEdit = !!onEdit && campaign.status !== "completed"
   const [loading, setLoading] = useState(false)
   const [testLoading, setTestLoading] = useState(false)
   const [testResult, setTestResult] = useState<string | null>(null)
@@ -129,26 +136,27 @@ export function CampaignCard({ campaign, onStatusChange }: Props) {
         </span>
       </div>
 
-      {/* Channel icons — which channels this campaign rides.
-          TOMBSTONE (§1.2, dangling-link sweep template class, 2026-09-02): each
-          icon was a <button> that router.push'd
-          `/dashboard/isa/campaigns/${id}?channel=${ch}` — "open campaign settings
-          for that channel". app/dashboard/isa/campaigns has no [id] child, and no
-          surface edits an ISA campaign after creation: app/actions/ai-isa.ts
-          exposes toggle / complete / test-touch / launch only (updateCampaignStatus
-          is itself tombstoned at ai-isa.ts:240). Downgraded to non-navigating
-          indicators. A per-channel settings page would need an updateISACampaign
-          action (brokerage-gated like createISACampaign) and a [campaignId] route
-          that seeds CreateCampaignDrawer's channel picker from the row. */}
+      {/* Channel icons — which channels this campaign rides. Each icon opens the
+          campaign's settings (the same drawer the Edit button below opens, in
+          edit mode) — the capability these icons ORIGINALLY router.push'd toward
+          (`/dashboard/isa/campaigns/${id}?channel=${ch}`, a route that never
+          existed; downgraded to plain indicators 2026-09-02). The half that was
+          missing is now built: app/actions/ai-isa.ts:updateISACampaign
+          (session-gated, brokerage-pinned) behind CreateCampaignDrawer's
+          `campaign` prop, opened via onEdit. No [campaignId] route — the drawer
+          is the settings surface. */}
       <div className="flex items-center gap-2">
         {(campaign.channels ?? []).map((ch) => (
-          <span
+          <button
             key={ch}
-            title={`${ch} channel`}
-            className="p-1 rounded"
+            type="button"
+            title={canEdit ? `${ch} channel — edit campaign settings` : `${ch} channel`}
+            className={`p-1 rounded ${canEdit ? "hover:bg-muted" : "cursor-default"}`}
+            disabled={!canEdit}
+            onClick={() => canEdit && onEdit?.(campaign)}
           >
             {CHANNEL_ICON[ch] ?? null}
-          </span>
+          </button>
         ))}
       </div>
 
@@ -202,6 +210,18 @@ export function CampaignCard({ campaign, onStatusChange }: Props) {
             ? <><PauseCircle className="h-3.5 w-3.5" /> Pause</>
             : <><PlayCircle className="h-3.5 w-3.5" /> Resume</>
           }
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="gap-1"
+          onClick={() => onEdit?.(campaign)}
+          disabled={!canEdit}
+          title={campaign.status === "completed"
+            ? "A completed campaign cannot be edited"
+            : "Edit name, channels, cadence and score threshold"}
+        >
+          <Pencil className="h-3.5 w-3.5" /> Edit
         </Button>
         <Button
           size="sm"

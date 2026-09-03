@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useEffect, useState, useTransition } from "react"
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Slider } from "@/components/ui/slider"
 import { Mail, MessageSquare, FileText, Phone, Voicemail, Bell } from "lucide-react"
-import { createISACampaign, type CampaignType } from "@/app/actions/ai-isa"
+import { createISACampaign, updateISACampaign, type CampaignType, type ISACampaignRow } from "@/app/actions/ai-isa"
 import {
   OUTREACH_CHANNELS, VIDEO_OUTREACH_CHANNELS, channelCarriesVideo,
   type CampaignChannelKey,
@@ -41,12 +41,42 @@ const CAMPAIGN_TYPES: { value: CampaignType; label: string }[] = [
   { value: "search_intent", label: "Search Intent" },
 ]
 
+const DEFAULT_SCORE_THRESHOLD = 50
+const DEFAULT_MAX_TOUCHES     = 5
+const DEFAULT_TOUCH_INTERVAL  = 3
+
+// Seed helpers for edit mode. The COLUMN wins; the target_segment jsonb key is
+// the fallback because createISACampaign (via this drawer's create path) only
+// ever wrote the jsonb spelling — see updateISACampaign's "two spellings" note.
+function seedScoreThreshold(c?: ISACampaignRow | null): number {
+  if (!c) return DEFAULT_SCORE_THRESHOLD
+  if (typeof c.score_threshold === "number") return c.score_threshold
+  const fromSeg = c.target_segment?.score_threshold
+  return typeof fromSeg === "number" ? fromSeg : DEFAULT_SCORE_THRESHOLD
+}
+function seedTouchInterval(c?: ISACampaignRow | null): number {
+  if (!c) return DEFAULT_TOUCH_INTERVAL
+  if (typeof c.touch_interval_days === "number") return c.touch_interval_days
+  const fromSeg = c.target_segment?.touch_interval_days
+  return typeof fromSeg === "number" ? fromSeg : DEFAULT_TOUCH_INTERVAL
+}
+function seedChannels(c?: ISACampaignRow | null): Set<CampaignChannelKey> {
+  return new Set<CampaignChannelKey>(["email", ...((c?.channels ?? []) as CampaignChannelKey[])])
+}
+
 interface Props {
   open:              boolean
   onClose:           () => void
   brokerageId:       string
   directMailEnabled: boolean
-  onCreated:         () => void
+  /** Fires after a successful create OR save — the owner refreshes its list. */
+  onSaved:           () => void
+  /**
+   * EDIT MODE. When present the drawer seeds from this row and submits through
+   * updateISACampaign instead of createISACampaign. Campaign type is fixed after
+   * creation; channels are frozen while the campaign is active (pause first).
+   */
+  campaign?:         ISACampaignRow | null
 }
 
 export function CreateCampaignDrawer({
@@ -54,17 +84,35 @@ export function CreateCampaignDrawer({
   onClose,
   brokerageId,
   directMailEnabled,
-  onCreated,
+  onSaved,
+  campaign,
 }: Props) {
+  const isEdit = !!campaign
+  const channelsFrozen = isEdit && campaign?.status === "active"
+
   const [isPending, startTransition] = useTransition()
-  const [name, setName]                 = useState("")
-  const [campaignType, setCampaignType] = useState<CampaignType>("fsbo")
+  const [name, setName]                 = useState(campaign?.name ?? "")
+  const [campaignType, setCampaignType] = useState<CampaignType>(campaign?.campaign_type ?? "fsbo")
   // Email is always on; the rest are opt-in from the canonical outreach channels.
-  const [selected, setSelected]         = useState<Set<CampaignChannelKey>>(new Set(["email"]))
-  const [scoreThreshold, setScoreThreshold] = useState(50)
-  const [maxTouches, setMaxTouches]         = useState(5)
-  const [touchInterval, setTouchInterval]   = useState(3)
+  const [selected, setSelected]         = useState<Set<CampaignChannelKey>>(() => seedChannels(campaign))
+  const [scoreThreshold, setScoreThreshold] = useState(() => seedScoreThreshold(campaign))
+  const [maxTouches, setMaxTouches]         = useState(campaign?.max_touches ?? DEFAULT_MAX_TOUCHES)
+  const [touchInterval, setTouchInterval]   = useState(() => seedTouchInterval(campaign))
   const [error, setError]               = useState<string | null>(null)
+
+  // Re-seed whenever a different campaign is handed in (or the drawer flips
+  // back to create mode). Keyed on the id, not the row: the owner's refresh
+  // replaces the row object after every save and must not clobber in-progress
+  // edits.
+  useEffect(() => {
+    setName(campaign?.name ?? "")
+    setCampaignType(campaign?.campaign_type ?? "fsbo")
+    setSelected(seedChannels(campaign))
+    setScoreThreshold(seedScoreThreshold(campaign))
+    setMaxTouches(campaign?.max_touches ?? DEFAULT_MAX_TOUCHES)
+    setTouchInterval(seedTouchInterval(campaign))
+    setError(null)
+  }, [campaign?.id, open]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Which activation-gated channels the tenant has enabled (superadmin capability).
   // `video` is deliberately absent: it is not a destination a campaign sends to,
@@ -74,6 +122,7 @@ export function CreateCampaignDrawer({
 
   function toggleChannel(key: CampaignChannelKey) {
     if (key === "email") return // always on
+    if (channelsFrozen) return
     setSelected((prev) => {
       const next = new Set(prev)
       next.has(key) ? next.delete(key) : next.add(key)
@@ -94,6 +143,28 @@ export function CreateCampaignDrawer({
     if (!name.trim()) { setError("Name is required."); return }
 
     startTransition(async () => {
+      if (campaign) {
+        const result = await updateISACampaign({
+          campaignId: campaign.id,
+          patch: {
+            name:              name.trim(),
+            // Channels are refused server-side while active; do not even send
+            // them so a stale drawer cannot trip the refusal by accident.
+            ...(channelsFrozen ? {} : { channels: buildChannels() }),
+            maxTouches:        maxTouches,
+            touchIntervalDays: touchInterval,
+            scoreThreshold:    scoreThreshold,
+          },
+        })
+        if (!result.success) {
+          setError(result.error ?? "Failed to save campaign.")
+          return
+        }
+        onSaved()
+        onClose()
+        return
+      }
+
       const result = await createISACampaign({
         brokerageId,
         name:          name.trim(),
@@ -112,11 +183,11 @@ export function CreateCampaignDrawer({
         setError(result.error ?? "Failed to create campaign.")
         return
       }
-      onCreated()
+      onSaved()
       onClose()
       // reset
       setName(""); setCampaignType("fsbo"); setSelected(new Set(["email"]))
-      setScoreThreshold(50); setMaxTouches(5); setTouchInterval(3)
+      setScoreThreshold(DEFAULT_SCORE_THRESHOLD); setMaxTouches(DEFAULT_MAX_TOUCHES); setTouchInterval(DEFAULT_TOUCH_INTERVAL)
     })
   }
 
@@ -124,8 +195,12 @@ export function CreateCampaignDrawer({
     <Sheet open={open} onOpenChange={v => !v && onClose()}>
       <SheetContent className="w-full sm:max-w-lg overflow-y-auto">
         <SheetHeader className="mb-6">
-          <SheetTitle>New ISA Campaign</SheetTitle>
-          <SheetDescription>Configure your automated outreach campaign.</SheetDescription>
+          <SheetTitle>{isEdit ? "Edit ISA Campaign" : "New ISA Campaign"}</SheetTitle>
+          <SheetDescription>
+            {isEdit
+              ? "Change this campaign's settings. Status is controlled from the card."
+              : "Configure your automated outreach campaign."}
+          </SheetDescription>
         </SheetHeader>
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-6">
@@ -141,10 +216,10 @@ export function CreateCampaignDrawer({
             />
           </div>
 
-          {/* Campaign Type */}
+          {/* Campaign Type — fixed after creation: it is the segment resolver's dispatch key. */}
           <div className="flex flex-col gap-1.5">
             <Label>Campaign Type</Label>
-            <Select value={campaignType} onValueChange={v => setCampaignType(v as CampaignType)}>
+            <Select value={campaignType} onValueChange={v => setCampaignType(v as CampaignType)} disabled={isEdit}>
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
@@ -154,6 +229,9 @@ export function CreateCampaignDrawer({
                 ))}
               </SelectContent>
             </Select>
+            {isEdit && (
+              <p className="text-xs text-muted-foreground">Campaign type cannot be changed after creation.</p>
+            )}
           </div>
 
           {/* Channels — data-driven from the canonical outreach-channel registry */}
@@ -169,22 +247,31 @@ export function CreateCampaignDrawer({
 
             {OUTREACH_CHANNELS.filter((c) => c.key !== "email").map((c) => {
               const locked = isLocked(c)
+              const lockReason = locked
+                ? "Requires superadmin activation — contact your platform admin"
+                : channelsFrozen
+                  ? "Pause the campaign to change channels"
+                  : undefined
               return (
                 <ChannelToggle
                   key={c.key}
                   icon={CHANNEL_ICON[c.key]}
                   label={c.label}
-                  description={
-                    locked
-                      ? "Requires superadmin activation — contact your platform admin"
-                      : CHANNEL_DESCRIPTION[c.key] ?? ""
-                  }
+                  description={lockReason ?? CHANNEL_DESCRIPTION[c.key] ?? ""}
                   enabled={selected.has(c.key) && !locked}
-                  locked={locked}
+                  locked={locked || channelsFrozen}
+                  lockReason={lockReason}
                   onToggle={() => !locked && toggleChannel(c.key)}
                 />
               )
             })}
+
+            {channelsFrozen && (
+              <p className="text-xs text-muted-foreground">
+                Channels are frozen while the campaign is active — consent screening ran against
+                the launched set. Pause it from the card to change them.
+              </p>
+            )}
 
             {/* Video is a payload, not a destination — say so where the choice is
                 made, so nobody goes looking for a "video channel" that should not
@@ -210,7 +297,10 @@ export function CreateCampaignDrawer({
               value={[scoreThreshold]}
               onValueChange={([v]) => setScoreThreshold(v)}
             />
-            <p className="text-xs text-muted-foreground">Only target contacts with score &ge; {scoreThreshold}</p>
+            <p className="text-xs text-muted-foreground">
+              Only target contacts with score &ge; {scoreThreshold}
+              {isEdit && campaign?.status !== "draft" && " — applied at enrolment only; contacts already in cadence are unaffected"}
+            </p>
           </div>
 
           {/* Max Touches */}
@@ -247,7 +337,9 @@ export function CreateCampaignDrawer({
               Cancel
             </Button>
             <Button type="submit" className="flex-1" disabled={isPending}>
-              {isPending ? "Creating…" : "Create Campaign"}
+              {isEdit
+                ? (isPending ? "Saving…" : "Save changes")
+                : (isPending ? "Creating…" : "Create Campaign")}
             </Button>
           </div>
         </form>
@@ -257,13 +349,14 @@ export function CreateCampaignDrawer({
 }
 
 function ChannelToggle({
-  icon, label, description, enabled, locked, onToggle,
+  icon, label, description, enabled, locked, lockReason, onToggle,
 }: {
   icon: React.ReactNode
   label: string
   description: string
   enabled: boolean
   locked: boolean
+  lockReason?: string
   onToggle: () => void
 }) {
   return (
@@ -271,10 +364,12 @@ function ChannelToggle({
       type="button"
       onClick={onToggle}
       disabled={locked}
-      title={locked ? "Requires superadmin activation — contact your platform admin" : undefined}
+      title={locked ? lockReason : undefined}
       className={`flex items-center gap-3 rounded-md border px-3 py-2 text-left transition-colors w-full ${
         locked
-          ? "border-border bg-muted opacity-60 cursor-not-allowed"
+          ? enabled
+            ? "border-primary bg-primary/5 opacity-60 cursor-not-allowed"
+            : "border-border bg-muted opacity-60 cursor-not-allowed"
           : enabled
             ? "border-primary bg-primary/5"
             : "border-border bg-background hover:bg-muted"
@@ -287,7 +382,7 @@ function ChannelToggle({
       </span>
       {/* Toggle indicator */}
       <span className={`h-4 w-4 shrink-0 rounded-full border-2 ${
-        enabled && !locked ? "border-primary bg-primary" : "border-muted-foreground bg-transparent"
+        enabled ? "border-primary bg-primary" : "border-muted-foreground bg-transparent"
       }`} />
     </button>
   )

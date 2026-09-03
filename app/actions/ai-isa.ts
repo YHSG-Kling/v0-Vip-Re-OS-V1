@@ -269,6 +269,16 @@ export interface ISACampaignRow {
   conversions: number
   created_at: string
   updated_at: string
+  // The editable settings (listISACampaigns selects "*", so these were always
+  // on the wire — the type just did not admit them). The edit drawer seeds
+  // from the COLUMNS and falls back to the target_segment keys; see
+  // updateISACampaign for why both spellings exist.
+  max_touches?: number | null
+  touch_interval_days?: number | null
+  score_threshold?: number | null
+  lead_type_filter?: string | null
+  motivation_type_filter?: string | null
+  target_segment?: Record<string, unknown> | null
 }
 
 export interface ISACampaignStats {
@@ -396,22 +406,29 @@ export async function toggleCampaignStatus(
   const service = createServiceClient()
 
   // Verify campaign belongs to caller's brokerage before mutating
-  const { data: existing } = await service
+  const { data: existing, error: readError } = await service
     .from("ai_isa_campaigns")
     .select("brokerage_id")
     .eq("id", campaignId)
     .maybeSingle()
+  if (readError) return { success: false, error: readError.message }
   if (!existing) return { success: false, error: "Campaign not found" }
   if (existing.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden" }
 
-  const { error } = await service
+  // COUNTED (§3, 2026-09-03): an UPDATE the tenant predicate refuses resolves
+  // with error null and zero rows — byte-identical to one that worked — so the
+  // toggle reported success while the campaign stayed as it was. Same shape
+  // completeISACampaign and updateISACampaign already carry.
+  const { data: toggled, error } = await service
     .from("ai_isa_campaigns")
     // is_active mirrors status (see createISACampaign) — the readers that
     // filter .eq("is_active", true) must agree with the status vocabulary.
     .update({ status: newStatus, is_active: newStatus === "active", updated_at: new Date().toISOString() })
     .eq("id", campaignId)
     .eq("brokerage_id", auth.brokerageId)
+    .select("id")
   if (error) return { success: false, error: error.message }
+  if (!toggled || toggled.length === 0) return { success: false, error: "Campaign not found" }
   return { success: true }
 }
 
@@ -476,6 +493,197 @@ export async function completeISACampaign(
   })
 
   return { success: true }
+}
+
+/**
+ * Edit a campaign's SETTINGS after creation — the door the CampaignCard's
+ * channel icons used to router.push toward (`/dashboard/isa/campaigns/[id]`, a
+ * route that never existed) and that the card's tombstone named as missing.
+ * Wired at app/dashboard/isa/campaigns/components/CreateCampaignDrawer.tsx in
+ * edit mode (campaign prop), opened from CampaignCard's Edit control.
+ *
+ * What this does NOT own, and refuses explicitly rather than dropping:
+ *   · status / is_active — the active↔paused flip is toggleCampaignStatus and
+ *     the terminal transition is completeISACampaign (both above). A patch that
+ *     names either is an error, not a silently-ignored key: a field that is
+ *     "accepted" and discarded renders as "checked and fine" (§4).
+ *   · campaign_type — the segment resolver's dispatch key
+ *     (lib/application/ai-isa.ts:184-200); fixed at creation.
+ *   · brokerage_id / id — tenant-control fields, refused (precedent:
+ *     ai-cma.ts strips them; refusing is stricter and says why).
+ *   · leads_targeted / touches_sent / conversions — engine counters.
+ *   · superadmin_locks / video_enabled / direct_mail_enabled — platform-staff
+ *     activation gates, not broker settings.
+ *
+ * Rules the patch is held to:
+ *   · completed is one-way (see completeISACampaign) — no edits.
+ *   · channels cannot change while ACTIVE: consent screening runs ONCE at
+ *     launch (lib/application/ai-isa.ts:216-227) against the launched channel
+ *     set, so widening it mid-flight would send on a rail nobody screened for.
+ *     Pause first. Channels pass through sanitizeOutreachChannels with email
+ *     always included, exactly as createISACampaign does.
+ *   · max_touches is clamped by clampMaxTouches — the governor
+ *     (lib/ai-isa/isa-outreach-logger.ts:checkMaxTouches) reads the column
+ *     live, so this takes effect on the next touch.
+ *   · target_segment is DEEP-MERGED, never replaced — the launcher reads
+ *     target_segment.score_threshold (lib/application/ai-isa.ts:209) and a
+ *     replace would silently drop every key the caller did not resend.
+ *
+ * TWO SPELLINGS (§6, deliberate and flagged): score_threshold and
+ * touch_interval_days exist BOTH as columns and as target_segment jsonb keys.
+ * The create drawer writes only the jsonb keys; the launcher READS the jsonb
+ * score_threshold; the voice ISA panel READS the touch_interval_days COLUMN
+ * (app/dashboard/voice/isa/isa-campaigns-panel.tsx:152), which had no writer.
+ * Until the merge onto one spelling lands, this action writes the COLUMNS and
+ * keeps the jsonb keys in agreement through the merge — whichever spelling a
+ * reader picks, it sees the same number.
+ */
+export async function updateISACampaign(params: {
+  campaignId: string
+  patch: {
+    name?: string
+    channels?: string[]
+    maxTouches?: number
+    touchIntervalDays?: number
+    scoreThreshold?: number
+    leadTypeFilter?: string | null
+    motivationTypeFilter?: string | null
+    /** Deep-merged onto the stored target_segment, never replaced. */
+    targetSegment?: Record<string, unknown>
+  }
+}): Promise<{ success: boolean; campaign?: ISACampaignRow; error?: string }> {
+  const auth = await requireCaller()
+  if (!auth.ok) return { success: false, error: auth.error }
+
+  if (!isValidUUID(params.campaignId)) return { success: false, error: "Invalid campaign ID" }
+  const patch = (params.patch ?? {}) as Record<string, unknown>
+
+  // Immutables named in the patch are refused, not dropped. Both spellings of
+  // each (camelCase caller shape and snake_case column) are checked so a
+  // caller passing the row back cannot slip one through.
+  const IMMUTABLE: Array<[key: string, why: string]> = [
+    ["status",       "status is owned by toggleCampaignStatus (active↔paused) and completeISACampaign (terminal)"],
+    ["isActive",     "is_active mirrors status and is owned by toggleCampaignStatus / completeISACampaign"],
+    ["is_active",    "is_active mirrors status and is owned by toggleCampaignStatus / completeISACampaign"],
+    ["campaignType", "campaign_type is fixed at creation — it is the segment resolver's dispatch key"],
+    ["campaign_type","campaign_type is fixed at creation — it is the segment resolver's dispatch key"],
+    ["brokerageId",  "brokerage_id comes from the session, never from the patch"],
+    ["brokerage_id", "brokerage_id comes from the session, never from the patch"],
+    ["id",           "id is the row being edited, not a field of it"],
+  ]
+  for (const [key, why] of IMMUTABLE) {
+    if (key in patch) return { success: false, error: `Cannot edit ${key}: ${why}` }
+  }
+
+  const service = createServiceClient()
+  const { data: existing, error: readError } = await service
+    .from("ai_isa_campaigns")
+    .select("brokerage_id, status, target_segment, channels")
+    .eq("id", params.campaignId)
+    .maybeSingle()
+  if (readError) return { success: false, error: readError.message }
+  if (!existing) return { success: false, error: "Campaign not found" }
+  if (existing.brokerage_id !== auth.brokerageId) return { success: false, error: "Forbidden" }
+  if (existing.status === "completed") {
+    return { success: false, error: "A completed campaign cannot be edited" }
+  }
+  if (params.patch.channels !== undefined && existing.status === "active") {
+    return { success: false, error: "Pause the campaign before changing its channels — consent screening ran against the launched set" }
+  }
+  if (
+    (params.patch.leadTypeFilter !== undefined || params.patch.motivationTypeFilter !== undefined) &&
+    existing.status !== "draft"
+  ) {
+    return { success: false, error: "Lead and motivation filters can only be changed while the campaign is a draft" }
+  }
+
+  const updates: Record<string, unknown> = {}
+
+  if (params.patch.name !== undefined) {
+    const name = String(params.patch.name).trim()
+    if (!name) return { success: false, error: "Name is required" }
+    updates.name = name
+  }
+  if (params.patch.channels !== undefined) {
+    const { sanitizeOutreachChannels } = await import("@/lib/campaigns/channels")
+    updates.channels = sanitizeOutreachChannels(["email", ...(params.patch.channels ?? [])])
+  }
+  if (params.patch.maxTouches !== undefined) {
+    updates.max_touches = clampMaxTouches(params.patch.maxTouches)
+  }
+  if (params.patch.leadTypeFilter !== undefined) {
+    updates.lead_type_filter = params.patch.leadTypeFilter
+  }
+  if (params.patch.motivationTypeFilter !== undefined) {
+    updates.motivation_type_filter = params.patch.motivationTypeFilter
+  }
+
+  // The column is authoritative for the two double-spelled settings. Accept the
+  // value from either spelling in the patch, then write BOTH so they agree.
+  const seg = (params.patch.targetSegment ?? {}) as Record<string, unknown>
+  const scoreThreshold = params.patch.scoreThreshold ?? (typeof seg.score_threshold === "number" ? seg.score_threshold : undefined)
+  if (scoreThreshold !== undefined) {
+    if (!Number.isFinite(scoreThreshold) || scoreThreshold < 0 || scoreThreshold > 100) {
+      return { success: false, error: "Score threshold must be between 0 and 100" }
+    }
+    updates.score_threshold = Math.round(scoreThreshold)
+  }
+  const touchIntervalDays = params.patch.touchIntervalDays ?? (typeof seg.touch_interval_days === "number" ? seg.touch_interval_days : undefined)
+  if (touchIntervalDays !== undefined) {
+    if (!Number.isFinite(touchIntervalDays) || touchIntervalDays < 1) {
+      return { success: false, error: "Touch interval must be at least 1 day" }
+    }
+    updates.touch_interval_days = Math.round(touchIntervalDays)
+  }
+
+  if (params.patch.targetSegment !== undefined || scoreThreshold !== undefined || touchIntervalDays !== undefined) {
+    const merged: Record<string, unknown> = {
+      ...((existing.target_segment as Record<string, unknown> | null) ?? {}),
+      ...seg,
+    }
+    if (updates.score_threshold !== undefined)     merged.score_threshold     = updates.score_threshold
+    if (updates.touch_interval_days !== undefined) merged.touch_interval_days = updates.touch_interval_days
+    updates.target_segment = merged
+  }
+
+  // Nothing to write — say so honestly rather than bumping updated_at.
+  if (Object.keys(updates).length === 0) {
+    const { data: unchanged, error: rereadError } = await service
+      .from("ai_isa_campaigns")
+      .select("*")
+      .eq("id", params.campaignId)
+      .eq("brokerage_id", auth.brokerageId)
+      .maybeSingle()
+    if (rereadError) return { success: false, error: rereadError.message }
+    if (!unchanged) return { success: false, error: "Campaign not found" }
+    return { success: true, campaign: unchanged as ISACampaignRow }
+  }
+  updates.updated_at = new Date().toISOString()
+
+  // §3: an UPDATE that matches nothing resolves with a null error. Select the
+  // update and count what came back; the brokerage predicate is repeated so
+  // the tenant pin verified above also holds at write time.
+  const { data: updated, error } = await service
+    .from("ai_isa_campaigns")
+    .update(updates)
+    .eq("id", params.campaignId)
+    .eq("brokerage_id", auth.brokerageId)
+    .select("*")
+  if (error) return { success: false, error: error.message }
+  if (!updated || updated.length === 0) return { success: false, error: "Campaign not found" }
+
+  // NO lifecycle_events row — deliberately. completeISACampaign reuses
+  // KernelEvent.MARKETING_CAMPAIGN_ENDED because "campaign ended" already had a
+  // spelling; lib/kernel/events.ts (read-only to this lane) has NO
+  // campaign-settings-updated spelling — CAMPAIGN_ROI_UPDATED means something
+  // else and MARKETING_CAMPAIGN_* stops at PAUSED/ENDED — and minting a
+  // free-form string would be a second vocabulary (§6). When a spelling exists,
+  // emit it through lib/kernel/emit.ts:emitKernelEvent (the survivor for
+  // lifecycle_events writes), NOT a direct insert like the sibling actions in
+  // this file still do; note emitKernelEvent carries no actor_user_id, so the
+  // actor would ride in metadata.
+
+  return { success: true, campaign: updated[0] as ISACampaignRow }
 }
 
 /** Send a single test touch for a campaign */
