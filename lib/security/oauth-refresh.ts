@@ -7,7 +7,11 @@
 //
 // Two production properties:
 //   • PROVIDER-GATED — a refresh only runs when that provider's OAuth client creds are in the env
-//     (GOOGLE_OAUTH_CLIENT_ID/SECRET, MICROSOFT_OAUTH_CLIENT_ID/SECRET); otherwise it is skipped,
+//     (GOOGLE_CLIENT_ID/SECRET, MICROSOFT_CLIENT_ID/SECRET — resolved through lib/env/aliases.ts;
+//     this file alone used to spell them GOOGLE_OAUTH_CLIENT_ID / MICROSOFT_OAUTH_CLIENT_ID while
+//     the three OAuth flows next to it read the un-prefixed names, so a correctly configured
+//     tenant got "skipped_unconfigured" on every Google/Microsoft credential, forever — §6, fixed
+//     2026-09-03; the old spelling is still accepted for one release); otherwise it is skipped,
 //     exactly like every other integration seam (no fabricated calls, no test spend).
 //   • ENCRYPT-ON-WRITE — the refreshed access_token is written through encryptSecret (at-rest
 //     encryption). This is the first safe encrypt-WRITE path: the readers were switched to the
@@ -16,6 +20,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { credentialRotationStatus } from "@/lib/security/credential-rotation"
 import { encryptSecret, decryptSecret } from "@/lib/security/secret-crypto"
+import { googleOAuthClient, microsoftOAuthClient } from "@/lib/env/aliases"
 
 type Svc = ReturnType<typeof createServiceClient>
 
@@ -27,7 +32,7 @@ export function shouldAttemptRefresh(cred: { tokenExpiresAt: string | null; hasR
   return s === "expired" || s === "expiring_soon"
 }
 
-interface ProviderOAuth { tokenUrl: string; clientId?: string; clientSecret?: string }
+interface ProviderOAuth { tokenUrl: string; clientId?: string | null; clientSecret?: string | null }
 
 /** PURE-ish: resolve the provider's OAuth token endpoint + client creds from env. null = unsupported
  *  or unconfigured (→ skip). */
@@ -36,10 +41,10 @@ export function resolveProviderOAuth(provider: string | null): ProviderOAuth | n
     case "gmail":
     case "google_calendar":
     case "google":
-      return { tokenUrl: "https://oauth2.googleapis.com/token", clientId: process.env.GOOGLE_OAUTH_CLIENT_ID, clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET }
+      return { tokenUrl: "https://oauth2.googleapis.com/token", ...googleOAuthClient() }
     case "outlook":
     case "microsoft":
-      return { tokenUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/token", clientId: process.env.MICROSOFT_OAUTH_CLIENT_ID, clientSecret: process.env.MICROSOFT_OAUTH_CLIENT_SECRET }
+      return { tokenUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/token", ...microsoftOAuthClient() }
     default:
       return null
   }

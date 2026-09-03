@@ -1,5 +1,6 @@
 import { runApifyTask } from './apify-actors'
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { apifyToken } from "@/lib/env/aliases"
 
 // ─── CLASS ALIAS (backward compat for callers using `new ApifyClient()`) ──────
 export class ApifyClient {
@@ -24,7 +25,10 @@ export class ApifyClient {
   }
 }
 
-const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN!
+// ONE SPELLING (§6, 2026-09-03): APIFY_API_TOKEN is the survivor (connector
+// registry, launch checklist, tenancy matrix); the content-intel lane's
+// APIFY_TOKEN is accepted for one release through lib/env/aliases.ts. Resolved
+// per call rather than at module load so a token set after import is seen.
 
 export async function runApifyActor(
   actorId: string,
@@ -45,7 +49,7 @@ export async function runApifyActor(
     baseUrl: "https://api.apify.com",
     path: `/v2/acts/${id}/run-sync-get-dataset-items`,
     method: "POST",
-    auth: { style: "bearer", token: APIFY_API_TOKEN },
+    auth: { style: "bearer", token: apifyToken() ?? "" },
     body: input,
     timeoutMs: 60_000,
   })

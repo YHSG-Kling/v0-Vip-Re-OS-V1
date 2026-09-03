@@ -24,10 +24,15 @@
  * and the cron upserts them into content_topic_bank.
  *
  * Routes through callConnector for canonical egress; auth via the existing
- * 'apify' connector registry entry (Bearer APIFY_TOKEN).
+ * 'apify' connector registry entry (Bearer APIFY_API_TOKEN — the registry's
+ * envKey; this file alone spelled it APIFY_TOKEN until 2026-09-03, so a tenant
+ * with the registry's spelling set had a topic scraper that no-op'd forever.
+ * Resolved through lib/env/aliases.ts; the old spelling is accepted for one
+ * release).
  */
 import "server-only"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { apifyToken } from "@/lib/env/aliases"
 
 export interface ApifyTopicItem {
   item_id:          string
@@ -52,7 +57,7 @@ interface ApifyDatasetItem {
 }
 
 export async function runApifyScrape(args: ApifyRunInput): Promise<ApifyTopicItem[]> {
-  const token = process.env.APIFY_TOKEN
+  const token = apifyToken()
   if (!token) return [] // graceful no-op when not configured
 
   // Apify's run-sync-get-dataset-items returns the dataset directly when the

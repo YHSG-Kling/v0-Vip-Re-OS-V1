@@ -18,6 +18,7 @@ import "server-only"
 import { createServiceClient } from "@/lib/supabase/service"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
 import { decryptSecret } from "@/lib/security/secret-crypto"
+import { googleOAuthClient, microsoftOAuthClient } from "@/lib/env/aliases"
 
 export type PersonalProvider = "gmail" | "outlook"
 
@@ -209,8 +210,8 @@ async function ensureFreshAccessToken(cred: PersonalCred): Promise<string | null
 }
 
 async function refreshGoogle(refreshToken: string): Promise<{ accessToken: string; expiresInSec: number } | null> {
-  const clientId = process.env.GOOGLE_CLIENT_ID
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET
+  // ONE SPELLING (§6): GOOGLE_CLIENT_ID/SECRET via lib/env/aliases.ts.
+  const { clientId, clientSecret } = googleOAuthClient()
   if (!clientId || !clientSecret) return null
 
   const res = await callConnector<{ access_token?: string; expires_in?: number }>({
@@ -228,8 +229,7 @@ async function refreshGoogle(refreshToken: string): Promise<{ accessToken: strin
 }
 
 async function refreshMicrosoft(refreshToken: string): Promise<{ accessToken: string; expiresInSec: number } | null> {
-  const clientId = process.env.MICROSOFT_CLIENT_ID
-  const clientSecret = process.env.MICROSOFT_CLIENT_SECRET
+  const { clientId, clientSecret } = microsoftOAuthClient()
   if (!clientId || !clientSecret) return null
 
   const res = await callConnector<{ access_token?: string; expires_in?: number }>({

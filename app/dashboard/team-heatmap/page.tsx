@@ -3,6 +3,7 @@ export const dynamic = "force-dynamic"
 import { Suspense } from "react"
 import { redirect } from "next/navigation"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { googleMapsBrowserKey } from "@/lib/env/aliases"
 import { createClient } from "@/lib/supabase/server"
 import {
   getHeatmapSnapshots,
@@ -111,7 +112,9 @@ export default async function TeamHeatmapPage({ searchParams }: PageProps) {
   ])
 
   // Check if Google Maps API key is available
-  const hasMapKey = !!process.env.NEXT_PUBLIC_GOOGLE_MAPS_KEY || !!process.env.MAPBOX_TOKEN
+  // ONE SPELLING (§6): NEXT_PUBLIC_GOOGLE_MAPS_API_KEY via lib/env/aliases.ts
+  // (NEXT_PUBLIC_GOOGLE_MAPS_KEY accepted for one release).
+  const hasMapKey = !!googleMapsBrowserKey() || !!process.env.MAPBOX_TOKEN
 
   return (
     <div className="flex flex-col gap-6 p-6">
@@ -389,7 +392,7 @@ function MapPlaceholder({ showConfigMessage = false }: { showConfigMessage?: boo
         <MapPin className="mx-auto h-12 w-12 text-muted-foreground/50" />
         <p className="mt-2 text-sm text-muted-foreground">
           {showConfigMessage
-            ? "Configure NEXT_PUBLIC_GOOGLE_MAPS_KEY or MAPBOX_TOKEN in settings"
+            ? "Configure NEXT_PUBLIC_GOOGLE_MAPS_API_KEY or MAPBOX_TOKEN in settings"
             : "Loading map..."}
         </p>
       </div>

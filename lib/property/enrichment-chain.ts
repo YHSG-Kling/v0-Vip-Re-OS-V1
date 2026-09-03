@@ -26,6 +26,7 @@
 
 import "server-only"
 import { callConnector } from "@/lib/agentic-os/connector-gateway"
+import { googleMapsBrowserKey } from "@/lib/env/aliases"
 import { OSINTClient } from "@/lib/osint-client"
 import { searchProperties } from "@/lib/external/batchdata-client"
 import { generateObject } from "@/lib/ai/generate"
@@ -260,7 +261,7 @@ export function getStreetViewImageUrl(opts: {
   pitch?:   number
 }): StreetViewImage | null {
   const apiKey = process.env.GOOGLE_MAPS_API_KEY
-                ?? process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY
+                ?? googleMapsBrowserKey()
   if (!apiKey) return null
 
   const params = new URLSearchParams({
@@ -295,7 +296,7 @@ export function getStaticMapImageUrl(opts: {
   height?: number
 }): StreetViewImage | null {
   const apiKey = process.env.GOOGLE_MAPS_API_KEY
-                ?? process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY
+                ?? googleMapsBrowserKey()
   if (!apiKey) return null
 
   const params = new URLSearchParams({
