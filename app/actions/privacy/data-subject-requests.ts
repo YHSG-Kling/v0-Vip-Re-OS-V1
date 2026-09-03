@@ -585,14 +585,20 @@ export async function fulfillDeleteRequestAction(requestId: string): Promise<
     .select(["id", ...piiFields].join(","))
   if (anonErr) return { ok: false, error: anonErr.message }
 
-  const rows = (anonymized ?? []) as unknown as Array<Record<string, unknown>>
+  // Named `anonymizedRows`, not `rows`: this file already has an unrelated
+  // `rows` (the DSAR queue, a data_subject_requests list) and two same-named
+  // locals of DIFFERENT tables in one file is a real ambiguity — a human reading
+  // it and the check-vocabulary scanner both resolved the wrong table, which is
+  // how a correct `status === "received"` on a DSAR row got judged against the
+  // contacts vocabulary (integrator, 2026-09-03).
+  const anonymizedRows = (anonymized ?? []) as unknown as Array<Record<string, unknown>>
   const expectedMarker: Record<string, unknown> = {
     first_name: audit_hash,
     last_name:  "[deleted]",
     email:      `${audit_hash}@deleted.local`,
   }
   const survivors: string[] = []
-  for (const row of rows) {
+  for (const row of anonymizedRows) {
     for (const field of piiFields) {
       const v = row[field]
       const cleared = field in expectedMarker ? v === expectedMarker[field] : v === null || v === undefined
@@ -609,9 +615,9 @@ export async function fulfillDeleteRequestAction(requestId: string): Promise<
   // ZERO ROWS is a legitimate outcome (the subject has no contact row in this
   // brokerage) but it is a different fact from "anonymized", so it is stated as
   // one — never reported as "0 record(s) anonymized" as if a delete had run.
-  const summary = rows.length === 0
+  const summary = anonymizedRows.length === 0
     ? `No contact record matched ${email} in this brokerage — nothing to anonymize. Transaction records retained per state real-estate retention rules.`
-    : `${rows.length} contact record(s) anonymized and verified (${piiFields.length} PII fields cleared per record). Transaction records retained per state real-estate retention rules.`
+    : `${anonymizedRows.length} contact record(s) anonymized and verified (${piiFields.length} PII fields cleared per record). Transaction records retained per state real-estate retention rules.`
 
   const { error: closeErr } = await svc
     .from("data_subject_requests")
@@ -625,11 +631,11 @@ export async function fulfillDeleteRequestAction(requestId: string): Promise<
   if (closeErr) {
     // The erasure happened; the ledger did not record it. Say so rather than
     // returning ok — the request would show as open with its clock still running.
-    return { ok: false, error: `Contact(s) anonymized but the request could not be marked fulfilled: ${closeErr.message}`, contactsAnonymized: rows.length }
+    return { ok: false, error: `Contact(s) anonymized but the request could not be marked fulfilled: ${closeErr.message}`, contactsAnonymized: anonymizedRows.length }
   }
 
   revalidatePath("/dashboard/admin/privacy/requests")
-  return { ok: true, contactsAnonymized: rows.length }
+  return { ok: true, contactsAnonymized: anonymizedRows.length }
 }
 
 // ── ADMIN: DENY ──────────────────────────────────────────────────────────────
