@@ -40,7 +40,7 @@ export interface BillingSubRow {
 // gate before someone gets the product for free, legacy rows predate the fix,
 // and normalizeStripeStatus is the same vocabulary the vendor billing path
 // already classifies with. One vocabulary, both paths, every spelling.
-import { normalizeStripeStatus } from "./stripe-status"
+import { normalizeStripeStatus, isCurrentStatus, isDelinquentStatus } from "./stripe-status"
 
 /** PURE: classify a brokerage's access from its subscription row + now. */
 export function resolveBillingAccess(sub: BillingSubRow | null, now: Date = new Date()): BillingAccess {
@@ -50,7 +50,20 @@ export function resolveBillingAccess(sub: BillingSubRow | null, now: Date = new 
   const canonical = normalizeStripeStatus(status)
 
   // canceled (either spelling) / past_due / unpaid / incomplete / paused all stop access.
-  if (canonical === "past_due" || canonical === "canceled" || canonical === "incomplete" || canonical === "paused") {
+  //
+  // ONE PREDICATE, NOT A THIRD SPELLING (§6, wave 26). The delinquent set used to
+  // be open-coded here, one import away from the file that owns it — so the
+  // paywall and the vendor path could drift on what "not paying" means. It now
+  // asks isDelinquentStatus.
+  //
+  // `paused` STAYS AN EXPLICIT CLAUSE, deliberately. isDelinquentStatus is
+  // past_due | canceled | incomplete — it does NOT include paused, because a
+  // paused subscription is not a DELINQUENCY (nobody failed to pay; billing is
+  // suspended by arrangement). But it does stop access here. Folding paused into
+  // the helper to shorten this line would silently widen "delinquent" for the
+  // vendor path too; dropping it would silently UNBLOCK every paused tenant.
+  // Both are paywall regressions, so the two ideas stay separate and named.
+  if (isDelinquentStatus(status) || canonical === "paused") {
     return { state: canonical === "past_due" ? "past_due" : "expired", blocked: true, trialDaysLeft: null, reason: `status_${status}` }
   }
 
@@ -64,7 +77,10 @@ export function resolveBillingAccess(sub: BillingSubRow | null, now: Date = new 
     }
   }
 
-  if (canonical === "active" || canonical === "trialing") {
+  // Same one vocabulary for the paying side: isCurrentStatus is active|trialing.
+  // The trial-expiry branch above has already run, so a trialing row reaching
+  // here either has no trial_end or an unparseable one — it is still current.
+  if (isCurrentStatus(status)) {
     return { state: canonical === "trialing" ? "trialing" : "active", blocked: false, trialDaysLeft: null, reason: `status_${status}` }
   }
 

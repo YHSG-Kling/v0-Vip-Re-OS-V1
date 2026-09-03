@@ -40,6 +40,7 @@ import {
 import {
   ACCOUNTING_SCOPES,
   accountingOfferingsForScope,
+  isAccountingConnectorOffered,
   type AccountingConnector,
   type AccountingScope,
 } from "@/lib/connections/accounting-scopes"
@@ -203,7 +204,15 @@ export async function getConnectionCenter(owner?: OwnerHint): Promise<Connection
         domain === "financial" && (ACCOUNTING_SCOPES as readonly string[]).includes(actor.scope)
           ? accountingOfferingsForScope(actor.scope as AccountingScope)[provider as AccountingConnector]
           : null
-      const offered = !offering || offering.status === "connectable"
+      // ONE yes/no, asked of the module that owns the matrix (§6, wave 26). This
+      // used to open-code `offering.status === "connectable"` two lines after
+      // importing that matrix — a second copy of the predicate
+      // isAccountingConnectorOffered exists to be. `offering` is null for
+      // non-financial domains and non-accounting scopes, which still means
+      // "nothing gates this here", so the null branch stays.
+      const offered =
+        !offering ||
+        isAccountingConnectorOffered(actor.scope as AccountingScope, provider as AccountingConnector)
       providers.push({
         domain,
         provider,

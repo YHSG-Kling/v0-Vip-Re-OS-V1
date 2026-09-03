@@ -52,7 +52,7 @@ import { requireAuth } from "@/lib/kernel/api-auth"
 import { resolveUserIdForAgentRecord } from "@/lib/kernel/agent-identity"
 import { revalidatePath } from "next/cache"
 import { canApproveCda, canBrokerSignCda, canSendCdaToTitle } from "@/lib/transactions/cda-signing-policy"
-import { buildCdaContractVerdict, expectedGrossFromTerms, sumOutstandingAgentFees, type CdaDiscrepancy } from "@/lib/commission/cda-discrepancy"
+import { buildCdaContractVerdict, buildCdaFeeDeduction, expectedGrossFromTerms, sumOutstandingAgentFees, type CdaDiscrepancy, type CdaFeeDeduction } from "@/lib/commission/cda-discrepancy"
 import { bestEffort } from "@/lib/db/best-effort"
 
 const COMPLIANCE_ROLES = new Set([
@@ -123,6 +123,14 @@ interface CdaContractVerdict {
   capReached: boolean
   /** Unpaid fees the agent owes the brokerage — must be deducted in the CDA. */
   outstandingFees: number
+  /** The DEDUCTION LINE those fees become on the CDA (wave 26). The total above
+   *  says how much is owed; this says what it does to the agent's disbursement:
+   *  `netAfterFees` = the agent's post-split share MINUS the fees, or null when
+   *  the share is unknown. Compliance confirms this line appears on the CDA.
+   *  SURFACES, DOES NOT BLOCK — a fee deduction is not a split discrepancy, and
+   *  buildCdaFeeDeduction's own contract keeps the two apart
+   *  (lib/commission/cda-discrepancy.ts:126-129). `passed` is unaffected. */
+  feeDeduction: CdaFeeDeduction
 }
 
 type SupabaseClient = Awaited<ReturnType<typeof createClient>>
@@ -179,7 +187,23 @@ async function loadCdaContractVerdict(
     expectedGross: expectedGrossFromTerms((txn ?? {}) as Record<string, number | null>),
     contractSplitPct: effectiveSplit,
   })
-  return { ...verdict, contractSplitPct: contractSplit, capReached, outstandingFees }
+
+  // ── THE FEES BECOME A DEDUCTION LINE, NOT JUST A TOTAL (§1 wire, wave 26) ──
+  // sumOutstandingAgentFees has been wired since the fee rail landed, and the
+  // total rode the verdict and the queue row — but the half that turns it into
+  // the CDA's deduction (and the agent's post-fee disbursement) had no caller,
+  // so the fees were COUNTED and DISPLAYED and never DEDUCTED. The agent's net
+  // on the CDA read as the pre-fee split.
+  //
+  // agent_net is the post-split, PRE-fee share, which is exactly what
+  // buildCdaFeeDeduction expects as `agentCommissionShare`; it returns null for
+  // netAfterFees when the share is unknown rather than inventing one.
+  const feeDeduction = buildCdaFeeDeduction({
+    outstandingFees,
+    agentCommissionShare: cda.agent_net == null ? null : Number(cda.agent_net),
+  })
+
+  return { ...verdict, contractSplitPct: contractSplit, capReached, outstandingFees, feeDeduction }
 }
 
 // The compliance review panel surfaces this verdict for every CDA in its queue via the batched
@@ -543,6 +567,15 @@ export async function submitCdaForApprovalAction(input: { cdaId: string }) {
         contract_split_pct: submitVerdict.contractSplitPct,
         cap_reached: submitVerdict.capReached,
         outstanding_fees: submitVerdict.outstandingFees,
+        // THE DEDUCTION LINE, beside the total it comes from (wave 26). This is
+        // what compliance confirms appears on the CDA, and what makes the
+        // agent's disbursement readable as share − fees rather than the raw
+        // split. Surfaced, never a blocker: `passed` above is untouched by it.
+        fee_deduction: {
+          amount:         submitVerdict.feeDeduction.amount,
+          required:       submitVerdict.feeDeduction.required,
+          net_after_fees: submitVerdict.feeDeduction.netAfterFees,
+        },
         discrepancies: submitVerdict.discrepancies,
       }
     }
@@ -1291,11 +1324,20 @@ export async function sendCdaToTitleAction(input: {
   const auth = await requireAuth(supabase)
   if (!auth.ok) return { success: false as const, error: "unauthenticated" }
 
-  const { data: cda } = await supabase
+  // THE MONEY COLUMNS RIDE ALONG (wave 26). This SELECT used to stop at the
+  // status columns, so the send below had nothing to say and said nothing —
+  // see the body composition note further down.
+  const { data: cda, error: cdaReadErr } = await supabase
     .from("closing_disclosure_agreement")
-    .select("id, transaction_id, brokerage_id, status, broker_approved_at")
+    .select("id, transaction_id, brokerage_id, status, broker_approved_at, gross_commission, agent_net, brokerage_net")
     .eq("id", input.cdaId)
     .maybeSingle()
+  // A refused read is not "no such CDA" — supabase-js resolves refusals, and
+  // reporting one as not_found would send the agent looking for a missing row.
+  if (cdaReadErr) {
+    console.error("[cda-portal] CDA read refused in sendCdaToTitleAction:", cdaReadErr.message)
+    return { success: false as const, error: `cda_read_refused:${cdaReadErr.message}` }
+  }
   if (!cda || cda.brokerage_id !== auth.brokerageId) {
     return { success: false as const, error: "not_found" }
   }
@@ -1304,20 +1346,87 @@ export async function sendCdaToTitleAction(input: {
   const sendVerdict = canSendCdaToTitle({ status: cda.status, brokerSigned: !!cda.broker_approved_at })
   if (!sendVerdict.ok) return { success: false as const, error: sendVerdict.error }
 
+  // ── THE AUTHORIZATION NOW CARRIES THE DISBURSEMENT (§1 merge, wave 26) ─────
+  // The subject line has always said "Approved Commission Disbursement
+  // Authorization"; the body said only "The approved CDA for this transaction is
+  // ready for the closing". The closing agent was told a disbursement was
+  // authorized and never told WHAT to disburse — the figures existed only on
+  // lib/transactions/deal-vendor-notify.ts:deliverCdaToClosingAgent, which
+  // nothing called. Composed here through that module's ONE composer (§6) so the
+  // two surfaces cannot state different splits.
+  //
+  // Honest when the row is thin: a CDA whose money columns are null composes no
+  // figure block rather than a row of $0 the closing agent would have to
+  // interpret. `tcNet` is not a column on this table — the TC take lives in
+  // commission_breakdown and is not modelled here yet, so it is left absent
+  // rather than guessed (the composer omits the line entirely when it is null).
+  const grossCommission = cda.gross_commission == null ? null : Number(cda.gross_commission)
+  const agentNet        = cda.agent_net        == null ? null : Number(cda.agent_net)
+  const brokerageNet    = cda.brokerage_net    == null ? null : Number(cda.brokerage_net)
+  const figuresKnown =
+    grossCommission != null && Number.isFinite(grossCommission) &&
+    agentNet != null        && Number.isFinite(agentNet) &&
+    brokerageNet != null    && Number.isFinite(brokerageNet)
+
+  let disbursementHtml = ""
+  if (figuresKnown) {
+    const { composeCdaDisbursementLines } = await import("@/lib/transactions/deal-vendor-notify")
+    const lines = composeCdaDisbursementLines({
+      grossCommission: grossCommission as number,
+      agentNet:        agentNet as number,
+      brokerageNet:    brokerageNet as number,
+      tcNet:           null,
+    })
+    disbursementHtml =
+      `<p>Our brokerage's compliance review of this commission disbursement is complete and APPROVED. `
+      + `Please disburse at closing as follows:</p><ul>`
+      + lines.map((l) => `<li>${l}</li>`).join("")
+      + `</ul>`
+  }
+
   const method = input.method ?? "email"
+  // ── A SWALLOWED SEND IS NOT A DELIVERY (wave 26) ──────────────────────────
+  // This used to be `try { await dispatchEmail(...) } catch {}` with the result
+  // discarded, and then stamped sent_to_title_at unconditionally below. A send
+  // that threw — or that resolved with success:false, which dispatchEmail does
+  // rather than throwing — was recorded as a delivered disbursement
+  // authorization, and the compliance queue (which buckets delivery off
+  // sent_to_title_at) showed the money instruction as having reached title when
+  // it had not. On the last mile of the money rail that is the §3 swallowed
+  // refusal in its most expensive form. The result is now READ, and a failed
+  // send refuses instead of recording.
   if (method === "email") {
+    let emailOk = false
+    let emailErr: string | null = null
     try {
       const { dispatchEmail } = await import("@/lib/providers/dispatch")
-      await dispatchEmail({
+      const sendResult = await dispatchEmail({
         brokerageId:   cda.brokerage_id,
         systemSource:  "cda",
         from:          "closings@platform.com",
         to:            input.recipientEmail,
         subject:       input.subject ?? "Approved Commission Disbursement Authorization",
         html:          (input.message ?? "")
+                       + disbursementHtml
                        + `<p>The approved CDA for this transaction is ready for the closing.</p>`,
       })
-    } catch { /* best-effort — record the send anyway so the agent can fall back */ }
+      // dispatchEmail reports failure in its RESULT rather than throwing — a
+      // compliance/autonomy/fair-housing hold comes back as { success: false }.
+      // Tested for an explicit true so an unexpected shape fails CLOSED (§4):
+      // "nobody checked" must never render as "checked and fine".
+      emailOk = (sendResult as { success?: boolean } | null)?.success === true
+      if (!emailOk) {
+        emailErr = (sendResult as { error?: string } | null)?.error ?? "provider reported failure"
+      }
+    } catch (e) {
+      emailErr = e instanceof Error ? e.message : String(e)
+    }
+    if (!emailOk) {
+      console.error("[cda-portal] CDA delivery to title FAILED — nothing recorded as sent", {
+        cdaId: cda.id, transactionId: cda.transaction_id, error: emailErr,
+      })
+      return { success: false as const, error: `delivery_failed:${emailErr ?? "unknown"}` }
+    }
   }
 
   const sentNow = new Date().toISOString()
@@ -1359,6 +1468,41 @@ export async function sendCdaToTitleAction(input: {
     // The delivery record above is the authoritative one; a milestone that didn't
     // move is a reporting gap, not a money error. Surface it rather than hide it.
     console.error("[cda-portal] cda_delivered milestone not completed", { transactionId: cda.transaction_id, error: milestoneErr.message })
+  }
+
+  // ── THE DELIVERY IS A COMPLIANCE ARTIFACT, NOT A LOG LINE (§1 merge, wave 26)
+  // Merged from lib/transactions/deal-vendor-notify.ts:deliverCdaToClosingAgent,
+  // which recorded this and was never called. The sent_to_title_* columns say
+  // THAT the authorization went out; this row is the timeline entry a compliance
+  // reviewer reads on the transaction — who received the disbursement
+  // instruction, and for what gross. activities.activity_type carries no CHECK
+  // constraint (verified against scripts/check-vocabularies.ts, which has no
+  // `activities:` entry), so this value cannot be refused by the vocabulary.
+  // Best-effort: the delivery already happened and is already recorded above, so
+  // a refused activity must not undo it — but it is LOGGED, never swallowed.
+  const { error: deliveredActivityErr } = await supabase.from("activities").insert({
+    brokerage_id:   cda.brokerage_id,
+    transaction_id: cda.transaction_id,
+    entity_type:    "transaction",
+    activity_type:  "cda_delivered_to_title",
+    title:          "CDA delivered to the closing agent",
+    description:    `Approved disbursement authorization sent to ${recipient}.`,
+    notes:          JSON.stringify({
+      cda_id: cda.id,
+      recipient,
+      method,
+      grossCommission: figuresKnown ? grossCommission : null,
+      figuresIncluded: figuresKnown,
+    }),
+    status:         "completed",
+    completed_at:   sentNow,
+    channel:        method === "email" ? "email" : method,
+  })
+  if (deliveredActivityErr) {
+    console.error(
+      "[cda-portal] cda_delivered_to_title activity REJECTED — the CDA reached title but the transaction has no timeline record of it:",
+      deliveredActivityErr.message,
+    )
   }
 
   revalidatePath(`/dashboard/transactions/${cda.transaction_id}`)

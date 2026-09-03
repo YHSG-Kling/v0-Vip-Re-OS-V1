@@ -788,6 +788,40 @@ export async function analyzeOffer(offerId: string, _userId?: string) {
     commission_rate:          totalRate,
   })
 
+  // ── llm_calls CEILING, CONSULTED BEFORE THE SPEND (wave 26) ───────────────
+  // The increment below has metered this lane since the tenant fix; nothing ever
+  // read the counter back. plan_limits carries an `llm_calls` row per tier and
+  // lib/usage/check-cap.ts already held its cap message — the ceiling existed
+  // and was never asked. A metered ceiling with no reader is a writer with no
+  // reader (CLAUDE.md §1) on a metric the tenant is billed against.
+  //
+  // NOT a second AI gate: generateTextRouted below still runs the
+  // ai_tokens_monthly fair-use pre-flight (lib/ai/fair-use.ts, m479). That meters
+  // TOKENS; this meters CALLS — the counter this function itself writes.
+  //
+  // BEFORE the increment, deliberately: the bump at the end of this block is
+  // unconditional and fires ahead of the model call, so checking after it would
+  // charge the tenant for the call it just refused. addQuantity:1 asks whether
+  // THIS call crosses the cap. Soft-warn passes; only the hard cap refuses, with
+  // check-cap's own message rather than a second wording (§6).
+  //
+  // Keyed on usageBrokerageId — the SAME id the counter is written under two
+  // lines down, so the cap reads exactly the row the spend will bump.
+  {
+    const { checkUsageCap } = await import("@/lib/usage/check-cap")
+    const llmCap = await checkUsageCap({
+      brokerageId: usageBrokerageId,
+      metric: "llm_calls",
+      addQuantity: 1,
+    })
+    if (!llmCap.allowed) {
+      return {
+        success: false as const,
+        error: llmCap.message ?? "You've reached this month's plan limit for AI requests.",
+      }
+    }
+  }
+
   // METERED TO THE TENANT, NOT A PERSON. This passed `userId` — a users.id — as
   // the brokerageId, so the counter row failed usage_counters' tenant RLS
   // (brokerage_id = current_user_brokerage_id()), the error was swallowed, and

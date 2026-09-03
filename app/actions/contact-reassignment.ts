@@ -283,6 +283,57 @@ export async function reassignContactAction(input: {
       .then(() => {}, () => {})
   }
 
+  // ── GAMIFICATION AWARD, PORTED ONTO THE SURVIVOR (§1 merge, wave 26) ───────
+  // The ONE thing app/actions/agents.ts:assignAgentToContact did that this
+  // action did not. That function is the never-surfaced duplicate of this one
+  // (it only re-pointed contacts.agent_id and left every downstream row with the
+  // previous agent); this action is strictly more complete on every other axis,
+  // so the award moves HERE rather than the duplicate staying alive to carry it.
+  //
+  // The receiving agent is credited — `input.toAgentId` is an agents.id, which is
+  // the id class awardPoints keys on (agents.id and users.id are DISJOINT).
+  //
+  // A REFUSED AWARD MUST NOT ROLL BACK THE REASSIGNMENT. The contact and all its
+  // downstream work have already moved and are already audited above; points are
+  // a motivational ledger, not the record of the move. So this is best-effort —
+  // but it is LOGGED, never swallowed: a silently missing award is how a
+  // gamification ledger drifts out of agreement with the events it scores.
+  // Goes straight to the canonical awarder (the atomic award_agent_points RPC),
+  // not through app/actions/agents.ts's module-private wrapper: that wrapper's
+  // one extra job is proving the target agent is in the caller's tenant, and
+  // this action already proved exactly that above ("Target agent not found in
+  // this brokerage" / "Target agent is not active") before moving anything.
+  try {
+    const { awardAgentPoints, POINT_VALUES } = await import("@/lib/gamification/award-points")
+    const awarded = await awardAgentPoints(svc, {
+      agentId:       input.toAgentId,
+      points:        POINT_VALUES.CONTACT_ASSIGNED,
+      reason:        "CONTACT_ASSIGNED",
+      referenceType: "contact",
+      referenceId:   input.contactId,
+    })
+    if (!awarded.ok) {
+      console.error("[reassignContact] CONTACT_ASSIGNED points award refused — the contact DID move; only the award is missing:", awarded.error)
+    } else {
+      // Badges are threshold-awarded against the total the database now holds,
+      // never against locally-recomputed arithmetic.
+      try {
+        const { checkAndAwardBadges } = await import("@/app/actions/gamification")
+        await checkAndAwardBadges(input.toAgentId, awarded.newTotal)
+      } catch (badgeError) {
+        console.error(
+          "[reassignContact] points landed but the badge check failed:",
+          badgeError instanceof Error ? badgeError.message : badgeError,
+        )
+      }
+    }
+  } catch (awardError) {
+    console.error(
+      "[reassignContact] CONTACT_ASSIGNED points award failed — the contact DID move; only the award is missing:",
+      awardError instanceof Error ? awardError.message : awardError,
+    )
+  }
+
   revalidatePath("/crm")
   revalidatePath(`/crm/contacts/${input.contactId}`)
 

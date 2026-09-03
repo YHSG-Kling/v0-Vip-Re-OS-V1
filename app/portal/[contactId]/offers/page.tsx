@@ -12,6 +12,14 @@ import { recordSellerView } from "@/app/actions/seller-offers"
 import { getSellerOffers, getSellerNetSheetInputs, getSellerOfferComparison } from "@/app/actions/portal-seller"
 import { CheckCircle2, Clock, FileText, ArrowLeft, PartyPopper, DollarSign, Calendar, Home } from "lucide-react"
 import { cn } from "@/lib/utils"
+// ONE earnest-AMOUNT formatter (wave 26). lib/transactions/earnest-terms.ts exists
+// to keep the earnest DEPOSIT (currency) and the earnest DUE DATE (a calendar
+// date) typed apart after the round-28 correction where the amount was fed into
+// the date slot. Its display half had no caller, so this page hand-rolled
+// `$${(offer.earnest_money || 0).toLocaleString()}` — which renders a MISSING
+// amount as "$0", the fabricated zero the rest of that module refuses. The
+// formatter returns an em dash for null: an absent figure reads as absent.
+import { formatEarnestAmount } from "@/lib/transactions/earnest-terms"
 import { SignatureStatusBadge } from "@/app/components/shared/SignatureStatusBadge"
 import { OfferDecisionButtons } from "@/components/portal/offer-decision-buttons"
 import { EsignStatusTracker } from "@/app/components/forms/EsignStatusTracker"
@@ -595,7 +603,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Earnest Money</p>
-                  <p className="font-semibold">${(offer.earnest_money || 0).toLocaleString()}</p>
+                  <p className="font-semibold">{formatEarnestAmount(offer.earnest_money)}</p>
                 </div>
                 <div>
                   <p className="text-sm text-muted-foreground">Down Payment</p>
@@ -928,7 +936,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
                 <td className="py-3">Earnest Money</td>
                 {offers.map((offer) => (
                   <td key={offer.id} className="text-center py-3">
-                    ${(offer.earnest_money || 0).toLocaleString()}
+                    {formatEarnestAmount(offer.earnest_money)}
                   </td>
                 ))}
                 <td className="text-center py-3 font-semibold">

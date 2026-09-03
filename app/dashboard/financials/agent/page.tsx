@@ -32,6 +32,8 @@ import { connectionScopeForUserType } from "@/lib/connections/field-spec"
 import { defaultQbReconciliationPeriod, loadAgentQbReconciliation } from "@/lib/finance/qb-reconciliation"
 import { ProviderConnectionCard } from "@/app/settings/accounting/provider-connection-card"
 import { QbReconciliationCard } from "@/app/settings/accounting/qb-reconciliation-card"
+import { QbScopedExportButton } from "../components/qb-scoped-export-button"
+import { pushAgentCommissionToQuickBooksAction } from "@/app/actions/accounting-sync"
 import { AgentFinancialsClient } from "./agent-financials-client"
 import { AgentNetPositionCard } from "./agent-net-position-card"
 import { getMyOpenCharges } from "@/app/actions/brokerage-fees"
@@ -121,8 +123,10 @@ export default async function AgentFinancialsPage() {
   // books host on their account first (then team, then brokerage).
   const { readScopedZoom } = await import("@/lib/connections/zoom")
   const agentZoom = await readScopedZoom(svcBooks, "agent", context.userId).catch(() => null)
-  // Last honest export marker (column arrives with the scoped-accounting-export
-  // migration; absent column simply reads null → "Not synced yet").
+  // Last honest export marker. (The earlier note here said the column "arrives
+  // with the scoped-accounting-export migration" — that migration IS applied:
+  // agent_commissions carries quickbooks_export_id and quickbooks_synced_at on
+  // the live schema. Corrected wave 26.)
   let agentBooksLastSyncedAt: string | null = null
   if (agentBooks?.quickbooks.connected && agentId) {
     const { data: lastExport } = await svcBooks
@@ -134,6 +138,31 @@ export default async function AgentFinancialsPage() {
       .limit(1)
       .maybeSingle()
     agentBooksLastSyncedAt = ((lastExport as { quickbooks_synced_at?: string | null } | null)?.quickbooks_synced_at) ?? null
+  }
+
+  // THE NEXT COMMISSION AVAILABLE TO EXPORT (wave 26). The scoped export lane
+  // (lib/finance/scoped-accounting-export.ts) had no caller at all, so an agent
+  // with their own QuickBooks connected could see the reconciliation gap below
+  // and had no way to close it. Offer the oldest PAID commission that carries no
+  // export marker yet — oldest first so the backlog drains in order.
+  // Best-effort: a refused read simply offers no button.
+  let nextExportableCommissionId: string | null = null
+  if (agentBooks?.quickbooks.connected && agentId) {
+    const { data: unexported, error: unexportedErr } = await svcBooks
+      .from("agent_commissions")
+      .select("id")
+      .eq("agent_id", agentId)
+      .eq("status", "paid")
+      .is("quickbooks_export_id", null)
+      .order("close_date", { ascending: true })
+      .limit(1)
+      .maybeSingle()
+    // supabase-js RESOLVES refusals — a refused read is not "nothing to export".
+    if (unexportedErr) {
+      console.error("[agent-financials] unexported-commission read refused:", unexportedErr.message)
+    } else {
+      nextExportableCommissionId = (unexported as { id?: string } | null)?.id ?? null
+    }
   }
 
   // QuickBooks reconciliation (round 37) — the agent's closed commissions vs
@@ -672,6 +701,13 @@ export default async function AgentFinancialsPage() {
             </div>
             {/* QuickBooks reconciliation (round 37) — commissions vs OS-recorded exports. */}
             {agentReconciliation && <QbReconciliationCard recon={agentReconciliation} />}
+            {/* Close the reconciliation gap the card above reports (wave 26). */}
+            {nextExportableCommissionId && (
+              <QbScopedExportButton
+                label="Sync next commission to QuickBooks"
+                run={pushAgentCommissionToQuickBooksAction.bind(null, nextExportableCommissionId)}
+              />
+            )}
           </div>
         )}
       </AgentFinancialsClient>

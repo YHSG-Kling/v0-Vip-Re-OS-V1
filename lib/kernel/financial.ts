@@ -258,6 +258,11 @@ export interface FinancialExportResult {
 }
 
 // ─── INPUT CONTRACTS ──────────────────────────────────────────────────────────
+/** The deal side a commission was earned on. agent_commissions.side holds it and
+ *  loadAgentCommissions returns it; until wave 26 nothing WROTE it. Same three
+ *  values the duplicate creator in app/actions/agents.ts offered (§6). */
+export type CommissionSide = "listing" | "buying" | "both"
+
 export interface CreateCommissionRecordInput {
   ctx: FinancialActorContext
   agentId: string
@@ -267,6 +272,26 @@ export interface CreateCommissionRecordInput {
   brokerageFee?: number
   franchiseFee?: number
   additionalFees?: Array<{ name: string; amount: number }>
+  /** The deal's REAL close date, "YYYY-MM-DD" or an ISO timestamp.
+   *
+   *  PORTED IN WAVE 26 from app/actions/agents.ts:addAgentCommission, the
+   *  never-surfaced duplicate that carried it. This creator used to hardcode
+   *  `close_date: new Date()` — "closed today" — for every row it wrote, while
+   *  loadAgentCommissions ORDERS BY close_date and returns it to callers. So the
+   *  one commission ledger was ordered and reported on a date that was really
+   *  "when the button was pressed": a deal filed a week after closing sorted
+   *  ahead of one filed the same day it closed, and a backdated close was
+   *  unrepresentable.
+   *
+   *  OPTIONAL, and the fallback is stated rather than hidden: when a caller has
+   *  no close date on hand the write still falls back to today's date, which is
+   *  what every existing caller was already getting. It is a fallback, not a
+   *  fact — pass the real date whenever the deal has one. */
+  closeDate?: string | null
+  /** Which side of the deal earned this. Optional: null is honest ("not
+   *  recorded"), and is what every row carried before this field existed —
+   *  never guessed from the transaction. */
+  side?: CommissionSide | null
 }
 
 export interface CreatedCommissionRecord {
@@ -1348,7 +1373,7 @@ export async function createExpenseRecord(
 export async function createCommissionRecord(
   input: CreateCommissionRecordInput
 ): Promise<KernelFinancialResult<CreatedCommissionRecord>> {
-  const { ctx, agentId, transactionId, grossCommission, splitPercentage, brokerageFee, franchiseFee, additionalFees } = input
+  const { ctx, agentId, transactionId, grossCommission, splitPercentage, brokerageFee, franchiseFee, additionalFees, closeDate, side } = input
   const supabase = createServiceClient()
 
   try {
@@ -1413,7 +1438,14 @@ export async function createCommissionRecord(
         transaction_id: transactionId,
         gross_commission: grossCommission,
         agent_split_percent: agentSplit,
-        close_date: new Date().toISOString(),
+        // THE DEAL'S CLOSE DATE WHEN THE CALLER HAS ONE. The `?? new Date()`
+        // fallback is the OLD behaviour preserved for callers that pass nothing
+        // — it means "we were not told when this closed, so we recorded when it
+        // was filed". It is not a claim about the deal. See closeDate on
+        // CreateCommissionRecordInput.
+        close_date: closeDate ?? new Date().toISOString(),
+        // Null = not recorded. Never inferred from the transaction.
+        side: side ?? null,
         status: "pending",
       })
       .select("id")

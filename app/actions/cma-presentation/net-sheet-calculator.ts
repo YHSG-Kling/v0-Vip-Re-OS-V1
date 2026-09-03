@@ -1,7 +1,7 @@
 "use server"
 import { resolveAgentId, resolveAgentIdInBrokerage } from "@/lib/kernel/agent-identity"
 import { resolveAgreedCommission, resolveClosingCosts } from "@/lib/offers/net-sheet-calc"
-import { deriveNetSheetClosingCostSection } from "@/lib/offers/seller-closing-costs"
+import { deriveNetSheetClosingCostSection, disclosedBuyerAgentCommissionNote } from "@/lib/offers/seller-closing-costs"
 
 /**
  * System 5.3: CMA & Listing Presentation Engine
@@ -48,6 +48,11 @@ export interface NetSheetResult {
   scenarios?: NetSheetScenario[]
   expiresAt?: string
   error?: string
+  /** Post-NAR-settlement disclosure for the SELLER's sheet: the buyer-agent share
+   *  disclosed on the accepted offer, when that offer names the seller as its
+   *  payer. Null when no accepted offer discloses one — never an assumed co-op
+   *  split (lib/offers/seller-closing-costs.ts:disclosedBuyerAgentCommissionNote). */
+  disclosedBuyerAgentCommissionNote?: string | null
 }
 
 export interface NetSheetScenario {
@@ -150,6 +155,39 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
     // The AGREED seller transaction fee — a flat dollar charge that does not scale.
     const nsTransactionFee = Number(nsAgreement?.seller_transaction_fee ?? 0) || 0
     const nsListingState = (nsListing?.state as string | null) ?? null
+
+    // ── POST-NAR-SETTLEMENT DISCLOSURE ON THE SELLER'S OWN SHEET (wave 26) ────
+    // §5 keeps commission off the AGENT-facing display. This is a SELLER
+    // document about the SELLER's money: where the accepted offer records the
+    // seller as the payer of the buyer-agent share, that share is a cost the
+    // seller bears, and omitting it makes the net-proceeds headline wrong by
+    // exactly that amount. Disclosing it here is the seller's own figure, not a
+    // commission readout for an agent.
+    //
+    // HONEST BY CONSTRUCTION — disclosedBuyerAgentCommissionNote returns null
+    // unless disclosed_commission_payer is literally 'seller' AND a real pct or
+    // flat figure is on the offer. It never derives an assumed co-op split, so a
+    // pre-listing CMA net sheet (no accepted offer) simply carries no note.
+    // disclosed_commission_payer's CHECK admits buyer|either|split|seller, so
+    // the payer test is exhaustive over the live vocabulary.
+    let nsDisclosedBuyerAgentNote: string | null = null
+    {
+      const { data: nsAcceptedOffer, error: nsOfferErr } = await supabase
+        .from("offers")
+        .select("disclosed_buyer_commission_pct, disclosed_buyer_commission_flat, disclosed_commission_payer")
+        .eq("listing_id", input.listingId)
+        .eq("status", "accepted")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      // supabase-js RESOLVES refusals. A refused read is not "nothing was
+      // disclosed" — say so rather than silently dropping a disclosure.
+      if (nsOfferErr) {
+        console.error("[net-sheet] accepted-offer disclosure read refused — the buyer-agent disclosure line is NOT on this sheet:", nsOfferErr.message)
+      } else if (nsAcceptedOffer) {
+        nsDisclosedBuyerAgentNote = disclosedBuyerAgentCommissionNote(nsAcceptedOffer)
+      }
+    }
 
     // Emit start event.
     //
@@ -265,7 +303,10 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
       success: true,
       netSheetId,
       scenarios,
-      expiresAt: expiresAt.toISOString()
+      expiresAt: expiresAt.toISOString(),
+      // Null when nothing real is disclosed — the sheet then carries no line,
+      // which is the honest state, not a missing feature.
+      disclosedBuyerAgentCommissionNote: nsDisclosedBuyerAgentNote,
     }
   } catch (error: any) {
     console.error("[System 5.3] Net sheet generation error:", error)

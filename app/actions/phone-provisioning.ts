@@ -447,6 +447,42 @@ export async function getPhoneAllowanceStatusAction(): Promise<
   }
 }
 
+/**
+ * This period's phone METER — included-vs-overage for voice minutes, SMS
+ * segments and active numbers, with the billable overage in cents.
+ *
+ * ─── THE BILLING HALF OF THE PHONE BUNDLE (wave 26 wire) ────────────────────
+ * lib/billing/phone-plan-resolve.ts has always carried two halves. The
+ * PROVISIONING half (evaluateTenantNumberProvisioning, "may this tenant add
+ * another number") was wired — it gates the action above and
+ * lib/voice/number-provisioning.ts. The METERING half (loadTenantPhoneMeter,
+ * "what did this tenant actually use against its bundle, and what is billable")
+ * had NO caller anywhere, and it is the only consumer of evaluatePhoneMetering —
+ * so the entire included-vs-overage phone meter, the line the finance P&L bills
+ * and the tenant usage card was written for, was computed by nothing.
+ *
+ * Tenant from the SESSION (resolveActingContext), never a parameter — same gate
+ * as getPhoneAllowanceStatusAction beside it. Fails safe to zero usage on an
+ * unreadable rollup by construction (see loadTenantPhoneMeter).
+ *
+ * @param month optional "YYYY-MM"; defaults to the current calendar month.
+ */
+export async function getTenantPhoneMeterAction(month?: string): Promise<
+  | { success: true; tier: string; meter: Awaited<ReturnType<typeof import("@/lib/billing/phone-plan-resolve").loadTenantPhoneMeter>>["meter"]; month: string }
+  | { success: false; error: string }
+> {
+  const ctx = await resolveActingContext()
+  if (!ctx.ok || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
+  // Refuse a malformed month rather than silently metering the wrong period.
+  if (month && !/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
+    return { success: false, error: "Month must be YYYY-MM." }
+  }
+  const { loadTenantPhoneMeter } = await import("@/lib/billing/phone-plan-resolve")
+  const svc = createServiceClient()
+  const m = await loadTenantPhoneMeter(svc, ctx.brokerageId, month)
+  return { success: true, tier: m.tier, meter: m.meter, month: m.month }
+}
+
 export interface NumberCandidateView {
   phoneNumber: string
   locality: string | null

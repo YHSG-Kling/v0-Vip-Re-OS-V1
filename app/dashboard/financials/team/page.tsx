@@ -20,6 +20,8 @@ import { ACCOUNTING_OFFERINGS, readScopedAccounting, type ScopedAccountingStatus
 import { defaultQbReconciliationPeriod, loadTeamQbReconciliation, type ScopeQbReconciliation } from "@/lib/finance/qb-reconciliation"
 import { ProviderConnectionCard } from "@/app/settings/accounting/provider-connection-card"
 import { QbReconciliationCard } from "@/app/settings/accounting/qb-reconciliation-card"
+import { QbScopedExportButton } from "../components/qb-scoped-export-button"
+import { pushTeamPnlToQuickBooksAction } from "@/app/actions/accounting-sync"
 
 export const dynamic = "force-dynamic"
 
@@ -634,6 +636,17 @@ export default async function TeamFinancialsPage() {
                 <p className="text-xl font-bold">{teamPnlRollup.topAgentName ?? "—"}</p>
                 <p className="text-xs text-muted-foreground">By gross commission this month</p>
               </div>
+            </div>
+            {/* SCOPED BOOKS EXPORT (wave 26): push THIS period's rollup into the
+                TEAM's own QuickBooks company. The lane existed with no caller.
+                The period is the rollup's own label, so the button can only
+                export the row shown above; the action re-resolves the team from
+                the session and refuses anyone who does not lead it. */}
+            <div className="mt-4 pt-4 border-t">
+              <QbScopedExportButton
+                label="Sync this P&L to QuickBooks"
+                run={pushTeamPnlToQuickBooksAction.bind(null, teamPnlRollup.periodLabel)}
+              />
             </div>
           </CardContent>
         </Card>

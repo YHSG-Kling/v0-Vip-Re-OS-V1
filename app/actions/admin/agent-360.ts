@@ -79,6 +79,9 @@ export interface Agent360Badge {
   icon: string | null
   tier: string | null
   awardedAt: string
+  /** Why it was awarded, as recorded on the ledger row. Null when the award
+   *  carried no reason — an honest absence, not an invented one. */
+  awardedReason: string | null
 }
 
 export interface Agent360 {
@@ -221,8 +224,12 @@ export async function getAgent360Action(
       .eq("brokerage_id", caller.brokerage_id)
       .order("created_at", { ascending: false })
       .limit(50),
+    // awarded_reason PORTED IN WAVE 26 from app/actions/agents.ts:getAgentAchievements
+    // — the never-surfaced twin of this read. A badge row without its reason says
+    // an agent earned something and not what for, which is the half a broker
+    // reading the 360 card actually asks about.
     svc.from("agent_badges")
-      .select("awarded_at, gamification_badges ( badge_name, badge_icon, badge_tier )")
+      .select("awarded_at, awarded_reason, gamification_badges ( badge_name, badge_icon, badge_tier )")
       .eq("agent_id", agent.id)
       .order("awarded_at", { ascending: false })
       .limit(12),
@@ -310,6 +317,7 @@ export async function getAgent360Action(
       icon: def?.badge_icon ?? null,
       tier: def?.badge_tier ?? null,
       awardedAt: b.awarded_at,
+      awardedReason: b.awarded_reason ?? null,
     }
   })
 

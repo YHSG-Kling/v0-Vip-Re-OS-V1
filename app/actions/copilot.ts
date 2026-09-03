@@ -658,6 +658,46 @@ export async function generateDailyGameplan(userId: string) {
     contacts: c.contact_id ? contentContactById.get(c.contact_id) ?? null : null,
   }))
 
+  // ── llm_calls CEILING, CONSULTED BEFORE THE SPEND (wave 26) ───────────────
+  // This lane bumps usage_counters.llm_calls below, and until now NOTHING ever
+  // read that counter back: plan_limits carries an `llm_calls` row per tier and
+  // lib/usage/check-cap.ts already held its cap and label strings, but no call
+  // site asked. A metered ceiling nobody consults is a writer with no reader
+  // (CLAUDE.md §1) on a metric the tenant is billed against.
+  //
+  // NOT a second AI gate. generateTextRouted below still runs the ai_tokens_monthly
+  // fair-use pre-flight (lib/ai/fair-use.ts, m479 served-and-billed overage) —
+  // that one meters TOKENS. This one meters CALLS, the counter this very
+  // function writes. Both ceilings are the tenant's; neither substitutes.
+  //
+  // addQuantity:1 asks "would THIS call cross the cap", not "have we already".
+  // Soft-warn passes through (the caller is near the cap, not over it); only a
+  // hard cap refuses, carrying check-cap's own message rather than a new one.
+  // The tenant is the session-resolved profile.brokerage_id — never a parameter.
+  {
+    const { checkUsageCap } = await import("@/lib/usage/check-cap")
+    const llmCap = await checkUsageCap({
+      brokerageId: profile.brokerage_id,
+      metric: "llm_calls",
+      addQuantity: 1,
+    })
+    if (!llmCap.allowed) {
+      // DEGRADE, DON'T BLANK. Only the AI SUMMARY costs an llm_call; the four
+      // lists above are plain reads the agent still needs. Withholding the whole
+      // gameplan over an AI cap would punish the agent for a billing state.
+      // Same shape as the not-linked early return, so the caller (which types
+      // this `any` and renders each list independently) needs no new branch.
+      return {
+        people_to_call: hotLeads || [],
+        deals_to_protect: atRiskDeals || [],
+        content_to_post: contentToPost,
+        overdue_tasks: overdueTasks || [],
+        ai_summary: llmCap.message ?? "You've reached this month's plan limit for AI requests.",
+        generated_at: new Date().toISOString(),
+      }
+    }
+  }
+
   // Generate AI-powered gameplan summary
   const { text: aiSummary } = await generateText({
     brokerageId: profile.brokerage_id,

@@ -98,11 +98,61 @@ export async function notifyDealVendorsOfIssue(
   return { notified }
 }
 
+/** The disbursement figures a CDA authorizes. One shape, so the two surfaces that
+ *  state them to a closing agent cannot state them differently. */
+export interface CdaDisbursementFigures {
+  grossCommission: number
+  agentNet: number
+  brokerageNet: number
+  tcNet?: number | null
+}
+
+/** PURE: format one CDA money figure. Kept beside the lines so a caller cannot
+ *  round or symbol it differently on one surface than the other. */
+export function formatCdaMoney(n: number): string {
+  return `$${(Math.round(n * 100) / 100).toLocaleString()}`
+}
+
+/**
+ * PURE: the disbursement instruction lines, in the order a closing agent reads them.
+ *
+ * ─── ONE COMPOSER, TWO SURFACES (§6, wave 26) ────────────────────────────────
+ * Extracted so `deliverCdaToClosingAgent` below and
+ * app/actions/cda-portal.ts:sendCdaToTitleAction — the WIRED send — state the
+ * same split. Before this, the wired action emailed an "Approved Commission
+ * Disbursement Authorization" whose entire body was "The approved CDA for this
+ * transaction is ready for the closing": a disbursement authorization carrying
+ * no disbursement. The figures lived only here, on the surface nothing called.
+ *
+ * The TC line is omitted (not zeroed) when there is no TC take — an honest
+ * absence rather than a "$0" the closing agent has to interpret.
+ */
+export function composeCdaDisbursementLines(f: CdaDisbursementFigures): string[] {
+  const lines = [
+    `Gross commission to our brokerage's side: ${formatCdaMoney(f.grossCommission)}`,
+    `Agent net: ${formatCdaMoney(f.agentNet)}`,
+    `Brokerage net: ${formatCdaMoney(f.brokerageNet)}`,
+  ]
+  if (f.tcNet && f.tcNet > 0) lines.push(`Transaction coordinator: ${formatCdaMoney(f.tcNet)}`)
+  return lines
+}
+
 /**
  * Deliver an APPROVED Closing Disclosure Agreement to the closing agent (the title company /
  * escrow officer / closing attorney) — the disbursement authorization that tells them how to split
  * the funds among agent / brokerage / TC (Model B). B2B-transactional (a counterparty on the deal),
  * deduded by the CDA's own sent_to_title_at, audited. Returns the recipient email when sent.
+ *
+ * KEEP-ONE NOTE (wave 26): the WIRED send is
+ * app/actions/cda-portal.ts:sendCdaToTitleAction, which owns the broker-signature
+ * gate, the sent_to_title_* columns and the cda_delivered milestone. The three
+ * things THIS function held that it lacked — the disbursement figures, reading
+ * the send result before recording a delivery, and the cda_delivered_to_title
+ * activity — have been merged onto it. This function is NOT deleted: it is
+ * imported and CALLED by scripts/cda-flow-simulator.ts:71, and
+ * scripts/cda-process-chain-simulator.ts:171 asserts approveCdaAction does not
+ * reach it. Deleting it would break a live proof, so the figures are shared
+ * through composeCdaDisbursementLines above instead of copied.
  */
 export async function deliverCdaToClosingAgent(
   supabase: Svc,
@@ -122,18 +172,16 @@ export async function deliverCdaToClosingAgent(
   const propertyLine = (txn as { property_address?: string | null } | null)?.property_address
     ? ` for ${(txn as { property_address?: string | null }).property_address}`
     : params.dealName ? ` for ${params.dealName}` : ""
-  const usd = (n: number) => `$${(Math.round(n * 100) / 100).toLocaleString()}`
-  const tcLine = params.tcNet && params.tcNet > 0 ? `\n• Transaction coordinator: ${usd(params.tcNet)}` : ""
+  // ONE composer, shared with the wired send (see composeCdaDisbursementLines).
+  const disbursementLines = composeCdaDisbursementLines(params)
 
   const subject = `Approved Commission Disbursement Authorization${propertyLine}`
   const body =
     `Hi ${name},\n\n` +
     `Our brokerage's compliance review of the commission disbursement${propertyLine} is complete and APPROVED. ` +
     `Please disburse at closing as follows:\n\n` +
-    `• Gross commission to our brokerage's side: ${usd(params.grossCommission)}\n` +
-    `• Agent net: ${usd(params.agentNet)}\n` +
-    `• Brokerage net: ${usd(params.brokerageNet)}${tcLine}\n\n` +
-    `Reply to confirm receipt. Thank you for closing this one with us.`
+    disbursementLines.map((l) => `• ${l}`).join("\n") +
+    `\n\nReply to confirm receipt. Thank you for closing this one with us.`
 
   try {
     const r = await sendEmail({ to: recipient, subject, body, brokerageId: params.brokerageId } as never)

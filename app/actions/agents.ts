@@ -597,9 +597,29 @@ async function awardPoints(agentId: string, points: number, reason: string, cate
 
 /**
  * COMPATIBILITY ALIAS over the survivor ledger. `agent_achievements` no longer
- * exists; an agent's unlocked rewards are `agent_badges` rows. The name is kept
- * only because the actions barrel (app/actions/index, deleted this wave) re-exports it and that barrel is not this
- * lane's to edit — the rows and the table underneath are the badge ledger.
+ * exists; an agent's unlocked rewards are `agent_badges` rows.
+ *
+ * ─── ITS KEEP-REASON HAS EXPIRED (wave 26) ──────────────────────────────────
+ * The reason recorded here was "the actions barrel (app/actions/index)
+ * re-exports it and that barrel is not this lane's to edit". That barrel WAS
+ * deleted, so nothing re-exports this and nothing calls it.
+ *
+ * SURVIVOR: app/actions/admin/agent-360.ts:228 — the same agent_badges read,
+ * joined to gamification_badges, but GATED on the caller's brokerage
+ * (caller.brokerage_id) and rendered on the agent 360 card. This function has no
+ * gate at all: it takes an agents.id straight from the caller and will read any
+ * agent's badge ledger in any tenant.
+ *
+ * MERGED FIRST, per §1: the one field the survivor's select lacked —
+ * `awarded_reason` — is now on it (agent-360.ts:229, surfaced as
+ * Agent360Badge.awardedReason). Nothing else here is absent there.
+ *
+ * NOT deleted only because scripts/people-vendor-education-wiring-simulator.ts
+ * :536-547 slices body("agents", "getAgentAchievements") to assert the refused
+ * read is logged, and that helper THROWS when the function is absent. Retiring
+ * this means repointing that assertion at agent-360 in the same change — a
+ * scripts/ edit outside this lane. Until then it stays UNGATED and UNCALLED,
+ * which is worth saying plainly rather than leaving implied.
  */
 export async function getAgentAchievements(agentId: string) {
   const supabase = await createClient()
@@ -675,9 +695,27 @@ export async function getAgentCommissions(agentId: string, year?: number, opts?:
  * lib/kernel/financial.ts:createCommissionRecord (exposed as
  * app/actions/financial-kernel.ts:createCommissionRecordAction and wired at
  * app/dashboard/financials/agent/agent-financials-client.tsx) — it applies the cap,
- * the fee schedule and the splits ledger. This one is kept ONLY because it carries two
- * things that one does not: the caller's real close_date and the deal `side`. It is
- * deliberately left without a UI surface so agent_commissions keeps a single live writer.
+ * the fee schedule and the splits ledger. It is deliberately left without a UI
+ * surface so agent_commissions keeps a single live writer.
+ *
+ * ─── THE GAP IS CLOSED; THE DELETE IS BLOCKED (wave 26) ─────────────────────
+ * The two things this function carried and the survivor did not — the caller's
+ * real `close_date` and the deal `side` — HAVE NOW BEEN PORTED onto the
+ * survivor (lib/kernel/financial.ts:CreateCommissionRecordInput.closeDate /
+ * .side, written at its agent_commissions insert). The survivor previously
+ * hardcoded `close_date: new Date()` on every row while loadAgentCommissions
+ * ORDERS BY that column, and never wrote `side` at all.
+ *
+ * So §1's "merge onto the survivor FIRST" is done, and this function is now a
+ * pure duplicate with nothing left to give. It is NOT deleted because deleting
+ * it breaks live proofs that read its body:
+ *   · scripts/cda-financial-wiring-simulator.ts:238-246 slices
+ *     fnBody(agents, "addAgentCommission") and asserts it still inserts into the
+ *     ledger and no longer inserts the GENERATED columns.
+ *   · scripts/wired-surface-baseline.json:6 lists it.
+ * The slice helper THROWS when the function is absent, so removal is a guard
+ * crash, not a silent pass. Retiring this needs those proofs repointed at the
+ * survivor in the same change — a scripts/ edit outside this lane.
  *
  * It could never have run as written. Verified against the live schema:
  *   • agent_commissions.brokerage_id is NOT NULL and was never supplied (23502), and
@@ -941,6 +979,16 @@ export async function getAgentExpenses(agentId: string, year?: number, opts?: { 
  * exported action that can write an untenanted row is a hole whether or not a
  * button points at it.
  *
+ * WAVE 26 re-checked it for a merge and found NOTHING the survivor lacks — it is
+ * a pure duplicate, ready to retire. It is NOT deleted because
+ * scripts/people-vendor-education-wiring-simulator.ts assertions A7
+ * ("stamps brokerage_id AT the insert") and A8 ("writes the session-resolved
+ * agent, never the caller's raw agent_id") slice this body via
+ * body("agents", "addAgentExpense"), and that helper THROWS when the function is
+ * absent (:298-302). Both assertions carry `neg:` positive controls, so they are
+ * live proofs, not decoration. Retiring this means repointing them at
+ * logScopedExpense in the same change — a scripts/ edit outside this lane.
+ *
  * Two things verified live and fixed here rather than left armed:
  *   • business_expenses.brokerage_id is NULLABLE and every row this function used
  *     to write had a NULL brokerage_id. The tenant is now stamped AT the insert.
@@ -1188,6 +1236,15 @@ type AgentGoalType = (typeof AGENT_GOAL_TYPES)[number]
  * Also: the pre-existence probe used .single(), which RESOLVES WITH AN ERROR on
  * zero rows — `if (existing)` was skipped rather than being a real branch. It is
  * a single upsert on the unique constraint now, so there is no probe to get wrong.
+ *
+ * WAVE 26 re-checked it for a merge and found NOTHING the survivor lacks — a
+ * pure duplicate, ready to retire. NOT deleted because
+ * scripts/people-vendor-education-wiring-simulator.ts assertions A11 ("supplies
+ * the NOT NULL brokerage_id it used to omit"), A12 ("refuses a goal_type the
+ * CHECK constraint would reject") and A14 ("uses maybeSingle, not single")
+ * slice this body via body("agents", "setAgentGoal"), and that helper THROWS
+ * when the function is absent. Retiring this means repointing all three at
+ * upsertAgentGoal in the same change — a scripts/ edit outside this lane.
  */
 export async function setAgentGoal(goalData: {
   agent_id?: string
@@ -1310,11 +1367,22 @@ export async function updateGoalProgress(goalId: string, currentValue: number) {
  * ever re-pointed contacts.agent_id and left every downstream row owned by the
  * previous agent.
  *
- * The ONE thing this function does that the survivor does not is award 10
- * gamification points for a new assignment. Porting that onto the survivor would
- * mean editing app/actions/contact-reassignment.ts, which is outside this pass's
- * file set — so this is hardened and left unwired rather than deleted, and the
- * points gap is reported rather than quietly dropped.
+ * ─── THE GAP IS CLOSED; THE DELETE IS BLOCKED (wave 26) ─────────────────────
+ * The ONE thing this function did that the survivor did not — award 10
+ * gamification points for a new assignment — HAS NOW BEEN PORTED onto the
+ * survivor (app/actions/contact-reassignment.ts, after the audit + notification,
+ * through the canonical awardAgentPoints RPC; a refused award is logged and
+ * never rolls back the move). The earlier note here said that port was outside
+ * that pass's file set; it is done.
+ *
+ * §1's "merge onto the survivor FIRST" is therefore satisfied and this function
+ * has nothing left the survivor lacks. It is NOT deleted because live proofs
+ * slice its body: scripts/people-vendor-education-wiring-simulator.ts assertions
+ * A15 ("counts its UPDATE and refuses a zero-row match") and A16 ("refuses a
+ * receiving agent outside the caller's brokerage") both call
+ * body("agents", "assignAgentToContact"), and that helper THROWS when the
+ * function is absent (:298-302) — removal crashes the guard. Retiring this needs
+ * those two assertions repointed at reassignContactAction in the same change.
  *
  * Hardened here: the receiving agent was never checked. A broker could route one
  * of their own contacts to an agents row belonging to ANOTHER brokerage —

@@ -11,7 +11,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { requireAuth } from "@/lib/kernel/api-auth"
-import { buildCdaContractVerdict, expectedGrossFromTerms, sumOutstandingAgentFees, type CdaDiscrepancy } from "@/lib/commission/cda-discrepancy"
+import { buildCdaContractVerdict, buildCdaFeeDeduction, expectedGrossFromTerms, sumOutstandingAgentFees, type CdaDiscrepancy, type CdaFeeDeduction } from "@/lib/commission/cda-discrepancy"
 
 const COMPLIANCE_ROLES = new Set([
   "compliance_officer",
@@ -49,6 +49,11 @@ export interface CdaReviewItem {
   contractSplitPct:         number | null
   /** Unpaid fees the agent owes the brokerage — must be deducted in the CDA (0 = none). */
   outstandingFees:          number
+  /** What those fees DO to the disbursement (wave 26): the deduction line
+   *  compliance must confirm is on the CDA, and the agent's net after it
+   *  (null when the post-split share is unknown — never a guessed figure).
+   *  Surfaces only; `contractCheckPassed` above is untouched by it. */
+  feeDeduction:             CdaFeeDeduction
 }
 
 /**
@@ -172,6 +177,14 @@ export async function listCdasForComplianceReviewAction(): Promise<{
     const profile = agentId ? profileByAgent.get(agentId) : undefined
     const contractSplit = profile?.split_percent ?? null
     const outstandingFees = sumOutstandingAgentFees(agentId ? feeChargesByAgent.get(agentId) ?? [] : [])
+    // The deduction the queue row must show beside the total (wave 26). Computed
+    // OUTSIDE the contract-split branch on purpose: an agent can owe fees with no
+    // split on file, and the fees are still owed and still deducted — the split
+    // verdict's absence is not the deduction's absence.
+    const feeDeduction = buildCdaFeeDeduction({
+      outstandingFees,
+      agentCommissionShare: c.agent_net == null ? null : Number(c.agent_net),
+    })
     let contractCheckPassed: boolean | null = null
     let contractDiscrepancies: CdaDiscrepancy[] | null = null
     if (contractSplit != null && Number.isFinite(contractSplit)) {
@@ -213,6 +226,7 @@ export async function listCdasForComplianceReviewAction(): Promise<{
       contractDiscrepancies,
       contractSplitPct:         contractSplit,
       outstandingFees,
+      feeDeduction,
     }
   })
 

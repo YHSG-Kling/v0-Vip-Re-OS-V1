@@ -14,6 +14,7 @@ import {
   listCommissionAgreementFormsAction,
   getCommissionAgreementStatusAction,
   sendCommissionAgreementAction,
+  uploadCommissionAgreementFormAction,
   type CommissionForm,
   type CommissionAgreementStatus,
 } from "@/app/actions/admin/commission-agreement"
@@ -35,6 +36,7 @@ export function CommissionAgreementCard({ targetUserId }: { targetUserId: string
   const [formId, setFormId] = useState<string>("")
   const [values, setValues] = useState<Record<string, string>>({})
   const [sending, setSending] = useState(false)
+  const [uploading, setUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [okNote, setOkNote] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -59,6 +61,41 @@ export function CommissionAgreementCard({ targetUserId }: { targetUserId: string
   }, [targetUserId])
 
   const selectedForm = forms.find((f) => f.id === formId) ?? null
+
+  // ── UPLOAD THE BROKERAGE'S OWN TEMPLATE (wave 26) ─────────────────────────
+  // uploadCommissionAgreementFormAction has existed and been gated
+  // (requireAdmin, path scoped to the caller's own brokerageId) since the rail
+  // landed, with no caller. Meanwhile this card's empty state told admins to
+  // "Upload your brokerage's form under Admin → Forms" — a surface that does not
+  // exist anywhere in app/**. The instruction pointed at nothing, so a brokerage
+  // with no template on file had no way to get one. This is the missing half.
+  async function handleUpload(file: File) {
+    setUploading(true); setError(null); setOkNote(null)
+    try {
+      // The action takes base64 with no data: prefix.
+      const buffer = await file.arrayBuffer()
+      const bytes = new Uint8Array(buffer)
+      let binary = ""
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+      const base64 = btoa(binary)
+
+      const res = await uploadCommissionAgreementFormAction({
+        fileName: file.name,
+        base64,
+        // Named from the file so the picker below has something meaningful to
+        // show; the admin renames it in Forms if they want something else.
+        formName: file.name.replace(/\.[^.]+$/, "") || "Commission Agreement",
+        contractType: "commission_agreement",
+      })
+      if (!res.ok) { setError(res.error); return }
+      setOkNote("Template uploaded. Choose it below to fill and send.")
+      await refresh()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not read that file.")
+    } finally {
+      setUploading(false)
+    }
+  }
 
   async function handleSend() {
     if (!formId) { setError("Choose a commission agreement form first."); return }
@@ -136,10 +173,27 @@ export function CommissionAgreementCard({ targetUserId }: { targetUserId: string
 
             {/* Send a (new) agreement */}
             {forms.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                No commission agreement forms uploaded yet. Upload your brokerage's form under
-                Admin → Forms (category “Commission Agreement”) to send it here.
-              </p>
+              <div className="space-y-2">
+                <p className="text-xs text-muted-foreground">
+                  No commission agreement forms uploaded yet. Upload your brokerage’s form (PDF)
+                  to send it here.
+                </p>
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="file"
+                    accept="application/pdf"
+                    disabled={uploading}
+                    className="text-xs"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0]
+                      // Reset the input so re-picking the same file fires onChange again.
+                      e.target.value = ""
+                      if (file) void handleUpload(file)
+                    }}
+                  />
+                  {uploading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+                </div>
+              </div>
             ) : (
               <div className="space-y-3">
                 <div className="space-y-1.5">

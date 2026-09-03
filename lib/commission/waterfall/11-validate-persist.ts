@@ -103,11 +103,18 @@ export async function validateAndPersist(
   // Return the locked commission instead of inserting a second summary row (this is
   // also what stops the duplicate-commissions-row bug on a re-run). The lock is set
   // AFTER the close-time calc, so the first/authoritative calc is never blocked.
-  const { data: txn } = await supabase
+  const { data: txn, error: txnErr } = await supabase
     .from('transactions')
     .select('commission_finalized_at, close_date')
     .eq('id', context.transactionId)
     .maybeSingle<{ commission_finalized_at: string | null; close_date: string | null }>()
+  // supabase-js RESOLVES refusals (§3). A refused read here previously read as
+  // "not finalized", which would let the engine re-persist a LOCKED commission
+  // and insert a second summary row — the exact duplicate this lock exists to
+  // prevent. Surfaced rather than swallowed.
+  if (txnErr) {
+    console.error('[waterfall/validate-persist] transaction lock read refused — treating as NOT finalized:', txnErr.message)
+  }
 
   {
     if (txn?.commission_finalized_at) {
