@@ -30,8 +30,11 @@ import type { PropertyRiskInput } from "@/lib/property-risk/buyer-target-analyze
  *   · floodZone     ← listings.flood_zone                    ✅
  *   · daysOnMarket  ← today − listings.listing_date          ✅
  *   · priceCutCount ← listing_price_changes (new < old)      ✅
- *   · compMedian    ← median sold_price of same city + property_type,
- *                     sold in the last 180 days              ✅ (derived here)
+ *   · compMedian    ← median sold_price of THE SAME BROKERAGE's listings in the
+ *                     same city + property_type, sold in the last 180 days
+ *                     ✅ (derived here). Tenant-scoped on purpose — see the note
+ *                     at compMedianFor; a median over another brokerage's sales
+ *                     is both a cross-tenant read and a wrong number.
  *   · quickLists / foreclosureStatus                          ❌ NOT AVAILABLE
  *     Those are BatchData quickList tags, and the only code that reads them
  *     lives inside the fenced scraping area (lib/lead-pipeline/scraper-parsers.ts).
@@ -132,15 +135,24 @@ export async function GET(request: Request) {
       }
     }
 
-    // ── Comp median per (city, property_type), computed once and reused ──────
+    // ── Comp median per (brokerage, city, property_type), computed once ─────
+    // SCOPED PER BROKERAGE, and the cache key carries the tenant. This sweep runs
+    // across every tenant on the cron secret, so a median keyed on (city, type)
+    // alone would have let ONE brokerage's sold prices set the comp another
+    // brokerage's radar judges its buyer's target against — a cross-tenant read
+    // of exactly the kind CLAUDE.md §4 exists to make impossible, and a wrong
+    // answer as well as a leak: a market median is only meaningful over data the
+    // tenant actually has. A thin sample yields a null median, which the analyzer
+    // is already silent on, rather than a borrowed one.
     const compCache = new Map<string, number | null>()
-    async function compMedianFor(city: string | null, propertyType: string | null): Promise<number | null> {
+    async function compMedianFor(brokerageId: string, city: string | null, propertyType: string | null): Promise<number | null> {
       if (!city) return null
-      const key = `${city.toLowerCase()}|${(propertyType ?? "").toLowerCase()}`
+      const key = `${brokerageId}|${city.toLowerCase()}|${(propertyType ?? "").toLowerCase()}`
       if (compCache.has(key)) return compCache.get(key) ?? null
       let q = supabase
         .from("listings")
         .select("sold_price")
+        .eq("brokerage_id", brokerageId)
         .eq("city", city)
         .not("sold_price", "is", null)
         .gte("sold_date", compSince)
@@ -188,7 +200,7 @@ export async function GET(request: Request) {
       const risk: PropertyRiskInput = {
         listPrice,
         floodZone: (listing.flood_zone as string | null) ?? null,
-        compMedian: await compMedianFor(listing.city as string | null, listing.property_type as string | null),
+        compMedian: await compMedianFor(r.brokerage_id as string, listing.city as string | null, listing.property_type as string | null),
         daysOnMarket,
         priceCutCount: priceCuts.get(r.listing_id as string) ?? 0,
         // Not reachable from a cron — see the header's blind-spot note.
