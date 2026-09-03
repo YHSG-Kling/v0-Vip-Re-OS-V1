@@ -55,6 +55,15 @@ export async function recalculateCampaignROI(
     spend_disagrees: boolean
     /** Human note on the derivation (which ledger, how many rows, partial?). */
     spend_note: string | null
+    /** direct_mail only (wave 26 columns) — the raw response-row count behind
+     *  total_leads, which now counts PEOPLE. Published so the reader can see
+     *  how many rows collapsed onto one responder instead of inheriting the
+     *  old row-count as a lead-count. Absent on other channels. */
+    mail_response_rows?: number
+    /** direct_mail only — response rows naming neither a contact nor a lead.
+     *  Each is counted as its own person because nothing can collapse them;
+     *  the blind spot beside the number. */
+    mail_anonymous_responses?: number
   }
 }> {
   try {
@@ -116,6 +125,8 @@ export async function recalculateCampaignROI(
     let totalLeads = 0
     let qualifiedLeads = 0
     let totalConversions = 0
+    let mailResponseRows: number | undefined
+    let mailAnonymousResponses: number | undefined
 
     // === SOCIAL campaigns ===
     if (campaignType === "social") {
@@ -302,7 +313,7 @@ export async function recalculateCampaignROI(
       if (mailCampaignIds.length > 0) {
         const { data: mailResponses, error: mailResponsesError } = await supabase
           .from("mail_response_tracking")
-          .select("response_type")
+          .select("id, response_type, contact_id, lead_id")
           .eq("brokerage_id", brokerageId)
           .in("campaign_id", mailCampaignIds)
 
@@ -317,11 +328,23 @@ export async function recalculateCampaignROI(
           }
         }
 
-        for (const r of mailResponses ?? []) {
-          totalLeads++
-          if (["call", "form_submit", "appointment"].includes(r.response_type)) {
-            totalConversions++
-          }
+        // PER-PERSON, not per-row (wave 26 columns). Both writers —
+        // app/actions/direct-mail.ts:652 and app/api/qr/scan/route.ts:170 —
+        // stamp contact_id / lead_id on every response, and nothing read
+        // them: this loop counted ROWS as LEADS, so one person who scanned a
+        // postcard three times was three "leads" and cost_per_lead was a
+        // third of the truth. A lead is a PERSON; the rows collapse onto the
+        // person they name. The row count and the anonymous remainder are
+        // published beside the number rather than folded into it.
+        const { persons, converters, rows, anonymous } = collapseMailResponsesToPersons(mailResponses ?? [])
+        totalLeads += persons
+        totalConversions += converters
+        mailResponseRows = rows
+        mailAnonymousResponses = anonymous
+        if (rows !== persons) {
+          console.warn(
+            `[ROI Calculator] campaign ${marketingCampaignId}: ${rows} mail response row(s) collapse onto ${persons} person(s) (${anonymous} anonymous, each counted once) — total_leads counts people.`
+          )
         }
       }
     }
@@ -577,12 +600,48 @@ export async function recalculateCampaignROI(
         derived_channel_spend: derivedSpend,
         spend_disagrees: spendDisagrees,
         spend_note: derivedSpendNote,
+        ...(mailResponseRows !== undefined
+          ? { mail_response_rows: mailResponseRows, mail_anonymous_responses: mailAnonymousResponses ?? 0 }
+          : {}),
       },
     }
   } catch (error: any) {
     console.error("[ROI Calculator] recalculateCampaignROI error:", error)
     return { success: false, error: error.message }
   }
+}
+
+/** The response types that mean a person RAISED A HAND, not merely looked.
+ *  One spelling (§6) for both the campaign arm and the channel rollup. */
+const MAIL_CONVERTING_RESPONSE_TYPES = new Set(["call", "form_submit", "appointment"])
+
+/**
+ * PURE (wave 26 columns) — collapse mail_response_tracking rows onto the
+ * PEOPLE they name. A person is a contact_id, else a lead_id, else — when the
+ * row names nobody — the row itself (nothing can merge two anonymous rows, so
+ * each counts once and the count is returned as the blind spot).
+ *
+ *   persons    — distinct responders
+ *   converters — distinct responders with at least one converting response
+ *   rows       — the raw row count the old code reported as "leads"
+ *   anonymous  — rows naming neither id (each is one of `persons`)
+ */
+export function collapseMailResponsesToPersons(
+  rows: Array<{ id?: string | null; response_type: string | null; contact_id?: string | null; lead_id?: string | null }>
+): { persons: number; converters: number; rows: number; anonymous: number } {
+  const seen = new Set<string>()
+  const converted = new Set<string>()
+  let anonymous = 0
+  let anonIndex = 0
+  for (const r of rows) {
+    let key: string
+    if (r.contact_id) key = `c:${r.contact_id}`
+    else if (r.lead_id) key = `l:${r.lead_id}`
+    else { key = `anon:${r.id ?? anonIndex++}`; anonymous++ }
+    seen.add(key)
+    if (r.response_type && MAIL_CONVERTING_RESPONSE_TYPES.has(r.response_type)) converted.add(key)
+  }
+  return { persons: seen.size, converters: converted.size, rows: rows.length, anonymous }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -750,7 +809,7 @@ export async function recalculateChannelPerformance(
 
         const { data: mailResponses, error: mailResponsesError } = await supabase
           .from("mail_response_tracking")
-          .select("response_type, campaign_id")
+          .select("id, response_type, campaign_id, contact_id, lead_id")
           .eq("brokerage_id", brokerageId)
           .gte("created_at", windowStart)
           .lte("created_at", windowEnd)
@@ -777,10 +836,19 @@ export async function recalculateChannelPerformance(
           )
         }
 
-        leads += owned.length
-        conversions += owned.filter((r) =>
-          ["call", "form_submit", "appointment"].includes(r.response_type)
-        ).length
+        // PER-PERSON (wave 26 columns) — same collapse as the campaign arm:
+        // channel_performance.leads is people who responded, not rows filed.
+        // A person who responded to two campaigns in the window is one lead
+        // of the CHANNEL (this is the channel rollup), and the row count is
+        // published beside it.
+        const collapsed = collapseMailResponsesToPersons(owned)
+        leads += collapsed.persons
+        conversions += collapsed.converters
+        if (collapsed.rows !== collapsed.persons) {
+          console.warn(
+            `[ROI Calculator] direct_mail channel ${windowStart}..${windowEnd}: ${collapsed.rows} response row(s) collapse onto ${collapsed.persons} person(s) (${collapsed.anonymous} anonymous, each counted once) — leads counts people.`
+          )
+        }
       }
 
       if (channelType === "newsletter") {

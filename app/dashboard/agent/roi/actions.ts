@@ -78,10 +78,24 @@ export interface AttributionModelCampaignRow {
   /** Credit in cents per model. A model with no row for this campaign is 0 by
    *  the engine's own math (e.g. first_touch gives non-earliest campaigns 0). */
   creditCentsByModel: Record<AttributionModelKey, number>
+  /** WHICH CLIENTS the credit came from (wave 26 columns). The engine stamps
+   *  marketing_attribution_credits.contact_id on every row
+   *  (lib/marketing/attribution.ts:129) and nothing read it — a dollar figure
+   *  with no person behind it. Distinct contacts across this campaign's
+   *  credited transactions, with a display name when the contacts read
+   *  succeeded (see `contactNameLookupError`). */
+  contacts: Array<{ contactId: string; name: string | null }>
 }
 
 export type AttributionModelComparison =
-  | { ok: true; rows: AttributionModelCampaignRow[]; campaignNameLookupError: string | null }
+  | {
+      ok: true
+      rows: AttributionModelCampaignRow[]
+      campaignNameLookupError: string | null
+      /** The contacts name read is a garnish like the campaign one: its refusal
+       *  is reported here and the ids still render, never blanked. */
+      contactNameLookupError: string | null
+    }
   | { ok: false; error: string }
 
 export interface RoiSnapshot {
@@ -191,7 +205,7 @@ export async function loadAgentRoiSnapshot(period: RoiPeriod = "7d"): Promise<Ro
   // attribution_model). We use 'linear' so even-split campaigns count once
   // each. Scope to transactions owned by this agent.
   let attributedRevenueCents = 0
-  let modelComparison: AttributionModelComparison = { ok: true, rows: [], campaignNameLookupError: null }
+  let modelComparison: AttributionModelComparison = { ok: true, rows: [], campaignNameLookupError: null, contactNameLookupError: null }
   if (agentRowId) {
     const { data: agentTxns } = await svc
       .from("transactions")
@@ -216,7 +230,7 @@ export async function loadAgentRoiSnapshot(period: RoiPeriod = "7d"): Promise<Ro
       // read of a money figure.
       const { data: allModelRows, error: allModelErr } = await svc
         .from("marketing_attribution_credits")
-        .select("campaign_id, transaction_id, attribution_model, credit_dollars, attribution_weight, touchpoint_count, first_touchpoint_at, last_touchpoint_at, created_at")
+        .select("campaign_id, transaction_id, attribution_model, credit_dollars, attribution_weight, touchpoint_count, first_touchpoint_at, last_touchpoint_at, contact_id, created_at")
         .in("transaction_id", txnIds)
         .gte("created_at", startISO)
       if (allModelErr) {
@@ -227,6 +241,9 @@ export async function loadAgentRoiSnapshot(period: RoiPeriod = "7d"): Promise<Ro
         // touchpoint_count / window are written identically on all four model
         // rows of one (campaign × transaction) — count each transaction once.
         const countedTxn = new Set<string>()
+        // contact_id is likewise identical across the four model rows; one
+        // set per campaign keeps a client listed once however many models.
+        const contactIdsByCampaign = new Map<string, Set<string>>()
         for (const r of (allModelRows ?? []) as any[]) {
           const model = r.attribution_model as AttributionModelKey
           if (!MODELS.includes(model)) continue
@@ -239,8 +256,14 @@ export async function loadAgentRoiSnapshot(period: RoiPeriod = "7d"): Promise<Ro
               firstTouchpointAt: null,
               lastTouchpointAt: null,
               creditCentsByModel: { first_touch: 0, last_touch: 0, linear: 0, time_decay: 0 },
+              contacts: [],
             }
             byCampaign.set(r.campaign_id, row)
+          }
+          if (r.contact_id) {
+            const set = contactIdsByCampaign.get(r.campaign_id) ?? new Set<string>()
+            set.add(r.contact_id as string)
+            contactIdsByCampaign.set(r.campaign_id, set)
           }
           row.creditCentsByModel[model] += Math.round(((r.credit_dollars ?? 0) as number) * 100)
           const pairKey = `${r.campaign_id}:${r.transaction_id}`
@@ -275,12 +298,41 @@ export async function loadAgentRoiSnapshot(period: RoiPeriod = "7d"): Promise<Ro
           }
         }
 
+        // Which client each credit came from — names resolved in one read,
+        // TENANT-SCOPED to the agent's brokerage (a credit row could in
+        // principle carry a foreign contact_id; the name read must not follow
+        // it across tenants). Ids render even when the name read is refused.
+        let contactNameLookupError: string | null = null
+        const allContactIds = Array.from(new Set(Array.from(contactIdsByCampaign.values()).flatMap((s) => Array.from(s))))
+        const contactName = new Map<string, string | null>()
+        if (allContactIds.length > 0) {
+          const { data: contactRows, error: contactErr } = await svc
+            .from("contacts")
+            .select("id, first_name, last_name")
+            .eq("brokerage_id", profile.brokerage_id)
+            .in("id", allContactIds)
+          if (contactErr) {
+            contactNameLookupError = contactErr.message
+          } else {
+            for (const c of (contactRows ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null }>) {
+              const name = [c.first_name, c.last_name].filter(Boolean).join(" ").trim()
+              contactName.set(c.id, name || null)
+            }
+          }
+        }
+        for (const [campaignId, ids] of contactIdsByCampaign.entries()) {
+          const row = byCampaign.get(campaignId)
+          if (!row) continue
+          row.contacts = Array.from(ids).map((contactId) => ({ contactId, name: contactName.get(contactId) ?? null }))
+        }
+
         modelComparison = {
           ok: true,
           rows: Array.from(byCampaign.values()).sort(
             (a, b) => b.creditCentsByModel.linear - a.creditCentsByModel.linear,
           ),
           campaignNameLookupError,
+          contactNameLookupError,
         }
       }
     }

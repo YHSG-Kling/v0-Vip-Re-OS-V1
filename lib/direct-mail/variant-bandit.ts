@@ -52,6 +52,10 @@ export interface BanditPick {
    *  for the admin dashboard's "% of mail used to explore vs
    *  exploit" metric. */
   isExploration: boolean
+  /** Wave 26 (columns) — COLD vs STALE vs WARM. `isExploration` only
+   *  ever said "never sent"; an arm whose evidence is months old looked
+   *  identical to one scanned yesterday. See `classifyArmState`. */
+  armState:      VariantArmState
   /** Wave 37 — which Beta the sampler used. "scans" is the engagement
    *  proxy (Beta(scans+1, sends-scans+1)); "leads" is the conversion
    *  target (Beta(leads+1, sends-leads+1)). The math switches per-
@@ -66,6 +70,63 @@ export interface BanditPick {
  *  → meaningful-N inflection from bandit literature; below this the
  *  Beta(leads+1, ...) posterior is too flat to discriminate arms. */
 const LEADS_COHORT_THRESHOLD = 30
+
+// ── Cold vs stale (wave 26 columns, direct_mail_variant_outcomes.last_scan_at) ──
+//
+// last_scan_at is written by app/api/cron/variant-outcomes-aggregator/route.ts
+// on every scan roll-up and last_send_at by recordVariantSend below, and until
+// this block NOTHING read either. The sampler saw only the three counters, so
+// an arm that scanned well in March and has not been scanned since carried the
+// same tight posterior as one scanned yesterday — a formerly-hot arm kept
+// winning the cohort on evidence the world may have moved past, and a dormant
+// arm nobody had mailed in a quarter kept its old, confident Beta.
+//
+// The counters are AGGREGATES; they cannot be time-split, so the honest remedy
+// is not to re-weight history (that would need per-window counts) but to
+// TEMPER it: a stale arm's evidence is discounted toward the Beta(1,1) prior,
+// which widens its posterior and lets the cohort re-explore around it. This is
+// deliberately a partial remedy and is named as such — a truly time-decayed
+// bandit needs bucketed outcomes, which is a migration this lane does not write.
+//
+//   cold  — sends_count = 0 (never mailed; the flat prior IS the exploration)
+//   stale — mailed before, but the newest observation of any kind
+//           (send or scan) is older than STALE_AFTER_DAYS (dormant arm), OR the
+//           arm has scanned before and is still being mailed but has not
+//           scanned within STALE_AFTER_DAYS (the response dried up)
+//   warm  — everything else: live evidence, sampled as-is
+export type VariantArmState = "cold" | "stale" | "warm"
+const STALE_AFTER_DAYS = 45
+/** Fraction of a stale arm's observed successes/failures kept. 0.5 halves the
+ *  evidence — enough to reopen exploration without erasing a real signal. */
+const STALE_EVIDENCE_DISCOUNT = 0.5
+
+export interface VariantArmEvidence {
+  sends_count:  number
+  scans_count:  number
+  leads_count:  number
+  last_send_at: string | null
+  last_scan_at: string | null
+}
+
+/** PURE. Classifies an arm's evidence as cold / stale / warm relative to `now`.
+ *  Exported so the classification can be proven without a database. */
+export function classifyArmState(o: VariantArmEvidence, now: Date = new Date()): VariantArmState {
+  if ((o.sends_count ?? 0) === 0) return "cold"
+  const cutoff = now.getTime() - STALE_AFTER_DAYS * 86_400_000
+  const sendMs = o.last_send_at ? new Date(o.last_send_at).getTime() : Number.NaN
+  const scanMs = o.last_scan_at ? new Date(o.last_scan_at).getTime() : Number.NaN
+  const newest = Math.max(Number.isFinite(sendMs) ? sendMs : -Infinity, Number.isFinite(scanMs) ? scanMs : -Infinity)
+  // Dormant: nothing observed on this arm inside the window (or the timestamps
+  // were never stamped — pre-column rows — which is the same absence of
+  // recency evidence and is treated the same way rather than as "fresh").
+  if (!Number.isFinite(newest) || newest < cutoff) return "stale"
+  // Dried up: it used to scan, it is still being mailed, and the last scan is
+  // outside the window while the last send is inside it.
+  if ((o.scans_count ?? 0) > 0 && (!Number.isFinite(scanMs) || scanMs < cutoff) && Number.isFinite(sendMs) && sendMs >= cutoff) {
+    return "stale"
+  }
+  return "warm"
+}
 
 /** Platform-default arm catalog. Each (use_kind, postcard_size)
  *  ships with N (composition × copy_style) combinations. The bandit
@@ -230,7 +291,7 @@ export async function pickVariantArm(args: {
     .from("direct_mail_variants")
     .select(`
       id, composition_id, copy_style, layout_variant,
-      outcomes:direct_mail_variant_outcomes!direct_mail_variant_outcomes_variant_id_fkey(sends_count, scans_count, leads_count)
+      outcomes:direct_mail_variant_outcomes!direct_mail_variant_outcomes_variant_id_fkey(sends_count, scans_count, leads_count, last_send_at, last_scan_at)
     `)
     .eq("brokerage_id", args.brokerageId)
     .eq("persona", args.persona)
@@ -243,9 +304,10 @@ export async function pickVariantArm(args: {
     composition_id: string
     copy_style: string
     layout_variant: string
-    outcomes: Array<{ sends_count: number; scans_count: number; leads_count: number }> | null
+    outcomes: VariantArmEvidence[] | null
   }
   const armRows = (arms ?? []) as unknown as ArmRow[]
+  const now = new Date()
   if (armRows.length === 0) return null
 
   // Wave 37 — sampling mode decision PER COHORT (not per-arm). Sum
@@ -263,20 +325,25 @@ export async function pickVariantArm(args: {
   const samplingMode: "scans" | "leads" = cohortLeads >= LEADS_COHORT_THRESHOLD ? "leads" : "scans"
 
   // Thompson sample per arm.
-  let best: { row: ArmRow; sample: number; isExploration: boolean } | null = null
+  let best: { row: ArmRow; sample: number; isExploration: boolean; armState: VariantArmState } | null = null
   for (const arm of armRows) {
-    const outcome = arm.outcomes?.[0] ?? { sends_count: 0, scans_count: 0, leads_count: 0 }
+    const outcome: VariantArmEvidence = arm.outcomes?.[0]
+      ?? { sends_count: 0, scans_count: 0, leads_count: 0, last_send_at: null, last_scan_at: null }
     // Mode-conditional Beta. In "leads" mode the positive
     // observation is a LEAD (the action we actually want); in
     // "scans" mode it's a SCAN (the high-volume proxy).
-    const positive = samplingMode === "leads" ? outcome.leads_count : outcome.scans_count
-    const negative = Math.max(0, outcome.sends_count - positive)
-    const alpha = positive + 1
-    const beta  = negative + 1
+    const rawPositive = samplingMode === "leads" ? outcome.leads_count : outcome.scans_count
+    const rawNegative = Math.max(0, outcome.sends_count - rawPositive)
+    // Stale evidence is TEMPERED, not trusted at face value — see the block
+    // above STALE_AFTER_DAYS. Cold and warm arms sample on their full counts.
+    const armState = classifyArmState(outcome, now)
+    const keep = armState === "stale" ? STALE_EVIDENCE_DISCOUNT : 1
+    const alpha = rawPositive * keep + 1
+    const beta  = rawNegative * keep + 1
     const sample = sampleBeta(alpha, beta)
-    const isExploration = outcome.sends_count === 0
+    const isExploration = armState === "cold"
     if (!best || sample > best.sample) {
-      best = { row: arm, sample, isExploration }
+      best = { row: arm, sample, isExploration, armState }
     }
   }
   if (!best) return null
@@ -288,6 +355,7 @@ export async function pickVariantArm(args: {
     layoutVariant: best.row.layout_variant,
     sampledProb:   best.sample,
     isExploration: best.isExploration,
+    armState:      best.armState,
     samplingMode,
   }
 }

@@ -254,13 +254,15 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       metadata: eventMeta,
     })
     try {
-      const { fanOutKernelEvent } = await import('@/lib/kernel/event-fanout')
-      await fanOutKernelEvent({
+      // Row already written above → skipInsert (fan-out only).
+      const { emitKernelEvent } = await import('@/lib/kernel/emit')
+      await emitKernelEvent({
         event:       KernelEvent.QR_SCAN_RECEIVED,
         brokerageId: qr.brokerage_id,
         entityType:  'qr_scan',
         entityId:    qr.id,
         metadata:    eventMeta,
+        skipInsert:  true,
       })
     } catch { /* non-blocking */ }
 

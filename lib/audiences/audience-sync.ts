@@ -208,15 +208,82 @@ async function findAudienceForScope(args: {
   return (data as AudienceRow | null) ?? null
 }
 
+// ── consent_snapshot: the removal path's memory (wave 26 columns) ────────────
+//
+// m164:53 wrote `consent_snapshot jsonb -- consent_basis at time of add (so
+// removal recovers it)`, `stageMembership` has filled it on every insert since,
+// and NOTHING read it: removal never recovered anything. The audience-sync
+// runner suppressed a contact whose consent lapsed with a bare
+// sync_status='removed' and no record of WHAT lapsed, and — the sharper defect
+// — a removed member could never come back: the unique key still held their
+// row, the re-stage INSERT hit 23505, and 23505 was "already_member", treated
+// as success. A past client who opted out and later re-consented was locked
+// out of every audience forever, silently.
+//
+// Two readers now:
+//   · describeConsentChange — PURE: names which snapshotted basis flipped
+//     between add-time and now. The runner records that beside each removal.
+//   · stageMembership on 23505 — reads the existing row's sync_status,
+//     removed_at and consent_snapshot; a REMOVED row is REVIVED to pending
+//     with the fresh snapshot, and the change that let them back in is named.
+
+/** The keys every snapshot writer in this file records. */
+const SNAPSHOT_CONSENT_KEYS = ["tcpa_consent", "direct_mail_opt_out", "email_opt_out", "dnc_status"] as const
+
+export interface ConsentChange {
+  /** True when the row carried a snapshot to compare against. */
+  hadSnapshot: boolean
+  snapshotAt:  string | null
+  /** Human-readable basis changes, e.g. "tcpa_consent true→false". When the
+   *  snapshot exists but none of its keys moved, the current disqualifying
+   *  columns are named instead (the change happened on a column the snapshot
+   *  never recorded — nurture_status, sms_opt_out, …). */
+  basis:       string[]
+}
+
+/** PURE. What changed between the consent recorded at add-time and the
+ *  contact row now. Never throws on a malformed snapshot — that is reported as
+ *  hadSnapshot=false, which is itself the finding. */
+export function describeConsentChange(
+  snapshot: unknown,
+  current: Record<string, unknown> | null | undefined,
+): ConsentChange {
+  const snap = snapshot && typeof snapshot === "object" && !Array.isArray(snapshot)
+    ? (snapshot as Record<string, unknown>)
+    : null
+  const cur = current ?? {}
+  if (!snap) return { hadSnapshot: false, snapshotAt: null, basis: ["snapshot_missing"] }
+  const basis: string[] = []
+  for (const k of SNAPSHOT_CONSENT_KEYS) {
+    if (!(k in snap)) continue
+    const was = Boolean(snap[k])
+    const now = Boolean(cur[k])
+    if (was !== now) basis.push(`${k} ${was}→${now}`)
+  }
+  if (basis.length === 0) {
+    // Nothing the snapshot recorded moved — name what disqualifies them NOW.
+    const unsnapshotted = ["nurture_status", "email_unsubscribed", "sms_opt_out", "sms_unsubscribed", "phone_opt_out", "opt_out_channels"]
+    for (const k of unsnapshotted) {
+      const v = cur[k]
+      if (v == null || v === false || v === "" || (Array.isArray(v) && v.length === 0)) continue
+      basis.push(`${k}=${Array.isArray(v) ? v.join("|") : String(v)}`)
+    }
+    if (basis.length === 0) basis.push("no_snapshotted_basis_changed")
+  }
+  const snapshotAt = typeof snap.snapshot_at === "string" ? snap.snapshot_at : null
+  return { hadSnapshot: true, snapshotAt, basis }
+}
+
 /** Insert the audience_members row idempotently. Unique constraint
- *  on (audience_id, contact_id, lead_id) handles re-fires. */
+ *  on (audience_id, contact_id, lead_id) handles re-fires. A row that was
+ *  REMOVED is revived rather than reported as already a member. */
 async function stageMembership(args: {
   brokerageId: string
   audienceId:  string
   contactId?:  string | null
   leadId?:     string | null
   consent:     Record<string, unknown>
-}): Promise<{ inserted: boolean; skipped?: string }> {
+}): Promise<{ inserted: boolean; skipped?: string; revived?: string }> {
   if (!args.contactId && !args.leadId) return { inserted: false, skipped: "no_recipient_id" }
   const svc = createServiceClient()
   const { error } = await svc.from("audience_members").insert({
@@ -228,8 +295,39 @@ async function stageMembership(args: {
     consent_snapshot: args.consent,
   })
   if (error) {
-    // 23505 = unique violation → already a member. Treat as success.
-    if (error.code === "23505") return { inserted: false, skipped: "already_member" }
+    if (error.code === "23505") {
+      // Already a member — but WHICH KIND. Read the row the unique key is
+      // protecting; a removed one is the re-consent case described above.
+      let q = svc.from("audience_members")
+        .select("id, sync_status, removed_at, consent_snapshot")
+        .eq("audience_id", args.audienceId)
+        .eq("brokerage_id", args.brokerageId)
+      q = args.contactId ? q.eq("contact_id", args.contactId) : q.is("contact_id", null)
+      q = args.leadId ? q.eq("lead_id", args.leadId) : q.is("lead_id", null)
+      const { data: existing, error: readErr } = await q.maybeSingle()
+      if (readErr) return { inserted: false, skipped: `already_member_unreadable:${readErr.message}` }
+      const row = existing as { id: string; sync_status: string; removed_at: string | null; consent_snapshot: unknown } | null
+      if (!row) return { inserted: false, skipped: "already_member" }
+      if (row.sync_status !== "removed") return { inserted: false, skipped: "already_member" }
+      // Removed before; consent is present again (the caller gated on it).
+      // Recover what was on file at removal and name what let them back in.
+      const change = describeConsentChange(row.consent_snapshot, args.consent)
+      const { data: revivedRows, error: reviveErr } = await svc.from("audience_members")
+        .update({ sync_status: "pending", removed_at: null, consent_snapshot: args.consent })
+        .eq("id", row.id)
+        .eq("sync_status", "removed")
+        .select("id")
+      if (reviveErr) return { inserted: false, skipped: `revive_refused:${reviveErr.message}` }
+      // A zero-row update resolves too (CLAUDE.md §3) — a concurrent revive
+      // already did it; that is the desired end state, not a failure.
+      if ((revivedRows ?? []).length === 0) return { inserted: false, skipped: "already_member" }
+      const removedAt = row.removed_at ? ` (removed ${row.removed_at})` : ""
+      const revived = `${change.basis.join(", ")}${removedAt}`
+      console.info("[audience-sync] removed member revived to pending", {
+        member_id: row.id, audience_id: args.audienceId, contact_id: args.contactId ?? null, basis: revived,
+      })
+      return { inserted: true, revived }
+    }
     return { inserted: false, skipped: error.message }
   }
   return { inserted: true }

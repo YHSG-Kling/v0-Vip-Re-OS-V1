@@ -1531,12 +1531,99 @@ export async function getPodcastAdvancedAnalytics(params?: { trendDays?: number 
   const since60 = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString()
 
   try {
-    const { data: events } = await supabase
+    const { data: events, error: eventsError } = await supabase
       .from("podcast_analytics_events")
-      .select("event_type, episode_id, platform, duration_listened_seconds, created_at")
+      .select("event_type, episode_id, platform, duration_listened_seconds, timestamp_seconds, listener_contact_id, created_at")
       .eq("brokerage_id", brokerageId)
+    if (eventsError) {
+      // §3 — a refused read used to fall through as "no events" and the tab
+      // rendered zeros over a refusal.
+      return { success: false, error: `podcast_analytics_events read refused: ${eventsError.message}` }
+    }
 
     const rows = events ?? []
+
+    // ── Per-contact listening — THE CRM SIGNAL (wave 26 columns) ─────────────
+    // trackPodcastEvent (:832) stamps listener_contact_id and timestamp_seconds
+    // on every event, and nothing read either: the tab could say "412 plays"
+    // and never WHO — so a past client who listened to every episode this
+    // quarter was indistinguishable from an anonymous RSS hit, and the one
+    // fact an agent can act on (this named person is engaging with my show)
+    // never reached them. Collapsed per contact, named from the contacts
+    // table (tenant-scoped), ranked by minutes. `anonymousEvents` is the
+    // denominator's blind spot published beside it: events with no
+    // listener_contact_id (RSS / directory plays) cannot be attributed.
+    type Listener = {
+      plays: number; seconds: number; ctaClicks: number
+      episodes: Set<string>; lastListenedAt: string | null
+    }
+    const byContact = new Map<string, Listener>()
+    let anonymousEvents = 0
+    for (const r of rows) {
+      const cid = (r as { listener_contact_id?: string | null }).listener_contact_id ?? null
+      if (!cid) { anonymousEvents++; continue }
+      const l = byContact.get(cid) ?? { plays: 0, seconds: 0, ctaClicks: 0, episodes: new Set<string>(), lastListenedAt: null }
+      if (r.event_type === "play") l.plays++
+      if (r.event_type === "cta_click") l.ctaClicks++
+      l.seconds += r.duration_listened_seconds ?? 0
+      if (r.episode_id) l.episodes.add(r.episode_id)
+      const ts = (r.created_at as string | null) ?? null
+      if (ts && (!l.lastListenedAt || ts > l.lastListenedAt)) l.lastListenedAt = ts
+      byContact.set(cid, l)
+    }
+    const listenerIds = Array.from(byContact.keys())
+    const listenerName = new Map<string, string | null>()
+    let listenerNameLookupError: string | null = null
+    if (listenerIds.length > 0) {
+      const { data: contactRows, error: contactErr } = await supabase
+        .from("contacts")
+        .select("id, first_name, last_name")
+        .eq("brokerage_id", brokerageId)
+        .in("id", listenerIds)
+      if (contactErr) {
+        listenerNameLookupError = contactErr.message
+      } else {
+        for (const c of (contactRows ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null }>) {
+          const name = [c.first_name, c.last_name].filter(Boolean).join(" ").trim()
+          listenerName.set(c.id, name || null)
+        }
+      }
+    }
+    const topListeners = Array.from(byContact.entries())
+      .map(([contactId, l]) => ({
+        contactId,
+        name: listenerName.get(contactId) ?? null,
+        plays: l.plays,
+        minutes: Math.round(l.seconds / 60),
+        episodesHeard: l.episodes.size,
+        ctaClicks: l.ctaClicks,
+        lastListenedAt: l.lastListenedAt,
+      }))
+      .sort((a, b) => b.minutes - a.minutes || b.plays - a.plays)
+      .slice(0, 25)
+
+    // ── Drop-off point (timestamp_seconds) ───────────────────────────────────
+    // A `pause` event's timestamp_seconds is where the listener stopped. The
+    // median of those per episode is the drop-off point; with no pause events
+    // it is null ("not measured"), never 0. `play` events carry a 0 timestamp
+    // by construction and are excluded so they cannot drag the median down.
+    const pauseByEpisode = new Map<string, number[]>()
+    const allPauses: number[] = []
+    for (const r of rows) {
+      if (r.event_type !== "pause") continue
+      const t = Number((r as { timestamp_seconds?: number | null }).timestamp_seconds ?? 0)
+      if (!Number.isFinite(t) || t <= 0) continue
+      const arr = pauseByEpisode.get(r.episode_id) ?? []
+      arr.push(t); pauseByEpisode.set(r.episode_id, arr)
+      allPauses.push(t)
+    }
+    const median = (xs: number[]): number | null => {
+      if (xs.length === 0) return null
+      const s = [...xs].sort((a, b) => a - b)
+      const mid = Math.floor(s.length / 2)
+      return s.length % 2 ? s[mid] : Math.round((s[mid - 1] + s[mid]) / 2)
+    }
+    const medianDropOffSeconds = median(allPauses)
 
     // Total plays
     const totalPlays = rows.filter((r: any) => r.event_type === "play").length
@@ -1641,6 +1728,8 @@ export async function getPodcastAdvancedAnalytics(params?: { trendDays?: number 
       title: ep.title,
       status: ep.status as string | null,
       plays: playsByEpisode[ep.id] ?? 0,
+      /** Median pause position in seconds, or null when no listener paused. */
+      dropOffSeconds: median(pauseByEpisode.get(ep.id) ?? []),
       audioUrl: ep.audio_url,
       publishedChannels: ep.publish_channels ?? [],
       platformLinks,
@@ -1656,6 +1745,12 @@ export async function getPodcastAdvancedAnalytics(params?: { trendDays?: number 
       channelBreakdown,
       dailyTrend,
       perEpisode,
+      /** Named listeners ranked by minutes — the per-contact CRM signal. */
+      topListeners,
+      identifiedListeners: byContact.size,
+      anonymousEvents,
+      listenerNameLookupError,
+      medianDropOffSeconds,
     }
   } catch (error: any) {
     return { success: false, error: error.message }
