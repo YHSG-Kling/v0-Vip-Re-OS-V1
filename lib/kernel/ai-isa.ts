@@ -168,9 +168,13 @@ export interface AiIsaCallRow {
  * the contact the human should open instead of the lead. Curated fields only —
  * a consumer renders these two, never the raw jsonb.
  *
- * Other writers of agent_handoffs (app/actions/leads.ts handOffToHumanAgent)
- * write NO context_package, so the column is nullable on read and every field
+ * The other writer of agent_handoffs (app/actions/leads.ts handOffToHumanAgent)
+ * writes this package too since 2026-09-03 ({ from_user_id, contact_id: null }
+ * — it hands over a LEAD, so there is no contact to open). Rows written before
+ * that date carry NULL, so the column stays nullable on read and every field
  * inside it is optional: an older or foreign row must not throw on `.contact_id`.
+ * The two writers still disagree on handoff_status ("completed" there,
+ * "pending" here) — a product divergence recorded, not resolved.
  */
 export interface AiIsaHandoffContextPackage {
   /** users.id of the actor who triggered the handoff (ctx.userId) — NOT agents.id. */

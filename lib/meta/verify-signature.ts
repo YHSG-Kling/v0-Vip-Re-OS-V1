@@ -62,7 +62,9 @@ export const META_VERIFY_TOKEN_FALLBACK_ENVS = ["META_VERIFY_TOKEN", "WHATSAPP_V
 
 /** The App Secret env pair — the same pair lib/social/token-refresh.ts uses. */
 export const META_APP_SECRET_ENV = "META_APP_SECRET"
-export const META_APP_SECRET_FALLBACK_ENV = "FACEBOOK_APP_SECRET"
+// File-local (integrator, 2026-09-03): it was exported with no importer and the
+// census listed it as an orphan const; the secret resolver below is its reader.
+const META_APP_SECRET_FALLBACK_ENV = "FACEBOOK_APP_SECRET"
 
 /**
  * Resolve the handshake token, survivor first. Returns which env name answered
@@ -86,7 +88,7 @@ export function resolveMetaVerifyToken(): { token: string; source: string } | nu
 
 /** The App Secret, survivor first. Null = this deploy cannot verify payloads. */
 export function resolveMetaAppSecret(): string | null {
-  const v = process.env.META_APP_SECRET ?? process.env.FACEBOOK_APP_SECRET
+  const v = process.env.META_APP_SECRET ?? process.env[META_APP_SECRET_FALLBACK_ENV]
   return v && v.trim().length > 0 ? v : null
 }
 
