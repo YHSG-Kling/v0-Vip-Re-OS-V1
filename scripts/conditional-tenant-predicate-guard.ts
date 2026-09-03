@@ -163,9 +163,13 @@ export const CLASSIFICATION: Record<string, { verdict: Verdict; why: string }> =
     verdict: "platform",
     why: "The route refuses any request without a matching x-cron-secret before reading targetBrokerageId. Omitting it checks every tenant's service_status, which is the health check's purpose.",
   },
-  "app/api/leads/raw/route.ts :: brokerageId": {
-    verdict: "platform",
-    why: "requirePlatformStaffAuth(supabase) runs before the query and returns its own 403 response on failure. Only platform staff reach the unscoped read.",
+  // app/api/leads/raw/route.ts :: brokerageId — GONE (wave 26 lane A): the GET
+  // that carried it was merged onto listRawLeadsForReview and tombstoned;
+  // the entry was retired with the site so it cannot sit here reading as
+  // enforced (§2).
+  "lib/kernel/actor-attribution.ts :: brokerageId": {
+    verdict: "anchored",
+    why: "readUsers is `.in(\"id\", actorIds)` — every row is already NAMED by primary key before the tenant predicate is considered, so omitting it cannot widen the result to rows the caller did not ask for; it can only let a named user's display name resolve across tenants. The omitting callers are the platform sentinel (app/actions/superadmin/platform-sentinel.ts, a platform surface) and the compliance dashboard's resolved_by column (a cookie client, RLS-bounded). An `opts` object that carries a null/empty brokerageId is REFUSED with a reason rather than widened (resolveActorNames :98), and resolveActorNamesEitherClass requires the id outright.",
   },
   "app/api/webhooks/sendgrid-events/route.ts :: eventBrokerageId": {
     verdict: "platform",
