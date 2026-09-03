@@ -4,7 +4,12 @@ import { captureFormSubmission, trackMagnetEvent, type CaptureFormSubmissionInpu
 // POST /api/lead-magnets/submissions
 // Input contract: CaptureFormSubmissionInput
 // Output contract: CaptureFormSubmissionOutput
-// Auth: NOT required — public-facing endpoint for form submitters
+// Auth: NOT required — public-facing endpoint for form submitters (embeds
+// OUTSIDE this app). The in-app twin for /lm/[slug] is
+// app/actions/lead-magnet-capture.ts:captureFormSubmissionAction; both doors
+// call the SAME two kernel commands with the same consent record and the same
+// provenance (IP + UA), so a submission means the same thing whichever door it
+// came through.
 export async function POST(req: NextRequest) {
   try {
     const body: CaptureFormSubmissionInput = await req.json()
@@ -19,14 +24,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: "submissionData is required" }, { status: 400 })
     }
 
-    // Enforce TCPA consent on valuation/home-value forms
-    const hasAddress = "property_address" in body.submissionData
-    if (hasAddress && !body.tcpaConsentGiven) {
-      return NextResponse.json(
-        { success: false, error: "TCPA consent required for this form" },
-        { status: 400 }
-      )
-    }
+    // TOMBSTONE (§1.1, 2026-09-03): the inline "TCPA consent required on a
+    // valuation form" check that stood here MOVED INTO THE KERNEL —
+    // lib/kernel/lead-magnets.ts:captureFormSubmission, right after the form's
+    // is_active check — so the in-app door enforces it too. It was a rule only
+    // this route knew, which meant the door the product actually uses recorded
+    // consent-less valuation requests this one refused. The kernel's refusal
+    // surfaces below as a 422 with the same error text.
 
     // Extract real IP + UA from request headers
     const ipAddress =
@@ -45,7 +49,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(result, { status: 422 })
     }
 
-    // Fire tracking event — non-blocking
+    // Fire tracking event — non-blocking. brokerageId is asserted, not trusted:
+    // trackMagnetEvent derives the tenant from the form row and refuses a
+    // mismatch (captureFormSubmission already validated the pair above).
     trackMagnetEvent({
       magnetId: body.formId,
       brokerageId: body.brokerageId,

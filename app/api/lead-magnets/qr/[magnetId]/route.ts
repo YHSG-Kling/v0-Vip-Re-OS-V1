@@ -52,20 +52,35 @@ export async function GET(
     const brokerageId = searchParams.get("brokerageId") ?? ""
     const track = searchParams.get("track") === "1"
 
-    if (!brokerageId) {
-      return NextResponse.json({ success: false, error: "brokerageId required" }, { status: 400 })
-    }
-
-    if (track && brokerageId) {
+    // ── THE SCAN IS STAMPED TO THE MAGNET'S TENANT, NOT THE CALLER'S CLAIM ───
+    // This arm is unauthenticated by nature (a scan comes from a stranger's
+    // phone) and it used to hand the query-string `brokerageId` straight to
+    // trackMagnetEvent, which wrote lifecycle_events and qr_scan_events under
+    // that value on a SERVICE client — the caller-named-brokerageId-on-a-service-
+    // client shape CLAUDE.md §4 names as the IDOR found repeatedly here. Anyone
+    // could forge scan events into any tenant's ledger with one GET. The
+    // parameter is now IGNORED for the scan: lib/kernel/lead-magnets.ts:
+    // trackMagnetEvent derives the tenant from the magnet's own
+    // lead_capture_forms row and refuses a supplied brokerageId that disagrees.
+    // An unknown magnetId records nothing. The record half below still needs
+    // `brokerageId`, and still gates it against the session.
+    if (track) {
       const ipAddress = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? undefined
       const userAgent = req.headers.get("user-agent") ?? undefined
       trackMagnetEvent({
         magnetId,
-        brokerageId,
         eventType: "qr_scan",
         ipAddress,
         userAgent,
       }).catch(() => {})
+    }
+
+    if (!brokerageId) {
+      // A scan-only caller (track=1, no brokerageId) has done what it came for.
+      if (track) {
+        return NextResponse.json({ success: true, tracked: true, record: null }, { status: 200 })
+      }
+      return NextResponse.json({ success: false, error: "brokerageId required" }, { status: 400 })
     }
 
     // ── THE RECORD IS GATED; THE SCAN IS NOT (integrator, wave 16) ───────────

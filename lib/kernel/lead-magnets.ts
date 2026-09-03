@@ -108,7 +108,15 @@ export function leadMagnetQrLabel(magnetId: string): string {
 
 export interface TrackMagnetEventInput {
   magnetId: string
-  brokerageId: string
+  /**
+   * OPTIONAL, and NEVER the tenant authority. The tenant an event is stamped
+   * to is derived from the magnet's own lead_capture_forms row (§4: the caller's
+   * parameter cannot vouch for itself). When supplied it must AGREE with that
+   * row or the event is refused — it exists so a caller that already validated
+   * the pair (captureFormSubmission did) can assert it, not so an anonymous
+   * scan reporter can choose which brokerage's ledger it writes into.
+   */
+  brokerageId?: string
   eventType: "view" | "form_start" | "form_submit" | "qr_scan" | "link_click"
   metadata?: Record<string, unknown>
   contactId?: string
@@ -583,6 +591,19 @@ export async function captureFormSubmission(
     return { success: false, error: "This form is no longer accepting submissions" }
   }
 
+  // TCPA CONSENT IS REQUIRED ON A VALUATION FORM — ONE RULE, IN THE KERNEL.
+  // A submission carrying a property address is a home-value request and will
+  // be worked by phone/text, so it may not be recorded without consent. This
+  // rule used to live only in the public HTTP door
+  // (app/api/lead-magnets/submissions/route.ts), which meant the in-app door
+  // (app/actions/lead-magnet-capture.ts, the one /lm/[slug] actually uses)
+  // recorded consent-less valuation requests the API would have refused. Both
+  // doors now get the same answer from the same place, and the consent record
+  // (form_submissions.tcpa_consent_given below) means the same thing on both.
+  if ("property_address" in input.submissionData && !input.tcpaConsentGiven) {
+    return { success: false, error: "TCPA consent required for this form" }
+  }
+
   // Try to match or create a contact from submission data
   const data = input.submissionData as Record<string, string>
   let contactId: string | undefined
@@ -956,59 +977,86 @@ export async function generateQRCode(
 export async function trackMagnetEvent(
   input: TrackMagnetEventInput
 ): Promise<TrackMagnetEventOutput> {
-  if (!input.magnetId || !input.brokerageId || !input.eventType) {
-    return { success: false, error: "Missing required fields: magnetId, brokerageId, eventType" }
+  if (!input.magnetId || !input.eventType) {
+    return { success: false, error: "Missing required fields: magnetId, eventType" }
   }
 
   const supabase = createServiceClient()
 
+  // ── THE TENANT COMES FROM THE MAGNET, NOT FROM THE CALLER (§4) ────────────
+  // This wrote lifecycle_events (and qr_scan_events) stamped to whatever
+  // `brokerageId` the caller named, on a SERVICE client, while the only row it
+  // read to get there — the form — was looked up by id with NO brokerage
+  // predicate. The scan arm of GET /api/lead-magnets/qr/[magnetId] is
+  // unauthenticated by nature (a scan comes from a stranger's phone) and took
+  // that value from the QUERY STRING, so anyone could forge scan and view
+  // events into any tenant's ledger. That is the body-supplied-brokerageId-on-
+  // a-service-client shape CLAUDE.md §4 names. The form row is the ONE
+  // authority for which tenant a magnet belongs to, so it is read first (for
+  // every event type), its brokerage_id is what every write below carries, and
+  // a caller-supplied brokerageId is only ever CHECKED against it — a
+  // disagreement refuses rather than trusting either side.
+  const { data: form, error: formError } = await supabase
+    .from("lead_capture_forms")
+    .select("id, slug, brokerage_id")
+    .eq("id", input.magnetId)
+    .maybeSingle()
+  if (formError) {
+    return { success: false, error: `Could not resolve the lead magnet: ${formError.message}` }
+  }
+  if (!form?.brokerage_id) {
+    return { success: false, error: "Lead magnet not found" }
+  }
+  const tenantId = form.brokerage_id as string
+  if (input.brokerageId && input.brokerageId !== tenantId) {
+    return { success: false, error: "brokerageId does not match the lead magnet's brokerage" }
+  }
+
   // If it's a QR scan, increment scan count and log qr_scan_event
   if (input.eventType === "qr_scan") {
-    // Find QR code by target_url containing the magnet slug
-    const { data: form } = await supabase
-      .from("lead_capture_forms")
-      .select("slug")
-      .eq("id", input.magnetId)
+    // The code is keyed by its ONE label (leadMagnetQrLabel — the mint path's
+    // idempotency key), not by a substring of its URL: target_url is the
+    // semantic landing URL and is re-pointable, so an ILIKE on the form slug
+    // could match a re-pointed or unrelated code, or nothing at all.
+    const { data: qr, error: qrError } = await supabase
+      .from("qr_codes")
+      .select("id, scan_count")
+      .eq("brokerage_id", tenantId)
+      .eq("label", leadMagnetQrLabel(input.magnetId))
       .maybeSingle()
+    if (qrError) {
+      console.error("[lead-magnets] qr_codes lookup refused:", qrError.message)
+    }
 
-    if (form) {
-      const { data: qr } = await supabase
-        .from("qr_codes")
-        .select("id")
-        .eq("brokerage_id", input.brokerageId)
-        .ilike("target_url", `%${form.slug}%`)
-        .maybeSingle()
-
-      if (qr) {
-        await supabase
-          .from("qr_scan_events")
-          .insert({
-            qr_code_id: qr.id,
-            brokerage_id: input.brokerageId,
-            contact_id: input.contactId ?? null,
-            scanned_at: new Date().toISOString(),
-            ip_address: input.ipAddress ?? null,
-            user_agent: input.userAgent ?? null,
-          })
-
-        // Increment scan_count on qr_codes
-        const { data: qrRow } = await supabase
+    if (qr) {
+      // Errors are READ (§3): a refused scan insert used to resolve silently and
+      // the scan_count still went up, so the count and the event log disagreed.
+      const { error: scanError } = await supabase
+        .from("qr_scan_events")
+        .insert({
+          qr_code_id: qr.id,
+          brokerage_id: tenantId,
+          contact_id: input.contactId ?? null,
+          scanned_at: new Date().toISOString(),
+          ip_address: input.ipAddress ?? null,
+          user_agent: input.userAgent ?? null,
+        })
+      if (scanError) {
+        console.error("[lead-magnets] qr_scan_events insert refused:", scanError.message)
+      } else {
+        const { error: countError } = await supabase
           .from("qr_codes")
-          .select("scan_count")
+          .update({ scan_count: (qr.scan_count ?? 0) + 1 })
+          .eq("brokerage_id", tenantId)
           .eq("id", qr.id)
-          .maybeSingle()
-
-        if (qrRow) {
-          await supabase
-            .from("qr_codes")
-            .update({ scan_count: (qrRow.scan_count ?? 0) + 1 })
-            .eq("id", qr.id)
+        if (countError) {
+          console.error("[lead-magnets] qr_codes scan_count update refused:", countError.message)
         }
       }
     }
   }
 
-  // Log the lifecycle event
+  // Log the lifecycle event — stamped to the MAGNET's tenant.
   const { data: event, error } = await supabase
     .from("lifecycle_events")
     .insert({
@@ -1016,7 +1064,7 @@ export async function trackMagnetEvent(
       entity_id: input.magnetId,
       event_type: `lead_magnet_${input.eventType}`,
       actor_user_id: input.contactId ?? null,
-      brokerage_id: input.brokerageId,
+      brokerage_id: tenantId,
       metadata: { ...input.metadata, contactId: input.contactId },
     })
     .select("id")

@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Inbox } from "lucide-react"
 import type { RawLeadReviewRow } from "@/app/actions/lead-promotion/promote-lead"
 import { rawLeadReviewStatus, type RawLeadReviewTone } from "@/lib/lead-promotion/review-status"
+import { DedupeReasons } from "./dedupe-reasons"
 
 const TONE: Record<RawLeadReviewTone, string> = {
   promoted: "bg-emerald-100 text-emerald-700 border-emerald-200",
@@ -70,7 +71,12 @@ export function RawLeadsReviewPanel({ initialRows }: { initialRows: RawLeadRevie
                       </td>
                       <td className="py-2 pr-4 text-muted-foreground">{[r.city, r.state].filter(Boolean).join(", ") || "—"}</td>
                       <td className="py-2 pr-4 text-muted-foreground">{r.source ?? r.sourceFamily ?? "—"}</td>
-                      <td className="py-2 pr-4"><Badge className={TONE[review.tone]}>{review.label}</Badge></td>
+                      <td className="py-2 pr-4">
+                        <Badge className={TONE[review.tone]}>{review.label}</Badge>
+                        {/* The WHY behind the status: this record's gate log, fetched on demand
+                            from the (session-gated) deduplication-log route. */}
+                        <DedupeReasons rawRecordId={r.id} />
+                      </td>
                       <td className="py-2 text-right">
                         {r.leadId ? (
                           <Button size="sm" variant="ghost" asChild>

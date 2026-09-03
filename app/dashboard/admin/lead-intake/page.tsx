@@ -2,6 +2,8 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { loadLeadIntakeCockpit, REJECTION_REASON_LABEL } from "@/lib/kernel/lead-intake-cockpit"
 import { listRawLeadsForReview } from "@/app/actions/lead-promotion/promote-lead"
+import { resolveLeadVisibility } from "@/lib/auth/lead-visibility"
+import { loadRawPipelineStats } from "./pipeline-stats"
 import { RawLeadsReviewPanel } from "./raw-leads-review"
 import { SocialScrapeTrigger } from "./social-scrape-trigger"
 import { Card } from "@/components/ui/card"
@@ -40,6 +42,22 @@ export default async function LeadIntakeCockpitPage() {
 
   const data = await loadLeadIntakeCockpit(brokerageId)
   const { funnel } = data
+
+  // PIPELINE STATS HEADER — the same numbers GET /api/leads/process-pipeline
+  // serves, by an in-process call to the one function behind that route
+  // (./pipeline-stats.ts). Same second gate as the route: a TRUE team scope is
+  // refused, because raw_scraped_leads has no agent linkage and brokerage-wide
+  // ingestion totals cannot be narrowed to a team (CLAUDE.md §4). Where the team
+  // IS the tenant the resolver has already collapsed the scope to 'brokerage'.
+  // The tenant is the SESSION's brokerage, never a parameter.
+  const vis = await resolveLeadVisibility(supabase, {
+    userId: user.id,
+    userType: userType,
+    platformRole: (u as { platform_role?: string | null } | null)?.platform_role ?? null,
+    brokerageId,
+  })
+  const statsRefusedForTeam = vis.allowed && vis.scope.kind === "team"
+  const pipelineStats = vis.allowed && vis.scope.kind !== "team" ? await loadRawPipelineStats(brokerageId) : null
 
   // ACCESS POLICY (owner): RAW LEADS = PLATFORM ONLY. Raw record CONTENT
   // (the review bench) renders only for platform staff — tenant brokers see
@@ -86,6 +104,48 @@ export default async function LeadIntakeCockpitPage() {
               </Card>
             ))}
           </div>
+
+          {/* ── Pipeline stats (the process-pipeline route's numbers, in-process) ── */}
+          <Card className="p-4">
+            <div className="text-xs font-medium mb-2">Pipeline stats · by processing status</div>
+            {statsRefusedForTeam ? (
+              <div className="text-sm text-muted-foreground">
+                Brokerage-level only — raw-pipeline totals cannot be scoped to a team, so they are not shown for a
+                team-scoped seat.
+              </div>
+            ) : !pipelineStats ? (
+              <div className="text-sm text-muted-foreground">Pipeline stats are unavailable for this seat.</div>
+            ) : !pipelineStats.ok ? (
+              <div className="text-sm text-red-700">Pipeline stats could not be read: {pipelineStats.error}</div>
+            ) : (
+              <div className="space-y-2">
+                <div className="flex flex-wrap gap-1.5">
+                  <Badge className="tabular-nums">total {pipelineStats.stats.raw_scraped_leads.total}</Badge>
+                  {Object.entries(pipelineStats.stats.raw_scraped_leads)
+                    .filter(([k, n]) => k !== "total" && n > 0)
+                    .map(([status, n]) => (
+                      <Badge key={status} variant="outline" className="tabular-nums">
+                        {REJECTION_REASON_LABEL[status] ?? status} {n}
+                      </Badge>
+                    ))}
+                </div>
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
+                  <span className="tabular-nums">
+                    dedup skips logged: {pipelineStats.stats.deduplication.duplicates_found}
+                  </span>
+                  {Object.keys(pipelineStats.stats.vendor_costs).length === 0 ? (
+                    <span>vendor spend: none recorded</span>
+                  ) : (
+                    Object.entries(pipelineStats.stats.vendor_costs).map(([vendor, cost]) => (
+                      <span key={vendor} className="tabular-nums">
+                        {vendor}: ${cost.toFixed(2)}
+                      </span>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+          </Card>
 
           {/* ── Per-source conversion table ─────────────────────────────────── */}
           <Card className="p-4">
