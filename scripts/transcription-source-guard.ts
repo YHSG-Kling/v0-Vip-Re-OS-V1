@@ -602,16 +602,25 @@ function assertOneTranscriptionPrimitive(): boolean {
 
 function assertWrapperKeepsOneArgument(): boolean {
   const src = blankComments(raw(WRAPPER))
-  const useServer = /^\s*["']use server["']/m.test(src.split("\n").slice(0, 3).join("\n"))
+  // The wrapper was a `"use server"` module until 2026-09-03, when lane R3-A
+  // swapped the directive for `import "server-only"` (every caller is
+  // in-process — the directive published an SSRF-shaped door nobody needed).
+  // The RULE this assertion protects is unchanged: brokerageId must not be a
+  // parameter. So it accepts EITHER boundary spelling and asserts the arity,
+  // rather than pinning the directive — a §2 waypoint pin that would have gone
+  // red on the day the door was closed and stayed red forever.
+  const boundary =
+    /^\s*["']use server["']/m.test(src.split("\n").slice(0, 3).join("\n")) ||
+    /^\s*import\s+["']server-only["']/m.test(src)
   const m = /export\s+async\s+function\s+transcribeFromUrl\s*\(/.exec(src)
-  if (!useServer || !m) {
-    return check("T13 the \"use server\" wrapper exposes no option bag", false, `use-server:${useServer} export-found:${!!m}`)
+  if (!boundary || !m) {
+    return check("T13 the transcribe wrapper exposes no option bag", false, `boundary(use-server|server-only):${boundary} export-found:${!!m}`)
   }
   const open = src.indexOf("(", m.index)
   const params = src.slice(open + 1, skipBalanced(src, open))
   const count = params.trim() === "" ? 0 : params.split(",").filter((s) => s.trim()).length
   return check(
-    "T13 the \"use server\" wrapper takes ONE argument — the option bag (with its brokerageId) is not an RPC surface",
+    "T13 the transcribe wrapper takes ONE argument — the option bag (with its brokerageId) is not a caller-reachable surface",
     count === 1,
     `transcribeFromUrl parameters: ${count} (${params.trim()})`,
   )

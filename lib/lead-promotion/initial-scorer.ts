@@ -1,11 +1,23 @@
-'use server'
+// NOT a server-action module (2026-09-03, lane R3-A; template
+// lib/behavior-learning/preference-updater.ts:1-9). The module-level "use server"
+// that stood here published triggerInitialScoring(leadId) as a public HTTP door
+// with no gate: a service client re-scoring and UPDATING any leads.id a session
+// chose to name (the tenant is read from the lead row, never checked against
+// the caller). Every caller is in-process server code (re-verified 2026-09-03):
+//   · lib/lead-promotion/index.ts:6 (the barrel), whose only value importer is
+//     scripts/raw-lead-promotion-simulator.ts:72 (tsx, outside the bundle) —
+//     no app/ module, route, or client component calls triggerInitialScoring
+// so the directive published nothing anyone needed. `server-only` makes a future
+// client import fail at build time instead of bundling the service credential.
+import "server-only"
 
 import { createServiceClient } from '@/lib/supabase/service'
 import type { StandardTimeline } from '@/constants/crm-standards'
 
 /**
- * Points contributed by `leads.timeline` (0-10). NOT exported — this file is
- * `'use server'`, where every export is a public HTTP endpoint and must be async.
+ * Points contributed by `leads.timeline` (0-10). NOT exported — nothing outside
+ * this module reads it, and until 2026-09-03 this file was `'use server'`, where
+ * every export was a public HTTP endpoint and had to be async (see the header).
  */
 const TIMELINE_URGENCY_POINTS: Record<StandardTimeline, number> = {
   immediate:     10,

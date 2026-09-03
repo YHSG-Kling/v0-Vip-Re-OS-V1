@@ -132,7 +132,27 @@ export interface NarrateResult {
    * a lane that has never produced one.
    */
   avatarSkipped: Array<{ renderId: string; reason: string }>
+  /**
+   * Every REFUSED read or write on the way, with where it happened (lane R3-A,
+   * 2026-09-03). §3 — supabase-js RESOLVES refusals, and this function used to
+   * drop three of them: the presentation read returned `empty` on a refusal
+   * (byte-identical to "no such presentation"), the queued-renders read reported
+   * `sections: 0` (byte-identical to "nothing queued"), and the voiceover
+   * write-back was a bare await — so an mp3 could be PAID FOR and hosted while
+   * the row kept the untrimmed script and no voiceoverUrl, the only record of
+   * what the voice said disagreeing with its audio, silently. A refusal is now a
+   * fact on the result; section-drip's receipt line carries it, and a refused
+   * READ returns with the refusal set rather than a clean-looking zero.
+   */
+  refusals: Array<{ renderId: string | null; step: NarrationRefusalStep; reason: string }>
 }
+
+export type NarrationRefusalStep =
+  | "presentation_read"
+  | "renders_read"
+  | "voiceover_synthesis"
+  | "voiceover_write_back"
+  | "trimmed_script_write_back"
 
 /**
  * Synthesize voice (and request avatar) for every queued section render of a
@@ -144,13 +164,21 @@ export async function narratePresentationSections(
   client?: ReturnType<typeof createServiceClient>,
 ): Promise<NarrateResult> {
   const supabase = client ?? createServiceClient()
-  const empty: NarrateResult = { sections: 0, avatarNarrated: 0, voiceOnly: 0, onScreenOnly: 0, hasVoiceClone: false, hasAvatarSource: false, avatarSubmitted: 0, avatarSkipped: [] }
+  const empty: NarrateResult = { sections: 0, avatarNarrated: 0, voiceOnly: 0, onScreenOnly: 0, hasVoiceClone: false, hasAvatarSource: false, avatarSubmitted: 0, avatarSkipped: [], refusals: [] }
 
-  const { data: pres } = await supabase
+  const { data: pres, error: presError } = await supabase
     .from("listing_presentations")
     .select("brokerage_id, agent_user_id")
     .eq("id", presentationId)
     .maybeSingle()
+  // §3 — a REFUSED read is not "no such presentation". It used to fall through
+  // to `return empty`, which is the same value a missing row returns, so a
+  // tenant predicate refusing (or the table being unreadable) rendered as a
+  // presentation with nothing to narrate. Returned as a refusal instead.
+  if (presError) {
+    console.warn(`[section-narration-orchestrator] presentation ${presentationId} read REFUSED: ${presError.message}`)
+    return { ...empty, refusals: [{ renderId: null, step: "presentation_read", reason: presError.message }] }
+  }
   if (!pres?.brokerage_id) return empty
 
   // Resolve the agent's voice clone + avatar source (both optional). The cross
@@ -160,15 +188,29 @@ export async function narratePresentationSections(
   const { voiceId, avatarSource, agentRecordId } = await resolveAgentNarrationAssets(supabase, pres.agent_user_id)
 
   // Queued section renders carry the narration script in input_props.
-  const { data: renders } = await supabase
+  const { data: renders, error: rendersError } = await supabase
     .from("remotion_composition_renders")
     .select("id, composition_id, agent_user_id, input_props")
     .eq("entity_type", "listing_presentation")
     .eq("entity_id", presentationId)
     .eq("render_status", "queued")
+  // §3 — same shape: a refused queue read used to report `sections: 0`, which is
+  // exactly what an empty queue reports, so every section shipped un-narrated
+  // with a receipt that said there was nothing to narrate.
+  if (rendersError) {
+    console.warn(`[section-narration-orchestrator] presentation ${presentationId} queued-render read REFUSED: ${rendersError.message}`)
+    return {
+      ...empty,
+      hasVoiceClone: !!voiceId,
+      hasAvatarSource: !!avatarSource,
+      refusals: [{ renderId: null, step: "renders_read", reason: rendersError.message }],
+    }
+  }
   const list = (renders ?? []) as Array<{ id: string; composition_id: string; agent_user_id: string | null; input_props: Record<string, unknown> | null }>
 
-  const result: NarrateResult = { ...empty, sections: list.length, hasVoiceClone: !!voiceId, hasAvatarSource: !!avatarSource }
+  // `refusals` is a fresh array, not `empty`'s — the pushes below must not
+  // reach back into the sentinel.
+  const result: NarrateResult = { ...empty, sections: list.length, hasVoiceClone: !!voiceId, hasAvatarSource: !!avatarSource, refusals: [] }
 
   for (const r of list) {
     const props = (r.input_props ?? {}) as Record<string, unknown>
@@ -229,11 +271,35 @@ export async function narratePresentationSections(
           // spoken. Leaving the pre-trim text beside the trimmed audio would
           // make the row disagree with its own mp3, and this column is the only
           // record of what the voice said.
-          await supabase.from("remotion_composition_renders")
+          //
+          // §3 — this was a bare await. A refused UPDATE resolves, so the mp3
+          // above is already paid for and hosted while the row keeps the
+          // untrimmed script and no voiceoverUrl: the section renders silent
+          // and the record of what the voice said is wrong, with nothing
+          // anywhere saying so. The error is read and surfaced on the result.
+          const { error: writeBackError } = await supabase.from("remotion_composition_renders")
             .update({ input_props: { ...props, narrationScript: script, voiceoverUrl }, used_voiceover: true })
             .eq("id", r.id)
+          if (writeBackError) {
+            console.error(`[section-narration-orchestrator] render ${r.id} — voiceover write-back REFUSED (${writeBackError.message}); the mp3 at ${voiceoverUrl} is hosted but the row still carries the pre-trim script and no voiceoverUrl`)
+            result.refusals.push({ renderId: r.id, step: "voiceover_write_back", reason: writeBackError.message })
+          }
+        } else {
+          // synthesizeSpeech never throws — it RETURNS its failure (no key,
+          // budget ceiling, vendor error). Degrading to on-screen is still the
+          // right outcome; degrading without a trace is not.
+          const reason = tts.error ?? tts.errorCode ?? "synthesis returned no audio"
+          console.warn(`[section-narration-orchestrator] render ${r.id} — voiceover NOT synthesized (${reason}); section ships on-screen only`)
+          result.refusals.push({ renderId: r.id, step: "voiceover_synthesis", reason })
         }
-      } catch { /* voice synth is best-effort → falls back to on-screen */ }
+      } catch (e) {
+        // Voice synth is best-effort → falls back to on-screen. WAS `catch {}`,
+        // which erased what went wrong (a thrown host upload, a missing module);
+        // the section still degrades, the reason now rides on the result.
+        const reason = e instanceof Error ? e.message : String(e)
+        console.warn(`[section-narration-orchestrator] render ${r.id} — voiceover pass threw (${reason}); section ships on-screen only`)
+        result.refusals.push({ renderId: r.id, step: "voiceover_synthesis", reason })
+      }
     }
 
     if (plan.avatar && avatarSource && agentRecordId) {
@@ -265,7 +331,10 @@ export async function narratePresentationSections(
         const { error: sErr } = await supabase.from("remotion_composition_renders")
           .update({ input_props: { ...props, narrationScript: script } })
           .eq("id", r.id)
-        if (sErr) console.warn(`[section-narration-orchestrator] trimmed-script write-back refused for render ${r.id}: ${sErr.message}`)
+        if (sErr) {
+          console.warn(`[section-narration-orchestrator] trimmed-script write-back refused for render ${r.id}: ${sErr.message}`)
+          result.refusals.push({ renderId: r.id, step: "trimmed_script_write_back", reason: sErr.message })
+        }
       }
 
       const { submitAvatarTrack } = await import("@/lib/video/avatar-track-submit")

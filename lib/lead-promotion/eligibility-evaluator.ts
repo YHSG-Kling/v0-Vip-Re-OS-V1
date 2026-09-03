@@ -1,4 +1,18 @@
-'use server'
+// NOT a server-action module (2026-09-03, lane R3-A; template
+// lib/behavior-learning/preference-updater.ts:1-9). The module-level "use server"
+// that stood here published evaluatePromotionEligibility(rawRecordId) as a
+// public HTTP door — a GATED one (the session/tenant compare below, which
+// stays) — that nobody addressed: its only importer is the barrel
+// lib/lead-promotion/index.ts:2, whose only value importer is
+// scripts/raw-lead-promotion-simulator.ts:72, and that imports the ungated CORE
+// rather than this door. No app/ module, route, or client component calls it
+// (re-verified 2026-09-03). So the directive published nothing anyone needed.
+// `server-only` makes a future client import fail at build time instead of
+// bundling the service credential. The gate is kept exactly as it was — it is
+// now the in-process tenant check for whichever server caller wires this door
+// next, and scripts/lead-pipeline-simulator.ts and
+// scripts/conversion-gate-auto-enrichment-simulator.ts both pin its shape.
+import "server-only"
 
 import { getAgentContext } from '@/lib/identity'
 import { createServiceClient } from '@/lib/supabase/service'

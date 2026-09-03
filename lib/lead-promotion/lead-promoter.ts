@@ -1,4 +1,19 @@
-'use server'
+// NOT a server-action module (2026-09-03, lane R3-A; template
+// lib/behavior-learning/preference-updater.ts:1-9). The module-level "use server"
+// that stood here published promoteRawRecordToLead(rawRecordId, brokerageId,
+// rawData) as a public HTTP door with no gate: a service client INSERTING a lead
+// under a caller-supplied brokerageId — section 4's named IDOR shape, on a
+// write. Every caller is in-process server code (re-verified 2026-09-03):
+//   · lib/lead-promotion/index.ts:9 (the barrel), whose only value importer is
+//     scripts/raw-lead-promotion-simulator.ts:72 (tsx, outside the bundle);
+//     scripts/lead-pipeline-simulator.ts:217 asserts there is NO production
+//     caller outside lib/lead-promotion — the pipeline promotes through
+//     lib/lead-pipeline/pipeline-processor.ts instead
+// so the directive published nothing anyone needed. `server-only` makes a future
+// client import fail at build time instead of bundling the service credential.
+// brokerageId is now an IN-PROCESS CONTRACT: with the door closed, the server
+// caller that supplies it is the gate.
+import "server-only"
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { extractPropertySpecs, leadSpecPatch } from '@/lib/data-steward/property-spec-extractor'

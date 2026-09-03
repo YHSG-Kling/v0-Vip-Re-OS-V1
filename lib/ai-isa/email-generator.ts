@@ -1,4 +1,18 @@
-'use server'
+// NOT a server-action module (2026-09-03, lane R3-A; template
+// lib/behavior-learning/preference-updater.ts:1-9). The module-level "use server"
+// that stood here published generatePersonalizedEmail(context) (pure copy
+// assembly) and logEmailActivity(leadId, brokerageId, …) as public HTTP doors
+// with no gate — the second one a service client WRITING an activities row
+// under a caller-supplied brokerageId: section 4's named IDOR shape, on a
+// write. Every caller is in-process server code (re-verified 2026-09-03):
+//   · lib/ai-isa/index.ts (the barrel), whose only value importers are the
+//     "use server" actions app/actions/ai-isa/engage-contact.ts:30,
+//     handle-inbound-email.ts:19 and initiate-engagement.ts:31
+// so the directive published nothing anyone needed. `server-only` makes a future
+// client import fail at build time instead of bundling the service credential.
+// brokerageId is now an IN-PROCESS CONTRACT: with the door closed, the server
+// caller that supplies it is the gate.
+import "server-only"
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { collectError } from '@/lib/errors/collect-error'

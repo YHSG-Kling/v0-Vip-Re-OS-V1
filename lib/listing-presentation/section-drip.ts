@@ -389,12 +389,19 @@ function describeNarrationReceipt(n: NarrateResult): string {
   const skips = n.avatarSkipped.length
     ? ` — skipped: ${n.avatarSkipped.map((s) => `${s.renderId}: ${s.reason}`).join("; ")}`
     : ""
+  // Refused reads/writes (§3) ride on the same line: a refused presentation or
+  // queue read is what "0 section(s)" used to hide, and a refused voiceover
+  // write-back is a paid mp3 the row does not point at.
+  const refusals = n.refusals.length
+    ? ` — REFUSED: ${n.refusals.map((f) => `${f.step}${f.renderId ? ` ${f.renderId}` : ""}: ${f.reason}`).join("; ")}`
+    : ""
   return (
     `${n.sections} section(s); planned ${n.avatarNarrated} avatar / ${n.voiceOnly} voice-only / ${n.onScreenOnly} on-screen; ` +
     `avatar submitted ${n.avatarSubmitted} of ${n.avatarNarrated} planned` +
     (gap > 0 ? ` (${gap} planned and NOT submitted)` : "") +
     `; voice clone ${n.hasVoiceClone ? "yes" : "no"}, avatar source ${n.hasAvatarSource ? "yes" : "no"}` +
-    skips
+    skips +
+    refusals
   )
 }
 
@@ -485,7 +492,7 @@ export async function materializePresentationSections(
       // and nothing anywhere would say so. Logged as one line here, and carried
       // out on the receipt for whoever holds it.
       const line = describeNarrationReceipt(narration)
-      if (narration.avatarNarrated > narration.avatarSubmitted) {
+      if (narration.avatarNarrated > narration.avatarSubmitted || narration.refusals.length > 0) {
         console.warn(`[section-drip] presentation ${presentationId} narration — ${line}`)
       } else {
         console.log(`[section-drip] presentation ${presentationId} narration — ${line}`)

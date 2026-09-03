@@ -1,4 +1,17 @@
-'use server'
+// NOT a server-action module (2026-09-03, lane R3-A; template
+// lib/behavior-learning/preference-updater.ts:1-9). The module-level "use server"
+// that stood here published scheduleISAAppointment({ brokerageId, agentId, … })
+// as a public HTTP door with no gate: a service client INSERTING a calendar
+// event and emitting a kernel event under a caller-supplied brokerageId —
+// section 4's named IDOR shape, on a write. Every caller is in-process server
+// code (re-verified 2026-09-03):
+//   · app/actions/ai-isa/schedule-appointment.ts:4  ("use server" action)
+//   · lib/ai-isa/book-seller-appointment.ts:31      (server lib)
+// so the directive published nothing anyone needed. `server-only` makes a future
+// client import fail at build time instead of bundling the service credential.
+// brokerageId / agentId are now an IN-PROCESS CONTRACT: with the door closed,
+// the server caller that supplies them is the gate.
+import "server-only"
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { CalendarEventType } from '@/lib/kernel/calendar-types'

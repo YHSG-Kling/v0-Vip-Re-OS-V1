@@ -1,4 +1,20 @@
-"use server"
+// NOT a server-action module (2026-09-03, lane R3-A; template
+// lib/behavior-learning/preference-updater.ts:1-9). The module-level "use server"
+// that stood here published checkCompliancePassed(offerId),
+// emitCompliancePassed(params) and validateAcceptanceEligibility(offerId) as
+// public HTTP doors with no gate — a service client that any session could
+// point at any offers.id (the tenant is read from the offer row, so this was a
+// cross-tenant probe-and-write, not a body-supplied tenant). Every caller is
+// in-process server code (re-verified 2026-09-03):
+//   · app/actions/compliance-bridge-actions.ts:17          ("use server")
+//   · app/actions/buyer-offer/submit-to-compliance.ts:39   ("use server")
+//   · app/actions/seller-offers.ts:136 (dynamic import)    ("use server")
+//   · lib/buyer-offer/index.ts:2-7 (the barrel), whose value importers are
+//     app/actions/buyer-offer/{submit-for-signature,respond-to-counter,
+//     convert-to-transaction}.ts — all "use server"
+// so the directive published nothing anyone needed. `server-only` makes a future
+// client import fail at build time instead of bundling the service credential.
+import "server-only"
 
 /**
  * System 7.1B - Compliance Gate (ABSOLUTE)

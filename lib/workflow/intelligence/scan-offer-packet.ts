@@ -1,4 +1,19 @@
-"use server"
+// NOT a server-action module (2026-09-03, lane R3-A; template
+// lib/behavior-learning/preference-updater.ts:1-9). The module-level "use server"
+// that stood here published scanOfferPacketCompleteness(params) and
+// scanListingPacketCompleteness({ brokerageId, … }) as public HTTP doors with no
+// gate: a service client reading a packet and WRITING compliance flags under a
+// caller-supplied brokerageId — section 4's named IDOR shape. Every caller is
+// in-process server code (re-verified 2026-09-03):
+//   · app/actions/buyer-offer/submit-to-compliance.ts:46     ("use server")
+//   · app/actions/seller-listing/execution-engine.ts:26      ("use server")
+//   · app/api/offers/[offerId]/packet-scan/route.ts:3         (route handler)
+//   · scripts/offer-packet-gate-simulator.ts:42 (tsx --conditions=react-server)
+// so the directive published nothing anyone needed. `server-only` makes a future
+// client import fail at build time instead of bundling the service credential.
+// brokerageId is now an IN-PROCESS CONTRACT: with the door closed, the server
+// caller that supplies it is the gate.
+import "server-only"
 
 /**
  * Scan a staged offer's packet for completeness, then surface any findings as

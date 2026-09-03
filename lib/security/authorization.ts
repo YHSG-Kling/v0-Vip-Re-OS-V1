@@ -1,4 +1,14 @@
-"use server"
+// NO DIRECTIVE (2026-09-03, lane R3-A). The module-level "use server" that stood
+// here published nothing — this file has held only the tombstones below since
+// 2026-08-24 — but a `"use server"` module with no session gate is the shape
+// scripts/lib-use-server-census.ts counts, and a tombstone-only file has no
+// business reading as a server-action module. Nothing imports it: the
+// lib/security/index.ts re-exports were cleared (see its tombstone) and
+// lib/auth/authorization.ts takes its type from lib/security. The tombstones
+// are kept VERBATIM: their "This file is `"use server"`" describes the file as
+// it was when those deletions were ruled, which is what a tombstone is for.
+// `export {}` keeps this a module (isolatedModules) with nothing exported.
+export {}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TOMBSTONE — requireSuperAdmin / isSuperAdmin

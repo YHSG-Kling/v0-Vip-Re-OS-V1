@@ -1,4 +1,15 @@
-"use server"
+// NOT a server-action module (2026-09-03, lane R3-A; template
+// lib/behavior-learning/preference-updater.ts:1-9). The module-level "use server"
+// that stood here published syncOfferStatus(offerId, event) and
+// getCurrentOfferStatus(offerId) as public HTTP doors with no gate — a service
+// client writing offers.status for any offers.id a session chose to name.
+// Every caller is in-process server code (re-verified 2026-09-03):
+//   · lib/buyer-offer/index.ts:65-68 (the barrel), whose value importers are
+//     app/actions/buyer-offer/submit-for-signature.ts:7 and
+//     app/actions/buyer-offer/respond-to-counter.ts:7 — both "use server"
+// so the directive published nothing anyone needed. `server-only` makes a future
+// client import fail at build time instead of bundling the service credential.
+import "server-only"
 
 /**
  * System 7.1B - Status Column Sync

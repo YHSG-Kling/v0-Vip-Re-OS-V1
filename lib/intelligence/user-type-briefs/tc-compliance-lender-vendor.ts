@@ -1,4 +1,21 @@
-"use server"
+// NOT a server-action module (2026-09-03, lane R3-A; template
+// lib/behavior-learning/preference-updater.ts:1-9). The module-level "use server"
+// that stood here published generateTcBrief / generateComplianceBrief /
+// generateLenderBrief / generateVendorBrief({ userId, brokerageId }) as public
+// HTTP doors with no gate: a service client over a caller-supplied brokerageId —
+// section 4's named IDOR shape. Every caller is in-process server code
+// (re-verified 2026-09-03):
+//   · lib/intelligence/user-type-briefs/index.ts:17-21 (the barrel), whose value
+//     importers are app/actions/briefing-actions.ts:12 ("use server") and the
+//     server pages app/dashboard/{coordinator,brokerage,compliance}/page.tsx,
+//     app/vendor/dashboard/page.tsx, app/lender/dashboard/page.tsx; the two
+//     "use client" importers of the barrel take TYPES only (erased)
+//   · scripts/lender-in-transaction-simulator.ts:83 reads the SOURCE, not the module
+// so the directive published nothing anyone needed. `server-only` makes a future
+// client import fail at build time instead of bundling the service credential.
+// brokerageId / userId are now an IN-PROCESS CONTRACT: with the door closed,
+// the server caller that supplies them is the gate.
+import "server-only"
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted } from "@/lib/ai/models"

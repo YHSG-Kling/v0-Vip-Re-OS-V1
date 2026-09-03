@@ -1,4 +1,19 @@
-"use server"
+// NOT a server-action module (2026-09-03, lane R3-A; template
+// lib/behavior-learning/preference-updater.ts:1-9). The module-level "use server"
+// that stood here published transcribeFromUrl(url) as a public HTTP door: any
+// authenticated session could make THIS server issue a GET at an arbitrary URL
+// of its choosing and spend that session's tenant vendor budget on the answer —
+// the SSRF shape the allowlist section below reasons about, opened to every
+// browser session rather than only to the repurpose lane's own actions. Every
+// caller is in-process server code (re-verified 2026-09-03):
+//   · lib/repurpose/actions.ts:21 (import) → :692 and :800, "use server" actions
+//     that already sit behind ctx.brokerageId
+// so the directive published nothing anyone needed. `server-only` makes a future
+// client import fail at build time instead of bundling a fetch-anything door.
+// The residual SSRF edge recorded below (http:// admitted, no private-range
+// refusal on the egress gateway) is unchanged by this — it is simply no longer
+// reachable except through those two gated actions.
+import "server-only"
 
 // Transcribe a direct media-file URL (mp4/mp3/wav/m4a/webm) for the REPURPOSE
 // lane. There is no YouTube/Vimeo caption extraction in this app, and a
@@ -24,23 +39,23 @@
 // transcribes.)
 //
 // ── WHY THE SIGNATURE IS STILL ONE ARGUMENT ─────────────────────────────────
-// A top-level `"use server"` makes every export an RPC endpoint any session can
-// call with any arguments. `brokerageId` decides WHOSE vendor ledger is billed,
-// so accepting it as a parameter would hand the browser a cross-tenant write
-// knob — bill another brokerage, or aim the refusal at a tenant that is already
-// at its ceiling. The tenant is therefore resolved SERVER-SIDE, from
-// `getAgentContext()`, which reads the session cookie through
-// `supabase.auth.getUser()` and then `users.brokerage_id` /
-// `user_role_assignments` — none of which is reachable from an argument. (It
+// Until 2026-09-03 this file was `"use server"`, which made this export an RPC
+// endpoint any session could call with any arguments. `brokerageId` decides
+// WHOSE vendor ledger is billed, so accepting it as a parameter would have
+// handed the browser a cross-tenant write knob — bill another brokerage, or aim
+// the refusal at a tenant that is already at its ceiling. The door is closed
+// now (header), and the one-argument shape is kept as an IN-PROCESS CONTRACT:
+// the tenant is still resolved SERVER-SIDE, from `getAgentContext()`, which
+// reads the session cookie through `supabase.auth.getUser()` and then
+// `users.brokerage_id` / `user_role_assignments` — never from an argument. (It
 // also honours the platform-staff act-as seam, so an impersonated run bills the
 // tenant being acted for, the same as every other action.)
 //
-// An unresolvable tenant REFUSES rather than falling through ungated. A gate you
-// can skip by calling the endpoint without a session is not a gate, and this
-// export is reachable without going through lib/repurpose/actions.ts, which does
-// its own auth check. Both in-repo call sites (lib/repurpose/actions.ts:677 and
-// :785) already sit behind `ctx.brokerageId`, so the refusal is unreachable on
-// the real paths.
+// An unresolvable tenant REFUSES rather than falling through ungated. Both
+// in-repo call sites (lib/repurpose/actions.ts:692 and :800) already sit behind
+// `ctx.brokerageId`, so the refusal is unreachable on the real paths; it stays
+// because a tenant resolver that can be skipped is not one, and
+// scripts/transcription-source-guard.ts T13 pins the one-argument shape.
 //
 // ── THE HOST ALLOWLIST: DELIBERATELY NOT PASSED, AND HERE IS THE REASONING ───
 // The primitive's `allowedHosts` is a HOST allowlist — it admits a named set and
