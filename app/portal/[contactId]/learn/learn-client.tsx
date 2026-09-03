@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useCallback, useMemo, useEffect, useRef } from "react"
+import { useSearchParams } from "next/navigation"
 import useSWR from "swr"
 import { Progress } from "@/app/components/ui/progress"
 import { Tabs, TabsList, TabsTrigger } from "@/app/components/ui/tabs"
@@ -81,20 +82,41 @@ export default function LearnClient({ contactId, initialFeed, agentId, contactFi
     setDrawerOpen(true)
   }, [])
 
-  // Journey deep-link: when the contact arrives from a milestone's "Learn about
-  // this step" link (/learn?milestone=<canonical id>), auto-open that milestone's
-  // lesson once. Matches on the lesson's canonical milestoneKey — the same identity
-  // the journey timeline resolved. Runs once per mount (focusedRef guard).
+  // Module deep-link: `?module=<learning_modules.id>` — minted by the tutor
+  // card's "Related lessons" badges (app/components/portal/education-tutor-card.tsx),
+  // which until 2026-09-03 pointed at the bare learn page because nothing read a
+  // module id. Read here rather than threaded through page.tsx like
+  // `?milestone=` because that server page is outside this lane; this client is
+  // already under the page's Suspense boundary, which is what useSearchParams
+  // needs. A value that is not a uuid is ignored — lesson keys are either a
+  // learning_modules.id or a static key, and only the former is minted.
+  const searchParams = useSearchParams()
+  const focusModuleRaw = searchParams?.get("module") ?? null
+  const focusModule =
+    focusModuleRaw && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(focusModuleRaw)
+      ? focusModuleRaw
+      : null
+
+  // Deep-links, once per mount (focusedRef guard). Two minters, one drawer:
+  //   · `?module=`    — the tutor card; matches lesson.key (a learning_modules.id,
+  //                     see handleLessonRead below). MODULE WINS when both are
+  //                     present: it names one lesson, a milestone names a group.
+  //   · `?milestone=` — the journey timeline's "Learn about this step" link;
+  //                     matches the lesson's canonical milestoneKey.
+  // A target that is not in this contact's feed opens nothing — the feed is
+  // the access boundary, and a module outside it is not this contact's lesson.
   useEffect(() => {
-    if (focusedRef.current || !focusMilestone) return
+    if (focusedRef.current || (!focusModule && !focusMilestone)) return
     const target =
-      currentFeed.lessons.find((l) => l.milestoneKey === focusMilestone) ?? null
+      (focusModule ? currentFeed.lessons.find((l) => l.key === focusModule) : null)
+      ?? (focusMilestone ? currentFeed.lessons.find((l) => l.milestoneKey === focusMilestone) : null)
+      ?? null
     if (target) {
       focusedRef.current = true
       setSelectedLesson(target)
       setDrawerOpen(true)
     }
-  }, [focusMilestone, currentFeed.lessons])
+  }, [focusModule, focusMilestone, currentFeed.lessons])
 
   // Handle lesson read — optimistic update + cross-system persistence + 100% agent notification.
   // Post-1043: persists via markResourceCompleted → learning_assignments (status='completed').

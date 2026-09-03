@@ -29,13 +29,24 @@ import type { ScriptType, ApprovalStatus, VideoScript, ScriptVariation, VideoEve
 import { VIDEO_EVENT_TYPES, PERFORMANCE_THRESHOLDS } from "@/app/types/video-generation"
 
 // ONE spelling of the per-lead value ESTIMATE behind the analytics page's
-// "estimatedRoi" figure (§6). It was `* 500` inline at four writer sites
-// across this file and app/api/video/engagement/route.ts, persisted into
-// `video_performance_tracking.estimated_roi` — a column that is now written
-// by nothing and read by nothing (tombstones at each former site). It is an
-// ESTIMATE of gross lead VALUE, not an ROI: no spend is recorded for video, so
-// no ROI can be computed here — that word belongs to
+// "Est. Lead Value" figure (`estimatedLeadValue`, §6). It was `* 500` inline at
+// four writer sites across this file and app/api/video/engagement/route.ts,
+// persisted into `video_performance_tracking.estimated_roi` — a column that is
+// now written by nothing and read by nothing (tombstones at each former site).
+// It is an ESTIMATE of gross lead VALUE, not an ROI: no spend is recorded for
+// video, so no ROI can be computed here — that word belongs to
 // lib/campaigns/roi-calculator.ts, which reports NULL until a spend exists.
+//
+// PRODUCT DIVERGENCE — recorded, not resolved (§6). This is $500 per lead. The
+// other "Est." surfaces in the tree price a lead at $10,000:
+//   lib/analytics/vendor-roi.ts:119        (qualified × $10k proxy − spend) / spend
+//   lib/territory/metrics-aggregator.ts:115 (conversions × $10k proxy) / total_cost
+//   app/dashboard/admin/farm-intelligence + provider-intelligence, and the mail
+//   create-campaign-dialog, render those percentages.
+// Two spellings of "what a lead is worth" is the §6 defect; which number is the
+// product's is a ruling for the owner, and the two must then be one constant.
+// Until that ruling, this page says "$500 per lead" beside its figure so the
+// reader can see which estimate they are looking at.
 const VIDEO_LEAD_VALUE_ESTIMATE = 500
 import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 // THE ONE speaking-pace vocabulary (§6). The word counts a duration tier asks
@@ -992,7 +1003,8 @@ export async function getVideoPerformanceStats(agentId: string, _brokerageId?: s
       avgClickThroughRate: 0,
       avgShareRate: 0,
       totalLeadConversions: 0,
-      estimatedRoi: 0,
+      estimatedLeadValue: 0,
+      leadValueEstimatePerLead: VIDEO_LEAD_VALUE_ESTIMATE,
       topPerforming: [],
       videoCount: 0,
     }
@@ -1022,7 +1034,8 @@ export async function getVideoPerformanceStats(agentId: string, _brokerageId?: s
       avgClickThroughRate: 0,
       avgShareRate: 0,
       totalLeadConversions: 0,
-      estimatedRoi: 0,
+      estimatedLeadValue: 0,
+      leadValueEstimatePerLead: VIDEO_LEAD_VALUE_ESTIMATE,
       topPerforming: [],
       videoCount: 0,
     }
@@ -1056,15 +1069,11 @@ export async function getVideoPerformanceStats(agentId: string, _brokerageId?: s
     ? (performance ?? []).reduce((sum, p) => sum + (p.share_rate || 0), 0) / performanceCount
     : 0
   const totalLeadConversions = performance?.reduce((sum, p) => sum + (p.lead_conversions || 0), 0) || 0
-  // DERIVED, not read from the retired `estimated_roi` column (tombstone at
-  // updateVideoPerformanceAggregates above). The field keeps its `estimatedRoi`
-  // NAME because app/dashboard/videos/analytics/page.tsx:325,:542 renders it
-  // under that key (that page is not this lane's to rename); its MEANING is an
-  // estimated gross lead VALUE — lead_conversions × one named per-lead estimate
-  // — and not an ROI, which would subtract a spend this table does not record.
-  // The ROI of a video campaign lives in campaign_roi.roi_percentage
-  // (lib/campaigns/roi-calculator.ts), where it is NULL until a spend exists.
-  const estimatedRoi = totalLeadConversions * VIDEO_LEAD_VALUE_ESTIMATE
+  // DERIVED (lead_conversions × VIDEO_LEAD_VALUE_ESTIMATE, see its comment at
+  // the top of this file), never read from the retired `estimated_roi` column.
+  // Was `estimatedRoi` until 2026-09-03; the page now renders it as
+  // "Est. Lead Value" with the per-lead constant beside it.
+  const estimatedLeadValue = totalLeadConversions * VIDEO_LEAD_VALUE_ESTIMATE
 
   // Get top performing videos
   const topPerforming = performance
@@ -1084,7 +1093,7 @@ export async function getVideoPerformanceStats(agentId: string, _brokerageId?: s
         shareRate: p.share_rate || 0,
         leadConversions: p.lead_conversions || 0,
         // Derived from the same fact, same estimate — never the stored column.
-        estimatedRoi: (p.lead_conversions || 0) * VIDEO_LEAD_VALUE_ESTIMATE,
+        estimatedLeadValue: (p.lead_conversions || 0) * VIDEO_LEAD_VALUE_ESTIMATE,
         lastEventAt: p.last_event_at,
       }
     }) || []
@@ -1098,7 +1107,11 @@ export async function getVideoPerformanceStats(agentId: string, _brokerageId?: s
     avgClickThroughRate: Math.round(avgClickThroughRate * 10) / 10,
     avgShareRate: Math.round(avgShareRate * 10) / 10,
     totalLeadConversions,
-    estimatedRoi,
+    estimatedLeadValue,
+    // The constant travels with the figure so the page can say "at $500 per
+    // lead" from the same number the figure was computed from — this file is
+    // "use server", so it cannot export the constant itself.
+    leadValueEstimatePerLead: VIDEO_LEAD_VALUE_ESTIMATE,
     topPerforming,
     videoCount: videos.length,
   }

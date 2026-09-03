@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect, useMemo, useRef } from "react"
 import { useToast } from "@/hooks/use-toast"
 import { StagedDraftBanner } from "@/app/components/shared/staged-draft-banner"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -216,6 +216,9 @@ interface MarketingStudioClientProps {
   brokerageId?: string
   userRole?: string
   initialTab?: string
+  /** `?campaign=<uuid>` — server-validated (page.tsx). Opens that campaign's
+   *  detail dialog once per mount, on the campaigns tab. */
+  initialCampaignId?: string | null
 }
 
 /**
@@ -228,9 +231,28 @@ function describeCadence(label: string, row: MarketingCadencePolicyRow | null): 
   return `${label}: auto ${row.cadence}${day}`
 }
 
-export default function MarketingStudioClient({ userId: userIdProp, agentId: agentIdProp, brokerageId: brokerageIdProp, userRole, initialTab = "overview" }: MarketingStudioClientProps) {
+export default function MarketingStudioClient({ userId: userIdProp, agentId: agentIdProp, brokerageId: brokerageIdProp, userRole, initialTab = "overview", initialCampaignId = null }: MarketingStudioClientProps) {
   const { toast } = useToast()
   const [activeTab, setActiveTab] = useState(initialTab)
+  // Once-per-mount guard for the ?campaign= deep-link (pattern:
+  // app/portal/[contactId]/learn/learn-client.tsx focusedRef).
+  const campaignDeepLinkRef = useRef(false)
+  // `?campaign=<uuid>` — minted by MarketingOpsPanel's "Review →" / "Launch →"
+  // links (./components/marketing-ops-panel.tsx) and, until 2026-09-03, read by
+  // nothing. The id arrives server-validated (page.tsx normalizeCampaignId). The
+  // positive control for this shape is app/dashboard/campaigns/mail/
+  // mail-dashboard.tsx (uuid guard + select + tab switch). The detail loader is
+  // the SAME brokerage-scoped reader the eye control uses, so a foreign id opens
+  // the dialog's own "not available on your brokerage" state, never a row.
+  useEffect(() => {
+    if (campaignDeepLinkRef.current || !initialCampaignId) return
+    campaignDeepLinkRef.current = true
+    setActiveTab("campaigns")
+    void openCampaignDetailById(initialCampaignId)
+    // openCampaignDetailById is a stable function declaration in this component;
+    // the ref guard is what makes this once-per-mount, not the dep list.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialCampaignId])
   const [isLoading, setIsLoading] = useState(true)
   const [dashboardError, setDashboardError] = useState<string | null>(null)
   const [dashboard, setDashboard] = useState<DashboardData | null>(null)
@@ -1332,12 +1354,22 @@ export default function MarketingStudioClient({ userId: userIdProp, agentId: age
    */
   async function handleViewCampaign(campaign: Campaign) {
     setSelectedCampaign(campaign)
+    await openCampaignDetailById(campaign.id)
+  }
+
+  /**
+   * The id-only half of handleViewCampaign, so the `?campaign=` deep-link —
+   * which holds an id and no listed card — opens the SAME dialog through the
+   * SAME brokerage-scoped reader. A cross-tenant or unknown id resolves to the
+   * dialog's own "no longer available on your brokerage" state, not to a row.
+   */
+  async function openCampaignDetailById(campaignId: string) {
     setCampaignDetail(null)
     setCampaignDetailError(null)
     setIsCampaignDetailOpen(true)
     setIsLoadingCampaignDetail(true)
     try {
-      const result = await getCampaignById(campaign.id)
+      const result = await getCampaignById(campaignId)
       if (!result.success) {
         setCampaignDetailError((result as any).error ?? "This campaign could not be loaded.")
         return

@@ -47,7 +47,37 @@ import { isAdminOrBroker } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
-export default async function VendorsPage() {
+// The outer tab roster below, so `?tab=` can only land on a tab that exists.
+const VENDOR_PAGE_TABS = ["marketplace", "assigned", "preferred", "reviews", "client-access", "plans"] as const
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const first = (raw: string | string[] | undefined): string | undefined => (Array.isArray(raw) ? raw[0] : raw)
+
+/**
+ * `?vendor=<vendors.id>` — a per-vendor deep-link onto the marketplace tab. The
+ * deleted VendorDirectoryPanel recorded that "no page reads a ?vendor= query"
+ * (its tombstone in app/dashboard/partners/components/os); this is the reader.
+ * The id is uuid-checked here so the client never sees an unvalidated value;
+ * whether it names a vendor THIS brokerage can see is decided by the directory
+ * listing the client already holds (tenant-scoped by searchVendors), not by the
+ * URL.
+ */
+export default async function VendorsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ vendor?: string | string[]; tab?: string | string[] }>
+}) {
+  const params = await searchParams
+  const vendorParam = first(params.vendor)
+  const initialVendorId = vendorParam && UUID_RE.test(vendorParam) ? vendorParam : null
+  const tabParam = first(params.tab)
+  // A vendor deep-link lands on the marketplace tab whatever ?tab= says — the
+  // directory it highlights lives there.
+  const initialTab: (typeof VENDOR_PAGE_TABS)[number] = initialVendorId
+    ? "marketplace"
+    : (VENDOR_PAGE_TABS as readonly string[]).includes(tabParam ?? "")
+      ? (tabParam as (typeof VENDOR_PAGE_TABS)[number])
+      : "marketplace"
+
   const supabase = await createClient()
 
   const { data: { user } } = await supabase.auth.getUser()
@@ -362,7 +392,7 @@ export default async function VendorsPage() {
         <ReferralTrackingPanel brokerageId={profile.brokerage_id} />
       </div>
 
-      <Tabs defaultValue="marketplace" className="space-y-6">
+      <Tabs defaultValue={initialTab} className="space-y-6">
         <TabsList className="grid w-full grid-cols-6">
           <TabsTrigger value="marketplace" className="flex items-center gap-2">
             <Store className="h-4 w-4" />
@@ -426,6 +456,7 @@ export default async function VendorsPage() {
               brokerageId={profile.brokerage_id}
               userRole={profile.user_type ?? "agent"}
               deliverables={deliverables}
+              initialVendorId={initialVendorId}
             />
           </Suspense>
         </TabsContent>

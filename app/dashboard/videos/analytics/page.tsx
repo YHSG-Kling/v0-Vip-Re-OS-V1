@@ -48,7 +48,10 @@ interface PerformanceStats {
   avgClickThroughRate: number
   avgShareRate: number
   totalLeadConversions: number
-  estimatedRoi: number
+  /** lead_conversions × leadValueEstimatePerLead — gross lead VALUE, not an ROI (no spend is subtracted). */
+  estimatedLeadValue: number
+  /** The per-lead constant the figure above was computed from (VIDEO_LEAD_VALUE_ESTIMATE). */
+  leadValueEstimatePerLead: number
   topPerforming: Array<{
     videoId: string
     videoAssetId?: string
@@ -60,7 +63,7 @@ interface PerformanceStats {
     clickThroughRate: number
     shareRate: number
     leadConversions: number
-    estimatedRoi: number
+    estimatedLeadValue: number
     lastEventAt: string
   }>
   videoCount: number
@@ -320,9 +323,17 @@ export default function VideoAnalyticsPage() {
             <CardContent className="p-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-muted-foreground">Est. ROI</p>
+                  {/* An ESTIMATE of gross lead value (leads × one per-lead
+                      constant), not an ROI — no production spend is subtracted.
+                      Said in the label and the subtitle, so the number is not
+                      read as measured. The ROI word belongs to
+                      lib/campaigns/roi-calculator.ts. */}
+                  <p className="text-sm text-muted-foreground">Est. Lead Value</p>
                   <p className="text-3xl font-bold mt-1">
-                    ${(stats?.estimatedRoi || 0).toLocaleString()}
+                    ${(stats?.estimatedLeadValue || 0).toLocaleString()}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    at ${(stats?.leadValueEstimatePerLead ?? 0).toLocaleString()} per lead, before production cost
                   </p>
                 </div>
                 <div className="p-3 rounded-full bg-emerald-100 dark:bg-emerald-900/30">
@@ -538,8 +549,9 @@ export default function VideoAnalyticsPage() {
                 <div className="p-4 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800">
                   <p className="font-medium text-blue-900 dark:text-blue-300 mb-2">Lead Generation Working</p>
                   <p className="text-sm text-blue-700 dark:text-blue-400">
-                    You have captured {stats.totalLeadConversions} leads through video content. 
-                    Your estimated ROI is ${stats.estimatedRoi?.toLocaleString()}.
+                    You have captured {stats.totalLeadConversions} leads through video content.
+                    Estimated gross lead value is ${stats.estimatedLeadValue?.toLocaleString()} at
+                    ${stats.leadValueEstimatePerLead?.toLocaleString()} per lead — no production cost is subtracted.
                   </p>
                 </div>
               ) : (

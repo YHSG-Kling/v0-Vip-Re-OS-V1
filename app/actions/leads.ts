@@ -20,6 +20,7 @@ import { createClient } from "@/lib/supabase/server"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { getAgentContext } from "@/lib/identity"
 import { bestEffort } from "@/lib/db/best-effort"
+import type { AiIsaHandoffContextPackage } from "@/lib/kernel/ai-isa"
 import {
   resolveLeadVisibility,
   applyLeadRowScope,
@@ -501,8 +502,28 @@ export async function handOffToHumanAgent(leadId: string, targetAgentId?: string
 
     if (error) return { success: false, error: error.message }
 
-    // Log the handoff
-    await supabase.from("agent_handoffs").insert({
+    // Log the handoff. This is the LEDGER the ISA console reads
+    // (app/dashboard/isa/page.tsx renders `context_package.from_user_id` as the
+    // person who handed the lead over). It was a fire-and-forget
+    // `.then(() => {}, () => {})` that discarded both the resolved `{ error }`
+    // and any rejection — a refused insert reported success — and it wrote no
+    // context_package, so every handoff from this door rendered as handed over
+    // by nobody. The package is typed against the kernel's contract
+    // (lib/kernel/ai-isa.ts AiIsaHandoffContextPackage) so the two writers
+    // cannot drift apart in shape.
+    //
+    // PRODUCT DIVERGENCE — recorded, not resolved here: this door writes
+    // handoff_status "completed" + completed_at (the human agent is assigned
+    // on the leads row in the same action), while the kernel writer
+    // lib/kernel/ai-isa.ts handoffToHumanAgent writes "pending" and leaves the
+    // receiving human to complete it. Which one the ISA console's Handoff tab
+    // should treat as the lifecycle is a product ruling; until it lands, a
+    // manual handoff never appears in the console's PENDING list.
+    const contextPackage: AiIsaHandoffContextPackage = {
+      from_user_id: userId,   // users.id of the actor (NOT agents.id) — per the contract
+      contact_id: null,       // leads are NOT contacts; nothing here has converted yet
+    }
+    const { error: handoffError } = await supabase.from("agent_handoffs").insert({
       brokerage_id: brokerageId,
       entity_type: "lead",
       entity_id: leadId,
@@ -512,9 +533,22 @@ export async function handOffToHumanAgent(leadId: string, targetAgentId?: string
       human_agent_id: resolvedAgentId,
       handoff_reason: "manual_handoff",
       handoff_status: "completed",
+      context_package: contextPackage,
       completed_at: new Date().toISOString(),
       created_at: new Date().toISOString(),
-    }).then(() => {}, () => {})
+    })
+    if (handoffError) {
+      // The leads row above has ALREADY moved; say both halves out loud rather
+      // than reporting a clean handoff whose ledger entry does not exist.
+      console.error(
+        `[leads] handOffToHumanAgent: agent_handoffs insert refused for lead ${leadId} (brokerage ${brokerageId}, agent ${resolvedAgentId ?? "unassigned"}, by user ${userId}):`,
+        handoffError.message,
+      )
+      return {
+        success: false,
+        error: `Lead was reassigned, but the handoff ledger entry was refused: ${handoffError.message}`,
+      }
+    }
 
     await bestEffort(
       supabase.from("activities").insert({

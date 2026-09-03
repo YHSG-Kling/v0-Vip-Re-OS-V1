@@ -361,6 +361,115 @@ console.log("\n═══ 1b. ...and §1 would actually notice if a SIXTH appeare
       + `}`) === 0)
 }
 
+/**
+ * WHICH CLASS DOES `<table>.agent_id` DEMAND? Read from the two generated caches
+ * — never from a belief about the table. Returns null for a table the caches do
+ * not know, which the caller must report as UNRESOLVED rather than pass.
+ */
+function cachedAgentIdClass(
+  table: string,
+  caches: { agents: Record<string, string[]>; users: Record<string, string[]> },
+): "agents" | "users" | null {
+  if (caches.agents[table]?.includes("agent_id")) return "agents"
+  if (caches.users[table]?.includes("agent_id")) return "users"
+  return null
+}
+
+/**
+ * THE RULE THE PER-AGENT ROLLUPS MUST HOLD, derived from two facts the file and
+ * the schema state for themselves rather than from a roster typed into this guard:
+ *
+ *   1. The file resolves ONE users-class expression into ONE agents-class name
+ *      through the canonical resolver — `const X = … resolveUserIdToAgentRecord(Y, …)`
+ *      proves Y is a users id and X is an agents id, because that is the
+ *      resolver's contract (lib/kernel/agent-identity-resolver.ts:103).
+ *   2. Every `agent_id` the file WRITES (`agent_id: <expr>`) or FILTERS
+ *      (`.eq("agent_id", <expr>)`) against a table the FK caches know must carry
+ *      the class that table's FK demands — X for an agents(id) column, Y for a
+ *      users(id) column — and any OTHER expression is UNRESOLVED, reported, and
+ *      fails: an alias such as `result.agentId` is exactly how a users id walks
+ *      into an agents column without either name appearing at the write.
+ *
+ * This is what the previous assertions at this spot got backwards. They PINNED
+ * the belief that revenue_protection_snapshots, listing_health_interventions
+ * and income_forecast_snapshots were users-class ("its two users-class tables
+ * KEEP the users id"), which was true before m366 and false after it — so once
+ * the schema moved, the guard was demanding the very 23503 the daily crons then
+ * swallowed for weeks (all three tables: 0 rows). A guard that asserts a
+ * waypoint fails the moment the work finishes (CLAUDE.md §2).
+ */
+function agentIdClassAudit(
+  source: string,
+  caches: { agents: Record<string, string[]>; users: Record<string, string[]> } = {
+    agents: AGENT_FK_COLUMNS,
+    users: USERS_FK_AGENTISH_COLUMNS,
+  },
+): {
+  usersExpr: string | null
+  agentsExpr: string | null
+  usages: Array<{ table: string; expr: string; need: "agents" | "users" | null; got: "agents" | "users" | null; via: "write" | "filter" }>
+  mismatches: string[]
+  unresolved: string[]
+} {
+  // The binding is the NEAREST `const` before the resolver call — a tempered
+  // scan that refuses to cross another `const`. The first draft used a plain
+  // 120-character window and, in the forecaster, bound `const supabase =
+  // createServiceClient()` two lines above as the agents-class name; every
+  // real `agentRecordId` usage then read as UNRESOLVED. Caught by the run, not
+  // by the control — which is why the control below now covers this shape.
+  const resolver = /const\s+(\w+)\s*=(?:(?!\bconst\b)[\s\S]){0,160}?resolveUserIdToAgentRecord\(\s*([A-Za-z_$][\w.$]*)/.exec(source)
+  const agentsExpr = resolver?.[1] ?? null
+  const usersExpr = resolver?.[2] ?? null
+  const usages: ReturnType<typeof agentIdClassAudit>["usages"] = []
+  const fromRe = /\.from\(\s*[`"']([a-z_]+)[`"']\s*\)/g
+  let m: RegExpExecArray | null
+  while ((m = fromRe.exec(source))) {
+    const table = m[1]
+    let window = source.slice(m.index + m[0].length, m.index + m[0].length + 900)
+    const nxt = window.indexOf(".from(")
+    if (nxt !== -1) window = window.slice(0, nxt)
+    const need = cachedAgentIdClass(table, caches)
+    const classify = (expr: string): "agents" | "users" | null =>
+      expr === agentsExpr ? "agents" : expr === usersExpr ? "users" : null
+    // `.eq("agent_id", X)` and `.eq("agent_id", X ?? "…")` — the fallback is
+    // still X's class; the first operand is what decides it.
+    const eqRe = /\.eq\(\s*[`"']agent_id[`"']\s*,\s*([A-Za-z_$][\w.$]*)(?:\s*\?\?[^)]*)?\)/g
+    let e: RegExpExecArray | null
+    while ((e = eqRe.exec(window))) {
+      if (NOT_A_VALUE.has(e[1])) continue
+      usages.push({ table, expr: e[1], need, got: classify(e[1]), via: "filter" })
+    }
+    const window2 = window.replace(
+      /\b(?:metadata|payload|context|extracted_data|output_data|input_data|plan|config)\s*:\s*\{[^{}]*\}/g,
+      "",
+    )
+    // A COLUMN write is the argument of insert/update/upsert. A plain local
+    // object in the same window — `savedDealGci.set(r.id, { gci, agent_id:
+    // r.agent_id })` sits 40 characters after `.from("transactions")` in the
+    // scorer — is not a column, and the first draft counted two of those as
+    // unresolved writes. Scan only from a write call to the window's end.
+    const writeCall = /\.(?:insert|update|upsert)\(/g
+    let w: RegExpExecArray | null
+    while ((w = writeCall.exec(window2))) {
+      const body = window2.slice(w.index + w[0].length)
+      const objRe = /\bagent_id\s*:\s*([A-Za-z_$][\w.$]*)/g
+      let o: RegExpExecArray | null
+      while ((o = objRe.exec(body))) {
+        if (NOT_A_VALUE.has(o[1])) continue
+        usages.push({ table, expr: o[1], need, got: classify(o[1]), via: "write" })
+      }
+      break
+    }
+  }
+  const mismatches = usages
+    .filter((u) => u.need && u.got && u.need !== u.got)
+    .map((u) => `${u.table}.agent_id (${u.via}) needs ${u.need}, got \`${u.expr}\` which is ${u.got}`)
+  const unresolved = usages
+    .filter((u) => u.need && !u.got)
+    .map((u) => `${u.table}.agent_id (${u.via}) ← \`${u.expr}\` is neither the resolver's input nor its output`)
+  return { usersExpr, agentsExpr, usages, mismatches, unresolved }
+}
+
 console.log("\n═══ 2. The three verified defects stay fixed ═══")
 {
   const npv = code("lib/lifetime-customer-npv/scorer.ts")
@@ -393,29 +502,102 @@ console.log("\n═══ 2. The three verified defects stay fixed ═══")
     /if \(!agentRecordId\)/.test(show))
 
   // m338 batch — the two per-agent ROLLUPS. Both crons read their agent list
-  // straight out of `users`, so the users-class snapshot tables were always
-  // right and the AGENTS-class source tables (transactions, listings) were
-  // always wrong: the scores were computed over an empty set and reported as
-  // real measurements. That is worse than a crash, which is why they survived.
+  // straight out of `users` and hand the USERS id down; the source tables
+  // (transactions, listings) FK agents, so the scores were computed over an
+  // empty set and reported as real measurements. m338 fixed the source side.
+  //
+  // REWRITTEN 2026-09-03 (lane R3-C). The assertions that stood here then
+  // asserted the OTHER half of the file backwards: "its two users-class tables
+  // KEEP the users id" / "still writes income_forecast_snapshots with the users
+  // id". Those three snapshot tables FK agents(id) — schema-fk-map.ts and
+  // agent-fk-columns.ts both say so — so the writes the guard was defending were
+  // 23503 refusals with no error read, and all three tables held 0 rows while
+  // the daily cron reported snapshots_written. Nothing below names a table's
+  // class by hand: agentIdClassAudit derives it from the FK caches and derives
+  // the two expressions' classes from the file's own resolver call.
+  const ROLLUP_SNAPSHOT_TABLES = ["revenue_protection_snapshots", "listing_health_interventions", "income_forecast_snapshots"]
+  const liveCaches = { agents: AGENT_FK_COLUMNS, users: USERS_FK_AGENTISH_COLUMNS }
+  for (const t of ROLLUP_SNAPSHOT_TABLES) {
+    const cls = cachedAgentIdClass(t, liveCaches)
+    ok(`${t}.agent_id has a class the FK cache can state (it is ${cls ?? "UNKNOWN"})`, cls !== null,
+      "regenerate scripts/agent-fk-columns.ts — an identity column the cache cannot classify is one the guard cannot judge")
+  }
+
   const rev = code("lib/revenue-protection/scorer.ts")
-  // Targeted at the `q = q.eq(...)` shape the transactions/listings queries use.
-  // A blanket ban on `input.agentId` also forbade the two CORRECT users-class
-  // filters (listing_health_interventions, revenue_protection_snapshots) — the
-  // pattern was wrong, the code was right, same trap as three times before.
-  ok("revenue protection filters transactions + listings by the AGENTS id...",
-    !/q = q\.eq\("agent_id", input\.agentId\)/.test(rev) &&
-    (rev.match(/if \(agentRecordId\) q = q\.eq\("agent_id", agentRecordId\)/g) ?? []).length === 4,
-    "lib/revenue-protection/scorer.ts")
-  ok("...while its two users-class tables KEEP the users id",
-    /listingSavesQuery\.eq\("agent_id", input\.agentId\)/.test(rev) &&
-    /revenue_protection_snapshots/.test(rev))
+  const revAudit = agentIdClassAudit(rev)
+  const revTables = new Set(revAudit.usages.map((u) => u.table))
+  ok("revenue protection resolves its input through the canonical resolver, so the\n    guard can tell which of its two names is the users id and which the agents id",
+    revAudit.usersExpr === "input.agentId" && revAudit.agentsExpr !== null,
+    `usersExpr=${revAudit.usersExpr} agentsExpr=${revAudit.agentsExpr}`)
+  ok(`...and every agent_id it writes or filters carries the class its table's FK\n    demands (${revAudit.usages.length} usages across ${[...revTables].join(", ")})`,
+    revAudit.usages.length > 0 && revAudit.mismatches.length === 0 && revAudit.unresolved.length === 0,
+    [...revAudit.mismatches, ...revAudit.unresolved].join("; "))
+  ok("...including the snapshot table it WRITES and the two it FILTERS, so the\n    per-agent rollup can land and its previous-period lookup can find it",
+    ["transactions", "listings", "revenue_protection_snapshots", "listing_health_interventions"].every((t) => revTables.has(t)) &&
+    revAudit.usages.some((u) => u.table === "revenue_protection_snapshots" && u.via === "write"),
+    [...revTables].join(", "))
 
   const inc = code("lib/income-forecast/forecaster.ts")
-  ok("the income forecaster filters transactions + listings by the AGENTS id,\n    so the pipeline half of the forecast is no longer silently zero",
-    /\.eq\("agent_id", agentRecordId \?\? "00000000-0000-0000-0000-000000000000"\)/.test(inc),
-    "lib/income-forecast/forecaster.ts")
-  ok("...and still writes income_forecast_snapshots with the users id",
-    /agent_id:\s+input\.agentId|\.eq\("agent_id", input\.agentId\)/.test(inc))
+  const incAudit = agentIdClassAudit(inc)
+  const incTables = new Set(incAudit.usages.map((u) => u.table))
+  ok("the income forecaster resolves its input through the canonical resolver too",
+    incAudit.usersExpr === "input.agentId" && incAudit.agentsExpr !== null,
+    `usersExpr=${incAudit.usersExpr} agentsExpr=${incAudit.agentsExpr}`)
+  ok(`...and every agent_id it writes or filters carries its table's class\n    (${incAudit.usages.length} usages across ${[...incTables].join(", ")})`,
+    incAudit.usages.length > 0 && incAudit.mismatches.length === 0 && incAudit.unresolved.length === 0,
+    [...incAudit.mismatches, ...incAudit.unresolved].join("; "))
+  ok("...including the snapshot table it writes AND reads back for the delta",
+    ["transactions", "listings", "income_forecast_snapshots"].every((t) => incTables.has(t)) &&
+    incAudit.usages.some((u) => u.table === "income_forecast_snapshots" && u.via === "write") &&
+    incAudit.usages.some((u) => u.table === "income_forecast_snapshots" && u.via === "filter"),
+    [...incTables].join(", "))
+
+  // POSITIVE CONTROLS (§2). Every line above is an absence assertion — zero
+  // mismatches, zero unresolved — and a regex that matches nothing passes it
+  // exactly the way correct code does. Prove the auditor sees the defect it was
+  // written for, in both directions and in the aliased shape.
+  // The two `const`s above the resolver are deliberate: they are the forecaster's
+  // real preamble, and the binding scan once crossed them (see agentIdClassAudit).
+  const fixture = (write: string) =>
+    `export async function f(input: { agentId: string; brokerageId: string }) {\n`
+    + `  const supabase = createServiceClient()\n`
+    + `  const now = new Date()\n`
+    + `  const agentRecordId = input.agentId\n`
+    + `    ? await resolveUserIdToAgentRecord(input.agentId, input.brokerageId)\n`
+    + `    : null\n`
+    + `  await svc.from("revenue_protection_snapshots").insert({ agent_id: ${write} })\n`
+    + `  const { data } = await svc.from("listings").select("id").eq("agent_id", agentRecordId ?? "00000000-0000-0000-0000-000000000000")\n`
+    + `}`
+  ok("CONTROL: the resolver binding is the NEAREST const, not the first one in reach",
+    agentIdClassAudit(fixture("agentRecordId")).agentsExpr === "agentRecordId",
+    `bound ${agentIdClassAudit(fixture("agentRecordId")).agentsExpr}`)
+  const localObject = agentIdClassAudit(
+    fixture("agentRecordId")
+    + `\nexport async function g(input: { agentId: string; brokerageId: string }) {\n`
+    + `  const agentRecordId = await resolveUserIdToAgentRecord(input.agentId, input.brokerageId)\n`
+    + `  const { data: rows } = await svc.from("transactions").select("id, agent_id").eq("agent_id", agentRecordId)\n`
+    + `  for (const r of rows ?? []) savedDealGci.set(r.id, { gci: 1, agent_id: r.agent_id ?? null })\n`
+    + `}`)
+  ok("CONTROL: a LOCAL object carrying `agent_id:` after a read is not a column write —\n    only insert/update/upsert arguments are",
+    localObject.unresolved.length === 0 && localObject.mismatches.length === 0 &&
+    localObject.usages.filter((u) => u.table === "transactions").length === 1)
+  const usersIntoAgentsFk = agentIdClassAudit(fixture("input.agentId"))
+  ok("CONTROL: a users id written into an agents-FK column IS caught",
+    usersIntoAgentsFk.mismatches.length === 1 && /needs agents, got `input\.agentId` which is users/.test(usersIntoAgentsFk.mismatches[0] ?? ""),
+    usersIntoAgentsFk.mismatches.join("; ") || "nothing flagged")
+  const aliased = agentIdClassAudit(fixture("result.agentId"))
+  ok("CONTROL: an ALIAS of the users id (`result.agentId`) is reported UNRESOLVED, not passed —\n    the write that re-broke the forecaster was spelled exactly this way",
+    aliased.mismatches.length === 0 && aliased.unresolved.length === 1)
+  const correct = agentIdClassAudit(fixture("agentRecordId"))
+  ok("CONTROL: the resolved agents id written into the agents-FK column is clean, and the\n    `?? sentinel` filter shape is read as the first operand's class",
+    correct.mismatches.length === 0 && correct.unresolved.length === 0 && correct.usages.length === 2)
+  const syntheticUsersClass = agentIdClassAudit(fixture("agentRecordId"), {
+    agents: { listings: ["agent_id"] },
+    users: { revenue_protection_snapshots: ["agent_id"] },
+  })
+  ok("CONTROL: the class comes from the CACHE, not from this guard — the same write is\n    a defect once a synthetic cache says the column FKs users",
+    syntheticUsersClass.mismatches.length === 1 && /needs users, got `agentRecordId` which is agents/.test(syntheticUsersClass.mismatches[0] ?? ""),
+    syntheticUsersClass.mismatches.join("; ") || "nothing flagged")
 
   // m343 — COPILOT and the TRANSACTIONS kernel. Both had already resolved the
   // agents id correctly somewhere in the same function and then not used it at

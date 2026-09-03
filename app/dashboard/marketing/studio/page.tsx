@@ -24,12 +24,24 @@ function normalizeTab(raw: string | string[] | undefined): string {
   return "overview"
 }
 
+// `?campaign=<uuid>` is MINTED by the ops panel on this very page
+// (components/marketing-ops-panel.tsx "Review →" / "Launch →") and, until
+// 2026-09-03, read by nothing: the link reloaded the studio on the overview tab
+// and the campaign it named was never opened. Anything that is not a uuid is
+// dropped here so the client never sees an unvalidated id.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+function normalizeCampaignId(raw: string | string[] | undefined): string | null {
+  const candidate = Array.isArray(raw) ? raw[0] : raw
+  return typeof candidate === "string" && UUID_RE.test(candidate) ? candidate : null
+}
+
 export default async function MarketingStudioPage({
   searchParams,
 }: {
-  searchParams: Promise<{ tab?: string | string[] }>
+  searchParams: Promise<{ tab?: string | string[]; campaign?: string | string[] }>
 }) {
   const params = await searchParams
+  const initialCampaignId = normalizeCampaignId(params.campaign)
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
@@ -59,7 +71,10 @@ export default async function MarketingStudioPage({
         agentId={agentRow?.id ?? ""}
         brokerageId={userRow?.brokerage_id ?? ""}
         userRole={userRow?.user_type ?? "agent"}
-        initialTab={normalizeTab(params.tab)}
+        // A campaign deep-link lands on the campaigns tab whatever ?tab= says —
+        // the dialog it opens lives there.
+        initialTab={initialCampaignId ? "campaigns" : normalizeTab(params.tab)}
+        initialCampaignId={initialCampaignId}
       />
     </Suspense>
   )

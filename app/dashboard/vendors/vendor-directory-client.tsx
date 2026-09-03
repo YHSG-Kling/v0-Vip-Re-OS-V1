@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition, useEffect } from "react"
+import { useState, useTransition, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -201,6 +201,9 @@ interface VendorDirectoryClientProps {
   brokerageId: string
   userRole: string
   deliverables?: Deliverable[]
+  /** `?vendor=<vendors.id>` — server-validated uuid (page.tsx). Brings that
+   *  vendor's card into view on the directory tab, once per mount. */
+  initialVendorId?: string | null
 }
 
 export function VendorDirectoryClient({
@@ -213,12 +216,39 @@ export function VendorDirectoryClient({
   brokerageId,
   userRole,
   deliverables = [],
+  initialVendorId = null,
 }: VendorDirectoryClientProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
 
   // Search & filter state
   const [vendors, setVendors] = useState<Vendor[]>(initialVendors)
+
+  // `?vendor=` deep-link. The card IS the vendor's row on this surface (there
+  // is no separate detail page — book / reviews / edit / insurance / assign all
+  // hang off it), so "open" means: scroll it into view and mark it. Resolved
+  // against the listing the server already handed us — searchVendors is
+  // tenant-scoped, so an id from another brokerage is simply "not in your
+  // directory", never a fetch by URL. Once per mount (ref guard, pattern:
+  // app/portal/[contactId]/learn/learn-client.tsx focusedRef).
+  const [focusedVendorId, setFocusedVendorId] = useState<string | null>(null)
+  const [deepLinkNotice, setDeepLinkNotice] = useState<string | null>(null)
+  const vendorDeepLinkRef = useRef(false)
+  useEffect(() => {
+    if (vendorDeepLinkRef.current || !initialVendorId) return
+    vendorDeepLinkRef.current = true
+    const target = initialVendors.find((v) => v.id === initialVendorId) ?? null
+    if (!target) {
+      setDeepLinkNotice("The vendor this link names is not in your brokerage's directory listing.")
+      return
+    }
+    setFocusedVendorId(target.id)
+    setDeepLinkNotice(`Showing ${target.name}.`)
+    // After paint — the card is in the initial render of the directory tab.
+    requestAnimationFrame(() => {
+      document.getElementById(`vendor-card-${target.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" })
+    })
+  }, [initialVendorId, initialVendors])
   const [searchName, setSearchName] = useState("")
   const [filterServiceType, setFilterServiceType] = useState<string>("")
   const [filterMinRating, setFilterMinRating] = useState<string>("")
@@ -1064,6 +1094,19 @@ export function VendorDirectoryClient({
             </CardContent>
           </Card>
 
+          {deepLinkNotice && (
+            <div className="flex items-center justify-between rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+              <span>{deepLinkNotice}</span>
+              <button
+                type="button"
+                className="text-xs underline"
+                onClick={() => { setDeepLinkNotice(null); setFocusedVendorId(null) }}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
           {/* Vendor Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {vendors.map((vendor) => {
@@ -1071,7 +1114,11 @@ export function VendorDirectoryClient({
               // ages by itself. Nothing writes a "compliant" flag anywhere.
               const insurance = readVendorInsurance(vendor.compliance_credentials, new Date())
               return (
-              <Card key={vendor.id} className="hover:shadow-md transition-shadow">
+              <Card
+                key={vendor.id}
+                id={`vendor-card-${vendor.id}`}
+                className={`hover:shadow-md transition-shadow ${focusedVendorId === vendor.id ? "ring-2 ring-primary" : ""}`}
+              >
                 <CardHeader className="pb-2">
                   <div className="flex items-start justify-between">
                     <div>
