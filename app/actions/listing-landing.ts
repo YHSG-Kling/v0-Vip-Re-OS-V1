@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { gatewayChatJSON } from "@/lib/ai/gateway-chat"
 import { captureContact } from "@/lib/contact-pipeline/contact-capture"
 import { tenantScope, applyTenantScope } from "@/lib/kernel/tenant-scope"
@@ -789,13 +790,16 @@ export async function submitShowingRequest(input: ShowingRequestInput) {
       .eq("id", analytics.id)
   }
 
-  // 5. Record lifecycle event with kernel event (listing resolved at step 1)
+  // 5. Record lifecycle event with kernel event (listing resolved at step 1) —
+  //    audit row + reactor (staff bell / sequences keyed on showing_requested).
   if (listing?.brokerage_id) {
-    await supabase.from("lifecycle_events").insert({
-      brokerage_id: listing.brokerage_id,
-      entity_type: "showing_request",
-      entity_id: showingRequest.id,
-      event_type: KernelEvent.SHOWING_REQUESTED,
+    await emitKernelEvent({
+      brokerageId: listing.brokerage_id,
+      entityType: "showing_request",
+      entityId: showingRequest.id,
+      event: KernelEvent.SHOWING_REQUESTED,
+      listingId: input.listingId,
+      contactId: contactId ?? undefined,
       metadata: {
         listing_id: input.listingId,
         contact_id: contactId,

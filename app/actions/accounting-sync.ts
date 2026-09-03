@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isBrokerageFinanceAdmin } from "@/lib/auth/resolve-user-role"
 import { KernelEvent } from "@/lib/kernel/events"
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { QuickBooksProvider, type AccountingWriteResult } from "@/lib/providers/accounting/quickbooks"
 
 // ─── GET PROVIDER CONNECTION STATUS ──────────────────────────────────────────
@@ -119,18 +120,17 @@ export async function disconnectProvider(data: {
     .eq("platform", data.provider)
   if (ownerCredError) throw new Error(`Integration deactivated, but the stored credential is still active: ${ownerCredError.message}`)
 
-  // Log kernel event
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: data.brokerageId,
-    event_type: KernelEvent.INTEGRATION_DEACTIVATED,
-    entity_type: "integration_credentials",
-    entity_id: data.brokerageId,
-    actor_user_id: user.id,
+  // Kernel event — audit row + reactor (was a bare insert nobody downstream heard).
+  await emitKernelEvent({
+    brokerageId: data.brokerageId,
+    event: KernelEvent.INTEGRATION_DEACTIVATED,
+    entityType: "integration_credentials",
+    entityId: data.brokerageId,
+    actorUserId: user.id,
     metadata: {
       provider: data.provider,
       disconnected_by: user.id,
     },
-    created_at: new Date().toISOString(),
   })
 
   const { revalidatePath } = await import("next/cache")
@@ -237,19 +237,18 @@ export async function retrySyncError(data: {
 
   if (deleteError) throw deleteError
 
-  // Log that we're re-queuing this record
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: data.brokerageId,
-    event_type: KernelEvent.SYSTEM_SYNC_TRIGGERED,
-    entity_type: "sync_errors",
-    entity_id: data.errorId,
-    actor_user_id: user.id,
+  // Log that we're re-queuing this record — audit row + reactor.
+  await emitKernelEvent({
+    brokerageId: data.brokerageId,
+    event: KernelEvent.SYSTEM_SYNC_TRIGGERED,
+    entityType: "sync_errors",
+    entityId: data.errorId,
+    actorUserId: user.id,
     metadata: {
       record_type: errorRecord.record_type,
       record_id: errorRecord.record_id,
       retried_by: user.id,
     },
-    created_at: new Date().toISOString(),
   })
 
   const { revalidatePath } = await import("next/cache")
