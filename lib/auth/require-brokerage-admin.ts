@@ -57,13 +57,57 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 // The platform/OS discriminator is defined ONCE. That module is pure (it imports
 // nothing), so this stays free of a server-only leak.
 import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
+// The tenant-admin roster is defined ONCE, by the module the owner's ruling
+// names (see the tombstone below). resolve-user-role.ts is a pure helper (its
+// only value import is the pure platform roster; role-grants and plan-tier are
+// type-only), and it is already imported by four "use client" components, so
+// the two client consumers of this file are not newly exposed to server code.
+import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
-/**
- * user_type values that mean "administers this brokerage".
- * Kept identical to public.is_brokerage_admin() — if that function changes, this
- * set is the thing to change with it.
- */
-export const BROKERAGE_ADMIN_USER_TYPES = new Set(["admin", "broker", "broker_owner"])
+// ═══════════════════════════════════════════════════════════════════════════
+// TOMBSTONE — `BROKERAGE_ADMIN_USER_TYPES = new Set(["admin", "broker", "broker_owner"])`
+// ═══════════════════════════════════════════════════════════════════════════
+// DELETED as a LITERAL (§6, 2026-09-03, lane H4). The comment above it claimed
+// "kept identical to public.is_brokerage_admin()". It was not. MEASURED on
+// hrvaqgvukzxfskkcrwbt the same day — pg_get_functiondef('public.is_brokerage_admin'):
+//
+//     user_type in ('admin','broker','broker_admin','broker_owner','team_lead')
+//     … ura.role in ('admin','broker','broker_admin','broker_owner','team_lead')
+//
+// FIVE roles on both branches (m530 applied), and the literal here held THREE.
+// So this gate was NARROWER than the policy it claims to mirror, in the
+// direction the header of lib/auth/resolve-user-role.ts calls "merely annoying"
+// for RLS-bound callers — and NOT merely annoying for the two callers that hand
+// this gate a SERVICE client (lib/kernel/notification-rules.ts:41,
+// app/actions/settings/provider-settings-actions.ts:54): there the app gate is
+// the ONLY gate, so a team_lead or broker_admin was refused outright at
+// surfaces the owner's ruling admits them to ("team_lead joins the roster for
+// operational admin gates … also add team_lead to is_brokerage_admin() so app
+// and DB agree on the non-money gates").
+//
+// ── THE SURVIVOR, AT file:line ─────────────────────────────────────────────
+//     lib/auth/resolve-user-role.ts:220  TENANT_ADMIN_USER_TYPES
+// {admin, broker, broker_owner, team_lead, broker_admin} — the exact five the
+// live function admits. The name below is kept as an ALIAS so the five import
+// sites (scripts/brokerage-admin-grant-simulator.ts:39, app/actions/support.ts:39,
+// app/crm/contacts/[contactId]/alerts/page.tsx:40,
+// app/dashboard/team/create-team-dialog.tsx:11, and this file) keep compiling;
+// it is the same Set object, not a second roster. Repoint them to the survivor
+// and delete the alias when their lanes are open.
+//
+// BEHAVIOUR CHANGE, stated: requireBrokerageAdmin (and the three consumers
+// that test this Set directly) now ADMIT `team_lead` and `broker_admin`, by
+// user_type and by tenant role grant. That is the database's answer today;
+// the app had lagged it since m530 was applied.
+//
+// This is NOT the finance roster: brokerage-wide money stays on
+// BROKERAGE_FINANCE_ADMIN_USER_TYPES / isBrokerageFinanceAdmin (team_lead
+// held out), and no caller of this file gates money — createTeam
+// (app/actions/multi-persona.ts:786), notification rules, provider credentials,
+// territory settings, support-queue admin, team creation, alert admin are all
+// operational gates in the ruling's sense.
+/** user_type values that mean "administers this brokerage" — the ONE roster. */
+export const BROKERAGE_ADMIN_USER_TYPES = TENANT_ADMIN_USER_TYPES
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 

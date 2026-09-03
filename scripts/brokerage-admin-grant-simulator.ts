@@ -37,6 +37,7 @@ import { readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import { createClient } from "@supabase/supabase-js"
 import { BROKERAGE_ADMIN_USER_TYPES } from "../lib/auth/require-brokerage-admin"
+import { TENANT_ADMIN_USER_TYPES } from "../lib/auth/resolve-user-role"
 
 let pass = 0,
   fail = 0
@@ -54,8 +55,17 @@ const check = (n: string, c: boolean, detail = "") => {
 
 const MIGRATIONS_DIR = join(process.cwd(), "supabase", "migrations")
 
-/** The roles that ADMINISTER a brokerage. One list, mirrored by the app gate. */
-const ADMIN_ROLES = new Set(["admin", "broker", "broker_owner"])
+/**
+ * The roles that ADMINISTER a brokerage. DERIVED from the one roster the app
+ * owns (lib/auth/resolve-user-role.ts TENANT_ADMIN_USER_TYPES), not restated
+ * here: this was a hard-coded three-role literal, which went red on
+ * 2026-09-03 the moment the app gate (require-brokerage-admin.ts) stopped
+ * restating the roster and agreed with the live five-role function — a §2
+ * waypoint pin failing BECAUSE the work finished. S6 below still proves
+ * every derived role is admitted by the SQL, and S7 proves the app gate is
+ * the same set, so the rule is asserted and the number is derived.
+ */
+const ADMIN_ROLES: Set<string> = new Set(TENANT_ADMIN_USER_TYPES)
 
 // ─── PURE ────────────────────────────────────────────────────────────────────
 // An executable model of public.is_brokerage_admin(). This is not a
@@ -119,9 +129,14 @@ function pureLayer() {
     isBrokerageAdmin({ userType: "lender", brokerageId: OWN, grants: [{ role: "lender", brokerageId: null }] }) === false,
   )
 
+  // P5 once used team_lead as the non-administering specimen; team_lead has
+  // been IN the roster since the live function admitted five roles (m530),
+  // so the pin went red when the app agreed with the database (2026-09-03).
+  // The specimen is now derived: a role the roster does not hold.
+  const nonAdminRole = ["agent", "vendor", "lender"].find((r) => !ADMIN_ROLES.has(r)) ?? "agent"
   check(
-    "P5 a non-administering grant (team_lead) does not admit, however tenanted",
-    isBrokerageAdmin({ userType: "team_lead", brokerageId: OWN, grants: [{ role: "team_lead", brokerageId: OWN }] }) ===
+    `P5 a non-administering grant (${nonAdminRole}) does not admit, however tenanted`,
+    isBrokerageAdmin({ userType: nonAdminRole, brokerageId: OWN, grants: [{ role: nonAdminRole, brokerageId: OWN }] }) ===
       false,
   )
 

@@ -9,6 +9,7 @@ import {
   getRecruitingCostBreakdown,
   getBreakEvenAnalysis,
   getRecruitingAnalyticsByYear,
+  listRecruitableAgents,
 } from "@/app/actions/recruiting-roi"
 import { YearlyRevenueChart } from "./yearly-revenue-chart"
 import { BreakEvenChart } from "./breakeven-chart"
@@ -55,15 +56,73 @@ export default async function RecruitingROIPage() {
     recruitROIs,
     costBreakdown,
     breakEvenAnalysis,
-    yearlyAnalytics,
+    recruitableAgents,
   ] = await Promise.all([
     // Tenant comes from the SESSION inside each action (§4) — no id is passed.
     getRecruitingROISummary(),
     getRecruitROIByRecruit(),
     getRecruitingCostBreakdown(),
     getBreakEvenAnalysis(),
-    getRecruitingAnalyticsByYear("").catch(() => []),
+    // The cost-entry picker's agent list (agents.id + name). A refused read
+    // leaves the picker empty and SAYS so — it does not become a free-text box.
+    listRecruitableAgents().catch(() => [] as Awaited<ReturnType<typeof listRecruitableAgents>>),
   ])
+
+  // ── "Revenue by Agent — Year 1-3": ONE SERIES PER RECRUIT ───────────────────
+  //
+  // UNTIL 2026-09-03 this called getRecruitingAnalyticsByYear("") — an EMPTY
+  // recruit id against a uuid column — so the query threw, the .catch() turned it
+  // into [], and the chart rendered "No revenue data available yet" for every
+  // tenant forever. The chart (yearly-revenue-chart.tsx) wants one row PER RECRUIT
+  // carrying the recruit's name and year1/2/3 revenue; the action returns one row
+  // per (recruit, year_number). So: iterate this tenant's RECRUITED agents and
+  // pivot. The recruited set is recruitROIs (recruiting_roi has one row per
+  // recruited agent, and the writer creates it from the same recruiting_analytics
+  // rows this reads) rather than the full roster from listRecruitableAgents — the
+  // roster is every agent the brokerage has, most of whom were never recruited
+  // through this funnel, and each extra id is a gated round trip for a row that
+  // cannot exist. Per-recruit refusals degrade to an empty series for THAT
+  // recruit; a bar that cannot be read is absent, never zero.
+  type RecruitRoiRow = {
+    recruited_agent_id: string | null
+    agents?: { users?: { first_name?: string | null; last_name?: string | null } | null } | null
+  }
+  const recruitedIds = Array.from(
+    new Set(
+      ((recruitROIs ?? []) as unknown as RecruitRoiRow[])
+        .map((r) => r.recruited_agent_id)
+        .filter((id): id is string => typeof id === "string" && id.length > 0),
+    ),
+  )
+  const namesByAgentId = new Map<string, { first_name: string | null; last_name: string | null }>()
+  for (const r of (recruitROIs ?? []) as unknown as RecruitRoiRow[]) {
+    if (r.recruited_agent_id && !namesByAgentId.has(r.recruited_agent_id)) {
+      namesByAgentId.set(r.recruited_agent_id, {
+        first_name: r.agents?.users?.first_name ?? null,
+        last_name: r.agents?.users?.last_name ?? null,
+      })
+    }
+  }
+  const perRecruitSeries = await Promise.all(
+    recruitedIds.map(async (agentId) => {
+      const rows = await getRecruitingAnalyticsByYear(agentId).catch(() => [])
+      const byYear = new Map<number, number>()
+      for (const row of rows as Array<{ year_number: number | null; gross_commission_generated: number | null }>) {
+        if (typeof row.year_number === "number") {
+          byYear.set(row.year_number, (byYear.get(row.year_number) ?? 0) + Number(row.gross_commission_generated ?? 0))
+        }
+      }
+      return {
+        recruited_agent_id: agentId,
+        agents: namesByAgentId.get(agentId) ?? { first_name: null, last_name: null },
+        year1_revenue: byYear.get(1) ?? 0,
+        year2_revenue: byYear.get(2) ?? 0,
+        year3_revenue: byYear.get(3) ?? 0,
+        hasData: byYear.size > 0,
+      }
+    }),
+  )
+  const yearlyAnalytics = perRecruitSeries.filter((s) => s.hasData)
 
   const totalInvested = roiSummary?.totalInvested || 0
   const totalGenerated = roiSummary?.totalGenerated || 0
@@ -263,7 +322,7 @@ export default async function RecruitingROIPage() {
               </Card>
             </div>
 
-            <CostEntryPanel />
+            <CostEntryPanel agents={recruitableAgents} />
           </div>
         </TabsContent>
       </Tabs>

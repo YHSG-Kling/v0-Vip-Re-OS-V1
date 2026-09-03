@@ -138,6 +138,43 @@ export async function getBreakEvenAnalysis() {
   }
 }
 
+/**
+ * THE TENANT'S AGENTS, FOR THE COST-ENTRY PICKER (built 2026-09-03, lane H4 —
+ * orphan doctrine §1.2: the missing half). `addRecruitingCost` takes an
+ * `agents.id` and verifies it is one of this tenant's agents, but the only UI
+ * that called it (app/dashboard/recruiting-roi/cost-entry-panel.tsx) sent a
+ * free-text "Recruit Name" as that id — so the verification refused every
+ * submission and no recruiting cost could ever be entered from the page.
+ *
+ * Same gate as every sibling (requireRecruitingCaller — tenant from the SESSION,
+ * caller must administer it). `id` is agents.id — the id the cost row keys on —
+ * and the name crosses agents.user_id → users (§3: agents.id and users.id are
+ * disjoint; the FK is the only bridge). One FK agents→users (agents_user_id_fkey),
+ * so the bare embed is PGRST201-safe.
+ */
+export async function listRecruitableAgents(): Promise<Array<{ id: string; name: string; isActive: boolean }>> {
+  const { client, brokerageId } = await requireRecruitingCaller()
+
+  const { data, error } = await client
+    .from("agents")
+    .select("id, is_active, users(first_name, last_name, email)")
+    .eq("brokerage_id", brokerageId)
+
+  if (error) throw error
+
+  type Row = {
+    id: string
+    is_active: boolean | null
+    users: { first_name: string | null; last_name: string | null; email: string | null } | null
+  }
+  return ((data ?? []) as unknown as Row[])
+    .map((a) => {
+      const full = `${a.users?.first_name ?? ""} ${a.users?.last_name ?? ""}`.trim()
+      return { id: a.id, name: full || a.users?.email || `Agent ${a.id.slice(0, 8)}`, isActive: a.is_active !== false }
+    })
+    .sort((x, y) => Number(y.isActive) - Number(x.isActive) || x.name.localeCompare(y.name))
+}
+
 export async function getRecruitingAnalyticsByYear(recruitedAgentId: string) {
   const { client, brokerageId } = await requireRecruitingCaller()
 

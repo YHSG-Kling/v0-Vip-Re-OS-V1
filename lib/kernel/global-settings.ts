@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isPlatformSuperadminIdentity } from "@/lib/platform/platform-staff-roster"
+import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -51,7 +52,12 @@ type SupabaseLike = { from: (table: string) => any }
 // the app: the OWNER of a brokerage was refused their own brokerage settings by
 // app code the database would have let through. Widening to broker_owner brings
 // the app up to the database; it does not go past it.
-const BROKERAGE_ADMIN_USER_TYPES = new Set(["admin", "broker", "broker_owner"])
+// DERIVED, not restated (§6, integrator 2026-09-03): this was the THIRD copy of
+// the tenant-admin roster (the other two: lib/auth/require-brokerage-admin.ts,
+// now also derived, and the SQL function is_brokerage_admin, which admits five
+// roles live). The survivor is lib/auth/resolve-user-role.ts TENANT_ADMIN_USER_TYPES;
+// the local name is kept so the gate below reads the same.
+const BROKERAGE_ADMIN_USER_TYPES: ReadonlySet<string> = TENANT_ADMIN_USER_TYPES
 
 // ★ ACT-AS WRITE SEAM ★ — the users-row read rides an INJECTED, ctx-resolved
 // client when the caller provides one (lib/platform/acting-context.ts:

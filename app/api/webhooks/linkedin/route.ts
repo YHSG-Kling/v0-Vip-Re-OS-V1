@@ -45,13 +45,20 @@ import crypto from "crypto"
  * The signature is over the EXACT bytes LinkedIn sent, so the body is read
  * ONCE with `req.text()` and that string is what gets parsed.
  *
- * LINKEDIN_WEBHOOK_VERIFY_TOKEN is read for the console contract
- * (lib/providers/webhook-contract.ts names it) — LinkedIn's scheme carries no
- * verify token; the client secret is the only key on both halves.
+ * LINKEDIN_WEBHOOK_VERIFY_TOKEN — READ, NOT USED, AND WHY IT STAYS (2026-09-03,
+ * lane H4). LinkedIn's scheme carries no verify token; the client secret is the
+ * only key on both halves, and nothing below consults this value. It is kept
+ * because the console contract row for this route
+ * (lib/providers/webhook-contract.ts, provider "linkedin", `secretEnv`) still
+ * names it, and scripts/webhook-contract-guard.ts:340-341 asserts that every
+ * env name on a row is consulted as `process.env.<NAME>` in the route's files —
+ * removing the read here alone would turn test:webhook-contract red. The RIGHT
+ * fix is to drop the name from the contract row and this read together; the
+ * contract module belongs to the integrator, so this stays until that lands.
  */
 const VERIFY_TOKEN = process.env.LINKEDIN_WEBHOOK_VERIFY_TOKEN ?? ""
 const CLIENT_SECRET = process.env.LINKEDIN_CLIENT_SECRET ?? ""
-void VERIFY_TOKEN
+void VERIFY_TOKEN // contract-row parity only — see the note above
 
 type LinkedInSignatureVerdict =
   | { ok: true }

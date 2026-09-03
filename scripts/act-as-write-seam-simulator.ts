@@ -242,7 +242,10 @@ function main() {
   // mutation, 2026-08-24. CLAUDE.md §2: "a TOMBSTONE IS NOT A CALL SITE".
   const rosterSrc = stripComments(read("lib/platform/platform-staff-roster.ts"))
   check("admin predicate itself unchanged (roster + platform-superadmin both-columns test)",
-    /BROKERAGE_ADMIN_USER_TYPES = new Set\(\["admin", "broker", "broker_owner"\]\)/.test(gsk) &&
+    // The roster is DERIVED from lib/auth/resolve-user-role.ts (2026-09-03) —
+    // the literal this once pinned was the third restatement of it (§6).
+    /BROKERAGE_ADMIN_USER_TYPES: ReadonlySet<string> = TENANT_ADMIN_USER_TYPES/.test(gsk) &&
+    /from "@\/lib\/auth\/resolve-user-role"/.test(gsk) &&
     /isPlatformSuperadminIdentity\(userType, platformRole\)/.test(gsk) &&
     /from "@\/lib\/platform\/platform-staff-roster"/.test(gsk) &&
     /if \(!BROKERAGE_ADMIN_USER_TYPES\.has\(userType\) && !isPlatformSuperadmin\)/.test(gsk))
