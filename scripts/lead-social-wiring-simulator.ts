@@ -859,8 +859,10 @@ const MUTATIONS: Mutation[] = [
     replace: `    .from("behavioral_signals")\n    .select("*")\n    .eq("unified_profile_id", profileId)` },
 
   { id: "L18", file: LEAD, note: "read property signals through a column with no writer",
-    find: `        .or(\`contact_id.eq.\${contactId},profile_id.eq.\${profileId}\`)`,
-    replace: `        .eq("profile_id", profileId)` },
+    // Anchor follows lane C5's rewrite of getAllSignalsForProfile (2026-09-03):
+    // the property read is a plain builder at 4-space indent now.
+    find: `    .or(\`contact_id.eq.\${contactId},profile_id.eq.\${profileId}\`)`,
+    replace: `    .eq("profile_id", profileId)` },
 
   { id: "L22", file: CRM_UI, note: "pass something other than the contact id to the profiler",
     find: `    const result = await createUnifiedLeadProfile({ contactId: selectedContactId }).catch(`,
@@ -943,8 +945,10 @@ const MUTATIONS: Mutation[] = [
     replace: `import { getUnifiedLeadProfiles, getSocialIntelligence, createUnifiedLeadProfile, analyzeGoogleSearchIntent } from "@/app/actions/lead-intelligence"` },
 
   { id: "L19", file: LEAD, note: "let a service client read every tenant's signals",
-    find: `  ).eq("brokerage_id", brokerageId)\n\n  const propertyQuery = (`,
-    replace: `  )\n\n  const propertyQuery = (` },
+    // Anchor follows lane C5's rewrite (2026-09-03): the behavioural read's
+    // tenant filter is its last chained call, so dropping it is the mutation.
+    find: `    .eq("contact_id", contactId)\n    .eq("brokerage_id", brokerageId)\n\n  const propertyQuery = supabase`,
+    replace: `    .eq("contact_id", contactId)\n\n  const propertyQuery = supabase` },
 
   { id: "L25", file: CRM_UI, note: "restore the render branch on a column that does not exist",
     find: `                            {unifiedLeadProfile.intent_strength && (`,

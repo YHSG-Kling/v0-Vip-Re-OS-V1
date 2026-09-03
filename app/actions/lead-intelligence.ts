@@ -2164,33 +2164,39 @@ PROPERTY DATA: ${JSON.stringify(allSignals.property)}
  * reads returned a permanent empty set and the AI prompt above was always fed
  * "[] / []" — the profile scored on nothing while looking like it scored on
  * evidence. Both tables also carry contact_id, which IS written, so the
- * contact is used as the resolving key and the legacy profile keys are kept
- * as a second lane for any row that does get stamped later.
+ * contact is the resolving key.
+ *
+ * TOMBSTONE (CLAUDE.md §1.1 + §6, wave 26 lane C5) — behavioral_signals.
+ * unified_profile_id. The repair above kept the profile key as "a second lane
+ * for any row that does get stamped later". None ever did: the three writers of
+ * this table (:143, :156, :256) still set contact_id and never the profile id,
+ * so the OR-branch was a read of a column with no writer, dressed as a
+ * fallback, and the contactId-less branch beneath it could only ever return [].
+ * The SURVIVOR is behavioral_signals.contact_id — the one column those writers
+ * stamp — read with a plain equality below. contactId is REQUIRED now: the one
+ * caller (:2039) always has it, and a profile with no contact has no signals to
+ * feed it. property_intelligence.profile_id is NOT touched here — it is a
+ * different column with a different writer question (:737 does stamp it when
+ * handed a valid uuid) and belongs to its own lane.
  */
-async function getAllSignalsForProfile(profileId: string, brokerageId: string, contactId?: string) {
+async function getAllSignalsForProfile(profileId: string, brokerageId: string, contactId: string) {
   // SERVICE CLIENT — RLS does not apply, so the tenant filter has to be here
   // explicitly. Both tables carry a NULLABLE brokerage_id whose policy is
   // `IS NULL OR = current_user_brokerage_id()`, which is not a boundary even
   // for a user client.
   const supabase = createServiceClient()
 
-  const behavioralQuery = (
-    contactId
-      ? supabase
-          .from("behavioral_signals")
-          .select("*")
-          .or(`contact_id.eq.${contactId},unified_profile_id.eq.${profileId}`)
-      : supabase.from("behavioral_signals").select("*").eq("unified_profile_id", profileId)
-  ).eq("brokerage_id", brokerageId)
+  const behavioralQuery = supabase
+    .from("behavioral_signals")
+    .select("*")
+    .eq("contact_id", contactId)
+    .eq("brokerage_id", brokerageId)
 
-  const propertyQuery = (
-    contactId
-      ? supabase
-          .from("property_intelligence")
-          .select("*")
-          .or(`contact_id.eq.${contactId},profile_id.eq.${profileId}`)
-      : supabase.from("property_intelligence").select("*").eq("profile_id", profileId)
-  ).eq("brokerage_id", brokerageId)
+  const propertyQuery = supabase
+    .from("property_intelligence")
+    .select("*")
+    .or(`contact_id.eq.${contactId},profile_id.eq.${profileId}`)
+    .eq("brokerage_id", brokerageId)
 
   const [{ data: behavioral, error: behavioralError }, { data: property, error: propertyError }] =
     await Promise.all([behavioralQuery, propertyQuery])
