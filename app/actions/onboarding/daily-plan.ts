@@ -1,6 +1,8 @@
 "use server"
 
+import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveTenantAdmin } from "@/lib/auth/resolve-user-role"
 import {
   phaseForDay, journeyProgress, buildDailyActionPlan, fallBehindRisk,
   type JourneyStep, type DailyActionPlan, type JourneyProgress, type FallBehindRisk,
@@ -14,13 +16,72 @@ export interface AgentJourney {
   phaseFocus: string
 }
 
-/** Load an agent's 90-day journey: phase progress + today's action plan + fall-behind risk. Read-only. */
+/**
+ * Session → identity. The same `requireCaller()` shape app/actions/video-generation.ts:57
+ * carries (one copy per "use server" file — there is no shared lib helper yet).
+ * Reads `{ data, error }` (§3).
+ */
+async function requireCaller(): Promise<
+  | { ok: true; supabase: Awaited<ReturnType<typeof createClient>>; userId: string; brokerageId: string; userType: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Not authenticated" }
+  const { data: u, error } = await supabase
+    .from("users")
+    .select("brokerage_id, user_type")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (error) return { ok: false, error: `Could not resolve your profile: ${error.message}` }
+  if (!u?.brokerage_id) return { ok: false, error: "Your account is not linked to a brokerage" }
+  return { ok: true, supabase, userId: user.id, brokerageId: u.brokerage_id as string, userType: String(u.user_type ?? "") }
+}
+
+/**
+ * Load an agent's 90-day journey: phase progress + today's action plan + fall-behind risk. Read-only.
+ *
+ * GATED ON THE SESSION (§4) — the same rule as app/actions/career-tier.ts:getAgentCareerProgress.
+ * This ran on the SERVICE client with `agentId` straight from the parameter and no auth: any
+ * caller could read any agent's onboarding state, contact count and pipeline across every
+ * tenant. `agentId` is kept (the card passes the agent's own id; an admin may look at a
+ * teammate) but is AUTHORISED, not trusted: the caller's OWN agent row (agents.user_id =
+ * session user — disjoint id spaces, §3), OR same-brokerage AND a tenant admin
+ * (resolveTenantAdmin — the ONE roster). Anything unverifiable returns the empty journey,
+ * which is what the card renders as nothing.
+ */
 export async function getAgentDailyActionPlan(agentId: string): Promise<AgentJourney> {
   const empty: AgentJourney = { active: false, progress: null, plan: null, risk: "none", phaseFocus: "" }
   if (!agentId) return empty
+  const caller = await requireCaller()
+  if (!caller.ok) return empty
   const svc = createServiceClient()
 
-  const { data: ob } = await svc.from("agent_onboarding").select("agent_id, brokerage_id, current_day, completion_percentage, status, start_date").eq("agent_id", agentId).maybeSingle()
+  const { data: agentIdentity, error: agentErr } = await svc
+    .from("agents")
+    .select("id, brokerage_id, user_id")
+    .eq("id", agentId)
+    .maybeSingle()
+  if (agentErr) {
+    console.error("[daily-plan] agent read refused:", agentErr.message)
+    return empty
+  }
+  if (!agentIdentity) return empty
+  const isOwn = (agentIdentity as any).user_id === caller.userId
+  if (!isOwn) {
+    if ((agentIdentity as any).brokerage_id !== caller.brokerageId) return empty
+    const admin = await resolveTenantAdmin(caller.supabase, caller.userId, {
+      user_type: caller.userType,
+      brokerage_id: caller.brokerageId,
+    })
+    if (!admin.ok || !admin.isTenantAdmin) return empty
+  }
+
+  const { data: ob, error: obErr } = await svc.from("agent_onboarding").select("agent_id, brokerage_id, current_day, completion_percentage, status, start_date").eq("agent_id", agentId).maybeSingle()
+  if (obErr) {
+    console.error("[daily-plan] onboarding read refused:", obErr.message)
+    return empty
+  }
   if (!ob) return empty
   const o = ob as any
   if (o.status && ["completed", "graduated"].includes(String(o.status))) return { ...empty, active: false }

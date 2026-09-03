@@ -3,6 +3,30 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { computeMentorLift, type MentorLift } from "@/lib/recruiting/mentor-lift"
+import { resolveTenantAdmin } from "@/lib/auth/resolve-user-role"
+
+/**
+ * Session → identity. The same `requireCaller()` shape app/actions/video-generation.ts:57
+ * and app/actions/ai-identity.ts:17 carry (one copy per "use server" file — there is no
+ * shared lib helper for this yet; consolidating the ~20 copies is a separate lane).
+ * Reads `{ data, error }` (§3): a refused profile read must not read as "no profile".
+ */
+async function requireCaller(): Promise<
+  | { ok: true; supabase: Awaited<ReturnType<typeof createClient>>; userId: string; brokerageId: string; userType: string }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: "Not authenticated" }
+  const { data: u, error } = await supabase
+    .from("users")
+    .select("brokerage_id, user_type")
+    .eq("id", user.id)
+    .maybeSingle()
+  if (error) return { ok: false, error: `Could not resolve your profile: ${error.message}` }
+  if (!u?.brokerage_id) return { ok: false, error: "Your account is not linked to a brokerage" }
+  return { ok: true, supabase, userId: user.id, brokerageId: u.brokerage_id as string, userType: String(u.user_type ?? "") }
+}
 
 /**
  * Log a mentor session (mentor-side). Records it in the canonical mentor_sessions table and awards the
@@ -227,14 +251,41 @@ export async function listMentorSessions(
 /**
  * Broker KPI — mentored vs unmentored production/retention lift. Compares newer agents (<2 yrs) with an
  * active mentor to those without. Honest: null lifts + no verdict until each cohort has enough agents.
+ *
+ * TENANT FROM THE SESSION (§4). This took `brokerageId` as a PARAMETER and ran three
+ * SERVICE-client reads against it with no gate — any signed-in (or unauthenticated)
+ * caller could read another brokerage's roster, mentor pairings and retention scores
+ * by posting a uuid to this "use server" endpoint. The parameter is gone: the tenant
+ * is the caller's own `users.brokerage_id`, and because this is a brokerage-wide KPI
+ * over every agent's production, the caller must administer that tenant
+ * (resolveTenantAdmin — the ONE roster, user_type OR grant). Anything that cannot be
+ * verified refuses; no read runs before the gate answers.
+ *
+ * §3: all three reads destructure `error`. A refused cohort read rendered as "no
+ * mentored agents" would show a broker a lift computed from half the data.
  */
-export async function getMentorLift(brokerageId: string): Promise<MentorLift> {
+export async function getMentorLift(): Promise<{ ok: true; lift: MentorLift } | { ok: false; error: string }> {
+  const caller = await requireCaller()
+  if (!caller.ok) return caller
+  const admin = await resolveTenantAdmin(caller.supabase, caller.userId, {
+    user_type: caller.userType,
+    brokerage_id: caller.brokerageId,
+  })
+  if (!admin.ok) return { ok: false, error: `Could not verify your role: ${admin.error}` }
+  if (!admin.isTenantAdmin) return { ok: false, error: "Only a brokerage admin can view the mentor lift KPI" }
+  const brokerageId = caller.brokerageId
+
   const svc = createServiceClient()
-  const [{ data: agents }, { data: rels }, { data: scores }] = await Promise.all([
+  const [agentsRes, relsRes, scoresRes] = await Promise.all([
     svc.from("agents").select("id, years_experience, ytd_transactions").eq("brokerage_id", brokerageId).eq("is_active", true).limit(2000),
     svc.from("agent_mentor_relationships").select("mentee_agent_id").eq("brokerage_id", brokerageId).eq("status", "active").limit(2000),
     svc.from("agent_retention_scores").select("agent_id, composite_score").eq("brokerage_id", brokerageId).order("score_date", { ascending: false }).limit(5000),
   ])
+  const refused = [agentsRes.error, relsRes.error, scoresRes.error].find(Boolean)
+  if (refused) return { ok: false, error: `Mentor lift read refused: ${refused.message}` }
+  const agents = agentsRes.data
+  const rels = relsRes.data
+  const scores = scoresRes.data
   const mentored = new Set(((rels ?? []) as any[]).map((r) => r.mentee_agent_id))
   // Latest retention score per agent.
   const latestScore = new Map<string, number>()
@@ -242,5 +293,8 @@ export async function getMentorLift(brokerageId: string): Promise<MentorLift> {
 
   const newer = ((agents ?? []) as any[]).filter((a) => (a.years_experience ?? 0) < 2)
   const toStat = (a: any) => ({ transactions: Number(a.ytd_transactions) || 0, retention: latestScore.get(a.id) ?? 0 })
-  return computeMentorLift(newer.filter((a) => mentored.has(a.id)).map(toStat), newer.filter((a) => !mentored.has(a.id)).map(toStat))
+  return {
+    ok: true,
+    lift: computeMentorLift(newer.filter((a) => mentored.has(a.id)).map(toStat), newer.filter((a) => !mentored.has(a.id)).map(toStat)),
+  }
 }

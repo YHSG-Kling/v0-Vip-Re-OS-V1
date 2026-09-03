@@ -8,11 +8,9 @@ import { addRecruitingCost } from "@/app/actions/recruiting-roi"
 import { useTransition } from "react"
 import { toast } from "sonner"
 
-interface Props {
-  brokerageId: string
-}
-
-export function CostEntryPanel({ brokerageId }: Props) {
+// `brokerageId` prop REMOVED (2026-09-03): the action derives the tenant from the
+// session (app/actions/recruiting-roi.ts, §4), so the page no longer hands one down.
+export function CostEntryPanel() {
   const [isOpen, setIsOpen] = useState(false)
   const [isPending, startTransition] = useTransition()
   const [formData, setFormData] = useState({
@@ -32,7 +30,6 @@ export function CostEntryPanel({ brokerageId }: Props) {
     startTransition(async () => {
       try {
         await addRecruitingCost(
-          brokerageId,
           formData.recruit_name,
           formData.cost_type,
           Math.round(parseFloat(formData.amount) * 100),

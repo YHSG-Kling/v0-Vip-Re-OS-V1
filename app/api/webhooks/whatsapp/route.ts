@@ -1,40 +1,44 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { ingestMessageService } from "@/lib/communication-spine/ingest-message-service"
+import { metaSubscriptionHandshake, verifyMetaSignature } from "@/lib/meta/verify-signature"
 
 /**
  * WhatsApp Business webhook — Meta's Cloud API.
  *
- * Verification: shares Meta's hub.challenge / hub.verify_token pattern
- * with Messenger/Instagram, but the message payload shape is different
+ * Verification: a WhatsApp Cloud API webhook IS a Graph API webhook — the
+ * same hub.challenge / hub.verify_token handshake on GET and the same
+ * X-Hub-Signature-256 (HMAC-SHA256 of the raw body, keyed by the App Secret)
+ * on POST as Messenger/Instagram. Only the payload shape differs
  * (entry[].changes[].value.messages instead of entry[].messaging).
  *
- * Required env: WHATSAPP_VERIFY_TOKEN, or META_VERIFY_TOKEN as fallback.
- * (META_VERIFY_TOKEN was the deleted first-generation Messenger route's env
- * var — the Messenger/IG survivor is app/api/webhooks/meta-dm/route.ts,
- * which reads META_WEBHOOK_VERIFY_TOKEN with the same fallback.)
+ * Both halves run through the ONE Meta verifier, lib/meta/verify-signature.ts.
+ * Until 2026-09-03 the POST here was unverified: any caller could file a
+ * message into a tenant's CRM (and create a WhatsApp "lead" contact) by
+ * posting a payload shaped like Meta's. Now: 503 when the App Secret is unset,
+ * 401 on a bad signature, nothing touched on either (fail closed, §4).
+ *
+ * Env: META_WEBHOOK_VERIFY_TOKEN is the ONE handshake token (§6 — the survivor
+ * of three spellings; WHATSAPP_VERIFY_TOKEN and META_VERIFY_TOKEN are accepted
+ * as documented fallbacks by the verifier, so an existing console config keeps
+ * verifying). META_APP_SECRET (fallback FACEBOOK_APP_SECRET) signs payloads.
  */
-
-const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN ?? process.env.META_VERIFY_TOKEN ?? ""
 
 // --- GET: Hub challenge verification ---
 export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url)
-  const mode = searchParams.get("hub.mode")
-  const token = searchParams.get("hub.verify_token")
-  const challenge = searchParams.get("hub.challenge")
-
-  if (mode === "subscribe" && token === VERIFY_TOKEN && challenge) {
-    return new NextResponse(challenge, { status: 200 })
-  }
-  return NextResponse.json({ error: "Forbidden" }, { status: 403 })
+  return metaSubscriptionHandshake(req)
 }
 
 // --- POST: WhatsApp message events ---
 export async function POST(req: NextRequest) {
+  // Raw body FIRST — the signature is over the exact bytes Meta sent.
+  const rawBody = await req.text()
+  const verdict = verifyMetaSignature(rawBody, req.headers.get("x-hub-signature-256"))
+  if (!verdict.ok) return NextResponse.json({ error: verdict.reason }, { status: verdict.status })
+
   let payload: any
   try {
-    payload = await req.json()
+    payload = JSON.parse(rawBody)
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 })
   }

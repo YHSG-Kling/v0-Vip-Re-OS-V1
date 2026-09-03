@@ -45,12 +45,21 @@
  *   GET  — Meta's subscription handshake (hub.challenge echo against
  *          META_WEBHOOK_VERIFY_TOKEN, fallback META_VERIFY_TOKEN; unset =
  *          honest 404 not-configured).
- *   POST — DM events. Signature policy, fail closed on WRITES and never on
- *          Meta's retry storm:
+ *   POST — DM events. Signature policy, fail closed:
  *            · app secret set + signature valid   → ingest
  *            · app secret set + signature INVALID → 401 (not Meta — no retry
  *              obligation to a forger)
- *            · app secret unset                   → 200 ack, NOTHING ingested
+ *            · app secret unset                   → 503, NOTHING ingested
+ *          2026-09-03: the verifier moved to lib/meta/verify-signature.ts —
+ *          the ONE Meta verifier, now shared with meta-leadgen and whatsapp
+ *          (both of which accepted UNVERIFIED POSTs until then). The
+ *          unset-secret answer changed from "200 ack, ingest nothing" to 503:
+ *          the silent ack dropped every DM forever with no signal anywhere,
+ *          while a 503 shows in the App Dashboard delivery log and Meta's
+ *          retry schedule re-delivers once the secret is set. The handshake
+ *          token spelling is unified there too (META_WEBHOOK_VERIFY_TOKEN
+ *          survives; META_VERIFY_TOKEN / WHATSAPP_VERIFY_TOKEN accepted as
+ *          documented fallbacks).
  *          The receiving PAGE/IG account maps to a tenant via
  *          social_media_accounts (account_id); a DM for a page no tenant
  *          connected is ACKED and skipped (Meta requires 200) with nothing
@@ -62,44 +71,23 @@
  * route only ingests.
  */
 import { NextRequest, NextResponse } from "next/server"
-import { createHmac, timingSafeEqual } from "crypto"
 import { createServiceClient } from "@/lib/supabase/service"
+import { metaSubscriptionHandshake, verifyMetaSignature } from "@/lib/meta/verify-signature"
 
 export const dynamic = "force-dynamic"
 
 export async function GET(req: NextRequest) {
-  // META_VERIFY_TOKEN fallback merged from the deleted first-generation route
-  // so an existing App Dashboard config keeps verifying (tombstone above).
-  const token = process.env.META_WEBHOOK_VERIFY_TOKEN ?? process.env.META_VERIFY_TOKEN
-  if (!token) return new NextResponse("Meta webhook not configured", { status: 404 })
-  const url = new URL(req.url)
-  const mode = url.searchParams.get("hub.mode")
-  const verify = url.searchParams.get("hub.verify_token")
-  const challenge = url.searchParams.get("hub.challenge")
-  if (mode === "subscribe" && verify === token && challenge) {
-    return new NextResponse(challenge, { status: 200 })
-  }
-  return new NextResponse("Verification failed", { status: 403 })
+  // The handshake (META_WEBHOOK_VERIFY_TOKEN, hub.challenge echo, honest 404
+  // when unset; META_VERIFY_TOKEN fallback merged from the deleted
+  // first-generation route — tombstone above) lives in the ONE verifier.
+  return metaSubscriptionHandshake(req)
 }
 
-/**
- * Current Meta payload verification (researched 2026-08-27, developers.facebook.com
- * → Webhooks → "Validating payloads"): X-Hub-Signature-256 = "sha256=" +
- * hex(HMAC-SHA256(raw body, app secret)). Returns false on ANY malformed input.
- */
-function verifyMetaSignature(rawBody: string, signatureHeader: string | null): boolean {
-  const secret = process.env.META_APP_SECRET ?? process.env.FACEBOOK_APP_SECRET
-  if (!secret || !signatureHeader?.startsWith("sha256=")) return false
-  const expectedHex = createHmac("sha256", secret).update(rawBody, "utf-8").digest("hex")
-  try {
-    const a = Buffer.from(expectedHex, "hex")
-    const b = Buffer.from(signatureHeader.slice("sha256=".length), "hex")
-    if (a.length !== b.length) return false
-    return timingSafeEqual(a, b)
-  } catch {
-    return false
-  }
-}
+// TOMBSTONE (2026-09-03): the local `verifyMetaSignature` (X-Hub-Signature-256
+// = "sha256=" + hex(HMAC-SHA256(raw body, app secret)), timing-safe) moved to
+// lib/meta/verify-signature.ts:verifyMetaSignature so meta-leadgen and
+// whatsapp verify with the SAME code instead of none. Nothing was dropped:
+// the malformed-input → false behaviour is safeHexEqual there.
 
 interface DmEvent {
   pageId: string
@@ -180,23 +168,20 @@ export async function POST(req: NextRequest) {
   // Raw body FIRST — the signature is over the exact bytes Meta sent.
   const rawBody = await req.text()
 
-  const secretConfigured = !!(process.env.META_APP_SECRET ?? process.env.FACEBOOK_APP_SECRET)
-  const signatureValid = verifyMetaSignature(rawBody, req.headers.get("x-hub-signature-256"))
-  if (secretConfigured && !signatureValid) {
-    // A configured deploy refusing a bad signature is refusing a forger, not
-    // Meta — Meta always signs. 401, no ingest.
-    return new NextResponse("invalid signature", { status: 401 })
-  }
+  // Fail closed BEFORE any parse: 503 when this deploy holds no App Secret
+  // (cannot verify anyone — see the header for why that is no longer a silent
+  // 200), 401 on a missing/bad signature (a forger, not Meta — Meta always
+  // signs, so there is no retry obligation).
+  const verdict = verifyMetaSignature(rawBody, req.headers.get("x-hub-signature-256"))
+  if (!verdict.ok) return new NextResponse(verdict.reason, { status: verdict.status })
 
-  // Meta retries aggressively on non-200 — from here, always ack.
+  // Verified. Meta retries aggressively on non-200 — from here, always ack.
   let events: DmEvent[] = []
   try {
     events = extractDmEvents(JSON.parse(rawBody))
   } catch { /* malformed body — ack and move on */ }
 
-  // Fail closed on writes: no app secret = acked but NOT ingested (an
-  // unverifiable event must not fabricate CRM rows).
-  if (events.length > 0 && secretConfigured && signatureValid) {
+  if (events.length > 0) {
     const svc = createServiceClient()
     for (const ev of events) {
       try {

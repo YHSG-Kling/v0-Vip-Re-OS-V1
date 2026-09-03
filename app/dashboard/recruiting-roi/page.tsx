@@ -57,11 +57,12 @@ export default async function RecruitingROIPage() {
     breakEvenAnalysis,
     yearlyAnalytics,
   ] = await Promise.all([
-    getRecruitingROISummary(profile.brokerage_id),
-    getRecruitROIByRecruit(profile.brokerage_id),
-    getRecruitingCostBreakdown(profile.brokerage_id),
-    getBreakEvenAnalysis(profile.brokerage_id),
-    getRecruitingAnalyticsByYear(profile.brokerage_id, "").catch(() => []),
+    // Tenant comes from the SESSION inside each action (§4) — no id is passed.
+    getRecruitingROISummary(),
+    getRecruitROIByRecruit(),
+    getRecruitingCostBreakdown(),
+    getBreakEvenAnalysis(),
+    getRecruitingAnalyticsByYear("").catch(() => []),
   ])
 
   const totalInvested = roiSummary?.totalInvested || 0
@@ -262,7 +263,7 @@ export default async function RecruitingROIPage() {
               </Card>
             </div>
 
-            <CostEntryPanel brokerageId={profile.brokerage_id} />
+            <CostEntryPanel />
           </div>
         </TabsContent>
       </Tabs>

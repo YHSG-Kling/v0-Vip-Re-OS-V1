@@ -122,14 +122,15 @@ export default async function BrokerageDashboard({
     getBrokerageDashboard(brokerageId),
     forecastBrokerageRevenue(brokerageId, 3),
     trackLicenseExpirations(brokerageId),
-    getRecruitingROISummary(brokerageId).catch(() => ({
+    // Recruiting ROI actions take the tenant from the SESSION (§4) — no id passed.
+    getRecruitingROISummary().catch(() => ({
       totalInvested: 0,
       totalGenerated: 0,
       avgROI: 0,
       activeRecruits: 0,
       profitableRecruits: 0,
     })),
-    getRecruitingCostBreakdown(brokerageId).catch(() => ({
+    getRecruitingCostBreakdown().catch(() => ({
       training: 0,
       marketing: 0,
       technology: 0,
@@ -137,7 +138,7 @@ export default async function BrokerageDashboard({
       guarantees: 0,
       other: 0,
     })),
-    getBreakEvenAnalysis(brokerageId).catch(() => ({
+    getBreakEvenAnalysis().catch(() => ({
       avgBreakEvenMonth: 0,
       breakEvenMonths: [],
     })),
@@ -824,7 +825,6 @@ export default async function BrokerageDashboard({
             costBreakdown={costBreakdown}
           />
           <BrokerRecruitingActionBar
-            brokerageId={brokerageId}
             breakEvenAnalysis={breakEvenAnalysis as any}
             costBreakdown={costBreakdown}
           />

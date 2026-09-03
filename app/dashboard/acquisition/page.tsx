@@ -152,8 +152,9 @@ export default async function AcquisitionPage() {
   // Recruiting ROI — only for admin/broker
   const [recruitROISummary, recruitROIByRecruit] = isAdminOrBroker && brokerageId
     ? await Promise.all([
-        getRecruitingROISummary(brokerageId).catch(() => null),
-        getRecruitROIByRecruit(brokerageId).catch(() => []),
+        // Tenant comes from the SESSION inside the actions (§4) — no id passed.
+        getRecruitingROISummary().catch(() => null),
+        getRecruitROIByRecruit().catch(() => []),
       ])
     : [null, []]
 
