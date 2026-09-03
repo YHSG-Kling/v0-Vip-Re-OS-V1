@@ -90,9 +90,11 @@ export interface EmitKernelEventInput {
   agentUserId?:      string
   /** Set by sequence-engine-internal emits to break enrollment feedback loops. */
   suppressEnrollment?: boolean
-  /** Optional short-window soft dedupe — same (event, entity, dedupeKey) within N seconds is
-   *  silently treated as a no-op. Use for tight loops (per-run repeats); leave undefined for
-   *  ordinary one-shot emits. Written to the `dedupe_key` column. */
+  /** Optional soft dedupe — same (event, entity, dedupeKey) within `dedupeWindowSec` seconds is
+   *  silently treated as a no-op. Default 60s (tight loops, per-run repeats); a sweep whose key
+   *  is day-grained (`…:${day}`) on an hourly cadence MUST pass a window at least as long as its
+   *  cadence — the first such caller (task-overdue) shipped without one and re-fired every hour
+   *  (lane L5, 2026-09-03). Capped at 7 days. Written to the `dedupe_key` column. */
   dedupeKey?:        string
   dedupeWindowSec?:  number
   // ── Row-already-written entry point (the retired fanOutKernelEvent contract) ─────────────────
@@ -129,10 +131,10 @@ export async function emitKernelEvent(input: EmitKernelEventInput): Promise<Emit
     // same event. The reactor's downstream gates (transparency_updates window, sequence cooldown,
     // portal dedupe) cover the longer-term cases.
     if (input.dedupeKey) {
-      const windowSec = Math.max(1, Math.min(3600, input.dedupeWindowSec ?? 60))
+      const windowSec = Math.max(1, Math.min(7 * 86_400, input.dedupeWindowSec ?? 60))
       const since = new Date(Date.now() - windowSec * 1000).toISOString()
       try {
-        const { data: existing } = await svc
+        const { data: existing, error: dedupeErr } = await svc
           .from("lifecycle_events")
           .select("id")
           .eq("event_type", input.event as string)
@@ -141,6 +143,10 @@ export async function emitKernelEvent(input: EmitKernelEventInput): Promise<Emit
           .eq("dedupe_key", input.dedupeKey)
           .gte("created_at", since)
           .limit(1)
+        if (dedupeErr) {
+          // Best-effort by design — but a refused read is said, not silently treated as "no prior".
+          console.warn("[emitKernelEvent] dedupe read refused; inserting anyway:", dedupeErr.message)
+        }
         if (existing && existing.length > 0) {
           return { inserted: false, lifecycleEventId: existing[0].id as string, fanOutOk: true, error: null }
         }

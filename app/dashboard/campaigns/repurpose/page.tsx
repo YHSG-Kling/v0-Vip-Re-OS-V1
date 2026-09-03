@@ -10,6 +10,7 @@ import { VideoUrlRepurposeCard } from "./video-url-repurpose-card"
 import { NewsletterTeasersCard, type NewsletterTeaser } from "./newsletter-teasers-card"
 import { getPipelines, getRepurposeHistory } from "@/lib/repurpose/actions"
 import { VIDEO_FINISHED_STATUSES } from "@/lib/video/video-pipeline-reaper-policy"
+import { TENANT_ADMIN_USER_TYPES } from "@/lib/auth/resolve-user-role"
 
 export const dynamic = "force-dynamic"
 
@@ -46,9 +47,10 @@ export default async function RepurposePage({
     // (app/actions/podcast-generation.ts:1502 stamps the episode owner). The
     // page was brokerage-scoped only, so an agent was offered paste-ready copy
     // promoting a colleague's episode. Office-wide roles (CLAUDE.md §4 tenant
-    // roster) keep the whole office's list; everyone else sees their own.
-    const OFFICE_WIDE_ROLES = new Set(["broker", "broker_admin", "broker_owner", "team_lead", "admin"])
-    const teasersOfficeWide = OFFICE_WIDE_ROLES.has(userType)
+    // roster) keep the whole office's list; everyone else sees their own. The
+    // roster is written down ONCE (lib/auth/resolve-user-role.ts) — an inline
+    // copy here is what test:admin-vocabulary forbids.
+    const teasersOfficeWide = TENANT_ADMIN_USER_TYPES.has(String(userType ?? "").toLowerCase())
     const supabase = await createClient()
 
     // Get user profile with role

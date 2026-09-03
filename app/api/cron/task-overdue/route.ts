@@ -84,6 +84,9 @@ export async function GET(request: Request) {
         listingId:    t.listing_id ?? undefined,
         source:       "cron",
         dedupeKey:    `task_overdue:${t.id}:${day}`,
+        // The key is day-grained and the cadence is hourly, so the window must
+        // cover the day — emit's default (60s) would have re-fired every hour.
+        dedupeWindowSec: 86_400,
         metadata: {
           assigned_to_agent_id: t.assigned_to_agent_id,
           title: t.title,
