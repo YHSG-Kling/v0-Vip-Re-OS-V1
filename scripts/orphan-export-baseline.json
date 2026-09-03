@@ -127,6 +127,7 @@
     "lib/campaign-sequences/touchpoint-bridge.ts": 1,
     "lib/campaigns/channels.ts": 1,
     "lib/campaigns/contact-sources.ts": 2,
+    "lib/campaigns/roi-calculator.ts": 1,
     "lib/charts/cma-reel-data.ts": 1,
     "lib/charts/explainer-diagram.ts": 2,
     "lib/charts/geometry.ts": 3,
@@ -155,6 +156,7 @@
     "lib/did/avatar-completion.ts": 3,
     "lib/did/consent.ts": 1,
     "lib/direct-mail/address-suppression.ts": 2,
+    "lib/direct-mail/variant-bandit.ts": 1,
     "lib/documents/auto-filer.ts": 1,
     "lib/documents/autonomy-ratchet.ts": 3,
     "lib/documents/client-pdf.ts": 2,
@@ -204,7 +206,7 @@
     "lib/forms/esign-anchor-eval.ts": 1,
     "lib/geo/citation-scope.ts": 1,
     "lib/geo/citation-share.ts": 1,
-    "lib/geo/video-landing.ts": 1,
+    "lib/geo/video-landing.ts": 3,
     "lib/integrations/integration-status.ts": 1,
     "lib/integrations/providers/catalog.ts": 1,
     "lib/intelligence/appointment-whisper.ts": 1,
@@ -298,7 +300,7 @@
     "lib/kernel/listing-propensity.ts": 2,
     "lib/kernel/lookalike-audience.ts": 1,
     "lib/kernel/manager-dissent.ts": 2,
-    "lib/kernel/manager-registry.ts": 4,
+    "lib/kernel/manager-registry.ts": 1,
     "lib/kernel/manager-signals.ts": 2,
     "lib/kernel/marketing/real-estate-compliance-gate.ts": 1,
     "lib/kernel/morning-standup.ts": 2,
@@ -365,7 +367,7 @@
     "lib/lead-pipeline/parked-retention.ts": 4,
     "lib/lead-pipeline/persona-drift.ts": 1,
     "lib/lead-pipeline/portal-lead-intake.ts": 1,
-    "lib/lead-pipeline/processing-status.ts": 2,
+    "lib/lead-pipeline/processing-status.ts": 1,
     "lib/lead-pipeline/promotion-address-verification.ts": 2,
     "lib/lead-pipeline/promotion-gate-health.ts": 1,
     "lib/lead-pipeline/raw-record-types.ts": 1,
@@ -412,6 +414,7 @@
     "lib/marketing/social-media-pairing.ts": 2,
     "lib/marketing/trigger-match.ts": 2,
     "lib/marketing/video-content-kit.ts": 2,
+    "lib/meta/verify-signature.ts": 3,
     "lib/net-sheet/net-sheet-guard-runner.ts": 1,
     "lib/net-sheet/net-sheet-reconciler.ts": 1,
     "lib/newsletter/seo-score.ts": 2,
@@ -503,6 +506,7 @@
     "lib/storage/signed-upload-url.ts": 6,
     "lib/strategy-learning/close-strategy-loop.ts": 1,
     "lib/strategy-learning/strategy-insights.ts": 1,
+    "lib/tasks/task-presentation.ts": 4,
     "lib/transactions/buyer-move.ts": 3,
     "lib/transactions/cda-esign.ts": 1,
     "lib/transactions/cda-field-classifier.ts": 2,
@@ -566,9 +570,10 @@
     "lib/workflow/step-palette.ts": 1,
     "lib/workflow-orchestrator/chains/listing-appt-prep.ts": 1,
     "remotion/EquityReportReel.tsx": 1,
+    "remotion/VideoCoverThumb.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 1
   },
-  "census": 9457,
+  "census": 9497,
   "fileCensus": {
     "app/(external-portal)/components/os/external-active-files-panel.tsx": 1,
     "app/(external-portal)/components/os/external-batch-actions-panel.tsx": 1,
@@ -639,7 +644,9 @@
     "app/actions/ai-identity.ts": 6,
     "app/actions/ai-insights.ts": 2,
     "app/actions/ai-isa/accept-handoff.ts": 1,
+    "app/actions/ai-isa/claim-handoff.ts": 1,
     "app/actions/ai-isa/engage-contact.ts": 2,
+    "app/actions/ai-isa/evaluate-lead-qualification.ts": 1,
     "app/actions/ai-isa/handle-inbound-email.ts": 1,
     "app/actions/ai-isa/initiate-contact-engagement.ts": 1,
     "app/actions/ai-isa/initiate-engagement.ts": 2,
@@ -647,7 +654,7 @@
     "app/actions/ai-isa/schedule-appointment.ts": 1,
     "app/actions/ai-isa/speed-to-lead-metrics.ts": 1,
     "app/actions/ai-isa-settings.ts": 5,
-    "app/actions/ai-isa.ts": 16,
+    "app/actions/ai-isa.ts": 17,
     "app/actions/ai-lead-nurturing.ts": 4,
     "app/actions/ai-lead-scoring.ts": 3,
     "app/actions/ai-listing-intake.ts": 9,
@@ -772,6 +779,7 @@
     "app/actions/continuity-receipt.ts": 1,
     "app/actions/conversation-analytics.ts": 3,
     "app/actions/convert-outside-inquiry.ts": 1,
+    "app/actions/coordination.ts": 4,
     "app/actions/copilot.ts": 10,
     "app/actions/counter-offer-diff.ts": 1,
     "app/actions/coverage-mode.ts": 1,
@@ -962,7 +970,7 @@
     "app/actions/push-subscriptions.ts": 3,
     "app/actions/qr-management.ts": 2,
     "app/actions/quarterly-review.ts": 1,
-    "app/actions/recruiting-roi.ts": 6,
+    "app/actions/recruiting-roi.ts": 7,
     "app/actions/referrals/agent-referral-actions.ts": 2,
     "app/actions/referrals/referral-actions.ts": 7,
     "app/actions/referrals/referral-appreciation.ts": 3,
@@ -976,7 +984,7 @@
     "app/actions/self-audit-rollup.ts": 1,
     "app/actions/self-book-showing.ts": 2,
     "app/actions/self-heal-rollup.ts": 2,
-    "app/actions/seller-cma.ts": 7,
+    "app/actions/seller-cma.ts": 8,
     "app/actions/seller-coaching.ts": 3,
     "app/actions/seller-decision-governance.ts": 15,
     "app/actions/seller-equity.ts": 1,
@@ -1069,7 +1077,7 @@
     "app/actions/superadmin/tenant-users.ts": 6,
     "app/actions/support.ts": 13,
     "app/actions/system-health.ts": 10,
-    "app/actions/tasks.ts": 5,
+    "app/actions/tasks.ts": 6,
     "app/actions/tax-planning.ts": 3,
     "app/actions/tcpa-compliance.ts": 1,
     "app/actions/team-branding.ts": 6,
@@ -1360,6 +1368,7 @@
     "app/api/cron/stripe-drift/route.ts": 1,
     "app/api/cron/support-sla/route.ts": 1,
     "app/api/cron/sync-facebook-audiences/route.ts": 1,
+    "app/api/cron/task-overdue/route.ts": 1,
     "app/api/cron/team-heatmap-snapshot/route.ts": 1,
     "app/api/cron/tenant-safety-scan/route.ts": 1,
     "app/api/cron/territory-metrics/route.ts": 1,
@@ -1426,7 +1435,7 @@
     "app/api/lead-magnets/submissions/route.ts": 1,
     "app/api/leads/deduplication-log/route.ts": 1,
     "app/api/leads/process-pipeline/route.ts": 1,
-    "app/api/leads/raw/route.ts": 2,
+    "app/api/leads/raw/route.ts": 1,
     "app/api/leads/route.ts": 1,
     "app/api/listings/[listingId]/upload-document/route.ts": 1,
     "app/api/meetings/sdk-signature/route.ts": 1,
@@ -1531,6 +1540,7 @@
     "app/api/workflow/intake/approve-packet/route.ts": 1,
     "app/api/workflow/listing-presentation/route.ts": 1,
     "app/api/workflow/trigger/route.ts": 1,
+    "app/api/workflows/market-insight/[runId]/route.ts": 1,
     "app/api/workflows/market-insight/route.ts": 1,
     "app/auth/callback/route.ts": 1,
     "app/auth/logout/route.ts": 2,
@@ -1800,7 +1810,6 @@
     "app/crm/components/merge-contacts-dialog.tsx": 1,
     "app/crm/components/os/buyer-match-panel.tsx": 1,
     "app/crm/components/os/communication-health-panel.tsx": 1,
-    "app/crm/components/os/contact-command-strip.tsx": 1,
     "app/crm/components/os/contact-pulse-panel.tsx": 1,
     "app/crm/components/os/conversion-forecast-panel.tsx": 1,
     "app/crm/components/os/next-best-action-panel.tsx": 1,
@@ -1903,6 +1912,8 @@
     "app/dashboard/admin/feature-governance/feature-governance-client.tsx": 1,
     "app/dashboard/admin/fees/brokerage-fees-client.tsx": 1,
     "app/dashboard/admin/intelligence-mesh/intelligence-mesh-client.tsx": 1,
+    "app/dashboard/admin/lead-intake/dedupe-reasons.tsx": 1,
+    "app/dashboard/admin/lead-intake/pipeline-stats.ts": 1,
     "app/dashboard/admin/lead-intake/raw-leads-review.tsx": 1,
     "app/dashboard/admin/lead-intake/social-scrape-trigger.tsx": 1,
     "app/dashboard/admin/learning-modules/approvals/approvals-client.tsx": 1,
@@ -2273,7 +2284,6 @@
     "app/dashboard/partners/components/os/partner-command-strip.tsx": 1,
     "app/dashboard/partners/components/os/referral-tracking-panel.tsx": 1,
     "app/dashboard/partners/components/os/title-pipeline-panel.tsx": 1,
-    "app/dashboard/partners/components/os/vendor-directory-panel.tsx": 1,
     "app/dashboard/partners/components/os/vendor-performance-radar.tsx": 1,
     "app/dashboard/partners/components/os/vendor-sla-panel.tsx": 1,
     "app/dashboard/patterns/patterns-dashboard-client.tsx": 1,
@@ -2838,7 +2848,7 @@
     "lib/application/transactions.ts": 55,
     "lib/approval-workflow/approval-engine.ts": 6,
     "lib/approval-workflow/approval-logger.ts": 5,
-    "lib/audiences/audience-sync.ts": 2,
+    "lib/audiences/audience-sync.ts": 3,
     "lib/auth/authorize-for-user.ts": 1,
     "lib/auth/contact-access.ts": 1,
     "lib/auth/isa-actor.ts": 2,
@@ -2849,6 +2859,7 @@
     "lib/auth/provision-isa-actor.ts": 1,
     "lib/auth/require-admin-maintenance-access.ts": 1,
     "lib/auth/require-brokerage-admin.ts": 1,
+    "lib/auth/require-caller.ts": 2,
     "lib/auth/resolve-user-role.ts": 9,
     "lib/auth/role-grants.ts": 9,
     "lib/auth/useAuth.ts": 1,
@@ -2949,7 +2960,7 @@
     "lib/campaigns/channels.ts": 3,
     "lib/campaigns/contact-sources.ts": 7,
     "lib/campaigns/enroll-in-sequence.ts": 1,
-    "lib/campaigns/roi-calculator.ts": 5,
+    "lib/campaigns/roi-calculator.ts": 6,
     "lib/charts/cma-reel-data.ts": 2,
     "lib/charts/explainer-diagram.ts": 5,
     "lib/charts/geometry.ts": 10,
@@ -3115,7 +3126,7 @@
     "lib/direct-mail/render-postcard.ts": 2,
     "lib/direct-mail/resolve-size-pref.ts": 2,
     "lib/direct-mail/unsubscribe-token.ts": 5,
-    "lib/direct-mail/variant-bandit.ts": 2,
+    "lib/direct-mail/variant-bandit.ts": 3,
     "lib/documents/auto-filer.ts": 3,
     "lib/documents/auto-populate-participants.ts": 1,
     "lib/documents/autonomy-ratchet.ts": 10,
@@ -3237,7 +3248,7 @@
     "lib/geo/citation-scope.ts": 4,
     "lib/geo/citation-share.ts": 3,
     "lib/geo/publish-video-landing.ts": 3,
-    "lib/geo/video-landing.ts": 10,
+    "lib/geo/video-landing.ts": 13,
     "lib/gifting/gift-studio.ts": 3,
     "lib/gifting/shoppable-links.ts": 1,
     "lib/goals/goal-types.ts": 2,
@@ -3369,6 +3380,7 @@
     "lib/journey-conformance/conformance-checker.ts": 1,
     "lib/journey-conformance/conformance-runner.ts": 1,
     "lib/kernel/0.1-feature-access.ts": 5,
+    "lib/kernel/actor-attribution.ts": 2,
     "lib/kernel/actor-context.ts": 1,
     "lib/kernel/adapters/brand-voice.ts": 2,
     "lib/kernel/adapters/compliance.ts": 3,
@@ -3461,9 +3473,9 @@
     "lib/kernel/education.ts": 15,
     "lib/kernel/egress-scope.ts": 3,
     "lib/kernel/email-deliverability.ts": 2,
-    "lib/kernel/emit.ts": 1,
+    "lib/kernel/emit.ts": 2,
     "lib/kernel/equity-trigger.ts": 5,
-    "lib/kernel/event-fanout.ts": 3,
+    "lib/kernel/event-fanout.ts": 2,
     "lib/kernel/event-reactor.ts": 1,
     "lib/kernel/exception-center.ts": 2,
     "lib/kernel/farm-play.ts": 3,
@@ -3536,6 +3548,7 @@
     "lib/kernel/portal.ts": 11,
     "lib/kernel/postclose-concierge.ts": 4,
     "lib/kernel/preview.ts": 2,
+    "lib/kernel/priority-rank.ts": 2,
     "lib/kernel/providers.ts": 1,
     "lib/kernel/referral-appreciation.ts": 8,
     "lib/kernel/referral-radar.ts": 6,
@@ -3788,6 +3801,7 @@
     "lib/marketing/vendor-ranking.ts": 5,
     "lib/marketing/video-content-kit.ts": 4,
     "lib/marketing/video-provider-resolver.ts": 2,
+    "lib/meta/verify-signature.ts": 6,
     "lib/negotiation/analyzer.ts": 1,
     "lib/negotiation/auto-trigger.ts": 2,
     "lib/negotiation/copilot-ai.ts": 1,
@@ -3998,7 +4012,7 @@
     "lib/remotion/code-revision.ts": 4,
     "lib/remotion/composition-cache.ts": 9,
     "lib/remotion/composition-geometry.ts": 2,
-    "lib/remotion/content-contract.ts": 4,
+    "lib/remotion/content-contract.ts": 6,
     "lib/remotion/media-host.ts": 1,
     "lib/remotion/music-mixer.ts": 1,
     "lib/remotion/registry.ts": 7,
@@ -4078,6 +4092,7 @@
     "lib/support/support-sla.ts": 4,
     "lib/support/support-thread.ts": 3,
     "lib/support/ticket-constants.ts": 2,
+    "lib/tasks/task-presentation.ts": 7,
     "lib/teams/membership.ts": 4,
     "lib/teams/team-scope.ts": 2,
     "lib/territory/metrics-aggregator.ts": 3,
@@ -4315,7 +4330,7 @@
     "remotion/Root.tsx": 1,
     "remotion/TeammateExplainerReel.tsx": 1,
     "remotion/TestimonialReel.tsx": 1,
-    "remotion/VideoCoverThumb.tsx": 1,
+    "remotion/VideoCoverThumb.tsx": 2,
     "remotion/_BrollLayer.tsx": 2,
     "remotion/charts/AffordabilityDonut.tsx": 1,
     "remotion/charts/CompsBar.tsx": 1,
@@ -4323,6 +4338,7 @@
     "remotion/charts/PriceTrendLine.tsx": 1,
     "remotion/components/CaptionLayer.tsx": 1,
     "remotion/components/QrOutroBadge.tsx": 2,
+    "remotion/components/SafeImg.tsx": 1,
     "services/goHighLevelService.ts": 3,
     "services/supabase.ts": 3,
     "workflows/market-insight-workflow.ts": 1
@@ -4765,9 +4781,15 @@
     "app/actions/ai-isa/accept-handoff.ts": [
       "acceptAIISAHandoff"
     ],
+    "app/actions/ai-isa/claim-handoff.ts": [
+      "claimHandoffAction"
+    ],
     "app/actions/ai-isa/engage-contact.ts": [
       "engageContact",
       "toggleContactAIISA"
+    ],
+    "app/actions/ai-isa/evaluate-lead-qualification.ts": [
+      "evaluateLeadQualificationAction"
     ],
     "app/actions/ai-isa/handle-inbound-email.ts": [
       "processInboundEmail"
@@ -4803,6 +4825,7 @@
       "createISACampaign",
       "toggleCampaignStatus",
       "completeISACampaign",
+      "updateISACampaign",
       "sendCampaignTestTouch",
       "getChannelFeatureFlags",
       "getEngagementFeed",
@@ -5651,6 +5674,12 @@
     ],
     "app/actions/convert-outside-inquiry.ts": [
       "convertOutsideInquiryToRepresentedBuyer"
+    ],
+    "app/actions/coordination.ts": [
+      "getActiveSessions",
+      "getAgentMetrics",
+      "endAgentSession",
+      "clearHumanOverride"
     ],
     "app/actions/copilot.ts": [
       "handleSuggestionAccepted",
@@ -6918,6 +6947,7 @@
       "getRecruitROIByRecruit",
       "getRecruitingCostBreakdown",
       "getBreakEvenAnalysis",
+      "listRecruitableAgents",
       "getRecruitingAnalyticsByYear",
       "addRecruitingCost"
     ],
@@ -7000,6 +7030,7 @@
     ],
     "app/actions/seller-cma.ts": [
       "loadCMAPageData",
+      "loadCMAReportById",
       "loadNetSheetPageData",
       "loadPricingPageData",
       "triggerAICompScoring",
@@ -7591,6 +7622,7 @@
     ],
     "app/actions/tasks.ts": [
       "getTasks",
+      "getTaskById",
       "updateTask",
       "completeTask",
       "deleteTask",
@@ -8804,6 +8836,9 @@
     "app/api/cron/sync-facebook-audiences/route.ts": [
       "GET"
     ],
+    "app/api/cron/task-overdue/route.ts": [
+      "GET"
+    ],
     "app/api/cron/team-heatmap-snapshot/route.ts": [
       "GET"
     ],
@@ -9006,7 +9041,6 @@
       "GET"
     ],
     "app/api/leads/raw/route.ts": [
-      "GET",
       "PATCH"
     ],
     "app/api/leads/route.ts": [
@@ -9335,6 +9369,9 @@
     ],
     "app/api/workflow/trigger/route.ts": [
       "POST"
+    ],
+    "app/api/workflows/market-insight/[runId]/route.ts": [
+      "GET"
     ],
     "app/api/workflows/market-insight/route.ts": [
       "POST"
@@ -10157,9 +10194,6 @@
     "app/crm/components/os/communication-health-panel.tsx": [
       "CommunicationHealthPanel"
     ],
-    "app/crm/components/os/contact-command-strip.tsx": [
-      "ContactCommandStrip"
-    ],
     "app/crm/components/os/contact-pulse-panel.tsx": [
       "ContactPulsePanel"
     ],
@@ -10468,6 +10502,12 @@
     ],
     "app/dashboard/admin/intelligence-mesh/intelligence-mesh-client.tsx": [
       "IntelligenceMeshClient"
+    ],
+    "app/dashboard/admin/lead-intake/dedupe-reasons.tsx": [
+      "DedupeReasons"
+    ],
+    "app/dashboard/admin/lead-intake/pipeline-stats.ts": [
+      "loadRawPipelineStats"
     ],
     "app/dashboard/admin/lead-intake/raw-leads-review.tsx": [
       "RawLeadsReviewPanel"
@@ -11602,9 +11642,6 @@
     ],
     "app/dashboard/partners/components/os/title-pipeline-panel.tsx": [
       "TitlePipelinePanel"
-    ],
-    "app/dashboard/partners/components/os/vendor-directory-panel.tsx": [
-      "VendorDirectoryPanel"
     ],
     "app/dashboard/partners/components/os/vendor-performance-radar.tsx": [
       "VendorPerformanceRadar"
@@ -13741,6 +13778,7 @@
       "getPendingApprovals"
     ],
     "lib/audiences/audience-sync.ts": [
+      "describeConsentChange",
       "onLeadConvertedForAudience",
       "onContactBecameLifetimeForAudience"
     ],
@@ -13791,6 +13829,10 @@
     ],
     "lib/auth/require-brokerage-admin.ts": [
       "requireBrokerageAdmin"
+    ],
+    "lib/auth/require-caller.ts": [
+      "resolveCallerIdentity",
+      "requireCaller"
     ],
     "lib/auth/resolve-user-role.ts": [
       "isPlatformStaffIdentity",
@@ -14365,6 +14407,7 @@
     ],
     "lib/campaigns/roi-calculator.ts": [
       "recalculateCampaignROI",
+      "collapseMailResponsesToPersons",
       "recalculateChannelPerformance",
       "getCampaignROIData",
       "getChannelPerformanceData",
@@ -15142,6 +15185,7 @@
       "mailOptOutPrintLine"
     ],
     "lib/direct-mail/variant-bandit.ts": [
+      "classifyArmState",
       "pickVariantArm",
       "recordVariantSend"
     ],
@@ -15773,6 +15817,9 @@
       "buildBreadcrumbJsonLd",
       "serializeJsonLd",
       "buildLlmsTxt",
+      "seoHintFromNarration",
+      "seoHintFromRenderProps",
+      "describeVideoForSearch",
       "secondsToIso8601",
       "framesToSeconds"
     ],
@@ -16315,6 +16362,10 @@
       "incrementFeatureUsage",
       "grantFeatureTrial",
       "disableFeatureFor"
+    ],
+    "lib/kernel/actor-attribution.ts": [
+      "resolveActorNames",
+      "resolveActorNamesEitherClass"
     ],
     "lib/kernel/actor-context.ts": [
       "buildActorContext"
@@ -16876,6 +16927,7 @@
       "probeSendgridDomainAuth"
     ],
     "lib/kernel/emit.ts": [
+      "isKernelEventValue",
       "emitKernelEvent"
     ],
     "lib/kernel/equity-trigger.ts": [
@@ -16886,7 +16938,6 @@
       "runEquityTrigger"
     ],
     "lib/kernel/event-fanout.ts": [
-      "fanOutKernelEvent",
       "enrollMatchingSequences",
       "writePortalUpdate"
     ],
@@ -17337,6 +17388,10 @@
     "lib/kernel/preview.ts": [
       "renderCapabilityPreview",
       "validateKernelContract"
+    ],
+    "lib/kernel/priority-rank.ts": [
+      "priorityRank",
+      "byPriorityDesc"
     ],
     "lib/kernel/providers.ts": [
       "resolveProvider"
@@ -18684,6 +18739,14 @@
       "resolveVideoProvider",
       "initialProviderColumns"
     ],
+    "lib/meta/verify-signature.ts": [
+      "resolveMetaVerifyToken",
+      "resolveMetaAppSecret",
+      "hmacSha256Hex",
+      "safeHexEqual",
+      "verifyMetaSignature",
+      "metaSubscriptionHandshake"
+    ],
     "lib/negotiation/analyzer.ts": [
       "buildNegotiationContext"
     ],
@@ -19790,7 +19853,9 @@
       "isSupplied",
       "missingContentProps",
       "describeMissingContent",
-      "contentContractError"
+      "contentContractError",
+      "consumesVoiceover",
+      "stagesVoiceover"
     ],
     "lib/remotion/media-host.ts": [
       "hostRenderedMedia"
@@ -20168,6 +20233,15 @@
     "lib/support/ticket-constants.ts": [
       "isTicketLane",
       "ticketAnsweredBy"
+    ],
+    "lib/tasks/task-presentation.ts": [
+      "localDayKey",
+      "dueDayKey",
+      "isTaskDone",
+      "isTaskOverdue",
+      "isTaskDueToday",
+      "groupTasksByDue",
+      "getPriorityColor"
     ],
     "lib/teams/membership.ts": [
       "isSourceOfFunds",
@@ -21259,6 +21333,7 @@
       "TestimonialReel"
     ],
     "remotion/VideoCoverThumb.tsx": [
+      "seoHintLine",
       "VideoCoverThumb"
     ],
     "remotion/_BrollLayer.tsx": [
@@ -21283,6 +21358,9 @@
     "remotion/components/QrOutroBadge.tsx": [
       "shouldRenderQrBadge",
       "QrOutroBadge"
+    ],
+    "remotion/components/SafeImg.tsx": [
+      "SafeImg"
     ],
     "services/goHighLevelService.ts": [
       "syncContactToGHL",
