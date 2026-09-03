@@ -365,6 +365,7 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
                     passingScore: r.passingScore,
                     eligible: r.eligible,
                     alreadyActive: r.alreadyActive,
+                    missed: r.missed,
                   }
                 : { error: r.error }
             })()}

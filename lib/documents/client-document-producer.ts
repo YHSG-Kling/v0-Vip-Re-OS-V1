@@ -104,7 +104,12 @@ export async function produceClientDocument(
       listing_id: params.listingId ?? null,
       document_type: params.documentType,
       blob_url: pdfUrl,
-      blob_id: `client-docs/${params.brokerageId}/${fileName}`,
+      // TOMBSTONE (§1.1, w26 lane C8): `blob_id` DELETED from this insert — the second
+      // of its two writers. SURVIVOR: `blob_url` on the same row, read by
+      // app/actions/generated-documents.ts:65. Full reasoning at the sibling tombstone,
+      // lib/kernel/appraiser-packet.ts:829 — in short, blob_id held the storage object
+      // PATH, the bucket is public-class so the stored URL already contains that path,
+      // and no reader ever selected the column.
       file_name: fileName,
       file_size: buf.length,
       metadata: { ...(params.metadata ?? {}), title: params.spec.title },

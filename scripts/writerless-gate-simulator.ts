@@ -358,20 +358,46 @@ function censusLayer() {
   // (lib/ads/listing-ad-producer.ts:176, lib/ads/ad-creator.ts:323). Ads no
   // longer launch pointing at nothing.
   //
-  // The replacement is `calendar_sync_mappings.provider_account_id`, chosen
-  // because it is the most DURABLE unfixed entry on the list rather than the
-  // most convenient — a canary that a routine burn-down retires next month
-  // teaches nothing. It cannot be built until the calendar provider adapter
-  // exists: `provider_event_id` on that table is text NOT NULL with no default
-  // and no trigger, and it holds the provider's own id for the event, which is
-  // the one fact this repo cannot know while the adapter is disabled. The module
-  // already records that state honestly (status 'partial', error_message
-  // "Provider adapter not enabled"), and lib/kernel/calendar-sync.ts:176 carries
-  // a do-not-"fix"-this note explaining why fabricating a row would make
-  // `is_synced` meaningless. Same protocol as before: if this goes green, either
-  // the adapter landed (repoint, and say so) or the scanner went blind.
+  // Wave 18 named `calendar_sync_mappings.provider_account_id` and wrote: "if this goes
+  // green, either the adapter landed (repoint, and say so) or the scanner went blind."
+  //
+  // ── CANARY REPOINTED, WAVE 26 — AND SAYING SO, AS INSTRUCTED ──────────────
+  // IT WAS THE FIRST: THE ADAPTER LANDED. lane C8 built
+  // lib/providers/calendar/google-calendar-sync-adapter.ts — a real Google Calendar v3
+  // implementation of the CalendarProvider port, authorized by the ACCOUNT OWNER'S own
+  // Google credential (calendar_provider_accounts stores no token; getFreshPersonalToken
+  // mints one from the connection that backs their mailbox) — registered it in
+  // CALENDAR_SYNC_ADAPTERS, and wired pushCalendarEventToProvider to INSERT the mapping
+  // at the point upsertEvent returns the provider's event id. So all three
+  // calendar_sync_mappings entries (brokerage_id, calendar_event_id,
+  // provider_account_id) now have a writer, and the read side gained
+  // lib/kernel/calendar-sync.ts:listSyncMappings + the panel on
+  // app/dashboard/settings/calendar/page.tsx.
+  //
+  // The replacement is `platform_contract_templates.body_storage_path`, and it is the
+  // most durable entry on the list by construction rather than by luck: its writer is
+  // absent BY RULING, not by omission. m481 gives that table two body arms under
+  // `check (body_text is not null or body_storage_path is not null)`, in-app authoring
+  // fills the body_text arm only (app/actions/superadmin/subscription-contracts.ts), and
+  // the storage-path arm waits on an uploaded-document lane that does not exist. It also
+  // cannot be retired from the other end: the column has a REAL reader that must stay —
+  // signSubscriptionAgreementAction's fail-closed branch
+  // (app/actions/admin/subscription-agreement.ts, the `!body.body_text?.trim()` guard)
+  // uses it to refuse a signature on a contract this screen cannot display. A lane that
+  // "fixes" it by writing a placeholder path would be manufacturing an unshowable
+  // contract. Same protocol as before: if this goes green, either the upload lane landed
+  // with its renderer (repoint, and say so) or the scanner went blind.
   check("1b still reports a genuine writerless read no lane has fixed",
-    oneB.includes("calendar_sync_mappings.provider_account_id"))
+    oneB.includes("platform_contract_templates.body_storage_path"))
+  // The calendar mapping columns this wave's adapter closed must be GONE — the proof
+  // that the repoint above was a burn-down and not a blindness.
+  for (const col of [
+    "calendar_sync_mappings.brokerage_id",
+    "calendar_sync_mappings.calendar_event_id",
+    "calendar_sync_mappings.provider_account_id",
+  ]) {
+    check(`1b no longer accuses ${col} (w26 lane C8 built the Google adapter + the mapping writer)`, !oneB.includes(col))
+  }
   // The nine this wave's sibling lane closed must be GONE — the same list its own
   // proof asserts, checked here too so the two simulators cannot drift apart.
   for (const col of [

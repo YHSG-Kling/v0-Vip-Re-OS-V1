@@ -92,6 +92,16 @@ export async function getSubscriptionAgreementAction(): Promise<
   // see the fail-closed branch there. Live evidence 2026-09-01
   // (hrvaqgvukzxfskkcrwbt): `platform_contract_templates` holds zero rows, so no
   // signing flow in production changes shape.
+  //
+  // RE-CONFIRMED w26 (lane C8), against a census that flagged body_storage_path as a
+  // read with no writer: NOT A DEFECT, ruling unchanged. THE READER IS
+  // signSubscriptionAgreementAction's fail-closed branch in this file (see
+  // `body.body_storage_path` below, in the `if (!body.body_text?.trim())` guard) —
+  // it is what distinguishes "a stored document this screen cannot display" from
+  // "no readable body at all" and refuses instead of collecting a signature on a
+  // blank screen. The other reader is app/actions/superadmin/subscription-contracts.ts:74.
+  // The writer is absent BY RULING, not by omission: in-app authoring fills the
+  // body_text arm and m481's CHECK requires exactly one of the two.
   const { data: template, error: tplErr } = await supabase
     .from("platform_contract_templates")
     .select("id, name, body_text, body_storage_path, version")

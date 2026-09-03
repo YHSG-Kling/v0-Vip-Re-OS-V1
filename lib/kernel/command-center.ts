@@ -431,8 +431,31 @@ export async function loadCommandCenter(params: CommandCenterParams = {}): Promi
     .order("proposed_at", { ascending: true })
     .limit(limit)
   applyTenantScope(clientMsgQuery, tenant)
-  // A team/agent scope sees only messages to its own clients.
-  if (contactIdFilter) clientMsgQuery.in("recipient_contact_id", contactIdFilter)
+  // A team/agent scope sees its own work — BY CLIENT **OR** BY SESSION.
+  //
+  // THE HALF THAT WAS MISSING (w26 lane C8). agent_client_messages.managed_agent_session_id is
+  // written on every proposal (lib/agents/agent-client-messages.ts:40) and was read by NOTHING,
+  // while the three sibling egress tables in this same feed — marketing_agent_actions,
+  // asset_manager_actions, ad_manager_actions — are all scoped by exactly that column above
+  // (:391, :400, :410). This query scoped on recipient_contact_id ALONE, so a team/agent scope
+  // dropped every proposal its own manager session produced for a PRE-CONVERSION LEAD:
+  // proposeClientMessage's `recipientLeadId` arm (the approved pre-consent channels) leaves
+  // recipient_contact_id NULL, and `.in("recipient_contact_id", …)` never matches NULL. The
+  // Deal Coordinator could draft a lead update, the team lead's Command Center would show
+  // nothing, and nobody would learn the message was waiting.
+  //
+  // OR, not AND: a message is this scope's if it is addressed to one of its contacts, or if the
+  // manager session that drafted it is one of its sessions. Both id lists are resolved THROUGH
+  // the entities this scope owns (resolveScopedEntities above), and both carry the NO_MATCH_UUID
+  // sentinel when the scope owns nothing — so an empty scope still matches zero rows and the
+  // widening cannot decay into "every tenant" (§4 fail closed). The ids are uuids, so the
+  // PostgREST or() filter string cannot be broken by their content.
+  if (contactIdFilter || sessionIdFilter) {
+    const scopeClauses: string[] = []
+    if (contactIdFilter) scopeClauses.push(`recipient_contact_id.in.(${contactIdFilter.join(",")})`)
+    if (sessionIdFilter) scopeClauses.push(`managed_agent_session_id.in.(${sessionIdFilter.join(",")})`)
+    clientMsgQuery.or(scopeClauses.join(","))
+  }
 
   // CLIENT & DEAL-PARTY DECISIONS — the decision-signal tasks (a seller hit Accept,
   // a lender posted conditions, a vendor filed a request). Oldest first: the longest-

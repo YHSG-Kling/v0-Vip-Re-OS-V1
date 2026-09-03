@@ -350,12 +350,22 @@ const CERTIFICATION_PASSING_SCORE = 90
  * onboarding steps (global + this brokerage). Every read destructures its
  * error — a refused read must surface as a refusal, never as "no attempts".
  */
+/** One question the agent got WRONG on their best certification attempt. */
+export interface MissedCertificationQuestion {
+  /** The question text when the quiz stores one; the question id otherwise. */
+  question: string
+  /** What the agent answered — null when they left it blank. Rendered as text. */
+  given: string | null
+  /** The stored correct answer. */
+  correct: string
+}
+
 async function readStoredCertificationScore(
   supabase: Awaited<ReturnType<typeof createClient>>,
   agentId: string,
   brokerageId: string,
 ): Promise<
-  | { ok: true; bestScore: number | null; attemptCount: number }
+  | { ok: true; bestScore: number | null; attemptCount: number; missed: MissedCertificationQuestion[] }
   | { ok: false; error: string }
 > {
   const { data: certSteps, error: stepsError } = await supabase
@@ -369,9 +379,11 @@ async function readStoredCertificationScore(
     return { ok: false, error: "No certification step is configured for this brokerage, so there is no exam to certify against." }
   }
 
+  // `questions` rides along: it is the only place the correct answer lives, and without
+  // it the stored `answers` map is an unreadable id→value blob.
   const { data: quizzes, error: quizError } = await supabase
     .from("onboarding_quizzes")
-    .select("id")
+    .select("id, questions")
     .in("step_id", stepIds)
   if (quizError) return { ok: false, error: `Could not read the certification exam: ${quizError.message}` }
   const quizIds = (quizzes ?? []).map((q: { id: string }) => q.id)
@@ -379,20 +391,64 @@ async function readStoredCertificationScore(
     return { ok: false, error: "No exam is attached to the certification step, so there is no stored score to certify against." }
   }
 
+  // WHAT THE AGENT ACTUALLY GOT WRONG — the reader half of agent_quiz_attempts.answers
+  // (written on every attempt by lib/kernel/agent-onboarding.ts:submitQuizAttempt and read
+  // by NOBODY, w26 lane C8). The broker on the certify screen saw one number and an attempt
+  // count; the exam response that produced the number was write-only, so a broker deciding
+  // whether to activate an agent could not see which competency the agent missed — and a
+  // reviewer deciding without the evidence is the defect.
   const { data: attempts, error: attemptsError } = await supabase
     .from("agent_quiz_attempts")
-    .select("score")
+    .select("score, answers, quiz_id")
     .eq("agent_id", agentId)
     .in("quiz_id", quizIds)
   if (attemptsError) return { ok: false, error: `Could not read the agent's exam attempts: ${attemptsError.message}` }
 
-  const scores = (attempts ?? [])
-    .map((a: { score: number | null }) => a.score)
+  type AttemptRow = { score: number | null; answers: Record<string, unknown> | null; quiz_id: string }
+  const attemptRows = (attempts ?? []) as unknown as AttemptRow[]
+  const scores = attemptRows
+    .map((a) => a.score)
     .filter((s): s is number => typeof s === "number" && Number.isFinite(s))
+  const bestScore = scores.length > 0 ? Math.max(...scores) : null
+
+  // The BEST attempt is the one the 90% gate is applied to, so it is the one whose misses
+  // matter. Ties keep the first — any of them produced the same score.
+  const best = bestScore == null ? null : attemptRows.find((a) => a.score === bestScore) ?? null
+  const questionsByQuiz = new Map<string, Array<Record<string, unknown>>>()
+  for (const q of (quizzes ?? []) as Array<{ id: string; questions: unknown }>) {
+    questionsByQuiz.set(q.id, Array.isArray(q.questions) ? (q.questions as Array<Record<string, unknown>>) : [])
+  }
+
+  const missed: MissedCertificationQuestion[] = []
+  if (best && best.answers && typeof best.answers === "object") {
+    const answers = best.answers as Record<string, unknown>
+    for (const q of questionsByQuiz.get(best.quiz_id) ?? []) {
+      const qid = typeof q.id === "string" ? q.id : null
+      if (!qid) continue
+      const given = answers[qid]
+      const correct = q.correctAnswer
+      // SAME COMPARISON THE SCORER USES (agent-onboarding.ts:601) — strict equality — so
+      // this list can never disagree with the score it sits next to.
+      if (given === correct) continue
+      const label = typeof q.question === "string" && q.question.trim()
+        ? (q.question as string)
+        : typeof q.prompt === "string" && (q.prompt as string).trim()
+          ? (q.prompt as string)
+          : qid
+      missed.push({
+        question: label,
+        // Blank is blank. An unanswered question is not "answered wrongly with undefined".
+        given: given === undefined || given === null || given === "" ? null : String(given),
+        correct: correct === undefined || correct === null ? "—" : String(correct),
+      })
+    }
+  }
+
   return {
     ok: true,
-    bestScore: scores.length > 0 ? Math.max(...scores) : null,
-    attemptCount: (attempts ?? []).length,
+    bestScore,
+    attemptCount: attemptRows.length,
+    missed,
   }
 }
 
@@ -410,6 +466,11 @@ export async function getCertificationReadiness(agentId: string): Promise<
       eligible: boolean
       alreadyActive: boolean
       onboardingStatus: string | null
+      /** What the agent got WRONG on the attempt the gate is applied to, from the
+       *  STORED agent_quiz_attempts.answers. Empty when they answered everything
+       *  correctly, when no attempt exists, or when the stored quiz carries no
+       *  questions — never padded with a guess. */
+      missed: MissedCertificationQuestion[]
     }
   | { success: false; error: string }
 > {
@@ -444,6 +505,7 @@ export async function getCertificationReadiness(agentId: string): Promise<
     eligible: exam.bestScore !== null && exam.bestScore >= CERTIFICATION_PASSING_SCORE,
     alreadyActive: agent.is_active === true && agent.onboarding_status === "completed",
     onboardingStatus: agent.onboarding_status ?? null,
+    missed: exam.missed,
   }
 }
 

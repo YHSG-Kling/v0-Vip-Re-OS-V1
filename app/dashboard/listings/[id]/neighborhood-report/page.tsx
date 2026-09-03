@@ -768,6 +768,12 @@ function NeighborhoodReportContent({
                 <div key={source.id} className="flex items-center gap-2">
                   <CheckCircle className="h-4 w-4 text-green-500" />
                   <span className="text-sm font-medium">{source.source_name}</span>
+                  {/* WHICH ENDPOINT — source_type is CHECK-constrained and cannot name the
+                      provider's actual route (RentCast is stored as 'custom'), so
+                      api_endpoint is the only place the provenance is recorded. */}
+                  {source.api_endpoint && (
+                    <span className="text-xs font-mono text-muted-foreground">{source.api_endpoint}</span>
+                  )}
                   {source.last_synced_at && (
                     <span className="text-xs text-muted-foreground">
                       (synced {new Date(source.last_synced_at).toLocaleDateString()})

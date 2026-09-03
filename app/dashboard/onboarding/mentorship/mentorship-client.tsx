@@ -25,6 +25,12 @@ interface Props {
   agentId: string
   brokerageId: string
   initialMentor: MentorData | null
+  /** The mentee's most recent COMPLETED pairing (agent_mentor_relationships.end_date,
+   *  stamped by lib/recruiting/mentorship-lifecycle.ts on certification). Only set when
+   *  there is no active mentor — it is the difference between "you graduated" and "you
+   *  have never been paired". `endedAt` is null when the ledger holds no date; the card
+   *  says so rather than inventing one. */
+  graduation: { mentorName: string | null; endedAt: string | null } | null
   /** Logged coaching sessions, both sides of the pairing — the reader half of
    *  logMentorSession (mentor_sessions had no reader at all until now). */
   sessions: MentorSessionEntry[]
@@ -82,7 +88,7 @@ function MentorLiftCard({ lift }: { lift: MentorLift }) {
   )
 }
 
-export function MentorshipClient({ agentId, brokerageId, initialMentor, sessions, sessionsError, mentorLift = null }: Props) {
+export function MentorshipClient({ agentId, brokerageId, initialMentor, graduation, sessions, sessionsError, mentorLift = null }: Props) {
   const [mentor, setMentor] = useState<MentorData | null>(initialMentor)
   const [matching, setMatching] = useState(false)
 
@@ -211,12 +217,39 @@ export function MentorshipClient({ agentId, brokerageId, initialMentor, sessions
           <LogSessionCard mentorId={mentor.mentorId} agentId={agentId} />
         </div>
       ) : (
-        /* No mentor yet */
+        /* No ACTIVE mentor. A mentee who GRADUATED is told so first — the pairing ended
+           because they certified, which is the opposite of never having been paired. */
+        <div className="space-y-4">
+        {graduation && (
+          <Card className="border-emerald-200 bg-emerald-50/40">
+            <CardHeader className="pb-3">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="h-5 w-5 text-emerald-600" />
+                <CardTitle className="text-base">Mentorship complete</CardTitle>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm">
+                You finished your mentorship
+                {graduation.mentorName ? ` with ${graduation.mentorName}` : ""}
+                {graduation.endedAt
+                  ? ` on ${new Date(graduation.endedAt).toLocaleDateString()}`
+                  : ""}
+                . Your coaching history below stays with you.
+              </p>
+              {!graduation.endedAt && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  The completion date was not recorded for this pairing.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        )}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Users className="h-5 w-5 text-primary" />
-              Find Your Mentor
+              {graduation ? "Find a New Mentor" : "Find Your Mentor"}
             </CardTitle>
             <CardDescription>
               Our AI will analyze your background, market, and specialties to pair you with the most compatible
@@ -264,6 +297,7 @@ export function MentorshipClient({ agentId, brokerageId, initialMentor, sessions
             </Button>
           </CardContent>
         </Card>
+        </div>
       )}
 
       <SessionHistoryCard sessions={sessions} error={sessionsError} />

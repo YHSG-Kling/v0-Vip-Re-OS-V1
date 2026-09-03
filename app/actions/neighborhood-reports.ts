@@ -62,6 +62,17 @@ export interface DataSource {
   source_type: string
   last_synced_at: string | null
   is_active: boolean
+  /**
+   * WHICH ENDPOINT OF THE PROVIDER FED THIS REPORT.
+   *
+   * refreshNeighborhoodReport registers the source with `api_endpoint: "/markets"`
+   * (:306) and nothing read it. It matters precisely because source_type cannot say it:
+   * the live CHECK admits only {attom, census, custom, housecanary, walkscore}, so
+   * RentCast is stored as 'custom' and the provenance line said "RentCast" with no way
+   * to tell WHICH of a provider's endpoints produced the numbers on screen — the first
+   * thing anyone checks when a figure looks wrong. Null when the row records none.
+   */
+  api_endpoint: string | null
 }
 
 export interface PriceHistoryPoint {
@@ -126,11 +137,17 @@ export async function getNeighborhoodReport(listingId: string): Promise<{
     .order("generated_at", { ascending: true })
 
   // Get data sources
-  const { data: dataSources } = await supabase
+  const { data: dataSources, error: dataSourcesError } = await supabase
     .from("neighborhood_data_sources")
-    .select("id, source_name, source_type, last_synced_at, is_active")
+    .select("id, source_name, source_type, last_synced_at, is_active, api_endpoint")
     .eq("brokerage_id", brokerageId)
     .eq("is_active", true)
+  // §3 — supabase-js resolves a refusal as data:null, which renders as "this report has
+  // no sources": a provenance card that goes blank on an outage is worse than one that
+  // says it could not be read.
+  if (dataSourcesError) {
+    console.error("[neighborhood-report] data-source read refused:", dataSourcesError.message)
+  }
 
   return {
     report: report as NeighborhoodReport | null,

@@ -58,6 +58,18 @@ export interface BrokerageInsight {
   status:                "open" | "dismissed" | "superseded" | "expired"
   computedAt:            string
   /**
+   * WHICH MINING RUN PRODUCED THIS INSIGHT.
+   *
+   * app/api/cron/brokerage-intelligence-mine/route.ts:104 stamps one uuid across every
+   * insight a single run writes, and nothing read it. Insights are SUPERSEDED per
+   * pattern_key (route.ts:93-98), not per run, so an open board legitimately mixes
+   * patterns from several runs — and a pattern that stopped being mined (its miner
+   * errored, or the pattern no longer clears its sample threshold) keeps its last row
+   * OPEN forever, looking exactly as current as one written this morning. Grouping by
+   * run is the only way to see that. Null on a row written before the column existed.
+   */
+  miningRunId:           string | null
+  /**
    * WHO KILLED THIS INSIGHT, WHEN, AND WHY.
    *
    * dismissInsightAction has always written dismissed_at / dismissed_by /
@@ -104,7 +116,7 @@ export async function getBrokerageInsights(params?: {
   const status = params?.status ?? "open"
   const { data, error } = await supabase
     .from("brokerage_intelligence_insights")
-    .select("id, pattern_key, headline, metric_label, top_quartile_value, median_value, bottom_quartile_value, outcome_label, top_quartile_outcome, median_outcome, bottom_quartile_outcome, lift_pct, sample_size, supporting_agent_count, playbook, playbook_actions, severity, status, computed_at, dismissed_at, dismissed_by, dismissal_reason")
+    .select("id, pattern_key, headline, metric_label, top_quartile_value, median_value, bottom_quartile_value, outcome_label, top_quartile_outcome, median_outcome, bottom_quartile_outcome, lift_pct, sample_size, supporting_agent_count, playbook, playbook_actions, severity, status, computed_at, mining_run_id, dismissed_at, dismissed_by, dismissal_reason")
     .eq("brokerage_id", auth.brokerageId)
     .eq("status", status)
     .order("lift_pct", { ascending: false })
@@ -153,6 +165,7 @@ export async function getBrokerageInsights(params?: {
       severity:              r.severity as BrokerageInsight["severity"],
       status:                r.status as BrokerageInsight["status"],
       computedAt:            r.computed_at as string,
+      miningRunId:           (r.mining_run_id as string | null) ?? null,
       dismissedAt:           (r.dismissed_at as string | null) ?? null,
       dismissedByName:       r.dismissed_by ? dismisserNameById.get(r.dismissed_by as string) ?? null : null,
       dismissalReason:       (r.dismissal_reason as string | null) ?? null,

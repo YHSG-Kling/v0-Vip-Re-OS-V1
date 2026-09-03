@@ -8,6 +8,7 @@ import {
   pullCalendarEventsFromProvider,
   listProviderAccounts,
   listSyncLogs,
+  listSyncMappings,
   type CalendarProviderType,
   type CalendarProviderAccountRow,
   type CalendarSyncLogRow,
@@ -84,10 +85,11 @@ export async function connectCalendarProvider(input: {
 /**
  * Push one VIP OS calendar event at a linked provider account.
  *
- * The kernel writes a calendar_sync_logs row for every attempt — currently
- * status 'partial' with "Provider adapter not enabled" — and this returns that
- * outcome instead of swallowing it, so the UI can never report a delivery that
- * did not happen.
+ * The kernel writes a calendar_sync_logs row for every attempt and this returns that
+ * outcome instead of swallowing it, so the UI can never report a delivery that did not
+ * happen. As of w26 a google_calendar account genuinely pushes (status 'success', with a
+ * calendar_sync_mappings row carrying the provider's event id); an outlook account still
+ * has no adapter and logs 'partial' with the reason.
  */
 export async function syncEventToProvider(
   calendarEventId: string,
@@ -153,6 +155,33 @@ export async function fetchSyncLogs(
     return {
       ok: false,
       error: error instanceof Error ? error.message : "The sync history could not be read",
+    }
+  }
+}
+
+/**
+ * WHICH EVENTS ARE ACTUALLY ON THE PROVIDER'S CALENDAR — the calendar_sync_mappings
+ * reader (w26, lane C8). A log line says an attempt happened; a mapping row says the
+ * provider holds this event under this id. Same verdict shape as fetchSyncLogs, for the
+ * same reason: an empty mapping list and a refused read must not look the same on screen.
+ */
+export async function fetchSyncMappings(
+  providerAccountId: string,
+): Promise<
+  | { ok: true; mappings: Awaited<ReturnType<typeof listSyncMappings>> }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user?.id) return { ok: false, error: "Unauthorized" }
+
+  try {
+    const mappings = await listSyncMappings({ userId: user.id, providerAccountId })
+    return { ok: true, mappings }
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "The synced-event list could not be read",
     }
   }
 }

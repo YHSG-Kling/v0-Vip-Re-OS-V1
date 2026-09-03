@@ -36,13 +36,39 @@ export interface StrategyInsights {
   /** Compact NL summary the recommender injects into its prompt. Always safe to
    *  embed (no PII) and degrades to a "no history yet" line on an empty sample. */
   promptContext: string
+  /**
+   * WHAT THE HUMANS WROTE ON THESE OUTCOMES — strategy_outcomes.notes.
+   *
+   * The closer stamps a note on every outcome it files
+   * (lib/strategy-learning/close-strategy-loop.ts:146 and the buyer-offer path), and
+   * nothing ever read the column: the numbers said an offer was rejected, and the one
+   * sentence explaining WHY was write-only. Only genuinely human notes survive here —
+   * the closer's own `Auto-closed on offer <outcome>` template carries no information
+   * the outcome column does not already hold, so it is filtered out rather than padding
+   * the list.
+   *
+   * DELIBERATELY NOT IN `promptContext`. This is free text an agent typed about a live
+   * deal; it can name a client, an address or a counterparty, and promptContext's whole
+   * contract (above) is that it is safe to embed in a model prompt. These reach the
+   * human strategy board only.
+   */
+  recentNotes: string[]
+  /** How many outcomes in the window carried ANY note — the denominator for the list
+   *  above, so a board showing two notes does not imply only two outcomes were annotated. */
+  notesRecorded: number
 }
 
 interface OutcomeRow {
   outcome: string
   deviation_from_recommendation: number | null
   recommendation_id: string | null
+  /** Optional on the type: rows read before this column was selected, and the pure
+   *  simulator's fixtures, simply have no note. */
+  notes?: string | null
 }
+
+/** The closer's own template (close-strategy-loop.ts:146). Not a human note. */
+const AUTO_CLOSE_NOTE_PREFIX = "Auto-closed on offer"
 
 function pct(n: number): string { return `${Math.round(n * 100)}%` }
 function usd(n: number): string { return `$${Math.round(n).toLocaleString()}` }
@@ -96,6 +122,21 @@ export function computeStrategyInsights(
     promptContext = parts.join("; ") + "."
   }
 
+  // Human notes only, newest-first order preserved from the caller, deduped, bounded.
+  const seenNotes = new Set<string>()
+  const recentNotes: string[] = []
+  let notesRecorded = 0
+  for (const r of rows) {
+    const raw = typeof r.notes === "string" ? r.notes.trim() : ""
+    if (!raw) continue
+    notesRecorded += 1
+    if (raw.startsWith(AUTO_CLOSE_NOTE_PREFIX)) continue
+    const trimmed = raw.length > 240 ? `${raw.slice(0, 240)}…` : raw
+    if (seenNotes.has(trimmed)) continue
+    seenNotes.add(trimmed)
+    if (recentNotes.length < 5) recentNotes.push(trimmed)
+  }
+
   return {
     windowDays,
     sampleSize: rows.length,
@@ -104,6 +145,8 @@ export function computeStrategyInsights(
     outcomeCounts,
     byStrategyType,
     promptContext,
+    recentNotes,
+    notesRecorded,
   }
 }
 
@@ -127,9 +170,12 @@ export async function generateStrategyInsights(
 
   const { data: outcomes } = await supabase
     .from("strategy_outcomes")
-    .select("outcome, deviation_from_recommendation, recommendation_id")
+    // `notes` — the human sentence on each outcome, written by every closer and read by
+    // nothing until w26. Ordered newest-first so `recentNotes` is genuinely recent.
+    .select("outcome, deviation_from_recommendation, recommendation_id, notes")
     .eq("brokerage_id", params.brokerageId)
     .gte("created_at", since)
+    .order("created_at", { ascending: false })
     .limit(2000)
 
   const rows = (outcomes ?? []) as OutcomeRow[]

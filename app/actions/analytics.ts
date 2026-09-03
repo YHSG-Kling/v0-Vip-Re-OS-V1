@@ -84,7 +84,13 @@ export async function aggregateValueDelivered(agentId: string, date: Date) {
       // (app/actions/calculators.ts trackToolUsage) and had no reader — the
       // value ledger counted "a tool was used" while WHICH tool and for HOW
       // LONG were write-only. Both now land in value_breakdown below.
-      .select("visitor_id, tool_name, time_spent_seconds")
+      // session_data_json is the LAST write-only column on this table: trackToolUsage
+      // stores `{ inputs, location }` on every public-tool session (app/actions/
+      // calculators.ts:841, both bounded) and nothing read it. So the value ledger could
+      // count that a calculator was used and for how long, while WHERE the visitor said
+      // they were and WHETHER they actually filled the tool in — the difference between
+      // a bounce and a lead-quality signal — were recorded and unreachable.
+      .select("visitor_id, tool_name, time_spent_seconds, session_data_json")
       .eq("brokerage_id", brokerageId)
       .gte("created_at", startIso)
       .lt("created_at", endIso),
@@ -137,10 +143,29 @@ export async function aggregateValueDelivered(agentId: string, date: Date) {
   // rows' own columns rather than a flat count.
   const toolsByName: Record<string, number> = {}
   let toolEngagementSeconds = 0
-  for (const t of toolRows as Array<{ tool_name?: string | null; time_spent_seconds?: number | null }>) {
+  // From session_data_json: how many sessions were actually FILLED IN, and which
+  // markets they came from. A session with no `inputs` is someone who opened the tool
+  // and left; counting it as engagement inflates the value figure below.
+  let toolSessionsWithInputs = 0
+  const toolSessionsByLocation: Record<string, number> = {}
+  for (const t of toolRows as Array<{ tool_name?: string | null; time_spent_seconds?: number | null; session_data_json?: unknown }>) {
     const name = t.tool_name || "unknown"
     toolsByName[name] = (toolsByName[name] ?? 0) + 1
     toolEngagementSeconds += Number(t.time_spent_seconds) || 0
+
+    const payload = t.session_data_json
+    if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+      const p = payload as Record<string, unknown>
+      const inputs = p.inputs
+      if (inputs && typeof inputs === "object" && !Array.isArray(inputs) && Object.keys(inputs as object).length > 0) {
+        toolSessionsWithInputs += 1
+      }
+      // `location` is already bounded public text at the write (boundPublicText), and
+      // it is a market string the visitor typed — never an identifier. An absent one is
+      // left out rather than bucketed as "unknown", which would read as a place.
+      const loc = typeof p.location === "string" ? p.location.trim() : ""
+      if (loc) toolSessionsByLocation[loc] = (toolSessionsByLocation[loc] ?? 0) + 1
+    }
   }
 
   // Calculate value in dollars
@@ -151,6 +176,9 @@ export async function aggregateValueDelivered(agentId: string, date: Date) {
     personalized_reports_sent: 0, // Would track CMAs sent
     tools_by_name: toolsByName,
     tool_engagement_seconds: toolEngagementSeconds,
+    // From session_data_json — see the loop above.
+    tool_sessions_with_inputs: toolSessionsWithInputs,
+    tool_sessions_by_location: toolSessionsByLocation,
 
     // Value calculations
     free_tools_value: toolRows.length * 50, // $50 per tool use

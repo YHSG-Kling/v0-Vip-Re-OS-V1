@@ -633,8 +633,13 @@ export function LearningModulesClient({
                           {p.externalUrl}
                         </a>
                       )}
+                      {/* WHICH ROW. external_table alone named a table and no record in
+                          it — the id has always been stored beside it and never read. */}
                       {!p.externalUrl && p.externalTable && (
-                        <span className="text-muted-foreground">→ {p.externalTable}</span>
+                        <span className="text-muted-foreground break-all">
+                          → {p.externalTable}
+                          {p.externalId ? ` #${p.externalId}` : " (no record id returned)"}
+                        </span>
                       )}
                       {p.status === "failed" && (
                         <span className="text-destructive break-words">

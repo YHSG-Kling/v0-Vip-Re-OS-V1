@@ -489,6 +489,20 @@ export function ManagerTrustClient({
                   <span>{m.score.satisfied}/{m.score.total} satisfied</span>
                   <span>{m.sessionCount} session{m.sessionCount === 1 ? "" : "s"}</span>
                   {m.lastEvaluatedAt && <span>last graded {new Date(m.lastEvaluatedAt).toLocaleDateString()}</span>}
+                  {/* The PROVIDER's reference for that last grade — what a broker quotes when
+                      disputing it. Truncated for the line; the full id is on the title. */}
+                  {m.lastOutcomeRef && (
+                    <span className="font-mono" title={`Anthropic outcome id ${m.lastOutcomeRef}`}>
+                      outcome {m.lastOutcomeRef.length > 14 ? `${m.lastOutcomeRef.slice(0, 14)}…` : m.lastOutcomeRef}
+                    </span>
+                  )}
+                  {/* VERSION AXIS — a pass-rate is only comparable within one agent version. */}
+                  {m.anthropicVersions.length === 1 && <span>agent v{m.anthropicVersions[0]}</span>}
+                  {m.anthropicVersions.length > 1 && (
+                    <span className="text-amber-700" title={m.anthropicVersions.map((v) => `v${v}`).join(", ")}>
+                      mixed agent versions ({m.anthropicVersions.length}) — scores span more than one
+                    </span>
+                  )}
                   {m.tokensIn + m.tokensOut > 0 && <span>{(m.tokensIn + m.tokensOut).toLocaleString()} tokens</span>}
                   {m.score.byResult.needs_revision ? <span>{m.score.byResult.needs_revision} needed revision</span> : null}
                   {m.score.byResult.failed ? <span className="text-red-600">{m.score.byResult.failed} failed</span> : null}

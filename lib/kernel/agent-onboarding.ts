@@ -607,22 +607,35 @@ export async function submitQuizAttempt(params: {
     : 0
   const passed = score >= quiz.passing_score
 
-  // Count existing attempts for attempt_number
-  const { count: prevAttempts, error: attemptCountError } = await supabase
+  // THE STORED LEDGER IS THE SURVIVOR (§1.1 merge-then-tombstone, w26 lane C8).
+  //
+  // TOMBSTONE: the `count: "exact", head: true` re-derivation that stood here is GONE.
+  // SURVIVOR: `agent_quiz_attempts.attempt_number` — this file's own column at :637
+  // below, written on every attempt and, until now, read by nothing. Two spellings of
+  // "which attempt is this" (§6) that could disagree: a COUNT answers "how many rows
+  // survive", the ledger answers "how far the sequence got". They diverge the moment a
+  // row is deleted or a retention sweep trims history — the count then reissues an
+  // attempt_number the agent has already been shown, and the ledger silently holds two
+  // rows claiming to be attempt 3. Reading MAX and adding one cannot reissue.
+  const { data: lastAttempt, error: attemptReadError } = await supabase
     .from("agent_quiz_attempts")
-    .select("id", { count: "exact", head: true })
+    .select("attempt_number")
     .eq("agent_id", params.agentId)
     .eq("quiz_id", params.quizId)
+    .order("attempt_number", { ascending: false })
+    .limit(1)
+    .maybeSingle()
 
-  // supabase-js RESOLVES a failed query, so a bare `{ count }` turns
-  // "permission denied" into 0 — which would both stamp attempt_number 1 on
-  // every retry (violating the attempt ledger) and report "attempt 1" back to
-  // the agent forever. attemptNumber is now user-visible, so this must throw.
-  if (attemptCountError) {
-    throw new Error(`Failed to count prior quiz attempts: ${attemptCountError.message}`)
+  // supabase-js RESOLVES a failed query, so a bare `{ data }` turns "permission denied"
+  // into null — which would both stamp attempt_number 1 on every retry (violating the
+  // attempt ledger) and report "attempt 1" back to the agent forever. attemptNumber is
+  // user-visible, so this must throw.
+  if (attemptReadError) {
+    throw new Error(`Failed to read prior quiz attempts: ${attemptReadError.message}`)
   }
 
-  const attemptNumber = (prevAttempts ?? 0) + 1
+  const priorAttemptNumber = Number((lastAttempt as { attempt_number: number | null } | null)?.attempt_number ?? 0)
+  const attemptNumber = (Number.isFinite(priorAttemptNumber) ? priorAttemptNumber : 0) + 1
 
   // Insert attempt record
   const { error: insertError } = await supabase

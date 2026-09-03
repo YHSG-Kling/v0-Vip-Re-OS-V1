@@ -374,10 +374,20 @@ export function CommandCenterClient({
                         {a.trend && a.trend !== "stable" && (
                           <span className={"text-[11px] font-medium " + (a.trend === "declining" ? "text-red-700" : "text-green-700")}>
                             {a.trend === "declining" ? "▼ declining" : "▲ improving"}
+                            {/* HOW FAR, not only which way — agent_retention_scores.previous_score.
+                                A −2 drift and a −30 collapse both read as "declining" before this. */}
+                            {a.delta !== null ? ` ${a.delta > 0 ? "+" : ""}${a.delta}` : ""}
                           </span>
                         )}
                       </div>
-                      {a.drivers.length > 0 && <p className="text-xs text-muted-foreground truncate">{a.drivers.join(" · ")}</p>}
+                      {a.drivers.length > 0 && (
+                        <p className="text-xs text-muted-foreground truncate">
+                          {a.drivers.join(" · ")}
+                          {/* HOW WEAK — the radar's stored signal_breakdown, the only
+                              place the driver labels' magnitude lives. */}
+                          {a.weakestSignal ? ` · weakest ${a.weakestSignal.key} ${a.weakestSignal.score}/100` : ""}
+                        </p>
+                      )}
                     </div>
                     <span className="text-lg font-semibold shrink-0">{a.score}<span className="text-xs text-muted-foreground">/100</span></span>
                   </Card>

@@ -83,6 +83,31 @@ if (!isAdminOrBroker({ user_type: profile?.user_type ?? "" })) redirect("/dashbo
           <p className="text-sm text-muted-foreground mt-1">
             Top-quartile agent behaviors vs. bottom-quartile, with the playbook required to close the gap. Adopt a pattern in one click — every selected agent inherits the winning configuration.
           </p>
+          {/* RUN PROVENANCE — brokerage_intelligence_insights.mining_run_id. The miner
+              stamps one uuid per run and supersedes per pattern_key, not per run, so an
+              open board can carry a pattern last mined weeks ago beside one written this
+              morning and look uniformly current. Saying how many runs are in view, and
+              how old the oldest is, is what makes a stale pattern visible. */}
+          {(() => {
+            const openInsights = openRes.insights ?? []
+            if (openInsights.length === 0) return null
+            const runs = new Set(openInsights.map((i) => i.miningRunId).filter((r): r is string => !!r))
+            const unstamped = openInsights.filter((i) => !i.miningRunId).length
+            const oldest = openInsights
+              .map((i) => i.computedAt)
+              .filter(Boolean)
+              .sort()[0]
+            return (
+              <p className="text-xs text-muted-foreground mt-1">
+                {runs.size === 0
+                  ? `${openInsights.length} open pattern${openInsights.length === 1 ? "" : "s"} — none records which mining run produced it.`
+                  : `${openInsights.length} open pattern${openInsights.length === 1 ? "" : "s"} from ${runs.size} mining run${runs.size === 1 ? "" : "s"}`}
+                {unstamped > 0 && runs.size > 0 ? ` (${unstamped} unstamped)` : ""}
+                {oldest ? ` · oldest computed ${new Date(oldest).toLocaleDateString()}` : ""}
+                {runs.size > 1 ? " — patterns from an earlier run have not been re-mined since." : ""}
+              </p>
+            )
+          })()}
         </div>
 
         <IntelligenceMeshClient

@@ -203,7 +203,22 @@ export async function listBrokeragesAction(filter?: {
 // ── DETAIL ───────────────────────────────────────────────────────────────────
 
 export async function getBrokerageDetailAction(brokerageId: string): Promise<
-  | { ok: true; brokerage: any; users: any[]; subscriptions: any[]; auditEntries: any[]; accessSessions: any[] }
+  | {
+      ok: true
+      brokerage: any
+      users: any[]
+      subscriptions: any[]
+      auditEntries: any[]
+      accessSessions: any[]
+      /** The tenant's AI entitlement row (ai_subscription_tier) — tier, active flag and
+       *  the date the entitlement began. Null when the tenant has never had one. */
+      aiEntitlement: {
+        tierName: string | null
+        isActive: boolean
+        subscribedAt: string | null
+        cancelledAt: string | null
+      } | null
+    }
   | { ok: false; error: string }
 > {
   const auth = await requireTenantRead()   // read-only: the whole staff roster
@@ -222,7 +237,14 @@ export async function getBrokerageDetailAction(brokerageId: string): Promise<
   // in a swallowing try/catch (app/actions/superadmin/impersonation.ts:20-28)
   // while the session insert is error-checked, so the session row is the more
   // reliable record of the two.
-  const [{ data: brokerage, error }, { data: users }, { data: subs }, { data: audit }, { data: sessions }] = await Promise.all([
+  // ── HOW LONG THIS TENANT HAS HAD AI (w26 lane C8) ───────────────────────
+  // ai_subscription_tier.subscribed_at is stamped by changeBrokerageTierAction below
+  // and was read by NOTHING in the product: the entitlement row gated admin AI
+  // operations (lib/security/authorization.ts) while the tenure it records reached no
+  // pixel. AI is platform-covered with per-tier overage (§5), so "on the Growth tier
+  // since March" is a billing-relevant fact about this account, and an operator asking
+  // why an overage looks the way it does had no way to see it.
+  const [{ data: brokerage, error }, { data: users }, { data: subs }, { data: audit }, { data: sessions }, aiTierRes] = await Promise.all([
     svc.from("brokerages").select("*").eq("id", brokerageId).maybeSingle(),
     svc.from("users").select("id, email, first_name, last_name, user_type, created_at").eq("brokerage_id", brokerageId).order("created_at", { ascending: false }).limit(50),
     svc.from("subscriptions").select("id, tier_id, status, current_period_start, current_period_end, created_at").eq("brokerage_id", brokerageId).order("created_at", { ascending: false }).limit(10),
@@ -232,8 +254,23 @@ export async function getBrokerageDetailAction(brokerageId: string): Promise<
       .eq("target_brokerage_id", brokerageId)
       .order("started_at", { ascending: false })
       .limit(30),
+    svc.from("ai_subscription_tier")
+      .select("tier_name, is_active, subscribed_at, cancelled_at")
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle(),
   ])
   if (error || !brokerage) return { ok: false, error: error?.message ?? "Not found" }
+
+  // §3 — a refused read resolves as data:null, which is byte-identical to "this tenant
+  // has no AI entitlement". The two are different answers on a billing surface, so a
+  // refusal is logged rather than rendered as "never subscribed"; the card below says
+  // which it is by distinguishing a null row from a null date.
+  if (aiTierRes.error) {
+    console.error("[brokerage-management] ai_subscription_tier read refused:", aiTierRes.error.message)
+  }
+  const aiTierRow = aiTierRes.data as
+    | { tier_name: string | null; is_active: boolean | null; subscribed_at: string | null; cancelled_at: string | null }
+    | null
 
   return {
     ok: true,
@@ -242,6 +279,17 @@ export async function getBrokerageDetailAction(brokerageId: string): Promise<
     subscriptions: subs ?? [],
     auditEntries: audit ?? [],
     accessSessions: sessions ?? [],
+    aiEntitlement: aiTierRow
+      ? {
+          tierName: aiTierRow.tier_name ?? null,
+          isActive: aiTierRow.is_active === true,
+          // NEVER INFERRED. A row whose subscribed_at is null (written before the
+          // stamp existed) reports null and the card says the date is not on record —
+          // it is not back-filled from created_at, which is a different fact.
+          subscribedAt: aiTierRow.subscribed_at ?? null,
+          cancelledAt: aiTierRow.cancelled_at ?? null,
+        }
+      : null,
   }
 }
 
@@ -310,17 +358,28 @@ export async function changeBrokerageTierAction(params: {
       .order("created_at", { ascending: true }).limit(1).maybeSingle()
     if (adminUser) {
       const { data: existingTier } = await svc
-        .from("ai_subscription_tier").select("id").eq("brokerage_id", params.brokerageId).maybeSingle()
+        .from("ai_subscription_tier").select("id, subscribed_at").eq("brokerage_id", params.brokerageId).maybeSingle()
+      const nowIso = new Date().toISOString()
       const tierRowPayload = {
         brokerage_id: params.brokerageId,
         tier_name: params.newTier,
         is_active: true,
         admin_user_id: (adminUser as any).id,
-        subscribed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
+        updated_at: nowIso,
       }
-      if (existingTier) await svc.from("ai_subscription_tier").update(tierRowPayload).eq("id", (existingTier as any).id)
-      else await svc.from("ai_subscription_tier").insert(tierRowPayload)
+      if (existingTier) {
+        // subscribed_at IS TENURE, NOT "LAST TOUCHED" (w26 lane C8, §5 — AI is
+        // platform-covered with per-tier overage, so this is a money surface).
+        // Stamping `now` on every tier change made the column mean "the most recent
+        // upgrade", which is what `updated_at` already means (§6, two spellings of one
+        // idea). The row's own age was destroyed by each edit, so no surface could ever
+        // have told a tenant how long they had been on AI. It is now set ONCE, on the
+        // insert that creates the entitlement, and carried forward untouched — and a row
+        // that never recorded one keeps its NULL rather than being back-dated to today.
+        await svc.from("ai_subscription_tier").update(tierRowPayload).eq("id", (existingTier as any).id)
+      } else {
+        await svc.from("ai_subscription_tier").insert({ ...tierRowPayload, subscribed_at: nowIso })
+      }
     }
   } catch { /* entitlement sync is best-effort — the audit log below is the record */ }
 

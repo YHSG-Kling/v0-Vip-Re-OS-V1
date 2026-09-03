@@ -61,6 +61,39 @@ export default async function MentorshipPage() {
   const mentorName =
     [mentorUser?.first_name, mentorUser?.last_name].filter(Boolean).join(" ") || null
 
+  // GRADUATION — the reader half of agent_mentor_relationships.end_date.
+  //
+  // lib/recruiting/mentorship-lifecycle.ts:75 ends a pairing the moment the mentee's
+  // onboarding certification lands: status → 'completed', end_date → now. NOTHING read
+  // either fact. Because the query above pins `.eq("status","active")`, a graduated mentee
+  // fell straight back to the "Find Your Mentor" empty state — the product forgot they had
+  // ever had a mentor, and forgot the day they finished. Only asked when there is no active
+  // pairing, so an active mentorship costs no extra round trip. §3: the error is read; an
+  // unreadable answer leaves the card off rather than claiming "never mentored".
+  let graduation: { mentorName: string | null; endedAt: string | null } | null = null
+  if (!relationship) {
+    const { data: completed, error: completedError } = await supabase
+      .from("agent_mentor_relationships")
+      .select("end_date, agents:mentor_agent_id(user:users(first_name, last_name))")
+      .eq("mentee_agent_id", agent.id)
+      .eq("status", "completed")
+      .order("end_date", { ascending: false, nullsFirst: false })
+      .limit(1)
+      .maybeSingle()
+    if (completedError) {
+      console.error("[MentorshipPage] completed mentorship read refused:", completedError.message)
+    } else if (completed) {
+      const gradAgent = (completed.agents ?? null) as Record<string, any> | null
+      const gradUser = (gradAgent?.user ?? null) as Record<string, any> | null
+      graduation = {
+        mentorName: [gradUser?.first_name, gradUser?.last_name].filter(Boolean).join(" ") || null,
+        // NEVER INFERRED. A completed pairing whose end_date is null (ended before the
+        // lifecycle stamped it) says "completed" without a date rather than guessing one.
+        endedAt: (completed.end_date as string | null) ?? null,
+      }
+    }
+  }
+
   const mentorData = relationship
     ? {
         mentorId: relationship.mentor_agent_id as string,
@@ -100,6 +133,7 @@ export default async function MentorshipPage() {
       agentId={agent.id}
       brokerageId={agent.brokerage_id}
       initialMentor={mentorData}
+      graduation={graduation}
       sessions={sessions}
       sessionsError={sessionsError}
       mentorLift={mentorLift}

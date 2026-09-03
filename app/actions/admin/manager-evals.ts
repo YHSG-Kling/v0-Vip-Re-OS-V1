@@ -57,6 +57,20 @@ export interface ManagerTrustRow {
   outcomeEffectiveness: number
   outcomeSample: number
   outcomeBand: EffectivenessBand
+  /** ANTHROPIC'S OWN ID for the most recent graded outcome of this manager
+   *  (agent_outcome_evaluations.anthropic_outcome_id, written by
+   *  app/api/webhooks/anthropic-agent/route.ts:337). The rubric grade that moves a
+   *  manager's trust tier is produced by the PROVIDER, not by us — so a broker who
+   *  disputes a grade needs the provider's reference for it, and that reference was
+   *  written and read by nobody. Null when this manager has no graded outcome yet. */
+  lastOutcomeRef: string | null
+  /** The Anthropic agent version each live managed_agents row of this kind runs
+   *  (managed_agents.anthropic_version, written by lib/agents/spawn-helper.ts:188/:210).
+   *  The VERSION AXIS of the scorecard: a pass-rate is only comparable against the
+   *  version that produced it, and a kind whose rows straddle two versions is a mixed
+   *  sample rather than one manager's score. Null when no live row carries a version;
+   *  more than one distinct value means the kind is running mixed. */
+  anthropicVersions: string[]
 }
 
 export interface ManagerTrustScorecard {
@@ -85,7 +99,7 @@ export async function getManagerTrustScorecard(): Promise<
   // 1) All graded outcomes (brokerage-scoped).
   let evalQ = svc
     .from("agent_outcome_evaluations")
-    .select("managed_agent_session_id, result, input_tokens, output_tokens, evaluated_at")
+    .select("managed_agent_session_id, result, input_tokens, output_tokens, evaluated_at, anthropic_outcome_id")
     .order("evaluated_at", { ascending: false })
     .limit(5000)
   if (!isPlatform) evalQ = evalQ.eq("brokerage_id", ctx.brokerageId as string)
@@ -107,17 +121,22 @@ export async function getManagerTrustScorecard(): Promise<
   }
 
   // 3) Bucket evals by agent_kind.
-  interface Bucket { evals: Array<{ result: string }>; sessions: Set<string>; lastAt: string | null; tokensIn: number; tokensOut: number }
+  interface Bucket { evals: Array<{ result: string }>; sessions: Set<string>; lastAt: string | null; lastOutcomeRef: string | null; tokensIn: number; tokensOut: number }
   const buckets = new Map<string, Bucket>()
   for (const e of evals ?? []) {
     const sid = e.managed_agent_session_id as string
     const kind = agentToKind.get(sessionToAgent.get(sid) ?? "") ?? null
     if (!kind) continue
-    const b = buckets.get(kind) ?? { evals: [], sessions: new Set(), lastAt: null, tokensIn: 0, tokensOut: 0 }
+    const b = buckets.get(kind) ?? { evals: [], sessions: new Set(), lastAt: null, lastOutcomeRef: null, tokensIn: 0, tokensOut: 0 }
     b.evals.push({ result: e.result as string })
     b.sessions.add(sid)
     const at = e.evaluated_at as string | null
-    if (at && (!b.lastAt || at > b.lastAt)) b.lastAt = at
+    // The provider's reference travels WITH the grade it belongs to — stamped only when
+    // this row is the newest one, so "last graded <date>" and the ref name the same grade.
+    if (at && (!b.lastAt || at > b.lastAt)) {
+      b.lastAt = at
+      b.lastOutcomeRef = (e.anthropic_outcome_id as string | null) ?? null
+    }
     b.tokensIn += (e.input_tokens as number | null) ?? 0
     b.tokensOut += (e.output_tokens as number | null) ?? 0
     buckets.set(kind, b)
@@ -125,7 +144,9 @@ export async function getManagerTrustScorecard(): Promise<
 
   // 3b) Per-kind autonomy override (broker policy of record) from managed_agents.config.
   //     Fetch ALL of the brokerage's managed agents so overrides show even for kinds with no evals.
-  let agentRowQ = svc.from("managed_agents").select("id, agent_kind, config").is("archived_at", null)
+  //     anthropic_version rides the SAME read (the live rows are already in hand): it is the
+  //     version axis of every number on this card — see ManagerTrustRow.anthropicVersions.
+  let agentRowQ = svc.from("managed_agents").select("id, agent_kind, config, anthropic_version").is("archived_at", null)
   if (!isPlatform) agentRowQ = agentRowQ.eq("brokerage_id", ctx.brokerageId as string)
   const { data: agentRows } = await agentRowQ
   // RETIRED KINDS — a SEPARATE read, deliberately. The `.is("archived_at", null)`
@@ -147,12 +168,21 @@ export async function getManagerTrustScorecard(): Promise<
   }
   const overrideByKind = new Map<string, AutonomyPosture | null>()
   const activeKinds = new Set<string>()
+  const versionsByKind = new Map<string, Set<string>>()
   for (const a of agentRows ?? []) {
     const kind = a.agent_kind as string
     activeKinds.add(kind)
     const cfg = (a.config ?? {}) as Record<string, unknown>
     const ov = cfg.autonomy_tier
     if (isAutonomyPosture(ov)) overrideByKind.set(kind, ov)
+    const ver = a.anthropic_version as string | null
+    // Only a version the row actually carries. A null is "this row never recorded one",
+    // never a fabricated "v1" — the axis stays absent rather than wrong.
+    if (typeof ver === "string" && ver.trim()) {
+      const set = versionsByKind.get(kind) ?? new Set<string>()
+      set.add(ver.trim())
+      versionsByKind.set(kind, set)
+    }
   }
 
   // 3c) CLOSED LEARNING LOOP — attribute REAL business outcomes back to the manager
@@ -223,6 +253,8 @@ export async function getManagerTrustScorecard(): Promise<
         score,
         sessionCount: b?.sessions.size ?? 0,
         lastEvaluatedAt: b?.lastAt ?? null,
+        lastOutcomeRef: b?.lastOutcomeRef ?? null,
+        anthropicVersions: Array.from(versionsByKind.get(kind) ?? []).sort(),
         tokensIn: b?.tokensIn ?? 0,
         tokensOut: b?.tokensOut ?? 0,
         overrideAutonomy: override,

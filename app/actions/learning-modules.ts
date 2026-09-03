@@ -574,6 +574,17 @@ export interface ModulePublicationRow {
   status:        string
   externalUrl:   string | null
   externalTable: string | null
+  /**
+   * THE ROW THE FAN-OUT ACTUALLY CREATED.
+   *
+   * publishModuleToChannels stamps external_table + external_id together (:230) — the
+   * table and the primary key of the record it made on that channel — and this reader
+   * selected the table and not the id. A channel whose fan-out returns no URL (the
+   * common case for an internal rail) therefore rendered as a bare table name with
+   * nothing to open or verify, which is the same dangling-pointer defect the approval
+   * queue's item_id had. Null when the channel returned no id.
+   */
+  externalId:    string | null
   publishedAt:   string | null
   errorMessage:  string | null
   createdAt:     string | null
@@ -589,7 +600,7 @@ export async function getModulePublicationsAction(): Promise<
   const supabase = createServiceClient()
   const { data, error } = await supabase
     .from("learning_module_channel_publications")
-    .select("module_id, channel, status, external_url, external_table, published_at, error_message, created_at")
+    .select("module_id, channel, status, external_url, external_id, external_table, published_at, error_message, created_at")
     .eq("brokerage_id", auth.brokerageId)
     .order("created_at", { ascending: false })
     .limit(1000)
@@ -603,6 +614,7 @@ export async function getModulePublicationsAction(): Promise<
       status:        (r.status as string) ?? "unknown",
       externalUrl:   (r.external_url as string | null) ?? null,
       externalTable: (r.external_table as string | null) ?? null,
+      externalId:    (r.external_id as string | null) ?? null,
       publishedAt:   (r.published_at as string | null) ?? null,
       errorMessage:  (r.error_message as string | null) ?? null,
       createdAt:     (r.created_at as string | null) ?? null,

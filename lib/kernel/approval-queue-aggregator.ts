@@ -2,7 +2,11 @@
  * Approval Queue Aggregator — single source for the agent's daily review queue.
  *
  * Three approval data sources existed in parallel before this:
- *   1. approval_items table (empty — nothing inserts into it)
+ *   1. approval_items table (STALE PARENTHETICAL CORRECTED, w26: it said "empty —
+ *      nothing inserts into it", and that has not been true since the content guardian
+ *      started filing flagged content there — lib/content-guardian/index.ts:135 inserts
+ *      the row and :148 writes its violations into review_notes. Believing the old note
+ *      is part of why this queue selected everything on that row EXCEPT the findings.)
  *   2. activities with activity_type='content.approval' (compliance dashboard)
  *   3. per-content tables (newsletter_campaigns.approval_status, etc.)
  *
@@ -216,6 +220,20 @@ export interface UnifiedApprovalItem {
    *  pair every source has). Offers carry the full negotiation response set:
    *  approve (= accept), reject, counter. */
   actions?: Array<"approve" | "reject" | "counter">
+  /**
+   * WHY THIS WAS FLAGGED — decoded from approval_items.review_notes, which the
+   * content guardian writes as `{ violations, excerpt }` JSON. Present only on
+   * `legacy` items whose notes parse as the guardian's shape; a free-text note
+   * (what approveOrRejectApproval writes on the way OUT) is carried as `note`
+   * instead of being force-fitted into a violation list.
+   */
+  review?: {
+    violations: Array<{ phrase: string; severity: string | null; fix: string | null; reference: string | null }>
+    /** The offending copy as the guardian captured it (first 500 chars). */
+    excerpt: string | null
+    /** A plain-text review note that is not the guardian's JSON. */
+    note: string | null
+  }
   /** Offer-decision metadata (section='deals' only) — powers the /approvals
    *  counter dialog prefill. */
   deal?: {
@@ -229,6 +247,67 @@ export interface UnifiedApprovalItem {
 }
 
 const PER_TABLE_LIMIT = 50
+
+/**
+ * PURE: decode approval_items.review_notes.
+ *
+ * TWO WRITERS SHARE THIS COLUMN and only one of them writes JSON:
+ *   · lib/content-guardian/index.ts:148 stamps `{ violations, excerpt }` when it flags
+ *     content (the pre-review evidence this queue exists to show).
+ *   · approveOrRejectApproval below stamps the reviewer's own free-text note on the way
+ *     OUT (`ctx.notes`).
+ * So parsing must tolerate both, and anything else — a hand-edited row, a truncated
+ * string, `null`. Nothing here throws and nothing is invented: an unparseable note is
+ * carried through verbatim as `note` rather than being dropped or rendered as zero
+ * violations, because "no violations recorded" and "we could not read the record" are
+ * different answers to the reviewer.
+ *
+ * The guardian JSON.stringify's FairHousingPattern objects, whose `pattern` is a RegExp
+ * — which serializes to `{}` — so only phrase/severity/fix/reference survive the round
+ * trip. That is exactly the human-readable half, and it is what this reads.
+ */
+function parseReviewNotes(raw: unknown): NonNullable<UnifiedApprovalItem["review"]> {
+  const empty = { violations: [] as Array<{ phrase: string; severity: string | null; fix: string | null; reference: string | null }>, excerpt: null as string | null, note: null as string | null }
+  if (typeof raw !== "string" || !raw.trim()) return empty
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return { ...empty, note: raw.slice(0, 1000) }
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { ...empty, note: raw.slice(0, 1000) }
+  }
+
+  const obj = parsed as Record<string, unknown>
+  const rawViolations = Array.isArray(obj.violations) ? obj.violations : []
+  const violations = rawViolations
+    .map((v) => {
+      // Brand-voice violations may be plain strings; fair-housing ones are objects.
+      if (typeof v === "string") return { phrase: v, severity: null, fix: null, reference: null }
+      if (!v || typeof v !== "object") return null
+      const o = v as Record<string, unknown>
+      const phrase =
+        (typeof o.phrase === "string" && o.phrase) ||
+        (typeof o.message === "string" && o.message) ||
+        (typeof o.rule === "string" && o.rule) ||
+        ""
+      if (!phrase) return null
+      return {
+        phrase,
+        severity: typeof o.severity === "string" ? o.severity : null,
+        fix: typeof o.fix === "string" ? o.fix : null,
+        reference: typeof o.reference === "string" ? o.reference : null,
+      }
+    })
+    .filter((v): v is { phrase: string; severity: string | null; fix: string | null; reference: string | null } => v !== null)
+
+  const excerpt = typeof obj.excerpt === "string" && obj.excerpt.trim() ? obj.excerpt : null
+  // Parsed as JSON but carrying neither half → not the guardian's shape; keep the text.
+  if (violations.length === 0 && excerpt === null) return { ...empty, note: raw.slice(0, 1000) }
+  return { violations, excerpt, note: null }
+}
 
 export async function aggregatePendingApprovals(
   brokerageId: string,
@@ -358,7 +437,13 @@ export async function aggregatePendingApprovals(
         .limit(PER_TABLE_LIMIT),
       svc
         .from("approval_items")
-        .select("id, agent_id, item_type, item_id, status, submitted_at, reviewed_at")
+        // review_notes IS THE WHOLE REASON THIS ROW EXISTS. lib/content-guardian/index.ts:148
+        // writes `{ violations, excerpt }` into it at the moment content is flagged — the fair-
+        // housing / brand-voice findings and the offending text — and this queue selected
+        // everything BUT that column. The reviewer got "listing_description — <uuid>" and had to
+        // approve or reject compliance-flagged copy without ever seeing what was flagged or why.
+        // A reviewer deciding without the violations is the defect (w26 lane C8).
+        .select("id, agent_id, item_type, item_id, status, submitted_at, reviewed_at, review_notes")
         .eq("brokerage_id", brokerageId)
         .eq("status", "pending")
         .order("submitted_at", { ascending: false })
@@ -572,21 +657,37 @@ export async function aggregatePendingApprovals(
 
   for (const row of (legacy.data ?? []) as Array<Record<string, unknown>>) {
     if (agentScopeId && row.agent_id && row.agent_id !== agentScopeId) continue
+    const review = parseReviewNotes(row.review_notes)
+    // A fair-housing / brand-voice finding is not "standard" work in a content queue:
+    // it is the one item on the page that must not be waved through, so it sorts and
+    // colours as high when the guardian recorded a violation.
+    const flagged = review.violations.length > 0
     items.push({
       id: String(row.id), // bare uuid — no prefix
       type: "legacy",
       agent_id: (row.agent_id as string | null) ?? null,
       status: String(row.status ?? "pending"),
-      priority: "standard",
+      priority: flagged ? "high" : "standard",
+      review,
       // `item_id` is the LINK the reviewer opens. It used to be interpolated
       // unconditionally, so a row without one rendered as "video_script — " with a
       // dangling em-dash — a reviewer told something was flagged and given nothing
       // to open. lib/content-guardian now writes it (directly when the entity
       // exists, stamped by attachApprovalSubject when it is created after the
       // scan), and a row that STILL has none says so instead of trailing off.
-      content: row.item_id
-        ? `${String(row.item_type ?? "approval")} — ${String(row.item_id)}`
-        : `${String(row.item_type ?? "approval")} (no linked item)`,
+      // The one-line summary EVERY surface renders (app/approvals/page.tsx:459,
+      // app/dashboard/admin/approvals, ApprovalsBanner) now names the findings, so
+      // even a caller that ignores the structured `review` above stops showing a
+      // compliance flag as a bare uuid.
+      content: [
+        row.item_id
+          ? `${String(row.item_type ?? "approval")} — ${String(row.item_id)}`
+          : `${String(row.item_type ?? "approval")} (no linked item)`,
+        flagged
+          ? `${review.violations.length} compliance flag${review.violations.length === 1 ? "" : "s"}: ` +
+            review.violations.map((v) => v.phrase).filter(Boolean).slice(0, 4).join(", ")
+          : null,
+      ].filter(Boolean).join(" · "),
       created_at: String(row.submitted_at ?? new Date().toISOString()),
       updated_at: String(row.reviewed_at ?? row.submitted_at ?? new Date().toISOString()),
     })

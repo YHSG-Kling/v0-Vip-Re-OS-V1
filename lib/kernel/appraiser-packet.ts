@@ -826,7 +826,18 @@ export async function composeAppraiserPacket(args: {
           transaction_id: tx.id,
           document_type: PACKET_DOCUMENT_TYPE,
           blob_url: pdfUrl,
-          blob_id: `client-docs/${tx.brokerage_id}/${fileName}`,
+          // TOMBSTONE (§1.1, w26 lane C8): `blob_id` DELETED from this insert.
+          // SURVIVOR: `blob_url` on the same row, read by
+          // app/actions/generated-documents.ts:65 (the Document Center library).
+          //
+          // blob_id stored `client-docs/<brokerage>/<file>` — the object PATH, which is
+          // the exact string handed to hostRenderedMedia one line above. Nothing read it.
+          // It was not a second, more durable handle: hostRenderedMedia issues the URL
+          // through lib/storage/document-buckets.ts#issueBucketObjectUrl, and its bucket
+          // (RENDER_MEDIA_BUCKET = "video-assets") is on the PUBLIC_MEDIA_BUCKETS roster,
+          // so the URL is a permanent getPublicUrl that CONTAINS this path rather than a
+          // signed URL that expires. The survivor therefore lacks nothing this arm
+          // carried — nothing had to be ported before the delete.
           file_name: fileName,
           file_size: buf.length,
           metadata: {

@@ -179,6 +179,25 @@ export default async function PlatformContinuityPage() {
                 {shapeChanges.slice(0, 12).map((c) => (
                   <li key={`${c.connector}:${c.fingerprint}`} className="text-xs text-muted-foreground">
                     <span className="font-medium text-foreground">{c.connector}</span> / {c.entity} — new shape {c.fingerprint} since {new Date(c.firstSeenAt).toLocaleDateString()}
+                    {/* last_seen_at: a shape still arriving is a contract change; one seen
+                        once is a blip. Both were stored and neither was shown. */}
+                    {c.lastSeenAt && `, last seen ${new Date(c.lastSeenAt).toLocaleDateString()}`}
+                    {/* shape_keys diffed against the prior shape — WHICH field moved. */}
+                    {c.diffUnavailable ? (
+                      <span className="block">changed fields unknown (an earlier shape recorded no key list)</span>
+                    ) : (
+                      <>
+                        {c.removedKeys.length > 0 && (
+                          <span className="block text-red-700">dropped: {c.removedKeys.slice(0, 8).join(", ")}{c.removedKeys.length > 8 ? ` +${c.removedKeys.length - 8} more` : ""}</span>
+                        )}
+                        {c.addedKeys.length > 0 && (
+                          <span className="block text-amber-700">added: {c.addedKeys.slice(0, 8).join(", ")}{c.addedKeys.length > 8 ? ` +${c.addedKeys.length - 8} more` : ""}</span>
+                        )}
+                        {c.removedKeys.length === 0 && c.addedKeys.length === 0 && (
+                          <span className="block">no key paths differ — a values-only change</span>
+                        )}
+                      </>
+                    )}
                   </li>
                 ))}
               </ul>

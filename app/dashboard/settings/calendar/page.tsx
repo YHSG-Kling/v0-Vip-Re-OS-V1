@@ -5,6 +5,7 @@ import {
   connectCalendarProvider,
   syncEventToProvider,
   fetchSyncLogs,
+  fetchSyncMappings,
 } from "@/app/actions/calendar/calendar-sync-actions"
 import { createClient } from "@/lib/supabase/server"
 import { hasPersonalCalendar } from "@/lib/providers/calendar/personal-calendar"
@@ -41,10 +42,22 @@ import { CopyToClipboardButton } from "./CopyToClipboardButton"
  *    maybeSingle() with its error destructured, and a missing token degrades to
  *    a message about the token only.
  *
- * NOTHING ON THIS PAGE CLAIMS DELIVERY. lib/kernel/calendar-sync.ts has no
- * provider adapter and stores no OAuth token; every push and pull writes a
- * calendar_sync_logs row with status 'partial' and the reason. The sync history
- * below prints that reason verbatim, so the screen and the database agree.
+ * NOTHING ON THIS PAGE CLAIMS DELIVERY IT CANNOT SHOW. The sync history below prints
+ * calendar_sync_logs verbatim, so the screen and the database agree.
+ *
+ * ── UPDATED w26 (lane C8): PUSH IS REAL FOR GOOGLE ──────────────────────────
+ * This block used to read "lib/kernel/calendar-sync.ts has no provider adapter and stores
+ * no OAuth token; every push and pull writes a calendar_sync_logs row with status
+ * 'partial'". Half of that is still true and half is now false, and leaving it would make
+ * this page lie about its own behavior:
+ *  · calendar_provider_accounts still stores NO OAuth token — that has not changed.
+ *    lib/providers/calendar/google-calendar-sync-adapter.ts resolves the ACCOUNT OWNER'S
+ *    own Google credential (the same connection that backs their mailbox) instead.
+ *  · A google_calendar push therefore reaches Google, logs status 'success', and writes a
+ *    calendar_sync_mappings row carrying the provider's event id. The "Events synced to
+ *    this calendar" list below is that table.
+ *  · An outlook account has NO adapter and still logs 'partial' with the reason. PULL is
+ *    still a stub for both providers.
  *
  * ── THE BOOKINGS CALENDAR (w8) ──────────────────────────────────────────────
  * Everything above concerns calendar_provider_accounts — a registry that holds
@@ -123,11 +136,23 @@ export default async function CalendarSettingsPage({ searchParams }: Props) {
   // Sync history per account — a refused read is shown as a refusal, never as
   // an empty history.
   const logsByAccount = new Map<string, { logs: CalendarSyncLogRow[]; error: string | null }>()
+  // WHICH EVENTS ARE ACTUALLY ON THE PROVIDER (w26) — calendar_sync_mappings. A log line
+  // records that an attempt happened; a mapping records that the provider is holding this
+  // event under this id. Same refusal contract as the logs above.
+  type SyncMappings = Extract<Awaited<ReturnType<typeof fetchSyncMappings>>, { ok: true }>["mappings"]
+  const mappingsByAccount = new Map<string, { mappings: SyncMappings; error: string | null }>()
   for (const account of accounts) {
     const res = await fetchSyncLogs(account.id)
     logsByAccount.set(
       account.id,
       res.ok ? { logs: res.logs, error: null } : { logs: [], error: res.error },
+    )
+    const mapRes = await fetchSyncMappings(account.id)
+    mappingsByAccount.set(
+      account.id,
+      mapRes.ok
+        ? { mappings: mapRes.mappings, error: null }
+        : { mappings: [] as SyncMappings, error: mapRes.error },
     )
   }
 
@@ -346,6 +371,44 @@ export default async function CalendarSettingsPage({ searchParams }: Props) {
                         </button>
                       </form>
                     </div>
+                  </div>
+
+                  {/* WHAT IS ON THE PROVIDER'S CALENDAR — calendar_sync_mappings. Until
+                      w26 this table had no writer and no reader: the page could say a
+                      push was attempted and never say what landed. */}
+                  <div className="mt-4 border-t border-gray-100 pt-3">
+                    <p className="text-xs font-medium text-gray-700 mb-2">Events synced to this calendar</p>
+                    {(() => {
+                      const m = mappingsByAccount.get(account.id)
+                      if (m?.error) {
+                        return <p className="text-xs text-red-700">Synced events could not be read — {m.error}</p>
+                      }
+                      if (!m || m.mappings.length === 0) {
+                        return <p className="text-xs text-gray-500">No event has been synced to this calendar yet.</p>
+                      }
+                      return (
+                        <ul className="flex flex-col gap-1">
+                          {m.mappings.slice(0, 10).map((row) => (
+                            <li key={row.id} className="text-xs text-gray-700 flex flex-wrap items-center gap-2">
+                              <span
+                                className={`inline-block px-1.5 py-0.5 rounded font-medium ${
+                                  row.is_synced ? "bg-green-100 text-green-800" : "bg-amber-100 text-amber-800"
+                                }`}
+                              >
+                                {row.is_synced ? "in sync" : "changed since last sync"}
+                              </span>
+                              <span className="font-mono break-all">{row.provider_event_id}</span>
+                              <span className="text-gray-500">
+                                on {PROVIDER_LABEL[row.provider_type] ?? row.provider_type}
+                                {row.last_synced_at
+                                  ? ` · ${new Date(row.last_synced_at).toLocaleString()}`
+                                  : " · never stamped"}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      )
+                    })()}
                   </div>
 
                   {/* Push an upcoming event at THIS account */}

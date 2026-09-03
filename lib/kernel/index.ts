@@ -118,6 +118,7 @@ export {
   pullCalendarEventsFromProvider,
   listProviderAccounts,
   listSyncLogs,
+  listSyncMappings,
 } from "./calendar-sync"
 export type {
   CalendarProviderType,

@@ -107,12 +107,17 @@ export default async function RecruitingROIPage() {
     recruitedIds.map(async (agentId) => {
       const rows = await getRecruitingAnalyticsByYear(agentId).catch(() => [])
       const byYear = new Map<number, number>()
-      for (const row of rows as Array<{ year_number: number | null; gross_commission_generated: number | null }>) {
+      // recruiting_analytics.computed_at — the newest yearly rollup behind this series.
+      let seriesComputedAt: string | null = null
+      for (const row of rows as Array<{ year_number: number | null; gross_commission_generated: number | null; computed_at: string | null }>) {
         if (typeof row.year_number === "number") {
           byYear.set(row.year_number, (byYear.get(row.year_number) ?? 0) + Number(row.gross_commission_generated ?? 0))
         }
+        const at = row.computed_at
+        if (typeof at === "string" && at && (!seriesComputedAt || at > seriesComputedAt)) seriesComputedAt = at
       }
       return {
+        computedAt: seriesComputedAt,
         recruited_agent_id: agentId,
         agents: namesByAgentId.get(agentId) ?? { first_name: null, last_name: null },
         year1_revenue: byYear.get(1) ?? 0,
@@ -123,6 +128,12 @@ export default async function RecruitingROIPage() {
     }),
   )
   const yearlyAnalytics = perRecruitSeries.filter((s) => s.hasData)
+  // The newest recruiting_analytics.computed_at across every series actually drawn.
+  const analyticsComputedAt = yearlyAnalytics
+    .map((s) => s.computedAt)
+    .filter((s): s is string => typeof s === "string" && s.length > 0)
+    .sort()
+    .pop() ?? null
 
   const totalInvested = roiSummary?.totalInvested || 0
   const totalGenerated = roiSummary?.totalGenerated || 0
@@ -146,6 +157,21 @@ export default async function RecruitingROIPage() {
         <h1 className="text-3xl font-bold tracking-tight">Recruiting ROI</h1>
         <p className="text-muted-foreground mt-1">
           Track recruiting costs, monitor agent profitability, and optimize hiring strategy
+        </p>
+        {/* FRESHNESS — recruiting_roi.computed_at (and, below the chart,
+            recruiting_analytics.computed_at). Every figure on this page is a stored
+            rollup, and a recompute can fail silently after a cost entry
+            (app/actions/recruiting-roi.ts:addRecruitingCost catches and logs). A money
+            number that will not say when it was computed is the defect; the OLDEST
+            stamp is shown too, because a sum is only as current as its stalest row. */}
+        <p className="text-xs text-muted-foreground mt-1">
+          {roiSummary?.computedAt
+            ? `ROI recomputed ${new Date(roiSummary.computedAt).toLocaleString()}${
+                roiSummary.oldestComputedAt && roiSummary.oldestComputedAt !== roiSummary.computedAt
+                  ? ` · oldest recruit rollup ${new Date(roiSummary.oldestComputedAt).toLocaleDateString()}`
+                  : ""
+              }`
+            : "No recompute timestamp on record — these figures cannot be dated."}
         </p>
       </div>
 
@@ -256,7 +282,14 @@ export default async function RecruitingROIPage() {
             <Card>
               <CardHeader>
                 <CardTitle>Revenue by Agent - Year 1-3</CardTitle>
-                <CardDescription>Gross commission generated in each year post-hire</CardDescription>
+                <CardDescription>
+                  Gross commission generated in each year post-hire
+                  {/* recruiting_analytics.computed_at — when the yearly rollups behind
+                      these bars were last recomputed. Absent rather than guessed. */}
+                  {analyticsComputedAt
+                    ? ` · rollups computed ${new Date(analyticsComputedAt).toLocaleDateString()}`
+                    : " · rollup date not recorded"}
+                </CardDescription>
               </CardHeader>
               <CardContent>
                 <YearlyRevenueChart data={yearlyAnalytics} />

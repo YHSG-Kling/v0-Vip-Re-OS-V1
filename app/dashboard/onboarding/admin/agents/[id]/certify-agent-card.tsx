@@ -24,6 +24,10 @@ export interface CertificationReadiness {
   passingScore: number
   eligible: boolean
   alreadyActive: boolean
+  /** What the agent got WRONG on the attempt the gate is applied to, decoded
+   *  from the STORED agent_quiz_attempts.answers. Optional so a caller built
+   *  before this existed still type-checks; absent and empty both render nothing. */
+  missed?: Array<{ question: string; given: string | null; correct: string }>
 }
 
 export function CertifyAgentCard({
@@ -103,6 +107,29 @@ export function CertifyAgentCard({
             </span>
           )}
         </div>
+
+        {/* WHAT THEY MISSED — the exam responses the ledger has always stored
+            (agent_quiz_attempts.answers) and no surface ever showed. A broker
+            deciding whether to activate an agent, or which competency to coach
+            before a retake, needs the misses and not only the number. */}
+        {(readiness.missed?.length ?? 0) > 0 && (
+          <div className="rounded-md border bg-muted/30 p-3 space-y-2">
+            <p className="text-xs font-medium">
+              Missed on the best attempt ({readiness.missed!.length}
+              {readiness.missed!.length === 1 ? " question" : " questions"})
+            </p>
+            <ul className="space-y-1.5">
+              {readiness.missed!.map((m, i) => (
+                <li key={i} className="text-xs">
+                  <span className="font-medium">{m.question}</span>
+                  <span className="text-muted-foreground">
+                    {" "}— answered {m.given === null ? "nothing" : `“${m.given}”`}; correct “{m.correct}”
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {readiness.alreadyActive ? (
           <p className="text-sm text-muted-foreground flex items-center gap-2">

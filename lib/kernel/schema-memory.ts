@@ -83,20 +83,81 @@ export async function rememberShape(svc: Svc, input: {
   }
 }
 
-export interface ShapeChange { connector: string; entity: string; fingerprint: string; firstSeenAt: string }
+export interface ShapeChange {
+  connector: string
+  entity: string
+  fingerprint: string
+  firstSeenAt: string
+  /** connector_shape_memory.last_seen_at — is the provider STILL sending this shape, or
+   *  was it a one-off? A change that has kept arriving is a contract change; one seen
+   *  once and never again is a blip. Written on every payload (:64/:77) and, until w26,
+   *  read by nothing. */
+  lastSeenAt: string | null
+  /** Key paths this shape has that the connector's PREVIOUS shape did not. */
+  addedKeys: string[]
+  /** Key paths the previous shape had that this one DROPPED — the half that breaks a
+   *  parser, and the half a fingerprint alone can never name. */
+  removedKeys: string[]
+  /** True when the diff could not be computed (a prior row carried no shape_keys), so
+   *  empty added/removed means "unknown", not "nothing changed". */
+  diffUnavailable: boolean
+}
 
-/** Shapes first seen in the window on connectors that had prior history — the digest's early-warning line. */
+/**
+ * Shapes first seen in the window on connectors that had prior history — the digest's
+ * early-warning line.
+ *
+ * WHAT CHANGED, NOT JUST THAT SOMETHING DID (w26 lane C8). `shape_keys` is the sorted
+ * key-path list this module exists to remember (:75) and `last_seen_at` its recency
+ * (:64/:77); neither was ever read back, so both the weekly digest and the continuity
+ * board could only say "connector X started sending a new payload shape" and name an
+ * opaque djb2 fingerprint. The one fact an operator needs — WHICH FIELD appeared or
+ * disappeared — was stored on every row and shown on none. This diffs the new shape
+ * against the connector's most recent PRIOR shape and reports both sides.
+ */
 export async function loadRecentShapeChanges(svc: Svc, sinceIso: string): Promise<ShapeChange[]> {
-  const { data } = await svc.from("connector_shape_memory")
-    .select("connector, entity, fingerprint, first_seen_at")
+  const { data, error } = await svc.from("connector_shape_memory")
+    .select("connector, entity, fingerprint, first_seen_at, last_seen_at, shape_keys")
     .gte("first_seen_at", sinceIso).order("first_seen_at", { ascending: false }).limit(50)
+  // §3 — a refused read resolves as data:null, and "no drift this week" is this
+  // function's normal answer, so the refusal would read as a clean bill of health.
+  if (error) {
+    console.error("[schema-memory] shape-change read refused:", error.message)
+    return []
+  }
   const rows = ((data ?? []) as any[])
   const out: ShapeChange[] = []
   for (const r of rows) {
-    const { count } = await svc.from("connector_shape_memory")
-      .select("id", { count: "exact", head: true })
+    // ONE read answers both questions: `count` says whether this connector/entity had
+    // prior history at all (the original predicate), and the single row returned is the
+    // most recent prior shape to diff against.
+    const { data: priorRows, count, error: priorError } = await svc.from("connector_shape_memory")
+      .select("shape_keys, first_seen_at", { count: "exact" })
       .eq("connector", r.connector).eq("entity", r.entity).lt("first_seen_at", r.first_seen_at)
-    if ((count ?? 0) > 0) out.push({ connector: r.connector, entity: r.entity, fingerprint: r.fingerprint, firstSeenAt: r.first_seen_at })
+      .order("first_seen_at", { ascending: false }).limit(1)
+    if (priorError) {
+      console.error("[schema-memory] prior-shape read refused:", priorError.message)
+      continue
+    }
+    if ((count ?? 0) === 0) continue // first shape ever for this connector — baseline, not change
+
+    const nextKeys = Array.isArray(r.shape_keys) ? (r.shape_keys as string[]) : null
+    const prior = (priorRows ?? [])[0] as { shape_keys: unknown } | undefined
+    const priorKeys = Array.isArray(prior?.shape_keys) ? (prior!.shape_keys as string[]) : null
+    const diffUnavailable = nextKeys === null || priorKeys === null
+    const priorSet = new Set(priorKeys ?? [])
+    const nextSet = new Set(nextKeys ?? [])
+
+    out.push({
+      connector: r.connector,
+      entity: r.entity,
+      fingerprint: r.fingerprint,
+      firstSeenAt: r.first_seen_at,
+      lastSeenAt: (r.last_seen_at as string | null) ?? null,
+      addedKeys: diffUnavailable ? [] : (nextKeys as string[]).filter((k) => !priorSet.has(k)),
+      removedKeys: diffUnavailable ? [] : (priorKeys as string[]).filter((k) => !nextSet.has(k)),
+      diffUnavailable,
+    })
   }
   return out
 }

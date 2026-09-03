@@ -41,7 +41,25 @@ export default async function SuperadminBrokerageDetailPage(
   const r = await getBrokerageDetailAction(id)
   if (!r.ok) return <div className="p-6 text-red-600">Failed: {r.error}</div>
 
-  const { brokerage, users, subscriptions, auditEntries, accessSessions } = r
+  const { brokerage, users, subscriptions, auditEntries, accessSessions, aiEntitlement } = r
+
+  // AI ENTITLEMENT TENURE (ai_subscription_tier.subscribed_at). Whole months only, and
+  // only when there IS a date — an entitlement whose start was never recorded says so
+  // rather than reporting "0 months", which would read as "signed up today".
+  const aiTenureLabel = (() => {
+    if (!aiEntitlement) return "no AI entitlement row on record"
+    const tier = aiEntitlement.tierName ?? "unnamed tier"
+    const state = aiEntitlement.cancelledAt
+      ? `cancelled ${new Date(aiEntitlement.cancelledAt).toLocaleDateString()}`
+      : aiEntitlement.isActive ? "active" : "inactive"
+    if (!aiEntitlement.subscribedAt) return `${tier} · ${state} · start date not recorded`
+    const started = new Date(aiEntitlement.subscribedAt)
+    const months = Math.max(
+      0,
+      (new Date().getFullYear() - started.getFullYear()) * 12 + (new Date().getMonth() - started.getMonth()),
+    )
+    return `${tier} · ${state} · since ${started.toLocaleDateString()} (${months} month${months === 1 ? "" : "s"})`
+  })()
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
@@ -59,6 +77,12 @@ export default async function SuperadminBrokerageDetailPage(
               {brokerage.city && brokerage.state ? `${brokerage.city}, ${brokerage.state}` : "Location not set"} ·
               created {new Date(brokerage.created_at).toLocaleDateString()} ·
               source <span className="font-medium">{brokerage.signup_source}</span>
+            </div>
+            {/* AI ENTITLEMENT — the tier the AI gates read, and how long this tenant has
+                held it. §5: AI is platform-covered with per-tier overage, so this is the
+                tenure behind every overage number on this account. */}
+            <div className="mt-1 text-xs text-muted-foreground">
+              AI entitlement: <span className="font-medium">{aiTenureLabel}</span>
             </div>
           </div>
           <div className="flex items-center gap-3">

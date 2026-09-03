@@ -39,9 +39,14 @@ async function requireRecruitingCaller(): Promise<{ client: Awaited<ReturnType<t
 export async function getRecruitingROISummary() {
   const { client, brokerageId } = await requireRecruitingCaller()
 
+  // `computed_at` IS THE FRESHNESS OF EVERY NUMBER BELOW. lib/recruiting/recruiting-roi-writer.ts:34
+  // stamps it on every recompute and nothing read it, so the recruiting-ROI headline could show a
+  // roi_pct computed months ago — after a cost entry whose recompute silently failed (the writer's
+  // caller at :247 swallows the error by design) — and present it as today's number. A stale money
+  // figure that says nothing about its own age is the money-surface defect (§5).
   const { data: summary, error } = await client
     .from("recruiting_roi")
-    .select("total_recruiting_cost, lifetime_brokerage_net, roi_pct, breakeven_month")
+    .select("total_recruiting_cost, lifetime_brokerage_net, roi_pct, breakeven_month, computed_at")
     .eq("brokerage_id", brokerageId)
 
   if (error) throw error
@@ -52,12 +57,23 @@ export async function getRecruitingROISummary() {
   const activeRecruits = summary?.length || 0
   const profitableRecruits = summary?.filter(r => (r.roi_pct || 0) > 0).length || 0
 
+  // NEWEST and OLDEST, not an average: the headline is a SUM across recruits, so it is only
+  // as fresh as its stalest row. Both null when no row carries a stamp — never inferred.
+  const stamps = (summary ?? [])
+    .map((r) => r.computed_at as string | null)
+    .filter((s): s is string => typeof s === "string" && s.length > 0)
+    .sort()
+
   return {
     totalInvested,
     totalGenerated,
     avgROI,
     activeRecruits,
     profitableRecruits,
+    /** recruiting_roi.computed_at — most recent recompute across the tenant's recruits. */
+    computedAt: stamps.length > 0 ? stamps[stamps.length - 1] : null,
+    /** The STALEST recompute in the sum. A headline is only as current as this. */
+    oldestComputedAt: stamps.length > 0 ? stamps[0] : null,
   }
 }
 
@@ -180,7 +196,10 @@ export async function getRecruitingAnalyticsByYear(recruitedAgentId: string) {
 
   const { data: analytics, error } = await client
     .from("recruiting_analytics")
-    .select("year_number, gross_commission_generated, brokerage_net_from_agent, transaction_count")
+    // computed_at: same freshness contract as recruiting_roi above. lib/kernel/manager-signals.ts:459
+    // stamps it on every yearly rollup and nothing read it, so the per-recruit revenue chart could
+    // not say whether it was drawn from this week's rollup or last quarter's.
+    .select("year_number, gross_commission_generated, brokerage_net_from_agent, transaction_count, computed_at")
     .eq("brokerage_id", brokerageId)
     .eq("recruited_agent_id", recruitedAgentId)
     .order("year_number", { ascending: true })
