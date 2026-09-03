@@ -1,5 +1,6 @@
 "use server"
 
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { isValidUUID } from "@/lib/validations"
 import {
   launchAIISACampaignService,
@@ -380,15 +381,16 @@ export async function createISACampaign(params: {
 
   if (error) return { success: false, error: error.message }
 
-  await service.from("lifecycle_events").insert({
-    event_type:    KernelEvent.LEAD_IMPORT_COMPLETED,
-    entity_type:   "campaign",
-    entity_id:     data.id,
-    brokerage_id:  auth.brokerageId,
-    actor_user_id: auth.userId,
+  // Audit row + reactor (integrator, 2026-09-03 — was a bare insert nothing downstream heard).
+  const { error: emitErr } = await emitKernelEvent({
+    event:       KernelEvent.LEAD_IMPORT_COMPLETED,
+    entityType:  "campaign",
+    entityId:    data.id,
+    brokerageId: auth.brokerageId,
+    actorUserId: auth.userId,
     metadata: { campaignType: params.campaignType, channels: cleanChannels },
-    created_at:    new Date().toISOString(),
   })
+  if (emitErr) console.error(`[createISACampaign] event emit refused for campaign ${data.id}: ${emitErr}`)
 
   return { success: true, campaignId: data.id }
 }
@@ -480,17 +482,18 @@ export async function completeISACampaign(
   if (error) return { success: false, error: error.message }
   if (!updated || updated.length === 0) return { success: false, error: "Campaign not found" }
 
-  await service.from("lifecycle_events").insert({
-    // §6 — reuse the one existing "campaign ended" spelling rather than mint a
-    // twelfth. lib/kernel/lifecycle.ts:84 already maps it.
-    event_type:    KernelEvent.MARKETING_CAMPAIGN_ENDED,
-    entity_type:   "campaign",
-    entity_id:     campaignId,
-    brokerage_id:  auth.brokerageId,
-    actor_user_id: auth.userId,
-    metadata:      { previousStatus: existing.status },
-    created_at:    new Date().toISOString(),
+  // §6 — reuse the one existing "campaign ended" spelling rather than mint a
+  // twelfth. lib/kernel/lifecycle.ts:84 already maps it. Audit row + reactor
+  // (integrator, 2026-09-03 — was a bare insert).
+  const { error: emitErr } = await emitKernelEvent({
+    event:       KernelEvent.MARKETING_CAMPAIGN_ENDED,
+    entityType:  "campaign",
+    entityId:    campaignId,
+    brokerageId: auth.brokerageId,
+    actorUserId: auth.userId,
+    metadata:    { previousStatus: existing.status },
   })
+  if (emitErr) console.error(`[completeISACampaign] event emit refused for campaign ${campaignId}: ${emitErr}`)
 
   return { success: true }
 }

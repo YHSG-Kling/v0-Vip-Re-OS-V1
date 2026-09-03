@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
+import Link from "next/link"
 import {
   Card,
   CardContent,
@@ -943,7 +944,10 @@ export function MarketInsightsDashboardClient({
                 {cmaReports.map((report) => (
                   <TableRow key={report.id}>
                     <TableCell className="font-medium">
-                      {report.property_address}
+                      {/* Opens the report by its own id (app/dashboard/cma/[cmaId], wave 26). */}
+                      <Link href={`/dashboard/cma/${report.id}`} className="hover:underline">
+                        {report.property_address}
+                      </Link>
                     </TableCell>
                     <TableCell className="text-right">
                       ${report.estimated_value?.toLocaleString() || "—"}

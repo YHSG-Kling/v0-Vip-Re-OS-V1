@@ -34,6 +34,7 @@
 //  - recordBuyerPropertyAction       → upserts property_interests row for contact
 //  - loadBuyerSavedProperties        → returns paginated saved/favorited interests
 
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getTransactionProviderByName } from "@/lib/integrations/providers/provider-resolver"
 import { KernelEvent } from "./events"
@@ -685,21 +686,20 @@ export async function launchEsignEnvelope(input: {
       .eq("id", input.form_submission_id)
 
     // Emit event
-    await supabase
-      .from("lifecycle_events")
-      .insert({
-        entity_type:  "form_submission",
-        entity_id:    input.form_submission_id,
-        event_type:   KernelEvent.ESIGN_ENVELOPE_REQUESTED,
-        brokerage_id: input.brokerage_id,
-        metadata: {
-          agent_id:                 input.agent_id,
-          external_transaction_id:  input.external_transaction_id,
-          provider:                 providerName,
-          signer_count:             input.signers.length,
-        },
-        created_at: new Date().toISOString(),
-      })
+    // Audit row + reactor (integrator, 2026-09-03 — was a bare insert).
+    const { error: emitErr } = await emitKernelEvent({
+      entityType:  "form_submission",
+      entityId:    input.form_submission_id,
+      event:       KernelEvent.ESIGN_ENVELOPE_REQUESTED,
+      brokerageId: input.brokerage_id,
+      metadata: {
+        agent_id:                 input.agent_id,
+        external_transaction_id:  input.external_transaction_id,
+        provider:                 providerName,
+        signer_count:             input.signers.length,
+      },
+    })
+    if (emitErr) console.error(`[forms] ESIGN_ENVELOPE_REQUESTED emit refused for submission ${input.form_submission_id}: ${emitErr}`)
 
     return { success: true, data: { envelope_launched: true } }
   } catch (error: any) {
@@ -894,11 +894,14 @@ export async function recordBuyerPropertyAction(input: {
     }
     const event = eventMap[input.interest_level]
     if (event && !isExternal) {
-      await supabase.from("lifecycle_events").insert({
-        entity_type: "contact", entity_id: input.contact_id, event_type: event, brokerage_id: input.brokerage_id,
+      // Audit row + reactor (integrator, 2026-09-03 — was a bare insert, so the
+      // buyer's own portal reaction never reached sequences or the staff bell).
+      const { error: emitErr } = await emitKernelEvent({
+        entityType: "contact", entityId: input.contact_id, event, brokerageId: input.brokerage_id,
+        contactId: input.contact_id, listingId: input.listing_id ?? undefined,
         metadata: { listing_id: input.listing_id, interest_level: input.interest_level, agent_id: input.agent_id },
-        created_at: new Date().toISOString(),
       })
+      if (emitErr) console.error(`[forms] ${event} emit refused for contact ${input.contact_id}: ${emitErr}`)
     }
 
     // BUYER GRAPH LOOP — the buyer's own portal action (favorite/dismiss) now TEACHES the system

@@ -248,6 +248,7 @@ export const CRON_REGISTRY: CronEntry[] = [
   { path: "/api/cron/voice-distiller-weekly"              , schedule: "0 9 * * 5" },
   { path: "/api/cron/showing-prep"                        , schedule: "15 * * * *" },
   { path: "/api/cron/deadline-watcher"                    , schedule: "45 * * * *" }, // (staggered r43)
+  { path: "/api/cron/task-overdue"                        , schedule: "20 * * * *" }, // TASK_OVERDUE had live notification_rules and no emitter (wave 26)
   // Offer expiry — the unattended door for PENDING → EXPIRED. `markOfferExpired`
   // is session-gated by design, so without this nothing ever expired an offer
   // whose `offers.response_deadline` had passed. Offset from deadline-watcher.

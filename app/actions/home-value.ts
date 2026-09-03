@@ -1,5 +1,6 @@
 "use server"
 
+import { emitKernelEvent } from "@/lib/kernel/emit"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -609,17 +610,21 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
     }
 
     // Step 8: EMIT HOME_VALUE_CONTACT_CREATED kernel event
-    await supabase.from("lifecycle_events").insert({
-      brokerage_id: resolvedBrokerageId,
-      entity_type: "contact",
-      entity_id: contactId,
-      event_type: KernelEvent.HOME_VALUE_CONTACT_CREATED,
+    // Audit row + reactor (integrator, 2026-09-03 — was a bare insert; the
+    // sessionless public lane passes the tenant it resolved explicitly).
+    const { error: emitErr } = await emitKernelEvent({
+      brokerageId: resolvedBrokerageId,
+      entityType: "contact",
+      entityId: contactId,
+      event: KernelEvent.HOME_VALUE_CONTACT_CREATED,
+      contactId,
       metadata: {
         request_id: valuationRequest.id,
         estimated_value: aiValuation.estimated_value_mid,
         property_address: propertyAddress,
       },
     })
+    if (emitErr) console.error(`[home-value] HOME_VALUE_CONTACT_CREATED emit refused for contact ${contactId}: ${emitErr}`)
 
     // Step 9: Notify the assigned agent via the notifications table.
     // notifications.user_id is a USERS id — resolved once above, not re-fetched
